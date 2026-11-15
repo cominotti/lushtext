@@ -17,6 +17,15 @@ MUTANTS_BUILD_JOBS="${MUTANTS_BUILD_JOBS:-}"
 MUTANTS_RE="${MUTANTS_RE:-}"
 MUTANTS_EXCLUDE="${MUTANTS_EXCLUDE:-}"
 MUTANTS_EXCLUDE_RE="${MUTANTS_EXCLUDE_RE:-}"
+MUTANTS_MIRROR="${MUTANTS_MIRROR:-0}"
+MUTANTS_LOCAL_JOBS="${MUTANTS_LOCAL_JOBS:-1}"
+MUTANTS_POOL_SIZE="${MUTANTS_POOL_SIZE:-3}"
+MUTANTS_SLOT_MAX_GIB="${MUTANTS_SLOT_MAX_GIB:-12}"
+# Design D3's measured decision for the mirror slots: "0" builds without
+# incremental compilation, "" leaves CARGO_INCREMENTAL as the caller set it.
+MUTANTS_SLOT_INCREMENTAL="${MUTANTS_SLOT_INCREMENTAL-0}"
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Cap per-job parallelism so concurrent jobs do not oversubscribe the host.
 # cargo-mutants runs MUTANTS_JOBS build/test pipelines at once; each one launches
@@ -60,6 +69,23 @@ Environment:
   MUTANTS_RE            Optional regex for focused mutant proof, matched against --list names.
   MUTANTS_EXCLUDE       Optional file glob excluded after focused matching.
   MUTANTS_EXCLUDE_RE    Optional regex for extra focused-run exclusions.
+  MUTANTS_MIRROR        Set to 1 (the Makefile's mutants-* targets do) to run smoke, diff
+                        and full in place in mirror slots of the build cache root.
+  MUTANTS_LOCAL_JOBS    Mirror mode: how many slots to run side by side (default: 1).
+  MUTANTS_POOL_SIZE     Mirror mode: slots in the host-wide pool (default: 3).
+  MUTANTS_SLOT_MAX_GIB  Mirror mode: empty a slot whose build + target exceed this (default: 12).
+  LUSHTEXT_TEST_ADDRESS_SPACE  Mirror mode: per-test address-space limit (K/M/G/T or none).
+
+Mirror mode (design D2 of openspec/changes/reduce-build-disk-writes): the
+checkout's tracked and untracked, non-ignored files, uncommitted edits
+included, are synced into slots under `scripts/build-cache.sh root`/mutants,
+and each slot runs `cargo mutants --in-place` with its own fixed target and
+build directories, so warm slots rebuild only what changed and no build
+directory is left behind. N slots run `--shard i/N` side by side, never
+`--jobs` (cargo-mutants refuses it with --in-place), and their reports are
+merged into the checkout's mutants.out. A slot is taken with a non-blocking
+lock: when none is free the run exits 75 and names the holders. The checkout
+itself is never mutated.
 EOF
 }
 
@@ -220,17 +246,392 @@ run_list() {
     cargo mutants "${args[@]}" --list
 }
 
+# --- mirror mode ---------------------------------------------------------------
+
+slot_fds=()
+slot_dirs=()
+slot_pids=()
+
+mirror_fail() {
+    echo "run-mutants.sh: $*" >&2
+    exit "${2:-1}"
+}
+
+# Release nothing explicitly: the locks are on descriptors only this process
+# holds (every child closes them first), so they go when it exits.
+close_slot_fds() {
+    local fd
+    for fd in "${slot_fds[@]}"; do
+        eval "exec ${fd}>&-"
+    done
+}
+
+cachedir_tag() {
+    [[ -e "$1/CACHEDIR.TAG" ]] && return
+    printf '%s\n' 'Signature: 8a477f597d28d172789f06886806bc55' \
+        '# A LushText mutation slot (scripts/run-mutants.sh); it can be regenerated.' >"$1/CACHEDIR.TAG"
+}
+
+acquire_slots() {
+    local want=$1 pool=$2 checkout=$3 k slot fd owner holders=() stale
+    for (( k = 1; k <= MUTANTS_POOL_SIZE && ${#slot_fds[@]} < want; k++ )); do
+        slot="${pool}/slot-${k}"
+        mkdir -p "${slot}"
+        cachedir_tag "${slot}"
+        exec {fd}>>"${slot}/lock"
+        if flock -n "${fd}"; then
+            stale=""
+            if [[ -s "${slot}/owner" ]]; then
+                stale="$(tr '\n' ' ' <"${slot}/owner")"
+                echo "run-mutants.sh: slot-${k}: replacing a stale owner record (${stale% }); its lock was free"
+            fi
+            printf 'pid=%s checkout=%s started=%s\n' "$$" "${checkout}" "$(date -Is)" >"${slot}/owner"
+            slot_fds+=("${fd}")
+            slot_dirs+=("${slot}")
+        else
+            eval "exec ${fd}>&-"
+            owner="$(tr '\n' ' ' <"${slot}/owner" 2>/dev/null || true)"
+            holders+=("slot-${k}: held by ${owner:-an unrecorded process}")
+        fi
+    done
+    if (( ${#slot_fds[@]} == 0 )); then
+        echo "run-mutants.sh: no free mutation slot in ${pool} (pool of ${MUTANTS_POOL_SIZE}); not waiting:" >&2
+        printf '  %s\n' "${holders[@]}" >&2
+        echo "run-mutants.sh: retry later, or with MUTANTS_LOCAL_JOBS=1 once one slot is free" >&2
+        exit 75
+    fi
+    if (( ${#slot_fds[@]} < want )); then
+        echo "run-mutants.sh: running on ${#slot_fds[@]} of ${want} requested slots (others busy):"
+        printf '  %s\n' "${holders[@]}"
+    fi
+}
+
+slot_size_kib() {
+    du -sk "$1/build" "$1/target" 2>/dev/null | awk '{ s += $1 } END { print s + 0 }'
+}
+
+prepare_slot() {
+    local slot=$1 checkout=$2 kib limit
+    kib="$(slot_size_kib "${slot}")"
+    limit=$(( MUTANTS_SLOT_MAX_GIB * 1024 * 1024 ))
+    if (( kib > limit )); then
+        echo "run-mutants.sh: $(basename "${slot}"): build + target hold $(( kib / 1024 )) MiB, over MUTANTS_SLOT_MAX_GIB=${MUTANTS_SLOT_MAX_GIB}; emptying them (this run builds it cold)"
+        rm -rf "${slot}/build" "${slot}/target"
+    fi
+    (close_slot_fds; exec python3 "${here}/mutants-mirror.py" sync "${checkout}" "${slot}/src") | sed "s/^/[$(basename "${slot}")] /"
+    return "${PIPESTATUS[0]}"
+}
+
+slot_runner_var() {
+    local triple
+    triple="$(rustc -vV | sed -n 's/^host: //p')"
+    [[ -n "${triple}" ]] || mirror_fail "could not read the host triple from rustc -vV"
+    triple="${triple^^}"
+    printf 'CARGO_TARGET_%s_RUNNER\n' "${triple//-/_}"
+}
+
+# One slot: its environment, then cargo mutants in place from its src/.
+run_slot() {
+    local slot=$1 out=$2 shard=$3 runner_var=$4 wrapper=$5 checkout=$6
+    shift 6
+    local name status log
+    name="$(basename "${slot}")"
+    close_slot_fds
+    cd "${slot}/src"
+    export CARGO_TARGET_DIR="${slot}/target" CARGO_BUILD_BUILD_DIR="${slot}/build"
+    export RUSTC_WORKSPACE_WRAPPER="${wrapper}"
+    export "${runner_var}=${checkout}/scripts/test-address-space-runner.sh"
+    if [[ -n "${MUTANTS_SLOT_INCREMENTAL}" ]]; then
+        export CARGO_INCREMENTAL="${MUTANTS_SLOT_INCREMENTAL}"
+    fi
+    unset CARGO_MUTANTS_JOBS
+    local args=("$@" --output "${out}")
+    if [[ -n "${shard}" ]]; then
+        args+=(--shard "${shard}")
+    fi
+    log="$(mktemp)"
+    set +e
+    cargo mutants "${args[@]}" 2>&1 | tee "${log}" | sed -u "s/^/[${name}] /"
+    status="${PIPESTATUS[0]}"
+    set -e
+    if (( status != 0 )) && grep -Eiq 'no relevant mutants|no mutants were generated|found 0 mutants|(^|[^0-9])0 mutants (to test|tested)' "${log}"; then
+        echo "[${name}] No relevant mutants in this slot's share; counting it as passing."
+        status=0
+    fi
+    rm -f "${log}"
+    return "${status}"
+}
+
+forward_signal() {
+    local pid
+    for pid in "${slot_pids[@]}"; do
+        kill -TERM -- "-${pid}" 2>/dev/null || kill -TERM "${pid}" 2>/dev/null || true
+    done
+    wait 2>/dev/null || true
+    echo "run-mutants.sh: interrupted; the slots heal on their next sync (the checkout was never mutated)" >&2
+    exit 143
+}
+
+run_mirror() {
+    local checkout root pool wrapper runner_var want n k shard out status merged
+    local statuses=() outs=()
+    checkout="$(git rev-parse --show-toplevel 2>/dev/null)" || mirror_fail "mirror mode needs a git checkout"
+    checkout="$(realpath "${checkout}")"
+    want="${MUTANTS_LOCAL_JOBS}"
+    [[ "${want}" =~ ^[1-9][0-9]*$ ]] || mirror_fail "MUTANTS_LOCAL_JOBS must be a positive integer, not '${want}'"
+    (( want <= MUTANTS_POOL_SIZE )) || want="${MUTANTS_POOL_SIZE}"
+    if [[ -n "${MUTANTS_SHARD}" ]] && (( want > 1 )); then
+        mirror_fail "MUTANTS_SHARD=${MUTANTS_SHARD} with ${want} slots would compose two shardings ambiguously; set MUTANTS_LOCAL_JOBS=1 to run one shard"
+    fi
+    require_command flock
+    root="$("${here}/build-cache.sh" root)"
+    pool="${root}/mutants"
+    mkdir -p "${pool}"
+    "${here}/build-cache.sh" checkout "${checkout}" >/dev/null
+    runner_var="$(slot_runner_var)"
+    acquire_slots "${want}" "${pool}" "${checkout}"
+    n="${#slot_dirs[@]}"
+    # The workspace wrapper at one stable path: Cargo hashes its path into
+    # every member's units, so a per-checkout path would rebuild every member
+    # whenever runs from different checkouts alternate in a slot.
+    wrapper="${pool}/rustc-passthrough.sh"
+    if ! cmp -s "${here}/rustc-passthrough.sh" "${wrapper}"; then
+        cp "${here}/rustc-passthrough.sh" "${wrapper}.tmp.$$"
+        chmod 755 "${wrapper}.tmp.$$"
+        mv -f "${wrapper}.tmp.$$" "${wrapper}"
+    fi
+    for slot in "${slot_dirs[@]}"; do
+        prepare_slot "${slot}" "${checkout}" || mirror_fail "syncing ${slot} failed"
+    done
+    rm -rf "${checkout}/mutants.out.slots"
+    echo "run-mutants.sh: ${n} slot(s) in ${pool}, in place, $([[ -n "${MUTANTS_SLOT_INCREMENTAL}" ]] && echo "CARGO_INCREMENTAL=${MUTANTS_SLOT_INCREMENTAL}" || echo "incremental as configured"), per-test address space ${LUSHTEXT_TEST_ADDRESS_SPACE:-unlimited}"
+    trap forward_signal INT TERM HUP
+    for (( k = 0; k < n; k++ )); do
+        shard="${MUTANTS_SHARD}"
+        if (( n > 1 )); then
+            shard="${k}/${n}"
+            out="${checkout}/mutants.out.slots/$(basename "${slot_dirs[k]}")"
+        else
+            out="${checkout}"
+        fi
+        mkdir -p "${out}"
+        outs+=("${out}")
+        set -m
+        run_slot "${slot_dirs[k]}" "${out}" "${shard}" "${runner_var}" "${wrapper}" "${checkout}" "$@" &
+        set +m
+        slot_pids+=("$!")
+    done
+    for (( k = 0; k < n; k++ )); do
+        status=0
+        wait "${slot_pids[k]}" || status=$?
+        statuses+=("${status}")
+        echo "run-mutants.sh: $(basename "${slot_dirs[k]}") finished with status ${status}"
+    done
+    trap - INT TERM HUP
+    if (( n == 1 )); then
+        (close_slot_fds; exec python3 "${here}/mutants-mirror.py" scan "${checkout}/mutants.out") || true
+        return "${statuses[0]}"
+    fi
+    local specs=()
+    for (( k = 0; k < n; k++ )); do
+        specs+=("${statuses[k]}:${outs[k]}")
+    done
+    merged=0
+    (close_slot_fds; exec python3 "${here}/mutants-mirror.py" merge "${checkout}" "${specs[@]}") || merged=$?
+    rm -rf "${checkout}/mutants.out.slots"
+    return "${merged}"
+}
+
+# The cargo-mutants arguments of a mirror-mode run: never --jobs (refused with
+# --in-place) and never the in-checkout --in-place guard (the slot is mutated,
+# not the checkout).
+mirror_args() {
+    MUTANTS_JOBS="" MUTANTS_IN_PLACE=0 mutants_args
+    printf '%s\n' --in-place
+}
+
+mirror_smoke() {
+    [[ -f "${MUTANTS_SMOKE_FILE}" ]] || fail "smoke file does not exist: ${MUTANTS_SMOKE_FILE}"
+    mapfile -t args < <(mirror_args)
+    run_mirror "${args[@]}" --no-config --file "${MUTANTS_SMOKE_FILE}"
+}
+
+mirror_diff() {
+    local diff_file="${1:-${MUTANTS_DIFF_FILE}}"
+    if [[ $# -ge 1 && -n "${1}" ]]; then
+        [[ -f "${diff_file}" ]] || fail "diff file does not exist: ${diff_file}"
+        [[ -s "${diff_file}" ]] || fail "diff file is empty: ${diff_file}"
+    fi
+    ensure_diff_file "${diff_file}"
+    if ! grep -q '^@@ ' "${diff_file}"; then
+        fail "no diff hunks found in ${diff_file}; nothing was mutation tested"
+    fi
+    mapfile -t args < <(mirror_args)
+    run_mirror "${args[@]}" --in-diff "$(realpath "${diff_file}")"
+}
+
+mirror_full() {
+    mapfile -t args < <(mirror_args)
+    run_mirror "${args[@]}"
+}
+
+# --- self-test -------------------------------------------------------------------
+
+self_test_fail() {
+    echo "run-mutants self-test: $*" >&2
+    exit 1
+}
+
+self_test() {
+    local dir me status out holder holders=()
+    me="${here}/run-mutants.sh"
+    dir="$(mktemp -d "${TMPDIR:-/tmp}/run-mutants-self-test.XXXXXX")"
+    # shellcheck disable=SC2064 # expand now: the trap must remove this dir
+    trap "jobs -p | xargs -r kill 2>/dev/null || true; rm -rf '${dir}'" EXIT
+    unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_COMMON_DIR
+    unset MUTANTS_SHARD MUTANTS_RE MUTANTS_EXCLUDE MUTANTS_EXCLUDE_RE MUTANTS_IN_PLACE MUTANTS_BASELINE_SKIP CI
+    export LUSHTEXT_BUILD_CACHE="${dir}/cache"
+    mkdir -p "${dir}/bin" "${dir}/repo/src"
+    # A stub cargo: records its arguments and environment, and writes the
+    # report cargo-mutants would write under --output.
+    cat >"${dir}/bin/cargo" <<'STUB'
+#!/usr/bin/env bash
+out=""; prev=""
+for a in "$@"; do [[ "$prev" == --output ]] && out="$a"; prev="$a"; done
+{ printf 'ARGS'; printf ' %q' "$@"; printf '\n'
+  printf 'ENV jobs=%s inc=%s wrapper=%s target=%s pwd=%s\n' "${CARGO_MUTANTS_JOBS-unset}" "${CARGO_INCREMENTAL-unset}" "${RUSTC_WORKSPACE_WRAPPER-unset}" "${CARGO_TARGET_DIR-unset}" "$PWD"
+} >>"${STUB_LOG}"
+if [[ -n "$out" ]]; then
+    mkdir -p "$out/mutants.out/log"
+    printf '{"outcomes": [], "total_mutants": 0, "missed": 0, "caught": 0, "timeout": 0, "unviable": 0, "success": 0, "cargo_mutants_version": "27.0.0"}\n' >"$out/mutants.out/outcomes.json"
+    printf '[]\n' >"$out/mutants.out/mutants.json"
+fi
+exit "${STUB_STATUS:-0}"
+STUB
+    printf '#!/bin/sh\nexit 0\n' >"${dir}/bin/cargo-mutants"
+    cp "${dir}/bin/cargo-mutants" "${dir}/bin/cargo-nextest"
+    chmod +x "${dir}/bin/"*
+    export PATH="${dir}/bin:${PATH}" STUB_LOG="${dir}/stub.log"
+    cd "${dir}/repo"
+    git init -q .
+    printf 'fn f() {}\n' >src/lib.rs
+    git add src/lib.rs
+    git -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false commit -q -m fixture
+    mkdir -p crates/lushtext-core/src/model
+    printf 'fn g() {}\n' >crates/lushtext-core/src/model/document_scale.rs
+
+    # Two slots: --shard i/N each, --in-place, never --jobs, CARGO_MUTANTS_JOBS unset.
+    : >"${STUB_LOG}"
+    MUTANTS_MIRROR=1 MUTANTS_LOCAL_JOBS=2 MUTANTS_JOBS=2 CARGO_MUTANTS_JOBS=2 "${me}" smoke >"${dir}/out" 2>&1 \
+        || self_test_fail "a two-slot smoke run failed: $(cat "${dir}/out")"
+    [[ "$(grep -c '^ARGS' "${STUB_LOG}")" == 2 ]] || self_test_fail "expected two cargo mutants runs: $(cat "${STUB_LOG}")"
+    if ! { grep -q -- '--shard 0/2' "${STUB_LOG}" && grep -q -- '--shard 1/2' "${STUB_LOG}"; }; then
+        self_test_fail "missing --shard i/2: $(cat "${STUB_LOG}")"
+    fi
+    ! grep -q -- '--jobs' "${STUB_LOG}" || self_test_fail "a mirror-mode run passed --jobs: $(cat "${STUB_LOG}")"
+    [[ "$(grep -c -- ' --in-place ' "${STUB_LOG}")" == 2 ]] || self_test_fail "a slot did not run --in-place"
+    ! grep -q 'jobs=2' "${STUB_LOG}" || self_test_fail "CARGO_MUTANTS_JOBS reached cargo-mutants"
+    grep -q "wrapper=${LUSHTEXT_BUILD_CACHE}/mutants/rustc-passthrough.sh" "${STUB_LOG}" || self_test_fail "the workspace wrapper is not the slot-stable copy"
+    grep -q "pwd=${LUSHTEXT_BUILD_CACHE}/mutants/slot-1/src" "${STUB_LOG}" || self_test_fail "a slot did not run from its src/"
+    [[ -f "${dir}/repo/mutants.out/outcomes.json" && ! -e "${dir}/repo/mutants.out.slots" ]] || self_test_fail "the slots' reports were not merged"
+    [[ -f "${LUSHTEXT_BUILD_CACHE}/mutants/slot-1/src/crates/lushtext-core/src/model/document_scale.rs" ]] \
+        || self_test_fail "an untracked file was not synced into the slot"
+
+    # One slot writes the checkout's mutants.out itself (--output <checkout>).
+    : >"${STUB_LOG}"
+    MUTANTS_MIRROR=1 MUTANTS_LOCAL_JOBS=1 "${me}" smoke >"${dir}/out" 2>&1 || self_test_fail "a one-slot run failed: $(cat "${dir}/out")"
+    grep -q -- "--output ${dir}/repo\( \|$\)" "${STUB_LOG}" || self_test_fail "one slot did not use --output <checkout>: $(cat "${STUB_LOG}")"
+    ! grep -q -- '--shard' "${STUB_LOG}" || self_test_fail "one slot passed --shard"
+
+    # A user shard with several slots is refused before any slot is taken.
+    : >"${STUB_LOG}"
+    rm -f "${LUSHTEXT_BUILD_CACHE}"/mutants/slot-*/owner
+    status=0; MUTANTS_MIRROR=1 MUTANTS_LOCAL_JOBS=2 MUTANTS_SHARD=0/4 "${me}" full >"${dir}/out" 2>&1 || status=$?
+    if ! { (( status == 1 )) && grep -q 'ambiguously' "${dir}/out"; }; then
+        self_test_fail "MUTANTS_SHARD with 2 slots was not refused ($status): $(cat "${dir}/out")"
+    fi
+    if [[ -s "${STUB_LOG}" ]] || ls "${LUSHTEXT_BUILD_CACHE}"/mutants/slot-*/owner >/dev/null 2>&1; then
+        self_test_fail "the refused run took a slot or ran cargo"
+    fi
+
+    # Every slot held: exit 75 without waiting, naming each holder.
+    for k in 1 2 3; do
+        mkdir -p "${LUSHTEXT_BUILD_CACHE}/mutants/slot-${k}"
+        printf 'pid=%s checkout=/elsewhere-%s started=now\n' "999${k}" "${k}" >"${LUSHTEXT_BUILD_CACHE}/mutants/slot-${k}/owner"
+        # The holder IS the sleeping process, so killing it frees the lock.
+        (exec 9>>"${LUSHTEXT_BUILD_CACHE}/mutants/slot-${k}/lock"; flock -x 9; exec sleep 30) &
+        holders+=("$!")
+    done
+    sleep 0.3
+    status=0; timeout 10 env MUTANTS_MIRROR=1 MUTANTS_LOCAL_JOBS=1 "${me}" smoke >"${dir}/out" 2>&1 || status=$?
+    (( status == 75 )) || self_test_fail "all slots held gave status ${status}, not 75: $(cat "${dir}/out")"
+    for k in 1 2 3; do
+        grep -q "slot-${k}: held by pid=999${k} checkout=/elsewhere-${k}" "${dir}/out" || self_test_fail "holder of slot-${k} not named: $(cat "${dir}/out")"
+    done
+    kill "${holders[@]}" 2>/dev/null || true
+    wait "${holders[@]}" 2>/dev/null || true
+
+    # A stale owner record with a free lock: the slot is taken normally.
+    printf 'pid=1 checkout=/gone started=then\n' >"${LUSHTEXT_BUILD_CACHE}/mutants/slot-1/owner"
+    MUTANTS_MIRROR=1 MUTANTS_LOCAL_JOBS=1 "${me}" smoke >"${dir}/out" 2>&1 || self_test_fail "a stale owner blocked the run: $(cat "${dir}/out")"
+    grep -q 'slot-1: replacing a stale owner record (pid=1 checkout=/gone' "${dir}/out" || self_test_fail "the stale owner was not reported: $(cat "${dir}/out")"
+    grep -q "pid=.* checkout=${dir}/repo" "${LUSHTEXT_BUILD_CACHE}/mutants/slot-1/owner" || self_test_fail "the owner record was not replaced"
+
+    # The lock is not inherited: a daemon a slot run leaves behind does not keep it.
+    cat >"${dir}/bin/cargo" <<'STUB'
+#!/usr/bin/env bash
+setsid sleep 30 </dev/null >/dev/null 2>&1 &
+echo "$!" >"${STUB_LOG}.daemon"
+exit 0
+STUB
+    MUTANTS_MIRROR=1 MUTANTS_LOCAL_JOBS=1 "${me}" smoke >"${dir}/out" 2>&1 || self_test_fail "the daemon run failed: $(cat "${dir}/out")"
+    holder="$(cat "${STUB_LOG}.daemon")"
+    flock -n "${LUSHTEXT_BUILD_CACHE}/mutants/slot-1/lock" true || { kill "${holder}"; self_test_fail "a daemon left by the run kept slot-1's lock"; }
+    kill "${holder}" 2>/dev/null || true
+
+    # An oversized slot is emptied before the sync.
+    mkdir -p "${LUSHTEXT_BUILD_CACHE}/mutants/slot-1/build"
+    head -c 4096 /dev/zero >"${LUSHTEXT_BUILD_CACHE}/mutants/slot-1/build/unit"
+    MUTANTS_MIRROR=1 MUTANTS_LOCAL_JOBS=1 MUTANTS_SLOT_MAX_GIB=0 "${me}" smoke >"${dir}/out" 2>&1 || self_test_fail "the oversized-slot run failed"
+    if ! grep -q 'over MUTANTS_SLOT_MAX_GIB=0; emptying them' "${dir}/out" || [[ -e "${LUSHTEXT_BUILD_CACHE}/mutants/slot-1/build/unit" ]]; then
+        self_test_fail "an oversized slot was not emptied: $(cat "${dir}/out")"
+    fi
+
+    # The CI modes and list keep their arguments (and mirror nothing).
+    cat >"${dir}/bin/cargo" <<'STUB'
+#!/usr/bin/env bash
+{ printf 'ARGS'; printf ' %s' "$@"; printf '\n'; } >>"${STUB_LOG}"
+STUB
+    printf -- '--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-fn f() {}\n+fn f() { }\n' >"${dir}/pr.diff"
+    : >"${STUB_LOG}"
+    CI=true MUTANTS_MIRROR=1 "${me}" ci-pr "${dir}/pr.diff" >/dev/null 2>&1 || self_test_fail "ci-pr failed"
+    CI=true MUTANTS_MIRROR=1 MUTANTS_SHARD=1/4 "${me}" ci-full >/dev/null 2>&1 || self_test_fail "ci-full failed"
+    MUTANTS_MIRROR=1 "${me}" list >/dev/null 2>&1 || self_test_fail "list failed"
+    out="$(cat "${STUB_LOG}")"
+    [[ "${out}" == "ARGS mutants --workspace --test-workspace=true --test-tool nextest --no-shuffle --timeout 300 --baseline=skip --in-place --in-diff ${dir}/pr.diff
+ARGS mutants --workspace --test-workspace=true --test-tool nextest --no-shuffle --timeout 300 --baseline=skip --in-place --shard 1/4
+ARGS mutants --workspace --test-workspace=true --test-tool nextest --no-shuffle --timeout 300 --list" ]] \
+        || self_test_fail "the CI/list arguments changed: ${out}"
+
+    echo "run-mutants self-test: ok"
+}
+
+if [[ "${MODE}" == "--self-test" ]]; then
+    self_test
+    exit 0
+fi
+
 ensure_tooling
 
 case "${MODE}" in
     smoke)
-        run_smoke
+        if [[ "${MUTANTS_MIRROR}" == "1" ]]; then mirror_smoke; else run_smoke; fi
         ;;
     diff)
-        run_diff "${2:-}"
+        if [[ "${MUTANTS_MIRROR}" == "1" ]]; then mirror_diff "${2:-}"; else run_diff "${2:-}"; fi
         ;;
     full)
-        run_full
+        if [[ "${MUTANTS_MIRROR}" == "1" ]]; then mirror_full; else run_full; fi
         ;;
     ci-pr)
         MUTANTS_BASELINE_SKIP=1

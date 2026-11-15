@@ -13,7 +13,7 @@ Rules for every task:
 
 ## 1. Failing-first self-tests (no lane behaviour change)
 
-- [ ] 1.1 Write `scripts/build-cache.sh --self-test` against a temporary
+- [x] 1.1 Write `scripts/build-cache.sh --self-test` against a temporary
   `LUSHTEXT_BUILD_CACHE`/`XDG_CACHE_HOME`. Cover:
   - the root precedence;
   - distinct directories for two temporary git worktrees;
@@ -25,7 +25,7 @@ Rules for every task:
 
   Start with a stub that prints a fixed path, record the failing output in
   `evidence/failing-first.md`, then implement D1.
-- [ ] 1.2 Write `scripts/mutants-mirror.py --self-test` (temporary git repos).
+- [x] 1.2 Write `scripts/mutants-mirror.py --self-test` (temporary git repos).
   Cover:
   - **sync:** tracked, untracked non-ignored, ignored, deleted-tracked and
     `.git`; an unchanged file keeps its mtime; a changed file gets a new
@@ -54,14 +54,14 @@ Rules for every task:
   and pin the merge to it. Fixture repositories set a local `user.name`,
   `user.email` and `commit.gpgsign=false`, so the self-test never signs and
   never reads the developer's identity. Record the failing run.
-- [ ] 1.3 Write the `scripts/test-address-space-runner.sh --self-test` cases.
+- [x] 1.3 Write the `scripts/test-address-space-runner.sh --self-test` cases.
   Cover:
   - a process allocating below the limit succeeds;
   - one allocating past it fails with a nonzero status, using
     `python3 -c 'bytearray(N)'`;
   - arguments and exit status pass through unchanged;
   - signals propagate (`exec`).
-- [ ] 1.4 Write `scripts/precommit-scope.py --self-test` (temporary git repos).
+- [x] 1.4 Write `scripts/precommit-scope.py --self-test` (temporary git repos).
   Cover:
   - **`docs-only` passes for:** a `docs/` edit, an `openspec/` edit, a root
     `*.md` edit and a `.claude/` deletion;
@@ -74,7 +74,7 @@ Rules for every task:
     `openspec/`; passes on the current tree.
 
   Record the failing run.
-- [ ] 1.5 Update the `proof-strength.py --self-test` assertions to the D6
+- [x] 1.5 Update the `proof-strength.py --self-test` assertions to the D6
   layout: a worktree under `<checkout-cache>/proof-strength/wt`,
   `CARGO_BUILD_BUILD_DIR` pinned at `wt/target/kani/kani`, the tests arm's
   `--in-place` command with the pinned `wt/target/tests-build` /
@@ -83,7 +83,7 @@ Rules for every task:
   and asserts that importing the module created nothing under it. Watch them
   fail on the current code. Update `kani-shards.py --self-test` too, if
   task 6.1 changes what it pins.
-- [ ] 1.6 Add `make check-build-cache-helpers`, which runs the five self-tests
+- [x] 1.6 Add `make check-build-cache-helpers`, which runs the five self-tests
   (and task 3.3's `run-mutants.sh --self-test` once it exists)
   plus `shellcheck` on the new shell scripts, and add it and
   `check-precommit-scope` to `check-policy`. Neither needs cargo. It also runs
@@ -102,10 +102,10 @@ Rules for every task:
 
 ## 2. Cache root (D1)
 
-- [ ] 2.1 Implement `scripts/build-cache.sh` (`root`, `checkout [<path>]`,
+- [x] 2.1 Implement `scripts/build-cache.sh` (`root`, `checkout [<path>]`,
   `checkout-path [<path>]`, `prune [--dry-run]`, `--self-test`) and make
   task 1.1 pass.
-- [ ] 2.2 Add `make build-cache-prune` and a recursively expanded
+- [x] 2.2 Add `make build-cache-prune` and a recursively expanded
   `BUILD_CACHE_CHECKOUT = $(shell ./scripts/build-cache.sh checkout-path)`
   Makefile variable (`=`, not `:=`, so it is expanded only by the recipes that
   use it, and `checkout-path` creates nothing). The recipes that write there
@@ -115,10 +115,10 @@ Rules for every task:
 
 ## 3. Mutation slots (D2, D3, D4)
 
-- [ ] 3.1 Implement `scripts/mutants-mirror.py` (`sync`, `merge`,
+- [x] 3.1 Implement `scripts/mutants-mirror.py` (`sync`, `merge`,
   `--self-test`) and make task 1.2 pass.
-- [ ] 3.2 Add `scripts/rustc-passthrough.sh` (`exec "$@"`).
-- [ ] 3.3 In `scripts/run-mutants.sh`, add `MUTANTS_MIRROR=1` handling for
+- [x] 3.2 Add `scripts/rustc-passthrough.sh` (`exec "$@"`).
+- [x] 3.3 In `scripts/run-mutants.sh`, add `MUTANTS_MIRROR=1` handling for
   `smoke`, `diff` and `full`:
   - non-blocking slot acquisition over `MUTANTS_POOL_SIZE`, with exit 75 and
     the holders named, and an `owner` file per slot;
@@ -152,7 +152,7 @@ Rules for every task:
 
   Keep `ci-pr`, `ci-full` and `list` byte-for-byte unchanged in behaviour.
   `MUTANTS_IN_PLACE=1` (in-checkout) keeps its clean-tree guard.
-- [ ] 3.4 Have the Makefile `mutants-smoke|diff|full` targets set
+- [x] 3.4 Have the Makefile `mutants-smoke|diff|full` targets set
   `MUTANTS_MIRROR=1`, keep `MUTANTS_LOCAL_JOBS=3` as the slot count, and keep
   the 36G scope. Update the comment block above `MUTANTS_LOCAL_JOBS` with the
   new mechanics and the baseline figures.
@@ -167,7 +167,7 @@ Rules for every task:
 
 ## 4. Per-test address-space limit (D5)
 
-- [ ] 4.1 Implement `scripts/test-address-space-runner.sh` and make task 1.3
+- [x] 4.1 Implement `scripts/test-address-space-runner.sh` and make task 1.3
   pass. Wire `CARGO_TARGET_<HOST>_RUNNER` (host triple from `rustc -vV`) into
   the slot environment and the proof-strength tests arm.
 - [ ] 4.2 Derive the limit. Run the unmutated baseline of the default mutation
@@ -187,11 +187,11 @@ Rules for every task:
 
 ## 5. Proof-strength relocation (D6)
 
-- [ ] 5.1 Move the default `WORKTREE` to `<checkout-cache>/proof-strength/wt`
+- [x] 5.1 Move the default `WORKTREE` to `<checkout-cache>/proof-strength/wt`
   via `build-cache.sh`. Extend `worktree_owned` to accept it, keep the results
   in `target/proof-strength/results`, and keep the relative
   `PROOF_STRENGTH_WORKTREE` semantics.
-- [ ] 5.2 Switch the tests arm to `cargo mutants --in-place` inside the clean
+- [x] 5.2 Switch the tests arm to `cargo mutants --in-place` inside the clean
   worktree, without `--jobs` (retire `TESTS_JOBS`), with the pinned tests
   build/target dirs, D3, D4 and D5. Resolve the default worktree with
   `build-cache.sh checkout-path` and create it only in `ensure_worktree`. Make
@@ -218,7 +218,7 @@ Rules for every task:
 
 ## 7. Flatpak state and app dirs (D7)
 
-- [ ] 7.1 Add `FLATPAK_STATE_DIR ?= $(BUILD_CACHE_CHECKOUT)/flatpak-builder`
+- [x] 7.1 Add `FLATPAK_STATE_DIR ?= $(BUILD_CACHE_CHECKOUT)/flatpak-builder`
   (passed as `--state-dir`) and `FLATPAK_BUILD_DIR ?=
   $(BUILD_CACHE_CHECKOUT)/flatpak-app` to `flatpak-deps`, `flatpak` and
   `flatpak-install`; today's `FLATPAK_BUILD_DIR := build-flatpak` becomes
@@ -239,11 +239,11 @@ Rules for every task:
 
 ## 8. Docs-only pre-commit (D8)
 
-- [ ] 8.1 Implement `scripts/precommit-scope.py` (`docs-only`,
+- [x] 8.1 Implement `scripts/precommit-scope.py` (`docs-only`,
   `check-includes`, `--self-test`) and make task 1.4 pass. Add
   `make check-precommit-scope` (runs `check-includes` and the self-test) to
   `check-policy`.
-- [ ] 8.2 Add `pre-commit-docs: check-fmt check-policy` to the Makefile, and
+- [x] 8.2 Add `pre-commit-docs: check-fmt check-policy` to the Makefile, and
   change `.githooks/pre-commit` to D8's form. Leave `pre-commit`, `check` and
   CI's Clippy command untouched, and diff them against `main` to prove it.
 - [ ] 8.3 Lane case: make one docs-only commit and one code commit on this

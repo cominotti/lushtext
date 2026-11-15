@@ -309,4 +309,16 @@ grep -q '<release version="1.2.3"' "$fixture/data/dev.cominotti.lushtext.metainf
 grep -q 'Release notes &amp; polish' "$fixture/data/dev.cominotti.lushtext.metainfo.xml.in"
 assert_success "validate-tag accepts synchronized fixture" with_release_lib 'validate_tag_release v1.2.3 1'
 
+# The release Flatpak validation build keeps its app and state dirs in the
+# checkout's build-cache directory, side by side (design D7 of
+# reduce-build-disk-writes), never in the checkout.
+LUSHTEXT_BUILD_CACHE="$tmpdir/build-cache" with_release_lib 'validate_flatpak_build'
+cache_dir="$(LUSHTEXT_BUILD_CACHE="$tmpdir/build-cache" "$repo_root/scripts/build-cache.sh" checkout-path "$fixture")"
+grep -q -- "--state-dir=$cache_dir/flatpak-release-builder .*$cache_dir/flatpak-release-app " "$tmpdir/flatpak-builder.log" || {
+    echo "release Flatpak build did not use the build-cache app and state dirs:" >&2
+    cat "$tmpdir/flatpak-builder.log" >&2
+    exit 1
+}
+[[ ! -e "$fixture/.flatpak-builder" && ! -e "$fixture/build-flatpak-release" ]]
+
 echo "release helper tests passed"

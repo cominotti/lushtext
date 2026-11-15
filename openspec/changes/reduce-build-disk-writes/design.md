@@ -151,8 +151,11 @@ set it. The CI modes (`ci-pr`, `ci-full`) and `list` are unchanged.
   checkout's copy. Cargo takes the workspace wrapper into workspace members'
   unit hash (it is what keeps Clippy's and `cargo check`'s artifacts apart),
   so a path that changed with each checkout could rebuild every member when
-  runs from different checkouts alternate in a slot. Task 3.3 confirms this
-  with one probe and keeps the stable path either way.
+  runs from different checkouts alternate in a slot. Task 3.3 confirmed this
+  with one probe (stage 3, probe crate, `CARGO_INCREMENTAL=0`, pinned target
+  and build dirs): with the wrapper at path A the crate compiled, a rebuild was
+  `Fresh`, the identical wrapper at path B recompiled the crate, and path A
+  again was `Fresh` (Cargo keeps both variants). So the stable path matters.
 - With N slots, the i-th slot taken (i = 0..N-1) also gets `--shard i/N`.
   cargo-mutants shards are 0-based. A user `MUTANTS_SHARD` combined with N > 1 is refused, because the
   two would compose ambiguously.
@@ -189,8 +192,10 @@ set it. The CI modes (`ci-pr`, `ci-full`) and `list` are unchanged.
   and rotates `<checkout>/mutants.out` itself.
 
 **Exit status.** A slot exit outside {0, 2, 3} wins (the first such). Otherwise
-the merged status is 2 if any slot missed mutants, else 3 if any timed out, else
-0. The implementation confirms cargo-mutants' own precedence and matches it.
+the merged status is 3 if any slot timed out, else 2 if any missed mutants,
+else 0. That is cargo-mutants' own precedence, confirmed by a stage-3 probe (a
+run with two missed mutants and one timeout exits 3), and the reverse of what
+this design first assumed.
 
 **Rationale.**
 
@@ -358,6 +363,14 @@ visibly; cargo-mutants already stops on a failing baseline.
   unchanged.
 - **A relative `PROOF_STRENGTH_WORKTREE` still resolves against the current
   directory.**
+- **A parallel Kani shard's `PROOF_STRENGTH_WORKTREE`** should be under the
+  cache too (`$(scripts/build-cache.sh checkout-path)/proof-strength/wt1`);
+  `worktree_owned` accepts anything under `<checkout-cache>/proof-strength`.
+- **The tests arm's wrapper and runner** are the checkout's own
+  `scripts/rustc-passthrough.sh` and `scripts/test-address-space-runner.sh`,
+  not the worktree's: a `--rev` older than this change has neither, and the
+  checkout's path is stable across runs of that checkout, which is all D4
+  needs (the worktree's build dir is per checkout too).
 - **The default location is resolved without creating it.** `WORKTREE` is a
   module-level constant computed at import, and the self-test imports the
   module, so the driver uses `build-cache.sh checkout-path` (D1) and creates

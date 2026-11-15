@@ -409,11 +409,19 @@ validate_flatpak_build() {
         return 0
     fi
 
-    build_dir="${LUSHTEXT_RELEASE_FLATPAK_BUILD_DIR:-build-flatpak-release}"
+    # The app dir and flatpak-builder's state dir (the whole release Cargo
+    # build) live in this checkout's build-cache directory, outside the
+    # snapshotted checkout, side by side on one mount because flatpak-builder
+    # hardlinks between them (design D7 of reduce-build-disk-writes).
+    local cache_dir state_dir
+    cache_dir="$("$script_dir/build-cache.sh" checkout "$repo_root")"
+    build_dir="${LUSHTEXT_RELEASE_FLATPAK_BUILD_DIR:-$cache_dir/flatpak-release-app}"
+    state_dir="${LUSHTEXT_RELEASE_FLATPAK_STATE_DIR:-$cache_dir/flatpak-release-builder}"
     flatpak-builder \
         --disable-rofiles-fuse \
         --force-clean \
         --user \
+        --state-dir="$state_dir" \
         --install-deps-from="${FLATPAK_REMOTE:-flathub}" \
         "$build_dir" \
         "$local_flatpak_manifest"

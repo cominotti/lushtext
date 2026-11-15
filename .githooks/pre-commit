@@ -4,5 +4,13 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
+# A docs-only commit (every staged path on the allowlist of
+# scripts/precommit-scope.py, no merge) skips only Clippy: no allowlisted path
+# is a Rust build input (`make check-precommit-scope`). Anything else, an empty
+# commit, and any doubt run the full gate.
+if ./scripts/precommit-scope.py docs-only; then
+    echo "Docs-only commit: rustfmt + policy audits (Clippy skipped: no Rust build input staged)"
+    exec make pre-commit-docs
+fi
 echo "Running LushText pre-commit checks (rustfmt + all-feature Clippy + policy audits)..."
 exec make pre-commit

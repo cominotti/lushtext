@@ -157,10 +157,18 @@ fi
 dependency_remote="${FLATPAK_REMOTE:-flathub}"
 flatpak --user remote-add --if-not-exists "$dependency_remote" "$runtime_repo"
 
+# flatpak-builder's state dir beside the app dir, under the caller's output
+# dir: in release.yml that dir is under $RUNNER_TEMP while $HOME is another
+# mount, and flatpak-builder hardlinks from its state into the app dir, which
+# fails across mounts (design D7 of reduce-build-disk-writes). Without it the
+# state went to .flatpak-builder/ in the working directory.
+state_dir="$out_dir/flatpak-builder"
+
 builder_args=(
     --disable-rofiles-fuse
     --force-clean
     --user
+    --state-dir="$state_dir"
     --install-deps-from="$dependency_remote"
     --repo="$repo_dir"
     --collection-id="$collection_id"
