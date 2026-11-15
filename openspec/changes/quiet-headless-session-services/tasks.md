@@ -1,5 +1,5 @@
 Kani: none (no proven module touched).
-Timing: no app code or budgeted path changes; the responsiveness lane's session gains a private system bus, so task 6.4 runs one interleaved main-vs-branch quick-tier check (design, "Measurement"). Host-load evidence is journal counts (task 6.5).
+Timing: no budgeted path changes (apply added two app-code edits off budgeted paths, design "Measurement"); the responsiveness lane's session gains a private system bus, so task 6.4 runs one interleaved main-vs-branch quick-tier check (design, "Measurement"). Host-load evidence is journal counts (task 6.5).
 Rules for every group: run heavy commands through `scripts/heavy.sh`, one command per call; work headless only, never on the live desktop and never with the real `~/.local/state/wireplumber`; end each group in a signed commit, staged by name, then push the branch.
 Fingerprinted files (design, "Risks"): the accessibility proof covers the capture and atspi skill scripts, `run-accessibility-smoke.sh`, `run-visual-smoke.sh`, `scripts/smoke_warning_classifiers.py`, `docs/automation*.md`, `docs/end-user-coverage.md`, `crates/lushtext-core/src/ui/` and `crates/lushtext/tests/widget/`; the visual-geometry proof (`check-visual-proof-policy.py`) covers `crates/cargo-gtk-proof/src/`, `scripts/visual-geometry-smoke.py`, `scripts/lushtext-automation.py`, `crates/lushtext-core/src/ui/`, `crates/lushtext/tests/widget/` and the `.blp`/`.css`/`.ui` files. The hook refuses a commit that leaves one changed without a fresh smoke. Every edit to those files lands in group 4 (move any group-3 edit there, such as a 3.5 simulation-hook fix or a widget-test change from 3.2), group 4's commit is preceded by `make accessibility-smoke`, `make visual-smoke` and `make visual-geometry-smoke` (task 4.7), and groups 5–8 plan to touch none of them; a later fix that does touches one re-runs both smokes right before its own commit.
 
@@ -94,7 +94,7 @@ Fingerprinted files (design, "Risks"): the accessibility proof covers the captur
 - [x] 6.1 Run `make test-unit`, `make test-int`, and `cargo test -p gtk-lush-proof-harness -p cargo-gtk-proof`.
 - [ ] 6.2 Run the full widget suite once (`make test-widget`): the environment changes for every widget test. Any `FLAKY:`, `FLAKY-SHARD:`, `OOM-KILL:` or `SESSION-HYGIENE:` is a blocker (`preexisting-blockers.md`). Rerun a failed test in isolation before classifying it. Do not touch the two tests that PR #99 fixes.
 - [x] 6.3 Run `make gtk-axioms` and `make check-gtk-axioms`. Run `make gtk-axioms-runtimes` once as well (local only: `flatpak run` of an SDK inside the migrated `run-gtk-axioms.sh` session), deciding as in 4.3 whether `flatpak run` needs the host system bus, or record the host skip and its reason in `evidence/runtime-proof.md`.
-- [ ] 6.4 Run every migrated lane once, headless:
+- [x] 6.4 Run every migrated lane once, headless:
   - `make visual-geometry-smoke`, `make visual-smoke`, `make accessibility-smoke`;
   - `make crash-recovery-smoke`, `make automation-smoke`, `make command-palette-notes-smoke`, `make portal-sandbox-smoke`;
   - `make responsiveness-smoke RESPONSIVENESS_TIER=quick` (a functional run, not a verdict). Check its app stderr and probe logs for any system-bus access. Then, unconditionally (design, "Measurement"), run the interleaved main-vs-branch quick-tier measurement of the affected cases through `scripts/measure.sh`, run detached (`verification-runs.md`; a verdict run needs a 1-minute load under 4, otherwise label it non-verdict and retry), and record the verdict in design.md "Measurement" and `evidence/runtime-proof.md`;
@@ -119,7 +119,7 @@ Fingerprinted files (design, "Risks"): the accessibility proof covers the captur
 
   Review `sonar-project.properties` for the new script and bin.
 - [x] 7.5 Record the outcome in the programme record `docs/next/long-line-documents.md`: a short host-hygiene entry with the baseline, the decisions, the deferrals (screenshot-lane portals and the session cap, with reasons) and the proof.
-- [ ] 7.6 Run `openspec validate quiet-headless-session-services --strict` and `make check-agent-docs`. Commit and push.
+- [x] 7.6 Run `openspec validate quiet-headless-session-services --strict` and `make check-agent-docs`. Commit and push.
 
 ## 8. Merge handoff
 

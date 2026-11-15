@@ -154,6 +154,7 @@ expected portal warning (three times).
   for both axiom jobs the control prerequisites `at-spi2-core` and
   `xdg-desktop-portal`), `build-aux/builder-diagnostics/Containerfile`, and
   `scripts/setup-dev-tools.sh`.
-- Timing: none on the app (no app code or budgeted path touched). The
+- Timing: none on the app (no budgeted path touched; apply added two small
+  app-code edits off budgeted paths, design "Measurement"). The
   responsiveness lane's session gains a private system bus, so it gets one
   interleaved main-vs-branch quick-tier check (design, "Measurement").

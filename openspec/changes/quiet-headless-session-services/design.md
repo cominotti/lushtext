@@ -558,8 +558,13 @@ them on every run, and the static gate pins their configuration.
 
 ## Measurement
 
-Timing: no app code and no budgeted path changes, and the responsiveness
-lane's per-variant app environment is unchanged (D2). The lanes' per-case wall
+Timing: no budgeted path changes, and the responsiveness lane's per-variant
+app environment is unchanged (D2). Apply added two application-code edits,
+neither on a budgeted path: `ui::accessibility::announce` returns early for a
+`GtkTestATContext` (A117), which no shipped session creates, and Protected
+View's edit-entry capture connects `insert-text` and `delete-range`
+after-handlers that only set a flag (`evidence/runtime-proof.md`, decisions 13
+and 14). The lanes' per-case wall
 time is not a budgeted path. The responsiveness lane's *session* does change:
 a private system bus with its monitor (media stay off, as today), so an
 app-side system-bus lookup on a timed path would fail fast instead of
@@ -577,3 +582,34 @@ over bounded observations, with no arithmetic and no state machine, and its
 unit tests are exhaustive over the violation classes.
 
 Budgets (`model/responsiveness_budget.rs`): unaffected. No exception.
+
+**Result (apply stage): no budget shift.** Four interleaved rounds through
+`scripts/measure.sh`, `main` `14332d69` (baseline) against the branch, cases
+`baseline/empty`, `baseline/small`, `keystroke/3500/*` and `dense/2000`,
+variants `plain` and `at`. The verdict rounds are `main-2` → `branch-2` →
+`main-3` → `branch-3`, each started at a 1-minute load under 4 (2.73 to
+3.00). The first branch round started at 4.03, so it is non-verdict and the
+pair was retried. The lane's side-labelled report (`merge-runs`, `report`)
+flagged one stage: `dense/2000/wrap-off@plain` background
+`post_open_install_slice`, branch median 12,570 µs against 2,782. That median
+is of two reps, and one of them is a single 22,373 µs dispatch. In the other
+reps the same dispatch is attributed to `validation`, as on `main`. Two more
+`dense/2000` pairs, run as attribution rounds and non-verdict because three
+of them started at a load of 4.02 to 4.54, took the merged report to four
+reps a side, which flags no regression. The worst dispatch per rep is the same
+on both sides (29.4 to 30.6 ms, `main` up to 39.3 ms), and so is the settle
+time (289 to 306 ms). `post_open_publish` is bimodal on both sides: about
+2 ms, or about 13 ms when a validation pass lands inside it. Across all 440
+phase records a side, the median worst lateness is 3.7 ms on `main` and 4.1 ms
+on the branch, under one 2 ms tick apart, and the maximum is 53.0 against
+37.5 ms. The over-budget `dense/2000/wrap-off` validation dispatches, 22 to
+39 ms, are on both sides. They predate this change and belong to the
+long-line programme (C6 is "not met" on `main` too). The functional
+quick-tier run passed, and the private system bus carried only bus
+housekeeping, plus Mutter's start-up lookups of `locale1` and `colord`, which
+fail fast there. The guard's verdict was `clean`. The host's `jetbrains-toolbox`
+ran at about 150 % CPU through every round, on both sides alike. The runbook's
+reference precondition asks for no process at 80 % or more, so this is
+recorded as a deviation that both sides shared, not hidden.
+(`evidence/runtime-proof.md` 6.4; raw runs in
+`.claude/handoffs/quiet-headless-session-services/measure/`.)

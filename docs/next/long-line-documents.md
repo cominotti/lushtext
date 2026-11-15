@@ -4908,4 +4908,7 @@ screenshot case cost 15 bluez endpoints and 1 nice plus 3 RT grants.
 sessions got 0 rtkit grants, 0 bluez endpoints, 0 WirePlumber state writes
 and 0 `MakeThread*` calls. Other worktrees ran unmigrated lanes on the host at
 the same time, so each count was attributed per process (`runtime-proof.md`
-6.5).
+6.5). The interleaved quick-tier measurement against `main` (`baseline/*`,
+`keystroke/3500/*`, `dense/2000`, `plain` and `at`) found no budget shift:
+four verdict rounds, plus two `dense/2000` attribution pairs that cleared the
+one flagged stage, a single-rep 22 ms dispatch (design, "Measurement").

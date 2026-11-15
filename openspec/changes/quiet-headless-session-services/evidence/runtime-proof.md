@@ -479,3 +479,33 @@ handoff directory, `lanes/`). No lane log has a `SESSION-HYGIENE:` line.
 | `make accessibility-smoke` | passed (run right before the commit) |
 | `make visual-smoke` | passed (run right before the commit) |
 | `make visual-geometry-smoke` | passed (run right before the commit) |
+| `make responsiveness-smoke RESPONSIVENESS_TIER=quick` (functional) | passed (433 rows: 324 ok, 108 skipped by design, 1 `exceeded_cap` in `eviction/reselect`); guard verdict `clean`, `system_bus_records=0`. The private system bus carried bus housekeeping (Hello, AddMatch from the dconf clients) and Mutter's start-up `StartServiceByName` of `locale1` and `colord`, which fail fast there. No app call |
+
+### 6.4 Interleaved measurement (`scripts/measure.sh`)
+
+| Run | 1-min load at start / end | Status |
+| --- | --- | --- |
+| `qh-main-1` | 2.96 / 3.94 | valid, unpaired |
+| `qh-branch-1` | **4.03** / 2.82 | non-verdict (load), retried as round 3 |
+| `qh-main-2` | 3.00 / 2.76 | verdict |
+| `qh-branch-2` | 2.76 / 2.36 | verdict |
+| `qh-main-3` | 2.78 / 2.72 | verdict |
+| `qh-branch-3` | 2.73 / 3.28 | verdict |
+| `qh-main-4`, `qh-branch-4`, `qh-main-5` (`dense/2000` only) | 4.02, 4.54, 4.46 | attribution rounds, non-verdict (load) |
+| `qh-branch-5` (`dense/2000` only) | 3.63 / 2.80 | attribution round |
+
+The campaign waited about 45 minutes for the measurement lock behind another
+worktree's `make proof-strength`. The host's `jetbrains-toolbox` ran at about
+150 % CPU in every round on both sides. The runbook's reference precondition
+asks for no process at 80 % or more, so that is a recorded deviation, shared
+by both sides.
+
+**Verdict: no budget shift** (design, "Measurement", has the figures). The
+side report of the four verdict rounds flagged
+`dense/2000/wrap-off@plain` background `post_open_install_slice`, but only as
+a median of two reps in which one rep has a single 22 ms dispatch. Elsewhere
+that dispatch is attributed to `validation`. With the attribution rounds
+added (four reps a side), nothing is flagged, and the worst dispatch and the
+settle time per rep match. The absolute over-budget `dense/2000/wrap-off`
+dispatches are on `main` as well, and predate this change.
+
