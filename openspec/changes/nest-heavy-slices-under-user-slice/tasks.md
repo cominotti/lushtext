@@ -124,7 +124,7 @@ other's scopes.
   78; legacy accounting and why legacy slices are never touched; H1-H3. Update
   `heavy.sh`'s header, step 4: "the CPU affinity this process inherited,
   intersected with the slice's cpuset".
-- [ ] 2.6 (Placement recorded; shim cost: measurement queued (coordinator).) Real placement. Run `scripts/heavy.sh -- sh -c 'cat /proc/self/cgroup;
+- [x] 2.6 (Placement in `evidence/placement.md`; the shim cost, run by the coordinator, in `evidence/shim.md`.) Real placement. Run `scripts/heavy.sh -- sh -c 'cat /proc/self/cgroup;
   grep Cpus_allowed_list /proc/self/status; nproc'`. For the widget-shard
   scope, make the call `widget-shards.py parallel` makes for each shard (its
   `parallel` mode ignores a shard argument and would run the whole suite):
@@ -234,7 +234,7 @@ other's scopes.
   `scripts/heavy.sh --mem none -- make check-responsiveness-lane` and
   `scripts/heavy.sh --mem none -- make check-policy`. All must pass. Rerun
   `scripts/measure.sh --self-test` once more in isolation.
-- [ ] 3.6 (Measurement queued (coordinator).) Lane evidence, not a verdict (design "Timing"). Build the measurement
+- [x] 3.6 (Run by the coordinator; recorded in `evidence/reference-cpus.md`.) Lane evidence, not a verdict (design "Timing"). Build the measurement
   binary with `scripts/heavy.sh -- make responsiveness-build`. Measure with the
   script, not `make responsiveness-smoke`, which would rebuild inside the
   exclusive lock. Take the exact baseline case name from

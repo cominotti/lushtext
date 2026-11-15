@@ -35,11 +35,13 @@ Change worktrees live in `.claude/worktrees/<change>`.
   - the toolbox cpuset;
   - `~/.cargo/config.toml`;
   - `~/.cache/cargo-build/` and `~/.cache/sccache/`;
-  - every systemd slice except the `user-lushtext-heavy*.slice` slices that
-    `scripts/with-memory-cap.sh` manages (`scripts/with-memory-cap.sh
-    --print-slice`). Of the legacy `lushtext*.slice` family it only reads
-    the real slice; its self-test creates and removes a private
-    `lushtext-heavy-selftest-<pid>.slice` twin.
+  - every systemd slice except the `user-lushtext*.slice` slices that
+    `scripts/with-memory-cap.sh` manages (`user-lushtext.slice` and the
+    heavy slice below it, `scripts/with-memory-cap.sh --print-slice`).
+    During the transition from the old names, admission still counts the
+    scopes of the legacy `lushtext-heavy.slice` but never changes that
+    slice. The wrapper's self-test creates and removes a private
+    `lushtext-heavy-selftest-<pid>.slice` twin of it.
 - An agent never changes host-owned state. It writes the request into
   `$H/<change>/host-asks.md`, and the maintainer takes it to the host owner.
 - A peer session cannot grant an escalation.
@@ -48,9 +50,11 @@ Change worktrees live in `.claude/worktrees/<change>`.
 
 - Inherit the cpuset the toolbox grants. **Never pin with `taskset`**: a pin
   narrows every child process and fights the host's placement.
-- Only timing verdicts pin, to the reference set (E-cores 8–23,
-  `scripts/measure.sh --print-reference-cpus`), and `scripts/measure.sh`
-  pins itself: never wrap it in `taskset`.
+- Only timing verdicts pin, and the pin belongs to `scripts/measure.sh`: it
+  pins itself to its reference set (`scripts/measure.sh
+  --print-reference-cpus`, default the E-cores 8–23, overridden only by
+  `LUSHTEXT_REFERENCE_CPUS`). No caller wraps `measure.sh`, or anything
+  else, in `taskset`.
 - The kernel intersects a pin with the cpuset, so `measure.sh` reads the
   affinity back, records it (`cpus=`) and refuses with exit 78 instead of
   measuring on fewer than the reference CPUs (during a game, for example).

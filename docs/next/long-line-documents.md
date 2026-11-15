@@ -4160,11 +4160,15 @@ separate change, in this order:
      pinned to 16-23 records the reference set, and one
      `LUSHTEXT_REFERENCE_CPUS=12-23` run the override label; the placement
      shim's cost is main's wrapper against the branch's, interleaved in one
-     `measure.sh` call. These three `measure.sh` calls were queued with the
-     coordinator during stage 3 (`MEASURE-QUEUE.md`); their figures go into
-     the change's `evidence/reference-cpus.md` and `evidence/shim.md` from
-     `evidence/measure.log` and `evidence/shim.log`, and the change is not
-     merged before those files exist.
+     `measure.sh` call. The coordinator ran these three `measure.sh` calls
+     after stage 3 had queued them. The change's `evidence/reference-cpus.md`
+     records both lane runs: `affinity=8-23`, `measure_cpus_source=default`,
+     `reference_run: true`; and `12-23`, `override`, `false`, with the
+     override label; loads 1.9-2.4. It also records two real 78 refusals, of
+     an unavailable reference and of a partly available one. The change's
+     `evidence/shim.md` records the shim's cost: about +20 ms per scope start
+     (median 0.03 s against 0.01 s, ten runs a side, load 2.0-2.2), at the
+     10 ms timer resolution.
      - **Deferred:** remove the legacy-slice accounting (`legacy_slice_of`,
        the `admitted_kib` loop, the two legacy self-test cases and the private
        legacy self-test slice) once no worktree branched before the merge SHA
@@ -4172,9 +4176,11 @@ separate change, in this order:
      - **Deferred (CST's second answer, design D13):** memory-sized
        parallelism, raising `CARGO_BUILD_JOBS` from 4 in measured steps with
        the per-job peak and `btrfs-stall-report` memory lines as evidence, in
-       its own change; and the maintainer's decision whether agents keep
-       their session `taskset -c 8-23` pin (CST advises inheriting the
-       toolbox cpuset; this change works either way).
+       its own change. The other half of D13, whether agents keep their
+       session `taskset -c 8-23` pin, was decided by the maintainer on
+       2026-11-15: agents inherit the toolbox cpuset and never pin, and only
+       `measure.sh` pins (`.agents/rules/parallel-agent-work.md`, "CPU and
+       memory").
      - **Observed, pre-existing, deferred:** `heavy.sh` can wait for memory
        while holding LOCK shared. Its step 3 re-check passes, then another
        copy admits a scope before the wrapper's own blocking admission, which

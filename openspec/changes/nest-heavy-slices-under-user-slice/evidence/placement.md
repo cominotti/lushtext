@@ -69,6 +69,5 @@ The affinity is 8-23 because this stage's session was started under
 `taskset -c 8-23` (its brief); the scope keeps that mask, which lies within
 the inner slice's cpuset, so the placement check passed.
 
-The shim's cost (the last item of task 2.6) is not recorded here yet: its
-`measure.sh` call is queued with the coordinator (`MEASURE-QUEUE.md`), which
-writes `shim.log` itself.
+The shim's cost (the last item of task 2.6) is in `shim.md`, from the
+`measure.sh` call the coordinator ran (`shim.log`).
