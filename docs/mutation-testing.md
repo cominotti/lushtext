@@ -85,19 +85,59 @@ make mutants-full
 make mutants-list
 ```
 
-Those call `scripts/run-mutants.sh`, which centralizes flags and safety checks.
-Useful environment overrides:
+Those call `scripts/run-mutants.sh` in **mirror mode** (`MUTANTS_MIRROR=1`),
+which centralizes flags and safety checks. Useful environment overrides:
 
 ```sh
 MUTANTS_TIMEOUT=600 make mutants-full
 MUTANTS_SMOKE_FILE=crates/lushtext-core/src/model/document_scale.rs make mutants-smoke
 MUTANTS_BASE=origin/main make mutants-diff
-MUTANTS_SHARD=0/4 make mutants-full
-MUTANTS_JOBS=8 MUTANTS_TEST_THREADS=3 MUTANTS_BUILD_JOBS=3 make mutants-full   # override local parallelism
+MUTANTS_LOCAL_JOBS=1 MUTANTS_SHARD=0/4 make mutants-full   # one slot running one shard
+MUTANTS_LOCAL_JOBS=2 MUTANTS_TEST_THREADS=3 MUTANTS_BUILD_JOBS=3 make mutants-full   # override local parallelism
 ```
 
+### Mirror slots
+
+A local run never mutates the checkout and never copies it to a scratch
+directory. It syncs the checkout's tracked and untracked, non-ignored files,
+uncommitted edits included, into **slots** under the build cache root
+(`scripts/build-cache.sh root`, by default `~/.cache/lushtext-build`):
+`mutants/slot-1`, `slot-2`, `slot-3` (`MUTANTS_POOL_SIZE`). Each slot has its
+own `src/`, `build/` and `target/`, and runs `cargo mutants --in-place` from
+`src/`. The sync rewrites only files whose bytes differ, so a warm slot
+rebuilds just the workspace members that changed and no dependency; the slot's
+first use is a cold build. A file an interrupted run left mutated in a slot is
+restored by the next sync. Copy mode used to cold-build every scratch copy
+(5.2 GB written each) into a new `~/.cache/cargo-build/<hash>` directory that
+nothing deleted.
+
+- **Slots.** The pool is shared by every checkout on the host. A run takes up
+  to `MUTANTS_LOCAL_JOBS` (default 3) free slots without waiting; if none is
+  free it exits **75** and names each holder's PID and checkout. Retry later,
+  or with `MUTANTS_LOCAL_JOBS=1`. Runs from different checkouts in one slot
+  simply resync. A slot whose `build/` plus `target/` grew past
+  `MUTANTS_SLOT_MAX_GIB` (default 24) is emptied first.
+- **Sharding, not jobs.** cargo-mutants refuses `--in-place` together with
+  `--jobs`, so N slots run `--shard 0/N` … `--shard N-1/N` side by side, and
+  their reports are merged into the checkout's `mutants.out` (previous report
+  in `mutants.out.old`). Each slot's logs and diffs are under `log/slot-<k>/`
+  and `diff/slot-<k>/`, with one `baseline.log` per slot. `MUTANTS_SHARD` works
+  only with one slot.
+- **Exit status.** A failure status of any slot wins; otherwise 3 if any mutant
+  timed out, else 2 if any was missed, else 0, as cargo-mutants itself decides.
+- **No sccache churn.** Slots compile workspace crates without the compiler
+  cache (`RUSTC_WORKSPACE_WRAPPER=<root>/mutants/rustc-passthrough.sh`), so a
+  mutant never enters the shared sccache. They keep incremental compilation,
+  in their own build dirs: without it a mutant's build took 2.2x as long
+  (design D3 of `reduce-build-disk-writes`). `MUTANTS_SLOT_INCREMENTAL=0`
+  turns it off for a run.
+
 `mutants-smoke` is the fast sanity check for tool installation, config parsing,
-and timeout behavior. `mutants-diff` creates a diff against `origin/main` when
+and timeout behavior. It runs its one file with `--no-config`, so the
+`exclude_re` entries do not apply. On its default file it therefore reports
+the two `markdown_chunked_cap` mutants in the `cfg(not(test-utils))` arm as
+missed: the workspace test build never compiles that arm, and every
+config-driven lane excludes the pair. `mutants-diff` creates a diff against `origin/main` when
 no diff file is supplied and filters mutants to changed hunks. `mutants-full`
 runs the configured deterministic scope and can be sharded with `MUTANTS_SHARD`.
 `mutants-list` prints the configured candidates without running tests.
@@ -122,9 +162,12 @@ make proof-strength PROOF_STRENGTH_ARM=kani PROOF_STRENGTH_SHARD=0/4
 ```
 
 - **Isolation.** Every mutant is applied in the disposable detached worktree
-  `target/proof-strength/wt` at the committed revision (`--rev`, default
-  `HEAD`), never in the developer tree, so uncommitted edits are neither
-  mutated nor checked. Commit first to measure them.
+  `<checkout-cache>/proof-strength/wt`, in the build cache root
+  (`scripts/build-cache.sh checkout-path` names `<checkout-cache>`), at the
+  committed revision (`--rev`, default `HEAD`), never in the developer tree,
+  so uncommitted edits are neither mutated nor checked. Commit first to
+  measure them. Both arms' build directories are pinned inside it, so nothing
+  is written into the snapshotted checkout but the results.
 - **Population.** Both arms list through the repository config with
   `examine_globs` narrowed to the one module, so the calibrated `exclude_re`
   entries apply and the whole-scope field-deletion floor (reported separately,
@@ -143,7 +186,13 @@ make proof-strength PROOF_STRENGTH_ARM=kani PROOF_STRENGTH_SHARD=0/4
   counts as a kill.
 - **Tests arm.** cargo-mutants over the same module with
   `lushtext-core/property-tests` enabled (the default lane omits it, but the
-  property suites are the tests-side counterpart of the proofs), one job.
+  property suites are the tests-side counterpart of the proofs), run
+  `--in-place` inside the clean worktree, serially and without `--jobs`
+  (cargo-mutants refuses it with `--in-place`), with
+  `target/tests-build`/`target/tests` pinned in the worktree (incremental, as
+  in the slots), workspace crates out of sccache, and each test process
+  under the per-test address-space limit. An interrupted mutant is discarded by
+  the next run's `git checkout --force`.
   `report` joins the arms on the mutant name and refuses to join across
   revisions or cargo-mutants versions.
 - **Resume.** One JSON result per mutant under
@@ -163,13 +212,16 @@ make proof-strength PROOF_STRENGTH_ARM=kani PROOF_STRENGTH_SHARD=0/4
   outgrew a 12G cap. The Kani arm is serial within one run; to use the
   host-wide budget, run shards of it in parallel, each with its own worktree:
   `PROOF_STRENGTH_ARM=kani PROOF_STRENGTH_SHARD=1/3
-  PROOF_STRENGTH_WORKTREE=target/proof-strength/wt1 make proof-strength`, and
-  likewise `2/3` and `3/3`. Run the tests arm once, unsharded: its
+  PROOF_STRENGTH_WORKTREE="$(scripts/build-cache.sh checkout-path)/proof-strength/wt1" make proof-strength`,
+  and likewise `2/3` and `3/3`. Run the tests arm once, unsharded: its
   cargo-mutants output directory is shared. A relative
   `PROOF_STRENGTH_WORKTREE` resolves against the current directory (the
-  repository root under `make`). The driver only reuses or removes a worktree
-  it created (one under `target/proof-strength/`, or one carrying its marker in
-  the worktree's git directory); it refuses any other checkout rather than
+  repository root under `make`), so `target/proof-strength/wt1` would put a
+  Kani build tree back into the snapshotted checkout; point it at the cache as
+  above. The driver only reuses or removes a worktree it created (one under
+  `<checkout-cache>/proof-strength/` or `target/proof-strength/`, or one
+  carrying its marker in the worktree's git directory); it refuses any other
+  checkout rather than
   force-checking it out. Shared state files (`baseline.json`, `report.json`,
   the derived configs) are replaced whole, so a parallel shard never reads a
   half-written one.
@@ -190,7 +242,7 @@ cargo-mutants is serial by default — one mutant builds and tests at a time.
 The local Makefile targets (`mutants-smoke`, `mutants-diff`, `mutants-full`)
 run the whole pass inside one memory-capped scope (`MUTANTS_MEMORY_MAX`,
 default `36G`, no swap, through `scripts/with-memory-cap.sh`, admitted into the
-host-wide `lushtext-heavy.slice`), so memory, not the core count, sets their
+host-wide `user-lushtext-heavy.slice` under the user manager's `user.slice`), so memory, not the core count, sets their
 parallelism. Each cargo-mutants job is a full cargo build plus its own nextest
 processes, so the defaults are:
 
@@ -200,9 +252,32 @@ processes, so the defaults are:
 
 These fit the 36G scope and the 16-core affinity. On 2026-10-20 runs at 6–8
 build jobs and 8–12 test threads inside a 12G cap were OOM-killed. A mutant
-whose test was OOM-killed reads as **caught**, so a run that hit its cap is
-discarded and rerun at the defaults. Override a knob inline for one measured
+whose test was OOM-killed reads as **caught**, so a run whose scope hit its cap
+is discarded and rerun at the defaults. Override a knob inline for one measured
 run, never as a new default.
+
+**Per-test address-space limit.** A runaway mutant is now stopped alone, before
+it reaches the scope cap. Every test process runs through a Cargo target runner,
+`scripts/test-address-space-runner.sh`, which sets `RLIMIT_AS` to
+`LUSHTEXT_TEST_ADDRESS_SPACE` (`4G` by default, set in the Makefile from
+the measurement in
+`openspec/changes/archive/2026-11-15-reduce-build-disk-writes/evidence/address-space.md`: twice
+the smallest power-of-two GiB at which the unmutated baselines pass) and execs
+the test. rustc, the linker, build scripts, nextest and cargo-mutants are not
+limited; the proof-strength tests arm uses the same runner. The unmutated
+baseline runs under the limit first, so a limit too small for the real tests
+stops the run before any mutant.
+
+After the run, `mutants.out/address-space-caught.txt` lists every caught mutant
+whose log shows an allocation failure (`memory allocation of N bytes failed`,
+GLib's `failed to allocate N bytes`, `failed to spawn thread`, `Cannot
+allocate memory` / `ENOMEM` / `os error 12`), and the run prints the count.
+**Triage each one.** The mutant is still caught: the unmutated code passes under
+the same limit, so unbounded growth is a behaviour change the tests detected.
+But, as for any kill that is not an assertion, confirm the test that failed
+would also have caught a bounded version of the defect; if only the limit
+caught it, tighten the test (the progress check in the paragraph below is the
+pattern). A run with such mutants is not discarded.
 
 **A test loop that cannot fail on lack of progress is a memory hazard under
 mutation.** The thread counts were not the whole cause of those kills. Per-test
@@ -234,16 +309,18 @@ not multiply by every mutant.
 ## In-Place Safety
 
 CI uses `--in-place` because the checkout is disposable and a separate nextest
-baseline has already passed. Local runs are copy-based by default. If you set
-`MUTANTS_IN_PLACE=1` outside CI, `scripts/run-mutants.sh` refuses to run unless
-the worktree, index, and untracked-file set are clean.
+baseline has already passed. Local runs through the Makefile are in place in a
+mirror slot, never in the checkout (above). If you call
+`scripts/run-mutants.sh` directly without `MUTANTS_MIRROR=1` and set
+`MUTANTS_IN_PLACE=1` outside CI, it mutates the checkout itself and refuses to
+run unless the worktree, index, and untracked-file set are clean.
 
 Use a clean checkout or a disposable worktree for local in-place experiments:
 
 ```sh
 git worktree add ../lushtext-mutants HEAD
 cd ../lushtext-mutants
-MUTANTS_IN_PLACE=1 MUTANTS_BASELINE_SKIP=1 make mutants-full
+MUTANTS_IN_PLACE=1 MUTANTS_BASELINE_SKIP=1 ./scripts/run-mutants.sh full
 ```
 
 ## CI Behavior

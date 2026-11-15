@@ -3383,11 +3383,24 @@ fn present_settled_minimap_document() -> (LushtextEditorPage, gtk4::ApplicationW
     wait_until(Duration::from_secs(10), || {
         !page.minimap_evidence().reflow_settle_pending
     });
-    assert!(
-        page.source_view().visible_rect().y() < 10,
-        "precondition: at the top"
-    );
+    assert_rests_at_lower(&page, "precondition: presented at the top");
     (page, window, settings)
+}
+
+/// Assert that `page`'s vertical value rests at `lower`, within the rest
+/// state's 0.5 px edge epsilon (`gtk_lush_viewport::rests_at_lower`): a pixel
+/// tolerance such as `visible_rect().y() < 10` let a view resting 8 px below
+/// its top pass, with its top-anchor repair disarmed
+/// (`diagnose-ci-only-reflow-guard-failure`).
+fn assert_rests_at_lower(page: &LushtextEditorPage, what: &str) {
+    let adjustment = page.source_view().vadjustment().expect("vadjustment");
+    assert!(
+        (adjustment.value() - adjustment.lower()).abs() <= 0.5,
+        "{what}: vertical value {} is not at lower {} ({:?})",
+        adjustment.value(),
+        adjustment.lower(),
+        page.source_view().visible_rect()
+    );
 }
 
 /// Hide (or show) the minimap and wait until the editor's width changed. The
@@ -3766,10 +3779,13 @@ fn test_a_reallocation_offset_at_the_top_is_still_repaired_after_a_reflow() {
     );
     settle_width_reflow(&page);
     let rect = page.source_view().visible_rect();
+    let adjustment = page.source_view().vadjustment().expect("vadjustment");
     assert!(
-        rect.y() < 10,
-        "the settle must restore the top a reallocation offset moved ({rect:?}); \
-         settle pending {}, vertical emissions {}",
+        (adjustment.value() - adjustment.lower()).abs() <= 0.5,
+        "the settle must restore the top a reallocation offset moved ({rect:?}, value {}, \
+         lower {}); settle pending {}, vertical emissions {}",
+        adjustment.value(),
+        adjustment.lower(),
         page.minimap_evidence().reflow_settle_pending,
         emissions.borrow().join(" ")
     );

@@ -36,3 +36,6 @@ mod search_replace;
 
 #[path = "integration/format_upgrade.rs"]
 mod format_upgrade;
+
+#[path = "integration/document_scale.rs"]
+mod document_scale;

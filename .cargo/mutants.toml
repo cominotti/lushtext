@@ -97,6 +97,17 @@ exclude_globs = [
     # code's, which that change moved without editing. Path-keyed: re-key this
     # entry if the module moves.
     "crates/lushtext-core/src/services/editor_io/text_scans/reference.rs",
+    # The per-file file index the arena replaced, kept as the oracle the
+    # `index_parity` property tests compare against (`scale-file-index` D6),
+    # and the module that turns owned rows into an arena (`owned.rs`, the
+    # benches' and tests' constructor), both compiled only under `cfg(test)`
+    # or `test-utils`. The D9 tree-shape fixture is test data. Path-keyed:
+    # re-key these entries if the modules move.
+    "crates/lushtext-core/src/services/palette/index/reference.rs",
+    "crates/lushtext-core/src/services/palette/index/owned.rs",
+    "crates/lushtext-core/src/services/palette/workspace_index_fixture.rs",
+    "crates/lushtext-core/src/services/palette/index_scale_tests.rs",
+    "crates/lushtext-core/src/services/palette/index/tests.rs",
     # Kani harness modules are verification code. Each is declared
     # `#[cfg(kani)] mod kani_proofs;`, so no build cargo-mutants runs compiles
     # it and no test can kill a mutant inside it: before this entry the scope
@@ -135,9 +146,6 @@ exclude_re = [
     "crates/lushtext-core/src/services/recovery_metadata\\.rs:.*replace == with != in load_existing_enveloped_json_file",
     "crates/lushtext-core/src/services/recovery_metadata\\.rs:.*replace match guard error\\.kind\\(\\) == io::ErrorKind::NotFound with (true|false) in load_existing_enveloped_json_file_for_replacement",
     "crates/lushtext-core/src/services/recovery_metadata\\.rs:.*replace == with != in load_existing_enveloped_json_file_for_replacement",
-    # Equivalent for returned index state: `>=` only adds a warning when the
-    # count is exactly the limit; `Vec::truncate(limit)` is otherwise a no-op.
-    "crates/lushtext-core/src/services/palette/index\\.rs:.*replace > with >= in truncate_to_index_limit",
     # Equivalent: missing snapshot files are intentionally ignored during
     # retention cleanup; this mutation only changes whether that no-op logs.
     "crates/lushtext-core/src/services/local_history_service\\.rs:.*replace != with == in remove_snapshot_files",
@@ -169,6 +177,16 @@ exclude_re = [
     # Equivalent on LushText's Linux target: this non-Unix advisory-lock stub is
     # not compiled or called in the mutation test target.
     "crates/lushtext-core/src/services/durable_write\\.rs:131:.*FileWriteLock::acquire -> std::io::Result<Option<Self>>",
+    # Never compiled by the mutation lane: `markdown_chunked_cap`'s
+    # `cfg(not(feature = "test-utils"))` arm. Unlike the cfg-disabled stubs
+    # around it, this is the arm that ships (a `const fn` returning `None`),
+    # but the lane's one workspace test build always has `test-utils`, which
+    # the `lushtext` crate's dev-dependency enables on `lushtext-core`, so a
+    # mutant here builds unchanged code and can only be missed (found in
+    # `reduce-build-disk-writes`' focused rounds). Its `test-utils` twin above
+    # it is in scope and killed by the integration test `document_scale`.
+    # Line-anchored: re-key this entry if the function moves.
+    "crates/lushtext-core/src/model/document_scale\\.rs:229:.*replace markdown_chunked_cap -> Option<u64> with Some\\([01]\\)",
     # Equivalent on LushText's Linux mutation target: this non-Unix metadata
     # shim is cfg-disabled, while the active Unix metadata probe remains in scope.
     "crates/lushtext-core/src/services/durable_write\\.rs:504:.*MetadataPlan::probe -> std::io::Result<Self>",

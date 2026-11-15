@@ -1,0 +1,13 @@
+# classify sample: a type error (i32 against i64), so the copy does not compile.
+# verus-classify must read it as a build error, never a refutation.
+--- a/src/preview_width.rs
++++ b/src/preview_width.rs
+@@ -52,7 +52,7 @@
+ )]
+ pub fn clamped_preview_width(preferred_width: i32, available_width: i32) -> i32 {
+     let max_width = (available_width.max(1) / PREVIEW_MAX_WIDTH_DIVISOR).max(PREVIEW_MIN_WIDTH_SP);
+-    preferred_width.max(PREVIEW_MIN_WIDTH_SP).min(max_width)
++    preferred_width.max(PREVIEW_MIN_WIDTH_SP).min(max_width as i64)
+ }
+ 
+ verus! {

@@ -19,13 +19,18 @@ Usage:
   scripts/proof-strength.py clean
   scripts/proof-strength.py --self-test
 
-Isolation: every Kani run happens in a disposable detached worktree
-(`target/proof-strength/wt`, at `--rev`, default HEAD), so uncommitted edits in
-the developer tree are neither mutated nor checked. The tests arm runs
-cargo-mutants against that worktree, which copies it before mutating. `clean`
-removes the worktree. Results live outside it, one JSON file per mutant under
-`target/proof-strength/results/<rev>/<module>/`, so a restart with the same
-revision and oracle table skips every finished mutant.
+Isolation: every Kani run happens in a disposable detached worktree at `--rev`
+(default HEAD), so uncommitted edits in the developer tree are neither mutated
+nor checked. The worktree lives in the build cache root, outside the
+snapshotted checkout: `<checkout-cache>/proof-strength/wt`, where
+`<checkout-cache>` is `scripts/build-cache.sh checkout-path` (design D6 of
+openspec/changes/archive/2026-11-15-reduce-build-disk-writes). The tests arm runs cargo-mutants
+`--in-place` inside that clean worktree, with its build and target directories
+pinned there, so it copies nothing and leaves no build directory behind; an
+interrupted mutant is discarded by the next run's `git checkout --force`.
+`clean` removes the worktree. Results live outside it, one JSON file per
+mutant under `target/proof-strength/results/<rev>/<module>/`, so a restart
+with the same revision and oracle table skips every finished mutant.
 
 Kani classes: killed (a harness failed; `should_panic` kills, where the mutant
 removed a pinned counterexample, are flagged), vacuity (every harness verified
@@ -60,11 +65,29 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STATE = REPO_ROOT / "target/proof-strength"
+BUILD_CACHE = REPO_ROOT / "scripts/build-cache.sh"
+
+
+def checkout_cache() -> Path:
+    """This checkout's directory in the build cache root, resolved WITHOUT
+    creating it (`checkout-path`): importing or self-testing the driver must
+    write nothing there. `ensure_worktree` creates it before its first write."""
+    out = subprocess.run([str(BUILD_CACHE), "checkout-path", str(REPO_ROOT)], capture_output=True, text=True, check=True)
+    return Path(out.stdout.strip())
+
+
+CHECKOUT_CACHE = checkout_cache()
+# The driver's own area of the build cache root; anything under it is a
+# worktree this driver created.
+CACHE_STATE = CHECKOUT_CACHE / "proof-strength"
 # One disposable worktree per concurrent run: shards of the Kani arm
 # (`--shard k/n`) may run in parallel, each with its own PROOF_STRENGTH_WORKTREE
 # (and therefore its own Kani target directory); per-mutant results never
-# collide because each shard owns disjoint mutants.
-WORKTREE = Path(os.environ["PROOF_STRENGTH_WORKTREE"]).resolve() if os.environ.get("PROOF_STRENGTH_WORKTREE") else STATE / "wt"
+# collide because each shard owns disjoint mutants. A relative
+# PROOF_STRENGTH_WORKTREE resolves against the current directory, so point a
+# parallel shard at the cache (`$(scripts/build-cache.sh checkout-path)/proof-strength/wt1`),
+# not at a path inside the checkout.
+WORKTREE = Path(os.environ["PROOF_STRENGTH_WORKTREE"]).resolve() if os.environ.get("PROOF_STRENGTH_WORKTREE") else CACHE_STATE / "wt"
 RESULTS = STATE / "results"
 # `touch target/proof-strength/STOP` stops a run cleanly between mutants.
 STOP_FILE = STATE / "STOP"
@@ -81,7 +104,9 @@ BASELINE_TIMEOUT_FACTOR = 10.0
 # Allowance for the `cargo kani` compile on top of the harness timeouts.
 COMPILE_ALLOWANCE = 900.0
 TESTS_TIMEOUT = 300
-TESTS_JOBS = 1
+# The tests arm runs `cargo mutants --in-place`, which cargo-mutants 27 refuses
+# together with any `--jobs` (1 included) or CARGO_MUTANTS_JOBS, so it passes
+# none: it was serial (`--jobs 1`) before, so nothing is lost.
 # Memory discipline for a shared host: wait until this much memory is
 # available before each Kani run or tests arm, and cap each Kani run's
 # address space (0 disables either).
@@ -217,7 +242,12 @@ def worktree_owned(worktree: Path) -> bool:
     directory, or a checkout carrying its marker. A PROOF_STRENGTH_WORKTREE
     naming any other checkout (the developer's own, another agent's) must never
     be force-checked-out, patched, or removed."""
-    return worktree.resolve().is_relative_to(STATE.resolve()) or owner_marker(worktree).exists()
+    resolved = worktree.resolve()
+    return (
+        resolved.is_relative_to(STATE.resolve())
+        or resolved.is_relative_to(CACHE_STATE.resolve())
+        or owner_marker(worktree).exists()
+    )
 
 
 def refuse_unowned(worktree: Path) -> None:
@@ -234,6 +264,9 @@ def ensure_worktree(rev: str, worktree: Path = WORKTREE) -> Path:
     if (worktree / ".git").exists():
         refuse_unowned(worktree)
     else:
+        if worktree.resolve().is_relative_to(CHECKOUT_CACHE.resolve()):
+            # Records the checkout path and CACHEDIR.TAG, for `build-cache.sh prune`.
+            subprocess.run([str(BUILD_CACHE), "checkout", str(REPO_ROOT)], check=True, capture_output=True)
         worktree.parent.mkdir(parents=True, exist_ok=True)
         git("worktree", "add", "--detach", str(worktree), rev)
         owner_marker(worktree).touch()
@@ -496,8 +529,47 @@ def kani_env(worktree: Path) -> dict[str, str]:
     config (for example one under `~/.cache`) would otherwise move that output
     out of the worktree, every harness would read as reaching every mutant, and
     a mutant no harness reaches would run the whole oracle list instead of
-    being skipped (close-protected-install-proof-strength, 2026-11-06)."""
-    return {**os.environ, "CARGO_BUILD_BUILD_DIR": str(worktree / "target/kani/kani")}
+    being skipped (close-protected-install-proof-strength, 2026-11-06).
+
+    The pinned directory is the worktree's own, which no ordinary build uses,
+    so incremental compilation is off there (`CARGO_INCREMENTAL=0`, design D3:
+    measured, see `KANI_ARM_INCREMENTAL`)."""
+    env = {**os.environ, "CARGO_BUILD_BUILD_DIR": str(worktree / "target/kani/kani")}
+    if KANI_ARM_INCREMENTAL == "0":
+        env["CARGO_INCREMENTAL"] = "0"
+    return env
+
+
+# Design D3's decision for the Kani arm, from its measurement (tasks 9.2): "0"
+# disables incremental compilation in the worktree's Kani build dir, "" leaves
+# CARGO_INCREMENTAL as the caller set it.
+KANI_ARM_INCREMENTAL = "0"
+
+
+def host_triple() -> str:
+    out = subprocess.run(["rustc", "-vV"], capture_output=True, text=True, check=True).stdout
+    return next(line.split(": ", 1)[1] for line in out.splitlines() if line.startswith("host: "))
+
+
+def tests_env(worktree: Path) -> dict[str, str]:
+    """The tests arm's environment (designs D3-D6): build and target
+    directories pinned in the worktree (incremental compilation as the caller
+    set it: the tests arm follows the mirror slots' D3 decision), workspace crates compiled without the compiler cache (the checkout's
+    `rustc-passthrough.sh`, a path that stays the same across runs, since Cargo
+    hashes the workspace wrapper into every member's units), and each test
+    process under the per-test address-space limit. The CPU caps fit the
+    `make proof-strength` scope."""
+    env = {
+        **os.environ,
+        "CARGO_BUILD_BUILD_DIR": str(worktree / "target/tests-build"),
+        "CARGO_TARGET_DIR": str(worktree / "target/tests"),
+        "RUSTC_WORKSPACE_WRAPPER": str(REPO_ROOT / "scripts/rustc-passthrough.sh"),
+        f"CARGO_TARGET_{host_triple().upper().replace('-', '_')}_RUNNER": str(REPO_ROOT / "scripts/test-address-space-runner.sh"),
+        "CARGO_BUILD_JOBS": str(TESTS_BUILD_JOBS),
+        "NEXTEST_TEST_THREADS": str(TESTS_THREADS),
+    }
+    env.pop("CARGO_MUTANTS_JOBS", None)
+    return env
 
 
 def reach_tokens(worktree: Path, package: str, harness: str) -> set[str] | None:
@@ -771,25 +843,14 @@ def tests_dir(rev: str, module: str) -> Path:
     return RESULTS / rev / "tests" / module_slug(module)
 
 
-def run_tests(worktree: Path, rev: str, module: str, shard: str | None) -> None:
-    """cargo-mutants over the module through the narrowed config, with the
-    property tests enabled (design D5)."""
-    oracle = KS.ORACLES[module]
-    pop = population(worktree, module)
-    out = tests_dir(rev, module)
-    if shard:
-        out = out / f"shard-{shard.replace('/', '-of-')}"
-    meta_path = out / "meta.json"
-    if meta_path.exists() and (out / "mutants.out/outcomes.json").exists():
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        if meta.get("rev") == rev and meta.get("finished"):
-            return
-    out.mkdir(parents=True, exist_ok=True)
+def tests_command(worktree: Path, config: Path, oracle, pop: Population, out: Path, shard: str | None) -> list[str]:
+    """The tests arm's cargo-mutants command: in place in the clean worktree
+    (design D6), never with `--jobs`."""
     command = [
         "cargo",
         "mutants",
         "--config",
-        str(derived_config(worktree, module)),
+        str(config),
         "--workspace",
         *test_scope(oracle.package),
         "--test-tool",
@@ -799,8 +860,7 @@ def run_tests(worktree: Path, rev: str, module: str, shard: str | None) -> None:
         str(TESTS_TIMEOUT),
         "--features",
         FEATURES,
-        "--jobs",
-        str(TESTS_JOBS),
+        "--in-place",
         "--output",
         str(out),
         "-d",
@@ -815,7 +875,26 @@ def run_tests(worktree: Path, rev: str, module: str, shard: str | None) -> None:
             command += ["--exclude-re", f"^{re.escape(name)}$"]
     if shard:
         command += ["--shard", shard]
-    env = {**os.environ, "CARGO_BUILD_JOBS": str(TESTS_BUILD_JOBS), "NEXTEST_TEST_THREADS": str(TESTS_THREADS)}
+    return command
+
+
+def run_tests(worktree: Path, rev: str, module: str, shard: str | None) -> None:
+    """cargo-mutants over the module through the narrowed config, with the
+    property tests enabled (design D5)."""
+    oracle = KS.ORACLES[module]
+    pop = population(worktree, module)
+    out = tests_dir(rev, module)
+    if shard:
+        out = out / f"shard-{shard.replace('/', '-of-')}"
+    meta_path = out / "meta.json"
+    if meta_path.exists() and (out / "mutants.out/outcomes.json").exists():
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        if meta.get("rev") == rev and meta.get("finished"):
+            return
+    out.mkdir(parents=True, exist_ok=True)
+    command = tests_command(worktree, derived_config(worktree, module), oracle, pop, out, shard)
+    env = tests_env(worktree)
+    assert_clean(worktree, f"worktree {worktree} is not clean before the in-place tests arm")
     meta = {
         "rev": rev,
         "module": module,
@@ -989,9 +1068,39 @@ def markdown(rows: list[dict], rev: str, versions: dict) -> str:
 
 
 def self_test() -> None:
+    # The default worktree is in this checkout's build-cache directory, and
     # Kani's build output stays in the worktree whatever the user's Cargo config.
-    pinned = kani_env(Path("/wt"))["CARGO_BUILD_BUILD_DIR"]
-    assert pinned == "/wt/target/kani/kani", pinned
+    assert WORKTREE == CACHE_STATE / "wt" or os.environ.get("PROOF_STRENGTH_WORKTREE"), WORKTREE
+    assert CACHE_STATE == checkout_cache() / "proof-strength"
+    pinned = kani_env(CACHE_STATE / "wt")["CARGO_BUILD_BUILD_DIR"]
+    assert pinned == str(CACHE_STATE / "wt/target/kani/kani"), pinned
+    # The tests arm: build and target dirs pinned in the worktree, D3-D5.
+    env = tests_env(CACHE_STATE / "wt")
+    assert env["CARGO_BUILD_BUILD_DIR"] == str(CACHE_STATE / "wt/target/tests-build")
+    assert env["CARGO_TARGET_DIR"] == str(CACHE_STATE / "wt/target/tests")
+    assert env.get("CARGO_INCREMENTAL") == os.environ.get("CARGO_INCREMENTAL") and "CARGO_MUTANTS_JOBS" not in env
+    assert env["RUSTC_WORKSPACE_WRAPPER"] == str(REPO_ROOT / "scripts/rustc-passthrough.sh")
+    runner = [v for k, v in env.items() if k.startswith("CARGO_TARGET_") and k.endswith("_RUNNER")]
+    assert runner == [str(REPO_ROOT / "scripts/test-address-space-runner.sh")], runner
+    oracle = next(iter(KS.ORACLES.values()))
+    command = tests_command(CACHE_STATE / "wt", Path("/c.toml"), oracle, Population([], [], None), Path("/out"), "0/2")
+    assert "--in-place" in command and "--jobs" not in command and "-j" not in command, command
+    assert command[command.index("-d") + 1] == str(CACHE_STATE / "wt") and command[-2:] == ["--shard", "0/2"], command
+    # Importing the driver resolves the default worktree without creating
+    # anything in the build cache root (a temporary one here).
+    with tempfile.TemporaryDirectory() as scratch:
+        cache = Path(scratch) / "cache"
+        probe = (
+            "import importlib.util, sys; "
+            f"spec = importlib.util.spec_from_file_location('ps', {str(Path(__file__).resolve())!r}); "
+            "m = importlib.util.module_from_spec(spec); sys.modules['ps'] = m; spec.loader.exec_module(m); print(m.WORKTREE)"
+        )
+        probe_env = {k: v for k, v in os.environ.items() if k not in GIT_LOCATION_VARIABLES and k != "PROOF_STRENGTH_WORKTREE"}
+        printed = subprocess.run(
+            [sys.executable, "-c", probe], env={**probe_env, "LUSHTEXT_BUILD_CACHE": str(cache)}, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        assert printed.startswith(str(cache / "checkouts")) and printed.endswith("/proof-strength/wt"), printed
+        assert not cache.exists(), "importing proof-strength.py created the build cache root"
     # Diff application and restore on a fixture repository.
     with tempfile.TemporaryDirectory() as scratch:
         repo = Path(scratch)
@@ -1025,7 +1134,7 @@ def self_test() -> None:
             except SystemExit as refusal:
                 assert "not a proof-strength worktree" in str(refusal), refusal
             assert (repo / "src/m.rs").read_text() == "// uncommitted\n"
-        assert worktree_owned(STATE / "wt") and not worktree_owned(repo)
+        assert worktree_owned(STATE / "wt") and worktree_owned(CACHE_STATE / "wt") and not worktree_owned(repo)
         owner_marker(repo).touch()
         assert worktree_owned(repo)
 

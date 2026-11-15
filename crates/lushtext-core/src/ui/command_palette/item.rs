@@ -13,7 +13,8 @@
 //! takes none of those names, and owns no `policy.rs` and no `evidence.rs`. Its
 //! behavior obligations are unchanged. Named in that workflow's matrix row.
 
-use crate::model::palette::{CommandDef, IndexedFile, PaletteCategory, PaletteNoteTarget};
+use crate::model::palette::{CommandDef, PaletteCategory, PaletteNoteTarget};
+use crate::services::palette::IndexedFile;
 use glib::prelude::*;
 use glib::subclass::prelude::*;
 use gtk4::glib;
@@ -219,11 +220,11 @@ impl PaletteItem {
 
     /// Create a palette item from an indexed file.
     #[must_use]
-    pub fn from_indexed_file(file: &IndexedFile) -> Self {
+    pub fn from_indexed_file(file: IndexedFile<'_>) -> Self {
         Self::new_file_raw(
-            file.name.clone(),
+            file.name().to_string(),
             file.relative_display(),
-            file.path.clone(),
+            file.path(),
         )
     }
 

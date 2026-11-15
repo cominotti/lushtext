@@ -130,6 +130,41 @@ Two lessons worth carrying:
   state is in GTK's private per-display IM global, which application code
   cannot reach, so application-side reorderings do not fix it.
 
+### A test that fails only on CI: the CI image lane
+
+Reproduce it in the widget job's image before spending CI rounds:
+`scripts/heavy.sh --mem none -- scripts/ci-image-widget-test.sh --cpus 4
+--runs 5 --binary <prebuilt widget binary> -- --exact <test>`, or `--shard
+<name>` for a whole shard (`build.md`, "CI image lane"). It runs CI's own step
+with `cargo` shimmed to the binary, so the temporary scope, the warning scan
+and the outer retry are CI's. The bare binary has none of them.
+
+Three classes it found (`diagnose-ci-only-reflow-guard-failure`):
+
+- **Session services answer at a different time.** In the CI image the
+  accessibility registry answers "no listener" while a never-shown page is
+  still unmapped, so `ui/at_listeners.rs` lets the page detach its view, and
+  the reattach at map scrolls to the kept line. In the toolbox the answer
+  comes later, and that path never runs. The same test exercised different
+  production code on the two hosts. Read the trace before reading the
+  timing.
+- **Fixture sizes follow the host.** The temporary scope's path holds
+  process ids (`lt-scope-<pid>-…`, `lushtext-test-<pid>-…`), which have two
+  digits in a fresh container and seven on a busy host. A row that retains
+  its path several times then has a host-dependent size, and a byte-budget
+  test can cross its threshold on one host only. A budget test fixes its
+  paths' length (`notes_browser::seed_workspace_of_fixed_length`).
+- **A worker's effect on disk is not its completion.** A file a worker wrote
+  is visible before the `spawn_blocking_then` completion that releases the
+  matching state has run. Wait for the state the completion sets, then
+  assert the file, never the reverse.
+
+**"At the top" is exact.** A test that relies on a view resting at its top
+asserts `value - lower <= 0.5` (the rest state's own epsilon), as a
+precondition before the step under test. `visible_rect().y() < 10` accepts a
+view 8 px down, under the 6 px top margin, which is exactly the state that
+disarms the top-anchor repair.
+
 ## Waiting for Async UI State
 
 Many widget changes land through idle callbacks, timeouts, or `spawn_blocking_then`. Use the **shared** wait helpers from `crates/lushtext/tests/widget/common.rs` — do not paste a private copy into your module:
@@ -206,6 +241,20 @@ is never sampled: a test that passes on an idle machine and fails under load
 (reproduced 2 of 6 runs with CPUs saturated; `harden-flatpak-sdk-update-ci`).
 Assert in-flight states with `observed_between_dispatches`; keep `wait_until`
 for terminal states, which persist.
+
+**A fixed iteration window starves a lower-priority source under load.** A
+test that iterates its own context for a fixed time and expects a
+`G_PRIORITY_DEFAULT` source to run between two dispatches of a
+higher-priority one is load-sensitive: once every iteration takes longer than
+the high-priority source's period, that source is ready at every prepare and
+GLib dispatches only it, so the lower-priority source can run in the window's
+last iteration, after which nothing records it. The in-tree case was
+`ui::responsiveness_probe::watchdog::tests::a_blocking_dispatch_is_recorded_between_its_bounds`
+(a 2 ms `G_PRIORITY_HIGH` watchdog and a 40 ms stalling idle in a 70 ms
+window; "lateness 756 µs below the lower bound" at a load of 8-12,
+`reduce-build-disk-writes` design D11). Iterate until the event that proves
+the outcome has happened (there: one watchdog dispatch after the stall), with
+a generous deadline, instead of for a fixed time.
 
 **`window.destroy()` does not dispose a window a test still holds** (ledger
 A21). A teardown test that needs the widget tree torn down must drop every

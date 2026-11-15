@@ -32,7 +32,7 @@ that freezes it is **paragraph length**, not file size.
 | SC | `spawn-completion-priority` (2026-11-02; queued from C2's `eviction/reselect` finding) | `gtk-lush-tasks` delivers `spawn_blocking_then` completions from one source at `GDK_PRIORITY_REDRAW + 4`, one per dispatch, above GtkTextView's validation idle (axiom A80), aging after eight completions or 16 ms (review); `ViewportSliceBin`'s pending-request evidence covers the re-slice (review, pre-existing); LushText's load and save admission drains and permit releases at the same priority; the `save/during-validation` lane case | No completion dispatch over B_settle and no input or frame delayed against `main`, interleaved; a save during a validation backlog lands promptly. `eviction/reselect` is **mostly unchanged** by design: its cause is EV, below |
 | EV | `defer-background-tab-layout` (queued 2026-11-02, coordinator decision; **next after C3**, it touches C3's install files) | The real cause of `eviction/reselect`'s 6–11 s batches, attributed in SC (perf on `main` cdfff201: 69.5 % of the application's CPU in `incremental_validate_callback`): (1) the transient load permit (`8 × 8 MiB + 1 MiB` = 65 MiB of the 256 MiB budget, so three loads at a time) is held through an installation that C6 paces below the validation idle, so the next document is not even read until every validating view has laid out its whole buffer; (2) **background tabs validate fully**: restoring many large files spends the CPU laying out tabs nobody is looking at (A80: a view on a hidden `GtkStack` page validates its whole buffer) | The selected document of a restore of ten 8 MiB documents is usable within the open budget, background documents do not delay it, and no background tab lays out its whole buffer before it is shown (or the cost is recorded against a toolkit floor). **Implemented 2026-11-03, review fixes 2026-11-04** (PR #80, not merged): a hidden tab's view shows an empty placeholder buffer (A82, A83) except while an assistive technology listens or past 2^18 lines, background installs wait one priority step below the visible tab's (aging after 256 ms), the load permit keeps the decoded body plus the residency not yet installed after the read, a dense document's reattach is revealed in paced ranges; `eviction/reselect` completes (main: 20 s cap) with every background document laid out never and installed within ~0.5 s of the visible one; see "EV" below |
 | DL | `bound-dense-long-line-editing` (queued 2026-11-05, coordinator, from CF's review; proposal not written) | Bound open, click, restyle and typing on **editable dense documents of long lines** (the full tier's dense/10000 and dense/50000: 160 lines of 10,000 or 50,000 characters). Identical on `main` `1d483b24` and CF: open 110–530 ms, click 53–262 ms, zoom step about 100 / 470–485 ms, font change 70 / 320–330 ms, typing about 1.2 s per burst, the lane failing `misdirected_typing` and `withheld_typing_frames` in 12 / 18 phases; the cost is GtkTextView validating 2000 px batches of such lines (A31), each dispatch laying out up to about a million characters | The full-tier lane passes its typing gates on these cases, and every dispatch is within the budgets or recorded against a toolkit floor (C5's per-keystroke exception covers one paragraph's re-layout, not a batch of them) |
-| PT | `power-of-two-thresholds` (queued 2026-11-01, maintainer decision; after C2, C6 and C5 merge; implemented 2026-11-05, merged (PR #84, `main` `d59a1256`) and archived 2026-11-06 (`openspec/changes/archive/2026-11-06-power-of-two-thresholds/`); `bound-lists-by-budget-not-count` merged (PR #87, `main` `1af354a1`) and archived 2026-11-07 (`openspec/changes/archive/2026-11-07-bound-lists-by-budget-not-count/`); `bound-notes-browser-by-budget` merged (PR #88, `main` `4860fa2d`) and archived 2026-11-07 (`openspec/changes/archive/2026-11-07-bound-notes-browser-by-budget/`); `drill-down-palette-categories` merged (PR #89, `main` `4b567cdf`) and archived 2026-11-07 (`openspec/changes/archive/2026-11-07-drill-down-palette-categories/`); `bin-minimap-markers-per-row` merged (PR #90, `main` `9b8f9102`) and archived 2026-11-09 (`openspec/changes/archive/2026-11-09-bin-minimap-markers-per-row/`; see "BM"); `adopt-gnome-51` implemented 2026-11-10, lane verdict 2026-11-11, merged (PR #91, `main` `14649be0`) and archived 2026-11-11 (`openspec/changes/archive/2026-11-11-adopt-gnome-51/`; see "AG" below); `retest-upstream-fixes-on-nightly` implemented 2026-11-11, merged (PR #92, `main` `25ab565e`) and archived 2026-11-12 (`openspec/changes/archive/2026-11-12-retest-upstream-fixes-on-nightly/`; see "RN" below); `lighten-notes-browser-rows` implemented 2026-11-13, merged (PR #94, `main` `b129f378`) and archived 2026-11-14 (`openspec/changes/archive/2026-11-14-lighten-notes-browser-rows/`); `stream-replace-all` **next** (queue item 2 below)) | Convert every existing threshold to the rule in `.agents/rules/rust.md` ("Thresholds are powers of two, rounded the conservative way"): inventory every byte, character, paragraph, row and count constant; classify each as cap, coverage window, policy tier, or external fact; round caps down and coverage windows up (e.g. `R_batch` 224 → 256); re-derive the constants Kani ties together and rerun the affected shards; user-visible tiers become 8 MiB / 64 MiB / 512 MiB in IEC units (512 MiB only after measuring the exclusive-load memory peak); external facts stay exact. No measurement campaign: rounding the conservative way keeps every guarantee. The exceptions are slice sizes (`V_SLICE`, the direct-install threshold), whose rounding changes total time and is re-measured, and any value whose rounding costs a visible loss (`V_BATCH`, the per-language syntax gates), which may stay exact as recorded exceptions. **Coupled pair (C2b review):** `N_INSPECT` (500, the Line Inspector's window width) is tied to `L_PROTECT` (500, the head a fold keeps) by a Kani bound (`core-protected-view`: a window never exceeds the basis `L_PROTECT` was measured on); convert both together, to the same power of two, and rerun that shard. **Proposal written 2026-11-05** (branch `power-of-two-thresholds`, `openspec/changes/power-of-two-thresholds/`): about 95 in-scope constants classified; tiers 8 MiB / 64 MiB (512 MiB after task 3's memory peak); caps down, coverage windows (`R_BATCH` 256), retention tiers and retry budgets up (nothing stored is pruned); exceptions with corpus evidence (`L_SYNTAX`, the per-language gates and `S_SYNTAX_OTHER`: rounding down unhighlights 0.1–22 % of real files; `L_PROTECT_EDIT`, `V_BATCH`, the 100,000-file index, the 64 MP image cap); `L_PROTECT`/`N_INSPECT` 512 if a `dense/512` lane case holds, else 256; `V_SLICE`, the direct-install threshold and the 250-per-turn search caps re-measured; a `make check-thresholds` inventory gate. **Implemented 2026-11-05** (branch `power-of-two-thresholds`, PR pending, not merged): see "PT" below. Measured: the open tier is 512 MiB (memory peak within 1.074 × main's at 500 MB), `L_PROTECT`/`N_INSPECT` 512, `V_SLICE` 16,384, the direct-install threshold 512 KiB, the search per-turn caps 256; task 4.5's corpus count kept `L_MINIMAP`, `L_INVISIBLES`, `L_SEARCH_HIGHLIGHT`, `MAX_MARKDOWN_EVENTS` and the table-cell caps as recorded exceptions. **Amended 2026-11-05 (maintainer, PR #84 not merged):** the first version rounded every cap down and lost what `main` showed (palette 50 → 32, notes 500 → 256, Replace All 10 → 8 MiB, the 10,000 caps → 8,192, minimap markers 2,000 → 1,024, the minimap and per-edit history tier 10 MB → 8 MiB). New kind **presentation cap** (design D12): a cap on what the user sees or gets rounds **up** from its pre-PT value when its bound holds by measurement, else keeps that value as an exception; internal caps keep rounding down. **Implemented 2026-11-05 (stage 3, PR #84):** palette 64, notes 512, Replace All 16 MiB, the 10,000 caps 16,384 (the sidebar directory cap kept at 10,000 by measurement), markers 2,048, save-only history 16 MiB (the minimap tier kept at 10,000,000 bytes by measurement), `N_HEAD` and CSS back to 10,000 and 37 KiB, `N_DENSE` 256, Markdown 65,536 events and 1,024 cells, `L_SEARCH_HIGHLIGHT` 16,384 (`L_MINIMAP` kept at 22,000 by measurement, `L_INVISIBLES` at 50,000 by Protected View's invariant), the index 131,072, images 2^26 pixels; displayed sizes in IEC units (D14). Queued after PT merges, in order (D13): `bound-lists-by-budget-not-count`, `stream-replace-all`, `scale-file-index`, slicing the 59–60 ms largest-file open dispatch, then `avx2-health-scan-kernel` and DL. See "PT" below, "Amendment". | Every threshold is a power of two or a recorded exception with its measurement; the affected Kani shards and the lane pass. |
+| PT | `power-of-two-thresholds` (queued 2026-11-01, maintainer decision; after C2, C6 and C5 merge; implemented 2026-11-05, merged (PR #84, `main` `d59a1256`) and archived 2026-11-06 (`openspec/changes/archive/2026-11-06-power-of-two-thresholds/`); `bound-lists-by-budget-not-count` merged (PR #87, `main` `1af354a1`) and archived 2026-11-07 (`openspec/changes/archive/2026-11-07-bound-lists-by-budget-not-count/`); `bound-notes-browser-by-budget` merged (PR #88, `main` `4860fa2d`) and archived 2026-11-07 (`openspec/changes/archive/2026-11-07-bound-notes-browser-by-budget/`); `drill-down-palette-categories` merged (PR #89, `main` `4b567cdf`) and archived 2026-11-07 (`openspec/changes/archive/2026-11-07-drill-down-palette-categories/`); `bin-minimap-markers-per-row` merged (PR #90, `main` `9b8f9102`) and archived 2026-11-09 (`openspec/changes/archive/2026-11-09-bin-minimap-markers-per-row/`; see "BM"); `adopt-gnome-51` implemented 2026-11-10, lane verdict 2026-11-11, merged (PR #91, `main` `14649be0`) and archived 2026-11-11 (`openspec/changes/archive/2026-11-11-adopt-gnome-51/`; see "AG" below); `retest-upstream-fixes-on-nightly` implemented 2026-11-11, merged (PR #92, `main` `25ab565e`) and archived 2026-11-12 (`openspec/changes/archive/2026-11-12-retest-upstream-fixes-on-nightly/`; see "RN" below); `lighten-notes-browser-rows` implemented 2026-11-13, merged (PR #94, `main` `b129f378`) and archived 2026-11-14 (`openspec/changes/archive/2026-11-14-lighten-notes-browser-rows/`); `scale-file-index` implemented 2026-11-15, merged (PR #106, `main` `edc97eb1`) and archived 2026-11-15 (`openspec/changes/archive/2026-11-15-scale-file-index/`; queue item 3 below); `stream-replace-all` **next** (queue item 2 below)) | Convert every existing threshold to the rule in `.agents/rules/rust.md` ("Thresholds are powers of two, rounded the conservative way"): inventory every byte, character, paragraph, row and count constant; classify each as cap, coverage window, policy tier, or external fact; round caps down and coverage windows up (e.g. `R_batch` 224 → 256); re-derive the constants Kani ties together and rerun the affected shards; user-visible tiers become 8 MiB / 64 MiB / 512 MiB in IEC units (512 MiB only after measuring the exclusive-load memory peak); external facts stay exact. No measurement campaign: rounding the conservative way keeps every guarantee. The exceptions are slice sizes (`V_SLICE`, the direct-install threshold), whose rounding changes total time and is re-measured, and any value whose rounding costs a visible loss (`V_BATCH`, the per-language syntax gates), which may stay exact as recorded exceptions. **Coupled pair (C2b review):** `N_INSPECT` (500, the Line Inspector's window width) is tied to `L_PROTECT` (500, the head a fold keeps) by a Kani bound (`core-protected-view`: a window never exceeds the basis `L_PROTECT` was measured on); convert both together, to the same power of two, and rerun that shard. **Proposal written 2026-11-05** (branch `power-of-two-thresholds`, `openspec/changes/power-of-two-thresholds/`): about 95 in-scope constants classified; tiers 8 MiB / 64 MiB (512 MiB after task 3's memory peak); caps down, coverage windows (`R_BATCH` 256), retention tiers and retry budgets up (nothing stored is pruned); exceptions with corpus evidence (`L_SYNTAX`, the per-language gates and `S_SYNTAX_OTHER`: rounding down unhighlights 0.1–22 % of real files; `L_PROTECT_EDIT`, `V_BATCH`, the 100,000-file index, the 64 MP image cap); `L_PROTECT`/`N_INSPECT` 512 if a `dense/512` lane case holds, else 256; `V_SLICE`, the direct-install threshold and the 250-per-turn search caps re-measured; a `make check-thresholds` inventory gate. **Implemented 2026-11-05** (branch `power-of-two-thresholds`, PR pending, not merged): see "PT" below. Measured: the open tier is 512 MiB (memory peak within 1.074 × main's at 500 MB), `L_PROTECT`/`N_INSPECT` 512, `V_SLICE` 16,384, the direct-install threshold 512 KiB, the search per-turn caps 256; task 4.5's corpus count kept `L_MINIMAP`, `L_INVISIBLES`, `L_SEARCH_HIGHLIGHT`, `MAX_MARKDOWN_EVENTS` and the table-cell caps as recorded exceptions. **Amended 2026-11-05 (maintainer, PR #84 not merged):** the first version rounded every cap down and lost what `main` showed (palette 50 → 32, notes 500 → 256, Replace All 10 → 8 MiB, the 10,000 caps → 8,192, minimap markers 2,000 → 1,024, the minimap and per-edit history tier 10 MB → 8 MiB). New kind **presentation cap** (design D12): a cap on what the user sees or gets rounds **up** from its pre-PT value when its bound holds by measurement, else keeps that value as an exception; internal caps keep rounding down. **Implemented 2026-11-05 (stage 3, PR #84):** palette 64, notes 512, Replace All 16 MiB, the 10,000 caps 16,384 (the sidebar directory cap kept at 10,000 by measurement), markers 2,048, save-only history 16 MiB (the minimap tier kept at 10,000,000 bytes by measurement), `N_HEAD` and CSS back to 10,000 and 37 KiB, `N_DENSE` 256, Markdown 65,536 events and 1,024 cells, `L_SEARCH_HIGHLIGHT` 16,384 (`L_MINIMAP` kept at 22,000 by measurement, `L_INVISIBLES` at 50,000 by Protected View's invariant), the index 131,072, images 2^26 pixels; displayed sizes in IEC units (D14). Queued after PT merges, in order (D13): `bound-lists-by-budget-not-count`, `stream-replace-all`, `scale-file-index`, slicing the 59–60 ms largest-file open dispatch, then `avx2-health-scan-kernel` and DL. See "PT" below, "Amendment". | Every threshold is a power of two or a recorded exception with its measurement; the affected Kani shards and the lane pass. |
 
 C1–C4 are drafted; none may be **implemented** before this record holds the
 values they use (`responsiveness-measurement` spec).
@@ -76,7 +76,9 @@ documented deviation; every part's run id, load and co-running processes are in
 the table below). Headless `mutter 50.4 --virtual-monitor 1280x800@120`,
 `GSK_RENDERER=cairo`, caret blink off, GTK 4.22.5, Libadwaita 1.9.3, Pango
 1.57.1, GtkSourceView 5.20.0, GLib 2.88.3, kernel 7.2.9-200.fc44, Intel Core
-Ultra 9 285K, affinity CPUs 8–23 (16 E-cores, inherited, never widened).
+Ultra 9 285K, affinity CPUs 8–23 (16 E-cores, inherited, never widened; the
+reference CPU set, named explicitly by `scripts/measure.sh
+--print-reference-cpus` since `nest-heavy-slices-under-user-slice`).
 Watchdog tick 2 ms, idle slack ε 928 µs. 1,499 fixture-integrity checks, 0
 violations; 2 of the bisection rows were storage-contaminated and excluded by
 the lane. Axiom observations: a fresh `make gtk-axioms` on the same tree (A31:
@@ -253,7 +255,11 @@ then a follow-up for the flipped points (`--prior` the re-confirmation,
 idle-gated final parts (`final-dense` 18:59, `final-dense120` 19:11,
 `final-minimap` 19:16; each waited for 30 s of load < 4 with no process at
 ≥ 80 % CPU). Total measurement time 44 minutes. Same toolkit, kernel, headless
-lane and affinity (E-cores 8–23, inherited) as the reference run; watchdog tick
+lane and affinity (E-cores 8–23, inherited; from
+`nest-heavy-slices-under-user-slice` on, the reference CPU set is explicit,
+`scripts/measure.sh --print-reference-cpus`, and every earlier verdict ran on
+8-23, so they stay comparable; a record on 12-23 is a game-time run, not a
+reference run) as the reference run; watchdog tick
 2 ms, idle slack ε 295 µs; a fresh `make gtk-axioms` (A31: 112 rows per
 batch); 0 integrity violations. The machine was shared with another session's
 bursty `java` jobs (up to 1,355 % CPU on the same E-cores) during the
@@ -4039,13 +4045,77 @@ separate change, in this order:
        checksum-pinned crate on OpenSSL 4;
      - D4: two retry-rescued widget tests diagnosed and fixed (directory
        retention, protected periodic capture).
-     **Follow-up `diagnose-ci-only-reflow-guard-failure`** (queued):
-     F1, the D2 guard
-     `test_a_reallocation_offset_at_the_top_is_still_repaired_after_a_reflow`,
-     fails on every CI run and passes locally, starved or not, before and
-     after the merge; task 4.2, the bookmark preview-only test, is not
-     diagnosed (it failed on CI inside the full `window` shard); and the
-     eight-branch-run proof for `editor-page`, `window` and `surfaces`.
+     **Follow-up `diagnose-ci-only-reflow-guard-failure`** (implemented
+     2026-11-15, merged (PR #111, `main` `da80e312`) on local evidence and
+     archived 2026-11-15,
+     `openspec/changes/archive/2026-11-15-diagnose-ci-only-reflow-guard-failure/`;
+     specs `editor-minimap`, `widget-test-ci-sharding`). It reproduces CI-only widget
+     failures in the widget job's image (`scripts/ci-image-widget-test.sh`,
+     `build.md` "CI image lane": CI's own step with `cargo` shimmed to a
+     prebuilt binary).
+     - F1, the D2 guard
+       `test_a_reallocation_offset_at_the_top_is_still_repaired_after_a_reflow`,
+       was a **product defect**. It reproduced in the lane at `--cpus=4`
+       and unlimited, 5 of 5 each, with CI's message (value 8), so the CPU
+       count was not the condition.
+       - The writer is the reattach of a detached view to its kept top
+         line (`ui/editor_page/view_attachment.rs`): for line 0, GTK's
+         aligned scroll rests at the top margin plus the first glyph's y,
+         never at `lower` (new axiom A113, sample on GNOME 50, 51 and
+         master). The animated move then reads as a scroll (A112), and the
+         settle disarms the top-anchor repair.
+       - The image's property is session timing. Its accessibility
+         registry answers "no listener" while the never-shown page is
+         still unmapped, so the page is detached and reattached; in the
+         toolbox the answer comes later.
+       - In production, a session-restored or background tab at line 0 came
+         back 6–12 px down, with the top margin gone and line one clipped.
+         It now rests at `lower`. Any other kept position (a deeper line,
+         or a display line inside a wrapped line one) still uses GTK's
+         aligned scroll.
+       - Red on `main` code: the lane failed the four D2 tests' new exact
+         precondition (value 8) and the new reattach test (value 12); the
+         toolbox failed the reattach test. Green with the fix: 20 of 20 lane
+         runs of the six-test proof set at `--cpus=4`; 5 of 5 of the guard
+         at `--cpus=1` and at `--cpus=2`; 20 of 20 toolbox runs of the
+         guard; the whole `editor-page` shard once in the lane. On the final
+         merged binary: the proof set plus a wrapped-first-paragraph test
+         5 of 5, and `editor-page` and `window` once each, green.
+     - Task 4.2, the bookmark preview-only test, did not reproduce: 5 of 5
+       isolated and green in all eleven complete lane runs of the
+       `window` shard.
+     - The lane found two `window`-shard tests fragile, and both are fixed:
+       - `notes_browser::test_the_list_stays_virtualized_at_131072_rows`:
+         its rows retained the temporary path, whose process ids have two
+         digits in the lane, so 103,244 rows fit the retained ceiling, and
+         their shell overlap left no room to count the rest (found 103,424
+         of 131,072). The fixture now fixes the folder path at 112 bytes:
+         73,908 rows on both hosts, peak construction 91.95 MB of
+         100.66 MB. Measured product limitation, not changed: with rows of
+         about 650 bytes, the notes source stops counting past the retained
+         ceiling and reports a lower bound (`MAX_PALETTE_NOTE_CONSTRUCTION_BYTES`'s
+         doc comment).
+       - `window::test_edits_during_a_pending_restore_never_overwrite_the_recovery_body`
+         waited for the set-aside file, which the worker writes before its
+         completion releases the restore hold. It now waits for the release
+         and then checks the file (four lane `window`-shard runs had failed
+         it).
+     - **Owed to the programme-end CI check** (the stage brief forbids
+       waiting for or rerunning CI, so `restore-main-ci` D5's eight-run
+       proof was not run): `editor-page` for the minimap slider test and
+       the protected periodic capture (green 5 of 5 in the lane, never
+       reproduced), `window` for the bookmark preview-only test (4.2, not
+       reproduced), and `surfaces` for directory retention (its CI figure
+       needs the runner). Each shard's first CI run on `main` after the
+       merge is read for those tests and for F1.
+     - Stage-4 review: the reattach's rest record now uses the same
+       document-start predicate as its scroll (it said "line 0", stale for
+       a display line inside a wrapped line one while a width burst outlives
+       the hold). It is a consistency correction, with no failing-first test:
+       two resize variants were green on the unfixed code, and the trace is
+       in the design's review record. Decided: the notes construction ceiling
+       stays at 96 MiB. A count past the retained ceiling is reported as a
+       lower bound rather than raising every user's peak memory.
    - `harden-flatpak-sdk-update-ci` (implemented 2026-11-14, merged (PR #100,
      `main` `6211a9c1`) and archived 2026-11-14,
      `openspec/changes/archive/2026-11-14-harden-flatpak-sdk-update-ci/`,
@@ -4121,6 +4191,137 @@ separate change, in this order:
        (design D9). Fix by having `make cargo-sources` and the Flathub
        generator emit `config.toml`, or report it upstream to
        `flatpak/flatpak-builder-tools`.
+   - `nest-heavy-slices-under-user-slice` (merged 2026-11-15 as `719e2825`,
+     PR #104, archived as
+     `openspec/changes/archive/2026-11-15-nest-heavy-slices-under-user-slice/`;
+     infrastructure, no app change).
+     Two problems with where agents' work ran. (A) Capped heavy work ran in
+     `lushtext-heavy.slice`, which systemd places under the user manager
+     itself, beside `app.slice`: `cpu.weight` 100 on CPUs 0-23 (68.8k
+     CPU-seconds by 00:20 that day), so builds competed with a game at the
+     game's weight and escaped CST's toolbox policy (the inner `user.slice`:
+     weight 30, cpuset 0,2-6,8-23, idle class on 12-23 during a game). The
+     slices are now `user-lushtext.slice` / `user-lushtext-heavy.slice`, which
+     systemd nests under that inner slice; no CPU property is set on our
+     units (CST's answer); every scope checks its own placement (path under
+     both slices, affinity within the inner slice's effective cpuset) and
+     exits 78 otherwise; admission also counts the legacy slice, which it
+     never touches. (B) The timing reference CPU set was implicit (every
+     verdict ran on 8-23 only because agents were pinned there).
+     `scripts/measure.sh` now pins itself to one explicit reference set
+     before any lock (default 8-23, `LUSHTEXT_REFERENCE_CPUS` override,
+     `--print-reference-cpus`), reads it back, refuses (78) when it is not
+     available or changes, never measures on the intersection, records
+     `cpus=`/`reference=`/`source=` and exports `LUSHTEXT_MEASURE_CPUS`; the
+     lane runs on that set, fails before any case on a mismatch or a set over
+     its 16-CPU cap, records it in `environment.txt`, `run.json`
+     (`reference_run`) and `report.md`, and merges parts on different sets as
+     `mixed`. Decisions: design D1-D13 of the change (CST's second answer:
+     refuse instead of measuring on 8-23 ∩ allowed; memory-sized parallelism
+     and the agents' session `taskset` pin deferred). Kani: none (no proven
+     module touched). Axioms: none (host behaviour H1-H3 restated in the
+     wrapper's and `measure.sh`'s headers and re-probed by their self-tests).
+     Timing: evidence, not a verdict:
+     one lane case (`baseline/small`, plain) through `measure.sh` from a shell
+     pinned to 16-23 records the reference set, and one
+     `LUSHTEXT_REFERENCE_CPUS=12-23` run the override label; the placement
+     shim's cost is main's wrapper against the branch's, interleaved in one
+     `measure.sh` call. The coordinator ran these three `measure.sh` calls
+     after stage 3 had queued them. The change's `evidence/reference-cpus.md`
+     records both lane runs: `affinity=8-23`, `measure_cpus_source=default`,
+     `reference_run: true`; and `12-23`, `override`, `false`, with the
+     override label; loads 1.9-2.4. It also records two real 78 refusals, of
+     an unavailable reference and of a partly available one. The change's
+     `evidence/shim.md` records the shim's cost: about +20 ms per scope start
+     (median 0.03 s against 0.01 s, ten runs a side, load 2.0-2.2), at the
+     10 ms timer resolution.
+     - **Deferred:** remove the legacy-slice accounting (`legacy_slice_of`,
+       the `admitted_kib` loop, the two legacy self-test cases and the private
+       legacy self-test slice) once no worktree branched before the merge SHA
+       `719e2825` remains.
+     - **Deferred (CST's second answer, design D13):** memory-sized
+       parallelism, raising `CARGO_BUILD_JOBS` from 4 in measured steps with
+       the per-job peak and `btrfs-stall-report` memory lines as evidence, in
+       its own change. The other half of D13, whether agents keep their
+       session `taskset -c 8-23` pin, was decided by the maintainer on
+       2026-11-15: agents inherit the toolbox cpuset and never pin, and only
+       `measure.sh` pins (`.agents/rules/parallel-agent-work.md`, "CPU and
+       memory").
+     - **Observed, pre-existing, deferred:** `heavy.sh` can wait for memory
+       while holding LOCK shared. Its step 3 re-check passes, then another
+       copy admits a scope before the wrapper's own blocking admission, which
+       then waits under LOCK and delays a pending measurement (seen
+       2026-11-15 01:37: "48 GiB of 48 GiB admitted", a 36G scope of a
+       `--mem none` mutants run beside a 12G one, about eight shared holders
+       in front of another change's `measure.sh`). Legacy accounting does not
+       widen the window (probe and admission count the same slices). It needs
+       its own design, because `--mem none` callers admit under LOCK by
+       design. Details:
+       `.claude/handoffs/nest-heavy-slices-under-user-slice/stage3-notes.md`.
+   - `reduce-build-disk-writes` (merged 2026-11-15 as `fb727d4a`, PR #108,
+     archived as
+     `openspec/changes/archive/2026-11-15-reduce-build-disk-writes/`;
+     infrastructure, no app change).
+     The build lanes wrote and left too much on the btrfs RAID1 home, which
+     is snapshotted.
+     - **Before:** a local `make mutants-*` ran copy mode, `--jobs 3`. It
+       wrote 31.7-32.1 GB per focused run and leaked three cold
+       `~/.cache/cargo-build` trees, about 22 GB per run.
+     - **Now:**
+       - local runs sync the checkout into a host-wide pool of three in-place
+         mirror slots under the repo-owned cache root `~/.cache/lushtext-build/`
+         (`scripts/build-cache.sh`; `make build-cache-prune`);
+       - slot acquisition never waits (exit 75, holders named);
+       - each test process has an address-space limit, 4G by default;
+       - the proof-strength worktree and the Flatpak builder state live in
+         that root;
+       - `make kani` and the proof-strength Kani arm build without
+         incremental;
+       - a docs-only commit skips Clippy, keeping `check-policy`.
+     - **Decisions:** design D1-D11 of the change.
+     - **Kani:** none (no proven module touched). **Axioms:** none.
+     - **Verdicts** (the change's design, "Measured verdicts"; quiet rounds
+       through `measure.sh`):
+       - The warm slot pair passes every D9 bar: 21.43 against 32.14 GB
+         written, no leaked dir, no sccache growth, wall time +11%.
+       - The slot refill after main's `Cargo.lock` refresh fails the
+         sccache, bytes and wall-time bars: +494 MB, +5% and +61%. The
+         two-round median wall time is +36%, recorded as D9's explicit
+         exception.
+       - Kani lane +0.9% and proof-strength Kani arm +7%, without
+         incremental, both inside the 25% bar.
+       - Host IO, `btrfs-stall-report`, one window per arm: the warm branch
+         wrote 12-16% fewer device bytes. Its stall verdict is no better:
+         both branch windows read SATURATED, the warm one with 1.0 s commits.
+     - **Fixed here (pre-existing):**
+       - the focused mutation scope's four killable `markdown_chunked_cap`
+         survivors, now caught by an integration test;
+       - its two cfg-unreachable ones, excluded in `.cargo/mutants.toml`.
+     - **Facts `close-heavy-admission-window` builds on.** It edits the same
+       `scripts/heavy.sh` / `scripts/with-memory-cap.sh` admission code.
+       - **D10.** `admitted_kib` reserves a `lushtext-cap-<pid>-<ns>.scope`'s
+         cap only while that PID, the command that `systemd-run --scope`
+         execs in place, is still in the scope. A daemon left behind, such
+         as the sccache server, which starts inside the first compile's
+         scope, keeps the scope alive but holds no admission. Its real
+         memory still counts through the slice's `MemoryMax` and
+         `MemAvailable`.
+       - The rule applies to the current and the legacy slice alike, and the
+         `--wait-admissible` probe and the blocking admission share the one
+         function, so the probe and the admit count the same thing.
+       - A scope with any other name (`run-p<pid>-*`, from wrapper copies
+         before this merge) still counts while anything is in it.
+         `systemctl --user set-property --runtime <scope>
+         MemoryMax=infinity` releases one without killing the daemon.
+       - **Mirror-mode runs** take their slots with `flock -n` and never wait
+         for one. Their one 36G `MUTANTS_MEMORY_MAX` admission still runs
+         inside `heavy.sh --mem none`, so under `LOCK` shared: the documented
+         inner-admission path the follow-up targets.
+       - **Admission is first-fit, not fair.** In stage 3 a 36G mutants scope
+         starved for about an hour behind a stream of small admissions, and
+         lane case 11.3 ran at 24G instead.
+       - Any fix keeps `LUSHTEXT_ADMISSION_NOWAIT=1`'s fail-fast 75. The
+         measurement rounds depend on it.
    Also recorded: a process-wide retained-byte ledger for many expanded
    huge sidebar directories (the budget, like the count before it, is per
    directory). From BN (besides `lighten-notes-browser-rows`, queued above):
@@ -4135,6 +4336,76 @@ separate change, in this order:
 3. `scale-file-index`: an interned path arena and a byte budget instead of
    the 131,072-file count, targeting at least 1,000,000 files, with a
    Criterion benchmark and a measurement on a real monorepo.
+   **Proposal written 2026-11-14** (branch `scale-file-index`,
+   `openspec/changes/archive/2026-11-15-scale-file-index/`), judged worth doing and refined by
+   measurement on `main` `2c91ccf2`: 363 B/file installed and 557 B/file at
+   the construction peak (131,072 files), so an arena alone does not reach
+   2^20 within the unchanged 64 MiB / 128 MiB ledgers; construction also
+   derives canonical identity for non-symlink entries (no per-file
+   `realpath`, no canonical-path set), the index keeps a sorted canonical-key
+   table (the open-tab exclusion and the empty-query count DP left here), the
+   limits become 2^20 files and directories (the count stays as the query
+   latency bound), and the category view gains a 131,072-row cap (A95). No
+   public monorepo checkout is on disk, so the measurement uses a synthetic
+   monorepo-shaped tree (a recorded deviation from "a real monorepo"; a
+   real-tree measurement stays a follow-up). **Spec review (stage 2,
+   2026-11-14)**, design "Review (stage 2)": the approach holds. Search
+   results carry a `u32` file ordinal, so the 36-byte category candidate and
+   the `core-list-budget` proofs are unchanged. The row cap applies to every
+   category, so a note category above 131,072 rows, which `main` lists whole up
+   to 233,016, is cut: the one recorded loss. The cap is gated on the lane's
+   application dispatch, not on the probe. The query split is for grouped
+   queries only, and the category ranking stays one pass. Mutations gained
+   their unspecified cases and dead-byte compaction.
+   **Implemented 2026-11-15** (stage 3, branch `scale-file-index`; merged
+   as PR #106, `main` `edc97eb1`, and archived 2026-11-15,
+   `openspec/changes/archive/2026-11-15-scale-file-index/`): the arena (`services/palette/index/`) indexes 1,048,576 files
+   of the synthetic monorepo-shaped tree with no truncation, at 41 B/file
+   installed and 58 B/file at the construction peak (`main`: 563 / 831 at
+   2^17, where it truncates at 119,157 files); one worker query at 2^20 is
+   31–35 ms, so the chunked query split was not built; the empty-query count
+   reads the key table (under 1 ms with 256 open tabs; closes the DP
+   "accepted items" entry for the empty-query count); a 1,024-file add batch
+   at 2^17 drops from 31.7 s to 15.5 ms. A95 re-probed with slow probes is
+   flat on GTK 4.24.1 up to 2^20 rows, but the category cap stays 131,072
+   because the probe grew on the GNOME 50 source floor (GTK 4.22.5); the
+   note-category loss above 131,072 rows stands as recorded. These are non-verdict figures:
+   the interleaved verdict rounds are queued on the shared machine.
+   **Reviewed 2026-11-15** (stage 4, design "Review (stage 4)"): a build that
+   stopped on a byte limit, and a sparse 2^20-file tree (about 500,000
+   directories), published an empty index because the finish's key table and
+   hashers were not reserved during the traversal; fixed (keys charged per
+   file, a one-`u64` component hasher paid from the visit set's scratch) with
+   a budget-sweep test against the per-file reference. A refused add at the
+   2^20 cap no longer counts every record (the 0.35 ms stage-3 follow-up). D8
+   gates on the optimized widget test's far select-and-scroll through
+   `measure.sh` (queued), because the palette has no `End` binding and no
+   row-selection action for a lane case to drive. Follow-ups: a measurement
+   on a real monorepo checkout (the synthetic tree is the recorded
+   deviation); the `workspace-index` lane group (design D10), with a palette
+   row-selection action and its automation documentation; raising the
+   category cap to the budget's rows once the source floor is GNOME 51.
+   **Verdicts 2026-11-15** (design "Measured verdicts"; every round through
+   `measure.sh` at a 1-minute load below 4, no storage stall in any window).
+   No 2^17 case is slower than `main`:
+   - one query: 3.8–4.0 ms, against `main`'s 8.9–34.6 ms;
+   - a 1,024-add batch: 14–16 ms, against 31.1–31.3 s;
+   - the build: 409–412 ms, against 1,759–1,796 ms.
+
+   At 2^20 the build indexes every file in 41 / 60 B per file. D7's grouped
+   query passes at 42.9 ms (43.3 ms with 32 open tabs, bar 50 ms), so the
+   chunked split was not built. D8's far select-and-scroll at the
+   131,072-row cap takes 2.0–3.8 ms, inside `B_INTERACT_US`.
+   **Measured exception (D7):** ranking a whole category at the row cap over
+   2^20 files takes 50.75 ms [49.36–52.45] on the worker, so a category view
+   publishes about 51 ms after Enter on a More row. Typing inside it lands
+   about 1 ms past the 200 ms the grouped scenario allows; the GTK thread is
+   not affected. It stays as recorded. A partial selection
+   (`select_nth_unstable` over every match, or a 2 × cap buffer) does not fit
+   the 8 MiB ranking budget, and the scoring pass dominates.
+   **Follow-up:** a chunked category ranking whose chunks share one bound
+   (one worst-score threshold, retention still within 8 MiB), preceded by a
+   measured breakdown of scoring against selection.
 4. Profile and slice the 59–60 ms largest-file open dispatch (the open-tier
    runs above).
 5. Then DL `bound-dense-long-line-editing`. (`avx2-health-scan-kernel`, once

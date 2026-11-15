@@ -1,0 +1,14 @@
+2026-11-15T11:22:24-03:00 before label=shim cpus=8-23 reference=8-23 source=default loadavg=2.04 2.18 2.61
+      PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+     6766 danilo    20   0 1583536 414440  19956 S 147.8   0.4      6,39 jetbrains-toolb
+  2463689 nobody    20   0  601788  45516   5224 S  13.6   0.0  13:40.09 below
+  2463405 nobody    15  -5  326724   9372   5448 S   7.8   0.0   9:20.60 python3
+    67369 danilo    20   0  234864   5968   3728 R   3.9   0.0   0:00.03 top
+  2053700 danilo    20   0  253396 216244   2860 S   3.9   0.2  38:39.71 resources-proce
+2026-11-15T11:22:25-03:00 after label=shim status=0 seconds=0.589 cpus=8-23 reference=8-23 source=default loadavg=2.20 2.21 2.62
+      PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+     6766 danilo    20   0 1583536 411312  19956 S 137.9   0.4      6,39 jetbrains-toolb
+    60783 danilo    12  -8  101.7g 864732 240504 S   1.9   0.9     10,31 chrome
+    62050 danilo    25   5 1470.5g 612748  99752 S   1.9   0.6  67:35.15 chrome
+    67809 danilo    20   0  234864   5868   3624 R   1.9   0.0   0:00.03 top
+   679735 danilo    20   0 4148676 179716  19556 S   1.9   0.2  19:14.61 agy

@@ -9,14 +9,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use lushtext_core::model::palette::{
-    CommandCategory, CommandDef, IndexedFile, PaletteFileEntry, PaletteFileIdentity,
-    PaletteNoteCategory, PaletteNoteEntry, PaletteNoteTarget, PaletteSearchRow, ScoredResult,
-    SearchMode, SearchResultItem,
+    CommandCategory, CommandDef, PaletteFileEntry, PaletteFileIdentity, PaletteNoteCategory,
+    PaletteNoteEntry, PaletteNoteTarget, PaletteSearchRow, ScoredResult, SearchMode,
+    SearchResultItem,
 };
 use lushtext_core::model::workspace::{WorkspaceScope, WorkspacesFile};
 use lushtext_core::services::palette::{
     FileIndex, GroupedSearchInput, NoteSourceRefreshCoordinator, NoteSourceRefreshRequest,
-    NotesBrowserMode, NotesBrowserQueryCoordinator, NotesBrowserQueryRequest,
+    NotesBrowserMode, NotesBrowserQueryCoordinator, NotesBrowserQueryRequest, OwnedIndexedFile,
     PaletteSearchCancellation, PaletteSearchOutcome, grouped_search,
     merge_sorted_for_property_test, note_scoring_equivalence_for_property_test,
     open_file_selection_equivalence_for_property_test,
@@ -253,7 +253,7 @@ proptest! {
                 } else {
                     root.join(format!("workspace-{index}.rs"))
                 };
-                IndexedFile::new(
+                OwnedIndexedFile::new(
                     path.clone(),
                     PaletteFileIdentity::canonical(path),
                     Arc::clone(&root),
@@ -485,4 +485,466 @@ fn result_pairs(results: &[ScoredResult<'_>]) -> Vec<(&'static str, u32)> {
             | SearchResultItem::Note(_) => ("unexpected.palette.result.kind", result.score),
         })
         .collect()
+}
+
+// --- Arena and per-file reference parity (`scale-file-index` D6) ----------
+
+mod index_parity {
+    use std::collections::HashSet;
+    use std::path::{Path, PathBuf};
+
+    use lushtext_core::model::palette::{PaletteFileIdentity, ScoredResult, SearchResultItem};
+    use lushtext_core::model::workspace_visibility::WorkspaceEntryVisibility;
+    use lushtext_core::services::filesystem::fixture;
+    use lushtext_core::services::palette::reference::{ReferenceBuildOutcome, ReferenceFileIndex};
+    use lushtext_core::services::palette::{
+        FileIndex, FileIndexBuildOutcome, FileIndexTruncationReason,
+        MAX_FILE_INDEX_BUILD_RETAINED_BYTES, MAX_FILE_INDEX_RETAINED_BYTES,
+        MAX_INDEXED_DIRECTORIES, MAX_INDEXED_FILES, PaletteSearchCancellation,
+        PaletteSearchOutcome,
+    };
+    use proptest::prelude::*;
+
+    use crate::support;
+
+    const DIR_NAMES: [&str; 4] = ["alpha", "beta", "gamma", "delta"];
+    const FILE_NAMES: [&str; 6] = [
+        "one.rs",
+        "two.md",
+        "three.toml",
+        "four.rs",
+        "five.txt",
+        "six.rs",
+    ];
+    const QUERIES: [&str; 5] = ["", "rs", "on", "fv", "zz"];
+
+    /// One generated tree: directories as name-index chains, files as
+    /// `(directory, name)` pairs (directory 0 is the root).
+    #[derive(Clone, Debug)]
+    struct TreeSpec {
+        dirs: Vec<Vec<usize>>,
+        files: Vec<(usize, usize)>,
+        /// A symlinked file to the n-th file, named to sort first or last.
+        file_link: Option<(usize, bool)>,
+        /// A symlinked directory aliasing the n-th directory.
+        dir_link: Option<usize>,
+        non_utf8: bool,
+        /// A second folder (a nested directory), listed before or after.
+        overlap: Option<(usize, bool)>,
+        mutations: Vec<Mutation>,
+    }
+
+    #[derive(Clone, Debug)]
+    enum Mutation {
+        Create {
+            dir: usize,
+            name: usize,
+        },
+        RemoveFile(usize),
+        RemoveDir(usize),
+        RenameFile {
+            file: usize,
+            dir: usize,
+            name: usize,
+        },
+        RenameDir {
+            dir: usize,
+            name: usize,
+        },
+    }
+
+    fn tree_spec() -> impl Strategy<Value = TreeSpec> {
+        let dirs = prop::collection::vec(prop::collection::vec(0usize..4, 1..=3), 0..=5);
+        let files = prop::collection::vec((0usize..6, 0usize..6), 0..=10);
+        let mutation =
+            prop_oneof![
+                (0usize..6, 0usize..6).prop_map(|(dir, name)| Mutation::Create { dir, name }),
+                (0usize..10).prop_map(Mutation::RemoveFile),
+                (0usize..6).prop_map(Mutation::RemoveDir),
+                (0usize..10, 0usize..6, 0usize..6)
+                    .prop_map(|(file, dir, name)| Mutation::RenameFile { file, dir, name }),
+                (0usize..6, 0usize..4).prop_map(|(dir, name)| Mutation::RenameDir { dir, name }),
+            ];
+        (
+            dirs,
+            files,
+            proptest::option::of((0usize..10, any::<bool>())),
+            proptest::option::of(0usize..6),
+            any::<bool>(),
+            proptest::option::of((0usize..6, any::<bool>())),
+            prop::collection::vec(mutation, 0..=4),
+        )
+            .prop_map(
+                |(dirs, files, file_link, dir_link, non_utf8, overlap, mutations)| TreeSpec {
+                    dirs,
+                    files,
+                    file_link,
+                    dir_link,
+                    non_utf8,
+                    overlap,
+                    mutations,
+                },
+            )
+    }
+
+    /// The tree on disk plus the real (non-alias) paths the test created.
+    struct Tree {
+        _dir: tempfile::TempDir,
+        root: PathBuf,
+        folders: Vec<PathBuf>,
+        dirs: Vec<PathBuf>,
+        files: Vec<PathBuf>,
+    }
+
+    fn write_tree(spec: &TreeSpec) -> Tree {
+        let dir = tempfile::TempDir::new().expect("temp directory");
+        let root = dir.path().join("ws");
+        fixture::create_dir_all(&root);
+        let mut dirs = vec![root.clone()];
+        for chain in &spec.dirs {
+            let path = chain
+                .iter()
+                .fold(root.clone(), |path, name| path.join(DIR_NAMES[*name]));
+            fixture::create_dir_all(&path);
+            if !dirs.contains(&path) {
+                dirs.push(path);
+            }
+        }
+        // Every ancestor created above is a directory too.
+        let mut all_dirs = Vec::new();
+        for path in &dirs {
+            for ancestor in path.ancestors() {
+                if ancestor.starts_with(&root)
+                    && !all_dirs.iter().any(|known: &PathBuf| known == ancestor)
+                {
+                    all_dirs.push(ancestor.to_path_buf());
+                }
+            }
+        }
+        all_dirs.sort();
+        let mut files = Vec::new();
+        for (dir_index, name) in &spec.files {
+            let path = all_dirs[dir_index % all_dirs.len()].join(FILE_NAMES[*name]);
+            if !files.contains(&path) {
+                fixture::write_text(&path, "");
+                files.push(path);
+            }
+        }
+        if let Some((target, early)) = spec.file_link
+            && !files.is_empty()
+        {
+            let target = files[target % files.len()].clone();
+            let link = root.join(if early { "aa_link.rs" } else { "zz_link.rs" });
+            fixture::symlink(&target, &link);
+        }
+        if let Some(alias) = spec.dir_link
+            && all_dirs.len() > 1
+        {
+            let target = all_dirs[1 + alias % (all_dirs.len() - 1)].clone();
+            fixture::symlink(&target, &root.join("linked"));
+        }
+        #[cfg(unix)]
+        if spec.non_utf8 {
+            use std::os::unix::ffi::OsStrExt;
+            for bytes in [&b"caf\xe9.rs"[..], &b"caf\xea.rs"[..]] {
+                let path = root.join(std::ffi::OsStr::from_bytes(bytes));
+                fixture::write_text(&path, "");
+                files.push(path);
+            }
+        }
+        let mut folders = vec![root.clone()];
+        if let Some((nested, before)) = spec.overlap
+            && all_dirs.len() > 1
+        {
+            let nested = all_dirs[1 + nested % (all_dirs.len() - 1)].clone();
+            if before {
+                folders.insert(0, nested);
+            } else {
+                folders.push(nested);
+            }
+        }
+        Tree {
+            _dir: dir,
+            root,
+            folders,
+            dirs: all_dirs,
+            files,
+        }
+    }
+
+    type Row = (PathBuf, String, String, PaletteFileIdentity, PathBuf);
+
+    fn arena_rows(index: &FileIndex) -> Vec<Row> {
+        index
+            .files()
+            .map(|file| {
+                (
+                    file.path(),
+                    file.relative_display(),
+                    file.name().to_string(),
+                    file.identity(),
+                    file.workspace_folder().as_ref().clone(),
+                )
+            })
+            .collect()
+    }
+
+    fn reference_rows(index: &ReferenceFileIndex) -> Vec<Row> {
+        index
+            .files()
+            .iter()
+            .map(|file| {
+                (
+                    file.path.clone(),
+                    file.relative_display(),
+                    file.name.clone(),
+                    file.identity.clone(),
+                    file.workspace_folder.as_ref().clone(),
+                )
+            })
+            .collect()
+    }
+
+    fn ranked(outcome: PaletteSearchOutcome<Vec<ScoredResult<'_>>>) -> (Vec<(u32, u32)>, usize) {
+        let PaletteSearchOutcome::Complete { value, metrics } = outcome else {
+            panic!("a fresh token cannot cancel");
+        };
+        let rows = value
+            .iter()
+            .map(|result| match result.item {
+                SearchResultItem::File(ordinal) => (ordinal.0, result.score),
+                _ => (u32::MAX, result.score),
+            })
+            .collect();
+        (rows, metrics.matching_candidates)
+    }
+
+    fn build_arena(
+        folders: &[PathBuf],
+        files: usize,
+        directories: usize,
+        build_bytes: u64,
+    ) -> (FileIndex, Option<FileIndexTruncationReason>, u64, u64) {
+        match FileIndex::rebuild_cancellable_with_limits(
+            folders,
+            files,
+            directories,
+            build_bytes,
+            MAX_FILE_INDEX_RETAINED_BYTES,
+            &PaletteSearchCancellation::default(),
+        ) {
+            FileIndexBuildOutcome::Complete { index, metrics } => (
+                index,
+                metrics.truncation,
+                metrics.peak_build_bytes,
+                metrics.retained_index_bytes,
+            ),
+            FileIndexBuildOutcome::Cancelled { .. } => panic!("a fresh token cannot cancel"),
+        }
+    }
+
+    fn build_reference(
+        folders: &[PathBuf],
+        files: usize,
+        directories: usize,
+    ) -> (ReferenceFileIndex, Option<FileIndexTruncationReason>) {
+        match ReferenceFileIndex::rebuild_cancellable_with_limits(
+            folders,
+            0,
+            files,
+            directories,
+            MAX_FILE_INDEX_BUILD_RETAINED_BYTES,
+            &PaletteSearchCancellation::default(),
+            &WorkspaceEntryVisibility::default(),
+        ) {
+            ReferenceBuildOutcome::Complete { index, metrics } => (index, metrics.truncation),
+            ReferenceBuildOutcome::Cancelled { .. } => panic!("a fresh token cannot cancel"),
+        }
+    }
+
+    fn assert_same(arena: &FileIndex, reference: &ReferenceFileIndex) -> Result<(), TestCaseError> {
+        prop_assert_eq!(arena_rows(arena), reference_rows(reference));
+        let cancellation = PaletteSearchCancellation::default();
+        for query in QUERIES {
+            prop_assert_eq!(
+                ranked(arena.search_cancellable(query, 8, &cancellation)),
+                ranked(reference.search_cancellable(query, 8, &cancellation)),
+                "query {:?}",
+                query
+            );
+        }
+        // Open tabs: every other canonical identity the reference holds.
+        let open: HashSet<PathBuf> = reference
+            .files()
+            .iter()
+            .filter_map(|file| file.identity.canonical_path().map(Path::to_path_buf))
+            .step_by(2)
+            .collect();
+        for query in ["", "rs"] {
+            for max in [1, 3, 64] {
+                prop_assert_eq!(
+                    ranked(arena.search_cancellable_excluding(query, max, &open, &cancellation)),
+                    ranked(reference.search_cancellable_excluding(
+                        query,
+                        max,
+                        &open,
+                        &cancellation
+                    )),
+                    "excluding, query {:?}, max {}",
+                    query,
+                    max
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Apply one mutation on disk first, then to both indexes.
+    fn mutate(
+        tree: &mut Tree,
+        mutation: &Mutation,
+        arena: &mut FileIndex,
+        reference: &mut ReferenceFileIndex,
+    ) {
+        match mutation {
+            Mutation::Create { dir, name } => {
+                let path =
+                    tree.dirs[dir % tree.dirs.len()].join(format!("new_{}", FILE_NAMES[*name]));
+                if fixture::exists(&path) {
+                    return;
+                }
+                fixture::write_text(&path, "");
+                tree.files.push(path.clone());
+                if let Some(folder) = reference.workspace_folder_for(&path) {
+                    arena.add_path(&path, &folder);
+                    reference.add_path(path, folder);
+                }
+            }
+            Mutation::RemoveFile(file) => {
+                if tree.files.is_empty() {
+                    return;
+                }
+                let path = tree.files.remove(file % tree.files.len());
+                fixture::remove_file(&path);
+                arena.remove_path(&path);
+                reference.remove_path(&path);
+            }
+            Mutation::RemoveDir(dir) => {
+                if tree.dirs.len() < 2 {
+                    return;
+                }
+                let path = tree.dirs[1 + dir % (tree.dirs.len() - 1)].clone();
+                fixture::remove_dir_all(&path);
+                tree.dirs.retain(|known| !known.starts_with(&path));
+                tree.files.retain(|known| !known.starts_with(&path));
+                arena.remove_path(&path);
+                reference.remove_path(&path);
+            }
+            Mutation::RenameFile { file, dir, name } => {
+                if tree.files.is_empty() {
+                    return;
+                }
+                let index = file % tree.files.len();
+                let old = tree.files[index].clone();
+                let new =
+                    tree.dirs[dir % tree.dirs.len()].join(format!("moved_{}", FILE_NAMES[*name]));
+                if fixture::exists(&new) {
+                    return;
+                }
+                fixture::rename(&old, &new);
+                tree.files[index] = new.clone();
+                arena.rename_path(&old, &new);
+                reference.rename_path(&old, &new);
+            }
+            Mutation::RenameDir { dir, name } => {
+                if tree.dirs.len() < 2 {
+                    return;
+                }
+                let old = tree.dirs[1 + dir % (tree.dirs.len() - 1)].clone();
+                let new = old.with_file_name(format!("renamed_{}", DIR_NAMES[*name]));
+                if fixture::exists(&new) {
+                    return;
+                }
+                fixture::rename(&old, &new);
+                let rebase = |path: &PathBuf| {
+                    path.strip_prefix(&old)
+                        .map_or_else(|_| path.clone(), |suffix| new.join(suffix))
+                };
+                tree.dirs = tree.dirs.iter().map(rebase).collect();
+                tree.files = tree.files.iter().map(rebase).collect();
+                arena.rename_path(&old, &new);
+                reference.rename_path(&old, &new);
+            }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(support::property_config())]
+
+        /// The arena and the per-file reference agree on the file list, its
+        /// order, identities, folders, query results and empty-query counts,
+        /// after the build and after every mutation.
+        #[test]
+        fn arena_matches_the_per_file_reference(spec in tree_spec()) {
+            let mut tree = write_tree(&spec);
+            let (mut arena, arena_truncation, _, _) = build_arena(
+                &tree.folders,
+                MAX_INDEXED_FILES,
+                MAX_INDEXED_DIRECTORIES,
+                MAX_FILE_INDEX_BUILD_RETAINED_BYTES,
+            );
+            let (mut reference, reference_truncation) =
+                build_reference(&tree.folders, MAX_INDEXED_FILES, MAX_INDEXED_DIRECTORIES);
+            prop_assert_eq!(arena_truncation, reference_truncation);
+            assert_same(&arena, &reference)?;
+            for mutation in &spec.mutations {
+                mutate(&mut tree, mutation, &mut arena, &mut reference);
+                assert_same(&arena, &reference)?;
+            }
+            prop_assert!(fixture::exists(&tree.root));
+        }
+
+        /// Under scaled count limits both stop at the same file with the same
+        /// reason; under scaled byte limits the arena's list is a prefix of
+        /// the reference's untruncated list, with a byte reason when cut.
+        #[test]
+        fn truncation_matches_the_reference(
+            spec in tree_spec(),
+            files in 1usize..=12,
+            directories in 1usize..=6,
+            build_bytes in 256u64..=16 * 1024,
+        ) {
+            let tree = write_tree(&spec);
+            let (arena, arena_truncation, _, _) =
+                build_arena(&tree.folders, files, directories, MAX_FILE_INDEX_BUILD_RETAINED_BYTES);
+            let (reference, reference_truncation) =
+                build_reference(&tree.folders, files, directories);
+            prop_assert_eq!(arena_truncation, reference_truncation);
+            prop_assert_eq!(arena_rows(&arena), reference_rows(&reference));
+
+            let (limited, reason, peak, retained) = build_arena(
+                &tree.folders,
+                MAX_INDEXED_FILES,
+                MAX_INDEXED_DIRECTORIES,
+                build_bytes,
+            );
+            let (full, _) =
+                build_reference(&tree.folders, MAX_INDEXED_FILES, MAX_INDEXED_DIRECTORIES);
+            let limited_rows = arena_rows(&limited);
+            let full_rows = reference_rows(&full);
+            prop_assert!(limited_rows.len() <= full_rows.len());
+            prop_assert_eq!(&limited_rows[..], &full_rows[..limited_rows.len()]);
+            if limited_rows.len() < full_rows.len() {
+                prop_assert!(matches!(
+                    reason,
+                    Some(
+                        FileIndexTruncationReason::BuildByteLimit
+                            | FileIndexTruncationReason::RetainedByteLimit
+                    )
+                ));
+            }
+            prop_assert!(peak <= build_bytes);
+            prop_assert!(retained <= MAX_FILE_INDEX_RETAINED_BYTES);
+        }
+    }
 }

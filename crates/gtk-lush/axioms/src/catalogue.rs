@@ -1843,6 +1843,23 @@ const CATALOGUE: &[Axiom] = &[
         probe: Some(probes::probe_a112),
     },
     Axiom {
+        id: AxiomId::new(113),
+        name: "a113_an_aligned_scroll_to_the_first_line_rests_at_the_top_margin",
+        statement: "A GtkTextView's aligned scroll to its first line (scroll_to_iter or \
+                    scroll_to_mark, use_align with yalign 0) puts that line's first character \
+                    box at the top edge, so the vertical value rests at the top margin plus the \
+                    box's location, never at lower; GTK moves there through \
+                    gtk_adjustment_animate_to_value",
+        dependent_designs: &[
+            "diagnose-ci-only-reflow-guard-failure D3: a reattached editor view whose kept \
+             position is the document's start sets its vertical value to lower itself instead \
+             of asking GTK for the aligned scroll (ui/editor_page/view_attachment.rs)",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a113),
+    },
+    Axiom {
         id: AxiomId::new(115),
         name: "a115_gtk_a11y_test_keeps_accessible_state_and_activates_no_bus",
         statement: "With GTK_A11Y=test, GTK 4 gives each widget a GtkTestATContext whose \

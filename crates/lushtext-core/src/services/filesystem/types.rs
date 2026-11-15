@@ -102,6 +102,8 @@ pub struct DirectoryEntryInfo {
     pub file_name: String,
     /// Coarse file kind.
     pub kind: FileKind,
+    /// The entry itself is a symbolic link (`kind` is its target's).
+    pub is_symlink: bool,
 }
 
 /// One lexicographically selected directory page with bounded retained rows.

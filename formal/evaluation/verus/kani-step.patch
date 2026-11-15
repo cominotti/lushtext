@@ -1,0 +1,1307 @@
+# Scratch Kani one-step inductive attempt (evaluate-verus-for-unbounded-proofs, task 3.1),
+# round 3, against 85758eaf8fb8190439719dd6926a5b2b3ed21fb0. Never applied to production:
+# see docs/next/formal-verification-verus.md §4.
+diff --git a/crates/lushtext-core/src/services/draft_service/kani_proofs.rs b/crates/lushtext-core/src/services/draft_service/kani_proofs.rs
+index bbce5415..c64db5a0 100644
+--- a/crates/lushtext-core/src/services/draft_service/kani_proofs.rs
++++ b/crates/lushtext-core/src/services/draft_service/kani_proofs.rs
+@@ -653,6 +653,12 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
+         if !editor.open || !editor.dirty || editor.token || editor.deletion.is_some() {
+             return;
+         }
++        // SCRATCH F1 (evaluate-verus-for-unbounded-proofs): production's pass
++        // writes each candidate once and commits before the lane frees, so it
++        // never registers again while a written body awaits its commit.
++        if editor.written.is_some() {
++            return;
++        }
+         if !self.lane_admits(LaneUse::Pass(id as u8)) {
+             // The existing mark-pending admission: a later tick retries.
+             return;
+@@ -1441,6 +1447,1286 @@ fn a_second_writer_breaks_the_journal_invariants() {
+     }
+ }
+ 
++
++// --- evaluate-verus-for-unbounded-proofs, task 3.1 (SCRATCH, never committed) ---
++//
++// One-step inductive attempt over the two-window lane scope: an arbitrary
++// state assumed to satisfy INV, one action, INV asserted after it; with a base
++// case (INV after the first startup) and a cover that INV is satisfiable.
++
++const STEP_IDS: usize = 2;
++const STEP_W: usize = 2;
++type StepJournal = Journal<TwoWindowScope, STEP_IDS, STEP_W, 1>;
++
++fn any_content_below(bound: ContentId) -> ContentId {
++    let c: ContentId = kani::any();
++    kani::assume(c < bound);
++    c
++}
++
++fn any_option_content(bound: ContentId) -> Option<ContentId> {
++    if kani::any() { Some(any_content_below(bound)) } else { None }
++}
++
++fn any_step(bound: ContentId) -> Option<DeletionStep> {
++    if kani::any() { Some(kani::any()) } else { None }
++}
++
++fn any_editor(bound: ContentId) -> Editor {
++    Editor {
++        open: kani::any(),
++        content: any_content_below(bound),
++        dirty: kani::any(),
++        token: kani::any(),
++        written: any_option_content(bound),
++        restore_pending: kani::any(),
++        deletion: any_step(bound),
++        preserve_queued: kani::any(),
++    }
++}
++
++fn any_lane_use() -> LaneUse {
++    match any_below(3) {
++        0 => LaneUse::Pass(any_below(STEP_IDS) as u8),
++        1 => LaneUse::Deletion(any_below(STEP_IDS) as u8),
++        _ => LaneUse::Cleanup,
++    }
++}
++
++fn any_window(id: u8, bound: ContentId) -> Window<STEP_IDS> {
++    Window {
++        id,
++        running: kani::any(),
++        editors: [any_editor(bound), any_editor(bound)],
++        known: [kani::any(), kani::any()],
++        trusted: kani::any(),
++        last_reconciliation_complete: kani::any(),
++        lane: None,
++        orphan_candidate: [any_option_content(bound), any_option_content(bound)],
++        missing_candidate: [kani::any(), kani::any()],
++    }
++}
++
++/// An arbitrary state of the two-window scope, within the model's domains.
++fn any_state() -> StepJournal {
++    let edits = any_below(MAX_EDITS + 1);
++    let next_content = (1 + STEP_IDS + edits) as ContentId;
++    let mut ancestors = [0 as ContentSet; CONTENTS];
++    for c in 0..CONTENTS {
++        ancestors[c] = kani::any();
++    }
++    StepJournal {
++        scope: core::marker::PhantomData,
++        processes: [Process {
++            windows: [any_window(0, next_content), any_window(1, next_content)],
++            lane: if kani::any() {
++                Some(LaneHolder { window: any_below(STEP_W) as u8, lane_use: any_lane_use() })
++            } else {
++                None
++            },
++            restored: kani::any(),
++            cleanup_owner: if kani::any() { Some(any_below(STEP_W) as u8) } else { None },
++        }],
++        entry: [
++            DiskEntry { present: kani::any(), backing: kani::any(), stamp: kani::any() },
++            DiskEntry { present: kani::any(), backing: kani::any(), stamp: kani::any() },
++        ],
++        body: [any_option_content(next_content), any_option_content(next_content)],
++        backing: [kani::any(), kani::any()],
++        preserved: kani::any(),
++        accepted: kani::any(),
++        resolved: kani::any(),
++        ancestors,
++        next_content,
++        edits,
++    }
++}
++
++impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS, W, P> {
++    fn all_contents(&self) -> ContentSet {
++        let mut mask: ContentSet = 0;
++        for c in 1..usize::from(self.next_content) {
++            mask |= bit(c as ContentId);
++        }
++        mask
++    }
++
++    /// W0: the ghost content model is well formed.
++    fn contents_well_formed(&self) -> bool {
++        let all = self.all_contents();
++        let mut ok = self.ancestors[0] == 0
++            && self.preserved & !all == 0
++            && self.accepted & !all == 0
++            && self.resolved & !all == 0;
++        for c in 1..CONTENTS {
++            let a = self.ancestors[c];
++            if c >= usize::from(self.next_content) {
++                ok &= a == 0;
++            } else if c <= IDS {
++                ok &= a == bit(c as ContentId);
++            } else {
++                // An edit contains itself, only older contents, and is closed.
++                ok &= a & bit(c as ContentId) != 0 && a & !all == 0 && a >> (c + 1) == 0;
++                for d in 1..CONTENTS {
++                    if a & bit(d as ContentId) != 0 {
++                        ok &= self.ancestors[d] & !a == 0;
++                    }
++                }
++            }
++        }
++        ok
++    }
++
++    fn s1_holds(&self) -> bool {
++        let mut recoverable: ContentSet = 0;
++        for kept in 1..CONTENTS {
++            if self.preserved & bit(kept as ContentId) != 0 {
++                recoverable |= self.ancestors[kept];
++            }
++        }
++        for id in 0..IDS {
++            if let Some(body) = self.body[id] && body != 0 {
++                recoverable |= self.ancestors[usize::from(body)];
++            }
++        }
++        for process in 0..P {
++            for window in 0..W {
++                let window = &self.processes[process].windows[window];
++                if !window.running {
++                    continue;
++                }
++                for id in 0..IDS {
++                    let editor = window.editors[id];
++                    if editor.open && editor.content != 0 {
++                        recoverable |= self.ancestors[usize::from(editor.content)];
++                    }
++                }
++            }
++        }
++        self.accepted & !self.resolved & !recoverable == 0
++    }
++
++    fn s3_holds(&self) -> bool {
++        let mut ok = true;
++        for process in 0..P {
++            for window in 0..W {
++                let window = &self.processes[process].windows[window];
++                for id in 0..IDS {
++                    if window.editors[id].deletion.is_some() && !self.untitled(id) {
++                        ok &= !(self.body[id].is_some() && !self.entry[id].present);
++                    }
++                }
++            }
++        }
++        ok
++    }
++
++    fn s4_holds(&self) -> bool {
++        let mut ok = true;
++        for process in 0..P {
++            for window in 0..W {
++                let window = &self.processes[process].windows[window];
++                if window.running && window.trusted {
++                    ok &= window.last_reconciliation_complete && self.inventory_complete();
++                }
++            }
++        }
++        ok
++    }
++
++    fn single_owner_holds(&self) -> bool {
++        let mut ok = true;
++        for process in 0..P {
++            for id in 0..IDS {
++                let mut owners = 0;
++                for window in 0..W {
++                    let window = &self.processes[process].windows[window];
++                    if window.running && window.editors[id].open {
++                        owners += 1;
++                    }
++                }
++                ok &= owners <= 1;
++            }
++        }
++        ok
++    }
++
++    /// S1–S4 and one owning window per id: the lane harness's assertions.
++    fn backbone_holds(&self) -> bool {
++        self.s1_holds() && self.s3_holds() && self.s4_holds() && self.single_owner_holds()
++    }
++
++    fn strengthening_holds(&self) -> bool {
++        self.strengthening_mask() == 0
++    }
++
++    /// The strengthening conjuncts found in scratch, one bit per conjunct.
++    fn strengthening_mask(&self) -> u64 {
++        // The conjuncts are written for the two-window lane scope.
++        assert!(IDS == STEP_IDS && W == STEP_W && P == 1);
++        // STRENGTHENING-BEGIN
++        let process = &self.processes[0];
++        let mut ok = true;
++        let mut mask: u64 = 0;
++        // R1a: stopped windows and a stopped process are reset; closed
++        // editors of running windows are CLOSED.
++        let any_running = process.windows[0].running || process.windows[1].running;
++        if !any_running {
++            { let c = process.lane.is_none() && !process.restored && process.cleanup_owner.is_none(); ok &= c; if !c { mask |= 1u64 << 0; } }
++            // R3a: a stopped process's windows list nothing.
++            for w in 0..STEP_W {
++                for id in 0..STEP_IDS {
++                    { let c = process.windows[w].known[id].is_none(); ok &= c; if !c { mask |= 1u64 << 27; } }
++                }
++            }
++        } else {
++            // R1h: a running process already ran its one startup restore.
++            { let c = process.restored; ok &= c; if !c { mask |= 1u64 << 1; } }
++        }
++        for w in 0..STEP_W {
++            let win = &process.windows[w];
++            if !win.running {
++                { let c = !win.trusted && !win.last_reconciliation_complete; ok &= c; if !c { mask |= 1u64 << 2; } }
++                for id in 0..STEP_IDS {
++                    let e = win.editors[id];
++                    { let c = !e.open
++                        && win.orphan_candidate[id].is_none() && win.missing_candidate[id].is_none(); ok &= c; if !c { mask |= 1u64 << 3; } }
++                }
++            }
++            for id in 0..STEP_IDS {
++                let e = win.editors[id];
++                if !e.open {
++                    { let c = e.content == 0 && !e.dirty && !e.token && e.written.is_none()
++                        && !e.restore_pending && e.deletion.is_none() && !e.preserve_queued; ok &= c; if !c { mask |= 1u64 << 4; } }
++                }
++                // R1b: a deletion is never parked at a terminal step.
++                { let c = !matches!(e.deletion, Some(DeletionStep::Done | DeletionStep::Stopped)); ok &= c; if !c { mask |= 1u64 << 5; } }
++                // R1c: a token or a written body belongs to an open, dirty-able
++                // editor that holds the lane for its pass.
++                let holds_pass = process.lane
++                    == Some(LaneHolder { window: w as u8, lane_use: LaneUse::Pass(id as u8) });
++                if e.token || e.written.is_some() {
++                    { let c = win.running && e.open && holds_pass; ok &= c; if !c { mask |= 1u64 << 6; } }
++                }
++                if e.token {
++                    { let c = e.dirty && !e.restore_pending && e.deletion.is_none(); ok &= c; if !c { mask |= 1u64 << 7; } }
++                    // R1d: a token for a file-backed id has its entry.
++                    { let c = self.untitled(id) || self.entry[id].present; ok &= c; if !c { mask |= 1u64 << 8; } }
++                }
++                // R1e: a trusted window's manifest copy lists only entries on disk.
++                if win.running && win.trusted && win.known[id].is_some() {
++                    { let c = self.entry[id].present; ok &= c; if !c { mask |= 1u64 << 9; } }
++                }
++                // R1f: cleanup candidates exist only while this window holds the
++                // cleanup lane; an orphan candidate is the unlisted body.
++                let holds_cleanup = process.lane
++                    == Some(LaneHolder { window: w as u8, lane_use: LaneUse::Cleanup });
++                if win.orphan_candidate[id].is_some() || win.missing_candidate[id].is_some() {
++                    { let c = holds_cleanup; ok &= c; if !c { mask |= 1u64 << 10; } }
++                }
++                if let Some(c) = win.orphan_candidate[id] {
++                    { let c = self.body[id] == Some(c) && !self.entry[id].present; ok &= c; if !c { mask |= 1u64 << 11; } }
++                }
++            }
++        }
++        // R1g: the lane holder is a running window doing that work.
++        if let Some(h) = process.lane {
++            let w = usize::from(h.window);
++            let win = &process.windows[w];
++            { let c = win.running; ok &= c; if !c { mask |= 1u64 << 12; } }
++            match h.lane_use {
++                LaneUse::Pass(id) => {
++                    let e = win.editors[usize::from(id)];
++                    { let c = e.open && (e.token || e.written.is_some()); ok &= c; if !c { mask |= 1u64 << 13; } }
++                }
++                LaneUse::Deletion(id) => {
++                    let e = win.editors[usize::from(id)];
++                    { let c = e.open && e.deletion.is_some(); ok &= c; if !c { mask |= 1u64 << 14; } }
++                }
++                LaneUse::Cleanup => {
++                    { let c = win.trusted && process.cleanup_owner == Some(h.window); ok &= c; if !c { mask |= 1u64 << 15; } }
++                }
++            }
++        }
++        if let Some(owner) = process.cleanup_owner {
++            { let c = process.windows[usize::from(owner)].running; ok &= c; if !c { mask |= 1u64 << 16; } }
++        }
++        // ---- round 2 ----
++        let all = self.all_contents();
++        let mut pcl: ContentSet = 0;
++        for kept in 1..CONTENTS {
++            if self.preserved & bit(kept as ContentId) != 0 {
++                pcl |= self.ancestors[kept];
++            }
++        }
++        let mut disk = pcl;
++        for id in 0..STEP_IDS {
++            if let Some(c) = self.body[id] {
++                disk |= self.ancestors[usize::from(c)];
++            }
++        }
++        // R2s1: S1 holds from disk alone (preserved copies and bodies), so a
++        // crash or a window close loses nothing accepted.
++        { let c = self.accepted & !self.resolved & !disk == 0; ok &= c; if !c { mask |= 1u64 << 17; } }
++        // R2a: while the process runs, every file-backed body has its entry.
++        if any_running {
++            { let c = self.inventory_complete(); ok &= c; if !c { mask |= 1u64 << 18; } }
++        }
++        for id in 0..STEP_IDS {
++            // R2w: content 0 ("nothing to protect") is never a body, a written
++            // generation, or a cleanup candidate.
++            { let c = self.body[id] != Some(0); ok &= c; if !c { mask |= 1u64 << 19; } }
++            if let Some(c) = self.body[id] {
++                let unique = self.ancestors[usize::from(c)] & self.accepted & !self.resolved & !pcl;
++                // R2f: a body no entry lists holds no unresolved accepted work
++                // beyond the preserved copies.
++                if !self.entry[id].present {
++                    { let c = unique == 0; ok &= c; if !c { mask |= 1u64 << 20; } }
++                }
++                for w in 0..STEP_W {
++                    let win = &process.windows[w];
++                    let e = win.editors[id];
++                    if win.running && e.open {
++                        // R2b: the owning editor protects the body's unresolved
++                        // accepted work: it holds it, or the body is unseen, or
++                        // its deletion preserves first.
++                        { let c = e.restore_pending
++                            || e.deletion == Some(DeletionStep::Preserve)
++                            || unique & !self.ancestors[usize::from(e.content)] == 0; ok &= c; if !c { mask |= 1u64 << 21; } }
++                        // R2h: a deletion past its preserve step deletes nothing
++                        // unresolved.
++                        if matches!(e.deletion, Some(DeletionStep::DeleteBody | DeletionStep::RemoveEntry)) {
++                            { let c = unique == 0; ok &= c; if !c { mask |= 1u64 << 22; } }
++                        }
++                    }
++                }
++            }
++            for w in 0..STEP_W {
++                let win = &process.windows[w];
++                let e = win.editors[id];
++                { let c = win.orphan_candidate[id] != Some(0); ok &= c; if !c { mask |= 1u64 << 23; } }
++                if matches!(e.deletion, Some(DeletionStep::Preserve)) {
++                    { let c = e.preserve_queued; ok &= c; if !c { mask |= 1u64 << 24; } }
++                }
++                // R2d: a written generation is the body on disk, and the
++                // editor's buffer contains it.
++                if let Some(written) = e.written {
++                    { let c = written != 0
++                        && self.body[id] == Some(written)
++                        && self.ancestors[usize::from(e.content)] & bit(written) != 0; ok &= c; if !c { mask |= 1u64 << 25; } }
++                }
++                // R2c: a running window lists every entry on disk, except the
++                // id it is deleting.
++                let mut deleting = false;
++                for other in 0..STEP_W {
++                    deleting |= process.windows[other].running && process.windows[other].editors[id].deletion.is_some();
++                }
++                if win.running && self.entry[id].present && !deleting {
++                    { let c = win.known[id].is_some(); ok &= c; if !c { mask |= 1u64 << 26; } }
++                }
++            }
++        }
++        for w in 0..STEP_W {
++            let win = &process.windows[w];
++            for id in 0..STEP_IDS {
++                let e = win.editors[id];
++                // R3b: a token and a written body never coexist (F1).
++                if e.token {
++                    { let c = e.written.is_none(); ok &= c; if !c { mask |= 1u64 << 28; } }
++                }
++                // R3c: a dirty buffer holds an edit.
++                if e.dirty {
++                    { let c = e.content != 0; ok &= c; if !c { mask |= 1u64 << 29; } }
++                }
++                // R3d: an open editor whose id has no entry holds no unresolved
++                // accepted work beyond the preserved copies.
++                if win.running && e.open && !self.entry[id].present {
++                    { let c = self.ancestors[usize::from(e.content)] & self.accepted & !self.resolved & !pcl == 0; ok &= c; if !c { mask |= 1u64 << 30; } }
++                }
++            }
++        }
++        let _ = all;
++        let _ = ok;
++        mask
++        // STRENGTHENING-END
++    }
++
++    fn inductive_invariant(&self) -> bool {
++        self.contents_well_formed() && self.backbone_holds() && self.strengthening_holds()
++    }
++}
++
++/// A ten-action trace the inductive step's counterexamples pointed at, in the
++/// lane's single-window scope (untitled id 2), from an empty previous session:
++/// a pass writes a body, registers again, fails its second write (which
++/// releases the lane while the first body still awaits its commit), orphan
++/// cleanup deletes that unlisted untitled body, the commit then accepts the
++/// deleted generation, and a crash loses the only copy (the editor buffer).
++#[kani::proof]
++#[kani::unwind(9)]
++fn verus_eval_trace_untitled_orphan() {
++    let mut journal = Journal::<SingleWindowScope, 3, 1, 1>::previous_session();
++    for id in 0..3 {
++        kani::assume(!journal.entry[id].present && journal.body[id].is_none() && journal.backing[id] == 0);
++    }
++    let trace = [
++        (Action::Startup, 0, false),
++        (Action::Open, 2, false),
++        (Action::Edit, 2, false),
++        (Action::Register, 2, false),
++        (Action::WriteBody, 2, false),
++        (Action::Register, 2, false),
++        (Action::WriteBody, 2, true),
++        (Action::Inspect, 2, false),
++        (Action::ExecCleanup, 2, false),
++        (Action::Commit, 2, false),
++        (Action::Crash, 0, false),
++    ];
++    for (action, id, fault) in trace {
++        journal.step(0, 0, action, id, fault);
++        journal.assert_invariants();
++    }
++}
++
++/// Base case: INV holds after the first startup (as the lane harnesses start).
++#[kani::proof]
++#[kani::unwind(9)]
++fn verus_eval_base_case() {
++    let mut journal = StepJournal::previous_session();
++    journal.step(0, 0, Action::Startup, 0, kani::any());
++    assert!(journal.inductive_invariant(), "base case: INV after the first startup");
++}
++
++/// Satisfiability: some state satisfies the assumed INV (a non-trivial one: a
++/// running window with an open dirty editor and an accepted content).
++#[kani::proof]
++#[kani::unwind(9)]
++fn verus_eval_invariant_is_satisfiable() {
++    let journal = any_state();
++    kani::assume(journal.inductive_invariant());
++    kani::cover!(
++        journal.processes[0].windows[0].running
++            && journal.processes[0].windows[0].editors[0].open
++            && journal.processes[0].windows[0].editors[0].dirty
++            && journal.accepted != 0,
++        "a non-trivial state satisfies INV"
++    );
++}
++
++/// Diagnosis: which action breaks which conjunct (one cover per pair).
++#[kani::proof]
++#[kani::unwind(9)]
++fn verus_eval_diagnose() {
++    let mut journal = any_state();
++    kani::assume(journal.inductive_invariant());
++    let action: Action = kani::any();
++    let fault: bool = kani::any();
++    journal.step(0, any_below(2), action, any_below(2), fault);
++    let w0 = !journal.contents_well_formed();
++    let s1 = !journal.s1_holds();
++    let s3 = !journal.s3_holds();
++    let s4 = !journal.s4_holds();
++    let own = !journal.single_owner_holds();
++    let st = !journal.strengthening_holds();
++    let before = 0u64;
++    let after = journal.strengthening_mask();
++    kani::cover!(after & (1u64 << 0) != 0 && before == 0, "C0:R1a");
++    kani::cover!(after & (1u64 << 1) != 0 && before == 0, "C1:R1h");
++    kani::cover!(after & (1u64 << 2) != 0 && before == 0, "C2:R1h");
++    kani::cover!(after & (1u64 << 3) != 0 && before == 0, "C3:R1h");
++    kani::cover!(after & (1u64 << 4) != 0 && before == 0, "C4:R1h");
++    kani::cover!(after & (1u64 << 5) != 0 && before == 0, "C5:R1b");
++    kani::cover!(after & (1u64 << 6) != 0 && before == 0, "C6:R1c");
++    kani::cover!(after & (1u64 << 7) != 0 && before == 0, "C7:R1c");
++    kani::cover!(after & (1u64 << 8) != 0 && before == 0, "C8:R1d");
++    kani::cover!(after & (1u64 << 9) != 0 && before == 0, "C9:R1e");
++    kani::cover!(after & (1u64 << 10) != 0 && before == 0, "C10:R1f");
++    kani::cover!(after & (1u64 << 11) != 0 && before == 0, "C11:R1f");
++    kani::cover!(after & (1u64 << 12) != 0 && before == 0, "C12:R1g");
++    kani::cover!(after & (1u64 << 13) != 0 && before == 0, "C13:R1g");
++    kani::cover!(after & (1u64 << 14) != 0 && before == 0, "C14:R1g");
++    kani::cover!(after & (1u64 << 15) != 0 && before == 0, "C15:R1g");
++    kani::cover!(after & (1u64 << 16) != 0 && before == 0, "C16:R1g");
++    kani::cover!(after & (1u64 << 17) != 0 && before == 0, "C17:R2s1");
++    kani::cover!(after & (1u64 << 18) != 0 && before == 0, "C18:R2a");
++    kani::cover!(after & (1u64 << 19) != 0 && before == 0, "C19:R2w");
++    kani::cover!(after & (1u64 << 20) != 0 && before == 0, "C20:R2f");
++    kani::cover!(after & (1u64 << 21) != 0 && before == 0, "C21:R2b");
++    kani::cover!(after & (1u64 << 22) != 0 && before == 0, "C22:R2h");
++    kani::cover!(after & (1u64 << 23) != 0 && before == 0, "C23:R2h");
++    kani::cover!(after & (1u64 << 24) != 0 && before == 0, "C24:R2h");
++    kani::cover!(after & (1u64 << 25) != 0 && before == 0, "C25:R2d");
++    kani::cover!(after & (1u64 << 26) != 0 && before == 0, "C26:R2c");
++    kani::cover!(w0 && matches!(action, Action::Edit), "W0 Edit");
++    kani::cover!(w0 && matches!(action, Action::Open), "W0 Open");
++    kani::cover!(w0 && matches!(action, Action::Register), "W0 Register");
++    kani::cover!(w0 && matches!(action, Action::WriteBody), "W0 WriteBody");
++    kani::cover!(w0 && matches!(action, Action::Commit), "W0 Commit");
++    kani::cover!(w0 && matches!(action, Action::Save), "W0 Save");
++    kani::cover!(w0 && matches!(action, Action::Discard), "W0 Discard");
++    kani::cover!(w0 && matches!(action, Action::DeletionStep), "W0 DeletionStep");
++    kani::cover!(w0 && matches!(action, Action::Inspect), "W0 Inspect");
++    kani::cover!(w0 && matches!(action, Action::ExecCleanup), "W0 ExecCleanup");
++    kani::cover!(w0 && matches!(action, Action::RestoreApply), "W0 RestoreApply");
++    kani::cover!(w0 && matches!(action, Action::ExternalMtime), "W0 ExternalMtime");
++    kani::cover!(w0 && matches!(action, Action::CloseWindow), "W0 CloseWindow");
++    kani::cover!(w0 && matches!(action, Action::OpenWindow), "W0 OpenWindow");
++    kani::cover!(w0 && matches!(action, Action::Crash), "W0 Crash");
++    kani::cover!(w0 && matches!(action, Action::Startup), "W0 Startup");
++    kani::cover!(s1 && matches!(action, Action::Edit), "S1 Edit");
++    kani::cover!(s1 && matches!(action, Action::Open), "S1 Open");
++    kani::cover!(s1 && matches!(action, Action::Register), "S1 Register");
++    kani::cover!(s1 && matches!(action, Action::WriteBody), "S1 WriteBody");
++    kani::cover!(s1 && matches!(action, Action::Commit), "S1 Commit");
++    kani::cover!(s1 && matches!(action, Action::Save), "S1 Save");
++    kani::cover!(s1 && matches!(action, Action::Discard), "S1 Discard");
++    kani::cover!(s1 && matches!(action, Action::DeletionStep), "S1 DeletionStep");
++    kani::cover!(s1 && matches!(action, Action::Inspect), "S1 Inspect");
++    kani::cover!(s1 && matches!(action, Action::ExecCleanup), "S1 ExecCleanup");
++    kani::cover!(s1 && matches!(action, Action::RestoreApply), "S1 RestoreApply");
++    kani::cover!(s1 && matches!(action, Action::ExternalMtime), "S1 ExternalMtime");
++    kani::cover!(s1 && matches!(action, Action::CloseWindow), "S1 CloseWindow");
++    kani::cover!(s1 && matches!(action, Action::OpenWindow), "S1 OpenWindow");
++    kani::cover!(s1 && matches!(action, Action::Crash), "S1 Crash");
++    kani::cover!(s1 && matches!(action, Action::Startup), "S1 Startup");
++    kani::cover!(s3 && matches!(action, Action::Edit), "S3 Edit");
++    kani::cover!(s3 && matches!(action, Action::Open), "S3 Open");
++    kani::cover!(s3 && matches!(action, Action::Register), "S3 Register");
++    kani::cover!(s3 && matches!(action, Action::WriteBody), "S3 WriteBody");
++    kani::cover!(s3 && matches!(action, Action::Commit), "S3 Commit");
++    kani::cover!(s3 && matches!(action, Action::Save), "S3 Save");
++    kani::cover!(s3 && matches!(action, Action::Discard), "S3 Discard");
++    kani::cover!(s3 && matches!(action, Action::DeletionStep), "S3 DeletionStep");
++    kani::cover!(s3 && matches!(action, Action::Inspect), "S3 Inspect");
++    kani::cover!(s3 && matches!(action, Action::ExecCleanup), "S3 ExecCleanup");
++    kani::cover!(s3 && matches!(action, Action::RestoreApply), "S3 RestoreApply");
++    kani::cover!(s3 && matches!(action, Action::ExternalMtime), "S3 ExternalMtime");
++    kani::cover!(s3 && matches!(action, Action::CloseWindow), "S3 CloseWindow");
++    kani::cover!(s3 && matches!(action, Action::OpenWindow), "S3 OpenWindow");
++    kani::cover!(s3 && matches!(action, Action::Crash), "S3 Crash");
++    kani::cover!(s3 && matches!(action, Action::Startup), "S3 Startup");
++    kani::cover!(s4 && matches!(action, Action::Edit), "S4 Edit");
++    kani::cover!(s4 && matches!(action, Action::Open), "S4 Open");
++    kani::cover!(s4 && matches!(action, Action::Register), "S4 Register");
++    kani::cover!(s4 && matches!(action, Action::WriteBody), "S4 WriteBody");
++    kani::cover!(s4 && matches!(action, Action::Commit), "S4 Commit");
++    kani::cover!(s4 && matches!(action, Action::Save), "S4 Save");
++    kani::cover!(s4 && matches!(action, Action::Discard), "S4 Discard");
++    kani::cover!(s4 && matches!(action, Action::DeletionStep), "S4 DeletionStep");
++    kani::cover!(s4 && matches!(action, Action::Inspect), "S4 Inspect");
++    kani::cover!(s4 && matches!(action, Action::ExecCleanup), "S4 ExecCleanup");
++    kani::cover!(s4 && matches!(action, Action::RestoreApply), "S4 RestoreApply");
++    kani::cover!(s4 && matches!(action, Action::ExternalMtime), "S4 ExternalMtime");
++    kani::cover!(s4 && matches!(action, Action::CloseWindow), "S4 CloseWindow");
++    kani::cover!(s4 && matches!(action, Action::OpenWindow), "S4 OpenWindow");
++    kani::cover!(s4 && matches!(action, Action::Crash), "S4 Crash");
++    kani::cover!(s4 && matches!(action, Action::Startup), "S4 Startup");
++    kani::cover!(own && matches!(action, Action::Edit), "OWN Edit");
++    kani::cover!(own && matches!(action, Action::Open), "OWN Open");
++    kani::cover!(own && matches!(action, Action::Register), "OWN Register");
++    kani::cover!(own && matches!(action, Action::WriteBody), "OWN WriteBody");
++    kani::cover!(own && matches!(action, Action::Commit), "OWN Commit");
++    kani::cover!(own && matches!(action, Action::Save), "OWN Save");
++    kani::cover!(own && matches!(action, Action::Discard), "OWN Discard");
++    kani::cover!(own && matches!(action, Action::DeletionStep), "OWN DeletionStep");
++    kani::cover!(own && matches!(action, Action::Inspect), "OWN Inspect");
++    kani::cover!(own && matches!(action, Action::ExecCleanup), "OWN ExecCleanup");
++    kani::cover!(own && matches!(action, Action::RestoreApply), "OWN RestoreApply");
++    kani::cover!(own && matches!(action, Action::ExternalMtime), "OWN ExternalMtime");
++    kani::cover!(own && matches!(action, Action::CloseWindow), "OWN CloseWindow");
++    kani::cover!(own && matches!(action, Action::OpenWindow), "OWN OpenWindow");
++    kani::cover!(own && matches!(action, Action::Crash), "OWN Crash");
++    kani::cover!(own && matches!(action, Action::Startup), "OWN Startup");
++    kani::cover!(st && matches!(action, Action::Edit), "STR Edit");
++    kani::cover!(st && matches!(action, Action::Open), "STR Open");
++    kani::cover!(st && matches!(action, Action::Register), "STR Register");
++    kani::cover!(st && matches!(action, Action::WriteBody), "STR WriteBody");
++    kani::cover!(st && matches!(action, Action::Commit), "STR Commit");
++    kani::cover!(st && matches!(action, Action::Save), "STR Save");
++    kani::cover!(st && matches!(action, Action::Discard), "STR Discard");
++    kani::cover!(st && matches!(action, Action::DeletionStep), "STR DeletionStep");
++    kani::cover!(st && matches!(action, Action::Inspect), "STR Inspect");
++    kani::cover!(st && matches!(action, Action::ExecCleanup), "STR ExecCleanup");
++    kani::cover!(st && matches!(action, Action::RestoreApply), "STR RestoreApply");
++    kani::cover!(st && matches!(action, Action::ExternalMtime), "STR ExternalMtime");
++    kani::cover!(st && matches!(action, Action::CloseWindow), "STR CloseWindow");
++    kani::cover!(st && matches!(action, Action::OpenWindow), "STR OpenWindow");
++    kani::cover!(st && matches!(action, Action::Crash), "STR Crash");
++    kani::cover!(st && matches!(action, Action::Startup), "STR Startup");
++}
++
++#[kani::proof]
++#[kani::unwind(9)]
++fn verus_eval_diag_action_WriteBody() {
++    let mut journal = any_state();
++    kani::assume(journal.inductive_invariant());
++    journal.step(0, any_below(2), Action::WriteBody, any_below(2), kani::any());
++    let after = journal.strengthening_mask();
++    kani::cover!(!journal.s1_holds(), "WriteBody S1");
++    kani::cover!(after & (1u64 << 0) != 0, "WriteBody C0");
++    kani::cover!(after & (1u64 << 1) != 0, "WriteBody C1");
++    kani::cover!(after & (1u64 << 2) != 0, "WriteBody C2");
++    kani::cover!(after & (1u64 << 3) != 0, "WriteBody C3");
++    kani::cover!(after & (1u64 << 4) != 0, "WriteBody C4");
++    kani::cover!(after & (1u64 << 5) != 0, "WriteBody C5");
++    kani::cover!(after & (1u64 << 6) != 0, "WriteBody C6");
++    kani::cover!(after & (1u64 << 7) != 0, "WriteBody C7");
++    kani::cover!(after & (1u64 << 8) != 0, "WriteBody C8");
++    kani::cover!(after & (1u64 << 9) != 0, "WriteBody C9");
++    kani::cover!(after & (1u64 << 10) != 0, "WriteBody C10");
++    kani::cover!(after & (1u64 << 11) != 0, "WriteBody C11");
++    kani::cover!(after & (1u64 << 12) != 0, "WriteBody C12");
++    kani::cover!(after & (1u64 << 13) != 0, "WriteBody C13");
++    kani::cover!(after & (1u64 << 14) != 0, "WriteBody C14");
++    kani::cover!(after & (1u64 << 15) != 0, "WriteBody C15");
++    kani::cover!(after & (1u64 << 16) != 0, "WriteBody C16");
++    kani::cover!(after & (1u64 << 17) != 0, "WriteBody C17");
++    kani::cover!(after & (1u64 << 18) != 0, "WriteBody C18");
++    kani::cover!(after & (1u64 << 19) != 0, "WriteBody C19");
++    kani::cover!(after & (1u64 << 20) != 0, "WriteBody C20");
++    kani::cover!(after & (1u64 << 21) != 0, "WriteBody C21");
++    kani::cover!(after & (1u64 << 22) != 0, "WriteBody C22");
++    kani::cover!(after & (1u64 << 23) != 0, "WriteBody C23");
++    kani::cover!(after & (1u64 << 24) != 0, "WriteBody C24");
++    kani::cover!(after & (1u64 << 25) != 0, "WriteBody C25");
++    kani::cover!(after & (1u64 << 26) != 0, "WriteBody C26");
++    kani::cover!(after & (1u64 << 27) != 0, "WriteBody C27");
++    kani::cover!(after & (1u64 << 28) != 0, "WriteBody C28");
++    kani::cover!(after & (1u64 << 29) != 0, "WriteBody C29");
++    kani::cover!(after & (1u64 << 30) != 0, "WriteBody C30");
++}
++
++#[kani::proof]
++#[kani::unwind(9)]
++fn verus_eval_diag_action_Commit() {
++    let mut journal = any_state();
++    kani::assume(journal.inductive_invariant());
++    journal.step(0, any_below(2), Action::Commit, any_below(2), kani::any());
++    let after = journal.strengthening_mask();
++    kani::cover!(!journal.s1_holds(), "Commit S1");
++    kani::cover!(after & (1u64 << 0) != 0, "Commit C0");
++    kani::cover!(after & (1u64 << 1) != 0, "Commit C1");
++    kani::cover!(after & (1u64 << 2) != 0, "Commit C2");
++    kani::cover!(after & (1u64 << 3) != 0, "Commit C3");
++    kani::cover!(after & (1u64 << 4) != 0, "Commit C4");
++    kani::cover!(after & (1u64 << 5) != 0, "Commit C5");
++    kani::cover!(after & (1u64 << 6) != 0, "Commit C6");
++    kani::cover!(after & (1u64 << 7) != 0, "Commit C7");
++    kani::cover!(after & (1u64 << 8) != 0, "Commit C8");
++    kani::cover!(after & (1u64 << 9) != 0, "Commit C9");
++    kani::cover!(after & (1u64 << 10) != 0, "Commit C10");
++    kani::cover!(after & (1u64 << 11) != 0, "Commit C11");
++    kani::cover!(after & (1u64 << 12) != 0, "Commit C12");
++    kani::cover!(after & (1u64 << 13) != 0, "Commit C13");
++    kani::cover!(after & (1u64 << 14) != 0, "Commit C14");
++    kani::cover!(after & (1u64 << 15) != 0, "Commit C15");
++    kani::cover!(after & (1u64 << 16) != 0, "Commit C16");
++    kani::cover!(after & (1u64 << 17) != 0, "Commit C17");
++    kani::cover!(after & (1u64 << 18) != 0, "Commit C18");
++    kani::cover!(after & (1u64 << 19) != 0, "Commit C19");
++    kani::cover!(after & (1u64 << 20) != 0, "Commit C20");
++    kani::cover!(after & (1u64 << 21) != 0, "Commit C21");
++    kani::cover!(after & (1u64 << 22) != 0, "Commit C22");
++    kani::cover!(after & (1u64 << 23) != 0, "Commit C23");
++    kani::cover!(after & (1u64 << 24) != 0, "Commit C24");
++    kani::cover!(after & (1u64 << 25) != 0, "Commit C25");
++    kani::cover!(after & (1u64 << 26) != 0, "Commit C26");
++    kani::cover!(after & (1u64 << 27) != 0, "Commit C27");
++    kani::cover!(after & (1u64 << 28) != 0, "Commit C28");
++    kani::cover!(after & (1u64 << 29) != 0, "Commit C29");
++    kani::cover!(after & (1u64 << 30) != 0, "Commit C30");
++}
++
++#[kani::proof]
++#[kani::unwind(9)]
++fn verus_eval_diag_action_Save() {
++    let mut journal = any_state();
++    kani::assume(journal.inductive_invariant());
++    journal.step(0, any_below(2), Action::Save, any_below(2), kani::any());
++    let after = journal.strengthening_mask();
++    kani::cover!(!journal.s1_holds(), "Save S1");
++    kani::cover!(after & (1u64 << 0) != 0, "Save C0");
++    kani::cover!(after & (1u64 << 1) != 0, "Save C1");
++    kani::cover!(after & (1u64 << 2) != 0, "Save C2");
++    kani::cover!(after & (1u64 << 3) != 0, "Save C3");
++    kani::cover!(after & (1u64 << 4) != 0, "Save C4");
++    kani::cover!(after & (1u64 << 5) != 0, "Save C5");
++    kani::cover!(after & (1u64 << 6) != 0, "Save C6");
++    kani::cover!(after & (1u64 << 7) != 0, "Save C7");
++    kani::cover!(after & (1u64 << 8) != 0, "Save C8");
++    kani::cover!(after & (1u64 << 9) != 0, "Save C9");
++    kani::cover!(after & (1u64 << 10) != 0, "Save C10");
++    kani::cover!(after & (1u64 << 11) != 0, "Save C11");
++    kani::cover!(after & (1u64 << 12) != 0, "Save C12");
++    kani::cover!(after & (1u64 << 13) != 0, "Save C13");
++    kani::cover!(after & (1u64 << 14) != 0, "Save C14");
++    kani::cover!(after & (1u64 << 15) != 0, "Save C15");
++    kani::cover!(after & (1u64 << 16) != 0, "Save C16");
++    kani::cover!(after & (1u64 << 17) != 0, "Save C17");
++    kani::cover!(after & (1u64 << 18) != 0, "Save C18");
++    kani::cover!(after & (1u64 << 19) != 0, "Save C19");
++    kani::cover!(after & (1u64 << 20) != 0, "Save C20");
++    kani::cover!(after & (1u64 << 21) != 0, "Save C21");
++    kani::cover!(after & (1u64 << 22) != 0, "Save C22");
++    kani::cover!(after & (1u64 << 23) != 0, "Save C23");
++    kani::cover!(after & (1u64 << 24) != 0, "Save C24");
++    kani::cover!(after & (1u64 << 25) != 0, "Save C25");
++    kani::cover!(after & (1u64 << 26) != 0, "Save C26");
++    kani::cover!(after & (1u64 << 27) != 0, "Save C27");
++    kani::cover!(after & (1u64 << 28) != 0, "Save C28");
++    kani::cover!(after & (1u64 << 29) != 0, "Save C29");
++    kani::cover!(after & (1u64 << 30) != 0, "Save C30");
++}
++
++#[kani::proof]
++#[kani::unwind(9)]
++fn verus_eval_diag_action_Discard() {
++    let mut journal = any_state();
++    kani::assume(journal.inductive_invariant());
++    journal.step(0, any_below(2), Action::Discard, any_below(2), kani::any());
++    let after = journal.strengthening_mask();
++    kani::cover!(!journal.s1_holds(), "Discard S1");
++    kani::cover!(after & (1u64 << 0) != 0, "Discard C0");
++    kani::cover!(after & (1u64 << 1) != 0, "Discard C1");
++    kani::cover!(after & (1u64 << 2) != 0, "Discard C2");
++    kani::cover!(after & (1u64 << 3) != 0, "Discard C3");
++    kani::cover!(after & (1u64 << 4) != 0, "Discard C4");
++    kani::cover!(after & (1u64 << 5) != 0, "Discard C5");
++    kani::cover!(after & (1u64 << 6) != 0, "Discard C6");
++    kani::cover!(after & (1u64 << 7) != 0, "Discard C7");
++    kani::cover!(after & (1u64 << 8) != 0, "Discard C8");
++    kani::cover!(after & (1u64 << 9) != 0, "Discard C9");
++    kani::cover!(after & (1u64 << 10) != 0, "Discard C10");
++    kani::cover!(after & (1u64 << 11) != 0, "Discard C11");
++    kani::cover!(after & (1u64 << 12) != 0, "Discard C12");
++    kani::cover!(after & (1u64 << 13) != 0, "Discard C13");
++    kani::cover!(after & (1u64 << 14) != 0, "Discard C14");
++    kani::cover!(after & (1u64 << 15) != 0, "Discard C15");
++    kani::cover!(after & (1u64 << 16) != 0, "Discard C16");
++    kani::cover!(after & (1u64 << 17) != 0, "Discard C17");
++    kani::cover!(after & (1u64 << 18) != 0, "Discard C18");
++    kani::cover!(after & (1u64 << 19) != 0, "Discard C19");
++    kani::cover!(after & (1u64 << 20) != 0, "Discard C20");
++    kani::cover!(after & (1u64 << 21) != 0, "Discard C21");
++    kani::cover!(after & (1u64 << 22) != 0, "Discard C22");
++    kani::cover!(after & (1u64 << 23) != 0, "Discard C23");
++    kani::cover!(after & (1u64 << 24) != 0, "Discard C24");
++    kani::cover!(after & (1u64 << 25) != 0, "Discard C25");
++    kani::cover!(after & (1u64 << 26) != 0, "Discard C26");
++    kani::cover!(after & (1u64 << 27) != 0, "Discard C27");
++    kani::cover!(after & (1u64 << 28) != 0, "Discard C28");
++    kani::cover!(after & (1u64 << 29) != 0, "Discard C29");
++    kani::cover!(after & (1u64 << 30) != 0, "Discard C30");
++}
++
++#[kani::proof]
++#[kani::unwind(9)]
++fn verus_eval_diag_action_DeletionStep() {
++    let mut journal = any_state();
++    kani::assume(journal.inductive_invariant());
++    journal.step(0, any_below(2), Action::DeletionStep, any_below(2), kani::any());
++    let after = journal.strengthening_mask();
++    kani::cover!(!journal.s1_holds(), "DeletionStep S1");
++    kani::cover!(after & (1u64 << 0) != 0, "DeletionStep C0");
++    kani::cover!(after & (1u64 << 1) != 0, "DeletionStep C1");
++    kani::cover!(after & (1u64 << 2) != 0, "DeletionStep C2");
++    kani::cover!(after & (1u64 << 3) != 0, "DeletionStep C3");
++    kani::cover!(after & (1u64 << 4) != 0, "DeletionStep C4");
++    kani::cover!(after & (1u64 << 5) != 0, "DeletionStep C5");
++    kani::cover!(after & (1u64 << 6) != 0, "DeletionStep C6");
++    kani::cover!(after & (1u64 << 7) != 0, "DeletionStep C7");
++    kani::cover!(after & (1u64 << 8) != 0, "DeletionStep C8");
++    kani::cover!(after & (1u64 << 9) != 0, "DeletionStep C9");
++    kani::cover!(after & (1u64 << 10) != 0, "DeletionStep C10");
++    kani::cover!(after & (1u64 << 11) != 0, "DeletionStep C11");
++    kani::cover!(after & (1u64 << 12) != 0, "DeletionStep C12");
++    kani::cover!(after & (1u64 << 13) != 0, "DeletionStep C13");
++    kani::cover!(after & (1u64 << 14) != 0, "DeletionStep C14");
++    kani::cover!(after & (1u64 << 15) != 0, "DeletionStep C15");
++    kani::cover!(after & (1u64 << 16) != 0, "DeletionStep C16");
++    kani::cover!(after & (1u64 << 17) != 0, "DeletionStep C17");
++    kani::cover!(after & (1u64 << 18) != 0, "DeletionStep C18");
++    kani::cover!(after & (1u64 << 19) != 0, "DeletionStep C19");
++    kani::cover!(after & (1u64 << 20) != 0, "DeletionStep C20");
++    kani::cover!(after & (1u64 << 21) != 0, "DeletionStep C21");
++    kani::cover!(after & (1u64 << 22) != 0, "DeletionStep C22");
++    kani::cover!(after & (1u64 << 23) != 0, "DeletionStep C23");
++    kani::cover!(after & (1u64 << 24) != 0, "DeletionStep C24");
++    kani::cover!(after & (1u64 << 25) != 0, "DeletionStep C25");
++    kani::cover!(after & (1u64 << 26) != 0, "DeletionStep C26");
++    kani::cover!(after & (1u64 << 27) != 0, "DeletionStep C27");
++    kani::cover!(after & (1u64 << 28) != 0, "DeletionStep C28");
++    kani::cover!(after & (1u64 << 29) != 0, "DeletionStep C29");
++    kani::cover!(after & (1u64 << 30) != 0, "DeletionStep C30");
++}
++
++#[kani::proof]
++#[kani::unwind(9)]
++fn verus_eval_diag_action_RestoreApply() {
++    let mut journal = any_state();
++    kani::assume(journal.inductive_invariant());
++    journal.step(0, any_below(2), Action::RestoreApply, any_below(2), kani::any());
++    let after = journal.strengthening_mask();
++    kani::cover!(!journal.s1_holds(), "RestoreApply S1");
++    kani::cover!(after & (1u64 << 0) != 0, "RestoreApply C0");
++    kani::cover!(after & (1u64 << 1) != 0, "RestoreApply C1");
++    kani::cover!(after & (1u64 << 2) != 0, "RestoreApply C2");
++    kani::cover!(after & (1u64 << 3) != 0, "RestoreApply C3");
++    kani::cover!(after & (1u64 << 4) != 0, "RestoreApply C4");
++    kani::cover!(after & (1u64 << 5) != 0, "RestoreApply C5");
++    kani::cover!(after & (1u64 << 6) != 0, "RestoreApply C6");
++    kani::cover!(after & (1u64 << 7) != 0, "RestoreApply C7");
++    kani::cover!(after & (1u64 << 8) != 0, "RestoreApply C8");
++    kani::cover!(after & (1u64 << 9) != 0, "RestoreApply C9");
++    kani::cover!(after & (1u64 << 10) != 0, "RestoreApply C10");
++    kani::cover!(after & (1u64 << 11) != 0, "RestoreApply C11");
++    kani::cover!(after & (1u64 << 12) != 0, "RestoreApply C12");
++    kani::cover!(after & (1u64 << 13) != 0, "RestoreApply C13");
++    kani::cover!(after & (1u64 << 14) != 0, "RestoreApply C14");
++    kani::cover!(after & (1u64 << 15) != 0, "RestoreApply C15");
++    kani::cover!(after & (1u64 << 16) != 0, "RestoreApply C16");
++    kani::cover!(after & (1u64 << 17) != 0, "RestoreApply C17");
++    kani::cover!(after & (1u64 << 18) != 0, "RestoreApply C18");
++    kani::cover!(after & (1u64 << 19) != 0, "RestoreApply C19");
++    kani::cover!(after & (1u64 << 20) != 0, "RestoreApply C20");
++    kani::cover!(after & (1u64 << 21) != 0, "RestoreApply C21");
++    kani::cover!(after & (1u64 << 22) != 0, "RestoreApply C22");
++    kani::cover!(after & (1u64 << 23) != 0, "RestoreApply C23");
++    kani::cover!(after & (1u64 << 24) != 0, "RestoreApply C24");
++    kani::cover!(after & (1u64 << 25) != 0, "RestoreApply C25");
++    kani::cover!(after & (1u64 << 26) != 0, "RestoreApply C26");
++    kani::cover!(after & (1u64 << 27) != 0, "RestoreApply C27");
++    kani::cover!(after & (1u64 << 28) != 0, "RestoreApply C28");
++    kani::cover!(after & (1u64 << 29) != 0, "RestoreApply C29");
++    kani::cover!(after & (1u64 << 30) != 0, "RestoreApply C30");
++}
++
++#[kani::proof]
++#[kani::unwind(9)]
++fn verus_eval_diag_action_OpenWindow() {
++    let mut journal = any_state();
++    kani::assume(journal.inductive_invariant());
++    journal.step(0, any_below(2), Action::OpenWindow, any_below(2), kani::any());
++    let after = journal.strengthening_mask();
++    kani::cover!(!journal.s1_holds(), "OpenWindow S1");
++    kani::cover!(after & (1u64 << 0) != 0, "OpenWindow C0");
++    kani::cover!(after & (1u64 << 1) != 0, "OpenWindow C1");
++    kani::cover!(after & (1u64 << 2) != 0, "OpenWindow C2");
++    kani::cover!(after & (1u64 << 3) != 0, "OpenWindow C3");
++    kani::cover!(after & (1u64 << 4) != 0, "OpenWindow C4");
++    kani::cover!(after & (1u64 << 5) != 0, "OpenWindow C5");
++    kani::cover!(after & (1u64 << 6) != 0, "OpenWindow C6");
++    kani::cover!(after & (1u64 << 7) != 0, "OpenWindow C7");
++    kani::cover!(after & (1u64 << 8) != 0, "OpenWindow C8");
++    kani::cover!(after & (1u64 << 9) != 0, "OpenWindow C9");
++    kani::cover!(after & (1u64 << 10) != 0, "OpenWindow C10");
++    kani::cover!(after & (1u64 << 11) != 0, "OpenWindow C11");
++    kani::cover!(after & (1u64 << 12) != 0, "OpenWindow C12");
++    kani::cover!(after & (1u64 << 13) != 0, "OpenWindow C13");
++    kani::cover!(after & (1u64 << 14) != 0, "OpenWindow C14");
++    kani::cover!(after & (1u64 << 15) != 0, "OpenWindow C15");
++    kani::cover!(after & (1u64 << 16) != 0, "OpenWindow C16");
++    kani::cover!(after & (1u64 << 17) != 0, "OpenWindow C17");
++    kani::cover!(after & (1u64 << 18) != 0, "OpenWindow C18");
++    kani::cover!(after & (1u64 << 19) != 0, "OpenWindow C19");
++    kani::cover!(after & (1u64 << 20) != 0, "OpenWindow C20");
++    kani::cover!(after & (1u64 << 21) != 0, "OpenWindow C21");
++    kani::cover!(after & (1u64 << 22) != 0, "OpenWindow C22");
++    kani::cover!(after & (1u64 << 23) != 0, "OpenWindow C23");
++    kani::cover!(after & (1u64 << 24) != 0, "OpenWindow C24");
++    kani::cover!(after & (1u64 << 25) != 0, "OpenWindow C25");
++    kani::cover!(after & (1u64 << 26) != 0, "OpenWindow C26");
++    kani::cover!(after & (1u64 << 27) != 0, "OpenWindow C27");
++    kani::cover!(after & (1u64 << 28) != 0, "OpenWindow C28");
++    kani::cover!(after & (1u64 << 29) != 0, "OpenWindow C29");
++    kani::cover!(after & (1u64 << 30) != 0, "OpenWindow C30");
++}
++
++#[kani::proof]
++#[kani::unwind(9)]
++fn verus_eval_diag_action_Startup() {
++    let mut journal = any_state();
++    kani::assume(journal.inductive_invariant());
++    journal.step(0, any_below(2), Action::Startup, any_below(2), kani::any());
++    let after = journal.strengthening_mask();
++    kani::cover!(!journal.s1_holds(), "Startup S1");
++    kani::cover!(after & (1u64 << 0) != 0, "Startup C0");
++    kani::cover!(after & (1u64 << 1) != 0, "Startup C1");
++    kani::cover!(after & (1u64 << 2) != 0, "Startup C2");
++    kani::cover!(after & (1u64 << 3) != 0, "Startup C3");
++    kani::cover!(after & (1u64 << 4) != 0, "Startup C4");
++    kani::cover!(after & (1u64 << 5) != 0, "Startup C5");
++    kani::cover!(after & (1u64 << 6) != 0, "Startup C6");
++    kani::cover!(after & (1u64 << 7) != 0, "Startup C7");
++    kani::cover!(after & (1u64 << 8) != 0, "Startup C8");
++    kani::cover!(after & (1u64 << 9) != 0, "Startup C9");
++    kani::cover!(after & (1u64 << 10) != 0, "Startup C10");
++    kani::cover!(after & (1u64 << 11) != 0, "Startup C11");
++    kani::cover!(after & (1u64 << 12) != 0, "Startup C12");
++    kani::cover!(after & (1u64 << 13) != 0, "Startup C13");
++    kani::cover!(after & (1u64 << 14) != 0, "Startup C14");
++    kani::cover!(after & (1u64 << 15) != 0, "Startup C15");
++    kani::cover!(after & (1u64 << 16) != 0, "Startup C16");
++    kani::cover!(after & (1u64 << 17) != 0, "Startup C17");
++    kani::cover!(after & (1u64 << 18) != 0, "Startup C18");
++    kani::cover!(after & (1u64 << 19) != 0, "Startup C19");
++    kani::cover!(after & (1u64 << 20) != 0, "Startup C20");
++    kani::cover!(after & (1u64 << 21) != 0, "Startup C21");
++    kani::cover!(after & (1u64 << 22) != 0, "Startup C22");
++    kani::cover!(after & (1u64 << 23) != 0, "Startup C23");
++    kani::cover!(after & (1u64 << 24) != 0, "Startup C24");
++    kani::cover!(after & (1u64 << 25) != 0, "Startup C25");
++    kani::cover!(after & (1u64 << 26) != 0, "Startup C26");
++    kani::cover!(after & (1u64 << 27) != 0, "Startup C27");
++    kani::cover!(after & (1u64 << 28) != 0, "Startup C28");
++    kani::cover!(after & (1u64 << 29) != 0, "Startup C29");
++    kani::cover!(after & (1u64 << 30) != 0, "Startup C30");
++}
++
++#[kani::proof]
++#[kani::unwind(9)]
++fn verus_eval_diag_action_Register() {
++    let mut journal = any_state();
++    kani::assume(journal.inductive_invariant());
++    journal.step(0, any_below(2), Action::Register, any_below(2), kani::any());
++    let after = journal.strengthening_mask();
++    kani::cover!(!journal.s1_holds(), "Register S1");
++    kani::cover!(after & (1u64 << 0) != 0, "Register C0");
++    kani::cover!(after & (1u64 << 1) != 0, "Register C1");
++    kani::cover!(after & (1u64 << 2) != 0, "Register C2");
++    kani::cover!(after & (1u64 << 3) != 0, "Register C3");
++    kani::cover!(after & (1u64 << 4) != 0, "Register C4");
++    kani::cover!(after & (1u64 << 5) != 0, "Register C5");
++    kani::cover!(after & (1u64 << 6) != 0, "Register C6");
++    kani::cover!(after & (1u64 << 7) != 0, "Register C7");
++    kani::cover!(after & (1u64 << 8) != 0, "Register C8");
++    kani::cover!(after & (1u64 << 9) != 0, "Register C9");
++    kani::cover!(after & (1u64 << 10) != 0, "Register C10");
++    kani::cover!(after & (1u64 << 11) != 0, "Register C11");
++    kani::cover!(after & (1u64 << 12) != 0, "Register C12");
++    kani::cover!(after & (1u64 << 13) != 0, "Register C13");
++    kani::cover!(after & (1u64 << 14) != 0, "Register C14");
++    kani::cover!(after & (1u64 << 15) != 0, "Register C15");
++    kani::cover!(after & (1u64 << 16) != 0, "Register C16");
++    kani::cover!(after & (1u64 << 17) != 0, "Register C17");
++    kani::cover!(after & (1u64 << 18) != 0, "Register C18");
++    kani::cover!(after & (1u64 << 19) != 0, "Register C19");
++    kani::cover!(after & (1u64 << 20) != 0, "Register C20");
++    kani::cover!(after & (1u64 << 21) != 0, "Register C21");
++    kani::cover!(after & (1u64 << 22) != 0, "Register C22");
++    kani::cover!(after & (1u64 << 23) != 0, "Register C23");
++    kani::cover!(after & (1u64 << 24) != 0, "Register C24");
++    kani::cover!(after & (1u64 << 25) != 0, "Register C25");
++    kani::cover!(after & (1u64 << 26) != 0, "Register C26");
++    kani::cover!(after & (1u64 << 27) != 0, "Register C27");
++    kani::cover!(after & (1u64 << 28) != 0, "Register C28");
++    kani::cover!(after & (1u64 << 29) != 0, "Register C29");
++    kani::cover!(after & (1u64 << 30) != 0, "Register C30");
++}
++
++#[kani::proof]
++#[kani::unwind(9)]
++fn verus_eval_diag_action_Edit() {
++    let mut journal = any_state();
++    kani::assume(journal.inductive_invariant());
++    journal.step(0, any_below(2), Action::Edit, any_below(2), kani::any());
++    let after = journal.strengthening_mask();
++    kani::cover!(!journal.s1_holds(), "Edit S1");
++    kani::cover!(after & (1u64 << 0) != 0, "Edit C0");
++    kani::cover!(after & (1u64 << 1) != 0, "Edit C1");
++    kani::cover!(after & (1u64 << 2) != 0, "Edit C2");
++    kani::cover!(after & (1u64 << 3) != 0, "Edit C3");
++    kani::cover!(after & (1u64 << 4) != 0, "Edit C4");
++    kani::cover!(after & (1u64 << 5) != 0, "Edit C5");
++    kani::cover!(after & (1u64 << 6) != 0, "Edit C6");
++    kani::cover!(after & (1u64 << 7) != 0, "Edit C7");
++    kani::cover!(after & (1u64 << 8) != 0, "Edit C8");
++    kani::cover!(after & (1u64 << 9) != 0, "Edit C9");
++    kani::cover!(after & (1u64 << 10) != 0, "Edit C10");
++    kani::cover!(after & (1u64 << 11) != 0, "Edit C11");
++    kani::cover!(after & (1u64 << 12) != 0, "Edit C12");
++    kani::cover!(after & (1u64 << 13) != 0, "Edit C13");
++    kani::cover!(after & (1u64 << 14) != 0, "Edit C14");
++    kani::cover!(after & (1u64 << 15) != 0, "Edit C15");
++    kani::cover!(after & (1u64 << 16) != 0, "Edit C16");
++    kani::cover!(after & (1u64 << 17) != 0, "Edit C17");
++    kani::cover!(after & (1u64 << 18) != 0, "Edit C18");
++    kani::cover!(after & (1u64 << 19) != 0, "Edit C19");
++    kani::cover!(after & (1u64 << 20) != 0, "Edit C20");
++    kani::cover!(after & (1u64 << 21) != 0, "Edit C21");
++    kani::cover!(after & (1u64 << 22) != 0, "Edit C22");
++    kani::cover!(after & (1u64 << 23) != 0, "Edit C23");
++    kani::cover!(after & (1u64 << 24) != 0, "Edit C24");
++    kani::cover!(after & (1u64 << 25) != 0, "Edit C25");
++    kani::cover!(after & (1u64 << 26) != 0, "Edit C26");
++    kani::cover!(after & (1u64 << 27) != 0, "Edit C27");
++    kani::cover!(after & (1u64 << 28) != 0, "Edit C28");
++    kani::cover!(after & (1u64 << 29) != 0, "Edit C29");
++    kani::cover!(after & (1u64 << 30) != 0, "Edit C30");
++}
++
++#[kani::proof]
++#[kani::unwind(9)]
++fn verus_eval_diag_action_Inspect() {
++    let mut journal = any_state();
++    kani::assume(journal.inductive_invariant());
++    journal.step(0, any_below(2), Action::Inspect, any_below(2), kani::any());
++    let after = journal.strengthening_mask();
++    kani::cover!(!journal.s1_holds(), "Inspect S1");
++    kani::cover!(after & (1u64 << 0) != 0, "Inspect C0");
++    kani::cover!(after & (1u64 << 1) != 0, "Inspect C1");
++    kani::cover!(after & (1u64 << 2) != 0, "Inspect C2");
++    kani::cover!(after & (1u64 << 3) != 0, "Inspect C3");
++    kani::cover!(after & (1u64 << 4) != 0, "Inspect C4");
++    kani::cover!(after & (1u64 << 5) != 0, "Inspect C5");
++    kani::cover!(after & (1u64 << 6) != 0, "Inspect C6");
++    kani::cover!(after & (1u64 << 7) != 0, "Inspect C7");
++    kani::cover!(after & (1u64 << 8) != 0, "Inspect C8");
++    kani::cover!(after & (1u64 << 9) != 0, "Inspect C9");
++    kani::cover!(after & (1u64 << 10) != 0, "Inspect C10");
++    kani::cover!(after & (1u64 << 11) != 0, "Inspect C11");
++    kani::cover!(after & (1u64 << 12) != 0, "Inspect C12");
++    kani::cover!(after & (1u64 << 13) != 0, "Inspect C13");
++    kani::cover!(after & (1u64 << 14) != 0, "Inspect C14");
++    kani::cover!(after & (1u64 << 15) != 0, "Inspect C15");
++    kani::cover!(after & (1u64 << 16) != 0, "Inspect C16");
++    kani::cover!(after & (1u64 << 17) != 0, "Inspect C17");
++    kani::cover!(after & (1u64 << 18) != 0, "Inspect C18");
++    kani::cover!(after & (1u64 << 19) != 0, "Inspect C19");
++    kani::cover!(after & (1u64 << 20) != 0, "Inspect C20");
++    kani::cover!(after & (1u64 << 21) != 0, "Inspect C21");
++    kani::cover!(after & (1u64 << 22) != 0, "Inspect C22");
++    kani::cover!(after & (1u64 << 23) != 0, "Inspect C23");
++    kani::cover!(after & (1u64 << 24) != 0, "Inspect C24");
++    kani::cover!(after & (1u64 << 25) != 0, "Inspect C25");
++    kani::cover!(after & (1u64 << 26) != 0, "Inspect C26");
++    kani::cover!(after & (1u64 << 27) != 0, "Inspect C27");
++    kani::cover!(after & (1u64 << 28) != 0, "Inspect C28");
++    kani::cover!(after & (1u64 << 29) != 0, "Inspect C29");
++    kani::cover!(after & (1u64 << 30) != 0, "Inspect C30");
++}
++
++#[kani::proof]
++#[kani::unwind(9)]
++fn verus_eval_diag_action_ExecCleanup() {
++    let mut journal = any_state();
++    kani::assume(journal.inductive_invariant());
++    journal.step(0, any_below(2), Action::ExecCleanup, any_below(2), kani::any());
++    let after = journal.strengthening_mask();
++    kani::cover!(!journal.s1_holds(), "ExecCleanup S1");
++    kani::cover!(after & (1u64 << 0) != 0, "ExecCleanup C0");
++    kani::cover!(after & (1u64 << 1) != 0, "ExecCleanup C1");
++    kani::cover!(after & (1u64 << 2) != 0, "ExecCleanup C2");
++    kani::cover!(after & (1u64 << 3) != 0, "ExecCleanup C3");
++    kani::cover!(after & (1u64 << 4) != 0, "ExecCleanup C4");
++    kani::cover!(after & (1u64 << 5) != 0, "ExecCleanup C5");
++    kani::cover!(after & (1u64 << 6) != 0, "ExecCleanup C6");
++    kani::cover!(after & (1u64 << 7) != 0, "ExecCleanup C7");
++    kani::cover!(after & (1u64 << 8) != 0, "ExecCleanup C8");
++    kani::cover!(after & (1u64 << 9) != 0, "ExecCleanup C9");
++    kani::cover!(after & (1u64 << 10) != 0, "ExecCleanup C10");
++    kani::cover!(after & (1u64 << 11) != 0, "ExecCleanup C11");
++    kani::cover!(after & (1u64 << 12) != 0, "ExecCleanup C12");
++    kani::cover!(after & (1u64 << 13) != 0, "ExecCleanup C13");
++    kani::cover!(after & (1u64 << 14) != 0, "ExecCleanup C14");
++    kani::cover!(after & (1u64 << 15) != 0, "ExecCleanup C15");
++    kani::cover!(after & (1u64 << 16) != 0, "ExecCleanup C16");
++    kani::cover!(after & (1u64 << 17) != 0, "ExecCleanup C17");
++    kani::cover!(after & (1u64 << 18) != 0, "ExecCleanup C18");
++    kani::cover!(after & (1u64 << 19) != 0, "ExecCleanup C19");
++    kani::cover!(after & (1u64 << 20) != 0, "ExecCleanup C20");
++    kani::cover!(after & (1u64 << 21) != 0, "ExecCleanup C21");
++    kani::cover!(after & (1u64 << 22) != 0, "ExecCleanup C22");
++    kani::cover!(after & (1u64 << 23) != 0, "ExecCleanup C23");
++    kani::cover!(after & (1u64 << 24) != 0, "ExecCleanup C24");
++    kani::cover!(after & (1u64 << 25) != 0, "ExecCleanup C25");
++    kani::cover!(after & (1u64 << 26) != 0, "ExecCleanup C26");
++    kani::cover!(after & (1u64 << 27) != 0, "ExecCleanup C27");
++    kani::cover!(after & (1u64 << 28) != 0, "ExecCleanup C28");
++    kani::cover!(after & (1u64 << 29) != 0, "ExecCleanup C29");
++    kani::cover!(after & (1u64 << 30) != 0, "ExecCleanup C30");
++}
++
++#[kani::proof]
++#[kani::unwind(9)]
++fn verus_eval_diag_action_Open() {
++    let mut journal = any_state();
++    kani::assume(journal.inductive_invariant());
++    journal.step(0, any_below(2), Action::Open, any_below(2), kani::any());
++    let after = journal.strengthening_mask();
++    kani::cover!(!journal.s1_holds(), "Open S1");
++    kani::cover!(after & (1u64 << 0) != 0, "Open C0");
++    kani::cover!(after & (1u64 << 1) != 0, "Open C1");
++    kani::cover!(after & (1u64 << 2) != 0, "Open C2");
++    kani::cover!(after & (1u64 << 3) != 0, "Open C3");
++    kani::cover!(after & (1u64 << 4) != 0, "Open C4");
++    kani::cover!(after & (1u64 << 5) != 0, "Open C5");
++    kani::cover!(after & (1u64 << 6) != 0, "Open C6");
++    kani::cover!(after & (1u64 << 7) != 0, "Open C7");
++    kani::cover!(after & (1u64 << 8) != 0, "Open C8");
++    kani::cover!(after & (1u64 << 9) != 0, "Open C9");
++    kani::cover!(after & (1u64 << 10) != 0, "Open C10");
++    kani::cover!(after & (1u64 << 11) != 0, "Open C11");
++    kani::cover!(after & (1u64 << 12) != 0, "Open C12");
++    kani::cover!(after & (1u64 << 13) != 0, "Open C13");
++    kani::cover!(after & (1u64 << 14) != 0, "Open C14");
++    kani::cover!(after & (1u64 << 15) != 0, "Open C15");
++    kani::cover!(after & (1u64 << 16) != 0, "Open C16");
++    kani::cover!(after & (1u64 << 17) != 0, "Open C17");
++    kani::cover!(after & (1u64 << 18) != 0, "Open C18");
++    kani::cover!(after & (1u64 << 19) != 0, "Open C19");
++    kani::cover!(after & (1u64 << 20) != 0, "Open C20");
++    kani::cover!(after & (1u64 << 21) != 0, "Open C21");
++    kani::cover!(after & (1u64 << 22) != 0, "Open C22");
++    kani::cover!(after & (1u64 << 23) != 0, "Open C23");
++    kani::cover!(after & (1u64 << 24) != 0, "Open C24");
++    kani::cover!(after & (1u64 << 25) != 0, "Open C25");
++    kani::cover!(after & (1u64 << 26) != 0, "Open C26");
++    kani::cover!(after & (1u64 << 27) != 0, "Open C27");
++    kani::cover!(after & (1u64 << 28) != 0, "Open C28");
++    kani::cover!(after & (1u64 << 29) != 0, "Open C29");
++    kani::cover!(after & (1u64 << 30) != 0, "Open C30");
++}
++
++#[kani::proof]
++#[kani::unwind(9)]
++fn verus_eval_diag_action_CloseWindow() {
++    let mut journal = any_state();
++    kani::assume(journal.inductive_invariant());
++    journal.step(0, any_below(2), Action::CloseWindow, any_below(2), kani::any());
++    let after = journal.strengthening_mask();
++    kani::cover!(!journal.s1_holds(), "CloseWindow S1");
++    kani::cover!(after & (1u64 << 0) != 0, "CloseWindow C0");
++    kani::cover!(after & (1u64 << 1) != 0, "CloseWindow C1");
++    kani::cover!(after & (1u64 << 2) != 0, "CloseWindow C2");
++    kani::cover!(after & (1u64 << 3) != 0, "CloseWindow C3");
++    kani::cover!(after & (1u64 << 4) != 0, "CloseWindow C4");
++    kani::cover!(after & (1u64 << 5) != 0, "CloseWindow C5");
++    kani::cover!(after & (1u64 << 6) != 0, "CloseWindow C6");
++    kani::cover!(after & (1u64 << 7) != 0, "CloseWindow C7");
++    kani::cover!(after & (1u64 << 8) != 0, "CloseWindow C8");
++    kani::cover!(after & (1u64 << 9) != 0, "CloseWindow C9");
++    kani::cover!(after & (1u64 << 10) != 0, "CloseWindow C10");
++    kani::cover!(after & (1u64 << 11) != 0, "CloseWindow C11");
++    kani::cover!(after & (1u64 << 12) != 0, "CloseWindow C12");
++    kani::cover!(after & (1u64 << 13) != 0, "CloseWindow C13");
++    kani::cover!(after & (1u64 << 14) != 0, "CloseWindow C14");
++    kani::cover!(after & (1u64 << 15) != 0, "CloseWindow C15");
++    kani::cover!(after & (1u64 << 16) != 0, "CloseWindow C16");
++    kani::cover!(after & (1u64 << 17) != 0, "CloseWindow C17");
++    kani::cover!(after & (1u64 << 18) != 0, "CloseWindow C18");
++    kani::cover!(after & (1u64 << 19) != 0, "CloseWindow C19");
++    kani::cover!(after & (1u64 << 20) != 0, "CloseWindow C20");
++    kani::cover!(after & (1u64 << 21) != 0, "CloseWindow C21");
++    kani::cover!(after & (1u64 << 22) != 0, "CloseWindow C22");
++    kani::cover!(after & (1u64 << 23) != 0, "CloseWindow C23");
++    kani::cover!(after & (1u64 << 24) != 0, "CloseWindow C24");
++    kani::cover!(after & (1u64 << 25) != 0, "CloseWindow C25");
++    kani::cover!(after & (1u64 << 26) != 0, "CloseWindow C26");
++    kani::cover!(after & (1u64 << 27) != 0, "CloseWindow C27");
++    kani::cover!(after & (1u64 << 28) != 0, "CloseWindow C28");
++    kani::cover!(after & (1u64 << 29) != 0, "CloseWindow C29");
++    kani::cover!(after & (1u64 << 30) != 0, "CloseWindow C30");
++}
++
++#[kani::proof]
++#[kani::unwind(9)]
++fn verus_eval_diag_action_Crash() {
++    let mut journal = any_state();
++    kani::assume(journal.inductive_invariant());
++    journal.step(0, any_below(2), Action::Crash, any_below(2), kani::any());
++    let after = journal.strengthening_mask();
++    kani::cover!(!journal.s1_holds(), "Crash S1");
++    kani::cover!(after & (1u64 << 0) != 0, "Crash C0");
++    kani::cover!(after & (1u64 << 1) != 0, "Crash C1");
++    kani::cover!(after & (1u64 << 2) != 0, "Crash C2");
++    kani::cover!(after & (1u64 << 3) != 0, "Crash C3");
++    kani::cover!(after & (1u64 << 4) != 0, "Crash C4");
++    kani::cover!(after & (1u64 << 5) != 0, "Crash C5");
++    kani::cover!(after & (1u64 << 6) != 0, "Crash C6");
++    kani::cover!(after & (1u64 << 7) != 0, "Crash C7");
++    kani::cover!(after & (1u64 << 8) != 0, "Crash C8");
++    kani::cover!(after & (1u64 << 9) != 0, "Crash C9");
++    kani::cover!(after & (1u64 << 10) != 0, "Crash C10");
++    kani::cover!(after & (1u64 << 11) != 0, "Crash C11");
++    kani::cover!(after & (1u64 << 12) != 0, "Crash C12");
++    kani::cover!(after & (1u64 << 13) != 0, "Crash C13");
++    kani::cover!(after & (1u64 << 14) != 0, "Crash C14");
++    kani::cover!(after & (1u64 << 15) != 0, "Crash C15");
++    kani::cover!(after & (1u64 << 16) != 0, "Crash C16");
++    kani::cover!(after & (1u64 << 17) != 0, "Crash C17");
++    kani::cover!(after & (1u64 << 18) != 0, "Crash C18");
++    kani::cover!(after & (1u64 << 19) != 0, "Crash C19");
++    kani::cover!(after & (1u64 << 20) != 0, "Crash C20");
++    kani::cover!(after & (1u64 << 21) != 0, "Crash C21");
++    kani::cover!(after & (1u64 << 22) != 0, "Crash C22");
++    kani::cover!(after & (1u64 << 23) != 0, "Crash C23");
++    kani::cover!(after & (1u64 << 24) != 0, "Crash C24");
++    kani::cover!(after & (1u64 << 25) != 0, "Crash C25");
++    kani::cover!(after & (1u64 << 26) != 0, "Crash C26");
++    kani::cover!(after & (1u64 << 27) != 0, "Crash C27");
++    kani::cover!(after & (1u64 << 28) != 0, "Crash C28");
++    kani::cover!(after & (1u64 << 29) != 0, "Crash C29");
++    kani::cover!(after & (1u64 << 30) != 0, "Crash C30");
++}
++
++#[kani::proof]
++#[kani::unwind(9)]
++fn verus_eval_diag_action_ExternalMtime() {
++    let mut journal = any_state();
++    kani::assume(journal.inductive_invariant());
++    journal.step(0, any_below(2), Action::ExternalMtime, any_below(2), kani::any());
++    let after = journal.strengthening_mask();
++    kani::cover!(!journal.s1_holds(), "ExternalMtime S1");
++    kani::cover!(after & (1u64 << 0) != 0, "ExternalMtime C0");
++    kani::cover!(after & (1u64 << 1) != 0, "ExternalMtime C1");
++    kani::cover!(after & (1u64 << 2) != 0, "ExternalMtime C2");
++    kani::cover!(after & (1u64 << 3) != 0, "ExternalMtime C3");
++    kani::cover!(after & (1u64 << 4) != 0, "ExternalMtime C4");
++    kani::cover!(after & (1u64 << 5) != 0, "ExternalMtime C5");
++    kani::cover!(after & (1u64 << 6) != 0, "ExternalMtime C6");
++    kani::cover!(after & (1u64 << 7) != 0, "ExternalMtime C7");
++    kani::cover!(after & (1u64 << 8) != 0, "ExternalMtime C8");
++    kani::cover!(after & (1u64 << 9) != 0, "ExternalMtime C9");
++    kani::cover!(after & (1u64 << 10) != 0, "ExternalMtime C10");
++    kani::cover!(after & (1u64 << 11) != 0, "ExternalMtime C11");
++    kani::cover!(after & (1u64 << 12) != 0, "ExternalMtime C12");
++    kani::cover!(after & (1u64 << 13) != 0, "ExternalMtime C13");
++    kani::cover!(after & (1u64 << 14) != 0, "ExternalMtime C14");
++    kani::cover!(after & (1u64 << 15) != 0, "ExternalMtime C15");
++    kani::cover!(after & (1u64 << 16) != 0, "ExternalMtime C16");
++    kani::cover!(after & (1u64 << 17) != 0, "ExternalMtime C17");
++    kani::cover!(after & (1u64 << 18) != 0, "ExternalMtime C18");
++    kani::cover!(after & (1u64 << 19) != 0, "ExternalMtime C19");
++    kani::cover!(after & (1u64 << 20) != 0, "ExternalMtime C20");
++    kani::cover!(after & (1u64 << 21) != 0, "ExternalMtime C21");
++    kani::cover!(after & (1u64 << 22) != 0, "ExternalMtime C22");
++    kani::cover!(after & (1u64 << 23) != 0, "ExternalMtime C23");
++    kani::cover!(after & (1u64 << 24) != 0, "ExternalMtime C24");
++    kani::cover!(after & (1u64 << 25) != 0, "ExternalMtime C25");
++    kani::cover!(after & (1u64 << 26) != 0, "ExternalMtime C26");
++    kani::cover!(after & (1u64 << 27) != 0, "ExternalMtime C27");
++    kani::cover!(after & (1u64 << 28) != 0, "ExternalMtime C28");
++    kani::cover!(after & (1u64 << 29) != 0, "ExternalMtime C29");
++    kani::cover!(after & (1u64 << 30) != 0, "ExternalMtime C30");
++}
++
++/// The inductive step: INV ∧ one action ⟹ INV, including the model's inline
++/// assertions (no body without an entry; S2 in cleanup).
++#[kani::proof]
++#[kani::unwind(9)]
++fn verus_eval_inductive_step() {
++    let mut journal = any_state();
++    kani::assume(journal.inductive_invariant());
++    journal.step(0, any_below(2), kani::any(), any_below(2), kani::any());
++    assert!(journal.contents_well_formed(), "step: W0");
++    assert!(journal.s1_holds(), "step: S1");
++    assert!(journal.s3_holds(), "step: S3");
++    assert!(journal.s4_holds(), "step: S4");
++    assert!(journal.single_owner_holds(), "step: one owner");
++    assert!(journal.strengthening_holds(), "step: strengthening");
++}
++
+ // --- set-aside naming ---------------------------------------------------------
+ //
+ // The journal model above keeps preserved content as a set, so it cannot see
