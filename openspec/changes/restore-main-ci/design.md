@@ -630,6 +630,49 @@ Independent review of `origin/main..HEAD` at `7da3d54c`. Evidence is in
   enriched assertion names the mechanism and it is fixed failing first, or
   the maintainer accepts eight clean branch runs of the `window` shard as the
   regression proof with the diagnosis carried as a recorded follow-up.
+- **R6. The D2 tests depended on when the test acted (must-fix, fixed).**
+  The PR's first CI run (`7da3d54c`) failed
+  `test_a_reallocation_offset_at_the_top_is_still_repaired_after_a_reflow` on
+  both attempts (`y = 114`, no repair), and the second (`fd9ce7b5`) again.
+  The tests waited for the toggle's width change, then acted: on a slow
+  runner the wait's main-loop drain could run the 150 ms settle first, so
+  the guard saw no burst and the two scroll tests passed vacuously. Starved
+  local runs with an env-gated trace (never committed) found two more routes:
+  - a starved run in which no settle ran at all: hiding the minimap retires
+    its map, and every minimap refresh while it is hidden cancels a pending
+    reflow settle (`run_minimap_refresh` clears it), so the hide's deferred
+    refresh cancelled the burst the test was acting in. Pre-existing on
+    `main`; its user-facing effect is nil in practice (the repair is only
+    needed for an offset GTK does not produce, R2), so the product is
+    unchanged and recorded here; the tests no longer open their burst by
+    hiding the minimap;
+  - the guard's precondition read the offset after the helper returned, by
+    which time a starved settle had already repaired it (the behaviour under
+    test).
+  Fix, test-only: the tests hide the minimap and wait until no burst is
+  pending, then open their burst by *showing* it and act from a high-priority
+  idle queued by the first horizontal page-size change, asserting the burst
+  is pending then; the scroll test also asserts the burst is pending when the
+  mark scroll lands; the kept-scroll test's later width reflow is an end
+  margin on the editor's scroller (the minimap stays shown); the guard reads
+  its offset inside the action. Each is red with its fix part disabled
+  (`stage4/d2-red2/`: no snap `y = 114`, no classifier `y = -6`, no re-record
+  `y = -6` at the later reflow) and green 20/20 starved
+  (`stage4/d2-starved3/`, `stage4/d2-starved4/`: the guard also 20/20 with four
+  busy loops).
+- **R7. CI's D1 failure was the window's own tick (explained, R3's fix).**
+  `test_a_restore_after_the_draft_settled_owes_a_draft` failed on both CI
+  attempts of `7da3d54c` at the strict assertion: the test runs about 5 s on
+  CI, so the window's 5 s autosave tick lands at the replacement terminal and
+  writes the restored text inside one `wait_until` drain. On `fd9ce7b5`, with
+  `owes_or_wrote`, the `window` shard passed; the assertion now also prints
+  the draft state, so a future failure says whether the draft was written.
+- **3.5 closed.** The advisory job is green on both PR runs: the script logs
+  `openssl-sys 0.9.88 -> 0.9.118, no other lock change`, public-API snapshots
+  are generated for all eight GTK Lush crates, and the cold install took about
+  4.5 minutes (job about 7.5) against the 20-minute limit. `cargo semver-checks`
+  reports missing baselines, which is the advisory's expected state for
+  unpublished crates.
 - **Also checked, no finding:** D1's handler refactor is behaviour-equivalent
   for edits (the `modified-changed` path now also marks a running pass
   pending, which the `changed` path already did); `is_modified()` excludes

@@ -193,7 +193,7 @@ Timing: none (no timed path's cost changes).
       `README.md` if it lists the advisory tools. Then run
       `make check-agent-docs` or the guidance validator `build.md` names.
       Commit and push.
-- [ ] 3.5 After the push, read the branch's GTK Lush API Advisory job (do not
+- [x] 3.5 After the push, read the branch's GTK Lush API Advisory job (do not
       wait on other jobs).
       - It must be green with eight non-empty snapshots.
       - Record the install step's duration on a cold cache against the
@@ -298,13 +298,21 @@ Design "Stage 4 review" holds the findings and decisions (R1–R5); evidence is
 in `.claude/handoffs/restore-main-ci/stage4/`.
 
 - **R1** SonarQube S6506 fixed: HTTPS-only download (`e85ca31b`).
-- **R2** A112 gains its rewrap half (word-wrapped view, at the top and
+- **R2** (`a9e54afb`) A112 gains its rewrap half (word-wrapped view, at the top and
   mid-document: every move carried); sample check holds on GTK 4.24.1.
 - **R3** The owed-draft tests accept a draft already written, and the
   pass-captured test keeps its pass in flight across the restore start
   (`0b31df41`): red on the pre-fix core, 20/20 starved.
 - **R4** Two rest-state pausers checked; no change.
 - **R5** 4.2 stays open and blocks merge (design R5).
-- Still open on the PR's CI: 3.5 (API advisory job green, eight snapshots,
-  cold install time against 20 minutes) and the eight-run proof for the
-  `editor-page`, `window` and `surfaces` shards.
+- **R6** (`75332603`) The D2 tests open their burst by showing the minimap and act inside
+  it (design R6): the guard failed on both PR CI runs; red with each fix part
+  disabled, 20/20 starved.
+- **R7** CI's D1 failure was the window's own 5 s tick (design R7).
+- **3.5** Closed: the advisory job is green on both PR runs, eight
+  snapshots, cold install about 4.5 minutes.
+- Eight-run proof so far (no `FLAKY` line for the watched tests):
+  `surfaces` 2 (`7da3d54c`, `fd9ce7b5`), `window` 2 (no bookmark `FLAKY`
+  on either; `7da3d54c` failed on R7), `editor-page` 0 counted (both runs
+  failed on R6; no minimap `FLAKY` line on either). Local: the `editor-page`
+  and `window` shards passed on the final tests with no `FLAKY`.
