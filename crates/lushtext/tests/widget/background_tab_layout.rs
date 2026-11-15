@@ -212,7 +212,13 @@ fn wait_laid_out(editor: &LushtextEditorPage) {
     let adjustment = editor.source_view().vadjustment().expect("vadjustment");
     let started = Instant::now();
     let mut upper = adjustment.upper();
-    while started.elapsed() < Duration::from_secs(30) {
+    loop {
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "the view never laid its document out: upper {}, page {}",
+            adjustment.upper(),
+            adjustment.page_size()
+        );
         flush_after_delay(Duration::from_millis(300));
         let now = adjustment.upper();
         if (now - upper).abs() < 0.5 && now > adjustment.page_size() {

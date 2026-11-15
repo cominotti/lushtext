@@ -585,3 +585,64 @@ made, with the reason for each:
 - 3.4: "starved" now means a lane run at `--cpus=1`, because the
   programme's briefs forbid `taskset`. The unlimited control now needs
   five runs.
+
+## Review record (stage 4, 2026-11-15)
+
+An independent review of `origin/main..HEAD` covered the fix, the tests, A113,
+the lane script, the spec deltas and the records. Findings and decisions:
+
+- **R1 (should-fix, fixed): the reattach's rest record still said "line 0".**
+  `attach_view` recorded the view as resting at the top
+  (`rest_state.set_at_lower`) for any kept position on line 0. Stage 3 had
+  moved `scroll_view_to_kept_line` to the document's start, so a tab kept on
+  a display line inside a wrapped line one was put back at that line (300 px
+  in the wrap test) while it was recorded "at the top".
+  - The end of the hold normally re-records the rest state, so the stale
+    record is read only while the rest state stays paused past the hold: a
+    width burst open when the hold ends. Two consumers read it then. The
+    top-edge clamp runs on a vertical page-size change in that burst and
+    snaps to `lower`. The settle snaps to `lower` too, if no scroll was noted
+    during the burst.
+  - Fix: the record is `is_start()`, the same predicate as the scroll.
+  - Not failing-first, by decision. A widget test resized the window across
+    the reattach in two variants: width and height together, then width only
+    with height steps after the hold. Both were green on the unfixed code,
+    and a value trace showed why. The reattach's animated scroll counts as a
+    scroll in the first burst, so that burst's settle re-records the real
+    position. GTK delivered the view's vertical page-size changes only after
+    that settle, so the clamp never read the stale record. The window is
+    real but not reachable deterministically in the harness. It is recorded
+    as a consistency correction, and no test claims to guard it.
+- **R2 (nit, fixed):** A113's probe documentation, catalogue entry and ledger
+  row still said the reattach rests "the first line" at `lower`. They now say
+  "the document's start", as the code does.
+- **R3 (minor, fixed):** `background_tab_layout::wait_laid_out` fell out of its
+  30 s loop silently, so a timeout surfaced as a misleading later assertion.
+  It now panics with the adjustment's `upper` and page size.
+- **Decided: the notes source's construction ceiling stays at 96 MiB**
+  (`MAX_PALETTE_NOTE_CONSTRUCTION_BYTES`). With rows of about 650 bytes the
+  source stops counting past the 64 MiB retained ceiling and reports the
+  total as a lower bound ("at least").
+  - The user still sees every retained row, and a cut that is stated
+    honestly, in the UI, to assistive technologies and in the snapshot. Only
+    the size of the hidden remainder is approximate.
+  - Raising the ceiling would raise the notes source's peak memory for every
+    user, to make the count exact for workspaces with roughly 100,000 or more
+    bookmarks on short paths.
+  - User experience first favours the bounded peak. The doc comment records
+    the limitation.
+- Checked without findings:
+  - the fix's two call sites;
+  - the hold and clamp interplay (`holds_top_line` guards the clamp);
+  - the A113 probe, which goes red if GTK ever rests the aligned scroll at
+    `lower`;
+  - the lane script: `FLAKY:` and `FLAKY-SHARD:` count as red, its self-test
+    covers a retry-rescued pass, and it has no `pgrep -f`;
+  - the notes fixture's pinned path, which still exercises 131,072 rows and
+    the A1 realized-row cap;
+  - the window test's wait order;
+  - the spec deltas, which are ADDED only, so no scenario is renamed;
+  - every `tasks.md` box, which is checked;
+  - `MEASURE-QUEUE.md`, which has no entry for this change;
+  - per-test GSettings isolation, since each widget test runs in its own
+    child process.

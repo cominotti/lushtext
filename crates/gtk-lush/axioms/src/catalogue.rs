@@ -1851,9 +1851,9 @@ const CATALOGUE: &[Axiom] = &[
                     box's location, never at lower; GTK moves there through \
                     gtk_adjustment_animate_to_value",
         dependent_designs: &[
-            "diagnose-ci-only-reflow-guard-failure D3: a reattached editor view whose kept top \
-             line is the first sets its vertical value to lower itself instead of asking GTK \
-             for the aligned scroll (ui/editor_page/view_attachment.rs)",
+            "diagnose-ci-only-reflow-guard-failure D3: a reattached editor view whose kept \
+             position is the document's start sets its vertical value to lower itself instead \
+             of asking GTK for the aligned scroll (ui/editor_page/view_attachment.rs)",
         ],
         slow: false,
         version_bound: None,

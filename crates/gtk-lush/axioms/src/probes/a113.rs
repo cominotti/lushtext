@@ -10,10 +10,10 @@
 //! `value-changed` emissions (measured here, not asserted).
 //!
 //! LushText puts a reattached editor view back at its kept top line
-//! (`ui/editor_page/view_attachment.rs`). For the first line it sets the value
-//! to `lower` itself instead of asking GTK for the aligned scroll, so a tab
-//! resting at its top comes back resting there, its top-anchor repair armed
-//! (`diagnose-ci-only-reflow-guard-failure`).
+//! (`ui/editor_page/view_attachment.rs`). When the kept position is the
+//! document's start it sets the value to `lower` itself instead of asking GTK
+//! for the aligned scroll, so a tab resting at its top comes back resting
+//! there, its top-anchor repair armed (`diagnose-ci-only-reflow-guard-failure`).
 
 use gtk4::prelude::*;
 

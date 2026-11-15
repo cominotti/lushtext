@@ -410,10 +410,14 @@ impl LushtextEditorPage {
             // tiny allocation reported: without this, a reflow settle or a
             // top-edge clamp after the reattach read "at the top" and sent the
             // tab back to line 0 (`bound-notes-browser-by-budget`, a flaky
-            // widget test traced to both).
+            // widget test traced to both). "At the top" is the document's
+            // start, the one position `scroll_view_to_kept_line` rests at
+            // `lower`: a kept display line inside a wrapped line one is not,
+            // and a resize whose burst outlives the hold would otherwise read
+            // the stale record (`diagnose-ci-only-reflow-guard-failure`).
             self.imp().overscroll.rest_state.set_at_lower(
                 gtk_lush_viewport::ViewportAxis::Vertical,
-                document.iter_at_mark(&mark).line() == 0,
+                document.iter_at_mark(&mark).is_start(),
             );
             self.hold_top_line_while_laying_out(mark);
         }

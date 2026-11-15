@@ -4099,6 +4099,14 @@ separate change, in this order:
        reproduced), and `surfaces` for directory retention (its CI figure
        needs the runner). Each shard's first CI run on `main` after the
        merge is read for those tests and for F1.
+     - Stage-4 review: the reattach's rest record now uses the same
+       document-start predicate as its scroll (it said "line 0", stale for
+       a display line inside a wrapped line one while a width burst outlives
+       the hold). It is a consistency correction, with no failing-first test:
+       two resize variants were green on the unfixed code, and the trace is
+       in the design's review record. Decided: the notes construction ceiling
+       stays at 96 MiB. A count past the retained ceiling is reported as a
+       lower bound rather than raising every user's peak memory.
    - `harden-flatpak-sdk-update-ci` (implemented 2026-11-14, merged (PR #100,
      `main` `6211a9c1`) and archived 2026-11-14,
      `openspec/changes/archive/2026-11-14-harden-flatpak-sdk-update-ci/`,
