@@ -53,8 +53,7 @@ pub fn natural_height_list(model: &CountingSectionModel) -> (gtk4::Box, gtk4::Li
         let text = item
             .item()
             .and_downcast::<gtk4::StringObject>()
-            .map(|object| object.string().to_string())
-            .unwrap_or_default();
+            .map_or_default(|object| object.string().to_string());
         if let Some(label) = item.child().and_downcast::<gtk4::Label>() {
             label.set_text(&text);
         }

@@ -554,8 +554,7 @@ impl LushtextWindow {
     /// Every other live window of this window's journal, in creation order.
     fn journal_peers(&self) -> Vec<Self> {
         self.process_draft_journal()
-            .map(|journal| journal.peers(self.imp().drafts.journal_key.get()))
-            .unwrap_or_default()
+            .map_or_default(|journal| journal.peers(self.imp().drafts.journal_key.get()))
     }
 
     /// Mirror a manifest this window just adopted into every other window's

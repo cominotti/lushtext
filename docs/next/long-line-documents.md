@@ -4024,6 +4024,103 @@ separate change, in this order:
      each measured first; `GtkAccessibleText` on the widget if a screen
      reader needs text ranges in a row; the A109 upstream report
      (`docs/upstream-reports.md`, drafted, filing needs the maintainer).
+   - `restore-main-ci` (merged 2026-11-15, PR #99, `main` `dee22056`, on
+     local evidence by maintainer decision; archived 2026-11-15,
+     `openspec/changes/archive/2026-11-15-restore-main-ci/`; specs
+     `draft-session-recovery`, `editor-minimap`,
+     `gtk-lush-internal-platform`, `widget-test-ci-sharding`). Restores
+     `main`'s CI:
+     - D1: text installed by local-history Restore, Undo Restore and a
+       set-aside draft opened in a tab now owes a draft
+       (`note_draft_owed`) and redraws the "•" title;
+     - D2: a scroll made during a passive width reflow survives the
+       settle (axiom A112), and R8 keeps it while the minimap is hidden;
+     - D3: the GTK Lush API advisory installs `cargo-public-api` from a
+       checksum-pinned crate on OpenSSL 4;
+     - D4: two retry-rescued widget tests diagnosed and fixed (directory
+       retention, protected periodic capture).
+     **Follow-up `diagnose-ci-only-reflow-guard-failure`** (queued):
+     F1, the D2 guard
+     `test_a_reallocation_offset_at_the_top_is_still_repaired_after_a_reflow`,
+     fails on every CI run and passes locally, starved or not, before and
+     after the merge; task 4.2, the bookmark preview-only test, is not
+     diagnosed (it failed on CI inside the full `window` shard); and the
+     eight-branch-run proof for `editor-page`, `window` and `surfaces`.
+   - `harden-flatpak-sdk-update-ci` (implemented 2026-11-14, merged (PR #100,
+     `main` `6211a9c1`) and archived 2026-11-14,
+     `openspec/changes/archive/2026-11-14-harden-flatpak-sdk-update-ci/`,
+     spec `openspec/specs/flatpak-ci-build/`; a `restore-main-ci`
+     follow-up under the pre-existing-blockers rule). PR #98's `Flatpak
+     Build` failed twice and passed on a rerun (run `43642169956`): the CI
+     image's system installation sits on overlayfs, and when Flathub has
+     newer GNOME 51 refs, flatpak's update renames lower-layer deployment
+     directories, which an overlay without `redirect_dir` refuses (`Invalid
+     cross-device link`, then a flatpak-builder segfault). CI Flatpak builds
+     now go through `.github/actions/flatpak-build`: diagnostics and a
+     `rename(2)` probe, then `scripts/ci-flatpak-installation.py relocate`
+     (`cp -a` to `$RUNNER_TEMP`, a `mount(2)` bind over `/var/lib/flatpak`,
+     a re-probe that must return `ok`). `make check-flatpak-ci-builds` (in
+     `check-policy`) keeps every job on it. A `release.yml` dispatch now
+     builds the dispatched commit, a dry run works for an untagged version
+     from any branch (a pre-existing blocker: it could not pass `Release
+     Metadata` with any version), and a non-dry dispatch is refused off
+     `main`. Kani: none (no proven module touched). Timing: none (no timed
+     path touched). Axioms: none.
+     - **Local evidence (the merge gate, design D8),** in the real image
+       `sha256:78d969b1…` on this host (overlay `redirect_dir` N):
+       - L1, as shipped: `rename-probe: EXDEV`, and `flatpak-builder
+         --install-deps-only` fails every update with the CI text, then
+         exits 139;
+       - L2, relocated, each step a separate `docker exec`: the mount
+         persists, `rename-probe: ok`, the same command updates the SDK,
+         Platform, GL, codecs and locales, and a full build with CI's
+         arguments from a `git archive` of the branch succeeds;
+       - L3: a destination inside the checkout is refused before any copy,
+         and a forced post-relocation probe failure stops the step naming
+         the probe, the result and the filesystem.
+       Details: `openspec/changes/archive/2026-11-14-harden-flatpak-sdk-update-ci/evidence/`.
+     - **The relocation's local cost** (non-verdict, host under other
+       agents' load): 3.8 GiB copied with hardlinks kept, 12.2–21.0 s of
+       wall time (6.8 s in the stage 2 reproduction), against the 90 s
+       acceptance budget of design D2.
+     - **Open, owed by the programme's final CI sweep** (design D8): C1, a
+       green `flatpak.yml` run on `main` logging the diagnostics, the
+       relocation within 90 s and `rename-probe: ok`; C2, one `release.yml`
+       dry-run dispatch from `main` with an untagged version (for example
+       `v0.8.4-dryrun.1`), the publish jobs skipped and no new tag or
+       release afterwards; C3, if either fails or the relocation exceeds
+       90 s, fix it (the D2 fallback is an empty system installation
+       filled from Flathub). C1 is also the first execution of three
+       things no local run can show (stage 4 review): the composite
+       action's nested `flatpak-builder@v6` node action inside a container
+       job (fallback: run the two helper steps in each job before a
+       direct `flatpak-builder@v6` step, and make `check-flatpak-ci-builds`
+       require those steps instead of the composite action),
+       `mount(2)` on a hosted runner (fallback: `FLATPAK_SYSTEM_DIR`
+       through `$GITHUB_ENV`, design D1), and the extra 3.8 GiB on runner
+       disk (fallback: D2's empty installation).
+     - **Upstream report candidates** (design D10; filing needs the
+       maintainer, outside the `upstream-gtk-reports` skill's projects):
+       `flatpak/flatpak-builder` segfaulting after `Error: Failed to update
+       org.gnome.Sdk`; `flathub-infra/flatpak-github-actions` shipping an
+       image whose system installation cannot be updated on overlay without
+       `redirect_dir` (and lagging Flathub since 2026-09-22).
+     - **Pre-existing flake fixed:** the final-tree `make test` caught
+       `editor_page::test_buffer_replacement_evidence_reads_stay_side_effect_free_across_replacement_mutation`
+       passing only on retry. A buffer replacement's 1 ms slice turns chain
+       inside one `wait_until` drain when they overrun on a loaded host, so
+       the in-flight `mutation_started` was never sampled (reproduced 2 of 6
+       isolated runs under CPU saturation). It and the save-formatting test
+       with the same transient wait now use `observed_between_dispatches`
+       (16 of 16 clean under the same load); test-only.
+     - **Observed, follow-up:** the Flatpak build (locally and so in CI)
+       prints cargo's ``warning: `…/cargo/config` is deprecated in favor of
+       `config.toml` `` twice. The file is the `inline` vendoring source
+       `flatpak-cargo-generator` writes into `build-aux/cargo-sources.json`
+       (`"dest-filename": "config"`), which this change does not touch
+       (design D9). Fix by having `make cargo-sources` and the Flathub
+       generator emit `config.toml`, or report it upstream to
+       `flatpak/flatpak-builder-tools`.
    Also recorded: a process-wide retained-byte ledger for many expanded
    huge sidebar directories (the budget, like the count before it, is per
    directory). From BN (besides `lighten-notes-browser-rows`, queued above):
@@ -4724,3 +4821,80 @@ not restated; each holds on the Fedora 45 host and in the GNOME 51 and GNOME
   leaves a pending worker (no `highlight-updated` follows).
 - A86: a reload with unchanged text no longer grows with the unrelated
   widgets.
+
+## RA `rust-1-100-adoption` (implementation record, 2026-11-14)
+
+**Status:** implemented 2026-11-14 on branch `rust-1-100-adoption`; merged
+2026-11-15 (PR #105, `main` `9df24739`) and archived 2026-11-15
+(`openspec/changes/archive/2026-11-15-rust-1-100-adoption/`). Design and
+decisions: the archived `design.md` (its "Implementation findings and
+decisions" section); evidence in the archived `evidence/` and
+`.claude/handoffs/rust-1-100-adoption/`. It lands first among the parallel
+programme runs, because its Clippy sweep and regenerated files
+(`Cargo.lock`, `workspace-hack`, `build-aux/cargo-sources.json`) cannot be
+text-merged.
+
+**The pin and the MSRV stay at 1.98.0.** The shipped Flatpak builds with
+`org.freedesktop.Sdk.Extension.rust-stable//26.08`, still 1.98.0, and
+`.agents/rules/build.md` item 5 requires the tested binary to be built by the
+shipped compiler.
+
+What landed:
+
+- **A8, durable rename classification** (a data-integrity defect independent
+  of the toolchain). `RenameProtocol` now ends in `Finish(RenameClass)`
+  (success, before-rename, after-rename), the shell maps it to
+  `DurableWriteError`, and the no-replace fallback runs only on a
+  before-rename `Unsupported`. An `Unsupported` parent-directory sync after a
+  completed rename no longer reads as `AlreadyExists`. The sidebar treats any
+  after-rename result as a completed rename and warns that the change is not
+  yet confirmed on disk; draft set-aside treats it as placed. Kani harness
+  `every_rename_classification_describes_the_namespace` (shard
+  `core-journal-and-write`) proves the classification.
+- **Clippy 1.100 sweep:** 62 sites workspace-wide: 59 `map_or_default`
+  rewrites (stable since 1.98), one `needless_bool`, one `needless_range_loop`
+  and one `double_must_use`. Clean under 1.100 `-D warnings` and under
+  `make check` on 1.98.0.
+- **sourceview5 0.11.3** (sourceview5-rs#19): the safe `replace_all` binding
+  replaced the one `unsafe` FFI block in `ui/search_bar/execution.rs`.
+- **Guards for the next bump:** the version policy (never 1.99.0, 1.99.1 is
+  the floor of any 1.99 pin, 1.98.0 lacks the 1.98.1 vtable fix), the weekly
+  advisory `next-stable.yml` lane, nextest 0.9.151 in CI, the layout-v2
+  generated-path regex in `lint-advisory.py`, and an empty `[lints]` table in
+  `workspace-hack`.
+- **`make update-deps-cooldown`:** a 7-day publish-age cooldown with the
+  MSRV-aware fallback, run once end to end (129 packages), with version-scoped
+  `deny.toml` skips for `syn@2` and `system-deps@7`.
+
+**Pre-existing blockers fixed on the way.** `make gtk-axioms` passed only
+on retry for A70, A76 and A79 under shared-host load, so their measurement
+was hardened and their statements left unchanged. A79 keeps the fastest of
+three lookup rounds per size, and A76's growth control compares against the
+first window's fastest sample, because preemption only adds time. A70's after-paint pacing takes up to three fresh-fixture rounds,
+each recorded, because a preempted main loop lets the next frame run before
+the validation idle. `make lint-advisory` had drifted on `main`: three sites
+were fixed in code, and the rest got scoped rules in
+`scripts/lint-advisory-policy.toml`. After merging `main`, the Protected View
+whole-line copy test failed once because Mutter's clipboard manager read the
+lazy provider before the test did; the test now requires its own read to add
+a whole read's worth of chunks. Six other timing probes (A29, A85, A86, A91,
+A98, A110) each held only on retry once under load; that lane-wide fragility
+is an open decision for the maintainer.
+
+**Recorded exception, with an expiry.** sourceview5 0.11.3 was taken with
+`--precise` outside the cooldown. Until **2026-11-21 08:57 UTC** the cooldown
+refuses that release, so `make update-deps-cooldown` fails loudly on the
+`0.11.3` floor; after that it runs unchanged.
+
+**Deferred until the pin can rise** (gated on the Flathub `rust-stable`
+extension shipping ≥ the version, and, for 1.100 APIs in `lushtext-core` or
+`gtk-lush-widgets`, on a Kani release newer than 0.68.0): B1 the 1.100 pin
+itself, B2 `[lints.cargo]` `unused_dependencies` (cargo 1.98 rejects the key),
+B3 the cooldown in `.cargo/config.toml`, B4 `clippy::assert_is_empty`, B5–B8
+the post-1.98 std APIs, and B9 Cargo's layout v2. The investigation's table in
+`.claude/handoffs/rust-1-100-adoption/proposal.md` §3 is the list.
+
+**End-of-programme step for the maintainer:** upgrade the host-wide nextest to
+the CI pin, `cargo install --locked cargo-nextest --version 0.9.151`. It was
+left alone here because parallel runs were using the one binary and nothing
+local needs it while cargo 1.98 writes layout v1.

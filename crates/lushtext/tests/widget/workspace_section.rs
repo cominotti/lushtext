@@ -123,14 +123,13 @@ fn realized_folder_row_overlay(
 
 fn themed_icon_names(icon: &gio::Icon) -> Vec<String> {
     icon.downcast_ref::<gio::ThemedIcon>()
-        .map(|themed_icon| {
+        .map_or_default(|themed_icon| {
             themed_icon
                 .names()
                 .into_iter()
                 .map(|name| name.to_string())
                 .collect()
         })
-        .unwrap_or_default()
 }
 
 #[test]

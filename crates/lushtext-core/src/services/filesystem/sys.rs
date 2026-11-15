@@ -191,6 +191,11 @@ pub(in crate::services) fn cross_device_error_for_test() -> io::Error {
 /// rather than refusing every rename. Linux added `RENAME_NOREPLACE` in 3.15 and
 /// not every filesystem implements it; `EINVAL`, `ENOSYS`, and `EOPNOTSUPP` all
 /// mean "not available here".
+///
+/// That meaning holds for **this** call only. The durable wrapper syncs the
+/// parent directories afterwards, and a directory `fsync` can fail with
+/// `EOPNOTSUPP` as well, after the rename took effect; the wrapper reports that
+/// as `DurableWriteError::AfterRename`, so callers branch on the class first.
 #[cfg(unix)]
 pub(in crate::services) fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
     match rustix::fs::renameat_with(

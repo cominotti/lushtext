@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- A112 probe and sample (`restore-main-ci`): `gtk_adjustment_configure` sets
+  the value before `changed`, then emits `value-changed`; `set_value` emits
+  `value-changed` alone; a `GtkTextView` scrolling to a mark moves its value
+  with no `changed`; a word-wrapped `GtkTextView` whose width changes moves
+  its value only through `configure` (the rewrap half, at the top and
+  mid-document). Fixture `fixtures::a112` (`EmissionLog`, `Emission`,
+  `moved_on_its_own`, `every_move_was_carried`, `document_view`,
+  `wrapped_document_view`, `scroll_to_target`, `rewrap`).
 - A113, A114 and A115 probes and samples (`slice-large-directory-collapse`):
   on a mapped tree list, removing bound rows replaces their row widgets
   inside `items-changed` and never reuses one, while removing unbound rows

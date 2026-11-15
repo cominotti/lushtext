@@ -218,8 +218,7 @@ pub fn provider_texts() -> Vec<String> {
             .borrow()
             .providers
             .as_ref()
-            .map(|providers| providers.iter().map(|p| p.to_str().to_string()).collect())
-            .unwrap_or_default()
+            .map_or_default(|providers| providers.iter().map(|p| p.to_str().to_string()).collect())
     })
 }
 

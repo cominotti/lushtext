@@ -59,7 +59,9 @@ pre-commit hook, CI, and contributor docs:
   narrower command is documented as a non-blocking smoke shortcut;
 - the fast policy audits, `make check-policy` (filesystem boundary, Blueprint
   drift and template contract, workflow boundaries, accessibility and visual
-  proof policy, terminology, automation docs, and more);
+  proof policy, terminology, automation docs, the CI job timeouts
+  (`check-workflow-timeouts`), the CI Flatpak build mechanism
+  (`check-flatpak-ci-builds`), and more);
 - the rustdoc lint gate (run by hand; [`testing.md`](./testing.md));
 - `cargo deny check advisories bans sources licenses`;
 - `openspec validate --all --strict` for OpenSpec changes and specs.
@@ -137,7 +139,9 @@ dotfile edits, and no automatic rpm-ostree host layering (that requires
   the Flatpak export and makes GNOME Settings treat LushText as unsandboxed.
 - After Flatpak or desktop-entry work, run `make flatpak-install` immediately
   before `make verify-flatpak-identity`, so the verifier cannot pass against an
-  older installed build. If the task does not authorize modifying the user's
+  older installed build. Every checkout installs through the same shared
+  repository (Flatpak section below), so the install origin survives deleting
+  the worktree. If the task does not authorize modifying the user's
   Flatpak installation, omit installed-state verification and report only
   build-time evidence.
 - `make clear-lushtext-xdg` is destructive: it refuses to delete when stdin is
@@ -158,8 +162,14 @@ These patterns are replicated from invowk-rust and must be maintained:
 1. **Profiles** in workspace `Cargo.toml` — do not change without benchmarking.
 2. **rust-lld** — default linker on x86_64-linux since Rust 1.90. No manual linker override needed.
 3. **cargo-hakari** — run `cargo hakari generate` after any dependency change.
-4. **.config/nextest.toml** — configure nextest parallelism for non-widget tests here.
+4. **.config/nextest.toml** — configure nextest parallelism for non-widget tests here. CI pins one cargo-nextest version, `CARGO_NEXTEST_VERSION` (currently **0.9.151**), in **every** workflow that installs it (`ci.yml` and `mutation-testing.yml`; they must agree). The floor is **0.9.143**: the first release that resolves dylib and artifact paths under Cargo's build-directory layout v2 and `build.build-dir`, which a cargo newer than the pin writes. The local install is upgraded separately, with `cargo install --locked cargo-nextest --version <pin>`; cargo 1.98 still writes layout v1, so an older local nextest keeps working until the pin moves.
 5. **`rust-version`** — keep `rust-version = "1.98.0"` in `[workspace.package]`, inherited by every package, so `cargo check` surfaces MSRV violations early. `rust-toolchain.toml` (and every CI toolchain step and the Snap bootstrap) pins **1.98.0**, the compiler the shipped Flatpak's SDK extension ships (`org.freedesktop.Sdk.Extension.rust-stable//26.08`, the branch `org.gnome.Sdk//51` declares), because the binary we test and measure must be built by the same compiler as the binary we ship. Before changing the pin, check what that extension ships: `flatpak remote-info --user flathub-user runtime/org.freedesktop.Sdk.Extension.rust-stable/x86_64/26.08`. GTK Lush crates also have the `make gtk-lush-msrv` lane so their independently adoptable surface cannot drift ahead of the workspace floor.
+
+   **Version policy.** Some releases are never pinned, whatever the extension ships:
+   - **Never Rust 1.99.0.** It miscompiles FFI `bool` returns on x86_64 (rust#163911, fixed in 1.99.1). LushText has no `extern "C" fn … -> bool` today (gtk-rs passes `gboolean`, an `i32`), but the miscompile is silent, so no build of the shipped binary may use that compiler. **1.99.1** is the floor of any 1.99 pin. If Flathub moves `rust-stable//26.08` to 1.99.0, the pin does **not** follow: LushText stays on the current pin and waits for an extension that ships 1.99.1 or later.
+   - **The shipped 1.98.0 lacks the 1.98.1 fix** for a vtable miscompile reported against a boxed `async` service (rust#161441). LushText's exposure is low, because it has no `async` services; a change that introduces one while the pin is 1.98.0 must re-check that issue first.
+
+   **Exceptions to "every CI toolchain step pins 1.98.0".** The nightly lanes (Kani's own nightly, fuzz smoke, the GTK Lush public-API snapshot) and the weekly **advisory next-stable lane**, `.github/workflows/next-stable.yml`. That lane runs `cargo +stable clippy --workspace --all-targets --all-features --locked -- -D warnings` on the latest stable toolchain, weekly and on manual dispatch. It prints the version it tested, and it names `+stable` explicitly, because otherwise `rust-toolchain.toml` would pin it back to 1.98.0. It never runs on pull requests or pushes and is not a required check. Its failures are advisory: whoever reads one fixes the churn with APIs available at the 1.98 MSRV (as `rust-1-100-adoption` did for Clippy 1.100's `map_unwrap_or` sites) or records why not.
 
 ## SonarQube Cloud Scope
 
@@ -207,6 +217,85 @@ external dependency set changes in a way that affects Flatpak vendoring; if
 the generated `build-aux/cargo-sources.json` stays byte-identical, note that
 in the verification summary.
 
+### Dependency cooldown
+
+Refresh the lockfile with **`make update-deps-cooldown`**, never a bare
+`cargo update`. It runs five steps and stops at the first failure:
+
+1. `cargo +1.100.0 update` with `CARGO_REGISTRY_GLOBAL_MIN_PUBLISH_AGE="7 days"`
+   (no release younger than a week is chosen) and
+   `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback` (the workspace's
+   `resolver = "2"` is not MSRV-aware, so the fallback to versions whose
+   `rust-version` the 1.98.0 MSRV satisfies is asked for explicitly);
+2. `cargo hakari generate`;
+3. `make cargo-sources`;
+4. `cargo +1.98.0 check --workspace --all-targets --all-features --locked`,
+   which proves the refreshed graph builds with the pinned compiler;
+5. the whole dependency policy, `cargo deny check advisories bans sources licenses`.
+
+It fails with a clear message when the 1.100.0 toolchain is missing.
+
+- **Environment variables only.** The cooldown lives in the target's
+  environment, never in `.cargo/config.toml`: cargo 1.98 warns on the unknown
+  `registry.global-min-publish-age` key on every command. `cargo install`
+  ignores the cooldown, so a tool installed that way is not covered by it.
+- **Exceptions.** Cargo has no per-package override, and
+  `CARGO_RESOLVER_INCOMPATIBLE_PUBLISH_AGE=allow` drops the cooldown for every
+  crate, so it is never used. A release needed before its week is up is taken
+  **after** the cooldown run, without the cooldown, with
+  `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback cargo +1.100.0 update -p <crate> --precise <version>`,
+  followed by steps 2–5. Record the exception here with its reason, versions,
+  command and expiry (publish time plus seven days). Until it expires,
+  `make update-deps-cooldown` fails at step 1 with Cargo's "too new" message,
+  which is accepted and expected.
+- **Duplicate majors.** `multiple-versions = "deny"` stays. A duplicate that no
+  LushText manifest can unify (an upstream crate moved to a new major while
+  others still use the old one) gets a version-scoped `skip` entry in
+  `deny.toml` (`{ crate = "<name>@<major>", reason = … }`) whose reason names
+  the lagging crates and the condition for removing it. A `--precise` hold on
+  the newer side is not used for this: the next cooldown run undoes it and it
+  keeps upstream fixes out.
+- **New licence, advisory or source.** A refresh that fails one of these
+  stops; it is never waved through. A new licence is added to
+  `[licenses] allow` only if it is compatible with distributing a
+  GPL-3.0-or-later application, with a `deny.toml` comment naming the crate
+  that brought it; otherwise that crate is held with `--precise` and the hold
+  recorded. An advisory is fixed by a newer release or a `--precise` hold; an
+  `[advisories] ignore` entry needs a reason and a removal condition. Every
+  source stays crates.io. (`zlib-rs`, licence `Zlib`, is in `Cargo.lock` but
+  outside cargo-deny's graph for the configured targets; `cargo-sources.json`
+  still vendors it, which is accepted: `Zlib` is GPL-compatible, and a
+  vendored but unbuilt crate is not distributed in the binary.)
+- **Side lockfiles.** `fuzz/Cargo.lock` depends on `lushtext-core` by path and
+  inherits the workspace's manifest floors, so it is refreshed with step 1's
+  command in `fuzz/` in the same change (before any floor moves past what the
+  cooldown allows), checked with
+  `cargo +1.100.0 metadata --locked --format-version 1 --manifest-path fuzz/Cargo.toml`.
+  `fixtures/gtk-lush-adoption/stock-settle/Cargo.lock` is refreshed the same
+  way. `formal/evaluation/stateright/Cargo.lock` is disposable, local-only
+  evaluation tooling and is left alone.
+
+**Current exceptions:**
+
+- **sourceview5 / sourceview5-sys 0.11.3** (`rust-1-100-adoption`, 2026-11-14).
+  Published 2026-11-14 08:57 UTC; the cooldown held them at 0.11.2. Reason:
+  0.11.3 contains LushText's upstream fix (sourceview5-rs#19, !42), so
+  `SearchContext::replace_all` returns `Result<u32, glib::Error>` and no longer
+  panics when nothing matches, which retires the one `unsafe` FFI block in
+  `ui/search_bar/execution.rs`; the workspace floor is therefore `"0.11.3"`.
+  Applied after the cooldown run, in the root workspace and in `fuzz/`:
+  `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback cargo +1.100.0 update -p sourceview5 -p sourceview5-sys --precise 0.11.3`.
+  **Expires 2026-11-21 08:57 UTC.** Until then `make update-deps-cooldown`
+  fails at step 1 with `failed to select a version for the requirement
+  sourceview5 = "^0.11.3"` / `version 0.11.3 is too new (published … ago,
+  minimum age 7 days)`, and leaves `Cargo.lock` untouched. After the expiry
+  the target runs normally; delete this entry then.
+
+The same refresh found that sourceview5 0.11.2 made `View` implement
+`gtk::Accessible` only under a `gtk_v4_*` feature (0.11.0 did unconditionally),
+so the workspace dependency enables `gtk_v4_18`; see the comment in the root
+`Cargo.toml`.
+
 ## GTK Lush Family Foundation
 
 GTK Lush family crates live under `crates/gtk-lush/<member>` and must stay
@@ -231,6 +320,25 @@ missing published baseline may produce advisory output, but missing tools,
 command rot, or missing/empty public API snapshots are infrastructure failures,
 and the lane must leave inspectable public API snapshots. Once a crate
 publishes, its semver/public-API job must become blocking for that crate.
+
+CI installs `cargo-public-api` through `scripts/install-cargo-public-api.sh`,
+not `cargo install --locked cargo-public-api`: 0.52.0 (the newest release)
+locks `openssl-sys` 0.9.88, which refuses the Fedora 45 image's OpenSSL 4. The
+script downloads the crate, checks it against `CARGO_PUBLIC_API_SHA256`, raises
+exactly one lockfile entry, `openssl-sys`, to
+`CARGO_PUBLIC_API_OPENSSL_SYS_VERSION`, refuses any other lock change, and
+installs with `--locked` from the crate. The job also installs
+`libcurl-devel`, so `curl-sys` links the image's libcurl: its bundled curl
+8.10.1 does not compile against OpenSSL 4, and either half alone fails.
+**Retirement:** drop the override (and `libcurl-devel`, if nothing else needs
+it) once a release locks `openssl-sys >= 0.9.114` and a `curl-sys` that builds
+there. The script enforces it: it fails when the crate's own lock already pins
+`openssl-sys` at or above the override, so the first such version bump is red
+until the override is removed. `make check-cargo-public-api-install` (in
+`make check-policy`, and a step of the advisory job itself, since CI runs no
+`check-policy`) self-tests the script offline, with a fake crate and a fake
+`cargo`. To reproduce the CI install, run the script in a `fedora:45`
+container with the three variables from `ci.yml`.
 Governance and publication gates are in `crates/gtk-lush/GOVERNANCE.md`.
 
 ## Property Testing
@@ -568,10 +676,11 @@ Meson wraps Cargo for installed and Flatpak builds:
 - Runtime: `org.gnome.Platform` 51 (GTK 4.24, GtkSourceView 5.22, Libadwaita 1.10), SDK extension `org.freedesktop.Sdk.Extension.rust-stable` (the SDK's `26.08` branch, Rust 1.98.0). The gtk-rs feature set stays at the GNOME 50 source floor, so compiling on 4.24 proves no newer API is used.
 - The Rust stable extension must satisfy the workspace MSRV. If a local user installation is stale after an MSRV bump, update it with `flatpak update --user org.freedesktop.Sdk.Extension.rust-stable//26.08` before treating a Flatpak build failure as an application regression.
 - `make flatpak` builds without installing; it first ensures the user Flathub remote and manifest runtime/SDK dependencies are available
-- `make flatpak-install` builds and installs the checkout into the user Flatpak installation; idempotent
+- `make flatpak-install` builds and installs the checkout into the user Flatpak installation; idempotent. It exports with `--repo` (never `--install`) into **one shared install repository**, `${XDG_DATA_HOME:-$HOME/.local/share}/lushtext-flatpak-install/repo`, computed only by `scripts/flatpak-install-origin.sh path` (`LUSHTEXT_FLATPAK_INSTALL_REPO` is a test hook, never a per-checkout setting). The installed ref's origin remote `lushtext-origin` takes that repository's `file://` URL, so it must outlive every checkout, worktree and cache: a per-checkout location (the old `.flatpak-builder/cache`, or anything a build-cache prune reclaims) dangles once deleted, `~/.cache` is disposable by XDG definition, and `make clear-lushtext-xdg` deletes `$XDG_CACHE_HOME/lushtext` and `$XDG_DATA_HOME/lushtext`. `scripts/flatpak-install-origin.sh install` then, under `flock` on `<repo>.lock`, repoints and re-enables `lushtext-origin` (flatpak reuses a disabled origin with a matching URL and skips the update with exit 0), installs, prunes the repository to its heads, and fails unless the deployed commit is the one the enabled origin serves; a failed build touches no remote
+- `make verify-flatpak-identity` starts with the install-origin guard (`flatpak-install-origin.sh check`): it fails when a `lushtext*-origin` remote, enabled or disabled, points at a path with no OSTree `config` and `summary` (GNOME Software's "server has no summary file"), and prints the one-line fix, `make flatpak-install` from any checkout (or `flatpak uninstall --user dev.cominotti.lushtext//master`). `make test-flatpak-install-origin` (in `make check-policy`) proves the guard and the flatpak behaviour it relies on against real `flatpak` in a private `FLATPAK_USER_DIR`, and prints `SKIP:` without `flatpak`, `ostree` or `flock`
 - `make check-flatpak-permissions` after automation, portal/sandbox, or packaging changes proves the manifest still declares the intentional `--filesystem=host` permission
 - `make verify-flatpak-identity` after install/export changes catches stale same-ID dev launchers and verifies `X-Flatpak`, permissions, and MIME registration
-- `build-aux/cargo-sources.json` vendors all Cargo dependencies for offline builds; regenerate after dependency changes with `make cargo-sources` (requires `flatpak-cargo-generator`). Update chain: `cargo update` → `cargo hakari generate` → `make cargo-sources`
+- `build-aux/cargo-sources.json` vendors all Cargo dependencies for offline builds; regenerate after dependency changes with `make cargo-sources` (requires `flatpak-cargo-generator`). Update chain: `make update-deps-cooldown`, which runs the cooldown `cargo update` → `cargo hakari generate` → `make cargo-sources` → a `cargo +1.98.0` check → `cargo deny` (see "Dependency cooldown" under Adding Dependencies)
 
 ## Flatpak Release Automation
 
@@ -663,13 +772,47 @@ the widget suite on its platform first.
   `pipewire-gstreamer` and `gstreamer1-plugins-good`. Keep it outside required
   PR checks unless a lane is proven cheap and stable.
 - `.github/workflows/flatpak.yml` — Flatpak build in the
-  `ghcr.io/flathub-infra/flatpak-github-actions:gnome-51` container, with cache
-  keys tied to the Flatpak build inputs.
+  `ghcr.io/flathub-infra/flatpak-github-actions:gnome-51` container
+  (`--privileged`), with cache keys tied to the Flatpak build inputs; also
+  `workflow_dispatch`. It builds through the composite action
+  `.github/actions/flatpak-build`, the **only** place that names
+  `flatpak/flatpak-github-actions/flatpak-builder@`. The image keeps its GNOME
+  SDK and Platform in the system installation `/var/lib/flatpak` on overlayfs;
+  when Flathub has newer refs, flatpak's update renames deployment directories,
+  an overlay without `redirect_dir` refuses that for lower-layer directories
+  (`Invalid cross-device link`, then a flatpak-builder segfault, exit 139).
+  Which runners fail varies (PR #98, run `43642169956`: two attempts failed,
+  a rerun on another runner image passed); the passing runner's cause
+  (`redirect_dir` on, or another snapshotter) is unverified, and the fix does
+  not depend on it. So the action
+  first runs `scripts/ci-flatpak-installation.py diagnose` (one log group:
+  kernel, `redirect_dir`, overlay mounts, `findmnt`/`df` of the installation and
+  `$RUNNER_TEMP`, and a `rename(2)` probe of the first runtime's deployed commit
+  directory), then `relocate`: `cp -a` of the installation to
+  `$RUNNER_TEMP/flatpak-system` and a `mount(2)` bind over `/var/lib/flatpak`
+  (the image has no `mount` binary), refused inside the checkout, failing unless
+  the re-probe returns `ok`, and logging its wall time and `df -h` (budget 90 s,
+  judged from CI logs, never enforced). Shell steps read `$RUNNER_TEMP` and
+  `$GITHUB_WORKSPACE` from the environment, never the `${{ }}` contexts.
+  `make check-flatpak-ci-builds` (in `make check-policy` and CI's `Lint` job)
+  fails when a workflow names `flatpak-builder@`, when a job in a
+  `flatpak-github-actions` container lacks `uses: ./.github/actions/flatpak-build`
+  after its checkout, or when the one exemption (`release.yml`
+  `cominotti-flatpak`, which installs with `--user` into the host-bound
+  `$HOME`) no longer passes `--user`.
 - `.github/workflows/release-dry-run.yml` — path-filtered release automation
   check (release helper, Flathub manifest and Cominotti repository tests, a
   no-mutation preview, metadata validation).
 - `.github/workflows/release.yml` — `v*` tag release validation and manual
-  dry run; its Flathub PR step stays skipped.
+  dry run; its Flathub PR step stays skipped. A tag push builds the tag. A
+  dispatch builds the dispatched commit (`checkout-ref` is `$GITHUB_SHA`) in
+  every job; a dispatch that is not a dry run is refused unless it came from
+  `refs/heads/main`. A dry run (the default) validates an **untagged** version
+  (`make release DRY_RUN=1` refuses an existing tag, so use one such as
+  `v0.8.4-dryrun.1`), generates the Flathub artifact from `HEAD`, and runs the
+  `Release Flatpak Build` job through `.github/actions/flatpak-build`, so a dry
+  run dispatched from a branch proves a release-workflow change before merge;
+  the Cominotti repository, deploy and publish jobs stay skipped.
 - `.github/workflows/release-benchmark.yml` — release-safe benchmark report on
   `v*` tags or recovery dispatches, `fedora:45`.
 - `.github/workflows/snap.yml` — `validate` runs `snapcraft expand-extensions`;
@@ -677,13 +820,17 @@ the widget suite on its platform first.
   `SNAP_PLATFORM_AVAILABLE` repository variable.
 
 Rust validation helpers installed in CI are version-pinned in workflow `env`
-blocks: `CARGO_DENY_VERSION=0.19.8`, `CARGO_NEXTEST_VERSION=0.9.137`,
+blocks: `CARGO_DENY_VERSION=0.19.8`, `CARGO_NEXTEST_VERSION=0.9.151`,
 `CARGO_FUZZ_VERSION=0.13.1`, `CARGO_MUTANTS_VERSION=27.0.0`,
-`CARGO_SEMVER_CHECKS_VERSION=0.48.0`, `CARGO_PUBLIC_API_VERSION=0.52.0`,
-`GTK_LUSH_MSRV=1.98.0`, and `GTK_LUSH_PUBLIC_API_TOOLCHAIN=nightly-2026-06-01`;
+`CARGO_SEMVER_CHECKS_VERSION=0.48.0`, `CARGO_PUBLIC_API_VERSION=0.52.0`
+(with `CARGO_PUBLIC_API_SHA256=80f55cea…7511`, the crate's checksum, and
+`CARGO_PUBLIC_API_OPENSSL_SYS_VERSION=0.9.118`, its one lockfile override; see
+the GTK Lush Family Foundation section), `GTK_LUSH_MSRV=1.98.0`, and `GTK_LUSH_PUBLIC_API_TOOLCHAIN=nightly-2026-06-01`;
 `KANI_VERSION` comes from the Makefile. Update the pin and rerun the affected
 local validation command when intentionally refreshing a tool.
 
 **When bumping gtk-rs:** update the Fedora version in `ci.yml` and
-`release-benchmark.yml`, and the GNOME tag in `flatpak.yml` and the Flatpak
-manifest, to match the new minimum GTK requirement.
+`release-benchmark.yml`, and the GNOME tag of every
+`flatpak-github-actions` image use (`flatpak.yml`, and both container jobs of
+`release.yml`: `flatpak` and `cominotti-flatpak`) and of the Flatpak manifest,
+to match the new minimum GTK requirement.

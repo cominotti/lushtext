@@ -1,0 +1,231 @@
+# Cooldown refresh and sourceview5 0.11.3 (tasks 6.2-6.7)
+# 2026-11-14, branch rust-1-100-adoption; cargo 1.100.0 for step 1, cargo-deny 0.19.5 locally (CI pins 0.19.8, unverified locally)
+
+## 6.2  deny.toml skips added before the first run: syn@2, system-deps@7 (reasons in deny.toml)
+
+## 6.3  make update-deps-cooldown on the OLD floor (sourceview5 = "0.11")
+
+### Run 1: step 1 refreshed the lock, step 4 FAILED (a finding, fixed below)
+     Locking 129 packages to highest Rust 1.98.0 compatible versions as of 7 days ago
+cargo update changes (Updating/Adding/Removing lines): 139
+  Updating crates.io index
+  Updating aho-corasick v1.1.4 -> v1.1.5
+  Updating anyhow v1.0.103 -> v1.0.104
+  Updating bit-set v0.8.0 -> v0.11.1
+  Updating bit-vec v0.8.0 -> v0.10.1 (available: v0.10.2, published 4 days ago)
+  Updating bitflags v2.13.0 -> v2.13.2
+  Adding borsh v1.8.1
+  Adding borsh-derive v1.8.1
+  Updating bstr v1.12.1 -> v1.13.1
+  Adding bytes v1.12.1
+  Updating cairo-rs v0.22.0 -> v0.22.9 (available: v0.22.11, published 11 hours ago)
+  Updating cairo-sys-rs v0.22.0 -> v0.22.9
+  Updating cc v1.2.65 -> v1.11.1 (available: v1.11.2, published 36 hours ago)
+  Updating cfg-expr v0.20.8 -> v0.20.10 (available: v0.20.11, published 38 hours ago)
+  Updating cfg-if v1.0.4 -> v1.0.5
+  Adding cfg_aliases v0.2.2
+  Adding chacha20 v0.10.2
+  Updating clap v4.6.1 -> v4.6.7
+  Updating clap_builder v4.6.0 -> v4.6.7
+  Updating clap_derive v4.6.1 -> v4.6.7
+  Updating clap_lex v1.1.0 -> v1.1.1
+  Adding core_detect v1.0.0
+  Adding cpufeatures v0.3.1
+  Updating crc32fast v1.5.0 -> v1.5.4 (available: v1.5.5, published 5 days ago)
+  Updating crossbeam-channel v0.5.15 -> v0.5.17
+  Updating crossbeam-deque v0.8.6 -> v0.8.8
+  Updating crossbeam-epoch v0.9.20 -> v0.9.21
+  Updating crossbeam-utils v0.8.21 -> v0.8.23
+  Updating either v1.16.0 -> v1.19.0
+  Updating encoding_rs v0.8.35 -> v0.8.44
+  Updating encoding_rs_io v0.1.7 -> v0.1.8
+  Updating equivalent v1.0.2 -> v1.0.3
+  Updating escape8259 v0.5.3 -> v0.5.4
+  Updating fastrand v2.4.1 -> v2.5.0
+  Updating find-msvc-tools v0.1.9 -> v0.1.15
+  Updating flate2 v1.1.9 -> v1.1.11
+  Removing fsevent-sys v4.1.0
+  Updating futures-channel v0.3.32 -> v0.3.34
+  Updating futures-core v0.3.32 -> v0.3.34
+  Updating futures-executor v0.3.32 -> v0.3.34
+  Updating futures-io v0.3.32 -> v0.3.34
+  Updating futures-macro v0.3.32 -> v0.3.34
+  Updating futures-task v0.3.32 -> v0.3.34
+  Updating futures-util v0.3.32 -> v0.3.34
+  Updating gdk-pixbuf-sys v0.22.0 -> v0.22.9
+  Updating gdk4 v0.11.2 -> v0.11.5
+  Updating gdk4-sys v0.11.2 -> v0.11.5
+  Removing getrandom v0.2.17
+  Removing getrandom v0.3.4
+  Updating gio v0.22.6 -> v0.22.10 (available: v0.22.11, published 11 hours ago)
+  Updating gio-sys v0.22.0 -> v0.22.9 (available: v0.22.11, published 11 hours ago)
+  Updating glib v0.22.7 -> v0.22.10 (available: v0.22.11, published 11 hours ago)
+  Updating glib-build-tools v0.22.0 -> v0.22.8
+  Updating glib-macros v0.22.6 -> v0.22.9 (available: v0.22.11, published 10 hours ago)
+  Updating glib-sys v0.22.6 -> v0.22.9 (available: v0.22.11, published 11 hours ago)
+  Updating globset v0.4.18 -> v0.4.21
+  Updating gobject-sys v0.22.6 -> v0.22.9
+  Updating graphene-rs v0.22.0 -> v0.22.8
+  Updating graphene-sys v0.22.0 -> v0.22.9
+  Updating grep-matcher v0.1.8 -> v0.1.9
+  Updating grep-searcher v0.1.16 -> v0.1.17
+  Updating gsk4 v0.11.1 -> v0.11.5
+  Updating gsk4-sys v0.11.1 -> v0.11.5
+  Updating gtk4 v0.11.3 -> v0.11.5
+  Updating gtk4-macros v0.11.0 -> v0.11.5
+  Updating gtk4-sys v0.11.3 -> v0.11.5
+  Updating ignore v0.4.26 -> v0.4.34
+  Updating indexmap v2.14.0 -> v2.14.2
+  Updating inotify v0.11.2 -> v0.11.5
+  Updating inotify-sys v0.1.5 -> v0.1.8
+  Updating js-sys v0.3.102 -> v0.3.107
+  Updating kqueue v1.2.0 -> v1.2.1
+  Updating lazy_static v1.5.0 -> v1.5.1
+  Updating libadwaita v0.9.1 -> v0.9.2
+  Updating libadwaita-sys v0.9.1 -> v0.9.2
+  Updating libc v0.2.186 -> v0.2.191
+  Updating libredox v0.1.17 -> v0.1.25
+  Updating log v0.4.33 -> v0.4.35
+  Updating memchr v2.8.2 -> v2.8.3
+  Updating memmap2 v0.9.11 -> v0.9.12
+  Updating miniz_oxide v0.8.9 -> v0.9.1
+  Updating mio v1.2.1 -> v1.2.4 (available: v1.2.5, published 32 hours ago)
+  Adding multiversion_no_op v1.0.0
+  Updating notify v8.2.0 -> v8.2.1 (available: v8.2.2, published 7 days ago)
+  Updating notify-types v2.1.0 -> v2.2.0 (available: v2.3.0, published 6 days ago)
+  Adding objc2-core-foundation v0.3.2
+  Adding objc2-core-services v0.3.2
+  Updating pango v0.22.6 -> v0.22.9
+  Updating pango-sys v0.22.0 -> v0.22.9 (available: v0.22.11, published 11 hours ago)
+  Updating pkg-config v0.3.33 -> v0.3.34
+  Removing ppv-lite86 v0.2.21
+  Updating proc-macro2 v1.0.106 -> v1.0.107
+  Updating proptest v1.11.0 -> v1.12.0
+  Updating quote v1.0.46 -> v1.0.47
+  Removing r-efi v5.3.0
+  Updating rand v0.9.4 -> v0.10.3
+  Removing rand_chacha v0.9.0
+  Updating rand_core v0.9.5 -> v0.10.1
+  Updating rand_xorshift v0.4.0 -> v0.5.0
+  Updating redox_users v0.5.2 -> v0.5.3
+  Updating regex v1.12.4 -> v1.13.1
+  Updating regex-automata v0.4.14 -> v0.4.18
+  Updating rustversion v1.0.22 -> v1.0.23
+  Adding scopeguard v1.2.0
+  Updating serde v1.0.228 -> v1.0.229
+  Updating serde_core v1.0.228 -> v1.0.229
+  Updating serde_derive v1.0.228 -> v1.0.229
+  Updating serde_json v1.0.150 -> v1.0.154
+  Updating serde_spanned v1.1.1 -> v1.1.3
+  Updating simd-adler32 v0.3.9 -> v0.3.10
+  Updating smallvec v1.15.2 -> v1.16.5
+  Updating sourceview5 v0.11.0 -> v0.11.2 (available: v0.11.3, published 16 hours ago)
+  Updating sourceview5-sys v0.11.0 -> v0.11.2 (available: v0.11.3, published 16 hours ago)
+  Removing syn v2.0.118
+  Adding syn v2.0.119 (available: v3.0.10, published 6 days ago)
+  Adding syn v3.0.9 (available: v3.0.10, published 6 days ago)
+  Adding system-deps v9.0.1
+  Updating thiserror v2.0.18 -> v2.0.21
+  Updating thiserror-impl v2.0.18 -> v2.0.21
+  Updating thread_local v1.1.9 -> v1.1.10
+  Updating toml v1.1.2+spec-1.1.0 -> v1.2.1+spec-1.1.0
+  Updating toml_datetime v1.1.1+spec-1.1.0 -> v1.1.3+spec-1.1.0
+  Updating toml_edit v0.25.12+spec-1.1.0 -> v0.25.19+spec-1.1.0
+  Updating toml_parser v1.1.2+spec-1.1.0 -> v1.1.5+spec-1.1.0
+  Updating toml_writer v1.1.1+spec-1.1.0 -> v1.2.0+spec-1.1.0
+  Updating unicase v2.9.0 -> v2.10.0
+  Updating unicode-ident v1.0.24 -> v1.0.27
+  Removing wasip2 v1.0.4+wasi-0.2.12
+  Updating wasm-bindgen v0.2.125 -> v0.2.130
+  Updating wasm-bindgen-macro v0.2.125 -> v0.2.130
+  Updating wasm-bindgen-macro-support v0.2.125 -> v0.2.130
+  Updating wasm-bindgen-shared v0.2.125 -> v0.2.130
+  Updating web-sys v0.3.102 -> v0.3.107
+  Updating winnow v1.0.3 -> v1.0.5
+  Removing wit-bindgen v0.57.1
+  Updating zerocopy v0.8.52 -> v0.8.63
+  Updating zerocopy-derive v0.8.52 -> v0.8.63
+  Adding zlib-rs v0.6.8
+  Updating zmij v1.0.21 -> v1.0.23
+
+Step 4 (cargo +1.98.0 check) failed with 13 errors of one kind:
+error[E0277]: the trait `glib::object::IsA<Accessible>` is not implemented for `View`
+   --> crates/lushtext-core/src/ui/editor_page/accessibility.rs:68:40
+    |
+ 68 |         a11y::set_labelled_description(view, &format!("Editor for {identity}"), &description);
+
+Cause: sourceview5 0.11.2 (resolved by the cooldown) changed `View`'s wrapper.
+0.11.0 implemented `gtk::Accessible` in every configuration; 0.11.2 adds a third
+`#[cfg(not(any(feature = "gtk_v4_10", feature = "gtk_v4_14")))]` variant whose
+`@implements` list lacks `gtk::Accessible` (src/auto/view.rs). The workspace
+enabled only `v5_18`, which implies `gtk_v4_6`, so the editor view stopped being
+`IsA<gtk4::Accessible>`. A semver-incompatible change in a patch release.
+
+Fix (in this change): the workspace sourceview5 dependency enables
+`gtk_v4_18` (the highest GTK feature the binding offers; the GNOME 50 floor is
+GTK 4.22), with a comment in Cargo.toml.
+
+### Run 2, after the fix: the whole target, end to end, exit 0
+
+1/5 cargo update under a 7 days publish-age cooldown, MSRV fallback
+     Locking 0 packages to highest Rust 1.98.0 compatible versions as of 7 days ago
+     (run 1 had already refreshed the lock; nothing else was due)
+2/5 cargo hakari generate        (workspace-hack gains syn 3, proc-macro2 span-locations, getrandom per target; the [lints] table survived)
+3/5 make cargo-sources           (build-aux/cargo-sources.json regenerated)
+4/5 cargo +1.98.0 check --workspace --all-targets --all-features --locked
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 23.98s
+5/5 cargo deny check advisories bans sources licenses
+    advisories ok, bans ok, licenses ok, sources ok
+    (only `workspace-duplicate` warnings, which deny.toml sets to warn)
+exit=0
+
+Resolved on the old floor: sourceview5 0.11.2 ("available: v0.11.3, published 16 hours ago"),
+gtk4 0.11.5, glib 0.22.10 (0.22.11 published 11 hours ago, held by the cooldown).
+
+### Side lockfiles, refreshed with step 1's command BEFORE the floor moves (task 6.6, open item (a))
+
+fuzz/Cargo.lock: "Locking 106 packages to highest Rust 1.98.0 compatible versions as of 7 days ago";
+  sourceview5 0.11.0 -> 0.11.2, gtk4 0.11.3 -> 0.11.5, glib 0.22.7 -> 0.22.10.
+fixtures/gtk-lush-adoption/stock-settle/Cargo.lock: "Locking 49 packages to highest Rust 1.100.0
+  compatible versions as of 7 days ago" (the fixture declares no rust-version, so the fallback used the
+  running cargo's); proved on the pin: `make gtk-lush-stock-fixtures` (cargo 1.98.0, --locked) Finished.
+  No sourceview5 in it.
+formal/evaluation/stateright/Cargo.lock: left alone; disposable, local-only evaluation tooling outside
+  the spec's side-lockfile list.
+`cargo +1.100.0 metadata --locked --format-version 1 --manifest-path fuzz/Cargo.toml` -> ok (old floor).
+
+## 6.4  Floor raised to sourceview5 = { version = "0.11.3", features = ["v5_18", "gtk_v4_18"] }, exception applied without the cooldown
+
+$ CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback cargo +1.100.0 update -p sourceview5 -p sourceview5-sys --precise 0.11.3
+    Updating sourceview5 v0.11.2 -> v0.11.3
+    Updating sourceview5-sys v0.11.2 -> v0.11.3
+(the same in fuzz/; recorded in build.md "Dependency cooldown", expiry 2026-11-21 08:57 UTC)
+sourceview5 0.11.3 keeps 0.11.2's feature-gated `gtk::Accessible` on `View` (src/auto/view.rs:45),
+and its `replace_all` is `let replace_length = replace.len() as i32;` then the FFI call, `Ok(count)` when no error.
+
+## 6.5  After the floor raise
+cargo hakari generate  -> info: no changes detected
+cargo hakari verify    -> info: workspace-hack works correctly; the [lints] table is still present
+make cargo-sources     -> build-aux/cargo-sources.json regenerated
+cargo +1.98.0 check --workspace --all-targets --all-features --locked -> Finished (exit 0, no warnings)
+cargo deny check advisories bans sources licenses -> advisories ok, bans ok, licenses ok, sources ok
+cargo +1.100.0 metadata --locked --format-version 1 --manifest-path fuzz/Cargo.toml -> ok
+
+## 6.7  make update-deps-cooldown once more, expected to fail at step 1 until the exception expires (exit 2; Cargo.lock unchanged)
+    Updating crates.io index
+error: failed to select a version for the requirement `sourceview5 = "^0.11.3"`
+  version 0.11.3 is too new (published 16 hours ago, minimum age 7 days)
+location searched: crates.io index
+required by package `gtk-lush-axioms v0.0.0 (…/crates/gtk-lush/axioms)`
+help: to preserve the min-publish-age, downgrade the requirement to "0.11.2"
+help: to use too-new packages anyways, re-resolve with `CARGO_RESOLVER_INCOMPATIBLE_PUBLISH_AGE=allow`
+make: *** [Makefile:1011: update-deps-cooldown] Error 101
+
+## 6.7  The refreshed graph on the GTK Lush MSRV lane and under Kani
+scripts/heavy.sh -- make gtk-lush-msrv -> exit 0 ("Finished `dev` profile ... in 1m 05s"; cargo 1.98.0, every GTK Lush crate)
+scripts/heavy.sh --mem 16G -- cargo kani -p gtk-lush-widgets --target-dir target/kani --only-codegen -> exit 0
+  ("Finished `dev` profile ... in 59.10s"). Kani printed its usual unstable-feature notes and
+  "Found the following unsupported constructs: caller_location (1), foreign function (1) ...
+  Verification will fail if one or more of these constructs is reachable"; this is codegen only
+  (no harness verified), and whether main prints the same was not compared. The PR-gated
+  widgets-geometry shard verifies these harnesses in CI at the end of the programme.

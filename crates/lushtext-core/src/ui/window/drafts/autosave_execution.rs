@@ -222,6 +222,29 @@ impl LushtextWindow {
         self.autosave_tick();
     }
 
+    /// Record that `editor` holds text its draft does not: the one draft-owed
+    /// operation.
+    ///
+    /// Marks the tab draft-dirty, which advances its dirty generation, so a
+    /// pass that captured the older text cannot clear the flag when it commits
+    /// (its completion compares generations). Then schedules the first-dirty
+    /// autosave when the tab was not owed a draft yet, or marks a running pass
+    /// pending when it was. The buffer `changed` and `modified-changed`
+    /// handlers call it for an edit; a whole-buffer replacement suspends those
+    /// handlers, so each replacement terminal that installs text the draft
+    /// does not hold calls it too: Restore and Undo Restore from local
+    /// history, and opening a set-aside draft. Startup draft recovery does
+    /// not: the installed body is the draft (`restore-main-ci` design D1).
+    pub(crate) fn note_draft_owed(&self, editor: &LushtextEditorPage) {
+        let became_owed = !editor.draft_dirty();
+        editor.set_draft_dirty(true);
+        if became_owed {
+            self.schedule_first_dirty_draft_autosave();
+        } else {
+            self.mark_draft_autosave_pending_if_inflight();
+        }
+    }
+
     /// Schedule a short autosave after the first dirty edit in a clean cycle.
     pub(crate) fn schedule_first_dirty_draft_autosave(&self) {
         let drafts = &self.imp().drafts;

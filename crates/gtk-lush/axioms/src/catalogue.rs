@@ -1825,6 +1825,24 @@ const CATALOGUE: &[Axiom] = &[
         probe: Some(probes::probe_a111),
     },
     Axiom {
+        id: AxiomId::new(112),
+        name: "a112_a_scroll_moves_the_value_no_changed_emission_carried",
+        statement: "gtk_adjustment_configure sets the new value before it emits changed, then \
+                    emits value-changed; gtk_adjustment_set_value emits value-changed alone; a \
+                    GtkTextView scrolling to a mark in its laid-out document moves its vertical \
+                    adjustment to a value no changed emission carried; a word-wrapped GtkTextView \
+                    whose width changes moves its value only through configure",
+        dependent_designs: &[
+            "restore-main-ci D2: during a width reflow burst, a vertical value-changed whose \
+             value differs from the one the last changed carried is a scroll, so the burst's \
+             settle keeps it and re-records the rest state instead of restoring the top \
+             anchor (ui/editor_page/overscroll.rs)",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a112),
+    },
+    Axiom {
         id: AxiomId::new(113),
         name: "a113_removing_bound_rows_replaces_their_row_widgets",
         statement: "On a mapped GtkListView over a GtkTreeListModel, removing rows a list item is \

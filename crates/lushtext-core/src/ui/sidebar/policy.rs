@@ -183,8 +183,7 @@ pub fn rename_intent(old_path: &Path, typed_name: &str) -> RenameIntent {
     let new_name = typed_name.trim();
     let old_name = old_path
         .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
+        .map_or_default(|name| name.to_string_lossy().into_owned());
 
     if new_name.is_empty() || new_name == old_name {
         return RenameIntent::Cancel;
@@ -229,6 +228,40 @@ impl WorkspaceRenameRefusal {
         }
     }
 }
+
+/// Whether a completed workspace rename is known to be durable.
+///
+/// A rename that took effect but whose parent-directory sync failed is still a
+/// completed rename: the entry has its new name, so the row, the cache, the
+/// watch targets, and open tabs must follow it. Only its survival across a
+/// power loss is unconfirmed (`rust-1-100-adoption` A8).
+#[derive(Debug)]
+pub enum RenameDurability {
+    /// Every directory the rename mutated was synced.
+    Confirmed,
+    /// The rename took effect, but a directory sync failed with this error.
+    Unconfirmed(std::io::Error),
+}
+
+/// The warning a completed rename owes the user, if any.
+///
+/// A confirmed rename owes none. An unconfirmed one names the new name and says
+/// the change is not yet confirmed on disk, in the wording an unconfirmed save
+/// uses; it is a warning, never an error, because the rename happened. The
+/// caller shows it at [`RENAME_DURABILITY_WARNING_SEVERITY`].
+#[must_use]
+pub fn rename_durability_warning(durability: &RenameDurability, new_name: &str) -> Option<String> {
+    match durability {
+        RenameDurability::Confirmed => None,
+        RenameDurability::Unconfirmed(_) => Some(format!(
+            "Renamed to '{new_name}', but the change is not yet confirmed on disk"
+        )),
+    }
+}
+
+/// The severity of [`rename_durability_warning`]'s message.
+pub const RENAME_DURABILITY_WARNING_SEVERITY: crate::services::notifications::NotificationSeverity =
+    crate::services::notifications::NotificationSeverity::Warning;
 
 /// Build the candidate name for one `create_unique` attempt.
 ///
@@ -1731,6 +1764,28 @@ mod tests {
         assert_eq!(
             refusal.message(),
             "A file named 'final.md' already exists in this folder"
+        );
+    }
+
+    #[test]
+    fn a_confirmed_rename_owes_no_warning() {
+        assert_eq!(
+            rename_durability_warning(&RenameDurability::Confirmed, "final.md"),
+            None
+        );
+    }
+
+    #[test]
+    fn an_unconfirmed_rename_warns_with_the_new_name() {
+        let durability =
+            RenameDurability::Unconfirmed(std::io::Error::from(std::io::ErrorKind::Unsupported));
+        assert_eq!(
+            rename_durability_warning(&durability, "final.md").as_deref(),
+            Some("Renamed to 'final.md', but the change is not yet confirmed on disk")
+        );
+        assert_eq!(
+            RENAME_DURABILITY_WARNING_SEVERITY,
+            crate::services::notifications::NotificationSeverity::Warning
         );
     }
 

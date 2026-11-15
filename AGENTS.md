@@ -24,6 +24,7 @@ Keep this index in sync with `.agents/rules/*.md` (`scripts/check-agent-docs.sh`
 - `build.md` — build, dependencies, validation gates, CI, packaging (Meson, Flatpak, release, Snap), SonarQube scope, and how each lane runs: Kani, GTK axioms, property, fuzz, mutation, benchmarks, end-user smoke
 - `documentation.md` — which documentation a change must update, including the accessibility and workflow matrices, `docs/next/` records, runbooks and memorials
 - `git.md` — git workflow and commit conventions
+- `parallel-agent-work.md` — how parallel agents share the workstation and reach `main`: host ownership, CPU and memory sizing, implementation slots, ordering, foreground waits, measurement queueing, serialized merges on local evidence, durability
 - `preexisting-blockers.md` — mandatory no-exceptions rule: fix pre-existing blockers in the same work stream
 - `rust.md` — Rust language, filesystem boundary, error and literal ownership, power-of-two threshold rounding and the `make check-thresholds` inventory, explicit SIMD, module splitting, and state grouping
 - `testing.md` — what every Rust, script or fuzz edit needs: temporary-file ownership, test isolation from real app data, test-only code never shipping, proof obligations and gate order before a commit, Kani harness and GTK axiom probe authoring, runtime warnings
@@ -216,6 +217,7 @@ archived OpenSpec changes.
   - **Stale drafts are never applied over the file and are always preserved**: a draft whose recorded mtime differs from the file is preserved as a local-history snapshot when policy accepts it and in every case copied byte-identically into `drafts/set-aside/` before it is retired; if preservation fails, nothing is retired or restored. A restore the user pre-empted by editing is preserved the same way, and autosave never writes a body for an id whose restore is pending.
   - Autosave, close-time capture and periodic local-history capture never snapshot a buffer a load installation or whole-buffer replacement owns (`LushtextEditorPage::draft_capture_blocked`).
   - `draft_dirty` clears only after same-id, same-generation body plus manifest acceptance; every failure stays retryable. Deletion removes the body before retiring its manifest entry, with an in-memory tombstone until both stages finish.
+  - One draft-owed operation, `LushtextWindow::note_draft_owed` (`drafts/autosave_execution.rs`), marks a tab draft-dirty (advancing its generation, so an older pass cannot clear it) and schedules the first-dirty autosave. The buffer handlers call it for edits; a whole-buffer replacement suspends them, so every replacement terminal that installs text the draft does not hold (local-history Restore and Undo Restore, a set-aside draft opened) calls it too, plus `reproject_modified_indicator` for the "•" title. Startup draft recovery re-projects the title only: its draft already holds the body (`restore-main-ci`).
   - Bounds: 64 MiB per draft; 64 MiB of eager bodies at startup (the rest stay lazy); manifest repair pages 256 entries and may replace the manifest only after a complete, unambiguous inventory within the 2,048-entry and 512 KiB caps — a partial repair stays untrusted and never authorizes cleanup. Orphan cleanup is a deferred two-phase workflow under the same stable target guard as body writes, and it re-validates the inspected inode before removal.
   - Every journal decision comes from the GTK-free, Kani-checked `services/draft_service/journal_core.rs`. **The journal is one per application, not per window** (`ui/window/AGENTS.md`).
   - **Set-aside retention: surface, never auto-delete.** `Preferences > Data` (`ui/preferences/preserved_drafts.rs`) lists the newest 256 preserved bodies within a `MAX_SET_ASIDE_SCAN_ENTRIES` (16 Ki) scan, with Open, confirmed Delete, and a confirmed Delete All that re-fingerprints each listed body before removal. A set-aside name counts as kept only when it holds a byte-identical copy. A soft bound (`set_aside_retention.rs`: 128 bodies or 256 MiB) produces one rate-limited status warning pointing to `app.review-preserved-drafts` (`ui/window/set_aside_review.rs`); no bound, startup, notice or review path deletes a body.
@@ -267,7 +269,9 @@ make visual-geometry-smoke / make accessibility-smoke / make visual-smoke  # pro
 make end-user-smoke # every host-supported end-user smoke lane (not the responsiveness lane)
 make responsiveness-smoke # long-line responsiveness lane, RESPONSIVENESS_TIER=quick|full; nightly/manual
 make blueprint-generate / make check-blueprint  # regenerate and validate generated .ui templates
-make flatpak / make flatpak-install / make verify-flatpak-identity
+make flatpak / make flatpak-install / make verify-flatpak-identity  # one shared install origin for every checkout
+make test-flatpak-install-origin # the install-origin guard against real flatpak in a private installation
+make update-deps-cooldown  # refresh Cargo.lock under a 7-day publish-age cooldown at the MSRV (needs Rust 1.100.0), then hakari, cargo-sources, a 1.98 check and cargo deny
 make release-bump TYPE=patch DRY_RUN=1  # preview the next release
 ```
 
@@ -311,8 +315,12 @@ Cominotti remote at `https://flatpak.cominotti.dev/`; public install docs never
 use `--no-gpg-verify`. **Flathub publication is not planned**: a skipped
 Flathub PR is expected output, absent `FLATHUB_TOKEN` / `FLATHUB_REPOSITORY`
 is not a gap, and the Flathub *remote* remains the source of the GNOME runtime
-and SDK (`openspec/specs/flathub-publication/spec.md`). Packaging, release and
-CI workflows: `.agents/rules/build.md`.
+and SDK (`openspec/specs/flathub-publication/spec.md`). CI builds the Flatpak
+only through `.github/actions/flatpak-build`, which moves the image's system
+installation off overlayfs before flatpak-builder updates it
+(`make check-flatpak-ci-builds`); a `release.yml` dispatch builds the dispatched
+commit, a dry run may come from a branch, a real one only from `main`.
+Packaging, release and CI workflows: `.agents/rules/build.md`.
 
 ## Async I/O Pattern
 

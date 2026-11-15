@@ -44,7 +44,13 @@ jobs:
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             version="$INPUT_VERSION"
             dry_run="$INPUT_DRY_RUN"
-            checkout_ref="main"
+            # Every job builds the one commit that was dispatched, so a dry
+            # run from a branch proves a release-workflow change before merge.
+            checkout_ref="$GITHUB_SHA"
+            if [[ "$dry_run" != "true" && "$GITHUB_REF" != "refs/heads/main" ]]; then
+              echo "::error::A release dispatch that is not a dry run must come from main; it was dispatched from $GITHUB_REF"
+              exit 1
+            fi
           else
             version="$REF_NAME"
             dry_run="false"
@@ -97,9 +103,16 @@ jobs:
       - name: Generate Flathub update artifact
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          DRY_RUN: ${{ steps.version.outputs.dry-run }}
         run: |
           set -euo pipefail
-          source_commit="$(git rev-parse "$VERSION^{commit}")"
+          # A dry run validates an untagged version (make release DRY_RUN=1
+          # refuses an existing tag), so it uses the dispatched commit.
+          if [[ "$DRY_RUN" == "true" ]] && ! git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
+            source_commit="$(git rev-parse HEAD)"
+          else
+            source_commit="$(git rev-parse "$VERSION^{commit}")"
+          fi
           ./scripts/generate-flathub-manifest.sh "$VERSION" "$source_commit" "$RUNNER_TEMP/flathub"
           ./scripts/verify-flathub-manifest.sh "$RUNNER_TEMP/flathub/dev.cominotti.lushtext.json"
 
@@ -125,7 +138,9 @@ jobs:
           ref: ${{ needs.metadata.outputs.checkout-ref }}
           fetch-depth: 0
 
-      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+      # Moves the image's system installation off overlayfs before
+      # flatpak-builder updates it (see the action's header).
+      - uses: ./.github/actions/flatpak-build
         with:
           manifest-path: build-aux/dev.cominotti.lushtext.Flatpak.json
           bundle: lushtext-${{ needs.metadata.outputs.version }}.flatpak

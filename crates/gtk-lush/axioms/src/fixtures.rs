@@ -579,8 +579,7 @@ fn numbered_list(rows: u32) -> gtk4::ListView {
         let text = item
             .item()
             .and_downcast::<gtk4::StringObject>()
-            .map(|object| object.string().to_string())
-            .unwrap_or_default();
+            .map_or_default(|object| object.string().to_string());
         if let Some(label) = item.child().and_downcast::<gtk4::Label>() {
             label.set_text(&text);
         }
@@ -888,6 +887,17 @@ pub mod a110 {
 /// The row lists the A111 probe draws as animation frames, for its sample.
 pub mod a111 {
     pub use crate::probes::row_lists::{BAND_MODEL_ROWS, FEW_ROWS, RowText, row_list};
+}
+
+/// The adjustment emission log and text view the A112 probe scrolls, for its
+/// sample.
+pub mod a112 {
+    pub use crate::probes::a112::{
+        DOCUMENT_LINES, Emission, EmissionLog, REWRAP_NARROWING, TARGET_LINE,
+        WRAPPED_DOCUMENT_LINES, document_view, every_move_was_carried, moved_on_its_own, rewrap,
+        scroll_to_target, wrapped_document_view,
+    };
+    pub use crate::probes::text::TextViewFixture;
 }
 
 /// The tree list the A113 probe removes rows from, for its sample.

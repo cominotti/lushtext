@@ -811,6 +811,7 @@ ORACLES: dict[str, Oracle] = {
         (
             _h(_WRITE + "a_move_removes_its_source_only_after_the_copy_is_durable", 0.07, "ci"),
             _h(_WRITE + "a_completed_rename_synced_every_directory_it_mutated", 0.08, "ci"),
+            _h(_WRITE + "every_rename_classification_describes_the_namespace", 0.18, "ci"),
             _h(_WRITE + "skipping_the_temp_sync_tears_the_destination", 3.43, "ci"),
             _h(_WRITE + "a_crash_never_tears_the_destination", 3.65, "ci"),
             _h(_WRITE + "every_classification_describes_the_destination", 5.55, "ci"),
