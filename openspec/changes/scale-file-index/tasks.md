@@ -24,21 +24,21 @@ Rules for every task:
 
 ## 1. Baseline and toolkit facts (before any fix)
 
-- [ ] 1.1 Fixture generator (design D9): `scripts/generate-workspace-index-fixture.py`
+- [x] 1.1 Fixture generator (design D9): `scripts/generate-workspace-index-fixture.py`
       (seeded, deterministic, `--files`, `--out`, a `--self-test` wired into
       `make check-responsiveness-lane`), plus a bench helper building the same
       shape through `services::filesystem::fixture`. Shape: depth and
       files-per-directory and name-length distributions from the design's
       table, one symlinked directory and one symlinked file. Sizes 2^17 and
       2^20.
-- [ ] 1.2 Verdict baseline on `main` at 2^17 (2^20 cannot be indexed on
+- [x] 1.2 Verdict baseline on `main` at 2^17 (2^20 cannot be indexed on
       `main`): build wall time and `peak_build_bytes`, `retained_index_bytes`,
       clone and drop of the index, one query (64 rows; 0 and 32 open tabs),
       the empty-query count with 32 and 256 open tabs, one incremental batch of
       1, 64 and 1,024 adds, a directory rename of 10,000 descendants. Through
       `scripts/measure.sh`, four interleaved rounds; record min–max in the
       design's "Measured baseline" beside the stage-1 non-verdict figures.
-- [ ] 1.3 Re-probe ledger axiom A95 at 2^18 and 2^20 rows, as a **separate**
+- [x] 1.3 Re-probe ledger axiom A95 at 2^18 and 2^20 rows, as a **separate**
       slow measurement (a `slow` probe entry, or a size list the runner only
       takes when slow probes are included). Leave the existing fast 16,384 /
       131,072 pair in the pull-request `GTK Axioms` lane unchanged. Record the
@@ -49,28 +49,28 @@ Rules for every task:
       2^18 rows fit `B_INTERACT_US`, revisit the cap upward; if the
       application figure at 131,072 (DP: 2.2–6.9 ms; the D10 verdict gates)
       does not fit, lower it, never below 2^16. Record the decision.
-- [ ] 1.4 Commit (signed, conventional) and push: generator, bench helper,
+- [x] 1.4 Commit (signed, conventional) and push: generator, bench helper,
       baseline record, A95 re-probe.
 
 ## 2. Failing-first tests (red before section 3)
 
-- [ ] 2.1 Unit, `services/palette`: a 2^20-file in-memory index built through
+- [x] 2.1 Unit, `services/palette`: a 2^20-file in-memory index built through
       the public constructor reports no truncation and
       `retained_byte_weight() ≤ 64 MiB` for the D9 shape (fails on `main`:
       `FileLimit` at 131,072, and about 363 B/file).
-- [ ] 2.2 Unit, build over a temp tree with no symlinks: a new
+- [x] 2.2 Unit, build over a temp tree with no symlinks: a new
       `FileIndexBuildMetrics::canonical_resolutions` field (no global test
       counter) equals the number of workspace folders plus symlink entries
       (fails on `main`: the field does not exist; `main` resolves once per file
       and directory). Trees with a symlinked file reached **before** and
       **after** its target, and a symlinked directory, keep `main`'s winners,
       ordinals and identities (design D2).
-- [ ] 2.3 Unit, build ledger: `peak_build_bytes` of the 2^17 temp tree is at
+- [x] 2.3 Unit, build ledger: `peak_build_bytes` of the 2^17 temp tree is at
       most 96 B/file, and `retained_index_bytes` at most 60 B/file (fails on
       `main`: 557 and 363 B/file). 96 leaves a quarter of headroom when the
       per-file figure carries to 2^20, where 128 B/file is the cap itself;
       task 4.1 asserts the 2^20 traversal directly.
-- [ ] 2.4 Unit, mutations: adding one file to a 2^20 index reports, through a
+- [x] 2.4 Unit, mutations: adding one file to a 2^20 index reports, through a
       new mutation-ledger evidence field, at most a logarithmic number of
       path comparisons (fails on `main`: one per file) and is admitted within
       64 MiB (fails if growth doubles a shrunk vector, design D3); a directory
@@ -86,10 +86,10 @@ Rules for every task:
       compacted). And near the 64 MiB cap, with dead bytes below a quarter of
       the weight, an add that fits the live size is still admitted (design
       D5's second compaction trigger).
-- [ ] 2.5 Unit, open tabs: the empty query's rest count at 2^20 with 256 open
+- [x] 2.5 Unit, open tabs: the empty query's rest count at 2^20 with 256 open
       tabs equals the exact count and its selector metrics report no walk over
       the rest (fails on `main`: `RestCount::WalkWith` visits every file).
-- [ ] 2.6 Property (`tests/properties/palette.rs`, `property-tests`), design
+- [x] 2.6 Property (`tests/properties/palette.rs`, `property-tests`), design
       D6: the arena and the retained per-file reference agree on generated
       trees, overlapping folders, symlinks (both traversal orders), a non-UTF-8
       name (two names sharing one lossy string), and mutation sequences, each
@@ -98,12 +98,12 @@ Rules for every task:
       `DirectoryRetentionLimit` under scaled count limits; and, under scaled
       byte limits, the arena list as a prefix of the reference's untruncated
       list. Red until the arena exists, then green.
-- [ ] 2.7 Unit, `ui/command_palette/policy.rs`: `category_row_limit()` equals
+- [x] 2.7 Unit, `ui/command_palette/policy.rs`: `category_row_limit()` equals
       `MAX_CATEGORY_VIEW_ROWS` (131,072) when `MAX_INDEXED_FILES` is 2^20, and
       the two floor-retention `const` assertions derive from the row cap (fails
       on `main`: the constant does not exist and the floor follows
       `MAX_INDEXED_FILES`).
-- [ ] 2.8 Widget (`command_palette_category.rs`): a 2^20-file index, a query
+- [x] 2.8 Widget (`command_palette_category.rs`): a 2^20-file index, a query
       matching more than 131,072 files, Enter on the workspace More row. The
       view lists 131,072 rows and says "Showing 131,072 of N results". The End
       dispatch and the far select-and-scroll are each bounded at
@@ -137,24 +137,24 @@ Rules for every task:
 
 ## 3. The arena and its identity rule
 
-- [ ] 3.1 `services/palette/index/` split: `arena.rs` (records, names, keys,
+- [x] 3.1 `services/palette/index/` split: `arena.rs` (records, names, keys,
       symlink identities, views), `traversal.rs` (the bounded build),
       `mutation.rs` (D5), `mod.rs` keeping today's public surface names.
       `model/palette.rs`: `IndexedFile<'a>` view; `SearchResultItem::File`
       carries it and stays 16 bytes (the existing layout assertion).
-- [ ] 3.2 `services/file_tree.rs` and `services/filesystem`: a symlink flag on
+- [x] 3.2 `services/file_tree.rs` and `services/filesystem`: a symlink flag on
       scanned entries from the directory entry type, `lstat` only for an
       unknown type; `make check-filesystem-boundary`.
-- [ ] 3.3 Construction with derived canonical identity (D2), the hashed
+- [x] 3.3 Construction with derived canonical identity (D2), the hashed
       visit set with exact collision checks (a test-only hasher forces
       collisions), the canonical-key table (D4), ledger charges for every arena
       growth and scratch (D3), the four truncation reasons unchanged.
-- [ ] 3.4 Incremental mutations (D5) under `FileIndexMutationLedger`; the
+- [x] 3.4 Incremental mutations (D5) under `FileIndexMutationLedger`; the
       worker in `ui/command_palette/index_execution.rs` keeps its ticket,
       replay and overflow rebuild.
-- [ ] 3.5 `OpenTabExclusion` over the key table; `RestCount` for the
+- [x] 3.5 `OpenTabExclusion` over the key table; `RestCount` for the
       workspace group from the open ordinals (D4).
-- [ ] 3.6 Consumers: `ui/command_palette/{item,category_model,policy}.rs`,
+- [x] 3.6 Consumers: `ui/command_palette/{item,category_model,policy}.rs`,
       `ui/window/palette_shell.rs`, `services/palette/{fuzzy,category,grouped}.rs`,
       benches (`make_synthetic_index`), property and widget tests.
       `FileIndex::from(Vec<…>)` stays for benches and tests as a constructor
@@ -163,7 +163,7 @@ Rules for every task:
       in unit, widget and bench code never hold 2^20 owned paths at once.
       `SearchResultItem::File(FileOrdinal)` consumers build the view with
       `index.file(ordinal)` (design D1); 3.6 makes no visual change.
-- [ ] 3.7 Limits (D3): `MAX_INDEXED_FILES` and `MAX_INDEXED_DIRECTORIES` 2^20,
+- [x] 3.7 Limits (D3): `MAX_INDEXED_FILES` and `MAX_INDEXED_DIRECTORIES` 2^20,
       doc comments restated (the count is the latency bound, the ledgers the
       memory bound); `classify_index_retirement` re-keyed on
       `LARGE_INDEX_RETIREMENT_FILES`. In `docs/thresholds.md`: the moved
@@ -171,7 +171,7 @@ Rules for every task:
       lines in code) for `LARGE_INDEX_RETIREMENT_FILES`,
       `INDEX_INCREMENTAL_GROWTH_DIVISOR` and `MAX_QUERY_CHUNKS` (design D3);
       then `make check-thresholds`.
-- [ ] 3.7a Name- and path-keyed gates after the `index.rs` split
+- [x] 3.7a Name- and path-keyed gates after the `index.rs` split
       (`.agents/rules/build.md`): re-key or retire the
       `.cargo/mutants.toml` `exclude_re` entry naming
       `services/palette/index\.rs` and `truncate_to_index_limit`, and check
@@ -179,12 +179,12 @@ Rules for every task:
       labels against the renamed bench IDs; prove each by running the gate
       (`make mutants-list` shows the entry matching, the smoke filter selects
       its benches), and `git add -N` the new files before any diff-aware gate.
-- [ ] 3.8 Tests 2.1–2.7 green; `make test-unit`, `make test-prop`,
+- [x] 3.8 Tests 2.1–2.7 green; `make test-unit`, `make test-prop`,
       `make check`. Commit and push.
 
 ## 4. Query cost and the category cap
 
-- [ ] 4.1 Criterion (`benches/benchmarks.rs`): `file_index_search` at 2^17
+- [x] 4.1 Criterion (`benches/benchmarks.rs`): `file_index_search` at 2^17
       and 2^20 (query, empty query, no match, 32 open tabs), `file_index_rebuild`
       on the D9 tree at 2^17 and 2^20, `file_index_incremental` at 2^17 and
       2^20 (add, remove file and directory, rename file and directory, the
@@ -214,7 +214,7 @@ Rules for every task:
       The category ranking stays one pass (design D7). D6's property test
       covers equality with the single pass. Re-measure, and record both in
       the design.
-- [ ] 4.4 `MAX_CATEGORY_VIEW_ROWS` (131,072, or the value 1.3 justified, never
+- [x] 4.4 `MAX_CATEGORY_VIEW_ROWS` (131,072, or the value 1.3 justified, never
       below 2^16) in `ui/command_palette/policy.rs`; the floor retention
       derived from it; `category_row_limit()` returns the smaller of the cap
       and the budget's rows; the category model's cut reports "Showing X of Y
@@ -224,7 +224,7 @@ Rules for every task:
       cap, the spec delta's 131,072 figures (the category requirement, its
       "A category larger than the row cap" scenario, the 2.8 test and
       design D8) move with it in the same commit. Test 2.8 green.
-- [ ] 4.5 Commit and push.
+- [x] 4.5 Commit and push.
 
 ## 5. Lane, verdicts and smoke
 
@@ -242,7 +242,7 @@ Rules for every task:
       Gate on "End in the category view" at 131,072 rows ≤ `B_INTERACT_US`
       (design D8). Pass bars: design "Timing". Record figures, loads and
       `btrfs-stall-report` for each window in the design's "Measured verdicts".
-- [ ] 5.3 Widget tests of the palette shards (`make test-widget-shard` for the
+- [x] 5.3 Widget tests of the palette shards (`make test-widget-shard` for the
       shards holding `command_palette*.rs`), then the full `make test`;
       `make visual-geometry-smoke`, `make accessibility-smoke` and
       `make visual-smoke` (widget tests changed); `make check`; the rustdoc
@@ -251,26 +251,39 @@ Rules for every task:
       --workspace --no-deps`, not in `make check`); and
       `cargo check -p lushtext --bins --locked` with default features (the
       reference module is `test-utils`-gated).
-- [ ] 5.4 Commit and push.
+- [x] 5.4 Commit and push.
 
 ## 6. Documentation
 
-- [ ] 6.1 AGENTS.md: the "File index cap and incremental mutation" and
+- [x] 6.1 AGENTS.md: the "File index cap and incremental mutation" and
       "Arc workspace_folder" key design decisions rewritten for the arena (the
       stale 100,000 figures go), the module layout line for
       `services/palette/`; README.md if it states the index cap.
-- [ ] 6.2 `docs/workflow-readability-matrix.md` WFR-COMMAND-PALETTE row:
+- [x] 6.2 `docs/workflow-readability-matrix.md` WFR-COMMAND-PALETTE row:
       file set, re-derived measured cells (row-scoped, excluding
       `#[cfg(test)]`); `make check-workflow-boundaries`.
-- [ ] 6.3 `docs/thresholds.md` (3.7) and `docs/benchmarks/` note for the new
+- [x] 6.3 `docs/thresholds.md` (3.7) and `docs/benchmarks/` note for the new
       groups; `docs/automation-reference.md` only if a snapshot field changes
       (none planned: `command_palette.file_index_count` keeps its meaning).
-- [ ] 6.4 `docs/next/long-line-documents.md`: programme item 3 marked
+- [x] 6.4 `docs/next/long-line-documents.md`: programme item 3 marked
       implemented with its verdict figures and follow-ups. Record the
       synthetic-tree deviation from "a measurement on a real monorepo" and
       the note-category loss above 131,072 rows, the real-tree measurement as
       a follow-up, and close the DP "accepted items" entry for the
       empty-query count.
-- [ ] 6.5 GTK axiom ledger A95 row (1.3); `.agents/skills/gtk-testing`
+- [x] 6.5 GTK axiom ledger A95 row (1.3); `.agents/skills/gtk-testing`
       references if a testing pitfall appeared.
-- [ ] 6.6 Commit and push.
+- [x] 6.6 Commit and push.
+
+## Stage 3 status (2026-11-15)
+
+Open boxes and why (design, "Implementation decisions (stage 3)"):
+
+- 2.9: committed with the arena, not as a separate red commit
+  (decision 10); the red runs are recorded in the handoff.
+- 4.2 / 4.3 / 5.2: the timing verdicts are queued by the shared-machine
+  coordinator (decision 13). Non-verdict figures: one query at 2^20 is
+  31–35 ms (D7 bar 50 ms), so 4.3 is not expected to trigger (decision 11).
+- 5.1: not built; the palette has no `End` binding, so D8's lane case needs
+  a revision first (decision 12, an open decision for the review).
+

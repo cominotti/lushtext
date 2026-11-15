@@ -4156,6 +4156,26 @@ separate change, in this order:
    application dispatch, not on the probe. The query split is for grouped
    queries only, and the category ranking stays one pass. Mutations gained
    their unspecified cases and dead-byte compaction.
+   **Implemented 2026-11-15** (stage 3, branch `scale-file-index`, PR
+   pending): the arena (`services/palette/index/`) indexes 1,048,576 files
+   of the synthetic monorepo-shaped tree with no truncation, at 41 B/file
+   installed and 58 B/file at the construction peak (`main`: 563 / 831 at
+   2^17, where it truncates at 119,157 files); one worker query at 2^20 is
+   31–35 ms, so the chunked query split was not built; the empty-query count
+   reads the key table (under 1 ms with 256 open tabs; closes the DP
+   "accepted items" entry for the empty-query count); a 1,024-file add batch
+   at 2^17 drops from 31.7 s to 15.5 ms. A95 re-probed with slow probes is
+   flat on GTK 4.24.1 up to 2^20 rows, but the category cap stays 131,072
+   because the probe grew on the GNOME 50 source floor (GTK 4.22.5); the
+   note-category loss above 131,072 rows stands as recorded. These are non-verdict figures:
+   the interleaved verdict rounds are queued on the shared machine, and the
+   lane group `workspace-index` is not built (the palette has no `End`
+   binding, so D8's lane case needs a revision; open decision). Follow-ups:
+   a measurement on a real monorepo checkout (the synthetic tree is the
+   recorded deviation); the lane group; raising the category cap to the
+   budget's rows once the source floor is GNOME 51; the cost of an add
+   refused at the 2^20 cap (about 0.35 ms each, worker-side; cause not
+   investigated).
 4. Profile and slice the 59–60 ms largest-file open dispatch (the open-tier
    runs above).
 5. Then DL `bound-dense-long-line-editing`. (`avx2-health-scan-kernel`, once

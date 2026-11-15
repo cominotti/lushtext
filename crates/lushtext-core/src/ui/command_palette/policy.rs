@@ -1288,6 +1288,51 @@ mod tests {
         assert_eq!(RESULT_PAGE_ROWS, 16);
     }
 
+    /// `scale-file-index` D8's one recorded loss: the row cap is shared by
+    /// every category, so a note category one row above it, which `main`
+    /// listed whole (up to the budget's 233,016 rows), is cut and counted.
+    #[test]
+    fn a_note_category_above_the_row_cap_is_cut_and_counted() {
+        use crate::model::palette::{
+            PaletteCategory, PaletteNoteCategory, PaletteNoteEntry, PaletteNoteTarget,
+        };
+        use crate::services::palette::{
+            CategorySearchInput, FileIndex, PaletteSearchCancellation, PaletteSearchOutcome,
+            category_search,
+        };
+
+        let notes: Vec<PaletteNoteEntry> = (0..=MAX_CATEGORY_VIEW_ROWS)
+            .map(|n| PaletteNoteEntry {
+                category: PaletteNoteCategory::Bookmarks,
+                title: format!("note {n}"),
+                subtitle: String::new(),
+                detail: None,
+                note_text: None,
+                target: PaletteNoteTarget::FolderNote {
+                    workspace_name: "w".into(),
+                    folder: std::path::PathBuf::from("/workspace"),
+                },
+            })
+            .collect();
+        let index = FileIndex::default();
+        let PaletteSearchOutcome::Complete { value, .. } = category_search(
+            CategorySearchInput {
+                index: &index,
+                open_tabs: &[],
+                note_entries: &notes,
+                category: PaletteCategory::Note(PaletteNoteCategory::Bookmarks),
+                query: "",
+                row_limit: category_row_limit(),
+            },
+            &PaletteSearchCancellation::default(),
+        ) else {
+            panic!("a fresh category search completes");
+        };
+        assert_eq!(value.ordinals.len(), MAX_CATEGORY_VIEW_ROWS);
+        assert_eq!(value.matching, MAX_CATEGORY_VIEW_ROWS + 1);
+        assert!(value.limited, "the cut is reported, never silent");
+    }
+
     #[test]
     fn category_rows_step_and_page_with_clamping() {
         assert_eq!(next_category_row(Some(0), 0, 1), None);

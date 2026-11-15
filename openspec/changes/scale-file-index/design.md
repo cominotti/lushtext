@@ -666,3 +666,133 @@ how each was decided (user experience first):
     The synthetic-tree deviation from "a real monorepo" is recorded. The new
     constants get threshold rows.
 
+
+## Implementation decisions (stage 3, 2026-11-15)
+
+Decided during implementation, user experience first; each one is checked by
+the test named with it.
+
+1. **One `u64` key per file** (D4 planned 12 B/file): the key is the
+   canonical-path hash's top 32 bits joined to the file ordinal, so the
+   table is one sorted `Vec<u64>` (8 B/file) and a lookup is a range of
+   equal top halves, each confirmed by an exact comparison against the
+   reconstructed canonical path (`arena.rs`, `key`/`key_range`; forced
+   collisions in `index/tests.rs`).
+2. **`SearchResultItem::File(FileOrdinal)`** as the stage-2 review settled;
+   the owned per-file record is `OwnedIndexedFile` (`index/owned.rs`,
+   `test-utils`), the input of `FileIndex::from` and `from_paths` and the
+   output of `owned_files()`, so tests compare plain values with the
+   oracle's.
+3. **The per-file index is the oracle, `ReferenceFileIndex`**
+   (`index/reference.rs`, `test-utils`): `main`'s `index.rs` moved whole,
+   renamed, with no behaviour change. Its fixture constructor with scaled
+   limits keeps the name `rebuild_cancellable_with_limits` on both, so the
+   `*_for_test` ceiling of `make check-workflow-boundaries` is unchanged.
+4. **Three `main` behaviours the property test found**, which the arena
+   first got wrong and now matches:
+   - a symlink in a directory finds a target admitted earlier in the same
+     directory (the directory's file range is open during its scan);
+   - a file renamed out of a nested workspace folder keeps the folder that
+     still contains it (`a_file_moved_out_of_a_renamed_nested_folder_keeps_its_folder`);
+   - a path inside several folders resolves to the deepest folder whose
+     root is alive (`roots_containing`), and a folder whose root directory
+     is removed is retired at `finish_mutation_batch`
+     (`remove_path_prunes_workspace_folders`).
+5. **Every mutation batch ends with `finish_mutation_batch`**, which drops
+   dead records from `len()`, merges the key table and compacts; the palette
+   worker calls it after each batch (`index_execution.rs`).
+6. **The reclamation test's bound is four thirds of the start plus one
+   growth step**, not "within one growth step": dead bytes are compacted
+   once they exceed a quarter of the weight (D5), so between compactions the
+   weight legitimately reaches `start + start/3`; the test also asserts it
+   returns within one growth step of the start at least once
+   (`index_scale_tests.rs`).
+7. **The 2^20 bench groups run only under `LUSHTEXT_BENCH_SCALE=1`**, which
+   `make bench` sets: their setup builds the index and writes the D9 tree in
+   the group function, before Criterion's filter, so without the gate each of
+   `make performance-smoke`'s filtered runs would pay it.
+8. **The category cap stays 131,072** (task 1.3, D8). With slow probes, A95
+   on GTK 4.24.1 is flat: 1.6–2.3 ms at 262,144 and 1.8–2.3 ms at 1,048,576
+   rows, 212 `get_item` calls at every size, so on the shipped GNOME 51
+   runtime 2^18 rows would fit `B_INTERACT_US`. The cap is not raised,
+   because (a) on the GNOME 50 source floor (GTK 4.22.5) the probe grew,
+   10.4 ms at 131,072 (2026-11-07, one run; not re-run on 4.22 here) and about 18 ms extrapolated to the budget's
+   233,016 rows; (b) above 233,016 the retained-byte budget binds anyway, so
+   a raise could only list 131,073–233,016 rows, and the floor retention
+   derived from the cap (`PALETTE_CATEGORY_FLOOR_RETENTION`, 36 B a row)
+   would then exceed the 8 MiB budget it must fit. Follow-up: when the source
+   floor moves to GNOME 51, set the cap to the budget's rows, which also
+   removes the note-category loss.
+9. **The note-category loss is proved by a unit test**, not a second widget
+   test: `a_note_category_above_the_row_cap_is_cut_and_counted`
+   (`ui/command_palette/policy.rs`) ranks 131,073 bookmark rows through
+   `category_search` with `category_row_limit()` and asserts 131,072 listed,
+   131,073 matching and the cut reported. The widget path that renders the
+   cut is the same for every category and is covered by the workspace test.
+10. **No red commit** (task 2.9): the red runs were recorded against a local
+    build of the tests on `main`'s code (`stage3-red-record.txt`,
+    `stage3-red-run.log`) and the tests were committed with the arena.
+    The first commit, the A95 probe (`f73b843b`), also carried the staged
+    `index.rs` → `index/reference.rs` rename, so that one commit does not
+    build on its own; the next (`de04a565`) does.
+11. **Chunked scoring (task 4.3) is not built**, so `MAX_QUERY_CHUNKS` and its
+    thresholds row (named by task 3.7) do not exist. The single-pass worker
+    query at 2^20 measured 31.0–34.5 ms (one query, 0 and 32 open tabs, five
+    runs each, `stage3-branch-w20-nonverdict.log`) on a loaded host through
+    `scripts/heavy.sh`: a non-verdict figure, but a third under D7's 50 ms
+    bar, so the split it would pay for is not needed. The verdict rounds are
+    queued (item 13).
+12. **The lane group `workspace-index` (task 5.1) is not built**, and D8's
+    gate needs a revision before it is: the palette has no `End` binding (its
+    key controller handles Tab, Page Up/Down, Up/Down and Backspace; `End` in
+    the focused entry moves the text cursor), so "End in the category view"
+    is not an input a lane, or a user, can give. The far jump the cap bounds
+    is a select-and-scroll to a far row (a selection restore, or the end of
+    a long Page Down run), which the optimized widget test measures:
+    1.9–2.9 ms to the last and 2.1–2.5 ms back to the first of 131,072 rows
+    of a 2^20-file index (three non-verdict runs). Open decision for the
+    review: either D8 gates on that widget figure (DP's method) or a
+    later change adds a palette row-selection action and the lane group.
+13. **Timing verdicts are queued, not run here.** The shared-machine
+    coordinator stopped the interleaved rounds before they ran (their
+    `measure.sh` held `INTENT` behind another change's long heavy round) and
+    queued them in `.claude/handoffs/MEASURE-QUEUE.md`
+    (`stage3-interleave.sh`: `main`/branch at 2^17 twice, the branch at
+    2^20, then the D7 Criterion groups and the D8 widget runs). Until they
+    run, the figures below are the stage-1/stage-3 baseline on `main` and
+    non-verdict branch figures.
+
+14. **Two bench-lane defects fixed on the way** (pre-existing-blockers rule):
+    the `near_policy_long_paths` setup asserted the per-file index's byte
+    cost (it now asserts the arena interns the directory chain, see the
+    bench's doc), and `make performance-smoke` named a widget proof that
+    `bound-notes-browser-by-budget` had renamed
+    (`test_notes_browser_caps_large_result_sets_with_refine_notice`, now
+    `test_notes_browser_lists_every_match_without_a_refine_notice`), so the
+    smoke failed on `main` too. The 2^20 `add_file` case frees one file
+    (untimed) before each add, so it times an admitted add whatever the
+    synthetic index's size.
+
+### Branch figures, non-verdict (2026-11-15)
+
+Release harness (`stage3-sfi_harness.rs.txt` with
+`stage3-sfi_variant-branch.rs.txt`, a visibility-only copy of `de04a565`),
+D9 tree on btrfs, five runs per case, through `scripts/heavy.sh` on a host
+at a 1-minute load of 5–15 (other agents' builds): not verdicts.
+
+| M | Figure | `main`, 2^17 requested (r1–r2) | branch, 2^17 (one run) | branch, 2^20 |
+| --- | --- | --- | --- | --- |
+| S1 | files indexed | 119,157 (`RetainedByteLimit`) | 131,072, no truncation | 1,048,576, no truncation |
+| S2 | `retained_index_bytes` | 563 B/file | 41 B/file | 44,002,118 (41 B/file) |
+| S3 | `peak_build_bytes` | 831 B/file | 58 B/file | 61,620,198 (58 B/file) |
+| S4 | build wall time | 1,819–1,858 ms | 421 ms | 3,606–3,766 ms |
+| S5 | clone / drop | 34.2–52.8 / 24.6–34.8 ms | 1.1 / 0.001 ms | 3.5–4.1 / 0.001 ms |
+| S6 | one query, 0 / 32 open tabs | 9.1–20.1 / 35.0–51.4 ms | 4.3 / 4.2 ms | 31.7–34.5 / 31.0–31.2 ms |
+| S7 | empty query, 32 / 256 open tabs | 7.0–11.8 / 13.0–16.7 ms | 0.05 / 0.46 ms | 0.04–0.15 / 0.30–0.81 ms |
+| S8 | batch of 1 / 64 / 1,024 adds | 30.5 ms / 2.0 s / 31.7 s | 3.8 / 4.3 / 15.5 ms | 5.5–9.5 / 25.8–27.3 / 354–369 ms, all refused at the 2^20 cap |
+| S9 | directory rename, 9,872 descendants | 288–335 ms | 7.4 ms | 41–54 ms |
+
+The 2^20 adds are refused because the index is full. A refused add costs
+about 0.35 ms each in a 1,024-add batch, worker-side and far under `main`'s
+admitted cost; the cause is not investigated. Recorded as a follow-up, not a
+blocker.

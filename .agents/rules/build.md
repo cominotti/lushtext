@@ -623,7 +623,8 @@ The release procedure is the `publish-release` skill. Rules:
 - Benchmark file: `crates/lushtext-core/benches/benchmarks.rs` (single file, all groups); all benchmarked code is GTK-free
 - Every command passes `--features test-utils`: `cargo bench -p lushtext-core --features test-utils` (the Makefile `bench*` targets, `scripts/bench-report.sh`, `scripts/run-performance-smoke.sh`, and CI's bench compile already do)
 - `[profile.bench]`: `opt-level = 3`, `lto = "thin"`, `codegen-units = 1` (no strip — criterion needs symbols)
-- `FileIndex::from(Vec<IndexedFile>)` enables synthetic index construction
+- `FileIndex::from(Vec<OwnedIndexedFile>)` and the streaming `FileIndex::from_paths` (both `test-utils`) build synthetic indexes; a 2^20-file fixture streams through `from_paths`, never a `Vec` of owned paths
+- The 2^20-file groups (`file_index_scale`, `file_index_scale_rebuild`, `palette_pipeline_hardening_1048576`) run only with `LUSHTEXT_BENCH_SCALE=1`, which `make bench` sets: their setup runs before Criterion's filter, so ungated they would build the index and write a million files in every filtered run
 - `scripts/bench-report.sh` clears stale Criterion `new/` results, fails closed if `cargo bench` fails, and writes `docs/benchmarks/<timestamp>.md` (requires `jq`; `--scope release` is the bounded release-safe report, `--scope diagnostic` the deeper one, splittable with repeated `--filter`)
 - Makefile targets: `bench`, `bench-report` (release-safe), `bench-report-full` (diagnostic), `bench-baseline` (saves "main"), `bench-compare` (lenient: benchmark IDs added after the baseline are measured without aborting)
 

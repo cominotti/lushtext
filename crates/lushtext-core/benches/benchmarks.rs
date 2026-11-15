@@ -283,8 +283,13 @@ fn make_directory_only_tree(directory_count: usize) -> TempDir {
     dir
 }
 
-/// Create a real tree whose complete raw/canonical path graph approaches the
-/// installed and build-byte policies without requiring six-figure file counts.
+/// Create a real tree of long paths: 16 directory segments of 175 bytes above
+/// 10,000 long names. The per-file index it replaced charged every file's
+/// whole ~2.9 KB path twice and came within a quarter of both byte policies;
+/// the arena interns the directory chain once (`scale-file-index` D1), so the
+/// case now proves that and the policies' ceilings, and the byte policies'
+/// edges are proved under scaled limits by the `index_parity` property tests
+/// and at 2^20 files by `file_index_scale_rebuild`.
 fn make_near_policy_long_path_tree(file_count: usize) -> TempDir {
     let dir = TempDir::new().expect("near-policy file-index tempdir");
     let mut parent = dir.path().to_path_buf();
@@ -967,12 +972,19 @@ fn bench_file_index_scale(c: &mut Criterion) {
     }
     let size = palette::MAX_INDEXED_FILES;
     let index = make_synthetic_index(size);
-    assert_eq!(index.len(), size, "the synthetic index is not truncated");
+    // `make_synthetic_index` repeats one tie name per directory (every
+    // 997th file), so those paths collapse; every other path is indexed.
+    let ties = (0..size).filter(|i| i % 997 == 0 && i % 1_000 != 0).count();
+    assert!(
+        index.len() >= size - ties,
+        "the synthetic index is not truncated: {} of {size}",
+        index.len()
+    );
     eprintln!(
         "file-index-scale files={} retained_index_bytes={} retained_b_per_file={}",
         index.len(),
         index.retained_byte_weight(),
-        index.retained_byte_weight() / size as u64,
+        index.retained_byte_weight() / index.len() as u64,
     );
     bench_file_index_scale_operations(c, &index, size);
 
@@ -1037,15 +1049,34 @@ fn bench_file_index_scale_operations(c: &mut Criterion, index: &FileIndex, size:
     });
     let root = Arc::new(PathBuf::from("/synthetic/project"));
     let added = PathBuf::from("/synthetic/project/src/new_file.rs");
+    // The index is full at 2^20, so each repetition first frees one file
+    // (untimed): the timed add is admitted, not refused at the cap.
+    let freed = bench_file_path(index, index.len() - 1);
+    let below_cap = || {
+        let mut copy = index.clone();
+        copy.remove_path(&freed);
+        copy
+    };
+    let add = |index: &mut FileIndex| {
+        index.add_file(OwnedIndexedFile::new(
+            added.clone(),
+            PaletteFileIdentity::canonical(added.clone()),
+            Arc::clone(&root),
+        ));
+    };
+    let mut admitted = below_cap();
+    add(&mut admitted);
+    assert_eq!(
+        admitted.len(),
+        index.len(),
+        "the add below the cap is admitted"
+    );
+    drop(admitted);
     group.bench_function(BenchmarkId::new("add_file", size), |b| {
         b.iter_batched(
-            || index.clone(),
+            below_cap,
             |mut index| {
-                index.add_file(OwnedIndexedFile::new(
-                    added.clone(),
-                    PaletteFileIdentity::canonical(added.clone()),
-                    Arc::clone(&root),
-                ));
+                add(&mut index);
                 index
             },
             BatchSize::LargeInput,
@@ -1390,14 +1421,14 @@ fn bench_file_index_rebuild(c: &mut Criterion) {
     else {
         panic!("fresh near-policy file-index evidence must complete");
     };
-    assert!(!near_policy_index.is_empty());
-    assert!(
-        near_policy_metrics.retained_index_bytes
-            >= palette::MAX_FILE_INDEX_RETAINED_BYTES.saturating_mul(3) / 4
+    assert_eq!(
+        near_policy_index.len(),
+        10_000,
+        "the long-path tree is indexed whole"
     );
     assert!(
-        near_policy_metrics.peak_build_bytes
-            >= palette::MAX_FILE_INDEX_BUILD_RETAINED_BYTES.saturating_mul(3) / 4
+        near_policy_metrics.retained_index_bytes < near_policy_index.len() as u64 * 256,
+        "the 2.8 KB directory chain is interned once, not charged per file"
     );
     assert!(near_policy_metrics.peak_build_bytes <= palette::MAX_FILE_INDEX_BUILD_RETAINED_BYTES);
     assert!(near_policy_metrics.retained_index_bytes <= palette::MAX_FILE_INDEX_RETAINED_BYTES);
