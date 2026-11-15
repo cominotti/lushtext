@@ -1,0 +1,29 @@
+# classify sample: a goal that exhausts its rlimit. verus-classify must read it as a
+# resource stop, never a refutation.
+--- a/src/preview_width.rs
++++ b/src/preview_width.rs
+@@ -88,3 +88,24 @@
+ }
+ 
+ } // verus!
++
++verus! {
++
++/// classify sample: a nonlinear goal far beyond a 0.1 rlimit (true: no
++/// product of two integers above 1 is the prime 1000003).
++#[verifier::rlimit(0.1)]
++pub proof fn classify_rlimit_sample(x: int, y: int)
++    requires
++        x > 1,
++        y > 1,
++    ensures
++        x * y != 1000003,
++{
++    assert(x * y != 1000003) by (nonlinear_arith)
++        requires
++            x > 1,
++            y > 1,
++    {}
++}
++
++} // verus!

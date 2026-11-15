@@ -1,0 +1,23 @@
+# Disposable evaluation model (`evaluate-verus-for-unbounded-proofs`); see
+# ../README.md. Standalone: its own empty workspace table and Cargo.lock, and
+# excluded from the root workspace, so cargo-deny, hakari, Clippy, nextest,
+# and rustfmt never see it. Built only by `scripts/formal-evaluation.sh`
+# (verus-* targets), with Verus's pinned rustc selected explicitly.
+[package]
+name = "lushtext-verus-proofs"
+version = "0.0.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[workspace]
+
+[dependencies]
+# The vstd that release 0.2026.11.02.8bf68ee's `cargo verus new` pins.
+vstd = "=0.0.0-2026-11-01-0251"
+
+[package.metadata.verus]
+verify = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(verus_only)'] }
