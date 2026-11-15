@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Breaking (behaviour):** a per-test child of `run_registered_tests()` exits
+  with `TEST_FAILURE_EXIT_CODE` before GTK initializes unless
+  `session::SESSION_ACTIVE_ENV` is set, which only the session helper's inner
+  stage does. A consumer that set its runner variable and started the harness
+  in a session of its own must start it through the helper (or let the
+  harness relaunch itself).
+- The session helper starts its inner stage through `/proc/<pid>/exe`, not
+  `current_exe()` (the `GTK_LUSH_SESSION_BIN` it exports keeps the file path,
+  which also works in another pid namespace). Every `cargo build` re-uplifts
+  `target/debug/gtk-lush-session`, so with several sessions starting in one
+  worktree `current_exe()` could name a replaced file (`… (deleted)`) and
+  `dbus-run-session` failed to start the inner stage (2 of 152 sessions under
+  a concurrent build loop; 0 of 441 after this and the shim's exec retry).
 - `recommended_pre_gtk_environment()` now selects `GTK_A11Y=test`, and its
   documentation states the hazard that comes with it: announcing through a
   `GtkTestATContext` kills the process (GTK ledger A117), so consumers

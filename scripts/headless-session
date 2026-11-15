@@ -48,4 +48,20 @@ fi
 
 target_dir=$(cargo metadata --quiet --format-version 1 --no-deps --manifest-path "$repo/Cargo.toml" \
     | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
-exec "$target_dir/debug/gtk-lush-session" "$@"
+bin="$target_dir/debug/gtk-lush-session"
+# Every `cargo build`, fresh or not, re-uplifts this file (a new inode), and
+# several lanes build it at once (`make test` starts every widget shard
+# together). While another build is writing it, exec fails with "Text file
+# busy"; the copy takes milliseconds, so retry briefly. Once running, the
+# helper re-executes itself through its own /proc exe link, never this path.
+# `execfail` keeps a failed exec from ending the shell, and `set +e` is
+# needed too: under errexit bash ends the shell on a failed exec even inside
+# an `||` or `if` (bash 5.3).
+shopt -s execfail
+set +e
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    exec "$bin" "$@"
+    sleep 0.1
+done
+echo "gtk-lush-session: cannot execute $bin" >&2
+exit 1

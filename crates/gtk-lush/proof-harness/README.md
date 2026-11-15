@@ -44,7 +44,10 @@ itself, **before the session bus starts**, so services the bus activates
 (`xdg-desktop-portal-gtk`, the AT-SPI launcher) inherit it. A per-test child
 only verifies the values (`verify_recommended_environment()`) and fails before
 GTK initializes, naming the variable, when one is missing; list mode and the
-relaunching parent verify nothing. The recommended values are:
+relaunching parent verify nothing. A per-test child also refuses to run
+outside the helper's inner stage (`session::SESSION_ACTIVE_ENV` unset), so a
+runner variable set by hand in a desktop shell never shows a test's widgets
+on the caller's display. The recommended values are:
 
 - `NO_AT_BRIDGE=1`
 - `GDK_DEBUG=no-portals`

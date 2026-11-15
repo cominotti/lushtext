@@ -291,6 +291,27 @@ pub fn find_in_path(command: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
         .find(|candidate| is_executable_file(candidate))
 }
 
+/// A path that executes this process's own binary for as long as this
+/// process lives, even after the file it was started from was replaced. Only
+/// for this process's own pid namespace (the inner stage it starts).
+///
+/// `cargo build` re-uplifts `target/debug/gtk-lush-session` (a new inode) on
+/// every run, fresh or not, and `scripts/headless-session` builds before
+/// each session. With several sessions starting in one worktree (`make test`
+/// starts every widget shard at once), a session's `current_exe()` could name
+/// a file another lane's build had just replaced, `… (deleted)`, and
+/// `dbus-run-session` then failed to exec the inner stage. `/proc/<pid>/exe`
+/// keeps referring to the running inode, and this process outlives the exec
+/// (it waits for the session it starts).
+fn own_executable() -> std::io::Result<PathBuf> {
+    let link = PathBuf::from(format!("/proc/{}/exe", std::process::id()));
+    if link.exists() {
+        Ok(link)
+    } else {
+        std::env::current_exe()
+    }
+}
+
 fn is_executable_file(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     path.is_file()
@@ -817,7 +838,7 @@ fn build_outer(
         set_runtime_dir(&mut session, options, dir);
     }
 
-    let current_exe = std::env::current_exe().map_err(|_| {
+    let current_exe = own_executable().map_err(|_| {
         SessionLaunchError::failure("gtk-lush-session: cannot find the current executable")
     })?;
     let plan = Plan {
@@ -1216,6 +1237,10 @@ fn run_inner_body(
     if let Some(address) = &system_address {
         command.env("DBUS_SYSTEM_BUS_ADDRESS", address);
     }
+    // The exported path is the file's, not `own_executable()`'s
+    // `/proc/<pid>/exe`: a consumer may run in another pid namespace (the
+    // GTK axiom runner passes the environment into a Flatpak SDK sandbox),
+    // where that link names another process or none.
     if plan.export_bin
         && let Ok(exe) = std::env::current_exe()
     {
@@ -1865,6 +1890,20 @@ fn compositor(monitors: &[String], command: &[OsString]) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_own_executable_survives_a_replaced_binary() {
+        let own = own_executable().expect("own executable");
+        assert!(
+            own.starts_with("/proc"),
+            "Linux runs the helper, so the path is the process's own exe link: {}",
+            own.display()
+        );
+        assert_eq!(
+            std::fs::canonicalize(&own).expect("resolve the link"),
+            std::env::current_exe().expect("current exe"),
+        );
+    }
 
     fn os(args: &[&str]) -> Vec<OsString> {
         args.iter().map(OsString::from).collect()

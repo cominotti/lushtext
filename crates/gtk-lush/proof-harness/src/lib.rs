@@ -319,7 +319,9 @@ pub fn apply_headless_child_environment(command: &mut Command, config: &HarnessC
 /// The parent process relaunches into a private headless compositor unless the
 /// configured runner environment variable is already present. Inside the
 /// headless session, the parent process lists or filters tests, then spawns a
-/// fresh child process for each selected test.
+/// fresh child process for each selected test. A child runs only inside the
+/// session helper's inner stage (`session::SESSION_ACTIVE_ENV`) and with the
+/// recommended environment; otherwise it fails before GTK initializes.
 // A message, not a bare `#[must_use]`: `ExitCode` is itself `#[must_use]` on
 // newer std (Clippy's `double_must_use`), but not on every toolchain this crate
 // supports, and the message says what the caller owes.
@@ -338,6 +340,10 @@ pub fn run_registered_tests(
     }
 
     if let Ok(test_name) = std::env::var(config.child_test_env()) {
+        if let Err(outside) = verify_inside_session_in(|key| std::env::var_os(key).is_some()) {
+            eprintln!("{test_name}: {outside}");
+            return ExitCode::from(TEST_FAILURE_EXIT_CODE);
+        }
         if let Err(missing) = verify_recommended_environment() {
             eprintln!(
                 "{missing}: the per-test child expects the session launcher to set it \
@@ -398,6 +404,22 @@ fn run_under_headless_compositor(config: &HarnessConfig, args: &[String]) -> Exi
 /// Returns the name of the first variable that does not hold its value.
 pub fn verify_recommended_environment() -> Result<(), String> {
     verify_recommended_environment_in(|key| std::env::var(key).ok())
+}
+
+/// `Err` unless this process runs inside the session helper's inner stage,
+/// the only place that sets `session::SESSION_ACTIVE_ENV`: a per-test child
+/// started any other way (the runner variable set by hand in a desktop
+/// shell) would show its widgets on the caller's display, so it runs nothing.
+fn verify_inside_session_in(is_set: impl Fn(&str) -> bool) -> Result<(), String> {
+    if is_set(session::SESSION_ACTIVE_ENV) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} is not set: a per-test child runs only inside the private headless \
+             session (gtk_lush_proof_harness::session), never on the caller's display",
+            session::SESSION_ACTIVE_ENV
+        ))
+    }
 }
 
 /// [`verify_recommended_environment`] over any variable lookup.
@@ -683,6 +705,17 @@ mod tests {
         let error = verify_recommended_environment_in(|key| env.get(key).cloned())
             .expect_err("a missing ADW_DISABLE_PORTAL must fail");
         assert!(error.starts_with("ADW_DISABLE_PORTAL=1"), "{error}");
+    }
+
+    #[test]
+    fn a_child_outside_the_session_helper_runs_nothing() {
+        let error = verify_inside_session_in(|_| false)
+            .expect_err("a child without the session marker must refuse");
+        assert!(error.starts_with(session::SESSION_ACTIVE_ENV), "{error}");
+        assert_eq!(
+            verify_inside_session_in(|key| key == session::SESSION_ACTIVE_ENV),
+            Ok(())
+        );
     }
 
     #[test]

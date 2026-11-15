@@ -240,7 +240,12 @@ one `wait_until` drain chains every turn to the terminal and the in-flight state
 is never sampled: a test that passes on an idle machine and fails under load
 (reproduced 2 of 6 runs with CPUs saturated; `harden-flatpak-sdk-update-ci`).
 Assert in-flight states with `observed_between_dispatches`; keep `wait_until`
-for terminal states, which persist.
+for terminal states, which persist. When the test must also *act* while the
+workflow is in flight (supersede it, cancel it), hold it there instead through
+its test cadence seam: the workspace reconciliation test sets a one-hour batch
+delay until its superseding refresh, then restores 20 ms for the latest plan
+(`quiet-headless-session-services`; a 20 ms gap went unseen under load and
+printed `FLAKY:`).
 
 **A fixed iteration window starves a lower-priority source under load.** A
 test that iterates its own context for a fixed time and expects a

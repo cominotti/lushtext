@@ -179,7 +179,12 @@ fn case_session_needs_atspi_startup_retry(
     case_json: &Path,
     result: &CaseSessionResult,
 ) -> Result<bool, String> {
-    if result.timed_out || result.exit_code == Some(0) {
+    // A session-hygiene exit is never retried: a second session would touch
+    // the host again (the widget runner's rule too).
+    if result.timed_out
+        || result.exit_code == Some(0)
+        || result.exit_code == Some(i32::from(SESSION_HYGIENE_EXIT_CODE))
+    {
         return Ok(false);
     }
     let case_dir = case_dir_for(case_json)?;
@@ -2676,6 +2681,21 @@ mod tests {
         )
         .expect("session log");
         assert!(!case_session_needs_atspi_startup_retry(&case_json, &failed).expect("classify"));
+
+        fs::write(
+            tempdir.path().join("session.log"),
+            "Unable to register the application: org.a11y.atspi.Registry: unit failed\n",
+        )
+        .expect("session log");
+        let hygiene = CaseSessionResult {
+            exit_code: Some(i32::from(SESSION_HYGIENE_EXIT_CODE)),
+            timed_out: false,
+            report_path: tempdir.path().join("process-report.json"),
+        };
+        assert!(
+            !case_session_needs_atspi_startup_retry(&case_json, &hygiene).expect("classify"),
+            "a session-hygiene exit is never retried, whatever its log says"
+        );
 
         let timed_out = CaseSessionResult {
             timed_out: true,

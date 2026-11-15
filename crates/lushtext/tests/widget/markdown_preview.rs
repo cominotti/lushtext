@@ -3176,6 +3176,16 @@ fn test_root_and_nested_code_blocks_repair_after_resize_at_constrained_width() {
         code_block_containers(&preview).len() == 2
     });
     wait_for_code_block_layout(&preview);
+    // Let the render's deferred width passes finish before the resize, so
+    // only the resize itself can repair the blocks. The repair used to come
+    // from the render's own 50 ms pass when the resize landed inside it, and
+    // a resize that landed later was never repaired (`size_allocate` on this
+    // `GtkBox` subclass is not called; the suite-level FLAKY of
+    // `quiet-headless-session-services` 6.2).
+    let render_settled = Rc::new(std::cell::Cell::new(false));
+    let render_settled_for_callback = render_settled.clone();
+    preview.queue_code_block_width_refresh_for_test(move || render_settled_for_callback.set(true));
+    wait_until(Duration::from_secs(10), || render_settled.get());
 
     window.set_default_size(320, 420);
     let repaired = wait_until_or_false(Duration::from_secs(10), || {

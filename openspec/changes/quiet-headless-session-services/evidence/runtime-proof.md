@@ -440,6 +440,115 @@ a property of the shard's tests. It came from the parallel run, where
 `memory.peak` also counts page cache charged to the scope; which pages is
 not attributed, so it stays open.
 
+### 6.2 Stage 4: discrimination, causes and fixes (2026-11-15)
+
+Both FLAKY lines are **pre-existing on `main`**, and both are now explained
+and fixed. Method: `main` `14332d69` (the branch's merge base, a detached
+checkout) against the branch, one side at a time. Each round ran the full
+parallel widget suite (`widget-shards.py parallel --retries 1`) as load,
+plus four concurrent loops. Each loop ran the two tests alternately, one
+fresh session per run, with no runner retries, until the suite ended. Every
+command went through `scripts/heavy.sh`. A run is `FLAKY` when the
+harness's own second attempt passed, and `FAILED` when both attempts failed.
+
+| Round | Side | Test | Runs | FLAKY | FAILED | Load (1 min) |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 (1 loop) | `main` | markdown / workspace | 85 / 84 | n/c | 0 / 0 | 4.5–9.3 |
+| 1 (1 loop) | branch | markdown / workspace | 66 / 66 | n/c | 0 / 0 | 5.5–11.1 |
+| 2 (4 loops) | `main` | markdown / workspace | 567 / 566 | n/c | **3** / 0 | 8.3–17.1 |
+| 2 (4 loops, stopped early) | branch | markdown / workspace | 52 / 49 | n/c | 0 / 1 (session start, below) | 9.1–22.5 |
+| 4 (4 loops) | `main` | markdown / workspace | 669 / 667 | **42 / 3** | **2** / 0 | 8.8–21.0 |
+| 4 (4 loops) | branch with the fixes | markdown / workspace | 559 / 556 | 0 / 0 | 0 / 0 | 9.8–18.4 |
+
+"n/c": not counted. Rounds 1 and 2 deleted the logs of runs that exited 0, so
+first-attempt failures were lost. From round 4 on every run is classified.
+The suite runs used as load passed on both sides, with 0 FLAKY. Both fixed
+tests then passed 10 of 10 times in isolation, and the axiom samples A115,
+A116 and A117 hold (`make gtk-axiom-sample AXIOM=<id> CHECK=1`).
+
+**Markdown preview: a defect in the widget.** Code-block widths were never
+repaired after the preview's own width changed. In the app the window shell
+masks most of it, because it queues a repair after its transitions and when
+the side-by-side width clamp moves.
+
+- `LushtextMarkdownPreview` is a `GtkBox` subclass, so `GtkBoxLayout`
+  allocates it, and GTK does not call its `size_allocate` override.
+  Instrumented, the override printed nothing in two runs.
+- `GtkWidget` has no `width` property, so its `notify::width` handler never
+  ran either.
+- So the only repair after a resize was the render's own 50 ms deferred
+  pass. The test passed only when the resize landed inside that pass.
+
+Made deterministic, by settling the render's deferred passes before the
+resize, the test failed 3 of 3 runs, and every run reported the stale
+repair: `window 320x420, text view 320 … blocks [(820, 240, …), (868, 288,
+…)]`.
+
+Fix: the preview observes its text view's horizontal adjustment through
+`gtk_lush_viewport::ViewportObserver`, whose page size GTK sets from the
+text view's allocated width. On a page-size change it runs only the deferred
+passes, because the change arrives inside the text view's allocation
+(ledger A13). The dead override and the `width` notify are removed. The
+deterministic test now passes, and so do all 117 `markdown_preview` tests
+and the `window_preview` and `focus_mode` modules.
+
+**Workspace reconciliation: the test sampled a transient state.** Its
+second wait needed the first reconciliation in flight between two batches,
+20 ms apart.
+
+- `wait_until` drains the main loop to exhaustion. On a loaded host each
+  dispatch outlasts the gap, so one drain applies every batch and the
+  in-flight state is never seen.
+- Fault injection reproduced it at will: a drain that adds 25 ms per
+  dispatch timed out after 30 s, with 5,674 polls.
+- The panic line of the `main` FLAKY runs is that same wait.
+
+Fix: the test holds the first plan with a one-hour batch delay until the
+latest refresh supersedes it, and the latest plan then runs at 20 ms. It
+passed 6 of 6 runs under the same slowed drain. The `gtk-testing` reference
+records the idiom.
+
+**Found by the discrimination, branch only: a session could exec a replaced
+binary.**
+
+- Every `cargo build`, even a no-op one, re-uplifts
+  `target/debug/gtk-lush-session`, giving it a new inode.
+- Concurrent sessions in one worktree then failed in three ways:
+  - `dbus-run-session: failed to exec '…/gtk-lush-session (deleted)'`, from
+    the helper's `current_exe()`;
+  - `Text file busy` or `No such file or directory`, from the shim's
+    `exec`.
+- Reproduction: four session loops beside a no-op build loop failed 2 of
+  152 sessions.
+
+Fix:
+- The helper starts its inner stage through `/proc/<pid>/exe`. The
+  `GTK_LUSH_SESSION_BIN` it exports stays the file path, because a consumer
+  in another pid namespace (the axiom runner's Flatpak SDK sandbox) would
+  resolve the link to another process or to none.
+- The shim retries a failed `exec` ten times, 0.1 s apart. This needs
+  `execfail` and `set +e`, because bash 5.3 ends an errexit shell on a
+  failed exec even inside `||` or `if`.
+
+Result: 0 failures in 441 sessions.
+
+**Review hardening.**
+- A per-test widget child now refuses to run unless
+  `GTK_LUSH_SESSION_ACTIVE` is set. Only the helper's inner stage sets it.
+  A child started by hand in a desktop shell with the runner variable
+  printed the refusal and touched no display.
+- The widget lane no longer allowlists
+  `Gtk-CRITICAL … org.a11y.atspi.Registry`: under `GTK_A11Y=test` it cannot
+  occur, and the round-4 suite proves zero. The `document_scale` criticals
+  filter drops the same exemption.
+- `cargo-gtk-proof` never retries a session-hygiene exit (93) as an AT-SPI
+  start-up failure.
+
+**Open decision 2 (the 2,011 MiB `editor-page` peak): not reproduced.**
+Across four parallel suite runs, two per side, the `editor-page` scope
+peaked at 384 to 393 MiB. Five-second `memory.stat` samples showed about
+117 MiB anon and 19 MiB file. The one-off peak stays unattributed.
+
 ## 6.3 GTK axioms on the final tree
 
 - `make gtk-axioms` on the final tree (merged with `main` `14332d69`): the

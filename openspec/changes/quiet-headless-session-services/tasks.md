@@ -92,7 +92,7 @@ Fingerprinted files (design, "Risks"): the accessibility proof covers the captur
 ## 6. Verification on the final tree
 
 - [x] 6.1 Run `make test-unit`, `make test-int`, and `cargo test -p gtk-lush-proof-harness -p cargo-gtk-proof`.
-- [ ] 6.2 Run the full widget suite once (`make test-widget`): the environment changes for every widget test. Any `FLAKY:`, `FLAKY-SHARD:`, `OOM-KILL:` or `SESSION-HYGIENE:` is a blocker (`preexisting-blockers.md`). Rerun a failed test in isolation before classifying it. Do not touch the two tests that PR #99 fixes.
+- [x] 6.2 Run the full widget suite once (`make test-widget`): the environment changes for every widget test. Any `FLAKY:`, `FLAKY-SHARD:`, `OOM-KILL:` or `SESSION-HYGIENE:` is a blocker (`preexisting-blockers.md`). Rerun a failed test in isolation before classifying it. Do not touch the two tests that PR #99 fixes. *(Stage 4: both FLAKY lines were pre-existing on `main`; causes found and fixed, `evidence/runtime-proof.md` "6.2 Stage 4".)*
 - [x] 6.3 Run `make gtk-axioms` and `make check-gtk-axioms`. Run `make gtk-axioms-runtimes` once as well (local only: `flatpak run` of an SDK inside the migrated `run-gtk-axioms.sh` session), deciding as in 4.3 whether `flatpak run` needs the host system bus, or record the host skip and its reason in `evidence/runtime-proof.md`.
 - [x] 6.4 Run every migrated lane once, headless:
   - `make visual-geometry-smoke`, `make visual-smoke`, `make accessibility-smoke`;

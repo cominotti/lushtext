@@ -613,3 +613,71 @@ reference precondition asks for no process at 80 % or more, so this is
 recorded as a deviation that both sides shared, not hidden.
 (`evidence/runtime-proof.md` 6.4; raw runs in
 `.claude/handoffs/quiet-headless-session-services/measure/`.)
+
+## Stage 4 review decisions (2026-11-15)
+
+User experience and robustness came first in each decision. The evidence is
+in `evidence/runtime-proof.md`, "6.2 Stage 4".
+
+1. **The two FLAKY lines.** Both are pre-existing on `main`. Under parallel
+   stress, `main` failed a first attempt 44 times in 669 markdown runs and
+   3 times in 667 workspace runs. The branch with the fixes had 0 in 559 and
+   0 in 556 at a comparable load. Both causes are fixed here:
+   - the preview widget never repaired its code blocks after its own width
+     changed. In the app the shell masks most of this: it queues a repair
+     after its transitions and when the side-by-side width clamp moves. What
+     is left is a resize that changes the preview's width with no such
+     transition, such as a window resize in preview-only mode (inferred from
+     the code, not verified live);
+   - the workspace test sampled a transient state.
+   Task 6.2 is done.
+2. **The 2,011 MiB `editor-page` peak.** Not reproduced: four parallel runs
+   peaked at 384 to 393 MiB. Closed as not reproduced and unattributed. The
+   shard keeps its 2 GiB scope, and an `OOM-KILL:` would still fail the run.
+3. **A70 and A79 violated once at load ~25.** These are load-sensitive
+   timing probes, not regressions: they hold at normal load, and this change
+   does not touch what they measure. Recorded; the programme's open item on
+   load-sensitive probes owns any recurrence.
+4. **The A117 upstream GTK report.** It stays drafted
+   (`docs/upstream-reports.md`). Filing it needs the maintainer's explicit
+   approval.
+5. **Responsiveness.** Accepted as no budget shift. The shared
+   `jetbrains-toolbox` deviation is recorded above.
+6. **`openspec validate --all --strict` on CLI 2.0.0.** This is
+   pre-existing on `main`: 87 legacy specs fail. It is already a programme
+   item, the OpenSpec strict legacy cleanup, not this change's.
+   `openspec validate --all` and this change's strict validation pass.
+7. **Task 8.1.** Written after the merge, with the merge SHA.
+8. **The CST `sccache` server.** Belongs to CST and goes into the 8.1 note.
+   The review added one more facet: started inside a `with-memory-cap.sh`
+   scope, the server also stays in that scope. One started at 14:09 by a
+   cargo-mutants measurement held a 36 GiB scope in `lushtext-heavy.slice`
+   (48 GiB) all afternoon, and admission counted it, so a 16 GiB job waited.
+
+Findings this stage fixed:
+
+- **Session start could exec a replaced binary** (branch-only):
+  - every `cargo build` re-uplifts `target/debug/gtk-lush-session`;
+  - concurrent sessions then failed, 2 in 152 under a build loop;
+  - the helper now re-executes itself through `/proc/<pid>/exe`, and the
+    shim retries `exec`;
+  - after the fix, 0 failures in 441 sessions.
+- **No test can touch the live desktop:**
+  - a per-test child refuses to run without `GTK_LUSH_SESSION_ACTIVE`, which
+    only the helper's inner stage sets;
+  - this adds to the existing guards: the relaunch through the helper with
+    `DISPLAY` and `WAYLAND_DISPLAY` removed, the recommended-environment
+    check, and the refusal of the real `XDG_RUNTIME_DIR`.
+- **The AT-SPI registry critical**
+  (`Unable to register the application … org.a11y.atspi.Registry: unit
+  failed`):
+  - this change removes the class from widget and screencast sessions,
+    because `GTK_A11Y=test` contacts no AT-SPI bus;
+  - accessibility sessions start `at-spi2-registryd` themselves;
+  - the widget lane no longer allowlists the line, so it would now fail the
+    lane;
+  - the round-4 suite proves zero.
+- **`cargo-gtk-proof` could retry a hygiene exit** as an AT-SPI start-up
+  failure. It no longer does.
+
+Gates and the merge are recorded in the handoff (`merge-record.md`).

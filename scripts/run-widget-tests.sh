@@ -39,7 +39,7 @@ SESSION_HYGIENE_EXIT_CODE=93
 # services the session does not run; that family lives once in
 # smoke_warning_classifiers.py and is read here as POSIX ERE.
 SESSION_SERVICES_REGEX="$(python3 -B "$SCRIPT_DIR/smoke_warning_classifiers.py" --print-regex headless-session-services)"
-BENIGN_WIDGET_NOISE_REGEX='(dbus-daemon\[[0-9]+\]: .*org\.(freedesktop\.(portal|impl\.portal\.|systemd1)|a11y\.Bus)|\(/usr/libexec/xdg-desktop-portal:.*WARNING \*\*:|\*\* \(xdg-desktop-portal-gtk:.*WARNING \*\*:|Gtk-CRITICAL \*\*: .*org\.a11y\.atspi\.Registry|Gdk-Message: .*Broken pipe$|^libmutter-Message:|^\*\* Message: .*Obtained a high priority EGL context$|^\*\* \(mutter:[0-9]+\): WARNING \*\*: ([0-9:.]+: )?Skipping layers 1\.\.n of your pipeline since the first layer is sliced\. We don'\''t currently support any multi-texturing with sliced textures but assume layer 0 is the most important to keep$|.*WARNING: Glycin running without sandbox\.( .*)?$)|'"$SESSION_SERVICES_REGEX"
+BENIGN_WIDGET_NOISE_REGEX='(dbus-daemon\[[0-9]+\]: .*org\.(freedesktop\.(portal|impl\.portal\.|systemd1)|a11y\.Bus)|\(/usr/libexec/xdg-desktop-portal:.*WARNING \*\*:|\*\* \(xdg-desktop-portal-gtk:.*WARNING \*\*:|Gdk-Message: .*Broken pipe$|^libmutter-Message:|^\*\* Message: .*Obtained a high priority EGL context$|^\*\* \(mutter:[0-9]+\): WARNING \*\*: ([0-9:.]+: )?Skipping layers 1\.\.n of your pipeline since the first layer is sliced\. We don'\''t currently support any multi-texturing with sliced textures but assume layer 0 is the most important to keep$|.*WARNING: Glycin running without sandbox\.( .*)?$)|'"$SESSION_SERVICES_REGEX"
 # Cargo diagnostics spell this as a standalone `warning:` token. Requiring a
 # line/whitespace boundary keeps `--list` output such as `...visible_warning:
 # test` from being mistaken for a toolkit or compiler warning.
@@ -110,6 +110,15 @@ self_test_warning_classification() {
     printf '%s\n' "Gtk-WARNING **: allocation failed" >"$log_file"
     if check_for_unexpected_widget_warnings "$log_file" >/dev/null 2>&1; then
         echo "Error: widget warning self-test accepted an unexpected GTK warning." >&2
+        return 1
+    fi
+
+    # GTK_A11Y=test reaches no AT-SPI bus, so the registry critical the old
+    # session printed (its bus could not activate at-spi2-registryd) cannot
+    # occur in a widget session; if it comes back, it fails the lane.
+    printf '%s\n' "(process:42): Gtk-CRITICAL **: 14:07:27.435: Unable to register the application: GDBus.Error:org.freedesktop.DBus.Error.NameHasNoOwner: Could not activate remote peer 'org.a11y.atspi.Registry': unit failed" >"$log_file"
+    if check_for_unexpected_widget_warnings "$log_file" >/dev/null 2>&1; then
+        echo "Error: widget warning self-test accepted the AT-SPI registry critical." >&2
         return 1
     fi
 
