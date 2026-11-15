@@ -40,11 +40,13 @@ overlap. The design's "Measured baseline" holds the full tables.
 3. **What does work is bounding the realized-row churn.** A prototype first
    removed the children GTK has no widget for, in 16,384-row chunks. It then
    removed the bound children in units of 16 or 32 per dispatch, and collapsed
-   the nearly empty row last. Every step took 6–8 ms and every frame 4–10 ms,
-   where the bare collapse took about 40 + 38 ms (400 rows after, 256 or
-   16,385 entries; 131,072 entries with nothing after). The directory row's
-   rendered position never moved, and the viewport slice bin made no
-   correction.
+   the nearly empty row last. At load 13, steps took 6.2–14.7 ms, frames
+   4.2–13.1 ms and the final call 1.9–18.1 ms, with a 2× spread between
+   identical runs. The bare collapse took about 40 + 38 ms (400 rows after,
+   256 or 16,385 entries; 131,072 entries with nothing after). Units of 64
+   failed (a 32 ms step). The directory row's rendered position never moved,
+   and the viewport slice bin made no correction. Whether 16, 32 or 8 rows per
+   frame meets `B_INTERACT_US` is for the quiet verdict to decide.
 4. **The rest is the probe scan.** About 0.45–0.63 s after collapsing a
    131,072-entry directory, a 37–50 ms dispatch publishes a directory scan. In
    6 of 6 runs the scan terminal counter advanced in exactly that dispatch.
@@ -88,8 +90,13 @@ expansion side in under the pre-existing-blockers rule, measurement first.
   3. Once at most `DIRECT_COLLAPSE_ROWS` rows remain, the row is collapsed.
      BL's listing retirement takes the emptied stores.
 
-  Expanding the row again during a collapse cancels it and refills the store
-  through the existing refresh path.
+  Steps are paced by the frame clock while the list is drawn, and by a
+  `G_PRIORITY_LOW` source while it is not (sidebar hidden, section body
+  collapsed, window unmapped), so a collapse always finishes. Expanding the
+  row again during a collapse, by any route, goes through an owned expand
+  entry point: it cancels the collapse and refills the store through the
+  existing refresh path. The row is still GTK-expanded at that point, so a
+  bare `set_expanded(true)` would do nothing.
 - **One pure step policy.** The choice of the next removal comes from facts:
   the subtree's stores, their lengths, the flattened position of the
   directory and the positions GTK holds rows for. It is a GTK-free function in
@@ -155,13 +162,15 @@ expansion side in under the pre-existing-blockers rule, measurement first.
   freezes the sidebar for 2–5 frames. The arrow flips in the first frame.
   The children then disappear in bands of at most
   `COLLAPSE_REALIZED_ROWS_PER_FRAME` rows per frame while the rows below move
-  up. A 256-entry directory with rows after it is fully collapsed in about
-  8 frames, and a 131,072-entry one in roughly 16–24. This is slower to finish
-  than `main`'s frozen collapse (about 80 ms for the former), but every frame
-  in between is drawn and input is handled.
-- Selection or keyboard focus on a child of the collapsing directory moves to
-  the directory row as the collapse starts. On `main` it lands wherever
-  `GtkSingleSelection` puts it once the child is gone.
+  up. At 32 rows per frame, a 256-entry directory with rows after it is fully
+  collapsed in about 8 frames (67 ms at 120 Hz, 133 ms at 60 Hz). At 16 rows
+  per frame it takes about 16 frames. A 131,072-entry one takes about 8 frames
+  more for its unbound rows, which need no frame each. This is slower to
+  finish than `main`'s frozen collapse (about 80 ms for the former), but every
+  frame in between is drawn and input is handled.
+- Selection or keyboard focus on a child of a collapsing directory moves to
+  the directory row as the collapse starts, on the direct path too. On `main`
+  it lands wherever `GtkSingleSelection` puts it once the child is gone.
 - No loss compared with `main`: the same rows, the same final state and the
   same accessible names, and the expander keeps every key and click it has
   today.

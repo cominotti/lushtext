@@ -14,9 +14,14 @@ Lane: none. The responsiveness lane drives editor documents and the restyle of a
 
   It enforces nothing yet (`timing_verdicts_enforced()` gates the assertions added in 7.1). Keep the measurement code identical between `main` and the branch: apply it to a `main` worktree as a patch saved in the handoff directory.
 - [ ] 1.2 Run it on `main` and on the branch, four rounds interleaved, through `scripts/measure.sh`, at a recorded load below 4. Record cairo and GL (steady state) frame figures. Write the tables into design "Measured baseline" as the verdict baseline, replacing the non-verdict stage 1 figures but keeping them as history.
-- [ ] 1.3 Decide the three constants of design D3 from the figures: `DIRECT_COLLAPSE_ROWS`, `COLLAPSE_REALIZED_ROWS_PER_FRAME` and `COLLAPSE_UNBOUND_CHUNK_ROWS`, each a power of two rounded down. Decide D10 (cap expansion batches or not). Record both in design "Implementation decisions".
-- [ ] 1.4 Confirm D12's attribution: in the verdict test's re-expansion right after a 131,072-entry collapse, show that every dispatch over `B_SETTLE_US` coincides with the probe scan's terminal publication, by counter. If a dispatch does not, attribute it before going on.
-- [ ] 1.5 Commit (signed, conventional, staged by name) and push.
+- [ ] 1.3 Attribute every expansion dispatch over `B_SETTLE_US` with a `perf` profile (run under `scripts/measure.sh`, which uses no systemd scope; pass `--call-graph=fp --user-callchains`), then choose D10's fix, or no fix, from the attribution. Decide the three constants of design D3 from the figures (`DIRECT_COLLAPSE_ROWS`, `COLLAPSE_REALIZED_ROWS_PER_FRAME` with 8, 16 and 32 measured, `COLLAPSE_UNBOUND_CHUNK_ROWS`), each a power of two rounded down. Record both in design "Implementation decisions".
+- [ ] 1.4 Confirm D12's attribution:
+  - in the verdict test's re-expansion right after a 131,072-entry collapse, show by counter that every dispatch over `B_SETTLE_US` coincides with a scan's terminal publication;
+  - record the store that scan published to: it must belong to the collapsed directory's path and be shown by no row, i.e. the `is_expandable()` probe's store.
+
+  If a dispatch does not match, attribute it before going on.
+- [ ] 1.5 Measure the residual routes of design D2 once on `main` and record them: a refresh splice removing an expanded 256-entry and an expanded 131,072-entry directory, a section rebuild with one expanded, and a direct collapse while the sidebar is hidden.
+- [ ] 1.6 Commit (signed, conventional, staged by name) and push.
 
 ## 2. GTK axioms first (design D13)
 
@@ -41,15 +46,16 @@ Lane: none. The responsiveness lane drives editor documents and the restyle of a
   - `test_collapse_shows_in_the_first_frame`: arrow class and accessible `expanded` false after the input dispatch, before any row is removed. Fails on `main`: the class does not exist.
   - `test_collapse_keeps_the_directory_row_still`: rendered top constant at every step, no slice bin correction, `outer_request_pending()` false at the end.
   - `test_collapse_from_inside_the_children_matches_a_direct_collapse`: folder header collapse while scrolled into a 4,096-entry directory; the outer value and rendered placement equal a direct collapse's on a twin tree.
-  - `test_collapse_moves_selection_and_focus_to_the_directory`: fails on `main`, where selection lands on another row.
-  - `test_expanding_again_mid_collapse_restores_every_entry`.
+  - `test_collapse_moves_selection_and_focus_to_the_directory`: on the sliced and on the direct path. Fails on `main`, where selection lands on another row.
+  - `test_expanding_again_mid_collapse_restores_every_entry`: once by click and once through each LushText expand caller (reveal, new-item flow, restore, folder toggle). A guard test: it passes on `main`, where no collapse can be pending, and must stay green. It asserts that the store lists every entry again and that no caller acts on a partly drained store.
+  - `test_a_collapse_nobody_draws_completes`: start a sliced collapse, then hide the sidebar, and separately start one with the section body collapsed; the collapse completes and `refresh_blocks_readiness` becomes false.
   - `test_ancestor_collapse_drains_the_descendant_first`: `outer/inner` with 16,385 entries.
   - `test_collapse_stops_loads_and_refreshes_under_it`: collapse during a 131,072-entry load; no batch is applied afterwards, and re-expansion loads afresh.
   - `test_collapse_routes_reach_the_entry_point`: click, each collapse key, activation, header collapse and toggle, reveal failure, reorder hover. Counted through the evidence's `collapse_direct_total` and `collapse_steps_total`.
   - `test_expand_routes_keep_gtk_behaviour`: click and expand keys expand and scroll as `main` does.
   - `test_collapse_readiness_and_evidence`: `refresh_blocks_readiness` is true while collapsing; the evidence inertness proof covers the new fields.
   - `test_removing_a_collapsing_directory_cancels_the_collapse`.
-- [ ] 3.3 Run them on the branch before group 4 and save the failures in `.claude/handoffs/slice-large-directory-collapse/impl/failing-first.log`.
+- [ ] 3.3 Run them on the branch before group 4 and save the failures in `.claude/handoffs/slice-large-directory-collapse/impl/failing-first.log`. BL's collapse tests (`test_collapsing_a_large_directory_retires_its_listing_after_the_collapse`, `test_collapsing_an_ancestor_releases_its_descendants_listings`, `test_a_collapsed_listing_held_elsewhere_is_released_not_emptied`) call `set_expanded(false)` directly. They keep testing the direct path, which the residual routes still take, and stay green unchanged; say so in their doc comments.
 - [ ] 3.4 Commit and push.
 
 ## 4. Pure step policy and its proofs (design D9)
@@ -61,7 +67,13 @@ Lane: none. The responsiveness lane drives editor documents and the restyle of a
 
 ## 5. The owned collapse (design D5–D8, D11)
 
-- [ ] 5.1 Add `ui/sidebar/workspace_section/collapse_execution.rs`: the entry point `collapse_directory(row, origin)`, the collapse state in `imp.rs` (grouped with the scan runtime state), the frame-paced step source (`after-paint`), and the band read (list-view children → expander → `list_row()` → `position()`). The module doc narrates the stage order, its resumption point and its two inversions.
+- [ ] 5.1 Add `ui/sidebar/workspace_section/collapse_execution.rs`:
+  - the entry points `collapse_directory(row, origin)` and `expand_directory(row, origin)`;
+  - the collapse state in `imp.rs`, grouped with the scan runtime state;
+  - the step source, frame-paced (`after-paint`) while the list view is mapped and a `G_PRIORITY_LOW` timeout while it is not, switched on `map`/`unmap` (design D4);
+  - the band read (list-view children → expander → `list_row()` → `position()`).
+
+  The module doc narrates the stage order, its resumption points and its inversions.
 - [ ] 5.2 Start of a collapse (D6, D7):
   - the expander class;
   - the accessible state;
@@ -72,8 +84,9 @@ Lane: none. The responsiveness lane drives editor documents and the restyle of a
 - [ ] 5.4 Routes (D5):
   - `row_factory.rs` sets the expander's own `GestureClick` phase to `None` on every row and installs LushText's disclosure gesture. Expanding activates `listitem.scroll-to` plus `set_expanded(true)`; collapsing calls the entry point.
   - Add the capture-phase key controller for the collapse bindings on the list view.
-  - Route `activate_file_at`, `folder_execution.rs`, `reveal_execution.rs` and `reorder_execution.rs` through the entry point.
-- [ ] 5.5 Add a `make check-workflow-boundaries` rule: no `set_expanded(false)` on a directory row outside `collapse_execution.rs`. Audit every `is_expanded()` reader in `ui/sidebar/**` for intent-versus-GTK-state, and record the audit in `impl/is-expanded-audit.md`.
+  - Route `activate_file_at`, `folder_execution.rs`, `reveal_execution.rs` and `reorder_execution.rs` through the collapse entry point.
+  - Route every `set_expanded(true)` caller through the expand entry point: `reveal_execution.rs` (`advance_expansion`), `file_execution.rs` (new-item flow), `scan_execution.rs` (restore), and `folder_execution.rs` (expand, toggle, load-time auto-expand).
+- [ ] 5.5 Add a `make check-workflow-boundaries` rule: no `set_expanded(` call on a directory row outside `collapse_execution.rs`. Audit every `is_expanded()` reader and every `set_expanded(true)` caller in `ui/sidebar/**` for intent-versus-GTK-state during a collapse, and record the audit in `impl/expansion-audit.md`.
 - [ ] 5.6 Readiness and evidence (D11): `refresh_blocks_readiness` covers a running collapse. Add the evidence fields and the automation snapshot's `collapse_pending`.
 - [ ] 5.7 The application CSS for `treeexpander.lushtext-collapsing`, both text directions, as A114 pinned it.
 - [ ] 5.8 Task 3.2's tests pass. Run each new test in isolation as well, and treat any `FLAKY:` as a blocker (`preexisting-blockers.md`).

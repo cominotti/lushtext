@@ -6,11 +6,14 @@ Collapsing a workspace sidebar directory SHALL keep its input dispatch and every
 #### Scenario: A directory with rows after it
 - **WHEN** the user collapses an expanded directory of 256 entries followed by 400 rows
 - **THEN** the input dispatch and every step fit `B_INTERACT_US`, and every frame until it is collapsed fits `B_SETTLE_US`
-- **AND** on `main` the same collapse took one 36.7–43.6 ms dispatch followed by a 25.6–38.5 ms frame (stage 1, non-verdict)
 
 #### Scenario: A huge directory
 - **WHEN** the user collapses an expanded directory of 131,072 entries, with nothing after it and with 400 rows after it
 - **THEN** the children no row widget is bound to are removed in chunks of at most `COLLAPSE_UNBOUND_CHUNK_ROWS` within the list turn slice, the bound children in units, and every dispatch fits its budget
+
+#### Scenario: A collapse nobody draws
+- **WHEN** a sliced collapse starts or continues while the sidebar is hidden, the section body is collapsed or the window is unmapped
+- **THEN** its steps continue from a low-priority source within the same bounds, the collapse completes, and readiness becomes complete
 
 #### Scenario: A small directory
 - **WHEN** the directory's subtree holds at most `DIRECT_COLLAPSE_ROWS` flattened rows

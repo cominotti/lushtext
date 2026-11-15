@@ -5,7 +5,9 @@ Every LushText route that collapses a directory row SHALL go through one section
 
 #### Scenario: Every route reaches the entry point
 - **WHEN** a directory is collapsed by an expander click, by `minus`, `KP_Subtract`, `slash`, `KP_Divide`, `Shift+Left`, `Ctrl+Shift+Left` or `Ctrl+Space` on its row (`Shift+Right` and `Ctrl+Shift+Right` in right-to-left), by activating the row, by the folder header's collapse or toggle, by a failed reveal, or by the reorder drag's defensive collapse
-- **THEN** the collapse runs through the section entry point, and no other LushText code calls `set_expanded(false)` on a directory row
+- **THEN** the collapse runs through the section's collapse entry point, and no other LushText code calls `set_expanded(false)` on a directory row
+- **AND** every LushText caller of `set_expanded(true)` goes through the expand entry point
+- **AND** the key routes are exactly those GTK's expander honours for the focus LushText's rows have on `main`, so no key gains or loses a behaviour
 
 #### Scenario: Expanding keeps GTK's behaviour
 - **WHEN** a collapsed directory is expanded by a click or by `plus`, `KP_Add`, `asterisk`, `Shift+Right` or `Ctrl+Space`
@@ -24,12 +26,13 @@ Every LushText route that collapses a directory row SHALL go through one section
 - **THEN** the collapse ends with the same outer scroller value and rendered row placement as GTK's direct collapse from the same state
 
 #### Scenario: Selection inside the subtree
-- **WHEN** a child of the collapsing directory is selected or focused
+- **WHEN** a child of a directory being collapsed, on the sliced or the direct path, is selected or focused
 - **THEN** selection and focus move to the directory row before any row is removed, and file peek follows only that one change
 
 #### Scenario: Expanding again mid-collapse
-- **WHEN** the user expands the directory again before its sliced collapse ends
+- **WHEN** the directory is expanded again before its sliced collapse ends, by a click, an expand key, a reveal, the new-item flow, a restore or a folder toggle
 - **THEN** the collapse stops, the arrow and accessible state show expanded at once, and the store is refilled through the existing refresh path until it lists every entry again
+- **AND** a caller that needs the children waits on that refill as it waits on a first expansion
 
 #### Scenario: An ancestor collapses
 - **WHEN** an ancestor of an expanded directory of 16,385 entries is collapsed
