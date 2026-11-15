@@ -23,7 +23,7 @@ With media on, the helper SHALL run WirePlumber with the `policy` profile, which
 #### Scenario: Screen capture still works
 - **WHEN** a lane captures a frame through mutter's ScreenCast and `pipewiresrc` in a `screencast` session
 - **THEN** the frame is captured as before, which was measured at 640x480 with one buffer
-- **AND** no thread of the session runs at SCHED_RR or SCHED_FIFO, and no process changed its nice level
+- **AND** no thread of the session runs at SCHED_RR or SCHED_FIFO, and no process raised its priority
 
 #### Scenario: Host devices stay untouched
 - **WHEN** a `screencast` session's services are running
@@ -44,7 +44,7 @@ The helper SHALL give every session a private, monitored system bus that is expo
 
 #### Scenario: Mutter's system-bus lookups
 - **WHEN** mutter asks the private bus for locale1, ColorManager, login1 or UPower
-- **THEN** it gets `ServiceUnknown`, and its two resulting warnings are classified as benign by exact text in the shared smoke classifiers and in the widget and axiom noise patterns
+- **THEN** it gets `ServiceUnknown`, and its two resulting warnings are classified as benign by exact text, defined once in the shared smoke classifier module, which the widget and axiom runners read instead of keeping copies
 
 ### Requirement: No accessibility bus or portals unless the profile asks
 In a profile with a11y off, the helper SHALL set `GTK_A11Y=test` and `NO_AT_BRIDGE=1` before the session bus starts. A caller may set `GTK_A11Y=none` instead; any value that selects AT-SPI is refused. A profile with portals off SHALL also set `ADW_DISABLE_PORTAL=1`. The `accessibility` profile sets neither.

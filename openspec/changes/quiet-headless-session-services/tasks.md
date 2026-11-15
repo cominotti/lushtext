@@ -61,10 +61,23 @@ Rules for every group: run heavy commands through `scripts/heavy.sh`, one comman
 ## 4. Migrate every other session spawner (design D9; worklist from 1.3)
 
 - [ ] 4.1 `cargo-gtk-proof`: in `host.rs`, replace the `dbus-run-session` prefix and report with the helper library and its profile, and route the host probe through `check-tools`. In `live.rs`, replace `LivePrograms` `pipewire`/`wireplumber`/`mutter`/`dbus_run_session` and `run_mutter_for_case` with the library's media and compositor stages. A hygiene verdict fails the case (`failure_status: session-hygiene`) and verifies no invariant from it. Update the unit tests that assert the old command line so they assert the helper's.
-- [ ] 4.2 Python lanes: `visual-geometry-smoke.py`, `crash-recovery-smoke-driver.py`, `automation-smoke-driver.py` (keep its `GTK_A11Y=none` app override, which the helper accepts), `builder-diagnostics.py`, `editor-glyph-live-smoke.py` and `responsiveness-smoke-driver.py` (`accessibility` profile when AT is requested). Use `scripts/headless-session` for `session`/`compositor`, `check-tools` for prerequisites, and `failure_status: session-hygiene` in manifests. `lushtext-automation.py`'s `session_bus` report value names the helper: update `docs/automation.md`/`docs/automation-reference.md` if the field is documented, and run `make automation-client-self-test`.
+- [ ] 4.2 Python lanes: `visual-geometry-smoke.py`, `crash-recovery-smoke-driver.py`, `automation-smoke-driver.py` (keep its `GTK_A11Y=none` app override, which the helper accepts), `builder-diagnostics.py`, `editor-glyph-live-smoke.py` and `responsiveness-smoke-driver.py` (design D2: `accessibility` profile whenever the `at` variant is selected, `plain` otherwise; keep its per-variant app environment exactly as it is). Use `scripts/headless-session` for `session`/`compositor`, `check-tools` for prerequisites, and `failure_status: session-hygiene` in manifests. `lushtext-automation.py`'s `session_bus` report value names the helper: update `docs/automation.md`/`docs/automation-reference.md` if the field is documented, and run `make automation-client-self-test`.
 - [ ] 4.3 Shell lanes: `run-visual-smoke.sh`, `run-accessibility-smoke.sh` (`accessibility` profile), `run-command-palette-notes-smoke.sh`, `run-automation-smoke.sh`, `run-crash-recovery-smoke.sh`, `run-responsiveness-smoke.sh` and `run-portal-sandbox-smoke.sh`. For the last, decide by running it whether `flatpak run` needs the host system bus; if it does, mark its profile `host-system-bus` with the reason and no media. Also `setup-dev-tools.sh` (package inventory stays; its `dbus-run-session` require entry reads the helper's `check-tools`).
 - [ ] 4.4 Skill scripts: `.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py` (the `visual-smoke`/`accessibility-smoke` capture engine) and `capture-lushtext-xvfb.sh` (`session --profile plain` around its Xvfb run). Then run `python3 -B scripts/test-gtk-debug-config.py` and `make check-agent-skills`.
-- [ ] 4.5 Classifiers: add the two exact private-system-bus mutter warnings (design D4) to `scripts/smoke_warning_classifiers.py` with sample lines in its self-test, and to the benign-noise patterns of `run-widget-tests.sh` and `run-gtk-axioms.sh` (and the `cargo-gtk-proof` warning scanner if it classifies mutter lines). Only these exact texts. Commit and push.
+- [ ] 4.5 Classifiers (design D4, `smoke-warning-classification`):
+  - add one shared family to `scripts/smoke_warning_classifiers.py` holding the two exact private-system-bus mutter warnings and the existing "Could not connect" locale1 and colord variants, with sample lines in its self-test;
+  - add a `--print-regex <family>` entry point;
+  - make `run-widget-tests.sh` and `run-gtk-axioms.sh` read the family from it instead of their copies of those lines, which removes the pre-existing duplicates;
+  - update the `cargo-gtk-proof` warning scanner's copy under its Python-oracle parity test;
+  - add only these exact texts.
+- [ ] 4.6 Prerequisites (design D1):
+  - the shim honours `GTK_LUSH_SESSION_BIN` and fails with the lane's unsupported-host status when neither that nor cargo is available;
+  - `check-tools` reports `dbus-monitor` (Fedora `dbus-tools`);
+  - add `dbus-tools` to every install list that installs `dbus-daemon`: `.github/workflows/ci.yml` (widget, axiom and other session jobs), `.github/workflows/end-user-smoke.yml` and `scripts/setup-dev-tools.sh`;
+  - make sure every job and lane that starts a session either can build the bin (cargo and GTK development headers) or is given `GTK_LUSH_SESSION_BIN`, starting with `portal-sandbox-smoke` and `capture-lushtext-xvfb.sh`;
+  - run `make check-end-user-smoke-workflow` and `make check-workflow-timeouts`.
+
+  Commit and push.
 
 ## 5. Gate fully on
 
@@ -79,7 +92,7 @@ Rules for every group: run heavy commands through `scripts/heavy.sh`, one comman
 - [ ] 6.4 Run every migrated lane once, headless:
   - `make visual-geometry-smoke`, `make visual-smoke`, `make accessibility-smoke`;
   - `make crash-recovery-smoke`, `make automation-smoke`, `make command-palette-notes-smoke`, `make portal-sandbox-smoke`;
-  - `make responsiveness-smoke RESPONSIVENESS_TIER=quick` (a functional run, not a verdict);
+  - `make responsiveness-smoke RESPONSIVENESS_TIER=quick` (a functional run, not a verdict). Check its app stderr and probe logs for any system-bus access. If one exists on a timed path, run an interleaved main-vs-branch measurement through `scripts/measure.sh` (`verification-runs.md`; the 1-minute load must be under 4 for a verdict) and amend design.md "Measurement";
   - the builder-diagnostics and editor-glyph lanes;
   - a `cargo gtk-proof run` of one visual-geometry case.
 

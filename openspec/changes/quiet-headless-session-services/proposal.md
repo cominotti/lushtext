@@ -70,7 +70,7 @@ is in [`evidence/baseline.md`](./evidence/baseline.md).
   - `build.md` and `testing.md` (gate order);
   - the proof-harness README and CHANGELOG;
   - the smoke warning classifiers (two new mutter warnings under the private
-    system bus);
+    system bus, kept in one shared family);
   - the programme record;
   - a handoff for the `cst` session once the change merges.
 
@@ -122,6 +122,8 @@ the shim does on first use. Their mutter logs gain two expected warnings.
   `SESSION-HYGIENE:` as a failure class.
 - `gtk-axiom-ledger`: two new axioms, for `GTK_A11Y=test` and
   `ADW_DISABLE_PORTAL=1`.
+- `smoke-warning-classification`: mutter's system-bus warnings become one
+  shared family that the widget and axiom runners read instead of copying.
 
 ## Impact
 
@@ -138,6 +140,7 @@ the shim does on first use. Their mutter logs gain two expected warnings.
   - the two `gtk-agentic-debugging` capture scripts;
   - `scripts/smoke_warning_classifiers.py` and the widget and axiom
     benign-noise patterns.
-- Makefile (`check-session-hygiene`, `check-policy`) and
-  `.github/workflows/end-user-smoke.yml` (it builds the bin).
+- Makefile (`check-session-hygiene`, `check-policy`),
+  `.github/workflows/ci.yml` and `end-user-smoke.yml` (`dbus-tools` for
+  `dbus-monitor`, and the bin), and `scripts/setup-dev-tools.sh`.
 - Timing: none on the app (no timed path touched).

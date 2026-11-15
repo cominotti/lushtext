@@ -65,8 +65,13 @@ nothing to keep in parity.
   supervision and the hygiene check would still be written three times.
 
 The cost is that Python and shell lanes need the binary built. The shim does
-this incrementally, it is small (glib, gtk4 and tempfile are already
-dependencies), and every such lane already runs cargo.
+this incrementally, and the binary is small (glib, gtk4 and tempfile are
+already dependencies). Not every lane runs cargo today: `portal-sandbox-smoke`
+and the xvfb skill script do not. So the shim honours `GTK_LUSH_SESSION_BIN`,
+a prebuilt binary path, and fails with the lane's unsupported-host status
+when neither that nor cargo is available. The helper also needs
+`dbus-monitor`, which Fedora ships in `dbus-tools`, not in `dbus-daemon`, the
+only D-Bus package CI installs. Task 4.6 audits every install list.
 
 ### D2. CLI and library contract
 
@@ -102,6 +107,12 @@ Profiles are named option bundles, so a lane says what it is:
 | `plain` | off | off | on |
 | `screencast` | off | quiet | on |
 | `accessibility` | atspi | quiet | on |
+
+The responsiveness lane runs every variant in one session and sets each
+app's environment per variant: `GTK_A11Y=none` and `NO_AT_BRIDGE=1` except
+for the `at` variant, and always `ADW_DISABLE_PORTAL=1`. So it uses the
+`accessibility` profile whenever the `at` variant is selected, which is the
+default, and `plain` otherwise. Its app-side environment does not change.
 
 Every profile uses a private system bus. The one exception is the
 portal-sandbox lane, which may need the host bus for `flatpak run`. If it
@@ -172,10 +183,15 @@ mutter asks for ColorManager, locale1, login1 and UPower, gets
 - `Failed to retrieve locale properties: …ServiceUnknown…`;
 - `There is no colord server available`.
 
-They join the shared benign classes in `scripts/smoke_warning_classifiers.py`
-and the widget and axiom benign-noise patterns, as exact texts. CI already
-runs with no system bus and already classifies the "Could not connect"
-variants.
+They become one shared benign family in `scripts/smoke_warning_classifiers.py`,
+defined there once as exact texts. The widget and axiom runners stop keeping
+their own copies of the mutter system-bus lines and read the family from the
+module (a `--print-regex <family>` entry point), as the
+`smoke-warning-classification` requirement asks of a pattern shared by more
+than one lane. The existing "Could not connect" variants, which CI produces
+because it has no system bus, move into the same family. The
+`cargo-gtk-proof` Rust scanner keeps its own copy under its existing
+Python-oracle parity test.
 
 *Rejected:*
 
@@ -370,8 +386,15 @@ them on every run, and the static gate pins their configuration.
 
 ## Measurement
 
-Timing: none (no timed path touched). App code is unchanged. The lanes'
-per-case wall time is not a budgeted path. The host-load evidence is
+Timing: none (no timed path touched). App code is unchanged, and the
+responsiveness lane's per-variant app environment is unchanged (D2). The
+lanes' per-case wall time is not a budgeted path. One residual: under the
+private system bus, an app-side system-bus lookup on a timed path would fail
+fast instead of succeeding. Task 6.4 checks the responsiveness lane's app
+stderr and the probe logs for any system-bus access. If one exists on a timed
+path, that lane gets an interleaved main-vs-branch run through
+`scripts/measure.sh` before merge (`verification-runs.md`), and this section
+is amended. The host-load evidence is
 before/after counts from the read-only system journal during one lane run
 (task 6.5), not timings.
 
