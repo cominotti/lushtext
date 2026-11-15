@@ -1,0 +1,15 @@
+# Task 9.1 focused scope: MUTANTS_RE='chunked_threshold_with|markdown_chunked_cap'
+# over crates/lushtext-core/src/model/document_scale.rs (make mutants-smoke), main round 1 outcomes
+CaughtMutant  crates/lushtext-core/src/model/document_scale.rs:198:5: replace chunked_threshold_with -> Option<u64> with None
+CaughtMutant  crates/lushtext-core/src/model/document_scale.rs:198:5: replace chunked_threshold_with -> Option<u64> with Some(1)
+CaughtMutant  crates/lushtext-core/src/model/document_scale.rs:198:5: replace chunked_threshold_with -> Option<u64> with Some(0)
+CaughtMutant  crates/lushtext-core/src/model/document_scale.rs:199:9: delete match arm (SyntaxLanguage::Markdown, Some(cap)) in chunked_threshold_with
+MissedMutant  crates/lushtext-core/src/model/document_scale.rs:220:5: replace markdown_chunked_cap -> Option<u64> with Some(0)
+MissedMutant  crates/lushtext-core/src/model/document_scale.rs:220:5: replace markdown_chunked_cap -> Option<u64> with None
+MissedMutant  crates/lushtext-core/src/model/document_scale.rs:220:5: replace markdown_chunked_cap -> Option<u64> with Some(1)
+MissedMutant  crates/lushtext-core/src/model/document_scale.rs:229:5: replace markdown_chunked_cap -> Option<u64> with Some(0)
+MissedMutant  crates/lushtext-core/src/model/document_scale.rs:221:12: replace == with != in markdown_chunked_cap
+Unviable      crates/lushtext-core/src/model/document_scale.rs:242:5: replace override_markdown_chunked_cap_for_test -> MarkdownChunkedCapGuard with Default::default()
+MissedMutant  crates/lushtext-core/src/model/document_scale.rs:229:5: replace markdown_chunked_cap -> Option<u64> with Some(1)
+CaughtMutant  crates/lushtext-core/src/model/document_scale.rs:1086:13: delete field syntax_enabled from struct Self expression in DocumentScale::with_edit_reanalysis_reduction
+CaughtMutant  crates/lushtext-core/src/model/document_scale.rs:1087:13: delete field reduced from struct Self expression in DocumentScale::with_edit_reanalysis_reduction

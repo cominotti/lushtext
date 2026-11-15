@@ -6,6 +6,8 @@ set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
 tmpdir="$(mktemp -d)"
+# Nothing here may touch the real build cache root (scripts/build-cache.sh).
+export LUSHTEXT_BUILD_CACHE="$tmpdir/build-cache"
 
 cleanup() {
     rm -rf "$tmpdir"
@@ -93,6 +95,14 @@ assert_success "full generator configures Flathub dependency remote" env \
     v1.2.3 deadbeef "$tmpdir/full-build"
 grep -q '^flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo$' "$build_log"
 grep -q -- '--install-deps-from=flathub' "$build_log"
+# flatpak-builder's state dir sits beside the app dir, under the output dir
+# (same mount, design D7 of reduce-build-disk-writes), and never in the cache root.
+grep -q -- "--state-dir=$tmpdir/full-build/flatpak-builder .*$tmpdir/full-build/build-dir " "$build_log" || {
+    printf 'FAIL: flatpak-builder did not get its state dir beside the app dir:\n' >&2
+    cat "$build_log" >&2
+    exit 1
+}
+[[ ! -e "$LUSHTEXT_BUILD_CACHE" ]] || { echo "FAIL: the generator wrote into the build cache root" >&2; exit 1; }
 
 bad_collection="$tmpdir/bad-collection"
 cp -R "$out_dir" "$bad_collection"

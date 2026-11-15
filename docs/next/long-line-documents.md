@@ -4258,6 +4258,67 @@ separate change, in this order:
        its own design, because `--mem none` callers admit under LOCK by
        design. Details:
        `.claude/handoffs/nest-heavy-slices-under-user-slice/stage3-notes.md`.
+   - `reduce-build-disk-writes` (PR #108; infrastructure, no app change).
+     The build lanes wrote and left too much on the btrfs RAID1 home, which
+     is snapshotted.
+     - **Before:** a local `make mutants-*` ran copy mode, `--jobs 3`. It
+       wrote 31.7-32.1 GB per focused run and leaked three cold
+       `~/.cache/cargo-build` trees, about 22 GB per run.
+     - **Now:**
+       - local runs sync the checkout into a host-wide pool of three in-place
+         mirror slots under the repo-owned cache root `~/.cache/lushtext-build/`
+         (`scripts/build-cache.sh`; `make build-cache-prune`);
+       - slot acquisition never waits (exit 75, holders named);
+       - each test process has an address-space limit, 4G by default;
+       - the proof-strength worktree and the Flatpak builder state live in
+         that root;
+       - `make kani` and the proof-strength Kani arm build without
+         incremental;
+       - a docs-only commit skips Clippy, keeping `check-policy`.
+     - **Decisions:** design D1-D11 of the change.
+     - **Kani:** none (no proven module touched). **Axioms:** none.
+     - **Verdicts** (the change's design, "Measured verdicts"; quiet rounds
+       through `measure.sh`):
+       - The warm slot pair passes every D9 bar: 21.43 against 32.14 GB
+         written, no leaked dir, no sccache growth, wall time +11%.
+       - The slot refill after main's `Cargo.lock` refresh fails the
+         sccache, bytes and wall-time bars: +494 MB, +5% and +61%. The
+         two-round median wall time is +36%, recorded as D9's explicit
+         exception.
+       - Kani lane +0.9% and proof-strength Kani arm +7%, without
+         incremental, both inside the 25% bar.
+       - Host IO, `btrfs-stall-report`, one window per arm: the warm branch
+         wrote 12-16% fewer device bytes. Its stall verdict is no better:
+         both branch windows read SATURATED, the warm one with 1.0 s commits.
+     - **Fixed here (pre-existing):**
+       - the focused mutation scope's four killable `markdown_chunked_cap`
+         survivors, now caught by an integration test;
+       - its two cfg-unreachable ones, excluded in `.cargo/mutants.toml`.
+     - **Facts `close-heavy-admission-window` builds on.** It edits the same
+       `scripts/heavy.sh` / `scripts/with-memory-cap.sh` admission code.
+       - **D10.** `admitted_kib` reserves a `lushtext-cap-<pid>-<ns>.scope`'s
+         cap only while that PID, the command that `systemd-run --scope`
+         execs in place, is still in the scope. A daemon left behind, such
+         as the sccache server, which starts inside the first compile's
+         scope, keeps the scope alive but holds no admission. Its real
+         memory still counts through the slice's `MemoryMax` and
+         `MemAvailable`.
+       - The rule applies to the current and the legacy slice alike, and the
+         `--wait-admissible` probe and the blocking admission share the one
+         function, so the probe and the admit count the same thing.
+       - A scope with any other name (`run-p<pid>-*`, from wrapper copies
+         before this merge) still counts while anything is in it.
+         `systemctl --user set-property --runtime <scope>
+         MemoryMax=infinity` releases one without killing the daemon.
+       - **Mirror-mode runs** take their slots with `flock -n` and never wait
+         for one. Their one 36G `MUTANTS_MEMORY_MAX` admission still runs
+         inside `heavy.sh --mem none`, so under `LOCK` shared: the documented
+         inner-admission path the follow-up targets.
+       - **Admission is first-fit, not fair.** In stage 3 a 36G mutants scope
+         starved for about an hour behind a stream of small admissions, and
+         lane case 11.3 ran at 24G instead.
+       - Any fix keeps `LUSHTEXT_ADMISSION_NOWAIT=1`'s fail-fast 75. The
+         measurement rounds depend on it.
    Also recorded: a process-wide retained-byte ledger for many expanded
    huge sidebar directories (the budget, like the count before it, is per
    directory). From BN (besides `lighten-notes-browser-rows`, queued above):

@@ -146,6 +146,13 @@ every worktree (resolved from `git rev-parse --git-common-dir`;
   locks**: a helper never waits for memory while holding `LOCK`, and never
   reserves memory while waiting for a lock. `make test`/`test-widget` admit
   their own per-shard scopes, so run them as `heavy.sh --mem none`.
+  Admission reserves a scope's cap only while its command runs: a daemon the
+  command leaves in the scope (the sccache server its first compile started)
+  keeps the scope alive but not the reservation. Scopes are named
+  `lushtext-cap-<pid>-<ns>.scope` for this; one an older copy of the script
+  started (`run-p<pid>-*.scope`) still counts while anything is in it, and
+  `systemctl --user set-property --runtime <scope> MemoryMax=infinity`
+  releases it without killing the daemon.
 - **Measurements** — the responsiveness lane, interleaved benches, any timing
   verdict — go through `scripts/measure.sh`: `INTENT` exclusively, then `LOCK`
   exclusively, so new heavy starts wait while the running ones drain. Before
@@ -169,10 +176,19 @@ every worktree (resolved from `git rev-parse --git-common-dir`;
 - **Never wait for other work while holding a lock**, least of all `LOCK`
   exclusively. `measure.sh` does nothing but run its command.
 
+**Mutation slots never wait.** A local `make mutants-*` run takes its mirror
+slots with a non-blocking lock (`.agents/rules/build.md`, "Mutation Testing"):
+waiting for a slot held by another agent would mean waiting while holding
+`LOCK` shared. Exit status 75 means every slot is busy and names the holders;
+retry the command later (or with `MUTANTS_LOCAL_JOBS=1`), never in a loop
+inside one `heavy.sh`.
+
 **Commits.** Commit through the protocol: `scripts/heavy.sh --mem none -- git
 commit ...` (`heavy.sh` does not pass stdin, so give the message with `-F`), or
 by hand `flock -s target/responsiveness-measure.intent true && flock -s
-target/responsiveness-measure.lock git commit ...` from the main checkout. The
+target/responsiveness-measure.lock git commit ...` from the main checkout. A
+docs-only commit skips Clippy but still runs `make check-policy`, which builds
+crates, so it goes through `heavy.sh` too. The
 gate order before a commit is in [`testing.md`](./testing.md).
 
 **Waiting.** Use `scripts/wait-for.sh`, or `tail --pid=<pid> -f /dev/null` / a

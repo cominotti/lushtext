@@ -393,9 +393,22 @@ mod watchdog {
                 glib::ControlFlow::Break
             });
             blocker.attach(Some(&context));
+            // Iterate until the watchdog has dispatched once after the stall:
+            // that dispatch is the one that records it. A fixed window was
+            // flaky under load: while every iteration took longer than a tick,
+            // the watchdog (G_PRIORITY_HIGH) was ready at every prepare and
+            // starved the idle, which could then run in the window's last
+            // iteration, leaving no later tick to record the stall.
             let started = Instant::now();
-            while started.elapsed() < STALL + Duration::from_millis(30) {
+            let mut ticks_at_stall = None;
+            while started.elapsed() < Duration::from_secs(10) {
                 context.iteration(true);
+                let ticks = latenesses.borrow().len();
+                match ticks_at_stall {
+                    None if stalled.load(Ordering::SeqCst) => ticks_at_stall = Some(ticks),
+                    Some(at_stall) if ticks > at_stall => break,
+                    _ => {}
+                }
             }
             drop(watchdog);
             assert!(stalled.load(Ordering::SeqCst), "the blocking source ran");

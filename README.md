@@ -521,7 +521,17 @@ the freshly built debug binary. If the existing app refuses to close, the
 launcher fails instead of activating stale code.
 
 Run `make install-git-hooks` once per checkout to configure the repo-managed
-hooks in `.githooks/`.
+hooks in `.githooks/`. The pre-commit hook runs `make pre-commit`, except that a
+commit touching only documentation (`docs/`, `openspec/`, `.claude/`,
+`.agents/`, root `*.md`) skips the Clippy step; `make check` always runs it.
+
+Local mutation runs (`make mutants-smoke|diff|full`), the proof-strength
+worktree and the Flatpak builder state keep their build trees outside the
+checkout, in the build cache root `~/.cache/lushtext-build`
+(`LUSHTEXT_BUILD_CACHE` or `XDG_CACHE_HOME` move it; `scripts/build-cache.sh`).
+Mutation runs use a small host-wide pool of in-place slots there and exit with
+status 75 when every slot is busy. `make build-cache-prune` removes the
+directories of checkouts that no longer exist.
 
 On a workstation shared by several agents or terminals, run heavy commands
 through `scripts/heavy.sh -- <command>`, timing measurements through
