@@ -64,7 +64,11 @@ pub(crate) enum FileEnd {
     Deferred,
     /// No edit applied; nothing of the file was kept.
     Unchanged,
-    /// Cancellation was observed; nothing of the file was kept.
+    /// Cancellation was observed; the target keeps its bytes. The entry and
+    /// body this file wrote are removed, entry first, unless a removal failed:
+    /// then both stay (or an orphan body does), never an entry without its
+    /// body, and the cancelled run's journal delete or a later Undo, which
+    /// finds the target already original, retires them.
     Cancelled,
 }
 

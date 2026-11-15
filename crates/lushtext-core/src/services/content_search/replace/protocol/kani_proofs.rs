@@ -155,6 +155,8 @@ fn an_apply_run_keeps_every_target_recoverable() {
     for index in 0..FILES {
         let (mut protocol, mut action) = ReplaceFileProtocol::start(journal);
         let mut finished = None;
+        // A failed entry or body removal is the one way cleanup keeps either.
+        let mut removal_failed = false;
         for _ in 0..MAX_FILE_STEPS {
             if let FileAction::Finish(end) = action {
                 finished = Some(end);
@@ -172,6 +174,11 @@ fn an_apply_run_keeps_every_target_recoverable() {
             }
             let outcome = execute(&mut disk, index, action);
             disk.assert_invariants();
+            if matches!(action, FileAction::RemoveEntry | FileAction::RemoveBody)
+                && outcome != FileOutcome::Done
+            {
+                removal_failed = true;
+            }
             action = protocol.step(outcome);
         }
         let end = finished.expect("every file reaches Finish within its bound");
@@ -184,9 +191,19 @@ fn an_apply_run_keeps_every_target_recoverable() {
                     assert!(!file.entry && !file.body);
                 }
             }
-            FileEnd::Deferred | FileEnd::Unchanged | FileEnd::Cancelled => {
+            FileEnd::Deferred | FileEnd::Unchanged => {
                 assert_eq!(file.target, Target::Original);
                 assert!(!file.entry && !file.body);
+            }
+            FileEnd::Cancelled => {
+                assert_eq!(file.target, Target::Original);
+                // Cleanup keeps nothing unless a removal failed; then the
+                // invariants still hold (no entry without its body).
+                assert!(removal_failed || (!file.entry && !file.body));
+                kani::cover!(
+                    removal_failed && file.entry,
+                    "a cancelled file whose entry removal failed keeps its entry and body"
+                );
             }
         }
         journal = protocol.journal();
