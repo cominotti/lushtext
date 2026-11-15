@@ -259,6 +259,23 @@ snapshots as JSON). `MAIN_REPLACE_FILE_BYTES` (10 MiB),
 stay as recorded presentation-cap exceptions. They are defined as `main`'s
 values.
 
+**When the waiver is decided.** The waiver needs the output length, which
+exists only after pass A, but the body is admitted at P1, before pass A. So
+the decision is made in two steps.
+
+- **P1, provisional.** A file is provisionally waived when its source is
+  within `main`'s limit for the current pass and its source length fits the
+  ledger's remaining room. That holds for every file `main` admitted, because
+  `main` charged source plus output, which is at least the source. A
+  provisionally waived body needs only its raw size free.
+- **P3, final.** With the output length known, the ledger charges source
+  plus output exactly as `main` did. If the charge fits, the waiver stands.
+  If it does not, the file needed the reserve after all: P3 re-checks free
+  space with the reserve on both filesystems. When that fails, the body is
+  deleted (no entry exists yet) and the file is skipped as
+  `NotEnoughDiskSpace`, exactly where `main` would have skipped it for its
+  undo payload.
+
 The failing-first test is
 `no_loss_every_file_main_replaced_is_replaced_with_little_free_space`. It uses
 a fake free-space probe with less than the reserve free.
@@ -330,7 +347,21 @@ asked for. Task 7.6 verifies this behaviour with a fixture and records it.
   cap and a power of two), and a `not_listed` count.
 
 `LineTooLong` and `InvalidPreview` come from the preview's ineligible matches,
-grouped by file. One Replace All touches at most `MAX_REPLACE_PREVIEW_ROWS`
+grouped by file. A file can be **partly replaced**: its eligible matches are
+replaced and some matches on long lines are not. It is listed too, with
+`partial: true` and the count of matches left. Its row says "Replaced; N
+matches on long lines were not", and offers the editor action. The user
+still has matches that were not replaced, and a list of files that "were not
+replaced" would hide exactly the files that need finishing.
+
+**Every unsaved file.** When every file of a run is open with unsaved
+changes, `ui/window/search.rs` today returns early with "No replacements to
+apply…" before any worker runs. That path now builds the same skip report on
+GTK, with one `UnsavedChanges` row per file, bounded by the preview's file
+count. The panel shows Show Skipped Files, where the editor action matters
+most.
+
+One Replace All touches at most `MAX_REPLACE_PREVIEW_ROWS`
 (16,384) files, and typical paths are about 100 bytes, so typical runs list
 every skipped file. A path-heavy worst case is cut at 4 MiB and says
 "N more not listed". The existing 32-entry, 32 KiB diagnostic sample stays for
@@ -407,11 +438,27 @@ contracts.
   current file is untouched) and rolls back the files it already wrote (D6
   rollback). Clean rollback clears the journal, as today. Failed rollback
   keeps the journal active and offers Undo for the remaining files.
-- **Close.** A `close_request` during a run sets the cancel flag. It defers
-  the close, with a status message "Cancelling Replace All…", until the
-  worker's terminal, then closes. Application quit takes the same path.
-  Rollback keeps its data-safety ordering. A process kill at any point is
-  covered by the journal and D9.
+- **Close.** Today nothing checks for a run, and closing the last window
+  can end the process while the worker writes. The journal makes that
+  recoverable, but it looks like a crash.
+
+  The save precedent (`close_request` refuses while an editor saves, and
+  publishes a warning) fits a write of milliseconds, not a run of minutes. So
+  a `close_request` during a run opens an `AdwAlertDialog`, "Replace All Is
+  Still Running", with three responses:
+  - **Keep Running** (default): nothing closes;
+  - **Close When Finished**: the close is deferred until the worker's
+    terminal, and the replacements complete;
+  - **Stop and Close**: the run is cancelled, its written files are rolled
+    back, and the window closes after the terminal.
+
+  Every close waits for the terminal, then re-enters the normal close-safety
+  path (drafts, session). Application quit takes the same path. Rollback
+  keeps its data-safety ordering. A process kill at any point is covered by
+  the journal and D9.
+
+  *Alternative rejected:* refuse and warn, as for a save. The user then has
+  to find Cancel or wait with no way to say "close when done".
 
 ### D9. Recovery and cleanup know bodies and journal-owned temp files
 
@@ -421,14 +468,22 @@ contracts.
   `delete` include `*.body`. An orphan body (one with no entry, from a crash
   between P2 and P4) is removed by cleanup.
 - **Temp files.** The manifest records the run's `pid` and `launch_nonce`.
-  On recovery, after undo, and after a discard, for each journaled target the
-  cleanup removes the leftovers in the target's own directory that satisfy
-  the new `leftovers::is_journal_owned_leftover`:
+  Both can be read back from a temp name: `temp_name::parse` returns the pid,
+  and `DurableTempName::launch_nonce` returns the high 32 bits of the
+  sequence. On recovery, after undo, and after a discard, for each journaled
+  target the cleanup removes the leftovers in the target's own directory that
+  satisfy the new `leftovers::is_journal_owned_leftover`:
   - the exact builder pattern;
   - the tag `WriteLabel::REPLACE`;
-  - the pid and nonce equal to the manifest's;
-  - a pid that is not the current process;
+  - the (pid, nonce) pair equal to the manifest's;
+  - that pair differing from the current launch's (pid, nonce);
   - a regular file (lstat).
+
+  The predicate keys on the pair, as `is_sweepable_leftover`'s `this_launch`
+  test already does, and never on the pid alone. Inside the Flatpak sandbox's
+  pid namespace a relaunch can reuse the crashed process's pid, but never its
+  nonce. A temp from the current launch is never removed, because only a
+  journal from an earlier launch is recovered.
 
   The 24-hour age rule stays for every other sweep. A recorded nonce proves
   the temp belongs to the crashed run, so no age is needed. A user workspace
@@ -503,6 +558,13 @@ not exceed 370. The `WFR-SEARCH-REPLACE` row re-derives its measured cells
 
 ## Risks / Trade-offs
 
+- **Many small files.** Each file now takes three durable writes (body,
+  entry, target) where `main` takes two (entry, target), plus a second read.
+  Task 9.3 measures 2,000 small files on an `fsync`-backed directory,
+  interleaved with `main`. The acceptance is at most 1.6× `main`'s wall time.
+  The fallback, applied only if that fails: for sources of at most 64 KiB,
+  embed the original in the entry, as the legacy kind did, but with digests,
+  so the separate body file is not written.
 - **Time per byte.** Two passes and four SHA-256 streams cost more per byte
   than `main`'s in-memory pass. Task 9.3 records branch against `main` at
   16 MiB. The acceptance is at most 2× `main`'s wall time plus 50 ms. If it

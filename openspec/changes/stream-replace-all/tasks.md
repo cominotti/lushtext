@@ -128,7 +128,8 @@
 - [ ] 4.2 `replace/admission.rs`: the pure `MainAdmissionLedger` and the disk
   admission with `REPLACE_DISK_RESERVE_BYTES` (D4). Unit-test it against a
   transcription of `main`'s `apply_replacements_inner` admission.
-- [ ] 4.3 Failing-first no-loss tests:
+- [ ] 4.3 Failing-first no-loss tests. They cover the provisional P1 waiver
+  and its final decision at P3 (design D4):
   - `no_loss_every_file_main_replaced_is_replaced_with_little_free_space`;
   - `no_loss_a_large_file_early_never_displaces_a_file_main_replaced`;
   - keep `no_loss_a_larger_file_never_displaces_a_file_main_replaced` passing.
@@ -177,6 +178,13 @@
   - regex mode with `$1`;
   - no row action for `LargerThanOpenTier`;
   - a Protected View open shows the notice.
+- [ ] 5.5a Failing-first widget test: every file of a run is open with
+  unsaved changes. The early return in `ui/window/search.rs` ("No
+  replacements to apply…") now produces the skip report, and Show Skipped
+  Files lists each file with `UnsavedChanges` and the editor action.
+- [ ] 5.5b Failing-first: a file with matches on short lines and on a 10 KiB
+  line is replaced, and is listed as partly replaced (`LineTooLong`, with the
+  count left).
 - [ ] 5.5 Widget test: completion with skips shows "· N skipped" and Show
   Skipped Files. Keyboard path: Tab, Enter, row action, then Escape returns
   focus.
@@ -190,8 +198,14 @@
   leaves the third untouched, restores the first two and clears the journal.
   The test drives `win.cancel-search-panel-replacements` and also the button,
   which becomes "Cancel Replace All".
-- [ ] 6.3 Failing-first: `close_request` during a run defers the close until
-  the terminal, and every file is original or replaced with an active entry.
+- [ ] 6.3 Failing-first: `close_request` during a run opens "Replace All Is
+  Still Running" (D8). Test three paths:
+  - Keep Running closes nothing;
+  - Close When Finished completes the run, keeps its journal active, then
+    runs the normal close safety;
+  - Stop and Close rolls back and then closes.
+
+  In every case each file is original, or replaced with an active entry.
   Check the application-quit path too.
 - [ ] 6.4 The GTK side owns descriptors only. The undo disposal reservation
   shrinks to the descriptor weight. A widget evidence test checks that no
@@ -200,9 +214,14 @@
 ## 7. Recovery, temp files and crash smoke
 
 - [ ] 7.1 `leftovers::is_journal_owned_leftover` plus a bounded per-target
-  sweep on recovery, undo and discard (D9). Unit tests: a matching temp with
-  the recorded pid and nonce is removed; a temp from another nonce, a
-  non-regular file and a symlink are kept; no workspace traversal happens.
+  sweep on recovery, undo and discard (D9). The predicate keys on the
+  recorded (pid, nonce) pair and on that pair differing from the current
+  launch's. Unit tests:
+  - a matching temp is removed;
+  - a temp with the same pid but another nonce (the Flatpak pid reuse case)
+    is kept;
+  - a temp of the current launch, a non-regular file and a symlink are kept;
+  - no workspace traversal happens.
 - [ ] 7.2 Add the `KillWindow`s `replace-body-before-entry`,
   `replace-entry-before-target-rename` and
   `replace-target-renamed-before-finish`, as empty inline functions in
@@ -275,7 +294,11 @@
 - [ ] 9.3 Wall-time record:
   - at 16 MiB, the branch is within 2× `main` plus 50 ms (design Risks);
   - at 512 MiB, record the throughput and its split between pass A, pass B
-    and the `fsync`s.
+    and the `fsync`s;
+  - 2,000 small files (1–8 KiB) on an `fsync`-backed directory, interleaved
+    with `main`: the branch is within 1.6× `main`'s wall time. Otherwise
+    apply design Risks' inline-original fallback for sources of at most
+    64 KiB, then re-measure.
 - [ ] 9.4 Gates:
   - `make check`;
   - `make test`, with the widget shards (CI parity);

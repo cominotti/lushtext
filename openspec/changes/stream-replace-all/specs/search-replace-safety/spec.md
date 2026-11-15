@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Cancelling Replace All rolls back already-applied file writes
-The system SHALL attempt to restore already-written files to their original content when cancellation interrupts a Replace All run. The user SHALL be able to cancel a run in flight: while a run is in flight, the Replace Preview confirm control SHALL become a Cancel Replace All control, and `win.cancel-search-panel-replacements` SHALL request the same cancellation. Cancellation SHALL be observed at the next chunk boundary. The file in progress MUST be left untouched (its durable write fails before rename). Files already written MUST be restored by streaming their original bytes from their journal bodies, with the same digest and identity checks as Undo. If rollback cannot restore every file, the journal MUST stay active and Undo MUST be offered for the remaining files. Closing the window or quitting the application during a run SHALL request cancellation and defer the close until the run's terminal.
+The system SHALL attempt to restore already-written files to their original content when cancellation interrupts a Replace All run. The user SHALL be able to cancel a run in flight: while a run is in flight, the Replace Preview confirm control SHALL become a Cancel Replace All control, and `win.cancel-search-panel-replacements` SHALL request the same cancellation. Cancellation SHALL be observed at the next chunk boundary. The file in progress MUST be left untouched (its durable write fails before rename). Files already written MUST be restored by streaming their original bytes from their journal bodies, with the same digest and identity checks as Undo. If rollback cannot restore every file, the journal MUST stay active and Undo MUST be offered for the remaining files. Closing the window or quitting the application during a run SHALL ask whether to Keep Running, Close When Finished, or Stop and Close (cancel and roll back). Any close SHALL wait for the run's terminal.
 
 #### Scenario: Cancellation restores earlier files
 - **WHEN** Replace All is cancelled after one or more files were already updated
@@ -18,9 +18,13 @@ The system SHALL attempt to restore already-written files to their original cont
 - **THEN** that file is not overwritten, the journal stays active for it, and Undo is offered for it
 
 #### Scenario: Window closes during a run
-- **WHEN** the user closes the window while Replace All is running
-- **THEN** the run is cancelled, a status message says Replace All is being cancelled, and the window closes only after the run's terminal
+- **WHEN** the user closes the window while Replace All is running and chooses Stop and Close
+- **THEN** the run is cancelled, its written files are rolled back, and the window closes only after the run's terminal
 - **AND** every file holds its original bytes, or its replaced bytes with an active undo entry
+
+#### Scenario: Close when finished
+- **WHEN** the user closes the window during a run and chooses Close When Finished
+- **THEN** the run completes, its undo journal stays active, and the window then closes through the normal close-safety path
 
 ### Requirement: Replace All enforces file and undo memory caps
 The system SHALL bound Replace All resources with explicit service-level limits.
@@ -212,6 +216,17 @@ Every file a Replace All run does not replace SHALL carry exactly one `ReplaceSk
 #### Scenario: A file skipped at preview time
 - **WHEN** a file's only matches are on lines longer than the search excerpt
 - **THEN** the run reports that file once, with the reason `LineTooLong`
+
+### Requirement: The skip report includes partly replaced files and all-unsaved runs
+A replaced file whose matches on long lines were not replaced SHALL be listed as partly replaced, with the count of matches left. A run whose files are all open with unsaved changes SHALL still produce the report, without starting a worker.
+
+#### Scenario: A file partly replaced
+- **WHEN** a file has three matches on short lines and one on a 10 KiB line
+- **THEN** three matches are replaced, and the file is listed as partly replaced with `LineTooLong`, one match left, and the editor action
+
+#### Scenario: Every file has unsaved changes
+- **WHEN** every file of a Replace All run is open with unsaved changes
+- **THEN** no file is written, and Show Skipped Files lists each file with `UnsavedChanges` and the editor action
 
 ### Requirement: A Skipped Files dialog lists the skip report
 When a run skips files, the panel's completion state SHALL show the skipped count and a Show Skipped Files control. The control SHALL open a dialog whose virtualized list groups rows by reason, with exact counts. Each row SHALL show the file name, its folder and a reason sentence, and never document content. A final row SHALL state how many skipped files are not listed.
