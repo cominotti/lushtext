@@ -30,6 +30,11 @@ Every caller of the durable no-replace rename SHALL treat an after-rename failur
 - **THEN** the item keeps its new name in the tree and is opened through the create callback
 - **AND** the row is not removed and no cleanup is scheduled for its old temporary name
 
+#### Scenario: Both rename durabilities share one completion path
+- **WHEN** the sidebar completes a confirmed rename and an unconfirmed one
+- **THEN** both run the same completion body, and only the unconfirmed one adds the warning
+- **AND** the sidebar scenarios are proved by a unit test of the guarded rename under an injected directory-sync failure, a pure-policy test of the warning, and the existing widget tests of that completion path
+
 #### Scenario: Draft set-aside keeps a moved body
 - **WHEN** setting a draft body aside moves it into the set-aside area and the directory sync then fails
 - **THEN** set-aside reports the body as placed under that name
