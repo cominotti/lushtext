@@ -151,11 +151,12 @@ Change worktrees live in `.claude/worktrees/<change>`.
      `--admin` skips required checks and reviews.
   4. Archive the change on `main` in a fresh worktree and push that one commit
      directly to `main`, under the same authorization.
-  5. Remove `MERGE-LOCK` only after the archive is on `origin/main`, and only
-     if its `owner.txt` names your change. Do this on every exit path.
-- If GitHub or the permission prompt refuses the merge or the push, stop and
-  report. Never retry another way: no other flag, account or API call, no
-  ruleset edit.
+  5. Remove `MERGE-LOCK` once the archive is on `origin/main`, and only if
+     its `owner.txt` names your change.
+- If GitHub or the permission prompt refuses the merge or the push, release
+  `MERGE-LOCK` without archiving, then stop and report. Any other early exit
+  also releases it. Never retry another way: no other flag, account or API
+  call, no ruleset edit.
 - Only the coordinator breaks a lock: one whose owner's PR is merged or
   closed, or whose run the ledger shows as ended. It records the break in
   that change's handoff.
