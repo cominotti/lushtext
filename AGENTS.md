@@ -24,6 +24,7 @@ Keep this index in sync with `.agents/rules/*.md` (`scripts/check-agent-docs.sh`
 - `build.md` — build, dependencies, validation gates, CI, packaging (Meson, Flatpak, release, Snap), SonarQube scope, and how each lane runs: Kani, GTK axioms, property, fuzz, mutation, benchmarks, end-user smoke
 - `documentation.md` — which documentation a change must update, including the accessibility and workflow matrices, `docs/next/` records, runbooks and memorials
 - `git.md` — git workflow and commit conventions
+- `parallel-agent-work.md` — how parallel agents share the workstation and reach `main`: host ownership, CPU and memory sizing, implementation slots, ordering, foreground waits, measurement queueing, serialized merges on local evidence, durability
 - `preexisting-blockers.md` — mandatory no-exceptions rule: fix pre-existing blockers in the same work stream
 - `rust.md` — Rust language, filesystem boundary, error and literal ownership, power-of-two threshold rounding and the `make check-thresholds` inventory, explicit SIMD, module splitting, and state grouping
 - `testing.md` — what every Rust, script or fuzz edit needs: temporary-file ownership, test isolation from real app data, test-only code never shipping, proof obligations and gate order before a commit, Kani harness and GTK axiom probe authoring, runtime warnings
