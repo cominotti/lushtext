@@ -323,14 +323,14 @@ Rules for every task:
 
 ## 11. Verification
 
-- [ ] 11.1 `scripts/heavy.sh -- make check`. Include `make check-policy` with
+- [x] 11.1 `scripts/heavy.sh -- make check`. Include `make check-policy` with
   the new targets, and `shellcheck` clean.
 - [x] 11.2 `openspec validate reduce-build-disk-writes --strict`.
-- [ ] 11.3 Lane cases 3.5, 3.6, 4.3, 5.3, 7.2 and 8.3 recorded. Then run
+- [x] 11.3 Lane cases 3.5, 3.6, 4.3, 5.3, 7.2 and 8.3 recorded. Then run
   `make mutants-smoke` once end to end in slots, with the checkout clean
   before and after, no new `~/.cache/cargo-build` entry, and a `mutants.out`
   that is complete.
-- [ ] 11.4 Kani: none (no proven module touched). GTK axioms: none. Widget
+- [x] 11.4 Kani: none (no proven module touched). GTK axioms: none. Widget
   shards: none (no widget test touched). Record those three lines in the
   stage handoff.
 - [x] 11.5 (Apply-time blocker, design D10.) `scripts/with-memory-cap.sh`

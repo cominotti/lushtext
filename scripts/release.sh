@@ -679,6 +679,8 @@ main() {
 }
 
 if [[ "${LUSHTEXT_RELEASE_LIB_ONLY:-0}" == "1" ]]; then
+    # Sourced: return. Executed (no function to return from): exit.
+    # shellcheck disable=SC2317
     return 0 2>/dev/null || exit 0
 fi
 

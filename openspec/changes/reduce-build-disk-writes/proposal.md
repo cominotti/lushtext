@@ -22,7 +22,9 @@ problems that remain are narrower and different:
    build of the workspace writes 5.2 GB. A local `make mutants-*` run
    (`MUTANTS_LOCAL_JOBS=3`) therefore writes and leaves behind about 15 GB
    before it tests its first mutant, every time. That figure is derived (one
-   measured cold build times three copies); task 9.1 measures it.
+   measured cold build times three copies); task 9.1 measures it. Measured
+   (`evidence/after.md`): one run on `main` writes 31.7 GB and leaves three
+   build dirs of 6.7-8.0 GB, 21.6 GB, behind.
 2. **Each mutant writes 1.55 GB with incremental compilation**, against
    0.61 GB without. Turning incremental off alone would store every mutated
    workspace crate in the shared 25G sccache (28.5 MB per mutant measured, never
@@ -129,6 +131,9 @@ For the maintainer:
 
 - **Writes:** about 15 GB less written and left behind per local mutation run,
   and 2.5x fewer bytes written per mutant (if D3 keeps incremental off).
+  Measured: 10.3 GB less written (21.4 against 31.7 GB) and 21.6 GB less left
+  behind per focused run. D3 kept incremental in the slots (without it a
+  mutant took 2.2x as long), so the per-mutant reduction does not apply there.
 - **Leftovers:** no orphan build dirs, and no Flatpak or proof-strength build
   trees in snapshots.
 - **Commits:** cold docs-only commits about 40 s faster.

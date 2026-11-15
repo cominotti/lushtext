@@ -77,7 +77,8 @@ build-script outputs name only a vanished `/tmp/cargo-mutants-*` copy).
 
 ## Owed
 
-- The quiet-window wall-time verdicts: task 9.1's four rounds and task 9.2's
-  three remaining proof-strength Kani rounds (`MEASURE-QUEUE.md`).
+- The quiet-window wall-time verdicts: task 9.1's four rounds, task 9.2's
+  three remaining proof-strength Kani rounds, and an optional pair confirming
+  D3's slot decision (`MEASURE-QUEUE.md`).
 - The system-level `btrfs-stall-report` figure for one `make mutants-diff`,
   main against branch (`host-io-request.md` in the handoff dir).

@@ -269,12 +269,15 @@ assert_success "accepts prerelease semver" with_release_lib 'validate_semver v1.
 assert_failure "rejects missing v prefix" with_release_lib 'validate_semver 1.2.3'
 assert_failure "rejects incomplete semver" with_release_lib 'validate_semver v1.2'
 
+# shellcheck disable=SC2016 # expanded by the sourced release library
 next="$(with_release_lib 'compute_next_version patch ""; printf "%s\n" "$next_version"' | tail -1)"
 assert_eq "patch bump" "v1.0.1" "$next"
 
+# shellcheck disable=SC2016 # expanded by the sourced release library
 next="$(with_release_lib 'compute_next_version minor alpha ""; printf "%s\n" "$next_version"' | tail -1)"
 assert_eq "alpha stream bump" "v1.1.0-alpha.3" "$next"
 
+# shellcheck disable=SC2016 # expanded by the sourced release library
 next="$(with_release_lib 'compute_next_version minor "" 1; printf "%s\n" "$next_version"' | tail -1)"
 assert_eq "promoted stable bump" "v1.1.0" "$next"
 

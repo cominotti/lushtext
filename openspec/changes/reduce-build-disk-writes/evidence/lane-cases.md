@@ -113,3 +113,28 @@ PROOF_STRENGTH_TIER=ci`, 2026-11-15 01:47-02:17 at revision `f91d7c4a`
   `target/proof-strength/` holds only `config/` and `results/`.
 - **Results in `target/proof-strength/results`**, as before.
 - The worktree is clean at `f91d7c4a` afterwards.
+
+## 11.3 `make mutants-smoke` end to end in slots
+
+`scripts/heavy.sh --mem none -- make mutants-smoke MUTANTS_MEMORY_MAX=24G` at
+`31cec657` (after the `origin/main` merge), 2026-11-15 04:37-05:12. The
+default 36G scope was tried first and waited about an hour for admission
+behind a stream of small scopes from other agents without being admitted, so
+it was stopped while still waiting (nothing had run) and restarted at 24G;
+three warm slots fit it, and no slot log has a process killed by signal 9.
+
+- The default smoke scope (`model/document_scale.rs`, no `MUTANTS_RE`): 269
+  mutants in three shards of 90, 90 and 89. The checkout's synced files went
+  to each slot (`synced 85 written`, the merge's changes), the three
+  unmutated baselines passed (11-12 s build, 53-62 s test), and the slots
+  finished in 1163, 1368 and 2061 s.
+- The merged `mutants.out` is complete: 269 unique entries in `mutants.json`,
+  272 outcomes (269 mutants and three baselines), 223 caught, 27 missed,
+  19 unviable, 0 timeouts, the per-slot logs under `log/slot-<k>/`, and an
+  empty `address-space-caught.txt`. Exit 2 (missed mutants), as cargo-mutants
+  reports it. The 27 survivors are a mutation finding about this file's
+  tests, not a lane failure: the six of them inside task 9.1's scope were
+  missed by `main`'s copy-mode runs too (`after.md`).
+- `git status --porcelain` was empty before and after.
+- No `~/.cache/cargo-build` directory born in the window names a slot or this
+  checkout (`leaked.sh` in the handoff dir).

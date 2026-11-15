@@ -179,6 +179,20 @@ is never sampled: a test that passes on an idle machine and fails under load
 Assert in-flight states with `observed_between_dispatches`; keep `wait_until`
 for terminal states, which persist.
 
+**A fixed iteration window starves a lower-priority source under load.** A
+test that iterates its own context for a fixed time and expects a
+`G_PRIORITY_DEFAULT` source to run between two dispatches of a
+higher-priority one is load-sensitive: once every iteration takes longer than
+the high-priority source's period, that source is ready at every prepare and
+GLib dispatches only it, so the lower-priority source can run in the window's
+last iteration, after which nothing records it. The in-tree case was
+`ui::responsiveness_probe::watchdog::tests::a_blocking_dispatch_is_recorded_between_its_bounds`
+(a 2 ms `G_PRIORITY_HIGH` watchdog and a 40 ms stalling idle in a 70 ms
+window; "lateness 756 µs below the lower bound" at a load of 8-12,
+`reduce-build-disk-writes` design D11). Iterate until the event that proves
+the outcome has happened (there: one watchdog dispatch after the stall), with
+a generous deadline, instead of for a fixed time.
+
 **`window.destroy()` does not dispose a window a test still holds** (ledger
 A21). A teardown test that needs the widget tree torn down must drop every
 strong handle to the window (and to children it keeps, such as a section)

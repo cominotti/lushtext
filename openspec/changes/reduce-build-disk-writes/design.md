@@ -284,7 +284,8 @@ the D9 protocol. The units:
 `scripts/measure.sh` (`runs.log` in the handoff dir). The 1-min load at the
 start of every round was 6.7-8.6 (other agents' unmanaged work, a game), so
 by D9 every wall time below is **non-verdict**; the decisions rest on effects
-far larger than the load spread, and are recorded as such.
+far larger than the load spread, and are recorded as such. A confirming
+verdict pair for the slots is queued in `.claude/handoffs/MEASURE-QUEUE.md`.
 
 - **Mutation slots: keep incremental** (`MUTANTS_SLOT_INCREMENTAL=""`). One
   slot, the six mutants of `MUTANTS_RE=chunked_threshold_with` on the
