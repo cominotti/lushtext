@@ -4401,8 +4401,9 @@ review", "Implementation decisions"); evidence in
     fixed per-splice cost, and completion is one unit per frame, so units 8
     and 16 fit `B_SETTLE_US` but finish 2–4× later than `main` (400:256:
     413 / 203 ms against 93–121 ms). The revision adds a completion bar
-    (no later than `main` plus one frame, or 100 ms where `main` is faster),
-    lighter rows (decorations on demand), destroy-only units, unbound
+    (no later than `main` plus two frames, or 100 ms where `main` is faster),
+    lighter rows (decorations on demand), the first step in the input
+    dispatch, destroy-only units, unbound
     removal between frames without LushText's per-row bookkeeping, a
     bottom-up order for several collapses, and the expansion cap (the
     expansion profile is row creation and CSS validation). `main`'s

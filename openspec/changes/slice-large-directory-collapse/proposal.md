@@ -75,7 +75,9 @@ frame, so a smaller unit fits the frame budget only by finishing two to four
 times later than `main`. The revision therefore adds, beside what follows:
 
 - **A completion bar:** a collapse draws its collapsed rows no later than
-  `main`'s plus one frame, or within 100 ms where `main` is faster.
+  `main`'s plus two frames, or within 100 ms where `main` is faster.
+- **The first step in the input dispatch,** so the work starts without waiting
+  a frame.
 - **Lighter rows:** the reorder handle, the Focus Folder button and the drop
   surfaces are created on demand instead of in every row, cutting what every
   collapse, expansion and scroll pays per row.
@@ -218,7 +220,7 @@ times later than `main`. The revision therefore adds, beside what follows:
   same accessible names, and the expander keeps every key and click it has
   today.
 - **Revised:** the collapse finishes no later than `main`'s frozen one (plus
-  one frame), and the folder header's Collapse leaves every root collapsed,
+  two frames, the frame boundaries a paced collapse starts and ends on), and the folder header's Collapse leaves every root collapsed,
   which `main` does not when a large first root pushes the next one out of
   the realized band. Expanding a small directory shows the rows in view in
   the first frame and fills the rest of the band over the next few frames

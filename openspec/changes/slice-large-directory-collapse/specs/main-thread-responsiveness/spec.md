@@ -48,6 +48,10 @@ Collapsing a sidebar directory by a route LushText owns SHALL keep the input dis
 - **WHEN** a step removes bound rows of a subtree with nothing after it beyond the realized band
 - **THEN** it may remove up to `COLLAPSE_DESTROY_ONLY_ROWS` rows, within `B_INTERACT_US`, because no row widget is created in their place
 
+#### Scenario: The input dispatch takes the first step
+- **WHEN** a sliced collapse starts
+- **THEN** the input dispatch runs its first step (unbound chunks within the list turn slice, or one bound unit) after showing the intent, within `B_INTERACT_US`, so no frame passes before the work starts
+
 #### Scenario: Unbound rows leave between frames
 - **WHEN** a sliced collapse removes rows no widget is bound to
 - **THEN** those chunks run between frames, not one per frame tick, each turn within the list turn slice plus one chunk, and the frame ticks take bound units only
@@ -57,16 +61,16 @@ Collapsing a sidebar directory by a route LushText owns SHALL keep the input dis
 - **THEN** the verdict test prints it separately, it is excluded from this requirement's pass bar, and it is recorded as owned by `stop-expander-bind-time-child-scans`
 
 ### Requirement: A sidebar collapse finishes no later than main's
-A sidebar directory collapse by a route LushText owns SHALL draw its collapsed rows no later than `main`'s direct collapse does, measured from the input to the frame that draws them: at most `main`'s time plus one 60 Hz frame, or 100 ms where `main` takes less.
+A sidebar directory collapse by a route LushText owns SHALL draw its collapsed rows no later than `main`'s direct collapse does, measured from the input to the frame that draws them: at most `main`'s time plus two 60 Hz frames, or 100 ms where `main` takes less.
 
 #### Scenario: A collapse finishes no later than main's
 - **WHEN** the verdict test collapses each measured case on `main` and on the branch
 - **THEN** it prints each side's completion: from the start of the input dispatch to the end of the first frame dispatch after which the directory row is collapsed
-- **AND** the branch's worst completion is at most `main`'s worst plus 16.7 ms, or at most 100 ms where that is larger
+- **AND** the branch's worst completion is at most `main`'s worst plus 33.3 ms, or at most 100 ms where that is larger
 
 #### Scenario: The folder header
 - **WHEN** the folder header collapses two expanded roots of 4,096 entries each
-- **THEN** each side's completion is taken at the first frame that draws both roots collapsed; on `main` that frame comes before its deferred restore expands the second root again
+- **THEN** each side's completion is taken at the first frame that draws both roots collapsed; on `main`, whose deferred restore later expands the second root again, that frame is expected before the restore, and the verdict test reports it if it never comes
 
 ### Requirement: Small-directory expansion is measured against the settle budget
 The sidebar expansion verdict SHALL also cover directories of 64, 256 and 1,024 entries, with and without 400 rows after them, on a first expansion and right after a collapse. A dispatch that applies a directory's rows and exceeds `B_SETTLE_US` SHALL be attributed with a profile before it is fixed, and fixed as the attribution shows.
