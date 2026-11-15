@@ -65,7 +65,7 @@ Scope statements:
 
 ## 2. Shared install origin
 
-- [ ] 2.1 Write `scripts/flatpak-install-origin.sh` with these subcommands:
+- [x] 2.1 Write `scripts/flatpak-install-origin.sh` with these subcommands:
   - `path` (D2);
   - `install <repo> <ref> -- <export command…>` (D3, D4):
     - it validates the character set and creates the parent before locking;
@@ -82,7 +82,7 @@ Scope statements:
   Derive the app id from `LUSHTEXT_FLATPAK_APP_ID` (default
   `dev.cominotti.lushtext`) and the remote prefix by flatpak's rule. It must
   pass `shellcheck` and `bash -n`.
-- [ ] 2.2 Change `flatpak-install` in the Makefile to one call, with
+- [x] 2.2 Change `flatpak-install` in the Makefile to one call, with
   `repo="$$(./scripts/flatpak-install-origin.sh path)"`:
   `./scripts/flatpak-install-origin.sh install "$$repo"
   dev.cominotti.lushtext/$$(flatpak --default-arch)/master --
@@ -93,20 +93,20 @@ Scope statements:
 
   `flatpak` and `flatpak-deps` stay unchanged. Add a comment saying why the
   origin is a single shared path (D1, D2, D8).
-- [ ] 2.3 Call `check` from `scripts/verify-flatpak-identity.sh` in a new
+- [x] 2.3 Call `check` from `scripts/verify-flatpak-identity.sh` in a new
   "Flatpak install origin" section (D6).
-- [ ] 2.4 Measure the wall time of `make test-flatpak-install-origin`
+- [x] 2.4 Measure the wall time of `make test-flatpak-install-origin`
   through `scripts/measure.sh` and record it. At 10 s or less, add the target to `check-policy`. Above 10 s,
   run it from `test-flatpak-identity-verifier` instead (design D7).
-- [ ] 2.5 Run `make test-flatpak-install-origin`,
+- [x] 2.5 Run `make test-flatpak-install-origin`,
   `make test-flatpak-identity-verifier`, `make check-flatpak-permissions` and
   `bash -n`/`shellcheck` on the new scripts. All must pass, and 1.1 and 1.2
   must turn green.
-- [ ] 2.6 Commit and push.
+- [x] 2.6 Commit and push.
 
 ## 3. Documentation (documentation.md)
 
-- [ ] 3.1 `.agents/rules/build.md`: the Dev Builds bullet on
+- [x] 3.1 `.agents/rules/build.md`: the Dev Builds bullet on
   `flatpak-install`, and the "Flatpak" section:
   - the shared repository path and override;
   - why it is shared and outside caches (worktree deletion,
@@ -114,19 +114,19 @@ Scope statements:
   - the repair and the post-check;
   - the guard and its one-line fix;
   - `make test-flatpak-install-origin`.
-- [ ] 3.2 `README.md` "From This Checkout": the shared repository in one
+- [x] 3.2 `README.md` "From This Checkout": the shared repository in one
   sentence, and the runtime corrected from 50 to 51 (pre-existing drift; the
   manifest says 51).
-- [ ] 3.3 `.agents/skills/flatpak-rust/SKILL.md`: proportional validation
+- [x] 3.3 `.agents/skills/flatpak-rust/SKILL.md`: proportional validation
   names the guard and its test. Add a review checklist item: the install
   origin stays on the single shared path.
-- [ ] 3.4 `docs/next/flatpak-packaging.md`: the install section, and the
+- [x] 3.4 `docs/next/flatpak-packaging.md`: the install section, and the
   runtime/SDK corrected from 50 to 51.
-- [ ] 3.5 `AGENTS.md`/`.claude/CLAUDE.md` Build Commands: add
+- [x] 3.5 `AGENTS.md`/`.claude/CLAUDE.md` Build Commands: add
   `make test-flatpak-install-origin` if the Makefile help lists it. The Rules
   Index entry for `build.md` stays as it is unless its summary needs the new
   topic.
-- [ ] 3.6 Run `make check-agent-docs`, then commit and push.
+- [x] 3.6 Run `make check-agent-docs`, then commit and push.
 
 ## 4. Merge, final gates, and the single install
 

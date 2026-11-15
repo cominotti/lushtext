@@ -882,7 +882,7 @@ gtk-lush-public-api-advisory:
 gtk-lush-api-advisory: gtk-lush-semver-advisory gtk-lush-public-api-advisory
 
 # Aggregate policy target for fast audits that sit beside rustfmt and Clippy.
-check-policy: check-filesystem-boundary check-temp-scope check-agent-helpers check-settings-writes check-font-zoom-registration check-thresholds check-responsiveness-lane check-kani-shards check-widget-shards check-gtk-axioms check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-explicit-simd check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test check-terminology
+check-policy: check-filesystem-boundary check-temp-scope test-flatpak-install-origin check-agent-helpers check-settings-writes check-font-zoom-registration check-thresholds check-responsiveness-lane check-kani-shards check-widget-shards check-gtk-axioms check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-explicit-simd check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test check-terminology
 
 # Workspace folder-set terminology guard.
 # Runs in the local gate as well as CI because it scans resources, docs, and
@@ -977,10 +977,25 @@ flatpak: flatpak-deps
 	@echo "Building Flatpak..."
 	flatpak-builder $(FLATPAK_BUILDER_FLAGS) $(FLATPAK_BUILD_DIR) $(FLATPAK_MANIFEST)
 
-# Flatpak build and install into the user installation
+# Flatpak build and install into the user installation.
+#
+# The installed ref's origin remote (lushtext-origin) takes the export
+# repository's file:// URL. Exporting into a checkout's own build cache (what
+# `flatpak-builder --install` does) leaves that remote dangling once the
+# checkout or worktree is deleted, and GNOME Software then reports "server has
+# no summary file" on every refresh. So every checkout exports to ONE shared
+# repository outside every checkout and cache, computed only by
+# `flatpak-install-origin.sh path` ($XDG_DATA_HOME, not ~/.cache, which
+# clear-lushtext-xdg, build-cache prunes and routine cache cleaning delete).
+# flatpak-builder only exports (no --install); the script then, under a lock
+# beside the repository, repoints and re-enables lushtext-origin, installs,
+# prunes, and fails unless the deployed commit is the one the origin serves.
+# A failed build touches no remote.
 flatpak-install: flatpak-deps
 	@echo "Building and installing Flatpak..."
-	flatpak-builder $(FLATPAK_BUILDER_FLAGS) --assumeyes --install $(FLATPAK_BUILD_DIR) $(FLATPAK_MANIFEST)
+	repo="$$(./scripts/flatpak-install-origin.sh path)" && \
+	./scripts/flatpak-install-origin.sh install "$$repo" "dev.cominotti.lushtext/$$(flatpak --default-arch)/master" -- \
+		flatpak-builder $(FLATPAK_BUILDER_FLAGS) --repo="$$repo" $(FLATPAK_BUILD_DIR) $(FLATPAK_MANIFEST)
 
 # Verify the installed Flatpak export is the active production desktop identity
 verify-flatpak-identity:

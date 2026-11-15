@@ -17,3 +17,24 @@ $ make test-flatpak-identity-verifier   # main's verify-flatpak-identity.sh
   make: *** [Makefile:993: test-flatpak-identity-verifier] Error 1
   rc=2
   => the new dangling-origin case fails against main's verifier (it has no install-origin section).
+
+## 2026-11-14T23:48:54-03:00 task 2.4: wall time of make test-flatpak-install-origin (scripts/measure.sh, handoff measure.log)
+  2026-11-14T23:39:52-03:00 before label=test-flatpak-install-origin  loadavg=6.48 10.74 12.63
+  2026-11-14T23:39:56-03:00 after label=test-flatpak-install-origin status=0 seconds=3.128 loadavg=6.48 10.74 12.63
+  => 3.128 s, recorded 1-min load 6.48 (>= 4): NON-VERDICT. A retry (label -r2, --lock-timeout 500) exited 75: the
+     exclusive lock did not drain within 500 s on the shared machine (other worktrees' mutants/kani/widget runs).
+     Decision without a verdict run: load only inflates wall time, and 3.1 s is a third of the 10 s limit, so the
+     target is wired into check-policy (design D7). No main counterpart exists to interleave (new test).
+
+## 2026-11-14T23:48:54-03:00 task 2.5 (green)
+  make test-flatpak-install-origin: all cases ok (1, 2, path, 3, 4, 5, 5b, 6, 7, 8) -> 'flatpak install-origin fixture tests passed'
+  make test-flatpak-identity-verifier: 'flatpak identity verifier tests passed' (dangling enabled and disabled cases fail the verifier)
+  make check-flatpak-permissions: passed; shellcheck + bash -n on the four scripts: clean
+  make check-agent-docs: passed
+
+## 2026-11-14T23:48:55-03:00 read-only: the new guard against the real installation (before the install, task 4.2)
+  error: the Flatpak remote 'lushtext-origin' (disabled) points at file:///var/home/danilo/Workspace/github/cominotti/lushtext/.claude/worktrees/adopt-gnome-51/.flatpak-builder/cache, which is not an OSTree repository with a summary (no config or summary file there).
+    It is disabled, so refreshes stay quiet, but the development build installed from it can no longer be updated.
+    Fix: run 'make flatpak-install' from any LushText checkout (it points lushtext-origin at file:///var/home/danilo/.local/share/lushtext-flatpak-install/repo),
+    or 'flatpak uninstall --user dev.cominotti.lushtext//master' to drop the development build; flatpak then removes the remote.
+  rc=1 (expected: the maintainer's disabled dangling lushtext-origin)

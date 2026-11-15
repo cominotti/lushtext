@@ -463,3 +463,39 @@ Timing: none (no timed path touched).
 None. The first `make flatpak-install` after this change repoints the
 existing `lushtext-origin`, including the disabled dangling one on the
 maintainer's machine, and leaves `.flatpak-builder/` directories alone.
+
+## Implementation notes (stage 3)
+
+Decisions taken while implementing, each measured in the fixture test:
+
+- **D5, the commit comparison.** `flatpak remote-info --user -c lushtext-origin
+  <ref>` exits 1 on a disabled remote ("Can't fetch summary from disabled
+  remote"), so in case 5 it cannot name the commit the update should have
+  deployed. `check --installed` therefore compares the deployed commit with
+  both the commit the remote serves and the head of the ref in the shared
+  repository. It reads the head through the flatpak CLI (`flatpak repo
+  --branches`, then the first `Commit:` of `flatpak repo --commits=<typed
+  ref>`, which lists the head first; case 5 runs it on a two-commit
+  repository), so the install path still needs no `ostree`. Each failing
+  condition is reported, not only the first.
+- **D6, placement.** The "Flatpak install origin" section is the verifier's
+  first section, so a broken origin is reported even when a later section
+  (metadata, MIME registration) fails.
+- **D7, extra coverage.** Beyond cases 1–7 the test checks:
+  - `path`: the default location, and that a symlinked `XDG_DATA_HOME`
+    spelling yields the same canonical path;
+  - 5b, the second half of the scenario "A silently skipped install fails the
+    target": a bare install through a symlinked spelling of the repository
+    deploys from `lushtext1-origin` (case h), `check --installed` fails naming
+    the expected and the actual origin, and the next `install` moves the ref
+    back to `lushtext-origin` and leaves no numbered origin;
+  - 8: a valid origin that is not the shared repository makes `check` warn
+    and pass.
+
+  The test uses `ostree` as an independent oracle for repository heads and
+  commit counts, which is why it skips without `ostree`. Its ref is the
+  untyped `org.test.lushtext/<arch>/master`, the form production passes.
+- **Lock message.** `install` prints one line when another install holds the
+  lock, before it waits.
+- **Temp scope.** `make test-flatpak-identity-verifier` now runs under
+  `$(TEMP_SCOPE)` as well, as `testing.md` requires of every test lane.

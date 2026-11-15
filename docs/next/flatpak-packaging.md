@@ -7,8 +7,8 @@ LushText has an active Flatpak packaging path built with Meson and
 
 ## Runtime/SDK
 
-- Runtime: `org.gnome.Platform` 50
-- SDK: `org.gnome.Sdk` 50
+- Runtime: `org.gnome.Platform` 51
+- SDK: `org.gnome.Sdk` 51
 - Rust SDK extension: `org.freedesktop.Sdk.Extension.rust-stable`
 - Manifest: `build-aux/dev.cominotti.lushtext.Flatpak.json`
 - Local install command: `make flatpak-install`
@@ -18,6 +18,43 @@ Flathub remote with `flatpak remote-add --if-not-exists --user` and asks
 `flatpak-builder` to install the manifest's missing runtime, SDK, and SDK
 extensions from that remote before building. `make flatpak` uses the same
 dependency setup path for build-only validation.
+
+### Development install origin
+
+`flatpak install <path> <ref>` names the installed ref's origin remote
+`lushtext-origin` and gives it the path's `file://` URL. `make flatpak-install`
+used to export into the checkout's own `.flatpak-builder/cache`, so deleting a
+worktree left that remote pointing at nothing, and GNOME Software and
+`flatpak update` then reported "Remote listing for lushtext-origin not
+available; server has no summary file" on every refresh (2026-11-14, after the
+`adopt-gnome-51` worktree was removed). Disabling the remote hid the error but
+made every later install a silent no-op: flatpak reuses a disabled origin whose
+URL matches and skips the update with exit status 0.
+
+So `make flatpak-install` (change `stable-flatpak-install-origin`):
+
+- exports with `flatpak-builder --repo=<shared repo>`, without `--install`, to
+  one repository shared by every checkout,
+  `${XDG_DATA_HOME:-$HOME/.local/share}/lushtext-flatpak-install/repo`
+  (canonicalised; `scripts/flatpak-install-origin.sh path` is the only place it
+  is computed). It lives in application data, not a cache, because
+  `make clear-lushtext-xdg`, build-cache prunes and routine `~/.cache` cleaning
+  would delete a cache location and bring the error back;
+- then, under `flock` on `<repo>.lock` (`scripts/flatpak-install-origin.sh
+  install`), repoints and re-enables an existing `lushtext-origin`, runs the
+  `flatpak install --user --reinstall <repo> <ref>` flatpak-builder's
+  `--install` ran, prunes the repository to its heads, and fails unless the ref
+  was deployed from the enabled `lushtext-origin` at that URL with the commit
+  the remote serves. A failed build touches no remote;
+- and `make verify-flatpak-identity` fails, naming the remote, its URL and
+  state, when any `lushtext*-origin` remote, enabled or disabled, points at a
+  path without an OSTree `config` and `summary`. The fix it prints is
+  `make flatpak-install` from any checkout, or
+  `flatpak uninstall --user dev.cominotti.lushtext//master`.
+
+`make test-flatpak-install-origin` (in `make check-policy`) pins this flatpak
+behaviour against real `flatpak` in a private `FLATPAK_USER_DIR` and prints
+`SKIP:` without `flatpak`, `ostree` or `flock`.
 
 ## Cominotti Flatpak Publication
 
