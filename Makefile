@@ -80,6 +80,7 @@
 #   make flatpak-deps - Install Flatpak runtime/SDK deps into the user installation
 #   make flatpak-install - Build and install Flatpak into the user installation
 #   make verify-flatpak-identity - Verify Flatpak desktop identity and MIME registration
+#   make test-flatpak-install-origin - Test the Flatpak install-origin guard against real flatpak in a private installation
 #   make cominotti-flatpak-repo - Build signed Cominotti Flatpak repository artifacts
 #   make verify-cominotti-pages-limits - Verify generated artifacts fit Cloudflare Pages
 #   make verify-flathub-domain - Verify cominotti.dev is ready for Flathub app verification
@@ -94,7 +95,7 @@
 .PHONY: fmt build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke kani proof-strength proof-strength-list check-kani-shards check-settings-writes check-font-zoom-registration check-thresholds formal-evaluation check-widget-shards check-temp-scope test-widget test-widget-headless test-widget-shard test-search-retirement-release test-workspace-row-states automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke smoke-read-faults-build visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke responsiveness-build responsiveness-smoke check-responsiveness-lane check-agent-helpers mutants-smoke mutants-diff mutants-full mutants-list composition-hold-build \
        check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-explicit-simd check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy check-terminology check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory gtk-axioms gtk-axiom-sample gtk-axioms-runtimes check-gtk-axioms automation-client-self-test check-policy lint-advisory sonar-local check check-agent-skills check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
-       meson-build meson-test flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
+       meson-build meson-test flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-flatpak-install-origin test-dev-desktop-staging \
        flathub-manifest verify-flathub-manifest verify-flathub-domain \
        cominotti-flatpak-repo verify-cominotti-flatpak-repo verify-cominotti-pages-limits cominotti-flatpak-smoke test-cominotti-flatpak-repo \
        test-release-helper test-flathub-manifest release release-bump \
@@ -989,7 +990,13 @@ verify-flatpak-identity:
 # Unit-style shell checks for the Flatpak identity verifier
 test-flatpak-identity-verifier:
 	@echo "Testing Flatpak identity verifier..."
-	./scripts/test-flatpak-identity-verifier.sh
+	$(TEMP_SCOPE) flatpak-identity-verifier -- ./scripts/test-flatpak-identity-verifier.sh
+
+# The install-origin guard of flatpak-install, against real flatpak in a
+# private FLATPAK_USER_DIR (prints SKIP: without flatpak, ostree or flock)
+test-flatpak-install-origin:
+	@echo "Testing the Flatpak install-origin guard..."
+	$(TEMP_SCOPE) flatpak-install-origin -- ./scripts/test-flatpak-install-origin.sh
 
 # Unit-style shell checks for development desktop-entry staging
 test-dev-desktop-staging:
@@ -1211,6 +1218,7 @@ help:
 	@echo "  flatpak-install Build and install Flatpak into the user installation"
 	@echo "  verify-flatpak-identity Verify Flatpak desktop identity and MIME registration"
 	@echo "  test-flatpak-identity-verifier Test the Flatpak identity verifier"
+	@echo "  test-flatpak-install-origin Test the Flatpak install-origin guard (private installation)"
 	@echo "  test-dev-desktop-staging Test dev-run desktop staging behavior"
 	@echo "  cargo-sources   Regenerate cargo-sources.json"
 	@echo "  flathub-manifest Generate a Flathub-facing manifest for VERSION=vX.Y.Z"

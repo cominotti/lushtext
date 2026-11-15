@@ -34,7 +34,7 @@ Scope statements:
 
 ## 1. Failing-first tests
 
-- [ ] 1.1 Write `scripts/test-flatpak-install-origin.sh` (design D7).
+- [x] 1.1 Write `scripts/test-flatpak-install-origin.sh` (design D7).
   - Use the private `TMPDIR`, `HOME`, `FLATPAK_USER_DIR`, `XDG_DATA_HOME`,
     `XDG_CACHE_HOME`, `XDG_CONFIG_HOME` and `LUSHTEXT_FLATPAK_INSTALL_REPO`,
     with an isolation assertion and an `EXIT`/`INT`/`TERM` cleanup trap.
@@ -50,17 +50,17 @@ Scope statements:
   - Run it against `main` (no `scripts/flatpak-install-origin.sh`) and record
     in `runs.log` that it fails at case 1, where the guard is missing. Record
     too that case 1's `remote-ls --updates` baseline assertion already holds.
-- [ ] 1.2 Extend `scripts/test-flatpak-identity-verifier.sh`.
+- [x] 1.2 Extend `scripts/test-flatpak-identity-verifier.sh`.
   - The stub `flatpak` answers `remotes --user --show-disabled …` with no
     remotes in the existing cases.
   - A new case answers with a dangling `lushtext-origin` line and asserts
     that `verify-flatpak-identity.sh` fails with the guard's message.
   - Record the new case failing against `main`'s verifier.
-- [ ] 1.3 Add a standalone `make test-flatpak-install-origin` target, run
+- [x] 1.3 Add a standalone `make test-flatpak-install-origin` target, run
   under `$(TEMP_SCOPE)` (`testing.md`, Temporary Files). Do
   **not** add it to `check-policy` yet: the pre-commit hook runs
   `check-policy`, and the test is red until group 2.
-- [ ] 1.4 Commit the test scripts, the standalone target and the red record
+- [x] 1.4 Commit the test scripts, the standalone target and the red record
   in `runs.log` (signed, conventional, staged by name), and push the branch.
 
 ## 2. Shared install origin

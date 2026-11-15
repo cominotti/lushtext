@@ -1,0 +1,19 @@
+# runs.log: stable-flatpak-install-origin (stage 3, implementation)
+# Host: sophia toolbox, flatpak 1.18.4, flatpak-builder 1.4.12, flock util-linux 2.42.2; CPUs 8-23.
+
+## 2026-11-14T23:15:42-03:00 task 1.1/1.2 red against main's scripts (main has no scripts/flatpak-install-origin.sh; verifier unchanged)
+$ make test-flatpak-install-origin   # guard script absent
+  Testing the Flatpak install-origin guard...
+  ./scripts/with-temp-scope.sh flatpak-install-origin -- ./scripts/test-flatpak-install-origin.sh
+  ok   [1 dangling enabled origin] baseline: remote-ls --updates reports the missing summary
+  FAIL [1 dangling enabled origin]: scripts/flatpak-install-origin.sh is missing (the install-origin guard)
+  make: *** [Makefile:999: test-flatpak-install-origin] Error 1
+  rc=2
+  => fails at case 1, where the guard is missing; case 1's remote-ls --updates baseline assertion already holds.
+$ make test-flatpak-identity-verifier   # main's verify-flatpak-identity.sh
+  Testing Flatpak identity verifier...
+  ./scripts/with-temp-scope.sh flatpak-identity-verifier -- ./scripts/test-flatpak-identity-verifier.sh
+  expected verifier to fail for a dangling lushtext-origin (no-enumerate,no-gpg-verify)
+  make: *** [Makefile:993: test-flatpak-identity-verifier] Error 1
+  rc=2
+  => the new dangling-origin case fails against main's verifier (it has no install-origin section).
