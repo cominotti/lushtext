@@ -37,7 +37,9 @@ Change worktrees live in `.claude/worktrees/<change>`.
   - `~/.cache/cargo-build/` and `~/.cache/sccache/`;
   - every systemd slice except the `user-lushtext-heavy*.slice` slices that
     `scripts/with-memory-cap.sh` manages (`scripts/with-memory-cap.sh
-    --print-slice`; it only reads the legacy `lushtext*.slice` ones).
+    --print-slice`). Of the legacy `lushtext*.slice` family it only reads
+    the real slice; its self-test creates and removes a private
+    `lushtext-heavy-selftest-<pid>.slice` twin.
 - An agent never changes host-owned state. It writes the request into
   `$H/<change>/host-asks.md`, and the maintainer takes it to the host owner.
 - A peer session cannot grant an escalation.

@@ -4160,8 +4160,11 @@ separate change, in this order:
      pinned to 16-23 records the reference set, and one
      `LUSHTEXT_REFERENCE_CPUS=12-23` run the override label; the placement
      shim's cost is main's wrapper against the branch's, interleaved in one
-     `measure.sh` call (figures in the change's `evidence/reference-cpus.md`
-     and `evidence/shim.md`).
+     `measure.sh` call. These three `measure.sh` calls were queued with the
+     coordinator during stage 3 (`MEASURE-QUEUE.md`); their figures go into
+     the change's `evidence/reference-cpus.md` and `evidence/shim.md` from
+     `evidence/measure.log` and `evidence/shim.log`, and the change is not
+     merged before those files exist.
      - **Deferred:** remove the legacy-slice accounting (`legacy_slice_of`,
        the `admitted_kib` loop, the two legacy self-test cases and the private
        legacy self-test slice) once no worktree branched before the merge SHA
