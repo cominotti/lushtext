@@ -126,3 +126,17 @@ Against `HEAD`'s generator the new `--state-dir` assertion fails (the stub
 `scripts/test-release.sh` gained the same assertion for the release
 validation build (`<checkout-cache>/flatpak-release-builder` beside
 `<checkout-cache>/flatpak-release-app`).
+
+## D10 (apply-time): admission ignores a daemon left in a finished scope
+
+The new `with-memory-cap.sh --self-test` case leaves `setsid sleep 30` in a
+2G scope against a 3G private budget, then admits a second 2G scope with
+`LUSHTEXT_ADMISSION_NOWAIT=1`. Against the unchanged script it failed:
+
+```
+self-test: a daemon left in a finished command's scope kept its cap admitted (status 75)
+```
+
+With the named scopes and the PID check it passes, and the companion case (a
+command that still runs keeps its cap admitted, so the second admission exits
+75) passes too.

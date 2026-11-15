@@ -97,14 +97,26 @@ mem_available_kib() {
     awk '/^MemAvailable:/ { print $2 }' /proc/meminfo
 }
 
-# Sum, in KiB, of the caps of the scopes currently in the heavy slice.
+# Sum, in KiB, of the caps of the scopes currently in the heavy slice whose
+# command still runs. A scope this script starts is named
+# lushtext-cap-<pid>-<ns>.scope after the command's PID (systemd-run --scope
+# execs the command in place); once that PID has left the scope, the processes
+# still in it are daemons the command left behind (an sccache server started
+# by its first compile) and its cap is no longer reserved. Their memory still
+# counts against the slice's MemoryMax and MemAvailable. Scopes started by an
+# older copy of this script (run-p<pid>-*.scope) count while they exist.
 admitted_kib() {
-    local cgroup dir total=0 limit
+    local cgroup dir total=0 limit scope pid
     cgroup=$(systemctl --user show -p ControlGroup --value "$HEAVY_SLICE" 2>/dev/null || true)
     dir="/sys/fs/cgroup$cgroup"
     if [ -n "$cgroup" ] && [ -d "$dir" ]; then
         for limit in "$dir"/*.scope/memory.max; do
             [ -r "$limit" ] || continue
+            scope=${limit%/memory.max}
+            if [[ "${scope##*/}" =~ ^lushtext-cap-([0-9]+)-[0-9]+\.scope$ ]]; then
+                pid=${BASH_REMATCH[1]}
+                grep -qx "$pid" "$scope/cgroup.procs" 2>/dev/null || continue
+            fi
             read -r limit <"$limit" || continue
             [ "$limit" = max ] && continue
             total=$((total + limit / 1024))
@@ -300,10 +312,33 @@ self_test() {
         LUSHTEXT_ADMISSION_NOWAIT=1 LUSHTEXT_HEAVY_MEMORY_MAX=2G LUSHTEXT_MEMORY_RESERVE=999999G timeout 5 "$me" 2G true 2>/dev/null || status=$?
         kill "$waiter" 2>/dev/null; wait "$waiter" 2>/dev/null || true
         [ "$status" -eq 75 ] || { echo "self-test: a NOWAIT admission blocked behind an admission waiting for memory (status $status)" >&2; return 1; }
+        # A daemon a capped command leaves behind (an sccache server started by
+        # the first compile) keeps its scope alive, but not its admission: the
+        # cap is reserved for the command, and only while it runs. A leftover
+        # used to pin its whole cap until the daemon exited (2026-11-15: a
+        # 36G scope held by sccache refused every measured mutation round).
+        local leftover
+        leftover=$(mktemp)
+        # shellcheck disable=SC2016 # expanded by the inner shell, inside the scope
+        LUSHTEXT_HEAVY_MEMORY_MAX=3G LUSHTEXT_MEMORY_RESERVE=1G "$me" 2G \
+            sh -c 'setsid sleep 30 </dev/null >/dev/null 2>&1 & echo $! >"$0"' "$leftover" 2>/dev/null
+        status=0
+        LUSHTEXT_ADMISSION_NOWAIT=1 LUSHTEXT_HEAVY_MEMORY_MAX=3G LUSHTEXT_MEMORY_RESERVE=1G timeout 5 "$me" 2G true 2>/dev/null || status=$?
+        kill "$(cat "$leftover")" 2>/dev/null || true
+        rm -f "$leftover"
+        [ "$status" -eq 0 ] || { echo "self-test: a daemon left in a finished command's scope kept its cap admitted (status $status)" >&2; return 1; }
+        # ... while a command that still runs keeps its cap admitted.
+        LUSHTEXT_HEAVY_MEMORY_MAX=3G LUSHTEXT_MEMORY_RESERVE=1G "$me" 2G sleep 10 2>/dev/null &
+        waiter=$!
+        sleep 1
+        status=0
+        LUSHTEXT_ADMISSION_NOWAIT=1 LUSHTEXT_HEAVY_MEMORY_MAX=3G LUSHTEXT_MEMORY_RESERVE=1G timeout 5 "$me" 2G true 2>/dev/null || status=$?
+        kill "$waiter" 2>/dev/null; wait "$waiter" 2>/dev/null || true
+        [ "$status" -eq 75 ] || { echo "self-test: a running command's cap was not counted (status $status)" >&2; return 1; }
         local after_max
         after_max=$(systemctl --user show -p MemoryMax --value "$real_slice" 2>/dev/null || true)
         [ "$after_max" = "$real_max" ] || { echo "self-test: the real $real_slice MemoryMax changed from '$real_max' to '$after_max'" >&2; return 1; }
-        echo "with-memory-cap self-test: ok (scope sets MemoryMax, no swap and OOMPolicy=continue inside $HEAVY_SLICE; nested calls run in place; --address-space fails an allocation cleanly; Ctrl-C reaches the command; arguments with \$ pass unexpanded; --wait-admissible waits without reserving; NOWAIT admission fails fast, even behind a waiter; the real slice's budget untouched)"
+        echo "with-memory-cap self-test: ok (scope sets MemoryMax, no swap and OOMPolicy=continue inside $HEAVY_SLICE; nested calls run in place; --address-space fails an allocation cleanly; Ctrl-C reaches the command; arguments with \$ pass unexpanded; --wait-admissible waits without reserving; NOWAIT admission fails fast, even behind a waiter; a leftover daemon does not keep its cap admitted; the real slice's budget untouched)"
     else
         echo "with-memory-cap self-test: ok (no systemd user manager; cap enforcement not exercised)"
     fi
@@ -415,7 +450,10 @@ if scope_available; then
     # Ctrl-C left the capped work running. As the same process, the command
     # gets the terminal's signals and its exit status reaches the caller
     # directly. fd 9 is closed so the command does not hold the lock.
+    # The unit is named after this PID, which becomes the command's (see
+    # admitted_kib): a daemon left in the scope then holds no admission.
     exec systemd-run --user --scope --quiet --expand-environment=no --slice="$HEAVY_SLICE" \
+        --unit="lushtext-cap-$$-$(date +%s%N)" \
         -p MemoryMax="$cap" -p MemorySwapMax=0 -p OOMPolicy=continue -- "${launch[@]}" 9>&-
 fi
 

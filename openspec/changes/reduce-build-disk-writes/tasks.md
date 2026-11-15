@@ -246,7 +246,7 @@ Rules for every task:
 - [x] 8.2 Add `pre-commit-docs: check-fmt check-policy` to the Makefile, and
   change `.githooks/pre-commit` to D8's form. Leave `pre-commit`, `check` and
   CI's Clippy command untouched, and diff them against `main` to prove it.
-- [ ] 8.3 Lane case: make one docs-only commit and one code commit on this
+- [x] 8.3 Lane case: make one docs-only commit and one code commit on this
   branch through `heavy.sh --mem none -- git commit -F ...`. Confirm from the
   hook output that the first skipped Clippy and the second ran it.
 
@@ -298,17 +298,17 @@ Rules for every task:
   - Dev Builds (the gate paragraph that says "The pre-commit hook runs
     `make pre-commit`"): the docs-only hook path, its allowlist and the
     include audit.
-- [ ] 10.2 `.agents/rules/verification-runs.md` "Shared-machine agent work":
+- [x] 10.2 `.agents/rules/verification-runs.md` "Shared-machine agent work":
   slot acquisition never waits, and exit 75 means retry later; the docs-only
   hook still runs `check-policy`, so commits still go through `heavy.sh`.
-- [ ] 10.3 `docs/mutation-testing.md`: the local commands, slots, the
+- [x] 10.3 `docs/mutation-testing.md`: the local commands, slots, the
   proof-strength isolation and tests-arm text (worktree location and in-place
   arm), the parallel-shard example that sets
   `PROOF_STRENGTH_WORKTREE=target/proof-strength/wt1` (a relative path, so it
   would put a build tree back in the checkout; point it at the cache), and the
   address-space-caught triage. Update `scripts/proof-strength.py`'s module
   docstring, which names `target/proof-strength/wt`.
-- [ ] 10.4 `AGENTS.md` (Build Commands: `build-cache-prune`; Testing: the
+- [x] 10.4 `AGENTS.md` (Build Commands: `build-cache-prune`; Testing: the
   mutation lane line; Rust Linting Policy: the paragraph that names
   `.githooks/pre-commit`, which now skips Clippy on docs-only commits) and
   `README.md`, if it describes the mutation commands or the hook. Keep the
@@ -327,3 +327,8 @@ Rules for every task:
 - [ ] 11.4 Kani: none (no proven module touched). GTK axioms: none. Widget
   shards: none (no widget test touched). Record those three lines in the
   stage handoff.
+- [x] 11.5 (Apply-time blocker, design D10.) `scripts/with-memory-cap.sh`
+  names each scope after its command's PID and stops counting a scope's cap
+  once that PID has left it, so a daemon left behind (an sccache server) no
+  longer pins its admission; failing-first self-test case, rule text in
+  `verification-runs.md`.

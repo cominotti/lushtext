@@ -251,8 +251,6 @@ builds use, `make kani` is left unchanged and the decision is recorded here.
 
 - Nothing exports `CARGO_INCREMENTAL=1`. A lane that keeps incremental leaves
   the variable unset.
-- Nothing exports `CARGO_INCREMENTAL=1`. A lane that keeps incremental leaves
-  the variable unset.
 - The widget build is excluded: it shares the checkout's build dir with
   `make test` and Clippy, and the toggle probe shows that each switch
   recompiles every member.
@@ -543,6 +541,35 @@ valid.
 
 Timing: build-lane wall time only. No application timed path is touched, so
 `B_interact` and `B_settle` are not involved.
+
+### D10. Admission does not count a daemon left in a finished scope (apply-time blocker)
+
+Found while measuring (2026-11-15), and fixed under the pre-existing-blockers
+rule. `scripts/with-memory-cap.sh` admitted a new scope only if the caps of
+every scope in `lushtext-heavy.slice` plus its own fit the slice budget. A
+scope lives while any process is in it, and the sccache server is started by
+whichever compile first finds it absent, so it lands in that compile's scope
+and outlives it. A 36G `make mutants-smoke` warm-up left such a scope: 36 of
+48 GiB stayed admitted after the run ended, so every measured round (36G,
+`LUSHTEXT_ADMISSION_NOWAIT=1`) failed with 75, and other agents' heavy work
+waited. The server never idles out on a busy host.
+
+- Each scope is now named `lushtext-cap-<pid>-<ns>.scope` after the command's
+  PID (`systemd-run --scope` execs the command in place), and `admitted_kib`
+  counts its cap only while that PID is still in the scope. The daemon's real
+  memory still counts against the slice's `MemoryMax` and `MemAvailable`.
+- Scopes an older copy of the script started keep counting while they exist,
+  until every worktree carries this script. The pinned scope here was
+  released with `systemctl --user set-property --runtime <scope>
+  MemoryMax=infinity`, which kills nothing.
+- **Rejected: `sccache --stop-server`.** It fails other agents' compiles in
+  flight.
+- **Rejected: starting the server outside the scope first.** A server that
+  idles out during a long test or CBMC phase is restarted inside the scope by
+  the next compile.
+- The self-test proves both directions, failing first: a leftover daemon does
+  not keep its 2G cap admitted against a 3G budget, and a command that still
+  runs does.
 
 ## Ledger axioms, Kani, GTK
 

@@ -127,6 +127,13 @@ every worktree (resolved from `git rev-parse --git-common-dir`;
   locks**: a helper never waits for memory while holding `LOCK`, and never
   reserves memory while waiting for a lock. `make test`/`test-widget` admit
   their own per-shard scopes, so run them as `heavy.sh --mem none`.
+  Admission reserves a scope's cap only while its command runs: a daemon the
+  command leaves in the scope (the sccache server its first compile started)
+  keeps the scope alive but not the reservation. Scopes are named
+  `lushtext-cap-<pid>-<ns>.scope` for this; one an older copy of the script
+  started (`run-p<pid>-*.scope`) still counts while anything is in it, and
+  `systemctl --user set-property --runtime <scope> MemoryMax=infinity`
+  releases it without killing the daemon.
 - **Measurements** — the responsiveness lane, interleaved benches, any timing
   verdict — go through `scripts/measure.sh`: `INTENT` exclusively, then `LOCK`
   exclusively, so new heavy starts wait while the running ones drain. It gives
