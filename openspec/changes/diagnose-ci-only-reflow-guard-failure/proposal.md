@@ -35,8 +35,10 @@ The findings (design "Measured baseline"):
 - In the CI image, the value is 8 with 1, 2, 4 or 8 CPUs, whether limited by
   quota or by cpuset: deterministic: 20 of 20 attempts in 10 runs. With the container's
   16 CPUs it is 0 and the test passes. In the toolbox, also at 16 CPUs, it is
-  0 in every configuration tried. That includes CI's font set, and software
-  GL, though the renderer used was not confirmed.
+  0 in every configuration tried. That includes CI's font set, and
+  `LIBGL_ALWAYS_SOFTWARE=1`. GTK draws with cairo in every widget run (the
+  harness forces it), so that variable could only reach mutter, whose GL
+  backend was not recorded.
 - Working condition: the CI image with a small CPU count. That the image
   matters, not just the count, rests on `restore-main-ci`'s recorded toolbox
   runs pinned to one or two CPUs, which passed. Which writer moves the view to
@@ -70,7 +72,8 @@ named and the production question is answered.
   "not reproducible" branch: CI-log diagnosis, a deterministic mechanism
   test, and eight branch CI runs.
 - The inherited watched tests of the three shards (design B5) run in the
-  lane first. A test proved there needs no CI runs. A test still not
+  lane first. A test proved there needs no CI runs, except directory
+  retention, whose CI figure only the runner gives. A test still not
   reproduced owes eight branch CI runs of its shard on this branch's final
   code, with every run id and attempt recorded, or, if the stage brief does
   not allow the CI-evidence exception, is recorded as owed to the

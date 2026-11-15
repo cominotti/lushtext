@@ -88,7 +88,7 @@ after the fixture, after the hide, and at the end.
 | CI image | unlimited (16 visible) | 0 | green | 1/1 | `c2-…-allcpus.log` |
 | toolbox | inherited (`nproc` 16) | 0 | green | 1/1 each | `l1-…`, `l3-diag-default.log` |
 | toolbox, 16 | CI's font set (`fontconfig-ci/fonts.conf`; the test printed it, and `upper` was 48,504 as on CI) | 0 | green | 1/1 | `l2-…`, `l3-diag-ci.log` |
-| toolbox, 16 | `LIBGL_ALWAYS_SOFTWARE=1` (and `LP_NUM_THREADS=4`); env set, **renderer not confirmed** | 0 | green | 1/1 each | `l4-…` |
+| toolbox, 16 | `LIBGL_ALWAYS_SOFTWARE=1` (and `LP_NUM_THREADS=4`); GTK on cairo regardless (B2), **mutter's backend not recorded** | 0 | green | 1/1 each | `l4-…` |
 
 What this shows:
 
@@ -140,7 +140,7 @@ list` (verified at spec review) and the reason each is owed CI runs:
 | --- | --- | --- |
 | `editor-page` | `editor_page::test_a_reallocation_offset_at_the_top_is_still_repaired_after_a_reflow` (F1) | red on every CI run; now reproduced in the lane |
 | `editor-page` | `editor_page::test_minimap_native_slider_covers_the_visible_text_with_an_overscroll_margin` | `restore-main-ci` 2.2: the original minimap failure ("stays scrolled to the middle"), never reproduced locally |
-| `editor-page` | `protected_view_surfaces::test_a_protected_periodic_capture_reads_the_source_not_the_buffer` | `restore-main-ci` 4.3: fixed from the CI log on D4's "not reproducible" branch |
+| `editor-page` | `protected_view_surfaces::test_a_protected_periodic_capture_reads_the_source_not_the_buffer` | `restore-main-ci` 4.3: diagnosed from the CI log with a deterministic mechanism test, which is D4's "not reproducible" branch. The archive's eight-run tally did not track it; it is listed here from D4. Its shard owes eight runs for the minimap original anyway |
 | `window` | `window::test_a_bookmark_opens_in_a_never_shown_tab_in_preview_only_mode` (4.2) | not reproduced, not diagnosed |
 | `surfaces` | `workspace_tree_virtualization::test_directory_retention_stays_within_its_charge` | `restore-main-ci` 4.1: diagnosed locally, CI's figure with the fix unmeasured |
 
@@ -310,14 +310,16 @@ existing recorder is connected, so no log holds it yet.
 - **How the runs are produced:**
   - `ci.yml` has no `workflow_dispatch` trigger (`on: push` to `main`,
     `pull_request`), and none is added;
-  - the runs are the PR's `pull_request` run plus reruns. A run cannot be
-    rerun while an attempt of it is in progress, so attempts are
-    sequential. While more than one shard still owes runs, a whole-run
-    rerun (`gh run rerun <run>`) serves every shard in one attempt: about
-    30 minutes each, so about four hours for eight. Rerunning the three
-    widget jobs one at a time (`gh run rerun <run> --job <job id>`) would
-    take 24 attempts, about ten hours. A single-job rerun is used only when
-    one shard alone still owes runs;
+  - the runs are the PR's `pull_request` run plus reruns. Expected, and
+    confirmed by task 6.0 before planning on it: a run cannot be rerun
+    while an attempt of it is in progress, so attempts are sequential, and
+    an attempt takes about 30 minutes (the widget shards record about
+    11 minutes each on the runner, plus setup). While more than one shard
+    still owes runs, a whole-run rerun (`gh run rerun <run>`) then serves
+    every shard in one attempt, about four hours for eight. Rerunning the
+    three widget jobs one at a time (`gh run rerun <run> --job <job id>`)
+    would take 24 attempts, about ten hours. A single-job rerun is used only
+    when one shard alone still owes runs;
   - each attempt is waited for with `timeout 540 gh run watch <run>
     --exit-status` in repeated foreground calls;
   - every run id and attempt is recorded in tasks.md.
@@ -410,8 +412,11 @@ hook refuse otherwise).
   app-side repair at the settle, with the axiom recorded, and the upstream
   question goes to `upstream-gtk-reports`.
 - The lane's container differs from the runner in kernel, cgroup driver and
-  virtualisation. A lane green with CI still red is possible. CI stays the
-  merge proof (D5); the lane only shortens the loop.
+  virtualisation. A lane green with CI still red is possible. D5 accepts the
+  lane's 20/20 as the merge proof for a test reproduced and fixed there;
+  CI's result for it is read in any runs D5 makes, or at the programme-end
+  CI check, and a red one there reopens the test under
+  `preexisting-blockers.md`.
 - Docker on this host is shared. Each lane invocation is bounded
   (`--memory`, `timeout`) and goes through `heavy.sh`.
 

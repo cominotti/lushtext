@@ -146,15 +146,19 @@ rest".
       not, skip 6.1–6.2: record every eight-run proof still owed (shard,
       test, reason) as owed to the programme-end CI check, in tasks.md and
       `docs/next/long-line-documents.md`. If it does, check once that
-      `gh run rerun` works for this account here. If not, plan the runs as
-      pushes of real commits, each after the previous run finished.
+      `gh run rerun` works for this account here, and whether a rerun is
+      refused while an attempt is in progress (design D5's expectation). If
+      reruns are not allowed, plan the runs as pushes of real commits, each
+      after the previous run finished.
 - [ ] 6.1 Open the PR. Read its `ci.yml` run with `timeout 540 gh run watch
       <id> --exit-status`, in repeated foreground calls.
 - [ ] 6.2 Rerun until each shard has the runs D5 requires on the final code:
       whole-run reruns (`gh run rerun <run>`) while more than one shard owes
       runs, a single job (`--job <id>`) when one alone does. Record run id,
       attempt and result for each. Eight for a test still on the "not
-      reproducible" branch; none are owed for a test proved in the lane.
+      reproducible" branch; none are owed for a test proved in the lane,
+      except directory retention, whose CI figure only the runner gives
+      (design D5).
 - [ ] 6.3 Any new failure in these shards joins the change
       (`preexisting-blockers.md`). It is diagnosed in the lane first.
 
