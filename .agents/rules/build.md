@@ -327,7 +327,11 @@ are in [`testing.md`](./testing.md). This section covers the lane.
   fails when the installed Kani is not the pinned version or any harness
   fails; `make kani KANI_SHARD=<shard>` runs one shard
   (`scripts/kani-shards.py list`). Kani cannot run two jobs on one target
-  directory.
+  directory. It runs with `CARGO_INCREMENTAL=0`: Kani's units sit in the
+  build dir's own target-triple tree, which no other build shares, and an
+  incremental cache there (22 MB per `gtk-lush-widgets` compile, 355 MB per
+  `lushtext-core` one) bought a 12% faster rebuild (design D3 of
+  `reduce-build-disk-writes`).
 - **Memory.** The run executes inside a memory-capped systemd user scope
   (`scripts/with-memory-cap.sh`, `KANI_MEMORY_MAX`, default `16G`, no swap,
   each process held to 7/8 of the cap in address space), admitted into the

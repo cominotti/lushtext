@@ -379,10 +379,14 @@ fuzz-smoke:
 # Every `#[kani::proof]` harness in the crates that own checked code. Fails when
 # the installed Kani is not the pinned version or when any harness fails;
 # `should_panic` harnesses count as passing only when Kani finds their
-# documented counterexample.
+# documented counterexample. Kani's units live in the build dir's own
+# target-triple tree, which no other build uses, so incremental compilation is
+# off for them (design D3 of reduce-build-disk-writes: 22 MB of incremental
+# cache per gtk-lush-widgets compile, 355 MB per lushtext-core one, for a
+# 12% faster rebuild).
 kani:
 	@set -eu; $(KANI_VERSION_GUARD); \
-	./scripts/with-memory-cap.sh --address-space "$(KANI_MEMORY_MAX)" ./scripts/kani-shards.py run "$(KANI_SHARD)" --target-dir "$(KANI_TARGET_DIR)" $(if $(KANI_MEASURE),--measure "$(KANI_MEASURE)")
+	CARGO_INCREMENTAL=0 ./scripts/with-memory-cap.sh --address-space "$(KANI_MEMORY_MAX)" ./scripts/kani-shards.py run "$(KANI_SHARD)" --target-dir "$(KANI_TARGET_DIR)" $(if $(KANI_MEASURE),--measure "$(KANI_MEASURE)")
 
 # The pinned-Kani guard shared by the Kani and proof-strength lanes.
 KANI_VERSION_GUARD = installed=$$(cargo kani --version 2>/dev/null | sed -n 's/^Kani Rust Verifier \([0-9.]*\).*/\1/p' | head -n 1 || true); \

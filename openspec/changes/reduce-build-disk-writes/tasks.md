@@ -210,7 +210,7 @@ Rules for every task:
 
 ## 6. Kani lane (D3)
 
-- [ ] 6.1 After task 9.2's first Kani round (where `incremental/` lands and its
+- [x] 6.1 After task 9.2's first Kani round (where `incremental/` lands and its
   size), and only if it shows an incremental cache in Kani's own triple tree:
   have `make kani` export `CARGO_INCREMENTAL=0` for `kani-shards.py run`.
   Otherwise leave `make kani` unchanged and record why in D3. The
@@ -289,7 +289,7 @@ Rules for every task:
 
 ## 10. Documentation (`.agents/rules/documentation.md`)
 
-- [ ] 10.1 `.agents/rules/build.md`:
+- [x] 10.1 `.agents/rules/build.md`:
   - Mutation Testing: slots, pool, the exit-75 behaviour, the merge, the
     address-space limit and its triage list, `make build-cache-prune`, and the
     retired "discard a run that hit its cap" wording for test processes;

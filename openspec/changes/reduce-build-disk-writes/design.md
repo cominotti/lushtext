@@ -308,6 +308,34 @@ far larger than the load spread, and are recorded as such.
 - **Proof-strength tests arm: follows the slots** (the same in-place
   build-then-nextest unit, not measured separately): incremental kept,
   `CARGO_INCREMENTAL` left as the caller set it.
+- **Kani lane: `CARGO_INCREMENTAL=0`** (`make kani`, task 6.1). The first
+  `cargo kani -p gtk-lush-widgets --only-codegen` with incremental on wrote
+  its cache into the build dir's own triple tree,
+  `<build-dir>/x86_64-unknown-linux-gnu/debug/incremental` (11 MB cold, 22 MB
+  after one edit), and nothing into the host tree's `debug/incremental`; for
+  `lushtext-core` it was 355 MB. So Kani does keep an incremental cache, in a
+  tree no other build uses. Unit: one rebuild after a one-line edit of
+  `crates/gtk-lush/widgets/src/lib.rs` (a comment, incremental's best case),
+  each mode in its own `CARGO_BUILD_BUILD_DIR`, in the proof-strength
+  worktree, through `measure.sh` (`kani-round.sh` in the handoff dir):
+
+  | round | inc0 | inc1 | start load |
+  | --- | --- | --- | --- |
+  | r1 | 18.5 s | 17.1 s | 6.2 / **3.4** |
+  | r2 | 20.9 s | 18.0 s | 7.1 / 11.5 |
+
+  Median 19.7 s against 17.6 s, +12%: inside the bar, so the lane drops the
+  cache. Only inc1 r1 started below load 4; the rest are non-verdict, and the
+  difference is small in either direction.
+- **Proof-strength Kani arm: measurement queued; `CARGO_INCREMENTAL=0` kept
+  provisionally** (`KANI_ARM_INCREMENTAL = "0"`, the design's default unless a
+  regression is shown). One round ran (`lushtext-core` rebuild after the
+  `MAX_MARKDOWN_EVENTS / 4` → `* 4` mutant of `ui/markdown_preview/policy.rs`:
+  35.7 s without incremental, start load 4.9) before the coordinator stopped
+  the chain, whose exclusive locks were blocking other agents at load 14, and
+  queued the remaining three rounds in `.claude/handoffs/MEASURE-QUEUE.md`. If
+  the queued rounds show incremental more than 25% faster, the arm switches
+  `KANI_ARM_INCREMENTAL` to `""` in a follow-up.
 
 ### D4. Workspace crates bypass sccache in the mutation lanes
 
