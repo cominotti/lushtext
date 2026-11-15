@@ -1,0 +1,99 @@
+# Clippy 1.100.0, whole workspace, all features, all targets (task 3.1)
+# Tree: branch rust-1-100-adoption at dadf35cc (= origin/main 72c039ef + the change's planning commits), before any fix
+# Command: RUSTUP_TOOLCHAIN=1.100.0 scripts/heavy.sh -- cargo clippy --workspace --all-targets --all-features --locked --message-format=json -- --cap-lints warn
+# Toolchain: rustc 1.100.0 (0ef1bc386 2026-11-09)
+# Widget test sites are reported in the build script's transformed copies (OUT/widget_mod_<module>.rs); the source is crates/lushtext/tests/widget/<module>.rs
+
+## Counts per lint and crate (deduplicated by lint + primary span)
+      1 clippy::double_must_use	crates/gtk-lush/proof-harness
+      4 clippy::map_unwrap_or	crates/cargo-gtk-proof
+      1 clippy::map_unwrap_or	crates/gtk-lush-adoption-lab
+      9 clippy::map_unwrap_or	crates/gtk-lush/axioms
+      1 clippy::map_unwrap_or	crates/gtk-lush/widgets
+     12 clippy::map_unwrap_or	crates/lushtext (11 widget test modules + tests/widget/common.rs)
+     32 clippy::map_unwrap_or	crates/lushtext-core
+      1 clippy::needless_bool	crates/lushtext-core
+      1 clippy::needless_range_loop	crates/lushtext (widget test window.rs)
+  total: 62
+
+## Sites (lint, location, targets, message, first source line)
+clippy::double_must_use	crates/gtk-lush/proof-harness/src/lib.rs:292:1	gtk_lush_proof_harness:lib	this function has a `#[must_use]` attribute with no message, but returns a type already considered as `#[must_use]`	pub fn run_registered_tests(
+clippy::map_unwrap_or	OUT/widget_mod_document_scale.rs:109:20	widget:test	called `map(_).unwrap_or_default()` on an `Option` value	let name = tag.name().map(|name| name.to_string()).unwrap_or_default();
+clippy::map_unwrap_or	OUT/widget_mod_document_scale.rs:1198:5	widget:test	called `map(_).unwrap_or_default()` on an `Option` value	window
+clippy::map_unwrap_or	OUT/widget_mod_font_zoom.rs:71:5	widget:test	called `map(_).unwrap_or_default()` on an `Option` value	widget
+clippy::map_unwrap_or	OUT/widget_mod_open_popover.rs:220:24	widget:test	called `map(_).unwrap_or_default()` on an `Option` value	let mut tooltips = root
+clippy::map_unwrap_or	OUT/widget_mod_preferences.rs:734:24	widget:test	called `map(_).unwrap_or_default()` on an `Option` value	let subtitle = row
+clippy::map_unwrap_or	OUT/widget_mod_preferences.rs:851:13	widget:test	called `map(_).unwrap_or_default()` on an `Option` value	row.subtitle()
+clippy::map_unwrap_or	OUT/widget_mod_preferences.rs:946:18	widget:test	called `map(_).unwrap_or_default()` on an `Option` value	let newest = set_aside_rows(&prefs)[0]
+clippy::map_unwrap_or	OUT/widget_mod_protected_view_surfaces.rs:163:5	widget:test	called `map(_).unwrap_or_default()` on an `Option` value	result
+clippy::map_unwrap_or	OUT/widget_mod_protected_view_surfaces.rs:615:13	widget:test	called `map(_).unwrap_or_default()` on an `Option` value	text.ok()
+clippy::map_unwrap_or	OUT/widget_mod_shell_geometry.rs:345:19	widget:test	called `map(_).unwrap_or_default()` on an `Option` value	.push(view.layout_name().map(String::from).unwrap_or_default());
+clippy::map_unwrap_or	OUT/widget_mod_workspace_section.rs:125:5	widget:test	called `map(_).unwrap_or_default()` on an `Option` value	icon.downcast_ref::<gio::ThemedIcon>()
+clippy::map_unwrap_or	crates/lushtext/tests/widget/common.rs:663:20	widget:test	called `map(_).unwrap_or_default()` on an `Option` value	let text = item
+clippy::map_unwrap_or	crates/cargo-gtk-proof/src/live.rs:1452:28	cargo_gtk_proof:lib	called `map(_).unwrap_or_default()` on an `Option` value	let required_anchors = config
+clippy::map_unwrap_or	crates/cargo-gtk-proof/src/live.rs:1844:27	cargo_gtk_proof:lib	called `map(_).unwrap_or_default()` on an `Option` value	let anchors = failure
+clippy::map_unwrap_or	crates/cargo-gtk-proof/src/live.rs:1864:33	cargo_gtk_proof:lib	called `map(_).unwrap_or_default()` on an `Option` value	let relationships = failure
+clippy::map_unwrap_or	crates/cargo-gtk-proof/src/model.rs:577:9	cargo_gtk_proof:lib	called `map(_).unwrap_or_default()` on a `Result` value	self.expanded_cases(&Value::Null)
+clippy::map_unwrap_or	crates/gtk-lush-adoption-lab/src/widgets_page.rs:156:20	gtk-lush-adoption-lab:bin	called `map(_).unwrap_or_default()` on an `Option` value	let text = item
+clippy::map_unwrap_or	crates/gtk-lush/axioms/examples/a22_tree_row_expansion_is_synchronous.rs:40:20	a22_tree_row_expansion_is_synchronous:example	called `map(_).unwrap_or_default()` on an `Option` value	let text = row
+clippy::map_unwrap_or	crates/gtk-lush/axioms/examples/a44_a_language_cleared_after_insert_text_leaves_no_tags.rs:37:20	a44_a_language_cleared_after_insert_text_leaves_no_tags:example	called `map(_).unwrap_or_default()` on an `Option` value	let tags = last_start
+clippy::map_unwrap_or	crates/gtk-lush/axioms/src/fixtures.rs:579:20	gtk_lush_axioms:lib	called `map(_).unwrap_or_default()` on an `Option` value	let text = item
+clippy::map_unwrap_or	crates/gtk-lush/axioms/src/probes/a87.rs:73:20	gtk_lush_axioms:lib	called `map(_).unwrap_or_default()` on an `Option` value	let text = item
+clippy::map_unwrap_or	crates/gtk-lush/axioms/src/probes/a94.rs:38:16	gtk_lush_axioms:lib	called `map(_).unwrap_or_default()` on an `Option` value	let role = headers
+clippy::map_unwrap_or	crates/gtk-lush/axioms/src/probes/a94.rs:58:25	gtk_lush_axioms:lib	called `map(_).unwrap_or_default()` on an `Option` value	let label = widget
+clippy::map_unwrap_or	crates/gtk-lush/axioms/src/probes/a96.rs:53:20	gtk_lush_axioms:lib	called `map(_).unwrap_or_default()` on an `Option` value	let text = item
+clippy::map_unwrap_or	crates/gtk-lush/axioms/src/probes/a97.rs:71:24	gtk_lush_axioms:lib	called `map(_).unwrap_or_default()` on an `Option` value	let text = entry_weak
+clippy::map_unwrap_or	crates/gtk-lush/axioms/src/probes/lazy_sections.rs:130:20	gtk_lush_axioms:lib	called `map(_).unwrap_or_default()` on an `Option` value	let text = item
+clippy::map_unwrap_or	crates/gtk-lush/widgets/examples/viewport_slice_bin.rs:31:20	viewport_slice_bin:example	called `map(_).unwrap_or_default()` on an `Option` value	let text = item
+clippy::map_unwrap_or	crates/lushtext-core/src/model/note.rs:36:26	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	loaded_text: loaded_text.map(normalize_note_text).unwrap_or_default(),
+clippy::map_unwrap_or	crates/lushtext-core/src/model/note.rs:152:5	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	text.lines()
+clippy::map_unwrap_or	crates/lushtext-core/src/model/palette.rs:84:20	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	let name = path
+clippy::map_unwrap_or	crates/lushtext-core/src/services/content_search/search.rs:1587:17	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	search_match
+clippy::map_unwrap_or	crates/lushtext-core/src/services/file_tree.rs:858:17	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	let a = path_a
+clippy::map_unwrap_or	crates/lushtext-core/src/services/file_tree.rs:862:17	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	let b = path_b
+clippy::map_unwrap_or	crates/lushtext-core/src/services/note_storage.rs:96:22	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	let suffix = display_path
+clippy::map_unwrap_or	crates/lushtext-core/src/services/note_storage.rs:112:22	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	let suffix = canonical_path
+clippy::map_unwrap_or	crates/lushtext-core/src/services/recovery_metadata.rs:321:26	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	let quarantine = self
+clippy::map_unwrap_or	crates/lushtext-core/src/ui/automation.rs:989:30	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	let protected_evidence = editor
+clippy::map_unwrap_or	crates/lushtext-core/src/ui/command_palette/evidence.rs:243:9	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	self.imp()
+clippy::map_unwrap_or	crates/lushtext-core/src/ui/editor_page/buffer_replacement/execution.rs:1215:24	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	let body = body
+clippy::map_unwrap_or	crates/lushtext-core/src/ui/editor_page/restyle.rs:433:5	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	gtk4::gio::Application::default()
+clippy::map_unwrap_or	crates/lushtext-core/src/ui/editor_page/surrounding_text.rs:172:24	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	let held = editor_weak
+clippy::map_unwrap_or	crates/lushtext-core/src/ui/font_zoom.rs:217:9	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	state
+clippy::map_unwrap_or	crates/lushtext-core/src/ui/language_catalog.rs:97:20	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	globs: manager
+clippy::map_unwrap_or	crates/lushtext-core/src/ui/open_popover/evidence.rs:286:22	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	empty_title: imp
+clippy::map_unwrap_or	crates/lushtext-core/src/ui/open_popover/evidence.rs:303:16	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	query: imp
+clippy::map_unwrap_or	crates/lushtext-core/src/ui/search_panel/evidence.rs:331:9	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	self.imp()
+clippy::map_unwrap_or	crates/lushtext-core/src/ui/search_panel/evidence.rs:417:9	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	self.imp()
+clippy::map_unwrap_or	crates/lushtext-core/src/ui/sidebar/list_execution.rs:227:9	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	self.imp()
+clippy::map_unwrap_or	crates/lushtext-core/src/ui/sidebar/policy.rs:175:20	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	let old_name = old_path
+clippy::map_unwrap_or	crates/lushtext-core/src/ui/sidebar/workspace_section/file_execution.rs:177:20	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	let name = path
+clippy::map_unwrap_or	crates/lushtext-core/src/ui/sidebar/workspace_section/file_execution.rs:676:23	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	name: new_path
+clippy::map_unwrap_or	crates/lushtext-core/src/ui/sidebar/workspace_section/icon_presentation.rs:94:9	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	icon.downcast_ref::<gio::ThemedIcon>()
+clippy::map_unwrap_or	crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs:2688:20	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	let siblings = child_paths
+clippy::map_unwrap_or	crates/lushtext-core/src/ui/window/composition/evidence.rs:98:24	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	scheduled: plan.map(CompositionPlan::scheduled).unwrap_or_default(),
+clippy::map_unwrap_or	crates/lushtext-core/src/ui/window/composition/evidence.rs:99:19	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	done: plan.map(CompositionPlan::done).unwrap_or_default(),
+clippy::map_unwrap_or	crates/lushtext-core/src/ui/window/documents.rs:134:20	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	let name = new_path
+clippy::map_unwrap_or	crates/lushtext-core/src/ui/window/documents.rs:993:28	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	let subtitle = editor
+clippy::map_unwrap_or	crates/lushtext-core/src/ui/window/drafts/admission.rs:556:9	lushtext_core:lib	called `map(_).unwrap_or_default()` on an `Option` value	self.process_draft_journal()
+clippy::map_unwrap_or	crates/lushtext-core/tests/properties/note.rs:33:33	properties:test	called `map(_).unwrap_or_default()` on an `Option` value	let loaded_normalized = loaded.as_deref().map(normalize_note_text).unwrap_or_default();
+clippy::needless_bool	crates/lushtext-core/src/services/local_history_service.rs:885:5	lushtext_core:lib	this `if` guard returns a bool literal and is followed by another	if budget.elapsed(started_at) {
+clippy::needless_range_loop	OUT/widget_mod_window.rs:6882:20	widget:test	the loop variable `ordinal` is used to index `saved.tabs`	for ordinal in 3..10 {
+
+## Intersection with scripts/kani-shards.py ORACLES keys (23 keys, both lushtext-core and gtk-lush-widgets)
+None. The one gtk-lush-widgets site is crates/gtk-lush/widgets/examples/viewport_slice_bin.rs (an example, not an oracle; the oracles there are src/slice_geometry.rs and src/scroll_request.rs). No shard is added to task 7.4 by A1.
+
+## Fixes (task 3.2)
+- 59 `map_unwrap_or`: `.map(f).unwrap_or_default()` -> `.map_or_default(f)` (Option and Result; stable since 1.98.0), mechanically, in exactly the 44 files above (59 rewrites, one per site).
+- `needless_bool` (services/local_history_service.rs `mismatched_reconcile_budget_elapsed`): returns `budget.elapsed(started_at)`; the `cfg(test)` seam is checked first and consumed only when the real budget has not elapsed, as before (a `let` + return form would trip `let_and_return` in the production build).
+- `needless_range_loop` (tests/widget/window.rs): `for (ordinal, tab) in saved.tabs.iter().enumerate().take(10).skip(3)`.
+- `double_must_use` (gtk-lush/proof-harness `run_registered_tests` -> `ExitCode`): the bare `#[must_use]` gains a message, so the function stays must-use on 1.98, where `ExitCode` may not be, and the lint (bare attribute only) no longer fires.
+- No `#[expect]` was needed; every site had a <= 1.98 fix. `manual_bit_width` in model/responsiveness_budget.rs left alone (declined; pedantic, not enabled).
+
+## Proof (task 3.3)
+RUSTUP_TOOLCHAIN=1.100.0 scripts/heavy.sh --mem 8G -- cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+  -> exit 0, "Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 25s" (tree: the sweep, A8, group 5 and the refreshed graph with sourceview5 0.11.3).
+  The only remaining output is Cargo 1.100's manifest lint `cargo::unused_dependencies` on `workspace-hack`
+  ("unused build dependency ..."), which is not a rustc/Clippy diagnostic and needs `[lints.cargo]`, which
+  cargo 1.98 rejects (proposal B2, deferred until the pin moves). `missing_lints_inheritance` no longer appears
+  (0 occurrences) now that workspace-hack has its empty `[lints]` table.

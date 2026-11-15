@@ -162,8 +162,14 @@ These patterns are replicated from invowk-rust and must be maintained:
 1. **Profiles** in workspace `Cargo.toml` — do not change without benchmarking.
 2. **rust-lld** — default linker on x86_64-linux since Rust 1.90. No manual linker override needed.
 3. **cargo-hakari** — run `cargo hakari generate` after any dependency change.
-4. **.config/nextest.toml** — configure nextest parallelism for non-widget tests here.
+4. **.config/nextest.toml** — configure nextest parallelism for non-widget tests here. CI pins one cargo-nextest version, `CARGO_NEXTEST_VERSION` (currently **0.9.151**), in **every** workflow that installs it (`ci.yml` and `mutation-testing.yml`; they must agree). The floor is **0.9.143**: the first release that resolves dylib and artifact paths under Cargo's build-directory layout v2 and `build.build-dir`, which a cargo newer than the pin writes. The local install is upgraded separately, with `cargo install --locked cargo-nextest --version <pin>`; cargo 1.98 still writes layout v1, so an older local nextest keeps working until the pin moves.
 5. **`rust-version`** — keep `rust-version = "1.98.0"` in `[workspace.package]`, inherited by every package, so `cargo check` surfaces MSRV violations early. `rust-toolchain.toml` (and every CI toolchain step and the Snap bootstrap) pins **1.98.0**, the compiler the shipped Flatpak's SDK extension ships (`org.freedesktop.Sdk.Extension.rust-stable//26.08`, the branch `org.gnome.Sdk//51` declares), because the binary we test and measure must be built by the same compiler as the binary we ship. Before changing the pin, check what that extension ships: `flatpak remote-info --user flathub-user runtime/org.freedesktop.Sdk.Extension.rust-stable/x86_64/26.08`. GTK Lush crates also have the `make gtk-lush-msrv` lane so their independently adoptable surface cannot drift ahead of the workspace floor.
+
+   **Version policy.** Some releases are never pinned, whatever the extension ships:
+   - **Never Rust 1.99.0.** It miscompiles FFI `bool` returns on x86_64 (rust#163911, fixed in 1.99.1). LushText has no `extern "C" fn … -> bool` today (gtk-rs passes `gboolean`, an `i32`), but the miscompile is silent, so no build of the shipped binary may use that compiler. **1.99.1** is the floor of any 1.99 pin. If Flathub moves `rust-stable//26.08` to 1.99.0, the pin does **not** follow: LushText stays on the current pin and waits for an extension that ships 1.99.1 or later.
+   - **The shipped 1.98.0 lacks the 1.98.1 fix** for a vtable miscompile reported against a boxed `async` service (rust#161441). LushText's exposure is low, because it has no `async` services; a change that introduces one while the pin is 1.98.0 must re-check that issue first.
+
+   **Exceptions to "every CI toolchain step pins 1.98.0".** The nightly lanes (Kani's own nightly, fuzz smoke, the GTK Lush public-API snapshot) and the weekly **advisory next-stable lane**, `.github/workflows/next-stable.yml`. That lane runs `cargo +stable clippy --workspace --all-targets --all-features --locked -- -D warnings` on the latest stable toolchain, weekly and on manual dispatch. It prints the version it tested, and it names `+stable` explicitly, because otherwise `rust-toolchain.toml` would pin it back to 1.98.0. It never runs on pull requests or pushes and is not a required check. Its failures are advisory: whoever reads one fixes the churn with APIs available at the 1.98 MSRV (as `rust-1-100-adoption` did for Clippy 1.100's `map_unwrap_or` sites) or records why not.
 
 ## SonarQube Cloud Scope
 
@@ -210,6 +216,85 @@ and `Cargo.lock` review. Run `make cargo-sources` whenever the lockfile or
 external dependency set changes in a way that affects Flatpak vendoring; if
 the generated `build-aux/cargo-sources.json` stays byte-identical, note that
 in the verification summary.
+
+### Dependency cooldown
+
+Refresh the lockfile with **`make update-deps-cooldown`**, never a bare
+`cargo update`. It runs five steps and stops at the first failure:
+
+1. `cargo +1.100.0 update` with `CARGO_REGISTRY_GLOBAL_MIN_PUBLISH_AGE="7 days"`
+   (no release younger than a week is chosen) and
+   `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback` (the workspace's
+   `resolver = "2"` is not MSRV-aware, so the fallback to versions whose
+   `rust-version` the 1.98.0 MSRV satisfies is asked for explicitly);
+2. `cargo hakari generate`;
+3. `make cargo-sources`;
+4. `cargo +1.98.0 check --workspace --all-targets --all-features --locked`,
+   which proves the refreshed graph builds with the pinned compiler;
+5. the whole dependency policy, `cargo deny check advisories bans sources licenses`.
+
+It fails with a clear message when the 1.100.0 toolchain is missing.
+
+- **Environment variables only.** The cooldown lives in the target's
+  environment, never in `.cargo/config.toml`: cargo 1.98 warns on the unknown
+  `registry.global-min-publish-age` key on every command. `cargo install`
+  ignores the cooldown, so a tool installed that way is not covered by it.
+- **Exceptions.** Cargo has no per-package override, and
+  `CARGO_RESOLVER_INCOMPATIBLE_PUBLISH_AGE=allow` drops the cooldown for every
+  crate, so it is never used. A release needed before its week is up is taken
+  **after** the cooldown run, without the cooldown, with
+  `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback cargo +1.100.0 update -p <crate> --precise <version>`,
+  followed by steps 2–5. Record the exception here with its reason, versions,
+  command and expiry (publish time plus seven days). Until it expires,
+  `make update-deps-cooldown` fails at step 1 with Cargo's "too new" message,
+  which is accepted and expected.
+- **Duplicate majors.** `multiple-versions = "deny"` stays. A duplicate that no
+  LushText manifest can unify (an upstream crate moved to a new major while
+  others still use the old one) gets a version-scoped `skip` entry in
+  `deny.toml` (`{ crate = "<name>@<major>", reason = … }`) whose reason names
+  the lagging crates and the condition for removing it. A `--precise` hold on
+  the newer side is not used for this: the next cooldown run undoes it and it
+  keeps upstream fixes out.
+- **New licence, advisory or source.** A refresh that fails one of these
+  stops; it is never waved through. A new licence is added to
+  `[licenses] allow` only if it is compatible with distributing a
+  GPL-3.0-or-later application, with a `deny.toml` comment naming the crate
+  that brought it; otherwise that crate is held with `--precise` and the hold
+  recorded. An advisory is fixed by a newer release or a `--precise` hold; an
+  `[advisories] ignore` entry needs a reason and a removal condition. Every
+  source stays crates.io. (`zlib-rs`, licence `Zlib`, is in `Cargo.lock` but
+  outside cargo-deny's graph for the configured targets; `cargo-sources.json`
+  still vendors it, which is accepted: `Zlib` is GPL-compatible, and a
+  vendored but unbuilt crate is not distributed in the binary.)
+- **Side lockfiles.** `fuzz/Cargo.lock` depends on `lushtext-core` by path and
+  inherits the workspace's manifest floors, so it is refreshed with step 1's
+  command in `fuzz/` in the same change (before any floor moves past what the
+  cooldown allows), checked with
+  `cargo +1.100.0 metadata --locked --format-version 1 --manifest-path fuzz/Cargo.toml`.
+  `fixtures/gtk-lush-adoption/stock-settle/Cargo.lock` is refreshed the same
+  way. `formal/evaluation/stateright/Cargo.lock` is disposable, local-only
+  evaluation tooling and is left alone.
+
+**Current exceptions:**
+
+- **sourceview5 / sourceview5-sys 0.11.3** (`rust-1-100-adoption`, 2026-11-14).
+  Published 2026-11-14 08:57 UTC; the cooldown held them at 0.11.2. Reason:
+  0.11.3 contains LushText's upstream fix (sourceview5-rs#19, !42), so
+  `SearchContext::replace_all` returns `Result<u32, glib::Error>` and no longer
+  panics when nothing matches, which retires the one `unsafe` FFI block in
+  `ui/search_bar/execution.rs`; the workspace floor is therefore `"0.11.3"`.
+  Applied after the cooldown run, in the root workspace and in `fuzz/`:
+  `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback cargo +1.100.0 update -p sourceview5 -p sourceview5-sys --precise 0.11.3`.
+  **Expires 2026-11-21 08:57 UTC.** Until then `make update-deps-cooldown`
+  fails at step 1 with `failed to select a version for the requirement
+  sourceview5 = "^0.11.3"` / `version 0.11.3 is too new (published … ago,
+  minimum age 7 days)`, and leaves `Cargo.lock` untouched. After the expiry
+  the target runs normally; delete this entry then.
+
+The same refresh found that sourceview5 0.11.2 made `View` implement
+`gtk::Accessible` only under a `gtk_v4_*` feature (0.11.0 did unconditionally),
+so the workspace dependency enables `gtk_v4_18`; see the comment in the root
+`Cargo.toml`.
 
 ## GTK Lush Family Foundation
 
@@ -595,7 +680,7 @@ Meson wraps Cargo for installed and Flatpak builds:
 - `make verify-flatpak-identity` starts with the install-origin guard (`flatpak-install-origin.sh check`): it fails when a `lushtext*-origin` remote, enabled or disabled, points at a path with no OSTree `config` and `summary` (GNOME Software's "server has no summary file"), and prints the one-line fix, `make flatpak-install` from any checkout (or `flatpak uninstall --user dev.cominotti.lushtext//master`). `make test-flatpak-install-origin` (in `make check-policy`) proves the guard and the flatpak behaviour it relies on against real `flatpak` in a private `FLATPAK_USER_DIR`, and prints `SKIP:` without `flatpak`, `ostree` or `flock`
 - `make check-flatpak-permissions` after automation, portal/sandbox, or packaging changes proves the manifest still declares the intentional `--filesystem=host` permission
 - `make verify-flatpak-identity` after install/export changes catches stale same-ID dev launchers and verifies `X-Flatpak`, permissions, and MIME registration
-- `build-aux/cargo-sources.json` vendors all Cargo dependencies for offline builds; regenerate after dependency changes with `make cargo-sources` (requires `flatpak-cargo-generator`). Update chain: `cargo update` → `cargo hakari generate` → `make cargo-sources`
+- `build-aux/cargo-sources.json` vendors all Cargo dependencies for offline builds; regenerate after dependency changes with `make cargo-sources` (requires `flatpak-cargo-generator`). Update chain: `make update-deps-cooldown`, which runs the cooldown `cargo update` → `cargo hakari generate` → `make cargo-sources` → a `cargo +1.98.0` check → `cargo deny` (see "Dependency cooldown" under Adding Dependencies)
 
 ## Flatpak Release Automation
 
@@ -758,7 +843,7 @@ the widget suite on its platform first.
   `SNAP_PLATFORM_AVAILABLE` repository variable.
 
 Rust validation helpers installed in CI are version-pinned in workflow `env`
-blocks: `CARGO_DENY_VERSION=0.19.8`, `CARGO_NEXTEST_VERSION=0.9.137`,
+blocks: `CARGO_DENY_VERSION=0.19.8`, `CARGO_NEXTEST_VERSION=0.9.151`,
 `CARGO_FUZZ_VERSION=0.13.1`, `CARGO_MUTANTS_VERSION=27.0.0`,
 `CARGO_SEMVER_CHECKS_VERSION=0.48.0`, `CARGO_PUBLIC_API_VERSION=0.52.0`
 (with `CARGO_PUBLIC_API_SHA256=80f55cea…7511`, the crate's checksum, and

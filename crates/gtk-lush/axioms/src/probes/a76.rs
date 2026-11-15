@@ -158,11 +158,22 @@ pub fn is_flat(costs: &[u128]) -> bool {
 }
 
 /// Whether the per-operation cost grows across the run: the last window's
-/// median is at least `GROWTH_RATIO` times the first's and above
-/// `NOISE_FLOOR_US`.
+/// median is at least `GROWTH_RATIO` times the first window's **fastest**
+/// sample and above `NOISE_FLOOR_US`.
+///
+/// The start of a run is the cheap end, so preemption there inflates its
+/// median the most: one `make gtk-axioms` round on a loaded host read a
+/// first-window median of 1,955 µs against about 600 µs in isolation, and the
+/// control failed (`rust-1-100-adoption`, 2026-11-14). Preemption only adds
+/// time, so the window's minimum is its cost. Repeating the run instead is not
+/// independent: after the first 8 MiB run is freed, later runs' merges cost
+/// less (measured: growth 581 -> 3,198 µs in the first round, 468 -> 1,237 µs
+/// in the third).
 #[must_use]
 pub fn is_growing(costs: &[u128]) -> bool {
-    let (first, last) = ends(costs);
+    let window = WINDOW.min(costs.len());
+    let first = costs[..window].iter().copied().min().unwrap_or(0);
+    let (_, last) = ends(costs);
     last >= first.max(1).saturating_mul(GROWTH_RATIO) && last > NOISE_FLOOR_US
 }
 
@@ -296,6 +307,14 @@ mod tests {
         // The A77 sample that once failed beside a release build.
         assert!(is_flat(&run(5, 24)));
         assert!(!is_growing(&run(5, 24)));
+    }
+
+    #[test]
+    fn a_preempted_start_does_not_hide_growth() {
+        // The loaded-host run: first-window median 1,955, last 3,929 us.
+        let mut costs = vec![658, 2_761, 1_606, 1_883, 1_955, 1_891, 2_119, 4_072];
+        costs.extend(vec![3_929; WINDOW]);
+        assert!(is_growing(&costs));
     }
 
     #[test]

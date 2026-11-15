@@ -33,7 +33,7 @@ impl NoteEditorPresentation {
     #[must_use]
     pub fn from_loaded_text(loaded_text: Option<&str>) -> Self {
         Self {
-            loaded_text: loaded_text.map(normalize_note_text).unwrap_or_default(),
+            loaded_text: loaded_text.map_or_default(normalize_note_text),
         }
     }
 
@@ -151,8 +151,7 @@ pub fn normalize_note_text(text: &str) -> String {
 pub fn note_preview_line(text: &str) -> String {
     text.lines()
         .find(|line| !line.trim().is_empty())
-        .map(|line| line.trim().to_string())
-        .unwrap_or_default()
+        .map_or_default(|line| line.trim().to_string())
 }
 
 #[cfg(test)]

@@ -919,11 +919,18 @@ fn test_replace_all_with_no_match_is_a_no_op() {
     wait_loaded(&editor);
     editor.show_replace();
     let bar = editor.search_bar();
-    bar.search_context()
-        .expect("a search context")
-        .settings()
-        .set_search_text(Some("absent"));
+    // Typed into the entry, as a user would: the "no match" styling reads the
+    // entry's text, not the search settings.
+    bar.search_entry().set_text("absent");
+    let context = bar.search_context().expect("a search context");
+    wait_until(Duration::from_secs(10), || {
+        flush_events();
+        context.settings().search_text().as_deref() == Some("absent")
+    });
     bar.replace_entry().set_text("x");
+    // A sentinel the counter cannot show for this document, so the assertion
+    // below proves Replace All refreshed it.
+    bar.set_match_count(7, 9);
     bar.replace_all();
     flush_events();
     assert!(!editor.is_modified());
@@ -933,6 +940,67 @@ fn test_replace_all_with_no_match_is_a_no_op() {
             .text(&buffer.start_iter(), &buffer.end_iter(), true)
             .as_str(),
         "nothing to find here\n"
+    );
+    // `rust-1-100-adoption` (search-replace-safety): the safe binding's zero
+    // count is success, and the counter reports zero matches.
+    wait_until(Duration::from_secs(10), || {
+        flush_events();
+        context.occurrences_count() == 0
+    });
+    assert_eq!(bar.imp().match_label.label().as_str(), "");
+    assert!(
+        bar.search_entry().has_css_class("error"),
+        "a finished scan with no match styles the query as having none"
+    );
+}
+
+/// `rust-1-100-adoption` (search-replace-safety): GtkSourceView rejects an
+/// invalid replacement template with regular expressions on (a trailing `\`)
+/// with a `GError`. Replace All logs it, never unwraps it, leaves the document
+/// unchanged, and still refreshes the counter.
+#[test]
+fn test_replace_all_with_an_invalid_regex_replacement_is_refused() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("plain.txt");
+    fixture::write_text(&path, "find me, find me\n");
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&path);
+    let editor = editor_at(&window, 0);
+    wait_loaded(&editor);
+    editor.show_replace();
+    let bar = editor.search_bar();
+    let context = bar.search_context().expect("a search context");
+    context.settings().set_regex_enabled(true);
+    context.settings().set_search_text(Some("find"));
+    wait_until(Duration::from_secs(10), || {
+        flush_events();
+        context.occurrences_count() == 2
+    });
+    // The binding itself reports the refusal: this is the `GError` the bar's
+    // `Err` arm logs.
+    assert!(
+        context.replace_all("bad\\").is_err(),
+        "GtkSourceView refuses a replacement ending in a lone backslash"
+    );
+    bar.replace_entry().set_text("bad\\");
+    bar.set_match_count(7, 9);
+    bar.replace_all();
+    flush_events();
+    assert!(!editor.is_modified());
+    let buffer = editor.buffer();
+    assert_eq!(
+        buffer
+            .text(&buffer.start_iter(), &buffer.end_iter(), true)
+            .as_str(),
+        "find me, find me\n"
+    );
+    assert_eq!(context.occurrences_count(), 2);
+    assert_ne!(
+        bar.imp().match_label.label().as_str(),
+        "7 of 9",
+        "the counter is refreshed after a refused Replace All"
     );
 }
 

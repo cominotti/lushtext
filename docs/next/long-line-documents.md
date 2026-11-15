@@ -4825,3 +4825,80 @@ not restated; each holds on the Fedora 45 host and in the GNOME 51 and GNOME
   leaves a pending worker (no `highlight-updated` follows).
 - A86: a reload with unchanged text no longer grows with the unrelated
   widgets.
+
+## RA `rust-1-100-adoption` (implementation record, 2026-11-14)
+
+**Status:** implemented 2026-11-14 on branch `rust-1-100-adoption`; merged
+2026-11-15 (PR #105, `main` `9df24739`) and archived 2026-11-15
+(`openspec/changes/archive/2026-11-15-rust-1-100-adoption/`). Design and
+decisions: the archived `design.md` (its "Implementation findings and
+decisions" section); evidence in the archived `evidence/` and
+`.claude/handoffs/rust-1-100-adoption/`. It lands first among the parallel
+programme runs, because its Clippy sweep and regenerated files
+(`Cargo.lock`, `workspace-hack`, `build-aux/cargo-sources.json`) cannot be
+text-merged.
+
+**The pin and the MSRV stay at 1.98.0.** The shipped Flatpak builds with
+`org.freedesktop.Sdk.Extension.rust-stable//26.08`, still 1.98.0, and
+`.agents/rules/build.md` item 5 requires the tested binary to be built by the
+shipped compiler.
+
+What landed:
+
+- **A8, durable rename classification** (a data-integrity defect independent
+  of the toolchain). `RenameProtocol` now ends in `Finish(RenameClass)`
+  (success, before-rename, after-rename), the shell maps it to
+  `DurableWriteError`, and the no-replace fallback runs only on a
+  before-rename `Unsupported`. An `Unsupported` parent-directory sync after a
+  completed rename no longer reads as `AlreadyExists`. The sidebar treats any
+  after-rename result as a completed rename and warns that the change is not
+  yet confirmed on disk; draft set-aside treats it as placed. Kani harness
+  `every_rename_classification_describes_the_namespace` (shard
+  `core-journal-and-write`) proves the classification.
+- **Clippy 1.100 sweep:** 62 sites workspace-wide: 59 `map_or_default`
+  rewrites (stable since 1.98), one `needless_bool`, one `needless_range_loop`
+  and one `double_must_use`. Clean under 1.100 `-D warnings` and under
+  `make check` on 1.98.0.
+- **sourceview5 0.11.3** (sourceview5-rs#19): the safe `replace_all` binding
+  replaced the one `unsafe` FFI block in `ui/search_bar/execution.rs`.
+- **Guards for the next bump:** the version policy (never 1.99.0, 1.99.1 is
+  the floor of any 1.99 pin, 1.98.0 lacks the 1.98.1 vtable fix), the weekly
+  advisory `next-stable.yml` lane, nextest 0.9.151 in CI, the layout-v2
+  generated-path regex in `lint-advisory.py`, and an empty `[lints]` table in
+  `workspace-hack`.
+- **`make update-deps-cooldown`:** a 7-day publish-age cooldown with the
+  MSRV-aware fallback, run once end to end (129 packages), with version-scoped
+  `deny.toml` skips for `syn@2` and `system-deps@7`.
+
+**Pre-existing blockers fixed on the way.** `make gtk-axioms` passed only
+on retry for A70, A76 and A79 under shared-host load, so their measurement
+was hardened and their statements left unchanged. A79 keeps the fastest of
+three lookup rounds per size, and A76's growth control compares against the
+first window's fastest sample, because preemption only adds time. A70's after-paint pacing takes up to three fresh-fixture rounds,
+each recorded, because a preempted main loop lets the next frame run before
+the validation idle. `make lint-advisory` had drifted on `main`: three sites
+were fixed in code, and the rest got scoped rules in
+`scripts/lint-advisory-policy.toml`. After merging `main`, the Protected View
+whole-line copy test failed once because Mutter's clipboard manager read the
+lazy provider before the test did; the test now requires its own read to add
+a whole read's worth of chunks. Six other timing probes (A29, A85, A86, A91,
+A98, A110) each held only on retry once under load; that lane-wide fragility
+is an open decision for the maintainer.
+
+**Recorded exception, with an expiry.** sourceview5 0.11.3 was taken with
+`--precise` outside the cooldown. Until **2026-11-21 08:57 UTC** the cooldown
+refuses that release, so `make update-deps-cooldown` fails loudly on the
+`0.11.3` floor; after that it runs unchanged.
+
+**Deferred until the pin can rise** (gated on the Flathub `rust-stable`
+extension shipping ≥ the version, and, for 1.100 APIs in `lushtext-core` or
+`gtk-lush-widgets`, on a Kani release newer than 0.68.0): B1 the 1.100 pin
+itself, B2 `[lints.cargo]` `unused_dependencies` (cargo 1.98 rejects the key),
+B3 the cooldown in `.cargo/config.toml`, B4 `clippy::assert_is_empty`, B5–B8
+the post-1.98 std APIs, and B9 Cargo's layout v2. The investigation's table in
+`.claude/handoffs/rust-1-100-adoption/proposal.md` §3 is the list.
+
+**End-of-programme step for the maintainer:** upgrade the host-wide nextest to
+the CI pin, `cargo install --locked cargo-nextest --version 0.9.151`. It was
+left alone here because parallel runs were using the one binary and nothing
+local needs it while cargo 1.98 writes layout v1.

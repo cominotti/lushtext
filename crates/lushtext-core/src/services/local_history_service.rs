@@ -882,16 +882,14 @@ fn mismatched_reconcile_budget_elapsed(
     budget: LocalHistoryReconcileBudget,
     started_at: Instant,
 ) -> bool {
-    if budget.elapsed(started_at) {
-        return true;
-    }
-
+    // The test seam is consumed only when the real budget has not elapsed,
+    // as before; the production build reduces to the budget alone.
     #[cfg(test)]
-    if take_mismatched_reconcile_budget_elapsed_for_test() {
+    if !budget.elapsed(started_at) && take_mismatched_reconcile_budget_elapsed_for_test() {
         return true;
     }
 
-    false
+    budget.elapsed(started_at)
 }
 
 fn load_document_for_identity(
@@ -2814,7 +2812,9 @@ mod tests {
 
         // The target lineage already exists, so the merge path moves each
         // snapshot body; the first parent sync on this thread is that rename's.
-        crate::services::filesystem::write::fail_next_parent_sync_for_test();
+        crate::services::filesystem::write::fail_next_parent_sync_for_test(
+            std::io::ErrorKind::Other,
+        );
         let error = move_path_tree(dir.path(), &old_path, &new_path)
             .expect_err("an unconfirmed rename must fail the migration");
 

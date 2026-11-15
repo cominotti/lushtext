@@ -1,0 +1,67 @@
+name: Next Stable (advisory)
+
+# Advisory lane: the blocking Clippy command on the LATEST stable Rust, weekly
+# and on manual dispatch, so lint churn in a new stable release shows up the
+# week it ships instead of the day the pin moves. It is the one stable-toolchain
+# exception to "every CI toolchain step pins the shipped compiler"
+# (.agents/rules/build.md, the `rust-version` item): it never runs on pull
+# requests or pushes and is never a required check. A failure is fixed with APIs
+# the 1.98 MSRV has, or recorded; it is not a reason to move the pin.
+
+on:
+  schedule:
+    - cron: "41 6 * * 4"
+  workflow_dispatch:
+
+concurrency:
+  group: next-stable-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  clippy-next-stable:
+    name: Clippy on latest stable (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The same Fedora GNOME stack and system packages as ci.yml's Lint job.
+    container:
+      image: registry.fedoraproject.org/fedora:45
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps=False --setopt=fastestmirror=True --setopt=max_parallel_downloads=10 --setopt=minrate=100k --setopt=timeout=30 install -y \
+            gtk4-devel \
+            libadwaita-devel \
+            gtksourceview5-devel \
+            blueprint-compiler \
+            gcc \
+            gettext \
+            git \
+            ripgrep
+
+      - name: Install the latest stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fedora-45-next-stable
+
+      # `+stable` is explicit on every command: without it rust-toolchain.toml
+      # would select the pinned 1.98.0 and this lane would silently test the pin.
+      - name: Name the toolchain under test
+        run: |
+          rustc +stable --version
+          cargo +stable clippy --version
+
+      - name: Clippy (latest stable)
+        run: cargo +stable clippy --workspace --all-targets --all-features --locked -- -D warnings

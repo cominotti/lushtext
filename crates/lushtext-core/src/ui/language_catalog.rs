@@ -94,10 +94,9 @@ fn build() {
         .iter()
         .map(|id| LanguageGlobs {
             id: id.to_string(),
-            globs: manager
-                .language(id)
-                .map(|language| language.globs().iter().map(ToString::to_string).collect())
-                .unwrap_or_default(),
+            globs: manager.language(id).map_or_default(|language| {
+                language.globs().iter().map(ToString::to_string).collect()
+            }),
         })
         .collect();
     let waiting = CATALOG.with(|state| {
