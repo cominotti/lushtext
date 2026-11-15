@@ -426,7 +426,12 @@ check-font-zoom-registration:
 # measure.sh and wait-for.sh run with the markers an enclosing helper exports
 # (`heavy.sh -- git commit` runs this target from its hook), which the
 # self-tests must shed; heavy.sh's self-test also runs measure.sh's inside a
-# real heavy.sh, the documented commit path.
+# real heavy.sh, the documented commit path. heavy.sh's self-test is handed an
+# unusable measurement reference CPU set (one past the last possible CPU), as
+# a commit hook during a game or a host without CPUs 8-23 would: its
+# measurements must run on its own affinity instead, or every commit fails
+# for the host's CPU state. with-memory-cap.sh's runs on per-run private
+# slices and checks afterwards that none is left behind.
 check-agent-helpers:
 	@echo "Checking the shared-machine agent helpers..."
 	@if command -v shellcheck >/dev/null 2>&1; then \
@@ -435,7 +440,7 @@ check-agent-helpers:
 		echo "shellcheck not installed; skipping the lint half"; \
 	fi
 	./scripts/with-memory-cap.sh --self-test
-	./scripts/heavy.sh --self-test
+	LUSHTEXT_REFERENCE_CPUS=$$(( $$(sed 's/.*[-,]//' /sys/devices/system/cpu/possible) + 1 )) ./scripts/heavy.sh --self-test
 	LUSHTEXT_AGENT_LOCK_HELD=shared:$$$$ LUSHTEXT_MEMORY_CAP_KIB=1 LUSHTEXT_ADMISSION_NOWAIT=1 ./scripts/measure.sh --self-test
 	LUSHTEXT_AGENT_LOCK_HELD=exclusive:$$$$ ./scripts/wait-for.sh --self-test
 

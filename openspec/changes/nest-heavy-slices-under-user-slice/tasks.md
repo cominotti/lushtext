@@ -159,7 +159,7 @@ other's scopes.
 
 ## 3. Failing-first cases for (B), then the reference CPU set (design D8-D9)
 
-- [ ] 3.1 In `measure.sh --self-test`, first export `LUSHTEXT_REFERENCE_CPUS`
+- [x] 3.1 In `measure.sh --self-test`, first export `LUSHTEXT_REFERENCE_CPUS`
   set to the self-test's own affinity (always a subset of the allowed set, and it
   keeps a hook's or agent's `taskset` pin), so every existing case passes on
   hosts without 8-23 (CI) and during a game. Do the same in `heavy.sh
@@ -203,7 +203,7 @@ other's scopes.
     that target already hands `measure.sh --self-test` stale markers to shed.
     Red before the export: the nested-heavy case fails on exit 78. Green after
     it, and the same line stands in for a game-time hook.
-- [ ] 3.2 In the driver's self-test (`make check-responsiveness-lane`), add
+- [x] 3.2 In the driver's self-test (`make check-responsiveness-lane`), add
   cases for `lane_affinity(inherited, measure_cpus, max_cpus)`:
   - unset: the first 16 CPUs (the MODIFIED core-cap scenario, outside
     `measure.sh`);
@@ -217,20 +217,20 @@ other's scopes.
   `reference_run: false`, the per-part set in `merged_from`), and over a part
   whose `run.json` lacks the fields (unset: equal to an unpinned part, mixed
   with a pinned one). Record the red lines.
-- [ ] 3.3 Implement D8 in `measure.sh`. Source `cpu-lists.sh`, add
+- [x] 3.3 Implement D8 in `measure.sh`. Source `cpu-lists.sh`, add
   `MEASURE_REFERENCE_CPUS_DEFAULT=8-23`, the override, `--print-reference-cpus`,
   and the check order: arguments, then the inside-heavy refusal, then the
   reference check (subset, pin itself, read back), then the locks. Also add the
   after-run read-back with `cpus_changed` and exit 78, the record fields and the
   two exported variables. Update the header with the reference rule, exit 78,
   H3, and why the read-back replaces `taskset`'s status.
-- [ ] 3.4 Implement D9. Add the driver subcommand `lane-affinity MAX_CPUS`,
+- [x] 3.4 Implement D9. Add the driver subcommand `lane-affinity MAX_CPUS`,
   which replaces `affinity-list`, and use it in `run-responsiveness-smoke.sh`,
   where a failure is a `smoke_fail` before any case runs. Write
   `measure_cpus=` and `measure_cpus_source=` to `environment.txt`, add the three
   `run.json` fields, the `report.md` label, and the `merge_runs` mixed rule.
   Keep `MAX_CPUS=16` and the unpinned path as they are.
-- [ ] 3.5 Run `scripts/heavy.sh --mem none -- make check-agent-helpers`,
+- [x] 3.5 Run `scripts/heavy.sh --mem none -- make check-agent-helpers`,
   `scripts/heavy.sh --mem none -- make check-responsiveness-lane` and
   `scripts/heavy.sh --mem none -- make check-policy`. All must pass. Rerun
   `scripts/measure.sh --self-test` once more in isolation.

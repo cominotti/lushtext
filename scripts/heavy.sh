@@ -70,6 +70,13 @@ self_test() {
     # runs check-policy, a capped `make`) must not leak its markers into the
     # cases below.
     unset LUSHTEXT_AGENT_LOCK_HELD LUSHTEXT_MEMORY_CAP_KIB LUSHTEXT_ADMISSION_NOWAIT
+    # The cases below run real measurements (`measure.sh -- true`). They run
+    # on this process's own affinity as the reference, whatever was inherited:
+    # with the default 8-23 they would exit 78 while a game narrows the
+    # cpuset, and on hosts without CPUs 8-23, and every commit hook would fail
+    # for the host's CPU state.
+    LUSHTEXT_REFERENCE_CPUS=$(cpu_list_canonical "$(cpu_own_affinity)")
+    export LUSHTEXT_REFERENCE_CPUS
     local intent=$dir/responsiveness-measure.intent lock=$dir/responsiveness-measure.lock
 
     status=0; "$me" --mem none -- sh -c 'exit 7' || status=$?
