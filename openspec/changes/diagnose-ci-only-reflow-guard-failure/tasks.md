@@ -15,7 +15,9 @@ lane's container limit.
         container only, never relabelling `$HOME`;
       - run the prebuilt widget binary, which self-supervises into headless
         Mutter;
-      - print per-run verdicts and keep each run's log.
+      - print per-run verdicts and keep each run's log;
+      - fail clearly when the image's toolkit versions differ from the host's,
+        and exit 77 (unsupported host) without Docker.
 - [ ] 1.2 `--self-test`, without Docker: image and package extraction against
       `ci.yml`, argument errors, and the `--shard` list from
       `scripts/widget-shards.py`. Wire it into `make check-agent-helpers`. The
@@ -33,8 +35,10 @@ lane's container limit.
       traces and name the site that moves the value from 0 to 8. Confirm or
       refute B1's inferred link (`at_lower` false at the settle).
 - [ ] 2.3 From the trace, name the property of the image that lets the move
-      happen (why the toolbox at one or two CPUs did not). Record it in
-      design D2.
+      happen, if one does. Run the guard in the toolbox at a small CPU count
+      (through a container of the toolbox's own image, or a recorded
+      equivalent), and confirm the GSK renderer and GL driver each run used
+      (`GSK_DEBUG`/`GDK_DEBUG` output). Record the result in design D2.
 - [ ] 2.4 If the writer is a toolkit behaviour the fix relies on, add ledger
       entry A113 with a `gtk-lush-axioms` probe and sample. Run
       `make gtk-axiom-sample AXIOM=A113 CHECK=1` and the GNOME 50 floor
@@ -50,9 +54,11 @@ rest".
 - [ ] 3.1 Failing first: a widget test that opens a document at its top in a
       `LushtextWindow`, settles, and asserts `value == lower` within 0.5.
       Run it in the lane at `--cpus=4` and record red or green.
-- [ ] 3.2 Make the D2 fixture's "at the top" precondition exact
-      (`value - lower <= 0.5`) in `present_settled_minimap_document` and in
-      the guard. Record it red in the lane on `main` code: it fails as a
+- [ ] 3.2 Make the "at the top" precondition exact (`value - lower <= 0.5`)
+      in `present_settled_minimap_document` and in the guard. Also do it in
+      every other editor-page test whose reflow or top-anchor assertion relies
+      on resting at the top: inventory them with `grep -n 'y() < 10\|at the
+      top'` in `crates/lushtext/tests/widget/` and record the list. Record it red in the lane on `main` code: it fails as a
       precondition, not at the repair.
 - [ ] 3.3 Fix at the writer:
       - product defect (3.1 red): fix the product. 3.1, 3.2 and the guard go
@@ -93,6 +99,8 @@ rest".
 
 ## 6. CI proof (design D5; the CI-evidence exception)
 
+- [ ] 6.0 Check once that `gh run rerun --job` works for this account here
+      (design D5). If not, plan the runs as pushes of real commits.
 - [ ] 6.1 Open the PR. Read its `ci.yml` run with `timeout 540 gh run watch
       <id> --exit-status`, in repeated foreground calls.
 - [ ] 6.2 Rerun the `editor-page`, `window` and `surfaces` widget jobs one at a
@@ -107,7 +115,9 @@ rest".
 - [ ] 7.1 gtk-testing `references/widget-testing.md`: the "CI image + CPU
       count" class (B3), the lane, and the exact at-rest precondition.
 - [ ] 7.2 `.agents/rules/build.md`, or `testing.md` (lane list): the lane and
-      when to use it. Update the `AGENTS.md` index only if a rule changes
+      when to use it. `.agents/rules/verification-runs.md`: the helpers that
+      `make check-agent-helpers` self-tests ("all three" becomes the new
+      count). `README.md`'s test-commands section, per `documentation.md`. Update the `AGENTS.md` index only if a rule changes
       materially.
 - [ ] 7.3 `docs/next/long-line-documents.md`: replace the "(queued)" follow-up
       paragraph with the outcome (writer, product or fixture, proof run ids).

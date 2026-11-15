@@ -34,11 +34,13 @@ The findings (design "Measured baseline"):
   value 8 "not at top". That last link is inferred, not shown.
 - In the CI image, the value is 8 with 1, 2, 4 or 8 CPUs, whether limited by
   quota or by cpuset: deterministic: 20 of 20 attempts in 10 runs. With the container's
-  16 CPUs it is 0 and the test passes. In the toolbox it is 0 in every
-  configuration tried, including CI's font set and software GL.
-- So the condition is the CI image together with a small CPU count. Which
-  writer moves the view to 8, and which property of that environment lets it,
-  are not known yet.
+  16 CPUs it is 0 and the test passes. In the toolbox, also at 16 CPUs, it is
+  0 in every configuration tried. That includes CI's font set, and software
+  GL, though the renderer used was not confirmed.
+- Working condition: the CI image with a small CPU count. That the image
+  matters, not just the count, rests on `restore-main-ci`'s recorded toolbox
+  runs pinned to one or two CPUs, which passed. Which writer moves the view to
+  8, and which property of the environment lets it, are not known yet.
 
 What remains open is whether an editor can open 8 px below its top in
 production on a small machine. Four CPUs is a common laptop. If it can, the

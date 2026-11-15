@@ -72,21 +72,30 @@ after the fixture, after the hide, and at the end.
 | CI image | `--cpuset-cpus=8-11` | 8 | **red** | 4/4 | `c4-…--cpuset-cpus=8-11.log` |
 | CI image | cpuset 1, 2 and 8 CPUs | 8 | **red** | 2/2 each | `c5-…` |
 | CI image | unlimited (16 visible) | 0 | green | 1/1 | `c2-…-allcpus.log` |
-| toolbox | inherited (22) | 0 | green | 1/1 each | `l1-…`, `l3-diag-default.log` |
-| toolbox | CI's font set (`fontconfig-ci/fonts.conf`) | 0 | green, `upper` 48,504 as on CI | 1/1 | `l2-…`, `l3-diag-ci.log` |
-| toolbox | `LIBGL_ALWAYS_SOFTWARE=1` (and `LP_NUM_THREADS=4`) | 0 | green | 1/1 each | `l4-…` |
+| toolbox | inherited (`nproc` 16) | 0 | green | 1/1 each | `l1-…`, `l3-diag-default.log` |
+| toolbox, 16 | CI's font set (`fontconfig-ci/fonts.conf`; the test printed it, and `upper` was 48,504 as on CI) | 0 | green | 1/1 | `l2-…`, `l3-diag-ci.log` |
+| toolbox, 16 | `LIBGL_ALWAYS_SOFTWARE=1` (and `LP_NUM_THREADS=4`); env set, **renderer not confirmed** | 0 | green | 1/1 each | `l4-…` |
 
 What this shows:
 
 - The failure is deterministic in the CI image with at most 8 CPUs. It does
   not depend on the kind of limit: a CFS quota and a cpuset both fail. So it
   is not quota throttling.
-- In the toolbox, the fonts alone and software GL alone do not reproduce it.
-  The `restore-main-ci` runs pinned to one or two CPUs passed too.
-- So the condition is the CI image **and** a small CPU count. Which property
-  of the image matters is open. Candidates: no GPU device, the minimal
+- Every passing run in the toolbox **and** the passing container run had 16
+  CPUs. This change ran nothing in the toolbox with fewer CPUs, so "a small
+  CPU count alone" is not refuted by its own runs.
+- The only evidence that the image matters, and not just the CPU count, is
+  `restore-main-ci`'s recorded toolbox runs pinned to one or two CPUs (20/20
+  and more, on the guard's reworked shape, design R6). They all passed. That
+  is recorded evidence, not a run of this change.
+- At 16 CPUs, the CI fonts alone do not reproduce it in the toolbox. Software
+  GL alone does not either, but the renderer GTK actually used was not
+  confirmed, so "no GPU device" is **not** ruled out.
+- Working condition: the CI image with at most 8 CPUs. Which property of the
+  image, if any, matters is open. Candidates: no GPU device, the minimal
   session services, the font set together with timing, an absent D-Bus
-  service.
+  service. Task 2.3 settles it, including a toolbox run at a small CPU count
+  through the lane's own limit, and a confirmed renderer.
 - The unlimited pass cell has n = 1. It is a control, not a figure.
 
 **B4. 4.2, the bookmark test, isolated in the CI image.** `--cpus=4`: 5/5
@@ -121,6 +130,17 @@ directories are untracked:
     self-supervision. A `--shard` runs `scripts/widget-shards.py`'s test list
     for the shard.
 - It builds nothing: the binary is built first with `scripts/heavy.sh`.
+- The host-built binary runs in the image only because the toolkit versions
+  match (B2). The script compares the image's `gtk4`, `libadwaita`,
+  `gtksourceview5`, `pango` and `glib2` versions with the host's and fails
+  clearly when they differ. Without Docker it exits with the widget runner's
+  unsupported-host code (77).
+- **Fidelity caveat:** the lane runs the binary's own headless
+  self-supervision, while CI goes through `scripts/run-widget-tests.sh`
+  (`widget-shards.py run`). A "not reproduced" verdict from the lane (D4)
+  carries that difference. The `--shard` mode therefore runs the shard's
+  test list through `scripts/run-widget-tests.sh` inside the container when
+  it can do so without `cargo`, or records why it cannot.
 - Every invocation in this change runs as `scripts/heavy.sh --mem none --
   scripts/ci-image-widget-test.sh …`, with the container's `--memory` set
   inside. That way it honours the shared lock (`verification-runs.md`).
@@ -144,8 +164,8 @@ existing recorder is connected, so no log holds it yet.
 - The discriminator for "which property of the image" is chosen from the
   trace, not tried blind. For example, if the writer is a GtkTextView
   first-line keep after a revalidation, the variable is when validation ran
-  relative to the settle. The trace then also shows why the toolbox at one
-  or two CPUs did not reach it.
+  relative to the settle. The trace then also shows whether, and why, the
+  toolbox at a small CPU count does not reach it.
 - The same trace prints `at_lower` at the guard's settle. That confirms or
   refutes the inferred link in B1.
 
@@ -216,6 +236,9 @@ existing recorder is connected, so no log holds it yet.
     with `timeout 540 gh run watch <run> --exit-status` in repeated
     foreground calls;
   - every run id and attempt is recorded in tasks.md.
+- Before relying on reruns, check once that `gh run rerun --job` is allowed
+  for the logged-in account on this repository. If it is not, the runs come
+  from pushes of this branch's real commits; empty commits are not used.
 - **Authority:** the CI-evidence exception of
   `.agents/rules/parallel-agent-work.md` ("Merging") covers this branch's own
   runs only. It overrides, for this change, the general "never wait for or
