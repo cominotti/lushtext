@@ -664,6 +664,24 @@ the widget suite on its platform first.
   margin, move a module or one slow test by name; never raise
   `timeout-minutes` (`scripts/check-workflow-timeouts.py` enforces the hard
   ceiling) and never shrink a threshold-sized test.
+- **CI image lane.** A widget failure seen only on CI is run in the CI widget
+  job's own image under the runner's CPU budget before it is treated as
+  CI-only: `scripts/ci-image-widget-test.sh` reads the `widget-tests` job's
+  image and `dnf` line from `ci.yml`, refuses to run when the image's toolkit
+  differs from the host's, and runs the binary already built here (build it
+  first, `scripts/heavy.sh -- cargo test -p lushtext --test widget --no-run`)
+  as `<binary> --exact <names>` in a fresh container per run, N times
+  (`--runs`), limited by `--cpus N` (a quota; never `taskset`). `--shard NAME`
+  runs one shard per call (`--runs 1`). Run each call as
+  `scripts/heavy.sh --mem none -- scripts/ci-image-widget-test.sh ...` and
+  keep single-test batches under about 15 minutes, so a call holds the
+  heavy-work lock once. A run is green only with exit 0, no `FLAKY:` line and,
+  for a shard, exactly the shard's tests selected. It lacks the CI runner's
+  temp scope, warning scan and outer retry, so a "not reproduced" verdict
+  says so. A failure reproduced there is fixed failing-first against it and
+  proved by 20 consecutive green lane runs; one seen only inside a full shard
+  runs the whole shard there at least five times first. Its `--self-test`
+  runs in `make check-agent-helpers`; it exits 77 without Docker.
 - **Retries make flakes loud, not acceptable.** The harness retries a **test**
   once in a fresh process and reports `ok (FLAKY: passed on attempt N)` plus a
   stderr `FLAKY:` line; `--retries 1` reruns a failed **shard** in a new

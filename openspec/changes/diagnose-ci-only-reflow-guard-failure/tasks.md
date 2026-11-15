@@ -15,7 +15,7 @@ on its final contents.
 
 ## 1. The CI-image lane (design D1)
 
-- [ ] 1.1 Add `scripts/ci-image-widget-test.sh`:
+- [x] 1.1 Add `scripts/ci-image-widget-test.sh`:
       - read the widget job's image and `dnf` line from
         `.github/workflows/ci.yml`;
       - take `--cpus N` / `--cpuset LIST`, `--runs N`, `--memory`, `--out
@@ -31,15 +31,25 @@ on its final contents.
       - print per-run verdicts and keep each run's log;
       - fail clearly when the image's toolkit versions differ from the host's,
         and exit 77 (unsupported host) without Docker.
-- [ ] 1.2 `--self-test`, without Docker: image and package extraction against
+- [x] 1.2 `--self-test`, without Docker: image and package extraction against
       `ci.yml` (the `widget-tests` job's image and `dnf` line, not another
       job's), argument errors (`--shard` with `--runs` above 1 refused), and
       the `--shard` list from `scripts/widget-shards.py`. Wire it into
       `make check-agent-helpers`, its self-test and its `shellcheck` list. The
       wait-for self-test's `pgrep -f` scan already covers `scripts/`.
-- [ ] 1.3 Reproduce B3 with the tracked lane: the guard red at `--cpus=4` and
+- [x] 1.3 Reproduce B3 with the tracked lane: the guard red at `--cpus=4` and
       green unlimited, at least five runs each (the unlimited control had
       n = 1), on `origin/main` code. Record the logs.
+      **Done, with a deviation:** red at `--cpus=4`, 5/5 (and 2/2 before),
+      with CI's exact message; **red unlimited too, 5/5** (16 CPUs visible,
+      1-min load 4.5 to 6.6), the same message and value 8. B3's single
+      unlimited green does not reproduce, so the CPU count is not the
+      condition (design B3, correction). Logs: `lane-1.3-cpus4/`,
+      `lane-1.3-unlimited/`, binary `ci-lane-bin/widget-main` (`main` code
+      at 77a45ad2).
+      The lane also counts a retry-rescued pass (`FLAKY:`) and a shard run
+      that selects other than the shard's tests as red, and mounts Cargo's
+      `build-dir` as well as the target directory (test binaries live there).
 
 ## 2. F1: name the writer (design D2)
 

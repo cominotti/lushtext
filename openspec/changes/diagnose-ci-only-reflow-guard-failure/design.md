@@ -119,6 +119,11 @@ What this shows:
   through the lane's own limit, and a confirmed renderer.
 - The unlimited pass cell has n = 1. It is a control, not a figure; task 1.3
   repeats it at least five times before D2 diffs a trace against it.
+- **Correction (stage 3, task 1.3):** the tracked lane fails unlimited too,
+  5 of 5 (16 CPUs visible, value 8, CI's exact message), as it does at
+  `--cpus=4` (5 of 5). The single unlimited green above did not reproduce,
+  so "at most 8 CPUs" is not the working condition; the condition is named
+  in D2's "Diagnosed" record.
 
 **B4. 4.2, the bookmark test, isolated in the CI image.** `--cpus=4`: 5/5
 green (`c3-container-bookmark.log`). R5's lead is untested: CI failed it
