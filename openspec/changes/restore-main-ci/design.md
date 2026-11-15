@@ -660,13 +660,51 @@ Independent review of `origin/main..HEAD` at `7da3d54c`. Evidence is in
   `y = -6` at the later reflow) and green 20/20 starved
   (`stage4/d2-starved3/`, `stage4/d2-starved4/`: the guard also 20/20 with four
   busy loops).
+  **Not yet green on CI.** The PR's third run (`318e43a3`, these tests) failed
+  the guard again on both attempts, `y = 114`, with every precondition met
+  (the burst pending when the offset was set, the offset in place). Locally it
+  has never failed in that form since the rework, starved or not. Not
+  diagnosed; the tests still waited a fixed 600 ms after acting, which a slow
+  runner may not cover if the burst keeps extending, so every wait after an
+  action now waits until no burst is pending (`settle_width_reflow`), and the
+  guard's failure message prints whether a burst is still pending and every
+  vertical `changed`/`value-changed` from the action on, marking a
+  `value-changed` no `changed` carried. The next CI run either passes or says
+  which of "still pending", "scroll detected" or "settled without repairing"
+  happened. This keeps the guard, and so the PR, blocked until CI shows it.
+- **R8. A hidden minimap's refresh lost a kept scroll (production race,
+  fixed failing first).** R6 found that while the minimap is hidden every
+  minimap refresh cancels a pending reflow settle and drops its pause. That
+  also cancelled the settle's re-record of a scroll made during the burst: the
+  rest state still said "at top" at line 1,000, so the next width reflow's
+  settle snapped the view back. This broke D2's MUST for anyone who keeps the
+  minimap off (`main` lost every such scroll, so it is not a regression of
+  this change, but it is this change's requirement). New test
+  `test_a_kept_reflow_scroll_survives_a_minimap_refresh_while_hidden`: the
+  minimap hidden, a burst opened by the scroller's end margin, a `set_value`
+  scroll and a synchronous refresh (`hide_search`) inside it, then a later
+  width shift and a height-only change. Red before the fix (`y = -6`): at the
+  later width reflow with fixed waits (`stage4/r8-red/`), and at the
+  height-only change once the waits follow the settle (`stage4/final-red/`),
+  because with the minimap hidden the later burst's settle can itself be
+  cancelled, and the top-edge clamp then reads the same stale "at top". Fix at the cancel site:
+  `record_scroll_from_cancelled_reflow` (`minimap/reflow_execution.rs`), called
+  by `run_minimap_refresh` after it drops the pause, takes the settle's record
+  of a kept scroll. It does not run the top-anchor repair: the burst may still
+  be moving, the cancel never repaired, and A112's rewrap half shows GTK
+  produces no offset for it to repair. Kept out of `minimap/policy.rs`, so no
+  Kani shard reads it.
 - **R7. CI's D1 failure was the window's own tick (explained, R3's fix).**
   `test_a_restore_after_the_draft_settled_owes_a_draft` failed on both CI
   attempts of `7da3d54c` at the strict assertion: the test runs about 5 s on
-  CI, so the window's 5 s autosave tick lands at the replacement terminal and
+  CI, so the window's autosave tick (`AUTOSAVE_TICK_INTERVAL`, 5 s) lands at the replacement terminal and
   writes the restored text inside one `wait_until` drain. On `fd9ce7b5`, with
   `owes_or_wrote`, the `window` shard passed; the assertion now also prints
   the draft state, so a future failure says whether the draft was written.
+- **4.1 on CI.** The directory-retention test passed on all three PR runs,
+  at 1,586, 1,396 and 1,925 B/row (32,768 rows) against a 1,944 B/row charge
+  and the 2,430 B/row bound: under the bound with margin, though the third is
+  close to the charge itself, which the 5/4 margin exists to absorb.
 - **3.5 closed.** The advisory job is green on both PR runs: the script logs
   `openssl-sys 0.9.88 -> 0.9.118, no other lock change`, public-API snapshots
   are generated for all eight GTK Lush crates, and the cold install took about

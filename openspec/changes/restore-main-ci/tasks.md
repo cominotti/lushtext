@@ -309,10 +309,15 @@ in `.claude/handoffs/restore-main-ci/stage4/`.
   it (design R6): the guard failed on both PR CI runs; red with each fix part
   disabled, 20/20 starved.
 - **R7** CI's D1 failure was the window's own 5 s tick (design R7).
+- **R8** (`b642c7b8`) A hidden minimap's refresh cancelled the settle's re-record of a
+  kept scroll (design R8): new test red first, fixed at the cancel site.
+- **R6, CI** The guard failed again on `318e43a3` (design R6): waits now
+  follow the settle, and the guard's message carries the burst state and
+  the vertical emissions. Open until a CI run is green.
 - **3.5** Closed: the advisory job is green on both PR runs, eight
   snapshots, cold install about 4.5 minutes.
 - Eight-run proof so far (no `FLAKY` line for the watched tests):
-  `surfaces` 2 (`7da3d54c`, `fd9ce7b5`), `window` 2 (no bookmark `FLAKY`
-  on either; `7da3d54c` failed on R7), `editor-page` 0 counted (both runs
-  failed on R6; no minimap `FLAKY` line on either). Local: the `editor-page`
+  `surfaces` 3 (`7da3d54c`, `fd9ce7b5`, `318e43a3`), `window` 3 (no bookmark
+  `FLAKY` on any; `7da3d54c` failed on R7), `editor-page` 0 counted (all
+  three runs failed on the R6 guard; no minimap `FLAKY` line on any). Local: the `editor-page`
   and `window` shards passed on the final tests with no `FLAKY`.

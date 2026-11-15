@@ -14,6 +14,12 @@ The settled repair of a passive width reflow SHALL restore the top edge only whe
 - **AND** a later width reflow and a later height-only change of the editor each settle
 - **THEN** the editor still shows line 1,000 after each of them
 
+#### Scenario: A kept scroll survives a minimap refresh while hidden
+- **WHEN** the minimap is hidden and a scroll to line 1,000 is made during a passive width burst
+- **AND** a minimap refresh runs while that burst is pending, cancelling its settle
+- **AND** a later width reflow and a later height-only change of the editor each settle
+- **THEN** the editor still shows line 1,000 after each of them
+
 #### Scenario: Scroll on a starved main loop
 - **WHEN** the minimap overscroll test runs with its process and two busy loops pinned to one CPU
 - **THEN** its "stays scrolled to the middle" precondition holds on 20 consecutive isolated runs
