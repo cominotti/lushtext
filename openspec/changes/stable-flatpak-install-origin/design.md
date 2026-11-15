@@ -119,7 +119,12 @@ The default path is
 `FLATPAK_INSTALL_REPO = ${XDG_DATA_HOME:-$HOME/.local/share}/lushtext-flatpak-install/repo`.
 `scripts/flatpak-install-origin.sh path` computes it, and that script is the
 only place the location is computed. `LUSHTEXT_FLATPAK_INSTALL_REPO`
-overrides it for tests.
+overrides it for tests. `path` canonicalises the result with `realpath -m`.
+Case h shows that two spellings of one directory create two origins, and this
+host reaches the home directory as both `/home/danilo` and `/var/home/danilo`
+(Silverblue's `/home` symlink). The Makefile passes the canonical path to both
+`prepare` and `--repo`, so every run, from any shell's `$HOME` spelling, names
+the same URI.
 
 - **Not `~/.cache/lushtext/`** (the task's suggestion). `make
   clear-lushtext-xdg` deletes `$XDG_CACHE_HOME/lushtext`
@@ -151,11 +156,15 @@ overrides it for tests.
 `scripts/flatpak-install-origin.sh prepare` runs first in `flatpak-install`:
 
 1. It creates the repository's parent directory and the lock file.
-2. It computes the URI as `file://` + the repository path. The path must be
-   absolute and must contain only characters `g_file_get_uri` leaves as they
-   are (`[A-Za-z0-9._~/!$&'()*+,;=:@-]`). Otherwise `prepare` refuses and
-   asks for an `LUSHTEXT_FLATPAK_INSTALL_REPO` without such characters. This
-   keeps the URI byte-equal to the one flatpak computes (case h).
+2. It computes the URI as `file://` + the canonical repository path. The
+   path must be absolute and must contain only characters `g_file_get_uri`
+   leaves as they are. The proposed set is `[A-Za-z0-9._~/!$&'()*+,;=:@-]`;
+   it is **to be confirmed in implementation** against GLib, by comparing it
+   with `gio info`'s `uri:` line in the fixture test when `gio` is available.
+   Otherwise `prepare` refuses and asks for an `LUSHTEXT_FLATPAK_INSTALL_REPO`
+   without such characters. This keeps the URI byte-equal to the one flatpak
+   computes (case h). If the set turns out wrong, D5 still fails the install
+   instead of leaving a second origin.
 3. If a user remote `lushtext-origin` exists (with `--show-disabled`) and its
    URL differs, or it is disabled, it runs `flatpak remote-modify --user
    --enable --url=<uri> lushtext-origin` and prints one line naming the old
@@ -270,12 +279,23 @@ test-flatpak-install-origin` and wired into `make check-policy`:
      leaves a stale commit, and `check --installed` fails it;
   5. a valid origin passes `check`.
 - **Skips.** It prints `SKIP:` and exits 0 when `flatpak` or `ostree` is
-  absent (the CI Lint container), so `check-policy` still runs it locally,
-  where the target is used.
+  absent.
 
-Before wiring it into `check-policy`, the implementation measures the test's
-wall time. If it takes over 10 s, it stays out of `check-policy` and is run
-by `test-flatpak-identity-verifier` instead.
+Where it runs:
+
+- **Locally, through `check-policy`.** The pre-commit hook runs `make
+  pre-commit`, which includes `check-policy`, so it runs before every local
+  commit, where `make flatpak-install` is used. The wiring lands with the
+  guard (tasks group 2), never before it, because a red `check-policy` would
+  block the hook.
+- **Not in CI.** CI never runs `check-policy`: the `Lint` job of
+  `.github/workflows/ci.yml` calls individual policy targets, and its
+  `fedora:45` container installs no `flatpak`. The test therefore cannot red
+  `main` for parallel changes. Should CI ever run `check-policy`, the explicit
+  `SKIP:` keeps it green.
+- **Time limit.** Before the wiring, the implementation measures the test's
+  wall time. Above 10 s, it stays out of `check-policy` and runs from
+  `test-flatpak-identity-verifier` instead.
 
 ### D8. Coordination with `reduce-build-disk-writes`
 

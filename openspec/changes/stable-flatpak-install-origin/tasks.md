@@ -47,13 +47,11 @@ Scope statements:
   - A new case answers with a dangling `lushtext-origin` line and asserts
     that `verify-flatpak-identity.sh` fails with the guard's message.
   - Record the new case failing against `main`'s verifier.
-- [ ] 1.3 Add `make test-flatpak-install-origin` and add it to `check-policy`.
-  - Measure its wall time first (D7). Above 10 s, leave it out of
-    `check-policy` and run it from `test-flatpak-identity-verifier` instead.
-  - Record the figure.
-- [ ] 1.4 Commit the tests (signed, conventional, staged by name) and push the
-  branch. The check is expected red until group 2 lands, so this commit
-  touches only the test files and the Makefile target.
+- [ ] 1.3 Add a standalone `make test-flatpak-install-origin` target. Do
+  **not** add it to `check-policy` yet: the pre-commit hook runs
+  `check-policy`, and the test is red until group 2.
+- [ ] 1.4 Commit the test scripts, the standalone target and the red record
+  in `runs.log` (signed, conventional, staged by name), and push the branch.
 
 ## 2. Shared install origin
 
@@ -76,11 +74,14 @@ Scope statements:
   origin is a single shared path (D1, D2, D8).
 - [ ] 2.3 Call `check` from `scripts/verify-flatpak-identity.sh` in a new
   "Flatpak install origin" section (D6).
-- [ ] 2.4 Run `make test-flatpak-install-origin`,
+- [ ] 2.4 Measure the wall time of `make test-flatpak-install-origin` and
+  record it. At 10 s or less, add the target to `check-policy`. Above 10 s,
+  run it from `test-flatpak-identity-verifier` instead (design D7).
+- [ ] 2.5 Run `make test-flatpak-install-origin`,
   `make test-flatpak-identity-verifier`, `make check-flatpak-permissions` and
   `bash -n`/`shellcheck` on the new scripts. All must pass, and 1.1 and 1.2
   must turn green.
-- [ ] 2.5 Commit and push.
+- [ ] 2.6 Commit and push.
 
 ## 3. Documentation (documentation.md)
 
@@ -113,7 +114,7 @@ Scope statements:
   - Keep its `--state-dir`/`build-cache.sh checkout` and this change's
     `--repo`, lock, prune and check.
   - Run its `build-cache.sh audit` if present.
-  - Rerun 2.4.
+  - Rerun 2.5.
 - [ ] 4.2 Run the authorised `make flatpak-install` once on the final tree,
   through `scripts/heavy.sh`. The maintainer's machine starts from the
   disabled dangling `lushtext-origin`. Record in `runs.log`:
