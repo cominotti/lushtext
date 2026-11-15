@@ -48,9 +48,10 @@ Collapsing a sidebar directory by a route LushText owns SHALL keep the input dis
 - **WHEN** a step removes bound rows of a subtree with nothing after it beyond the realized band
 - **THEN** it may remove up to `COLLAPSE_DESTROY_ONLY_ROWS` rows, within `B_INTERACT_US`, because no row widget is created in their place
 
-#### Scenario: The input dispatch takes the first step
+#### Scenario: The first frame takes the first step
 - **WHEN** a sliced collapse starts
-- **THEN** the input dispatch runs its first step (unbound chunks within the list turn slice, or one bound unit) after showing the intent, within `B_INTERACT_US`, so no frame passes before the work starts
+- **THEN** the input dispatch only shows the intent and arms the step sources, and the first step runs no later than the first frame after the input (a bound unit from that frame's tick, or unbound chunks from the between-frames source), so no frame passes before the work starts
+- **AND** that frame takes no more than one unit of bound rows
 
 #### Scenario: Unbound rows leave between frames
 - **WHEN** a sliced collapse removes rows no widget is bound to
@@ -89,7 +90,8 @@ The sidebar expansion verdict SHALL also cover directories of 64, 256 and 1,024 
 
 #### Scenario: The rows the user sees come first
 - **WHEN** an expansion's batches are capped per frame
-- **THEN** the first frame after the expansion shows the rows in the viewport, as on `main`, and later frames add the rest of the realized band
+- **THEN** the first frame after the expansion shows the first `SIDEBAR_REALIZED_ROWS_PER_FRAME` rows, which fill the viewport at the verdict window's height as on `main`, and later frames add the rest of the realized band
+- **AND** in a viewport taller than that unit, the remaining visible rows appear top-down in the following frames, one unit a frame, rather than in one frame over budget
 
 #### Scenario: Expanding a 256-entry directory
 - **WHEN** the user expands a directory of 256 entries after the decision above

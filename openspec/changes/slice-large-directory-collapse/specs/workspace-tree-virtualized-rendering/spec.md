@@ -52,7 +52,7 @@ Every LushText route that collapses a directory row SHALL go through one section
 #### Scenario: The folder header collapses every root
 - **WHEN** the folder header collapses two expanded roots, the first of 4,096 entries and the second small enough to collapse directly
 - **THEN** both roots stay collapsed after every deferred restore, and `expanded_paths` holds neither
-- **AND** a LushText expansion or collapse records its intent whether or not GTK still holds the row object a widget once showed
+- **AND** a LushText expansion or collapse records its intent, and refreshes the row's workspace-watch contribution, whether or not GTK still holds the row object a widget once showed
 
 #### Scenario: Keys typed into inline rename
 - **WHEN** the user renames an expanded directory inline and types `-`, `+`, `*`, `/` or another character that is also an expander key binding

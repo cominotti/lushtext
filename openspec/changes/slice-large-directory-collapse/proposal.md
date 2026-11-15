@@ -76,8 +76,6 @@ times later than `main`. The revision therefore adds, beside what follows:
 
 - **A completion bar:** a collapse draws its collapsed rows no later than
   `main`'s plus two frames, or within 100 ms where `main` is faster.
-- **The first step in the input dispatch,** so the work starts without waiting
-  a frame.
 - **Lighter rows:** the reorder handle, the Focus Folder button and the drop
   surfaces are created on demand instead of in every row, cutting what every
   collapse, expansion and scroll pays per row.
@@ -150,8 +148,9 @@ times later than `main`. The revision therefore adds, beside what follows:
 - **Readiness covers a collapse in progress.** `workspace-refresh-complete`
   (`refresh_blocks_readiness`) stays blocked while a sliced collapse runs. The
   sidebar evidence surface reports the collapse's state, steps and rows left.
-- **GTK axioms**, each with a probe, a sample and a ledger row. Provisional
-  ids are A118–A120; the final ids are the next free ones at apply time.
+- **GTK axioms**, each with a probe, a sample and a ledger row. A118–A120
+  are applied under those ids; the revision's fourth takes the next free id
+  at apply time (provisionally A121, design R1).
   - A118: on a mapped `GtkListView`, a removal destroys the row widgets bound
     to the removed items inside `items-changed`, and creates fresh widgets for
     the rows that enter the band. Unclaimed widgets are never reused for other
@@ -163,6 +162,10 @@ times later than `main`. The revision therefore adds, beside what follows:
     generic widget vtable exposes its three class actions).
   - A120: a CSS rule on a class of the expander overrides the `:checked`
     arrow without changing the row's state.
+  - A121 (provisional): `GtkTreeListModel` keeps no `GtkTreeListRow` for a
+    node nothing references, so `get_item` hands out a new row object
+    without the object data and `notify::expanded` handler of the one that
+    died (design R4).
 - **Records corrected.** A91's row stops claiming the collapse's cost and
   keeps the node-teardown share it measured. BL's exception text in
   `docs/next/long-line-documents.md` and the archived design is annotated with
@@ -207,12 +210,9 @@ times later than `main`. The revision therefore adds, beside what follows:
   LushText-owned route, no longer freezes the sidebar for 2–5 frames. The arrow flips in the first frame.
   The children then disappear in bands of at most
   `SIDEBAR_REALIZED_ROWS_PER_FRAME` rows per frame while the rows below move
-  up. At 32 rows per frame, a 256-entry directory with rows after it is fully
-  collapsed in about 8 frames (67 ms at 120 Hz, 133 ms at 60 Hz). At 16 rows
-  per frame it takes about 16 frames. A 131,072-entry one takes about 8 frames
-  more for its unbound rows, which need no frame each. This is slower to
-  finish than `main`'s frozen collapse (about 80 ms for the former), but every
-  frame in between is drawn and input is handled.
+  up, every frame drawn and input handled throughout. *(Stage 1's estimate
+  here, a finish slower than `main`'s, is superseded by the revision's
+  completion bar below.)*
 - Selection or keyboard focus on a child of a collapsing directory moves to
   the directory row as the collapse starts, on the direct path too. On `main`
   it lands wherever `GtkSingleSelection` puts it once the child is gone.
@@ -258,7 +258,7 @@ None.
   - `ui/sidebar/reveal_execution.rs`, `reorder_execution.rs` and `policy.rs`
     (the step policy and its Kani proofs).
   - `ui/sidebar/evidence.rs` and the application CSS (the collapsing arrow).
-- **GTK Lush:** `crates/gtk-lush/axioms/` gets three probes, catalogue
+- **GTK Lush:** `crates/gtk-lush/axioms/` gets four probes, catalogue
   entries and samples, run by the adoption lab's `axiom_probes`.
 - **Tests:** failing-first widget tests in
   `crates/lushtext/tests/widget/workspace_tree_virtualization.rs` (shard

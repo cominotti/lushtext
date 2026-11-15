@@ -4402,8 +4402,7 @@ review", "Implementation decisions"); evidence in
     and 16 fit `B_SETTLE_US` but finish 2–4× later than `main` (400:256:
     413 / 203 ms against 93–121 ms). The revision adds a completion bar
     (no later than `main` plus two frames, or 100 ms where `main` is faster),
-    lighter rows (decorations on demand), the first step in the input
-    dispatch, destroy-only units, unbound
+    lighter rows (decorations on demand), destroy-only units, unbound
     removal between frames without LushText's per-row bookkeeping, a
     bottom-up order for several collapses, and the expansion cap (the
     expansion profile is row creation and CSS validation). `main`'s
@@ -4415,6 +4414,11 @@ review", "Implementation decisions"); evidence in
     now A118–A120 (`main` took A113; A115–A117 are held by
     `quiet-headless-session-services`). Still not merged; the final verdict
     campaign is queued as not runnable until the implementation lands.
+    The revision's review (design R8) rejected running the first step in
+    the input dispatch (the first frame already runs it, 17–42 µs after the
+    input), corrected the completion table's 400:64 bar, added the watch
+    contribution to the intent fix, and settled the expansion cap against
+    tall viewports.
   - *What `stop-expander-bind-time-child-scans` must build on.* Its proposal
     says `row_factory.rs` is unchanged; this change makes that false. Build
     on: `collapse_directory` and `expand_directory`

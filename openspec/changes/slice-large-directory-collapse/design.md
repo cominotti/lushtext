@@ -502,7 +502,9 @@ For each step, the policy (D9) picks one removal:
      widgets a unit creates are therefore styled in that same frame, and two
      units never share a frame. Unbound chunks create no widget (A118), so a
      step that takes only chunks needs no frame of its own. They still run
-     on ticks, which keeps one source.
+     on ticks, which keeps one source. *Superseded by D19 (R5):* unbound
+     chunks run from a `G_PRIORITY_DEFAULT_IDLE` source between frames, and
+     the tick takes bound units only.
    - **One unit per frame clock, not per section.** The sections of a window
      share its frame clock. A window-wide token admits at most one bound unit
      per frame across every section's collapse (D7).
@@ -541,7 +543,9 @@ or realizes rows when rows before the band are removed: those rows go last,
 as in this design's first draft, and the probe records why.
 
 *Rejected.*
-- **Lighter rows alone.** Fewer widgets and CSS nodes per row would cut each
+- **Lighter rows alone.** *(Still rejected as the whole fix; R5's D17 takes
+  lighter rows as margin inside each unit frame, and R2 replaces the per-row
+  figures below with 0.45–0.6 ms a row replaced and styled, quiet.)* Fewer widgets and CSS nodes per row would cut each
   replacement, but about 200 replacements plus their styling cannot fit
   8 ms. At about 190 µs per replacement in the call and about 185 µs per new
   row in the next frame's styling (400:256, both under load), a reduction of
@@ -606,9 +610,9 @@ residuals:
 
 ### D6. Showing the intent in the input dispatch
 
-*Revised (R5, D21):* after the intent below, the input dispatch also runs
-the first step, so the work starts without waiting a frame. The stage 1 text
-follows.
+*Reviewed (R5, D21):* the revision's proposal to run the first step in the
+input dispatch is rejected (D21): the first frame's tick already runs the
+first step, with no frame lost. The stage 1 text below stands.
 
 The input dispatch does no row work. It:
 - adds `lushtext-collapsing` to the row's `GtkTreeExpander`, whose CSS shows
@@ -1220,7 +1224,9 @@ merge commit `cb637ceb` moved this change's axioms to **A118** (row-widget
 churn), **A119** (the expander's disclosure routes) and **A120** (the
 collapsing arrow) everywhere, and the samples of A113 and A118–A120 hold on
 GNOME 51 after the merge (D13). A114 is left free. The new axiom of R4 takes
-the next free id at apply time (provisionally A121).
+the next free id at apply time (provisionally A121). Being a single id, it
+counts the gap: it is A114 if no branch holds A114 by then, and every
+artifact naming A121 is renamed with it.
 
 ### R2. Attribution: the unit is not the lever, the per-row cost is
 
@@ -1356,7 +1362,7 @@ collapsed right after the call), and the instrument records it.
 at 400:4,096 and up, in the header case and in every 131,072-entry case.
 
 **Can the revised mechanism meet it?** In frames of 16.7 ms, after R5's
-D18, D19, D21 and the bottom-up order, with a unit of 32 rows where rows enter
+D18, D19 and the bottom-up order, with a unit of 32 rows where rows enter
 the band and a destroy-only unit of 64 where none do, the band of about 207
 rows needing `ceil(175 / unit) + 1` frames (the last for the direct collapse
 of at most 32 rows), and the unbound rows taking whatever wall time D19
@@ -1367,7 +1373,7 @@ leaves them:
 | 0:256 | 23 ms | 100 ms | 6 | 4 | 2 |
 | 0:4,096 | 21 ms | 100 ms | 6 | 4 + unbound (under 1) | 1 |
 | 0:131,072 | 30 ms | 100 ms | 6 | 4 + unbound (32 ms: 2) | 0 |
-| 400:64 | 37 ms | 70 ms | 4 | 2 | 2 |
+| 400:64 | 37 ms | 100 ms | 6 | 2 | 4 |
 | 400:256 | 121 ms | 154 ms | 9 | 7 | 2 |
 | 400:4,096 | 104 ms | 137 ms | 8 | 7 + unbound (under 1) | 0–1 |
 | 400:16,385 | 106 ms | 139 ms | 8 | 7 + unbound (under 1) | 0–1 |
@@ -1375,8 +1381,9 @@ leaves them:
 | header, two roots | 115 ms | 148 ms | 8 | about 5 (both roots' unbound rows, then destroy-only) | 3 |
 
 So the bar is reachable only if every unit frame fits 16.7 ms (the frame
-count is the completion), the first unit runs in the input dispatch (D21),
-and D19 removes 131,072 unbound rows within about two frames. With rows
+count is the completion), the first unit runs in the first frame (it does
+today: the first unit frame starts 17–42 µs after the input, D21), and D19
+removes 131,072 unbound rows within about two frames. With rows
 after the directory there is no slack for a smaller unit, and lighter rows
 (D17) buy margin inside each frame, not fewer frames. Task 10.7 re-derives
 this table from its measured costs before choosing the constants, and if any
@@ -1420,7 +1427,17 @@ row object a widget shows has it. The two entry points record the intent
 themselves, on every path (the sliced collapse already does): the direct
 collapse prunes the subtree from `expanded_paths` and releases its retained
 stores; the expansion inserts the path and retains the shown store; both
-are idempotent with the hook. A new axiom (provisionally A121, task 2.6)
+are idempotent with the hook. The hook has a second duty the entry points
+take over too: it refreshes the row's own workspace-watch contribution
+(`refresh_workspace_watch_row`, `watch.rs`), which for a non-root directory
+depends on `is_expanded()` (`watch_contribution`). The model's
+`items-changed` mirror removes the children's contributions but not the
+row's own, so a non-root directory collapsed through a fresh row object (a
+reveal's failure terminal, the restore, the sliced path's final
+`set_expanded(false)` on a record whose row object no widget showed) would
+stay watched. Both entry points therefore refresh the row's contribution
+after GTK's transition, on every path; roots are watched at any depth-0
+state, so the header case does not depend on it. A new axiom (provisionally A121, task 2.6)
 records that `GtkTreeListModel` hands out a new `GtkTreeListRow` for a node
 whose previous row object died, without its object data or handlers.
 Failing-first test: `test_the_folder_header_collapses_every_root`, two roots,
@@ -1483,19 +1500,34 @@ The order and the owned routes of D4–D7 stay. What changes:
   already collapsed (destroy-only, D18), instead of creating widgets for the
   next root's children only to remove them. The one-unit-per-frame token is
   unchanged.
-- **D21 (new). The input dispatch takes the first step.** Waiting for the
-  first tick costs a frame that `main` never pays. The input dispatch
-  therefore runs the first step itself after showing the intent: unbound
-  chunks within the turn slice, or one bound unit (about 5.5 ms of destroy
-  and create for 32 rows in R2's profile, within `B_INTERACT_US`), whose
-  rows are styled in the first frame together with the arrow. D6's "the
-  input dispatch does no row work" is revised accordingly; its first-frame
-  guarantee holds, because the unit's styling is within that frame's budget.
+- **D21 (considered at the revision, rejected at its review). The input
+  dispatch does not take the first step; the first frame does, as today.**
+  The revision proposed running the first step inside the input dispatch on
+  the premise that waiting for the first tick costs a frame `main` never
+  pays. The attribution rounds refute the premise: in every sliced case of
+  `rev/attr/slc-rev-u{8,16,32}-ng.log` whose first unit frame was over
+  8 ms, that frame starts 17–42 µs after the input dispatch (for example
+  400:256 at unit 32: 18, 23 and 42 µs), so the tick the input arms already
+  runs in the first frame, the same frame that draws `main`'s collapse.
+  Moving the unit into the input dispatch therefore saves no frame. It would
+  put 6–9 ms of row churn (39 % of a 15–22 ms unit frame, R2) into the
+  input dispatch against `B_INTERACT_US`, and the first frame's own tick
+  would take a second unit unless the token were marked, which is the
+  stage 4 failure (two units styled in one frame). D6 stands as written:
+  the input dispatch does no row work, and the first step runs from the
+  first frame's tick. Task 10.9 keeps that as a guard test.
 - **D10, decided: cap the expansion.** The attribution (R2) puts the
   over-budget expansion dispatches in creating and styling about 200 row
   widgets, so a load's batches bring at most `SIDEBAR_REALIZED_ROWS_PER_FRAME`
-  rows into the band per frame (task 6.1), with the first batch covering the
-  viewport so the rows the user sees appear in the first frame, as today.
+  rows into the band per frame (task 6.1). The first batch is that unit
+  (BL's `FIRST_BATCH_ROWS` is already 32), which covers the viewport at the
+  verdict window's height, so the rows the user sees appear in the first
+  frame there, as today. *Decided at review:* in a viewport taller than the
+  unit the cap still holds, and the rest of the visible rows fill top-down
+  over the next frames, one unit a frame (about 17 ms for each further 32
+  rows, against `main`'s single 40–60 ms frozen frame before any row shows).
+  Covering a tall viewport in one batch would bring that many rows into one
+  frame, which is the cost the cap exists to bound.
   Expansion is pre-existing over budget on `main` and the branch alike; it is
   in scope under `.agents/rules/preexisting-blockers.md`. The probe-scan
   publication stays D12's residual.
@@ -1596,18 +1628,60 @@ its bind-time re-application of the collapse projection
 bind of R4; and `collapse_blocks_readiness` inside
 `refresh_blocks_readiness`. Recorded in `docs/next/long-line-documents.md`.
 
+### R8. Review of the revision (2026-11-15)
+
+An independent review of R1–R7 against the code, the attribution logs and
+the rules. It found the change sound and its stop conditions honest, and
+corrected, in place:
+
+1. **D21 rejected.** Its premise (a frame lost waiting for the first tick)
+   is refuted by `rev/attr/`: the first unit frame starts 17–42 µs after
+   the input. The spec scenario is now "The first frame takes the first
+   step", and task 10.9 a guard test.
+2. **R3's 400:64 row** applied `main + 33.3 ms` (70 ms) where the bar is
+   `max(…, 100 ms)`: 100 ms, 6 frames, slack 4.
+3. **R4's fix missed the hook's second duty**, refreshing the row's own
+   watch contribution; the entry points take it over (task 10.5, with a
+   non-root case in its test; the spec scenario says so).
+4. **The expansion cap and "the viewport in the first frame"** contradicted
+   each other for a viewport taller than the unit. Decided for the cap
+   (D10 in R5, task 6.1, spec scenario).
+5. **Stale stage 1 and stage 3 text** that the revision contradicts is
+   marked superseded: the proposal's "slower to finish than `main`", D4's
+   "unbound chunks still run on ticks" and its lighter-rows figures, and the
+   risk that a collapse finishes later than `main`'s.
+6. **The proposal's axiom list** gains the fourth axiom, and R1 says a
+   single new id counts the A114 gap.
+7. **Task order across groups** is stated in `tasks.md`, since the group
+   numbers predate the revision: 2.6 first, the landing commit 7.7 after
+   every visual-sensitive edit and its smokes, the verdict campaign last.
+8. **D17's gain is recorded as a hypothesis** (Risks): the decorations are
+   invisible in most rows on `main`, so their share of CSS validation is not
+   separated by the profile; task 10.4's acceptance round decides.
+9. **Task 10.7** also measures the capped expansion, which the same unit
+   governs, and reads an unbound chunk's budget as its whole turn.
+
 ## Risks / Trade-offs
 
 - **Lighter rows touch every row** (D17). The reorder drag, the Focus Folder
   button and the drop surfaces are created on demand, so their tests, the
   accessibility smoke and the visual smokes guard them; if the acceptance
   round of task 10.4 misses its figure, the change goes back to design.
+  The gain is a hypothesis, not a profile: these decorations are
+  `visible = false` in most rows on `main` (`row_factory.rs`), and the
+  profile does not separate their share of the CSS validation (26 % of a unit
+  frame) from that of the visible widgets, so on-demand creation may cut
+  creation, teardown and AT-context work (buttons 5 %, images 4 %, part of
+  the overlay subtrees' 19 %) more than styling. Task 10.4's round is what
+  decides it.
 - **The completion bar is new and tight at 400 rows after** (R3): seven
   packed frames are `main`'s frozen time, and R3's table leaves no slack at
   400:4,096 and up or at 0:131,072. If task 10.7's round shows negative
   slack anywhere, the change returns to design.
 
-- **The collapse finishes later than `main`'s frozen one** (D2): stage 1
+- *Superseded by R3's completion bar, which no longer accepts a collapse
+  that finishes later than `main`'s plus two frames; kept as the stage 3
+  record.* **The collapse finishes later than `main`'s frozen one** (D2): stage 1
   estimated about 130 ms at 256 entries with rows after the directory and
   about 220 ms at 131,072; the quiet campaign measured 123–135 ms (`main`
   57–73 ms) and 0.83–1.11 s (`main` 0.44–0.50 s); that the latter is
