@@ -12,6 +12,30 @@ slot-2 compiled `lushtext-core` 6 times and `lushtext` 5 times, slot-3 4 and
 2 times (the baseline plus one per mutant). No dependency crate was compiled,
 and each unmutated baseline built in 12-13 s against main's cold 38-40 s.
 
+## 3.6 An interrupted run heals its slot
+
+`lane-3.6.sh` in the handoff dir, 2026-11-15, one slot
+(`MUTANTS_RE=chunked_threshold_with`, `MUTANTS_MEMORY_MAX=16G`):
+
+1. Started `scripts/heavy.sh --mem none -- make mutants-smoke
+   MUTANTS_LOCAL_JOBS=1` and polled until slot-1's
+   `crates/lushtext-core/src/model/document_scale.rs` differed from the
+   checkout's: the first mutant was applied (`match (language, markdown_cap)
+   {...}` replaced by `None /* ~ changed by cargo-mutants ~ */`).
+2. Sent SIGTERM to `heavy.sh`. It forwarded the signal; `run-mutants.sh`
+   printed `interrupted; the slots heal on their next sync (the checkout was
+   never mutated)` and the run exited 143. The slot file was still mutated:
+   cargo-mutants did not restore it.
+3. Reran the same command. The slot's sync line was `synced 1 written, ...
+   3222 unchanged`, so the mutated file was rewritten from the checkout before
+   cargo-mutants started; the unmutated baseline passed (10 s build + 47 s
+   test) and all 6 mutants were caught (exit 0). Afterwards the slot file
+   matched the checkout, and no `stale owner record` was reported: the
+   interrupted run had removed its own record.
+4. `git status --porcelain` of the checkout was identical before, during and
+   after both runs, except for one checkbox in `tasks.md` edited by hand while
+   the case ran; `document_scale.rs` was never modified.
+
 ## 8.3 Docs-only and code commits
 
 Both commits went through `scripts/heavy.sh --mem none -- git commit -F ...`.

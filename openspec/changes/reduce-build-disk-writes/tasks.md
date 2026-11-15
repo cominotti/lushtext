@@ -160,7 +160,7 @@ Rules for every task:
 - [x] 3.5 Lane case: run `make mutants-smoke` twice in a row on warm slots and
   confirm from the second run's cargo output that no dependency crate was
   compiled (the warm-slot scenario).
-- [ ] 3.6 Lane case: confirm the slot healing scenario end to end. Interrupt a
+- [x] 3.6 Lane case: confirm the slot healing scenario end to end. Interrupt a
   `make mutants-smoke` (SIGTERM through `heavy.sh`) while a mutant is applied,
   rerun, and confirm that the slot file matches the checkout before testing
   resumes and that the checkout was never modified (`git status` clean
@@ -319,7 +319,7 @@ Rules for every task:
   `.githooks/pre-commit`, which now skips Clippy on docs-only commits) and
   `README.md`, if it describes the mutation commands or the hook. Keep the
   Rules Index entry for `build.md` in sync.
-- [ ] 10.5 Run `make check-agent-docs` and fix whatever it reports.
+- [x] 10.5 Run `make check-agent-docs` and fix whatever it reports.
 
 ## 11. Verification
 
