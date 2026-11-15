@@ -412,8 +412,8 @@ rationale = "`ShellReconciliation::compact_surface` is `Option<Option<SecondaryS
 code = "clippy::format_collect"
 classification = "accepted_advisory"
 path_globs = ["crates/gtk-lush/axioms/src/probes/*.rs"]
-max_count = 5
-rationale = "GTK axiom probes build small synthetic text fixtures once per probe, where iterator string assembly is clearer than a formatter type (a31, a32, a34, a59, a72; raised from 3 by rust-1-100-adoption after a59 and a72 landed unclassified)."
+max_count = 7
+rationale = "GTK axiom probes build small synthetic text fixtures once per probe, where iterator string assembly is clearer than a formatter type (a31, a32, a34, a59, a72, and two in a112; raised from 3 by rust-1-100-adoption after a59, a72 and a112 landed unclassified)."
 
 [[rules]]
 code = "clippy::float_cmp"
@@ -470,7 +470,8 @@ code = "clippy::used_underscore_binding"
 classification = "accepted_advisory"
 path_globs = [
   "crates/gtk-lush/axioms/src/probes/a107.rs",
+  "crates/gtk-lush/axioms/src/probes/a112.rs",
   "crates/gtk-lush/axioms/src/probes/a44.rs",
 ]
-max_count = 3
+max_count = 4
 rationale = "Each `_…_shown` binding is a presented-window guard the probe keeps alive across a measurement and then drops explicitly, so the measurement provably ran while it was shown."
