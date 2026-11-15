@@ -1,0 +1,54 @@
+export repo contents: config extensions objects refs state summaries summary summary.idx tmp 
+   install rc=0 
+-- a: fresh install from A
+   remote: lushtext-origin file://$S/repoA no-enumerate,no-gpg-verify
+   deploy: org.test.lushtext/x86_64/master	lushtext-origin
+   remote-ls --updates: OK
+   install rc=0 
+-- b: reinstall from B (different URL)
+   remote: lushtext1-origin file://$S/repoB no-enumerate,no-gpg-verify
+   deploy: org.test.lushtext/x86_64/master	lushtext1-origin
+   remote-ls --updates: OK
+-- c: repo B deleted (the 2026-11-14 bug)
+   remote: lushtext1-origin file://$S/repoB no-enumerate,no-gpg-verify
+   deploy: org.test.lushtext/x86_64/master	lushtext1-origin
+   remote-ls --updates: FAIL: error: Unable to load summary from remote lushtext1-origin: Remote listing for lushtext1-origin not available; server has no summary file. Check the URL passed to remote-add was valid.
+-- c2: dangling origin disabled (the maintainer machine now)
+   remote: lushtext1-origin file://$S/repoB disabled,no-enumerate,no-gpg-verify
+   deploy: org.test.lushtext/x86_64/master	lushtext1-origin
+   remote-ls --updates: OK
+   install rc=0 
+-- d: install from A with the dangling disabled origin present
+   remote: lushtext-origin file://$S/repoA no-enumerate,no-gpg-verify
+   deploy: org.test.lushtext/x86_64/master	lushtext-origin
+   remote-ls --updates: OK
+   install rc=0 F: Warning: Treating remote fetch error as non-fatal since runtime/org.test.lushtext/x86_64/master is already installed: No such ref 'runtime/org.test.lushtext/x86_64/master' in remote lushtext-origin
+-- e: origin disabled, same URL, new commit in A
+   remote: lushtext-origin file://$S/repoA disabled,no-enumerate,no-gpg-verify
+   deploy: org.test.lushtext/x86_64/master	lushtext-origin
+   remote-ls --updates: OK
+   deployed != repo head: STALE although install exited 0
+   install rc=0 
+-- f: re-enabled first, same URL
+   remote: lushtext-origin file://$S/repoA no-enumerate,no-gpg-verify
+   deploy: org.test.lushtext/x86_64/master	lushtext-origin
+   remote-ls --updates: OK
+   deployed == repo head
+   install rc=0 
+-- g: repointed to B first, install from B
+   remote: lushtext-origin file://$S/repoB no-enumerate,no-gpg-verify
+   deploy: org.test.lushtext/x86_64/master	lushtext-origin
+   remote-ls --updates: OK
+   install rc=0 
+-- h: same repo B through a symlinked path spelling
+   remote: lushtext1-origin file://$S.link/repoB no-enumerate,no-gpg-verify
+   deploy: org.test.lushtext/x86_64/master	lushtext1-origin
+   remote-ls --updates: OK
+-- i: prune: commits before 4
+   Deleted 12 objects, 2.1 kB freed
+   commits after 1
+   install rc=0 
+-- i: install after prune
+   remote: lushtext-origin file://$S/repoB no-enumerate,no-gpg-verify
+   deploy: org.test.lushtext/x86_64/master	lushtext-origin
+   remote-ls --updates: OK
