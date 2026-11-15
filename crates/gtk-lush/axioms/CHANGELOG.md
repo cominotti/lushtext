@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- A112, A113 and A114 probes and samples (`slice-large-directory-collapse`):
+- A113, A114 and A115 probes and samples (`slice-large-directory-collapse`):
   on a mapped tree list, removing bound rows replaces their row widgets
   inside `items-changed` and never reuses one, while removing unbound rows
   after or before the band changes none and leaves the band in place;
@@ -13,9 +13,9 @@
   ancestor's capture-phase `Stop` prevents them, its parameterless class actions
   resolve before an inserted group, and it keeps the expander's accessible
   `expanded` state only at bind; a class rule draws a checked arrow as the
-  collapsed one in both directions. Inside an SDK sandbox A113 checks its
+  collapsed one in both directions. Inside an SDK sandbox A114 checks its
   input-free half and skips only its input half. New
-  fixtures `fixtures::a112` to `fixtures::a114`.
+  fixtures `fixtures::a113` to `fixtures::a115`.
 - A108, A109, A110 and A111 probes and samples (`lighten-notes-browser-rows`):
   a label list's frame after a retext is mostly layout and grows with the
   realized rows, where a text-independent measure does not; a

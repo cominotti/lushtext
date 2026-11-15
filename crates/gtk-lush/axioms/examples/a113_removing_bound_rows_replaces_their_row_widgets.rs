@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Sample for A112: a directory row expanded over 256 entries with 400 rows
+//! Sample for A113: a directory row expanded over 256 entries with 400 rows
 //! after it. "Remove 16 bound" removes the first 16 children (their row
 //! widgets are destroyed, and as many created for the rows moving into the
 //! band); "Remove unbound after" removes the children after the band (no row
@@ -9,7 +9,7 @@
 mod support;
 
 use gtk_lush_axioms::AxiomId;
-use gtk_lush_axioms::fixtures::a112::{AFTER_ROWS, SMALL_CHILDREN, tree_fixture};
+use gtk_lush_axioms::fixtures::a113::{AFTER_ROWS, SMALL_CHILDREN, tree_fixture};
 use gtk4::prelude::*;
 
 fn build(ui: &support::SampleUi) {
@@ -48,5 +48,5 @@ fn build(ui: &support::SampleUi) {
 }
 
 fn main() -> std::process::ExitCode {
-    support::run(AxiomId::new(112), build)
+    support::run(AxiomId::new(113), build)
 }

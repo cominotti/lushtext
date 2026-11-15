@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Sample for A114: an expanded directory row. "Collapsing class" adds the
+//! Sample for A115: an expanded directory row. "Collapsing class" adds the
 //! class the application rule targets, and its arrow then draws collapsed
 //! while the row stays expanded; "Direction" switches LTR and RTL.
 
 mod support;
 
 use gtk_lush_axioms::AxiomId;
-use gtk_lush_axioms::fixtures::a114::{COLLAPSING_CLASS, COLLAPSING_CSS, tree_fixture};
+use gtk_lush_axioms::fixtures::a115::{COLLAPSING_CLASS, COLLAPSING_CSS, tree_fixture};
 use gtk4::prelude::*;
 
 fn build(ui: &support::SampleUi) {
@@ -60,5 +60,5 @@ fn build(ui: &support::SampleUi) {
 }
 
 fn main() -> std::process::ExitCode {
-    support::run(AxiomId::new(114), build)
+    support::run(AxiomId::new(115), build)
 }

@@ -1825,8 +1825,8 @@ const CATALOGUE: &[Axiom] = &[
         probe: Some(probes::probe_a111),
     },
     Axiom {
-        id: AxiomId::new(112),
-        name: "a112_removing_bound_rows_replaces_their_row_widgets",
+        id: AxiomId::new(113),
+        name: "a113_removing_bound_rows_replaces_their_row_widgets",
         statement: "On a mapped GtkListView over a GtkTreeListModel, removing rows a list item is \
                     bound to destroys those list items inside the removal's items-changed and \
                     creates fresh ones for the rows entering the band in the same call, never \
@@ -1839,11 +1839,11 @@ const CATALOGUE: &[Axiom] = &[
         ],
         slow: false,
         version_bound: None,
-        probe: Some(probes::probe_a112),
+        probe: Some(probes::probe_a113),
     },
     Axiom {
-        id: AxiomId::new(113),
-        name: "a113_a_tree_expander_disclosure_routes_can_be_owned",
+        id: AxiomId::new(114),
+        name: "a114_a_tree_expander_disclosure_routes_can_be_owned",
         statement: "GtkTreeExpander's toggle GestureClick lives on its re-created expander icon, \
                     not on the expander, and a capture-phase gesture on the expander claiming \
                     the release inside the icon denies it without changing the press; its class \
@@ -1863,11 +1863,11 @@ const CATALOGUE: &[Axiom] = &[
         ],
         slow: false,
         version_bound: None,
-        probe: Some(probes::probe_a113),
+        probe: Some(probes::probe_a114),
     },
     Axiom {
-        id: AxiomId::new(114),
-        name: "a114_a_class_rule_draws_a_checked_expander_collapsed",
+        id: AxiomId::new(115),
+        name: "a115_a_class_rule_draws_a_checked_expander_collapsed",
         statement: "An application CSS rule on a class of GtkTreeExpander draws the arrow of its \
                     expander:checked icon exactly as the collapsed arrow, in LTR and RTL, under \
                     the shipped style, while the row stays expanded and the icon checked",
@@ -1877,7 +1877,7 @@ const CATALOGUE: &[Axiom] = &[
         ],
         slow: false,
         version_bound: None,
-        probe: Some(probes::probe_a114),
+        probe: Some(probes::probe_a115),
     },
 ];
 #[cfg(test)]

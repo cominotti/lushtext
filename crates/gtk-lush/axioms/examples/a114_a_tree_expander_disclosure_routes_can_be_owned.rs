@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Sample for A113: a tree whose rows are built like LushText's. Click an
+//! Sample for A114: a tree whose rows are built like LushText's. Click an
 //! arrow (GTK toggles the row), press `+`/`-` with the row focused (nothing)
 //! and after Tab has moved the focus onto the expander (the row expands or
 //! collapses), and
@@ -10,7 +10,7 @@
 mod support;
 
 use gtk_lush_axioms::AxiomId;
-use gtk_lush_axioms::fixtures::a113::{
+use gtk_lush_axioms::fixtures::a114::{
     CLASS_ACTIONS, click_gestures, disclosure_fixture, expander_icon,
 };
 
@@ -41,5 +41,5 @@ fn build(ui: &support::SampleUi) {
 }
 
 fn main() -> std::process::ExitCode {
-    support::run(AxiomId::new(113), build)
+    support::run(AxiomId::new(114), build)
 }
