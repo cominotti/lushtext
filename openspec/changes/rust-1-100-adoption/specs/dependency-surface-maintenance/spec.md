@@ -1,11 +1,20 @@
 ## ADDED Requirements
 
 ### Requirement: Dependency refreshes observe a publish-age cooldown and the MSRV
-A whole-graph dependency refresh SHALL run through one repository command. That command SHALL resolve only releases at least seven days old, and only releases whose `rust-version` the MSRV satisfies where one exists. It SHALL set both policies through environment variables, never `.cargo/config.toml`. Afterwards it SHALL regenerate `workspace-hack` and `cargo-sources.json`, check the workspace on the pinned toolchain, and run the cargo-deny bans check.
+A whole-graph dependency refresh SHALL run through one repository command. That command SHALL resolve only releases at least seven days old, and only releases whose `rust-version` the MSRV satisfies where one exists. It SHALL set both policies through environment variables, never `.cargo/config.toml`. Afterwards it SHALL regenerate `workspace-hack` and `cargo-sources.json`, check the workspace on the pinned toolchain, and run the whole cargo-deny policy.
 
 #### Scenario: A cooldown refresh skips too-new releases
 - **WHEN** the refresh command runs and a dependency has a release younger than seven days
 - **THEN** the refreshed `Cargo.lock` keeps the newest older release
+
+#### Scenario: The refresh command completes before any exception is applied
+- **WHEN** a change introduces or first applies the refresh command
+- **THEN** the command runs once to completion, through `cargo deny check advisories bans sources licenses`, before the change applies any recorded cooldown exception
+
+#### Scenario: A refresh that brings a new licence or advisory stops
+- **WHEN** the refreshed graph fails cargo-deny's licence, advisory or source check
+- **THEN** the refresh command exits with a failure
+- **AND** the change either adds a licence compatible with a GPL-3.0-or-later application to the allow list, with a reason naming the crate that brought it, or holds that crate with a recorded `--precise`, or upgrades past the advisory
 
 #### Scenario: A refresh never selects a release above the MSRV
 - **WHEN** the refresh command runs with a Cargo newer than the pinned toolchain
