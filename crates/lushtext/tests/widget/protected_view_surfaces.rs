@@ -542,10 +542,38 @@ fn test_a_protected_head_stays_under_the_paragraph_wrap_gate() {
 
 #[test]
 fn test_a_protected_periodic_capture_reads_the_source_not_the_buffer() {
+    assert_protected_periodic_capture_reads_the_source(0);
+}
+
+/// `restore-main-ci` D4, the CI flake of the test above (run 43627976239, "not
+/// met within 30s" on the snapshot wait). The edit that makes the document
+/// protected also starts the capture of its pre-edit baseline, which holds the
+/// one process-wide automatic-capture admission on a worker. A periodic
+/// capture that runs meanwhile finds the admission taken and reschedules a
+/// whole interval (five minutes) later, so on a loaded runner the snapshot
+/// never came. A slow baseline makes the race deterministic; the test waits
+/// for the admission the capture needs.
+#[test]
+fn test_a_protected_periodic_capture_after_a_slow_baseline_reads_the_source() {
+    assert_protected_periodic_capture_reads_the_source(3_000);
+}
+
+/// Resets the baseline-capture delay a test set, on every exit path.
+struct BaselineDelayReset;
+
+impl Drop for BaselineDelayReset {
+    fn drop(&mut self) {
+        lushtext_core::ui::window::set_local_history_baseline_delay_for_test(0);
+    }
+}
+
+fn assert_protected_periodic_capture_reads_the_source(baseline_delay_ms: u64) {
     // An edit-growth entry is modified, so periodic local history captures
     // it; the capture must come from the text source on the worker (no
     // chunked GTK snapshot of the protected buffer, ledger A66).
     ensure_gtk_init();
+    let _reset = BaselineDelayReset;
+    lushtext_core::ui::window::set_local_history_baseline_delay_for_test(baseline_delay_ms);
     let data_dir = crate::common::isolated_data_dir();
     let document = data_dir.path().join("periodic-protected.txt");
     fixture::write_text(&document, "first line\nsecond line\n");
@@ -563,6 +591,11 @@ fn test_a_protected_periodic_capture_reads_the_source_not_the_buffer() {
     let expected = editor_text(&page);
     use lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Periodic;
 
+    // The periodic capture needs the automatic-capture admission, which the
+    // edit's baseline capture may still hold.
+    wait_until(Duration::from_secs(30), || {
+        !page.local_history_evidence().automatic_capture_inflight
+    });
     page.run_local_history_periodic_capture_for_test();
     assert!(
         !page.local_history_evidence().periodic_snapshot_inflight,

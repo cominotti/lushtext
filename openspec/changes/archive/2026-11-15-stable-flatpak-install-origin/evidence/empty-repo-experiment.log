@@ -1,0 +1,6 @@
+empty repo: config extensions objects refs state summary summary.idx tmp 
+remote-ls --updates rc=0 
+update rc=0 F: Warning: Treating remote fetch error as non-fatal since runtime/org.test.lushtext/x86_64/master is already installed: No such ref 'runtime/org.test.lushtext/x86_64/master' in remote lushtext-origin
+install rc=0
+lushtext-origin	file://$S/shared/repo	no-enumerate,no-gpg-verify
+deployed == head
