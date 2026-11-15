@@ -115,6 +115,8 @@ RELEASE_NOTES_FILE="$NOTES" make release-bump TYPE=patch DRY_RUN=1
 
 The dry run does not prove the worktree is clean, because the real release checks that later. Verify cleanliness separately before the real run.
 
+To prove a change to `release.yml` itself before merge, dispatch it from the branch with `dry_run` true and an **untagged** version (for example `v0.8.4-dryrun.1`; `make release DRY_RUN=1` refuses an existing tag). The dispatch builds the dispatched commit: release metadata validates, the Flathub artifact is generated from `HEAD`, and `Release Flatpak Build` runs, while the Cominotti repository, deploy and publish jobs stay skipped. Confirm afterwards that no tag or release appeared. A dispatch with `dry_run` false is refused unless it comes from `main`.
+
 ## Real Release
 
 Real releases must run from clean `main`. Use `YES=1` only after the user has clearly asked to proceed or confirmed the release.
@@ -170,7 +172,7 @@ gh run watch <run-id> --exit-status
 
 Then re-query by exact commit, tag branch, and any recovery commit SHA, and judge the result against the skill's green standard (Non-Negotiables and Completion Standard).
 
-If any workflow is not successful, read its logs, fix the underlying issue, and rerun. If the public tag already exists and the fix is only in release tooling or workflow configuration, keep the tag immutable and dispatch the repaired workflow from the recovery ref while still checking out or otherwise resolving the public release tag. Repeat the workflow sweep after each fix until the surface is fully green or an external maintainer-controlled blocker prevents repair. When a replacement run supersedes a failed, cancelled, or timed-out run, keep both run IDs in the final report.
+If any workflow is not successful, read its logs, fix the underlying issue, and rerun. If the public tag already exists and the fix is only in release tooling or workflow configuration, keep the tag immutable and dispatch the repaired workflow from `main` once the fix is merged there: a `release.yml` dispatch that is not a dry run is refused off `main`, it builds the dispatched commit, and its Flathub artifact still resolves the public tag's commit. Prove a fix to `release.yml` first with a dry-run dispatch from its branch (see Dry Run). Repeat the workflow sweep after each fix until the surface is fully green or an external maintainer-controlled blocker prevents repair. When a replacement run supersedes a failed, cancelled, or timed-out run, keep both run IDs in the final report.
 
 Do not answer "CI is green" or "release complete" from local validation, a successful push, or a single successful workflow. Always name the exact SHA, workflow names, run IDs, and conclusions you checked.
 
