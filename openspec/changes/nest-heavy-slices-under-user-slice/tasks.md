@@ -260,13 +260,13 @@ other's scopes.
 
 ## 4. Documentation (documentation.md)
 
-- [ ] 4.1 `.agents/rules/build.md`:
+- [x] 4.1 `.agents/rules/build.md`:
   - the Kani "Memory" bullet: the new slice name and its nesting, the inherited
     CPU policy, the placement check, and the oomd risk from design D7;
   - the `make responsiveness-smoke` bullet: under `measure.sh` the lane runs on
     the reference CPU set and refuses a mismatched one; outside it, the existing
     cap.
-- [ ] 4.2 `.agents/rules/verification-runs.md`:
+- [x] 4.2 `.agents/rules/verification-runs.md`:
   - "Shared-machine agent work": the heavy-work bullet's CPU affinity wording
     (inherited, intersected with the slice's cpuset; the kernel refuses CPUs
     outside it; a self-imposed mask only narrows it), and one sentence that,
@@ -280,19 +280,19 @@ other's scopes.
     is not comparable with the reference and must be labelled with its CPU set
     wherever it is quoted. Interleaved sides must share one set. During a game,
     wait rather than override.
-- [ ] 4.3 `docs/runbooks/responsiveness-lane.md`: the affinity paragraph (the
+- [x] 4.3 `docs/runbooks/responsiveness-lane.md`: the affinity paragraph (the
   reference under `measure.sh`, the labels, the mixed merge), and the
   `lane-affinity` subcommand.
-- [ ] 4.4 `Makefile`: the comment at the mutants block (the new slice name),
+- [x] 4.4 `Makefile`: the comment at the mutants block (the new slice name),
   the `check-agent-helpers` shellcheck list, and that target's comment for the
   unusable reference handed to `heavy.sh --self-test` (task 3.1). `docs/mutation-testing.md`
   ("Local Parallelism"): the new slice name.
-- [ ] 4.5 `openspec/specs/widget-test-ci-sharding/spec.md` and
+- [x] 4.5 `openspec/specs/widget-test-ci-sharding/spec.md` and
   `openspec/specs/responsiveness-measurement/spec.md` are updated by archive
   from the deltas. Check that no other live spec or rule names the old slice:
   `git grep -n "lushtext-heavy.slice\|lushtext\.slice"`, outside
   `openspec/changes/archive/` and `docs/memorials/`, which stay historical.
-- [ ] 4.6 `docs/next/long-line-documents.md`:
+- [x] 4.6 `docs/next/long-line-documents.md`:
   - add the change to the infrastructure follow-ups list beside
     `harden-flatpak-sdk-update-ci`, with its scope, the baseline figures and
     decisions, "Kani: none", and the timing evidence of task 3.6;
@@ -309,10 +309,10 @@ other's scopes.
     parallelism (raise `CARGO_BUILD_JOBS` in measured steps, with the per-job
     peak and btrfs-stall-report memory lines as evidence), and the
     maintainer's decision whether agents keep their session `taskset` pin.
-- [ ] 4.7 README, AGENTS.md and `docs/runbooks/README.md` name the wrappers but
+- [x] 4.7 README, AGENTS.md and `docs/runbooks/README.md` name the wrappers but
   neither the slice nor the reference set. Confirm that no edit is needed, or
   make it, and record which in the commit body.
-- [ ] 4.8 Commit (`docs(build): document the nested heavy slice and the
+- [x] 4.8 Commit (`docs(build): document the nested heavy slice and the
   reference CPU set`) and push.
 
 ## 5. Final gates and handoff

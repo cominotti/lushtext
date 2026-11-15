@@ -318,8 +318,22 @@ are in [`testing.md`](./testing.md). This section covers the lane.
 - **Memory.** The run executes inside a memory-capped systemd user scope
   (`scripts/with-memory-cap.sh`, `KANI_MEMORY_MAX`, default `16G`, no swap,
   each process held to 7/8 of the cap in address space), admitted into the
-  host-wide `lushtext-heavy.slice`; the wrapper's header documents admission,
-  the desktop reserve, nested in-place runs and the scope settings. Any command
+  host-wide `user-lushtext-heavy.slice`; the wrapper's header documents
+  admission, the desktop reserve, nested in-place runs and the scope settings.
+  The `user-` prefix nests that slice under the user manager's `user.slice`
+  (`user.slice/user-lushtext.slice/user-lushtext-heavy.slice`), so heavy work
+  inherits the toolboxes' CPU policy from the host's CPU tooling (CST: its
+  cpuset, `CPUWeight=30`, and the idle class on CPUs 12-23 during a game); the
+  wrapper sets no CPU property. Every scope checks its own placement before its
+  command runs (under both slices, affinity within the inner `user.slice`'s
+  effective cpuset) and exits 78 otherwise. Admission also counts the legacy
+  `lushtext-heavy.slice`, where copies of the wrapper from before the rename
+  still start scopes, and never touches it. One risk is recorded, not changed:
+  systemd-oomd's per-slice pressure kill (80% for 20 s) on the inner
+  `user.slice` now sees our scopes' pressure, and its candidates include the
+  toolbox containers; a thrashing heavy scope is normally the one killed, and
+  each scope's no-swap cap makes the kernel kill inside it first, so an oomd
+  kill of a toolbox is traced to here. Any command
   run under the wrapper sizes its own parallelism to fit the cap (`cargo -j 4`,
   at most 4 test threads), one capped heavy run per agent at a time. A run that
   hit the cap is discarded, and hitting it is a finding to fix by the fit
@@ -558,7 +572,11 @@ and skip messages; `make end-user-smoke` runs the host-supported lanes together.
   It generates synthetic fixtures only (`scripts/generate-long-line-fixtures.py`,
   seeded, written into the run's temp scope), runs with an affinity of at most
   16 CPUs taken from the inherited mask (never widened), never writes a
-  fixture, and fails on any fixture digest change. Budget overruns are results,
+  fixture, and fails on any fixture digest change. Under `scripts/measure.sh`
+  it runs on the reference CPU set measure.sh pinned and fails before any case
+  when its inherited affinity differs from it or it exceeds the cap (never
+  trimmed); it records the set and its source, and labels unpinned runs,
+  overrides and mixed merges as not comparable with reference runs. Budget overruns are results,
   not failures. The nightly `quick` tier is trend evidence only; verdicts come
   from a `full` run on the reference machine under the reference
   precondition, through `scripts/measure.sh`, recorded in
