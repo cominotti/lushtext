@@ -402,10 +402,12 @@ check-temp-scope:
 # workflow, container-build, Python or Rust code may name dbus-run-session,
 # dbus-daemon, dbus-launch, mutter, pipewire, pipewire-pulse or wireplumber
 # outside the benign contexts, copy the shared session-warning family, or let
-# the helper's quiet configuration drift. Self-tested failing-first.
+# the helper's quiet configuration drift. Self-tested failing-first, then the
+# real scan of the tracked tree, which fails on any finding.
 check-session-hygiene:
 	@echo "Checking that headless sessions start only through the session helper..."
 	./scripts/check-session-hygiene.py --self-test
+	./scripts/check-session-hygiene.py
 
 # Every LushText GSettings write and the one application settings instance
 # live in ui/settings_writes.rs (bound-window-construction-dispatch).

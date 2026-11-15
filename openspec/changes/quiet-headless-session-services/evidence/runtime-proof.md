@@ -285,3 +285,52 @@ scripts/run-portal-sandbox-smoke.sh:150: `dbus-run-session` is named in a shell 
 ```
 
 The file was then restored from its copy, and the scan went green again.
+
+## 6.5 Host evidence during one `make visual-geometry-smoke`
+
+The run went from 2026-11-15 03:36:53 to 04:01:33 (24 min 40 s, 99 cases, all
+passing, no `failure_status`). It ran on the final group 3+4 tree, commit
+`67cc12e0`. Other worktrees ran their own, unmigrated, visual and
+accessibility lanes on the same host at the same time. The host journal
+therefore cannot read zero for the window. The branch's share is
+attributed instead: a sampler recorded every `pipewire` and `wireplumber`
+process, with its `HOME`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME` and
+`XDG_RUNTIME_DIR`, once per second from 03:12 to 04:02.
+
+| Measure, in the window | Host total | This branch |
+| --- | --- | --- |
+| rtkit-daemon grants ("Successfully made thread") | 674 | **0** |
+| rtkit-daemon burst-limit denials | 424 | **0** (it made no request to deny) |
+| bluetoothd "Endpoint registered" | 2,745 | **0** (no session of the branch can reach the host system bus) |
+
+How the branch's share was attributed:
+
+- **rtkit.** The sampler saw 400 daemons from this branch, each with
+  `XDG_STATE_HOME`/`XDG_CONFIG_HOME` under
+  `<runtime>/gtk-lush-session/homes/`, and 1,363 from the other worktrees,
+  each with the real `HOME` and no private state directory. Of the 674
+  grants, 664 name a process from the other worktrees and none names one
+  of the branch's. The remaining 10 name three processes too short-lived
+  for the sampler, with the same nice -11 / RT 20 pattern as the other
+  worktrees' bare PipeWire daemons.
+- **Private system buses.** On the 99 cases' private system buses
+  (`session-hygiene/system-bus-monitor.log`) there are **0** `MakeThread*`
+  calls and **0** calls to `org.bluez`. The rest of the rtkit traffic is
+  the portal frontend's startup `Properties.Get` of
+  `org.freedesktop.RealtimeKit1` (297 calls, 3 per case) and its
+  bus-daemon lookups of the name. The private bus refuses each one ("not
+  provided by any .service files"): this is the bounded exemption of
+  design D7, and no case printed `SESSION-HYGIENE:`.
+- **Mutter** requested no realtime scheduling (0 `MakeThread*`), as at the
+  spec stage.
+- **`~/.local/state/wireplumber`.** `default-nodes` changed at 03:10:30
+  and 03:47:21. The writers were the other worktrees' WirePlumber
+  instances: a live sample at 03:10:35 showed one from
+  `scale-file-index`'s visual lane with the real `HOME` and no
+  `XDG_STATE_HOME`. Every WirePlumber this branch started wrote its state
+  under the helper's private `homes/state`, which is removed with the
+  session.
+
+The spec-stage baseline (`evidence/baseline.md`) put an unmigrated case at
+15 endpoints and 1 nice plus 3 RT grants. On the same 99 cases that is
+about 1,485 endpoints and 396 grants, against 0 for the branch.

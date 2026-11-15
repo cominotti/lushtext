@@ -86,8 +86,8 @@ Fingerprinted files (design, "Risks"): the accessibility proof covers the captur
 
 ## 5. Gate fully on
 
-- [ ] 5.1 Wire the real scan of `make check-session-hygiene` into `make check-policy`. It must now be green, and every 1.3 finding must be gone with no pragma or allowlist entry. Confirm that it fails again when one migrated site is temporarily reverted, then restore the site.
-- [ ] 5.2 Run `make check` (fmt, all-feature Clippy, `check-policy`) and `cargo check -p lushtext --bins --locked`. Commit and push.
+- [x] 5.1 Wire the real scan of `make check-session-hygiene` into `make check-policy`. It must now be green, and every 1.3 finding must be gone with no pragma or allowlist entry. Confirm that it fails again when one migrated site is temporarily reverted, then restore the site.
+- [x] 5.2 Run `make check` (fmt, all-feature Clippy, `check-policy`) and `cargo check -p lushtext --bins --locked`. Commit and push.
 
 ## 6. Verification on the final tree
 
@@ -102,7 +102,7 @@ Fingerprinted files (design, "Risks"): the accessibility proof covers the captur
   - a `cargo gtk-proof run` of one visual-geometry case.
 
   Record each status, or the host skip and its reason, in `evidence/runtime-proof.md`. Run the visual and accessibility smokes last, right before the commit (proof fingerprints; `testing.md` gate order); no fingerprinted file may change after them, in this group or later.
-- [ ] 6.5 Collect host evidence, read-only: during one `make visual-geometry-smoke` run, count rtkit-daemon grants and burst-limit lines and bluetoothd "Endpoint registered" lines with `flatpak-spawn --host journalctl -u rtkit-daemon`/`-u bluetooth --since/--until`. Compare with the same window length of an unmigrated run, using the spec-stage figures in `evidence/baseline.md` (15 endpoints and 1 nice plus 3 RT per case) or a fresh `main` run. The pass bar is zero for the branch. Also record that `~/.local/state/wireplumber` mtimes did not move during the run, and whether mutter requested rtkit (spec stage: it did not). Commit and push.
+- [x] 6.5 Collect host evidence, read-only: during one `make visual-geometry-smoke` run, count rtkit-daemon grants and burst-limit lines and bluetoothd "Endpoint registered" lines with `flatpak-spawn --host journalctl -u rtkit-daemon`/`-u bluetooth --since/--until`. Compare with the same window length of an unmigrated run, using the spec-stage figures in `evidence/baseline.md` (15 endpoints and 1 nice plus 3 RT per case) or a fresh `main` run. The pass bar is zero for the branch. Also record that `~/.local/state/wireplumber` mtimes did not move during the run, and whether mutter requested rtkit (spec stage: it did not). Commit and push.
 
 ## 7. Documentation (documentation.md)
 
