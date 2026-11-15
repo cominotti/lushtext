@@ -1187,6 +1187,33 @@ pub fn reset_vm_hwm() {
     fixture::write_text(std::path::Path::new("/proc/self/clear_refs"), "5");
 }
 
+/// Wait until the resident set stops growing: four consecutive readings
+/// 250 ms apart within 256 KiB of each other, or `budget`. A memory test
+/// calls it before `reset_vm_hwm`, so asynchronous work still running from
+/// the fixture's setup (a presented window's first frames, background scans)
+/// does not land in the measured window; how much of it lands there depends
+/// on how fast the machine is (`restore-main-ci` D4).
+pub fn wait_for_resident_quiescence(budget: std::time::Duration) {
+    const STEP: std::time::Duration = std::time::Duration::from_millis(250);
+    const TOLERANCE_KIB: u64 = 256;
+    const STABLE_READINGS: usize = 4;
+    let deadline = std::time::Instant::now() + budget;
+    let mut readings: Vec<u64> = Vec::new();
+    while std::time::Instant::now() < deadline {
+        flush_after_delay(STEP);
+        readings.push(proc_status_kib("VmRSS:"));
+        if readings.len() >= STABLE_READINGS {
+            let window = &readings[readings.len() - STABLE_READINGS..];
+            let low = window.iter().min().copied().unwrap_or(0);
+            let high = window.iter().max().copied().unwrap_or(0);
+            if high - low <= TOLERANCE_KIB {
+                return;
+            }
+        }
+    }
+    panic!("the resident set kept moving for {budget:?}: {readings:?} KiB");
+}
+
 /// One `/proc/self/status` field in KiB (`VmRSS:`, `VmHWM:`).
 pub fn proc_status_kib(field: &str) -> u64 {
     fixture::read_text(std::path::Path::new("/proc/self/status"))

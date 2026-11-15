@@ -181,11 +181,16 @@ fn test_copy_whole_line_writes_the_exact_paragraph_in_bounded_chunks() {
         .and_downcast::<WholeLineProvider>()
         .expect("the lazy whole-line provider is on the clipboard");
     assert_eq!(provider.byte_len(), giant.len());
-    assert_eq!(
-        provider.chunks_written(),
-        0,
-        "nothing is written until read"
-    );
+    let chunk = lushtext_core::ui::editor_page::WHOLE_LINE_CHUNK_BYTES;
+    let one_read = u64::try_from(giant.len().div_ceil(chunk)).expect("fits");
+    // The provider writes only to answer a read. The compositor may read it
+    // too: Mutter's clipboard manager copies a new text selection so it
+    // outlives its owner, and under load its read can finish while
+    // `whole_line_copies` is awaited (5 chunks, the whole paragraph, were
+    // seen written before this test's own read). So the writes before that
+    // read are none or the compositor's, and the read below must add a whole
+    // read's worth of bounded chunks.
+    let before = provider.chunks_written();
 
     let copied = clipboard_bytes(&page);
     assert_eq!(copied.len(), giant.len(), "every byte of the line");
@@ -193,10 +198,10 @@ fn test_copy_whole_line_writes_the_exact_paragraph_in_bounded_chunks() {
         copied == giant.as_bytes(),
         "byte-identical to the paragraph"
     );
-    let chunk = lushtext_core::ui::editor_page::WHOLE_LINE_CHUNK_BYTES;
     assert!(
-        provider.chunks_written() >= u64::try_from(giant.len().div_ceil(chunk)).expect("fits"),
-        "written one bounded chunk per dispatch"
+        provider.chunks_written() - before >= one_read,
+        "the read was answered with one bounded chunk per dispatch \
+         ({before} chunks were written before it)"
     );
     assert_eq!(editor_text(&page), body);
 }
@@ -538,10 +543,38 @@ fn test_a_protected_head_stays_under_the_paragraph_wrap_gate() {
 
 #[test]
 fn test_a_protected_periodic_capture_reads_the_source_not_the_buffer() {
+    assert_protected_periodic_capture_reads_the_source(0);
+}
+
+/// `restore-main-ci` D4, the CI flake of the test above (run 43627976239, "not
+/// met within 30s" on the snapshot wait). The edit that makes the document
+/// protected also starts the capture of its pre-edit baseline, which holds the
+/// one process-wide automatic-capture admission on a worker. A periodic
+/// capture that runs meanwhile finds the admission taken and reschedules a
+/// whole interval (five minutes) later, so on a loaded runner the snapshot
+/// never came. A slow baseline makes the race deterministic; the test waits
+/// for the admission the capture needs.
+#[test]
+fn test_a_protected_periodic_capture_after_a_slow_baseline_reads_the_source() {
+    assert_protected_periodic_capture_reads_the_source(3_000);
+}
+
+/// Resets the baseline-capture delay a test set, on every exit path.
+struct BaselineDelayReset;
+
+impl Drop for BaselineDelayReset {
+    fn drop(&mut self) {
+        lushtext_core::ui::window::set_local_history_baseline_delay_for_test(0);
+    }
+}
+
+fn assert_protected_periodic_capture_reads_the_source(baseline_delay_ms: u64) {
     // An edit-growth entry is modified, so periodic local history captures
     // it; the capture must come from the text source on the worker (no
     // chunked GTK snapshot of the protected buffer, ledger A66).
     ensure_gtk_init();
+    let _reset = BaselineDelayReset;
+    lushtext_core::ui::window::set_local_history_baseline_delay_for_test(baseline_delay_ms);
     let data_dir = crate::common::isolated_data_dir();
     let document = data_dir.path().join("periodic-protected.txt");
     fixture::write_text(&document, "first line\nsecond line\n");
@@ -559,6 +592,11 @@ fn test_a_protected_periodic_capture_reads_the_source_not_the_buffer() {
     let expected = editor_text(&page);
     use lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Periodic;
 
+    // The periodic capture needs the automatic-capture admission, which the
+    // edit's baseline capture may still hold.
+    wait_until(Duration::from_secs(30), || {
+        !page.local_history_evidence().automatic_capture_inflight
+    });
     page.run_local_history_periodic_capture_for_test();
     assert!(
         !page.local_history_evidence().periodic_snapshot_inflight,

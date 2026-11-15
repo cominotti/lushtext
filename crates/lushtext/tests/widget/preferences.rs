@@ -851,6 +851,13 @@ fn test_data_page_opens_a_preserved_draft_in_a_new_untitled_tab_and_keeps_it() {
         editor.draft_dirty(),
         "the opened draft must be offered to autosave"
     );
+    // GTK set the modified flag on the install's first insert, while the
+    // handler that draws the bullet was suspended (`restore-main-ci` D1).
+    let title = window.imp().tab_view.nth_page(pages - 1).title();
+    assert!(
+        title.starts_with("• "),
+        "the opened draft's tab shows it is modified: {title:?}"
+    );
     let draft_id = editor.draft_id().expect("the new tab has a draft id");
     window.autosave_tick_for_test();
     wait_until(Duration::from_secs(10), || {
