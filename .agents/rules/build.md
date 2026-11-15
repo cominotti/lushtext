@@ -699,8 +699,10 @@ mode used to cold-build one tree per job (5.2 GB each) into a new
   with `MUTANTS_LOCAL_BUILD_JOBS=4` and `MUTANTS_LOCAL_TEST_THREADS=4` per slot)
   stays, for builds; a run whose scope was OOM-killed is still discarded,
   because an OOM-killed test reads as caught.
-- **Disk.** The pool is bounded by its size (about 3 x 3-5 GB), not by the
-  number of worktrees. `make build-cache-prune` never touches the slots.
+- **Disk.** The pool is bounded by its size, not by the number of worktrees:
+  at most 3 x `MUTANTS_SLOT_MAX_GIB` (24 GiB). A warm slot holds about
+  10-11 GiB per dependency set, and one past the bound is emptied and built
+  cold at its next run. `make build-cache-prune` never touches the slots.
 
 `MUTANTS_IN_PLACE=1` without mirror mode (calling `scripts/run-mutants.sh`
 directly) mutates the checkout itself and keeps refusing a dirty worktree

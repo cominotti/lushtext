@@ -889,9 +889,10 @@ All six are on `main` and in every round. They were classified under
   `lushtext` dev-dependency enables `test-utils`, so a mutant there compiles
   unchanged code. They are excluded in `.cargo/mutants.toml` by exact location
   and reason.
-  - `cargo mutants --list --workspace` with the config drops exactly these
-    two from the file. Without the config, the file still lists all nine of
-    its `markdown_chunked_cap` matches.
+  - With the config, `cargo mutants --list --workspace --file … --re
+    markdown_chunked_cap` drops exactly these two: the `:220`, `:221` and
+    `:242` lines remain. Without the config (`--no-config`), the same listing
+    also shows the `:229` pair.
   - `make mutants-smoke` passes `--no-config` by design, so it still runs
     the pair and reports it missed. `docs/mutation-testing.md` now says so.
 
