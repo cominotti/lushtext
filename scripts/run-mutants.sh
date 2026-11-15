@@ -332,15 +332,15 @@ slot_runner_var() {
 
 # One slot: its environment, then cargo mutants in place from its src/.
 run_slot() {
-    local slot=$1 out=$2 shard=$3 runner_var=$4 wrapper=$5 checkout=$6
-    shift 6
-    local name status log
+    local slot=$1 out=$2 shard=$3 runner_var=$4 wrapper=$5
+    shift 5
+    local name status log started="${SECONDS}"
     name="$(basename "${slot}")"
     close_slot_fds
     cd "${slot}/src"
     export CARGO_TARGET_DIR="${slot}/target" CARGO_BUILD_BUILD_DIR="${slot}/build"
     export RUSTC_WORKSPACE_WRAPPER="${wrapper}"
-    export "${runner_var}=${checkout}/scripts/test-address-space-runner.sh"
+    export "${runner_var}=${here}/test-address-space-runner.sh"
     if [[ -n "${MUTANTS_SLOT_INCREMENTAL}" ]]; then
         export CARGO_INCREMENTAL="${MUTANTS_SLOT_INCREMENTAL}"
     fi
@@ -358,7 +358,11 @@ run_slot() {
         echo "[${name}] No relevant mutants in this slot's share; counting it as passing."
         status=0
     fi
+    if (( status == 4 )); then
+        echo "[${name}] the unmutated baseline failed, so no mutant was tested; it ran under the per-test address-space limit LUSHTEXT_TEST_ADDRESS_SPACE=${LUSHTEXT_TEST_ADDRESS_SPACE:-none} (scripts/test-address-space-runner.sh): check its log for an allocation failure before raising the limit" >&2
+    fi
     rm -f "${log}"
+    echo "[${name}] slot wall time $(( SECONDS - started )) s (shard ${shard:-all})"
     return "${status}"
 }
 
@@ -417,7 +421,7 @@ run_mirror() {
         mkdir -p "${out}"
         outs+=("${out}")
         set -m
-        run_slot "${slot_dirs[k]}" "${out}" "${shard}" "${runner_var}" "${wrapper}" "${checkout}" "$@" &
+        run_slot "${slot_dirs[k]}" "${out}" "${shard}" "${runner_var}" "${wrapper}" "$@" &
         set +m
         slot_pids+=("$!")
     done

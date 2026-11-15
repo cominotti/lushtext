@@ -244,8 +244,13 @@ MUTANTS_MEMORY_MAX ?= 36G
 # Per-test address-space limit (scripts/test-address-space-runner.sh, design
 # D5), for the mirror slots and the proof-strength tests arm: twice the
 # smallest power-of-two GiB at which the unmutated baselines pass, at least
-# 4 GiB. See evidence/address-space.md of reduce-build-disk-writes.
-LUSHTEXT_TEST_ADDRESS_SPACE ?= none
+# 4 GiB. Measured 2026-11-15 in a slot: `cargo nextest run --workspace` (2462
+# tests) and the same with lushtext-core/property-tests (2557) both pass at
+# 2 GiB, the first size tried, so the default is 4G; a 64M limit fails the
+# listing pass, proving the runner is applied. It stops the recorded 15 GB
+# list_budget runaway. Details: evidence/address-space.md of
+# reduce-build-disk-writes. `none` disables it.
+LUSHTEXT_TEST_ADDRESS_SPACE ?= 4G
 export LUSHTEXT_TEST_ADDRESS_SPACE
 MUTANTS_LOCAL_PARALLELISM = MUTANTS_MIRROR=1 MUTANTS_LOCAL_JOBS=$(MUTANTS_LOCAL_JOBS) MUTANTS_TEST_THREADS=$(MUTANTS_LOCAL_TEST_THREADS) MUTANTS_BUILD_JOBS=$(MUTANTS_LOCAL_BUILD_JOBS)
 
