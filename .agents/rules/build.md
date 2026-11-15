@@ -673,8 +673,11 @@ the widget suite on its platform first.
   SDK and Platform in the system installation `/var/lib/flatpak` on overlayfs;
   when Flathub has newer refs, flatpak's update renames deployment directories,
   an overlay without `redirect_dir` refuses that for lower-layer directories
-  (`Invalid cross-device link`, then a flatpak-builder segfault, exit 139), and
-  whether a runner has it on varies (PR #98, run `43642169956`). So the action
+  (`Invalid cross-device link`, then a flatpak-builder segfault, exit 139).
+  Which runners fail varies (PR #98, run `43642169956`: two attempts failed,
+  a rerun on another runner image passed); the passing runner's cause
+  (`redirect_dir` on, or another snapshotter) is unverified, and the fix does
+  not depend on it. So the action
   first runs `scripts/ci-flatpak-installation.py diagnose` (one log group:
   kernel, `redirect_dir`, overlay mounts, `findmnt`/`df` of the installation and
   `$RUNNER_TEMP`, and a `rename(2)` probe of the first runtime's deployed commit

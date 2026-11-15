@@ -259,6 +259,24 @@ The step fails before flatpak-builder could start, naming the probe, the result
 same container with the hook set to `ok` ran the real probe (`rename-probe: ok`),
 so the hook never reaches the diagnostic probe and never forces a pass.
 
+## An installation already off overlayfs is left in place
+
+The spec scenario "An installation already off overlayfs is left in place" ran
+in the same image with `--tmpfs /var/lib/flatpak` (a fresh container and volume,
+removed afterwards):
+
+```
+::group::Relocate the system Flatpak installation off overlayfs
+relocation skipped: /var/lib/flatpak is on tmpfs, not overlay; its directories can be renamed in place
+::endgroup::
+relocate exit=0
+(empty RUNNER_TEMP listing above = no copy)
+tmpfs
+```
+
+`relocate` skips with the reason, exits 0, and copies nothing (`$RUNNER_TEMP`
+stays empty).
+
 ## Release dry-run path (task 3.3)
 
 In a scratch clone of the branch (commit `6b931da0`), with the tag
@@ -282,5 +300,10 @@ In a scratch clone of the branch (commit `6b931da0`), with the tag
 | `workflow_dispatch` | false | `refs/heads/main` | 0 | `checkout-ref=$GITHUB_SHA` |
 | `workflow_dispatch` | true | `refs/heads/feature` | 0 | `dry-run=true`, `checkout-ref=$GITHUB_SHA` |
 | `push` (tag) | — | `refs/tags/v0.8.4` | 0 | `checkout-ref=v0.8.4` |
+
+The same two bodies were rerun on a **detached** clone (`git checkout --detach`,
+as `actions/checkout` leaves a SHA checkout): `make release
+VERSION=v0.8.4-dryrun.1 DRY_RUN=1` exit 0, the Flathub step exit 0 with the
+manifest's `commit` equal to `HEAD` (`0776b47f…`), clone clean afterwards.
 
 `actionlint` passes on `flatpak.yml`, `release.yml` and `ci.yml`.

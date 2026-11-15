@@ -4073,6 +4073,14 @@ separate change, in this order:
        org.gnome.Sdk`; `flathub-infra/flatpak-github-actions` shipping an
        image whose system installation cannot be updated on overlay without
        `redirect_dir` (and lagging Flathub since 2026-09-22).
+     - **Pre-existing flake fixed:** the final-tree `make test` caught
+       `editor_page::test_buffer_replacement_evidence_reads_stay_side_effect_free_across_replacement_mutation`
+       passing only on retry. A buffer replacement's 1 ms slice turns chain
+       inside one `wait_until` drain when they overrun on a loaded host, so
+       the in-flight `mutation_started` was never sampled (reproduced 2 of 6
+       isolated runs under CPU saturation). It and the save-formatting test
+       with the same transient wait now use `observed_between_dispatches`
+       (16 of 16 clean under the same load); test-only.
      - **Observed, follow-up:** the Flatpak build (locally and so in CI)
        prints cargo's ``warning: `…/cargo/config` is deprecated in favor of
        `config.toml` `` twice. The file is the `inline` vendoring source

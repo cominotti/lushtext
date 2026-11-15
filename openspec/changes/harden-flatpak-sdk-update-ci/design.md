@@ -209,6 +209,21 @@ Filing either is an outward action that needs the maintainer, and the `upstream-
 
 Merge on the local evidence of D8. The maintainer has authorised merging with `--admin` while required checks are pending. No rollback state exists: reverting the composite action's `relocate` step restores today's behaviour. CI confirmation (D8 C1–C3) is owed by the programme's final CI sweep. The programme record entry states that.
 
+## Implementation record (stage 3, 2026-11-14)
+
+Decisions made while implementing, beyond D1–D10:
+
+- **Probe target rule (D3).** The probe renames the first runtime's *active* commit directory in sorted order (`runtime/<ref>/<arch>/<branch>/<commit>`, resolved through the branch's `active` link, falling back to the first real commit directory), never the `active` symlink itself: renaming a symlink is a lower-layer file rename, which overlay allows, so it would report a false `ok`. A `<commit>.rename-probe` left by an interrupted probe is renamed back first; when both names exist the probe refuses, naming both. A failed rename back raises a dedicated error that even the diagnostic probe does not swallow.
+- **Refusal before the overlay check (D1).** `relocate` validates `RUNNER_TEMP`, `GITHUB_WORKSPACE` and the destination's containment (after resolving symlinks) before it looks at the filesystem, so a misconfigured job fails even on a runner where relocation would be skipped: it is a configuration error, and it would bite on the next runner that needs the copy.
+- **A failure-only test hook (L3).** `CI_FLATPAK_FORCE_PROBE_FAILURE=<errno name>` makes the post-relocation probe report that errno without renaming. Only that probe honours it (never `diagnose` or `probe`), and it rejects `ok` and unknown names, so it can force a failure but never a pass. It produced L3's forced-failure run.
+- **Policy check sequencing (D5).** `check-flatpak-ci-builds` joined `check-policy` and CI's `Lint` job only with the workflow switch, because the pre-commit hook runs `check-policy` and the failing-first state would otherwise have blocked the earlier commits.
+- **L2's source.** The checkout is a git worktree whose `.git` points at a host path the container cannot see, so the `git archive` was made on the host and bound read-only into the container as a tar. It carries the same committed tree.
+- **Detached checkout.** A dispatch now checks out `$GITHUB_SHA`, a detached HEAD. `make release DRY_RUN=1` and the new Flathub step were rerun on a detached clone and pass, and the step uses `HEAD`.
+
+- **A pre-existing flaky widget test, fixed (pre-existing-blockers rule).** The final-tree `make test` reported `FLAKY: editor_page::test_buffer_replacement_evidence_reads_stay_side_effect_free_across_replacement_mutation` (attempt 1: `condition was not met within 10s` waiting for `mutation_started`). Cause: the buffer replacement reschedules itself on 1 ms timeouts; when a turn overruns that (a loaded host), the next turn is already due when it returns, so one `wait_until` drain ran the whole replacement to its terminal and never sampled the in-flight state. Reproduced failing-first under CPU saturation of the test's cores (2 of 6 isolated runs; one run failed both attempts). Fix: sample in-flight states before every dispatch with `common::observed_between_dispatches`, in that test and in the one other test with the same transient wait (`test_document_sized_save_formatting_stays_inflight_until_bounded_install_finishes`, `in_progress`). After the fix, 16 of 16 isolated runs under the same load were clean. The pitfall is recorded in the gtk-testing skill (`references/widget-testing.md`). No production code changed.
+
+Evidence: `evidence/policy-baseline.md`, `evidence/local-runs.md`.
+
 ## Open Questions
 
 None. Why the one runner image succeeded is recorded as unknown, and it does not affect the decision.
