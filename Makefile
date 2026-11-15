@@ -609,6 +609,7 @@ responsiveness-smoke: responsiveness-build
 check-responsiveness-lane:
 	@echo "Checking responsiveness lane fixtures and derivation..."
 	./scripts/run-responsiveness-smoke.sh --self-test
+	python3 ./scripts/generate-workspace-index-fixture.py --self-test
 
 # Run all host-supported end-user smoke lanes. Individual scripts own their
 # dependency checks, artifact paths, and skip messages.
@@ -634,10 +635,11 @@ mutants-list:
 	@echo "Listing configured cargo-mutants scope..."
 	./scripts/run-mutants.sh list
 
-# Run benchmarks (quick, default Criterion sample size)
+# Run benchmarks (quick, default Criterion sample size), the 2^20-file groups
+# included (LUSHTEXT_BENCH_SCALE=1)
 bench:
 	@echo "Running benchmarks..."
-	cargo bench -p lushtext-core --features test-utils
+	LUSHTEXT_BENCH_SCALE=1 cargo bench -p lushtext-core --features test-utils
 
 # Run benchmarks and generate markdown report (short sampling)
 bench-report:

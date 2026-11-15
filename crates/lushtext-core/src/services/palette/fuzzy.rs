@@ -74,10 +74,29 @@ pub(super) enum RestCount<'p, T> {
     /// Count with the retention predicate itself.
     Walk,
     /// The predicate admits every item: count the rest by its exact length,
-    /// in O(1).
+    /// in O(1). Only the per-file reference index still counts this way.
+    #[cfg_attr(
+        not(any(test, feature = "test-utils")),
+        expect(
+            dead_code,
+            reason = "only the test-utils reference index counts this way"
+        )
+    )]
     Length,
     /// Count with a cheaper predicate that equals the retention predicate.
+    /// Only the per-file reference index still counts this way.
+    #[cfg_attr(
+        not(any(test, feature = "test-utils")),
+        expect(
+            dead_code,
+            reason = "only the test-utils reference index counts this way"
+        )
+    )]
     WalkWith(&'p mut dyn FnMut(&T) -> bool),
+    /// The source knows how many items the predicate admits in all: the
+    /// rest is that total less the retained prefix, in O(1) (the workspace
+    /// group's open-tab exclusion, `scale-file-index` D4).
+    Known { admitted: usize },
 }
 
 #[derive(Clone, Copy)]
@@ -129,10 +148,10 @@ pub(super) fn search_items<'a, I, T, F, G>(
     max: usize,
 ) -> Vec<ScoredResult<'a>>
 where
-    I: Iterator<Item = &'a T>,
-    T: 'a,
-    F: Fn(&T) -> &str,
-    G: Fn(&'a T) -> SearchResultItem<'a>,
+    I: Iterator<Item = T>,
+    T: Copy + 'a,
+    F: Fn(&T) -> &'a str,
+    G: Fn(T) -> SearchResultItem<'a>,
 {
     let cancellation = PaletteSearchCancellation::default();
     match search_items_cancellable(
@@ -163,11 +182,11 @@ pub(super) fn search_items_cancellable<'a, I, T, P, F, G>(
     cancellation: &PaletteSearchCancellation,
 ) -> PaletteSearchOutcome<Vec<ScoredResult<'a>>>
 where
-    I: Iterator<Item = &'a T>,
-    T: 'a,
+    I: Iterator<Item = T>,
+    T: Copy + 'a,
     P: FnMut(&T) -> bool,
     F: FnMut(&T, &mut FuzzyQuery) -> Option<u32>,
-    G: Fn(&'a T) -> SearchResultItem<'a>,
+    G: Fn(T) -> SearchResultItem<'a>,
 {
     search_items_cancellable_counting(
         items,
@@ -203,11 +222,11 @@ pub(super) fn search_items_cancellable_counting<'a, I, T, P, F, G>(
     selection: CountedSelection<'_, '_, T>,
 ) -> PaletteSearchOutcome<Vec<ScoredResult<'a>>>
 where
-    I: Iterator<Item = &'a T>,
-    T: 'a,
+    I: Iterator<Item = T>,
+    T: Copy + 'a,
     P: FnMut(&T) -> bool,
     F: FnMut(&T, &mut FuzzyQuery) -> Option<u32>,
-    G: Fn(&'a T) -> SearchResultItem<'a>,
+    G: Fn(T) -> SearchResultItem<'a>,
 {
     let CountedSelection {
         max,
@@ -239,11 +258,11 @@ pub(super) fn search_items_cancellable_with_progress<'a, I, T, P, F, G>(
     policy: SearchProgressPolicy<'_>,
 ) -> PaletteSearchOutcome<Vec<ScoredResult<'a>>>
 where
-    I: Iterator<Item = &'a T>,
-    T: 'a,
+    I: Iterator<Item = T>,
+    T: Copy + 'a,
     P: FnMut(&T) -> bool,
     F: FnMut(&T, &mut FuzzyQuery) -> Option<u32>,
-    G: Fn(&'a T) -> SearchResultItem<'a>,
+    G: Fn(T) -> SearchResultItem<'a>,
 {
     let SearchProgressPolicy {
         max,
@@ -276,11 +295,11 @@ fn search_items_cancellable_controlled<'a, I, T, P, F, G>(
     rest: RestCount<'_, T>,
 ) -> PaletteSearchOutcome<Vec<ScoredResult<'a>>>
 where
-    I: Iterator<Item = &'a T>,
-    T: 'a,
+    I: Iterator<Item = T>,
+    T: Copy + 'a,
     P: FnMut(&T) -> bool,
     F: FnMut(&T, &mut FuzzyQuery) -> Option<u32>,
-    G: Fn(&'a T) -> SearchResultItem<'a>,
+    G: Fn(T) -> SearchResultItem<'a>,
 {
     let SelectionPolicy {
         max,
@@ -313,7 +332,7 @@ where
                 }
             }
             metrics.candidates_examined = metrics.candidates_examined.saturating_add(1);
-            if !include(item) {
+            if !include(&item) {
                 continue;
             }
             metrics.matching_candidates = metrics.matching_candidates.saturating_add(1);
@@ -328,7 +347,13 @@ where
         }
         metrics.peak_retained_per_source = results.len();
         if results.len() == max {
-            let rest = count_rest(items.map(|(_, item)| item), include, rest, &policy);
+            let rest = count_rest(
+                items.map(|(_, item)| item),
+                include,
+                rest,
+                metrics.matching_candidates,
+                &policy,
+            );
             match rest {
                 Some(counted) => {
                     metrics.matching_candidates =
@@ -357,10 +382,10 @@ where
             }
         }
         metrics.candidates_examined = metrics.candidates_examined.saturating_add(1);
-        if !include(item) {
+        if !include(&item) {
             continue;
         }
-        let Some(candidate_score) = score(item, &mut fuzzy_query) else {
+        let Some(candidate_score) = score(&item, &mut fuzzy_query) else {
             continue;
         };
         metrics.matching_candidates = metrics.matching_candidates.saturating_add(1);
@@ -411,10 +436,11 @@ struct RestCounted {
 
 /// Count the included items after the empty query's retained prefix without
 /// retaining or scoring them; `None` when cancellation was observed.
-fn count_rest<'a, T: 'a, P>(
-    items: impl Iterator<Item = &'a T>,
+fn count_rest<T, P>(
+    items: impl Iterator<Item = T>,
     include: &mut P,
     rest: RestCount<'_, T>,
+    retained_matching: usize,
     policy: &SelectionPolicy<'_>,
 ) -> Option<RestCounted>
 where
@@ -423,6 +449,10 @@ where
     match rest {
         RestCount::Walk => walk_rest(items, include, policy),
         RestCount::WalkWith(predicate) => walk_rest(items, predicate, policy),
+        RestCount::Known { admitted } => Some(RestCounted {
+            matching: admitted.saturating_sub(retained_matching),
+            visited: 0,
+        }),
         RestCount::Length => {
             let (lower, upper) = items.size_hint();
             if upper == Some(lower) {
@@ -437,8 +467,8 @@ where
     }
 }
 
-fn walk_rest<'a, T: 'a>(
-    items: impl Iterator<Item = &'a T>,
+fn walk_rest<T>(
+    items: impl Iterator<Item = T>,
     predicate: &mut dyn FnMut(&T) -> bool,
     policy: &SelectionPolicy<'_>,
 ) -> Option<RestCounted> {
@@ -452,7 +482,7 @@ fn walk_rest<'a, T: 'a>(
             return None;
         }
         counted.visited = counted.visited.saturating_add(1);
-        if predicate(item) {
+        if predicate(&item) {
             counted.matching = counted.matching.saturating_add(1);
         }
     }
@@ -468,11 +498,11 @@ pub(super) fn search_items_full_sort_reference<'a, I, T, P, F, G>(
     max: usize,
 ) -> Vec<ScoredResult<'a>>
 where
-    I: Iterator<Item = &'a T>,
-    T: 'a,
+    I: Iterator<Item = T>,
+    T: Copy + 'a,
     P: FnMut(&T) -> bool,
     F: FnMut(&T, &mut FuzzyQuery) -> Option<u32>,
-    G: Fn(&'a T) -> SearchResultItem<'a>,
+    G: Fn(T) -> SearchResultItem<'a>,
 {
     if query.is_empty() {
         return items
@@ -492,7 +522,7 @@ where
         .enumerate()
         .filter(|(_, item)| include(item))
         .filter_map(|(source_ordinal, item)| {
-            score(item, &mut fuzzy_query).map(|score| ScoredResult {
+            score(&item, &mut fuzzy_query).map(|score| ScoredResult {
                 item: wrap(item),
                 score,
                 source_ordinal,
@@ -651,7 +681,7 @@ mod tests {
     #[test]
     fn empty_query_count_uses_the_cheaper_predicate_when_given() {
         let cancellation = PaletteSearchCancellation::default();
-        let mut cheaper = |command: &CommandDef| command.id.starts_with('f');
+        let mut cheaper = |command: &&CommandDef| command.id.starts_with('f');
         let outcome = search_items_cancellable_counting(
             COMMANDS.iter(),
             |command| command.id.starts_with('f'),

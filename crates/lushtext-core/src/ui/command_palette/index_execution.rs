@@ -160,6 +160,7 @@ fn apply_index_mutation_batch(
             for update in &batch.updates {
                 update.apply(&mut index, &mut ledger);
             }
+            index.finish_mutation_batch(&mut ledger);
             debug_assert_eq!(ledger.retained_bytes(), index.retained_byte_weight());
             debug_assert!(
                 ledger.peak_retained_bytes()

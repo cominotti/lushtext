@@ -34,6 +34,10 @@ pub struct DirectoryEntry {
     /// and `None` means emptiness was not checked (files, or directories past
     /// the scan's lookahead budget).
     pub is_empty: Option<bool>,
+    /// The entry itself is a symbolic link (`is_dir` follows it), from the
+    /// directory entry's type: the file index resolves only these
+    /// (`scale-file-index` D2).
+    pub is_symlink: bool,
 }
 
 impl Ord for DirectoryEntry {
@@ -382,6 +386,7 @@ where
                 is_empty = Some(is_dir_empty(&entry.path, visibility));
             }
             selector.consider(DirectoryEntry {
+                is_symlink: entry.is_symlink,
                 path: entry.path,
                 is_dir,
                 is_empty,
@@ -503,6 +508,7 @@ where
                 is_empty = Some(is_dir_empty(&entry.path, visibility));
             }
             entries.push(DirectoryEntry {
+                is_symlink: entry.is_symlink,
                 path: entry.path,
                 is_dir,
                 is_empty,
@@ -573,6 +579,7 @@ where
                 is_empty = Some(is_dir_empty(&entry.path, visibility));
             }
             selector.consider(DirectoryEntry {
+                is_symlink: entry.is_symlink,
                 path: entry.path,
                 is_dir,
                 is_empty,
@@ -654,6 +661,7 @@ where
                 is_empty = Some(is_dir_empty(&entry.path, visibility));
             }
             let candidate = DirectoryEntry {
+                is_symlink: entry.is_symlink,
                 path: entry.path,
                 is_dir,
                 is_empty,
@@ -1278,6 +1286,7 @@ mod tests {
                 path: PathBuf::from(name),
                 is_dir: false,
                 is_empty: None,
+                is_symlink: false,
             })
             .collect::<Vec<_>>();
         let maximum_graph = entries

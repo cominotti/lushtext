@@ -56,6 +56,32 @@ Truncation at this size: none; 64 MiB / 363 B ≈ 184,000 files is where this
 shape would hit `RetainedByteLimit`, and 128 MiB / 557 B ≈ 241,000 where it
 would hit `BuildByteLimit`, both long before 2^20.
 
+**Stage 3 baseline on `main` (task 1.2), 2026-11-14,** `main` `72c039ef`
+with a visibility-only patch (`stage3-main-visibility.patch`) so a release
+test harness (`stage3-sfi_harness.rs.txt`) can drive the per-file index at
+the D9 shape: the 2^17 generated tree on btrfs (`scripts/generate-workspace-
+index-fixture.py --files 131072`), each case timed 5 times, four rounds
+through `scripts/measure.sh` (`runs.log`, `stage3-baseline-main.log`).
+Rounds r1 and r2 started at a 1-minute load of 3.96 and 3.84 (verdict);
+r3 and r4 started at 6.53 and 6.73 and are **non-verdict** (another agent's
+lint at 370 % CPU and a game client on the host). The non-verdict rounds lie
+inside the verdict ranges except where noted, so the ranges below are r1–r2:
+
+| M | Figure (D9 shape, 2^17 files requested) | `main`, release |
+| --- | --- | --- |
+| S1 | files indexed | 119,157: truncated by `RetainedByteLimit` (the D9 shape's longer paths) |
+| S2 | `retained_index_bytes` | 67,108,718 (563 B/file) |
+| S3 | `peak_build_bytes` | 99,137,141 (831 B/file) |
+| S4 | build wall time (r2; r1 lost its line to a harness grep) | 1,819–1,858 ms (r3–r4: 1,755–1,870) |
+| S5 | clone / drop | 34.2–52.8 / 24.6–34.8 ms |
+| S6 | one query, 64 rows, 0 / 32 open tabs | 9.1–20.1 / 35.0–51.4 ms |
+| S7 | empty query, 32 / 256 open tabs | 7.0–11.8 / 13.0–16.7 ms |
+| S8 | one incremental batch of 1 / 64 / 1,024 adds (clone excluded) | 30.5–43.3 ms / 1.98–2.23 s / 31.7–32.2 s |
+| S9 | directory rename of 9,872 descendants | 288–335 ms |
+
+S8 is the D5 motivation measured: an add costs a linear scan per file, so a
+1,024-file batch (a branch switch) holds the worker for half a minute.
+
 Arena size estimate from real path distributions (lengths only, read-only:
 `git ls-files` of the two largest checkouts on disk and a walk of
 `~/.cargo/registry/src`), at 24 B per file record plus canonical key, the name

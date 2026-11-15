@@ -43,7 +43,7 @@ use lushtext_core::model::local_history::LocalHistorySnapshotOrigin;
 use lushtext_core::model::local_history::{LocalHistoryDocument, LocalHistorySnapshotMeta};
 use lushtext_core::model::migration_ledger::MigrationKind;
 use lushtext_core::model::palette::{
-    IndexedFile, PaletteCategory, PaletteFileEntry, PaletteFileIdentity, PaletteNoteCategory,
+    FileOrdinal, PaletteCategory, PaletteFileEntry, PaletteFileIdentity, PaletteNoteCategory,
     PaletteNoteEntry, PaletteNoteTarget, PaletteOpenEditorNoteSnapshot, PaletteSearchRow,
     SearchMode, SearchResultItem,
 };
@@ -70,7 +70,7 @@ use lushtext_core::services::json_format::KIND_LOCAL_HISTORY_INDEX;
 use lushtext_core::services::markdown_render::{
     MARKDOWN_EVENTS_PER_PROJECTION_SLICE, plan_markdown,
 };
-use lushtext_core::services::palette::{self, FileIndex};
+use lushtext_core::services::palette::{self, FileIndex, OwnedIndexedFile};
 use lushtext_core::services::recent_documents;
 use lushtext_core::services::recovery_metadata::{
     RecoveryLoadConfig, RecoveryMetadataClass, save_enveloped_json_path,
@@ -82,6 +82,7 @@ use lushtext_core::services::{
     local_history_service::{self, LocalHistoryCapturePolicy},
     migration_ledger, session_service,
 };
+use lushtext_core::ui::command_palette::policy::{MAX_CATEGORY_VIEW_ROWS, category_row_limit};
 use lushtext_core::ui::editor_page::save::policy::{
     ExternalTransientPressure, SAVE_PAYLOAD_SHARED_BUDGET_BYTES, SaveAdmissionPolicy,
     SaveAdmissionPriority, SaveAdmissionRequest,
@@ -225,28 +226,24 @@ fn make_synthetic_index(n: usize) -> FileIndex {
     ];
     let extensions = ["rs", "toml", "md", "json", "txt", "yaml"];
 
-    let files: Vec<IndexedFile> = (0..n)
-        .map(|i| {
-            let dir = dirs[i % dirs.len()];
-            let ext = extensions[i % extensions.len()];
-            let name = if i % 1_000 == 0 {
-                format!("résumé-shared-{i:06}.md")
-            } else if i % 997 == 0 {
-                "equal-score-tie.rs".to_string()
-            } else {
-                format!("file_{i}.{ext}")
-            };
-            let path = PathBuf::from(format!("/synthetic/project/{dir}/{name}"));
-            IndexedFile {
-                identity: PaletteFileIdentity::canonical(path.clone()),
-                path,
-                name,
-                workspace_folder: Arc::clone(&root),
-            }
-        })
-        .collect();
-
-    FileIndex::from(files)
+    // Streamed into the index: 2^20 owned rows are never held at once.
+    FileIndex::from_paths((0..n).map(|i| {
+        let dir = dirs[i % dirs.len()];
+        let ext = extensions[i % extensions.len()];
+        let name = if i % 1_000 == 0 {
+            format!("résumé-shared-{i:06}.md")
+        } else if i % 997 == 0 {
+            "equal-score-tie.rs".to_string()
+        } else {
+            format!("file_{i}.{ext}")
+        };
+        let path = PathBuf::from(format!("/synthetic/project/{dir}/{name}"));
+        (
+            path.clone(),
+            PaletteFileIdentity::canonical(path),
+            Arc::clone(&root),
+        )
+    }))
 }
 
 /// Create a temp directory tree with the given number of files spread across subdirs.
@@ -815,38 +812,92 @@ fn bench_recent_document_search(c: &mut Criterion) {
 fn bench_file_index_search(c: &mut Criterion) {
     let mut group = c.benchmark_group("file_index_search");
 
-    for size in [100, 1_000, 10_000, 50_000, 100_000] {
+    for size in [100, 1_000, 10_000, 50_000, 100_000, 128 * 1024] {
         let index = make_synthetic_index(size);
-
-        group.bench_with_input(BenchmarkId::new("query_match", size), &index, |b, idx| {
-            b.iter(|| idx.search(black_box("file_42"), 50));
-        });
-
-        group.bench_with_input(BenchmarkId::new("empty_query", size), &index, |b, idx| {
-            b.iter(|| idx.search(black_box(""), 50));
-        });
-
-        group.bench_with_input(BenchmarkId::new("no_match", size), &index, |b, idx| {
-            b.iter(|| idx.search(black_box("zzzzz"), 50));
-        });
+        bench_file_index_queries(&mut group, &index, size);
     }
     group.finish();
 }
 
+/// The open tabs a query excludes: every 4,096th file's canonical path, 32 at
+/// most (`scale-file-index` task 4.1).
+fn bench_open_tab_paths(index: &FileIndex) -> HashSet<PathBuf> {
+    index
+        .files()
+        .step_by(4096)
+        .take(32)
+        .filter_map(|file| file.identity().canonical_path().map(Path::to_path_buf))
+        .collect()
+}
+
+/// One query, the empty query, no match, and the query and empty query with
+/// 32 open tabs excluded.
+/// The environment variable that admits the 2^20-file groups
+/// (`file_index_scale`, `file_index_scale_rebuild`,
+/// `palette_pipeline_hardening_1048576`). Their setup runs in the group
+/// function, before Criterion's filter, so without the gate every filtered
+/// run (`make performance-smoke` runs one per filter) would build a
+/// 2^20-file index and write the D9 tree to disk.
+const SCALE_BENCH_ENV: &str = "LUSHTEXT_BENCH_SCALE";
+
+fn scale_benches_enabled(group: &str) -> bool {
+    let enabled = std::env::var_os(SCALE_BENCH_ENV).is_some_and(|value| value == "1");
+    if !enabled {
+        eprintln!("skipping {group}: set {SCALE_BENCH_ENV}=1 (make bench) to run it");
+    }
+    enabled
+}
+
+fn bench_file_index_queries(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    index: &FileIndex,
+    size: usize,
+) {
+    let open = bench_open_tab_paths(index);
+    let cancellation = palette::PaletteSearchCancellation::default();
+    group.bench_function(BenchmarkId::new("query_match", size), |b| {
+        b.iter(|| index.search(black_box("file_42"), 50));
+    });
+    group.bench_function(BenchmarkId::new("empty_query", size), |b| {
+        b.iter(|| index.search(black_box(""), 50));
+    });
+    group.bench_function(BenchmarkId::new("no_match", size), |b| {
+        b.iter(|| index.search(black_box("zzzzz"), 50));
+    });
+    group.bench_function(BenchmarkId::new("query_open32", size), |b| {
+        b.iter(|| {
+            index.search_cancellable_excluding(black_box("file_42"), 50, &open, &cancellation)
+        });
+    });
+    group.bench_function(BenchmarkId::new("empty_query_open32", size), |b| {
+        b.iter(|| index.search_cancellable_excluding(black_box(""), 64, &open, &cancellation));
+    });
+}
+
+fn bench_file_path(index: &FileIndex, position: usize) -> PathBuf {
+    index
+        .file(FileOrdinal(
+            u32::try_from(position).expect("a bench position"),
+        ))
+        .expect("a file at the position")
+        .path()
+}
+
 /// `drill-down-palette-categories` M2 and D3: the empty query's count pass
-/// over the rest of a full index (0, 32 and 256 open tabs), and one category
-/// ranked whole at the index ceiling.
+/// over the rest of a 131,072-file index (0, 32 and 256 open tabs), and one
+/// category ranked at the row cap (`scale-file-index` D8).
 fn bench_palette_categories(c: &mut Criterion) {
-    let index = make_synthetic_index(palette::MAX_INDEXED_FILES);
+    let index = make_synthetic_index(MAX_CATEGORY_VIEW_ROWS);
     let open_tabs = |count: usize| -> Vec<PaletteFileEntry> {
-        index.files()[..count]
-            .iter()
+        index
+            .files()
+            .take(count)
             .map(|file| {
                 PaletteFileEntry::new(
-                    file.name.clone(),
+                    file.name().to_string(),
                     file.relative_display(),
-                    file.path.clone(),
-                    file.identity.clone(),
+                    file.path(),
+                    file.identity(),
                 )
             })
             .collect()
@@ -893,7 +944,7 @@ fn bench_palette_categories(c: &mut Criterion) {
                             note_entries: &[],
                             category: PaletteCategory::WorkspaceFiles,
                             query: black_box(query),
-                            row_limit: 233_016,
+                            row_limit: category_row_limit(),
                         },
                         &cancellation,
                     )
@@ -901,6 +952,221 @@ fn bench_palette_categories(c: &mut Criterion) {
             },
         );
     }
+    group.finish();
+}
+
+/// `scale-file-index` task 4.1: the 2^20-file index, run only when
+/// [`SCALE_BENCH_ENV`] is `1` (`make bench` sets it), because its setup builds
+/// the index and writes a million files before Criterion applies its filter. One query, the
+/// empty query, no match and 32 open tabs; the base clone and each mutation
+/// kind of the incremental worker; the category view's ranking at the row
+/// cap of a query matching every file.
+fn bench_file_index_scale(c: &mut Criterion) {
+    if !scale_benches_enabled("file_index_scale") {
+        return;
+    }
+    let size = palette::MAX_INDEXED_FILES;
+    let index = make_synthetic_index(size);
+    assert_eq!(index.len(), size, "the synthetic index is not truncated");
+    eprintln!(
+        "file-index-scale files={} retained_index_bytes={} retained_b_per_file={}",
+        index.len(),
+        index.retained_byte_weight(),
+        index.retained_byte_weight() / size as u64,
+    );
+    bench_file_index_scale_operations(c, &index, size);
+
+    // The real traversal of the D9 tree on disk: no truncation, and both
+    // byte ledgers within their caps at 2^20 files (the spec's
+    // 1,048,576-file scenario).
+    let tree = tempfile::TempDir::new().expect("D9 tree temp directory");
+    let summary = palette::workspace_index_fixture::write(
+        tree.path(),
+        size,
+        palette::workspace_index_fixture::DEFAULT_SEED,
+        true,
+    );
+    let folders = [tree.path().to_path_buf()];
+    let build = || {
+        let palette::FileIndexBuildOutcome::Complete { index, metrics } =
+            FileIndex::rebuild_cancellable_with_hint(
+                &folders,
+                0,
+                &palette::PaletteSearchCancellation::default(),
+                &WorkspaceEntryVisibility::default(),
+            )
+        else {
+            panic!("a fresh token cannot cancel");
+        };
+        (index, metrics)
+    };
+    let (built, metrics) = build();
+    eprintln!(
+        "file-index-scale-d9 files_written={} directories_written={} indexed={} truncation={:?} peak_build_bytes={} retained_index_bytes={} canonical_resolutions={}",
+        summary.files,
+        summary.directories,
+        built.len(),
+        metrics.truncation,
+        metrics.peak_build_bytes,
+        metrics.retained_index_bytes,
+        metrics.canonical_resolutions,
+    );
+    assert_eq!(
+        metrics.truncation, None,
+        "the 2^20 D9 tree is indexed whole"
+    );
+    assert!(metrics.peak_build_bytes <= 128 * 1024 * 1024);
+    assert!(metrics.retained_index_bytes <= 64 * 1024 * 1024);
+    drop(built);
+    let mut group = c.benchmark_group("file_index_scale_rebuild");
+    group.sample_size(10);
+    group.bench_function(BenchmarkId::new("d9_tree", size), |b| {
+        b.iter(|| black_box(build()));
+    });
+    group.finish();
+}
+
+/// The query, clone, mutation and category-ranking cases of
+/// [`bench_file_index_scale`], on the synthetic 2^20-file index.
+fn bench_file_index_scale_operations(c: &mut Criterion, index: &FileIndex, size: usize) {
+    let mut group = c.benchmark_group("file_index_scale");
+    group.sample_size(10);
+    bench_file_index_queries(&mut group, index, size);
+    group.bench_function(BenchmarkId::new("clone", size), |b| {
+        b.iter_with_large_drop(|| index.clone());
+    });
+    let root = Arc::new(PathBuf::from("/synthetic/project"));
+    let added = PathBuf::from("/synthetic/project/src/new_file.rs");
+    group.bench_function(BenchmarkId::new("add_file", size), |b| {
+        b.iter_batched(
+            || index.clone(),
+            |mut index| {
+                index.add_file(OwnedIndexedFile::new(
+                    added.clone(),
+                    PaletteFileIdentity::canonical(added.clone()),
+                    Arc::clone(&root),
+                ));
+                index
+            },
+            BatchSize::LargeInput,
+        );
+    });
+    let middle = bench_file_path(index, size / 2);
+    group.bench_function(BenchmarkId::new("remove_path_file", size), |b| {
+        b.iter_batched(
+            || index.clone(),
+            |mut index| {
+                index.remove_path(black_box(&middle));
+                index
+            },
+            BatchSize::LargeInput,
+        );
+    });
+    let model = PathBuf::from("/synthetic/project/src/model");
+    group.bench_function(BenchmarkId::new("remove_path_dir", size), |b| {
+        b.iter_batched(
+            || index.clone(),
+            |mut index| {
+                index.remove_path(black_box(&model));
+                index
+            },
+            BatchSize::LargeInput,
+        );
+    });
+    let renamed = middle.with_file_name("renamed.rs");
+    group.bench_function(BenchmarkId::new("rename_path_file", size), |b| {
+        b.iter_batched(
+            || index.clone(),
+            |mut index| {
+                index.rename_path(black_box(&middle), black_box(&renamed));
+                index
+            },
+            BatchSize::LargeInput,
+        );
+    });
+    let model_renamed = PathBuf::from("/synthetic/project/src/model_renamed");
+    group.bench_function(BenchmarkId::new("rename_path_dir", size), |b| {
+        b.iter_batched(
+            || index.clone(),
+            |mut index| {
+                index.rename_path(black_box(&model), black_box(&model_renamed));
+                index
+            },
+            BatchSize::LargeInput,
+        );
+    });
+    let cancellation = palette::PaletteSearchCancellation::default();
+    group.bench_function(BenchmarkId::new("category_ranking_row_cap", size), |b| {
+        b.iter(|| {
+            palette::category_search(
+                palette::CategorySearchInput {
+                    index,
+                    open_tabs: &[],
+                    note_entries: &[],
+                    category: PaletteCategory::WorkspaceFiles,
+                    query: black_box("file"),
+                    row_limit: category_row_limit(),
+                },
+                &cancellation,
+            )
+        });
+    });
+    group.finish();
+}
+
+/// `scale-file-index`: rapid queries over the maximum index (the MODIFIED
+/// performance scenario), in `make bench` only.
+fn bench_palette_pipeline_hardening_maximum(c: &mut Criterion) {
+    if !scale_benches_enabled("palette_pipeline_hardening_1048576") {
+        return;
+    }
+    let index = make_synthetic_index(palette::MAX_INDEXED_FILES);
+    let mut group = c.benchmark_group("palette_pipeline_hardening_1048576");
+    group.sample_size(10);
+    for (case, query) in [
+        ("high_hit", "file"),
+        ("medium_hit", "file_42"),
+        ("no_hit", "zzqvv"),
+    ] {
+        group.bench_function(format!("bounded/{case}/limit_50"), |b| {
+            b.iter(|| black_box(index.search(black_box(query), 50)));
+        });
+    }
+    group.bench_function("rapid_latest_query_replacement", |b| {
+        b.iter(|| {
+            let coordinator = RefCell::new(palette::PaletteSearchCoordinator::default());
+            let active = coordinator
+                .borrow_mut()
+                .submit("file")
+                .expect("first query starts");
+            let replacements_submitted = Cell::new(false);
+            let cancelled = index.search_cancellable_with_progress(
+                active.request,
+                50,
+                &active.cancellation,
+                &|examined| {
+                    if examined >= palette::PALETTE_CANCEL_CHECK_INTERVAL
+                        && !replacements_submitted.replace(true)
+                    {
+                        for query in ["f", "fi", "fil", "file", "file_9", "file_99999"] {
+                            let _ = coordinator.borrow_mut().submit(query);
+                        }
+                    }
+                },
+            );
+            assert!(matches!(
+                cancelled,
+                palette::PaletteSearchOutcome::Cancelled { .. }
+            ));
+            let latest = coordinator
+                .borrow_mut()
+                .finish(active.generation)
+                .expect("latest query starts");
+            let rows = index.search(latest.request, 50);
+            let _ = coordinator.borrow_mut().finish(latest.generation);
+            black_box(rows)
+        });
+    });
     group.finish();
 }
 
@@ -1210,6 +1476,33 @@ fn bench_file_index_rebuild(c: &mut Criterion) {
             );
         });
     }
+
+    // `scale-file-index` D9: the monorepo-shaped tree on disk at 2^17 files
+    // (the 2^20 tree runs in `file_index_scale_rebuild`, `make bench` only).
+    let d9 = tempfile::TempDir::new().expect("D9 tree temp directory");
+    let d9_files = 128 * 1024;
+    let _ = palette::workspace_index_fixture::write(
+        d9.path(),
+        d9_files,
+        palette::workspace_index_fixture::DEFAULT_SEED,
+        true,
+    );
+    let d9_folders = [d9.path().to_path_buf()];
+    group.bench_function(BenchmarkId::new("d9_tree", d9_files), |b| {
+        b.iter(|| {
+            let outcome = FileIndex::rebuild_cancellable_with_hint(
+                black_box(&d9_folders),
+                0,
+                &palette::PaletteSearchCancellation::default(),
+                &WorkspaceEntryVisibility::default(),
+            );
+            let palette::FileIndexBuildOutcome::Complete { metrics, .. } = &outcome else {
+                panic!("a fresh token cannot cancel");
+            };
+            assert_eq!(metrics.truncation, None);
+            outcome
+        });
+    });
     group.finish();
 }
 
@@ -1327,8 +1620,10 @@ fn bench_end_to_end_boundedness(c: &mut Criterion) {
     };
     assert_eq!(cancelled_note_metrics.retained_entries, 256);
 
-    let excluded_path = file_index.files()[0]
-        .identity
+    let excluded_path = file_index
+        .file(FileOrdinal(0))
+        .expect("the benchmark index has a first file")
+        .identity()
         .canonical_path()
         .expect("benchmark index identities are canonical")
         .to_path_buf();
@@ -1348,7 +1643,11 @@ fn bench_end_to_end_boundedness(c: &mut Criterion) {
         panic!("file-index exclusion must return a file row");
     };
     assert_ne!(
-        fallback.identity.canonical_path(),
+        file_index
+            .file(fallback)
+            .expect("a result ordinal names a file")
+            .identity()
+            .canonical_path(),
         Some(excluded_path.as_path())
     );
 
@@ -2279,21 +2578,20 @@ fn bench_tree_population(c: &mut Criterion) {
 fn bench_file_index_incremental(c: &mut Criterion) {
     let mut group = c.benchmark_group("file_index_incremental");
 
-    for size in [10_000, 100_000] {
+    for size in [10_000, 100_000, 128 * 1024] {
         // add_file
         group.bench_function(BenchmarkId::new("add_file", size), |b| {
             b.iter_batched(
                 || {
                     let index = make_synthetic_index(size);
                     let root = Arc::new(PathBuf::from("/synthetic/project"));
-                    let new_file = IndexedFile {
-                        path: PathBuf::from("/synthetic/project/src/new_file.rs"),
-                        identity: PaletteFileIdentity::canonical(PathBuf::from(
+                    let new_file = OwnedIndexedFile::new(
+                        PathBuf::from("/synthetic/project/src/new_file.rs"),
+                        PaletteFileIdentity::canonical(PathBuf::from(
                             "/synthetic/project/src/new_file.rs",
                         )),
-                        name: "new_file.rs".to_string(),
-                        workspace_folder: root,
-                    };
+                        root,
+                    );
                     (index, new_file)
                 },
                 |(mut index, file)| {
@@ -2309,7 +2607,7 @@ fn bench_file_index_incremental(c: &mut Criterion) {
             b.iter_batched(
                 || {
                     let index = make_synthetic_index(size);
-                    let target = index.files()[size / 2].path.clone();
+                    let target = bench_file_path(&index, size / 2);
                     (index, target)
                 },
                 |(mut index, target)| {
@@ -2341,7 +2639,7 @@ fn bench_file_index_incremental(c: &mut Criterion) {
             b.iter_batched(
                 || {
                     let index = make_synthetic_index(size);
-                    let old = index.files()[size / 2].path.clone();
+                    let old = bench_file_path(&index, size / 2);
                     let new = old.with_file_name("renamed.rs");
                     (index, old, new)
                 },
@@ -4352,6 +4650,8 @@ criterion_group!(
     bench_file_index_search,
     bench_palette_categories,
     bench_palette_pipeline_hardening,
+    bench_palette_pipeline_hardening_maximum,
+    bench_file_index_scale,
     bench_file_index_rebuild,
     bench_end_to_end_boundedness,
     bench_file_index_incremental,
