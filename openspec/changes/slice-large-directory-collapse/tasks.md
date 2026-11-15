@@ -2,7 +2,7 @@ Tests: failing-first widget, unit and property tests (groups 2–3), before the 
 Kani: new scheduled shard `core-sidebar-collapse` (design D9), run once after the code is final, plus its `ORACLES` entry; no existing shard's harness inputs change (`ui/sidebar/policy.rs` is no harness's oracle today, and `model::list_budget` is reused unchanged; check with `scripts/kani-shards.py oracle` at apply time).
 Commits: design D16. Nothing visual-sensitive (`crates/lushtext-core/src/ui/`, `crates/lushtext/tests/widget/`, `resources/style/`) is committed before task 7.7, which lands all of it in one commit after the visual-geometry and accessibility smokes ran on that exact tree.
 Timing: the sidebar collapse and small-directory expansion cases of design D2 and the completion bar of design R3, four rounds interleaved `main` → branch → `main` → branch through `scripts/measure.sh` on the **final** constants only, a round counting only at a recorded 1-minute load below 4. The campaign is queued in `.claude/handoffs/MEASURE-QUEUE.md` as not runnable until task 10.8 marks it ready. Attribution rounds (branch only, one per question) are not verdicts.
-GTK axioms: the samples of the new axioms (design D13: A118–A120, and A121 of design R4) and A91's, on GNOME 51 and the GNOME 50 floor.
+GTK axioms: the samples of the new axioms (design D13: A118–A120, and A114 of design R4) and A91's, on GNOME 51 and the GNOME 50 floor.
 Lane: none. The responsiveness lane drives editor documents and the restyle of a populated sidebar, not expansion or collapse; the widget verdict test is the measurement vehicle (design D2).
 
 **Stage 3 status (2026-11-15).** Every task that needs no quiet machine is
@@ -89,7 +89,7 @@ before group 10. No box changes state.
 - [x] 2.4 Run `make check-gtk-axioms` and the new samples with `make gtk-axiom-sample AXIOM=<id> CHECK=1` on GNOME 51 and on the GNOME 50 floor (`scripts/run-gtk-axioms.sh runtimes --only <ids>`), headless only. Copy the printed versions into "Verified against". If A120 is refuted on either toolkit, switch design D6 to its fallback and record it. If A118 shows that removing the rows before the band moves a mapped list's band or realizes rows, switch design D4 to its fallback order and record it. Record A119's reachable key list as design D5's key route.
 - [x] 2.5 Commit and push.
 
-- [ ] 2.6 Add the next free axiom id (provisionally A121, design R4, D13) with probe and sample: `GtkTreeListModel` keeps no `GtkTreeListRow` for a node nothing references, and `get_item` then hands out a new row object without the object data and `notify::expanded` handler of the one that died. Run it on GNOME 51 and the GNOME 50 floor, add its ledger row, catalogue entry, README and CHANGELOG lines, and commit it with no visual-sensitive path (design D16).
+- [x] 2.6 Add the next free axiom id (A114, the free gap, design R1, R4, D13) with probe and sample: `GtkTreeListModel` keeps no `GtkTreeListRow` for a node nothing references, and `get_item` then hands out a new row object without the object data and `notify::expanded` handler of the one that died. Run it on GNOME 51 and the GNOME 50 floor, add its ledger row, catalogue entry, README and CHANGELOG lines, and commit it with no visual-sensitive path (design D16). (2026-11-15: **A114**, the free gap, no branch held it or A121; holds on GTK 4.24.1 and 4.22.2, `impl/a114-sample.log`, `impl/a114-gnome50.log`.)
 
 ## 3. Failing-first tests
 

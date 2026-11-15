@@ -904,7 +904,7 @@ allocates next. Ids are never reused:
   changing the row's expanded state or the node's `:checked` state, on
   Adwaita 1.10 and on the GNOME 50 floor.
 
-- **A121** (provisional, R4): `GtkTreeListModel` keeps no `GtkTreeListRow`
+- **A114** (R4; the free gap, taken at apply time): `GtkTreeListModel` keeps no `GtkTreeListRow`
   for a node nothing references; `get_item` then hands out a new row object,
   without the object data or signal handlers set on the one that died, and a
   `set_expanded` through it notifies only the new object. Probe: hook a row,
@@ -1226,7 +1226,11 @@ collapsing arrow) everywhere, and the samples of A113 and A118–A120 hold on
 GNOME 51 after the merge (D13). A114 is left free. The new axiom of R4 takes
 the next free id at apply time (provisionally A121). Being a single id, it
 counts the gap: it is A114 if no branch holds A114 by then, and every
-artifact naming A121 is renamed with it.
+artifact naming A121 is renamed with it. *Applied (2026-11-15, task 2.6):* no
+local or remote branch held A114 or A121, so the axiom is **A114**, and every
+artifact was renamed. The pre-renumber stage 3 text that wrote this change's
+click-route axiom as "A114" (now A119; the history above and the handoff's
+`impl/impl-decisions.md`) is history, not this axiom.
 
 ### R2. Attribution: the unit is not the lever, the per-row cost is
 
@@ -1437,7 +1441,7 @@ reveal's failure terminal, the restore, the sliced path's final
 `set_expanded(false)` on a record whose row object no widget showed) would
 stay watched. Both entry points therefore refresh the row's contribution
 after GTK's transition, on every path; roots are watched at any depth-0
-state, so the header case does not depend on it. A new axiom (provisionally A121, task 2.6)
+state, so the header case does not depend on it. A new axiom (A114, task 2.6)
 records that `GtkTreeListModel` hands out a new `GtkTreeListRow` for a node
 whose previous row object died, without its object data or handlers.
 Failing-first test: `test_the_folder_header_collapses_every_root`, two roots,

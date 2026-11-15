@@ -4410,7 +4410,7 @@ review", "Implementation decisions"); evidence in
     expansion-intent hook lives on `GtkTreeListRow` objects that GTK
     discards when no widget shows the row, so a collapse through a fresh row
     object never prunes `expanded_paths` and `schedule_child_state_restore`
-    expands the root again (new axiom, provisionally A121). The axioms are
+    expands the root again (new axiom A114). The axioms are
     now A118–A120 (`main` took A113; A115–A117 are held by
     `quiet-headless-session-services`). Still not merged; the final verdict
     campaign is queued as not runnable until the implementation lands.

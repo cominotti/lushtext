@@ -1860,6 +1860,24 @@ const CATALOGUE: &[Axiom] = &[
         probe: Some(probes::probe_a113),
     },
     Axiom {
+        id: AxiomId::new(114),
+        name: "a114_a_tree_list_row_object_nothing_references_is_replaced",
+        statement: "A GtkTreeListModel keeps no GtkTreeListRow object for a node nothing \
+                    references: once every reference is dropped the object is finalized, and \
+                    the next get_item for the node hands out a new object without the dead \
+                    one's handlers, while the node keeps its expansion; a row a list item is \
+                    bound to keeps its object",
+        dependent_designs: &[
+            "slice-large-directory-collapse R4/D20: the sidebar's collapse and expand entry \
+             points record expansion intent and refresh the row's watch contribution \
+             themselves, and the expansion hook is installed at factory bind as well as at \
+             splices, because a hook on a row object no widget shows dies with it",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a114),
+    },
+    Axiom {
         id: AxiomId::new(118),
         name: "a118_removing_bound_rows_replaces_their_row_widgets",
         statement: "On a mapped GtkListView over a GtkTreeListModel, removing rows a list item is \

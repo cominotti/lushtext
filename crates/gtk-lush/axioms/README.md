@@ -130,7 +130,7 @@ followed with LushText's budgeted workspace lists
 button. A118–A120 (what removing bound and unbound rows of a mapped tree list
 costs in row widgets, the tree expander's disclosure routes and how to own
 them, and a class rule drawing a checked arrow collapsed) followed with
-LushText's sliced sidebar collapse (`slice-large-directory-collapse`). Every sample prints its usage on `--help`/`-h` and
+LushText's sliced sidebar collapse (`slice-large-directory-collapse`). A114 (a tree list row object nothing references dies, and the next fetch hands out a new one without its handlers) followed with the same change's expansion-intent fix. Every sample prints its usage on `--help`/`-h` and
 refuses an unknown argument before GTK starts; a sample with its own modes
 declares them in a `SampleFlags` and calls `support::guard(&FLAGS)` first in
 `main` (`make check-gtk-axioms` checks it). Never run a sample without

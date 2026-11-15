@@ -90,7 +90,7 @@ times later than `main`. The revision therefore adds, beside what follows:
 - **A fix for `main`'s folder-header collapse,** which leaves a root expanded:
   the expansion-intent hook lived on row objects GTK discards, so the entry
   points now record intent themselves and the hook is installed at bind (new
-  axiom, provisionally A121).
+  axiom, A114).
 
 - **An owned, sliced collapse.** Every LushText route that collapses a
   directory goes through one section entry point:
@@ -150,7 +150,7 @@ times later than `main`. The revision therefore adds, beside what follows:
   sidebar evidence surface reports the collapse's state, steps and rows left.
 - **GTK axioms**, each with a probe, a sample and a ledger row. A118–A120
   are applied under those ids; the revision's fourth takes the next free id
-  at apply time (provisionally A121, design R1).
+  at apply time (A114, design R1).
   - A118: on a mapped `GtkListView`, a removal destroys the row widgets bound
     to the removed items inside `items-changed`, and creates fresh widgets for
     the rows that enter the band. Unclaimed widgets are never reused for other
@@ -162,7 +162,7 @@ times later than `main`. The revision therefore adds, beside what follows:
     generic widget vtable exposes its three class actions).
   - A120: a CSS rule on a class of the expander overrides the `:checked`
     arrow without changing the row's state.
-  - A121 (provisional): `GtkTreeListModel` keeps no `GtkTreeListRow` for a
+  - A114: `GtkTreeListModel` keeps no `GtkTreeListRow` for a
     node nothing references, so `get_item` hands out a new row object
     without the object data and `notify::expanded` handler of the one that
     died (design R4).

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A114 probe and sample (`slice-large-directory-collapse` R4): a
+  `GtkTreeListModel` keeps no row object for a node nothing references; the
+  next `get_item` hands out a new object without the dead one's handlers,
+  while the node keeps its expansion. Fixture `fixtures::a114`
+  (`row_object_fixture`, `RowObjectFixture`, `FIRST_CHILDREN`,
+  `SECOND_CHILDREN`).
 - A113 probe and sample (`diagnose-ci-only-reflow-guard-failure`): a
   `GtkTextView`'s aligned scroll to its first line (`scroll_to_iter` or
   `scroll_to_mark`, aligned at 0) rests the vertical value at the top margin
