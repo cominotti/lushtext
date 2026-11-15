@@ -75,6 +75,23 @@ If `GtkSourceMap` doesn't support the semantic overlay we need, build a custom w
 4. Minimap auto-hides when the file fits entirely in the viewport (no value added)
 5. Minimap respects the current color scheme (dark/light background)
 
+### Reflow settle and scrolls (2026-11-14, `restore-main-ci`)
+
+A width reflow burst (a sidebar animation, showing or hiding the minimap, a
+resize) pauses the editor's rest state, and the burst's settle restores the top
+anchor when that state says "at top". A scroll made during the burst used to be
+undone (the CI flake of
+`editor_page::test_minimap_native_slider_covers_the_visible_text_with_an_overscroll_margin`,
+`y = -6`). The settle now keeps a scroll made during the burst, told from a
+GTK reallocation by the value the last `changed` carried (ledger A112), and
+re-records the rest state; the top-anchor repair of a reallocation offset is
+kept and has its own widget test. While the minimap is hidden, a minimap
+refresh cancels a pending settle (it clears it before syncing the retired
+map); the cancel now takes the settle's rest-state record, so a kept scroll is
+not undone by the next reflow. The cancel still skips the top-anchor repair,
+which only an offset GTK does not produce would need (ledger A112's rewrap
+half). No phase of this plan changes.
+
 ## Architecture Considerations
 - **GtkSourceMap vs custom**: `GtkSourceMap` is the path of least resistance — it's
   maintained by the GtkSourceView team, handles font scaling, scroll sync, and click-to-

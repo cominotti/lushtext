@@ -2473,46 +2473,63 @@ fn test_directory_expansion_dispatches_fit_the_settle_budget() {
     );
 }
 
-/// `bound-lists-by-budget-not-count` tasks 2.4 and 8.3: what 16,384 expanded
+/// `bound-lists-by-budget-not-count` tasks 2.4 and 8.3: what 32,768 expanded
 /// rows really cost, presented, against what the directory budget charges
 /// them: resident high-water growth at most 5/4 of the charge. Prints the
-/// per-row growth the fixed charge is calibrated from.
+/// per-row growth.
+///
+/// Measured only once the resident set is quiescent (`restore-main-ci` D4).
+/// The window is presented and the folder scanned just before, and their
+/// asynchronous tail kept allocating for about a second after the refresh
+/// went idle; with the former 300 ms settle part of it landed in the measured
+/// window, more of it the slower the machine. That made the growth bimodal on
+/// CI, 2,362-2,375 or 2,534-2,537 B/row against a 2,430 B/row bound at 16,384
+/// rows, where the workstation measured 1,970-1,985. In a fixture with two
+/// more large sibling directories the overlap reproduced locally: 2,328-2,561
+/// B/row after 300 ms, 1,322-1,329 after a 5 s settle. Fitted on the
+/// workstation in separate processes without the wait, the growth is 1,644
+/// B/row plus about 5.3 MB, against a charge of 1,960 B/row. The test also
+/// measures 32,768 rows rather than 16,384, so any constant left weighs half
+/// as much per row, while a per-row undercharge still fails. With both, 20
+/// workstation runs measured 1,369-1,552 B/row; the expansion can reuse
+/// memory the setup tail freed, so the figure checks that the charge is not
+/// exceeded; it does not calibrate the charge.
 #[test]
 fn test_directory_retention_stays_within_its_charge() {
     use crate::common::{proc_status_kib, reset_vm_hwm};
     use lushtext_core::ui::sidebar::policy::{
         SIDEBAR_PATH_GRAPH_OVERHEAD, SIDEBAR_ROW_FIXED_CHARGE, SIDEBAR_ROW_PATH_COPIES,
     };
-    let tree = large_tree(&[("nested", 16 * 1024)], 800);
+    const ROWS: usize = 32 * 1024;
+    let tree = large_tree(&[("nested", ROWS)], 800);
     let nested = tree.root.join("nested");
     wait_until(Duration::from_secs(10), || {
         row_for_path(&tree.section, &nested).is_some()
     });
     wait_for_refresh_idle(&tree.section);
-    flush_after_delay(Duration::from_millis(300));
+    crate::common::wait_for_resident_quiescence(Duration::from_secs(30));
     reset_vm_hwm();
     let before_kib = proc_status_kib("VmRSS:");
     row_for_path(&tree.section, &nested)
         .expect("directory row")
         .set_expanded(true);
     wait_until(Duration::from_secs(120), || {
-        listing(&tree.section, &nested).directory_retained_entries == 16 * 1024
+        listing(&tree.section, &nested).directory_retained_entries == ROWS
     });
     wait_for_refresh_idle(&tree.section);
     flush_after_delay(Duration::from_millis(300));
     let growth = proc_status_kib("VmHWM:").saturating_sub(before_kib) * 1024;
     let path_len = nested.join(file_name(0)).as_os_str().len() as u64;
-    let charged = 16
-        * 1024
+    let charged = ROWS as u64
         * ((path_len + SIDEBAR_PATH_GRAPH_OVERHEAD) * SIDEBAR_ROW_PATH_COPIES
             + SIDEBAR_ROW_FIXED_CHARGE);
     println!(
-        "list-budget-evidence {{\"m\":\"sidebar-memory\",\"rows\":16384,\"path_len\":{path_len},\"growth_bytes\":{growth},\"charged_bytes\":{charged},\"growth_per_row\":{}}}",
-        growth / (16 * 1024)
+        "list-budget-evidence {{\"m\":\"sidebar-memory\",\"rows\":{ROWS},\"path_len\":{path_len},\"growth_bytes\":{growth},\"charged_bytes\":{charged},\"growth_per_row\":{}}}",
+        growth / ROWS as u64
     );
     assert!(
         growth * 4 <= charged * 5,
-        "16,384 rows grew the resident set by {growth} bytes, over 5/4 of the {charged} bytes charged"
+        "{ROWS} rows grew the resident set by {growth} bytes, over 5/4 of the {charged} bytes charged"
     );
     drop(tree.window);
 }

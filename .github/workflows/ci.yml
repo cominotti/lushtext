@@ -14,6 +14,12 @@ env:
   CARGO_DENY_VERSION: "0.19.8"
   CARGO_NEXTEST_VERSION: "0.9.137"
   CARGO_PUBLIC_API_VERSION: "0.52.0"
+  # The .crate's SHA-256 (its crates.io sparse-index cksum) and the one
+  # lockfile override scripts/install-cargo-public-api.sh applies: 0.52.0
+  # locks openssl-sys 0.9.88, which refuses Fedora 45's OpenSSL 4. The script
+  # fails once a release no longer needs the override (restore-main-ci D3).
+  CARGO_PUBLIC_API_SHA256: "80f55cea4022db86641f1ece5098c9df2f13d79624e61a461d5379dc5d4b7511"
+  CARGO_PUBLIC_API_OPENSSL_SYS_VERSION: "0.9.118"
   CARGO_SEMVER_CHECKS_VERSION: "0.48.0"
   GTK_LUSH_MSRV: "1.98.0"
   GTK_LUSH_PUBLIC_API_TOOLCHAIN: "nightly-2026-06-01"
@@ -77,6 +83,9 @@ jobs:
 
       - name: Workflow timeout policy
         run: make check-workflow-timeouts
+
+      - name: Flatpak CI build policy
+        run: make check-flatpak-ci-builds
 
       - name: Explicit-SIMD policy
         run: make check-explicit-simd
@@ -192,8 +201,12 @@ jobs:
             libadwaita-devel \
             gtksourceview5-devel \
             gcc \
+            gawk \
             git \
-            openssl-devel
+            gzip \
+            libcurl-devel \
+            openssl-devel \
+            tar
 
       # Dated nightly toolchains are not published as dtolnay/rust-toolchain
       # action refs; the dated pin must flow through the toolchain input. The
@@ -208,10 +221,16 @@ jobs:
         with:
           shared-key: fedora-45-gtk-lush-api
 
+      # Offline: a fake crate and a fake cargo (make check-cargo-public-api-install).
+      - name: Self-test the cargo-public-api install script
+        run: ./scripts/install-cargo-public-api.sh --self-test
+
       - name: Install advisory API tools
         run: |
           cargo install --locked cargo-semver-checks --version "${CARGO_SEMVER_CHECKS_VERSION}"
-          cargo install --locked cargo-public-api --version "${CARGO_PUBLIC_API_VERSION}"
+          # libcurl-devel above makes curl-sys link the image's libcurl,
+          # which builds against OpenSSL 4; its bundled curl does not.
+          ./scripts/install-cargo-public-api.sh
 
       - name: Run advisory GTK Lush API checks
         run: make gtk-lush-api-advisory GTK_LUSH_PUBLIC_API_TOOLCHAIN="${GTK_LUSH_PUBLIC_API_TOOLCHAIN}"
