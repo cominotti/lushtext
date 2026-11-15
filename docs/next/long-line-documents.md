@@ -4191,8 +4191,10 @@ separate change, in this order:
        (design D9). Fix by having `make cargo-sources` and the Flathub
        generator emit `config.toml`, or report it upstream to
        `flatpak/flatpak-builder-tools`.
-   - `nest-heavy-slices-under-user-slice` (implemented 2026-11-15, branch
-     `nest-heavy-slices-under-user-slice`; infrastructure, no app change).
+   - `nest-heavy-slices-under-user-slice` (merged 2026-11-15 as `719e2825`,
+     PR #104, archived as
+     `openspec/changes/archive/2026-11-15-nest-heavy-slices-under-user-slice/`;
+     infrastructure, no app change).
      Two problems with where agents' work ran. (A) Capped heavy work ran in
      `lushtext-heavy.slice`, which systemd places under the user manager
      itself, beside `app.slice`: `cpu.weight` 100 on CPUs 0-23 (68.8k
@@ -4236,7 +4238,7 @@ separate change, in this order:
      - **Deferred:** remove the legacy-slice accounting (`legacy_slice_of`,
        the `admitted_kib` loop, the two legacy self-test cases and the private
        legacy self-test slice) once no worktree branched before the merge SHA
-       remains.
+       `719e2825` remains.
      - **Deferred (CST's second answer, design D13):** memory-sized
        parallelism, raising `CARGO_BUILD_JOBS` from 4 in measured steps with
        the per-job peak and `btrfs-stall-report` memory lines as evidence, in

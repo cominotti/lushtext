@@ -96,7 +96,7 @@ jobs SHALL keep running one shard per job through
 
 ### Requirement: Parallel local shards are isolated from each other
 In a parallel local run, each shard SHALL run in its own admitted memory scope
-(`scripts/with-memory-cap.sh` inside `lushtext-heavy.slice`, capped by
+(`scripts/with-memory-cap.sh` inside the host-wide heavy slice, capped by
 `WIDGET_SHARD_MEMORY_MAX`), its own temporary-file scope
 (`scripts/with-temp-scope.sh --session-runtime`), its own D-Bus session, and
 its own headless compositor, with a distinct `XDG_RUNTIME_DIR` and Wayland
@@ -127,6 +127,10 @@ even if a retry recovered the test.
 #### Scenario: Interrupted run leaves nothing behind
 - **WHEN** a developer interrupts a parallel run with Ctrl-C
 - **THEN** every shard's session is stopped and its runtime directory and scope are removed
+
+#### Scenario: Shard scopes nest under the user manager's user.slice
+- **WHEN** a parallel local run admits a shard's memory scope on a host with a systemd user manager
+- **THEN** the scope's cgroup path lies under `user.slice/user-lushtext.slice/user-lushtext-heavy.slice`
 
 ### Requirement: Parallel local runs report per shard and fail as a whole
 A parallel local run SHALL relay each shard's output live with the shard's name

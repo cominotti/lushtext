@@ -325,7 +325,7 @@ other's scopes.
   `widget-test-ci-sharding`; no overlap with this MODIFIED one). Rerun tasks
   2.7 and 3.5, and the placement run of 2.6.
 - [x] 5.2 `openspec validate nest-heavy-slices-under-user-slice --strict`.
-- [ ] 5.3 State in the stage conclusion, for the maintainer, the question of
+- [x] 5.3 (The maintainer decided the D13 question on 2026-11-15: agents inherit the cpuset and never pin, `parallel-agent-work.md`. `for-cst.md` in the change's handoff directory carries the merge SHA `719e2825`, that decision and the verification steps.) State in the stage conclusion, for the maintainer, the question of
   design D13 item 1: CST advises that agents stop pinning their sessions with
   `taskset -c 8-23` and inherit the toolbox cpuset; keeping the pin is the
   maintainer's call, and this change works either way. After merge, write
