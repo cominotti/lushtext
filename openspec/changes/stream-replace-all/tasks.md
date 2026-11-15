@@ -187,7 +187,7 @@
 - [x] 4.5 Failing-first: another writer appends to the target during pass B,
   using a test hook after pass A. No rename happens, the file is skipped as
   `ChangedDuringReplace`, and its body and entry are removed (D5).
-- [x] 4.6 `replace/undo.rs`: streaming undo and rollback (D6). The existing
+- [ ] 4.6 `replace/undo.rs`: streaming undo and rollback (D6). The existing
   undo tests keep their names: the growth race, exactly at the limit, and the
   I/O failure. Add failing-first tests for a diverged file (not overwritten
   and retryable), for a body corrupted after the run (its digest mismatches,
@@ -223,7 +223,7 @@
   preview-ineligible matches (`LineTooLong`, `InvalidPreview`) in by file.
   Test the 16,384-file failure-heavy case for exact counts and the bounded
   list.
-- [x] 5.2 `ui/search_panel/policy.rs`: `replace_in_editor_availability` and
+- [ ] 5.2 `ui/search_panel/policy.rs`: `replace_in_editor_availability` and
   `rust_replacement_to_gtksourceview`, with unit and property tests and in
   the mutation scope. The axiom 1.3 (a) results decide the translation table.
 - [x] 5.3 `ui/search_panel/skipped_files.rs` (a called presentation surface):
@@ -242,7 +242,7 @@
     edited;
   - no row action for `LargerThanOpenTier`;
   - a Protected View open shows the notice.
-- [x] 5.5a Failing-first widget test: every file of a run is open with
+- [ ] 5.5a Failing-first widget test: every file of a run is open with
   unsaved changes. The early return in `ui/window/search.rs` ("No
   replacements to apply…") now produces the skip report, and Show Skipped
   Files lists each file with `UnsavedChanges` and the editor action.
@@ -273,7 +273,7 @@
 - [x] 6.1 Add `ReplaceProgress` atomics, and a progress poll on the
   notification bus with the search-progress delay and heartbeat (D8). The
   progress is announced once.
-- [x] 6.2 Failing-first: cancelling in the middle of the third of five files
+- [ ] 6.2 Failing-first: cancelling in the middle of the third of five files
   leaves the third untouched, restores the first two and clears the journal.
   The test drives `win.cancel-search-panel-replacements` and also the button,
   which becomes "Cancel Replace All".

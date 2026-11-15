@@ -968,6 +968,52 @@ fn a_cancelled_run_rolls_back_the_files_it_wrote_and_removes_its_journal() {
     );
 }
 
+#[test]
+fn a_rollback_with_less_free_space_than_the_reserve_restores_every_file() {
+    let dir = tempdir().expect("tempdir");
+    let journal = tempdir().expect("journal");
+    let files: Vec<_> = ["a", "b", "c"]
+        .iter()
+        .map(|name| {
+            let file = dir.path().join(format!("{name}.txt"));
+            fixture::write_text(&file, "needle\n");
+            file
+        })
+        .collect();
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let cancel_in_hook = cancel.clone();
+    let _free = fs_metadata::fake_free_space_for_test(AMPLE_FREE);
+    // Once the third file's body is written, the first two are replaced: the
+    // disk then drops far below the 1 GiB reserve (still far above what two
+    // restores write), and the run is cancelled. The seam is per thread and
+    // this apply runs on the test thread; the outer guard restores it.
+    register_after_pass_a_hook_for_test(&files[2], move |_| {
+        std::mem::forget(fs_metadata::fake_free_space_for_test(1024 * 1024));
+        cancel_in_hook.store(true, Ordering::Relaxed);
+    });
+    let replacements: Vec<_> = files
+        .iter()
+        .map(|file| make_replacement(file, 1, "needle", "replaced", 0..6))
+        .collect();
+
+    let result = apply_replacements(&replacements, &HashSet::new(), &cancel, journal.path());
+
+    assert!(
+        result
+            .expect_err("cancelled")
+            .to_string()
+            .contains("cancelled")
+    );
+    for file in &files {
+        assert_eq!(fixture::read_text(file), "needle\n");
+    }
+    assert!(
+        search_backup::load(journal.path())
+            .expect("load")
+            .is_empty()
+    );
+}
+
 // --- stream engine ------------------------------------------------------------
 
 fn engine(
