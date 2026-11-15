@@ -1,0 +1,28 @@
+2026-11-15T11:16:22-03:00 before label=ref-cpus cpus=8-23 reference=8-23 source=default loadavg=2.27 2.49 2.88
+      PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+     6766 danilo    20   0 1583536 424856  19956 S 147.6   0.4      6,30 jetbrains-toolb
+    60783 danilo    12  -8  101.7g 884096 240772 R  62.2   0.9     10,30 chrome
+  3690263 danilo    25   5 1450.9g 129528  68884 S  36.9   0.1  79:40.66 chrome
+   760434 danilo    20   0   11.2g 161896  46956 S  19.4   0.2  76:19.62 Isolated Web Co
+  2004227 danilo    25   5 1450.9g 147216  68528 S  15.5   0.1   4:13.82 chrome
+2026-11-15T11:18:27-03:00 after label=ref-cpus status=0 seconds=124.507 cpus=8-23 reference=8-23 source=default loadavg=2.38 2.39 2.79
+      PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+     6766 danilo    20   0 1583536 413400  19956 S 149.6   0.4      6,33 jetbrains-toolb
+  2053700 danilo    20   0  253396 216196   2860 S  11.5   0.2  38:26.84 resources-proce
+    60974 danilo    20   0  234864   5884   3640 R   3.8   0.0   0:00.04 top
+  2053237 danilo    20   0 1852032  48364   5176 S   3.8   0.0   5:12.13 resources
+  2359572 danilo    20   0 6813732 537780  68200 S   3.8   0.5  53:53.19 claude
+2026-11-15T11:20:03-03:00 before label=ref-cpus-override cpus=12-23 reference=12-23 source=override loadavg=1.93 2.25 2.70
+      PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+     6766 danilo    20   0 1583536 411240  19956 S 144.1   0.4      6,36 jetbrains-toolb
+  2053700 danilo    20   0  253396 216232   2860 S  11.5   0.2  38:31.93 resources-proce
+    65123 danilo    20   0  234864   5828   3584 R   3.8   0.0   0:00.04 top
+   759322 danilo    20   0 5252544 353884  73448 S   3.8   0.4 176:21.84 firefox
+    18335 danilo    20   0   52.4g  28512  24940 S   1.9   0.0   1:39.91 fastmail
+2026-11-15T11:22:08-03:00 after label=ref-cpus-override status=0 seconds=123.933 cpus=12-23 reference=12-23 source=override loadavg=2.06 2.19 2.62
+      PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+     6766 danilo    20   0 1583536 420584  19956 S 142.0   0.4      6,39 jetbrains-toolb
+  2359572 danilo    20   0 6813732 558312  69084 S   9.7   0.6  53:59.36 claude
+    67175 danilo    20   0  234864   5884   3640 R   3.9   0.0   0:00.03 top
+    18940 danilo    20   0 2699904 320928  45968 S   1.9   0.3 214:21.96 fractal
+    39553 danilo    25   5 1450.9g 213120  85900 S   1.9   0.2   2:17.23 chrome

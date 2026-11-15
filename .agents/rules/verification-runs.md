@@ -89,6 +89,14 @@ memory budget, and run it detached.
   afterwards.
 - Heavy work started through `scripts/heavy.sh` waits for a running campaign
   by itself; never bypass the helpers to start heavy work beside one.
+- **One CPU set per comparison.** A run on a CPU set other than the reference
+  (`scripts/measure.sh --print-reference-cpus`) is not comparable with
+  reference runs: a `LUSHTEXT_REFERENCE_CPUS` override, a record from before
+  the reference was explicit (no `reference=` in its `measure.sh` record), or
+  an unpinned lane run (`report.md` says which). Label it with its CPU set
+  wherever it is quoted. The interleaved sides of one verdict share one set.
+  During a game, when `measure.sh` refuses the reference, wait for the game to
+  end rather than override.
 
 ## Checkpoints
 
@@ -106,10 +114,10 @@ is in [`parallel-agent-work.md`](./parallel-agent-work.md).
 
 **The helpers are THE way agents run heavy work, measurements, and waits.**
 Each has a `--self-test`; `make check-agent-helpers` (in `make check-policy`)
-runs those three, the CI image lane's (`scripts/ci-image-widget-test.sh`,
-[`build.md`](./build.md), "CI image lane") and `shellcheck`, against
-temporary locks only. Their headers
-document the mechanics.
+runs those three, `scripts/with-memory-cap.sh`'s, the CI image lane's
+(`scripts/ci-image-widget-test.sh`, [`build.md`](./build.md), "CI image
+lane") and `shellcheck`, against temporary locks and private slices only.
+Their headers document the mechanics.
 
 ```
 scripts/heavy.sh [--mem <cap|none>] -- <command> [args...]       # every heavy non-measurement command
@@ -128,16 +136,27 @@ every worktree (resolved from `git rev-parse --git-common-dir`;
   Clippy) — goes through `scripts/heavy.sh`. It waits, holding nothing, until
   `scripts/with-memory-cap.sh --wait-admissible <cap>` would admit the cap
   (default `12G`), probes `INTENT` shared, takes `LOCK` shared for the one
-  command, and runs it as a child with `CARGO_BUILD_JOBS=4` and the inherited
-  CPU affinity inside `scripts/with-memory-cap.sh <cap>`. **Memory before
+  command, and runs it as a child with `CARGO_BUILD_JOBS=4` inside
+  `scripts/with-memory-cap.sh <cap>`. Its CPU affinity is the inherited one,
+  intersected with the slice's cpuset: the capped scope nests under the user
+  manager's `user.slice` and inherits the toolboxes' CPU policy, the kernel
+  refuses CPUs outside that cpuset, and a self-imposed mask (`taskset`) only
+  narrows it. By the host's CPU tooling (CST), heavy work runs on CPUs 12-23
+  in the idle class while a game runs. **Memory before
   locks**: a helper never waits for memory while holding `LOCK`, and never
   reserves memory while waiting for a lock. `make test`/`test-widget` admit
   their own per-shard scopes, so run them as `heavy.sh --mem none`.
 - **Measurements** — the responsiveness lane, interleaved benches, any timing
   verdict — go through `scripts/measure.sh`: `INTENT` exclusively, then `LOCK`
-  exclusively, so new heavy starts wait while the running ones drain. It gives
-  up after `--lock-timeout` seconds (default 1800), printing every holder and
-  exiting 75. It records the load and the top five CPU processes before and
+  exclusively, so new heavy starts wait while the running ones drain. Before
+  any lock it pins itself, and so the command, to the reference CPU set
+  (`--print-reference-cpus`, default `8-23`, overridden by
+  `LUSHTEXT_REFERENCE_CPUS`) and reads it back; it exits 78 when the set is not
+  available (a game narrows the toolbox cpuset), when the read-back differs, or
+  when the set changes during the lock wait or the command, and never measures
+  on the intersection. Its records carry `cpus=`, `reference=` and `source=`.
+  It gives up after `--lock-timeout` seconds (default 1800), printing every
+  holder and exiting 75. It records the load and the top five CPU processes before and
   after, and runs the command with `LUSHTEXT_ADMISSION_NOWAIT=1`. Build the
   measured binary first, with `heavy.sh`: `measure.sh` refuses to run inside
   heavy work (exit 2). Test-suite wall-time comparisons are not verdicts: run

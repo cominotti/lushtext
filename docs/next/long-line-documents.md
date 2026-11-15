@@ -76,7 +76,9 @@ documented deviation; every part's run id, load and co-running processes are in
 the table below). Headless `mutter 50.4 --virtual-monitor 1280x800@120`,
 `GSK_RENDERER=cairo`, caret blink off, GTK 4.22.5, Libadwaita 1.9.3, Pango
 1.57.1, GtkSourceView 5.20.0, GLib 2.88.3, kernel 7.2.9-200.fc44, Intel Core
-Ultra 9 285K, affinity CPUs 8–23 (16 E-cores, inherited, never widened).
+Ultra 9 285K, affinity CPUs 8–23 (16 E-cores, inherited, never widened; the
+reference CPU set, named explicitly by `scripts/measure.sh
+--print-reference-cpus` since `nest-heavy-slices-under-user-slice`).
 Watchdog tick 2 ms, idle slack ε 928 µs. 1,499 fixture-integrity checks, 0
 violations; 2 of the bisection rows were storage-contaminated and excluded by
 the lane. Axiom observations: a fresh `make gtk-axioms` on the same tree (A31:
@@ -253,7 +255,11 @@ then a follow-up for the flipped points (`--prior` the re-confirmation,
 idle-gated final parts (`final-dense` 18:59, `final-dense120` 19:11,
 `final-minimap` 19:16; each waited for 30 s of load < 4 with no process at
 ≥ 80 % CPU). Total measurement time 44 minutes. Same toolkit, kernel, headless
-lane and affinity (E-cores 8–23, inherited) as the reference run; watchdog tick
+lane and affinity (E-cores 8–23, inherited; from
+`nest-heavy-slices-under-user-slice` on, the reference CPU set is explicit,
+`scripts/measure.sh --print-reference-cpus`, and every earlier verdict ran on
+8-23, so they stay comparable; a record on 12-23 is a game-time run, not a
+reference run) as the reference run; watchdog tick
 2 ms, idle slack ε 295 µs; a fresh `make gtk-axioms` (A31: 112 rows per
 batch); 0 integrity violations. The machine was shared with another session's
 bursty `java` jobs (up to 1,355 % CPU on the same E-cores) during the
@@ -4185,6 +4191,71 @@ separate change, in this order:
        (design D9). Fix by having `make cargo-sources` and the Flathub
        generator emit `config.toml`, or report it upstream to
        `flatpak/flatpak-builder-tools`.
+   - `nest-heavy-slices-under-user-slice` (implemented 2026-11-15, branch
+     `nest-heavy-slices-under-user-slice`; infrastructure, no app change).
+     Two problems with where agents' work ran. (A) Capped heavy work ran in
+     `lushtext-heavy.slice`, which systemd places under the user manager
+     itself, beside `app.slice`: `cpu.weight` 100 on CPUs 0-23 (68.8k
+     CPU-seconds by 00:20 that day), so builds competed with a game at the
+     game's weight and escaped CST's toolbox policy (the inner `user.slice`:
+     weight 30, cpuset 0,2-6,8-23, idle class on 12-23 during a game). The
+     slices are now `user-lushtext.slice` / `user-lushtext-heavy.slice`, which
+     systemd nests under that inner slice; no CPU property is set on our
+     units (CST's answer); every scope checks its own placement (path under
+     both slices, affinity within the inner slice's effective cpuset) and
+     exits 78 otherwise; admission also counts the legacy slice, which it
+     never touches. (B) The timing reference CPU set was implicit (every
+     verdict ran on 8-23 only because agents were pinned there).
+     `scripts/measure.sh` now pins itself to one explicit reference set
+     before any lock (default 8-23, `LUSHTEXT_REFERENCE_CPUS` override,
+     `--print-reference-cpus`), reads it back, refuses (78) when it is not
+     available or changes, never measures on the intersection, records
+     `cpus=`/`reference=`/`source=` and exports `LUSHTEXT_MEASURE_CPUS`; the
+     lane runs on that set, fails before any case on a mismatch or a set over
+     its 16-CPU cap, records it in `environment.txt`, `run.json`
+     (`reference_run`) and `report.md`, and merges parts on different sets as
+     `mixed`. Decisions: design D1-D13 of the change (CST's second answer:
+     refuse instead of measuring on 8-23 ∩ allowed; memory-sized parallelism
+     and the agents' session `taskset` pin deferred). Kani: none (no proven
+     module touched). Axioms: none (host behaviour H1-H3 restated in the
+     wrapper's and `measure.sh`'s headers and re-probed by their self-tests).
+     Timing: evidence, not a verdict:
+     one lane case (`baseline/small`, plain) through `measure.sh` from a shell
+     pinned to 16-23 records the reference set, and one
+     `LUSHTEXT_REFERENCE_CPUS=12-23` run the override label; the placement
+     shim's cost is main's wrapper against the branch's, interleaved in one
+     `measure.sh` call. The coordinator ran these three `measure.sh` calls
+     after stage 3 had queued them. The change's `evidence/reference-cpus.md`
+     records both lane runs: `affinity=8-23`, `measure_cpus_source=default`,
+     `reference_run: true`; and `12-23`, `override`, `false`, with the
+     override label; loads 1.9-2.4. It also records two real 78 refusals, of
+     an unavailable reference and of a partly available one. The change's
+     `evidence/shim.md` records the shim's cost: about +20 ms per scope start
+     (median 0.03 s against 0.01 s, ten runs a side, load 2.0-2.2), at the
+     10 ms timer resolution.
+     - **Deferred:** remove the legacy-slice accounting (`legacy_slice_of`,
+       the `admitted_kib` loop, the two legacy self-test cases and the private
+       legacy self-test slice) once no worktree branched before the merge SHA
+       remains.
+     - **Deferred (CST's second answer, design D13):** memory-sized
+       parallelism, raising `CARGO_BUILD_JOBS` from 4 in measured steps with
+       the per-job peak and `btrfs-stall-report` memory lines as evidence, in
+       its own change. The other half of D13, whether agents keep their
+       session `taskset -c 8-23` pin, was decided by the maintainer on
+       2026-11-15: agents inherit the toolbox cpuset and never pin, and only
+       `measure.sh` pins (`.agents/rules/parallel-agent-work.md`, "CPU and
+       memory").
+     - **Observed, pre-existing, deferred:** `heavy.sh` can wait for memory
+       while holding LOCK shared. Its step 3 re-check passes, then another
+       copy admits a scope before the wrapper's own blocking admission, which
+       then waits under LOCK and delays a pending measurement (seen
+       2026-11-15 01:37: "48 GiB of 48 GiB admitted", a 36G scope of a
+       `--mem none` mutants run beside a 12G one, about eight shared holders
+       in front of another change's `measure.sh`). Legacy accounting does not
+       widen the window (probe and admission count the same slices). It needs
+       its own design, because `--mem none` callers admit under LOCK by
+       design. Details:
+       `.claude/handoffs/nest-heavy-slices-under-user-slice/stage3-notes.md`.
    Also recorded: a process-wide retained-byte ledger for many expanded
    huge sidebar directories (the budget, like the count before it, is per
    directory). From BN (besides `lighten-notes-browser-rows`, queued above):
