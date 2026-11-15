@@ -115,9 +115,9 @@ lane's behaviour outside `measure.sh`.
 systemd derives a slice's parent by removing the last dash component, so
 `user-lushtext-heavy.slice` lives at
 `user.slice/user-lushtext.slice/user-lushtext-heavy.slice` (probe 1). The
-self-test slice becomes `user-lushtext-heavy-selftest.slice`, a child of the
-real heavy slice, as `lushtext-heavy-selftest.slice` is today. Its scopes are
-one level deeper, so the real slice's admission does not count them, and their
+self-test slice becomes a per-run `user-lushtext-heavy-selftest-<pid>.slice`
+(D4), a descendant of the real heavy slice, as `lushtext-heavy-selftest.slice`
+is today. Its scopes are two levels deeper, so the real slice's admission does not count them, and their
 memory counts against the real slice's `MemoryMax` as it does today. The
 intermediate `user-lushtext.slice` is implicit and never configured.
 
@@ -160,11 +160,14 @@ when asked). `placement_verdict` is a pure function of six strings:
    `systemctl --user show -p ControlGroup --value user.slice <slice>`;
 4. own `Cpus_allowed_list`;
 5. the inner `user.slice`'s `cpuset.cpus` (configured, may be empty), read from
-   `/sys/fs/cgroup<(2)>/cpuset.cpus`;
+   `/sys/fs/cgroup<(2)>/cpuset.cpus`. A missing file (the cpuset controller is
+   not enabled for that slice) reads as empty;
 6. its `cpuset.cpus.effective`, read the same way.
 
 It passes when (1) starts with (2) + `/` and with (3) + `/`, and, when (5) is
-non-empty, the CPU set of (4) is a subset of (6). On failure it prints one line,
+non-empty, the CPU set of (4) is a subset of (6). A read that fails (no
+`/proc/self/cgroup` `0::` line, `systemctl --user show` failing or printing no
+ControlGroup) is a failed check that names the read, never a pass. On failure it prints one line,
 `with-memory-cap: scope placement: expected …, got …`, and exits 78 (EX_CONFIG)
 before running the command. CPU lists are parsed by `cpu_list_expand` (the
 `a-b,c` syntax) in `scripts/cpu-lists.sh` (D8), which `measure.sh` shares.
@@ -187,7 +190,9 @@ Why each choice:
   `--address-space` callers get no new process layer. Other callers gain one
   bash start and one `systemctl show` per capped command, a few tens of
   milliseconds against commands that run for seconds to hours. Task 2.6
-  records that cost. It is not a budget, because no timed path runs through it.
+  records that cost through `scripts/measure.sh`, main's copy against the
+  branch's, interleaved. It is not a budget, because no timed path runs
+  through it.
 - `systemd-run --scope` execs the command in the caller's own process, so the
   shim sees the caller's cgroup namespace. Toolbox shares the host namespace
   (probe 1 printed the full path). In a private namespace the path would be
@@ -211,7 +216,7 @@ keep starting scopes in `lushtext-heavy.slice` for a while.
 
 - `admitted_kib` loops over `"$HEAVY_SLICE"` and `legacy_slice_of
   "$HEAVY_SLICE"` (the name without its `user-` prefix: `lushtext-heavy.slice`,
-  or `lushtext-heavy-selftest.slice` in the self-test). It applies the existing
+  or the self-test's private legacy slice, below). It applies the existing
   per-scope body to each slice whose ControlGroup exists. That body is whatever
   main has: today the `memory.max` sum, after `reduce-build-disk-writes` the
   live-PID rule. This keeps the merge surface to the loop header.
@@ -220,10 +225,24 @@ keep starting scopes in `lushtext-heavy.slice` for a while.
 - Residual, accepted and bounded: an old copy counts only the legacy slice. So
   while a new-slice scope runs, an old copy can admit a cap that the new-slice
   scope has already reserved. Both copies still require `MemAvailable` ≥ cap +
-  16G reserve. Each slice keeps its own `MemoryMax` (48G), and every scope keeps
-  its own cap with no swap. The window closes when every active worktree has
-  merged main. The coordinator tells each run to merge origin/main before its
-  final gates.
+  16G reserve. Each slice keeps its own `MemoryMax` (48G), so the nominal
+  ceiling over both families is 96G, twice the host-wide budget, until the
+  window closes. What bounds it in practice is the per-admission
+  `MemAvailable` ≥ cap + 16G check on the 94 GB host, and every scope's own cap
+  with no swap. The window closes when every active worktree has merged main.
+  The coordinator tells each run to merge origin/main before its final gates;
+  a worktree that runs heavy work for days should merge sooner.
+- The self-test must not see other runs' scopes, nor show its scopes to them.
+  Old copies' self-tests run concurrently in other worktrees and start 2G
+  scopes in `lushtext-heavy-selftest.slice`, and with legacy accounting a shared
+  self-test slice would count them in both directions: a fit-expecting case
+  (`reduce-build-disk-writes` adds one at a 3G budget) would then read 75. The
+  self-test therefore uses a per-run slice, `user-lushtext-heavy-selftest-<pid>.slice`.
+  It still nests under the real heavy slice. Its legacy slice is
+  `lushtext-heavy-selftest-<pid>.slice`. It stops both private slices when it
+  ends; no other process can be using them. The rule that legacy slices are
+  never stopped applies to the real `lushtext-heavy.slice` and to the shared
+  `lushtext-heavy-selftest.slice`.
 - The wrapper never stops, reverts or resizes the legacy slices:
   - stopping a slice stops its scopes, and an old copy may be starting one;
   - lowering the legacy `MemoryMax` would OOM-kill old work.
@@ -236,7 +255,9 @@ keep starting scopes in `lushtext-heavy.slice` for a while.
   reads `populated 0`.
 - The legacy branch is temporary. Its removal is recorded as a deferral in the
   programme record: once no worktree branched before the merge SHA remains,
-  delete `legacy_slice_of` and the loop.
+  delete `legacy_slice_of`, the loop and the two legacy self-test cases. Until
+  then every self-test run creates the top-level `lushtext.slice` again for its
+  private legacy slice, which is expected.
 
 Rejected: a migration that moves running scopes into the new slice. systemd
 cannot re-parent a running scope.
@@ -265,7 +286,11 @@ expects the slice's whole set. The cgroup assertion drops the literal
 
 Self-test cases that need a CPU outside the cpuset compute it at run time, as
 the first online CPU that `cpuset.cpus.effective` lacks. When every online CPU
-is in the cpuset, they skip and print why. No test names a CPU number.
+is in the cpuset, they skip and print why. No test names a CPU number. A
+caller pinned to such a CPU cannot be made inside the toolbox (the kernel
+refuses a disjoint mask, H3), so the case that needs one starts its caller in a
+transient scope in `app.slice` (cpuset 0-23 here), as probe 3 did, and runs the
+wrapper from there.
 
 ### D7. Risk: systemd-oomd candidate set (recorded, no change)
 
@@ -286,8 +311,8 @@ in `build.md` so a future oomd kill of a toolbox is traced here.
   `measure.sh --print-reference-cpus` prints the effective value, so docs and
   tests never copy the literal. 8-23 is the set of every earlier verdict:
   programme record "affinity (E-cores 8–23, inherited)",
-  `docs/benchmarks/transient-file-load.md`, and lane `environment.txt` files
-  with `affinity=8-23`.
+  `docs/benchmarks/transient-file-load.md`, and the lane `environment.txt`
+  files, all 20 of which on disk on 2026-11-15 record `affinity=8-23`.
 - **Allowed set = the cgroup's effective cpuset, not the caller's mask.**
   `measure.sh` reads its own `0::` path from `/proc/self/cgroup`. It walks up to
   the nearest directory under `/sys/fs/cgroup` that has `cpuset.cpus.effective`
@@ -296,8 +321,10 @@ in `build.md` so a future oomd kill of a toolbox is traced here.
   set the kernel lets the process use. A caller pinned narrower than the
   reference (say 12-23 by its own choice) is widened to the reference: the
   reference wins over an incidental caller mask. That does not contradict the
-  lane's "never widened" scenario. The lane still never widens the mask it
-  inherits, and under `measure.sh` the mask it inherits is the reference.
+  lane's "never widened" rule. The lane still never widens the mask it
+  inherits, and under `measure.sh` the mask it inherits is the reference. Under
+  `measure.sh` the lane also never trims it (D9), which is why the core-cap
+  scenario is MODIFIED to apply outside `measure.sh` only.
 - **Apply, then read back, and never intersect.** Order inside `measure.sh`:
   parse arguments, then the existing inside-heavy-work refusal (exit 2, which
   stays first), then the reference check, then the locks. The check is:
@@ -316,8 +343,9 @@ in `build.md` so a future oomd kill of a toolbox is traced here.
   refusing, because a CST flip can fall between the two reads (D3). The lock
   wait can last up to `--lock-timeout` (1800 s), so once both locks are held
   `measure.sh` reads its affinity again before the `before` record. If the set
-  changed, it releases the locks and exits 78 without running the command. The command inherits the mask. The before/after
-  `snapshot` processes run pinned too, which is harmless.
+  changed, it releases the locks and exits 78 without running the command.
+  The command inherits the mask. The before/after `snapshot` processes run
+  pinned too, which is harmless.
 - **The set may change during the run.** CST narrows the cpuset at game start,
   and the kernel then shrinks every task's effective mask (probe 3's rule).
   After the command, `measure.sh` reads its own affinity again. If it differs
@@ -339,6 +367,13 @@ in `build.md` so a future oomd kill of a toolbox is traced here.
   runs and is recorded `source=override`, so the run is labelled non-reference.
   `verification-runs.md` says such a run is not comparable with the reference
   and that interleaved sides must share one set.
+- **Callers that are tests.** `heavy.sh --self-test` runs `measure.sh -- true`
+  directly twice (the nested-heavy and leftover-daemon cases) and expects it to
+  run. With the default 8-23 those cases would exit 78 during every game and
+  on any host without CPUs 8-23. They run in the pre-commit hook, so every
+  commit would then fail. `heavy.sh`'s self-test therefore exports
+  `LUSHTEXT_REFERENCE_CPUS` set to its own affinity, as `measure.sh`'s does
+  (task 3.1). No other script in the repo calls `measure.sh`.
 
 Rejected alternatives:
 
@@ -346,7 +381,8 @@ Rejected alternatives:
   run under `measure.sh`, so the reference belongs where every timing run
   passes.
 - **Pin to reference ∩ allowed.** That is the silent change (B) exists to
-  remove.
+  remove. CST's second answer (item 2) worded the pin as "8-23 ∩ allowed".
+  This design deliberately refuses instead (D13).
 - **Wrap the command in `taskset -c R`.** That leaves `measure.sh`'s after-check
   with nothing to read. Pinning itself gives it a mask to read before and after.
 
@@ -381,7 +417,9 @@ Recording:
 `merge_runs` today copies `runs[0]` and so takes the first part's affinity.
 When the parts' `affinity`, `measure_cpus` or `measure_cpus_source` differ,
 the merged `run.json` instead records `affinity: "mixed"` with a per-part list
-in `merged_from`, and `reference_run: false`. The report prints
+in `merged_from`, and `reference_run: false`. A part whose `run.json` lacks
+the fields (written before this change) counts as unset, so it is equal to an
+unpinned part and differs from a pinned one. The report prints
 `affinity: mixed (parts ran on different CPU sets: not comparable)`. The C6
 side comparison already reads `merged_from`. It is not changed beyond carrying
 the per-part set.
@@ -391,7 +429,8 @@ the per-part set.
 `heavy.sh` keeps inheriting the caller's affinity. With the nesting, that
 affinity is bounded by the inner `user.slice`'s cpuset (D3). Pinning builds to
 8-23 would waste the CPUs CST grants and gain nothing. Only measurements need a
-stable set.
+stable set. Agents that pin their own sessions (D13 item 1) narrow that set
+for their own heavy work. The slice cannot widen it.
 
 ### D11. The host fact (B) relies on
 
@@ -411,7 +450,48 @@ on CST's answer that scopes under the inner `user.slice` get it "regardless of
 the scope's MemoryMax/CPUWeight". That follows from cgroup v2 (`cpu.idle` on
 an ancestor applies to its subtree). Task 2.6 records `cpu.idle` and the
 scope's effective cpuset if a game happens to run during implementation, and
-otherwise says it was not observed. No check asserts it (CST's answer).
+otherwise says it was not observed. No check asserts it (CST's answer). It is
+therefore a reliance of this design, not a spec scenario: the spec asserts
+only what a check can observe (the scope nests under the inner `user.slice`
+and sets no CPU property; its affinity lies within the inner slice's effective
+cpuset, whatever that is at the time). Whether a game runs is read from the
+existence of CST's `game.state` file (`/run/host/run/cpu-setup/game.state`
+from a toolbox, `/run/cpu-setup/game.state` on the host), never its contents
+(CST: best effort, format changing). That is evidence only, never a gate.
+
+### D13. CST's second answer (00:45), item by item
+
+CST wrote a second answer after the proposal was first committed
+(`cst-answer.md`, "answer 2", marked "in scope for this change"). CST is
+another agent session; its items are advice to weigh, not requirements. Each
+item's disposition:
+
+1. **"Inherit, never pin: agents drop `taskset`; update the rules that tell
+   agents to pin."** No rule, skill or runbook in the repo tells agents to
+   pin (`git grep taskset` over `.agents/`, `docs/runbooks/`, `AGENTS.md` finds
+   none). The `build.md` passage CST cites ("16 CPUs taken from the inherited
+   mask") is the lane's own cap, kept by D9. The `taskset -c 8-23` that agents
+   run under comes from the maintainer's session instructions, outside the
+   repo. Changing it is the maintainer's decision, so this change neither adds
+   nor removes it. With the nesting, an agent's pin can only narrow what CST
+   grants (H3), which costs CPUs, not correctness. Task 4.2 makes the rules say
+   that heavy work inherits the toolbox cpuset and that a self-imposed mask
+   only narrows it. The question goes to the maintainer through the stage
+   conclusion and `for-cst.md`.
+2. **"Only `measure.sh` pins: 8-23 ∩ allowed."** Adopted, except the
+   intersection. `measure.sh` refuses instead of measuring on the intersection
+   (D8), because an intersected run is the silent change of reference that (B)
+   removes. `cst-asks.md` tells CST.
+3. **"Size parallelism by memory; raise `CARGO_BUILD_JOBS` 4 → 6 → 8 while
+   watching btrfs-stall-report."** Deferred to its own change. It needs a
+   per-job memory peak measured across heavy runs, it changes every build's
+   memory footprint, and 2026-11-14 already had two memcg OOM kills at today's
+   fixed counts (CST's own note). This change keeps every count (CPU-count
+   audit). The deferral goes to the programme record (task 4.6).
+4. **"`game.state` exists while the game profile is on; no pause policy."**
+   Used only as evidence (D12). No pause, no gate, no message depends on it.
+   `measure.sh` refuses on the cpuset itself, which is what matters for a
+   reference run.
 
 ## Axioms relied on
 
@@ -436,7 +516,9 @@ partial-overlap case). H2 is covered by the placement case's affinity check.
 - Timed paths touched: which CPUs `measure.sh` runs its command on. No budget
   constant, lane threshold or verdict changes.
 - Evidence, not a verdict: one lane case (`baseline/small`, plain variant,
-  quick tier) is run through `measure.sh` from a shell without `taskset`. It
+  quick tier) is run through `measure.sh` from a shell pinned to a proper
+  subset of the reference (its upper half, computed at run time), so the
+  caller's mask differs from the reference without leaving the agents' 8-23. It
   shows `environment.txt` and `run.json` recording `affinity=8-23`,
   `measure_cpus=8-23`, `measure_cpus_source=default` and `reference_run: true`.
   One `LUSHTEXT_REFERENCE_CPUS=12-23` run of the same case shows the override
@@ -445,6 +527,14 @@ partial-overlap case). H2 is covered by the placement case's affinity check.
   records the same affinity whenever the caller is pinned to 8-23, so the change
   cannot move a figure for an existing pinned verdict. It removes the dependence
   on the caller's pinning.
+- The placement shim's cost (D3): `with-memory-cap.sh 64M true`, main's copy
+  (`git show origin/main:scripts/with-memory-cap.sh`) against the branch's,
+  five runs each per round, two rounds per side interleaved main → branch →
+  main → branch, every round through `scripts/measure.sh`. Non-verdict
+  figures, recorded with their 1-minute load. They are not compared with a
+  budget, because no timed path runs a capped scope.
+- Self-test cases that need a caller outside the cpuset run only `/proc` reads
+  on that CPU, for a few milliseconds. They put no load outside 8-23.
 - Heavy work under the nesting: test-suite wall times, never verdicts, may grow
   under desktop load (weight 30) and stall during a game. That is the accepted
   loss.

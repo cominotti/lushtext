@@ -47,9 +47,10 @@ was 8-23. `scripts/measure.sh` sets no affinity. The responsiveness lane takes
 "the first 16 CPUs of the inherited affinity". On 2026-11-15 CST widened the
 toolbox cpuset to 0,2-6,8-23 (22 CPUs, P-cores included). From an unpinned
 toolbox shell the lane would now measure on 0,2-6,8-17, a mix of P-cores and
-E-cores, and nothing would record that the reference changed. Lane artifacts
-already hold runs on 8-23 and on 12-23 (game time) side by side, with nothing
-marking which one is the reference. The kernel makes this easy to miss:
+E-cores, and nothing would record that the reference changed. The 20 lane
+`environment.txt` files on disk on 2026-11-15 all record `affinity=8-23`. A run
+started while a game narrows the cpuset would record 12-23, and nothing in the
+artifacts would mark it as off the reference. The kernel makes this easy to miss:
 `taskset -c 1,8` in a cpuset without CPU 1 succeeds and leaves the command on
 CPU 8 alone (measured, design "Baseline").
 
@@ -60,7 +61,9 @@ Both changes are worth doing as described.
 - **(A) Rename the slices** so systemd nests them under the inner
   `user.slice`: `lushtext.slice` becomes `user-lushtext.slice` (implicit, never
   configured) and `lushtext-heavy.slice` becomes `user-lushtext-heavy.slice`.
-  The self-test slice becomes `user-lushtext-heavy-selftest.slice`. The override
+  The self-test slice becomes a per-run
+  `user-lushtext-heavy-selftest-<pid>.slice`, so concurrent self-tests in other
+  worktrees never count each other's scopes. The override
   guard accepts only `user-lushtext-heavy*.slice` and names the new prefix when
   it refuses an old one.
 - Set no CPU property on our slices or scopes. They inherit the inner
@@ -129,6 +132,11 @@ Both changes are worth doing as described.
 - No change to memory caps, the 48G host-wide budget, the reserve, admission
   timing or the lock protocol.
 - No affinity for heavy non-measurement work. Agents may still pin themselves.
+- None of CST's second answer (`cst-answer.md`, 00:45) beyond (B): no repo rule
+  tells agents to pin, so there is nothing to drop; memory-sized parallelism
+  (raising `CARGO_BUILD_JOBS` from 4) is a separate, measured change; the game
+  signal `game.state` is only recorded as evidence. Design D13 gives the
+  disposition of each item and the deferrals.
 - No automatic cleanup of the legacy slices. An empty legacy slice holds no
   process and no budget. Its runtime drop-ins live in `/run` and go away when
   the user manager stops (logout or reboot).
@@ -138,7 +146,8 @@ Both changes are worth doing as described.
 ## User-visible impact
 
 - The desktop and games: heavy builds no longer compete with a game at equal
-  weight. During a game they are idle class and confined to CPUs 12-23, like the
+  weight. During a game they are confined to CPUs 12-23 and, by CST's answer
+  (not observed during the spec stage, design D12), in the idle class, like the
   toolboxes. Outside games they run on whatever cpuset CST grants the toolboxes
   (0,2-6,8-23 today).
 - Loss compared with main (accepted by the maintainer): all heavy work runs at
@@ -172,8 +181,13 @@ Both changes are worth doing as described.
   the host-wide heavy slice, and gains a scenario for the nesting. Every
   existing scenario keeps its name.
 - `responsiveness-measurement`: ADDED requirement "A lane run through
-  scripts/measure.sh runs on and records the reference CPU set". The existing
-  core-cap scenario is unchanged.
+  scripts/measure.sh runs on and records the reference CPU set". MODIFIED
+  requirement "A responsiveness lane measures the real binary headlessly": its
+  scenario "The lane respects the core cap" (name kept) now applies when the
+  lane is not run under `measure.sh`. Under `measure.sh` an inherited reference
+  over 16 CPUs fails the lane instead of being trimmed, which the unmodified
+  scenario would contradict. The requirement's text and its other scenarios are
+  unchanged.
 
 ## Impact
 

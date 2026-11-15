@@ -13,17 +13,17 @@
 - **THEN** the command's CPU affinity is that effective cpuset, as read from `/sys/fs/cgroup` at run time
 - **AND** setting an affinity disjoint from that cpuset inside the scope fails
 
+#### Scenario: A caller wider than the cpuset is narrowed to it
+- **WHEN** a caller whose affinity includes every online CPU starts a capped command on a host where some online CPU lies outside the inner `user.slice`'s effective cpuset
+- **THEN** the command's CPU affinity is a subset of that effective cpuset
+
 #### Scenario: A caller pinned inside the cpuset keeps its mask
 - **WHEN** a caller pinned to a subset of the inner `user.slice`'s effective cpuset starts a capped command
 - **THEN** the command's CPU affinity is the caller's mask
 
-#### Scenario: Game-time demotion reaches heavy work
-- **WHEN** CST's game profile sets the inner `user.slice` to `CPUWeight=idle` and `AllowedCPUs=12-23` while a capped command runs
-- **THEN** the command runs in the idle class on CPUs 12-23 with no property set by the wrapper
-
 #### Scenario: No CPU property is set
 - **WHEN** a capped scope runs
-- **THEN** `systemctl --user show` reports neither `CPUWeight` nor `AllowedCPUs` set on the scope, on `user-lushtext-heavy.slice` or on `user-lushtext.slice`
+- **THEN** `systemctl --user show` reports `CPUWeight=[not set]` and an empty `AllowedCPUs=` for the scope, `user-lushtext-heavy.slice` and `user-lushtext.slice`
 
 #### Scenario: An old slice name is refused
 - **WHEN** `LUSHTEXT_HEAVY_SLICE` names `lushtext-heavy-selftest.slice`
@@ -37,7 +37,7 @@ The scope's first process SHALL check that its cgroup path lies under the Contro
 - **THEN** the check passes and the command runs with its arguments unchanged, the same exit status and the same signals
 
 #### Scenario: A process outside the heavy slice is refused
-- **WHEN** the placement check runs in a process whose cgroup is the toolbox's `libpod-*.scope`, which is under `user.slice` but outside the heavy slice
+- **WHEN** the placement check for a heavy slice runs in a process whose cgroup lies outside that slice, such as the toolbox's `libpod-*.scope` (under `user.slice`) or a scope of another heavy slice
 - **THEN** it exits 78 and the message names the heavy slice's ControlGroup and the actual path
 
 #### Scenario: A CPU outside the inherited set is refused
@@ -45,8 +45,12 @@ The scope's first process SHALL check that its cgroup path lies under the Contro
 - **THEN** it exits 78 and the message names both CPU lists
 
 #### Scenario: No configured cpuset means only the path is checked
-- **WHEN** the inner `user.slice` has an empty `cpuset.cpus`
+- **WHEN** the inner `user.slice`'s `cpuset.cpus` is empty or absent
 - **THEN** a scope correctly placed in the heavy slice passes whatever its affinity
+
+#### Scenario: A failed read refuses
+- **WHEN** the check cannot read its own cgroup path or a ControlGroup from `systemctl --user show`
+- **THEN** it exits 78 naming the read that failed, and the command does not run
 
 #### Scenario: Nested and uncapped runs start no check
 - **WHEN** a capped command runs a nested capped command, or a command runs with the cap `none`
@@ -56,7 +60,7 @@ The scope's first process SHALL check that its cgroup path lies under the Contro
 While the legacy slice of the same family exists (`lushtext-heavy.slice` for `user-lushtext-heavy.slice`), admission SHALL count the scopes in both slices by the same per-scope rule. The admission lock file SHALL keep its name, so wrapper copies from before the rename serialize with current ones. The wrapper SHALL NOT stop, revert or resize a legacy slice.
 
 #### Scenario: A legacy scope's cap is counted
-- **WHEN** a 2G scope runs in the legacy self-test slice and a NOWAIT admission asks for 2G under a 3G budget
+- **WHEN** a 2G scope runs in the legacy slice of the self-test's private slice and a NOWAIT admission asks for 2G under a 3G budget
 - **THEN** the admission exits 75 without starting a scope
 
 #### Scenario: No legacy slice
@@ -66,3 +70,7 @@ While the legacy slice of the same family exists (`lushtext-heavy.slice` for `us
 #### Scenario: The legacy slice is left alone
 - **WHEN** the wrapper admits and starts a scope while the legacy slice holds a running scope
 - **THEN** the legacy slice's `MemoryMax`, drop-ins and scopes are unchanged
+
+#### Scenario: Concurrent self-tests do not count each other
+- **WHEN** `with-memory-cap.sh --self-test` runs while another worktree's self-test, of either the current or the pre-rename wrapper, holds scopes in its own self-test slice
+- **THEN** no admission case of this run counts those scopes, because this run uses a per-run self-test slice and per-run legacy slice

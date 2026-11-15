@@ -53,6 +53,10 @@ The before and after records of `measure.sh` SHALL carry `cpus=<affinity read ba
 - **WHEN** `measure.sh --self-test` runs on a host whose cgroup does not allow CPUs 8-23, such as a CI runner
 - **THEN** it sets the reference from the CPUs it is allowed, computes any unavailable CPU it needs at run time, skips a case that needs one when none exists, and passes
 
+#### Scenario: Tests that call measure.sh pass during a game
+- **WHEN** `heavy.sh --self-test`, which runs real measurements, runs while the toolbox cpuset excludes part of the default reference (a game profile, or a host without CPUs 8-23)
+- **THEN** its measurements run on its own affinity as an override and the self-test passes, so the pre-commit hook does not fail for the host's CPU state
+
 ### Requirement: The CPU set is re-checked across waits and flips
 `measure.sh` SHALL read its affinity again once both locks are held and before the `before` record, and SHALL exit 78 without running the command when the set changed during the lock wait. A failing CPU comparison SHALL be read once more before refusing, so a single host cpuset flip between two reads does not refuse a valid run.
 

@@ -6,12 +6,16 @@ restated in the wrapper and `measure.sh` headers and re-probed by the
 self-tests below.
 
 Every heavy command goes through `scripts/heavy.sh [--mem <cap>] -- <cmd>`, one
-per call, and every commit through `scripts/heavy.sh --mem none -- git commit -F
-<file>` (signed, conventional, staged by name). Work only in
+per call, and every commit through `scripts/heavy.sh -- git commit -F <file>`
+(default cap: the hook runs Clippy; signed, conventional, staged by name). Work only in
 `.claude/worktrees/nest-heavy-slices-under-user-slice`. No self-test names a CPU
 number: CPUs inside or outside the cpuset are computed at run time from
 `/sys/fs/cgroup` and `/sys/devices/system/cpu/online`, and a case that needs a
-CPU that does not exist on the host skips and says why (design D6).
+CPU that does not exist on the host skips and says why (design D6). The
+wrapper self-test runs in a per-run slice, `user-lushtext-heavy-selftest-$$.slice`,
+whose legacy slice is `lushtext-heavy-selftest-$$.slice`, and stops both at the
+end (design D4), so concurrent self-tests in other worktrees never count each
+other's scopes.
 
 ## 1. Failing-first self-test cases for (A) (no behaviour change yet)
 
@@ -32,6 +36,17 @@ CPU that does not exist on the host skips and says why (design D6).
     of the effective cpuset. Fails today, because the scope gets all online
     CPUs (design probe 2). Also a fixture case for the re-read: a verdict
     whose first CPU reading disagrees and whose second agrees passes.
+  - disjoint caller (needs an online CPU `o` outside the effective cpuset,
+    otherwise skip): from `systemd-run --user --scope --slice=app.slice -p
+    MemoryMax=64M taskset -c o <wrapper> 64M sh -c '…'`, the inner command's
+    `Cpus_allowed_list` equals the inner `user.slice`'s effective cpuset as
+    sets, and `taskset -c o true` inside the scope fails. Fails today: the
+    command keeps `o`, and the inner `taskset` succeeds (design probe 3).
+  - no CPU property: `systemctl --user show -p CPUWeight -p AllowedCPUs` on
+    the scope (its unit from `/proc/self/cgroup`), the slice from
+    `--print-slice` and `user-lushtext.slice` print `CPUWeight=[not set]` and
+    `AllowedCPUs=`. This is a guard of a non-change, so it passes on main too
+    (with main's slice names); record it as such, not as red.
   - the guard: `LUSHTEXT_HEAVY_SLICE=lushtext-heavy-selftest.slice` exits 2
     and names `user-lushtext-heavy`. Fails today: accepted.
   - the checker with fixtures (`--placement-verdict <six values>`, design D3):
@@ -43,17 +58,26 @@ CPU that does not exist on the host skips and says why (design D6).
     - the list syntax `8-11,16,20-23`.
 
     Each exits 0 or 78. Fails today: unknown option.
-  - refusal in a real process: `--exec-in-scope` run directly in the caller's
-    own cgroup (the toolbox `libpod` scope, outside the heavy slice) exits 78
-    and does not run its command, so a marker file stays absent. Fails today:
-    unknown option.
-  - legacy accounting: start a legacy self-test scope, `systemd-run --user
-    --scope --slice=lushtext-heavy-selftest.slice -p MemoryMax=2G sleep 10`.
+  - refusal in a real process: `--exec-in-scope "$HEAVY_SLICE" - …`, with the
+    self-test's private slice, run directly in the caller's own cgroup exits
+    78 and does not run its command, so a marker file stays absent. The
+    caller's cgroup is the toolbox `libpod` scope, or a real heavy scope when
+    the self-test itself runs under `heavy.sh` (the commit hook); both lie
+    outside the private slice. Fails today: unknown option.
+  - a failed read: `--placement-verdict` with an empty ControlGroup exits 78
+    and names the read.
+  - legacy accounting: start a scope in the private legacy slice,
+    `systemd-run --user --scope --slice=lushtext-heavy-selftest-$$.slice -p
+    MemoryMax=2G sleep 10`.
     Then `LUSHTEXT_ADMISSION_NOWAIT=1 LUSHTEXT_HEAVY_MEMORY_MAX=3G
     LUSHTEXT_MEMORY_RESERVE=1G <wrapper> 2G true` must exit 75. Then kill the
     sleeper. This case cannot be red on main, which has no rename. Its red run
     is the intermediate state in task 2.3 (renamed, no loop yet).
-  - legacy left alone: the legacy self-test slice's `MemoryMax` and drop-in
+  - isolation: a 2G `sleep 10` scope in the shared
+    `user-lushtext-heavy-selftest.slice` (where no run counts scopes) does not
+    stop a NOWAIT 2G admission under a 3G budget and a 1G reserve from exiting
+    0. Red if the self-test used the shared slice;
+  - legacy left alone: the private legacy slice's `MemoryMax` and drop-in
     list (`systemctl --user show -p MemoryMax -p DropInPaths`) are the same
     before and after a current-slice admission.
 - [ ] 1.3 In `heavy.sh --self-test`, change the "capped scope" case as design D6
@@ -68,7 +92,8 @@ CPU that does not exist on the host skips and says why (design D6).
 ## 2. The rename, the check and the transition (design D1-D7)
 
 - [ ] 2.1 `HEAVY_SLICE` defaults to `user-lushtext-heavy.slice`, the self-test
-  slice is `user-lushtext-heavy-selftest.slice`, and the guard follows D5.
+  slice is the per-run `user-lushtext-heavy-selftest-$$.slice` (stopped with its
+  legacy slice when the self-test ends), and the guard follows D5.
   `ADMISSION_LOCK` keeps its file name. Add `--print-slice`, which prints
   `$HEAVY_SLICE`.
 - [ ] 2.2 Add `scripts/cpu-lists.sh`, sourced by the wrapper and later by
@@ -94,21 +119,33 @@ CPU that does not exist on the host skips and says why (design D6).
   `heavy.sh`'s header, step 4: "the CPU affinity this process inherited,
   intersected with the slice's cpuset".
 - [ ] 2.6 Real placement. Run `scripts/heavy.sh -- sh -c 'cat /proc/self/cgroup;
-  grep Cpus_allowed_list /proc/self/status; nproc'`. Run one parallel widget
-  shard, whose scope `widget-shards.py` admits itself: `scripts/heavy.sh --mem
-  none -- ./scripts/widget-shards.py parallel <smallest shard>`. In
+  grep Cpus_allowed_list /proc/self/status; nproc'`. For the widget-shard
+  scope, make the call `widget-shards.py parallel` makes for each shard (its
+  `parallel` mode ignores a shard argument and would run the whole suite):
+  `scripts/heavy.sh --mem none -- scripts/with-memory-cap.sh 2G sh -c 'cat
+  /proc/self/cgroup; grep Cpus_allowed_list /proc/self/status'`
+  (`DEFAULT_SHARD_MEMORY_MAX`, which goes through admission). In
   `evidence/placement.md`, record:
   - the cgroup paths and the affinity;
-  - if a game runs at that moment, `cpu.idle` of the inner `user.slice` and the
-    scope's affinity, otherwise "game-time class not observed" (design D12);
+  - whether CST's game profile is on, from the existence of
+    `/run/host/run/cpu-setup/game.state` (never its contents). If it is,
+    `cpu.idle` of the inner `user.slice` and the scope's affinity, otherwise
+    "game-time class not observed" (design D12);
   - `cpuset.cpus.effective` and `cpu.weight` of `user-lushtext.slice` and of the
     inner `user.slice`, read from `/sys/fs/cgroup` at that moment;
-  - the wall time of `scripts/with-memory-cap.sh 64M true`, five runs on main and
-    five on the branch, through `heavy.sh`, with the load. These are
-    non-verdict figures for the shim's cost (design D3).
+  - the shim's cost (design "Timing"). Under `heavy.sh`'s 12G scope a 64M call
+    would run in place and start no scope, so this goes through
+    `scripts/measure.sh` instead. Save main's copy with `git show
+    origin/main:scripts/with-memory-cap.sh > <evidence>/main-with-memory-cap.sh`.
+    Then run four rounds, main → branch → main → branch, each `scripts/measure.sh
+    --label shim-<side> --log <evidence>/shim.log -- sh -c 'for i in 1 2 3 4 5;
+    do /usr/bin/time -f %e bash <copy> 64M true; done'`. Record the wall times
+    with each round's 1-minute load. They are non-verdict figures: label a
+    round at load ≥ 4 and do not retry it.
 - [ ] 2.7 Run `scripts/heavy.sh --mem none -- make check-agent-helpers`
-  (self-tests plus shellcheck) and `scripts/heavy.sh --mem none -- make
-  check-policy`. Both must pass. Run the two self-tests once more in isolation
+  (self-tests plus shellcheck, from the toolbox cgroup) and `scripts/heavy.sh
+  -- make check-policy` (default cap, so the self-tests also run inside a real
+  heavy scope, as in the commit hook). Both must pass. Run the two self-tests once more in isolation
   (`scripts/with-memory-cap.sh --self-test`, `scripts/heavy.sh --self-test`) to
   rule out a flake. Commit (`fix(build): nest heavy scopes under the user
   manager's user.slice`) and push.
@@ -118,7 +155,11 @@ CPU that does not exist on the host skips and says why (design D6).
 - [ ] 3.1 In `measure.sh --self-test`, first export `LUSHTEXT_REFERENCE_CPUS`
   set to the self-test's own affinity (always a subset of the allowed set, and it
   keeps a hook's or agent's `taskset` pin), so every existing case passes on
-  hosts without 8-23 (CI). Then add the cases below and
+  hosts without 8-23 (CI) and during a game. Do the same in `heavy.sh
+  --self-test`, which runs `measure.sh -- true` directly in its nested-heavy and
+  leftover-daemon cases (design D8, "Callers that are tests"); without it every
+  commit fails while a game runs. `heavy.sh`'s export lands with task 3.3, after
+  the red run of its case below. Then add the cases below and
   record each red line in `evidence/red.md`:
   - `--print-reference-cpus` with the variable unset prints `8-23`;
   - with the reference set to one allowed CPU `c`, the command's
@@ -147,10 +188,18 @@ CPU that does not exist on the host skips and says why (design D6).
     free;
   - a transient disagreement: with a test hook that changes the first reading
     only (`LUSHTEXT_MEASURE_TEST_FLIP_ONCE`, self-test only), the re-read
-    passes and the command runs.
+    passes and the command runs;
+  - `heavy.sh --self-test` sheds an unusable inherited reference: in
+    `check-agent-helpers` (Makefile), run it as
+    `LUSHTEXT_REFERENCE_CPUS=<one past the last CPU in
+    /sys/devices/system/cpu/possible> ./scripts/heavy.sh --self-test`, the way
+    that target already hands `measure.sh --self-test` stale markers to shed.
+    Red before the export: the nested-heavy case fails on exit 78. Green after
+    it, and the same line stands in for a game-time hook.
 - [ ] 3.2 In the driver's self-test (`make check-responsiveness-lane`), add
   cases for `lane_affinity(inherited, measure_cpus, max_cpus)`:
-  - unset: the first 16 CPUs;
+  - unset: the first 16 CPUs (the MODIFIED core-cap scenario, outside
+    `measure.sh`);
   - equal: the set unchanged;
   - mismatch: an error naming both sets;
   - over the cap: an error naming the set and 16.
@@ -158,8 +207,9 @@ CPU that does not exist on the host skips and says why (design D6).
   Also add cases for `run_metadata`'s `measure_cpus`, `measure_cpus_source` and
   `reference_run`, for the three `render_markdown` affinity labels, and for
   `merge_runs` over two parts whose affinity differs (`affinity: "mixed"`,
-  `reference_run: false`, the per-part set in `merged_from`). Record the red
-  lines.
+  `reference_run: false`, the per-part set in `merged_from`), and over a part
+  whose `run.json` lacks the fields (unset: equal to an unpinned part, mixed
+  with a pinned one). Record the red lines.
 - [ ] 3.3 Implement D8 in `measure.sh`. Source `cpu-lists.sh`, add
   `MEASURE_REFERENCE_CPUS_DEFAULT=8-23`, the override, `--print-reference-cpus`,
   and the check order: arguments, then the inside-heavy refusal, then the
@@ -182,7 +232,8 @@ CPU that does not exist on the host skips and says why (design D6).
   script, not `make responsiveness-smoke`, which would rebuild inside the
   exclusive lock. Take the exact baseline case name from
   `scripts/run-responsiveness-smoke.sh --list-cases`. From a shell started
-  without `taskset` (`taskset -c <all allowed CPUs> bash`), run
+  pinned to a proper subset of the reference, inside the agents' 8-23 (`taskset
+  -c <upper half of $(scripts/measure.sh --print-reference-cpus)> bash`), run
   `scripts/measure.sh --label ref-cpus --log <evidence>/measure.log -- env
   RESPONSIVENESS_VARIANTS=plain ./scripts/run-responsiveness-smoke.sh
   --artifact-dir build/smoke/reference-cpus --case <baseline case>`. Then run
@@ -211,7 +262,8 @@ CPU that does not exist on the host skips and says why (design D6).
 - [ ] 4.2 `.agents/rules/verification-runs.md`:
   - "Shared-machine agent work": the heavy-work bullet's CPU affinity wording
     (inherited, intersected with the slice's cpuset; the kernel refuses CPUs
-    outside it), and one sentence that heavy work runs in the idle class while a
+    outside it; a self-imposed mask only narrows it), and one sentence that,
+    by CST's game profile, heavy work runs on 12-23 in the idle class while a
     game runs;
   - the measurements bullet: `measure.sh` pins to the reference CPU set
     (`--print-reference-cpus`, default 8-23, `LUSHTEXT_REFERENCE_CPUS`) and
@@ -224,8 +276,9 @@ CPU that does not exist on the host skips and says why (design D6).
 - [ ] 4.3 `docs/runbooks/responsiveness-lane.md`: the affinity paragraph (the
   reference under `measure.sh`, the labels, the mixed merge), and the
   `lane-affinity` subcommand.
-- [ ] 4.4 `Makefile`: the comment at the mutants block (the new slice name) and
-  the `check-agent-helpers` shellcheck list. `docs/mutation-testing.md`
+- [ ] 4.4 `Makefile`: the comment at the mutants block (the new slice name),
+  the `check-agent-helpers` shellcheck list, and that target's comment for the
+  unusable reference handed to `heavy.sh --self-test` (task 3.1). `docs/mutation-testing.md`
   ("Local Parallelism"): the new slice name.
 - [ ] 4.5 `openspec/specs/widget-test-ci-sharding/spec.md` and
   `openspec/specs/responsiveness-measurement/spec.md` are updated by archive
@@ -241,8 +294,14 @@ CPU that does not exist on the host skips and says why (design D6).
     explicit (`measure.sh --print-reference-cpus`). Earlier verdicts were all on
     8-23, so they stay comparable. Records on 12-23 are game-time runs and not
     reference runs;
-  - add the deferral "remove the legacy-slice accounting once no worktree
-    branched before the merge SHA remains".
+  - add the deferral "remove the legacy-slice accounting (`legacy_slice_of`,
+    the `admitted_kib` loop, the two legacy self-test cases and the private
+    legacy self-test slice) once no worktree branched before the merge SHA
+    remains";
+  - add the deferrals from CST's second answer (design D13): memory-sized
+    parallelism (raise `CARGO_BUILD_JOBS` in measured steps, with the per-job
+    peak and btrfs-stall-report memory lines as evidence), and the
+    maintainer's decision whether agents keep their session `taskset` pin.
 - [ ] 4.7 README, AGENTS.md and `docs/runbooks/README.md` name the wrappers but
   neither the slice nor the reference set. Confirm that no edit is needed, or
   make it, and record which in the commit body.
