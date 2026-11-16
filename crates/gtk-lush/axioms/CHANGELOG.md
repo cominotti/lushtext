@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A122 probe and sample (`fix-extend-selection-abort`): `GtkTextView`'s
+  `extend-selection` returns `gboolean`, runs its class handler last and
+  stops at the first TRUE, so a handler answering FALSE lets later handlers
+  and GtkTextView's own run, and one answering TRUE claims the emission.
+  Fixture `fixtures::a122` (`document_view`, `connect_answer`,
+  `emit_word_extension`, `DOCUMENT`, `LOCATION_OFFSET`).
 - A117 probe and sample (`quiet-headless-session-services`): with
   `GTK_A11Y=test`, `gtk_accessible_announce` kills the process by SIGSEGV
   (`GtkTestATContext` has no `announce` vfunc); with `GTK_A11Y=none` it
