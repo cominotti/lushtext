@@ -108,6 +108,19 @@ a helper a test must remember to call first
 - **Prove a fix failing-first** with `HOME` pointing at a temporary directory
   and the XDG variables and `LUSHTEXT_DATA_DIR` unset, never against the real
   home.
+- **Scripts and self-tests that run git forget the caller's repository first.**
+  The pre-commit hook runs `make check-policy`, and inside a hook git exports
+  `GIT_DIR`, `GIT_INDEX_FILE` and their siblings, which override `git -C`. A
+  fixture's `git init` or `git add` then rewrites the repository being
+  committed: a self-test once set `core.bare=true` in the checkout's
+  `.git/config` and replaced its worktree index that way
+  (`flatpak-stage-git-visible-tree`). Unset every name
+  `git rev-parse --local-env-vars` prints before the first git call
+  (`scripts/flatpak-source-tree.sh`; the Python scripts scrub the same names),
+  run fixture repositories with `GIT_CONFIG_GLOBAL=/dev/null`,
+  `GIT_CONFIG_NOSYSTEM=1` and `-c core.hooksPath=/dev/null`, and pin it with a
+  case that runs the script under a decoy repository's `GIT_DIR`,
+  `GIT_INDEX_FILE` and `GIT_WORK_TREE`.
 
 ## Test-Only Code Never Ships
 
