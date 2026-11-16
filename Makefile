@@ -83,6 +83,7 @@
 #   make flatpak-install - Build and install Flatpak into the user installation
 #   make verify-flatpak-identity - Verify Flatpak desktop identity and MIME registration
 #   make test-flatpak-install-origin - Test the Flatpak install-origin guard against real flatpak in a private installation
+#   make check-flatpak-source-tree - Shellcheck and self-test the git-visible source staging of flatpak/flatpak-install
 #   make cominotti-flatpak-repo - Build signed Cominotti Flatpak repository artifacts
 #   make verify-cominotti-pages-limits - Verify generated artifacts fit Cloudflare Pages
 #   make verify-flathub-domain - Verify cominotti.dev is ready for Flathub app verification
@@ -97,7 +98,7 @@
 .PHONY: fmt build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke kani proof-strength proof-strength-list check-kani-shards check-settings-writes check-font-zoom-registration check-signal-connections check-thresholds formal-evaluation check-widget-shards check-temp-scope test-widget test-widget-headless test-widget-shard test-search-retirement-release test-workspace-row-states build-cache-prune check-build-cache-helpers check-precommit-scope pre-commit-docs automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke smoke-read-faults-build visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke responsiveness-build responsiveness-smoke check-responsiveness-lane check-agent-helpers mutants-smoke mutants-diff mutants-full mutants-list composition-hold-build \
        check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-flatpak-ci-builds check-explicit-simd check-session-hygiene check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy check-cargo-public-api-install check-terminology check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory gtk-axioms gtk-axiom-sample gtk-axioms-runtimes check-gtk-axioms automation-client-self-test check-policy lint-advisory sonar-local check check-agent-skills check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
-       meson-build meson-test flatpak-deps flatpak flatpak-install cargo-sources update-deps-cooldown verify-flatpak-identity test-flatpak-identity-verifier test-flatpak-install-origin test-dev-desktop-staging \
+       meson-build meson-test flatpak-deps flatpak flatpak-install cargo-sources update-deps-cooldown verify-flatpak-identity test-flatpak-identity-verifier test-flatpak-install-origin check-flatpak-source-tree test-dev-desktop-staging \
        flathub-manifest verify-flathub-manifest verify-flathub-domain \
        cominotti-flatpak-repo verify-cominotti-flatpak-repo verify-cominotti-pages-limits cominotti-flatpak-smoke test-cominotti-flatpak-repo \
        test-release-helper test-flathub-manifest release release-bump \
@@ -267,6 +268,15 @@ FLATPAK_REMOTE_URL ?= https://dl.flathub.org/repo/flathub.flatpakrepo
 FLATPAK_STATE_DIR ?= $(BUILD_CACHE_CHECKOUT)/flatpak-builder
 FLATPAK_BUILD_DIR ?= $(BUILD_CACHE_CHECKOUT)/flatpak-app
 FLATPAK_MANIFEST := build-aux/dev.cominotti.lushtext.Flatpak.json
+# `make flatpak` and `make flatpak-install` build a staged copy of the
+# checkout's git-visible tree (tracked files as on disk plus untracked,
+# non-ignored ones), never the checkout itself: the manifest's `dir` source
+# copies everything under `..`, ignored files included, so `target/`,
+# mutation output or an unreadable `.claude/handoffs/` directory became build
+# input (scripts/flatpak-source-tree.sh). The staged manifest is the same file.
+FLATPAK_SOURCE_DIR ?= $(BUILD_CACHE_CHECKOUT)/flatpak-source
+FLATPAK_STAGED_MANIFEST = $(FLATPAK_SOURCE_DIR)/tree/$(FLATPAK_MANIFEST)
+FLATPAK_STAGE_SOURCE = ./scripts/flatpak-source-tree.sh stage . "$(FLATPAK_SOURCE_DIR)" >/dev/null
 FLATPAK_BUILDER_FLAGS = --disable-rofiles-fuse --force-clean --user --state-dir="$(FLATPAK_STATE_DIR)"
 FLATPAK_BUILDER_DEPS_FLAGS := --assumeyes --install-deps-from=$(FLATPAK_REMOTE)
 FLATHUB_MANIFEST_OUT_DIR ?= build-aux/flathub
@@ -1003,7 +1013,7 @@ gtk-lush-public-api-advisory:
 gtk-lush-api-advisory: gtk-lush-semver-advisory gtk-lush-public-api-advisory
 
 # Aggregate policy target for fast audits that sit beside rustfmt and Clippy.
-check-policy: check-filesystem-boundary check-temp-scope test-flatpak-install-origin check-agent-helpers check-build-cache-helpers check-precommit-scope check-session-hygiene check-cargo-public-api-install check-settings-writes check-font-zoom-registration check-signal-connections check-thresholds check-responsiveness-lane check-kani-shards check-widget-shards check-gtk-axioms check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-flatpak-ci-builds check-explicit-simd check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test check-terminology
+check-policy: check-filesystem-boundary check-temp-scope test-flatpak-install-origin check-flatpak-source-tree check-agent-helpers check-build-cache-helpers check-precommit-scope check-session-hygiene check-cargo-public-api-install check-settings-writes check-font-zoom-registration check-signal-connections check-thresholds check-responsiveness-lane check-kani-shards check-widget-shards check-gtk-axioms check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-flatpak-ci-builds check-explicit-simd check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test check-terminology
 
 # Workspace folder-set terminology guard.
 # Runs in the local gate as well as CI because it scans resources, docs, and
@@ -1104,7 +1114,8 @@ flatpak-deps:
 flatpak: flatpak-deps
 	@echo "Building Flatpak..."
 	./scripts/build-cache.sh checkout >/dev/null
-	flatpak-builder $(FLATPAK_BUILDER_FLAGS) $(FLATPAK_BUILD_DIR) $(FLATPAK_MANIFEST)
+	$(FLATPAK_STAGE_SOURCE)
+	flatpak-builder $(FLATPAK_BUILDER_FLAGS) $(FLATPAK_BUILD_DIR) $(FLATPAK_STAGED_MANIFEST)
 
 # Flatpak build and install into the user installation.
 #
@@ -1123,9 +1134,10 @@ flatpak: flatpak-deps
 flatpak-install: flatpak-deps
 	@echo "Building and installing Flatpak..."
 	./scripts/build-cache.sh checkout >/dev/null
+	$(FLATPAK_STAGE_SOURCE)
 	repo="$$(./scripts/flatpak-install-origin.sh path)" && \
 	./scripts/flatpak-install-origin.sh install "$$repo" "dev.cominotti.lushtext/$$(flatpak --default-arch)/master" -- \
-		flatpak-builder $(FLATPAK_BUILDER_FLAGS) --repo="$$repo" $(FLATPAK_BUILD_DIR) $(FLATPAK_MANIFEST)
+		flatpak-builder $(FLATPAK_BUILDER_FLAGS) --repo="$$repo" $(FLATPAK_BUILD_DIR) $(FLATPAK_STAGED_MANIFEST)
 
 # Verify the installed Flatpak export is the active production desktop identity
 verify-flatpak-identity:
@@ -1136,6 +1148,19 @@ verify-flatpak-identity:
 test-flatpak-identity-verifier:
 	@echo "Testing Flatpak identity verifier..."
 	$(TEMP_SCOPE) flatpak-identity-verifier -- ./scripts/test-flatpak-identity-verifier.sh
+
+# The git-visible source staging of flatpak and flatpak-install: shellcheck
+# plus a fixture self-test (dirty edits, deletions, symlinks, modes, ignored
+# and unreadable directories, and the refusals that protect directories the
+# script does not own)
+check-flatpak-source-tree:
+	@echo "Checking the Flatpak source staging..."
+	@if command -v shellcheck >/dev/null 2>&1; then \
+		shellcheck -x scripts/flatpak-source-tree.sh; \
+	else \
+		echo "shellcheck not installed; skipping the lint half"; \
+	fi
+	$(TEMP_SCOPE) flatpak-source-tree -- ./scripts/flatpak-source-tree.sh --self-test
 
 # The install-origin guard of flatpak-install, against real flatpak in a
 # private FLATPAK_USER_DIR (prints SKIP: without flatpak, ostree or flock)

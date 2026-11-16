@@ -188,6 +188,9 @@ Every checkout and worktree installs through one shared local repository,
 `~/.local/share/lushtext-flatpak-install/repo`, so deleting a checkout never
 leaves GNOME Software reporting "server has no summary file" for the
 development build's `lushtext-origin` remote.
+Both targets build a staged copy of what git sees in the checkout (tracked
+files with your local edits, plus untracked files that are not ignored), so
+build output and other ignored files never enter the Flatpak build.
 Use `make flatpak` for a build-only check. After dependency changes, refresh
 the vendored Cargo sources with:
 
