@@ -1910,6 +1910,25 @@ const CATALOGUE: &[Axiom] = &[
         version_bound: None,
         probe: Some(probes::probe_a117),
     },
+    Axiom {
+        id: AxiomId::new(122),
+        name: "a122_an_extend_selection_handler_returning_false_lets_gtk_select",
+        statement: "GtkTextView's extend-selection (emitted on a double or triple click) returns \
+                    gboolean, runs its class handler last and stops at the first TRUE: a \
+                    handler returning FALSE lets the emission go on to later handlers and to \
+                    GtkTextView's handler, which extends the selection; a handler returning \
+                    TRUE claims it, and no later handler, GtkTextView's included, runs",
+        dependent_designs: &[
+            "fix-extend-selection-abort: Protected View's extend-selection handler answers TRUE \
+             in a protected document and FALSE everywhere else, always a gboolean \
+             (ui/editor_page/protected_view/interaction_execution.rs, through \
+             ui::signal_connect::connect_returning); answering nothing aborted the process on \
+             every double click outside Protected View",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a122),
+    },
 ];
 
 #[cfg(test)]

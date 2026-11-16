@@ -15,7 +15,7 @@
 
 use crate::model::palette::{CommandDef, PaletteCategory, PaletteNoteTarget};
 use crate::services::palette::IndexedFile;
-use glib::prelude::*;
+use crate::ui::signal_connect;
 use glib::subclass::prelude::*;
 use gtk4::glib;
 use std::cell::{Cell, RefCell};
@@ -181,16 +181,15 @@ impl PaletteItem {
         imp.category.set(from.category.get());
         imp.hidden.set(from.hidden.get());
         imp.category_label.replace(from.category_label.take());
-        self.emit_by_name::<()>("content-changed", &[]);
+        signal_connect::emit_void(self, "content-changed", &[]);
     }
 
     /// Run `f` whenever the row is retargeted; the caller disconnects it.
     pub fn connect_content_changed<F: Fn(&Self) + 'static>(&self, f: F) -> glib::SignalHandlerId {
-        self.connect_local("content-changed", false, move |values| {
+        signal_connect::connect_void(self, "content-changed", false, move |values| {
             if let Some(row) = values.first().and_then(|value| value.get::<Self>().ok()) {
                 f(&row);
             }
-            None
         })
     }
 

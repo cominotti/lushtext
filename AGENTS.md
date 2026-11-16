@@ -106,6 +106,7 @@ src/
     ├── automation.rs           # the read-only D-Bus automation adapter
     ├── accessibility.rs, buffer_snapshot.rs, theme.rs, plain_disposal.rs  # accessibility helpers; chunked buffer snapshots; display theme setup; non-blocking payload disposal
     ├── settings_writes.rs      # the one coalescing GSettings writer (cross-cutting)
+    ├── signal_connect.rs       # every string-named signal connect/emit; checks the declared return type at connect time (cross-cutting; `make check-signal-connections`)
     ├── font_zoom.rs + font_zoom/, language_catalog.rs, input_quiet.rs, at_listeners.rs  # font/zoom classes; language catalog; input quiet and paced idles; AT-SPI listener mirror (cross-cutting)
     ├── protected_fold.rs, folded_text.rs, entry_paste_cap.rs  # fold tag and folded installs; folded-surface copies; single-line paste cap (cross-cutting)
     ├── workspace_visibility.rs # GTK reader/writer of the visibility keys

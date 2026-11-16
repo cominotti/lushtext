@@ -54,6 +54,7 @@ use crate::model::paragraph_profile_watch::{
 };
 use crate::ui::accessibility as a11y;
 use crate::ui::responsiveness_probe::PostOpenSpan;
+use crate::ui::signal_connect;
 use crate::ui::status_bar::MessageKind;
 use crate::ui::window::LushtextWindow;
 
@@ -439,20 +440,20 @@ impl LushtextEditorPage {
         signals.track(&buffer, id);
 
         let editor_weak = self.downgrade();
-        let id = buffer.connect_local("insert-text", true, move |values| {
+        let id = signal_connect::connect_void(&buffer, "insert-text", true, move |values| {
             let editor = editor_weak.upgrade()?;
             let location = values.get(1)?.get::<gtk4::TextIter>().ok()?;
             let text = values.get(2)?.get::<&str>().ok()?;
             editor.watch_insertion(&location, text);
-            None
+            Some(())
         });
         signals.track(&buffer, id);
         let editor_weak = self.downgrade();
-        let id = buffer.connect_local("delete-range", true, move |values| {
+        let id = signal_connect::connect_void(&buffer, "delete-range", true, move |values| {
             let editor = editor_weak.upgrade()?;
             let start = values.get(1)?.get::<gtk4::TextIter>().ok()?;
             editor.watch_deletion(&start);
-            None
+            Some(())
         });
         signals.track(&buffer, id);
     }
