@@ -120,6 +120,16 @@ scanner, when the helper's quiet configuration drifts, and when the helper has
 no sanctioned spawn (a gate keyed on nothing). Version and path records come
 from `check-tools --json` instead; see its docstring for the exempt contexts.
 
+`make check-signal-connections` (in `make check-policy`) fails on a
+string-named signal connection or emission (`connect`, `connect_local`,
+`connect_closure`, `connect_unsafe`, their `_id` forms, and the
+`emit_by_name` family) anywhere in `crates/lushtext-core/src` outside
+`ui/signal_connect.rs`, whose helpers check the signal's declared return type
+when the handler is connected; tests and the GTK axiom probes are outside its
+scope. Its `--self-test` seeds each form, including a call split over lines.
+The rule is in [`widget-wiring.md`](./widget-wiring.md), "Signal And Binding
+Lifetimes".
+
 `make check-workflow-boundaries` (in `make check-policy`) enforces the
 mechanical half of the workflow readability convention; the rules it checks
 are normative in [`workflow-convention.md`](./workflow-convention.md), and the

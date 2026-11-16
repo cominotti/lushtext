@@ -128,6 +128,28 @@ teardown or recycling lifecycle:
 - `RegistrationBag` for controller-like cleanup callbacks that are not
   represented by a signal id or binding.
 
+**String-named signals go through `ui::signal_connect`.** A signal without a
+typed gtk-rs `connect_*` method (keybinding signals such as `backspace` or
+`extend-selection`, `GtkTextBuffer` `insert-text` as an after-handler, a
+frame-clock phase with `after`, an app-defined signal such as
+`content-changed`) is connected with `signal_connect::connect_void` (the
+handler returns `()` or `Option<()>`) or `signal_connect::connect_returning`
+(the handler returns the declared type, for example `bool` for `gboolean`),
+and emitted by name with `signal_connect::emit_void` or `emit_returning`. The
+helper looks the signal up and checks its declared return type **when the
+handler is connected**, so a mismatch fails every test that builds the
+surface. glib-rs's own `connect_local` checks the closure's
+`Option<glib::Value>` only inside the emission, in GLib's C marshaller, where
+the panic aborts the process: a `gboolean` handler that answered `None`
+aborted LushText on every double click (`fix-extend-selection-abort`, ledger
+A122). `connect`, `connect_local`, `connect_closure`, `connect_unsafe` (and
+their `_id` forms) and the `emit_by_name` family are banned in
+`crates/lushtext-core/src` outside `ui/signal_connect.rs`
+(`make check-signal-connections`, in `make check-policy`). Widget tests under
+`crates/lushtext/tests/**` and the GTK axiom probes under
+`crates/gtk-lush/axioms/**` are outside that gate: they connect and emit by
+name on purpose to drive the toolkit, and own their answers.
+
 Keep ordinary untracked `connect_*` calls when the source and target share the
 same widget/action lifetime and no later disconnect is needed. Keep
 event-controller ownership explicit when the controller itself is the lifetime
