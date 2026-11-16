@@ -599,6 +599,69 @@ fn test_move_cursor_scrolls_without_moving_a_mark() {
     assert!(vadjustment.value() > top, "the viewport moved down a page");
 }
 
+// ─── extend-selection: double and triple clicks (ledger A122) ──────────────
+
+/// Emit `extend-selection` at `offset` with word granularity, as GTK does on
+/// a double click, with a handler connected after the page's own that counts
+/// the emissions reaching it. Returns that count and the emission's result.
+///
+/// The emission's result cannot tell the page's handler apart from GTK's: the
+/// class handler also returns TRUE, and the iterators are copies. Whether a
+/// later handler ran can: `extend-selection` stops at the first TRUE.
+fn emit_word_extend_selection(page: &LushtextEditorPage, offset: i32) -> (u32, bool) {
+    let view = page.source_view().clone();
+    let reached = std::rc::Rc::new(std::cell::Cell::new(0u32));
+    let counter = std::rc::Rc::clone(&reached);
+    let observer = view.connect_local("extend-selection", false, move |_| {
+        counter.set(counter.get() + 1);
+        Some(false.to_value())
+    });
+    let location = page.buffer().iter_at_offset(offset);
+    let handled = view.emit_by_name::<bool>(
+        "extend-selection",
+        &[
+            &gtk4::TextExtendSelection::Word,
+            &location,
+            &location,
+            &location,
+        ],
+    );
+    view.disconnect(observer);
+    flush_events();
+    (reached.get(), handled)
+}
+
+/// A double click in an ordinary document emits `extend-selection`: the
+/// page's handler answers FALSE, so the emission goes on to later handlers
+/// and to GtkTextView's, which selects the word. It used to answer nothing,
+/// and glib-rs aborted the process inside the emission (`required return
+/// value of type 'gboolean' but got None`).
+#[test]
+fn test_extend_selection_outside_protected_view_continues_to_gtk() {
+    let body = "hello world\n";
+    let (page, _window) = editable_page(body, "extend-selection");
+    let (reached, handled) = emit_word_extend_selection(&page, 1);
+    assert_eq!(reached, 1, "the emission went on past the page's handler");
+    assert!(handled, "GtkTextView's handler extended the selection");
+    assert_eq!(editor_text(&page), body, "the buffer is unchanged");
+    assert!(!page.is_protected_view(), "still editable");
+}
+
+/// In Protected View the page's handler claims `extend-selection`: no later
+/// handler runs (so neither does GtkTextView's) and no mark moves.
+#[test]
+fn test_extend_selection_in_protected_view_is_claimed() {
+    let (page, _window, body) = protected_page_with_number();
+    let before = marks(&page);
+    let mut at_number = page.buffer().iter_at_line(2).expect("line 2");
+    at_number.forward_chars(7);
+    let (reached, handled) = emit_word_extend_selection(&page, at_number.offset());
+    assert_eq!(reached, 0, "the page's handler stopped the emission");
+    assert!(handled, "the page's handler claimed the emission");
+    assert_eq!(marks(&page), before, "no mark moved");
+    assert_eq!(editor_text(&page), body, "the buffer is unchanged");
+}
+
 // ─── Recovery of a giant-paragraph draft (tasks 7.10, design D13) ──────────
 
 /// Seed a draft of `draft` for a file holding "small\n", restore it at startup,

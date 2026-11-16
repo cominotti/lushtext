@@ -38,6 +38,7 @@ use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::plain_disposal::{
     DisposalCapacityWakeup, DisposalOwned, disposal_capacity_epoch, try_reserve_for_gtk,
 };
+use crate::ui::signal_connect;
 
 /// One running capture.
 struct SourceCapture {
@@ -278,13 +279,11 @@ fn watch_segment_changes(
         buffer.connect_remove_tag(move |_, _, _, _| on_remove.set(true)),
         // After-handlers: they run only once the default handler changed the
         // text, never for an edit the edit lock or a refusal handler stopped.
-        buffer.connect_local("insert-text", true, move |_| {
+        signal_connect::connect_void(buffer, "insert-text", true, move |_| {
             on_insert.set(true);
-            None
         }),
-        buffer.connect_local("delete-range", true, move |_| {
+        signal_connect::connect_void(buffer, "delete-range", true, move |_| {
             on_delete.set(true);
-            None
         }),
     ]
 }

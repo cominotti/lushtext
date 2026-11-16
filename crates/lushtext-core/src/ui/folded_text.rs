@@ -50,6 +50,7 @@ use crate::model::buffer_replacement::next_replacement_boundary;
 use crate::model::protected_fold::FoldPlan;
 use crate::ui::editor_page::WHOLE_LINE_CHUNK_BYTES as COPY_CHUNK_BYTES;
 use crate::ui::protected_fold::{BoundaryLedger, FoldedInstall, tail_insert_admitted};
+use crate::ui::signal_connect;
 
 /// MIME types a [`SourceTextProvider`] offers: UTF-8 text only. No `GType` is
 /// offered, so no reader can make GTK materialize the text as one `GValue`.
@@ -323,7 +324,7 @@ impl FoldedTextSurface {
         });
         for name in ["copy-clipboard", "cut-clipboard"] {
             let weak = Rc::downgrade(&surface);
-            view.connect_local(name, false, move |args| {
+            signal_connect::connect_void(view, name, false, move |args| {
                 if let Some(surface) = weak.upgrade()
                     && surface.is_folded()
                     && let Some(Ok(view)) = args.first().map(glib::Value::get::<glib::Object>)
@@ -332,7 +333,6 @@ impl FoldedTextSurface {
                     glib::signal::signal_stop_emission_by_name(&view, name);
                     surface.copy_selection();
                 }
-                None
             });
         }
         // GtkTextView adds the primary clipboard to its buffer on realize and

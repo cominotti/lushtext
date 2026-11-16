@@ -66,6 +66,7 @@ use gtk_lush_signals::SignalBag;
 use gtk4::prelude::*;
 
 use super::LushtextEditorPage;
+use crate::ui::signal_connect;
 
 /// `GtkTextView` properties whose setters change the view's default text
 /// style: each calls `gtk_text_layout_default_style_changed`, which
@@ -136,9 +137,8 @@ impl LushtextEditorPage {
         let tags_changed = &self.imp().frame_validation.tags_changed;
         for signal in ["apply-tag", "remove-tag"] {
             let tags_changed = Rc::clone(tags_changed);
-            let handler_id = buffer.connect_local(signal, false, move |_| {
+            let handler_id = signal_connect::connect_void(&buffer, signal, false, move |_| {
                 tags_changed.set(true);
-                None
             });
             self.imp().editing_buffer_signals.track(&buffer, handler_id);
         }
@@ -230,11 +230,7 @@ impl LushtextEditorPage {
         let at_before_paint = consume.clone();
         let before_paint = clock.connect_before_paint(move |_| at_before_paint());
         state.clock_signals.track(&clock, before_paint);
-        let after_layout = clock.connect_closure(
-            "layout",
-            true,
-            glib::closure_local!(move |_: gtk4::gdk::FrameClock| consume()),
-        );
+        let after_layout = signal_connect::connect_void(&clock, "layout", true, move |_| consume());
         state.clock_signals.track(&clock, after_layout);
     }
 

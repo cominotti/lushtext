@@ -39,6 +39,7 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
 use crate::model::palette::PaletteNoteCategory;
+use crate::ui::signal_connect;
 
 use super::policy::{GroupedNoteRows, NoteSectionBounds};
 
@@ -107,16 +108,15 @@ impl NotesBrowserRow {
         self.imp().source_index.set(source_index);
         self.imp().generation.set(generation);
         self.imp().category.set(category);
-        self.emit_by_name::<()>("content-changed", &[]);
+        signal_connect::emit_void(self, "content-changed", &[]);
     }
 
     /// Run `f` whenever the row is retargeted; the caller disconnects it.
     pub fn connect_content_changed<F: Fn(&Self) + 'static>(&self, f: F) -> glib::SignalHandlerId {
-        self.connect_local("content-changed", false, move |values| {
+        signal_connect::connect_void(self, "content-changed", false, move |values| {
             if let Some(row) = values.first().and_then(|value| value.get::<Self>().ok()) {
                 f(&row);
             }
-            None
         })
     }
 }

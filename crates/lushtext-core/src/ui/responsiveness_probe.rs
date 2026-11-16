@@ -464,6 +464,7 @@ mod measurement {
         ProbeInputTarget, ProbeRecord, SETTLE_SENTINEL_MARK, arms_settle_sentinel,
         frame_phase_frames,
     };
+    use crate::ui::signal_connect;
 
     const LOG_ENV: &str = "LUSHTEXT_RESPONSIVENESS_LOG";
     const TICK_ENV: &str = "LUSHTEXT_RESPONSIVENESS_TICK_US";
@@ -569,9 +570,8 @@ mod measurement {
             return;
         }
         if let Ok(buffer) = view.buffer().downcast::<sourceview5::Buffer>() {
-            buffer.connect_local("highlight-updated", false, |_| {
+            signal_connect::connect_void(&buffer, "highlight-updated", false, |_| {
                 record_mark(HIGHLIGHT_UPDATED_MARK);
-                None
             });
             // Typed text arrives inside a user action (GtkTextView's
             // `gtk_text_buffer_insert_interactive_at_cursor`); load and
@@ -1111,7 +1111,6 @@ mod measurement {
         mod imp {
             use std::cell::Cell;
 
-            use gtk4::prelude::*;
             use gtk4::subclass::prelude::*;
 
             use crate::services::responsiveness_log::ProbeImTrigger;
@@ -1173,7 +1172,11 @@ mod measurement {
                         return;
                     }
                     self.surrounding.set(None);
-                    let handled = self.obj().emit_by_name::<bool>("retrieve-surrounding", &[]);
+                    let handled: bool = crate::ui::signal_connect::emit_returning(
+                        &*self.obj(),
+                        "retrieve-surrounding",
+                        &[],
+                    );
                     super::super::record_im(trigger, self.surrounding.take(), handled);
                 }
 
@@ -1222,8 +1225,11 @@ mod measurement {
                     }
                     match key.keyval().to_unicode() {
                         Some(character) if !character.is_control() => {
-                            self.obj()
-                                .emit_by_name::<()>("commit", &[&character.to_string()]);
+                            crate::ui::signal_connect::emit_void(
+                                &*self.obj(),
+                                "commit",
+                                &[&character.to_string()],
+                            );
                             true
                         }
                         _ => false,
