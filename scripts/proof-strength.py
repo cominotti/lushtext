@@ -533,8 +533,15 @@ def kani_env(worktree: Path) -> dict[str, str]:
 
     The pinned directory is the worktree's own, which no ordinary build uses,
     so incremental compilation is off there (`CARGO_INCREMENTAL=0`, design D3:
-    measured, see `KANI_ARM_INCREMENTAL`)."""
-    env = {**os.environ, "CARGO_BUILD_BUILD_DIR": str(worktree / "target/kani/kani")}
+    measured, see `KANI_ARM_INCREMENTAL`). Its build jobs stay at 4
+    (`PROOF_STRENGTH_KANI_BUILD_JOBS`) whatever heavy.sh exported."""
+    env = {
+        **os.environ,
+        "CARGO_BUILD_BUILD_DIR": str(worktree / "target/kani/kani"),
+        # Every job is a kani-compiler process: keep the 4 the cap was sized
+        # for, whatever heavy.sh gave the run (build.md, "Compiler parallelism").
+        "CARGO_BUILD_JOBS": os.environ.get("PROOF_STRENGTH_KANI_BUILD_JOBS", "4"),
+    }
     if KANI_ARM_INCREMENTAL == "0":
         env["CARGO_INCREMENTAL"] = "0"
     return env

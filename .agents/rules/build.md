@@ -233,6 +233,53 @@ These patterns are replicated from invowk-rust and must be maintained:
 
    **Exceptions to "every CI toolchain step pins 1.98.0".** The nightly lanes (Kani's own nightly, fuzz smoke, the GTK Lush public-API snapshot) and the weekly **advisory next-stable lane**, `.github/workflows/next-stable.yml`. That lane runs `cargo +stable clippy --workspace --all-targets --all-features --locked -- -D warnings` on the latest stable toolchain, weekly and on manual dispatch. It prints the version it tested, and it names `+stable` explicitly, because otherwise `rust-toolchain.toml` would pin it back to 1.98.0. It never runs on pull requests or pushes and is not a required check. Its failures are advisory: whoever reads one fixes the churn with APIs available at the 1.98 MSRV (as `rust-1-100-adoption` did for Clippy 1.100's `map_unwrap_or` sites) or records why not.
 
+## Compiler parallelism
+
+`scripts/heavy.sh` sets each heavy command's compiler parallelism once it
+holds `LOCK` ([measurements and reasons](../../docs/memorials/2026-11-17-compiler-front-end-threads.md)):
+
+- **Alone** (it is the only shared holder of `LOCK` in `/proc/locks`, which
+  sees the host and every toolbox): `CARGO_BUILD_JOBS` = its CPUs, at most
+  16, and **8** front-end threads. **Sharing the machine**:
+  `CARGO_BUILD_JOBS=4` and 1 thread. A nested `heavy.sh` keeps what the outer
+  one set; one inside a measurement takes the shared setting. The policy is
+  the pure `heavy_parallelism`; its table is in `heavy.sh --self-test`.
+- The threads go to the checkout's own crates through
+  `scripts/rustc-frontend-threads.sh`, installed as `RUSTC_WRAPPER` and
+  chained to the wrapper cargo would otherwise run
+  (`scripts/next-rustc-wrapper.py`). It adds `-Zthreads=N` with
+  `RUSTC_BOOTSTRAP=<crate name>` only to unoptimized units (no `-C opt-level`
+  other than 0) of crates under the checkout, compiled by `rustc` or
+  `clippy-driver` (no `--cap-lints`, `--crate-name` equal to
+  `CARGO_CRATE_NAME`): dependencies, build-script probes, `kani-compiler`,
+  the mutation passthrough and every release or bench unit — what ships and
+  what a timing verdict measures — stay on the sequential front end.
+- **Never set `RUSTC_BOOTSTRAP=1` globally**, in `rustflags`, `[env]` or the
+  environment: anyhow, thiserror and proc-macro2 probe for it and compile
+  nightly-only code into the dependencies. A committed `.cargo/config.toml`
+  is not the place either: it reaches CI, release, Snap and the Flatpak tree.
+- The wrapper is invisible to cargo's fingerprints, so turning it on or off
+  rebuilds nothing. rustc's incremental cache does track whether unstable
+  options are on, so the wrapper keeps the bootstrap at one thread and only
+  the count varies. A build outside `heavy.sh` (an IDE, a plain `cargo`) in
+  the same build directory has no bootstrap, so the first build after
+  switching between the two redoes the workspace crates' incremental state
+  once.
+- `LUSHTEXT_RUSTC_FRONTEND_THREADS=0` from the caller turns the wrapper into a
+  passthrough for one command; other inherited values are replaced.
+- Lanes with their own caps keep their own job counts: Kani's compile phase
+  (`KANI_BUILD_JOBS`, 4; every job is a `kani-compiler`), proof-strength's
+  Kani arm (`PROOF_STRENGTH_KANI_BUILD_JOBS`, 4) and tests arm, the mutation
+  slots, the widget shards' shared build (`--build-jobs`, 4) and the
+  responsiveness build (`RESPONSIVENESS_BUILD_JOBS`).
+- The 16-job ceiling is the largest measured: the whole workspace cold with
+  sccache off peaked at 9.5 GiB, inside the default 12G cap. Raising it, or
+  the thread count, needs new peaks and an update here.
+- Each worktree runs its own copy of `heavy.sh`: a worktree branched before
+  this change gets it by merging `main`.
+- `make check-rustc-frontend-threads` (in `make check-policy`) shellchecks the
+  wrapper, runs its fake-compiler self-test and the resolver's self-test.
+
 ## SonarQube Cloud Scope
 
 `sonar-project.properties` is a maintained CI contract. Any change that adds,
@@ -492,8 +539,9 @@ are in [`testing.md`](./testing.md). This section covers the lane.
   toolbox containers; a thrashing heavy scope is normally the one killed, and
   each scope's no-swap cap makes the kernel kill inside it first, so an oomd
   kill of a toolbox is traced to here. Any command
-  run under the wrapper sizes its own parallelism to fit the cap (`cargo -j 4`,
-  at most 4 test threads), one capped heavy run per agent at a time. A run that
+  run under the wrapper sizes its own parallelism to fit the cap (Kani keeps
+  `cargo -j 4` through `KANI_BUILD_JOBS` whatever `heavy.sh` set, at most 4
+  test threads), one capped heavy run per agent at a time. A run that
   hit the cap is discarded, and hitting it is a finding to fix by the fit
   order, never a reason to raise it; do not retry a harness that hits the
   limit, shrink its bounds first. Locally the wrapper refuses to run uncapped

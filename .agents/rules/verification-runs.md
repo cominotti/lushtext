@@ -136,8 +136,10 @@ every worktree (resolved from `git rev-parse --git-common-dir`;
   Clippy) — goes through `scripts/heavy.sh`. It waits, holding nothing, until
   `scripts/with-memory-cap.sh --wait-admissible <cap>` would admit the cap
   (default `12G`), probes `INTENT` shared, takes `LOCK` shared for the one
-  command, and runs it as a child with `CARGO_BUILD_JOBS=4` inside
-  `scripts/with-memory-cap.sh <cap>`. Its CPU affinity is the inherited one,
+  command, sets its compiler parallelism (`CARGO_BUILD_JOBS` = its CPUs up
+  to 16 and 8 front-end threads when it is the only holder of `LOCK`, 4 jobs
+  and 1 thread otherwise: [`build.md`](./build.md), "Compiler parallelism"),
+  and runs it as a child inside `scripts/with-memory-cap.sh <cap>`. Its CPU affinity is the inherited one,
   intersected with the slice's cpuset: the capped scope nests under the user
   manager's `user.slice` and inherits the toolboxes' CPU policy, the kernel
   refuses CPUs outside that cpuset, and a self-imposed mask (`taskset`) only
