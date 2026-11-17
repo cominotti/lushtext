@@ -78,5 +78,16 @@ rounds.
   cold `cargo build --release -p lushtext` at 16 jobs, 2.6 GiB. All fit the
   default 12G cap.
 
+End to end through the committed `heavy.sh` (no hand-built environment):
+the fresh-worktree clippy took 13.9 s and 11.8 s alone (16 jobs, 8 threads)
+and 19.9 s and 19.2 s with a second `LOCK` holder (4 jobs, 1 thread). sccache
+keys do not depend on `CARGO_BUILD_JOBS` (30 dependency hits at 4 and at 16
+jobs, in fresh build directories passed with `--config`; `CARGO_*`
+variables holding paths do change the keys). The pinned 1.98.0, 1.99.1 and
+1.100.0 compile through the wrapper. One Kani shard
+(`core-protected-view-navigation`) verified through the new `heavy.sh`.
+Ad-hoc stage scripts ran widget tests under `--mem 6G` and `8G`, below the
+measured 16-job peaks, so a cap below 12G keeps 4 jobs.
+
 Artifacts: `.claude/handoffs/rustc-frontend-threads/campaign*.txt` in the main
 checkout (gitignored).

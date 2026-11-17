@@ -227,6 +227,8 @@ These patterns are replicated from invowk-rust and must be maintained:
 4. **.config/nextest.toml** — configure nextest parallelism for non-widget tests here. CI pins one cargo-nextest version, `CARGO_NEXTEST_VERSION` (currently **0.9.151**), in **every** workflow that installs it (`ci.yml` and `mutation-testing.yml`; they must agree). The floor is **0.9.143**: the first release that resolves dylib and artifact paths under Cargo's build-directory layout v2 and `build.build-dir`, which a cargo newer than the pin writes. The local install is upgraded separately, with `cargo install --locked cargo-nextest --version <pin>`; cargo 1.98 still writes layout v1, so an older local nextest keeps working until the pin moves.
 5. **`rust-version`** — keep `rust-version = "1.98.0"` in `[workspace.package]`, inherited by every package, so `cargo check` surfaces MSRV violations early. `rust-toolchain.toml` (and every CI toolchain step and the Snap bootstrap) pins **1.98.0**, the compiler the shipped Flatpak's SDK extension ships (`org.freedesktop.Sdk.Extension.rust-stable//26.08`, the branch `org.gnome.Sdk//51` declares), because the binary we test and measure must be built by the same compiler as the binary we ship. Before changing the pin, check what that extension ships: `flatpak remote-info --user flathub-user runtime/org.freedesktop.Sdk.Extension.rust-stable/x86_64/26.08`. GTK Lush crates also have the `make gtk-lush-msrv` lane so their independently adoptable surface cannot drift ahead of the workspace floor.
 
+   **Front-end threads.** `heavy.sh`'s wrapper passes the unstable `-Zthreads=N` to every dev unit of the checkout ("Compiler parallelism"), and upstream is renaming it (`--jobs-frontend`, then a stable `-j`). `make check-rustc-frontend-threads` compiles a crate through the wrapper with the pinned rustc; run it with `RUSTUP_TOOLCHAIN=<new pin>` before moving the pin (1.99.1 and 1.100.0 pass), and switch the wrapper to the new option in the same change if it fails.
+
    **Version policy.** Some releases are never pinned, whatever the extension ships:
    - **Never Rust 1.99.0.** It miscompiles FFI `bool` returns on x86_64 (rust#163911, fixed in 1.99.1). LushText has no `extern "C" fn … -> bool` today (gtk-rs passes `gboolean`, an `i32`), but the miscompile is silent, so no build of the shipped binary may use that compiler. **1.99.1** is the floor of any 1.99 pin. If Flathub moves `rust-stable//26.08` to 1.99.0, the pin does **not** follow: LushText stays on the current pin and waits for an extension that ships 1.99.1 or later.
    - **The shipped 1.98.0 lacks the 1.98.1 fix** for a vtable miscompile reported against a boxed `async` service (rust#161441). LushText's exposure is low, because it has no `async` services; a change that introduces one while the pin is 1.98.0 must re-check that issue first.
@@ -241,8 +243,10 @@ holds `LOCK` ([measurements and reasons](../../docs/memorials/2026-11-17-compile
 - **Alone** (it is the only shared holder of `LOCK` in `/proc/locks`, which
   sees the host and every toolbox): `CARGO_BUILD_JOBS` = its CPUs, at most
   16, and **8** front-end threads. **Sharing the machine**:
-  `CARGO_BUILD_JOBS=4` and 1 thread. A nested `heavy.sh` keeps what the outer
-  one set; one inside a measurement takes the shared setting. The policy is
+  `CARGO_BUILD_JOBS=4` and 1 thread. A command whose `--mem` cap is below
+  the 12G default keeps 4 jobs and 1 thread too, since that cap was sized for
+  them. A nested `heavy.sh` keeps what the outer one set; one inside a
+  measurement takes the shared setting. The policy is
   the pure `heavy_parallelism`; its table is in `heavy.sh --self-test`.
 - The threads go to the checkout's own crates through
   `scripts/rustc-frontend-threads.sh`, installed as `RUSTC_WRAPPER` and
@@ -275,6 +279,11 @@ holds `LOCK` ([measurements and reasons](../../docs/memorials/2026-11-17-compile
 - The 16-job ceiling is the largest measured: the whole workspace cold with
   sccache off peaked at 9.5 GiB, inside the default 12G cap. Raising it, or
   the thread count, needs new peaks and an update here.
+- The answer to "how many front-end threads" is 8, and only while a command
+  is alone: one long holder of `LOCK` (a detached Kani shard, `make test`)
+  puts every other command back on 4 jobs and 1 thread. A command that started
+  alone keeps 16 jobs while others start beside it; if widget shards turn
+  `FLAKY` in such a window, that overlap is the first lever.
 - Each worktree runs its own copy of `heavy.sh`: a worktree branched before
   this change gets it by merging `main`.
 - `make check-rustc-frontend-threads` (in `make check-policy`) shellchecks the

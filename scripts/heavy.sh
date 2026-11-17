@@ -63,19 +63,35 @@ source "$here/agent-locks.sh"
 # shellcheck source=scripts/cpu-lists.sh
 source "$here/cpu-lists.sh"
 
-# Pure: the compiler parallelism of a heavy command with <cpus> CPUs while
-# <holders> heavy commands (itself included) hold LOCK. Prints
-# "<CARGO_BUILD_JOBS> <front-end threads>". The 16-job ceiling is the largest
-# count whose memory peaks were measured (build.md, "Compiler parallelism").
+# Pure: the compiler parallelism of a heavy command with <cpus> CPUs and a
+# memory cap of <cap> (a size or `none`) while <holders> heavy commands
+# (itself included) hold LOCK. Prints "<CARGO_BUILD_JOBS> <front-end
+# threads>". The 16-job ceiling and the 12G floor of the cap are where the
+# memory peaks were measured (build.md, "Compiler parallelism"): a smaller cap
+# was sized for 4 jobs and keeps them.
 heavy_parallelism() {
-    local cpus=$1 holders=$2 jobs
-    if [ "$holders" -le 1 ] && [ "$cpus" -gt 4 ]; then
+    local cpus=$1 holders=$2 cap=$3 jobs
+    if [ "$cap" != none ] && [ "$(heavy_cap_kib "$cap")" -lt $((12 * 1024 * 1024)) ]; then
+        echo "4 1"
+    elif [ "$holders" -le 1 ] && [ "$cpus" -gt 4 ]; then
         jobs=$cpus
         [ "$jobs" -le 16 ] || jobs=16
         echo "$jobs 8"
     else
         echo "4 1"
     fi
+}
+
+# A cap in KiB (the sizes scripts/with-memory-cap.sh takes).
+heavy_cap_kib() {
+    local value=${1%[KMGT]} unit=${1##*[0-9]}
+    case "$unit" in
+        K) echo "$value" ;;
+        M) echo $((value * 1024)) ;;
+        G) echo $((value * 1024 * 1024)) ;;
+        T) echo $((value * 1024 * 1024 * 1024)) ;;
+        *) echo $((value / 1024)) ;;
+    esac
 }
 
 # Shared holders of LOCK now: one /proc/locks line per open file description,
@@ -156,7 +172,9 @@ self_test() {
 
     # The parallelism policy, pure.
     local case_ want got
-    for case_ in "16 1:16 8" "24 1:16 8" "12 1:12 8" "5 1:5 8" "4 1:4 1" "2 1:4 1" "16 2:4 1" "16 5:4 1" "16 0:16 8"; do
+    for case_ in "16 1 none:16 8" "24 1 12G:16 8" "12 1 16G:12 8" "5 1 none:5 8" "4 1 none:4 1" \
+        "2 1 none:4 1" "16 2 none:4 1" "16 5 16G:4 1" "16 0 none:16 8" "16 1 12288M:16 8" \
+        "16 1 8G:4 1" "16 1 6G:4 1" "16 1 64M:4 1"; do
         want=${case_#*:}
         # shellcheck disable=SC2086 # two words on purpose
         got=$(heavy_parallelism ${case_%%:*})
@@ -168,7 +186,7 @@ self_test() {
     # wrapper cargo would otherwise run.
     local cpus alone parallel_probe
     cpus=$(cpu_list_expand "$(cpu_own_affinity)" | wc -l)
-    alone=$(heavy_parallelism "$cpus" 1)
+    alone=$(heavy_parallelism "$cpus" 1 none)
     # shellcheck disable=SC2016 # expanded by the inner shell
     parallel_probe='echo "$CARGO_BUILD_JOBS $LUSHTEXT_RUSTC_FRONTEND_THREADS ${RUSTC_WRAPPER##*/} $LUSHTEXT_RUSTC_FRONTEND_ROOT"'
     out=$("$me" --mem none -- sh -c "$parallel_probe")
@@ -350,7 +368,7 @@ if mode=$(agent_lock_inherited); then
     echo "heavy: LOCK already held $mode by an enclosing helper; running in place: $*" >&2
     if [ "${RUSTC_WRAPPER:-}" != "$here/rustc-frontend-threads.sh" ] || [ -z "${CARGO_BUILD_JOBS:-}" ]; then
         # shellcheck disable=SC2046 # two words on purpose
-        heavy_export_parallelism $(heavy_parallelism 1 2)
+        heavy_export_parallelism $(heavy_parallelism 1 2 none)
     fi
     exec "$here/with-memory-cap.sh" "$cap" "$@"
 fi
@@ -372,7 +390,7 @@ while :; do
 done
 
 # shellcheck disable=SC2046 # two words on purpose
-heavy_export_parallelism $(heavy_parallelism "$(cpu_list_expand "$(cpu_own_affinity)" | wc -l)" "$(heavy_lock_shared_holders)")
+heavy_export_parallelism $(heavy_parallelism "$(cpu_list_expand "$(cpu_own_affinity)" | wc -l)" "$(heavy_lock_shared_holders)" "$cap")
 agent_trap_signals
 LUSHTEXT_AGENT_LOCK_HELD=$(agent_lock_marker shared)
 export LUSHTEXT_AGENT_LOCK_HELD

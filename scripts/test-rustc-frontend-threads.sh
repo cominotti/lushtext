@@ -125,6 +125,25 @@ expect "16 threads" \
 expect "the compiler's exit status comes back" \
     "3" "$(set +e; call -- sh -c 'exit 3' 2>/dev/null; echo $?)"
 
+# The real pinned compiler (rust-toolchain.toml, through rustup when present)
+# must accept what the wrapper adds: a compiler that renamed or dropped the
+# option would fail every heavy dev build while the fake compilers above
+# still pass. RUSTUP_TOOLCHAIN picks another toolchain for a pin bump.
+if command -v rustc >/dev/null 2>&1; then
+    real_rustc=$(cd "$here/.." && rustc --print sysroot)/bin/rustc
+    mkdir -p "$root/crates/core/src"
+    echo 'pub fn answer() -> u32 { 42 }' >"$root/crates/core/src/lib.rs"
+    status=0
+    real_out=$(call -- "$real_rustc" --crate-name core --crate-type lib --edition=2024 \
+        "$root/crates/core/src/lib.rs" --out-dir "$scratch/out" 2>&1) || status=$?
+    expect "the pinned rustc ($("$real_rustc" -V | cut -d' ' -f2)) compiles a crate with the injected option" \
+        "0" "$status"
+    [ "$status" -eq 0 ] || echo "  $real_out"
+    expect "the pinned rustc wrote the library" "yes" "$([ -f "$scratch/out/libcore.rlib" ] && echo yes || echo no)"
+else
+    echo "SKIP - no rustc on PATH: the real-compiler case needs one"
+fi
+
 if [ "$failures" -gt 0 ]; then
     echo "rustc-frontend-threads self-test: $failures failure(s)" >&2
     exit 1
