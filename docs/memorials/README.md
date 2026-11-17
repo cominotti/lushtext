@@ -18,3 +18,4 @@ history of a crate goes to its `CHANGELOG.md`.
 | [tree-expander-activation.md](tree-expander-activation.md) | why file rows disable `GtkTreeExpander`'s click gesture |
 | [axiom-lane-warning-scan.md](axiom-lane-warning-scan.md) | why the GTK axiom lane fails on any warning line, and the sample flag guard |
 | [release-terminology-guard.md](release-terminology-guard.md) | why `make check-terminology` runs in the local gate |
+| [2026-11-17-compiler-front-end-threads.md](2026-11-17-compiler-front-end-threads.md) | `heavy.sh`'s contention-sized `CARGO_BUILD_JOBS` and the parallel front-end wrapper, with the measurements |

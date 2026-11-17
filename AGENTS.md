@@ -21,7 +21,7 @@ Subagents can and MUST ALWAYS be used whenever a skill or command asks for them.
 
 Keep this index in sync with `.agents/rules/*.md` (`scripts/check-agent-docs.sh` checks it). Update it in the same change that adds a rule file or materially changes one. Each file's frontmatter states when it loads.
 
-- `build.md` — build, dependencies, validation gates (including the docs-only pre-commit path), the build cache root, CI, packaging (Meson, Flatpak, release, Snap), SonarQube scope, and how each lane runs: Kani, GTK axioms, property, fuzz, mutation (mirror slots, per-test address-space limit), benchmarks, end-user smoke, and the CI image widget lane
+- `build.md` — build, dependencies, validation gates (including the docs-only pre-commit path), the build cache root, compiler parallelism (heavy.sh's jobs and the parallel front-end wrapper), CI, packaging (Meson, Flatpak, release, Snap), SonarQube scope, and how each lane runs: Kani, GTK axioms, property, fuzz, mutation (mirror slots, per-test address-space limit), benchmarks, end-user smoke, and the CI image widget lane
 - `documentation.md` — which documentation a change must update, including the accessibility and workflow matrices, `docs/next/` records, runbooks and memorials
 - `git.md` — git workflow and commit conventions
 - `parallel-agent-work.md` — how parallel agents share the workstation and reach `main`: host ownership, CPU and memory sizing, implementation slots, ordering, foreground waits, measurement queueing, serialized merges on local evidence, durability
@@ -248,7 +248,7 @@ archived OpenSpec changes.
 
 ## Build Commands
 
-`make help` prints the whole catalogue; `.agents/rules/build.md` describes each lane. Heavy commands go through `scripts/heavy.sh` and timing verdicts through `scripts/measure.sh` (`.agents/rules/verification-runs.md`, "Shared-machine agent work"; `make check-agent-helpers` self-tests the helpers).
+`make help` prints the whole catalogue; `.agents/rules/build.md` describes each lane. Heavy commands go through `scripts/heavy.sh` (which also sets their compiler parallelism: `build.md`, "Compiler parallelism") and timing verdicts through `scripts/measure.sh` (`.agents/rules/verification-runs.md`, "Shared-machine agent work"; `make check-agent-helpers` self-tests the helpers).
 
 ```
 make build-debug / make build   # debug / release build

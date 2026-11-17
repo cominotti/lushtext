@@ -70,6 +70,11 @@ Change worktrees live in `.claude/worktrees/<change>`.
   `--mem` cap that fits its measured peak at its job and thread counts.
   Admission then decides how many run at once: the slice budget, and
   MemAvailable at least cap plus the 16 GiB reserve.
+- The one CPU-sized count is `heavy.sh`'s own `CARGO_BUILD_JOBS`: the
+  command's CPUs, at most 16, while it is the only heavy command running, and
+  4 otherwise. Its memory peaks at 16 were measured and fit the default cap
+  ([`build.md`](./build.md), "Compiler parallelism"). Do not override it in
+  a stage; a lane whose cap was sized for fewer jobs pins its own count.
 
 ## Implementation slots and ordering
 
