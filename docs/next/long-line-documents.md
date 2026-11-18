@@ -5271,7 +5271,18 @@ What landed on the branch, and what is still owed, is the change's
   33.3 / 33.3 with 1 replaced and 5 skipped, branch 2.3 / 2.2 with all 6
   replaced. `main`'s repetitions 2 and 3 (task 1.1) are within 1 % of PT's
   figures; on the GTK side `main` retains 62,915,133 bytes of undo after six
-  10 MiB files (task 1.2), the branch descriptors only.
+  10 MiB files (task 1.2), the branch descriptors only. Those rounds ran on
+  the 1 MiB chunk.
+- **Memory verdict on the 256 KiB chunk (rerun, tasks 4.8 and 9.2, same
+  method, interleaved `main` `562fff58` → branch `e05d2abd` → `main` →
+  branch, 2026-11-18; every branch record reports `chunk_bytes` 262144):
+  met.** 16 MiB: `main` 33.3 / 33.1, branch 1.9 / 2.0 (bar: below `main`'s
+  33.9). 512 MiB, branch only: 1.7 / 1.6 (bars: at most 1.9 × 1.05 + 1 MiB =
+  3.0, and below 8). Six 10 MiB files: `main` 50.7 / 50.8 with 3 replaced
+  and 3 skipped, branch 1.7 / 1.7 with all 6 replaced; six 16 MiB files:
+  `main` 33.4 / 33.3 with 1 replaced and 5 skipped, branch 1.7 / 1.6 with all
+  6 replaced. Every branch figure is 0.4–1.4 MiB below its 1 MiB-chunk
+  round, at most the 1.5 MiB that two smaller buffers save.
 - **Chunk-size verdict (task 2.4, part A of the queued entry, coordinator
   2026-11-18, `scripts/measure.sh`, 12 interleaved rounds on one 512 MiB file
   at a 1-minute load of 2.45–3.84): 256 KiB.** Median throughput 256 KiB

@@ -624,7 +624,9 @@ path moves that edit to G5.
   - (d) typing in another tab during a 512 MiB run, within `B_interact`.
 - [x] 9.2 Memory verdict, the M9 method, as in 4.8: four rounds
   interleaved `main` → branch → `main` → branch through `heavy.sh` (design
-  R3), on the final code.
+  R3), on the final code. Rerun on `e05d2abd` (the 256 KiB chunk of task
+  2.4), 2026-11-18: met, branch growth 1.6–2.0 MiB at every size
+  (`docs/next/long-line-documents.md`, "SR").
 - [x] 9.3 Wall-time record (timing verdicts, part B of the queued entry
   "stream-replace-all: timing verdicts", four rounds interleaved `main` → branch → `main` →
   branch per case, after G5):
