@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Run widget tests in the CI widget job's own image, under a CPU limit, with
-# the widget binary already built on this host:
+# the widget binary and the session helper (`gtk-lush-session`) already built
+# on this host:
 #
 #   scripts/ci-image-widget-test.sh [--cpus N | --cpuset LIST] [--runs N]
 #       [--memory SIZE] [--out DIR] [--binary PATH] [--timeout S]
@@ -372,6 +373,16 @@ fi
 BINARY="$(realpath "$BINARY")"
 [[ "$BINARY" == "$BUILD_DIR"/* || "$BINARY" == "$TARGET_DIR"/* ]] \
     || { echo "ci-image-widget-test: $BINARY is outside the build and target directories ($BUILD_DIR, $TARGET_DIR)" >&2; exit 1; }
+# The widget launcher starts its private session through
+# scripts/headless-session, which builds the session helper with cargo unless
+# GTK_LUSH_SESSION_BIN names one; the image has no cargo, so the lane passes
+# the host-built helper (CI's step builds it the same way). An --env setting
+# of GTK_LUSH_SESSION_BIN wins.
+SESSION_BIN=""
+if ! printf '%s\n' "${ENV_VARS[@]}" | grep -q '^GTK_LUSH_SESSION_BIN='; then
+    SESSION_BIN="$TARGET_DIR/debug/gtk-lush-session"
+    [[ -x "$SESSION_BIN" ]] || { echo "ci-image-widget-test: no session helper at $SESSION_BIN; build it first (scripts/heavy.sh -- cargo build -p gtk-lush-proof-harness --bin gtk-lush-session)" >&2; exit 1; }
+fi
 
 if [[ -z "$OUT_DIR" ]]; then
     OUT_DIR="$TARGET_DIR/ci-image-widget-test/$(date +%Y%m%dT%H%M%S)-$$"
@@ -395,6 +406,7 @@ fi
 SHIM_DIR="$OUT_DIR/.lane-bin"
 write_cargo_shim "$SHIM_DIR"
 CONTAINER_ENV=(-e "LANE_WIDGET_BINARY=$BINARY" -e "PATH=$SHIM_DIR:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin")
+[[ -n "$SESSION_BIN" ]] && CONTAINER_ENV+=(-e "GTK_LUSH_SESSION_BIN=$SESSION_BIN")
 for setting in "${ENV_VARS[@]}"; do CONTAINER_ENV+=(-e "$setting"); done
 if [[ -n "$SHARD" ]]; then
     # CI's widget step, verbatim but for the measurement file.

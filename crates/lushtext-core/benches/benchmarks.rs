@@ -552,7 +552,9 @@ fn make_replace_all_10mb_fixture() -> (TempDir, Vec<Replacement>) {
 fn make_replace_all_dense_10mb_fixture() -> (TempDir, Vec<Replacement>, usize) {
     let dir = TempDir::new().expect("expected operation to succeed");
     let path = dir.path().join("accepted-10mb-dense-lines.txt");
-    let byte_limit = usize::try_from(content_search::MAX_REPLACE_FILE_BYTES)
+    // `main`'s 10 MiB first-pass limit: the benchmark keeps its historic size
+    // while the per-file limit is the open tier.
+    let byte_limit = usize::try_from(content_search::MAIN_REPLACE_FILE_BYTES)
         .expect("Replace All file-byte limit should fit usize");
     let source_lines = byte_limit / 2;
     fixture::write_text(&path, &"x\n".repeat(source_lines));
@@ -2320,7 +2322,7 @@ fn bench_replace_undo_workflows(c: &mut Criterion) {
             &evidence_replacements,
             &HashSet::new(),
             &evidence_cancel,
-            Some(evidence_dir.path()),
+            evidence_dir.path(),
         )
         .expect("dense-line Replace All evidence should complete");
         let evidence_metrics = evidence.metrics();
@@ -2367,7 +2369,7 @@ fn bench_replace_undo_workflows(c: &mut Criterion) {
                         black_box(&replacements),
                         black_box(&HashSet::new()),
                         black_box(&cancel),
-                        Some(dir.path()),
+                        dir.path(),
                     )
                     .expect("expected operation to succeed")
                     .into_parts();
@@ -2386,7 +2388,7 @@ fn bench_replace_undo_workflows(c: &mut Criterion) {
                         &replacements,
                         &HashSet::new(),
                         &cancel,
-                        Some(dir.path()),
+                        dir.path(),
                     )
                     .expect("expected operation to succeed")
                     .into_parts();
@@ -2410,7 +2412,7 @@ fn bench_replace_undo_workflows(c: &mut Criterion) {
                     black_box(&replacements),
                     black_box(&HashSet::new()),
                     black_box(&cancel),
-                    Some(dir.path()),
+                    dir.path(),
                 )
                 .expect("expected operation to succeed")
                 .into_parts();
@@ -2429,7 +2431,7 @@ fn bench_replace_undo_workflows(c: &mut Criterion) {
                     black_box(&replacements),
                     black_box(&HashSet::new()),
                     black_box(&cancel),
-                    Some(dir.path()),
+                    dir.path(),
                 )
                 .expect("expected operation to succeed");
                 let metrics = outcome.metrics();
@@ -2456,7 +2458,7 @@ fn bench_replace_undo_workflows(c: &mut Criterion) {
                     black_box(&replacements),
                     black_box(&HashSet::new()),
                     black_box(&cancel),
-                    Some(dir.path()),
+                    dir.path(),
                 )
                 .expect("expected operation to succeed")
                 .into_parts();

@@ -1,0 +1,22 @@
+{
+  "kind": "dev.cominotti.lushtext.replace-all-undo-stream-entry",
+  "version": 1,
+  "data": {
+    "path": "/tmp/project/src/main.rs",
+    "body_file": "deb09d05810ef629.body",
+    "original": {
+      "len": 6,
+      "sha256": "6db7d803e74f1ffa7d8f5adc0bf95b3e15bf4c8373fffadf546227cc6c6742cb"
+    },
+    "replaced": {
+      "len": 5,
+      "sha256": "f39592393ef0859cb196a52693d2cea00fb2df784b3c04ae54aa7cadb8e562f8"
+    },
+    "identity": {
+      "dev": 64769,
+      "ino": 1234,
+      "size": 6,
+      "mtime_ns": 1700000000000000000
+    }
+  }
+}

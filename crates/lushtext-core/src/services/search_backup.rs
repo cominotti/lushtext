@@ -2,14 +2,20 @@
 
 //! Persisted undo backup for Replace All.
 //!
-//! The backup maps file paths to original and post-replace bytes so a Replace
-//! All can be reverted without overwriting files edited after the replacement.
+//! Each replaced file has one entry: a descriptor naming the target, the
+//! length and SHA-256 of its original and replaced bytes, and a raw body file
+//! in `bodies/` holding the original bytes (design D3). Undo recognises a file
+//! by its digest and streams the body back, so no layer holds file content.
+//! Legacy inline entries (`replace-all-undo-entry`) still load and undo after
+//! an upgrade; new runs never write them.
 
 use crate::model::sidecar_identity::stable_path_hash;
 use crate::services::content_search::{
-    MAX_REPLACE_UNDO_BYTES, MAX_REPLACE_UNDO_RETAINED_BYTES, ReplaceUndoBackup, ReplaceUndoEntry,
-    replace_undo_retained_byte_weight,
+    ContentDigest, MAIN_REPLACE_UNDO_BYTES, MAX_REPLACE_UNDO_RETAINED_BYTES, ReplaceUndoBackup,
+    ReplaceUndoEntry, UndoOriginal, replace_undo_retained_byte_weight,
 };
+use crate::services::content_search::{ShrinkAction, shrink_step};
+use crate::services::filesystem::leftovers::LaunchId;
 use crate::services::{
     filesystem::{
         DirectoryScanPolicy, metadata as fs_metadata, mutate as fs_mutate, tree as fs_tree,
@@ -17,11 +23,12 @@ use crate::services::{
     },
     json_format::{
         KIND_REPLACE_UNDO_CLEANUP_MARKER, KIND_REPLACE_UNDO_ENTRY, KIND_REPLACE_UNDO_MANIFEST,
-        KIND_RETIRED_REPLACE_UNDO_BACKUP,
+        KIND_REPLACE_UNDO_STREAM_ENTRY, KIND_RETIRED_REPLACE_UNDO_BACKUP,
     },
     recovery_metadata::{
         RecoveryDiagnostic, RecoveryLoadConfig, RecoveryMetadataClass, RecoveryPreservation,
-        RecoveryProblem, load_enveloped_json_optional, save_enveloped_json_path,
+        RecoveryProblem, load_enveloped_json_optional, load_enveloped_json_optional_accepting,
+        save_enveloped_json_path,
     },
 };
 use anyhow::{Context, Result};
@@ -31,7 +38,9 @@ use std::cell::Cell;
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard, OnceLock, TryLockError};
+use std::time::Duration;
 
 /// Pre-public single-file backup path, retained only for clean-break recovery diagnostics.
 const BACKUP_FILE: &str = "replace-backup.json";
@@ -41,6 +50,15 @@ const JOURNAL_DIR: &str = "replace-backup-journal";
 const JOURNAL_MANIFEST_FILE: &str = "manifest.json";
 /// Inactive marker written before cleanup so interrupted deletion cannot revive undo.
 const CLEANUP_MARKER_FILE: &str = "cleanup-in-progress.json";
+/// Subdirectory of the journal holding one raw original-bytes body per entry.
+///
+/// Its own directory, so the entry scans keep their `JOURNAL_SCAN_MAX_ENTRIES`
+/// coverage and the bodies get their own scan under the same bound (design D3).
+const BODIES_DIR: &str = "bodies";
+/// Extension of a body file.
+const BODY_EXTENSION: &str = "body";
+/// How often a cancellable wait for the journal guard re-checks its flag.
+const JOURNAL_GUARD_POLL: Duration = Duration::from_millis(20);
 /// Maximum journal entries scanned for orphan diagnostics in one recovery pass.
 ///
 /// It bounds damaged app-data startup work while staying at or above the files
@@ -60,11 +78,86 @@ thread_local! {
     static TEST_MAX_REPLACE_UNDO_BYTES: Cell<Option<u64>> = const { Cell::new(None) };
 }
 
+/// A legacy inline entry (`replace-all-undo-entry`), read but never written.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct ReplaceBackupDiskEntry {
     path: PathBuf,
     original_content: String,
     replaced_content: String,
+}
+
+/// Length and hex SHA-256 of one byte stream, as an entry stores it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct DiskDigest {
+    len: u64,
+    sha256: String,
+}
+
+impl DiskDigest {
+    fn from_digest(digest: ContentDigest) -> Self {
+        Self {
+            len: digest.len,
+            sha256: digest.sha256_hex(),
+        }
+    }
+
+    fn to_digest(&self) -> Option<ContentDigest> {
+        Some(ContentDigest {
+            len: self.len,
+            sha256: ContentDigest::sha256_from_hex(&self.sha256)?,
+        })
+    }
+}
+
+/// The target's identity facts when its entry was written (design D3).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TargetIdentity {
+    /// Device id.
+    pub dev: u64,
+    /// Inode number.
+    pub ino: u64,
+    /// Byte size.
+    pub size: u64,
+    /// Modification time in nanoseconds since the epoch.
+    pub mtime_ns: u64,
+}
+
+/// A streamed entry (`replace-all-undo-stream-entry`): a descriptor whose
+/// original bytes are the raw body file `bodies/<body_file>`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ReplaceStreamDiskEntry {
+    path: PathBuf,
+    body_file: String,
+    original: DiskDigest,
+    replaced: DiskDigest,
+    identity: TargetIdentity,
+}
+
+/// Either entry kind, told apart by shape: only a streamed entry has a
+/// `body_file` and only a legacy one has inline content.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum AnyDiskEntry {
+    Stream(ReplaceStreamDiskEntry),
+    Legacy(ReplaceBackupDiskEntry),
+}
+
+/// What one Replace All run records for a file it is about to replace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamEntryRecord {
+    /// The original bytes, which the body holds.
+    pub original: ContentDigest,
+    /// The bytes Replace All will write.
+    pub replaced: ContentDigest,
+    /// The target's facts before pass A.
+    pub identity: TargetIdentity,
+}
+
+/// Which kind an entry was, for the one-kind-per-journal rule (design D6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntryKind {
+    Stream,
+    Legacy,
 }
 
 /// Commit record listing the per-file entries that make one complete undo run.
@@ -77,6 +170,23 @@ struct ReplaceJournalManifest {
     #[serde(default)]
     incremental: bool,
     entries: Vec<ReplaceJournalManifestEntry>,
+    /// Process id of the launch that last wrote targets through this journal
+    /// (design D9). Absent in journals written before streamed entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pid: Option<u32>,
+    /// That launch's temp-name nonce (design D9).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    launch_nonce: Option<u32>,
+}
+
+impl ReplaceJournalManifest {
+    /// The recorded launch, or a launch no temp name carries when absent.
+    fn launch(&self) -> LaunchId {
+        LaunchId {
+            pid: self.pid.unwrap_or(0),
+            nonce: self.launch_nonce.unwrap_or(0),
+        }
+    }
 }
 
 /// Manifest entry tying a target path to its hashed per-file journal file.
@@ -132,8 +242,7 @@ pub struct ReplaceBackupCleanupReport {
 ///
 /// Returns an error if a previous holder panicked while owning the coordinator.
 pub fn acquire_journal_guard() -> Result<MutexGuard<'static, ()>> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+    journal_lock()
         .lock()
         .map_err(|_| anyhow::anyhow!("replace undo backup disk lock poisoned"))
 }
@@ -153,6 +262,12 @@ pub fn load(data_dir: &Path) -> Result<ReplaceUndoBackup> {
 #[must_use]
 pub(crate) fn journal_dir(data_dir: &Path) -> PathBuf {
     data_dir.join(JOURNAL_DIR)
+}
+
+/// The directory holding the journal's raw undo bodies under `data_dir`.
+#[must_use]
+pub(crate) fn bodies_dir(data_dir: &Path) -> PathBuf {
+    journal_dir(data_dir).join(BODIES_DIR)
 }
 
 /// Load Replace All undo state with recovery diagnostics.
@@ -223,54 +338,88 @@ fn load_retired_backup(data_dir: &Path) -> ReplaceBackupRecoveryLoad {
     }
 }
 
-/// Save a complete Replace All undo journal.
+/// Wait for the journal guard while polling `cancel` (design D3a).
 ///
-/// Each file entry is written before its target file changes; the manifest is
-/// the commit marker that makes the staged set active for undo.
+/// The guard's other holders are startup recovery and the journal disk jobs,
+/// both brief; a run waits for them here, so Cancel, Stop and Close are seen
+/// while it waits. Returns `Ok(None)` when cancelled first.
 ///
 /// # Errors
 ///
-/// Returns an error if any backup entry is not valid UTF-8 or the backup file
-/// cannot be serialized or written.
-pub fn save(data_dir: &Path, backup: &ReplaceUndoBackup) -> Result<()> {
-    delete(data_dir)?;
-    if backup.is_empty() {
-        return Ok(());
-    }
-    for (path, entry) in backup {
-        save_entry(data_dir, path, entry)?;
-    }
-    mark_journal_active(data_dir, backup)?;
-    Ok(())
+/// Returns an error if a previous holder panicked while owning the guard.
+pub fn acquire_journal_guard_cancellable(
+    cancel: &AtomicBool,
+) -> Result<Option<MutexGuard<'static, ()>>> {
+    acquire_journal_guard_while_current(|| !cancel.load(Ordering::Relaxed))
 }
 
-/// Re-arm a journal that a partial undo reduced, without any inactive window.
+/// Wait for the journal guard while `current` holds (design D3a).
 ///
-/// [`save`] is a delete-then-rebuild: it removes the whole journal directory
-/// before writing the new one. For a partial undo that is a data-loss window —
-/// the files it could **not** restore still hold Replace All output, and while
-/// the rebuild is in flight there is no durable rollback copy for them at all,
-/// which is the in-memory-only failure the journal exists to prevent.
-///
-/// A partial undo only ever *shrinks* the journal, and every retained entry file
-/// is already on disk and byte-identical, so this does the shrink in the safe
-/// order instead: write the smaller active manifest first, then remove the entry
-/// files it no longer lists. Neither window is ever inactive.
-///
-/// - Interrupted before the new manifest lands: the previous manifest stays
-///   active and lists a superset. Undo re-validates each file's current bytes,
-///   so an already-restored entry is recognised as restored and never rewritten.
-/// - Interrupted after it lands: the smaller manifest is active and the
-///   already-restored entry files are orphans, which recovery reports as
-///   diagnostics without deactivating the journal.
-///
-/// Falls back to [`save`] when the on-disk journal is not a superset of
-/// `backup`, which is the one case a shrink cannot express.
+/// A journal disk job passes its generation check here, so a job a newer
+/// one superseded returns before it waits, and while it waits, instead of
+/// holding a worker slot until the guard is free. `current` is checked
+/// before every attempt; the caller checks it again once it holds the guard.
+/// Returns `Ok(None)` when `current` stopped holding first.
 ///
 /// # Errors
 ///
-/// Returns an error when the smaller active manifest cannot be written durably,
-/// or when the fallback full rewrite fails.
+/// Returns an error if a previous holder panicked while owning the guard.
+pub fn acquire_journal_guard_while_current(
+    mut current: impl FnMut() -> bool,
+) -> Result<Option<MutexGuard<'static, ()>>> {
+    loop {
+        if !current() {
+            return Ok(None);
+        }
+        match journal_lock().try_lock() {
+            Ok(guard) => return Ok(Some(guard)),
+            Err(TryLockError::WouldBlock) => std::thread::sleep(JOURNAL_GUARD_POLL),
+            Err(TryLockError::Poisoned(_)) => {
+                anyhow::bail!("replace undo backup disk lock poisoned")
+            }
+        }
+    }
+}
+
+fn journal_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// The entry JSON of `path` in the journal under `data_dir`.
+#[must_use]
+pub fn entry_path(data_dir: &Path, path: &Path) -> PathBuf {
+    data_dir.join(JOURNAL_DIR).join(entry_file_name(path))
+}
+
+/// The raw body file of `path` in the journal under `data_dir` (design D3).
+#[must_use]
+pub fn body_path(data_dir: &Path, path: &Path) -> PathBuf {
+    data_dir
+        .join(JOURNAL_DIR)
+        .join(BODIES_DIR)
+        .join(body_file_name(path))
+}
+
+/// Shrink the journal to `backup`, never rebuilding it (design D3a).
+///
+/// A descriptor journal cannot be rebuilt from memory, so this only removes:
+/// a partial undo or rollback leaves a subset of the on-disk entries, and
+/// every retained entry and body is already durable.
+///
+/// - An incremental journal (every journal a run writes) needs no manifest
+///   change: the entries and bodies `backup` no longer lists are removed,
+///   each entry before its body.
+/// - A manifest-listed legacy journal first gets the smaller active manifest,
+///   then loses the entries it no longer lists.
+///
+/// Neither order has an inactive window. Orphan bodies are removed too.
+///
+/// # Errors
+///
+/// Returns an error, and changes nothing, when an entry `backup` retains is
+/// missing on disk (it is reported, never rebuilt), or when the smaller
+/// manifest cannot be written.
 pub fn shrink_journal_to(data_dir: &Path, backup: &ReplaceUndoBackup) -> Result<()> {
     if backup.is_empty() {
         return delete(data_dir);
@@ -288,17 +437,30 @@ pub fn shrink_journal_to(data_dir: &Path, backup: &ReplaceUndoBackup) -> Result<
             .iter()
             .all(|entry_file| fs_metadata::exists(&journal_dir.join(entry_file)));
     if !is_superset {
-        return save(data_dir, backup);
+        anyhow::bail!(
+            "replace undo journal no longer holds every retained entry; it is not rebuilt"
+        );
     }
 
-    mark_journal_active(data_dir, backup)?;
+    let manifest = load_manifest_value(data_dir, &journal_dir);
+    if manifest
+        .as_ref()
+        .is_some_and(|manifest| !manifest.incremental)
+    {
+        mark_journal_active(data_dir, backup)?;
+    }
+    let retained_bodies = backup
+        .keys()
+        .map(|path| body_file_name(path))
+        .collect::<HashSet<_>>();
     remove_unlisted_journal_entries(&journal_dir, &retained);
+    remove_unlisted_bodies(&journal_dir, &retained_bodies);
     Ok(())
 }
 
-/// Delete payload entries the freshly written active manifest no longer lists.
+/// Delete payload entries the journal no longer lists, each before its body.
 ///
-/// Best-effort by design: the manifest is already durable and correct, and a
+/// Best-effort by design: the journal is already durable and correct, and a
 /// leftover entry is only an orphan diagnostic, so a removal failure must not be
 /// reported as a failed journal write.
 fn remove_unlisted_journal_entries(journal_dir: &Path, retained: &HashSet<String>) {
@@ -325,9 +487,57 @@ fn remove_unlisted_journal_entries(journal_dir: &Path, retained: &HashSet<String
         if retained.contains(file_name) {
             continue;
         }
+        let body = journal_dir.join(BODIES_DIR).join(format!(
+            "{}.{BODY_EXTENSION}",
+            file_name.trim_end_matches(".json")
+        ));
+        // The entry goes before its body, and a body whose entry could not be
+        // removed stays: no entry may reference a missing body (design D9).
+        let mut action = ShrinkAction::RemoveEntry;
+        loop {
+            let (target, succeeded) = match action {
+                ShrinkAction::RemoveEntry => {
+                    (&entry.path, fs_mutate::remove_file_if_exists(&entry.path))
+                }
+                ShrinkAction::RemoveBody => (&body, fs_mutate::remove_file_if_exists(&body)),
+                ShrinkAction::Finish { .. } => break,
+            };
+            if let Err(error) = &succeeded {
+                tracing::warn!(
+                    "Failed to remove superseded replace undo file {}: {error}",
+                    target.display()
+                );
+            }
+            action = shrink_step(action, succeeded.is_ok());
+        }
+    }
+}
+
+/// Remove bodies no retained entry names: orphans a crash between a body and
+/// its entry, or between an entry's removal and its body's, left (design D9).
+fn remove_unlisted_bodies(journal_dir: &Path, retained: &HashSet<String>) {
+    let bodies_dir = journal_dir.join(BODIES_DIR);
+    let Ok(entries) = fs_tree::scan_directory(
+        &bodies_dir,
+        DirectoryScanPolicy {
+            max_entries: JOURNAL_SCAN_MAX_ENTRIES,
+            include_hidden: false,
+        },
+    ) else {
+        return;
+    };
+    for entry in entries {
+        let Some(file_name) = entry.path.file_name().and_then(OsStr::to_str) else {
+            continue;
+        };
+        if entry.path.extension().and_then(OsStr::to_str) != Some(BODY_EXTENSION)
+            || retained.contains(file_name)
+        {
+            continue;
+        }
         if let Err(error) = fs_mutate::remove_file_if_exists(&entry.path) {
             tracing::warn!(
-                "Failed to remove superseded replace undo journal entry {}: {error}",
+                "Failed to remove orphan replace undo body {}: {error}",
                 entry.path.display()
             );
         }
@@ -340,25 +550,33 @@ fn remove_unlisted_journal_entries(journal_dir: &Path, retained: &HashSet<String
 ///
 /// Returns an error when prior journal state cannot be made inactive and removed.
 pub fn begin_incremental_journal(data_dir: &Path) -> Result<()> {
-    delete(data_dir)
+    delete(data_dir)?;
+    let bodies = data_dir.join(JOURNAL_DIR).join(BODIES_DIR);
+    fs_write::create_dir_all_durable(&bodies)
+        .with_context(|| format!("failed to create {}", bodies.display()))?;
+    Ok(())
 }
 
-/// Save one per-file undo journal entry before that file is modified.
+/// Save one streamed entry for `path`, after its body is durable (P4).
 ///
 /// # Errors
 ///
-/// Returns an error if the entry is not valid UTF-8 or cannot be durably
-/// written into the journal directory.
-pub fn save_entry(data_dir: &Path, path: &Path, entry: &ReplaceUndoEntry) -> Result<()> {
-    let disk = disk_entry_from_memory(path, entry)?;
-    let journal_dir = data_dir.join(JOURNAL_DIR);
-    let entry_path = journal_dir.join(entry_file_name(path));
+/// Returns an error if the entry cannot be durably written.
+pub fn save_stream_entry(data_dir: &Path, path: &Path, record: &StreamEntryRecord) -> Result<()> {
+    let disk = ReplaceStreamDiskEntry {
+        path: path.to_path_buf(),
+        body_file: body_file_name(path),
+        original: DiskDigest::from_digest(record.original),
+        replaced: DiskDigest::from_digest(record.replaced),
+        identity: record.identity,
+    };
+    let entry_path = entry_path(data_dir, path);
     let config = RecoveryLoadConfig::new(
         data_dir,
         &entry_path,
         RecoveryMetadataClass::ReplaceAllUndoJournal,
     );
-    let diagnostics = save_enveloped_json_path(&config, KIND_REPLACE_UNDO_ENTRY, &disk)?;
+    let diagnostics = save_enveloped_json_path(&config, KIND_REPLACE_UNDO_STREAM_ENTRY, &disk)?;
     for diagnostic in diagnostics {
         tracing::warn!("{}", diagnostic.summary());
     }
@@ -371,12 +589,13 @@ pub fn save_entry(data_dir: &Path, path: &Path, entry: &ReplaceUndoEntry) -> Res
 /// recovery evidence. Replace All writes each entry before its corresponding
 /// target rename, so a crash can expose an entry for an unchanged target; undo
 /// validation safely ignores that entry unless the target matches its replaced
-/// bytes.
+/// digest. The manifest records `launch`, whose temp files the next recovery
+/// owns (design D9).
 ///
 /// # Errors
 ///
 /// Returns an error when the active marker cannot be written durably.
-pub fn mark_incremental_journal_active(data_dir: &Path) -> Result<()> {
+pub fn mark_incremental_journal_active(data_dir: &Path, launch: LaunchId) -> Result<()> {
     let journal_dir = data_dir.join(JOURNAL_DIR);
     fs_write::create_dir_all_durable(&journal_dir)
         .with_context(|| format!("failed to create {}", journal_dir.display()))?;
@@ -391,8 +610,41 @@ pub fn mark_incremental_journal_active(data_dir: &Path) -> Result<()> {
     let manifest = ReplaceJournalManifest {
         incremental: true,
         entries: Vec::new(),
+        pid: Some(launch.pid),
+        launch_nonce: Some(launch.nonce),
     };
     save_journal_manifest(data_dir, &journal_dir, &manifest)
+}
+
+/// Re-arm the journal in `journal_dir` for `launch`, before the first restore
+/// write of an Undo in a later launch than the manifest records (design D6).
+///
+/// A manifest-listed legacy journal keeps its list.
+///
+/// # Errors
+///
+/// Returns an error when the manifest is missing or cannot be rewritten.
+pub fn rearm_journal(journal_dir: &Path, launch: LaunchId) -> Result<()> {
+    let data_dir = journal_dir
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("replace undo journal has no parent directory"))?;
+    let mut manifest = load_manifest_value(data_dir, journal_dir)
+        .ok_or_else(|| anyhow::anyhow!("replace undo journal has no active manifest"))?;
+    manifest.pid = Some(launch.pid);
+    manifest.launch_nonce = Some(launch.nonce);
+    save_journal_manifest(data_dir, journal_dir, &manifest)
+}
+
+fn load_manifest_value(data_dir: &Path, journal_dir: &Path) -> Option<ReplaceJournalManifest> {
+    load_enveloped_json_optional::<ReplaceJournalManifest>(
+        &RecoveryLoadConfig::new(
+            data_dir,
+            &journal_dir.join(JOURNAL_MANIFEST_FILE),
+            RecoveryMetadataClass::ReplaceAllUndoJournal,
+        ),
+        KIND_REPLACE_UNDO_MANIFEST,
+    )
+    .value
 }
 
 /// Delete one per-file journal entry. Missing entries are treated as already gone.
@@ -401,7 +653,7 @@ pub fn mark_incremental_journal_active(data_dir: &Path) -> Result<()> {
 ///
 /// Returns an error if an existing entry cannot be removed.
 pub fn delete_entry(data_dir: &Path, path: &Path) -> Result<()> {
-    let entry_path = data_dir.join(JOURNAL_DIR).join(entry_file_name(path));
+    let entry_path = entry_path(data_dir, path);
     match fs_mutate::remove_file_if_exists(&entry_path) {
         Ok(_) => Ok(()),
         Err(e) => Err(anyhow::anyhow!(
@@ -409,6 +661,59 @@ pub fn delete_entry(data_dir: &Path, path: &Path) -> Result<()> {
             entry_path.display(),
             e
         )),
+    }
+}
+
+/// Delete one body, after its entry. Missing bodies are treated as already gone.
+///
+/// # Errors
+///
+/// Returns an error if an existing body cannot be removed.
+pub fn delete_body(data_dir: &Path, path: &Path) -> Result<()> {
+    let body = body_path(data_dir, path);
+    match fs_mutate::remove_file_if_exists(&body) {
+        Ok(_) => Ok(()),
+        Err(e) => Err(anyhow::anyhow!(
+            "failed to delete replace undo body {}: {}",
+            body.display(),
+            e
+        )),
+    }
+}
+
+/// Re-read a legacy entry's original bytes, under `limit` (design D6).
+///
+/// Undo calls this on its worker for one entry at a time.
+///
+/// # Errors
+///
+/// Returns an error when the entry is missing, malformed, not legacy, or its
+/// payload exceeds `limit`.
+pub fn load_legacy_original(entry_file: &Path, limit: u64) -> Result<Vec<u8>> {
+    let journal_dir = entry_file
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("replace undo entry has no journal directory"))?;
+    let data_dir = journal_dir
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("replace undo journal has no parent directory"))?;
+    let load = load_enveloped_json_optional_accepting::<AnyDiskEntry>(
+        &RecoveryLoadConfig::new(
+            data_dir,
+            entry_file,
+            RecoveryMetadataClass::ReplaceAllUndoJournal,
+        ),
+        KIND_REPLACE_UNDO_STREAM_ENTRY,
+        &[KIND_REPLACE_UNDO_ENTRY],
+    );
+    match load.value {
+        Some(AnyDiskEntry::Legacy(disk)) => {
+            if replace_entry_payload_bytes(&disk) > limit {
+                anyhow::bail!("legacy replace undo entry exceeds the undo payload limit");
+            }
+            Ok(disk.original_content.into_bytes())
+        }
+        Some(AnyDiskEntry::Stream(_)) => anyhow::bail!("replace undo entry is not a legacy entry"),
+        None => anyhow::bail!("legacy replace undo entry could not be loaded"),
     }
 }
 
@@ -453,9 +758,13 @@ pub fn mark_journal_active(data_dir: &Path, backup: &ReplaceUndoBackup) -> Resul
             entry_file: entry_file_name(path),
         })
         .collect();
+    // A shrink keeps the launch the manifest records (design D9).
+    let prior = load_manifest_value(data_dir, &journal_dir);
     let manifest = ReplaceJournalManifest {
         incremental: false,
         entries,
+        pid: prior.as_ref().and_then(|manifest| manifest.pid),
+        launch_nonce: prior.as_ref().and_then(|manifest| manifest.launch_nonce),
     };
     save_journal_manifest(data_dir, &journal_dir, &manifest)
 }
@@ -536,7 +845,7 @@ fn load_journal(data_dir: &Path, journal_dir: &Path) -> ReplaceBackupRecoveryLoa
 
     let mut diagnostics = manifest_load.diagnostics;
     if manifest.incremental {
-        return load_incremental_journal(data_dir, journal_dir, diagnostics);
+        return load_incremental_journal(data_dir, journal_dir, manifest.launch(), diagnostics);
     }
     if entry_count_exceeds_cap(manifest.entries.len()) {
         diagnostics.push(RecoveryDiagnostic::repair_skipped(
@@ -557,6 +866,7 @@ fn load_journal(data_dir: &Path, journal_dir: &Path) -> ReplaceBackupRecoveryLoa
     let mut backup = ReplaceUndoBackup::new();
     let mut dedup = ManifestEntryDedup::default();
     let mut undo_payload_bytes = 0u64;
+    let mut kinds = JournalKinds::default();
 
     for entry in &manifest.entries {
         match dedup.admit(&entry.entry_file, &entry.path) {
@@ -580,28 +890,17 @@ fn load_journal(data_dir: &Path, journal_dir: &Path) -> ReplaceBackupRecoveryLoa
         }
 
         let entry_path = journal_dir.join(&entry.entry_file);
-        let entry_load = load_enveloped_json_optional::<ReplaceBackupDiskEntry>(
-            &RecoveryLoadConfig::new(
-                data_dir,
-                &entry_path,
-                RecoveryMetadataClass::ReplaceAllUndoJournal,
-            ),
-            KIND_REPLACE_UNDO_ENTRY,
-        );
-        let Some(disk) = entry_load.value else {
-            if entry_load.diagnostics.is_empty() {
-                diagnostics.push(RecoveryDiagnostic::repair_skipped(
-                    RecoveryMetadataClass::ReplaceAllUndoJournal,
-                    &entry_path,
-                    "replace undo journal manifest references a missing entry",
-                ));
-            } else {
-                diagnostics.extend(entry_load.diagnostics);
-            }
+        let Some(loaded) = load_descriptor(
+            data_dir,
+            journal_dir,
+            &entry_path,
+            manifest.launch(),
+            &mut diagnostics,
+            "replace undo journal manifest references a missing entry",
+        ) else {
             continue;
         };
-        diagnostics.extend(entry_load.diagnostics);
-        if disk.path != entry.path {
+        if loaded.path != entry.path {
             diagnostics.push(RecoveryDiagnostic::repair_skipped(
                 RecoveryMetadataClass::ReplaceAllUndoJournal,
                 &entry_path,
@@ -609,10 +908,9 @@ fn load_journal(data_dir: &Path, journal_dir: &Path) -> ReplaceBackupRecoveryLoa
             ));
             continue;
         }
-        let entry_payload_bytes = replace_entry_payload_bytes(&disk);
         if payload_budget_exceeded(
             undo_payload_bytes,
-            entry_payload_bytes,
+            loaded.legacy_payload_bytes,
             effective_max_replace_undo_bytes(),
         ) {
             diagnostics.push(RecoveryDiagnostic::repair_skipped(
@@ -622,14 +920,9 @@ fn load_journal(data_dir: &Path, journal_dir: &Path) -> ReplaceBackupRecoveryLoa
             ));
             break;
         }
-        undo_payload_bytes = undo_payload_bytes.saturating_add(entry_payload_bytes);
-        backup.insert(
-            disk.path,
-            ReplaceUndoEntry::new(
-                disk.original_content.into_bytes(),
-                disk.replaced_content.into_bytes(),
-            ),
-        );
+        undo_payload_bytes = undo_payload_bytes.saturating_add(loaded.legacy_payload_bytes);
+        kinds.record(loaded.kind, &entry_path, &mut diagnostics);
+        backup.insert(loaded.path, loaded.descriptor);
     }
 
     if manifest.entries.is_empty() {
@@ -674,6 +967,7 @@ fn load_journal(data_dir: &Path, journal_dir: &Path) -> ReplaceBackupRecoveryLoa
 fn load_incremental_journal(
     data_dir: &Path,
     journal_dir: &Path,
+    launch: LaunchId,
     mut diagnostics: Vec<RecoveryDiagnostic>,
 ) -> ReplaceBackupRecoveryLoad {
     let scan_cap = JOURNAL_SCAN_MAX_ENTRIES.saturating_add(3);
@@ -725,29 +1019,21 @@ fn load_incremental_journal(
 
     let mut backup = ReplaceUndoBackup::new();
     let mut undo_payload_bytes = 0u64;
+    let mut kinds = JournalKinds::default();
+    let mut lost_entry = false;
     for entry_path in entry_paths.into_iter().take(JOURNAL_SCAN_MAX_ENTRIES) {
-        let entry_load = load_enveloped_json_optional::<ReplaceBackupDiskEntry>(
-            &RecoveryLoadConfig::new(
-                data_dir,
-                &entry_path,
-                RecoveryMetadataClass::ReplaceAllUndoJournal,
-            ),
-            KIND_REPLACE_UNDO_ENTRY,
-        );
-        let Some(disk) = entry_load.value else {
-            if entry_load.diagnostics.is_empty() {
-                diagnostics.push(RecoveryDiagnostic::repair_skipped(
-                    RecoveryMetadataClass::ReplaceAllUndoJournal,
-                    &entry_path,
-                    "incremental replace undo journal entry could not be loaded",
-                ));
-            } else {
-                diagnostics.extend(entry_load.diagnostics);
-            }
+        let Some(loaded) = load_descriptor(
+            data_dir,
+            journal_dir,
+            &entry_path,
+            launch,
+            &mut diagnostics,
+            "incremental replace undo journal entry could not be loaded",
+        ) else {
+            lost_entry = true;
             continue;
         };
-        diagnostics.extend(entry_load.diagnostics);
-        let entry_payload_bytes = replace_entry_payload_bytes(&disk);
+        let entry_payload_bytes = loaded.legacy_payload_bytes;
         if payload_budget_exceeded(
             undo_payload_bytes,
             entry_payload_bytes,
@@ -761,15 +1047,10 @@ fn load_incremental_journal(
             break;
         }
         undo_payload_bytes = undo_payload_bytes.saturating_add(entry_payload_bytes);
-        let target_path = disk.path.clone();
+        kinds.record(loaded.kind, &entry_path, &mut diagnostics);
+        let target_path = loaded.path.clone();
         if backup
-            .insert(
-                target_path.clone(),
-                ReplaceUndoEntry::new(
-                    disk.original_content.into_bytes(),
-                    disk.replaced_content.into_bytes(),
-                ),
-            )
+            .insert(target_path.clone(), loaded.descriptor)
             .is_some()
         {
             diagnostics.push(RecoveryDiagnostic::repair_skipped(
@@ -796,6 +1077,15 @@ fn load_incremental_journal(
         ));
     }
     let active = journal_is_active(diagnostics.len(), None);
+    if !active && lost_entry {
+        // An incremental journal lists no entries, so once a damaged entry is
+        // quarantined the rest would load as a complete journal and offer
+        // Undo for a subset. The cleanup marker keeps it inactive until
+        // cleanup removes it, as a missing entry does for a listed journal.
+        if let Err(error) = mark_cleanup_in_progress(data_dir) {
+            tracing::warn!("Failed to mark a damaged replace undo journal for cleanup: {error}");
+        }
+    }
     ReplaceBackupRecoveryLoad {
         backup: if active {
             backup
@@ -899,26 +1189,6 @@ impl ManifestEntryDedup {
     }
 }
 
-fn disk_entry_from_memory(path: &Path, entry: &ReplaceUndoEntry) -> Result<ReplaceBackupDiskEntry> {
-    let original_content = String::from_utf8(entry.original_bytes.clone()).with_context(|| {
-        format!(
-            "replace backup original content for {} is not valid UTF-8",
-            path.display()
-        )
-    })?;
-    let replaced_content = String::from_utf8(entry.replaced_bytes.clone()).with_context(|| {
-        format!(
-            "replace backup replacement content for {} is not valid UTF-8",
-            path.display()
-        )
-    })?;
-    Ok(ReplaceBackupDiskEntry {
-        path: path.to_path_buf(),
-        original_content,
-        replaced_content,
-    })
-}
-
 fn replace_entry_payload_bytes(entry: &ReplaceBackupDiskEntry) -> u64 {
     u64::try_from(entry.original_content.len())
         .unwrap_or(u64::MAX)
@@ -933,7 +1203,127 @@ fn effective_max_replace_undo_bytes() -> u64 {
             return override_value;
         }
     }
-    MAX_REPLACE_UNDO_BYTES
+    MAIN_REPLACE_UNDO_BYTES
+}
+
+/// Test-only journal writers: the states a run, a crash or an older build
+/// leave, built from bytes (never compiled into a shipping build).
+#[cfg(any(test, feature = "test-utils"))]
+pub mod fixture {
+    use super::{
+        JOURNAL_DIR, KIND_REPLACE_UNDO_ENTRY, LaunchId, RecoveryLoadConfig, RecoveryMetadataClass,
+        ReplaceBackupDiskEntry, ReplaceJournalManifest, Result, StreamEntryRecord, TargetIdentity,
+        body_path, entry_path, save_enveloped_json_path, save_journal_manifest, save_stream_entry,
+    };
+    use crate::services::content_search::{
+        ContentDigest, ReplaceUndoBackup, ReplaceUndoEntry, UndoOriginal,
+    };
+    use crate::services::filesystem::{WriteLabel, write as fs_write};
+    use std::path::Path;
+
+    /// Write an armed streamed journal for `files` (target, original,
+    /// replaced) as a run of this launch would, and return its descriptors.
+    /// The targets themselves are not touched.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any journal file cannot be written.
+    pub fn write_stream_journal(
+        data_dir: &Path,
+        files: &[(&Path, &[u8], &[u8])],
+    ) -> Result<ReplaceUndoBackup> {
+        super::begin_incremental_journal(data_dir)?;
+        let launch = LaunchId::current();
+        for (index, (path, original, replaced)) in files.iter().enumerate() {
+            let body = body_path(data_dir, path);
+            fs_write::atomic_replace(&body, WriteLabel::REPLACE_UNDO_BODY, original)?;
+            let record = StreamEntryRecord {
+                original: ContentDigest::of(original),
+                replaced: ContentDigest::of(replaced),
+                identity: TargetIdentity::default(),
+            };
+            save_stream_entry(data_dir, path, &record)?;
+            if index == 0 {
+                super::mark_incremental_journal_active(data_dir, launch)?;
+            }
+        }
+        Ok(stream_descriptors(data_dir, files))
+    }
+
+    /// The descriptors [`write_stream_journal`] returns for `files`, without
+    /// writing anything: what a run of this launch would hand the panel.
+    #[must_use]
+    pub fn stream_descriptors(
+        data_dir: &Path,
+        files: &[(&Path, &[u8], &[u8])],
+    ) -> ReplaceUndoBackup {
+        let launch = LaunchId::current();
+        files
+            .iter()
+            .map(|(path, original, replaced)| {
+                (
+                    path.to_path_buf(),
+                    ReplaceUndoEntry {
+                        entry_file: entry_path(data_dir, path),
+                        original_source: UndoOriginal::Body(body_path(data_dir, path)),
+                        original: ContentDigest::of(original),
+                        replaced: ContentDigest::of(replaced),
+                        launch,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Write an active legacy journal (inline `replace-all-undo-entry`
+    /// entries, as a build before streamed entries wrote it), manifest-listed
+    /// or incremental, and return the descriptors its loader produces.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any journal file cannot be written, or a payload
+    /// is not UTF-8.
+    pub fn write_legacy_journal(
+        data_dir: &Path,
+        files: &[(&Path, &[u8], &[u8])],
+        incremental: bool,
+    ) -> Result<ReplaceUndoBackup> {
+        super::delete(data_dir)?;
+        let journal_dir = data_dir.join(JOURNAL_DIR);
+        fs_write::create_dir_all_durable(&journal_dir)?;
+        for (path, original, replaced) in files {
+            let disk = ReplaceBackupDiskEntry {
+                path: path.to_path_buf(),
+                original_content: String::from_utf8(original.to_vec())?,
+                replaced_content: String::from_utf8(replaced.to_vec())?,
+            };
+            let entry = entry_path(data_dir, path);
+            let config = RecoveryLoadConfig::new(
+                data_dir,
+                &entry,
+                RecoveryMetadataClass::ReplaceAllUndoJournal,
+            );
+            save_enveloped_json_path(&config, KIND_REPLACE_UNDO_ENTRY, &disk)?;
+        }
+        let manifest = ReplaceJournalManifest {
+            incremental,
+            entries: if incremental {
+                Vec::new()
+            } else {
+                files
+                    .iter()
+                    .map(|(path, _, _)| super::ReplaceJournalManifestEntry {
+                        path: path.to_path_buf(),
+                        entry_file: super::entry_file_name(path),
+                    })
+                    .collect()
+            },
+            pid: None,
+            launch_nonce: None,
+        };
+        save_journal_manifest(data_dir, &journal_dir, &manifest)?;
+        Ok(super::load_recovering(data_dir).active_backup())
+    }
 }
 
 /// Delete the persisted Replace All undo backup, if it exists.
@@ -1063,13 +1453,14 @@ fn detect_orphan_journal_entries(
             continue;
         }
 
-        let orphan_load = load_enveloped_json_optional::<ReplaceBackupDiskEntry>(
+        let orphan_load = load_enveloped_json_optional_accepting::<AnyDiskEntry>(
             &RecoveryLoadConfig::new(
                 data_dir,
                 &entry.path,
                 RecoveryMetadataClass::ReplaceAllUndoJournal,
             ),
-            KIND_REPLACE_UNDO_ENTRY,
+            KIND_REPLACE_UNDO_STREAM_ENTRY,
+            &[KIND_REPLACE_UNDO_ENTRY],
         );
         diagnostics.extend(orphan_load.diagnostics);
         diagnostics.push(RecoveryDiagnostic::repair_skipped(
@@ -1086,12 +1477,298 @@ fn entry_file_name(path: &Path) -> String {
     format!("{}.json", stable_path_hash(path))
 }
 
+/// The body file name of `path`: the entry's hash with the body extension.
+fn body_file_name(path: &Path) -> String {
+    format!("{}.{BODY_EXTENSION}", stable_path_hash(path))
+}
+
+/// One entry turned into an undo descriptor.
+struct LoadedDescriptor {
+    path: PathBuf,
+    descriptor: ReplaceUndoEntry,
+    kind: EntryKind,
+    /// The inline payload a legacy entry carried, charged against `main`'s
+    /// undo payload bound; zero for a streamed entry.
+    legacy_payload_bytes: u64,
+}
+
+/// Load one entry of either kind as a descriptor, reading no body.
+///
+/// A streamed entry's body is stat-ed: missing, or a size other than the
+/// original's length, makes the entry malformed (design D9). A legacy entry's
+/// digests are computed here, on the loading worker, and its inline strings
+/// dropped.
+fn load_descriptor(
+    data_dir: &Path,
+    journal_dir: &Path,
+    entry_path: &Path,
+    launch: LaunchId,
+    diagnostics: &mut Vec<RecoveryDiagnostic>,
+    missing: &'static str,
+) -> Option<LoadedDescriptor> {
+    let entry_load = load_enveloped_json_optional_accepting::<AnyDiskEntry>(
+        &RecoveryLoadConfig::new(
+            data_dir,
+            entry_path,
+            RecoveryMetadataClass::ReplaceAllUndoJournal,
+        ),
+        KIND_REPLACE_UNDO_STREAM_ENTRY,
+        &[KIND_REPLACE_UNDO_ENTRY],
+    );
+    let Some(disk) = entry_load.value else {
+        if entry_load.diagnostics.is_empty() {
+            diagnostics.push(RecoveryDiagnostic::repair_skipped(
+                RecoveryMetadataClass::ReplaceAllUndoJournal,
+                entry_path,
+                missing,
+            ));
+        } else {
+            diagnostics.extend(entry_load.diagnostics);
+        }
+        return None;
+    };
+    diagnostics.extend(entry_load.diagnostics);
+    let malformed = |diagnostics: &mut Vec<RecoveryDiagnostic>, detail: &'static str| {
+        diagnostics.push(RecoveryDiagnostic::repair_skipped(
+            RecoveryMetadataClass::ReplaceAllUndoJournal,
+            entry_path,
+            detail,
+        ));
+    };
+    match disk {
+        AnyDiskEntry::Stream(disk) => {
+            let (Some(original), Some(replaced)) =
+                (disk.original.to_digest(), disk.replaced.to_digest())
+            else {
+                malformed(
+                    diagnostics,
+                    "replace undo journal entry has a malformed digest",
+                );
+                return None;
+            };
+            if disk.body_file != body_file_name(&disk.path) {
+                malformed(
+                    diagnostics,
+                    "replace undo journal entry names an unexpected body",
+                );
+                return None;
+            }
+            let body = journal_dir.join(BODIES_DIR).join(&disk.body_file);
+            if !fs_metadata::file_stat(&body).is_ok_and(|facts| facts.byte_size == original.len) {
+                // The entry stays in place for the cleanup marker's pass; a
+                // copy in the quarantine is the evidence (design D9).
+                diagnostics.push(crate::services::recovery_metadata::copy_into_quarantine(
+                    &RecoveryLoadConfig::new(
+                        data_dir,
+                        entry_path,
+                        RecoveryMetadataClass::ReplaceAllUndoJournal,
+                    ),
+                    RecoveryProblem::RepairSkipped {
+                        detail:
+                            "replace undo journal entry's body is missing or has the wrong size"
+                                .to_string(),
+                    },
+                ));
+                return None;
+            }
+            Some(LoadedDescriptor {
+                descriptor: ReplaceUndoEntry {
+                    entry_file: entry_path.to_path_buf(),
+                    original_source: UndoOriginal::Body(body),
+                    original,
+                    replaced,
+                    launch,
+                },
+                path: disk.path,
+                kind: EntryKind::Stream,
+                legacy_payload_bytes: 0,
+            })
+        }
+        AnyDiskEntry::Legacy(disk) => {
+            let legacy_payload_bytes = replace_entry_payload_bytes(&disk);
+            Some(LoadedDescriptor {
+                descriptor: ReplaceUndoEntry {
+                    entry_file: entry_path.to_path_buf(),
+                    original_source: UndoOriginal::LegacyEntry,
+                    original: ContentDigest::of(disk.original_content.as_bytes()),
+                    replaced: ContentDigest::of(disk.replaced_content.as_bytes()),
+                    launch,
+                },
+                path: disk.path,
+                kind: EntryKind::Legacy,
+                legacy_payload_bytes,
+            })
+        }
+    }
+}
+
+/// The one-kind-per-journal rule: one run writes one kind, so a journal
+/// holding both is malformed (design D6).
+#[derive(Default)]
+struct JournalKinds {
+    first: Option<EntryKind>,
+    reported: bool,
+}
+
+impl JournalKinds {
+    fn record(
+        &mut self,
+        kind: EntryKind,
+        entry_path: &Path,
+        diagnostics: &mut Vec<RecoveryDiagnostic>,
+    ) {
+        match self.first {
+            None => self.first = Some(kind),
+            Some(first) if first != kind && !self.reported => {
+                self.reported = true;
+                diagnostics.push(RecoveryDiagnostic::repair_skipped(
+                    RecoveryMetadataClass::ReplaceAllUndoJournal,
+                    entry_path,
+                    "replace undo journal mixes legacy and streamed entries",
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
     use super::*;
     use crate::services::filesystem::fixture;
     use tempfile::TempDir;
+
+    // Fixtures in the shape these tests were written in, over the streamed
+    // format: an entry is built from its original and replaced bytes, written
+    // as a body plus a streamed entry, and compared by its two digests (all a
+    // descriptor keeps). These local items shadow the glob import.
+
+    /// A test entry: the bytes it was built from, compared by digest.
+    #[derive(Debug, Clone)]
+    struct ReplaceUndoEntry {
+        original: ContentDigest,
+        replaced: ContentDigest,
+        original_bytes: Option<Vec<u8>>,
+    }
+
+    impl ReplaceUndoEntry {
+        #[expect(
+            clippy::needless_pass_by_value,
+            reason = "mirrors the retired `ReplaceUndoEntry::new(Vec<u8>, Vec<u8>)` the ported tests call"
+        )]
+        fn new(original: Vec<u8>, replaced: Vec<u8>) -> Self {
+            Self {
+                original: ContentDigest::of(&original),
+                replaced: ContentDigest::of(&replaced),
+                original_bytes: Some(original),
+            }
+        }
+    }
+
+    impl PartialEq for ReplaceUndoEntry {
+        fn eq(&self, other: &Self) -> bool {
+            self.original == other.original && self.replaced == other.replaced
+        }
+    }
+
+    type ReplaceUndoBackup = std::collections::BTreeMap<PathBuf, ReplaceUndoEntry>;
+
+    struct TestLoad {
+        backup: ReplaceUndoBackup,
+        active: bool,
+        diagnostics: Vec<RecoveryDiagnostic>,
+    }
+
+    fn from_real(real: super::ReplaceUndoBackup) -> ReplaceUndoBackup {
+        real.into_iter()
+            .map(|(path, entry)| {
+                (
+                    path,
+                    ReplaceUndoEntry {
+                        original: entry.original,
+                        replaced: entry.replaced,
+                        original_bytes: None,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn to_real(data_dir: &Path, backup: &ReplaceUndoBackup) -> super::ReplaceUndoBackup {
+        backup
+            .iter()
+            .map(|(path, entry)| {
+                (
+                    path.clone(),
+                    super::ReplaceUndoEntry {
+                        entry_file: super::entry_path(data_dir, path),
+                        original_source: UndoOriginal::Body(body_path(data_dir, path)),
+                        original: entry.original,
+                        replaced: entry.replaced,
+                        launch: LaunchId::current(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn load_recovering(data_dir: &Path) -> TestLoad {
+        let load = super::load_recovering(data_dir);
+        TestLoad {
+            backup: from_real(load.backup),
+            active: load.active,
+            diagnostics: load.diagnostics,
+        }
+    }
+
+    fn load(data_dir: &Path) -> Result<ReplaceUndoBackup> {
+        super::load(data_dir).map(from_real)
+    }
+
+    /// Write one body and its streamed entry, as pass A and P4 do.
+    fn save_entry(data_dir: &Path, path: &Path, entry: &ReplaceUndoEntry) -> Result<()> {
+        let bodies = data_dir.join(JOURNAL_DIR).join(BODIES_DIR);
+        fs_write::create_dir_all_durable(&bodies)?;
+        let original = entry
+            .original_bytes
+            .as_deref()
+            .expect("a fixture entry carries its bytes");
+        fs_write::atomic_replace(
+            &body_path(data_dir, path),
+            crate::services::filesystem::WriteLabel::REPLACE_UNDO_BODY,
+            original,
+        )?;
+        save_stream_entry(
+            data_dir,
+            path,
+            &StreamEntryRecord {
+                original: entry.original,
+                replaced: entry.replaced,
+                identity: TargetIdentity::default(),
+            },
+        )
+    }
+
+    /// A complete manifest-listed journal, as `main`'s `save` wrote one.
+    fn save(data_dir: &Path, backup: &ReplaceUndoBackup) -> Result<()> {
+        delete(data_dir)?;
+        if backup.is_empty() {
+            return Ok(());
+        }
+        for (path, entry) in backup {
+            save_entry(data_dir, path, entry)?;
+        }
+        mark_journal_active(data_dir, backup)
+    }
+
+    fn mark_journal_active(data_dir: &Path, backup: &ReplaceUndoBackup) -> Result<()> {
+        super::mark_journal_active(data_dir, &to_real(data_dir, backup))
+    }
+
+    fn shrink_journal_to(data_dir: &Path, backup: &ReplaceUndoBackup) -> Result<()> {
+        super::shrink_journal_to(data_dir, &to_real(data_dir, backup))
+    }
 
     // --- pure rule tests: no tempdir, no disk ---
 
@@ -1252,6 +1929,8 @@ mod tests {
                     entry_file: "duplicate-target.json".to_string(),
                 },
             ],
+            pid: None,
+            launch_nonce: None,
         };
         let config = RecoveryLoadConfig::new(
             dir.path(),
@@ -1272,44 +1951,6 @@ mod tests {
                     if detail.contains("duplicate target path")
             )
         }));
-    }
-
-    #[test]
-    fn incremental_journal_over_the_retained_memory_cap_is_inactive() {
-        let dir = TempDir::new().expect("expected operation to succeed");
-        mark_incremental_journal_active(dir.path()).expect("arm incremental journal");
-        // Each entry carries enough bytes that a bounded number of them crosses
-        // the retained-memory ceiling without needing a huge fixture.
-        let entry_bytes = 1usize << 20;
-        let mut index = 0usize;
-        let mut retained = ReplaceUndoBackup::new();
-        while retained_byte_weight_probe(&retained) <= MAX_REPLACE_UNDO_RETAINED_BYTES {
-            let path = PathBuf::from(format!("/tmp/retained-{index}.rs"));
-            let entry = ReplaceUndoEntry::new(vec![b'o'; entry_bytes], vec![b'r'; entry_bytes]);
-            save_entry(dir.path(), &path, &entry).expect("save retained-cap entry");
-            retained.insert(path, entry);
-            index = index.saturating_add(1);
-            assert!(index < 4_096, "retained-cap fixture should stay bounded");
-        }
-
-        // The payload cap must not be what rejects this fixture.
-        TEST_MAX_REPLACE_UNDO_BYTES.with(|cap| cap.set(Some(u64::MAX)));
-        let load = load_recovering(dir.path());
-        TEST_MAX_REPLACE_UNDO_BYTES.with(|cap| cap.set(None));
-
-        assert!(!load.active);
-        assert!(load.backup.is_empty());
-        assert!(load.diagnostics.iter().any(|diagnostic| {
-            matches!(
-                diagnostic.problem,
-                RecoveryProblem::RepairSkipped { ref detail }
-                    if detail.contains("retained-memory limit")
-            )
-        }));
-    }
-
-    fn retained_byte_weight_probe(backup: &ReplaceUndoBackup) -> u64 {
-        replace_undo_retained_byte_weight(backup)
     }
 
     #[test]
@@ -1370,33 +2011,40 @@ mod tests {
         }));
     }
 
+    /// D3a: shrink never rebuilds a journal. A journal that no longer holds
+    /// every retained entry is reported and left as it is.
     #[test]
-    fn shrink_falls_back_to_a_full_rewrite_when_the_journal_is_not_a_superset() {
+    fn shrink_refuses_a_journal_that_is_not_a_superset() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let unrelated = journal_with(&["/tmp/x.rs"]);
         save(dir.path(), &unrelated).expect("save unrelated journal");
 
         let fresh = journal_with(&["/tmp/a.rs", "/tmp/b.rs"]);
-        shrink_journal_to(dir.path(), &fresh).expect("shrink falls back to save");
+        shrink_journal_to(dir.path(), &fresh).expect_err("shrink does not rebuild");
 
         let load = load_recovering(dir.path());
         assert!(load.active);
-        assert_eq!(load.backup, fresh);
+        assert_eq!(load.backup, unrelated);
     }
 
+    /// D3a: an interrupted cleanup is never undone by a shrink, so its undo
+    /// is never resurrected.
     #[test]
-    fn shrink_falls_back_when_a_cleanup_marker_is_present() {
+    fn shrink_refuses_after_an_interrupted_cleanup() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let full = journal_with(&["/tmp/a.rs", "/tmp/b.rs"]);
         save(dir.path(), &full).expect("save full journal");
         mark_cleanup_in_progress(dir.path()).expect("mark interrupted cleanup");
 
         let remaining = journal_with(&["/tmp/b.rs"]);
-        shrink_journal_to(dir.path(), &remaining).expect("shrink falls back to save");
+        shrink_journal_to(dir.path(), &remaining).expect_err("shrink does not rebuild");
 
         let load = load_recovering(dir.path());
-        assert!(load.active, "the fallback rewrite must clear the marker");
-        assert_eq!(load.backup, remaining);
+        assert!(
+            !load.active,
+            "the cleanup marker keeps the journal inactive"
+        );
+        assert!(load.backup.is_empty());
     }
 
     #[test]
@@ -1615,12 +2263,14 @@ mod tests {
     fn active_journal_over_undo_payload_cap_is_inactive() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = PathBuf::from("/tmp/a.rs");
-        let mut backup = ReplaceUndoBackup::new();
-        backup.insert(
-            path,
-            ReplaceUndoEntry::new(b"before-content".to_vec(), b"after-content".to_vec()),
-        );
-        save(dir.path(), &backup).expect("save valid journal");
+        // Only a legacy inline journal carries a payload the loader charges;
+        // a streamed entry's original stays in its body file.
+        super::fixture::write_legacy_journal(
+            dir.path(),
+            &[(&path, b"before-content", b"after-content")],
+            false,
+        )
+        .expect("save valid legacy journal");
 
         TEST_MAX_REPLACE_UNDO_BYTES.with(|cap| cap.set(Some(4)));
         let load = load_recovering(dir.path());
@@ -1643,10 +2293,10 @@ mod tests {
         let path = PathBuf::from("/tmp/a.rs");
         let mut backup = ReplaceUndoBackup::new();
         let entry = ReplaceUndoEntry::new(b"before".to_vec(), b"after".to_vec());
-        let exact_payload = u64::try_from(entry.original_bytes.len() + entry.replaced_bytes.len())
-            .expect("tiny undo payload should fit in u64");
+        let exact_payload = entry.original.len + entry.replaced.len;
+        super::fixture::write_legacy_journal(dir.path(), &[(&path, b"before", b"after")], false)
+            .expect("save valid legacy journal");
         backup.insert(path, entry);
-        save(dir.path(), &backup).expect("save valid journal");
 
         TEST_MAX_REPLACE_UNDO_BYTES.with(|cap| cap.set(Some(exact_payload)));
         let load = load_recovering(dir.path());
@@ -1670,6 +2320,8 @@ mod tests {
         let manifest = ReplaceJournalManifest {
             incremental: false,
             entries,
+            pid: None,
+            launch_nonce: None,
         };
         let config = RecoveryLoadConfig::new(
             dir.path(),
@@ -1705,6 +2357,8 @@ mod tests {
         let manifest = ReplaceJournalManifest {
             incremental: false,
             entries,
+            pid: None,
+            launch_nonce: None,
         };
         let config = RecoveryLoadConfig::new(
             dir.path(),
@@ -1733,6 +2387,8 @@ mod tests {
         let manifest = ReplaceJournalManifest {
             incremental: false,
             entries: Vec::new(),
+            pid: None,
+            launch_nonce: None,
         };
         let config = RecoveryLoadConfig::new(
             dir.path(),
@@ -1846,5 +2502,53 @@ mod tests {
             fs_metadata::exists(&dir.path().join(JOURNAL_DIR).join(entry_file_name(&path_b))),
             "the second per-file journal entry should be created independently"
         );
+    }
+
+    /// Design D3a: a journal disk job a newer one superseded returns before it
+    /// waits for the guard, and one superseded while waiting returns too, so
+    /// neither holds a worker slot behind a long Replace All run.
+    #[test]
+    fn a_superseded_journal_disk_job_returns_before_it_waits() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicU32;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let held = acquire_journal_guard().expect("a run holds the journal guard");
+        let generation = Arc::new(AtomicU32::new(2));
+        let (tx, rx) = mpsc::channel();
+        let stale = generation.clone();
+        let worker = std::thread::spawn(move || {
+            let acquired =
+                acquire_journal_guard_while_current(|| stale.load(Ordering::Acquire) == 1)
+                    .expect("not poisoned");
+            tx.send(acquired.is_none()).expect("send");
+        });
+        assert!(
+            rx.recv_timeout(Duration::from_secs(5))
+                .expect("a superseded job returns while the guard is held"),
+            "a superseded job never takes the guard"
+        );
+        worker.join().expect("worker joins");
+
+        let (tx, rx) = mpsc::channel();
+        let waiting = generation.clone();
+        let worker = std::thread::spawn(move || {
+            let acquired =
+                acquire_journal_guard_while_current(|| waiting.load(Ordering::Acquire) == 2)
+                    .expect("not poisoned");
+            tx.send(acquired.is_none()).expect("send");
+        });
+        assert!(
+            rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "a current job waits for the guard"
+        );
+        generation.store(3, Ordering::Release);
+        assert!(
+            rx.recv_timeout(Duration::from_secs(5))
+                .expect("superseded while waiting, the job returns"),
+        );
+        worker.join().expect("worker joins");
+        drop(held);
     }
 }

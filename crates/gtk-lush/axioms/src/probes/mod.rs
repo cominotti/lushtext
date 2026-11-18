@@ -40,6 +40,9 @@ pub(crate) mod a118;
 pub(crate) mod a119;
 pub(crate) mod a120;
 pub(crate) mod a122;
+pub(crate) mod a127;
+pub(crate) mod a128;
+pub(crate) mod a129;
 pub(crate) mod a13;
 pub(crate) mod a14;
 pub(crate) mod a15;
@@ -250,6 +253,9 @@ pub use a118::probe_a118;
 pub use a119::probe_a119;
 pub use a120::probe_a120;
 pub use a122::probe_a122;
+pub use a127::probe_a127;
+pub use a128::probe_a128;
+pub use a129::probe_a129;
 
 /// Settle after an adjustment or height change, before reading it back.
 pub(crate) const LAYOUT_SETTLE: Duration = Duration::from_millis(200);

@@ -299,18 +299,59 @@ impl<'a> InventoryBuilder<'a> {
             }
             if entry.kind == FileKind::File && has_extension(&entry.path, "json") {
                 let relative = FormatItemPath::from_data_path(self.data_dir, &entry.path);
-                let (classification, file_facts) = classify_path(
+                // Streamed entries are what this build writes; a legacy
+                // inline entry is classified as its own kind (design D6).
+                let mut kind = FormatMetadataKind::ReplaceUndoStreamEntry;
+                let (mut classification, mut file_facts) = classify_path(
                     &entry.path,
-                    FormatMetadataKind::ReplaceUndoEntry,
+                    kind,
                     self.bounds.max_metadata_bytes,
                     self.registry,
                 );
+                if matches!(
+                    &classification,
+                    FormatClassification::UnsupportedOld { detail, .. }
+                        if detail.ends_with(json_format::KIND_REPLACE_UNDO_ENTRY)
+                ) {
+                    kind = FormatMetadataKind::ReplaceUndoEntry;
+                    (classification, file_facts) = classify_path(
+                        &entry.path,
+                        kind,
+                        self.bounds.max_metadata_bytes,
+                        self.registry,
+                    );
+                }
                 self.items.push(FormatInventoryItem {
-                    kind: FormatMetadataKind::ReplaceUndoEntry,
+                    kind,
                     absolute_path: entry.path,
                     path: relative,
                     file_facts,
                     classification,
+                });
+            }
+        }
+        self.scan_replace_undo_bodies();
+    }
+
+    /// Inventory the raw bodies, bounded like the entries (design D3).
+    fn scan_replace_undo_bodies(&mut self) {
+        let relative_dir = "replace-backup-journal/bodies";
+        let dir = self.data_dir.join(relative_dir);
+        if !matches!(fs_metadata::path_status(&dir), Ok(PathStatus::Directory)) {
+            return;
+        }
+        for entry in
+            self.scan_bounded_directory(&dir, relative_dir, self.bounds.max_replace_journal_entries)
+        {
+            if entry.kind == FileKind::File && has_extension(&entry.path, "body") {
+                let relative = FormatItemPath::from_data_path(self.data_dir, &entry.path);
+                let file_facts = item_file_facts(&entry.path).ok();
+                self.items.push(FormatInventoryItem {
+                    kind: FormatMetadataKind::ReplaceUndoBody,
+                    absolute_path: entry.path,
+                    path: relative,
+                    file_facts,
+                    classification: FormatClassification::Current { version: None },
                 });
             }
         }
@@ -449,7 +490,10 @@ fn classify_path(
         }
     };
 
-    if kind == FormatMetadataKind::DraftBody {
+    if matches!(
+        kind,
+        FormatMetadataKind::DraftBody | FormatMetadataKind::ReplaceUndoBody
+    ) {
         return (
             FormatClassification::Current { version: None },
             Some(file_facts),
@@ -894,7 +938,8 @@ mod tests {
         let entry_items = inventory
             .items
             .iter()
-            .filter(|item| item.kind == FormatMetadataKind::ReplaceUndoEntry)
+            // Damaged JSON is classified as the kind this build writes.
+            .filter(|item| item.kind == FormatMetadataKind::ReplaceUndoStreamEntry)
             .collect::<Vec<_>>();
 
         assert_eq!(entry_items.len(), 1);

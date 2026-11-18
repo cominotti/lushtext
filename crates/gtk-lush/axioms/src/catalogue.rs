@@ -2002,6 +2002,47 @@ const CATALOGUE: &[Axiom] = &[
         version_bound: None,
         probe: Some(probes::probe_a122),
     },
+    Axiom {
+        id: AxiomId::new(127),
+        name: "a127_regex_replace_all_expands_gregex_references",
+        statement: "With regex enabled, GtkSourceSearchContext::replace_all expands GRegex \
+                    references: \\N and \\g<N> are group N, \\0 the whole match, \\g<name> a \
+                    named group, \\g<1>0 group 1 followed by a literal 0, and $1 is literal text",
+        dependent_designs: &["stream-replace-all D7: rust_replacement_to_gtksourceview \
+             (ui/search_panel/policy.rs) turns a workspace Replace All's Rust-regex \
+             replacement ($N, ${N}, $name) into this syntax for Open and Replace in Editor"],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a127),
+    },
+    Axiom {
+        id: AxiomId::new(128),
+        name: "a128_at_word_boundaries_matches_workspace_whole_word_on_ascii",
+        statement: "GtkSourceSearchSettings at-word-boundaries, plain-text or regex, finds on an \
+                    ASCII-identifier fixture exactly the occurrences no ASCII word character \
+                    ([A-Za-z0-9_]) touches: workspace search's whole-word rule",
+        dependent_designs: &[
+            "stream-replace-all D7: Open and Replace in Editor carries the whole-word toggle \
+             into the editor's search bar (set_at_word_boundaries)",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a128),
+    },
+    Axiom {
+        id: AxiomId::new(129),
+        name: "a129_gregex_compiles_the_passed_through_rust_regex_constructs",
+        statement: "GRegex, through GtkSourceSearchContext, compiles character classes, \\b, \\d, \
+                    \\w, (?i), (?P<n>...) and (?<n>...) and finds the match the Rust regex engine \
+                    finds for each on the probe text",
+        dependent_designs: &[
+            "stream-replace-all D7: Open and Replace in Editor passes the workspace search \
+             pattern to the editor's regex search unchanged",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a129),
+    },
 ];
 
 #[cfg(test)]

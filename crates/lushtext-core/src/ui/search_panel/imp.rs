@@ -35,6 +35,7 @@ use std::time::Duration;
 
 /// Callback type for file-open events (path, line_number).
 type OpenFileCallback = Box<dyn Fn(&Path, u32)>;
+type ReplaceInEditorCallback = Box<dyn Fn(&Path)>;
 
 /// Callback type for navigation events from F4/Shift+F4 (path, line_number).
 type NavigateCallback = Box<dyn Fn(&Path, u32)>;
@@ -218,6 +219,20 @@ pub struct SearchPreviewState {
     pub journal_disk_jobs_in_flight: Cell<usize>,
     /// Counts published by the most recent durable Replace All apply.
     pub last_apply_counts: Cell<Option<super::policy::ReplaceApplyCounts>>,
+    /// Cancel flag and progress counters of the Replace All run in flight.
+    pub(super) replace_run: RefCell<Option<super::replace_execution::ReplaceRunControl>>,
+    /// The request of the last accepted preview, which a Replace All run applies.
+    pub(super) accepted_preview_intent: RefCell<Option<super::policy::ReplaceRunIntent>>,
+    /// The request of the run in flight, captured as it began.
+    pub(super) run_intent: RefCell<Option<super::policy::ReplaceRunIntent>>,
+    /// The request of the run whose skip report Show Skipped Files offers.
+    pub(super) last_run_intent: RefCell<Option<Arc<super::policy::ReplaceRunIntent>>>,
+    /// Files the last Replace All run skipped or partly replaced (design D7).
+    pub(super) last_skip_report:
+        RefCell<Option<Arc<crate::model::content_search::ReplaceSkipReport>>>,
+    /// The open Skipped Files dialog's model, weakly, for evidence.
+    pub(super) skipped_files_model:
+        RefCell<Option<glib::WeakRef<super::skipped_files::SkippedFilesModel>>>,
 }
 
 /// Match-navigation state used by F4 / Shift+F4.
@@ -250,6 +265,8 @@ pub struct SearchCallbacks {
     pub undo_callback: RefCell<Option<UndoCallback>>,
     /// Called when the panel needs to surface a short status message.
     pub message_callback: RefCell<Option<MessageCallback>>,
+    /// Called when a Skipped Files row is activated: Open and Replace in Editor.
+    pub replace_in_editor_callback: RefCell<Option<ReplaceInEditorCallback>>,
 }
 
 /// Private template implementation for the workspace search panel.
@@ -310,6 +327,8 @@ pub struct LushtextSearchPanel {
     /// Button that starts the checked Replace All operation.
     #[template_child]
     pub replace_all_button: TemplateChild<gtk4::Button>,
+    #[template_child]
+    pub skipped_files_button: TemplateChild<gtk4::Button>,
     /// Button that restores the latest Replace All undo backup.
     #[template_child]
     pub undo_button: TemplateChild<gtk4::Button>,
@@ -384,6 +403,7 @@ impl Default for LushtextSearchPanel {
             glob_entry: TemplateChild::default(),
             replace_entry: TemplateChild::default(),
             replace_all_button: TemplateChild::default(),
+            skipped_files_button: TemplateChild::default(),
             undo_button: TemplateChild::default(),
             save_button: TemplateChild::default(),
             close_button: TemplateChild::default(),
@@ -460,6 +480,7 @@ impl ObjectSubclass for LushtextSearchPanel {
 impl ObjectImpl for LushtextSearchPanel {
     fn constructed(&self) {
         self.parent_constructed();
+        self.obj().register_application_panel();
         for entry in [
             self.search_entry.upcast_ref::<gtk4::Editable>(),
             self.glob_entry.upcast_ref(),
@@ -620,11 +641,22 @@ impl LushtextSearchPanel {
             let Some(panel) = panel_weak.upgrade() else {
                 return;
             };
-            if panel.imp().preview.preview_mode.get() {
+            if panel.replace_run_in_flight() {
+                panel.request_replace_cancel();
+            } else if panel.imp().preview.preview_mode.get() {
                 panel.activate_confirm_replacements();
             } else {
                 panel.activate_replace_preview();
             }
+        });
+
+        // 5a. Show Skipped Files.
+        let panel_weak = self.obj().downgrade();
+        self.skipped_files_button.connect_clicked(move |_| {
+            let Some(panel) = panel_weak.upgrade() else {
+                return;
+            };
+            panel.show_skipped_files();
         });
 
         // 6. Undo button.

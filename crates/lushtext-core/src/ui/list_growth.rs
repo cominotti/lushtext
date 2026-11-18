@@ -5,9 +5,10 @@
 //!
 //! **Cross-cutting coordination, no role.** `WFR-NOTES-BOOKMARKS` (the
 //! browser's first listing of a source) and `WFR-COMMAND-PALETTE` (a category
-//! view's first listing) both publish into an empty list in stages; the
+//! view's first listing) both publish into an empty list in stages, and so
+//! does `WFR-SEARCH-REPLACE` (the Skipped Files dialog's first listing); the
 //! growth arithmetic is the pure `model::list_budget` (`staged_first_rows`,
-//! `next_growth`). Named in both matrix rows.
+//! `next_growth`). Named in all three matrix rows.
 //!
 //! A first publish of 16,384 rows used to realize GTK's whole band (about
 //! 205 rows, A1) in the frame that first showed them: 29–36 ms under GL in the

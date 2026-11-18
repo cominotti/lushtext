@@ -2594,6 +2594,159 @@ as did a symbolic `Vec` capacity (the policy sizes the group vector from the
 table's length) and, at three rows, `i64` arithmetic in the run builder (now
 `i32`, saturating).
 
+### Replace All protocol and stream (`stream-replace-all`, 2026-11-17)
+
+**Status: merged (PR #103, `main` `ea30711f`) and archived 2026-11-18
+(`openspec/changes/archive/2026-11-18-stream-replace-all/`); runner budgets
+measured.**
+Two shards. Their budgets come from two dispatched `kani.yml` runs on
+`86bbcdb4` (task 3.3b, 2026-11-18), the larger of the two, rounded up to
+0.1:
+
+| Shard | Run 44330495557 | Run 44338924357 | Record | Gate |
+| --- | --- | --- | --- | --- |
+| `core-replace-protocol` | 2.75 min, 1.70 GiB | 2.31 min, 1.70 GiB | 2.8 min, 1.7 GiB | `pull-request` (fits the 15-minute gate, design D11) |
+| `core-replace-stream` | 3.79 min, 3.43 GiB | 4.71 min, 3.43 GiB | 4.8 min, 3.5 GiB | `scheduled` |
+
+Per harness on the runner: `an_apply_run_keeps_every_target_recoverable`
+18.5 / 17.0 s, `undo_writes_only_to_a_file_holding_the_replaced_bytes`
+0.72 / 0.64 s, `shrink_removes_the_entry_before_the_body` 0.07 / 0.06 s;
+`utf8_seams_do_not_depend_on_the_chunk_size` 120.0 / 156.3 s,
+`the_byte_scan_matches_core_from_utf8` 5.7 / 7.2 s. Both runs measured
+every shard; the eleven figures they exceeded were raised and none was
+lowered (`STREAM_REPLACE_RAISED_IN`): peaks of `core-geometry-policies`
+(2.6 GiB), `core-list-budget` (1.8), `core-minimap-fit` (2.5),
+`core-post-open-settle` (2.0), `core-protected-fold-mapping` and
+`core-protected-fold-shape` (1.8); minutes of `core-paragraph-profile`
+(15.1), `core-profile-watch-reads` (19.5), `core-protected-view` (3.7) and
+`core-shell-geometry` (11.2); and both figures of `core-protected-fold`
+(12.9 min, 1.8 GiB). Every figure stays inside the margins
+(`make check-kani-shards`). The measurement artifacts are in
+`.claude/handoffs/stream-replace-all/kani-dispatch/`.
+
+- `core-replace-protocol` (`replace/protocol/kani_proofs.rs`, 3 harnesses):
+  the per-file apply protocol P0–P6 and the undo protocol U0–U3 of the
+  I/O-free `replace/protocol.rs`, composed with an abstract durable write
+  that assumes the write-protocol theorems (a failed write is `BeforeRename`
+  and leaves the previous bytes). 3/3 verified locally on `23ef433a`
+  (0.34 min, 1.59 GiB). Its first run found a counterexample: a cancelled
+  file whose entry removal fails keeps its entry and body. The protocol was
+  right (never an entry without its body, the target keeps its bytes), so
+  the contract and the harness changed, and a cover pins that path. The
+  final run on the final protocol inputs (stage 3, snapshot `fe8c3205`)
+  verified 3/3 in 1.66 min at 1.66 GiB (per harness 13.1 s, 0.47 s,
+  0.05 s), the local figure in the shard table until the dispatches. The
+  mutation check that reorders cleanup so a body goes before its entry
+  fails `an_apply_run_keeps_every_target_recoverable` at "a body is removed
+  only after its entry" (task 3.2a, the change's `failing-first.log`).
+  `make proof-strength` of `replace/protocol.rs`, Kani arm (on `fe8c3205`):
+  16 mutants, 8 unviable, 3 killed, 5 survivors. Two were real gaps, the
+  re-arm of an Undo in a later launch (design D6) dropped after an entry
+  that restores nothing, or never taken; the unit test
+  `undo_in_a_later_launch_rearms_the_manifest_for_this_launch` now kills
+  both. Three are equivalent for safety: re-arming on every file or every
+  entry (the guard `journal.armed` or `rearm_needed` forced) only repeats an
+  idempotent manifest write, so no safety harness can tell them apart. The
+  tests arm (on `ab547a86`: 16 mutants, 8 unviable, 5 caught) missed the same
+  three. They are not left standing: the protocol's own unit tests
+  `a_run_prepares_and_arms_the_journal_once` and
+  `a_later_launch_undo_rearms_the_manifest_once` count the arm and re-arm
+  actions (one per run, one per later-launch Undo, none otherwise), and each
+  of the three, applied by hand, fails one of them (stage 3 continuation,
+  2026-11-18; `.claude/handoffs/stream-replace-all/stage3-protocol-mutant-*.log`).
+- `core-replace-stream` (`replace/stream/utf8/kani_proofs.rs`, 2 harnesses):
+  the stream's UTF-8 seams (8 arbitrary bytes, chunks 1–4) and the
+  `cfg(kani)` byte scan against `core::str::from_utf8` (4 bytes).
+  `make proof-strength` of `replace/stream/utf8.rs` (2026-11-18): 36 mutants
+  in each arm, none unviable. The Kani arm (on `ab547a86`) kills 35; its one
+  survivor is `validate_utf8` → `Ok(())` in the `cfg(not(kani))` `simdutf8`
+  path, which Kani never compiles, and the tests arm kills it
+  (`the_byte_scan_matches_simdutf8`). The tests arm (on `de4b8e8c`) kills 35;
+  its one miss is the same mutation of the `cfg(kani)` wrapper, which the
+  tests never compile, and the Kani arm kills it. Every mutant is killed by
+  one arm, which is the split the design expected.
+
+**Reduced bound (fit order step 3), recorded here and in the harness doc.**
+The engine's line logic is not Kani-proved. Every harness form that ran the
+engine was stopped in CBMC's symbolic execution while still growing: the
+four-byte forms past the 12 GiB runner margin, and a concrete-shape ladder
+down to one run over 2 symbolic bytes with one fixed edit and no sinks past
+8 GiB (8.47 GiB at 3.4 min). The probes are tabulated in the change's design
+D11, "Kani memory". Only the four-byte forms
+were measured past the margin. That the ladder and the no-sink run (stopped
+just past 8 GiB, at 8.0–8.5 GiB) would not fit is an extrapolation from their growth. Step 2
+of the fit order (another solver) did not apply, because every probe was
+still in symbolic execution. The trace is dominated by slice-index and
+`copy_from_slice` failure paths and `memcmp`: 18,630 inlined slice-index
+failure paths for a 2-byte source. That is consistent with nested loop
+unrolling at the ladder's `unwind(6)`, about twice what a 2-byte source
+needs, and no probe lowered the unwind bound to the domain's need. The cost
+is the engine under CBMC, not the harness's sinks or comparisons.
+
+The line logic's split independence is instead checked exhaustively over
+two bounded domains by a unit test: every source of at most 4 characters
+over `a`, `b`, `\r`, `\n`, `é` with every edit set of at most two edits
+over small tables (a recorded line `aé` among them, so a seam cuts a
+character inside a targeted line), and every source of at most 3 symbols
+over those plus the bytes `0x80`, `0xC3`, `0xFF` with every single edit,
+where a source that is not UTF-8 must never be replaced. Both run every
+chunk size and two output limits, and a coverage guard fails if a case the
+retired harness covered is never reached. It takes 17.6 s in a debug build.
+A property test samples larger inputs against the reference builder.
+
+What this weakens:
+- the property holds for the enumerated domain and is sampled beyond it,
+  not proved for every byte value;
+- "an invalid source is never replaced at any chunk size" was a property of
+  the retired whole-engine harness over arbitrary bytes. It is now the
+  carry's proof composed with the engine by reading the code, plus the unit
+  test's bounded invalid-byte domain (a mutant that skips the carry's final
+  check fails it).
+
+The seam harness's whole-source verdict over 8 bytes is the byte scan's,
+whose equality with `core::str::from_utf8` is proved only up to 4 bytes. The
+carry's own calls stay within 4 bytes there.
+
+**What `apply-verification-altitude-redesigns` and
+`verify-shell-conformance-against-proven-cores` build on once this merges.**
+Both wait for it because of `durable_write` overlap; the facts are:
+
+- `services/durable_write.rs`, `services/filesystem/write_protocol.rs` and
+  their Kani shards are **unchanged** by this branch (`git diff` against
+  `main` is empty for both; the change's design D3 forbids touching them).
+  The durable-rename classification of #105 (`RenameClass`) reached the
+  branch through its merges, and Replace All consumes it only through
+  `DurableWriteError`.
+- New boundary surface they must carry along:
+  - `filesystem/write.rs`: `atomic_replace_workspace_file_stream(path,
+    label, producer)`, the streaming counterpart of
+    `atomic_replace_workspace_file` (resolved target identity, then the
+    target's own leftover sweep); Replace All's pass B and Undo call it with
+    `WriteLabel::REPLACE`, and pass A writes bodies with
+    `atomic_replace_stream(…, WriteLabel::REPLACE_UNDO_BODY)`.
+  - `filesystem/types.rs`: the new label `REPLACE_UNDO_BODY`
+    (`"replace-undo-body"`); `WriteLabel::KNOWN` grows from 10 to 11, and the
+    temp-name and leftover tests list it. Group 4 of
+    `apply-verification-altitude-redesigns` (entry points taking
+    `WriteLabel`) gains these call sites.
+  - `filesystem/leftovers.rs`: `is_journal_owned_leftover`, keyed on the
+    manifest's recorded `(pid, launch_nonce)` pair and that pair differing
+    from the current launch's, plus a bounded per-parent sweep used by
+    recovery, undo and discard (design D9).
+  - `services/kill_point.rs`: four `KillWindow`s
+    (`replace-body-before-entry`, `replace-entry-before-target-rename`,
+    `replace-target-renamed-before-finish`,
+    `replace-undo-before-target-rename`) and the occurrence ordinal of
+    `LUSHTEXT_KILL_AT` (`name@label#n`).
+  - `services/search_backup.rs`: stream entries plus raw bodies under
+    `replace-backup-journal/bodies/`, shrink-only journal paths, and a
+    manifest carrying `pid` and `launch_nonce`.
+  - `services/content_search/replace/protocol.rs`: the I/O-free
+    `ReplaceFileProtocol` / `ReplaceUndoProtocol` in the `step(outcome) ->
+    action` style; a conformance lane that drives shells against proven
+    cores should treat them as one more proven core and their shells
+    (`replace/apply.rs`, `replace/undo.rs`) as one more shell.
+
 ## 4. Deferral inventory
 
 - ~~`sliced-protected-install` (C3): the planner's whole-plan properties
@@ -2796,3 +2949,16 @@ table's length) and, at three rows, `i64` arithmetic in the run builder (now
   process kind, or GTK Lush publication needing a claim outside the per-bin
   domain. On a trigger, the Kani inductive step above (with F1) is finished
   first, and Verus is reopened with V2 only if that fails.
+- `stream-replace-all`: the Replace All stream engine's line logic is checked
+  by a bounded exhaustive unit test, not Kani (section "Replace All protocol
+  and stream" above). One engine run over 2 symbolic bytes was already past
+  8 GiB and still growing when stopped, and no engine form tried fitted the
+  12 GiB runner margin. The first probe to try on a reopen is cheap: the
+  2-byte ladder harness at a per-domain unwind (`unwind(3)`, or a per-loop
+  bound through the shard's `kani_flags`). The ladder ran at `unwind(6)`, and
+  its trace's call counts fit nested loop unrolling. The candidate follow-up
+  if that does not fit is an altitude change, not a bigger budget: split the
+  line logic into a byte-step line cursor whose chunked loop is a fold over
+  single steps, so split independence holds by construction and Kani proves
+  the one-step machine. It is not queued; it becomes worth a change if the
+  engine's line handling changes again.

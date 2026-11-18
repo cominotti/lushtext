@@ -19,14 +19,13 @@ use lushtext_core::model::sidecar_identity::{DocumentSidecarIdentity, stable_pat
 use lushtext_core::model::workspace::{
     WorkspaceConfig, WorkspaceFolder, WorkspaceId, WorkspaceScope, WorkspacesFile,
 };
-use lushtext_core::services::content_search::{ReplaceUndoBackup, ReplaceUndoEntry};
 use lushtext_core::services::filesystem::fixture;
 use lushtext_core::services::json_format::{
     self, JsonFormatError, KIND_BOOKMARK_SIDECAR, KIND_DOCUMENT_NOTE_SIDECAR, KIND_DRAFT_MANIFEST,
     KIND_FOLDER_NOTE_SIDECAR, KIND_LEGACY_WORKSPACE_NOTE_SIDECAR, KIND_LOCAL_HISTORY_INDEX,
     KIND_MIGRATION_LEDGER, KIND_REPLACE_UNDO_CLEANUP_MARKER, KIND_REPLACE_UNDO_ENTRY,
-    KIND_REPLACE_UNDO_MANIFEST, KIND_SAVED_SEARCHES, KIND_SEARCH_HISTORY, KIND_SESSION,
-    KIND_WORKSPACE_STATE,
+    KIND_REPLACE_UNDO_MANIFEST, KIND_REPLACE_UNDO_STREAM_ENTRY, KIND_SAVED_SEARCHES,
+    KIND_SEARCH_HISTORY, KIND_SESSION, KIND_WORKSPACE_STATE,
 };
 use lushtext_core::services::recovery_metadata::{
     RecoveryLoadConfig, RecoveryLoadOutcome, RecoveryMetadataClass, RecoveryProblem,
@@ -431,12 +430,8 @@ fn public_service_saves_write_v1_envelopes() {
         KIND_MIGRATION_LEDGER,
     );
 
-    let mut backup = ReplaceUndoBackup::new();
-    backup.insert(
-        source_path.clone(),
-        ReplaceUndoEntry::new(b"before".to_vec(), b"after".to_vec()),
-    );
-    search_backup::save(data_dir, &backup).expect("save replace undo journal");
+    search_backup::fixture::write_stream_journal(data_dir, &[(&source_path, b"before", b"after")])
+        .expect("save replace undo journal");
     let journal_dir = data_dir.join("replace-backup-journal");
     assert_file_kind(
         &journal_dir.join("manifest.json"),
@@ -444,8 +439,96 @@ fn public_service_saves_write_v1_envelopes() {
     );
     assert_file_kind(
         &journal_dir.join(format!("{}.json", stable_path_hash(&source_path))),
-        KIND_REPLACE_UNDO_ENTRY,
+        KIND_REPLACE_UNDO_STREAM_ENTRY,
     );
+    // The body is raw bytes, not JSON.
+    assert_eq!(
+        fixture::read_bytes(
+            &journal_dir
+                .join("bodies")
+                .join(format!("{}.body", stable_path_hash(&source_path)))
+        ),
+        b"before"
+    );
+}
+
+/// Write a journal directory from the stream-entry fixtures: a manifest, one
+/// entry file and its body (design D3).
+fn stream_journal_from_fixtures(data_dir: &Path, entry: &[u8], body: &[u8]) {
+    let journal = data_dir.join("replace-backup-journal");
+    fixture::create_dir_all(&journal.join("bodies"));
+    fixture::write_bytes(
+        &journal.join("manifest.json"),
+        fixture_bytes!("replace-undo-manifest-launch-v1.json"),
+    );
+    fixture::write_bytes(&journal.join("deb09d05810ef629.json"), entry);
+    fixture::write_bytes(&journal.join("bodies").join("deb09d05810ef629.body"), body);
+}
+
+#[test]
+fn stream_entry_fixtures_load_as_descriptors_and_reject_a_wrong_body() {
+    let entry = fixture_bytes!("replace-undo-stream-entry-v1.json");
+    assert_json_value_field(
+        entry,
+        KIND_REPLACE_UNDO_STREAM_ENTRY,
+        &["body_file"],
+        "deb09d05810ef629.body",
+    );
+
+    // Valid, and with an unknown field: active, one descriptor.
+    for entry in [
+        entry.as_slice(),
+        fixture_bytes!("replace-undo-stream-entry-unknown-field-v1.json").as_slice(),
+    ] {
+        let dir = TempDir::new().expect("temp dir");
+        stream_journal_from_fixtures(dir.path(), entry, b"before");
+        let load = search_backup::load_recovering(dir.path());
+        assert!(load.active, "{:?}", load.diagnostics);
+        assert_eq!(load.backup.len(), 1);
+        let descriptor = &load.backup[Path::new("/tmp/project/src/main.rs")];
+        assert_eq!(descriptor.original.len, 6);
+        assert_eq!(descriptor.replaced.len, 5);
+        assert_eq!(descriptor.launch.pid, 4242);
+        assert_eq!(descriptor.launch.nonce, 7);
+    }
+
+    // A body whose size differs from the recorded original: malformed.
+    let dir = TempDir::new().expect("temp dir");
+    stream_journal_from_fixtures(dir.path(), entry, b"before!");
+    let load = search_backup::load_recovering(dir.path());
+    assert!(!load.active);
+    assert!(load.backup.is_empty());
+
+    // A wrong kind: malformed.
+    let wrong_kind = String::from_utf8(entry.to_vec())
+        .expect("utf-8 fixture")
+        .replace(KIND_REPLACE_UNDO_STREAM_ENTRY, KIND_REPLACE_UNDO_MANIFEST);
+    let dir = TempDir::new().expect("temp dir");
+    stream_journal_from_fixtures(dir.path(), wrong_kind.as_bytes(), b"before");
+    assert!(!search_backup::load_recovering(dir.path()).active);
+
+    // A missing optional manifest field (a journal from before streamed
+    // entries records no launch): still active.
+    let dir = TempDir::new().expect("temp dir");
+    stream_journal_from_fixtures(dir.path(), entry, b"before");
+    fixture::write_text(
+        &dir.path()
+            .join("replace-backup-journal")
+            .join("manifest.json"),
+        r#"{"kind":"dev.cominotti.lushtext.replace-all-undo-manifest","version":1,"data":{"incremental":true,"entries":[]}}"#,
+    );
+    assert!(search_backup::load_recovering(dir.path()).active);
+
+    // A legacy entry beside a streamed one: mixed kinds, malformed.
+    let dir = TempDir::new().expect("temp dir");
+    stream_journal_from_fixtures(dir.path(), entry, b"before");
+    fixture::write_bytes(
+        &dir.path()
+            .join("replace-backup-journal")
+            .join("0000000000000000.json"),
+        fixture_bytes!("replace-undo-entry-v1.json"),
+    );
+    assert!(!search_backup::load_recovering(dir.path()).active);
 }
 
 #[test]
@@ -550,5 +633,88 @@ fn sample_bookmark_document(identity: DocumentSidecarIdentity) -> BookmarkDocume
             created_at_secs: 1,
             updated_at_secs: 2,
         }],
+    }
+}
+
+/// `main`'s journal shapes, vendored from `services/search_backup.rs` at the
+/// commit this change branched from (stream-replace-all task 7.6). `main`
+/// reads an entry with `parse_v1_payload::<ReplaceBackupDiskEntry>(..,
+/// KIND_REPLACE_UNDO_ENTRY)` and a manifest into `ReplaceJournalManifest`;
+/// serde ignores unknown fields on both.
+mod main_journal_shape {
+    use std::path::PathBuf;
+
+    #[derive(Debug, serde::Deserialize)]
+    #[expect(dead_code, reason = "vendored shape: only its parse result matters")]
+    pub struct ReplaceBackupDiskEntry {
+        pub path: PathBuf,
+        pub original_content: String,
+        pub replaced_content: String,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    pub struct ReplaceJournalManifest {
+        #[serde(default)]
+        pub incremental: bool,
+        pub entries: Vec<ReplaceJournalManifestEntry>,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    #[expect(dead_code, reason = "vendored shape: only its parse result matters")]
+    pub struct ReplaceJournalManifestEntry {
+        pub path: PathBuf,
+        pub entry_file: String,
+    }
+}
+
+/// Downgrade (design D6): a journal this branch writes, read by `main`'s
+/// loader. `main` parses the manifest, rejects every streamed entry as the
+/// wrong kind (so the journal is inactive: no Undo, no target written), and
+/// never reads `bodies/`, whose files are not `.json` and sit in a
+/// subdirectory its non-recursive scan does not enter.
+#[test]
+fn main_loader_exposes_no_undo_for_a_streamed_journal() {
+    let dir = TempDir::new().expect("tempdir");
+    let data_dir = dir.path();
+    let sources = [
+        Path::new("/tmp/project/a.rs"),
+        Path::new("/tmp/project/b.rs"),
+    ];
+    search_backup::fixture::write_stream_journal(
+        data_dir,
+        &[
+            (sources[0], b"before a", b"after a"),
+            (sources[1], b"before b", b"after b"),
+        ],
+    )
+    .expect("write streamed journal");
+    let journal_dir = data_dir.join("replace-backup-journal");
+
+    let manifest: main_journal_shape::ReplaceJournalManifest = json_format::parse_v1_payload(
+        &fixture::read_bytes(&journal_dir.join("manifest.json")),
+        KIND_REPLACE_UNDO_MANIFEST,
+    )
+    .expect("main parses the streamed journal's manifest");
+    // An incremental manifest lists nothing: main scans the entry files.
+    assert!(manifest.incremental || manifest.entries.len() == sources.len());
+
+    for source in sources {
+        let entry_file = journal_dir.join(format!("{}.json", stable_path_hash(source)));
+        let parsed = json_format::parse_v1_payload::<main_journal_shape::ReplaceBackupDiskEntry>(
+            &fixture::read_bytes(&entry_file),
+            KIND_REPLACE_UNDO_ENTRY,
+        );
+        assert!(
+            matches!(parsed, Err(JsonFormatError::UnsupportedFormat { .. })),
+            "main rejects a streamed entry as another kind: {parsed:?}",
+        );
+        let body = journal_dir
+            .join("bodies")
+            .join(format!("{}.body", stable_path_hash(source)));
+        assert!(fixture::read_bytes(&body).starts_with(b"before"));
+        assert_ne!(
+            body.extension().and_then(std::ffi::OsStr::to_str),
+            Some("json")
+        );
     }
 }

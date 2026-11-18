@@ -757,10 +757,15 @@ impl LushtextWindow {
     fn wire_preview_projection(&self, page: &libadwaita::TabPage, editor: &LushtextEditorPage) {
         let window_weak = self.downgrade();
         let page_weak = page.downgrade();
+        let editor_weak = editor.downgrade();
         editor.connect_content_republished(move || {
             let (Some(window), Some(page)) = (window_weak.upgrade(), page_weak.upgrade()) else {
                 return;
             };
+            // Open and Replace in Editor waits for this terminal (design D7).
+            if let Some(editor) = editor_weak.upgrade() {
+                window.resume_pending_editor_replace(&editor);
+            }
             if window.imp().tab_view.selected_page().as_ref() != Some(&page)
                 || window.tab_projection_refresh_deferred()
             {

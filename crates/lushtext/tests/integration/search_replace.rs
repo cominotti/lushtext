@@ -11,11 +11,11 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use lushtext_core::model::content_search::{
-    ContentSearchOptions, ReplacePreviewSkipReason, Replacement, SearchMatch, SearchMatchId,
-    generate_replacement_preview,
+    ContentSearchOptions, ReplacePreviewSkipReason, ReplaceSkipReason, Replacement, SearchMatch,
+    SearchMatchId, generate_replacement_preview,
 };
 use lushtext_core::services::{
-    content_search::{self, ReplaceUndoBackup, ReplaceUndoEntry},
+    content_search::{self, ReplaceUndoBackup},
     filesystem::{fixture, metadata as fs_metadata},
     search_backup,
 };
@@ -26,7 +26,7 @@ const JOURNAL_DIR: &str = "replace-backup-journal";
 const CLEANUP_MARKER_FILE: &str = "cleanup-in-progress.json";
 
 #[test]
-fn pre_rename_failure_reclaims_one_entry_budget_for_later_sorted_target() {
+fn pre_rename_failure_cleans_its_journal_files_and_a_later_target_proceeds() {
     let ctx = TestContext::new();
     let first = ctx.write_file("workspace/a-first.txt", "needle\n");
     let later = ctx.write_file("workspace/b-later.txt", "needle\n");
@@ -34,9 +34,6 @@ fn pre_rename_failure_reclaims_one_entry_budget_for_later_sorted_target() {
         replacement_for(&first, SearchMatchId::from_index(0)),
         replacement_for(&later, SearchMatchId::from_index(1)),
     ];
-    let one_entry =
-        u64::try_from("needle\n".len() + "done\n".len()).expect("fixture payload should fit u64");
-    content_search::set_max_replace_undo_bytes_for_test(Some(one_entry));
     // Keep the guard alive through `apply_replacements`; dropping it early would
     // disarm the before-rename failure seam before the replace runs.
     let _before_rename_seam =
@@ -46,19 +43,20 @@ fn pre_rename_failure_reclaims_one_entry_budget_for_later_sorted_target() {
         &replacements,
         &HashSet::new(),
         &AtomicBool::new(false),
-        Some(ctx.data_dir()),
+        ctx.data_dir(),
     )
-    .expect("later target should use the reclaimed one-entry budget");
-    content_search::set_max_replace_undo_bytes_for_test(None);
+    .expect("a later target proceeds after a pre-rename failure");
 
     assert_eq!(fixture::read_text(&first), "needle\n");
     assert_eq!(fixture::read_text(&later), "done\n");
     assert_eq!(outcome.result.files_affected, 1);
-    assert_eq!(outcome.result.error_count, 1);
-    assert_eq!(outcome.metrics().undo_live_bytes, one_entry);
-    assert_eq!(outcome.metrics().undo_bytes, one_entry);
+    assert_eq!(outcome.skip_report.count(ReplaceSkipReason::WriteFailed), 1);
     assert!(!outcome.undo_backup.contains_key(&first));
     assert!(outcome.undo_backup.contains_key(&later));
+    assert!(!fs_metadata::exists(&search_backup::body_path(
+        ctx.data_dir(),
+        &first
+    )));
     let persisted = search_backup::load(ctx.data_dir()).expect("load incremental journal");
     assert!(!persisted.contains_key(&first));
     assert!(persisted.contains_key(&later));
@@ -75,7 +73,7 @@ fn caller_skip_paths_preserve_open_tab_bytes_and_report_the_skip() {
         &replacements,
         &skip_paths,
         &AtomicBool::new(false),
-        Some(ctx.data_dir()),
+        ctx.data_dir(),
     )
     .expect("caller-supplied skip identity should remain a successful no-op");
 
@@ -85,6 +83,10 @@ fn caller_skip_paths_preserve_open_tab_bytes_and_report_the_skip() {
     assert_eq!(outcome.result.skipped_count, 1);
     assert_eq!(outcome.result.error_count, 0);
     assert_eq!(outcome.result.skipped_sample[0], path.display().to_string());
+    assert_eq!(
+        outcome.skip_report.count(ReplaceSkipReason::UnsavedChanges),
+        1
+    );
     assert!(outcome.undo_backup.is_empty());
     assert!(
         search_backup::load(ctx.data_dir())
@@ -95,8 +97,10 @@ fn caller_skip_paths_preserve_open_tab_bytes_and_report_the_skip() {
 
 #[test]
 fn replacement_output_accepts_exact_file_limit_and_rejects_one_byte_over() {
-    let file_limit = usize::try_from(content_search::MAX_REPLACE_FILE_BYTES)
-        .expect("Replace All file limit should fit usize");
+    // The open tier is hundreds of MiB; the limit is lowered for the test, on
+    // this thread only, so the boundary is exact at a small size.
+    const FILE_LIMIT: usize = 64 * 1024;
+    content_search::set_max_replace_file_bytes_for_test(Some(FILE_LIMIT as u64));
 
     {
         let ctx = TestContext::new();
@@ -104,20 +108,20 @@ fn replacement_output_accepts_exact_file_limit_and_rejects_one_byte_over() {
         let replacement = expanding_replacement(
             &path,
             SearchMatchId::from_index(0),
-            Arc::from("a".repeat(file_limit)),
+            Arc::from("a".repeat(FILE_LIMIT)),
         );
 
         let outcome = content_search::apply_replacements(
             &[replacement],
             &HashSet::new(),
             &AtomicBool::new(false),
-            Some(ctx.data_dir()),
+            ctx.data_dir(),
         )
         .expect("exact per-file output limit should remain replaceable and undoable");
 
-        assert_eq!(fixture::read_bytes(&path).len(), file_limit);
+        assert_eq!(fixture::read_bytes(&path).len(), FILE_LIMIT);
         assert_eq!(outcome.result.files_affected, 1);
-        assert_eq!(outcome.result.skipped_count, 0);
+        assert!(outcome.skip_report.is_empty());
         assert!(outcome.undo_backup.contains_key(&path));
     }
 
@@ -126,27 +130,25 @@ fn replacement_output_accepts_exact_file_limit_and_rejects_one_byte_over() {
     let replacement = expanding_replacement(
         &path,
         SearchMatchId::from_index(1),
-        Arc::from("b".repeat(file_limit.saturating_add(1))),
+        Arc::from("b".repeat(FILE_LIMIT.saturating_add(1))),
     );
 
     let outcome = content_search::apply_replacements(
         &[replacement],
         &HashSet::new(),
         &AtomicBool::new(false),
-        Some(ctx.data_dir()),
+        ctx.data_dir(),
     )
     .expect("one-byte-over output should be a bounded skipped target");
+    content_search::set_max_replace_file_bytes_for_test(None);
 
     assert_eq!(fixture::read_text(&path), "x");
     assert_eq!(outcome.result.files_affected, 0);
-    assert_eq!(outcome.result.skipped_count, 1);
-    assert_eq!(outcome.result.error_count, 1);
-    assert!(
+    assert_eq!(
         outcome
-            .result
-            .error_sample
-            .iter()
-            .any(|message| message.contains("replacement output would exceed"))
+            .skip_report
+            .count(ReplaceSkipReason::LargerThanOpenTier),
+        1
     );
     assert!(outcome.undo_backup.is_empty());
 }
@@ -178,13 +180,9 @@ fn dense_short_line_replace_all_reports_replacement_bounded_construction() {
         .collect();
     let cancel = AtomicBool::new(false);
 
-    let outcome = content_search::apply_replacements(
-        &replacements,
-        &HashSet::new(),
-        &cancel,
-        Some(ctx.data_dir()),
-    )
-    .expect("dense-line Replace All should succeed");
+    let outcome =
+        content_search::apply_replacements(&replacements, &HashSet::new(), &cancel, ctx.data_dir())
+            .expect("dense-line Replace All should succeed");
     let metrics = outcome.metrics();
     let (result, backup) = outcome.into_parts();
 
@@ -201,14 +199,22 @@ fn dense_short_line_replace_all_reports_replacement_bounded_construction() {
         metrics.output_bytes,
         u64::try_from(SOURCE_LINES * 2).expect("output fixture bytes should fit u64")
     );
+    // The undo body holds the original bytes once; no layer keeps the output.
     assert_eq!(
         metrics.undo_bytes,
-        u64::try_from(SOURCE_LINES * 4).expect("undo fixture bytes should fit u64")
+        u64::try_from(SOURCE_LINES * 2).expect("undo fixture bytes should fit u64")
+    );
+    // The metric is the targeted-line buffer's capacity; a two-byte line takes
+    // the smallest byte allocation (8), never anything sized by the file.
+    assert!(
+        metrics.retained_line_bytes <= 16,
+        "only one short targeted line is buffered: {}",
+        metrics.retained_line_bytes
     );
     assert_eq!(
         search_backup::load(ctx.data_dir()).expect("load active dense-line undo journal"),
         backup,
-        "journal-before-mutation state must retain the exact before/after payload"
+        "the journal holds exactly the descriptors the run returned"
     );
 }
 
@@ -251,8 +257,7 @@ fn replace_preview_keeps_only_valid_rows_and_reports_content_free_reason_counts(
 #[test]
 fn interrupted_startup_cleanup_never_reactivates_replace_undo() {
     let ctx = TestContext::new();
-    let backup = sample_backup();
-    search_backup::save(ctx.data_dir(), &backup).expect("save active replace journal");
+    let _backup = sample_backup(ctx.data_dir());
     fixture::write_text(
         &ctx.data_dir().join(JOURNAL_DIR).join(CLEANUP_MARKER_FILE),
         r#"{"reason":"simulated interrupted startup cleanup"}"#,
@@ -277,8 +282,7 @@ fn interrupted_startup_cleanup_never_reactivates_replace_undo() {
 #[test]
 fn undo_completion_cleanup_remains_empty_across_restart() {
     let ctx = TestContext::new();
-    let backup = sample_backup();
-    search_backup::save(ctx.data_dir(), &backup).expect("save active replace journal");
+    let backup = sample_backup(ctx.data_dir());
     assert_eq!(
         search_backup::load(ctx.data_dir()).expect("active journal loads"),
         backup
@@ -292,17 +296,23 @@ fn undo_completion_cleanup_remains_empty_across_restart() {
     assert!(after_restart.diagnostics.is_empty());
 }
 
-fn sample_backup() -> ReplaceUndoBackup {
-    let mut backup = ReplaceUndoBackup::new();
-    backup.insert(
-        PathBuf::from("/tmp/lushtext-replace-a.txt"),
-        ReplaceUndoEntry::new(b"before-a".to_vec(), b"after-a".to_vec()),
-    );
-    backup.insert(
-        PathBuf::from("/tmp/lushtext-replace-b.txt"),
-        ReplaceUndoEntry::new(b"before-b".to_vec(), b"after-b".to_vec()),
-    );
-    backup
+fn sample_backup(data_dir: &std::path::Path) -> ReplaceUndoBackup {
+    search_backup::fixture::write_stream_journal(
+        data_dir,
+        &[
+            (
+                std::path::Path::new("/tmp/lushtext-replace-a.txt"),
+                b"before-a",
+                b"after-a",
+            ),
+            (
+                std::path::Path::new("/tmp/lushtext-replace-b.txt"),
+                b"before-b",
+                b"after-b",
+            ),
+        ],
+    )
+    .expect("save active replace journal")
 }
 
 fn replacement_for(path: &std::path::Path, match_id: SearchMatchId) -> Replacement {

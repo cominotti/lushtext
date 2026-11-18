@@ -311,6 +311,71 @@ where
     }
 }
 
+/// Stream `path` to `consume` in chunks of at most `chunk_bytes`, refusing
+/// to read past `byte_limit` (one sentinel byte tells an exact-limit file from
+/// a larger one). Returns the bytes streamed.
+pub(in crate::services) fn stream_bounded<F, C, E>(
+    path: &Path,
+    byte_limit: u64,
+    chunk_bytes: usize,
+    mut cancelled: F,
+    mut consume: C,
+) -> Result<u64, super::read::BoundedStreamError<E>>
+where
+    F: FnMut() -> bool,
+    C: FnMut(&[u8]) -> Result<(), E>,
+{
+    use super::read::BoundedStreamError;
+    let mut file = fs::File::open(path).map_err(BoundedStreamError::Io)?;
+    let mut chunk = vec![0u8; chunk_bytes.max(1)].into_boxed_slice();
+    let mut streamed = 0u64;
+    loop {
+        if cancelled() {
+            return Err(BoundedStreamError::Cancelled);
+        }
+        if streamed == byte_limit {
+            let mut sentinel = [0u8; 1];
+            let count = read_retrying(&mut file, &mut sentinel).map_err(BoundedStreamError::Io)?;
+            return if count == 0 {
+                Ok(streamed)
+            } else {
+                Err(BoundedStreamError::LimitExceeded { byte_limit })
+            };
+        }
+        let remaining = byte_limit - streamed;
+        let read_len = usize::try_from(remaining.min(chunk.len() as u64)).unwrap_or(chunk.len());
+        let count =
+            read_retrying(&mut file, &mut chunk[..read_len]).map_err(BoundedStreamError::Io)?;
+        if count == 0 {
+            return Ok(streamed);
+        }
+        consume(&chunk[..count]).map_err(BoundedStreamError::Consumer)?;
+        streamed += count as u64;
+    }
+}
+
+fn read_retrying(file: &mut fs::File, buffer: &mut [u8]) -> io::Result<usize> {
+    loop {
+        match file.read(buffer) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            result => return result,
+        }
+    }
+}
+
+/// Bytes an unprivileged process may still write on the filesystem holding
+/// `path` (`f_bavail * f_frsize`).
+#[cfg(unix)]
+pub(in crate::services) fn free_space(path: &Path) -> io::Result<u64> {
+    let stat = rustix::fs::statvfs(path).map_err(io::Error::from)?;
+    Ok(stat.f_bavail.saturating_mul(stat.f_frsize))
+}
+
+#[cfg(not(unix))]
+pub(in crate::services) fn free_space(_path: &Path) -> io::Result<u64> {
+    Err(io::Error::from(io::ErrorKind::Unsupported))
+}
+
 #[cfg(unix)]
 pub(in crate::services) fn file_identity(metadata: &Metadata) -> Option<FileIdentity> {
     use std::os::unix::fs::MetadataExt;

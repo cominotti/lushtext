@@ -234,6 +234,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/model/content_search.rs` | `MAX_REPLACE_PREVIEW_BYTES` | 67,108,864 | presentation cap | up from 67,108,864: past it Replace Preview omits rows (D12) |
 | `crates/lushtext-core/src/model/content_search.rs` | `MAX_REPLACE_DIAGNOSTIC_ENTRIES` | 32 | presentation cap | up from 32: diagnostics a user reads after Replace All (D12) |
 | `crates/lushtext-core/src/model/content_search.rs` | `MAX_REPLACE_DIAGNOSTIC_BYTES` | 32,768 | presentation cap | up from 32,768: diagnostic text a user reads (D12) |
+| `crates/lushtext-core/src/model/content_search.rs` | `MAX_REPLACE_SKIP_LIST_BYTES` | 4,194,304 | presentation cap | up from 4,194,304: new; path bytes the skip list keeps, which lists every file of a 16,384-file run at typical path lengths and counts the rest (`stream-replace-all` D7) |
 | `crates/lushtext-core/src/model/content_search.rs` | `BEYOND_BUDGET_REPORT_INTERVAL_MS` | 250 | out: time | cadence of the running found count (`bound-lists-by-budget-not-count` D4) |
 
 ### `crates/lushtext-core/src/model/cursor_step.rs`
@@ -470,15 +471,23 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/services/bookmark_excerpt.rs` | `BOOKMARK_EXCERPT_LINE_CHAR_LIMIT` | 4,096 | presentation cap | up from 4,096: characters an excerpt line shows (D12) |
 | `crates/lushtext-core/src/services/bookmark_excerpt.rs` | `BOOKMARK_EXCERPT_CANCELLATION_CHECK_LINES` | 1,024 | cap | power of two |
 
-### `crates/lushtext-core/src/services/content_search/replace.rs`
+### `crates/lushtext-core/src/services/content_search/replace/mod.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/services/content_search/replace.rs` | `MAX_REPLACE_FILE_BYTES` | 16,777,216 | presentation cap | up from 10,485,760: M9, one-file peak growth 33.9 vs 21.6 MiB (ratio 1.57); the 64 MiB aggregate unchanged (D12) |
-| `crates/lushtext-core/src/services/content_search/replace.rs` | `MAIN_REPLACE_FILE_BYTES` | 10,485,760 | presentation cap, exception | up from 10,485,760, kept: `main`'s per-file limit, the first-pass bound that charges the undo payload exactly as `main` did, so no larger file displaces a file `main` replaced (D12) |
-| `crates/lushtext-core/src/services/content_search/replace.rs` | `MAX_REPLACE_UNDO_BYTES` | 67,108,864 | presentation cap | up from 67,108,864: past it Replace All skips files (D12) |
-| `crates/lushtext-core/src/services/content_search/replace.rs` | `MAX_REPLACE_UNDO_RETAINED_BYTES` | 67,108,864 | cap | power of two |
+| `crates/lushtext-core/src/services/content_search/replace/mod.rs` | `MAX_REPLACE_FILE_BYTES` | 536,870,912 | derived | `DocumentScale::REFUSE_TO_OPEN`, the open tier: past it no editor fallback exists (`stream-replace-all` D1) |
+| `crates/lushtext-core/src/services/content_search/replace/mod.rs` | `MAIN_REPLACE_FILE_BYTES` | 10,485,760 | presentation cap, exception | up from 10,485,760, kept: `main`'s first-pass per-file limit, replayed by the no-loss ledger so no file `main` replaced is displaced (`stream-replace-all` D4) |
+| `crates/lushtext-core/src/services/content_search/replace/mod.rs` | `MAIN_MAX_REPLACE_FILE_BYTES` | 16,777,216 | presentation cap, exception | up from 16,777,216, kept: `main`'s second-pass per-file limit, replayed by the no-loss ledger (`stream-replace-all` D4) |
+| `crates/lushtext-core/src/services/content_search/replace/mod.rs` | `MAIN_REPLACE_UNDO_BYTES` | 67,108,864 | presentation cap, exception | up from 67,108,864, kept: `main`'s aggregate undo payload, replayed by the no-loss ledger and the legacy inline journal's load bound (`stream-replace-all` D4, D6) |
+| `crates/lushtext-core/src/services/content_search/replace/mod.rs` | `REPLACE_DISK_RESERVE_BYTES` | 1,073,741,824 | policy tier | free space kept on the journal's and the target's filesystem beyond `main`'s admission; at least `MAIN_REPLACE_UNDO_BYTES + MAIN_MAX_REPLACE_FILE_BYTES` by a compile-time assertion (`stream-replace-all` D4) |
+| `crates/lushtext-core/src/services/content_search/replace/mod.rs` | `MAX_REPLACE_UNDO_RETAINED_BYTES` | 67,108,864 | cap | power of two |
 
+
+### `crates/lushtext-core/src/services/content_search/replace/stream.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-core/src/services/content_search/replace/stream.rs` | `REPLACE_STREAM_CHUNK_BYTES` | 262,144 | cap | power of two; two buffers retained per file at most; the smallest size within 5 % of the best measured throughput (`stream-replace-all` D2, task 2.4) |
 ### `crates/lushtext-core/src/services/draft_service.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
@@ -1079,6 +1088,13 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/ui/search_panel/retirement.rs` | `SEARCH_RETIREMENT_ROWS_PER_SLICE` | 256 | cap | 256: a full turn stays within B_settle (D8, task 5.4) |
 | `crates/lushtext-core/src/ui/search_panel/retirement.rs` | `MAX_SEARCH_RETIREMENT_GENERATIONS` | 2 | cap | power of two |
 
+
+### `crates/lushtext-core/src/ui/search_panel/skipped_files.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-core/src/ui/search_panel/skipped_files.rs` | `SKIPPED_FILES_WIDTH_SP` | 560 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-core/src/ui/search_panel/skipped_files.rs` | `SKIPPED_FILES_HEIGHT_SP` | 520 | out: geometry | UI geometry in sp or px (D1) |
 ### `crates/lushtext-core/src/ui/settings_writes.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |

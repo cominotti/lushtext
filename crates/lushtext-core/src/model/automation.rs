@@ -1296,6 +1296,26 @@ pub struct AutomationContentSearchSnapshot {
     pub skipped_replacement_count: u32,
     /// Whether a Replace All undo backup is available.
     pub has_undo_backup: bool,
+    /// Whether a Replace All run (including its rollback) is in flight.
+    pub replace_in_flight: bool,
+    /// Whether the run in flight was asked to stop.
+    pub replace_cancel_requested: bool,
+    /// Files the run in flight has finished, or `None` with no run.
+    pub replace_progress_files_done: Option<u32>,
+    /// Files the run in flight will visit, or `None` with no run.
+    pub replace_progress_files_total: Option<u32>,
+    /// Bytes the run in flight has written, or `None` with no run.
+    pub replace_progress_bytes_written: Option<u64>,
+    /// Whether the run in flight is rolling back after Cancel.
+    pub replace_progress_rolling_back: bool,
+    /// Files the last run skipped, per reason (stable machine names).
+    pub replace_skip_counts: std::collections::BTreeMap<String, u32>,
+    /// Files the last run replaced only partly.
+    pub replace_skip_partly_replaced: u32,
+    /// Skipped files counted but not listed, past the list's byte bound.
+    pub replace_skip_not_listed: u32,
+    /// Whether Show Skipped Files is offered for the last run.
+    pub skipped_files_offered: bool,
     /// Number of recent history rows loaded into the panel.
     pub history_count: u32,
     /// Number of named saved searches loaded into the panel.

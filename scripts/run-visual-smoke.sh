@@ -42,6 +42,7 @@ VISUAL_CASES=(
     workspace-refresh
     workspace-tree-context-menu
     workspace-header-context-menu
+    replace-all-skipped-files
     notes-empty
     notes-few
     bookmarks-few
@@ -280,6 +281,7 @@ MATRIX_ROWS_BY_CASE = {
     "workspace-refresh": ["A11Y-WORKSPACE-BUSY-ERROR"],
     "workspace-tree-context-menu": ["A11Y-WORKSPACE-CONTEXT", "A11Y-WORKSPACE-DRAG-DROP", "A11Y-CONTEXT-MENUS-GENERAL"],
     "workspace-header-context-menu": ["A11Y-WORKSPACE-CONTEXT", "A11Y-CONTEXT-MENUS-GENERAL"],
+    "replace-all-skipped-files": ["A11Y-WORKSPACE-SEARCH-REPLACE-SKIPPED"],
     "notes-empty": ["A11Y-NOTES-EMPTY"],
     "notes-few": ["A11Y-NOTES-POPULATED"],
     "bookmarks-few": ["A11Y-BOOKMARKS"],
@@ -779,6 +781,70 @@ envelope = {
     json.dumps(envelope, indent=2, sort_keys=True) + "\n",
     encoding="utf-8",
 )
+PY
+}
+
+# One workspace folder with a file Replace All rewrites and one whose only
+# match is on a 10 KiB line, which the preview cannot show: the run ends with
+# one skipped file behind Show Skipped Files (`stream-replace-all`).
+prepare_replace_skipped_capture_state() {
+    local capture_dir="$1"
+
+    /usr/bin/python3 - "$capture_dir" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+capture_dir = Path(sys.argv[1])
+data_dir = capture_dir / "data" / "lushtext"
+folder = capture_dir / "replace-fixtures" / "replace-workspace"
+data_dir.mkdir(parents=True, exist_ok=True)
+folder.mkdir(parents=True, exist_ok=True)
+(folder / "replace-target.txt").write_text(
+    "replace-needle alpha\nordinary line between matches\nreplace-needle beta\n", encoding="utf-8"
+)
+(folder / "replace-long-line.txt").write_text("x" * 10240 + "replace-needle\n", encoding="utf-8")
+envelope = {
+    "kind": "dev.cominotti.lushtext.workspace-state",
+    "version": 1,
+    "data": {
+        "current_scope": {"kind": "all"},
+        "workspaces": [
+            {
+                "id": "ws-replace",
+                "name": "Replace Workspace",
+                "folders": [{"id": "folder-replace", "path": str(folder)}],
+            }
+        ],
+    },
+}
+(data_dir / "workspaces.json").write_text(json.dumps(envelope, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+}
+
+assert_replace_skipped_capture_artifacts() {
+    local name="$1"
+    local capture_dir="$2"
+    local snapshot_path="$capture_dir/automation-snapshot.json"
+    [[ -s "$snapshot_path" ]] || smoke_fail "visual smoke '${name}' did not write automation-snapshot.json"
+    /usr/bin/python3 - "$snapshot_path" >"$ARTIFACT_DIR/assertions/${name}-replace-skipped.txt" <<'PY' \
+        || smoke_fail "visual smoke '${name}' did not end with the Skipped Files dialog over one skipped file"
+import json
+import sys
+
+snapshot_path = sys.argv[1]
+with open(snapshot_path, encoding="utf-8") as handle:
+    snapshot = json.load(handle)
+window = snapshot["window"]
+assert window is not None, snapshot
+search = window["content_search"]
+assert search["skipped_files_offered"] is True, search
+assert search["replace_in_flight"] is False, search
+skipped = sum(search["replace_skip_counts"].values())
+assert skipped == 1, search["replace_skip_counts"]
+print("skipped_files_offered=true")
+print(f"replace_skip_counts={json.dumps(search['replace_skip_counts'], sort_keys=True)}")
+print(f"snapshot={snapshot_path}")
 PY
 }
 
@@ -1284,6 +1350,9 @@ run_capture() {
     if [[ "$name" == workspace-* ]]; then
         prepare_workspace_capture_state "$name" "$capture_dir"
     fi
+    if [[ "$name" == "replace-all-skipped-files" ]]; then
+        prepare_replace_skipped_capture_state "$capture_dir"
+    fi
     if [[ "$name" == notes-* || "$name" == bookmarks-* || "$name" == "command-palette-notes" ]]; then
         prepare_notes_capture_state "$name" "$capture_dir"
     fi
@@ -1418,6 +1487,28 @@ run_capture() {
             --step "window-action:focus-workspace-header"
             --step "window-action:show-workspace-header-context-menu"
             --step "wait-atspi-text:Rename Workspace"
+        )
+    fi
+    if [[ "$name" == "replace-all-skipped-files" ]]; then
+        capture_args+=(
+            --wait-predicate workspace-refresh-complete
+            --atspi-tree-output "$ARTIFACT_DIR/assertions/${name}-atspi-tree.txt"
+            --atspi-focus-output "$ARTIFACT_DIR/assertions/${name}-atspi-focus.txt"
+            --step window-action:toggle-search-panel
+            --step wait-window-action:set-search-panel-query
+            --step window-string-action:set-search-panel-query=replace-needle
+            --step wait-predicate:search-complete
+            --step "wait-atspi-text:3 results in 2 files"
+            --step window-string-action:set-search-panel-replace-query=after-needle
+            --step wait-window-action:preview-search-panel-replacements
+            --step window-action:preview-search-panel-replacements
+            --step wait-predicate:search-complete
+            --step "wait-atspi-text:Include replacement at line 1"
+            --step window-action:confirm-search-panel-replacements
+            --step "wait-atspi-text:Show Skipped Files"
+            --step wait-window-action:show-search-panel-skipped-files
+            --step window-action:show-search-panel-skipped-files
+            --step "wait-atspi-text:1 file not replaced"
         )
     fi
     if [[ "$name" == "local-history-restore" ]]; then
@@ -1568,6 +1659,9 @@ run_capture() {
         local-history-restore)
             assert_local_history_restore_capture_artifacts "$name" "$capture_dir"
             ;;
+        replace-all-skipped-files)
+            assert_replace_skipped_capture_artifacts "$name" "$capture_dir"
+            ;;
     esac
     case "$name" in
         normal-properties|compact-properties|constrained-properties)
@@ -1697,6 +1791,7 @@ run_selected_capture "workspace-constrained" "$TEXT_FIXTURE" "$ARTIFACT_DIR/scre
 run_selected_capture "workspace-refresh" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/workspace-refresh.png" "1280" "860" "" "0" "default"
 run_selected_capture "workspace-tree-context-menu" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/workspace-tree-context-menu.png" "1280" "860" "" "0" "default"
 run_selected_capture "workspace-header-context-menu" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/workspace-header-context-menu.png" "1280" "860" "" "0" "default"
+run_selected_capture "replace-all-skipped-files" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/replace-all-skipped-files.png" "1280" "860" "" "0" "default"
 run_selected_capture "notes-empty" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/notes-empty.png" "1280" "860" "" "0" "default" "show-notes"
 run_selected_capture "notes-few" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/notes-few.png" "1280" "860" "" "0" "default" "show-notes"
 run_selected_capture "bookmarks-few" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/bookmarks-few.png" "1280" "860" "" "0" "default" "show-notes"

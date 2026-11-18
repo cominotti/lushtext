@@ -8,6 +8,7 @@ every integer constant; and user-visible size tiers are shown in IEC units.
 Introduced by `power-of-two-thresholds` (archived 2026-11-06).
 
 ## Requirements
+
 ### Requirement: Every threshold is a power of two or a recorded exception
 Every integer constant in the production crates' sources is either a
 threshold or out of scope.
@@ -112,8 +113,8 @@ of it.
 
 #### Scenario: Replace All processes every file main processed
 - **WHEN** a Replace All run touches files of up to 16 MiB each whose total undo payload is within 64 MiB
-- **THEN** every file is replaced, including those between 10 MiB and 16 MiB that `main` skipped, and the aggregate undo payload still bounds the run's memory
-- **AND** when the undo payload runs out, every file `main` would have replaced is replaced before any file above 10 MiB is charged, so no larger file displaces one
+- **THEN** every file is replaced, including those between 10 MiB and 16 MiB that the release before `power-of-two-thresholds` skipped, and files up to the open tier (512 MiB, `MAX_REPLACE_FILE_BYTES` derived from `REFUSE_TO_OPEN`) are processed too, in constant memory
+- **AND** the no-loss ledger (`MAIN_REPLACE_FILE_BYTES` 10 MiB, `MAIN_MAX_REPLACE_FILE_BYTES` 16 MiB, `MAIN_REPLACE_UNDO_BYTES` 64 MiB, recorded presentation-cap exceptions equal to `main`'s values) waives the disk reserve for every file `main` would have replaced, so no larger file displaces one
 
 #### Scenario: A raised retention tier still loads in full
 - **WHEN** the recent-documents file holds 256 entries whose path and canonical path are each 4,096 bytes long
@@ -179,7 +180,7 @@ This covers:
 
 - the open refusal and the grew-while-opening refusal;
 - the local-history browse limit and its unavailable message;
-- the Replace All per-file and undo-payload skip messages;
+- the Replace All skip reasons that name a size (the per-file limit and the disk reserve);
 - the reduced-features notice;
 - the editor's accessible description.
 
@@ -200,3 +201,6 @@ list.
 - **WHEN** the user opens a file above the open tier
 - **THEN** the error names the tier in MiB, together with the file's size in MiB
 
+#### Scenario: Replace All names the open tier in MiB
+- **WHEN** Replace All skips a 600 MiB file
+- **THEN** its reason in the Skipped Files list says the file is larger than 512 MiB, the largest file LushText opens

@@ -34,6 +34,7 @@ use crate::model::automation::{
     READINESS_BLOCKER_WORKSPACE_SEARCH, READINESS_BLOCKER_WORKSPACE_SIDEBAR_ANIMATION,
     READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
 };
+use crate::model::content_search::ReplaceSkipReason;
 use crate::model::palette::{PaletteCategory, SearchMode};
 use crate::services::action_catalog;
 use crate::services::local_history_service::LocalHistoryAvailability;
@@ -1210,6 +1211,7 @@ fn local_history_snapshot(window: &LushtextWindow) -> AutomationLocalHistorySnap
 fn content_search_snapshot(window: &LushtextWindow) -> AutomationContentSearchSnapshot {
     let imp = window.imp();
     let evidence = imp.search_panel.evidence();
+    let progress = evidence.replace_progress;
 
     AutomationContentSearchSnapshot {
         visible: imp.search_panel_revealer.reveals_child(),
@@ -1233,6 +1235,22 @@ fn content_search_snapshot(window: &LushtextWindow) -> AutomationContentSearchSn
         omitted_replacement_count: evidence.omitted_replacement_count,
         skipped_replacement_count: evidence.skipped_replacement_count,
         has_undo_backup: evidence.has_undo_backup,
+        replace_in_flight: evidence.replace_in_flight,
+        replace_cancel_requested: evidence.replace_cancel_requested,
+        replace_progress_files_done: progress.map(|progress| bounded_len(progress.files_done)),
+        replace_progress_files_total: progress.map(|progress| bounded_len(progress.files_total)),
+        replace_progress_bytes_written: progress.map(|progress| progress.bytes_written),
+        replace_progress_rolling_back: progress.is_some_and(|progress| progress.rolling_back),
+        replace_skip_counts: ReplaceSkipReason::ALL
+            .iter()
+            .filter_map(|reason| {
+                let count = evidence.replace_skip_counts[reason.index()];
+                (count > 0).then(|| (reason.automation_name().to_string(), bounded_len(count)))
+            })
+            .collect(),
+        replace_skip_partly_replaced: bounded_len(evidence.replace_skip_partly_replaced),
+        replace_skip_not_listed: bounded_len(evidence.replace_skip_not_listed),
+        skipped_files_offered: evidence.skipped_files_offered,
         history_count: evidence.history_count,
         saved_search_count: evidence.saved_search_count,
         navigation_match_count: evidence.navigation_match_count,

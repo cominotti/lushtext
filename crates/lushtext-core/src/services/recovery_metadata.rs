@@ -1086,6 +1086,70 @@ fn preserve_original(
     }
 }
 
+/// Copy `config.path` into the quarantine as evidence of `problem`, leaving
+/// the original where it is (at most `config.max_bytes`).
+///
+/// A caller that must keep the original in place, because a cleanup marker
+/// or a later pass still reads it, records this preservation instead of
+/// moving the file. Returns the diagnostic with its preservation outcome.
+#[must_use]
+pub fn copy_into_quarantine(
+    config: &RecoveryLoadConfig<'_>,
+    problem: RecoveryProblem,
+) -> RecoveryDiagnostic {
+    let preservation = copy_original_into_quarantine(config, &problem);
+    RecoveryDiagnostic {
+        class: config.class,
+        original_path: config.path.to_path_buf(),
+        problem,
+        preservation,
+        replacement_allowed: false,
+    }
+}
+
+fn copy_original_into_quarantine(
+    config: &RecoveryLoadConfig<'_>,
+    problem: &RecoveryProblem,
+) -> RecoveryPreservation {
+    let capacity_hint = fs_metadata::file_stat(config.path)
+        .map_or(0, |facts| facts.byte_size)
+        .min(config.max_bytes);
+    let bytes = match fs_read::bounded_bytes(config.path, config.max_bytes, capacity_hint, || false)
+    {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return RecoveryPreservation::Failed {
+                detail: format!("failed to read the original for quarantine: {error}"),
+            };
+        }
+    };
+    let quarantine_dir = config.quarantine_dir();
+    if let Err(error) = fs_write::create_dir_all_durable(&quarantine_dir) {
+        return RecoveryPreservation::Failed {
+            detail: format!(
+                "failed to create quarantine directory {}: {error}",
+                quarantine_dir.display()
+            ),
+        };
+    }
+    let quarantine_path = match next_quarantine_path(&quarantine_dir, config, problem) {
+        Ok(path) => path,
+        Err(error) => {
+            return RecoveryPreservation::Failed {
+                detail: format!("failed to allocate quarantine path: {error}"),
+            };
+        }
+    };
+    match fs_write::atomic_replace(&quarantine_path, WriteLabel::RECOVERY_QUARANTINE, &bytes) {
+        Ok(()) => RecoveryPreservation::CopiedToQuarantine {
+            path: quarantine_path,
+        },
+        Err(error) => RecoveryPreservation::Failed {
+            detail: format!("copy failed: {}", error.into_io_error()),
+        },
+    }
+}
+
 /// Allocate a unique quarantine filename without overwriting earlier evidence.
 fn next_quarantine_path(
     quarantine_dir: &Path,

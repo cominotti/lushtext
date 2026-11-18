@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- A127, A128 and A129 probes and samples (`stream-replace-all`): a regex
+  `GtkSourceSearchContext::replace_all` expands GRegex references (`\N`,
+  `\g<N>`, `\g<name>`, `\g<1>0` as group 1 then `0`) and leaves `$1`
+  literal; `at-word-boundaries` finds the ASCII whole-word occurrences
+  workspace search finds; GRegex compiles the passed-through Rust-`regex`
+  constructs. Fixtures `fixtures::a127` (`regex_search`, `replace_all_with`,
+  `DOCUMENT`, `PATTERN`, `EXPANSIONS`), `fixtures::a128`
+  (`word_boundary_offsets`, `ascii_whole_word_offsets`,
+  `unicode_whole_word_offsets` and the fixture texts) and `fixtures::a129`
+  (`first_match`, `CONSTRUCTS`, `DOCUMENT`).
 - A122 probe and sample (`fix-extend-selection-abort`): `GtkTextView`'s
   `extend-selection` returns `gboolean`, runs its class handler last and
   stops at the first TRUE, so a handler answering FALSE lets later handlers
