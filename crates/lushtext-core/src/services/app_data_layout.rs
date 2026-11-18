@@ -4,9 +4,11 @@
 //!
 //! Every file and directory LushText keeps under its data home
 //! (`json_store::data_dir()`) is one [`AppDataLocation`], and its on-disk name
-//! is spelled only here. The consumers that must cover every location decide
-//! each one through an exhaustive `match`, so a new location does not compile
-//! until each has decided it:
+//! is spelled only here. [`AppDataLocation::ALL`] is declared by the same
+//! list as the enum, so it holds every location by construction, and the
+//! consumers that must cover every location iterate it and decide each one
+//! through an exhaustive `match`, so a new location does not compile until
+//! each has decided it:
 //!
 //! - the startup leftover sweep (`app_data_leftovers.rs`) visits every
 //!   location whose [`AppDataLocation::sweep`] is [`SweepCoverage::Swept`],
@@ -32,13 +34,31 @@ const LINEAGE_INDEX_FILE: &str = "index.json";
 /// The directory each format-upgrade backup run keeps its backups in.
 const RUN_ITEMS_DIR: &str = "items";
 
-/// One file or directory under the app data home.
-///
-/// The swept directories and families come first, in the order the startup
-/// sweep visits them (its shared budget is spent in that order), then the
-/// legacy folder-note directory, then the files.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum AppDataLocation {
+/// Declares [`AppDataLocation`] and [`AppDataLocation::ALL`] from one list,
+/// so no location can exist outside `ALL`: the startup sweep and the
+/// format-upgrade inventory, which iterate `ALL`, reach every location by
+/// construction, and a new variant needs no second edit to be listed.
+macro_rules! app_data_locations {
+    ($($(#[$meta:meta])* $variant:ident,)*) => {
+        /// One file or directory under the app data home.
+        ///
+        /// The swept directories and families come first, in the order the
+        /// startup sweep visits them (its shared budget is spent in that
+        /// order), then the legacy folder-note directory, then the files.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        pub enum AppDataLocation {
+            $($(#[$meta])* $variant,)*
+        }
+
+        impl AppDataLocation {
+            /// Every location, in declaration order. Declared by the same
+            /// list as the enum, so it holds every variant exactly once.
+            pub const ALL: [Self; [$(stringify!($variant)),*].len()] = [$(Self::$variant),*];
+        }
+    };
+}
+
+app_data_locations! {
     /// The data home itself, which holds the top-level files.
     Root,
     /// Draft bodies and their manifest.
@@ -129,33 +149,6 @@ pub const FAMILY_SWEEP_ORDER: [AppDataLocation; 2] = [
 ];
 
 impl AppDataLocation {
-    /// Every location, in declaration order.
-    pub const ALL: [Self; 23] = [
-        Self::Root,
-        Self::DraftsDir,
-        Self::LocalHistoryDir,
-        Self::Bookmarks,
-        Self::DocumentNotes,
-        Self::FolderNotes,
-        Self::RecoveryQuarantine,
-        Self::ReplaceJournalDir,
-        Self::ReplaceJournalBodies,
-        Self::StyleSchemes,
-        Self::SetAside,
-        Self::FormatUpgradeBackups,
-        Self::LegacyFolderNotes,
-        Self::Workspaces,
-        Self::Session,
-        Self::DraftManifest,
-        Self::SavedSearches,
-        Self::SearchHistory,
-        Self::RecentDocuments,
-        Self::MigrationLedger,
-        Self::ReplaceJournalManifest,
-        Self::ReplaceCleanupMarker,
-        Self::RetiredReplaceBackup,
-    ];
-
     /// The location's path relative to the data home, `/`-separated; empty
     /// for [`Self::Root`].
     #[must_use]

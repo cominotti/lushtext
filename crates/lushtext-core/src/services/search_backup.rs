@@ -567,8 +567,9 @@ impl Protocol for ShrinkRun {
     }
 }
 
-/// Remove bodies no retained entry names: orphans a crash between a body and
-/// its entry, or between an entry's removal and its body's, left (design D9).
+/// Remove bodies no retained entry names and no entry file references:
+/// orphans a crash between a body and its entry, or between an entry's
+/// removal and its body's, left (design D9).
 fn remove_unlisted_bodies(journal_dir: &Path, retained: &HashSet<String>) {
     let bodies_dir = journal_dir.join(bodies_dir_name());
     let Ok(entries) = fs_tree::scan_directory(
@@ -587,6 +588,18 @@ fn remove_unlisted_bodies(journal_dir: &Path, retained: &HashSet<String>) {
         if entry.path.extension().and_then(OsStr::to_str) != Some(BODY_EXTENSION)
             || retained.contains(file_name)
         {
+            continue;
+        }
+        // A body is an orphan only once its entry is gone: an unlisted entry
+        // the shrink did not remove (its removal or its bounded scan failed
+        // to reach it) still references this body (design D9).
+        let Some(stem) = entry.path.file_stem().and_then(OsStr::to_str) else {
+            continue;
+        };
+        if !matches!(
+            fs_metadata::path_status(&journal_dir.join(format!("{stem}.json"))),
+            Ok(super::filesystem::types::PathStatus::Missing)
+        ) {
             continue;
         }
         if let Err(error) = fs_mutate::remove_file_if_exists(&entry.path) {
@@ -2140,6 +2153,44 @@ mod tests {
         assert!(
             fs_metadata::exists(&body_path(dir.path(), retired)),
             "a body whose entry could not be removed is kept"
+        );
+    }
+
+    /// D9 for the orphan-body cleanup itself: a body is an orphan only once
+    /// its entry is gone. An unlisted entry the shrink did not remove (its
+    /// entry scan failed, or stopped at `JOURNAL_SCAN_MAX_ENTRIES` before
+    /// reaching it) still references its body, so the cleanup keeps that
+    /// body and removes only the bodies with no entry at all.
+    #[test]
+    fn orphan_body_cleanup_keeps_a_body_whose_entry_is_still_there() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let unreached = Path::new("/tmp/a.rs");
+        let retained = Path::new("/tmp/b.rs");
+        let orphan = Path::new("/tmp/c.rs");
+        super::fixture::write_stream_journal(
+            dir.path(),
+            &[
+                (unreached, b"before a", b"after a"),
+                (retained, b"before b", b"after b"),
+                (orphan, b"before c", b"after c"),
+            ],
+        )
+        .expect("write the journal");
+        fs_mutate::remove_file_if_exists(&entry_path(dir.path(), orphan))
+            .expect("leave the body of c without an entry");
+        let retained_bodies = HashSet::from([body_file_name(retained)]);
+
+        remove_unlisted_bodies(&journal_dir(dir.path()), &retained_bodies);
+
+        assert!(fs_metadata::exists(&entry_path(dir.path(), unreached)));
+        assert!(
+            fs_metadata::exists(&body_path(dir.path(), unreached)),
+            "a body whose entry is still there is not an orphan"
+        );
+        assert!(fs_metadata::exists(&body_path(dir.path(), retained)));
+        assert!(
+            !fs_metadata::exists(&body_path(dir.path(), orphan)),
+            "a body with no entry is an orphan and is removed"
         );
     }
 

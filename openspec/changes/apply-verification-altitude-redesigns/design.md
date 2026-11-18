@@ -80,6 +80,60 @@ groups. It corrected these points in place:
   current (testing.md), so groups 5 and 3 land together after one smoke run.
   They stay separately described and separately revertible by hand.
 
+### Review (stage 4, 2026-11-18)
+
+An independent review of the implementation (`origin/main..05ecec02`) kept
+all six groups and fixed three findings in place, each failing-first:
+- **G1, the shrink fix was partial (should-fix, data safety).** The stage-3
+  fix kept the body of a retired entry whose *removal* failed, but the
+  orphan-body cleanup still deleted the body of any unlisted entry the shrink
+  never reached: its bounded entry scan stops at `JOURNAL_SCAN_MAX_ENTRIES`
+  and gives up on a scan error. Either case left an entry referencing a
+  missing body, the state D9 forbids (a load that reads such an entry
+  quarantines it as broken). The cleanup now
+  removes a body only when its entry file is confirmed missing
+  (`path_status` is `Missing`), which is D9's invariant stated directly; the
+  returned kept-body set stays as the cheap path for the common case. Test:
+  `orphan_body_cleanup_keeps_a_body_whose_entry_is_still_there`.
+- **G2, `ALL` was complete by convention, not construction (should-fix).**
+  The consumers' matches are exhaustive, but the sweep and the inventory
+  iterate `AppDataLocation::ALL`, so a variant left out of that array
+  compiled and was silently never swept, against the scenario "A new
+  durable-write directory is swept without editing the sweep". The enum and
+  `ALL` are now declared by one macro list, so `ALL` holds every variant by
+  construction.
+- **Mutation, two pre-existing survivors had a seam after all.**
+  `replace/apply.rs` 725 (`&&` to `||` in the output stage's admission) is
+  killed by a growing file `main` skipped, with one fake free-space value
+  between source-plus-reserve and output-plus-reserve:
+  `a_growing_file_main_skipped_needs_the_reserve_beyond_its_output`. 690
+  (`&&` to `||` in the cancelled test) is killed by a non-empty directory at
+  the next file's body path, planted from the previous file's after-pass-A
+  hook: `a_body_that_cannot_be_installed_skips_its_file_without_cancelling_the_run`.
+
+**Decided: the three remaining `process_file` survivors stay unexcluded.**
+The stage-3 handoff left them open. They are pre-existing on `main`; this
+change only re-indented their lines (`git diff -w` shows them unchanged).
+None is equivalent, so the triage policy (`docs/mutation-testing.md`) forbids
+silencing them with an exclusion:
+- 649 (`||` to `&&` in the pass-A facts check): a same-size change with a new
+  mtime between the facts and the end of pass A is caught by pass B instead,
+  under a different skip reason, which the user reads;
+- 689 (`||` to `&&`) and 691 (delete `!`): a cancel raised after the stream's
+  last check reports `NoChange` or `Failed` instead of `Cancelled` (stage 3
+  called 689 equivalent; it is not).
+
+Each needs code to run between two protocol actions of one file, which no
+test seam reaches and a new `*_for_test` setter must not add (the ceiling is
+174). The `drive` loop this change introduced is exactly that point: a
+before-action tap, which `verify-shell-conformance-against-proven-cores`
+adds for the shells it drives, kills all three (modify the target before
+`WriteBody` for 649; raise cancel and break the bodies directory before
+`WriteBody` for 689 and 691). They are recorded in the programme record's
+deferral inventory for that change. User experience first: killing them
+changes no behaviour a user sees today, and a wrong exclusion would hide a
+future regression of the skip reason or the cancel path.
+
 ### Measured baseline at 187c6299
 
 Line counts are from `wc -l`, and counts from `grep` over
@@ -853,4 +907,6 @@ explicitly re-deferred there.
 ## Open Questions
 
 None. The G3 cap (12 ticks) and G2's `recent-documents.json` question were
-decided in this revision, with the rationale above.
+decided in this revision, with the rationale above; the three unexcluded
+`process_file` survivors were decided in the stage-4 review ("Review
+(stage 4, 2026-11-18)").

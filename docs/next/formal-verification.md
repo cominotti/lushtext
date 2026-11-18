@@ -2747,9 +2747,28 @@ Both wait for it because of `durable_write` overlap; the facts are:
   apply closure kept its arms. The group also fixed a pre-existing shrink
   defect its characterization test found: the orphan-body cleanup removed a
   body whose entry the shrink had failed to remove, leaving that entry
-  referencing a missing body; the shrink now keeps it.
+  referencing a missing body; the shrink now keeps it. The stage-4 review
+  closed the rest of that defect class: an unlisted entry the bounded or
+  failed entry scan never reached kept its entry while the cleanup deleted
+  its body, so the orphan-body cleanup now removes a body only when its entry
+  file is confirmed missing (design, "Review (stage 4, 2026-11-18)").
 
 ## 4. Deferral inventory
+
+- **Three `replace/apply.rs::process_file` mutation survivors, for
+  `verify-shell-conformance-against-proven-cores`** (recorded 2026-11-18 by
+  the `apply-verification-altitude-redesigns` review). Pre-existing on
+  `main`, surfaced by that change's re-indentation, none equivalent, so none
+  is excluded: 649 (`||` to `&&` in the pass-A facts check, a same-size
+  change reported under pass B's skip reason), 689 (`||` to `&&`) and 691
+  (delete `!`) in the cancelled test (a cancel raised after the stream's last
+  check reported as `NoChange` or `Failed`). Each needs code between two
+  actions of one file's protocol, which no seam reaches and a new
+  `*_for_test` setter may not add. A before-action tap in `protocol_drive::drive`
+  kills all three: modify the target same-size before `WriteBody` (649);
+  raise cancel and break the bodies directory before `WriteBody` (689, 691).
+  The two other survivors of that group (690, 725) are killed by tests on
+  existing seams.
 
 - ~~`sliced-protected-install` (C3): the planner's whole-plan properties
   K1–K6, K8 and K9 are property-tested, not Kani-proved.~~ **Closed
