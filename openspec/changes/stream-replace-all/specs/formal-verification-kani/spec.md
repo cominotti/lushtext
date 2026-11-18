@@ -23,11 +23,12 @@ Kani shard `core-replace-stream` SHALL prove that, fed in chunks of 1 to 4 bytes
 - **THEN** the proof shows the UTF-8 verdict is the one-shot verdict
 
 ### Requirement: The Replace All engine's line logic is checked exhaustively over a bounded domain
-Because no Kani form of the engine fitted the shard margin (each was stopped in symbolic execution past 8 GiB and still growing, design D11, "Kani memory"), a unit test SHALL check the engine at every point of a bounded domain. At each point the chunked feed's outcome SHALL equal the whole feed's, and a replaced file's output, count and digests SHALL equal the whole feed's and the reference builder's.
+Because no Kani form of the engine that was tried fitted the shard margin (design D11, "Kani memory"), a unit test SHALL check the engine at every point of bounded domains. On a valid UTF-8 source, the chunked feed's outcome SHALL equal the whole feed's, and a replaced file's output, count and digests SHALL equal the whole feed's and the reference builder's. A source that is not valid UTF-8 SHALL never be replaced, at any chunk size.
 
 #### Scenario: The bounded domain
 - **WHEN** the check runs
-- **THEN** it covers every source of at most 4 characters over `a`, `b`, `\r`, `\n` and `é`, every edit set of at most two edits over small line and replacement tables, every chunk size, and an unlimited and a binding output limit
+- **THEN** it covers every source of at most 4 characters over `a`, `b`, `\r`, `\n` and `é`, every edit set of at most two edits over small line and replacement tables that include a recorded line holding `é`, every chunk size, and an unlimited and a binding output limit
+- **AND** each case the retired engine harness covered (two edits applied, the limit stopping a file, a stale line, an unterminated final line replaced across a seam, a cut character inside a replaced targeted line) is reached at least once
 
 #### Scenario: A CRLF split across chunks
 - **WHEN** a chunk boundary falls between the `\r` and `\n` of a targeted line
@@ -36,3 +37,8 @@ Because no Kani form of the engine fitted the shard margin (each was stopped in 
 #### Scenario: A mishandled seam is caught
 - **WHEN** a mutant of the engine drops the earlier part of a targeted line split across chunks
 - **THEN** the bounded check fails on the chunked feed's outcome
+
+#### Scenario: An invalid source is never replaced
+- **WHEN** the check feeds every source of at most 3 symbols over the valid alphabet plus the bytes `0x80`, `0xC3` and `0xFF`, with the same edit sets, chunk sizes and limits
+- **THEN** no source that is not valid UTF-8 is `Replaced` at any chunk size, it ends `NotUtf8`, `StaleLine` or `OutputLimitExceeded`, and with no edit and no limit it ends `NotUtf8`
+- **AND** a mutant whose end of stream skips the UTF-8 carry's final check fails the check

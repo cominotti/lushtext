@@ -252,6 +252,8 @@ REPLACE_PROTOCOL_LOCAL_PEAK_GIB = 3.0
 # (3.72 min, 3.42 GiB peak; utf8 seams 135.9 s, byte scan 6.5 s), rounded up.
 REPLACE_STREAM_LOCAL_MINUTES = 4.0
 REPLACE_STREAM_LOCAL_PEAK_GIB = 4.0
+# Placeholders, not measurements: stream-replace-all task 9.4's KANI_MEASURE
+# run on the final code replaces them with per-harness verification seconds.
 REPLACE_PROTOCOL_RUN_SECONDS = 60.0
 REPLACE_UNDO_SECONDS = 60.0
 REPLACE_SHRINK_SECONDS = 10.0
@@ -648,9 +650,9 @@ SHARDS: dict[str, Shard] = {
     ),
     # stream-replace-all: the Replace All per-file and undo protocols (design
     # D11, properties 1-5) and the stream's UTF-8 seams (the engine's line
-    # logic is checked exhaustively by a unit test instead: CBMC could not hold
-    # one engine run, design D11 "Kani memory"). Local figures until two
-    # kani.yml dispatches replace them.
+    # logic is checked exhaustively by a unit test instead: no engine form
+    # tried fitted the margin, design D11 "Kani memory"). Local figures until
+    # two kani.yml dispatches replace them.
     "core-replace-protocol": Shard(
         "lushtext-core",
         ("services::content_search::replace::protocol::kani_proofs::",),

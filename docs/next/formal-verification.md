@@ -2574,16 +2574,35 @@ engine was stopped in CBMC's symbolic execution while still growing: the
 four-byte forms past the 12 GiB runner margin, and a concrete-shape ladder
 down to one run over 2 symbolic bytes with one fixed edit and no sinks past
 8 GiB (8.47 GiB at 3.4 min). The probes are tabulated in the change's design
-D11, "Kani memory". The trace is
-dominated by slice-index and `copy_from_slice` failure paths and `memcmp`, so
-the cost is the engine's slicing under CBMC, not the harness's domain. The
-line logic's split independence is instead checked exhaustively over a
-bounded domain by a unit test (every source of at most 4 characters over
+D11, "Kani memory". Only the four-byte forms
+were measured past the margin. That the ladder and the no-sink run (stopped
+near 8.4–8.9 GiB) would not fit is an extrapolation from their growth. Step 2
+of the fit order (another solver) did not apply, because every probe was
+still in symbolic execution. The trace is dominated by slice-index and
+`copy_from_slice` failure paths and `memcmp`: 18,630 inlined slice-index
+failure paths for a 2-byte source. That is consistent with nested loop
+unrolling at the ladder's `unwind(6)`, about twice what a 2-byte source
+needs, and no probe lowered the unwind bound to the domain's need. The cost
+is the engine under CBMC, not the harness's sinks or comparisons.
+
+The line logic's split independence is instead checked exhaustively over a
+bounded domain by a unit test: every source of at most 4 characters over
 `a`, `b`, `\r`, `\n`, `é`, every edit set of at most two edits over small
-tables, every chunk size, two output limits; 7.5 s in a debug build), and
-sampled at scale by the property test against the reference builder. What
-this weakens: the property holds for the enumerated domain and is sampled
-beyond it, not proved for every byte value.
+tables, every chunk size and two output limits; it takes 7.5 s in a debug
+build. A property test samples larger inputs against the reference builder.
+
+What this weakens:
+- the property holds for the enumerated domain and is sampled beyond it,
+  not proved for every byte value;
+- "an invalid source is never replaced at any chunk size" was a property of
+  the retired whole-engine harness over arbitrary bytes. It is now the
+  carry's proof composed with the engine by reading the code. The change's
+  task 3.3c adds a bounded invalid-byte domain and a targeted line holding
+  `é` to the unit test.
+
+The seam harness's whole-source verdict over 8 bytes is the byte scan's,
+whose equality with `core::str::from_utf8` is proved only up to 4 bytes. The
+carry's own calls stay within 4 bytes there.
 
 **What `apply-verification-altitude-redesigns` and
 `verify-shell-conformance-against-proven-cores` build on once this merges.**
@@ -2829,10 +2848,14 @@ Both wait for it because of `durable_write` overlap; the facts are:
   first, and Verus is reopened with V2 only if that fails.
 - `stream-replace-all`: the Replace All stream engine's line logic is checked
   by a bounded exhaustive unit test, not Kani (section "Replace All protocol
-  and stream" above): one engine run over 2 symbolic bytes was already past
-  8 GiB and still growing when stopped, and no engine form fitted the 12 GiB
-  runner margin. The candidate follow-up is an altitude change, not
-  a bigger budget: split the line logic into a byte-step line cursor whose
-  chunked loop is a fold over single steps, so split independence holds by
-  construction and Kani proves the one-step machine. It is not queued; it
-  becomes worth a change if the engine's line handling changes again.
+  and stream" above). One engine run over 2 symbolic bytes was already past
+  8 GiB and still growing when stopped, and no engine form tried fitted the
+  12 GiB runner margin. The first probe to try on a reopen is cheap: the
+  2-byte ladder harness at a per-domain unwind (`unwind(3)`, or a per-loop
+  bound through the shard's `kani_flags`). The ladder ran at `unwind(6)`, and
+  its trace's call counts fit nested loop unrolling. The candidate follow-up
+  if that does not fit is an altitude change, not a bigger budget: split the
+  line logic into a byte-step line cursor whose chunked loop is a fold over
+  single steps, so split independence holds by construction and Kani proves
+  the one-step machine. It is not queued; it becomes worth a change if the
+  engine's line handling changes again.

@@ -143,9 +143,11 @@ an internal cap, a power of two; tasks 2.4 and 9.3 measure 256 KiB against
   without being buffered.
 - A **targeted** line is collected into a line buffer. That line is at most
   `MAX_SEARCH_MATCH_LINE_BYTES` long, because preview rows with truncated
-  lines are ineligible, so the buffer is bounded at 4 KiB plus one chunk
-  seam. The line is compared with `original_line` exactly as today, and an
-  edit applies only when the whole line matches.
+  lines are ineligible. The buffer refuses any byte past the longest
+  recorded line of its edits plus one (`\r`), so it holds at most 4 KiB plus
+  one byte; a longer line is stale without being buffered. The line is
+  compared with `original_line` exactly as today, and an edit applies only
+  when the whole line matches.
 - The output is the same bytes `build_replaced_text_reference` produces,
   including the final unterminated line, empty lines and CRLF.
 
@@ -746,12 +748,18 @@ job returns before it waits for the guard.
   whole source rejects (`utf8_seams_do_not_depend_on_the_chunk_size`), and the
   `cfg(kani)` byte scan it runs on equals `core::str::from_utf8` on every input
   of at most 4 bytes (`the_byte_scan_matches_core_from_utf8`). `simdutf8`'s
-  runtime-detected SIMD and `core::str::from_utf8`'s word-at-a-time fast path
-  are out of CBMC's reach, so the harness validates with the byte scan, which
-  the unit test `the_byte_scan_matches_simdutf8` ties to the production
-  validator on every sequence of class-edge bytes up to 5 long.
+  runtime-detected SIMD is out of CBMC's reach, and so is
+  `core::str::from_utf8` at the seam harness's 8 bytes, so the harness
+  validates with the byte scan, which the unit test
+  `the_byte_scan_matches_simdutf8` ties to the production validator on every
+  sequence of class-edge bytes up to 5 long. The seam harness's whole-source
+  verdict over 8 bytes is therefore the byte scan's: its equality with
+  `core::str::from_utf8` is proved up to 4 bytes and tested against
+  `simdutf8` up to 5 class-edge bytes, not proved at 8. Every chunk and
+  every carried sequence the harness validates is at most 4 bytes, so the
+  carry's own calls stay inside the proved domain.
 - **The engine's line logic is not a Kani proof** (see "Kani memory" below).
-  Its split independence is checked **exhaustively over a bounded domain** by
+  Its split independence is checked **exhaustively over bounded domains** by
   the unit test
   `the_engine_does_not_depend_on_its_chunk_size_over_a_bounded_domain`: every
   source of at most 4 characters over `a`, `b`, `\r`, `\n` and `é` (781
@@ -771,9 +779,35 @@ job returns before it waits for the guard.
   test `streaming_engine_matches_the_reference_at_every_chunk_size` samples
   larger inputs, chunk sizes 1 to 16, against the reference.
 
-Both shards are scheduled, and their runner budgets are measured once
-(`make check-kani-shards`). `core-replace-protocol` is gated on pull requests
-if its measured wall time is within the PR-gate budget of the shard table.
+  **Stage-2 review additions (task 3.3c).** The stage-1 domain has two gaps
+  that the retired engine harness `an_invalid_source_is_never_replaced`
+  (arbitrary bytes through the whole engine) used to close:
+  - every source is valid UTF-8, so no point sends an invalid source
+    through the engine; only the one example of
+    `the_engine_reports_a_stale_line_and_invalid_utf8_split_across_chunks`
+    does. Task 3.3c adds a second domain, every source of at most 3 symbols
+    over the five plus `0x80`, a lone `0xC3` and `0xFF`, with the same edit
+    sets, chunk sizes and limits: no point is `Replaced` unless the source is
+    valid UTF-8, an invalid source ends `NotUtf8`, `StaleLine` or
+    `OutputLimitExceeded` at every chunk size, and with no edit and no limit
+    it ends `NotUtf8` at every chunk size;
+  - no recorded line holds `é`, so a character cut by a seam is replaced
+    only on an untargeted line, and the collected-line path never sees a
+    cut character inside a line that matches. Task 3.3c adds a recorded line
+    with `é`.
+
+  Its coverage guard also counts every case the retired covers named (two
+  edits applied, the limit stopping a file, a stale line, an unterminated
+  final line replaced across a seam, a cut character inside a targeted
+  line, an invalid source split by a seam), so no part of the domain is
+  vacuous.
+
+Both shards are scheduled. Their runner budgets come from two `kani.yml`
+dispatches, the larger of the two (task 3.3b, `build.md`, "Shard gates and
+budgets"), and `make check-kani-shards` checks them against the margins.
+`core-replace-protocol` is gated on pull requests if its measured wall time
+is within the PR-gate budget of the shard table. The change adds harnesses,
+so it also owes `make proof-strength` for both oracle modules (task 9.4).
 
 #### Kani memory (stage-1 revision, 2026-11-17)
 
@@ -783,7 +817,9 @@ oracle) ran CBMC out of memory at the 16 GiB cap twice (13.63 GiB peak RSS,
 16.8 min, in symbolic execution). The CI margin is stricter than the local cap:
 `MAX_SHARD_PEAK_GIB` is 12 GiB and `MAX_SHARD_MINUTES` 25, summed over the
 shard. The revision fitted it by the runbook's order (split, then solver,
-then a recorded bound reduction), one probe at a time through
+then a recorded bound reduction). Step 2 did not apply: every engine probe
+was still in symbolic execution when it was stopped, before any solver ran,
+so a solver choice could not change its memory. The probes ran one at a time through
 `scripts/heavy.sh --mem 16G` in a source snapshot, each stopped once its CBMC
 passed 12 GiB (or 8 GiB in the last ladder), since a run past the margin is
 disqualified whatever it would have returned (handoff `runs.log` and
@@ -801,19 +837,34 @@ disqualified whatever it would have returned (handoff `runs.log` and
 | one engine run over 2 symbolic bytes, one fixed edit, **no sinks** (`io::sink`, no digests) | 8.47 GiB at 3.4 min | stopped |
 
 Every probe was stopped while still growing, so none shows where CBMC would
-have ended; what they show is that none fits the margin. The last row points
-at the engine itself under CBMC (its trace is dominated by slice-index and
-`copy_from_slice` failure paths and `memcmp`), not the harness's domain,
-sinks or comparisons, so no smaller bound keeps a property worth stating. The decision, step 3 of the fit order:
+have ended. The four-byte forms were past the 12 GiB margin when stopped.
+The ladder and the no-sink run were stopped near 8.4–8.9 GiB, under the
+margin, so that they do not fit is an extrapolation from their growth, not a
+measurement. The last row points at the engine itself under CBMC, not the
+harness's domain, sinks or comparisons: its trace is dominated by
+slice-index and `copy_from_slice` failure paths and `memcmp`, with 18,630
+inlined slice-index failure paths for a 2-byte source. That count fits
+nested loop unrolling: every ladder harness ran at `unwind(6)`, although a
+2-byte source needs about 3. No probe lowered the unwind bound to the
+domain's need. So the record does not show that no smaller bound keeps a
+property worth stating; it shows that none of the forms tried fitted, and
+that the next probe to try is a per-domain unwind (deferral inventory). The decision, step 3 of the fit order:
 keep the two UTF-8 harnesses (3.72 min and 3.42 GiB in one local shard run; the
 table records 4.0 min / 4.0 GiB pending dispatch), and move the line logic to
 the bounded exhaustive unit test above, which checks every point of a larger
 domain than any Kani form could hold and compares with the reference builder
-as well as the whole feed. What this weakens: the line logic's split
-independence is established for that enumerated domain and sampled beyond
-it, not for every byte value; the byte classes the line logic distinguishes
-(`\n`, `\r`, equality with the recorded line, a multi-byte character cut by a
-seam) are all in the alphabet. The `cfg(kani)` `find_newline` byte loop and
+as well as the whole feed. What this weakens:
+- the line logic's split independence is established for the enumerated
+  domains and sampled beyond them, not proved for every byte value;
+- the byte classes the line logic distinguishes (`\n`, `\r`, equality with
+  the recorded line, a multi-byte character cut by a seam, inside a targeted
+  line once task 3.3c lands) are all in the alphabet;
+- "an invalid source is never replaced, at any chunk size" was a Kani
+  property of the retired engine harness, over 5 arbitrary bytes. It is now
+  the carry's proof composed by reading the code (`feed` checks the carry
+  before the line logic sees a chunk, `finish_outcome` checks
+  `Utf8Carry::finish` before any `Replaced`), plus task 3.3c's bounded
+  invalid-byte domain. The `cfg(kani)` `find_newline` byte loop and
 the harness-only line buffer were removed with it, so the engine has no
 `cfg(kani)` code left. Proving the line logic at another altitude (a
 byte-step line cursor whose split independence holds by construction) is a
@@ -959,15 +1010,33 @@ proves each successor kills a logged mutant of the behaviour it guards.
 test** (decision 21 rests on the U1 reasoning and the Undo harness only).
 Task 4.11, failing-first through a removal fault seam.
 
-**R6. Commit plan.** The smokes fingerprint file contents under
-`crates/lushtext-core/src/ui/`, `crates/lushtext/tests/widget/`,
-`resources/ui/`, `resources/style/` and a list of docs (`docs/accessibility*`,
-`docs/automation*`, `docs/end-user-coverage.md`). So the remaining work lands
-non-visual first, in groups that touch none of those paths (G1 to G4 in
-`tasks.md`), and every fingerprinted edit lands in **one** visual commit (G5),
-with the three smokes once on its final tree. Measurement verdicts come after
-G5, on the final code; a verdict failure that needs a fingerprinted edit
-repeats the smokes once more.
+**R6. Commit plan.** The smokes fingerprint file contents. The source of
+truth is two scripts: `scripts/accessibility_source_fingerprint.py`
+(`RELEVANT_PREFIXES` and `RELEVANT_EXACT_PATHS`) and
+`scripts/check-visual-proof-policy.py` (`VISUAL_SENSITIVE_PREFIXES`,
+`VISUAL_SENSITIVE_EXACT`, `VISUAL_SENSITIVE_SUFFIXES`). At `c16d6fdc` they
+cover:
+- the prefixes `crates/lushtext-core/src/ui/`,
+  `crates/lushtext/tests/widget/`, `resources/ui/`, `resources/style/`,
+  `crates/cargo-gtk-proof/src/` and `scripts/visual-geometry-scenarios/`;
+- every `.blp`, `.css` and `.ui` file;
+- `crates/lushtext-core/src/model/automation.rs` and
+  `scripts/lushtext-automation.py`;
+- the smoke runners and helpers (`scripts/run-accessibility-smoke.sh`,
+  `scripts/run-visual-smoke.sh`, `scripts/smoke_warning_classifiers.py`,
+  `scripts/accessibility_warning_allowlist.py`, the visual-geometry scripts
+  and the gtk-agentic-debugging AT-SPI scripts);
+- `docs/accessibility*.md`, `docs/automation*.md` and
+  `docs/end-user-coverage.md`.
+
+So the remaining work lands non-visual first, in groups that touch none of
+those paths (G1 to G4 in `tasks.md`). Every fingerprinted edit lands in
+**one** visual commit (G5), with the three smokes run once on its final tree.
+A G1–G4 task that turns out to need a fingerprinted path moves that edit to
+G5. For example, if G3's crash smoke needed a new automation-client command
+or snapshot field, that edit would move. Measurement verdicts come after G5,
+on the final code. A verdict failure that needs a fingerprinted edit repeats
+the smokes once more.
 
 **R7. What the waiting formal-verification changes build on.** Recorded in
 `docs/next/formal-verification.md`, "Replace All protocol and stream
@@ -986,3 +1055,58 @@ peaks, wall times and the last probe harness stay in `runs.log` and
 `kani-probes-summary.txt`. The task rules lost the stale
 `taskset -c 8-23` pin, the retry-until-quiet verdict rule and the PR #99
 exclusion.
+
+## Stage-2 review of the revision (2026-11-17)
+
+An independent review of the stage-1 revision checked it against the code,
+the rules, the Kani shard table and the handoff's probe logs. It kept every
+R1–R8 decision, including the bound reduction (R2). Its corrections:
+
+- **S1. The bound reduction's record states only what was measured** (D11,
+  "Kani memory"):
+  - only the four-byte forms were measured past 12 GiB; that the ladder and
+    the no-sink run would not fit is an extrapolation;
+  - step 2 of the fit order did not apply, because every probe was still in
+    symbolic execution, before any solver ran;
+  - the ladder ran at `unwind(6)` for sources that need about 3, and its
+    trace fits nested loop unrolling. So a per-domain unwind is the first
+    probe of the deferral entry. The record no longer claims that no smaller
+    bound keeps a property worth stating.
+
+  The same wording is now in the delta spec, the programme record and the
+  `kani-shards.py` comment.
+- **S2. The property that left with the engine harness is restored as a
+  bounded check** (task 3.3c, delta scenario "An invalid source is never
+  replaced"). The retired harness `an_invalid_source_is_never_replaced` ran
+  arbitrary bytes through the whole engine. The stage-1 unit domain is
+  valid UTF-8 only, and its recorded lines never hold `é`. Replace All
+  writes users' files, so "a non-UTF-8 file is never rewritten, however it is
+  chunked" keeps a checked statement. The test also gains a coverage count
+  for each retired cover, and `ReplaceStream`'s rustdoc stops promising more
+  than the checks cover.
+- **S3. The commit plan names every fingerprinted path** (R6). The two gate
+  scripts also fingerprint `model/automation.rs`,
+  `scripts/lushtext-automation.py`, the smoke runners and helpers,
+  `crates/cargo-gtk-proof/src/`, `scripts/visual-geometry-scenarios/` and
+  every `.blp`, `.css` and `.ui` file. A G1–G4 edit that needs one of them
+  moves to G5.
+- **S4. The chunk-size verdict holds up no implementation task** (task 2.4).
+  `parallel-agent-work.md` says a queued verdict never holds up
+  implementation, and `stream.rs` is not fingerprinted. So G5 does not wait
+  for part A. A size other than the shipped 1 MiB lands in its own commit
+  whenever part A reports, and parts B and C and the memory rounds run on a
+  tree with both.
+- **S5. A path-keyed gate names a missing test** (task 4.10).
+  `scripts/run-performance-smoke.sh`'s `replace_undo_workflows` filter runs
+  `parallel_undo_operations_consume_only_their_own_target_hooks`, which the
+  branch no longer has, so that lane fails as stale. The task restores the
+  test under that name with its evidence label, or re-keys the script, and
+  runs the filter.
+- **S6. Proof strength is owed** (task 9.4). The change adds harnesses, so
+  `make proof-strength` runs once for each of the two oracle modules.
+  `core-replace-protocol`'s final measured run also replaces the placeholder
+  oracle seconds (60, 60 and 10).
+- **S7. The dispatch step names its exception** (task 3.3b): the stage that
+  owns the merge watches its own `kani.yml` runs under
+  `parallel-agent-work.md`'s CI-evidence exception, before it takes
+  `MERGE-LOCK`.

@@ -46,24 +46,36 @@
 
 ## Commit plan (stage-1 revision, design R6)
 
-The three smokes fingerprint every file under `crates/lushtext-core/src/ui/`,
-`crates/lushtext/tests/widget/`, `resources/ui/` and `resources/style/`, and
-`docs/accessibility*.md`, `docs/automation*.md` and
-`docs/end-user-coverage.md`. The remaining work lands in this order; G1 to G4
-touch none of those paths, and G5 is the one commit that does.
+The three smokes fingerprint the paths listed in design R6. The source of
+truth is `scripts/accessibility_source_fingerprint.py` and
+`scripts/check-visual-proof-policy.py`. Besides the `ui/`, widget-test,
+`resources/ui/` and `resources/style/` prefixes and the accessibility,
+automation and end-user-coverage docs, they include:
+- `model/automation.rs` and `scripts/lushtext-automation.py`;
+- `crates/cargo-gtk-proof/src/` and `scripts/visual-geometry-scenarios/`;
+- the smoke runner and helper scripts;
+- every `.blp`, `.css` and `.ui` file.
+
+The remaining work lands in this order. G1 to G4 touch none of those paths,
+and G5 is the one commit that does. A G1–G4 task that needs a fingerprinted
+path moves that edit to G5.
 
 - **G0 (done in stage 1):** merge of `origin/main` (`03df8bd8`), the Kani
   redesign and the bounded exhaustive engine test (3.3, 3.3a), and this
   re-plan.
-- **G1, service data safety:** 3.2a, 3.5a, 3.5b, 3.6, 4.3, 4.6, 4.9 (service
-  tests), 4.10, 4.11.
+- **G1, service data safety:** 3.2a, 3.3c, 3.5a, 3.5b, 3.6, 4.3, 4.6, 4.9
+  (service tests), 4.10 (with the performance-smoke re-key), 4.11.
 - **G2, GTK axioms:** 1.3 (`crates/gtk-lush/axioms/`, the ledger in
   `docs/next/formal-verification.md` and the skill's ledger reference).
 - **G3, crash smoke:** 7.3's driver and lane (`scripts/crash-recovery-smoke-driver.py`);
   its `docs/end-user-coverage.md` line waits for G5.
 - **G4, measurement harnesses:** the branch-side M9 test and the 2.4/9.3
   timing binaries (services and benches only), so the queue entries can turn
-  `READY`; once part A reports, 2.4's chunk constant in its own commit.
+  `READY`. G5 does not wait for part A (`parallel-agent-work.md`: a queued
+  verdict does not hold up implementation). If part A picks a size other
+  than the shipped 1 MiB, the constant changes in its own commit, whenever
+  part A reports. `stream.rs` is not fingerprinted, so that commit never
+  repeats the smokes.
 - **G5, the visual commit:** 4.9 (widget tests), 5.2, 5.4, 5.5a, 5.6, 6.2,
   6.3, 8.2 and every fingerprinted doc of 8.1/8.5. Run `make
   blueprint-generate`, `make check-blueprint`, `make lint-blueprint`, the
@@ -156,9 +168,12 @@ touch none of those paths, and G5 is the one commit that does.
   `docs/workflow-readability-matrix.md`, 174 since decision 12, with its
   reason), turns part A of the queued entry
   "stream-replace-all: timing verdicts" to `READY <sha>`, and the
-  coordinator runs it. The constant lands in its own non-visual commit right
-  after part A reports and before G5; part B and the memory rounds of 4.8
-  and 9.2 run only on a tree that has it.
+  coordinator runs it. Part A is a verdict on the shipped 1 MiB and holds up
+  no implementation task. If it picks another size, the constant changes in
+  its own non-visual commit, before or after G5. Parts B and C and the memory
+  rounds of 4.8 and 9.2 run only on a tree that has both G5 and the chosen
+  constant. When the implementation stage turns part C `READY`, it adds that
+  condition to part C's line in the queue entry.
 - [x] 2.5 Failing-first unit tests for `NotUtf8` at a chunk seam, for a
   targeted line split across three chunks, and for a non-targeted 64 MiB line
   that is never buffered (allocation evidence through
@@ -201,8 +216,42 @@ touch none of those paths, and G5 is the one commit that does.
   (`build.md`, "Shard gates and budgets"), replacing both shards' pending
   local figures, larger of the two. Gate `core-replace-protocol` on pull
   requests only if it fits the PR budget in the shard table. This is the
-  change's one CI-evidence step and is done by the stage that owns the
-  merge.
+  change's one CI-evidence step. The stage that owns the merge does it,
+  under the CI-evidence exception of `parallel-agent-work.md`, "Merging".
+  That stage waits with repeated foreground
+  `timeout 540 gh run watch <id> --exit-status` calls, before it takes
+  `MERGE-LOCK`, never while holding it. Without these figures the archive
+  commit fails its hook (`PENDING DISPATCH (owed by stream-replace-all)`).
+- [ ] 3.3c (group G1; stage-2 review, design D11) Close the bounded check's
+  two gaps, which the retired engine harness `an_invalid_source_is_never_replaced`
+  used to cover:
+  - **Invalid sources.** Add a second domain: every source of at most 3
+    symbols over `a`, `b`, `\r`, `\n`, `é`, `0x80`, a lone `0xC3` and `0xFF`
+    (as bytes), with the same edit sets, every chunk size and both limits.
+    No point is `Replaced` unless the source is valid UTF-8. An invalid
+    source ends `NotUtf8`, `StaleLine` or `OutputLimitExceeded` at every
+    chunk size. With no edit and no limit it ends `NotUtf8` at every chunk
+    size.
+  - **A cut character in a targeted line.** Add a recorded line holding `é`
+    (for example `aé`) to the edit tables.
+  - **Coverage.** The coverage guard asserts a positive count for each case
+    the retired covers named:
+    - two edits applied;
+    - the limit stopping a file;
+    - a stale line;
+    - an unterminated final line replaced across a seam;
+    - a cut character inside a targeted line that is replaced;
+    - an invalid source split by a seam.
+  - **Run time.** The whole check stays under about 15 s in a debug build.
+    If it does not, shrink the invalid-byte domain first, and record the
+    domain in design D11 and the test's doc comment.
+  - **Rustdoc.** `ReplaceStream`'s rustdoc names the domains its checks
+    cover, instead of the unconditional "at every chunk size"
+    (`testing.md`: a rustdoc promise never claims more than was proved or
+    checked).
+  - **Mutant.** Log a mutant in `failing-first.log` that fails the new
+    domain: `finish_outcome` skips the `Utf8Carry::finish` check, so a
+    source that ends inside a sequence is replaced.
 - [x] 3.4 `services/search_backup.rs`:
   - the `replace-all-undo-stream-entry` kind;
   - raw `*.body` files in `replace-backup-journal/bodies/`, written with the
@@ -352,6 +401,19 @@ touch none of those paths, and G5 is the one commit that does.
   `replaced_capacity`, `line_spans`, the inline `replace_undo_entry`) map to
   the stream-engine tests, the bounded check of 3.3a and the reference
   builder's own tests; the record says which.
+
+  **A path-keyed gate names one of the 48** (`testing.md`, "Path-keyed
+  gates"). `scripts/run-performance-smoke.sh`'s `replace_undo_workflows`
+  filter runs
+  `services::content_search::replace::tests::parallel_undo_operations_consume_only_their_own_target_hooks`
+  and greps `replace-undo-hook-isolation-evidence`. On the branch that test
+  does not exist, so `smoke_assert_ran` fails the lane ("its filter is
+  stale"). Restore the test under that name, emitting the same evidence
+  label, or re-key the script and `docs/end-user-coverage.md` (G5). Prove
+  it with
+  `scripts/heavy.sh -- scripts/run-performance-smoke.sh --filter replace_undo_workflows`.
+  Grep `scripts/`, `.github/`, `Makefile`, `.cargo/` and `docs/` for every
+  other successor name that changes.
 - [ ] 4.11 Failing-first (decision 21): a cancelled file whose entry removal,
   then whose body removal, fails through a per-target fault seam. The target
   keeps its original bytes, the journal stays active with that entry and its
@@ -565,9 +627,24 @@ touch none of those paths, and G5 is the one commit that does.
   - `make check`;
   - `make test`, with the widget shards (CI parity);
   - property tests and fuzz corpus replay;
-  - `make kani KANI_SHARD=core-replace-protocol` once and detached on the
-    final code (`core-replace-stream`'s inputs were final in stage 1 and it
-    ran then; rerun it only if `replace/stream/utf8.rs` changes);
+  - `make kani KANI_SHARD=core-replace-protocol KANI_MEASURE=<handoff>/kani-protocol-final.json`
+    once and detached on the final code (`core-replace-stream`'s inputs were final in
+    stage 1 and it ran then; rerun it only if `replace/stream/utf8.rs`
+    changes). Its per-harness verification seconds replace the placeholder
+    `REPLACE_PROTOCOL_RUN_SECONDS`, `REPLACE_UNDO_SECONDS` and
+    `REPLACE_SHRINK_SECONDS` (60, 60 and 10) in `scripts/kani-shards.py`'s
+    `ORACLES`;
+  - `make proof-strength` (`verification-runs.md`, "Proof strength": the
+    change adds harnesses) for
+    `PROOF_STRENGTH_MODULE=crates/lushtext-core/src/services/content_search/replace/protocol.rs`
+    and for `…/replace/stream/utf8.rs`, each once, detached
+    (`setsid nohup scripts/heavy.sh -- make proof-strength …`). Shard the
+    Kani arm only if its peak per CBMC fits. Survivors are triaged and
+    recorded in `docs/next/formal-verification.md`'s section for this
+    change. A mutant of the `cfg(not(kani))` `simdutf8` path is expected to
+    survive the Kani arm, and the tests arm must kill it;
+  - `scripts/run-performance-smoke.sh --filter replace_undo_workflows` through
+    `heavy.sh` (task 4.10's re-key);
   - `make crash-recovery-smoke`, `make accessibility-smoke`,
     `make gtk-axioms` and `make check-gtk-axioms`.
 
