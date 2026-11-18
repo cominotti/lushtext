@@ -2568,6 +2568,32 @@ fn no_loss_a_small_file_whose_output_grows_past_10_mib_is_replaced_in_the_second
     assert!(fixture::read_text(&grows).starts_with("ggg"));
 }
 
+/// The first pass takes a file of exactly 10 MiB, the boundary itself; only a
+/// file past it waits for the second pass. With a payload that holds one of
+/// the two, the 10 MiB file wins although a 10 MiB + 1 byte file comes first
+/// in path order.
+#[test]
+fn no_loss_a_file_of_exactly_10_mib_is_replaced_in_the_first_pass() {
+    let dir = tempdir().expect("tempdir");
+    let past = sized(dir.path(), "a-past.txt", 10 * MIB + 1);
+    let exact = sized(dir.path(), "b-exact.txt", 10 * MIB);
+    // Each charges its source plus its output, about 20 MiB: 21 MiB holds
+    // one of them.
+    let (outcome, _journal) = apply_with_free(
+        &needle_to_thread(&[&past, &exact]),
+        LITTLE_FREE,
+        Some(21 * 1024 * 1024),
+    );
+    assert!(
+        outcome.undo_backup.contains_key(&exact),
+        "{:?}",
+        outcome.skip_report
+    );
+    assert!(!outcome.undo_backup.contains_key(&past));
+    assert!(fixture::read_text(&exact).starts_with("thread\n"));
+    assert!(fixture::read_text(&past).starts_with("needle\n"));
+}
+
 /// `main`'s test, end to end: an 11 MiB file first in path order, two 1 MiB
 /// files after it and a 24 MiB payload. `main` replaced the two small files
 /// in its first pass and then had no room for the large one; with little free
@@ -2812,4 +2838,80 @@ fn undo_in_a_later_launch_rearms_the_manifest_for_this_launch() {
         (Some(u64::from(current.pid)), Some(u64::from(current.nonce))),
         "the later launch's Undo owns the journal it restores through"
     );
+}
+
+/// A file `main` did not admit keeps the reserve on the target filesystem
+/// for its *output*: with free space enough for its source plus the reserve
+/// but not for its larger output plus the reserve, it is skipped for disk
+/// space and left alone, although the journal filesystem keeps the reserve.
+#[test]
+fn a_growing_file_main_skipped_needs_the_reserve_beyond_its_output() {
+    let dir = tempdir().expect("tempdir");
+    // 17 MiB is past `main`'s 16 MiB per-file limit: never waived.
+    let large = sized(dir.path(), "a-large.txt", 17 * MIB);
+    let growth = "x".repeat(1024);
+    let journal = tempdir().expect("journal");
+    let source_len = 17 * 1024 * 1024;
+    // Enough for the source and the reserve, not for the output and the
+    // reserve: the two admission checks of the output stage disagree.
+    let _free =
+        fs_metadata::fake_free_space_for_test(REPLACE_DISK_RESERVE_BYTES + source_len + 512);
+    let outcome = apply_replacements(
+        &[make_replacement(&large, 1, "needle", &growth, 0..6)],
+        &HashSet::new(),
+        &AtomicBool::new(false),
+        journal.path(),
+    )
+    .expect("a skipped file is not a failed run");
+    assert!(outcome.undo_backup.is_empty());
+    assert_eq!(
+        outcome
+            .skip_report
+            .count(ReplaceSkipReason::NotEnoughDiskSpace),
+        1,
+        "{:?}",
+        outcome.skip_report
+    );
+    assert!(fixture::read_text(&large).starts_with("needle\n"));
+}
+
+/// A pass A whose body cannot be renamed into place (here a non-empty
+/// directory occupies the body's path) fails before rename with no stop
+/// reason and no cancel: the file is skipped as an undo-journal failure, not
+/// treated as a cancelled run, and the files before it stay replaced.
+#[test]
+fn a_body_that_cannot_be_installed_skips_its_file_without_cancelling_the_run() {
+    let dir = tempdir().expect("tempdir");
+    let first = dir.path().join("a-first.txt");
+    let second = dir.path().join("b-second.txt");
+    fixture::write_text(&first, "needle\n");
+    fixture::write_text(&second, "needle\n");
+    let journal = tempdir().expect("journal");
+    let blocked_body = search_backup::body_path(journal.path(), &second);
+    register_after_pass_a_hook_for_test(&first, move |_| {
+        fixture::create_dir_all(&blocked_body.join("occupied"));
+    });
+    let _free = fs_metadata::fake_free_space_for_test(AMPLE_FREE);
+    let outcome = apply_replacements(
+        &[
+            make_replacement(&first, 1, "needle", "thread", 0..6),
+            make_replacement(&second, 1, "needle", "thread", 0..6),
+        ],
+        &HashSet::new(),
+        &AtomicBool::new(false),
+        journal.path(),
+    )
+    .expect("a body failure is a skip, not a cancelled run");
+    assert_eq!(fixture::read_text(&first), "thread\n");
+    assert_eq!(fixture::read_text(&second), "needle\n");
+    assert_eq!(
+        outcome
+            .skip_report
+            .count(ReplaceSkipReason::UndoJournalFailed),
+        1,
+        "{:?}",
+        outcome.skip_report
+    );
+    assert!(outcome.undo_backup.contains_key(&first));
+    assert!(!outcome.undo_backup.contains_key(&second));
 }

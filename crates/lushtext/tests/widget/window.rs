@@ -8566,6 +8566,193 @@ fn test_a_failed_set_aside_copy_keeps_autosave_off_the_unshown_draft() {
     });
 }
 
+/// A window holding one unrestored recovery body whose set-aside copy keeps
+/// failing (a regular file where the set-aside directory belongs), after the
+/// first failure was recorded. The real 5 s autosave timer is stopped, so the
+/// test's `autosave_tick_for_test` calls are the only timer ticks.
+fn window_with_a_failing_unrestored_copy() -> (LushtextWindow, LushtextEditorPage, String) {
+    set_first_dirty_autosave_delay_for_test(60_000);
+    set_draft_restore_delay_for_test(300);
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    wait_for_startup_data_flow(&window);
+    if let Some(source) = window.imp().drafts.autosave_source_id.take() {
+        source.remove();
+    }
+    let editor = active_editor(&window);
+    let draft_id = editor.draft_id().expect("draft id");
+    let data_dir = json_store::data_dir();
+    let entry = DraftEntry {
+        draft_id: draft_id.clone(),
+        original_path: None,
+        original_mtime_secs: None,
+        saved_at_secs: 1_700_000_777,
+    };
+    draft_service::fixture::write_body(&data_dir, &draft_id, "only copy of earlier work")
+        .expect("write recovery body");
+    window.imp().drafts.manifest.borrow_mut().upsert(entry);
+    draft_service::save_manifest(&data_dir, &window.imp().drafts.manifest.borrow())
+        .expect("persist recovery manifest");
+    fixture::write_text(&draft_service::set_aside_dir(&data_dir), "not a directory");
+
+    window.check_draft_by_id(&editor, &draft_id);
+    editor.buffer().set_text("typed before the restore landed");
+    editor.buffer().set_modified(true);
+    wait_until(Duration::from_secs(10), || {
+        unrestored_copy_failures(&window, &draft_id) == Some(1)
+    });
+    (window, editor, draft_id)
+}
+
+/// The failed attempts recorded for `draft_id`'s pending copy retry, or `None`
+/// while an attempt is in flight (or when no retry is pending).
+fn unrestored_copy_failures(window: &LushtextWindow, draft_id: &str) -> Option<u32> {
+    window
+        .draft_evidence()
+        .unrestored_copy_failures
+        .iter()
+        .find(|(id, _)| id == draft_id)
+        .map(|(_, failures)| *failures)
+}
+
+/// Wait until no copy attempt is in flight and the autosave lane is idle.
+fn wait_for_unrestored_copy_settled(window: &LushtextWindow, draft_id: &str) {
+    wait_until(Duration::from_secs(10), || {
+        let evidence = window.draft_evidence();
+        unrestored_copy_failures(window, draft_id).is_some()
+            && !evidence.autosave_inflight
+            && !evidence.mutation_inflight
+            && !evidence.first_dirty_timer_pending
+    });
+}
+
+/// A set-aside copy that keeps failing is retried with exponential backoff
+/// on timer ticks, capped at 12 ticks: counted from the tick at which the
+/// first failure was recorded, attempts happen at ticks 1, 3, 7, 15 and 27
+/// and at no other tick, and the id stays held throughout.
+#[test]
+fn test_a_failing_unrestored_copy_is_retried_with_capped_backoff() {
+    ensure_gtk_init();
+    let _reset = DraftPipelinePolicyReset;
+    let _delay_reset = FirstDirtyAutosaveDelayReset;
+    let _restore_reset = RestoreDelayReset;
+    let (window, _editor, draft_id) = window_with_a_failing_unrestored_copy();
+
+    let mut attempts = Vec::new();
+    for tick in 1..=30u32 {
+        let before = unrestored_copy_failures(&window, &draft_id).expect("a pending retry");
+        window.autosave_tick_for_test();
+        wait_for_unrestored_copy_settled(&window, &draft_id);
+        if unrestored_copy_failures(&window, &draft_id) != Some(before) {
+            attempts.push(tick);
+        }
+        assert_eq!(
+            window.draft_evidence().restore_held_draft_ids,
+            1,
+            "a failed copy keeps the restore hold at tick {tick}"
+        );
+    }
+    assert_eq!(attempts, vec![1, 3, 7, 15, 27]);
+}
+
+/// Only the periodic timer retries a failed copy: an autosave pass started
+/// by the first-dirty debounce, and the pending rerun that follows it,
+/// attempt no copy.
+#[test]
+fn test_non_timer_autosave_passes_do_not_retry_an_unrestored_copy() {
+    ensure_gtk_init();
+    let _reset = DraftPipelinePolicyReset;
+    let _delay_reset = FirstDirtyAutosaveDelayReset;
+    let _restore_reset = RestoreDelayReset;
+    let (window, editor, draft_id) = window_with_a_failing_unrestored_copy();
+    let before = window.draft_evidence();
+
+    // A second tab's first edit arms the first-dirty debounce. Its pass meets
+    // the held id, which marks a rerun pending, and the rerun runs when the
+    // pass finishes: two autosave passes, neither started by the timer.
+    set_first_dirty_autosave_delay_for_test(20);
+    window.new_tab();
+    let other = active_editor(&window);
+    assert_ne!(other.draft_id(), editor.draft_id());
+    other.buffer().set_text("another tab's edits");
+    other.buffer().set_modified(true);
+    wait_until(Duration::from_secs(10), || !other.draft_dirty());
+    wait_for_unrestored_copy_settled(&window, &draft_id);
+
+    let after = window.draft_evidence();
+    assert_eq!(
+        after.unrestored_copy_failures, before.unrestored_copy_failures,
+        "no non-timer pass attempted the copy"
+    );
+    assert_eq!(
+        after.unrestored_copy_next_due_ticks, before.unrestored_copy_next_due_ticks,
+        "no non-timer pass moved the retry's due tick"
+    );
+    assert_eq!(after.autosave_timer_ticks, before.autosave_timer_ticks);
+    assert_eq!(after.restore_held_draft_ids, 1);
+}
+
+/// A copy that succeeds on a backed-off retry releases the hold and
+/// publishes where the earlier work was kept exactly once.
+#[test]
+fn test_an_unrestored_copy_that_succeeds_after_backoff_releases_the_hold_once() {
+    ensure_gtk_init();
+    let _reset = DraftPipelinePolicyReset;
+    let _delay_reset = FirstDirtyAutosaveDelayReset;
+    let _restore_reset = RestoreDelayReset;
+    let (window, _editor, draft_id) = window_with_a_failing_unrestored_copy();
+    let data_dir = json_store::data_dir();
+    let set_aside_dir = draft_service::set_aside_dir(&data_dir);
+    let ticks = window.draft_evidence().autosave_timer_ticks;
+
+    // Tick 1 retries and fails again; the next attempt is due at tick 3.
+    window.autosave_tick_for_test();
+    wait_for_unrestored_copy_settled(&window, &draft_id);
+    assert_eq!(unrestored_copy_failures(&window, &draft_id), Some(2));
+    assert_eq!(
+        window.draft_evidence().unrestored_copy_next_due_ticks,
+        vec![(draft_id.clone(), ticks + 3)]
+    );
+
+    fs_mutate::remove_file_if_exists(&set_aside_dir).expect("unblock the set-aside area");
+    // Tick 2 is inside the backoff: the cause has cleared, nothing is tried.
+    window.autosave_tick_for_test();
+    wait_for_unrestored_copy_settled(&window, &draft_id);
+    assert_eq!(window.draft_evidence().restore_held_draft_ids, 1);
+    let announced = notification_evidence(&window).announcements.status_lane;
+
+    // Tick 3 is due: the copy lands, the hold goes, and the outcome is
+    // published once.
+    window.autosave_tick_for_test();
+    let set_aside = set_aside_dir.join(format!("{draft_id}.1700000777.draft"));
+    wait_until(Duration::from_secs(10), || {
+        let evidence = window.draft_evidence();
+        evidence.restore_held_draft_ids == 0 && evidence.unrestored_copy_retries == 0
+    });
+    fixture::assert_text(&set_aside, "only copy of earlier work");
+    assert_eq!(
+        notification_evidence(&window).announcements.status_lane,
+        announced + 1,
+        "the preserved outcome is published once"
+    );
+    for _ in 0..3 {
+        window.autosave_tick_for_test();
+        wait_until(Duration::from_secs(10), || {
+            let evidence = window.draft_evidence();
+            !evidence.autosave_inflight && !evidence.mutation_inflight
+        });
+    }
+    let evidence = window.draft_evidence();
+    assert_eq!(evidence.unrestored_copy_retries, 0);
+    assert!(evidence.unrestored_copy_next_due_ticks.is_empty());
+    assert_eq!(
+        notification_evidence(&window).announcements.status_lane,
+        announced + 1,
+        "later ticks publish nothing more"
+    );
+}
+
 /// Register a recovery draft for `path` both on disk and in the window's
 /// manifest copy, as a restored session would have left it.
 fn seed_registered_recovery_draft(
@@ -9250,7 +9437,7 @@ fn test_new_file_backed_drafts_are_registered_before_their_first_body_write() {
 
     // The batch commit fails, as a crash between the body writes and the
     // commit would leave it.
-    fail_next_draft_mutations_for_test(false, true, false);
+    fail_next_draft_mutations_for_test(false, true, false, false);
     window.autosave_tick_for_test();
     wait_until(Duration::from_secs(5), || {
         !window.draft_evidence().autosave_inflight
@@ -9276,6 +9463,205 @@ fn test_new_file_backed_drafts_are_registered_before_their_first_body_write() {
             ))
         );
     }
+}
+
+/// Open a file-backed document in `window` and give it unsaved edits.
+fn edit_new_file_backed_document(
+    window: &LushtextWindow,
+    dir: &std::path::Path,
+    name: &str,
+    text: &str,
+) -> (PathBuf, LushtextEditorPage) {
+    let path = dir.join(name);
+    fixture::write_text(&path, "on disk\n");
+    window.open_document(&path);
+    wait_until(Duration::from_secs(5), || {
+        let editor = active_editor(window);
+        editor.file_path().as_deref() == Some(path.as_path()) && editor.file_size().is_some()
+    });
+    let editor = active_editor(window);
+    editor.buffer().set_text(text);
+    editor.buffer().set_modified(true);
+    (path, editor)
+}
+
+/// A write-ahead registration whose commit fails writes no body: the
+/// candidate is refused, stays draft-dirty, and the next pass registers it and
+/// writes it.
+#[test]
+fn test_a_failed_draft_registration_writes_no_body_and_stays_retryable() {
+    ensure_gtk_init();
+    let _policy_reset = DraftPipelinePolicyReset;
+    let _delay_reset = FirstDirtyAutosaveDelayReset;
+    set_first_dirty_autosave_delay_for_test(60_000);
+    let dir = tempfile::tempdir().expect("registration tempdir");
+    let data_dir = json_store::data_dir();
+    let window = test_window();
+    present_window(&window);
+    let (path, editor) =
+        edit_new_file_backed_document(&window, dir.path(), "refused.md", "refused edits");
+    let draft_id = draft_service::draft_id_for_path(&path);
+
+    fail_next_draft_mutations_for_test(false, false, false, true);
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(5), || {
+        !window.draft_evidence().autosave_inflight
+    });
+    assert!(
+        editor.draft_dirty(),
+        "a refused candidate stays draft-dirty"
+    );
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &draft_id).expect("read body"),
+        None,
+        "no body is written without a committed registration"
+    );
+    assert!(
+        draft_service::load_manifest(&data_dir)
+            .expect("load manifest")
+            .find_by_id(&draft_id)
+            .is_none()
+    );
+
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(5), || {
+        !window.draft_evidence().autosave_inflight && !editor.draft_dirty()
+    });
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &draft_id)
+            .expect("read retried body")
+            .as_deref(),
+        Some("refused edits")
+    );
+    assert!(
+        draft_service::load_manifest(&data_dir)
+            .expect("load manifest")
+            .find_by_id(&draft_id)
+            .is_some()
+    );
+}
+
+/// An id the trusted manifest already describes is written without a second
+/// registration: an armed registration failure is not consumed by its pass,
+/// and it still refuses the next new id.
+#[test]
+fn test_an_already_registered_draft_id_skips_registration() {
+    ensure_gtk_init();
+    let _policy_reset = DraftPipelinePolicyReset;
+    let _delay_reset = FirstDirtyAutosaveDelayReset;
+    set_first_dirty_autosave_delay_for_test(60_000);
+    let dir = tempfile::tempdir().expect("steady-state tempdir");
+    let data_dir = json_store::data_dir();
+    let window = test_window();
+    present_window(&window);
+    let (path, editor) =
+        edit_new_file_backed_document(&window, dir.path(), "steady.md", "first edits");
+    let draft_id = draft_service::draft_id_for_path(&path);
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(5), || {
+        !window.draft_evidence().autosave_inflight && !editor.draft_dirty()
+    });
+    assert!(window.draft_evidence().manifest_authority_trusted);
+
+    fail_next_draft_mutations_for_test(false, false, false, true);
+    editor.buffer().set_text("second edits");
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(5), || {
+        !window.draft_evidence().autosave_inflight && !editor.draft_dirty()
+    });
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &draft_id)
+            .expect("read steady-state body")
+            .as_deref(),
+        Some("second edits")
+    );
+
+    let (new_path, new_editor) =
+        edit_new_file_backed_document(&window, dir.path(), "new.md", "new edits");
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(5), || {
+        !window.draft_evidence().autosave_inflight
+    });
+    assert!(
+        new_editor.draft_dirty(),
+        "the armed registration failure was left for the first id that needs one"
+    );
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &draft_service::draft_id_for_path(&new_path))
+            .expect("read new body"),
+        None
+    );
+}
+
+/// The asynchronous close flush registers a new file-backed id before it
+/// writes the body, and a close whose registration failed is refused, writes
+/// no body, and stays retryable.
+#[test]
+fn test_close_flush_registers_a_new_draft_id_before_its_body_write() {
+    ensure_gtk_init();
+    let _policy_reset = DraftPipelinePolicyReset;
+    let _delay_reset = FirstDirtyAutosaveDelayReset;
+    set_first_dirty_autosave_delay_for_test(60_000);
+    let dir = tempfile::tempdir().expect("close registration tempdir");
+    let data_dir = json_store::data_dir();
+    let window = test_window();
+    present_window(&window);
+    let (path, editor) =
+        edit_new_file_backed_document(&window, dir.path(), "close.md", "close edits");
+    let draft_id = draft_service::draft_id_for_path(&path);
+
+    let flush = |window: &LushtextWindow| {
+        let result = Rc::new(RefCell::new(None));
+        let result_for_callback = Rc::clone(&result);
+        window.flush_dirty_drafts_async(move |flush_result| {
+            result_for_callback.borrow_mut().replace(flush_result);
+        });
+        result
+    };
+
+    fail_next_draft_mutations_for_test(false, false, false, true);
+    let refused = flush(&window);
+    wait_until(Duration::from_secs(10), || refused.borrow().is_some());
+    let error = refused
+        .borrow_mut()
+        .take()
+        .expect("close result")
+        .expect_err("a close whose registration failed must not confirm");
+    assert!(matches!(
+        error.downcast_ref::<DraftFlushError>(),
+        Some(DraftFlushError::Unconfirmed { body_write: 1, .. })
+    ));
+    assert!(editor.draft_dirty());
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &draft_id).expect("read refused body"),
+        None
+    );
+
+    set_draft_mutation_delays_for_test(600, 0, 0);
+    let accepted = flush(&window);
+    wait_until(Duration::from_secs(5), || {
+        draft_service::load_manifest(&data_dir)
+            .expect("load manifest")
+            .find_by_id(&draft_id)
+            .is_some()
+    });
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &draft_id).expect("read body"),
+        None,
+        "the close is between registration and its body write"
+    );
+    wait_until(Duration::from_secs(10), || accepted.borrow().is_some());
+    accepted
+        .borrow_mut()
+        .take()
+        .expect("close result")
+        .expect("the retried close confirms its draft");
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &draft_id)
+            .expect("read close body")
+            .as_deref(),
+        Some("close edits")
+    );
 }
 
 /// Between write-ahead registration and the body write of the same pass the
@@ -9357,7 +9743,7 @@ fn test_injected_draft_stage_failures_remain_retryable() {
     editor.buffer().set_text("retry every stage");
     editor.buffer().set_modified(true);
 
-    fail_next_draft_mutations_for_test(true, false, false);
+    fail_next_draft_mutations_for_test(true, false, false, false);
     window.autosave_tick_for_test();
     wait_until(Duration::from_secs(5), || {
         !window.draft_evidence().autosave_inflight
@@ -9368,7 +9754,7 @@ fn test_injected_draft_stage_failures_remain_retryable() {
         None
     );
 
-    fail_next_draft_mutations_for_test(false, true, false);
+    fail_next_draft_mutations_for_test(false, true, false, false);
     window.autosave_tick_for_test();
     wait_until(Duration::from_secs(5), || {
         !window.draft_evidence().autosave_inflight
@@ -9383,7 +9769,7 @@ fn test_injected_draft_stage_failures_remain_retryable() {
     wait_until(Duration::from_secs(5), || {
         !window.draft_evidence().autosave_inflight && !editor.draft_dirty()
     });
-    fail_next_draft_mutations_for_test(false, false, true);
+    fail_next_draft_mutations_for_test(false, false, true, false);
     window.delete_draft_by_id(&draft_id);
     wait_until(Duration::from_secs(5), || {
         !window.draft_evidence().mutation_inflight
@@ -9446,7 +9832,7 @@ fn test_file_backed_draft_body_delete_failure_keeps_an_explicit_retry_tombstone(
         !window.draft_evidence().autosave_inflight && !editor.draft_dirty()
     });
 
-    fail_next_draft_mutations_for_test(false, false, true);
+    fail_next_draft_mutations_for_test(false, false, true, false);
     window.delete_draft_by_id(&draft_id);
     wait_until(Duration::from_secs(10), || {
         !window.draft_evidence().mutation_inflight

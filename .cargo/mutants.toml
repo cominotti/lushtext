@@ -174,9 +174,6 @@ exclude_re = [
     # operator in this one function: the first `||`, the `!=`, and the function's
     # return value all still mutate and are all killed.
     "crates/lushtext-core/src/ui/sidebar/policy\\.rs:.*:68: replace \\|\\| with && in WorkspacePersistenceState::has_pending_work",
-    # Equivalent on LushText's Linux target: this non-Unix advisory-lock stub is
-    # not compiled or called in the mutation test target.
-    "crates/lushtext-core/src/services/durable_write\\.rs:131:.*FileWriteLock::acquire -> std::io::Result<Option<Self>>",
     # Never compiled by the mutation lane: `markdown_chunked_cap`'s
     # `cfg(not(feature = "test-utils"))` arm. Unlike the cfg-disabled stubs
     # around it, this is the arm that ships (a `const fn` returning `None`),
@@ -189,9 +186,9 @@ exclude_re = [
     "crates/lushtext-core/src/model/document_scale\\.rs:229:.*replace markdown_chunked_cap -> Option<u64> with Some\\([01]\\)",
     # Equivalent on LushText's Linux mutation target: this non-Unix metadata
     # shim is cfg-disabled, while the active Unix metadata probe remains in scope.
-    "crates/lushtext-core/src/services/durable_write\\.rs:504:.*MetadataPlan::probe -> std::io::Result<Self>",
-    "crates/lushtext-core/src/services/durable_write\\.rs:515:.*MetadataPlan::create_mode -> Option<u32> with Some\\(0\\)",
-    "crates/lushtext-core/src/services/durable_write\\.rs:515:.*MetadataPlan::create_mode -> Option<u32> with Some\\(1\\)",
+    "crates/lushtext-core/src/services/durable_write\\.rs:808:.*MetadataPlan::probe -> std::io::Result<Self>",
+    "crates/lushtext-core/src/services/durable_write\\.rs:819:.*MetadataPlan::create_mode -> Option<u32> with Some\\(0\\)",
+    "crates/lushtext-core/src/services/durable_write\\.rs:819:.*MetadataPlan::create_mode -> Option<u32> with Some\\(1\\)",
     # Equivalent on LushText's Linux mutation target: these non-Unix raw
     # filesystem fallbacks are cfg-disabled, while the active Unix backend
     # helpers remain mutation-scoped.
@@ -229,19 +226,15 @@ exclude_re = [
     # reliably create different-owner fixtures; mode, xattr, and ACL metadata
     # remain tested through observable durable-write behavior.
     "crates/lushtext-core/src/services/filesystem/sys\\.rs:376:.*best_effort_chown",
-    # Equivalent on Unix: dropping the owned `File` releases the `flock` even if
-    # the explicit `LOCK_UN` syscall is removed.
-    "crates/lushtext-core/src/services/durable_write\\.rs:.*replace <impl Drop for FileWriteLock>::drop with \\(\\)",
-    # Equivalent for success behavior: the mutation only changes whether a
-    # second parent-directory fsync is attempted after rename.
-    "crates/lushtext-core/src/services/durable_write\\.rs:.*replace != with == in rename_durable",
     # Durability-only wrapper: deleting the parent-directory fsync has no stable
     # observable unit-test effect, while callers are covered through their bytes
     # and namespace behavior.
     "crates/lushtext-core/src/services/filesystem/write\\.rs:.*sync_parent_dir",
     # Race-only diagnostic branch: if the recents file vanishes between status
     # and read, both paths return an empty recent list; only the warning changes.
-    "crates/lushtext-core/src/services/recent_documents\\.rs:252:.*load_recent_file",
+    # Keyed on the `NotFound` guard (the function's only `==`), not a line: the
+    # former `:252:` anchor had drifted off the function and matched nothing.
+    "crates/lushtext-core/src/services/recent_documents\\.rs:.*: replace (match guard error\\.kind\\(\\) == std::io::ErrorKind::NotFound with (true|false)|== with !=) in load_recent_file",
     # Equivalent while the public JSON envelope is still v1.
     "crates/lushtext-core/src/services/format_upgrade/diagnostics\\.rs:.*latest_format_version -> u32 with 1",
     # Equivalent after the preceding exact-version branch in

@@ -11,10 +11,12 @@
 
 use super::types::WriteLabel;
 
-/// Build the temp name for `file_name` written with `tag` by process `pid`
-/// with sequence number `sequence`.
+/// Build the temp name for `file_name` written with `label` by process `pid`
+/// with sequence number `sequence`. The tag field is the label's string, so
+/// the builder can only emit a tag [`parse`] knows.
 #[must_use]
-pub fn format(file_name: &str, tag: &str, pid: u32, sequence: u64) -> String {
+pub fn format(file_name: &str, label: WriteLabel, pid: u32, sequence: u64) -> String {
+    let tag = label.as_str();
     format!(".{file_name}.{tag}.{pid}.{sequence}{TEMP_SUFFIX}")
 }
 
@@ -90,7 +92,7 @@ mod tests {
     fn every_name_the_builder_emits_for_a_known_label_parses_back() {
         for label in WriteLabel::KNOWN {
             for file in ["manifest.json", "notes.v2.md", "abc.7.draft"] {
-                let name = format(file, label.as_str(), 4242, 1 << 40 | 7);
+                let name = format(file, label, 4242, 1 << 40 | 7);
                 assert_eq!(
                     parse(&name),
                     Some(DurableTempName {
@@ -103,17 +105,48 @@ mod tests {
                 );
             }
         }
-        assert_eq!(parse(&format("a.txt", "not-a-label", 1, 1)), None);
+    }
+
+    /// A name whose tag is not a known label, crafted by hand because the
+    /// builder can no longer express one, never parses.
+    #[test]
+    fn a_name_with_an_unknown_tag_does_not_parse() {
+        assert_eq!(parse(".a.txt.not-a-label.1.1.tmp"), None);
+        assert!(parse(".a.txt.save.1.1.tmp").is_some());
+    }
+
+    /// The exact temp name the builder emits for every known label, for a
+    /// fixed file, pid and sequence. The leftover sweep reads these names from
+    /// disk, written by older builds too, so they must never change.
+    #[test]
+    fn the_builder_emits_the_same_temp_name_for_every_known_label() {
+        let sequence = sequence(9, 7);
+        assert_eq!(sequence, 38_654_705_671);
+        let built: Vec<String> = WriteLabel::KNOWN
+            .iter()
+            .map(|&label| format("manifest.json", label, 4242, sequence))
+            .collect();
+        assert_eq!(
+            built,
+            [
+                ".manifest.json.save.4242.38654705671.tmp",
+                ".manifest.json.json.4242.38654705671.tmp",
+                ".manifest.json.draft.4242.38654705671.tmp",
+                ".manifest.json.replace.4242.38654705671.tmp",
+                ".manifest.json.replace-undo-body.4242.38654705671.tmp",
+                ".manifest.json.recovery-quarantine.4242.38654705671.tmp",
+                ".manifest.json.local-history-copy.4242.38654705671.tmp",
+                ".manifest.json.format-upgrade-backup.4242.38654705671.tmp",
+                ".manifest.json.format-upgrade-manifest.4242.38654705671.tmp",
+                ".manifest.json.format-upgrade-convert.4242.38654705671.tmp",
+                ".manifest.json.style-scheme.4242.38654705671.tmp",
+            ]
+        );
     }
 
     #[test]
     fn the_sequence_field_carries_the_launch_nonce() {
-        let name = format(
-            "a.txt",
-            WriteLabel::KNOWN[0].as_str(),
-            1,
-            sequence(9, u64::MAX),
-        );
+        let name = format("a.txt", WriteLabel::KNOWN[0], 1, sequence(9, u64::MAX));
         let parsed = parse(&name).expect("builder output parses");
         assert_eq!(parsed.launch_nonce(), 9);
         assert_eq!(parsed.sequence & u64::from(u32::MAX), u64::from(u32::MAX));

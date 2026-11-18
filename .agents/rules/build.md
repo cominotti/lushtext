@@ -891,7 +891,14 @@ and verify no invariant from that case; the widget shard runner prints
 - `make crash-recovery-smoke`: draft/session recovery through a real
   `SIGKILL` and relaunch, plus a second binary built with the smoke-only
   `crash-kill-points` feature (`target/crash-kill-points`,
-  `LUSHTEXT_KILL_AT`) aborted inside named protocol windows.
+  `LUSHTEXT_KILL_AT`) aborted inside named protocol windows. Launches have
+  roles (the driver's `LAUNCH_ROLES`): `seed` and `relaunch` always run the
+  ordinary binary, and only the `victim` runs the kill-point binary, which is
+  the ordinary binary plus kill points because the feature gates only
+  `services::kill_point::reach` (`make check-kill-point-gating`, in
+  `make check-policy`). The lane fails before any scenario when the ordinary
+  binary, or `target/release/lushtext` if built, carries a kill-point marker
+  (`KILL_POINT_MARKERS`, `assertions/no-kill-points.json`).
 - `make portal-sandbox-smoke`: Flatpak/Snap runtime state and confined checks.
   It skips explicitly when neither runtime is available; a skip is not proof
   that confinement works, and its diagnostics must not imply a portals-only

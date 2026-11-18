@@ -96,7 +96,14 @@ impl KillTarget {
     }
 }
 
-/// Mark that the process is inside `window`, for an operation labelled `label`.
+/// Mark that the process is inside `window`, for an operation keyed by
+/// `label`.
+///
+/// The key is what `LUSHTEXT_KILL_AT=name@key` narrows on, and it is one of
+/// two kinds: a write label's string (`WriteLabel::as_str`) for the
+/// durable-write and Replace All windows, or a **draft id** for the draft
+/// windows (`StalePreservedBeforeRetire`, `DraftBodyBeforeCommit`). It stays
+/// `&str` because a draft id is not a write label.
 #[cfg(feature = "crash-kill-points")]
 pub fn reach(window: KillWindow, label: &str) {
     use std::sync::OnceLock;
@@ -119,8 +126,9 @@ pub fn reach(window: KillWindow, label: &str) {
     }
 }
 
-/// Mark that the process is inside `window`; compiled out without the
-/// `crash-kill-points` feature.
+/// Mark that the process is inside `window`, for an operation keyed by a
+/// write label or a draft id; compiled out without the `crash-kill-points`
+/// feature.
 #[cfg(not(feature = "crash-kill-points"))]
 #[inline(always)]
 pub fn reach(_window: KillWindow, _label: &str) {}
