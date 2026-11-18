@@ -34,7 +34,7 @@ Rules for every task:
 
 ## 1. Setup and failing-first self-test cases (no behaviour change)
 
-- [ ] 1.1 Take the implementation slot (`parallel-agent-work.md`,
+- [x] 1.1 Take the implementation slot (`parallel-agent-work.md`,
   "Implementation slots and ordering"). Merge `origin/main` into the branch
   (never rebase), and resolve any conflict in `scripts/heavy.sh` or
   `scripts/with-memory-cap.sh` by keeping both sides' cases. Write
@@ -46,7 +46,7 @@ Rules for every task:
   head-of-line cost too: while a 36G head has the host memory, a later
   request is admitted only while the caps admitted plus that request stay
   within 12G of the 48G budget.
-- [ ] 1.2 Add the cases below. Each must fail on the current scripts. Record
+- [x] 1.2 Add the cases below. Each must fail on the current scripts. Record
   each failure line, and the script version it ran against, in
   `evidence/red.md`. A case that cannot run (no systemd user manager) skips
   and says why. Every case is bounded by `timeout`, and none waits more than
@@ -106,7 +106,7 @@ Rules for every task:
     `heavy-work-admission` spec's "Admission order" requirement: no head; head
     reserved; head beside; head short of memory; inside an envelope (no
     reserve check). On `main` the option is unknown.
-- [ ] 1.3 Run `scripts/heavy.sh --mem none -- make check-agent-helpers` with
+- [x] 1.3 Run `scripts/heavy.sh --mem none -- make check-agent-helpers` with
   `main`'s `heavy.sh` and confirm that exactly the cases above fail. Commit
   the cases ("test(build): failing-first cases for the heavy admission
   window") behind `LUSHTEXT_ADMISSION_WINDOW_RED=1`, an opt-in guard, because
@@ -122,12 +122,12 @@ old `heavy.sh` loop would make every capped `heavy.sh` call above 1G exit 2,
 the default 12G included. The "window after the probe" case also needs group
 3's loop. So no commit sits between the wrapper half and the `heavy.sh` half.
 
-- [ ] 2.1 Add the pure `admission_verdict` (design D5) and the
+- [x] 2.1 Add the pure `admission_verdict` (design D5) and the
   `--admission-verdict` entry. Make the probe (`--wait-admissible`) and
   `admit` both decide through it, which keeps "probe and admit share one
   function". Keep `admitted_kib` (D10, legacy counting) unchanged at the host
   level.
-- [ ] 2.2 Tickets and the per-slice queue (D5): create under the admission
+- [x] 2.2 Tickets and the per-slice queue (D5): create under the admission
   lock; owner PID plus start time; sweep dead tickets. Add
   `--ticket <cap> <owner-pid>` (prints the path) and `LUSHTEXT_ADMISSION_TICKET`
   (excluded from the heads, removed on admission). A blocking `admit` without
@@ -138,19 +138,19 @@ the default 12G included. The "window after the probe" case also needs group
   probe and in `admit`, and the admission lock path from
   `LUSHTEXT_ADMISSION_LOCK` (default as today). Both are for the self-tests
   and are documented only in the wrapper's header.
-- [ ] 2.3 Check-once mode (D1): with `LUSHTEXT_ADMISSION_ONCE=<file>`, the
+- [x] 2.3 Check-once mode (D1): with `LUSHTEXT_ADMISSION_ONCE=<file>`, the
   admission lock is waited for at most 2 s (busy counts as a misfit), and a
   misfit writes one `misfit: <waiting message>` line to `<file>` and exits 75
   before any scope. Unset it, and `LUSHTEXT_ADMISSION_TICKET`, before the
   `exec`.
-- [ ] 2.4 The `LOCK` proof (D4): source `scripts/agent-locks.sh`, and for caps
+- [x] 2.4 The `LOCK` proof (D4): source `scripts/agent-locks.sh`, and for caps
   above 1G that are not nested in place, run `agent_lock_inherited`, only
   when `LUSHTEXT_AGENT_LOCK_HELD` is set (then call `agent_lock_paths`
   first). With
   `exclusive` outside an envelope, check once (75). With `shared`, without
   `LUSHTEXT_ADMISSION_ONCE` and outside an envelope, exit 2 with the message
   of D4. Otherwise behave as today.
-- [ ] 2.5 Envelopes (D2, D3):
+- [x] 2.5 Envelopes (D2, D3):
   - `--envelope <size> <cmd>` starts the placeholder
     `lushtext-cap-<P>-<ns>.scope`, which waits for the owner, reverts the
     sub-slice and exits;
@@ -176,7 +176,7 @@ the default 12G included. The "window after the probe" case also needs group
   - `--preflight <cap>` applies D4's check without admitting anything;
   - CI without a user manager runs uncapped; elsewhere the wrapper refuses, as
     today.
-- [ ] 2.6 Self-test hygiene (D7): shed `LUSHTEXT_AGENT_LOCK_HELD`; widen the
+- [x] 2.6 Self-test hygiene (D7): shed `LUSHTEXT_AGENT_LOCK_HELD`; widen the
   cleanup and leftover check to `*selftest-<child>*.slice.d`, and revert any
   envelope sub-slice of the private slice in the `EXIT` trap. Add the
   envelope cases of the spec:
@@ -215,12 +215,12 @@ the default 12G included. The "window after the probe" case also needs group
   - the private slices' queue directories are gone after the run, and the
     leftover check fails on one that is not.
 
-- [ ] 2.7 `shellcheck -x` the wrapper, and run its `--self-test` directly.
+- [x] 2.7 `shellcheck -x` the wrapper, and run its `--self-test` directly.
   The wrapper cases of 1.2 must pass. No commit yet (group 2 note).
 
 ## 3. heavy.sh: retry after LOCK, envelopes, tickets
 
-- [ ] 3.1 Replace steps 3-4 with D1's loop:
+- [x] 3.1 Replace steps 3-4 with D1's loop:
   1. step 1 (the probe, with the ticket);
   2. `INTENT` and `LOCK`;
   3. the parallelism read after `LOCK`;
@@ -236,13 +236,13 @@ the default 12G included. The "window after the probe" case also needs group
   a report file, through `agent_trap_signals` and `agent_run_child`, and
   applies 3.5's decision. Inside an envelope or a measurement, the wrapper's
   own rules apply (D2, "Nested envelopes").
-- [ ] 3.2 `--envelope <size>`: mutually exclusive with `--mem` (usage error
+- [x] 3.2 `--envelope <size>`: mutually exclusive with `--mem` (usage error
   otherwise). Pass `<size>` to `heavy_parallelism` as the cap. Add table rows
   for envelope sizes (for example `16 1 16G:16 8`, `16 1 36G:16 8`,
   `16 1 8G:4 1`, `16 2 16G:4 1`), keeping every existing row.
-- [ ] 3.3 Take one ticket per invocation (`--ticket <cap> $$`), keep it
+- [x] 3.3 Take one ticket per invocation (`--ticket <cap> $$`), keep it
   across retries, remove it in the `EXIT` trap. `--mem none` takes none.
-- [ ] 3.4 Update `heavy.sh`'s header: steps, memory before locks, envelopes.
+- [x] 3.4 Update `heavy.sh`'s header: steps, memory before locks, envelopes.
   Make `heavy.sh --self-test` follow D7: a private `LUSHTEXT_HEAVY_SLICE` for
   every case with a budget override, stop and revert from its `EXIT` trap,
   the real slice's `MemoryMax` unchanged at the end, and no drop-in or queue
@@ -250,7 +250,7 @@ the default 12G included. The "window after the probe" case also needs group
   case of 1.2, every existing case, and a new case: the parallelism probe
   after a forced misfit-retry still reports the contended or alone setting
   read after `LOCK`.
-- [ ] 3.5 Envelope OOM: after the child exits, wait a bounded few seconds for
+- [x] 3.5 Envelope OOM: after the child exits, wait a bounded few seconds for
   the `envelope:` line. On `oom_kill > 0`, print `OOM-KILL: envelope <name>:
   …` and exit non-zero even when the command exited 0. A missing line after
   the wait is reported as a warning, never as a pass that claims no OOM. Test
@@ -258,7 +258,7 @@ the default 12G included. The "window after the probe" case also needs group
   command's status through; `oom_kill=2` with status 0 gives `OOM-KILL:` and
   a non-zero exit; a missing line gives the warning. Do not provoke a real OOM
   kill (2.6).
-- [ ] 3.6 Remove the red guard of 1.3. Run `shellcheck -x` and
+- [x] 3.6 Remove the red guard of 1.3. Run `shellcheck -x` and
   `scripts/heavy.sh --mem none -- make check-agent-helpers` with the
   worktree's scripts. Every case of 1.2 and every existing case must pass.
   Commit groups 2 and 3 together ("fix(build): admit heavy work once after

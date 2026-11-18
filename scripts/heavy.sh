@@ -7,23 +7,40 @@
 # .agents/rules/verification-runs.md):
 #
 #   scripts/heavy.sh [--mem <cap|none>] -- <command> [args...]
+#   scripts/heavy.sh --envelope <size> -- <command> [args...]
 #   scripts/heavy.sh --self-test
 #
-# 1. Wait, holding nothing, until scripts/with-memory-cap.sh would admit <cap>
+# 1. Take one place in the heavy slice's admission order (a ticket of
+#    scripts/with-memory-cap.sh, kept across the retries below and removed on
+#    exit), then wait, holding nothing, until the wrapper would admit <cap>
 #    (default 12G) into the host-wide heavy slice, whose budget is the
-#    wrapper's own default; this script never overrides it. Memory comes
-#    first so the script never waits for memory while holding LOCK.
+#    wrapper's own default; this script never overrides it.
 # 2. Probe the INTENT lock shared: it blocks while a measurement
 #    (scripts/measure.sh) is pending or running, so new heavy work cannot keep
 #    a waiting measurement starved.
 # 3. Take the LOCK shared for this one command: heavy commands run alongside
-#    each other, never during a measurement. If memory became short meanwhile,
-#    release LOCK and go back to step 1.
+#    each other, never during a measurement.
 # 4. Run the command as a child, with the compiler parallelism below and the
 #    CPU affinity this process inherited, intersected with the slice's
 #    cpuset, inside `scripts/with-memory-cap.sh <cap>` (its scope nests under
 #    the user manager's user.slice and inherits its cpuset; a self-imposed
-#    mask only narrows it).
+#    mask only narrows it). That admission is the real one, and it checks
+#    once (LUSHTEXT_ADMISSION_ONCE): memory another admission took since step
+#    1 is a misfit that starts no scope and no command. This script then
+#    releases LOCK, waits for memory again holding nothing, and retries from
+#    step 1. Exit 75 without a misfit line is the command's own and is
+#    returned. Memory before locks: no admission ever waits for memory under
+#    LOCK (.agents/rules/verification-runs.md).
+#
+# `--envelope <size>` is for commands that admit their own scopes (`make
+# test`, `make mutants-*`, `make kani`, `make proof-strength`): step 4 runs
+# `with-memory-cap.sh --envelope <size>`, which reserves <size> on the host
+# once and runs the command in a sub-slice of that size, where its capped
+# calls get scopes of their own admitted against the envelope. Under
+# `--mem none` such a call is refused (exit 2) instead of waiting under LOCK.
+# An OOM kill anywhere in the envelope prints `OOM-KILL:` and fails the run.
+# `--envelope` and `--mem` are mutually exclusive; the size is also the cap
+# the compiler parallelism is sized for.
 #
 # Compiler parallelism (.agents/rules/build.md, "Compiler parallelism"), set
 # once LOCK is held: every heavy command holds it shared, so its shared
@@ -54,6 +71,11 @@
 # pending measurement. That requires PROOF that an enclosing helper holds
 # LOCK: the exported marker names the holder's PID, which must be an ancestor
 # whose fd 7 is still LOCK (scripts/agent-locks.sh).
+# Nested, `--envelope` runs the wrapper as a child with its report in
+# LUSHTEXT_ENVELOPE_REPORT, so an OOM kill still fails the run; under an outer
+# `heavy.sh --mem none` it is refused like any admission under a shared LOCK,
+# inside a capped scope or another envelope it runs in place, and inside a
+# measurement a misfit exits 75 (a nested call cannot release LOCK).
 
 set -euo pipefail
 
@@ -130,8 +152,59 @@ heavy_export_parallelism() {
     export RUSTC_WRAPPER="$here/rustc-frontend-threads.sh" LUSHTEXT_NEXT_RUSTC_WRAPPER="$next" LUSHTEXT_RUSTC_FRONTEND_ROOT
 }
 
+# Pure: the final status of an envelope run whose command exited $1, given
+# whether the envelope started ($2: 1 when the report holds an
+# `envelope-start:` line) and its `envelope:` line ($3, empty when missing).
+# An OOM kill anywhere in the envelope fails the run, even when the command
+# exited 0, the way scripts/run-widget-tests.sh fails a shard; a missing line
+# is a warning, never a pass that claims no OOM kill.
+heavy_envelope_verdict() {
+    local status=$1 started=$2 line=$3 word oom=unknown slice=unknown peak=unknown
+    [ "$started" = 1 ] || return "$status"
+    if [ -z "$line" ]; then
+        echo "heavy: warning: the envelope wrote no report line; OOM kills inside it are unknown" >&2
+        return "$status"
+    fi
+    for word in $line; do
+        case $word in
+            oom_kill=*) oom=${word#oom_kill=} ;;
+            slice=*) slice=${word#slice=} ;;
+            peak=*) peak=${word#peak=} ;;
+        esac
+    done
+    if ! [[ "$oom" =~ ^[0-9]+$ ]]; then
+        echo "heavy: warning: the envelope $slice could not read its OOM kills ($line)" >&2
+        return "$status"
+    fi
+    if [ "$oom" -gt 0 ]; then
+        echo "OOM-KILL: envelope $slice: the kernel killed $oom process(es) inside it (peak $peak MiB); the run fails, raise nothing, find what grew" >&2
+        [ "$status" -ne 0 ] || status=1
+    fi
+    return "$status"
+}
+
+# After an envelope's command exited with $1: wait a bounded few seconds for
+# the placeholder's `envelope:` line in report $2 and for the placeholder to
+# exit (its reservation then ends), then decide (heavy_envelope_verdict).
+heavy_envelope_finish() {
+    local status=$1 report=$2 started=0 line="" word placeholder=""
+    grep -q '^envelope-start: ' "$report" 2>/dev/null && started=1
+    if [ "$started" = 1 ]; then
+        for _ in $(seq 100); do
+            line=$(grep -m1 '^envelope: ' "$report" 2>/dev/null || true)
+            [ -z "$line" ] || break
+            sleep 0.1
+        done
+        for word in $line; do
+            case $word in placeholder=*) placeholder=${word#placeholder=} ;; esac
+        done
+        [ -z "$placeholder" ] || timeout 5 tail --pid="$placeholder" -f /dev/null 2>/dev/null || true
+    fi
+    heavy_envelope_verdict "$status" "$started" "$line"
+}
+
 usage() {
-    echo "usage: $0 [--mem <cap|none>] -- <command> [args...]" >&2
+    echo "usage: $0 [--mem <cap|none> | --envelope <size>] -- <command> [args...]" >&2
     echo "       $0 --self-test" >&2
     exit 2
 }
@@ -330,6 +403,49 @@ EOF
         */"${heavy_test_slice%.slice}"-env[0-9]*t[0-9]*.slice/lushtext-cap-*.scope) ;;
         *) hfail "an inner 2G call in a 2G envelope ran in '$out' (stderr '$(tail -n 3 "$dir/envelope.err" | tr '\n' ' ')'), expected a lushtext-cap scope under ${heavy_test_slice%.slice}-env*.slice" ;;
     esac
+    # A misfit-retry re-reads the parallelism after LOCK: the first attempt
+    # sees a second holder of LOCK (contended) and misfits; the systemctl
+    # shim then stops that holder and lets the next admission fit, and the
+    # command reports the setting read alone. A 12G cap (a smaller one keeps
+    # 4 jobs whatever the holders) in a 13G budget beside a 2G sleeper.
+    local alone12
+    alone12=$(heavy_parallelism "$(cpu_list_expand "$(cpu_own_affinity)" | wc -l)" 1 12G)
+    if [ "$alone12" = "4 1" ]; then
+        echo "heavy self-test: misfit-retry parallelism case skipped (4 CPUs or fewer: alone and contended agree)" >&2
+    elif [ "$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo)" -lt $((14 * 1048576)) ]; then
+        echo "heavy self-test: misfit-retry parallelism case skipped (MemAvailable below 14 GiB)" >&2
+    elif heavy_test_sleeper; then
+        local sibling
+        # shellcheck disable=SC2016 # expanded by the inner shell
+        sh -c 'exec 7>>"$0"; flock -s 7; exec sleep 30' "$lock" &
+        sibling=$!
+        heavy_test_pids+=("$sibling")
+        for _ in $(seq 50); do
+            [ "$(heavy_lock_shared_holders)" -ge 1 ] && break
+            sleep 0.05
+        done
+        # shellcheck disable=SC2016 # expanded by the inner shell
+        out=$(PATH=$shim_path HEAVY_SHIM_SLICE=$heavy_test_slice HEAVY_SHIM_REAL=$real_systemctl \
+            HEAVY_SHIM_ONCE=$dir/shim-once HEAVY_SHIM_KILL=$sibling LUSHTEXT_HEAVY_MEMORY_MAX=13G \
+            timeout 60 "$me" --mem 12G -- sh -c 'echo "$CARGO_BUILD_JOBS $LUSHTEXT_RUSTC_FRONTEND_THREADS"' 2>"$dir/retry.err" || true)
+        [ -e "$dir/shim-once" ] || hfail "the misfit-retry case never reached its first admission"
+        [ "$out" = "$alone12" ] \
+            || hfail "after a misfit-retry the command got parallelism '$out', expected '$alone12' read after the second LOCK (stderr '$(tail -n 2 "$dir/retry.err" | tr '\n' ' ')')"
+        grep -q 'released LOCK, waiting again' "$dir/retry.err" || hfail "a misfit-retry did not say it released LOCK"
+        heavy_test_sleeper_stop
+    else
+        hfail "the misfit-retry case's sleeper never started"
+    fi
+
+    # A nested heavy.sh --envelope under an outer --mem none is refused (2,
+    # naming --envelope): it cannot be the outer heavy.sh's own admission.
+    status=0
+    out=$(timeout 10 "$me" --mem none -- "$me" --envelope 2G -- true 2>&1) || status=$?
+    [ "$status" -eq 2 ] && [[ "$out" == *--envelope* ]] \
+        || hfail "heavy.sh --envelope 2G inside heavy.sh --mem none gave status $status ('$(tail -n 2 <<<"$out" | tr '\n' ' ')'), expected 2 naming --envelope"
+    status=0
+    timeout 10 "$me" --mem 2G --envelope 2G -- true 2>/dev/null || status=$?
+    [ "$status" -eq 2 ] || hfail "--mem with --envelope was accepted (status $status)"
     exit "$failures"
 }
 
@@ -366,12 +482,28 @@ self_test() {
     local case_ want got
     for case_ in "16 1 none:16 8" "24 1 12G:16 8" "12 1 16G:12 8" "5 1 none:5 8" "4 1 none:4 1" \
         "2 1 none:4 1" "16 2 none:4 1" "16 5 16G:4 1" "16 0 none:16 8" "16 1 12288M:16 8" \
-        "16 1 8G:4 1" "16 1 6G:4 1" "16 1 64M:4 1"; do
+        "16 1 8G:4 1" "16 1 6G:4 1" "16 1 64M:4 1" \
+        "16 1 16G:16 8" "16 1 36G:16 8" "16 2 16G:4 1" "16 2 36G:4 1"; do
         want=${case_#*:}
         # shellcheck disable=SC2086 # two words on purpose
         got=$(heavy_parallelism ${case_%%:*})
         [ "$got" = "$want" ] || fail "heavy_parallelism ${case_%%:*} gave '$got', expected '$want'" || return
     done
+
+    # The envelope's OOM decision, pure: an OOM kill fails a run that exited
+    # 0, a clean report passes the status through, a missing report warns, and
+    # a run whose envelope never started says nothing.
+    local verdict_err=$dir/verdict.err
+    status=0; heavy_envelope_verdict 0 1 "envelope: peak=10 oom_kill=0 slice=s placeholder=1" 2>"$verdict_err" || status=$?
+    [ "$status" -eq 0 ] && [ ! -s "$verdict_err" ] || fail "a clean envelope report gave status $status ('$(cat "$verdict_err")')" || return
+    status=0; heavy_envelope_verdict 3 1 "envelope: peak=10 oom_kill=0 slice=s placeholder=1" 2>"$verdict_err" || status=$?
+    [ "$status" -eq 3 ] || fail "a clean envelope report changed status 3 to $status" || return
+    status=0; heavy_envelope_verdict 0 1 "envelope: peak=10 oom_kill=2 slice=s placeholder=1" 2>"$verdict_err" || status=$?
+    [ "$status" -ne 0 ] && grep -q '^OOM-KILL: envelope s:' "$verdict_err" || fail "two OOM kills in an envelope gave status $status ('$(cat "$verdict_err")'), expected non-zero and an OOM-KILL: line" || return
+    status=0; heavy_envelope_verdict 0 1 "" 2>"$verdict_err" || status=$?
+    [ "$status" -eq 0 ] && grep -q 'warning' "$verdict_err" && ! grep -q OOM-KILL "$verdict_err" || fail "a missing envelope report gave status $status ('$(cat "$verdict_err")'), expected 0 and a warning" || return
+    status=0; heavy_envelope_verdict 5 0 "" 2>"$verdict_err" || status=$?
+    [ "$status" -eq 5 ] && [ ! -s "$verdict_err" ] || fail "an envelope that never started gave status $status ('$(cat "$verdict_err")')" || return
 
     # Alone (this run's private LOCK has no other holder): all the CPUs, at
     # most 16, and 8 front-end threads through the wrapper, chained to the
@@ -525,7 +657,7 @@ self_test() {
     fi
 
     local admission=skipped
-    if [ "${LUSHTEXT_ADMISSION_WINDOW_RED:-}" = 1 ] && command -v systemd-run >/dev/null 2>&1 \
+    if command -v systemd-run >/dev/null 2>&1 \
         && systemd-run --user --scope --quiet -p MemoryMax=1M true >/dev/null 2>&1; then
         local real_max after_max leftovers rt=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
         real_max=$(systemctl --user show -p MemoryMax --value user-lushtext-heavy.slice 2>/dev/null || true)
@@ -550,11 +682,19 @@ if [ "${1:-}" = "--self-test" ]; then
 fi
 
 cap=12G
+mem_given=0
+envelope=
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --mem)
             [ "$#" -ge 2 ] || usage
             cap=$2
+            mem_given=1
+            shift 2
+            ;;
+        --envelope)
+            [ "$#" -ge 2 ] || usage
+            envelope=$2
             shift 2
             ;;
         --)
@@ -565,6 +705,14 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 [ "$#" -ge 1 ] || usage
+if [ -n "$envelope" ]; then
+    [ "$mem_given" = 0 ] || { echo "heavy: --envelope and --mem are mutually exclusive" >&2; usage; }
+    [[ "$envelope" =~ ^[0-9]+[KMGT]?$ ]] || { echo "heavy: invalid envelope size '$envelope' (expected e.g. 16G)" >&2; usage; }
+    cap=$envelope
+    child=("$here/with-memory-cap.sh" --envelope "$envelope" "$@")
+else
+    child=("$here/with-memory-cap.sh" "$cap" "$@")
+fi
 
 agent_lock_paths
 
@@ -579,30 +727,74 @@ if mode=$(agent_lock_inherited); then
         # shellcheck disable=SC2046 # two words on purpose
         heavy_export_parallelism $(heavy_parallelism 1 2 none)
     fi
-    exec "$here/with-memory-cap.sh" "$cap" "$@"
+    [ -n "$envelope" ] || exec "${child[@]}"
+    # An envelope runs as a child, so its OOM kills still fail the run. Its
+    # report goes in LUSHTEXT_ENVELOPE_REPORT, never in the check-once
+    # variable: that exemption belongs to the admission this script makes
+    # after taking LOCK itself, so under an outer `--mem none` the envelope
+    # is refused (exit 2) like any admission under a shared LOCK.
+    report=$(mktemp "${TMPDIR:-/tmp}/heavy-report.XXXXXX")
+    # shellcheck disable=SC2064 # expand now
+    trap "rm -f '$report'" EXIT
+    agent_trap_signals
+    agent_run_child env LUSHTEXT_ENVELOPE_REPORT="$report" "${child[@]}"
+    status=0
+    heavy_envelope_finish "$agent_child_status" "$report" || status=$?
+    exit "$status"
 fi
 
+# One place in the admission order for the whole invocation, kept across the
+# retries below (so it keeps its age) and removed on exit. A measurement's
+# admissions take none: they ignore the order.
+report=$(mktemp "${TMPDIR:-/tmp}/heavy-report.XXXXXX")
+ticket=
+if [ "${LUSHTEXT_ADMISSION_NOWAIT:-}" != 1 ]; then
+    ticket=$("$here/with-memory-cap.sh" --ticket "$cap" "$$")
+fi
+# shellcheck disable=SC2064 # expand now
+trap "rm -f '$report' ${ticket:+'$ticket'}" EXIT
+
+announced=0
 while :; do
-    "$here/with-memory-cap.sh" --wait-admissible "$cap"
+    # Wait for memory holding nothing.
+    LUSHTEXT_ADMISSION_TICKET=$ticket "$here/with-memory-cap.sh" --wait-admissible "$cap"
     exec 6>>"$AGENT_LOCK_INTENT"
     flock -s 6
     exec 6>&-
     exec 7>>"$AGENT_LOCK_MEASURE"
     flock -s 7
-    # Memory may have gone while waiting for the locks: never wait for it
-    # while holding LOCK.
-    status=0
-    LUSHTEXT_ADMISSION_NOWAIT=1 "$here/with-memory-cap.sh" --wait-admissible "$cap" 7>&- || status=$?
-    [ "$status" -ne 0 ] || break
-    exec 7>&-
-    [ "$status" -eq 75 ] || exit "$status"
+    # shellcheck disable=SC2046 # two words on purpose
+    heavy_export_parallelism $(heavy_parallelism "$(cpu_list_expand "$(cpu_own_affinity)" | wc -l)" "$(heavy_lock_shared_holders)" "$cap")
+    agent_trap_signals
+    LUSHTEXT_AGENT_LOCK_HELD=$(agent_lock_marker shared)
+    export LUSHTEXT_AGENT_LOCK_HELD
+    : >"$report"
+    # The admission itself is the check, made once: memory taken by another
+    # admission since the probe is a misfit, reported in the file, and no
+    # scope or command starts.
+    agent_run_child env LUSHTEXT_ADMISSION_ONCE="$report" LUSHTEXT_ADMISSION_TICKET="$ticket" \
+        ${envelope:+LUSHTEXT_ENVELOPE_REPORT="$report"} "${child[@]}"
+    if [ "$agent_child_status" = 75 ] && grep -q '^misfit: ' "$report"; then
+        # Never wait for memory while holding LOCK: give it back, then wait.
+        exec 7>&-
+        unset LUSHTEXT_AGENT_LOCK_HELD
+        if [ "${LUSHTEXT_ADMISSION_NOWAIT:-}" = 1 ]; then
+            sed -n 's/^misfit: //p' "$report" >&2
+            exit 75
+        fi
+        if [ "$announced" = 0 ]; then
+            echo "heavy: memory went short after LOCK ($(sed -n 's/^misfit: //p' "$report" | head -n 1)); released LOCK, waiting again holding nothing" >&2
+            announced=1
+        fi
+        sleep 1
+        continue
+    fi
+    break
 done
-
-# shellcheck disable=SC2046 # two words on purpose
-heavy_export_parallelism $(heavy_parallelism "$(cpu_list_expand "$(cpu_own_affinity)" | wc -l)" "$(heavy_lock_shared_holders)" "$cap")
-agent_trap_signals
-LUSHTEXT_AGENT_LOCK_HELD=$(agent_lock_marker shared)
-export LUSHTEXT_AGENT_LOCK_HELD
-agent_run_child "$here/with-memory-cap.sh" "$cap" "$@"
 exec 7>&-
+if [ -n "$envelope" ]; then
+    status=0
+    heavy_envelope_finish "$agent_child_status" "$report" || status=$?
+    exit "$status"
+fi
 exit "$agent_child_status"
