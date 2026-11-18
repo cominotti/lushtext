@@ -1772,15 +1772,18 @@ the picture is final.
 
    `max(main's worst completion + 33.3 ms, 100 ms) + max(0, R − 16,384) × 0.5 µs`
 
-   where `R` is the collapsing subtree's flattened rows at the input. Up to
+   where `R` is the collapsing subtree's flattened rows at the input; when
+   one input starts several sliced collapses (the folder header), `R` is the
+   sum of their subtrees' rows, since they share one unit per frame and one
+   between-frames source (R10). Up to
    16,384 rows the allowance is zero and the bar is R3's, unchanged; it is
    continuous in `R`, so no size steps the bar.
 4. *Settled* (`done_us`): printed for both sides and recorded, not judged.
    After the completing frame the section retires the listing (BL's
-   4,096-row slices at `G_PRIORITY_LOW`) and, 0.43–0.45 s later on both
-   sides, publishes the probe scan (the residual owned by
+   4,096-row slices at `G_PRIORITY_LOW`) and, 0.40–0.45 s after the
+   collapse on both sides, publishes the probe scan (the residual owned by
    `stop-expander-bind-time-child-scans`); the settled time's excess over
-   `main`'s is the completion's.
+   `main`'s is mostly the completion's.
 
 *Why 16,384.* It is the size up to which R3 is reachable on the frame
 argument: R3's table puts the unbound removal of up to 16,385 entries under
@@ -1805,6 +1808,23 @@ that requires work: the WIP's `d19a` build misses it by 37–141 ms at
 0:131,072, and only the skip-cache upper bound meets it, by 4–45 ms before
 the instrument bias is removed. Meeting it requires task 10.3's per-row cut,
 which this section's profile now names, and the margin is thin (Risks).
+
+*A second anchor: the chunked-removal rate (R10).* Stage 1's Prototype A
+removed unbound rows in plain 16,384-row splices at 4.9–6.6 ms each (load
+7–13, non-verdict), 0.30–0.40 µs a row including GTK's per-node removal and
+the mirror bookkeeping of that time. The skip-cache build's 5.7–6.0 ms per
+8,192-row chunk is 0.70–0.73 µs a row, about twice that, which fits the
+per-chunk work listed above ("What the skip-cache bound is not", the
+O(store) mirror count among it) that task
+10.3 removes. At Prototype A's rate the roughly 130,800 unbound rows of the
+0:131,072 case take 39–52 ms of GTK-thread time; with the first frame's
+wait, the frames that interleave with the between-frames source and the
+band's four destroy-only frames (D18), the reworked completion is estimated
+at roughly 110–150 ms. That is over R3's 100 ms even at that rate, so R3
+was out of reach for any chunked removal of a subtree this size, not only
+for D19's bookkeeping; and it is under R9's 157.3 ms, though not by much.
+It is an estimate from non-verdict figures, not evidence: task 10.7's round
+decides.
 
 | case | `main` worst | R3 bar | allowance | revised bar | evidence today |
 |---|---|---|---|---|---|
@@ -1844,7 +1864,9 @@ names are kept).
   into blank space; with rows after it, a gap opens above them. Both stay
   recorded follow-ups if task 10.7's round misses the revised bar.
 - *Judging the settled time.* On both sides it ends with the probe-scan
-  publication about 0.43–0.45 s after the completion, so its excess over
+  publication 0.40–0.45 s after the collapse (`main`'s dispatch starts
+  402–450 ms after the input in the stage 4 campaign, the branch's 431–442 ms
+  after its completing frame), so its excess over
   `main` (589–741 ms against 438.5–502.8 ms) is the completion's excess,
   which the completion bar already judges; judging it again would add
   nothing the user sees.
@@ -1859,8 +1881,9 @@ all a user can see change (unbound rows are not drawn), and the interval
 that follows it is the earliest time a between-frames source can run. The
 scenario "The first frame takes the first step" now says so; task 10.9's
 guard test asserts it (the first frame takes at most one unit and shows the
-projection; the second frame sees fewer than 4,096 of the subtree's rows
-left in the band's model range, or the unbound rows going).
+projection, and before the second frame's tick the subtree holds fewer rows
+than at the input, removed by that frame's tick or by the between-frames
+source; R10).
 
 **The open CRITICAL flood is a task.** The WIP's
 `test_typing_into_inline_rename_keeps_every_character` floods
@@ -1880,6 +1903,59 @@ fixes to pass the hook, both in the uncommitted tree (they land with task
 (`make check-signal-connections`, new on `main`), and `docs/thresholds.md`
 gained `COLLAPSE_DESTROY_ONLY_ROWS`'s row (`make check-thresholds`). The WIP
 snapshot after the merge commit is `rev3/wip-after-merge.patch`.
+
+### R10. Review of R9 (2026-11-17)
+
+An independent review of R9 against the logs (`rev/attr2/*.log` read with
+`rev/summ.py`; the stage 4 campaign's `main` rounds), the WIP and the rules.
+Every R9 figure was re-read and holds: skip-cache completion 112.6 / 125.6 /
+153.3 ms, settled 589–617 ms, worst step 5.7–6.0 ms; `d19a` 194.1 / 230.9 /
+298.7 ms, 658–741 ms, 7.9–8.2 ms; `d19a-1`'s 0:4,096 71.2–82.3 ms at load 8;
+`main`'s 0:16,385 15.7–17.9 ms plus a 1.0–1.1 ms frame; the 0.24–0.65 µs
+range and the 37–141 ms and 4–45 ms margins. The decision is sound: R3's
+own table priced the 0:131,072 case at "unbound (32 ms: 2)" frames, which
+no chunked removal reaches at the rates measured so far, so revising the
+bar for the linear part is a correction of R3, not a relaxation of what R3
+could have met; and the stop condition stays. Corrected, in place:
+
+1. **`R` for several collapses at once** was undefined. It is the sum of the
+   subtrees one input collapses (R9 item 3, the requirement, task 10.1),
+   because they share the unit token and the between-frames source; for the
+   measured header case (2 × 4,096) the allowance is zero either way.
+2. **The 0.5 µs a row had one anchor across two builds and two loads.** A
+   second anchor is added beside it, Prototype A's chunked-removal rate,
+   with the completion it predicts; it shows both why R3 was out of reach
+   at 131,072 rows and that R9's bar is reachable but thin.
+3. **"The cut's best case" contradicted R9.** R9 says the skip-cache build
+   is not the floor of the mechanism; Risks and task 10.3 called it the
+   cut's best case. Both now say it is the best case of cutting the
+   path-cache bookkeeping alone. Risks also records the repetitions'
+   spread.
+4. **The requirement said "no later than `main`'s"** in its body while
+   allowing more; its body is reworded (the scenario name is kept, as R9
+   decided), and "57 ms past the bar of a directory of 16,384 rows" now
+   says "past the same case's bar without the allowance", since that bar
+   depends on `main`'s time for the case, not only on the size.
+5. **Implementation decision 18's guard** read "fewer than 4,096 of the
+   subtree's rows left in the band's model range", which no instrument
+   measures; it now matches task 10.9: the subtree holds fewer rows than at
+   the input before the second frame's tick.
+6. **The probe-scan delay** read 0.43–0.45 s in two places and 0.40–0.45 s
+   in a third; `main`'s campaign rounds put its dispatch 402–450 ms after
+   the input, so all three say 0.40–0.45 s.
+7. **The attribution hooks had no removal task.** `SLC_UNIT`, `SLC_DESTROY`,
+   `SLC_CHUNK` (read through `OnceLock`s inside `next_collapse_step` itself,
+   so the pure, Kani-proved policy reads the environment, and in
+   `collapse_execution.rs`'s direct-path test) and `SLC_SKIP_CACHE`
+   (`scan_execution.rs`, which skips the path caches and so is wrong by
+   design) are in the WIP. Task 10.7 needs them; new task 10.11 removes
+   them after it, saved as a handoff patch, before the gates of 7.3 and the
+   smokes of 7.4.
+8. **The ticked boxes 9.4–9.7, 9.10 and 10.6** were proved before the merge
+   with `c16d6fdc` and before the rest of groups 9 and 10; task 5.8 now
+   reruns them on the final tree, in isolation as well.
+9. **Task 10.10's profile** was ordered after task 10.3, which it is meant
+   to inform; 10.3 now uses it if it arrives first and does not wait for it.
 
 ## Risks / Trade-offs
 
@@ -1906,11 +1982,15 @@ snapshot after the merge commit is `rev3/wip-after-merge.patch`.
   (queued); if it misses, the change returns to design with the slice-model
   or band-hiding alternatives of R9.
 - **R9's bar is met today only by the upper bound, and thinly.** The
-  skip-cache build is the per-row cut's best case, and it clears 157.3 ms by
+  skip-cache build is the best case of cutting the path-cache bookkeeping
+  alone (the further cuts task 10.3 lists, the O(store) mirror count, the
+  per-row collect and the disposal hand-off, go beyond it, R9), and it
+  clears 157.3 ms by
   4 ms at the worst of three non-verdict repetitions (by about 13 ms once
-  the 9 ms instrument bias goes). A real cut that keeps any of the
-  bookkeeping, or a quiet verdict that differs, can miss; task 10.7's round
-  is the stop condition.
+  the 9 ms instrument bias goes). Its three repetitions spread 112–153 ms
+  (`d19a`'s 194–299 ms), so the worst of a four-round campaign can sit
+  above them. A real cut that keeps any of the bookkeeping, or a quiet
+  verdict that differs, can miss; task 10.7's round is the stop condition.
 
 - *Superseded by R3's completion bar, which no longer accepts a collapse
   that finishes later than `main`'s plus two frames; kept as the stage 3
