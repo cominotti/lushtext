@@ -172,6 +172,20 @@ The placeholder is not counted twice: the sub-slice is a `*.slice`, and the
 host-level count reads only `*.scope` children. The scopes inside the
 sub-slice are not children of the heavy slice.
 
+**Envelope peak and OOM kills.** An OOM kill in the root scope would otherwise
+go unreported: only shard scopes print `OOM-KILL:`, so a killed nextest
+process would read as an ordinary test failure. So a sentinel scope in the
+sub-slice (no `MemoryMax`, one process that exits when the placeholder exits)
+keeps the sub-slice alive until the placeholder has read its `memory.peak` and
+`memory.events` `oom_kill`, which cgroup v2 counts over the whole sub-tree.
+The placeholder writes them to `heavy.sh`'s report file (`envelope: peak=<MiB>
+oom_kill=<n>`, a prefix distinct from the misfit line). `heavy.sh` waits a
+bounded few seconds for that line after the child exits. When `oom_kill > 0`
+it prints `OOM-KILL: …` and exits non-zero, even if the command exited 0,
+as `run-widget-tests.sh` does for a shard. The self-tests check the reading
+on a normal run, and the decision on fixture lines. They never provoke a real
+OOM kill, because one in a user scope can raise a GNOME notification.
+
 **D10 holds.** When the root command exits, `tail --pid` returns, the
 placeholder reverts the sub-slice and exits, and the envelope's admission
 ends. An sccache server left in the sub-slice keeps it alive, but holds no
@@ -192,10 +206,17 @@ can run at once.
 
 | Lane | Inner admissions | Envelope | Reserved compared with `main` |
 | --- | --- | --- | --- |
-| `make test`, `make test-widget` | 16G build (`WIDGET_BUILD_MEMORY_MAX`), then 3 x 2G shards (`WIDGET_SHARD_MEMORY_MAX`; 864 MiB measured peak) | 16G | 16G for the whole run. `main` holds 0 in the non-widget phase (uncapped), 16G for the build and 6G for the shards |
+| `make test`, `make test-widget` | 16G build (`WIDGET_BUILD_MEMORY_MAX`), then 3 x 2G shards (`WIDGET_SHARD_MEMORY_MAX`; 864 MiB measured peak) | 16G, provisional | 16G for the whole run. `main` holds 0 in the non-widget phase (uncapped), 16G for the build and 6G for the shards |
 | `make mutants-*` | `MUTANTS_MEMORY_MAX` (36G default) | the same value | unchanged |
 | `make kani` | `KANI_MEMORY_MAX` 16G, `--address-space` | 16G | `heavy.sh -- make kani` on `main` runs in place at 12G; the envelope gives Kani its 16G |
 | `make proof-strength` | `PROOF_STRENGTH_MEMORY_MAX` 16G | 16G | unchanged |
+
+The `make test` size is provisional. The sub-slice now also bounds the
+non-widget phase, which `main` runs uncapped, and 9.5 GiB is a cold-build
+peak, not a peak of the tests running. Lane case 4.3 records the sub-slice's
+`memory.peak` and `oom_kill` for a whole `make test`. The documented size is
+then set to cover that peak, at a power of two of at least 16G; a peak that
+does not fit 16G raises it in the same change, with the figure recorded.
 
 If inner caps add up to more than the envelope, those scopes run one after
 another within it (D3). An inner cap larger than the envelope fails at
@@ -228,6 +249,10 @@ envelope's admission then works as follows:
 
 - the slice is that sub-slice, and the budget is its `memory.max`, read from
   `/sys/fs/cgroup` rather than an environment value;
+- the wrapper's per-call `set-property --runtime <slice> MemoryMax=<budget>`
+  is skipped. Done there, it would reset the sub-slice to the host default
+  (48G) and remove the envelope's bound. A self-test checks that
+  `memory.max` is unchanged after an inner admission;
 - no legacy slice is counted, since no old copy can start a scope in an
   envelope;
 - the MemAvailable and reserve check is skipped. The envelope's admission
@@ -284,7 +309,9 @@ time and name their fix.
     `with-memory-cap.sh --ticket <cap> <owner-pid>`. It keeps the ticket
     across D1 retries, so it keeps its age, and passes it as
     `LUSHTEXT_ADMISSION_TICKET` to the probe and to the once-admission. The
-    ticket is removed on admission, and by `heavy.sh`'s `EXIT` trap.
+    ticket is removed on admission, and by `heavy.sh`'s `EXIT` trap. Like
+    `LUSHTEXT_ADMISSION_ONCE`, the variable is unset before the `exec`, so
+    no inner call inherits another process's ticket.
   - A blocking `admit` outside `heavy.sh` takes its own ticket and removes it
     before the `exec`.
 - **Verdict.** One pure function decides for the probe and the admission
@@ -367,6 +394,11 @@ back.
 - **Envelope reservations are coarse.** A lane reserves its whole size for the
   whole run (proposal, "Loss compared with `main`"). Accepted: today the same
   phases either reserve their peak or run uncapped.
+- **The refusal lands late.** Under `--mem none`, `make test` would reach its
+  first inner admission only after the whole non-widget phase. The admitting
+  Makefile recipes therefore start with a cheap preflight
+  (`with-memory-cap.sh --preflight <cap>`): it applies D4's check without
+  admitting anything, and exits 2 at once in the same case.
 - **Mixed wrapper copies during the transition.** Worktrees that have not
   merged this change still use first-fit, ignore tickets, and wait under
   `LOCK` through their own `heavy.sh`. They share the admission lock, and they

@@ -21,7 +21,7 @@
 - **THEN** the number of shared `LOCK` holders that sets `CARGO_BUILD_JOBS` and the front-end threads is read after `LOCK` is taken again
 
 ### Requirement: Commands that admit their own scopes run in an envelope
-`heavy.sh --envelope <size>` SHALL admit `<size>` like a scope of that cap, as a reservation that the host-wide count of every wrapper copy since D10 sees. The command SHALL then run in a sub-slice whose `MemoryMax` is `<size>`, with no swap. Capped calls inside it SHALL get their own scopes there, admitted against `<size>` without the host reserve check, and waiting only for scopes of the same envelope.
+`heavy.sh --envelope <size>` SHALL admit `<size>` like a scope of that cap, as a reservation that the host-wide count of the current and earlier wrapper copies sees. The command SHALL then run in a sub-slice whose `MemoryMax` is `<size>`, with no swap. Capped calls inside it SHALL get their own scopes there, admitted against `<size>` without the host reserve check, and waiting only for scopes of the same envelope.
 
 #### Scenario: An inner admission does not wait for other agents
 - **WHEN** a command runs under `heavy.sh --envelope 2G` and starts a 2G capped call while the host slice is otherwise full
@@ -43,6 +43,14 @@
 #### Scenario: Each shard keeps its own scope
 - **WHEN** `make test` runs under `heavy.sh --envelope 16G`
 - **THEN** each widget shard runs in its own capped scope inside the envelope and reports its own peak and OOM kills
+
+#### Scenario: Inner calls keep the envelope's limit
+- **WHEN** a capped call is admitted inside a 2G envelope
+- **THEN** the envelope sub-slice's `memory.max` is still 2G afterwards
+
+#### Scenario: An OOM kill in the envelope fails the run
+- **WHEN** the kernel OOM-kills any process inside an envelope, the root command's own processes included
+- **THEN** `heavy.sh` prints an `OOM-KILL:` line naming the envelope and exits non-zero, even when the command exited 0
 
 #### Scenario: Parallelism follows the envelope size
 - **WHEN** `heavy.sh --envelope <size>` computes the compiler parallelism

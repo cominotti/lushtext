@@ -11,10 +11,11 @@ Rules for every task:
 - Work only in `.claude/worktrees/close-heavy-admission-window` and
   `.claude/handoffs/close-heavy-admission-window/`.
 - Every heavy command goes through `scripts/heavy.sh [--mem <cap>] -- <cmd>`,
-  one command per call. This worktree's own `heavy.sh` changes under you, so
-  until group 3 is committed, run lanes with the copy from `main`
-  (`git show origin/main:scripts/heavy.sh`) or with the worktree's copy, and
-  record which.
+  one command per call. `heavy.sh` resolves its sibling scripts from its own
+  directory, so a copy extracted with `git show` does not run. Until groups 2
+  and 3 are committed, run heavy commands through the main checkout's
+  `scripts/heavy.sh` (that is `main`'s copy; read-only use, the main checkout
+  is never edited), and record which copy ran each lane.
 - Every commit goes through `scripts/heavy.sh --mem none -- git commit -F
   <file>`: signed, conventional, staged by name, ending with `Co-Authored-By:
   Claude Opus 5.5 <noreply@anthropic.com>`. Push per task group.
@@ -77,12 +78,18 @@ Rules for every task:
 - [ ] 1.3 Run `scripts/heavy.sh --mem none -- make check-agent-helpers` with
   `main`'s `heavy.sh` and confirm that exactly the cases above fail. Commit
   the cases ("test(build): failing-first cases for the heavy admission
-  window"). The pre-commit hook fails on red self-tests, so either commit the
-  red cases behind `LUSHTEXT_ADMISSION_WINDOW_RED=1`, an opt-in guard removed
-  in 2.6, or commit groups 1 and 2 together. Record which in `evidence/red.md`.
-  Push.
+  window") behind `LUSHTEXT_ADMISSION_WINDOW_RED=1`, an opt-in guard, because
+  the pre-commit hook fails on red self-tests. Record in `evidence/red.md`
+  that the guarded run fails on the current scripts and that the unguarded
+  hook passes. Push.
 
 ## 2. with-memory-cap.sh: verdict, queue, check-once, refusal, envelope
+
+Groups 2 and 3 land as **one** commit (3.5). Once the wrapper refuses an
+admission under a shared `LOCK` without `LUSHTEXT_ADMISSION_ONCE` (2.4), the
+old `heavy.sh` loop would make every capped `heavy.sh` call above 1G exit 2,
+the default 12G included. The "window after the probe" case also needs group
+3's loop. So no commit sits between the wrapper half and the `heavy.sh` half.
 
 - [ ] 2.1 Add the pure `admission_verdict` (design D5) and the
   `--admission-verdict` entry. Make the probe (`--wait-admissible`) and
@@ -97,7 +104,7 @@ Rules for every task:
   take none and ignore the head.
 - [ ] 2.3 Check-once mode (D1): with `LUSHTEXT_ADMISSION_ONCE=<file>`, a
   misfit writes the waiting message to `<file>` and exits 75 before any scope.
-  Unset the variable before the `exec`.
+  Unset it, and `LUSHTEXT_ADMISSION_TICKET`, before the `exec`.
 - [ ] 2.4 The `LOCK` proof (D4): source `scripts/agent-locks.sh`, and for caps
   above 1G that are not nested in place, run `agent_lock_inherited`. With
   `exclusive` outside an envelope, check once (75). With `shared`, without
@@ -113,7 +120,11 @@ Rules for every task:
     the placement check), and does not export `LUSHTEXT_MEMORY_CAP_KIB`;
   - inner calls recognise the envelope from `/proc/self/cgroup` and admit
     against the sub-slice's `memory.max`, with no reserve check, no legacy
-    slice and no NOWAIT;
+    slice and no NOWAIT, and skip the per-call slice `set-property` (D3);
+  - a sentinel scope in the sub-slice keeps it alive until the placeholder
+    has read its `memory.peak` and `oom_kill` and written the `envelope:`
+    line to the report file (D2, "Envelope peak and OOM kills");
+  - `--preflight <cap>` applies D4's check without admitting anything;
   - CI without a user manager runs uncapped; elsewhere the wrapper refuses, as
     today.
 - [ ] 2.6 Self-test hygiene (D7): shed `LUSHTEXT_AGENT_LOCK_HELD`; widen the
@@ -125,6 +136,14 @@ Rules for every task:
   - a leftover daemon in an envelope keeps no admission, and the sub-slice's
     drop-in is gone;
   - two 2G inner calls in a 2G envelope run one after the other;
+  - the sub-slice's `memory.max` is still the envelope size after an inner
+    admission;
+  - an envelope's normal run produces an `envelope: peak=<MiB> oom_kill=0`
+    line, read before the sub-slice went away. Never provoke a real OOM kill:
+    an OOM kill in a user scope can raise a GNOME notification, which is why
+    the existing cases read limits instead;
+  - `--preflight 2G` under a proven shared `LOCK` exits 2, and outside one
+    exits 0;
   - an inner 4G call in a 2G envelope exits 2;
   - `--address-space` inside an envelope still sets `RLIMIT_AS` to 7/8 of the
     inner cap (the Kani path);
@@ -133,11 +152,8 @@ Rules for every task:
     request;
   - a dead ticket does not block.
 
-  Remove the red guard of 1.3 if one was used.
-- [ ] 2.7 `shellcheck -x` the scripts, run
-  `scripts/heavy.sh --mem none -- make check-agent-helpers`, and check that
-  every wrapper case of 1.2 now passes. Commit ("fix(build): admit heavy work
-  once after LOCK, in envelopes and in a fair order"; wrapper half) and push.
+- [ ] 2.7 `shellcheck -x` the wrapper, and run its `--self-test` directly.
+  The wrapper cases of 1.2 must pass. No commit yet (group 2 note).
 
 ## 3. heavy.sh: retry after LOCK, envelopes, tickets
 
@@ -164,7 +180,20 @@ Rules for every task:
   Run the whole `heavy.sh --self-test`, which must pass every case of 1.2,
   every existing case, and a new case: the parallelism probe after a forced
   misfit-retry still reports the contended or alone setting read after
-  `LOCK`. Commit ("fix(build): …"; heavy half) and push.
+  `LOCK`.
+- [ ] 3.5 Envelope OOM: after the child exits, wait a bounded few seconds for
+  the `envelope:` line. On `oom_kill > 0`, print `OOM-KILL: envelope <name>:
+  …` and exit non-zero even when the command exited 0. A missing line after
+  the wait is reported as a warning, never as a pass that claims no OOM. Test
+  the decision as a pure function over report lines: `oom_kill=0` passes the
+  command's status through; `oom_kill=2` with status 0 gives `OOM-KILL:` and
+  a non-zero exit; a missing line gives the warning. Do not provoke a real OOM
+  kill (2.6).
+- [ ] 3.6 Remove the red guard of 1.3. Run `shellcheck -x` and
+  `scripts/heavy.sh --mem none -- make check-agent-helpers` with the
+  worktree's scripts. Every case of 1.2 and every existing case must pass.
+  Commit groups 2 and 3 together ("fix(build): admit heavy work once after
+  LOCK, in envelopes and in a fair order") and push.
 
 ## 4. Call sites and lane cases
 
@@ -175,14 +204,20 @@ Rules for every task:
   in `evidence/call-sites.md`.
 - [ ] 4.2 Update the Makefile comments of `test`, `test-widget`, `mutants-*`,
   `kani` and `proof-strength`, and `widget-shards.py`'s docstring, to name
-  `heavy.sh --envelope <size>` with the per-lane size. Do not change any
-  default cap.
+  `heavy.sh --envelope <size>` with the per-lane size. Start each of those
+  recipes with `./scripts/with-memory-cap.sh --preflight <its inner cap>`, so
+  a `--mem none` run fails before its first phase rather than after it. Do not
+  change any default cap.
 - [ ] 4.3 Lane case: run `scripts/heavy.sh --envelope 16G -- make test` once
   on the final scripts. Record the output in `evidence/lane-make-test.md`:
   - the envelope's placeholder, sub-slice and root scope
     (`systemctl --user list-units 'lushtext-*'` and the cgroup tree during
     the run);
   - each shard's own scope and `widget-memory:` line;
+  - the envelope's `envelope: peak=… oom_kill=…` line. Set the documented
+    `make test` size from that peak (design D2, "provisional"): keep 16G if
+    the peak fits with margin, otherwise raise it to the next power of two
+    and record why;
   - no `FLAKY:` lines;
   - the exit status;
   - `/proc/loadavg` before and after.
@@ -194,8 +229,9 @@ Rules for every task:
   envelope, the run's summary, and that no admission waited under `LOCK`.
   Exit 75 (slots busy) is retried later and is not a failure.
 - [ ] 4.5 Lane case: `scripts/heavy.sh --mem none -- make mutants-smoke`
-  exits 2 at once with the `--envelope` message, before any slot is taken
-  (the slot lock files are unchanged).
+  and `scripts/heavy.sh --mem none -- make test` each exit 2 within a second
+  with the `--envelope` message (the preflight), before any slot is taken or
+  any test runs.
 - [ ] 4.6 Commit ("build: run self-admitting lanes in heavy.sh envelopes")
   and push.
 
