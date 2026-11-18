@@ -1,473 +1,685 @@
+## Revision against 761866ff (2026-11-18)
+
+The change was proposed in 1546d7e8, before its prerequisites landed. This
+revision re-derives the plan against `main` 761866ff, after
+`harden-kani-lane-and-draft-token`, `verify-multi-window-draft-journal` and
+`apply-verification-altitude-redesigns` (PR #117, merged 8d4f5d7b, archived
+761866ff) merged.
+
+**What the shared driver already gives.** Altitude group 1 put all six
+proven-core shells on one loop, `protocol_drive::drive`:
+- the atomic write, `run_rename_protocol` and `move_durable` in
+  `durable_write.rs`;
+- the Replace All apply and Undo shells;
+- the journal shrink in `search_backup.rs`.
+
+A source check (`no_shell_steps_its_core_outside_protocol_advance`) pins that
+no shell steps its core anywhere else. So **the sequence of actions a shell
+executes is the core's by construction**. The old D3 check "the core's next
+action equals the one the shell executed" is now redundant. What conformance
+still has to show is narrower and sharper:
+- (i) the outcome a shell feeds back reflects what the backend really did;
+- (ii) each `execute` arm has exactly its action's effect on the disk;
+- (iii) the service built on the shells keeps the journal model's state.
+
+`drive` is one site that can observe every action and inject a crash. It
+cannot make a typed fault faithful: a shell builds `last_error`, and decides
+`AlreadyExists`, inside its own `execute` arms (archived design, "What the
+site does not give"). This revision designs that half (D3).
+
+**Groups, re-decided.**
+
+| Group (1546d7e8) | Decision | Why |
+|---|---|---|
+| D1 shared models | **Kept, split in two** | Write model: the choices become explicit arguments, with no trait. Journal model: a `Choices` trait. The move is its own commit, before any widening (D1). |
+| D2 plain-proptest runner | **Kept, generation changed** | E4 measured that uniform scripts barely reach the protocol. Generation is now enabled-indexed, with a recorded reach figure and a mutant calibration (D2). |
+| D3 backend tap | **Kept, redesigned** | Observation, crash and before-action hooks live once in `drive`. Typed faults are injected at the `sys.rs` backend call. "Exactly one fallible call per action" is replaced by a pinned per-action call table (D3). |
+| D3 write-shell conformance | **Kept** | Exhaustive and cheap. It is the only check that the real disk matches the proven disk model (D4). |
+| D4 draft service, one window | **Kept** | E1 found a real defect exactly this way (D5). |
+| D4 draft service, two windows | **Dropped** | The service holds no window state, and a sequential driver cannot exercise the process-wide lock. K8 and the multi-window harness already prove the coordinator (D5). |
+| D4 `AfterEffect` widening | **Kept, semantics corrected** | "Persists" alone is unsound: an after-rename failure is visible but not durable (D6). |
+| D4 step atomicity, `At(k)` | **Kept** | Preservation is compared as a superset (D7). |
+| D5 GTK scenarios | **Dropped, deferred** | They need the widget lane and the three smokes (UI prefix `crates/lushtext/tests/widget/`), and the evidence-surface fields would touch `ui/`. Single-scenario widget tests already cover the paths (D10). |
+| D7 fuzz conformance mode | **Dropped** | The write shell is enumerated exhaustively, and the draft property shrinks semantically. A byte-decoded mode adds a corpus, seeds and a feature edge for no new coverage (D10). |
+| (new) Replace shells | **Tap only** | The three `process_file` mutation survivors owed to this change are killed. Lockstep against the Replace model is deferred (D8). |
+
+**Owed by others to this change**, from the programme record's deferral
+inventory: the three `replace/apply.rs::process_file` mutation survivors (the
+pass-A facts check, and the two cancelled tests), each needing code between
+two actions of one file's protocol (D8).
+
 ## Context
 
-The Kani consolidation left two proven pure cores, each checked inside an
-environment model that lives in a `cfg(kani)` harness module.
+Kani proves two pure cores, each inside an environment model that lives in a
+`cfg(kani)` harness module:
 
-- **The draft journal.** `services/draft_service/journal_core.rs` holds small
-  `const fn` decisions over `Copy` facts. `services/draft_service/kani_proofs.rs`
-  composes them into a `Journal` model with these parts:
-  - a fixed-array disk: entries, bodies, backing versions, preserved content;
-  - window state: editors, known entries, tokens, restore holds, deletions,
-    trust;
-  - the actions Edit … Startup, each with a `fault: bool`.
+- **The draft journal.** `services/draft_service/journal_core.rs` holds the
+  decisions. `services/draft_service/kani_proofs.rs` (1,721 lines) composes
+  them into the `Journal` model:
+  - `Window` and `Process` actors;
+  - a `Scope` trait of associated constants;
+  - the actions `Edit` … `Startup`, each with a `fault: bool`.
 
-  Kani proves S1–S4 and L1 (k = 7) over it. After
-  `verify-multi-window-draft-journal` (change 3), the model separates `Window`
-  actors from `Process` actors.
+  The model has seven `kani::any()` / `kani::assume` choice sites before the
+  harnesses. It proves S1–S4, L1 (k = 7), K3 and the multi-window properties.
 - **The durable write.** `services/filesystem/write_protocol.rs` holds
-  `WriteProtocol`, `MoveProtocol`, and `RenameProtocol`, each
-  `step(outcome) -> next action`. `write_protocol/kani_proofs.rs` defines a
-  `Disk` model with these parts:
-  - the destination, its previous inode, and one temp inode;
-  - POSIX crash semantics (`after_crash`) and the live state (`visible`).
+  `WriteProtocol`, `MoveProtocol` and `RenameProtocol`. Their harness module
+  (481 lines) defines a `Disk` model of one destination, its previous inode
+  and one temp inode, with `after_crash` and `visible`. Its four choice sites
+  are the outcome inside `Disk::execute`, the crash branch inside
+  `after_crash`, the crash step, and the harness-level outcomes.
 
-  Kani proves crash atomicity, classification soundness, mode non-widening,
-  and move/rename safety.
+The shells are not proved:
 
-The shells that drive these cores are not proved:
+- `durable_write.rs`. Its evidence is 40 unit tests, a few of them using
+  file-private `#[cfg(test)]` hooks: five thread-locals
+  (`FAIL_FINAL_TEMP_SYNC_AFTER_METADATA`, `FAIL_NEXT_PARENT_SYNC`,
+  `FAIL_NEXT_SOURCE_REMOVAL`, `FAIL_NEXT_RENAME_CROSS_DEVICE`,
+  `NEXT_NO_REPLACE_UNSUPPORTED`) and one process-global observer
+  (`TEMP_AFTER_CONTENT_OBSERVER`). Some of these return early, before the
+  protocol runs (`rename_durable`'s cross-device hook). That is not the path a
+  real `EXDEV` takes.
+- `draft_service.rs` (5,055 lines), whose evidence is single-scenario tests and
+  the property `draft_orphan_cleanup.rs`.
+- The Replace All shells, with their own target-keyed hook registry in
+  `content_search/replace/mod.rs`.
 
-- `services/durable_write.rs`: `atomic_write_stream_with_metadata`,
-  `run_rename_protocol`, and `move_durable`, which call through
-  `services/filesystem/sys.rs`;
-- `services/draft_service.rs`;
-- `ui/window/drafts/`: `journal.rs`, `cleanup_journal.rs`,
-  `autosave_execution.rs`, and `restore_execution.rs`.
+Two concrete gaps:
 
-The write shell's evidence today is a handful of fault-injection unit tests.
-They use `#[cfg(test)]` thread-local hooks (`FAIL_NEXT_PARENT_SYNC`,
-`FAIL_FINAL_TEMP_SYNC_AFTER_METADATA`, `FAIL_NEXT_RENAME_CROSS_DEVICE`, and
-`TEMP_AFTER_CONTENT_OBSERVER`), which integration tests cannot reach. The
-draft service has `execute_orphan_cleanup_with_fault_for_test` and the
-single-case property `tests/properties/draft_orphan_cleanup.rs`.
-
-Two concrete gaps motivate this change beyond "the shells are untested":
-
-1. **The fault seam between the two cores.** The journal model's `fault` means
-   "the step's I/O did nothing". A journal step's durable write can also end
-   `AfterRename`: the manifest or body is on disk, but the call returned an
-   error. The journal model has no such outcome, so S1–S4 were never checked
-   over it.
-2. **Step atomicity.** The model treats each action as atomic. Some service
-   calls perform more than one durable write per action. Preservation, for
-   example, writes a set-aside copy and a local-history snapshot, and
-   registration may preserve and then commit. A fault or crash between those
-   writes is a state the model never visits.
-
-This change depends on change 1 (`harden-kani-lane-and-draft-token`): the
-`test-utils` gate on fixtures, `property-tests` implying `test-utils`, and the
-`kani_proofs.rs` harness-module rule. It also depends on change 3, for the
-window/process model.
+1. **The fault seam between the cores.** The journal model's `fault` means
+   "the step's I/O did nothing". A draft body write (`write_draft` →
+   `atomic_replace`) and a manifest commit can end `AfterRename`: the bytes are
+   visible, the directory sync failed, and the call returns an error, so the
+   window treats the step as failed. The service already treats this outcome
+   specially in one place: `set_aside::keep_copy` counts an `AfterRename`
+   placement as placed (`set_aside.rs`, "`AfterRename` means it is in the
+   set-aside area"). The model has no such outcome.
+2. **Step atomicity.** The model's actions are atomic. Some service calls make
+   several durable writes: a preservation makes a set-aside copy plus a
+   local-history snapshot, and a registration may preserve and then commit.
 
 ## Goals / Non-Goals
 
 **Goals:**
 
-- Close the proof chain. Kani shows the core is safe inside its environment;
-  conformance shows the real shell behaves like that environment and obeys
-  the core.
-- Use the proven code as the only oracle. There is no second specification,
-  no expected-state table, and no parallel state machine.
-- Pin the environment models against the real filesystem. This does for the
-  POSIX side what the GTK axiom-ledger probes do for GTK.
-- Find divergences, and fix each one failing-first. A divergence in the core
-  counts as a proof invalidation, not a test failure to be patched quietly.
-- Fit the existing lanes: the pull-request property job, the fuzz smoke,
-  corpus replay, and the widget lane. Deep runs go to `test-prop-deep` and the
-  fuzz lanes.
+- Close the proof chain for the durable write and the draft service. Kani
+  shows each core is safe inside its environment; conformance shows the real
+  shell behaves like that environment.
+- The proven code is the only oracle. There is no second specification, no
+  expected-state table, and no parallel state machine.
+- Pin the write environment model against the real filesystem, for every
+  outcome the shell can feed back.
+- Find each divergence and fix it failing-first. A divergence in the core
+  counts as a proof invalidation.
+- Kill the three Replace mutation survivors owed to this change.
 
 **Non-Goals:**
 
-- Simulating power loss. An in-process test cannot discard the page cache,
-  so the real-filesystem check covers only the "everything executed has
-  persisted" branch of the crash model. The volatile branches stay Kani's,
-  and real-process kills stay with K5 (`make crash-recovery-smoke`).
-- The `ViewportSliceBin` shell. Its environment is GTK. The rendered-bounds
-  widget tests and the axiom-ledger probes already play the conformance role
-  there, and a generated GTK geometry driver is not affordable in the widget
-  lane.
+- Simulating power loss. An in-process test cannot discard the page cache, so
+  the real-filesystem check covers only the branch of the crash model in which
+  everything executed has persisted. The volatile branches stay Kani's, and
+  real-process kills stay with K5 (`make crash-recovery-smoke`).
+- **Crashes in the middle of a draft-service call** (D5). They stay with K5's
+  kill points.
+- The GTK drafts coordination, the fuzz conformance mode, the two-window
+  service property, and lockstep checks of the Replace shells. These are
+  deferred with reasons (D8, D10).
+- The `ViewportSliceBin` shell: its environment is GTK, and the axiom-ledger
+  probes play the conformance role there.
 - Multi-process (axiom A6), which stays accepted per K8.
-- New user-visible behaviour, persisted formats, actions, or automation
-  fields, except for fixes that the conformance findings require.
+- Any user-visible behaviour, persisted format, action or automation field,
+  except a fix a conformance finding requires.
 
 ## Decisions
 
-### D1. One environment model, two drivers
+### D1. One environment model per core, two drivers, moved before anything else
 
-Move the journal model out of `draft_service/kani_proofs.rs` into
-`services/draft_service/journal_model.rs`, and move the write `Disk` model into
-`services/filesystem/write_protocol/disk_model.rs`. Gate both with
-`#[cfg(any(kani, test, feature = "test-utils"))]`. Each model takes every
-nondeterministic value through a small trait:
+**Write model.** `Content`, `Entry`, `TempInode`, `Disk` and the `Shell`
+mutant move into `services/filesystem/write_protocol/disk_model.rs`, gated
+`#[cfg(any(kani, test, feature = "test-utils"))]`. They move verbatim, except
+that each choice becomes an argument:
+- `Disk::execute(action, shell, outcome)`;
+- `Disk::after_crash(durable_branch: bool)`.
+
+The harnesses pass `kani::any()` at the call site. A choice made at the call
+site is the same nondeterminism, so the state space is unchanged. No `Choices`
+trait is needed for a model whose choices are all per call. The stateright
+port `env.rs` used the same explicit-argument transformation.
+
+**Journal model.** The model moves into
+`services/draft_service/journal_model.rs`, under the same gate. Some of its
+choices are taken inside a step, under a state-dependent `kani::assume`: the
+`RestoreEnding` inside `RestoreApply`, the previous-session bits, and
+`any_below`. So it takes them through a small trait:
 
 ```rust
 pub(crate) trait Choices {
-    fn flag(&mut self) -> bool;                 // previous-session layout, crash branch
-    fn fault(&mut self) -> Fault;               // None | BeforeEffect | AfterEffect
-    fn restore_ending(&mut self) -> RestoreEnding;
-    // ... one method per kani::any() site in today's model
+    fn flag(&mut self) -> bool;                         // previous-session layout bits
+    fn below(&mut self, bound: usize) -> usize;         // any_below
+    fn restore_ending(&mut self, admits: impl Fn(RestoreEnding) -> bool) -> RestoreEnding;
 }
 ```
 
-`KaniChoices` implements the trait with `kani::any()` and `kani::assume`. The
-conformance driver's `ScriptChoices` implements it from the generated
-operation and from what the real shell actually did. The harness files keep
-only the `#[kani::proof]` functions and the invariant assertions. The
-assertions also become model methods, so conformance can check S1–S4 on the
-model's side as a cross-check.
+- `KaniChoices` implements it with `kani::any()` and `kani::assume`.
+- The conformance driver's `ScriptChoices` answers from the generated script.
 
-**Rationale.** This is what "the proven core is the oracle" means in practice.
-The composition of `journal_core` calls in the model is itself proved code.
-Re-writing it for the tests would re-create exactly the drift the Kani
-consolidation removed.
+The action, id and fault stay explicit arguments of `Journal::step`, as they
+are today. The S1–S4 assertions become model methods that return their
+verdict. The harnesses assert those methods, and conformance calls them as a
+cross-check.
 
-**Proof preservation.** The move must not change what Kani checks. Task 1
-re-runs the journal, liveness, K8, and multi-window harnesses and the five
-write harnesses before any other change. Each must give the same verdict, and
-each must take a wall time within 20 % of its recorded one. A larger shift is
-investigated, because it may mean the choice trait changed the state space.
+**Placement and the tables.**
+- The model modules are verification code. They are added to:
+  - `.cargo/mutants.toml` `exclude_globs`, with a reason;
+  - `NOT_ORACLE_MODULES` in `scripts/kani-shards.py`, because a harness file
+    imports from them and `make check-kani-shards` requires that every module
+    a harness imports is an oracle or an exception.
+- `kani_proofs.rs` keeps only the `#[kani::proof]` functions, so the
+  harness-module rule (`testing.md`, "Kani Harnesses") still holds.
+
+**Order.** The move is one commit, before the tap, the drivers or the
+widening. The affected scheduled shards run once, after the final code (D9).
+The move gets no run of its own. Its proof preservation is shown by the final
+run's verdicts, compared with today's recorded verdicts. The widening changes
+only the journal shards, and only by the domain D6 states.
 
 *Alternatives:*
+- A separate expected-state function for the tests: a second specification.
+- The core decisions alone as the oracle: too weak. E1's defect was found by
+  the environment model, while the core answered correctly.
+- Reusing `formal/evaluation/stateright/src/env.rs`: it is a port, a second
+  copy that already drifts from the Kani model (two inline asserts turned into
+  flags, and a hand-written `Hash`).
 
-- (a) Keep the models `cfg(kani)`-only and write a separate expected-state
-  function for the tests. Rejected: that is a second specification.
-- (b) Use only the pure cores as the oracle, with no environment model. For
-  the write shell, `WriteProtocol::step` alone gives the action sequence and
-  the classification, but it cannot say what the disk should hold. For the
-  journal, the per-id decisions do not say what the whole journal should look
-  like after a step. Rejected as too weak, although (b) is still the first
-  check at every step.
+### D2. Runner: plain `proptest`, enabled-indexed generation
 
-### D2. Runner: a hand-rolled state-machine driver on plain `proptest`
+A script is a `Vec<Op>` with a bounded length.
+- Each `Op` carries a **choice index**, not an action name. Before every
+  step, the driver asks the model for its enabled actions and takes
+  `index % enabled.len()`, so every op does something.
+- The fault field and the id are bounded small integers, interpreted the same
+  way.
 
-The script is `Vec<Op>`, with a bounded length and small bounded fields: an
-id index, a fault class, and a fault position. The driver folds the script
-over `(model, real)` and checks the abstraction after every step.
+So every generated script is valid. Removing an op shifts the later ops'
+choices, but they stay valid, so proptest's own `Vec` and element shrinking is
+sound. No `proptest-state-machine` dependency is added: it would bring
+`cargo deny`, hakari and `cargo-sources.json` churn, and a second expression of
+the model as its trait.
 
-**Why no `proptest-state-machine`.** Its value is precondition-aware
-generation and shrinking, through a `ReferenceStateMachine` trait. This
-project needs neither:
+**Reach and calibration.** E4 measured 2,000 uniform traces that made 6 body
+writes and no commit, and a trivial mutant that needed 1,246 traces to be
+caught. Enabled-indexed generation is meant to fix that, and it must be shown
+to:
+- **Reach figure.** A deterministic test runs the property's strategy for its
+  default case count, with a fixed seed. It counts the steps that reached
+  each of `WriteBody`, `Commit`, `DeletionStep`, `RestoreApply`, `ExecCleanup`
+  and `Startup`, and asserts a recorded floor for each. A generator change that
+  drops reach then fails a test instead of passing vacuously.
+- **Mutant calibration.** Two scratch, never-merged mutants of the service
+  are each caught within the default case count, and the counts are recorded:
+  - `preserve_stale_draft_body` skipping its set-aside copy;
+  - `delete_draft_file` running before `remove_manifest_entry`.
 
-- Every model step is **total**: an inapplicable action is a no-op. Today's
-  model already returns early in that case. The driver asks the model whether
-  an op is enabled before calling the service, so an op that the model treats
-  as a no-op is a no-op on the real side too. Every subsequence of a valid
-  script is therefore valid, and proptest's built-in `Vec` shrinking (drop
-  elements, then shrink each element) is sound and yields minimal sequences.
-- Implementing `ReferenceStateMachine` would mean re-expressing the model as
-  that crate's trait, which is a second copy.
-- The crate is a new dev-dependency. It would bring `cargo deny` review, a
-  cargo-hakari regeneration, and a `cargo-sources.json` regeneration (the
-  vendored sources cover the whole lock file, dev-dependencies included) for
-  no gain.
+**Shrink budget.** The conformance properties take their config from
+`support::property_config()`, with `max_shrink_iters = 256` and
+`max_shrink_time = 45_000` ms. That fits nextest's `property` profile
+(60 s × 2). A failure persists to the regression file. The shrunk script is
+committed as a deterministic `#[test]`, failing, before the fix.
 
-*Alternative:* only extend the `operation_script` fuzz target. Rejected as the
-primary runner: libFuzzer does not shrink semantically (`-minimize_crash`
-shrinks bytes), it is nightly-only, and it runs outside the pull-request gate.
-It is kept as a secondary explorer (D7).
+### D3. The conformance tap: one site in `drive`, faults at the backend call
 
-**Shrinking budget.** The conformance properties use their own config, built
-from `support::property_config()`, with `max_shrink_iters = 256` and
-`max_shrink_time = 45_000` ms. That keeps shrinking inside nextest's
-`property` profile ceiling (60 s × 2). A failure persists to the existing
-regression file. Task discipline: the shrunk script is pasted into a
-deterministic `#[test]`, and that test is committed failing, before the fix.
+The tap is `services/filesystem/backend_tap.rs`, gated
+`#[cfg(any(test, feature = "test-utils"))]`. It is a per-invocation fault
+seam (`testing.md`): a thread-local `TapState`, installed by
+`BackendTap::install(plan) -> TapGuard`, which uninstalls on drop. It has no
+process-global slot. The drivers are single-threaded, and so are the
+shells' own calls: Replace runs `process_file` on its caller's thread.
 
-### D3. The write-shell tap
+**Action site (in `drive`).**
+- `Protocol` gains `const KIND: ProtocolKind`:
+  - `Write`, `Move` and `Rename`;
+  - `ReplaceFile`, `ReplaceUndo` and `Shrink`.
+- `drive` calls `tap::before::<P>(&action)` and `tap::after::<P>(&action,
+  &outcome)` around its single `execute(action)`, which now needs
+  `P::Action: Copy + Debug + 'static` and `P::Outcome: Copy + Debug + 'static`.
+  All six shells already satisfy that, or do after a derive.
+- The tap records the trace as `(kind, run, action ordinal, action,
+  outcome)`, with `Box<dyn Any>` payloads that the driver downcasts. A nested
+  `drive` (a move's `Copy`) records a child run, between its parent's
+  `before` and `after`.
+- At an address, `before` can do one of three things:
+  - run a closure (a before-action hook, which D8 needs);
+  - panic with a private `TapCrash` payload (a crash before the action);
+  - leave a crash armed for `after` (a crash after the action).
+- Outside the gate, both calls are `#[inline(always)]` empty functions, as
+  `kill_point::reach` is.
 
-A module `services/filesystem/backend_tap.rs` gated
-`cfg(any(test, feature = "test-utils"))`, with three parts:
+**Call site (in `sys.rs`).** Every fallible backend primitive the shells
+reach calls `tap::fallible(call, path)` first, and returns its `Some(error)`
+when an injection is armed:
+- `required_metadata` (`metadata` on non-Unix);
+- `create_temp_file`, `apply_mode` and `sync_file`;
+- `rename` and `rename_no_replace`;
+- `sync_dir_descriptor`, `remove_file`, `read`, `create_dir_all` and
+  `create_dir`.
 
-- **A thread-local `TapState`** installed by `BackendTap::install(plan) ->
-  TapGuard`, which uninstalls on `Drop`. No process-global slot is used,
-  following the build rule on fault seams: the driver is single-threaded, and
-  nextest isolates tests by process. The `plan` maps an action ordinal
-  (counted across one protocol run, including nested copy writes, and tagged
-  with the protocol kind) to an injection: `Fail`, `AlreadyExists`,
-  `CrashBefore`, or `CrashAfter`.
-- **One call site per action** in each shell loop:
-  `tap::before(kind, &action)?`, which may inject a fault, and
-  `tap::after(kind, &action, outcome)`, which records the outcome fed back.
-  When `apply-verification-altitude-redesigns` group 1 (the common
-  `Protocol::drive`) lands first, the tap lives once in `drive`. Otherwise
-  each of the three loops calls it. Under shipping builds both calls are
-  `#[inline(always)]` no-ops behind `cfg(not(...))`, which is the kill-point
-  pattern. Task 7 checks with `strings` that the release binary is free of
-  them.
-- **A fallible-call counter** in `sys.rs`. Each fallible backend primitive
-  bumps a thread-local counter under the same gate: `required_metadata`,
-  `create_temp_file`, `apply_mode`, `sync_file`, `rename` /
-  `rename_no_replace`, `sync_dir_descriptor`, `remove_file`, and `read`. The
-  content write and flush through the temp file's `Write` is the
-  `WriteContent` action's one call. `best_effort_chown` and
-  `copy_xattrs_best_effort` return `()` and are not fallible calls.
+The injected error then takes the real error path:
+- `outcome_of` stores it as `last_error`;
+- `create_temp_file` returning `ErrorKind::AlreadyExists` becomes
+  `StepOutcome::AlreadyExists`;
+- an `EXDEV` (the error `sys::cross_device_error_for_test` builds) takes the
+  real cross-device branch.
 
-  The check "exactly one fallible call per non-`Finish` action" follows the
-  spec's "one backend call per action". A nested `Copy` in `MoveProtocol` is
-  one action that runs one whole `WriteProtocol`. The tap records the nested
-  run as a child trace, and the check applies recursively.
+Each fault is therefore as faithful as a real one, with no generic outcome
+forging in `drive`. An injection's address is:
+- the protocol kind;
+- the run occurrence in the armed scope;
+- the action ordinal in that run;
+- the call index in that action;
+- the error to inject: `Other`, `AlreadyExists`, `CrossDevice`, or
+  `Unsupported`.
 
-**Crash.** A `CrashBefore` or `CrashAfter` injection panics with a private
-marker payload. The driver catches it with `std::panic::catch_unwind`. Nothing
-in the shell handles it. Unwinding drops the temp `File` without running
-`RemoveTemp`, which is exactly the "process stopped here" disk. This adds no
-control flow to the production loop.
+**Content.** `WriteContent` writes through the temp file's `Write`, not a
+`sys.rs` primitive. A content fault comes from one of two places:
+- for the stream variants, the test's own producer, which may fail;
+- for the byte variants, the post-content tap point. The old
+  `observe_temp_after_content_for_test` becomes `tap::content_written(path)`,
+  whose error flows through `outcome_of`.
 
-**The existing hooks** (`fail_next_parent_sync_for_test`,
-`FAIL_FINAL_TEMP_SYNC_AFTER_METADATA`, `fail_next_rename_cross_device_for_test`,
-and the temp observer) are re-expressed as one-entry tap plans. Their existing
-tests must pass unchanged, which proves the tap against the known paths
-before it is trusted with generated ones.
+**Per-action call table (it replaces "exactly one fallible call").** Reading
+the shell shows that the inherited claim is false for some actions:
+- `ApplyMetadata` makes no call when there is no metadata source (a new
+  file);
+- `WriteContent` makes no `sys.rs` call;
+- a move's `Copy` is a whole nested write;
+- `RemoveTemp` makes one call and ignores its result.
 
-**`RemoveTemp`.** The shell feeds `Done` regardless of what the removal
-returned, and the core's `step` maps `RemoveTemp` under any outcome to
-`Finish(BeforeRename)`. The conformance check asserts this indifference
-(`step(Done) == step(Failed)` from that state) instead of flagging it. The
-disk model's `removal_failed` then predicts whether a temp is left behind.
+So the tap counts the fallible calls per action, and the conformance test
+pins the table: `(kind, action, source present) → count`. A shell change that
+adds a call to an action fails that test, and the new call becomes a new
+injection point, enumerated automatically. The checked contract is that **the
+outcome fed back equals the result of the action's calls**:
+- `Done` exactly when every call succeeded;
+- otherwise the failing call's class;
+- except `RemoveTemp`, whose outcome the core provably ignores.
 
-**Oracle per step.** The driver keeps three things in lockstep:
+**The existing hooks** are re-expressed as one-entry tap plans, and their 40
+tests must pass unchanged:
+- the five thread-locals;
+- `TEMP_AFTER_CONTENT_OBSERVER`;
+- the early-return cross-device and no-replace paths.
 
-1. `WriteProtocol` (or `MoveProtocol` / `RenameProtocol`), stepped with the
-   outcome recorded by the tap;
-2. the `Disk` model, stepped with the same action and outcome, via
-   `ScriptChoices` fed from the tap record;
-3. the real tempdir.
+The cross-device hook now fails `sys::rename` inside the protocol instead of
+returning before it. That is the path a real `EXDEV` takes. The Replace
+hook registry (`content_search/replace/mod.rs`) is keyed by target across
+threads, is used by its own tests, and stays.
 
-After each action it checks four things:
+**Crash by unwinding: where it is faithful.** A `TapCrash` panic is caught by
+the driver with `catch_unwind`. Unwinding drops the temp `File` without
+running `RemoveTemp`, which is the "process stopped here" disk. That holds
+only while no `Drop` on the unwind path does I/O and no lock it poisons is
+read afterwards. The audit for this revision:
+- `TargetWriteGuard::drop` is in memory and poison-recovering: faithful;
+- `draft_service::save_manifest` holds a process-global `Mutex` with
+  `.expect("draft manifest write lock poisoned")`;
+- `search_backup::acquire_journal_guard` maps poison to an error.
 
-- the core's next action equals the one the shell executed next;
-- the real destination bytes equal the model's `visible()`, with `Old` and
-  `New` mapped to the generated byte strings;
-- the real temp exists if and only if the model's temp is still `linked`;
-- the temp's mode is no wider than the destination's (theorem 3, checked on
-  the real fs).
+A crash inside either would poison state that a restarted *process* would not
+have. Changing that poison handling is out of scope: poison is the right
+production signal there. So **panic crashes are used only where the test
+calls a durable-write primitive directly** (D4), and the draft driver
+crashes only between service calls (D5). Task 2.6 re-runs this audit over the
+final code.
 
-At `Finish`, the returned `Result` variant must equal the core's
-`WriteClass`. After a crash, the real destination must be `Old` or `New` and
-equal the model's `visible()`, and any leftover must parse through
-`temp_name`'s single owner as a LushText temp name.
+### D4. Write-shell conformance: exhaustive, against the shared disk model
 
-**Scripts.** The destination is absent or holds old bytes, with a generated
-mode. Payloads are tiny. The primitive is one of `atomic_replace`, the stream
-variant, `copy_durable`, `move_durable`, `rename_durable` (same or cross
-directory), and `rename_durable_no_replace`. One optional injection is placed
-at a generated action ordinal. The finite protocols make this nearly
-exhaustive: at most 17 actions × 4 injections × 7 primitives. So the property
-is complemented by one deterministic **exhaustive** test that enumerates every
-(primitive, ordinal, injection) triple. That test is cheap and runs in
-`make test`.
+The driver lives in `services/conformance/write_shell.rs` (test-utils). For
+each case it does three things:
+1. It seeds a tempdir destination, absent or holding `Old` bytes, with a
+   generated mode.
+2. It installs one injection, or none.
+3. It calls the real primitive. The primitives are `atomic_replace`, the
+   stream variant, `copy_durable`, `move_durable`, `rename_durable` (same or
+   cross directory), and `rename_durable_no_replace`.
 
-### D4. The draft-service driver and its abstraction function
+From the tap's `after` record, the driver steps the shared `Disk` model with
+the same action and the recorded outcome. After each action it checks that:
+- the outcome equals the result of the action's calls, as in D3;
+- the real destination's bytes equal the model's `visible()`, with `Old` and
+  `New` mapped to the case's byte strings;
+- the real temp exists exactly while the model's temp is `linked`;
+- the temp's mode is no wider than the destination's (theorem 3, on the real
+  filesystem);
+- the call counts match the pinned table.
+
+At the terminal action, the returned `Result` variant must equal the core's
+`WriteClass` or `RenameClass`, and the move's `bool`. After an injected crash,
+three more checks run:
+- the destination is `Old` or `New`, equal to the model's
+  `after_crash(false)`, the live branch;
+- every leftover parses through `temp_name` as LushText's own;
+- `filesystem::leftovers::is_sweepable_leftover` accepts it, once its age is
+  set past the threshold with `fixture::set_modified`.
+
+**Exhaustive, deterministic.** The protocols are finite: at most 16 actions
+in a write plus the finish, and 3 in a transfer. The enumeration is
+(primitive × destination state × action ordinal × call index × injection).
+The injection is one of:
+- `Fail`;
+- `AlreadyExists`, only at `CreateTemp`;
+- `CrossDevice`, only at a rename;
+- `CrashBefore` or `CrashAfter`.
+
+That is a few thousand tiny cases, run in `make test` within 5 s. The temp-name
+retry path is reached by failing up to `MAX_TEMP_NAME_ATTEMPTS` consecutive
+`CreateTemp` calls with `AlreadyExists`, which is one case per count. A
+proptest property over the same driver adds what enumeration does not vary:
+modes, payload sizes, and two injections in one run
+(`tests/properties/shell_conformance_write.rs`, 64 cases).
+
+### D5. Draft-service conformance: one window, crashes between calls
 
 **Driver role.** At service level there is no GTK window, so the model's
-window half (editors, tokens, known entries, holds) is **model-owned**: the
-model decides what the window would do, and the driver translates each
-enabled model action into the service call(s) the drafts coordination makes
-at that point:
+window half (editors, tokens, known entries, holds) is **model-owned**. The
+model decides what the window would do. The driver translates each enabled
+model action into the service calls the drafts coordination makes at that
+point:
 
 | Model action | Service call(s) |
 |---|---|
-| Edit | none (buffer change; content id minted) |
-| Register | `register_draft_entries` → keeps the returned `RegisteredDraft` |
+| Edit | none (a buffer change; mints a content id) |
+| Register | `register_draft_entries`, keeping the returned `RegisteredDraft` |
 | WriteBody | `write_draft(&registered, text_of(content))` |
-| Commit | `update_manifest` with the pass's `DraftManifestCommit` |
-| Save | durable write of the backing file (mtime advances) |
+| Commit | `update_manifest` with the pass's commit |
+| Save | a durable write of the backing file (the mtime advances) |
 | Discard | none (the deletion is queued; model-owned) |
 | DeletionStep | `resolve_draft_restore` / `preserve_stale_draft_body` / `delete_draft_file` / `remove_manifest_entry`, per the core's `DeletionStep` |
 | Inspect / ExecCleanup | `inspect_orphan_cleanup_from` / `execute_orphan_cleanup` |
-| RestoreApply | `resolve_file_draft_restore` + the disposition's preservation call |
-| ExternalMtime | `fixture::set_modified` on the backing file, +1 s or more (manifest mtimes are seconds) |
+| RestoreApply | `resolve_file_draft_restore`, plus the disposition's preservation call |
+| ExternalMtime | `fixture::set_modified` on the backing file, at least +1 s (manifest mtimes are whole seconds) |
 | Crash | drop every driver-held value (tokens, plans, restore state, authority) |
 | Startup | `load_restore_state_cancellable`, then adopt its authority and restore list |
 
-When implementation finds that the table's mapping for an action differs from
-what `ui/window/drafts/` actually calls, the coordination is the source of
-truth, and the table in this design is updated. Such a difference is itself a
-finding about the service-level driver's fidelity, not a code defect.
+Task 4.1 checks the table against the real call sites in
+`ui/window/drafts/` and `ui/window/session_restore/`. Where they differ, the
+coordination is the source of truth, and the table here is corrected.
 
-**Abstraction function** (the real state projected to the model's disk and
+**Crashes happen between calls.** The model's actions are atomic, so its
+`Crash` falls between two of them. That is where the driver crashes, by
+dropping its in-memory values: the D3 audit forbids a panic inside a call
+that holds the manifest lock. Faults inside a multi-write call are D7's
+`At(k)`. A process killed inside a call is K5's, through the
+`DraftBodyBeforeCommit` kill window and its siblings.
+
+**Abstraction function** (the real state projected onto the model's disk and
 authority):
+- `entry[id].present` comes from `load_manifest`, and `entry[id].backing`
+  from the entry's `original_mtime_secs`, mapped through the driver's
+  mtime→version table;
+- `body[id]` is the body file's text, mapped back to a content id through an
+  injective content↔text table (`"c{content}\n"`, multibyte for some ids);
+- `backing[id]` is the backing file's mtime version;
+- `preserved` is the set of content ids among the set-aside bodies
+  (`set_aside::list`/`read`) and the local-history snapshots of the backing
+  path;
+- `trusted` is the `DraftManifestAuthority` that the last service call
+  returned and the driver holds.
 
-- `entry[id].present` comes from the loaded manifest (`load_manifest`), and
-  `entry[id].backing` from that entry's `original_mtime_secs`, mapped through
-  the driver's mtime→version table;
-- `body[id]` is the body file's text, mapped back to a content id through the
-  driver's injective `content ↔ text` table (`"c{content}\n"`, extended to
-  multibyte for some ids);
-- `backing[id]` is the backing file's current mtime version;
-- `preserved` is the set of content ids found among set-aside bodies
-  (`set_aside::list`/`read`) and local-history snapshots of the backing path;
-- `trusted` is the `DraftManifestAuthority` the last service call returned,
-  which the driver holds as the window does.
+Unknown files in the drafts directory fail the abstraction outright.
 
-The check at every step is `abstract(real) == model.disk_projection()`. The
-model's own S1–S4 assertions also run, as a cross-check that the lockstep
-stayed inside the proved envelope.
+**Comparison.**
+- `abstract(real).preserved ⊇ model.preserved`. An extra preserved copy is
+  safe for every S property, so it is counted and reported, not a
+  divergence.
+- Every other field must be equal.
+- The model's own S1–S4 methods must hold, as a cross-check that the lockstep
+  stayed inside the proved envelope.
 
-**Faults, and the atomicity seam.** A generated fault is `(class, position)`.
-The driver arms the tap for the service call, and the post-step state must
-equal the model's step under the matching `Fault`:
+**Two windows: dropped.** The 1546d7e8 design added a second property, with
+two window actors over one service. The service holds no per-window state:
+the windows' state is the model's. Its process-wide manifest lock and
+`TargetWriteGuard` serialize concurrent calls, but a sequential single-thread
+driver never makes calls concurrent, so the property would re-run the
+single-window check with a different model-side interleaving. The
+coordinator's multi-window behaviour is proved by K8 and
+`journal_invariants_hold_across_two_windows`, and its GTK half is in D10's
+deferral.
 
-- `BeforeEffect` fails the first fallible backend call of the step. The model
-  step is `Fault::BeforeEffect`, which is today's `fault = true`.
-- `AfterEffect` fails the final `SyncDir` of the step's committing write. The
-  model step is the new `Fault::AfterEffect`: the step's effect persists, but
-  the window treats it as failed. That means no token, no `written`, no
-  acceptance, and the dirty flag kept.
-- `At(k)` fails the k-th fallible call of a multi-write step. The resulting
-  real state must equal the model's `BeforeEffect` or `AfterEffect` outcome.
-  A third, intermediate state is an **environment finding** (step atomicity).
-  It is resolved by one of two changes, recorded in the programme record: the
-  model gains that intermediate state, and Kani re-checks, or the shell is
-  reordered so that the intermediate state cannot be observed.
+### D6. Widening the journal fault domain: before, after-unconfirmed
 
-**Widening the Kani fault domain.** `Fault` replaces `fault: bool` in the
-shared model. `AfterEffect` is meaningful only for the Register, WriteBody,
-Commit, DeletionStep(RemoveEntry), and preservation steps. Kani then checks
-S1–S4 and L1 over it. L1 is stated without faults, so it is unchanged, but it
-is re-run. The state space grows. The shard budget rules of change 1 apply:
-split first, and reduce bounds only as a recorded last resort.
+`Fault { None, BeforeEffect, AfterEffect }` replaces `fault: bool` in
+`journal_model.rs`.
 
-**Two windows at service level.** A second property runs two window actors of
-one process actor from change 3's model, over one data directory and one
-service. The service's manifest write lock and `TargetWriteGuard` are
-genuinely process-wide in the test process, so this checks that the real
-shared state matches what the multi-window model assumes is shared. Window
-choice is an `Op` field.
+- `BeforeEffect` is today's `fault = true`.
+- `AfterEffect` exists only for the steps whose effect is one rename:
+  Register's commit, WriteBody, Commit, and `DeletionStep(RemoveEntry)`. It
+  makes the effect **live but unconfirmed**. The window treats the step as
+  failed: no token, no `written`, no acceptance, and the dirty flag is kept.
+- **Unconfirmed is not persisted.** An after-rename failure means that the
+  directory sync failed, so a crash may revert the rename. The model keeps one
+  unconfirmed bit per entry and per body:
+  - `Crash` chooses, through `Choices::flag`, whether each unconfirmed
+    effect survives or reverts;
+  - a later successful durable write into the same directory clears the bit,
+    because its own directory sync makes the earlier rename durable. Bodies
+    live in `drafts/` and the manifest in the data directory, so the bit is
+    per directory.
+- **The unsynced body unlink is unconfirmed too.** `delete_draft_file`
+  (`DeletionStep::DeleteBody`) removes the body with
+  `remove_file_if_exists`, which syncs no directory, so a crash may bring the
+  body back. The same per-directory bit covers it: the removal stays
+  unconfirmed until a later durable write into `drafts/`. A resurrected body
+  whose entry is gone is the startup sweep's unregistered body, which is set
+  aside and never deleted. Kani now checks that path instead of assuming
+  that the unlink is durable.
+- **The set-aside copy needs no `AfterEffect`.** Its shell already counts an
+  after-rename placement as placed. That is a success outcome, and it is
+  modelled as the `None` fault.
 
-### D5. GTK drafts coordination: a scripted scenario set, not a random one
+Kani checks S1–S4 over the widened domain. L1 is stated without faults, but
+its three-action prefix admits them, so the liveness shard re-runs too.
 
-**Feasibility.** Each widget step needs a settle: `spawn_blocking_then`
-completions, idle drains, and readiness waits. A generated 16-step GTK
-sequence costs seconds, and shrinking it would re-boot windows hundreds of
-times. That does not fit the widget lane. A scripted set still has value,
-because it is the only layer that exercises `journal.rs`,
-`cleanup_journal.rs`, `autosave_execution.rs`, and `restore_execution.rs`
-against the model:
+*Fallback, registered in advance.* If a shard breaks its margin (≤ 25 min,
+≤ 12 GiB), the runbook order applies (`docs/runbooks/kani-shards.md`): split
+the shard, then try a solver, then make a recorded bound reduction that names
+the property it weakens. If the two-window harness still cannot carry
+`AfterEffect` after that, it runs with `AfterEffect` excluded. That restriction
+is stated in the harness, in the spec and in the programme record as a
+named residual.
 
-- **Scenarios (at most 8), each a recorded model trace:**
-  1. the L1 k = 7 path (stale pending restore → preserve, delete body, remove
-     entry → register, write, commit);
-  2. the Unavailable-restore path, from the S1 counterexample;
-  3. a failed set-aside copy that keeps the hold and retries;
-  4. a Data-page open of a preserved draft;
-  5. a Register `AfterEffect` fault, then a restart through the startup path
-     of a fresh process state;
-  6. a Commit `AfterEffect` fault;
-  7. a two-window cleanup racing a registration (from change 3's
-     counterexamples, or its proof);
-  8. a discard during a pending write.
+*Findings.* A counterexample over `AfterEffect` is a core or an environment
+finding, handled as the formal-verification spec requires. Its reachability
+from real errors is recorded, as K4 and K8 did.
 
-  The trace is replayed through real window actions: editing the buffer, and
-  triggering autosave, discard, and restore through the existing actions and
-  `test_policy.rs` seams.
-- **Comparison.** After each settled step: `DraftEvidence` against the
-  model's window state, as counts (restore holds, tombstones, pending
-  preservations, authority trusted, mutation in flight), and the D4 disk
-  abstraction against the model's disk. If a per-id fact the comparison needs
-  is missing from `DraftEvidence`, the evidence surface gets a bounded field,
-  under its invariants and declared in the `WFR-DRAFT-RECOVERY` row. No
-  `*_for_test` seam is added.
-- **Crash.** A widget scenario cannot crash a process. A restart is modelled
-  by dropping the windows without the close flush and starting a fresh
-  window over the same data directory. That is valid only if change 3's
-  process-once startup offers a test-utils reset. Otherwise the restart half
-  stays at service level (D4) and in K5.
+### D7. Step atomicity: `At(k)`
 
-*Alternative:* derive scenarios automatically from the conformance lane's
-shrunk failures. That is useful later, but it is not a gate. The fixed list
-is reviewable.
+A generated fault may also be `At(k)`: the k-th fallible backend call of a
+multi-write service step fails (D3's call addressing, counted across the
+step). The real post-step state must abstract to the model's `BeforeEffect`
+or `AfterEffect` outcome for that step, under D5's comparison. Any other
+state is an **environment finding (step atomicity)**, resolved in one of two
+ways, with the choice recorded in the programme record:
+- the model gains the intermediate state, and the journal shards are re-run;
+- or the shell is reordered behind a failing-first test, so that the
+  intermediate state cannot be observed.
 
-### D6. Placement and gating
+The driver first enables `BeforeEffect`, `Crash` and `Startup`, and it must
+pass on the real service before `AfterEffect` and `At(k)` are enabled. Each
+divergence is triaged before the domain grows.
 
-- The driver lives in `lushtext-core` at `src/services/conformance/`
-  (`mod.rs`, `write_shell.rs`, `draft_service.rs`, `ops.rs`), gated
-  `#[cfg(any(test, feature = "test-utils"))]`, because it must reach the
-  crate-private models and the tap. The property modules in
-  `tests/properties/` (`shell_conformance_write.rs` and
-  `shell_conformance_drafts.rs`) are thin `proptest!` wrappers over it.
-  `property-tests` already implies `test-utils` after change 1.
-- These modules, the two model modules, and `backend_tap.rs` are verification
-  code. They are added to `.cargo/mutants.toml` `exclude_globs`, as change 1
-  does for `kani_proofs.rs`, and to the filesystem-boundary audit's allowlist
-  of test-gated backend users, if the audit flags them.
-- The filesystem boundary is kept: the driver uses
-  `services::filesystem::fixture` for seeding and `set_modified` mtimes, and the public
-  boundary for reads. It makes no raw `std::fs` calls.
+### D8. Replace shells: tap only, and the three survivors
 
-### D7. Fuzz reuse: a conformance mode in `operation_script`
+Lockstep against the Replace model is **deferred**:
+- That model lives in `replace/protocol/kani_proofs.rs` (339 lines), the
+  pull-request-gated shard `core-replace-protocol`. Moving it changes that
+  shard's inputs and owes a CI budget figure from the change's own pull
+  request.
+- Replace's crash windows are already covered by K5's four replace kill
+  windows, and by the property `replace_journal_recovery.rs`.
+- Its durable writes are the write shell that D4 checks.
 
-`lushtext_core::fuzzing` gains `exercise_conformance_script_for_fuzzing`,
-which is selected when the input's first byte has its top bit set. It decodes
-bytes into the same `Op` vocabulary through `ops::decode` (with the existing
-operation-count and input-length caps) and runs the D3 and D4 drivers. The
-`fuzzing` feature gains `test-utils`, which is acceptable because fuzz builds
-never ship. Committed seeds, including every promoted divergence, replay
-through `fuzz_corpus_replay` on stable. A new target was rejected: it would
-need its own corpus, Makefile list entry, and docs, for no semantic gain. The
-selector bit keeps the existing helper ops' throughput for the other half of
-the input space.
+The tap still serves Replace in two ways:
+- the typed backend faults reach its nested writes;
+- the before-action hook kills the three `process_file` survivors that
+  altitude's review recorded.
 
-### D8. Budgets
+The three tests, each committed first as a test that the mutant survives:
+- **Pass-A facts check (`||` to `&&`).** Before `WriteBody`, modify the
+  target to a same-size, new-mtime content. The file must be skipped under
+  the pass-A reason, not pass B's.
+- **Cancelled test (`||` to `&&`).** Before `WriteBody`, raise the cancel
+  flag and replace the bodies directory with a file. The file must end
+  `Cancelled`, not `NoChange` or `Failed`.
+- **Cancelled test (delete `!`).** The same setup, with the assertion on the
+  reported terminal.
+
+The tests' line anchors are read off the current `apply.rs`. The
+mutation-testing doc records the three as killed.
+
+### D9. Kani, proof strength, axioms, timing
+
+- **Shards touched** (all `gate="scheduled"`):
+  - `core-journal-and-write` (12.0 min, 2.6 GiB): the write-model move and
+    the journal move plus widening;
+  - `core-journal-liveness` (15.2 min, 4.8 GiB);
+  - `core-second-writer` (7.4 min, 2.7 GiB; two journal harnesses);
+  - `core-multi-window` (8.9 min, 2.7 GiB).
+
+  Each runs **once, after the final code, detached**
+  (`setsid nohup scripts/heavy.sh --envelope 16G -- make kani
+  KANI_SHARD=<shard>`). The baseline is the `kani-shards.py list` figures
+  above, not a fresh run before the change. The pull-request shard
+  `core-replace-protocol` is not touched (D8) and is left to CI.
+- **Budgets.** The four records become
+  `PENDING DISPATCH (owed by verify-shell-conformance-against-proven-cores)`
+  with their local figures. At the **end of stage 3**, one `kani.yml`
+  dispatch runs on the pushed final code. It is not watched in stage 4. The
+  archive records the larger of the dispatched figures, from two runs: the
+  dispatch, plus the following weekly schedule or a second dispatch.
+- **Proof strength is owed**, because the journal harnesses assert their
+  properties over a widened domain. It runs once on the final code, with its
+  Kani arm sharded (`PROOF_STRENGTH_SHARD=k/n`), detached. Its survivors are
+  triaged in the programme record.
+- **GTK axioms: none.** The change relies on no toolkit behaviour (no
+  GTK-facing code; D10 drops the widget scenarios).
+- **Timing: no timing verdict.** No hot path changes. Shipping builds compile
+  the tap to empty inline functions. `test-utils` builds, which include every
+  benchmark command, carry the *uninstalled* tap: one thread-local check per
+  protocol action and per backend call. Next to an `fsync`, that cost is noise,
+  and the benches measure no durable-write throughput verdict.
+
+### D10. Dropped groups, with their deferrals
+
+- **GTK drafts coordination scenarios.** These were up to eight widget
+  scenarios replaying model traces. Their cost:
+  - widget-lane time;
+  - the three smokes, because `crates/lushtext/tests/widget/` is a UI prefix;
+  - probably new `DraftEvidence` fields under `ui/`, with their matrix-row and
+    smoke obligations.
+
+  The paths they would replay already have single-scenario widget tests: the
+  L1 path, the Unavailable restore, the failed set-aside copy, the Data-page
+  open, and the discard during a write. With D5 in place, the remaining risk
+  is that the coordination's calls differ from the D5 table, and task 4.1
+  checks exactly that by reading. Deferral entry: "GTK drafts coordination
+  conformance: reopen when a drafts-coordination defect escapes D5's table
+  check, or when the evidence surface gains per-id facts for another reason."
+- **Fuzz conformance mode.** It would mean a top-bit selector in
+  `operation_script`, `fuzzing` implying `test-utils`, and new seeds. For the
+  write shell, enumeration is exhaustive. For drafts, proptest shrinks
+  semantically while libFuzzer shrinks bytes, and the mode would run outside
+  the pull-request gate. Dropped, with a deferral entry, and the
+  `structured-operation-fuzzing` delta is removed.
+- **Two-window service property.** See D5.
+- **Replace lockstep.** See D8.
+
+### D11. Placement, gating and the release check
+
+- The drivers live in `lushtext-core` at `src/services/conformance/`:
+  - `mod.rs` and `ops.rs`;
+  - `write_shell.rs` and `draft_service.rs`.
+
+  They are gated `#[cfg(any(test, feature = "test-utils"))]`, because they
+  reach crate-private models and the tap. The property modules under
+  `tests/properties/` are thin `proptest!` wrappers over them.
+- These modules, the two model modules and `backend_tap.rs` are added to the
+  `.cargo/mutants.toml` exclusions, and the Sonar scope is reviewed for
+  them.
+- The drivers seed the tempdir and set mtimes through
+  `services::filesystem::fixture`, and read through the public boundary. They
+  make no raw `std::fs` calls.
+- **Release check.** The crash-recovery smoke's marker guard
+  (`scripts/crash-recovery-smoke-driver.py`, the one list G6 left for this
+  change) gains the tap's crash-payload text and a unique tap string. It then
+  fails if the ordinary binary, or `target/release/lushtext`, contains any of
+  them. `cargo check -p lushtext --bins --locked` with default features
+  already fails if production names a gated item.
+
+### D12. Budgets
 
 | Lane | Setting | Budget |
 |---|---|---|
-| `make test` | exhaustive write-shell triples (D3) | ≤ 5 s |
-| `make test-prop` | write-shell property: 64 cases | ≤ 10 s |
-| `make test-prop` | drafts property: 64 cases × ≤ 16 ops; two-window: 32 cases × ≤ 16 ops | ≤ 30 s each, measured on CI |
+| `make test` | D4 exhaustive enumeration, D3 call table, D2 reach test | ≤ 5 s together |
+| `make test-prop` | write-shell property, 64 cases | ≤ 10 s |
+| `make test-prop` | drafts property, 64 cases × ≤ 16 ops | ≤ 30 s |
 | `make test-prop-deep` | 512 cases, ≤ 32 ops | informational |
-| `make fuzz-operation-smoke` | existing time bound, shared by both modes | unchanged |
-| `make test-widget` | ≤ 8 scenarios | ≤ 60 s added |
-| `make kani` | widened fault domain | the change 1 shard margins (≤ 25 min, ≤ 12 GiB) |
+| `make kani` | the four journal and write shards | ≤ 25 min, ≤ 12 GiB each |
 
-The tempdir sits under the default `TMPDIR`, with real fsyncs. If CI
-measurement exceeds a budget, the fixes are tried in order: the script-length
-bound first, then the case count for that property. The pull-request job
-timeout is never raised. The measured figures are recorded in
+The budgets are measured locally through `heavy.sh`, with the load recorded.
+The CI figure of the property job is read once, at the programme's CI check,
+and never waited for. If a budget breaks, the script bound is cut first, then
+the case count. The job timeout is never raised. The figures are recorded in
 `docs/property-testing.md`.
+
+## Measured baseline at 761866ff
+
+| Fact | Value | Source |
+|---|---|---|
+| Shells through `drive` | 6, in 4 files | `protocol_drive.rs` `SHELL_SOURCES` |
+| Longest write / transfer | 16 actions + `Finish` (`MAX_TEMP_NAME_ATTEMPTS` = 8) / 3 + `Finish` | `write_protocol.rs`, `kani_proofs.rs` `WRITE_STEPS`, `TRANSFER_STEPS` |
+| Durable-write unit tests | 40 | `grep -c '#\[test\]' durable_write.rs` |
+| Ad hoc durable-write hooks | 5 thread-locals + 1 process-global observer, all file-private | `durable_write.rs` |
+| Journal model | 1,721 lines, 7 model-level choice sites | `draft_service/kani_proofs.rs` |
+| Write model | 481 lines, 4 choice sites | `write_protocol/kani_proofs.rs` |
+| Stateright port | 752 lines (`env.rs`) | `formal/evaluation/stateright` |
+| E4 uniform reach | 2,000 traces → 6 body writes, 0 commits; a mutant caught after 1,246 traces | `formal-verification-quint-vs-tlaplus.md` |
+| Shards touched | `core-journal-and-write` 12.0 min / 2.6 GiB; `core-journal-liveness` 15.2 / 4.8; `core-second-writer` 7.4 / 2.7; `core-multi-window` 8.9 / 2.7 | `scripts/kani-shards.py list` |
+| Locks a panic would poison | the draft manifest write lock (`expect`), the replace journal guard (an error) | `draft_service.rs:416`, `search_backup.rs:265` |
 
 ## Risks / Trade-offs
 
-- [The model move changes what Kani proves.] → Task 1 re-runs every affected
-  harness first and compares verdicts and times. The choice trait is a pure
-  indirection whose Kani implementation is exactly today's `kani::any()` and
-  `kani::assume` calls.
-- [The widened fault domain blows the Kani budget.] → The fault is
-  restricted to the steps where `AfterEffect` exists. Shards are split under
-  change 1's rules. A bound reduction is recorded with the property it
-  weakens.
-- [The service-level driver re-implements window behaviour and drifts from
-  the GTK coordination.] → The window half is model-owned (proved), not
-  driver-owned. The D4 mapping table is checked against the real call sites
-  in `ui/window/drafts/`, and D5 covers the real coordination.
-- [Real-filesystem runs are slow or flaky on CI.] → Payloads are tiny, the
-  driver is single-threaded, and there are no timers or watchers. Any flake is
-  a blocker under the pre-existing-blockers rule and is investigated, not
-  retried.
-- [Mtime granularity makes `backing` ambiguous.] → The driver sets distinct
-  whole-second mtimes explicitly, and never relies on the wall clock.
-- [The abstraction is not injective, so real divergences hide.] → The
-  content↔text table is injective by construction. Unknown files in the
-  drafts directory fail the abstraction outright rather than being ignored.
-- [Tap code leaks into shipping builds.] → It is behind the gate, with a
-  release `strings` check and change 1's default-feature `cargo check` of the
-  binary.
+- [The model move changes what Kani proves.] → The move is mechanical: each
+  choice becomes a call-site argument or a `KaniChoices` call, which is the
+  same `kani::any()` and `kani::assume`. The final shard runs must give
+  today's verdicts on the unchanged properties. A wall time more than 20 %
+  off its record is investigated before it is accepted.
+- [The widened domain blows a budget.] → The D6 fallback order is
+  pre-registered, and any bound reduction or exclusion is named in the spec.
+- [The service driver drifts from the GTK coordination.] → The window half is
+  model-owned, which is proved. Task 4.1 checks the table against the real
+  call sites. The GTK half is a recorded deferral.
+- [Generated scripts are vacuous.] → The D2 reach floors and the two-mutant
+  calibration.
+- [Unwinding is mistaken for a kill.] → The D3 audit, and panic crashes only
+  where no lock or I/O `Drop` is on the path.
+- [A flake on real filesystems.] → Payloads are tiny, the driver is
+  single-threaded, and there are no timers. Any flake is a blocker under the
+  pre-existing-blockers rule.
+- [Mtime granularity.] → Distinct whole-second mtimes are set explicitly.
+- [Tap code ships.] → The gate, the default-feature binary check, and the
+  extended marker guard.
 
 ## Migration Plan
 
-Nothing is migrated, because no persisted format changes. Rollback means
-reverting the change, since all the added code is test-gated. If a divergence
-fix touches production, that fix ships with its own failing-first test and
-can be reverted separately.
+Nothing is migrated: no persisted format changes. Everything added is
+test-gated, so a rollback is a revert. A production fix that a finding forces
+ships with its own failing-first test, and can be reverted separately.
 
 ## Open Questions
 
-- Can local-history preservation be observed cheaply enough for every step?
-  If not, the abstraction reads it only at preservation steps and at startup,
-  and records that restriction.
-- Does change 3's process-once startup expose a `test-utils` reset, which D5
-  needs for an in-process restart? If not, the D5 restart scenarios are
-  replaced by service-level ones.
-- If the new `AfterEffect` Kani runs find a counterexample, is it reachable
-  from real hardware errors, and should it be fixed or pinned as a
-  `should_panic` residual? That is decided per finding and recorded, following
-  the K4 and K8 precedent.
+- Can local-history preservation be read cheaply enough at every step? If
+  not, the abstraction reads it only at preservation steps and at startup,
+  and the restriction is recorded.
+- Does an `AfterEffect` counterexample, if one is found, have a real-error
+  path? That is decided per finding and recorded, following the K4 and K8
+  precedent.

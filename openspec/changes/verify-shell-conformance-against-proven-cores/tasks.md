@@ -1,90 +1,150 @@
-## 0. Preconditions
+## 0. Baseline
 
-- [ ] 0.1 Confirm that `harden-kani-lane-and-draft-token` has landed: both fixture modules are gated behind `test-utils`, `property-tests` implies `test-utils`, the `kani_proofs.rs` harness-module rule and its mutation exclusion exist, and the shard table records budgets. Confirm that `verify-multi-window-draft-journal` has landed: the model has `Window` and `Process` actors, and the multi-window harness passes. If either change is missing, stop: this change builds on both
-- [ ] 0.2 Record the baseline: every journal and write-protocol harness verdict and time from the latest `make kani` run of the affected shards, plus the current `make test-prop` wall time and the time of the CI property job
+- [ ] 0.1 Record in the handoff directory:
+  - the baseline from `scripts/kani-shards.py list` for `core-journal-and-write`, `core-journal-liveness`, `core-second-writer`, and `core-multi-window`, with each harness's recorded verdict and its `ORACLES` seconds;
+  - the `make test-prop` wall time through `heavy.sh`, with `/proc/loadavg` before and after.
 
-## 1. Share the environment models (D1)
+  No Kani shard runs before the code is final (design D9)
 
-- [ ] 1.1 Move the write `Disk` model and its `Shell` mutant into `services/filesystem/write_protocol/disk_model.rs`, gated `cfg(any(kani, test, feature = "test-utils"))`, and route every `kani::any()` in it through a `Choices` trait with a `KaniChoices` implementation. `kani_proofs.rs` keeps only the harness functions
-- [ ] 1.2 Do the same for the journal model: move it into `services/draft_service/journal_model.rs` and route through `Choices`, keeping `Window`/`Process` from change 3. Make the S1–S4 assertions model methods, and keep the harness bodies in `kani_proofs.rs`
-- [ ] 1.3 Run `make kani` for the affected shards. Every harness must give the same verdict. Each wall time must be within 20 % of the task 0.2 baseline, or the shift must be explained in the programme record. `make check-kani-shards` passes
-- [ ] 1.4 Add both model modules to `.cargo/mutants.toml` `exclude_globs`, with a verification-code reason. Confirm with `make mutants-list` that no other file's count changes, and that `make check-workflow-boundaries` and `make check-filesystem-boundary` pass
-- [ ] 1.5 `cargo build --release -p lushtext` compiles no model: check with `strings` for a model assertion message
+## 1. Share the environment models (D1). This is its own commit, before any other group
 
-## 2. The backend tap (D3)
+- [ ] 1.1 Move the write model into `services/filesystem/write_protocol/disk_model.rs`, gated `cfg(any(kani, test, feature = "test-utils"))`. It covers `Content`, `Entry`, `TempInode`, `Disk`, and the `Shell` mutant. The choices become arguments: `Disk::execute(action, shell, outcome)` and `Disk::after_crash(durable_branch)`. The harnesses pass `kani::any()`, and `kani_proofs.rs` keeps only the harness functions
+- [ ] 1.2 Move the journal model into `services/draft_service/journal_model.rs` under the same gate. Route its in-step choices through `Choices`, with a `KaniChoices` implementation that is exactly today's `kani::any()`/`kani::assume`. Keep `Window`/`Process` and `Scope`. Make S1–S4 model methods that return their verdict, which the harnesses assert
+- [ ] 1.3 Add both modules to `.cargo/mutants.toml` `exclude_globs`, with a verification-code reason, and to `NOT_ORACLE_MODULES` in `scripts/kani-shards.py`. Then check that each of these passes, and that `make mutants-list` shows no other file's count changing:
+  - `make check-kani-shards`;
+  - `make check-workflow-boundaries`;
+  - `make check-filesystem-boundary`;
+  - `cargo check -p lushtext --bins --locked`, with default features
+- [ ] 1.4 Run `scripts/heavy.sh -- cargo kani -p lushtext-core --only-codegen` once, with `CARGO_INCREMENTAL=0`. It runs no CBMC, and shows the moved harnesses still compile under Kani before any other group builds on them. The full shard runs are task 9.1
 
-- [ ] 2.1 Failing first: write the D3 exhaustive test skeleton for one triple (atomic replace, a `CrashAfter` at `Rename`) against a `BackendTap` API that does not yet exist, and confirm that it fails to compile
-- [ ] 2.2 Implement `services/filesystem/backend_tap.rs` under `cfg(any(test, feature = "test-utils"))`, with three parts: a thread-local `TapState`, a `TapGuard` that uninstalls on `Drop`, and injection plans keyed by protocol kind and action ordinal. Give it `before`/`after` call sites in `atomic_write_stream_with_metadata`, `run_rename_protocol`, and `move_durable`, or once in `Protocol::drive` if altitude group 1 has landed. The calls are no-ops outside the gate. Add the fallible-call counter to the listed `sys.rs` primitives
-- [ ] 2.3 Re-express `fail_next_parent_sync_for_test`, `FAIL_FINAL_TEMP_SYNC_AFTER_METADATA`, `fail_next_rename_cross_device_for_test`, and the temp observer as one-entry tap plans. Every existing `durable_write` unit and fault-injection test passes unchanged
-- [ ] 2.4 Confirm that the release binary has no tap: `strings target/release/lushtext` finds none of the tap's messages or the marker payload's text. Confirm that `cargo check -p lushtext --bins` passes with default features
+## 2. The conformance tap (D3)
 
-## 3. Write-shell conformance (D3)
+- [ ] 2.1 Failing first: write the D4 enumeration skeleton for one case against a `BackendTap` API that does not exist yet, and confirm it fails to compile. The case is an atomic replace over an existing destination, with a `CrashAfter` at `Rename`
+- [ ] 2.2 Add `Protocol::KIND` (`ProtocolKind`: `Write`, `Move`, `Rename`, `ReplaceFile`, `ReplaceUndo`, `Shrink`) to the six implementations, and the `Copy + Debug + 'static` bounds that `drive` needs under the gate. Keep `protocol_drive`'s own tests and the `no_shell_steps_its_core_outside_protocol_advance` source check passing
+- [ ] 2.3 Implement `services/filesystem/backend_tap.rs`, under `cfg(any(test, feature = "test-utils"))`, with no process-global slot:
+  - a thread-local `TapState`, and a `TapGuard` that uninstalls on drop;
+  - a trace of `(kind, run, ordinal, action, outcome)`, with nested runs;
+  - plans addressed by kind, run, action ordinal, and call index;
+  - before-action hooks;
+  - `TapCrash` before and after an action;
+  - `tap::content_written`.
 
-- [ ] 3.1 Implement `services/conformance/{mod,ops,write_shell}.rs` (test-utils), which runs the real primitive, the protocol core, and `disk_model` in lockstep through `ScriptChoices` fed by the tap record. Check after every action: the core's next action, one fallible call, the outcome fed back unchanged (with the `RemoveTemp` indifference assertion), destination bytes equal to `visible()`, temp presence, and temp mode no wider than the destination. At `Finish`, check the returned variant against `WriteClass`. After a crash, check the destination and whether `temp_name` parses the leftover
-- [ ] 3.2 Add the deterministic exhaustive test over every (primitive, action ordinal, injection) triple, in `make test`, taking at most 5 s
-- [ ] 3.3 Add the `tests/properties/shell_conformance_write.rs` property (generated destination state, mode, payloads, primitive, and injection), and register it in `tests/properties.rs`
-- [ ] 3.4 For every divergence: commit the shrunk case as a failing deterministic test, classify it (shell, environment, or core, as in the spec), fix it, and record it in the programme record. A core defect follows task 6.4
+  Call it from `drive`, around `execute`, and from the fallible `sys.rs` primitives listed in D3. Outside the gate, every call is an `#[inline(always)]` no-op
+- [ ] 2.4 Re-express the six durable-write hooks as one-entry plans, and delete their thread-locals and the observer `OnceLock`. The hooks are `FAIL_FINAL_TEMP_SYNC_AFTER_METADATA`, `FAIL_NEXT_PARENT_SYNC`, `FAIL_NEXT_SOURCE_REMOVAL`, `FAIL_NEXT_RENAME_CROSS_DEVICE`, `NEXT_NO_REPLACE_UNSUPPORTED`, and `TEMP_AFTER_CONTENT_OBSERVER`. The cross-device plan fails `sys::rename` inside the protocol. All 40 `durable_write` tests pass unchanged, and any other test using these hooks passes too
+- [ ] 2.5 Extend `KILL_POINT_MARKERS` in `scripts/crash-recovery-smoke-driver.py` with the `TapCrash` payload text and one unique tap string. Check with `strings` that `cargo build --release -p lushtext` contains neither. Run `make crash-recovery-smoke` once on the final code (task 10.1) to show the guard passes
+- [ ] 2.6 Unwind audit over the final code. List every `Drop` impl and every lock on the unwind path of each primitive that D4 crashes inside. Record that none does I/O and that none is poisoned and read afterwards. Record in the handoff why the draft driver crashes only between calls: the manifest lock `expect`s on poison
 
-## 4. Draft-service conformance (D4)
+## 3. Write-shell conformance (D4)
 
-- [ ] 4.1 Check the D4 action→service-call table against the real call sites in `ui/window/drafts/` and `ui/window/session_restore/`, and correct the table in `design.md` where it differs
-- [ ] 4.2 Implement the abstraction function in `services/conformance/draft_service.rs`: manifest entries and backing versions, bodies through the injective content↔text table, backing mtimes through explicit whole-second `fixture::set_modified` times, set-aside and local-history preservation, and the held authority. Unknown files in the drafts directory fail the abstraction
-- [ ] 4.3 Implement the single-window driver (one `Op` per model action, window half owned by the model, crash drops every held value, startup through `load_restore_state_cancellable`), with `BeforeEffect` faults only. It must pass on the real service before the fault domain is widened. If it does not, each divergence goes through task 3.4
-- [ ] 4.4 Add `tests/properties/shell_conformance_drafts.rs` (≤ 16 ops, 64 cases) and the two-window property (≤ 16 ops, 32 cases), using change 3's `Window`/`Process` model over one service instance
+- [ ] 3.1 Implement `services/conformance/{mod,ops,write_shell}.rs` (test-utils). It steps the shared `Disk` from the tap trace and checks, after every action, the D4 list:
+  - outcome against backend results, with the `RemoveTemp` indifference;
+  - the pinned call table;
+  - destination bytes against `visible()`;
+  - temp presence against `linked`;
+  - temp mode no wider.
 
-## 5. Widen the fault domain (D4)
+  At the terminal action it checks the result variant against the core's class. After a crash it checks the destination against `after_crash(false)`, the `temp_name` parse, and `is_sweepable_leftover` after aging the leftover with `fixture::set_modified`
+- [ ] 3.2 Add the deterministic exhaustive test over (primitive × destination state × action ordinal × call index × injection). It includes `MAX_TEMP_NAME_ATTEMPTS` consecutive collisions, runs in `make test`, and takes at most 5 s. Pin the per-action call table as its own test
+- [ ] 3.3 Add `tests/properties/shell_conformance_write.rs` (64 cases: modes, payload sizes, two injections per run), and register it in `tests/properties.rs`
+- [ ] 3.4 Triage every divergence under the classification requirement. Commit the shrunk case as a failing deterministic test, fix it, and record it in the programme record. A core defect follows task 7.4
 
-- [ ] 5.1 Replace `fault: bool` with `Fault { None, BeforeEffect, AfterEffect }` in `journal_model.rs`. `AfterEffect` persists the step's effect and leaves the window believing it failed, and only for the steps D4 lists
-- [ ] 5.2 Run the journal shards under `make kani`. Record verdicts, times, and peak memory against change 1's margins. If a margin is broken, split the shard first, then re-measure. Reduce a bound only as a recorded last resort
-- [ ] 5.3 If Kani finds a counterexample over `AfterEffect`, it is a core or environment finding. Handle it as in task 6.4, including reachability evidence and a maintainer decision if it is kept as a `should_panic` residual
-- [ ] 5.4 Enable the `AfterEffect` and `At(k)` fault positions in the drafts driver. An intermediate multi-write state that matches neither model outcome is an environment finding (step atomicity). Resolve it by extending the model and re-running task 5.2, or by reordering the shell behind a failing-first test. Record which resolution was chosen
+## 4. Draft-service conformance (D5), before-effect faults first
 
-## 6. Divergence discipline and budgets
+- [ ] 4.1 Check the D5 action→call table against the real call sites in `ui/window/drafts/` and `ui/window/session_restore/`. Correct the design's table where it differs, and record each difference in the handoff
+- [ ] 4.2 Implement the abstraction in `services/conformance/draft_service.rs`:
+  - manifest entries and backing versions;
+  - bodies, through the injective content↔text table;
+  - explicit whole-second mtimes;
+  - set-aside and local-history preservation;
+  - the held authority.
 
-- [ ] 6.1 Run `make test-prop` locally and on CI. Record the wall time of each conformance property. Each must stay within the D8 budget and within the property job's timeout. If a budget is exceeded, shorten the script bound first, then lower that property's case count. Never raise the job timeout
-- [ ] 6.2 Run `make test-prop-deep PROPTEST_DEEP_CASES=512` with scripts of up to 32 ops once, and triage every failure through task 3.4
-- [ ] 6.3 Set the conformance shrink config (`max_shrink_iters = 256`, `max_shrink_time = 45_000`). Show on a scratch, never-merged injected divergence that shrinking reaches a minimal script within the nextest `property` profile ceiling and persists it to `proptest-regressions/properties.txt`
-- [ ] 6.4 Core-defect procedure, used whenever one is found:
-  - mark the property as invalidated in the programme record, from the finding's commit;
-  - add or adjust a Kani harness so that it exhibits the counterexample, and show that it fails;
+  Unknown files in the drafts directory fail the abstraction. If local history is too costly to read at every step, read it at preservation steps and at startup, and record the restriction
+- [ ] 4.3 Implement the single-window driver with enabled-indexed ops (D2): the window half is model-owned, and a crash drops every held value between calls. Enable only `BeforeEffect`, `Crash`, and `Startup`. It must pass on the real service before task 5 widens anything. Each divergence goes through task 3.4
+- [ ] 4.4 Add `tests/properties/shell_conformance_drafts.rs` (≤ 16 ops, 64 cases) with the D2 shrink config
+- [ ] 4.5 Add the reach test: a fixed seed and the default case count, with recorded floors for `WriteBody`, `Commit`, `DeletionStep`, `RestoreApply`, `ExecCleanup`, and `Startup`. Then run the two-mutant calibration on scratch, never-merged commits:
+  - a set-aside copy that `preserve_stale_draft_body` skips;
+  - a delete that runs before its entry removal.
+
+  Record the number of cases each needed in the design and in `docs/property-testing.md`
+- [ ] 4.6 On a scratch, never-merged injected divergence, show that shrinking reaches a minimal script within the nextest `property` profile ceiling and persists it to the regression file
+
+## 5. Widen the journal fault domain (D6) and step atomicity (D7)
+
+- [ ] 5.1 Replace `fault: bool` with `Fault { None, BeforeEffect, AfterEffect }` in `journal_model.rs`:
+  - `AfterEffect` applies only to Register's commit, WriteBody, Commit, and `DeletionStep(RemoveEntry)`;
+  - it adds per-directory unconfirmed bits, which `DeletionStep(DeleteBody)`'s unsynced unlink also sets;
+  - `Crash` keeps or reverts an unconfirmed effect through `Choices::flag`;
+  - a later successful durable write into the same directory confirms it;
+  - the set-aside copy's after-rename stays a success, as its shell decides.
+
+  The harnesses choose the fault with `kani::any()`
+- [ ] 5.2 Enable `AfterEffect` (the kept branch only, since in-process tests cannot revert) and `At(k)` in the drafts driver. An intermediate multi-write state that matches neither model outcome is a step-atomicity environment finding. Resolve it by extending the model or by reordering the shell behind a failing-first test, and record which
+- [ ] 5.3 If Kani or conformance finds a counterexample over `AfterEffect`, handle it as task 7.4, with reachability evidence from real errors
+
+## 6. Replace shells (D8)
+
+- [ ] 6.1 Failing first, against the mutants: add the three `process_file` survivor tests to `content_search/replace/tests.rs`, using the tap's before-action hook at `ReplaceFile`/`WriteBody`:
+  - a same-size, new-mtime target modification, skipped under the pass-A reason;
+  - a raised cancel plus a bodies directory replaced by a file, ending `Cancelled`, under each of the two cancel mutants.
+
+  Show with `cargo mutants --file content_search/replace/apply.rs --re '<the three lines>'`, through `heavy.sh --envelope 36G`, that the three are now caught, and record that in `docs/mutation-testing.md` and the programme record's deferral entry
+
+## 7. Divergence discipline and budgets
+
+- [ ] 7.1 Run `make test-prop` locally through `heavy.sh`, recording `/proc/loadavg`, and record each conformance property's wall time against the D12 budget. If a budget is exceeded, cut the script bound first, then that property's case count. Never raise a job timeout. The CI figure is read once, at the programme's CI check
+- [ ] 7.2 Run `make test-prop-deep PROPTEST_DEEP_CASES=512` once, with scripts of up to 32 ops, and triage every failure through task 3.4
+- [ ] 7.3 Record every finding, or the absence of findings, with its class in the programme record
+- [ ] 7.4 Core-defect procedure, used whenever one is found:
+  - mark the property invalidated from the finding's commit;
+  - add or adjust a harness that exhibits the counterexample, and show it fails;
   - fix the core;
-  - re-prove, and mark the property as proved again;
-  - add a service or widget regression test that failed before the fix
+  - re-prove it and mark the property proved;
+  - add a service regression test that failed before the fix
 
-## 7. Fuzz reuse (D7)
+## 8. Dependency and scope checks
 
-- [ ] 7.1 Add `ops::decode` and `fuzzing::exercise_conformance_script_for_fuzzing`, selected by the first input byte's top bit in `operation_script`. Make the `fuzzing` feature imply `test-utils`, and keep the existing operation-count and input-length caps
-- [ ] 7.2 Add reviewable conformance seeds under `fuzz/corpus/operation_script/`: one per primitive, plus one draft script per model action. `make fuzz-corpus-replay` passes on stable, and `make fuzz-operation-smoke` runs within its existing time bound
-- [ ] 7.3 Promote every fuzz-found divergence to a committed seed plus a deterministic test, through task 3.4
+- [ ] 8.1 Confirm that no dependency was added:
+  - `Cargo.lock` is unchanged apart from workspace crates;
+  - `cargo deny check advisories bans sources licenses` passes;
+  - `cargo hakari generate --diff` is clean;
+  - `cargo-sources.json` needs no regeneration
+- [ ] 8.2 Review `sonar-project.properties` for `services/conformance/`, the model modules, and `backend_tap.rs`, under the SonarQube scope rule
 
-## 8. GTK coordination scenarios (D5)
+## 9. Kani and proof strength, on the final code (D9)
 
-- [ ] 8.1 Find out whether change 3's process-once startup offers a `test-utils` reset for an in-process restart. If it does not, move the restart halves of scenarios 5 and 6 to service-level deterministic tests, and record that in the design
-- [ ] 8.2 Add `crates/lushtext/tests/widget/drafts_conformance.rs` with the eight D5 scenarios. Each replays a recorded model trace through real window actions and compares `DraftEvidence` and the disk abstraction with the model after every settled step. Use the existing readiness and settle helpers. Async completions need adequate budgets, and no wait helper may be copy-pasted
-- [ ] 8.3 If the comparison needs a per-id fact that `DraftEvidence` lacks, add a bounded evidence field under the evidence invariants and declare it in the `WFR-DRAFT-RECOVERY` matrix row. Run `make check-workflow-boundaries`, and add no `*_for_test` seam
-- [ ] 8.4 Run the new module through `make test-widget` three times in isolation with zero `FLAKY:` lines. It must add at most 60 s to the widget lane
+- [ ] 9.1 Once the journal and write code is final, run detached, once each: `setsid nohup scripts/heavy.sh --envelope 16G -- make kani KANI_SHARD=<shard>` for `core-journal-and-write`, `core-journal-liveness`, `core-second-writer`, and `core-multi-window`. Compare against task 0.1:
+  - every unchanged property keeps its verdict;
+  - every widened one passes, or is a finding (task 5.3).
 
-## 9. Dependency and scope checks
+  Any harness time more than 20 % off its record is explained in the programme record. A broken margin follows the D6 fallback order. Update the `ORACLES` seconds
+- [ ] 9.2 Set the four shard records to `PENDING DISPATCH (owed by verify-shell-conformance-against-proven-cores)`, with the local figures, and pass `make check-kani-shards`
+- [ ] 9.3 Run `make proof-strength` for `journal_core` and `write_protocol`, detached, through `heavy.sh --envelope 16G`, with the Kani arm sharded (`PROOF_STRENGTH_SHARD=k/n`). Triage each survivor in the programme record
+- [ ] 9.4 At the end of implementation, after the final push, dispatch `kani.yml` once on the branch and record the run id in the handoff. Do not watch it: the archive records the larger figure of two runs (this dispatch, plus the next scheduled run or a second dispatch) in the four shard records
 
-- [ ] 9.1 Confirm that no dependency was added: `Cargo.lock` is unchanged except for workspace crates, `cargo deny check advisories bans sources licenses` passes, `cargo hakari generate --diff` reports nothing, and `cargo-sources.json` needs no regeneration
-- [ ] 9.2 Review `sonar-project.properties` for the new source files (`services/conformance/`, the model modules, and `backend_tap.rs`), and apply the SonarQube scope rule
+## 10. Final verification
 
-## 10. Documentation sync
+- [ ] 10.1 Run each of these through `heavy.sh`, with the stated envelopes, without warnings:
+  - `make check` and `make check-policy`;
+  - `make test` (`--envelope 16G`);
+  - `make test-prop`;
+  - `make fuzz-corpus-replay`;
+  - `make crash-recovery-smoke`.
 
-- [ ] 10.1 `docs/next/formal-verification.md`: add "Phase 6 — Shell conformance against the proven cores", covering the shared models, the tap, the three drivers, measured budgets, the fault-domain widening and its Kani results, and every finding with its classification. Add a deferral-inventory entry for power-loss semantics (Kani and K5 only), and one for the `ViewportSliceBin` shell, with the reasoning
-- [ ] 10.2 `docs/next/formal-verification-next.md`: mark the N11 row and section done, pointing to this change, and update the suggested order in §4
-- [ ] 10.3 AGENTS.md Testing section: add the conformance lane (what it drives, that the oracle is the proven model, and where it runs), and update the `durable_write` shell and draft-journal design bullets to name the conformance evidence. `.claude/CLAUDE.md` is a symlink to AGENTS.md
-- [ ] 10.4 `.agents/rules/build.md`:
-  - Property Testing: conformance properties, the total-model shrinking rule, the shrink budget, and regression promotion;
-  - Fuzzing: the conformance mode, and `fuzzing` implying `test-utils`;
-  - Formal Verification: shared model modules, the choice-source rule, the fault-domain completeness rule, the divergence classification, and the mutation exclusion;
-  - the fault-seam guidance: the backend tap as the one durable-write injection seam
-- [ ] 10.5 `docs/end-user-coverage.md`: map "shell obeys proven core" to the property (write and drafts), fuzz, and widget scenario lanes. `docs/property-testing.md` and `docs/fuzzing.md`: add the new properties, their budgets, and the seeds. Update the `gtk-testing` skill reference if the widget scenarios introduce a new pattern
-- [ ] 10.6 `README.md`: update the testing and formal-verification paragraph if it lists the lanes
+  No UI prefix is touched, so the three visual and accessibility smokes are not owed. Confirm with `git diff --name-only origin/main` that no path under the UI prefixes changed
+- [ ] 10.2 Run `openspec validate verify-shell-conformance-against-proven-cores --strict`. At archive time, merge the deltas into `formal-verification-kani`, `durable-file-write-contract`, `draft-session-recovery`, `property-based-testing`, and `crash-restart-recovery-coverage`
 
-## 11. Final verification
+## 11. Documentation sync
 
-- [ ] 11.1 `make check`, `make check-policy`, `make test`, `make test-prop`, `make fuzz-corpus-replay`, and `make test-widget` pass locally without warnings
-- [ ] 11.2 `make kani` passes every shard within change 1's recorded margins
-- [ ] 11.3 CI is green on the change's pull request, including the property job within its timeout
-- [ ] 11.4 Run `openspec validate verify-shell-conformance-against-proven-cores --strict`. At archive time, merge the delta specs into `formal-verification-kani`, `durable-file-write-contract`, `draft-session-recovery`, `property-based-testing`, and `structured-operation-fuzzing`
+- [ ] 11.1 `docs/next/formal-verification.md`:
+  - Add "Phase 6 — Shell conformance against the proven cores", covering the shared models, the tap and its two sites, the write enumeration and its call table, the drafts driver with its reach and calibration figures, the `AfterEffect` widening and its Kani results, and every finding with its class.
+  - Update the deferral inventory: mark the three Replace survivors closed. Add entries for the GTK drafts coordination scenarios, the fuzz conformance mode, the two-window service property, Replace lockstep, mid-call draft crashes (K5), and power-loss semantics (Kani and K5 only), each with its reason and reopening trigger
+- [ ] 11.2 `docs/next/formal-verification-next.md`: mark the N11 row and section done, pointing to this change. Make the N11 text claim only what was checked: the GTK drafts coordination is deferred, not covered. Update §4's suggested order
+- [ ] 11.3 AGENTS.md, Testing section: add the conformance lane (what it drives, that the oracle is the shared proven model, where it runs). Name the conformance evidence in the durable-write and draft-journal design bullets. `.claude/CLAUDE.md` is a symlink to it
+- [ ] 11.4 `.agents/rules/build.md`:
+  - Property Testing: conformance properties, enabled-indexed generation, reach floors, the shrink budget, and regression promotion;
+  - Formal Verification: shared model modules and where their choices come from, the fault-domain completeness rule, the divergence classes, and the `NOT_ORACLE_MODULES` and mutation entries;
+  - fault seams: the backend tap as the durable-write injection seam.
+
+  `.agents/rules/testing.md`, fault seams: the tap is per-invocation and thread-local, and panic crashes are used only where no lock or I/O `Drop` is on the unwind path
+- [ ] 11.5 `docs/end-user-coverage.md`: map "the shell obeys its proven core" to the write enumeration and the two properties. `docs/property-testing.md`: the new properties, budgets, reach floors and calibration. `docs/mutation-testing.md`: the three survivors killed. Add a `gtk-testing` skill reference only if a new test pattern appears
+- [ ] 11.6 `README.md`: update the testing and formal-verification paragraph if it lists the lanes

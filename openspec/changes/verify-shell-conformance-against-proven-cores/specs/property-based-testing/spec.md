@@ -1,30 +1,26 @@
 ## ADDED Requirements
 
 ### Requirement: Model-based conformance properties
-The property lane SHALL host model-based conformance properties that generate
-bounded operation scripts (`Vec<Op>`), including faults and crashes. They SHALL
-run those scripts against real non-GTK production shells over tiny temporary
-directories, in lockstep with a Kani-proven core and its environment model.
-Every model step SHALL be total, meaning an inapplicable operation is a no-op
-in both the model and the driver. Proptest's own vector and element shrinking
-then yields a minimal failing script without precondition machinery, and no
-additional state-machine testing dependency SHALL be added for this purpose.
-Conformance properties SHALL declare their script length bound, case count,
-and a shrink-time budget. Each SHALL finish within its recorded share of the
-pull-request property job at the default case count, and higher counts SHALL
-run only through the deep property lane. A minimized failing script SHALL be
-persisted in the property regression file and promoted to a deterministic
-test before it is fixed. These properties MUST NOT construct GTK widgets,
-start watchers, or use D-Bus, portals, or a compositor.
+The property lane SHALL host conformance properties that generate bounded
+operation scripts and run them against real non-GTK shells over tiny
+temporary directories, in lockstep with a proven core and its model. Each
+operation SHALL choose among the model's enabled actions, so that every
+script is valid and proptest's own shrinking applies. Each property SHALL
+declare its script bound, case count, shrink budget, and reach floors. No
+state-machine testing dependency SHALL be added.
 
 #### Scenario: A failing script shrinks to a minimal sequence
 - **WHEN** a conformance property fails
-- **THEN** proptest shrinks the operation script by removing and simplifying operations, every candidate remains a valid script, and the minimized script is written to the property regression file
+- **THEN** proptest shrinks the operation script by removing and simplifying operations, every candidate remains a valid script, and the minimized script is written to the property regression file and promoted to a deterministic test before the fix
+
+#### Scenario: Generated scripts reach the protocol
+- **WHEN** the reach test runs the drafts property's strategy at its default case count with a fixed seed
+- **THEN** the counts of body writes, commits, deletion steps, restores, cleanups, and startups each meet their recorded floor
 
 #### Scenario: The pull-request lane stays within budget
 - **WHEN** `make test-prop` runs with the default case count
-- **THEN** each conformance property completes within its recorded budget, and the property job stays within its timeout
+- **THEN** each conformance property completes within its recorded budget, and higher counts run only through `make test-prop-deep`
 
-#### Scenario: Deep conformance runs are opt-in
-- **WHEN** a maintainer runs `make test-prop-deep`
-- **THEN** the conformance properties run with the deep case count and longer scripts, without changing the pull-request configuration
+#### Scenario: Conformance properties stay off GTK
+- **WHEN** a conformance property runs
+- **THEN** it constructs no GTK widget, starts no watcher, and uses no D-Bus, portal, or compositor
