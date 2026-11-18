@@ -2983,6 +2983,17 @@ invariants").
    frame figure. The tail is not attributed: the profile has no slow
    repetition, and `u16`'s 7.2–7.5 ms 16-row steps suggest a part that does
    not scale with the rows.
+   *(R14, read from the same logs.)* In `d128` 400:256 rep 2, the worst step
+   and the worst frame are the same dispatch (both at 12.9 ms after the
+   input), and the frame less its step is 4.8 ms (14.39 − 9.585). So under
+   D25 it is the step tail, not the frame, that is most likely to miss.
+   Q4 also has larger steps in non-frame dispatches right after the input:
+   10.56 ms at 400:16,385 rep 1 (offset 0.1 ms), and 9.97, 8.1 and 9.1 ms at
+   400:131,072. These are unbound chunk turns, which still carry the
+   path-cache splice that D24 removes. They are G2's and G5's to re-read,
+   not the bound tail's. The tail profile G0b (below) is queued now, on the
+   binary that shows the tail, so S3's attribution does not wait for G1's
+   build.
 
 #### Decision D25 (new). The bound step runs in a dispatch of its own, between frames
 
@@ -2997,8 +3008,21 @@ invariants").
     collapse is pending, so the next unit runs right after that frame;
   - by the between-frames idle (D19) when its turn leaves the next step
     bound, so a unit that becomes next mid-interval runs before the next
-    frame, as the tick takes it today.
-  One source dispatch runs one step and nothing else. The token is
+    frame, as the tick takes it today;
+  - by its own dispatch (R14): a dispatch that removed D23's chunk, or (under
+    rung S1) a step that left rows in the interval's budget, re-arms the
+    source before it returns when the next step is bound and the token is
+    free. Without this, the first bound unit after D23's chunk would wait for
+    the between-frames idle, which runs below the frame clock, and so would
+    miss the first frame that D23's credit at 400:4,096 counts on.
+  One source dispatch runs one step, plus D22's re-apply for the subtree rows
+  that step created, and nothing else. The `after-paint` handler is the
+  section's, connected to the list's current frame clock when the collapse
+  arms its sources on a mapped list, at most one per section. It is
+  disconnected when the queue empties, when the list unrealizes (the frame
+  clock can change across a re-realize), when the section is disposed, and on
+  every path that stops the tick (`stop_collapse_sources`). It is connected
+  again on `map` while a collapse is pending (R14). The token is
   unchanged in meaning and key (R6.3): at most one unit of bound rows per
   frame interval, read from the list's frame clock counter (a unit runs only
   if no unit ran since the clock's last frame). The frame then lays out that
@@ -3048,6 +3072,12 @@ invariants").
 - **Pacing seams.** `CollapsePacingForTest::Hold` holds the step source too;
   `NoFrameClock` and the starvation fallback (D4, R6.2) are unchanged: with
   no frame there is no `after-paint`, and the fallback steps.
+- **A shared priority (R14).** GtkSourceView's first highlight update also
+  runs at `G_PRIORITY_HIGH_IDLE` (ledger A69, A85). If the user types in a
+  highlighted document while a collapse runs, one main-loop iteration can
+  dispatch both sources back to back before the next input. No gate
+  measures that combination. It is recorded as a risk, not a bar, and the
+  step's own 6 ms margin is what bounds it.
 - **Axioms.** D25 relies on three toolkit facts, pinned as **A124** and
   **A125** (task 2.8) on GNOME 51 and the GNOME 50 floor:
   - A124: A118 already records that a removal creates and binds the
@@ -3058,8 +3088,12 @@ invariants").
     emission returns, and the next frame runs no setup or bind for them and
     only styles, measures, allocates and paints them.
   - A125: a `G_PRIORITY_HIGH_IDLE` one-shot source armed in a frame's
-    `after-paint`, or in an input dispatch, runs before the next frame clock
-    dispatch even when that frame is already due.
+    `after-paint`, in an input dispatch, or in its own dispatch (the re-arm
+    above), runs before the next frame clock dispatch even when that frame is
+    already due. Read in that source, `gdk_frame_clock_get_frame_counter`
+    equals the counter of the frame just painted, and it advances only when
+    the next frame starts. The token reads the counter outside a frame
+    dispatch, and today's tick reads it only inside one (R14).
   If either is refuted on a toolkit, the change takes the closing rule
   below with the current in-frame step.
 
@@ -3118,7 +3152,13 @@ factor and bars, and read by the stage that queued it.
   repetitions, Q4's order. Pass: every worst frame at most 12 ms, every step
   and the input at most 6 ms, `INPUT_TO_FRAME_US` held, and every completion
   at most bar − M after the credits of R11's gate (D24's from Q2, Q3's for
-  0:N). Ladder:
+  0:N). A "step" here, and in the final campaign's `B_INTERACT_US` reading,
+  is the **whole step-source dispatch**, not the inner step timer
+  (`collapse_step_us_max`, `collapse_execution.rs`). That dispatch includes
+  D22's re-apply, the token and the re-arm. The collapse times the source
+  callback as a whole, and the verdict timeline tags each step-source
+  dispatch's `took_us` by kind (bound unit, terminal, chunk), because
+  `worst_other_us` also holds other non-frame dispatches (R14). Ladder:
   - **S1 is the expected path, not a fallback.** At 32 rows the measured
     steps already exceed the 6 ms margin (Q4 7.2 and 9.1 ms at 400:64,
     `d128` 6.5–9.6 ms at 400:*, Q3's 7.325 ms at destroy-only 128, Q2's
@@ -3137,13 +3177,22 @@ factor and bars, and read by the stage that queued it.
     **S2**, 8 rows (`SLC_STEP_ROWS=8`); a step that still misses 8 ms at 8
     rows is D2's existing toolkit-floor exception (A118, A124), recorded,
     and its 6 ms selection miss is recorded as data.
-  - *Beside S1 and S2, the step tail:* G1 and G1b print every step over
-    4 ms with its kind (bound unit, terminal, chunk) and its rows. If the
-    tail does not scale with the step's rows (a 16-row step as slow as a
-    32-row one, as `u16` hints), **S3**: a DWARF profile round of the
-    slowest case at 10 repetitions names the fixed part, which is cut under
-    a failing-first test if it is LushText's, or recorded as a toolkit floor
-    if it is GTK's.
+  - *The step tail, read first (R14):* **S3**. The DWARF profile round G0b,
+    queued now beside G0 on `widget-attr-104` (400:64 and 400:256, 10
+    repetitions, the binary whose steps reach 9.07 and 9.585 ms), is read by
+    task 11.1 before G1's build. For each repetition with a bound step over
+    6 ms, it names what the slow step spends its time on beyond a typical
+    one. A fixed LushText cost is cut under a failing-first test in task
+    11.3's build, before G1 runs. A GTK cost is recorded as a toolkit floor
+    (A118, A124). If no repetition is slow, S3 falls back to G1's per-step
+    print: G1 and G1b print every step over 4 ms with its kind (bound unit,
+    terminal, chunk) and its rows. If the tail does not scale with the
+    step's rows (a 16-row step as slow as a 32-row one, as `u16` hints), a
+    DWARF round of G1's slowest case at 10 repetitions follows. S1 and S2
+    shrink only the part that scales with rows. If S3 leaves a tail over
+    `B_INTERACT_US` in the final campaign, and that tail is not GTK's
+    per-widget work, C3 sends the rows-after class to `main`'s direct
+    collapse.
   - *A frame misses 12 ms:* **F1**, a DWARF profile round of that case. D25's
     frame holds only GTK's layout of the new rows and LushText's bind work
     for them; a LushText cost it names (bind, D22's projection, the
@@ -3163,11 +3212,15 @@ factor and bars, and read by the stage that queued it.
   (`LIST_TURN_SLICE_US`, 4 ms, plus one chunk) are at most 6 ms (`SLC_CHUNK`,
   measured at 0:131,072 and 400:16,385). The turn bounds the chunk to about
   2 ms: at D24's rate (about 0.18 µs a row, the skip-cache figure) that is
-  8,192 rows or less, predicted, not measured. If 4,096 misses the turn, the
-  chunk is the largest smaller power of two that fits it, and D23 is void. If 4,096
-  misses, D23 is void, 400:4,096 keeps the measured completion without its
-  credit (121.9 ms predicted against 120.6 ms), and the closing rule applies
-  to that case's margin.
+  8,192 rows or less, predicted, not measured. If 4,096 misses either
+  figure, then:
+  - the between-frames chunk is the largest smaller power of two that fits
+    the turn;
+  - D23 is void, because no single chunk then covers 400:4,096's unbound
+    rows;
+  - 400:4,096 keeps its measured completion without D23's credit (121.9 ms
+    predicted against 120.6 ms), and the closing rule applies to that case's
+    margin (R14).
 - **G3, A123's hiding time (task 2.7, measured by its probe).** The input
   dispatch (intent and hiding) must be at most 6 ms: `0.245 ms` (104's worst
   input) plus the probe's time to hide the band. If it is over, the rows
@@ -3260,7 +3313,10 @@ This is the last design loop for the rows-after frame and step margins.
 R13, G0)", PENDING: four rounds on `rev5/bin/widget-attr-104`, alone →
 after → alone → after, 6 repetitions each, branch only, factor the cases
 that run before the 400:* cases in the process. G1 and its rungs are queued
-by task 11.3 once their binary exists.
+by task 11.3 once their binary exists. Added by R14: "slice-large-directory-
+collapse: bound-step tail profile (design R14, G0b)", PENDING. It is one
+DWARF round on the same binary, 400:64 and 400:256 with 400 rows after, 10
+repetitions, profiled as the R13 profile was. Task 11.1 reads it.
 
 #### What this revision changes in the tasks
 
@@ -3280,6 +3336,71 @@ by task 11.3 once their binary exists.
   superseded by C1 and annotated where it is written; the history sections
   that record earlier returns stay as written.
 - **Unchanged:** D22–D24 and R11's completion gate.
+
+### R14. Review of R13 (2026-11-18)
+
+Reviewed against the round logs (`rev/attr2/slc-r13-*.log`,
+`slc-r11-base-104.log`, read again with `rev/summ.py` and the verdict
+lines' `over_interact` lists), the code (`collapse_execution.rs`,
+`ui/sidebar/policy.rs`, the verdict test), and the GTK 4.24.1 sources in the
+handoff.
+
+**What holds.** R13's figures hold:
+- the per-row fits: (8.0 − 3.75) / 18 rows, and (16.0 − 9.8) / 32 rows;
+- the bars: 400:256's completion bar of 154.3 ms, and 400:4,096's 120.6 ms
+  selection bar;
+- Q4's 9.07 ms step at 400:64 rep 3;
+- D18's `rows_after == 0`, which `collapse_removal_is_destroy_only` requires;
+- the verdict case loop: one window per size, ended by `drop(tree.window)`
+  only;
+- GTK's creation inside `items-changed` and its reuse rule
+  (`gtk_list_item_change_get`);
+- the mapping at insertion (`gtk_widget_reposition_after`).
+
+D25 is sound. A step armed after `after-paint` moves into the idle part of
+the interval instead of delaying the next frame, and input can run between
+the step and the frame. Corrected in place:
+
+1. **The step tail is the likely gate, not the frame.** Where the worst step
+   sits in the worst frame, the frame less its step is 4.8 ms. Q4's larger
+   non-frame steps at 400:16,385 and 400:131,072 are chunk turns, which G2
+   and G5 own. S3's attribution no longer waits for G1's build: the
+   tail-profile round G0b is queued now and read by task 11.1, and S3 is
+   read before S1 and S2 (R13, item 5 and the ladder).
+2. **An arming gap.** D23's chunk and the first bound unit both had to run
+   before the first frame. Nothing armed the source again after the chunk,
+   except the between-frames idle, which runs below the frame clock. The
+   source now re-arms itself when the next step is bound and the token is
+   free, and under S1 within the interval's budget. Task 11.3 asserts this
+   at 400:4,096.
+3. **The bars read the inner timer.** `collapse_step_us_max` excludes D22's
+   re-apply and the source's own work. The whole step-source dispatch is now
+   timed and tagged, and that figure is what is read against 6 ms and
+   `B_INTERACT_US`.
+4. **A test that might not fail first.** `test_bound_units_run_outside_the_frame`
+   read the store length in the clock's `update`. GTK connects its tick
+   handler to `update` when the first tick callback is added
+   (`gtkwidget.c`, `gtk_widget_add_tick_callback`), so whether the test's
+   read comes before or after the step depends on connection order. The
+   test now reads at `before-paint`, which precedes `update` in the same
+   dispatch.
+5. **Signal lifetime and the counter.** The `after-paint` handler's lifetime
+   is stated: at most one per section; disconnected when the queue empties,
+   on unrealize, on dispose and with the tick; connected again on `map`.
+   A125 now also records the frame counter as read outside a frame dispatch,
+   which the token now does, and the source's re-arm from its own dispatch.
+6. **Spec wording.** The scenario "The first frame takes the first step"
+   said that frame runs no step. All four delta files are ADDED-only, so it
+   is renamed "The first frame lays out the first unit". "Every step runs in
+   a dispatch of its own" contradicted the between-frames turns that run
+   several chunks; it now says "every bound unit". S1, S2 and T1 change the
+   scenarios they touch, and task 11.4 now updates the delta specs for the
+   rung taken.
+7. **Smaller.** G2's duplicated "if 4,096 misses" sentence is now one rule.
+   D25 records that it shares `G_PRIORITY_HIGH_IDLE` with GtkSourceView's
+   first update. Task 8.2 adds the step-source pattern to
+   `.agents/rules/widget-wiring.md`. The tasks' Kani line names the
+   harnesses C1–C5 apart from the closing rule's C1–C3.
 
 ## Risks / Trade-offs
 

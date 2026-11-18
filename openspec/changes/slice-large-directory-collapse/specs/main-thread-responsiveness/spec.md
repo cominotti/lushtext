@@ -6,7 +6,7 @@ Collapsing a sidebar directory by a route LushText owns SHALL keep the input dis
 #### Scenario: How the budgets are measured
 - **WHEN** the verdict test measures a collapse
 - **THEN** it runs on the optimized widget build with the sidebar presented, at host load below 4, interleaved with `main`
-- **AND** every step runs in a dispatch of its own, outside the frame clock's dispatch, and is read against `B_INTERACT_US`; the frame that styles, measures and allocates the rows a step brought into the band runs no step and is read against `B_SETTLE_US`
+- **AND** no step runs inside the frame clock's dispatch: every bound unit, and the first unbound chunk after the input, runs in a step-source dispatch of its own, and that whole dispatch is read against `B_INTERACT_US`; the other unbound chunks run in between-frames turns, each read against `B_INTERACT_US`; the frame that styles, measures and allocates the rows a step brought into the band runs no step and is read against `B_SETTLE_US`
 - **AND** at most one unit of bound rows is removed per frame interval (between two frames of the list's frame clock) across all the window's sections
 
 #### Scenario: A toolkit floor
@@ -48,7 +48,7 @@ Collapsing a sidebar directory by a route LushText owns SHALL keep the input dis
 - **WHEN** a step removes bound rows of a subtree with nothing after it beyond the realized band
 - **THEN** it may remove up to `COLLAPSE_DESTROY_ONLY_ROWS` rows, within `B_INTERACT_US`, because no row widget is created in their place
 
-#### Scenario: The first frame takes the first step
+#### Scenario: The first frame lays out the first unit
 - **WHEN** a sliced collapse starts
 - **THEN** the input dispatch shows the intent, hides the subtree's realized rows, removes no row, arms the step source, and stays within `B_INTERACT_US`
 - **AND** the step source, which runs above the frame clock's priority and below input, runs in its own dispatches before the first frame after the input: first at most one chunk of `COLLAPSE_UNBOUND_CHUNK_ROWS` unbound rows, then, when that chunk removed every unbound row of the subtree, the collapse's first bound unit; when unbound rows remain, the between-frames source continues them, so no second frame passes before the work continues
@@ -61,7 +61,7 @@ Collapsing a sidebar directory by a route LushText owns SHALL keep the input dis
 
 #### Scenario: A frame lays out one unit and runs no step
 - **WHEN** a sliced collapse with 400 rows after the directory removes bound rows
-- **THEN** each bound unit runs in a step-source dispatch armed by the input, by the previous frame's `after-paint` or by the between-frames source, at most one unit per frame interval
+- **THEN** each bound unit runs in a step-source dispatch armed by the input, by the previous frame's `after-paint`, by the between-frames source, or by the step source's own previous dispatch when that dispatch removed a chunk and the next step is bound, at most one unit per frame interval
 - **AND** no rows leave the directory's stores during a frame clock dispatch, and the frame after the unit only styles, measures, allocates and paints the rows it brought into the band
 
 #### Scenario: The probe scan's publication is a named residual

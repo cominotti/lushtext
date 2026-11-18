@@ -35,7 +35,7 @@ The ledger SHALL record, with a probe, a catalogue entry and a sample verified o
 - **AND** it records the `hidden` state of a row widget the list creates while the state is applied, read after its insertion, and of a hidden row after the list is unmapped and mapped again, and the time to hide and to clear the band's rows
 
 ### Requirement: Where a list removal creates row widgets, and how a step runs before a frame, are ledger axioms
-The ledger SHALL record, each with a probe, a catalogue entry and a sample verified on GNOME 51 and the GNOME 50 floor, in which emission a mapped `GtkListView` creates, binds and maps the widgets of rows a removal brings into its band, and whether a `G_PRIORITY_HIGH_IDLE` one-shot source armed in a frame's `after-paint` or in an input dispatch runs before the next frame clock dispatch.
+The ledger SHALL record, each with a probe, a catalogue entry and a sample verified on GNOME 51 and the GNOME 50 floor, in which emission a mapped `GtkListView` creates, binds and maps the widgets of rows a removal brings into its band, and whether a `G_PRIORITY_HIGH_IDLE` one-shot source armed in a frame's `after-paint`, in an input dispatch or in its own dispatch runs before the next frame clock dispatch, with the frame counter it reads.
 
 #### Scenario: Removal-time creation
 - **WHEN** the probe removes 32 bound rows, with 400 rows after them, from a presented `GtkListView` over a `GtkTreeListModel`, outside any frame clock dispatch, and counts factory setup and bind calls and reads each new row widget's mapped state when the removal returns and during the next frame
@@ -43,5 +43,6 @@ The ledger SHALL record, each with a probe, a catalogue entry and a sample verif
 
 #### Scenario: A high-idle step before a due frame
 - **WHEN** the probe arms a `G_PRIORITY_HIGH_IDLE` one-shot source in a frame's `after-paint`, and separately in a dispatch that runs while the next frame is already due, and records the order of that source and the next frame clock dispatch
-- **THEN** it records whether the source runs before that frame on both toolkits, and the delay it adds to the frame when it runs 4 ms
+- **THEN** it records whether the source runs before that frame on both toolkits, also when the source re-arms itself from its own dispatch, and the delay it adds to the frame when it runs 4 ms
+- **AND** it records the frame clock's frame counter read inside that source, against the counter of the frame just painted and of the next frame
 
