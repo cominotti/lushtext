@@ -626,7 +626,13 @@ waiting_message() {
 # admitted command never counts as its own head.
 admit() {
     local mode=$1 announced=0 own=$admission_ticket bypass=0
-    [ "$mode" != nowait ] || { own=; bypass=1; }
+    # NOWAIT ignores the order in every mode, as its probe did: a check-once
+    # admission that honoured a head its probe ignored would misfit forever.
+    # Inside an envelope NOWAIT does not apply (lock_policy).
+    if [ "$mode" = nowait ] || { [ "${LUSHTEXT_ADMISSION_NOWAIT:-}" = 1 ] && [ "$inside_envelope" = 0 ]; }; then
+        own=
+        bypass=1
+    fi
     exec 9>"$ADMISSION_LOCK"
     while :; do
         if [ "$mode" = wait ]; then
@@ -979,6 +985,14 @@ self_test_admission_cases() {
     status=0
     LUSHTEXT_ADMISSION_NOWAIT=1 LUSHTEXT_HEAVY_MEMORY_MAX=6G LUSHTEXT_MEMORY_RESERVE=1G timeout 5 "$me" 2G true 2>/dev/null || status=$?
     [ "$status" -eq 0 ] || self_test_fail "a NOWAIT 2G request was held behind an older waiter (status $status, expected 0)"
+    # So is scripts/heavy.sh's check-once admission under NOWAIT: its probe
+    # ignored the order, so the admission must too, or it misfits forever.
+    local once_report
+    once_report=$(mktemp)
+    status=0
+    LUSHTEXT_ADMISSION_ONCE=$once_report LUSHTEXT_ADMISSION_NOWAIT=1 LUSHTEXT_HEAVY_MEMORY_MAX=6G LUSHTEXT_MEMORY_RESERVE=1G timeout 5 "$me" 2G true 2>/dev/null || status=$?
+    [ "$status" -eq 0 ] || self_test_fail "a check-once NOWAIT 2G admission was held behind an older waiter (status $status, report '$(tr '\n' ' ' <"$once_report")', expected 0)"
+    rm -f "$once_report"
     kill "$sleeper" 2>/dev/null || true
     for _ in $(seq 100); do
         [ -e "$marker" ] && break
@@ -1186,9 +1200,17 @@ self_test_envelope_cases() {
     # shellcheck disable=SC2016 # expanded by the inner shell
     LUSHTEXT_HEAVY_MEMORY_MAX=6G timeout 10 "$me" --envelope 2G sh -c 'timeout 3 "$0" 2G true' "$me" 2>/dev/null || status=$?
     [ "$status" -eq 0 ] || self_test_fail "an older host-level 4G ticket held back a 2G call inside a 2G envelope (status $status)"
+    rm -f "${ticket:?}"
+    # No ticket where no host admission would remove it: inside a capped
+    # scope (the command runs in place) or inside an envelope (its calls take
+    # the envelope's queue), a ticket would hold its place, and reserve its
+    # cap, for the command's whole run.
+    ticket=$(LUSHTEXT_MEMORY_CAP_KIB=4194304 "$me" --ticket 4G "$owner" 2>/dev/null || true)
+    [ -z "$ticket" ] || { self_test_fail "--ticket inside a capped scope created $ticket"; rm -f "$ticket"; }
+    ticket=$(LUSHTEXT_HEAVY_MEMORY_MAX=6G timeout 10 "$me" --envelope 2G "$me" --ticket 4G "$owner" 2>/dev/null || true)
+    [ -z "$ticket" ] || { self_test_fail "--ticket inside an envelope created $ticket"; rm -f "$ticket"; }
     kill "$owner" 2>/dev/null || true
     wait "$owner" 2>/dev/null || true
-    rm -f "${ticket:?}"
 
     # A SIGKILLed placeholder leaves its sub-slice's drop-in; the next
     # envelope admission sweeps it, with its queue.
@@ -1586,14 +1608,21 @@ check_cap() {
 
 # `--ticket <cap> <owner pid>`: take a place in the heavy slice's admission
 # order for a waiter (scripts/heavy.sh, which keeps it across its retries and
-# removes it on exit) and print the ticket's path. Prints nothing for caps
-# that are not admitted (`none`, 1G or less).
+# removes it on exit) and print the ticket's path. Prints nothing where no
+# host admission would ever remove it: caps that are not admitted (`none`, 1G
+# or less), inside a capped scope (the command runs in place), with no user
+# manager (it runs uncapped) and inside an envelope (its calls take the
+# envelope's own queue). A ticket there would hold its place, and reserve its
+# cap, for the command's whole run.
 if [ "${1:-}" = "--ticket" ]; then
     [ "$#" -eq 3 ] || { echo "usage: $0 --ticket <cap> <owner-pid>" >&2; exit 2; }
     check_cap "$2"
     [ "$2" != none ] || exit 0
     cap_kib=$(cap_in_kib "$2")
     [ "$cap_kib" -gt $((1024 * 1024)) ] || exit 0
+    [ -z "${LUSHTEXT_MEMORY_CAP_KIB:-}" ] || exit 0
+    ! envelope_context || exit 0
+    scope_available || exit 0
     exec 9>"$ADMISSION_LOCK"
     flock 9
     ticket_create "$cap_kib" "$3" "$(queue_dir_of "$HEAVY_SLICE")"

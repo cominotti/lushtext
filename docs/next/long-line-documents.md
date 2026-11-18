@@ -4332,6 +4332,10 @@ separate change, in this order:
          runs in `heavy.sh --envelope <MUTANTS_MEMORY_MAX>`, and admission is
          in arrival order, the oldest waiter that has the host memory
          reserving its cap.
+         Its stage-4 review fixed, failing first, a ticket that outlived
+         its admission when `heavy.sh` ran in place, a caller's
+         `RUSTC_WRAPPER` lost on a misfit-retry, and the check-once
+         admission honouring the order under NOWAIT (design, "Review").
    Also recorded: a process-wide retained-byte ledger for many expanded
    huge sidebar directories (the budget, like the count before it, is per
    directory). From BN (besides `lighten-notes-browser-rows`, queued above):

@@ -538,6 +538,55 @@ back.
   the case then cannot reach its precondition and says so. It does not pass
   silently.
 
+## Review (stage 4, 2026-11-17)
+
+The independent review of `origin/main..HEAD` found three defects and one
+test-hygiene issue. Each was fixed failing first (the new self-test cases
+failed on the reviewed scripts: `.claude/handoffs/close-heavy-admission-window/review-red-*.log`).
+
+- **R1, should-fix: a ticket outlived its admission.** `heavy.sh` took a
+  ticket even where no host admission would remove it: run in place inside a
+  capped scope, with no user manager, or inside an envelope. The ticket then
+  stayed the oldest live waiter for the command's whole run and reserved its
+  cap against every younger request (reproduced: a `heavy.sh --mem 2G` run
+  inside a capped scope kept its ticket while its command ran).
+  `--ticket` now prints nothing in those cases, the same exemptions
+  `--wait-admissible` already made. Cases: the wrapper's `--ticket` inside a
+  capped scope and inside an envelope; `heavy.sh` run in place keeps no
+  ticket.
+- **R2, should-fix: a misfit-retry lost the caller's `RUSTC_WRAPPER`.**
+  D1 moved the parallelism export into the retry loop. From the second pass
+  on, `RUSTC_WRAPPER` held our own front-end wrapper, which
+  `next-rustc-wrapper.py` skips, so the chain fell through to the configured
+  wrapper and dropped a caller's own (an empty one, which turns sccache off,
+  included). `heavy.sh` now puts the caller's value back before every pass.
+  Case: a 2G misfit-retry whose command reports the caller's wrapper as the
+  next one.
+- **R3, minor: check-once admission under NOWAIT honoured the order.** The
+  probe ignored the queue's head under `LUSHTEXT_ADMISSION_NOWAIT=1`, but the
+  check-once admission after LOCK did not, so it could misfit on every retry.
+  Both now ignore the head under NOWAIT (outside an envelope, where NOWAIT
+  does not apply). Case: a check-once NOWAIT admission behind an older waiter
+  is admitted.
+- **R4, test hygiene:** the `heavy.sh` self-test's queue cleanup and
+  leftovers check matched `-h<pid>*`, which also matches a concurrent run
+  whose PID has this one as a prefix; the cleanup could delete that run's
+  queue. Both now match exactly, as the wrapper's own `self_test_leftovers`
+  does.
+
+**Decision: `openspec validate --all --strict`.** The 87 warnings that
+OpenSpec CLI 2.0.0 promotes under `--strict` sit in main specs this change
+does not touch, reproduce on `origin/main`, and are already queued in the
+programme ledger as their own item ("OpenSpec strict cleanup"). They do not
+block this change; the main spec this change creates
+(`heavy-work-admission`) is checked with `--strict` at archive time so that
+it adds none.
+
+**For agents after the merge.** `heavy.sh --mem none -- make test` (and the
+other self-admitting lanes) now exit 2 naming `--envelope`. Stage briefs and
+in-flight worktrees that still carry the old form switch to
+`heavy.sh --envelope 16G -- make test` (coordinator note).
+
 GTK axioms: none (no toolkit behaviour relied on).
 Kani: none (no proven module touched).
 Timing: none (no timed path touched; helper behaviour is proved by the

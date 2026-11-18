@@ -241,7 +241,10 @@ heavy_self_test_admission_cleanup() {
     }
     systemctl --user stop "$heavy_test_slice" >/dev/null 2>&1 || true
     systemctl --user revert "$heavy_test_slice" >/dev/null 2>&1 || true
-    rm -rf "${XDG_RUNTIME_DIR:-/tmp}/lushtext-heavy-admission.queue/${heavy_test_slice%.slice}"*
+    # Exactly this run's queues: `-h<pid>.slice` and `-h<pid>-env…`, never a
+    # concurrent run whose PID has this one as a prefix.
+    rm -rf "${XDG_RUNTIME_DIR:-/tmp}/lushtext-heavy-admission.queue/$heavy_test_slice" \
+        "${XDG_RUNTIME_DIR:-/tmp}/lushtext-heavy-admission.queue/${heavy_test_slice%.slice}"-env*
 }
 
 # Wait up to $2 seconds (default 10) for process $1 to exit; true if it did.
@@ -441,6 +444,31 @@ EOF
     else
         hfail "the misfit-retry case's sleeper never started"
     fi
+
+    # A caller's RUSTC_WRAPPER survives a misfit-retry: from the second pass
+    # on, RUSTC_WRAPPER holds our own front-end wrapper, which
+    # next-rustc-wrapper.py skips. A 2G cap in the 3G budget beside a 2G
+    # sleeper; the shim lets only the first admission see the sleeper.
+    if heavy_test_sleeper; then
+        # shellcheck disable=SC2016 # expanded by the inner shell
+        out=$(PATH=$shim_path HEAVY_SHIM_SLICE=$heavy_test_slice HEAVY_SHIM_REAL=$real_systemctl \
+            HEAVY_SHIM_ONCE=$dir/shim-once-wrapper RUSTC_WRAPPER=/heavy-self-test/caller-wrapper \
+            timeout 60 "$me" --mem 2G -- sh -c 'echo "${LUSHTEXT_NEXT_RUSTC_WRAPPER-unset}"' 2>"$dir/wrapper.err" || true)
+        grep -q 'released LOCK, waiting again' "$dir/wrapper.err" || hfail "the rustc-wrapper retry case did not misfit (stderr '$(tail -n 2 "$dir/wrapper.err" | tr '\n' ' ')')"
+        [ "$out" = /heavy-self-test/caller-wrapper ] \
+            || hfail "after a misfit-retry the command's next rustc-wrapper was '$out', expected the caller's /heavy-self-test/caller-wrapper"
+        heavy_test_sleeper_stop
+    else
+        hfail "the rustc-wrapper retry case's sleeper never started"
+    fi
+
+    # Run in place inside a capped scope, heavy.sh keeps no ticket in the
+    # admission order while its command runs: no admission would remove it,
+    # and it would reserve its cap against every younger request.
+    local queue=${XDG_RUNTIME_DIR:-/tmp}/lushtext-heavy-admission.queue/$heavy_test_slice
+    # shellcheck disable=SC2016 # expanded by the inner shell
+    out=$(LUSHTEXT_MEMORY_CAP_KIB=4194304 timeout 10 "$me" --mem 2G -- sh -c 'ls -A "$0" 2>/dev/null | wc -l' "$queue" 2>/dev/null || true)
+    [ "$out" = 0 ] || hfail "heavy.sh run in place inside a capped scope kept '$out' ticket(s) in the admission order while its command ran, expected 0"
 
     # A nested heavy.sh --envelope under an outer --mem none is refused (2,
     # naming --envelope): it cannot be the outer heavy.sh's own admission.
@@ -672,7 +700,8 @@ self_test() {
         [ "$after_max" = "$real_max" ] || { fail "the real user-lushtext-heavy.slice MemoryMax changed from '$real_max' to '$after_max'"; status=1; }
         leftovers=$(compgen -G "$rt/systemd/user.control/user-lushtext-heavy-selftest-h$$.slice.d" || true)
         leftovers+=$(compgen -G "$rt/systemd/user.control/user-lushtext-heavy-selftest-h$$-env*.slice.d" || true)
-        leftovers+=$(compgen -G "${XDG_RUNTIME_DIR:-/tmp}/lushtext-heavy-admission.queue/user-lushtext-heavy-selftest-h$$*" || true)
+        leftovers+=$(compgen -G "${XDG_RUNTIME_DIR:-/tmp}/lushtext-heavy-admission.queue/user-lushtext-heavy-selftest-h$$.slice" || true)
+        leftovers+=$(compgen -G "${XDG_RUNTIME_DIR:-/tmp}/lushtext-heavy-admission.queue/user-lushtext-heavy-selftest-h$$-env*" || true)
         [ -z "$leftovers" ] || { fail "the admission cases left drop-ins or queues behind: $leftovers"; status=1; }
         [ "$status" -eq 0 ] || { fail "$status admission case(s) failed"; return 1; }
         admission="the window after the probe, a busy admission lock and --mem none give LOCK back; exit 75 is the command's; envelopes admit inner scopes; the real slice untouched"
@@ -760,7 +789,18 @@ fi
 trap "rm -f '$report' ${ticket:+'$ticket'}" EXIT
 
 announced=0
+# The caller's RUSTC_WRAPPER, put back before every pass: once a pass has
+# exported our own front-end wrapper there, next-rustc-wrapper.py skips it, so
+# a misfit-retry would otherwise lose a caller's wrapper (an empty one, which
+# turns sccache off, included) and chain to the configured one instead.
+caller_wrapper_set=${RUSTC_WRAPPER+1}
+caller_wrapper=${RUSTC_WRAPPER-}
 while :; do
+    if [ -n "$caller_wrapper_set" ]; then
+        export RUSTC_WRAPPER=$caller_wrapper
+    else
+        unset RUSTC_WRAPPER
+    fi
     # Wait for memory holding nothing.
     LUSHTEXT_ADMISSION_TICKET=$ticket "$here/with-memory-cap.sh" --wait-admissible "$cap"
     exec 6>>"$AGENT_LOCK_INTENT"

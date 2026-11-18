@@ -31,3 +31,21 @@ requirement text, placeholder Purpose sections) in main specs under
 `openspec/specs/`, none of which this branch edits; there is no ERROR. No
 Makefile target, hook or CI workflow runs `--all`. Recorded for the
 coordinator as its own ledger change (see the handoff's `host-asks.md`).
+
+## Stage-4 review fixes (2026-11-17)
+
+Design "Review" R1-R4. Failing first on the reviewed scripts: the wrapper's
+self-test failed 3 new cases (check-once NOWAIT behind a waiter, `--ticket`
+inside a capped scope, `--ticket` inside an envelope) and `heavy.sh`'s 2
+(caller's `RUSTC_WRAPPER` after a misfit-retry, a ticket kept by a run in
+place); logs in the handoff directory (`review-red-wmc.log`,
+`review-red-heavy.log`).
+
+| Gate | Command | Result | Load before → after |
+| --- | --- | --- | --- |
+| Agent helpers | `scripts/heavy.sh --mem none -- make check-agent-helpers` | exit 0; all four self-tests ok, shellcheck clean | 5.07 → 4.30 |
+| Real-slice smoke | `scripts/heavy.sh --mem 2G -- true`; `scripts/heavy.sh --envelope 2G -- true` | both exit 0; envelope peak 5 MiB, oom_kill 0; no ticket, envelope unit or drop-in left | - |
+
+`make test` was not rerun: the fixes touch only the ticket's creation, the
+retry loop's environment and the NOWAIT branch of `admit`, which the
+self-tests cover; the full suite ran on `bea805bb`.
