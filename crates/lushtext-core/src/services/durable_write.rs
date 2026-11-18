@@ -33,7 +33,7 @@ use crate::services::filesystem::write_protocol::{
     MoveAction, MoveProtocol, RenameAction, RenameClass, RenameProtocol, StepOutcome, WriteAction,
     WriteClass, WriteProtocol,
 };
-use crate::services::filesystem::{sys, temp_name};
+use crate::services::filesystem::{WriteLabel, sys, temp_name};
 use crate::services::protocol_drive::{Protocol, drive};
 
 /// The durable write as [`drive`] runs it: an action's outcome is one
@@ -155,7 +155,7 @@ pub(crate) fn temp_name_launch_nonce() -> u32 {
 
 /// Build a unique hidden temp path next to the final destination.
 #[must_use]
-pub fn unique_temp_path(path: &Path, tmp_tag: &str) -> PathBuf {
+pub fn unique_temp_path(path: &Path, label: WriteLabel) -> PathBuf {
     let parent = parent_or_current(path);
     let file_name = path
         .file_name()
@@ -163,7 +163,7 @@ pub fn unique_temp_path(path: &Path, tmp_tag: &str) -> PathBuf {
     let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
     parent.join(temp_name::format(
         &file_name,
-        tmp_tag,
+        label,
         std::process::id(),
         temp_name::sequence(temp_name_launch_nonce(), counter),
     ))
@@ -213,8 +213,8 @@ impl std::fmt::Display for DurableWriteError {
 impl std::error::Error for DurableWriteError {}
 
 #[cfg(test)]
-fn atomic_write_bytes(path: &Path, tmp_tag: &str, bytes: &[u8]) -> std::io::Result<()> {
-    atomic_write_bytes_classified(path, tmp_tag, bytes).map_err(DurableWriteError::into_io_error)
+fn atomic_write_bytes(path: &Path, label: WriteLabel, bytes: &[u8]) -> std::io::Result<()> {
+    atomic_write_bytes_classified(path, label, bytes).map_err(DurableWriteError::into_io_error)
 }
 
 /// Atomically replace `path` with `bytes`, classifying any failure by phase.
@@ -235,10 +235,10 @@ fn atomic_write_bytes(path: &Path, tmp_tag: &str, bytes: &[u8]) -> std::io::Resu
 /// bytes are in place but the directory `fsync` failed.
 pub fn atomic_write_bytes_classified(
     path: &Path,
-    tmp_tag: &str,
+    label: WriteLabel,
     bytes: &[u8],
 ) -> Result<(), DurableWriteError> {
-    atomic_write_stream_classified(path, tmp_tag, |writer| writer.write_all(bytes))
+    atomic_write_stream_classified(path, label, |writer| writer.write_all(bytes))
 }
 
 /// Atomically replace `path` with bytes while preserving metadata from `metadata_source`.
@@ -257,11 +257,11 @@ pub fn atomic_write_bytes_classified(
 /// synced after the new file is visible.
 pub fn atomic_write_bytes_with_metadata_source_classified(
     path: &Path,
-    tmp_tag: &str,
+    label: WriteLabel,
     bytes: &[u8],
     metadata_source: &Path,
 ) -> Result<(), DurableWriteError> {
-    atomic_write_stream_with_metadata_source_classified(path, tmp_tag, metadata_source, |writer| {
+    atomic_write_stream_with_metadata_source_classified(path, label, metadata_source, |writer| {
         writer.write_all(bytes)
     })
 }
@@ -284,7 +284,7 @@ pub fn atomic_write_bytes_with_metadata_source_classified(
 /// bytes are in place but the directory `fsync` failed.
 pub fn atomic_write_stream_classified<F>(
     path: &Path,
-    tmp_tag: &str,
+    label: WriteLabel,
     write_content: F,
 ) -> Result<(), DurableWriteError>
 where
@@ -292,7 +292,7 @@ where
 {
     atomic_write_stream_with_metadata(
         path,
-        tmp_tag,
+        label,
         MetadataSource::ExistingDestination,
         write_content,
     )
@@ -310,7 +310,7 @@ where
 /// synced after the new file is visible.
 pub fn atomic_write_stream_with_metadata_source_classified<F>(
     path: &Path,
-    tmp_tag: &str,
+    label: WriteLabel,
     metadata_source: &Path,
     write_content: F,
 ) -> Result<(), DurableWriteError>
@@ -319,7 +319,7 @@ where
 {
     atomic_write_stream_with_metadata(
         path,
-        tmp_tag,
+        label,
         MetadataSource::Explicit(metadata_source),
         write_content,
     )
@@ -332,7 +332,7 @@ where
 /// sync after a successful rename reports `AfterRename`.
 fn atomic_write_stream_with_metadata<F>(
     path: &Path,
-    tmp_tag: &str,
+    label: WriteLabel,
     metadata_source: MetadataSource<'_>,
     write_content: F,
 ) -> Result<(), DurableWriteError>
@@ -355,7 +355,7 @@ where
                     .map(|plan| metadata_plan = Some(plan))
             }
             WriteAction::CreateTemp => {
-                let tmp_path = unique_temp_path(path, tmp_tag);
+                let tmp_path = unique_temp_path(path, label);
                 let mode = metadata_plan.as_ref().and_then(MetadataPlan::create_mode);
                 match sys::create_temp_file(&tmp_path, mode) {
                     Ok(file) => {
@@ -414,7 +414,7 @@ where
                 // not yet crash-durable.
                 crate::services::kill_point::reach(
                     crate::services::kill_point::KillWindow::DurableRenamedBeforeDirSync,
-                    tmp_tag,
+                    label.as_str(),
                 );
                 outcome_of(
                     sync_timing::timed(|| sync_parent_dir(path)),
@@ -697,9 +697,9 @@ pub fn create_dir_durable(path: &Path) -> std::io::Result<()> {
 ///
 /// Returns an error if the source cannot be read or the destination cannot be
 /// atomically written.
-pub fn copy_durable(from: &Path, to: &Path, tmp_tag: &str) -> std::io::Result<()> {
+pub fn copy_durable(from: &Path, to: &Path, label: WriteLabel) -> std::io::Result<()> {
     let bytes = sys::read(from)?;
-    atomic_write_bytes_with_metadata_source_classified(to, tmp_tag, &bytes, from)
+    atomic_write_bytes_with_metadata_source_classified(to, label, &bytes, from)
         .map_err(DurableWriteError::into_io_error)
 }
 
@@ -715,12 +715,12 @@ pub fn copy_durable(from: &Path, to: &Path, tmp_tag: &str) -> std::io::Result<()
 ///
 /// Returns an error if the copy fails, the source cannot be removed, or the
 /// source directory cannot be synced after removal.
-pub fn move_durable(from: &Path, to: &Path, tmp_tag: &str) -> std::io::Result<()> {
+pub fn move_durable(from: &Path, to: &Path, label: WriteLabel) -> std::io::Result<()> {
     let (mut protocol, first) = MoveProtocol::start();
     let mut last_error = None;
     let moved = drive(&mut protocol, first, |action| {
         let result = match action {
-            MoveAction::Copy => copy_durable(from, to, tmp_tag),
+            MoveAction::Copy => copy_durable(from, to, label),
             MoveAction::RemoveSource => remove_move_source(from),
             MoveAction::SyncSourceDir => sync_parent_dir(from),
             MoveAction::Finish(_) => unreachable!("`drive` never executes the terminal action"),
@@ -1051,13 +1051,13 @@ mod tests {
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = dir.path().join("data.txt");
 
-        atomic_write_bytes(&path, "test", b"new").expect("expected operation to succeed");
+        atomic_write_bytes(&path, WriteLabel::SAVE, b"new").expect("expected operation to succeed");
 
         assert_eq!(fixture::read_bytes(&path), b"new");
         assert!(
             fixture::entry_names(dir.path())
                 .into_iter()
-                .all(|entry| !entry.contains(".test."))
+                .all(|entry| !entry.contains(".save."))
         );
     }
 
@@ -1066,8 +1066,8 @@ mod tests {
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = dir.path().join("session.json");
 
-        let first = unique_temp_path(&path, "json");
-        let second = unique_temp_path(&path, "json");
+        let first = unique_temp_path(&path, WriteLabel::JSON);
+        let second = unique_temp_path(&path, WriteLabel::JSON);
 
         assert_ne!(first, second);
         assert_eq!(first.parent(), Some(dir.path()));
@@ -1181,7 +1181,7 @@ mod tests {
         let to = dir.path().join("to.txt");
         fixture::write_text(&from, "snapshot");
 
-        copy_durable(&from, &to, "copy").expect("copy");
+        copy_durable(&from, &to, WriteLabel::LOCAL_HISTORY_COPY).expect("copy");
 
         fixture::assert_text(&from, "snapshot");
         fixture::assert_text(&to, "snapshot");
@@ -1194,7 +1194,8 @@ mod tests {
         let to = dir.path().join("to.txt");
         fixture::write_text(&from, "snapshot");
 
-        move_durable(&from, &to, "copy").expect("expected operation to succeed");
+        move_durable(&from, &to, WriteLabel::LOCAL_HISTORY_COPY)
+            .expect("expected operation to succeed");
 
         assert!(!fixture::exists(&from));
         fixture::assert_text(&to, "snapshot");
@@ -1208,7 +1209,8 @@ mod tests {
         fixture::write_text(&from, "snapshot");
 
         fail_next_parent_sync_for_test(std::io::ErrorKind::Other);
-        move_durable(&from, &to, "copy").expect_err("the destination sync failed");
+        move_durable(&from, &to, WriteLabel::LOCAL_HISTORY_COPY)
+            .expect_err("the destination sync failed");
 
         fixture::assert_text(&from, "snapshot");
     }
@@ -1224,7 +1226,8 @@ mod tests {
         fixture::write_text(&from, "snapshot");
 
         fail_next_source_removal_for_test();
-        let error = move_durable(&from, &to, "copy").expect_err("the source removal failed");
+        let error = move_durable(&from, &to, WriteLabel::LOCAL_HISTORY_COPY)
+            .expect_err("the source removal failed");
 
         assert_eq!(error.to_string(), "injected source removal failure");
         fixture::assert_text(&from, "snapshot");
@@ -1275,7 +1278,7 @@ mod tests {
         fixture::set_mode(&from, 0o644);
         fixture::set_mode(&to, 0o600);
 
-        move_durable(&from, &to, "copy").expect("copy fallback");
+        move_durable(&from, &to, WriteLabel::LOCAL_HISTORY_COPY).expect("copy fallback");
 
         assert!(!fixture::exists(&from));
         fixture::assert_text(&to, "source");
@@ -1298,7 +1301,7 @@ mod tests {
             return;
         }
 
-        move_durable(&from, &to, "copy").expect("copy fallback");
+        move_durable(&from, &to, WriteLabel::LOCAL_HISTORY_COPY).expect("copy fallback");
 
         let read_back =
             fixture::get_xattr(&to, name).expect("source user xattr must survive copy fallback");
@@ -1333,7 +1336,7 @@ mod tests {
             }
         }
 
-        move_durable(&from, &to, "copy").expect("copy fallback");
+        move_durable(&from, &to, WriteLabel::LOCAL_HISTORY_COPY).expect("copy fallback");
 
         let after = Command::new(&getfacl)
             .arg("--omit-header")
@@ -1411,7 +1414,7 @@ mod tests {
     #[test]
     fn atomic_write_to_bare_relative_name_syncs_current_directory() {
         if std::env::var_os(BARE_NAME_CHILD_ENV).is_some() {
-            atomic_write_bytes_classified(Path::new("bare.txt"), "test", b"bare")
+            atomic_write_bytes_classified(Path::new("bare.txt"), WriteLabel::SAVE, b"bare")
                 .expect("a bare relative destination must write durably");
             create_dir_all_durable(Path::new("fresh/nested"))
                 .expect("a relative directory tree must be created durably");
@@ -1472,7 +1475,7 @@ mod tests {
         // fails: a before-rename failure that must leave no destination behind.
         let path = dir.path().join("missing-dir/data.txt");
 
-        let error = atomic_write_bytes_classified(&path, "test", b"bytes")
+        let error = atomic_write_bytes_classified(&path, WriteLabel::SAVE, b"bytes")
             .expect_err("missing parent must fail the write");
 
         assert!(
@@ -1493,7 +1496,7 @@ mod tests {
 
         let error = atomic_write_bytes_with_metadata_source_classified(
             &destination,
-            "copy",
+            WriteLabel::LOCAL_HISTORY_COPY,
             b"new",
             &source,
         )
@@ -1517,7 +1520,7 @@ mod tests {
         let private = dir.path().join("private.bin");
         fixture::write_bytes(&private, b"old");
         fixture::set_mode(&private, 0o600);
-        atomic_write_bytes(&private, "test", b"new").expect("overwrite");
+        atomic_write_bytes(&private, WriteLabel::SAVE, b"new").expect("overwrite");
         assert_eq!(
             fixture::mode(&private) & 0o777,
             0o600,
@@ -1527,7 +1530,7 @@ mod tests {
         let exec = dir.path().join("tool");
         fixture::write_bytes(&exec, b"old");
         fixture::set_mode(&exec, 0o755);
-        atomic_write_bytes(&exec, "test", b"new").expect("overwrite exec");
+        atomic_write_bytes(&exec, WriteLabel::SAVE, b"new").expect("overwrite exec");
         assert_ne!(
             fixture::mode(&exec) & 0o111,
             0,
@@ -1543,7 +1546,7 @@ mod tests {
         fixture::write_bytes(&path, b"old");
         fixture::set_mode(&path, 0o1755);
 
-        atomic_write_bytes(&path, "test", b"new").expect("overwrite special mode");
+        atomic_write_bytes(&path, WriteLabel::SAVE, b"new").expect("overwrite special mode");
 
         assert_eq!(
             fixture::mode(&path) & 0o7777,
@@ -1576,7 +1579,7 @@ mod tests {
             *observed_mode_for_hook.lock().expect("mode lock") = Some(mode);
         }));
 
-        atomic_write_bytes(&private, "test", b"new").expect("overwrite");
+        atomic_write_bytes(&private, WriteLabel::SAVE, b"new").expect("overwrite");
         *TEMP_AFTER_CONTENT_OBSERVER
             .get_or_init(|| Mutex::new(None))
             .lock()
@@ -1595,7 +1598,7 @@ mod tests {
         let path = dir.path().join("data.txt");
         fixture::write_bytes(&path, b"old");
 
-        let error = atomic_write_stream_classified(&path, "test", |writer| {
+        let error = atomic_write_stream_classified(&path, WriteLabel::SAVE, |writer| {
             writer.write_all(b"partial")?;
             Err(std::io::Error::other("serializer failed"))
         })
@@ -1615,7 +1618,7 @@ mod tests {
         let path = dir.path().join("occupied");
         fixture::create_dir_all(&path.join("child"));
 
-        let error = atomic_write_bytes_classified(&path, "test", b"new")
+        let error = atomic_write_bytes_classified(&path, WriteLabel::SAVE, b"new")
             .expect_err("renaming a file over a non-empty directory fails");
 
         assert!(matches!(error, DurableWriteError::BeforeRename(_)));
@@ -1634,7 +1637,7 @@ mod tests {
 
         let error = atomic_write_bytes_with_metadata_source_classified(
             &path,
-            "test",
+            WriteLabel::SAVE,
             b"new",
             &missing_source,
         )
@@ -1653,7 +1656,7 @@ mod tests {
         fixture::set_mode(&path, 0o600);
 
         FAIL_FINAL_TEMP_SYNC_AFTER_METADATA.with(|fail| fail.set(true));
-        let error = atomic_write_bytes_classified(&path, "test", b"new")
+        let error = atomic_write_bytes_classified(&path, WriteLabel::SAVE, b"new")
             .expect_err("injected final sync failure should fail");
 
         assert!(
@@ -1671,7 +1674,7 @@ mod tests {
         fixture::write_bytes(&path, b"old");
 
         fail_next_parent_sync_for_test(std::io::ErrorKind::Other);
-        let error = atomic_write_bytes_classified(&path, "test", b"new")
+        let error = atomic_write_bytes_classified(&path, WriteLabel::SAVE, b"new")
             .expect_err("injected parent sync failure should fail");
 
         assert!(
@@ -1698,7 +1701,7 @@ mod tests {
         let reference_mode = fixture::mode(&reference) & 0o777;
 
         let fresh = dir.path().join("fresh");
-        atomic_write_bytes(&fresh, "test", b"hello").expect("new-file write");
+        atomic_write_bytes(&fresh, WriteLabel::SAVE, b"hello").expect("new-file write");
         let fresh_mode = fixture::mode(&fresh) & 0o777;
 
         assert_eq!(
@@ -1724,7 +1727,7 @@ mod tests {
             return;
         }
 
-        atomic_write_bytes(&path, "test", b"new").expect("overwrite preserves xattr");
+        atomic_write_bytes(&path, WriteLabel::SAVE, b"new").expect("overwrite preserves xattr");
 
         let read_back =
             fixture::get_xattr(&path, name).expect("the user xattr must survive the overwrite");
@@ -1767,7 +1770,7 @@ mod tests {
             }
         }
 
-        atomic_write_bytes(&path, "test", b"new").expect("overwrite preserves ACL");
+        atomic_write_bytes(&path, WriteLabel::SAVE, b"new").expect("overwrite preserves ACL");
 
         let after = Command::new(&getfacl)
             .arg("--omit-header")

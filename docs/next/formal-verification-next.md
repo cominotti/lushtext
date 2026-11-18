@@ -189,6 +189,10 @@ applied one at a time:
   write, move and rename shells and the Replace All apply, undo and
   journal-shrink shells run through it, and a source check fails a shell that
   steps its core in a loop of its own.
+- group 4, `WriteLabel` down to the temp name: **done** (2026-11-18). The
+  durable write, copy, move and `temp_name::format` take `WriteLabel`, so a
+  temp tag is always a known label; `kill_point::reach` keeps a string key,
+  because the draft windows narrow on a draft id.
 
 ### N9. Use proofs as mutation killers
 

@@ -131,11 +131,11 @@ group's heavy commands.
 
 ## 4. `WriteLabel` down to the temp name (design G4)
 
-- [ ] 4.1 Write the characterization test first. For each of the 11
+- [x] 4.1 Write the characterization test first. For each of the 11
   `WriteLabel::KNOWN` entries, with a fixed file, pid, and sequence, assert
   the exact temp name the current builder emits. It must pass on the
   unchanged tree.
-- [ ] 4.2 Change these signatures to take `WriteLabel`, and remove the four
+- [x] 4.2 Change these signatures to take `WriteLabel`, and remove the four
   `as_str()` conversions in `filesystem/write.rs`:
   - `temp_name::format` and `unique_temp_path`;
   - the private `atomic_write_bytes`;
@@ -145,17 +145,17 @@ group's heavy commands.
 
   `kill_point::reach` keeps its `&str` key. Update its documentation to say
   that the key is a write label or a draft id.
-- [ ] 4.3 Switch the tests that pass literal tags (`"test"` 15 times, `"json"`
+- [x] 4.3 Switch the tests that pass literal tags (`"test"` 15 times, `"json"`
   twice, and the `leftovers.rs` `unique_temp_path` callers) to existing
   `WriteLabel` constants. Add no test-only label. Move the `"not-a-label"`
   negative case to `parse`, as a crafted name.
-- [ ] 4.4 Confirm 4.1 passes unchanged, and confirm that the leftover
+- [x] 4.4 Confirm 4.1 passes unchanged, and confirm that the leftover
   predicate tests pass, older-build names included. Confirm that the
   kill-point `@label` narrowing still works by running
   `scripts/heavy.sh -- make crash-recovery-smoke`, where supported.
-- [ ] 4.5 Re-check the `durable_write.rs` `exclude_re` entries as in 1.6.
+- [x] 4.5 Re-check the `durable_write.rs` `exclude_re` entries as in 1.6.
   Confirm 0.2's diff is empty. Kani: none.
-- [ ] 4.6 Sync the docs: `docs/durable-writes.md` (label plumbing, and the
+- [x] 4.6 Sync the docs: `docs/durable-writes.md` (label plumbing, and the
   kill-point key kinds) and N8 (group 4 done).
 
 ## 2. One owner for the app-data layout (design G2)
