@@ -2667,11 +2667,11 @@ thread has 558 samples, 139.5 ms of CPU. 233 of them carry no call chain
 
 | phase, ms from the input | what runs | CPU |
 |---|---|---|
-| 0–97, unbound | the path-cache splice: `PathBuf` equality, the path SipHash, `Path::components`, the `item_locations` and `child_paths` `remove_entry`. 222 samples | 55.5 ms |
+| 0–97, unbound | the path-cache splice: `PathBuf` equality, the path SipHash, `Path::components`, the `item_locations` `remove_entry` (10 samples), and a `remove_entry` on a `HashMap<PathBuf, gio::ListStore>` (14 samples, 3.5 ms; the section's only such map is `retained_child_stores` in `imp.rs`, which is not one of D24's maps, and its callers are not in the chains). 222 samples | 55.5 ms |
 | 0–97, unbound | GTK's tree-list-model node removal and the store splice | about 20 ms |
 | 0–97, unbound | frees, and other work with no attributable caller | about 17 ms |
 | 97–164, band tail | five band dispatches, at 97.6, 114.9, 132.6, 144.6 and 161.4 ms, the last the terminal `collapse_row`. Between them, frees with no call chain (the listing retirement's drops, by their leaves `g_object_unref` and `_int_free_chunk`) | about 24 ms of frees, 7.3 ms band teardown, 6.8 ms frame |
-| whole window | the evidence instruments: no sample | 0 |
+| whole window | the evidence instruments: none among the 325 samples with a call chain (a floor, since evidence and retirement are classed by chain) | 0 |
 
 So the unbound phase is about 97 ms here, against the skip-cache build's
 30 ms. More than half of it is the path-cache splice, which confirms R11's
@@ -2682,14 +2682,20 @@ Q1 counts **five** band dispatches. That is four units and the terminal, one
 more than R3's `ceil(175 / 64) + 1` = 4, as in the skip-cache window. With
 rows after the subtree, Q4's frames over 8 ms at 400:4,096 (unit 32) fall at
 about 13, 26, 43, 59, 76 and 110 ms, with one more at about 93 ms under 8 ms.
-That is seven band frames, R3's `ceil(175 / 32) + 1` = 7.
+That is consistent with seven band frames, R3's `ceil(175 / 32) + 1` = 7.
+`over_interact` lists only dispatches over 8 ms, so the frame at about 93 ms
+is inferred from the 17 ms cadence, not read from the log.
 
-The first frame after the input (at about 0 ms) runs no unit there. Its tick
-finds unbound rows, which wait for the between-frames source, so that frame
-is lost. At 400:64, which has no unbound rows, the first frame after the
-input takes a unit at once (frames over 8 ms at about 0 and 16 ms). This
-measures R11's claim for D23: where the input's chunk covers the unbound
-rows, it buys back that lost frame.
+The log has no frame over 8 ms in the first 13 ms after the input at
+400:4,096, and the first two recorded frames are only about 13 ms apart. At
+400:64, which has no unbound rows, a frame over 8 ms follows the input at
+once (at about 0 and 16 ms). That is consistent with R11's reading for D23:
+at 400:4,096 the first frame's tick finds only unbound rows, which wait for
+the between-frames source, so that frame takes no unit, and the input's
+chunk would buy it back. The log does not show that light first frame
+directly, and 400:4,096 passes the gate only on that credit, so task 10.9's
+guard test (the first frame's tick takes the first bound unit) and task
+10.7's round on the reworked code must confirm it.
 
 R11's frame table is corrected by these counts:
 - 0:N takes `ceil(207 / unit) + 1` band frames;
