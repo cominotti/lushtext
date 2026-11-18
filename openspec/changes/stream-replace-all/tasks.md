@@ -159,7 +159,7 @@ path moves that edit to G5.
   Add `sha2` to `lushtext-core` and run `cargo hakari generate`,
   `cargo deny check advisories bans sources licenses`, and
   `make cargo-sources`, verifying that `cargo-sources.json` gains no crate.
-- [ ] 2.4 Choose `REPLACE_STREAM_CHUNK_BYTES`: measure the branch's
+- [x] 2.4 Choose `REPLACE_STREAM_CHUNK_BYTES`: measure the branch's
   throughput at 256 KiB, 1 MiB and 4 MiB on a 512 MiB fixture, then take the
   smallest power of two within 5 % of the best. Record it, with its kind
   rustdoc. A timing verdict: G4 builds one release binary with a test-only
@@ -357,7 +357,7 @@ path moves that edit to G5.
 - [x] 4.7 Exact accounting: the existing tests in "Replace All undo payload
   accounting is exact across failures" pass against the disk and descriptor
   counters.
-- [ ] 4.8 Memory acceptance (M9 method, interleaved with `main`, through
+- [x] 4.8 Memory acceptance (M9 method, interleaved with `main`, through
   `heavy.sh`: design R3), with the same replacements at every size, on a
   disk-backed fixture. G4 adds the branch-side measurement test (the shape
   of `measure/main_m9.rs.add` over `apply_replacements`'s new signature). The branch's peak
@@ -538,7 +538,7 @@ path moves that edit to G5.
   Extend `LUSHTEXT_KILL_AT` with an occurrence ordinal (`name@label#n`),
   with unit tests, and document it in `services/kill_point.rs` and
   `docs/end-user-coverage.md`.
-- [ ] 7.3 (group G3) Add a crash-recovery smoke case (`scripts/crash-recovery-smoke-driver.py`)
+- [x] 7.3 (group G3) Add a crash-recovery smoke case (`scripts/crash-recovery-smoke-driver.py`)
   that drives Replace All through the automation actions on a multi-file
   fixture, kills at each window on the third of five files (and at
   `durable-renamed-before-dirsync@replace`), plus at
@@ -602,7 +602,7 @@ path moves that edit to G5.
 
 ## 9. Lanes and verdicts
 
-- [ ] 9.1 Responsiveness lane cases (`make responsiveness-smoke`, measurement
+- [x] 9.1 Responsiveness lane cases (`make responsiveness-smoke`, measurement
   build). The cases do not exist in the lane yet: G5 adds them (the lane's
   scenario list and its self-test, `make check-responsiveness-lane`), then
   part C of the queued entry "stream-replace-all: timing verdicts"
@@ -616,10 +616,10 @@ path moves that edit to G5.
   - (c) the progress heartbeat during a 512 MiB run, within `B_interact`
     (the lane for "Replace All reports progress for long runs");
   - (d) typing in another tab during a 512 MiB run, within `B_interact`.
-- [ ] 9.2 Memory verdict, the M9 method, as in 4.8: four rounds
+- [x] 9.2 Memory verdict, the M9 method, as in 4.8: four rounds
   interleaved `main` → branch → `main` → branch through `heavy.sh` (design
   R3), on the final code.
-- [ ] 9.3 Wall-time record (timing verdicts, part B of the queued entry
+- [x] 9.3 Wall-time record (timing verdicts, part B of the queued entry
   "stream-replace-all: timing verdicts", four rounds interleaved `main` → branch → `main` →
   branch per case, after G5):
   - at 16 MiB, the branch is within 2× `main` plus 50 ms (design Risks);
@@ -630,7 +630,7 @@ path moves that edit to G5.
     not, stop and amend the artifacts first (design Risks: the inline-original
     fallback is a spec amendment, with its format fixtures, Kani protocol and
     descriptor rule), then implement it and re-measure.
-- [ ] 9.4 Gates:
+- [x] 9.4 Gates:
   - `make check`;
   - `make test`, with the widget shards (CI parity);
   - property tests and fuzz corpus replay;

@@ -5261,13 +5261,23 @@ What landed on the branch, and what is still owed, is the change's
   (`workspace-search-replace-skipped`) and two responsiveness lane cases
   (`replace-all/skips-16384`: completion terminal and Skipped Files dialog;
   `replace-all/run-512mib`: progress and typing during the run).
-- **Still owed** (`tasks.md`): the memory verdicts (4.8, 9.2, M9 through
-  `heavy.sh`), `main`'s M9 repetitions 2 and 3 (1.1) and the GTK-side
-  disposal baseline (1.2), and the timing verdicts queued in
-  `MEASURE-QUEUE.md` ("stream-replace-all: timing verdicts": part A, chunk
-  size, `READY de4b8e8c`; parts B and C after the G5 commit). The two
-  `kani.yml` dispatches for the new shards' budgets (3.3b) belong to the
-  merge stage.
+- **Memory verdict (tasks 4.8 and 9.2, M9 through `heavy.sh`, VmHWM growth
+  in MiB, interleaved `main` `562fff58` → branch `369fab84` → `main` →
+  branch, 2026-11-18): met.** 16 MiB: `main` 33.0 / 33.2, branch 3.1 / 3.3
+  (bar: below `main`'s 33.9). 512 MiB, branch only (`main` refuses the
+  file): 3.3 / 3.3 (bars: at most 16 MiB growth × 1.05 + 1 MiB = 4.5, and
+  below 8). Six 10 MiB files: `main` 51.0 / 50.4 with 3 replaced and 3
+  skipped, branch 2.6 / 2.1 with all 6 replaced; six 16 MiB files: `main`
+  33.3 / 33.3 with 1 replaced and 5 skipped, branch 2.3 / 2.2 with all 6
+  replaced. `main`'s repetitions 2 and 3 (task 1.1) are within 1 % of PT's
+  figures; on the GTK side `main` retains 62,915,133 bytes of undo after six
+  10 MiB files (task 1.2), the branch descriptors only.
+- **Still owed:** the timing verdicts queued in `MEASURE-QUEUE.md`
+  ("stream-replace-all: timing verdicts", parts A chunk size, B wall time
+  and C responsiveness, all `READY`, in that order; the load stayed above 4
+  through the stage). A functional run of the two lane cases passed every
+  phase at load 6–10 (not a verdict). The two `kani.yml` dispatches for the
+  new shards' budgets (3.3b) belong to the merge stage.
 - **Prepared AppStream release note.** "Replace All rewrites files up to
   512 MiB without holding them in memory, reports its progress, can be
   cancelled, lists the files it skipped with the reason, and offers to
