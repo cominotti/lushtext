@@ -21,6 +21,21 @@ Flathub remote with `flatpak remote-add --if-not-exists --user` and asks
 extensions from that remote before building. `make flatpak` uses the same
 dependency setup path for build-only validation.
 
+### Development build source
+
+Both targets build `<checkout-cache>/flatpak-source/tree`, a copy of the
+checkout's git-visible tree that `scripts/flatpak-source-tree.sh stage`
+rebuilds before each build, and run the copy's manifest. The manifest's
+`type: "dir"` source copies every file under its path, ignored ones included:
+built in place, it took `target/`, mutation output and agent handoffs as
+build input, and on 2026-11-16 a `nobody`-owned, unreadable
+`.claude/handoffs/*/debuginfod-cache` aborted `make flatpak-install` before
+the first compile. The staged tree holds tracked files as on disk (local edits
+included, deletions left out) and untracked files no `.gitignore` excludes,
+and never `.git`. CI builds a clean checkout and the release manifests use a
+`git` source, so neither changes. `make check-flatpak-source-tree` (in
+`make check-policy`) proves the staging against a fixture.
+
 ### Development install origin
 
 `flatpak install <path> <ref>` names the installed ref's origin remote

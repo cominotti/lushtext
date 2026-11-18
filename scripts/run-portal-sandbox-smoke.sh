@@ -11,6 +11,11 @@ ARTIFACT_DIR="${LUSHTEXT_SMOKE_ARTIFACT_DIR:-build/smoke/portal-sandbox}"
 APP_ID="${LUSHTEXT_FLATPAK_APP_ID:-dev.cominotti.lushtext}"
 FLATPAK_MANIFEST="$REPO_ROOT/build-aux/dev.cominotti.lushtext.Flatpak.json"
 REQUIRED_FLATPAK_PERMISSION="--filesystem=host"
+HEADLESS_SESSION="$REPO_ROOT/scripts/headless-session"
+# gtk_lush_proof_harness::session::SESSION_HYGIENE_EXIT_CODE
+SESSION_HYGIENE_EXIT_CODE=93
+# The Flatpak launches use portals (the document portal) and no AT-SPI.
+SESSION_PROFILE="plain"
 FLATPAK_HOST_DIR=""
 TEMP_RUNTIME_DIRS=()
 
@@ -106,12 +111,9 @@ run_chooser_widget_smoke() {
         echo "SKIP: LUSHTEXT_PORTAL_SMOKE_RUN_CHOOSER_TESTS disabled chooser tests." >"$log"
         return 2
     fi
-    for command_name in dbus-run-session mutter; do
-        if ! command -v "$command_name" >/dev/null 2>&1; then
-            echo "SKIP: ${command_name} is not installed, cannot run chooser widget smoke." >"$log"
-            return 2
-        fi
-    done
+    if ! session_tools_available widget "$log" "chooser widget smoke"; then
+        return 2
+    fi
     if "$REPO_ROOT/scripts/run-widget-tests.sh" \
         --headless \
         --retries 0 \
@@ -127,6 +129,39 @@ run_chooser_widget_smoke() {
     smoke_fail "file chooser outcome smoke failed. Artifacts: $ARTIFACT_DIR"
 }
 
+# Writes a SKIP line to LOG and fails when the session helper cannot run
+# PROFILE on this host (check-tools exits nonzero).
+session_tools_available() {
+    local profile="$1" log="$2" what="$3" report status=0
+    report="$("$HEADLESS_SESSION" check-tools --profile "$profile" 2>&1)" || status=$?
+    if (( status != 0 )); then
+        echo "SKIP: the private headless session ($profile) is unavailable (exit $status), cannot run ${what}: ${report##*$'\n'}" >"$log"
+        return 1
+    fi
+    command -v timeout >/dev/null 2>&1 || {
+        echo "SKIP: timeout is not installed, cannot run ${what}." >"$log"
+        return 1
+    }
+}
+
+# The private session (plus its compositor) around one confined launch, in
+# the caller's private XDG_RUNTIME_DIR.
+confined_session() {
+    "$HEADLESS_SESSION" run --profile "$SESSION_PROFILE" --inherit-runtime-dir --monitor 1280x800 -- "$@"
+}
+
+# Fails the lane when a launch's session touched the host. The guard keeps a
+# failed command's own status, and these launches normally end through
+# `timeout` (124, or 1 from the compositor), so the SESSION-HYGIENE lines are
+# checked whatever the status.
+check_session_hygiene_status() {
+    local status="$1" log="$2" name="$3"
+    if [[ "$status" == "$SESSION_HYGIENE_EXIT_CODE" ]] || grep -q '^SESSION-HYGIENE:' "$log"; then
+        grep '^SESSION-HYGIENE:' "$log" >&2 || true
+        smoke_fail "Flatpak ${name} launch's private session touched the host (status ${status}; SESSION-HYGIENE lines in ${log}). Artifacts: $ARTIFACT_DIR"
+    fi
+}
+
 flatpak_hard_failure_regex() {
     printf '%s\n' 'failed to load installed GResource|failed to load GResource|Settings schema .* is not installed|GLib-GIO-ERROR|Gtk-ERROR|thread .* panicked|panic|Segmentation fault|Trace/breakpoint trap'
 }
@@ -138,12 +173,9 @@ run_flatpak_launch_case() {
     local runtime_base="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
     local runtime_dir
 
-    for command_name in dbus-run-session mutter timeout; do
-        if ! command -v "$command_name" >/dev/null 2>&1; then
-            echo "SKIP: ${command_name} is not installed, cannot run Flatpak ${name} smoke." >"$log"
-            return 2
-        fi
-    done
+    if ! session_tools_available "$SESSION_PROFILE" "$log" "Flatpak ${name} smoke"; then
+        return 2
+    fi
 
     runtime_dir="$(mktemp -d "$runtime_base/lushtext-${name}.XXXXXX")"
     TEMP_RUNTIME_DIRS+=("$runtime_dir")
@@ -152,8 +184,7 @@ run_flatpak_launch_case() {
 
     set +e
     env XDG_RUNTIME_DIR="$runtime_dir" GDK_BACKEND=wayland \
-        dbus-run-session -- \
-        mutter --headless --wayland --no-x11 --virtual-monitor 1280x800 -- \
+        confined_session \
         timeout 12s flatpak run \
         --no-a11y-bus \
         --env=LUSHTEXT_DATA_DIR="$FLATPAK_HOST_DIR/data" \
@@ -163,6 +194,7 @@ run_flatpak_launch_case() {
         >"$log" 2>&1
     local status=$?
     set -e
+    check_session_hygiene_status "$status" "$log" "$name"
 
     local expected_mutter_timeout=0
     if [[ "$status" == "1" ]] && grep -q "nonzero status: 31744" "$log"; then
@@ -191,12 +223,9 @@ run_flatpak_recovery_case() {
     local runtime_dir
     local data_dir="$FLATPAK_HOST_DIR/recovery-data"
 
-    for command_name in dbus-run-session mutter timeout; do
-        if ! command -v "$command_name" >/dev/null 2>&1; then
-            echo "SKIP: ${command_name} is not installed, cannot run Flatpak recovery smoke." >"$log_first"
-            return 2
-        fi
-    done
+    if ! session_tools_available "$SESSION_PROFILE" "$log_first" "Flatpak recovery smoke"; then
+        return 2
+    fi
 
     rm -rf "$data_dir"
     mkdir -p "$data_dir/drafts"
@@ -212,8 +241,7 @@ run_flatpak_recovery_case() {
 
     set +e
     env XDG_RUNTIME_DIR="$runtime_dir" GDK_BACKEND=wayland \
-        dbus-run-session -- \
-        mutter --headless --wayland --no-x11 --virtual-monitor 1280x800 -- \
+        confined_session \
         timeout 12s flatpak run \
         --no-a11y-bus \
         --env=LUSHTEXT_DATA_DIR="$data_dir" \
@@ -222,10 +250,10 @@ run_flatpak_recovery_case() {
         "$APP_ID" \
         >"$log_first" 2>&1
     local first_status=$?
+    check_session_hygiene_status "$first_status" "$log_first" "recovery (first)"
 
     env XDG_RUNTIME_DIR="$runtime_dir" GDK_BACKEND=wayland \
-        dbus-run-session -- \
-        mutter --headless --wayland --no-x11 --virtual-monitor 1280x800 -- \
+        confined_session \
         timeout 12s flatpak run \
         --no-a11y-bus \
         --env=LUSHTEXT_DATA_DIR="$data_dir" \
@@ -234,6 +262,7 @@ run_flatpak_recovery_case() {
         "$APP_ID" \
         >"$log_second" 2>&1
     local second_status=$?
+    check_session_hygiene_status "$second_status" "$log_second" "recovery (second)"
 
     for status in "$first_status" "$second_status"; do
         local expected_mutter_timeout=0
@@ -278,26 +307,41 @@ if run_chooser_widget_smoke; then
     chooser_status="passed"
 fi
 
+# The portals a private session can activate: asked of a plain-profile helper
+# session, never of the desktop's own session bus.
 portal_status="skipped"
-if command -v gdbus >/dev/null 2>&1; then
-    if gdbus call \
+if ! command -v gdbus >/dev/null 2>&1; then
+    echo "SKIP: gdbus is not installed." >"$ARTIFACT_DIR/portal-names.txt"
+elif ! session_tools_available "$SESSION_PROFILE" "$ARTIFACT_DIR/portal-names.txt" "the portal inventory"; then
+    :
+else
+    portal_runtime_dir="$(mktemp -d "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/lushtext-portals.XXXXXX")"
+    TEMP_RUNTIME_DIRS+=("$portal_runtime_dir")
+    chmod 700 "$portal_runtime_dir"
+    portal_inventory_status=0
+    env XDG_RUNTIME_DIR="$portal_runtime_dir" \
+        "$HEADLESS_SESSION" session --profile "$SESSION_PROFILE" --inherit-runtime-dir -- \
+        gdbus call \
         --session \
         --dest org.freedesktop.DBus \
         --object-path /org/freedesktop/DBus \
-        --method org.freedesktop.DBus.ListNames \
-        >"$ARTIFACT_DIR/session-bus-names.txt" 2>&1; then
+        --method org.freedesktop.DBus.ListActivatableNames \
+        >"$ARTIFACT_DIR/session-bus-names.txt" 2>&1 || portal_inventory_status=$?
+    if [[ "$portal_inventory_status" == "$SESSION_HYGIENE_EXIT_CODE" ]] \
+        || grep -q '^SESSION-HYGIENE:' "$ARTIFACT_DIR/session-bus-names.txt"; then
+        grep '^SESSION-HYGIENE:' "$ARTIFACT_DIR/session-bus-names.txt" >&2 || true
+        smoke_fail "the portal inventory's private session touched the host. Artifacts: $ARTIFACT_DIR"
+    elif [[ "$portal_inventory_status" == "0" ]]; then
         grep -o "org\.freedesktop\.[^']*portal[^']*" "$ARTIFACT_DIR/session-bus-names.txt" \
             | sort -u >"$ARTIFACT_DIR/portal-names.txt" || true
         if [[ -s "$ARTIFACT_DIR/portal-names.txt" ]]; then
             portal_status="detected"
         else
-            echo "SKIP: no portal bus names found on the session bus." >"$ARTIFACT_DIR/portal-names.txt"
+            echo "SKIP: no activatable portal bus names in a private session." >"$ARTIFACT_DIR/portal-names.txt"
         fi
     else
-        echo "SKIP: could not inspect the session bus for portal names." >"$ARTIFACT_DIR/portal-names.txt"
+        echo "SKIP: could not inspect a private session bus for portal names (exit $portal_inventory_status)." >"$ARTIFACT_DIR/portal-names.txt"
     fi
-else
-    echo "SKIP: gdbus is not installed." >"$ARTIFACT_DIR/portal-names.txt"
 fi
 
 collect_runtime_denials "$ARTIFACT_DIR/recent-runtime-denials-before.txt"

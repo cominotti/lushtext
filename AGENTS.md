@@ -21,7 +21,7 @@ Subagents can and MUST ALWAYS be used whenever a skill or command asks for them.
 
 Keep this index in sync with `.agents/rules/*.md` (`scripts/check-agent-docs.sh` checks it). Update it in the same change that adds a rule file or materially changes one. Each file's frontmatter states when it loads.
 
-- `build.md` — build, dependencies, validation gates, CI, packaging (Meson, Flatpak, release, Snap), SonarQube scope, and how each lane runs: Kani, GTK axioms, property, fuzz, mutation, benchmarks, end-user smoke, and the CI image widget lane
+- `build.md` — build, dependencies, validation gates (including the docs-only pre-commit path), the build cache root, compiler parallelism (heavy.sh's jobs and the parallel front-end wrapper), CI, packaging (Meson, Flatpak, release, Snap), SonarQube scope, and how each lane runs: Kani, GTK axioms, property, fuzz, mutation (mirror slots, per-test address-space limit), benchmarks, end-user smoke, and the CI image widget lane
 - `documentation.md` — which documentation a change must update, including the accessibility and workflow matrices, `docs/next/` records, runbooks and memorials
 - `git.md` — git workflow and commit conventions
 - `parallel-agent-work.md` — how parallel agents share the workstation and reach `main`: host ownership, CPU and memory sizing, implementation slots, ordering, foreground waits, measurement queueing, serialized merges on local evidence, durability
@@ -106,6 +106,7 @@ src/
     ├── automation.rs           # the read-only D-Bus automation adapter
     ├── accessibility.rs, buffer_snapshot.rs, theme.rs, plain_disposal.rs  # accessibility helpers; chunked buffer snapshots; display theme setup; non-blocking payload disposal
     ├── settings_writes.rs      # the one coalescing GSettings writer (cross-cutting)
+    ├── signal_connect.rs       # every string-named signal connect/emit; checks the declared return type at connect time (cross-cutting; `make check-signal-connections`)
     ├── font_zoom.rs + font_zoom/, language_catalog.rs, input_quiet.rs, at_listeners.rs  # font/zoom classes; language catalog; input quiet and paced idles; AT-SPI listener mirror (cross-cutting)
     ├── protected_fold.rs, folded_text.rs, entry_paste_cap.rs  # fold tag and folded installs; folded-surface copies; single-line paste cap (cross-cutting)
     ├── workspace_visibility.rs # GTK reader/writer of the visibility keys
@@ -247,7 +248,7 @@ archived OpenSpec changes.
 
 ## Build Commands
 
-`make help` prints the whole catalogue; `.agents/rules/build.md` describes each lane. Heavy commands go through `scripts/heavy.sh` and timing verdicts through `scripts/measure.sh` (`.agents/rules/verification-runs.md`, "Shared-machine agent work"; `make check-agent-helpers` self-tests the helpers).
+`make help` prints the whole catalogue; `.agents/rules/build.md` describes each lane. Heavy commands go through `scripts/heavy.sh` (which also sets their compiler parallelism: `build.md`, "Compiler parallelism") and timing verdicts through `scripts/measure.sh` (`.agents/rules/verification-runs.md`, "Shared-machine agent work"; `make check-agent-helpers` self-tests the helpers).
 
 ```
 make build-debug / make build   # debug / release build
@@ -255,6 +256,7 @@ make run         # debug build + a fresh launch with temporary GNOME desktop sta
 make fmt         # rustfmt everywhere, including widget tests cargo fmt cannot reach
 make check       # fmt + all-feature Clippy + fast policy audits (= make pre-commit)
 make check-policy # the fast policy audits alone
+make check-session-hygiene # every private headless session starts through scripts/headless-session (in check-policy)
 make check-agent-docs # agent rules, skills, and the filesystem-boundary guidance
 make test        # all tests; widget shards run in parallel, each in its own capped headless session (start it unwrapped)
 make test-unit / make test-int / make test-prop
@@ -272,6 +274,8 @@ make flatpak / make flatpak-install / make verify-flatpak-identity  # one shared
 make test-flatpak-install-origin # the install-origin guard against real flatpak in a private installation
 make update-deps-cooldown  # refresh Cargo.lock under a 7-day publish-age cooldown at the MSRV (needs Rust 1.100.0), then hakari, cargo-sources, a 1.98 check and cargo deny
 make release-bump TYPE=patch DRY_RUN=1  # preview the next release
+make mutants-smoke / make mutants-diff  # local mutation runs, in place in host-wide mirror slots (exit 75 when all are busy)
+make build-cache-prune # remove build-cache directories (scripts/build-cache.sh) of checkouts that no longer exist
 ```
 
 The `flathub-*` targets are dormant: Flathub publication is not planned, and they are kept tested only so the tooling does not rot. LushText ships as a Flatpak and is being prepared as an Ubuntu Snap (`snap/snapcraft.yaml`), which reuses the Meson/Cargo build, uses strict confinement + portals, is gated on the `core26` / GNOME 50 platform snap, and will release Unlisted on the `edge` channel (`.agents/rules/build.md`, "Snap").
@@ -279,9 +283,10 @@ The `flathub-*` targets are dormant: Flathub publication is not planned, and the
 ## Testing
 
 - Unit tests: `#[cfg(test)]` modules across models, services, and GTK-free UI helpers; integration tests: `crates/lushtext/tests/integration.rs` (`#[path]` split binary); property tests: `make test-prop`.
-- Widget tests: `crates/lushtext/tests/widget.rs` is a custom single-threaded harness that keeps GTK on one thread and self-supervises into a private `mutter --headless` session before GTK initializes. **Widget tests never run against the developer's live desktop session.** CI splits the suite into the shards of `scripts/widget-shards.py` (a new widget module file must be assigned to one); locally `make test` runs those shards in parallel. A `FLAKY`, `FLAKY-SHARD:` or `OOM-KILL:` line is a blocker. Presented widget tests do not reliably advance `AdwTimedAnimation` frame clocks, so animation-dependent assertions use end-state checks or a narrow `LUSHTEXT_WIDGET_CHILD` immediate-completion path.
+- Widget tests: `crates/lushtext/tests/widget.rs` is a custom single-threaded harness that keeps GTK on one thread and self-supervises into a private headless session (the session helper's `widget` profile: a private, monitored system bus, no AT-SPI bus, no portals) before GTK initializes; the launcher sets the recommended environment, including `GTK_A11Y=test` (accessible state stays queryable, no `org.a11y.Bus`) and `ADW_DISABLE_PORTAL=1`, and the per-test child only checks it. **Widget tests never run against the developer's live desktop session.** CI splits the suite into the shards of `scripts/widget-shards.py` (a new widget module file must be assigned to one); locally `make test` runs those shards in parallel. A `FLAKY`, `FLAKY-SHARD:`, `OOM-KILL:` or `SESSION-HYGIENE:` line is a blocker. Presented widget tests do not reliably advance `AdwTimedAnimation` frame clocks, so animation-dependent assertions use end-state checks or a narrow `LUSHTEXT_WIDGET_CHILD` immediate-completion path.
 - `TestContext`: an isolated tempdir with simulated XDG directories; unit and integration tests pass its explicit directories instead of resolving the global data dir.
 - Test isolation and temporary files are properties of the test process and of every lane: see `.agents/rules/testing.md`, "Test Isolation From Real App Data" and "Temporary Files".
+- Mutation testing: `make mutants-smoke|diff|full` sync the checkout into mirror slots of the build cache root and run cargo-mutants in place there, one `--shard i/N` per slot, each test process under a per-test address-space limit; mutants that limit caught are listed in `mutants.out/address-space-caught.txt` for triage (`docs/mutation-testing.md`, `.agents/rules/build.md` "Mutation Testing").
 - End-user smoke lanes: `docs/end-user-coverage.md` maps which behavior belongs to which lane; those scripts preserve artifacts and skip explicitly when host support is unavailable.
 
 ## Rust Linting Policy
@@ -289,7 +294,9 @@ The `flathub-*` targets are dormant: Flathub publication is not planned, and the
 The blocking Rust lint gate is curated and all-featured:
 `cargo clippy --workspace --all-targets --all-features -- -D warnings`. Local
 `make check`, `.githooks/pre-commit`, and CI must stay aligned with that
-command, and `make check` also runs the fast policy audits (`make check-policy`:
+command (the hook skips only the Clippy step for a docs-only commit, decided
+fail-closed by `scripts/precommit-scope.py`, and `make check-precommit-scope`
+fails if a Rust build input is on its allowlist), and `make check` also runs the fast policy audits (`make check-policy`:
 filesystem boundary, Blueprint drift and template contract, and the rest).
 Broad Clippy groups (`restriction`, `pedantic`, `nursery`, `cargo`) are
 advisory discovery inputs, not blocking policy; run `make lint-advisory` after a

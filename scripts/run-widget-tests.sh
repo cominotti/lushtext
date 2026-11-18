@@ -5,6 +5,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMP_SCOPE="$SCRIPT_DIR/with-temp-scope.sh"
+# The one way a lane starts a private headless session (the `widget` profile:
+# private system bus, no media, no accessibility bus, no portals, and the
+# harness's recommended pre-GTK environment set before the bus starts).
+HEADLESS_SESSION="$SCRIPT_DIR/headless-session"
 
 # Paths this script itself creates outside the scoped TMPDIR (the warning-scan
 # log), removed on every exit path, including SIGINT and SIGTERM.
@@ -27,8 +31,15 @@ MONITOR="2560x1600"
 SCOPE_LABEL=widget
 TEST_ARGS=()
 SELF_TEST=false
-UNSUPPORTED_HOST_EXIT_CODE=77
-BENIGN_WIDGET_NOISE_REGEX='(dbus-daemon\[[0-9]+\]: .*org\.(freedesktop\.(portal|impl\.portal\.|systemd1)|a11y\.Bus)|\(/usr/libexec/xdg-desktop-portal:.*WARNING \*\*:|\*\* \(xdg-desktop-portal-gtk:.*WARNING \*\*:|^\(xdg-desktop-portal-gtk:[0-9]+\): xdg-desktop-portal-gtk-WARNING \*\*: ([0-9:.]+: )?error: Could not connect: No such file or directory$|Gtk-CRITICAL \*\*: .*org\.a11y\.atspi\.Registry|Gdk-Message: .*Broken pipe$|^libmutter-Message:|^\*\* Message: .*Obtained a high priority EGL context$|^\*\* \(mutter:[0-9]+\): WARNING \*\*: ([0-9:.]+: )?Skipping layers 1\.\.n of your pipeline since the first layer is sliced\. We don'\''t currently support any multi-texturing with sliced textures but assume layer 0 is the most important to keep$|^\(mutter:[0-9]+\): mutter-WARNING \*\*: .*Failed to acquire org\.freedesktop\.locale1 proxy: Could not connect: No such file or directory$|^\(mutter:[0-9]+\): libmutter-WARNING \*\*: .*Failed to connect to colord daemon: Could not connect: No such file or directory$|.*WARNING: Glycin running without sandbox\.( .*)?$)'
+# gtk_lush_proof_harness::session::SESSION_HYGIENE_EXIT_CODE: the session
+# touched the host (rtkit, bluez, devices, an accessibility bus, a portal).
+# Such a run is never retried; a second session would touch the host again.
+SESSION_HYGIENE_EXIT_CODE=93
+# The private session's own services (mutter, the portal frontend) report the
+# services the session does not run; that family lives once in
+# smoke_warning_classifiers.py and is read here as POSIX ERE.
+SESSION_SERVICES_REGEX="$(python3 -B "$SCRIPT_DIR/smoke_warning_classifiers.py" --print-regex headless-session-services)"
+BENIGN_WIDGET_NOISE_REGEX='(dbus-daemon\[[0-9]+\]: .*org\.(freedesktop\.(portal|impl\.portal\.|systemd1)|a11y\.Bus)|\(/usr/libexec/xdg-desktop-portal:.*WARNING \*\*:|\*\* \(xdg-desktop-portal-gtk:.*WARNING \*\*:|Gdk-Message: .*Broken pipe$|^libmutter-Message:|^\*\* Message: .*Obtained a high priority EGL context$|^\*\* \(mutter:[0-9]+\): WARNING \*\*: ([0-9:.]+: )?Skipping layers 1\.\.n of your pipeline since the first layer is sliced\. We don'\''t currently support any multi-texturing with sliced textures but assume layer 0 is the most important to keep$|.*WARNING: Glycin running without sandbox\.( .*)?$)|'"$SESSION_SERVICES_REGEX"
 # Cargo diagnostics spell this as a standalone `warning:` token. Requiring a
 # line/whitespace boundary keeps `--list` output such as `...visible_warning:
 # test` from being mistaken for a toolkit or compiler warning.
@@ -55,25 +66,6 @@ Options:
 Arguments after `--` are passed to the widget test binary, for example:
   scripts/run-widget-tests.sh -- --exact window::test_primary_menu_button_exists
 EOF
-}
-
-require_command() {
-    local command_name="$1"
-    if ! command -v "$command_name" >/dev/null 2>&1; then
-        echo "UNSUPPORTED-HOST: '$command_name' is required for widget test execution." >&2
-        exit "$UNSUPPORTED_HOST_EXIT_CODE"
-    fi
-}
-
-export_widget_test_env() {
-    export NO_AT_BRIDGE=1
-    export GDK_DEBUG=no-portals
-    export GTK_USE_PORTAL=0
-    # Cairo keeps widget tests on GTK's CPU fallback renderer. That avoids
-    # headless Mesa/EGL device probing in containers while still letting a
-    # caller override GSK_RENDERER when intentionally debugging a GPU renderer.
-    : "${GSK_RENDERER:=cairo}"
-    export GSK_RENDERER
 }
 
 # Sanitize the harness output as it flows past instead of after the run ends.
@@ -109,13 +101,33 @@ self_test_warning_classification() {
     printf '%s\n' "** (mutter:582): WARNING **: 09:42:29.034: Skipping layers 1..n of your pipeline since the first layer is sliced. We don't currently support any multi-texturing with sliced textures but assume layer 0 is the most important to keep" >"$log_file"
     check_for_unexpected_widget_warnings "$log_file"
 
+    python3 -B "$SCRIPT_DIR/smoke_warning_classifiers.py" --print-samples headless-session-services >"$log_file"
+    if ! check_for_unexpected_widget_warnings "$log_file"; then
+        echo "Error: widget warning self-test rejected the shared session-services family." >&2
+        return 1
+    fi
+
     printf '%s\n' "Gtk-WARNING **: allocation failed" >"$log_file"
     if check_for_unexpected_widget_warnings "$log_file" >/dev/null 2>&1; then
         echo "Error: widget warning self-test accepted an unexpected GTK warning." >&2
         return 1
     fi
 
+    # GTK_A11Y=test reaches no AT-SPI bus, so the registry critical the old
+    # session printed (its bus could not activate at-spi2-registryd) cannot
+    # occur in a widget session; if it comes back, it fails the lane.
+    printf '%s\n' "(process:42): Gtk-CRITICAL **: 14:07:27.435: Unable to register the application: GDBus.Error:org.freedesktop.DBus.Error.NameHasNoOwner: Could not activate remote peer 'org.a11y.atspi.Registry': unit failed" >"$log_file"
+    if check_for_unexpected_widget_warnings "$log_file" >/dev/null 2>&1; then
+        echo "Error: widget warning self-test accepted the AT-SPI registry critical." >&2
+        return 1
+    fi
+
     echo "Widget warning classification self-test passed."
+    if retry_allowed "$SESSION_HYGIENE_EXIT_CODE" || ! retry_allowed 101; then
+        echo "Error: a session-hygiene failure must not be retried, and a test failure may be." >&2
+        return 1
+    fi
+    echo "Widget retry classification self-test passed."
     self_test_memory_report
     "$TEMP_SCOPE" --self-test
 }
@@ -189,24 +201,23 @@ run_with_widget_log() {
 }
 
 run_headless() {
-    require_command dbus-run-session
-    require_command mutter
-
     local status
     if (
         export GDK_BACKEND=wayland
         export LUSHTEXT_WIDGET_HEADLESS_RUNNER=1
         export LUSHTEXT_WIDGET_HEADLESS_MONITOR="$MONITOR"
-        export_widget_test_env
+        # Cairo keeps widget tests on GTK's CPU fallback renderer, so headless
+        # containers do not probe missing Mesa/EGL devices; the session keeps
+        # a caller's GSK_RENDERER when a renderer bug is being chased.
         unset DISPLAY WAYLAND_DISPLAY
         # The temp scope gives the whole harness a private TMPDIR and a short
         # private XDG_RUNTIME_DIR, releases the runtime directory only once
         # the session's services have exited, and fails the run if any test
-        # process left a temporary entry behind.
+        # process left a temporary entry behind. The session helper runs in
+        # that directory and judges, at teardown, what the session touched.
         run_with_widget_log \
             "$TEMP_SCOPE" --session-runtime "$SCOPE_LABEL" -- \
-            dbus-run-session -- \
-            mutter --headless --wayland --no-x11 --virtual-monitor "$MONITOR" -- \
+            "$HEADLESS_SESSION" run --profile widget --inherit-runtime-dir --monitor "$MONITOR" -- \
             cargo test -p lushtext --test widget -- "${TEST_ARGS[@]}"
     ); then
         status=0
@@ -214,6 +225,12 @@ run_headless() {
         status=$?
     fi
     return "$status"
+}
+
+# Whether a failed attempt may be rerun: never after a session-hygiene verdict.
+retry_allowed() {
+    local status="$1"
+    (( status != SESSION_HYGIENE_EXIT_CODE ))
 }
 
 run_once() {
@@ -288,6 +305,10 @@ while (( attempt <= max_attempts )); do
     fi
 
     if (( attempt == max_attempts )); then
+        break
+    fi
+    if ! retry_allowed "$status"; then
+        echo "Widget test run failed its session-hygiene check (exit $status); not retrying." >&2
         break
     fi
 

@@ -48,14 +48,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-smoke_require_command dbus-run-session
+smoke_require_session screencast
 smoke_require_command gdbus
 smoke_require_command gsettings
 smoke_require_command gst-launch-1.0
-smoke_require_command mutter
-smoke_require_command pipewire
-smoke_require_command pw-dump
-smoke_require_command wireplumber
 
 [[ -x /usr/bin/python3 ]] || smoke_skip "/usr/bin/python3 is not available."
 [[ -x "$BINARY" ]] || smoke_skip "LushText debug binary is missing. Run 'make build-debug' first."

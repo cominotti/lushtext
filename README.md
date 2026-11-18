@@ -191,6 +191,9 @@ Every checkout and worktree installs through one shared local repository,
 `~/.local/share/lushtext-flatpak-install/repo`, so deleting a checkout never
 leaves GNOME Software reporting "server has no summary file" for the
 development build's `lushtext-origin` remote.
+Both targets build a staged copy of what git sees in the checkout (tracked
+files with your local edits, plus untracked files that are not ignored), so
+build output and other ignored files never enter the Flatpak build.
 Use `make flatpak` for a build-only check. After dependency changes, refresh
 the vendored Cargo sources with:
 
@@ -524,7 +527,17 @@ the freshly built debug binary. If the existing app refuses to close, the
 launcher fails instead of activating stale code.
 
 Run `make install-git-hooks` once per checkout to configure the repo-managed
-hooks in `.githooks/`.
+hooks in `.githooks/`. The pre-commit hook runs `make pre-commit`, except that a
+commit touching only documentation (`docs/`, `openspec/`, `.claude/`,
+`.agents/`, root `*.md`) skips the Clippy step; `make check` always runs it.
+
+Local mutation runs (`make mutants-smoke|diff|full`), the proof-strength
+worktree and the Flatpak builder state keep their build trees outside the
+checkout, in the build cache root `~/.cache/lushtext-build`
+(`LUSHTEXT_BUILD_CACHE` or `XDG_CACHE_HOME` move it; `scripts/build-cache.sh`).
+Mutation runs use a small host-wide pool of in-place slots there and exit with
+status 75 when every slot is busy. `make build-cache-prune` removes the
+directories of checkouts that no longer exist.
 
 On a workstation shared by several agents or terminals, run heavy commands
 through `scripts/heavy.sh -- <command>`, timing measurements through
@@ -775,7 +788,14 @@ make check
 ```
 
 Widget tests require a display server; the repo runner uses the private
-headless Mutter path for deterministic full-suite runs. CI splits the widget
+headless Mutter path for deterministic full-suite runs. Every private test
+session starts through one session helper (`scripts/headless-session`, the
+`gtk-lush-session` binary of `gtk-lush-proof-harness`): it gives the session a
+private, monitored system bus, so no test reaches the host's RealtimeKit or
+Bluetooth daemons, quiet media only where a screenshot needs them, and an
+AT-SPI bus only in accessibility sessions. A session that touched the host
+fails with `SESSION-HYGIENE:` lines and status 93, and `make
+check-session-hygiene` keeps every lane on the helper. CI splits the widget
 suite into the shards of `scripts/widget-shards.py`, one job each; `make
 check-widget-shards` fails when a widget test belongs to no shard or to two,
 and `make test-widget-shard WIDGET_SHARD=<shard>` reproduces one. Locally,

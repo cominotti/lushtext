@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The one way a LushText script starts a private headless session.
+#
+#   scripts/headless-session session --profile screencast -- <inner stage...>
+#   scripts/headless-session compositor --monitor 1280x720 -- <child...>
+#   scripts/headless-session run --profile widget -- <command...>
+#   scripts/headless-session check-tools --profile accessibility [--json]
+#
+# It finds or builds the `gtk-lush-session` binary of gtk-lush-proof-harness
+# and execs it, so the exit status is the binary's: the command's own, 77 for
+# an unsupported host, 93 for SESSION-HYGIENE. This shim names no session
+# command itself: the session bus, the private system bus, the compositor and
+# the quiet media daemons are started only by the helper
+# (`make check-session-hygiene` enforces it). `gtk-lush-session --help` lists
+# the profiles and options.
+#
+# GTK_LUSH_SESSION_BIN, when set to an executable, is used as is (lanes that
+# do not run cargo, and code inside a session that starts a nested one).
+# Otherwise the binary is built incrementally with cargo. With neither,
+# the shim exits 77 so the lane reports an unsupported host.
+
+set -euo pipefail
+
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+repo=$(cd "$here/.." && pwd)
+unsupported=77
+
+if [[ -n "${GTK_LUSH_SESSION_BIN:-}" ]]; then
+    if [[ -x "$GTK_LUSH_SESSION_BIN" ]]; then
+        exec "$GTK_LUSH_SESSION_BIN" "$@"
+    fi
+    echo "UNSUPPORTED-HOST: GTK_LUSH_SESSION_BIN=$GTK_LUSH_SESSION_BIN is not executable" >&2
+    exit "$unsupported"
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "UNSUPPORTED-HOST: cargo is needed to build gtk-lush-session (or set GTK_LUSH_SESSION_BIN)" >&2
+    exit "$unsupported"
+fi
+
+if ! cargo build --quiet --locked --manifest-path "$repo/Cargo.toml" \
+    -p gtk-lush-proof-harness --bin gtk-lush-session >&2; then
+    echo "UNSUPPORTED-HOST: building gtk-lush-session failed" >&2
+    exit "$unsupported"
+fi
+
+target_dir=$(cargo metadata --quiet --format-version 1 --no-deps --manifest-path "$repo/Cargo.toml" \
+    | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
+bin="$target_dir/debug/gtk-lush-session"
+# Every `cargo build`, fresh or not, re-uplifts this file (a new inode), and
+# several lanes build it at once (`make test` starts every widget shard
+# together). While another build is writing it, exec fails with "Text file
+# busy"; the copy takes milliseconds, so retry briefly. Once running, the
+# helper re-executes itself through its own /proc exe link, never this path.
+# `execfail` keeps a failed exec from ending the shell, and `set +e` is
+# needed too: under errexit bash ends the shell on a failed exec even inside
+# an `||` or `if` (bash 5.3).
+shopt -s execfail
+set +e
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    exec "$bin" "$@"
+    sleep 0.1
+done
+echo "gtk-lush-session: cannot execute $bin" >&2
+exit 1

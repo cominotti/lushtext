@@ -1,0 +1,193 @@
+# Red scan of `scripts/check-session-hygiene.py` on the unmigrated tree (task 1.3)
+
+Run 2026-11-14 on branch quiet-headless-session-services at 20263148 plus the
+gate script only. Exit status 1. This is the migration worklist of group 4.
+Classes: spawn (starts a session process), prerequisite (a require check or
+`command -v`), version (a `--version` query), data (a report value, test data,
+a message or a needle), copy (a copy of the shared session-warning family),
+helper (the helper does not exist yet). Resolution names the D2/D8 mechanism;
+no finding is resolved by an allowlist entry or a pragma.
+
+| File | Class | Resolution |
+| --- | --- | --- |
+| .agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py | spawn | `scripts/headless-session session --profile screencast/accessibility` + `compositor` (4.4) |
+| .agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-xvfb.sh | spawn | `scripts/headless-session session --profile plain` around Xvfb (4.4) |
+| crates/cargo-gtk-proof/src/artifacts.rs | data | missing-capability test data takes the name from the helper's exported constant (4.2) |
+| crates/cargo-gtk-proof/src/host.rs | spawn + data | helper library profile and `check-tools` (4.1) |
+| crates/cargo-gtk-proof/src/live.rs | spawn | library media and compositor stages (4.1) |
+| crates/cargo-gtk-proof/src/runner.rs | data (message) | reworded to compositor-child wording; `--mutter-child` flag unchanged (4.1, D8) |
+| crates/cargo-gtk-proof/src/warnings.rs | data (needle `pipewire remote error`) | needle built from the helper's exported command constant (4.1) |
+| crates/gtk-lush/proof-harness/src/lib.rs | spawn + prerequisite | `run_under_headless_compositor` through `session` (3.3); tooling check and its tests move into `src/session/` (4.2) |
+| crates/gtk-lush/proof-harness/src/session/** | helper | created in group 2; drift rules and sanctioned spawns then hold |
+| scripts/automation-smoke-driver.py | spawn | `scripts/headless-session` (4.2) |
+| scripts/builder-diagnostics.py | spawn | `scripts/headless-session` (4.2) |
+| scripts/crash-recovery-smoke-driver.py | spawn | `scripts/headless-session` (4.2) |
+| scripts/editor-glyph-live-smoke.py | spawn + prerequisite | `scripts/headless-session` and `check-tools` (4.2) |
+| scripts/lushtext-automation.py | data (`session_bus` report value) | value names the helper (4.2) |
+| scripts/responsiveness-smoke-driver.py | spawn + version | `scripts/headless-session`, `--media off`; `toolkit.mutter` from `check-tools --json` (4.2) |
+| scripts/run-accessibility-smoke.sh | prerequisite | `check-tools --profile accessibility` (4.3) |
+| scripts/run-automation-smoke.sh | prerequisite | `check-tools` (4.3) |
+| scripts/run-command-palette-notes-smoke.sh | prerequisite | `check-tools` (4.3) |
+| scripts/run-crash-recovery-smoke.sh | prerequisite | `check-tools` (4.3) |
+| scripts/run-gtk-axioms.sh | spawn + copy | `scripts/headless-session run --profile widget` (3.4); family from `--print-regex` (4.5) |
+| scripts/run-portal-sandbox-smoke.sh | spawn + prerequisite (`for` loops) | `scripts/headless-session` and `check-tools` (4.3) |
+| scripts/run-responsiveness-smoke.sh | spawn + version | `scripts/headless-session`; `mutter=` line from `check-tools --json` (4.3) |
+| scripts/run-visual-smoke.sh | prerequisite | `check-tools --profile screencast` (4.3) |
+| scripts/run-widget-tests.sh | spawn + prerequisite + copy | `scripts/headless-session run --profile widget` (3.4); family from `--print-regex` (4.5) |
+| scripts/setup-dev-tools.sh | prerequisite (`required_commands`) | names dropped; the exempt `packages=(…)` inventory installs them (4.3) |
+| scripts/visual-geometry-smoke.py | spawn | `scripts/headless-session` (4.2) |
+
+Not flagged, by design: install lists in `.github/workflows/*.yml` and the
+builder-diagnostics `Containerfile` (package-install context), comments in
+Rust and shell, quoted messages, `.md` and `openspec/**`, and the tracked
+`build/smoke-local/**` logs, which are not a scanned kind (the classifier-copy
+rule scans only the code kinds the spawn rule scans, because a log that
+contains a warning text is evidence, not a copy). `scripts/builder-diagnostics.py`
+keeps wildcard patterns (`.*colord daemon`) that are not copies of a family
+text; it starts reading the family when it migrates (4.5).
+
+## Self-test, red first
+
+`scripts/check-session-hygiene.py --self-test-without-rules` runs every
+self-test fixture with each rule stubbed out (the scan returns nothing, the
+drift and sanctioned-spawn checks return nothing). Before the rules were
+written it reported 49 failures: every spawn and argument fixture "was not
+caught for `<name>`", the classifier copies, the renamed gate copy, all seven
+drift mutations and the empty helper. With the rules in place,
+`--self-test` passes (39 spawn, 19 benign, 7 drift fixtures), and
+`--self-test-without-rules` still exits 0 only because it inverts the result:
+it is the re-runnable red-first proof.
+
+## Scan output
+
+session hygiene: 130 finding(s); every private headless session starts through scripts/headless-session or the gtk-lush-proof-harness session library
+.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py:485: string literal names `dbus-run-session`
+.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py:489: string literal names `mutter`
+.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py:490: string literal names `pipewire`
+.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py:492: string literal names `wireplumber`
+.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py:543: string literal names `dbus-run-session`
+.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py:741: string literal names `pipewire`
+.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py:745: string literal names `wireplumber`
+.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py:827: string literal names `mutter`
+.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-xvfb.sh:251: `dbus-run-session` is named in a shell command
+.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-xvfb.sh:280: `dbus-run-session` is named in a shell command
+crates/cargo-gtk-proof/src/artifacts.rs:477: string literal names `mutter`
+crates/cargo-gtk-proof/src/artifacts.rs:559: string literal names `mutter`
+crates/cargo-gtk-proof/src/host.rs:110: string literal names `dbus-run-session`
+crates/cargo-gtk-proof/src/host.rs:168: string literal names `dbus-run-session`
+crates/cargo-gtk-proof/src/host.rs:192: string literal names `dbus-run-session`
+crates/cargo-gtk-proof/src/host.rs:196: string literal names `mutter`
+crates/cargo-gtk-proof/src/host.rs:197: string literal names `pipewire`
+crates/cargo-gtk-proof/src/host.rs:199: string literal names `wireplumber`
+crates/cargo-gtk-proof/src/host.rs:651: string literal names `dbus-run-session`
+crates/cargo-gtk-proof/src/host.rs:669: string literal names `dbus-run-session`
+crates/cargo-gtk-proof/src/live.rs:117: string literal names `dbus-run-session`
+crates/cargo-gtk-proof/src/live.rs:118: string literal names `pipewire`
+crates/cargo-gtk-proof/src/live.rs:119: string literal names `wireplumber`
+crates/cargo-gtk-proof/src/live.rs:122: string literal names `mutter`
+crates/cargo-gtk-proof/src/live.rs:2644: string literal names `dbus-run-session`
+crates/cargo-gtk-proof/src/live.rs:2645: string literal names `pipewire`
+crates/cargo-gtk-proof/src/live.rs:2646: string literal names `wireplumber`
+crates/cargo-gtk-proof/src/runner.rs:1990: string literal names `mutter`
+crates/cargo-gtk-proof/src/runner.rs:2512: string literal names `mutter`
+crates/cargo-gtk-proof/src/warnings.rs:108: string literal names `pipewire`
+crates/gtk-lush/proof-harness/src/lib.rs:357: string literal names `dbus-run-session`
+crates/gtk-lush/proof-harness/src/lib.rs:360: string literal names `mutter`
+crates/gtk-lush/proof-harness/src/lib.rs:391: string literal names `dbus-run-session`
+crates/gtk-lush/proof-harness/src/lib.rs:392: string literal names `dbus-run-session`
+crates/gtk-lush/proof-harness/src/lib.rs:394: string literal names `mutter`
+crates/gtk-lush/proof-harness/src/lib.rs:395: string literal names `mutter`
+crates/gtk-lush/proof-harness/src/lib.rs:734: string literal names `dbus-run-session`
+crates/gtk-lush/proof-harness/src/lib.rs:735: string literal names `mutter`
+crates/gtk-lush/proof-harness/src/lib.rs:739: string literal names `dbus-run-session`
+crates/gtk-lush/proof-harness/src/lib.rs:751: string literal names `dbus-run-session`
+crates/gtk-lush/proof-harness/src/lib.rs:755: string literal names `mutter`
+crates/gtk-lush/proof-harness/src/lib.rs:759: string literal names `mutter`
+crates/gtk-lush/proof-harness/src/lib.rs:763: string literal names `mutter`
+crates/gtk-lush/proof-harness/src/lib.rs:766: string literal names `mutter`
+crates/gtk-lush/proof-harness/src/lib.rs:768: string literal names `mutter`
+crates/gtk-lush/proof-harness/src/session/:1: the session helper has no sanctioned spawn of `dbus-run-session`, `dbus-daemon`, `mutter`, `pipewire`, `wireplumber`; a gate keyed on nothing passes vacuously (re-key it if the helper moved)
+crates/gtk-lush/proof-harness/src/session/mod.rs:1: session helper file is missing; if it moved, re-key this gate
+crates/gtk-lush/proof-harness/src/session/pipewire-quiet.conf:1: session helper file is missing; if it moved, re-key this gate
+crates/gtk-lush/proof-harness/src/session/profiles.rs:1: session helper file is missing; if it moved, re-key this gate
+crates/gtk-lush/proof-harness/src/session/wireplumber-quiet.conf:1: session helper file is missing; if it moved, re-key this gate
+scripts/automation-smoke-driver.py:423: string literal names `dbus-run-session`
+scripts/automation-smoke-driver.py:423: string literal names `mutter`
+scripts/automation-smoke-driver.py:501: string literal names `dbus-run-session`
+scripts/automation-smoke-driver.py:590: string literal names `mutter`
+scripts/automation-smoke-driver.py:609: string literal names `mutter`
+scripts/builder-diagnostics.py:302: string literal names `dbus-run-session`
+scripts/builder-diagnostics.py:302: string literal names `mutter`
+scripts/builder-diagnostics.py:324: string literal names `dbus-run-session`
+scripts/builder-diagnostics.py:326: string literal names `mutter`
+scripts/crash-recovery-smoke-driver.py:103: string literal names `dbus-run-session`
+scripts/crash-recovery-smoke-driver.py:103: string literal names `mutter`
+scripts/crash-recovery-smoke-driver.py:227: string literal names `dbus-run-session`
+scripts/crash-recovery-smoke-driver.py:386: string literal names `pipewire`
+scripts/crash-recovery-smoke-driver.py:386: string literal names `wireplumber`
+scripts/crash-recovery-smoke-driver.py:388: string literal names `pipewire`
+scripts/crash-recovery-smoke-driver.py:392: string literal names `wireplumber`
+scripts/crash-recovery-smoke-driver.py:422: string literal names `mutter`
+scripts/editor-glyph-live-smoke.py:25: string literal names `dbus-run-session`
+scripts/editor-glyph-live-smoke.py:156: string literal names `dbus-run-session`
+scripts/lushtext-automation.py:1659: string literal names `dbus-run-session`
+scripts/responsiveness-smoke-driver.py:5725: string literal names `mutter`
+scripts/responsiveness-smoke-driver.py:5789: string literal names `mutter`
+scripts/responsiveness-smoke-driver.py:5799: string literal names `mutter`
+scripts/run-accessibility-smoke.sh:546: `dbus-run-session` is named in a shell command
+scripts/run-accessibility-smoke.sh:548: `mutter` is named in a shell command
+scripts/run-accessibility-smoke.sh:549: `pipewire` is named in a shell command
+scripts/run-accessibility-smoke.sh:551: `wireplumber` is named in a shell command
+scripts/run-automation-smoke.sh:45: `dbus-run-session` is named in a shell command
+scripts/run-automation-smoke.sh:48: `mutter` is named in a shell command
+scripts/run-command-palette-notes-smoke.sh:51: `dbus-run-session` is named in a shell command
+scripts/run-command-palette-notes-smoke.sh:55: `mutter` is named in a shell command
+scripts/run-command-palette-notes-smoke.sh:56: `pipewire` is named in a shell command
+scripts/run-command-palette-notes-smoke.sh:58: `wireplumber` is named in a shell command
+scripts/run-crash-recovery-smoke.sh:54: `dbus-run-session` is named in a shell command
+scripts/run-crash-recovery-smoke.sh:55: `mutter` is named in a shell command
+scripts/run-gtk-axioms.sh:62: copies the shared `headless-session-services` warning text 'Failed to acquire org.freedesktop.locale1 proxy: Could not connect: No such file or directory'
+scripts/run-gtk-axioms.sh:62: copies the shared `headless-session-services` warning text 'Failed to connect to colord daemon: Could not connect: No such file or directory'
+scripts/run-gtk-axioms.sh:177: `dbus-run-session` is named in a shell command
+scripts/run-gtk-axioms.sh:178: `mutter` is named in a shell command
+scripts/run-gtk-axioms.sh:180: `dbus-run-session` is named in a shell command
+scripts/run-gtk-axioms.sh:181: `mutter` is named in a shell command
+scripts/run-portal-sandbox-smoke.sh:109: `dbus-run-session` is named in a shell command
+scripts/run-portal-sandbox-smoke.sh:109: `mutter` is named in a shell command
+scripts/run-portal-sandbox-smoke.sh:141: `dbus-run-session` is named in a shell command
+scripts/run-portal-sandbox-smoke.sh:141: `mutter` is named in a shell command
+scripts/run-portal-sandbox-smoke.sh:155: `dbus-run-session` is named in a shell command
+scripts/run-portal-sandbox-smoke.sh:156: `mutter` is named in a shell command
+scripts/run-portal-sandbox-smoke.sh:194: `dbus-run-session` is named in a shell command
+scripts/run-portal-sandbox-smoke.sh:194: `mutter` is named in a shell command
+scripts/run-portal-sandbox-smoke.sh:215: `dbus-run-session` is named in a shell command
+scripts/run-portal-sandbox-smoke.sh:216: `mutter` is named in a shell command
+scripts/run-portal-sandbox-smoke.sh:227: `dbus-run-session` is named in a shell command
+scripts/run-portal-sandbox-smoke.sh:228: `mutter` is named in a shell command
+scripts/run-responsiveness-smoke.sh:115: `dbus-run-session` is named in a shell command
+scripts/run-responsiveness-smoke.sh:116: `mutter` is named in a shell command
+scripts/run-responsiveness-smoke.sh:150: `mutter` is named in a shell command
+scripts/run-responsiveness-smoke.sh:162: `dbus-run-session` is named in a shell command
+scripts/run-visual-smoke.sh:161: `dbus-run-session` is named in a shell command
+scripts/run-visual-smoke.sh:162: `mutter` is named in a shell command
+scripts/run-visual-smoke.sh:166: `pipewire` is named in a shell command
+scripts/run-visual-smoke.sh:168: `wireplumber` is named in a shell command
+scripts/run-widget-tests.sh:31: copies the shared `headless-session-services` warning text 'Failed to acquire org.freedesktop.locale1 proxy: Could not connect: No such file or directory'
+scripts/run-widget-tests.sh:31: copies the shared `headless-session-services` warning text 'Failed to connect to colord daemon: Could not connect: No such file or directory'
+scripts/run-widget-tests.sh:31: copies the shared `headless-session-services` warning text 'error: Could not connect: No such file or directory'
+scripts/run-widget-tests.sh:192: `dbus-run-session` is named in a shell command
+scripts/run-widget-tests.sh:193: `mutter` is named in a shell command
+scripts/run-widget-tests.sh:208: `dbus-run-session` is named in a shell command
+scripts/run-widget-tests.sh:209: `mutter` is named in a shell command
+scripts/setup-dev-tools.sh:119: `dbus-run-session` is an element of array `required_commands`
+scripts/setup-dev-tools.sh:126: `mutter` is an element of array `required_commands`
+scripts/setup-dev-tools.sh:127: `pipewire` is an element of array `required_commands`
+scripts/setup-dev-tools.sh:129: `wireplumber` is an element of array `required_commands`
+scripts/visual-geometry-smoke.py:119: string literal names `dbus-run-session`
+scripts/visual-geometry-smoke.py:123: string literal names `mutter`
+scripts/visual-geometry-smoke.py:124: string literal names `pipewire`
+scripts/visual-geometry-smoke.py:126: string literal names `wireplumber`
+scripts/visual-geometry-smoke.py:424: string literal names `dbus-run-session`
+scripts/visual-geometry-smoke.py:503: string literal names `pipewire`
+scripts/visual-geometry-smoke.py:506: string literal names `wireplumber`
+scripts/visual-geometry-smoke.py:514: string literal names `mutter`

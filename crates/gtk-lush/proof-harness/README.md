@@ -31,22 +31,31 @@ system. Application setup remains caller-owned.
 
 ## Host Contract
 
-The parent harness checks for `dbus-run-session` and `mutter` before launching
-the private compositor. Missing host tooling exits with
-`UNSUPPORTED_HOST_EXIT_CODE` (`77`) and an `UNSUPPORTED-HOST` diagnostic so
-wrappers can distinguish environment support from a failing widget test. Normal
-test failures keep the Rust test-harness-style `TEST_FAILURE_EXIT_CODE`
-(`101`).
+The harness starts its private headless session through the `session`
+module, the crate's one implementation of it (see "Session Hygiene" below).
+Missing host tooling exits with `UNSUPPORTED_HOST_EXIT_CODE` (`77`) and an
+`UNSUPPORTED-HOST` diagnostic so wrappers can distinguish environment support
+from a failing widget test. Normal test failures keep the Rust
+test-harness-style `TEST_FAILURE_EXIT_CODE` (`101`), and a session that failed
+its runtime guard exits with `session::SESSION_HYGIENE_EXIT_CODE` (`93`).
 
-Consumers should apply `recommended_pre_gtk_environment()` before GTK
-initialization when their startup is still single-threaded. The recommended
-values are:
+The launcher applies `recommended_pre_gtk_environment()` to `dbus-run-session`
+itself, **before the session bus starts**, so services the bus activates
+(`xdg-desktop-portal-gtk`, the AT-SPI launcher) inherit it. A per-test child
+only verifies the values (`verify_recommended_environment()`) and fails before
+GTK initializes, naming the variable, when one is missing; list mode and the
+relaunching parent verify nothing. A per-test child also refuses to run
+outside the helper's inner stage (`session::SESSION_ACTIVE_ENV` unset), so a
+runner variable set by hand in a desktop shell never shows a test's widgets
+on the caller's display. The recommended values are:
 
 - `NO_AT_BRIDGE=1`
 - `GDK_DEBUG=no-portals`
 - `GTK_USE_PORTAL=0`
-- `GSK_RENDERER=cairo`
+- `GSK_RENDERER=cairo` (a caller's value wins)
 - `GTK_IM_MODULE=gtk-im-context-simple`
+- `GTK_A11Y=test` (a caller's `none` is accepted)
+- `ADW_DISABLE_PORTAL=1`
 
 Each one disables a desktop-session subsystem the private compositor advertises
 but cannot provide. The input-method entry is the least obvious and the most
@@ -57,11 +66,104 @@ destroying a focused entry races the compositor's reply into a **SIGSEGV** insid
 40 after. It is a statement about the environment, not a claim that the
 underlying GTK race is fixed.
 
+`GTK_A11Y=test` and `ADW_DISABLE_PORTAL=1` exist because GTK 4 ignores
+`NO_AT_BRIDGE` and activates `org.a11y.Bus` from every client, and Libadwaita
+starts `xdg-desktop-portal`, its GTK backend and the document portal despite
+`GDK_DEBUG=no-portals`. `test`, not `none`: `none` creates no AT context, so
+`gtk4::test_accessible_has_property` and `has_state` return false.
+
+`test` has one hazard every consumer must handle: `GtkTestATContext`
+implements no `announce`, so `gtk_accessible_announce` on a realized widget
+kills the test process by SIGSEGV (GTK axiom ledger A117). Announce through one
+helper that skips a `GtkTestATContext` (nothing listens through it), and do
+not ask for the context under `GTK_A11Y=none`.
+
 `apply_headless_child_environment()` applies the outer relaunch side of the
 contract before Mutter starts: `GDK_BACKEND=wayland`, the caller-owned headless
 marker, and removal of inherited live `DISPLAY` and `WAYLAND_DISPLAY`.
 Per-test children spawned inside the private Mutter session should inherit that
 session's private Wayland display from the environment.
+
+## Session Hygiene
+
+A test session must not load the developer's desktop. Before this module,
+every screenshot case started a bare WirePlumber (the `main` profile, whose
+ALSA, bluez, v4l2 and libcamera monitors opened the host's devices and
+registered 15 endpoints with the host's bluetoothd), PipeWire's module-rt asked
+the host's rtkit for priorities until its burst limit denied real audio, the
+daemons rewrote the user's `~/.local/state/wireplumber`, and every widget
+session activated `org.a11y.Bus` and the portals. `session` is the one place
+that starts a session's processes, and it fails a run that does any of that.
+
+**Profiles** (`session::profiles`), with explicit `--a11y`, `--media` and
+`--portals` overriding them:
+
+| Profile | a11y | media | portals | Used by |
+| --- | --- | --- | --- | --- |
+| `widget` | off | off | off | widget and axiom harnesses |
+| `plain` | off | off | on | application lanes without screenshots |
+| `screencast` | off | quiet | on | screenshot lanes |
+| `accessibility` | atspi | quiet | on | AT-SPI lanes |
+
+Every profile gets a **private, monitored system bus** (a `dbus-daemon` with
+no service directory, exported as `DBUS_SYSTEM_BUS_ADDRESS`): rtkit and
+bluetoothd cannot be reached, and `dbus-monitor` records every attempt.
+**Quiet media** is PipeWire plus WirePlumber `--profile=policy` (no hardware
+monitors), module-rt off in the daemons and in every client (the
+`session/*.conf` fragments, compiled in), and helper-private config, state and
+data homes. With media on, the session's `XDG_CONFIG_HOME` must be private.
+
+**Runtime guard.** At teardown, while every service is alive, a pure verdict
+(`session::verdict`) reads the observations and prints
+`SESSION-HYGIENE: <class>: <detail>` for each violation:
+
+- `rtkit`: any `MakeThread*` call, or any other message naming RealtimeKit1,
+  except the `xdg-desktop-portal` frontend's startup lookups and its single
+  read of each rtkit property in a portals-on session (resolved by PID and
+  executable; an unresolved sender is not exempt);
+- `bluez`: any message naming `org.bluez`;
+- `hardware-device`: a PipeWire object whose `device.api` is `alsa`, `v4l2`,
+  `libcamera` or `bluez5`;
+- `module-rt`: `libpipewire-module-rt` mapped in a daemon or logged by it;
+- `accessibility-bus`: `org.a11y.Bus` acquired (at any point) with a11y off;
+- `portal`: a portal acquired with portals off;
+- `config`: `GTK_A11Y` other than `test`/`none` with a11y off, or the quiet
+  media configuration missing.
+
+A violation exits with `93`, or keeps a failed command's own status. The
+session's `session-hygiene.txt` (under `--log-dir`) records the effective
+options, the names acquired and the verdict.
+
+**Binary.** `gtk-lush-session` exposes the same helper:
+`session [OPTIONS] -- CMD` (the command runs inside the bus and may start
+`compositor` itself), `compositor --monitor WxH -- CMD` (execs
+`mutter --headless`, so the caller's handle is mutter; refused outside a
+session), `run` (both), and `check-tools [--profile P] [--json]` (missing
+commands, and with `--json` each command's path and `--version` line, plus a
+`roles` map naming which command is the session bus, the compositor and the
+media daemons, so a caller can record the compositor's version without naming
+it). It
+exports its own path as `GTK_LUSH_SESSION_BIN` inside the session, so code
+there can start a nested, fully private session without depending on this
+crate. `--expect-dirty` reruns the previous bare media configuration and
+succeeds only when the guard catches it, for by-hand proof.
+
+**Library stages for supervising callers.** A tool that runs the session with
+its own log capture and timeout (LushText's `cargo-gtk-proof`) builds the
+stages as `std::process::Command`s instead of running them:
+`session::session_command(&options, runtime_dir, &command, &extra_env)` is the
+`session` stage in the caller's private runtime directory (refused when it is
+the user's real `XDG_RUNTIME_DIR`), and re-executes the current executable as
+the inner stage, so that executable's `main` must call
+`session::run_inner_stage_if_requested()` first;
+`session::compositor_command(&monitors, &command)` is the `compositor` stage,
+valid only inside a session. Both return `SessionLaunchError` (the status to
+exit with and the line to print) instead of starting anything when the host
+lacks a tool or an option is invalid.
+
+**Static gate.** LushText's `make check-session-hygiene` fails on any tracked
+code outside this module that names a session command, and on drift of the
+profile and the fragments.
 
 ## Temporary Files
 

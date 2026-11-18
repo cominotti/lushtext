@@ -53,6 +53,7 @@ CLIENT_STATUSES = (
     "pixel-anchor-failed",
     "state-mismatch",
     "warning-scan-failed",
+    "session-hygiene",
     "missing-field",
     "workflow-failure",
     "artifact-error",
@@ -68,6 +69,7 @@ EXIT_CODES = {
     "pixel-anchor-failed": 1,
     "state-mismatch": 1,
     "warning-scan-failed": 1,
+    "session-hygiene": 1,
     "workflow-failure": 1,
     "dbus-error": 1,
     "artifact-error": 1,
@@ -1656,7 +1658,7 @@ def command_self_test(_args: argparse.Namespace) -> ClientResult:
                         "schema_version": 1,
                         "status": "ready",
                         "runtime": {
-                            "session_bus": "dbus-run-session",
+                            "session_bus": "gtk-lush-session (screencast profile)",
                             "environment": [{"key": "XDG_RUNTIME_DIR", "value": "runtime"}],
                         },
                     }
@@ -1878,6 +1880,26 @@ def command_self_test(_args: argparse.Namespace) -> ClientResult:
             pixel_failed_summary = summarize_artifacts(pixel_failed_dir)
             assert not pixel_failed_summary.ok
             assert pixel_failed_summary.status == "pixel-anchor-failed"
+
+            hygiene_dir = root / "session-hygiene-case"
+            hygiene_dir.mkdir()
+            (hygiene_dir / "scenario-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "scenario_id": "visual-session-hygiene",
+                        "scenario_type": "minimap-sidebar",
+                        "status": "failed",
+                        "failure_status": "session-hygiene",
+                        "failure_reason": "SESSION-HYGIENE: see session-hygiene/session-hygiene.txt",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            hygiene_summary = summarize_artifacts(hygiene_dir)
+            assert not hygiene_summary.ok
+            assert hygiene_summary.status == "session-hygiene"
+            assert EXIT_CODES["session-hygiene"] == 1
 
             skipped_dir = root / "skipped-case"
             skipped_dir.mkdir()

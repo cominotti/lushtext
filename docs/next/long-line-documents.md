@@ -4258,6 +4258,70 @@ separate change, in this order:
        its own design, because `--mem none` callers admit under LOCK by
        design. Details:
        `.claude/handoffs/nest-heavy-slices-under-user-slice/stage3-notes.md`.
+   - `reduce-build-disk-writes` (merged 2026-11-15 as `fb727d4a`, PR #108,
+     archived as
+     `openspec/changes/archive/2026-11-15-reduce-build-disk-writes/`;
+     infrastructure, no app change).
+     The build lanes wrote and left too much on the btrfs RAID1 home, which
+     is snapshotted.
+     - **Before:** a local `make mutants-*` ran copy mode, `--jobs 3`. It
+       wrote 31.7-32.1 GB per focused run and leaked three cold
+       `~/.cache/cargo-build` trees, about 22 GB per run.
+     - **Now:**
+       - local runs sync the checkout into a host-wide pool of three in-place
+         mirror slots under the repo-owned cache root `~/.cache/lushtext-build/`
+         (`scripts/build-cache.sh`; `make build-cache-prune`);
+       - slot acquisition never waits (exit 75, holders named);
+       - each test process has an address-space limit, 4G by default;
+       - the proof-strength worktree and the Flatpak builder state live in
+         that root;
+       - `make kani` and the proof-strength Kani arm build without
+         incremental;
+       - a docs-only commit skips Clippy, keeping `check-policy`.
+     - **Decisions:** design D1-D11 of the change.
+     - **Kani:** none (no proven module touched). **Axioms:** none.
+     - **Verdicts** (the change's design, "Measured verdicts"; quiet rounds
+       through `measure.sh`):
+       - The warm slot pair passes every D9 bar: 21.43 against 32.14 GB
+         written, no leaked dir, no sccache growth, wall time +11%.
+       - The slot refill after main's `Cargo.lock` refresh fails the
+         sccache, bytes and wall-time bars: +494 MB, +5% and +61%. The
+         two-round median wall time is +36%, recorded as D9's explicit
+         exception.
+       - Kani lane +0.9% and proof-strength Kani arm +7%, without
+         incremental, both inside the 25% bar.
+       - Host IO, `btrfs-stall-report`, one window per arm: the warm branch
+         wrote 12-16% fewer device bytes. Its stall verdict is no better:
+         both branch windows read SATURATED, the warm one with 1.0 s commits.
+     - **Fixed here (pre-existing):**
+       - the focused mutation scope's four killable `markdown_chunked_cap`
+         survivors, now caught by an integration test;
+       - its two cfg-unreachable ones, excluded in `.cargo/mutants.toml`.
+     - **Facts `close-heavy-admission-window` builds on.** It edits the same
+       `scripts/heavy.sh` / `scripts/with-memory-cap.sh` admission code.
+       - **D10.** `admitted_kib` reserves a `lushtext-cap-<pid>-<ns>.scope`'s
+         cap only while that PID, the command that `systemd-run --scope`
+         execs in place, is still in the scope. A daemon left behind, such
+         as the sccache server, which starts inside the first compile's
+         scope, keeps the scope alive but holds no admission. Its real
+         memory still counts through the slice's `MemoryMax` and
+         `MemAvailable`.
+       - The rule applies to the current and the legacy slice alike, and the
+         `--wait-admissible` probe and the blocking admission share the one
+         function, so the probe and the admit count the same thing.
+       - A scope with any other name (`run-p<pid>-*`, from wrapper copies
+         before this merge) still counts while anything is in it.
+         `systemctl --user set-property --runtime <scope>
+         MemoryMax=infinity` releases one without killing the daemon.
+       - **Mirror-mode runs** take their slots with `flock -n` and never wait
+         for one. Their one 36G `MUTANTS_MEMORY_MAX` admission still runs
+         inside `heavy.sh --mem none`, so under `LOCK` shared: the documented
+         inner-admission path the follow-up targets.
+       - **Admission is first-fit, not fair.** In stage 3 a 36G mutants scope
+         starved for about an hour behind a stream of small admissions, and
+         lane case 11.3 ran at 24G instead.
+       - Any fix keeps `LUSHTEXT_ADMISSION_NOWAIT=1`'s fail-fast 75. The
+         measurement rounds depend on it.
    Also recorded: a process-wide retained-byte ledger for many expanded
    huge sidebar directories (the budget, like the count before it, is per
    directory). From BN (besides `lighten-notes-browser-rows`, queued above):
@@ -5076,6 +5140,66 @@ the post-1.98 std APIs, and B9 Cargo's layout v2. The investigation's table in
 the CI pin, `cargo install --locked cargo-nextest --version 0.9.151`. It was
 left alone here because parallel runs were using the one binary and nothing
 local needs it while cargo 1.98 writes layout v1.
+
+## QH `quiet-headless-session-services` (implementation record, 2026-11-15)
+
+**Status:** merged 2026-11-15 as `12af80a9` (PR #110) and archived as
+`openspec/changes/archive/2026-11-15-quiet-headless-session-services/`. This
+is a host-hygiene change for every measurement lane, not a budget change.
+Design and decisions, including the stage-4 review decisions, are in that
+directory's `design.md`, and the evidence is in its `evidence/` directory
+(`baseline.md`, `red-scan.txt`, `runtime-proof.md`).
+
+**Baseline.** Before this change, every headless widget, smoke and axiom
+session shared the host's system bus. On the spec-stage day, rtkit-daemon
+logged 6,155 thread grants and 7,544 burst-limit denials for this user, and
+bluetoothd logged 27,495 "Endpoint registered" lines. Bare WirePlumber
+instances also rewrote the real `~/.local/state/wireplumber`. One unmigrated
+screenshot case cost 15 bluez endpoints and 1 nice plus 3 RT grants.
+
+**Decisions.**
+
+- One session helper (`gtk-lush-proof-harness`'s `session` module, exposed as
+  the `gtk-lush-session` binary and the `scripts/headless-session` shim) starts
+  every session. Its profiles are `widget`, `plain`, `screencast` and
+  `accessibility`.
+- Every session gets a private, monitored system bus, quiet media only where
+  ScreenCast needs it, helper-private homes, and a runtime guard. The guard
+  prints `SESSION-HYGIENE:` lines and exits 93.
+- `make check-session-hygiene`, which is in `make check-policy`, fails any
+  other spawn.
+- Widget children run with `GTK_A11Y=test` and `ADW_DISABLE_PORTAL=1` (axioms
+  A115 and A116).
+- Under `GTK_A11Y=test`, `gtk_accessible_announce` segfaults (A117), so
+  `ui::accessibility::announce` skips a `GtkTestATContext`. No announcement
+  reaches a user through such a context.
+- The edit-entry source capture of Protected View (`capture_execution.rs`)
+  now cancels itself on any insertion or deletion. Before, a test-workflow
+  replacement of an edit-entered buffer left it reading through an
+  invalidated iterator (a `Gtk-CRITICAL`, then an abort). This and the
+  announcement guard are the change's two application-code edits.
+- Socket paths are bounded by `dbus-daemon`'s 99 bytes. The helper,
+  `with-temp-scope.sh --session-runtime` and the Python smoke drivers'
+  runtime root all check the system bus socket, the deepest one, and a
+  driver whose temp scope is too deep (a seven-digit PID did it) falls back
+  to `/tmp`.
+
+**Deferrals.**
+
+- Portals stay on in the screenshot, accessibility and portal-sandbox lanes:
+  their baselines and confinement checks may depend on them, and portals put
+  no measured load on the host.
+- There is no per-minute session cap: the guard already proves a session's
+  host cost is zero, and a cap would only slow the parallel lanes.
+
+**Proof.** During one 99-case `make visual-geometry-smoke` run, this branch's
+sessions got 0 rtkit grants, 0 bluez endpoints, 0 WirePlumber state writes
+and 0 `MakeThread*` calls. Other worktrees ran unmigrated lanes on the host at
+the same time, so each count was attributed per process (`runtime-proof.md`
+6.5). The interleaved quick-tier measurement against `main` (`baseline/*`,
+`keystroke/3500/*`, `dense/2000`, `plain` and `at`) found no budget shift:
+four verdict rounds, plus two `dense/2000` attribution pairs that cleared the
+one flagged stage, a single-rep 22 ms dispatch (design, "Measurement").
 
 ## SR `stream-replace-all` (implementation record, in progress, 2026-11-15)
 

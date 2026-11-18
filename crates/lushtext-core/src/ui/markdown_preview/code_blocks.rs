@@ -433,6 +433,21 @@ impl LushtextMarkdownPreview {
         self.replace_deferred_code_block_width_refresh(generation);
     }
 
+    /// Repair code-block widths after the text view's width changed.
+    ///
+    /// Called while GTK allocates the text view, so only the deferred passes
+    /// run: a width request changed from inside an allocation is not
+    /// reliably laid out again (ledger A13).
+    pub(super) fn queue_code_block_width_refresh_after_allocation(&self) {
+        let generation = self
+            .imp()
+            .code_block_refresh_generation
+            .get()
+            .wrapping_add(1);
+        self.imp().code_block_refresh_generation.set(generation);
+        self.replace_deferred_code_block_width_refresh(generation);
+    }
+
     /// Refresh code-block widths and run `callback` after the final deferred pass.
     pub(crate) fn queue_code_block_width_refresh_after<F: Fn() + 'static>(&self, callback: F) {
         self.imp()

@@ -49,6 +49,7 @@ Run the narrow checks first, then the build proof appropriate to the change:
 ```bash
 make check-flatpak-permissions
 make test-flatpak-install-origin
+make check-flatpak-source-tree
 make check-agent-docs
 make meson-build
 make meson-test
@@ -61,6 +62,7 @@ git diff --check
 - Run `make cargo-sources` before the build when dependency inputs changed.
 - `make flatpak` is build-only; install immediately before `make verify-flatpak-identity` when claiming installed state (`build.md`). If installing into the user's Flatpak state is outside the task's authority, omit both installed-state commands and report build-only evidence.
 - Run `make test-flatpak-install-origin` whenever `flatpak-install`, `scripts/flatpak-install-origin.sh`, or the flatpak/flatpak-builder version changes. It proves the install-origin guard (`flatpak-install-origin.sh check`, the first section of `make verify-flatpak-identity`) against real `flatpak` in a private `FLATPAK_USER_DIR`; a failure there means flatpak changed how it names, reuses or prunes origin remotes.
+- `make flatpak` and `make flatpak-install` build a staged copy of the git-visible tree (`scripts/flatpak-source-tree.sh`, `build.md` "Flatpak"), never the checkout: a file the build reads must be tracked or at least not ignored, and an ignored file that "worked" in place no longer reaches the build. Run `make check-flatpak-source-tree` when the staging script or those targets change.
 - Run `make meson-test` for the Meson-registered AppStream and desktop-file checks. The target requires both validator programs, reconfigures Meson, asserts both expected test names exist, and fails instead of treating an absent validator or test as proof. Use the release helper's direct validators as the additional release-readiness surface.
 - Run release helper self-tests, and `scripts/test-flathub-manifest.sh` for the dormant Flathub generators, when those generators or release flows change.
 - Do not claim launch, identity, permission, or store readiness without the corresponding current-tree evidence.

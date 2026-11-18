@@ -26,3 +26,7 @@ workspace = true
 glib = { workspace = true }
 gtk4 = { workspace = true }
 tempfile = { workspace = true }
+
+[[bin]]
+name = "gtk-lush-session"
+path = "src/bin/gtk-lush-session.rs"

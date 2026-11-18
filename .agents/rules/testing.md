@@ -47,8 +47,14 @@ directory ([why](../../docs/memorials/2026-10-20-test-data-incidents.md)).
 - **Keep runtime dirs short.** Portal and headless smoke scripts keep their
   temporary runtime directories directly under `$XDG_RUNTIME_DIR` or `/tmp`,
   never under long artifact paths: Mutter/Wayland socket paths are
-  length-limited, and `with-temp-scope.sh --session-runtime` refuses a scope
-  whose `wayland-0` socket path would exceed 100 bytes.
+  length-limited. The session helper's private system bus socket
+  (`gtk-lush-session/system-bus`) is the deepest, and `dbus-daemon` binds at
+  most 99 bytes (`DBUS_SOCKET_PATH_MAX`, below the kernel's 107). The helper
+  puts an owned runtime directory that would not fit under `/tmp` and refuses
+  an inherited one; `with-temp-scope.sh --session-runtime` refuses such a
+  scope; and the Python drivers' `smoke_runtime_dir.create_runtime_root`
+  falls back to `/tmp` when the scope's `TMPDIR` is too deep, which a
+  seven-digit PID can make it.
 - **PID-bearing names and a conservative sweep.** Names carry the owning PID
   after an exact prefix so the next run can reclaim what a SIGKILLed run left:
   only real directories owned by the current user, whose PID is gone and which
@@ -102,6 +108,19 @@ a helper a test must remember to call first
 - **Prove a fix failing-first** with `HOME` pointing at a temporary directory
   and the XDG variables and `LUSHTEXT_DATA_DIR` unset, never against the real
   home.
+- **Scripts and self-tests that run git forget the caller's repository first.**
+  The pre-commit hook runs `make check-policy`, and inside a hook git exports
+  `GIT_DIR`, `GIT_INDEX_FILE` and their siblings, which override `git -C`. A
+  fixture's `git init` or `git add` then rewrites the repository being
+  committed: a self-test once set `core.bare=true` in the checkout's
+  `.git/config` and replaced its worktree index that way
+  (`flatpak-stage-git-visible-tree`). Unset every name
+  `git rev-parse --local-env-vars` prints before the first git call
+  (`scripts/flatpak-source-tree.sh`; the Python scripts scrub the same names),
+  run fixture repositories with `GIT_CONFIG_GLOBAL=/dev/null`,
+  `GIT_CONFIG_NOSYSTEM=1` and `-c core.hooksPath=/dev/null`, and pin it with a
+  case that runs the script under a decoy repository's `GIT_DIR`,
+  `GIT_INDEX_FILE` and `GIT_WORK_TREE`.
 
 ## Test-Only Code Never Ships
 
@@ -185,8 +204,12 @@ a helper a test must remember to call first
   implemented **twice** in `scripts/check-visual-proof-policy.py` and
   `crates/cargo-gtk-proof/src/policy.rs`, `scripts/check-accessibility-policy.py`,
   `scripts/accessibility_source_fingerprint.py`,
-  `scripts/check-filesystem-boundary.sh`, and `scripts/run-performance-smoke.sh`
-  (keyed on test names and evidence labels). When a change relocates, renames,
+  `scripts/check-filesystem-boundary.sh`, `scripts/run-performance-smoke.sh`
+  (keyed on test names and evidence labels), and
+  `scripts/check-session-hygiene.py` (its exemptions for the session helper's
+  directory and for itself are path-keyed and fail-closed: a renamed helper
+  becomes a violator, and the gate fails when the helper has zero sanctioned
+  spawns). When a change relocates, renames,
   or splits a file such a gate names: re-key or retire the entry in the same
   change and record which; re-key **every** implementation, with a parity
   assertion in each one's self-tests; prove the re-key by running the gate on
@@ -201,7 +224,8 @@ a helper a test must remember to call first
 Run the cheap gates first, with the same `make` targets the hook runs:
 `make fmt`, `make check-fmt`, `make check-clippy` (it adds project lints a plain
 `cargo clippy` lacks), `make check-workflow-boundaries`,
-`make check-automation-docs` when the automation surface changed, and
+`make check-session-hygiene` when a lane, a workflow or the session helper
+changed, `make check-automation-docs` when the automation surface changed, and
 `cargo check -p lushtext --bins --locked` with default features (all-feature
 Clippy hides `test-utils`-only imports). Only then run the accessibility,
 visual and visual-geometry smokes, and commit right after them: their proofs

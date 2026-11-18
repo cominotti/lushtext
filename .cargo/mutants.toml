@@ -177,6 +177,16 @@ exclude_re = [
     # Equivalent on LushText's Linux target: this non-Unix advisory-lock stub is
     # not compiled or called in the mutation test target.
     "crates/lushtext-core/src/services/durable_write\\.rs:131:.*FileWriteLock::acquire -> std::io::Result<Option<Self>>",
+    # Never compiled by the mutation lane: `markdown_chunked_cap`'s
+    # `cfg(not(feature = "test-utils"))` arm. Unlike the cfg-disabled stubs
+    # around it, this is the arm that ships (a `const fn` returning `None`),
+    # but the lane's one workspace test build always has `test-utils`, which
+    # the `lushtext` crate's dev-dependency enables on `lushtext-core`, so a
+    # mutant here builds unchanged code and can only be missed (found in
+    # `reduce-build-disk-writes`' focused rounds). Its `test-utils` twin above
+    # it is in scope and killed by the integration test `document_scale`.
+    # Line-anchored: re-key this entry if the function moves.
+    "crates/lushtext-core/src/model/document_scale\\.rs:229:.*replace markdown_chunked_cap -> Option<u64> with Some\\([01]\\)",
     # Equivalent on LushText's Linux mutation target: this non-Unix metadata
     # shim is cfg-disabled, while the active Unix metadata probe remains in scope.
     "crates/lushtext-core/src/services/durable_write\\.rs:504:.*MetadataPlan::probe -> std::io::Result<Self>",

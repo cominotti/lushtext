@@ -18,34 +18,15 @@
 
 use std::process::ExitCode;
 
-use gtk_lush_axioms::{Verdict, catalogue, include_slow_probes, init_toolkit, slow_skip_line};
-use gtk_lush_proof_harness::{
-    HarnessConfig, RegisteredTest, recommended_pre_gtk_environment, run_registered_tests,
+use gtk_lush_axioms::{
+    Verdict, catalogue, include_slow_probes, init_toolkit, run_control_child_if_requested,
+    slow_skip_line,
 };
+use gtk_lush_proof_harness::{HarnessConfig, RegisteredTest, run_registered_tests};
 
 const CHILD_TEST_ENV: &str = "GTK_LUSH_AXIOMS_PROBE_CHILD";
 const HEADLESS_RUNNER_ENV: &str = "GTK_LUSH_AXIOMS_PROBE_HEADLESS_RUNNER";
 const HEADLESS_MONITOR_ENV: &str = "GTK_LUSH_AXIOMS_PROBE_HEADLESS_MONITOR";
-
-fn configure_probe_environment() {
-    // SAFETY: `main` runs this before GTK initializes and before any thread
-    // is spawned; every later process is a fresh child that inherits it.
-    unsafe {
-        for setting in recommended_pre_gtk_environment() {
-            if setting.key == "GSK_RENDERER" && std::env::var_os(setting.key).is_some() {
-                continue;
-            }
-            std::env::set_var(setting.key, setting.value);
-        }
-        // GTK 4 registers with the AT-SPI registry regardless of
-        // `NO_AT_BRIDGE`, and the private session has none, which GTK reports
-        // as a `Gtk-CRITICAL`. The probes measure geometry, not accessibility.
-        std::env::set_var("GTK_A11Y", "none");
-        // Libadwaita reads the settings portal directly unless told not to;
-        // the private session has none.
-        std::env::set_var("ADW_DISABLE_PORTAL", "1");
-    }
-}
 
 /// Run the probe the harness named in this child process.
 fn run_named_probe() {
@@ -69,7 +50,14 @@ fn run_named_probe() {
 }
 
 fn main() -> ExitCode {
-    configure_probe_environment();
+    // A probe's nested control child (A115, A116) is this binary re-run:
+    // run the control and exit before the harness parses anything.
+    if let Some(code) = run_control_child_if_requested() {
+        return code;
+    }
+    // The session launcher sets the pre-GTK environment, `GTK_A11Y=test`
+    // included, before the private bus starts; the harness verifies it in
+    // each probe child.
     let args: Vec<String> = std::env::args().skip(1).collect();
     let config = HarnessConfig::new(CHILD_TEST_ENV, HEADLESS_RUNNER_ENV, HEADLESS_MONITOR_ENV)
         .with_runner_label("GTK axiom probes");

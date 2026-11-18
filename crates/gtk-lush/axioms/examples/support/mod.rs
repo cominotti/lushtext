@@ -28,7 +28,8 @@ use std::time::Duration;
 
 use gtk_lush_axioms::{
     AxiomId, SampleFlags, SampleRequest, classify_sample_args, find, in_sdk_sandbox,
-    include_slow_probes, init_toolkit, remote_desktop_skip_line, sample_usage, slow_skip_line,
+    include_slow_probes, init_toolkit, remote_desktop_skip_line, run_control_child_if_requested,
+    sample_usage, session_bus_skip_line, slow_skip_line,
 };
 use gtk4::prelude::*;
 
@@ -101,8 +102,15 @@ pub fn run(axiom: AxiomId, build: fn(&SampleUi)) -> ExitCode {
 /// Decide the command line before GTK starts: `Some` exit code for a help
 /// request (`0`) or an unknown argument (`2`), after printing the usage;
 /// `None` when the sample may go on. A sample with measurement modes calls
-/// this first with its own `flags`.
+/// this first with its own `flags`. In a probe's nested control child
+/// (`GTK_LUSH_AXIOMS_CONTROL` set) it runs the control instead and returns
+/// its exit code.
 pub fn guard(flags: &SampleFlags) -> Option<ExitCode> {
+    // A nested control child (A115, A116) is this executable re-run by its
+    // own probe: run the control and exit before parsing arguments.
+    if let Some(code) = run_control_child_if_requested() {
+        return Some(code);
+    }
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let program = std::env::args()
         .next()
@@ -145,6 +153,11 @@ fn check(axiom: AxiomId) -> ExitCode {
     // Inside an SDK sandbox there is no session bus to reach the
     // compositor's RemoteDesktop through: say so, before connecting.
     if let Some(line) = remote_desktop_skip_line(axiom, in_sdk_sandbox()) {
+        println!("{line}");
+        return ExitCode::SUCCESS;
+    }
+    // Nor a session bus to read `ListNames` from.
+    if let Some(line) = session_bus_skip_line(axiom, in_sdk_sandbox()) {
         println!("{line}");
         return ExitCode::SUCCESS;
     }

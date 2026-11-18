@@ -54,6 +54,7 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use super::LushtextEditorPage;
 use super::protected_view::interaction_execution::DropTargetHold;
 use crate::model::held_input::ContentDisposition;
+use crate::ui::signal_connect;
 
 /// One held edit lock, returned by [`LushtextEditorPage::lock_edits`] and
 /// consumed by [`LushtextEditorPage::unlock_edits`].
@@ -125,7 +126,7 @@ impl LushtextEditorPage {
         ] {
             let editor = self.downgrade();
             let user_request = matches!(signal, "undo" | "redo");
-            buffer.connect_local(signal, false, move |values| {
+            signal_connect::connect_void(&buffer, signal, false, move |values| {
                 if let Some(editor) = editor.upgrade()
                     && editor.decide_removal(user_request)
                     && let Some(buffer) = values
@@ -134,7 +135,6 @@ impl LushtextEditorPage {
                 {
                     buffer.stop_signal_emission_by_name(signal);
                 }
-                None
             });
         }
     }

@@ -461,12 +461,48 @@ pub fn bounded_announcement_text(message: &str, max_chars: usize) -> Cow<'_, str
     Cow::Owned(bounded)
 }
 
+/// The AT context type that cannot announce (ledger A117).
+const TEST_AT_CONTEXT_TYPE: &str = "GtkTestATContext";
+
+/// Whether `GTK_A11Y` selects no accessibility backend, compared as GTK does
+/// (case-insensitively, read once: GTK caches the value on first use).
+fn accessibility_disabled() -> bool {
+    static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DISABLED.get_or_init(|| {
+        std::env::var("GTK_A11Y").is_ok_and(|value| value.eq_ignore_ascii_case("none"))
+    })
+}
+
+/// Whether announcing on `widget` is safe.
+///
+/// Workaround for a GTK defect (ledger A117, GTK 4.24.1 and `main`):
+/// `GtkTestATContext` implements no `announce` vfunc and `GtkATContext` gives
+/// it no default, so `gtk_accessible_announce` on a widget whose test context
+/// is realized calls a NULL function pointer and kills the process. GTK uses
+/// that context under `GTK_A11Y=test`, the backend the widget-test session
+/// selects, and also as its fallback whenever no backend builds a context,
+/// so a shipped build can meet it too. Nothing listens through a test
+/// context, so skipping the call loses no announcement. Under
+/// `GTK_A11Y=none` GTK creates no context at all; the gtk-rs
+/// `at_context()` binding is non-nullable there, so it is not asked, and
+/// `gtk_accessible_announce` returns by itself. Remove this when GTK gives
+/// the test context an `announce` and the floor carries the fix.
+fn announcement_is_safe<W: IsA<gtk4::Accessible>>(widget: &W) -> bool {
+    accessibility_disabled() || widget.at_context().type_().name() != TEST_AT_CONTEXT_TYPE
+}
+
 /// Announce a bounded workflow message through GTK.
+///
+/// Skipped on an AT context that cannot announce (see
+/// `announcement_is_safe`, ledger A117).
 pub fn announce<W: IsA<gtk4::Accessible>>(
     widget: &W,
     message: &str,
     priority: gtk4::AccessibleAnnouncementPriority,
 ) {
+    if !announcement_is_safe(widget) {
+        return;
+    }
     let message = bounded_announcement_text(message, DEFAULT_ANNOUNCEMENT_LIMIT);
     widget.announce(message.as_ref(), priority);
 }

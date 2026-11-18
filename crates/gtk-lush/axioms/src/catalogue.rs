@@ -1859,6 +1859,76 @@ const CATALOGUE: &[Axiom] = &[
         version_bound: None,
         probe: Some(probes::probe_a113),
     },
+    Axiom {
+        id: AxiomId::new(115),
+        name: "a115_gtk_a11y_test_keeps_accessible_state_and_activates_no_bus",
+        statement: "With GTK_A11Y=test, GTK 4 gives each widget a GtkTestATContext whose \
+                    accessible properties stay queryable through gtk_test_accessible_*, and \
+                    activates no org.a11y.Bus; without the variable (NO_AT_BRIDGE is ignored) \
+                    presenting the same widget activates org.a11y.Bus",
+        dependent_designs: &[
+            "quiet-headless-session-services D5: the widget profile sets GTK_A11Y=test (not \
+             none, which drops the AT context the accessible-state widget tests read) before \
+             the session bus starts, and the runtime guard fails a session that acquires \
+             org.a11y.Bus",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a115),
+    },
+    Axiom {
+        id: AxiomId::new(116),
+        name: "a116_adw_disable_portal_stops_the_settings_portal_activation",
+        statement: "With ADW_DISABLE_PORTAL=1, Libadwaita reads its settings without the \
+                    settings portal and activates no org.freedesktop.portal.Desktop; without \
+                    it, GDK_DEBUG=no-portals and GTK_USE_PORTAL=0 do not stop Libadwaita from \
+                    activating the portal",
+        dependent_designs: &[
+            "quiet-headless-session-services D6: the widget profile sets ADW_DISABLE_PORTAL=1 \
+             before the session bus starts, and the runtime guard fails a portals-off session \
+             that acquires a portal name",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a116),
+    },
+    Axiom {
+        id: AxiomId::new(117),
+        name: "a117_gtk_a11y_test_crashes_on_announce",
+        statement: "With GTK_A11Y=test, gtk_accessible_announce on a presented widget kills the \
+                    process by SIGSEGV: GtkTestATContext implements no announce vfunc and \
+                    GtkATContext gives it no default; with GTK_A11Y=none the same call returns, \
+                    because GTK creates no AT context",
+        dependent_designs: &[
+            "quiet-headless-session-services D5: lushtext-core's one announcement helper \
+             (ui::accessibility::announce) skips the call when the widget's AT context is a \
+             GtkTestATContext, the backend the widget profile selects and GTK's fallback when \
+             no backend builds a context; under GTK_A11Y=none it never asks for the context, \
+             which the non-nullable gtk-rs at_context() binding would mis-handle",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a117),
+    },
+    Axiom {
+        id: AxiomId::new(122),
+        name: "a122_an_extend_selection_handler_returning_false_lets_gtk_select",
+        statement: "GtkTextView's extend-selection (emitted on a double or triple click) returns \
+                    gboolean, runs its class handler last and stops at the first TRUE: a \
+                    handler returning FALSE lets the emission go on to later handlers and to \
+                    GtkTextView's handler, which extends the selection; a handler returning \
+                    TRUE claims it, and no later handler, GtkTextView's included, runs",
+        dependent_designs: &[
+            "fix-extend-selection-abort: Protected View's extend-selection handler answers TRUE \
+             in a protected document and FALSE everywhere else, always a gboolean \
+             (ui/editor_page/protected_view/interaction_execution.rs, through \
+             ui::signal_connect::connect_returning); answering nothing aborted the process on \
+             every double click outside Protected View",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a122),
+    },
 ];
 
 #[cfg(test)]

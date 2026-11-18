@@ -37,6 +37,32 @@ a user-facing workflow unverified.
 | Full benchmarks | `make bench-report`, `make bench-report-full` | Reviewable Criterion benchmark reports for release and performance-sensitive work | No, release or manual |
 | Mutation testing | `make mutants-smoke`, `make mutants-diff`, `make mutants-full` | Test strength for deterministic model, service, and pure helper code | Diff in PR/scheduled lanes, full manual or scheduled |
 
+## Private Headless Sessions
+
+Every lane above that runs GTK starts its private session through the one
+session helper, `scripts/headless-session` (the `gtk-lush-session` binary of
+`gtk-lush-proof-harness`) or that crate's session library, never by naming
+the session bus, the compositor or the media daemons itself
+(`make check-session-hygiene`, in `make check-policy`). A session has a
+private, monitored system bus, so no test process can reach the host's
+RealtimeKit or BlueZ; quiet PipeWire and WirePlumber only where a screenshot
+needs mutter's ScreenCast; and an AT-SPI bus only in accessibility sessions.
+
+| Profile | Lanes | AT-SPI | Media | Portals |
+| --- | --- | --- | --- | --- |
+| `widget` | widget tests, GTK axioms, builder diagnostics | off (`GTK_A11Y=test`) | off | off |
+| `plain` | automation, editor-glyph, portal/sandbox, Xvfb capture, responsiveness without its `at` variant | off | off | on |
+| `screencast` | visual smoke, visual geometry, command-palette notes | off | quiet | on |
+| `accessibility` | accessibility smoke, crash recovery (media off when the host lacks the media daemons: no screenshots), responsiveness with its `at` variant (media off) | on | quiet | on |
+
+At teardown the helper's runtime guard checks what the session did. A session
+that touched the host (RealtimeKit, BlueZ, a hardware device, PipeWire's
+module-rt, an accessibility bus or portal its profile excludes, or a
+configuration that is not the quiet one) prints
+`SESSION-HYGIENE: <class>: <detail>` and exits with status 93. Lanes report it
+as its own failure class (`session-hygiene` in manifests and in the
+automation client), never retry it, and verify no invariant from that case.
+
 ## Fast Pull-Request Expectations
 
 Pull-request CI should stay bounded and deterministic. It should run non-widget
@@ -167,8 +193,8 @@ they are not default PR gates:
   verification. The compatibility script delegates command execution to
   `cargo gtk-proof policy`; Python oracle summaries remain diagnostic and
   non-authoritative.
-- `make automation-smoke` launches the real debug binary under an isolated
-  D-Bus session and headless Mutter, introspects the app-owned automation
+- `make automation-smoke` launches the real debug binary in a private
+  headless session (`plain` profile) under headless Mutter, introspects the app-owned automation
   object, reads catalog/snapshot state, checks stateful action state against
   snapshot fields, runs the reusable automation client against the live app for
   catalog/snapshot/predicate/wait/event/action commands, waits for idle,

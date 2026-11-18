@@ -269,12 +269,15 @@ assert_success "accepts prerelease semver" with_release_lib 'validate_semver v1.
 assert_failure "rejects missing v prefix" with_release_lib 'validate_semver 1.2.3'
 assert_failure "rejects incomplete semver" with_release_lib 'validate_semver v1.2'
 
+# shellcheck disable=SC2016 # expanded by the sourced release library
 next="$(with_release_lib 'compute_next_version patch ""; printf "%s\n" "$next_version"' | tail -1)"
 assert_eq "patch bump" "v1.0.1" "$next"
 
+# shellcheck disable=SC2016 # expanded by the sourced release library
 next="$(with_release_lib 'compute_next_version minor alpha ""; printf "%s\n" "$next_version"' | tail -1)"
 assert_eq "alpha stream bump" "v1.1.0-alpha.3" "$next"
 
+# shellcheck disable=SC2016 # expanded by the sourced release library
 next="$(with_release_lib 'compute_next_version minor "" 1; printf "%s\n" "$next_version"' | tail -1)"
 assert_eq "promoted stable bump" "v1.1.0" "$next"
 
@@ -308,5 +311,17 @@ grep -q 'version = "1.2.3"' "$fixture/crates/lushtext-core/Cargo.toml"
 grep -q '<release version="1.2.3"' "$fixture/data/dev.cominotti.lushtext.metainfo.xml.in"
 grep -q 'Release notes &amp; polish' "$fixture/data/dev.cominotti.lushtext.metainfo.xml.in"
 assert_success "validate-tag accepts synchronized fixture" with_release_lib 'validate_tag_release v1.2.3 1'
+
+# The release Flatpak validation build keeps its app and state dirs in the
+# checkout's build-cache directory, side by side (design D7 of
+# reduce-build-disk-writes), never in the checkout.
+LUSHTEXT_BUILD_CACHE="$tmpdir/build-cache" with_release_lib 'validate_flatpak_build'
+cache_dir="$(LUSHTEXT_BUILD_CACHE="$tmpdir/build-cache" "$repo_root/scripts/build-cache.sh" checkout-path "$fixture")"
+grep -q -- "--state-dir=$cache_dir/flatpak-release-builder .*$cache_dir/flatpak-release-app " "$tmpdir/flatpak-builder.log" || {
+    echo "release Flatpak build did not use the build-cache app and state dirs:" >&2
+    cat "$tmpdir/flatpak-builder.log" >&2
+    exit 1
+}
+[[ ! -e "$fixture/.flatpak-builder" && ! -e "$fixture/build-flatpak-release" ]]
 
 echo "release helper tests passed"

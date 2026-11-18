@@ -907,3 +907,12 @@ pub mod a113 {
     };
     pub use crate::probes::text::TextViewFixture;
 }
+
+/// The text view whose `extend-selection` the A122 probe emits, for its
+/// sample.
+pub mod a122 {
+    pub use crate::probes::a122::{
+        DOCUMENT, LOCATION_OFFSET, connect_answer, document_view, emit_word_extension,
+    };
+    pub use crate::probes::text::TextViewFixture;
+}

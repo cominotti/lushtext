@@ -46,6 +46,7 @@
 #   make mutants-smoke - Small cargo-mutants smoke run
 #   make mutants-diff  - Mutation test current changes against origin/main
 #   make mutants-full  - Mutation test the configured deterministic scope
+#   make build-cache-prune - Remove build-cache directories of checkouts that no longer exist
 #   make fmt         - apply rustfmt everywhere, including the widget tests cargo fmt cannot reach
 #   make check       - fmt + all-feature clippy + fast policy audits
 #   make blueprint-generate - Regenerate generated GtkBuilder .ui files from Blueprint .blp sources
@@ -82,6 +83,7 @@
 #   make flatpak-install - Build and install Flatpak into the user installation
 #   make verify-flatpak-identity - Verify Flatpak desktop identity and MIME registration
 #   make test-flatpak-install-origin - Test the Flatpak install-origin guard against real flatpak in a private installation
+#   make check-flatpak-source-tree - Shellcheck and self-test the git-visible source staging of flatpak/flatpak-install
 #   make cominotti-flatpak-repo - Build signed Cominotti Flatpak repository artifacts
 #   make verify-cominotti-pages-limits - Verify generated artifacts fit Cloudflare Pages
 #   make verify-flathub-domain - Verify cominotti.dev is ready for Flathub app verification
@@ -93,10 +95,10 @@
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: fmt build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke kani proof-strength proof-strength-list check-kani-shards check-settings-writes check-font-zoom-registration check-thresholds formal-evaluation check-widget-shards check-temp-scope test-widget test-widget-headless test-widget-shard test-search-retirement-release test-workspace-row-states automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke smoke-read-faults-build visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke responsiveness-build responsiveness-smoke check-responsiveness-lane check-agent-helpers mutants-smoke mutants-diff mutants-full mutants-list composition-hold-build \
-       check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-flatpak-ci-builds check-explicit-simd check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy check-cargo-public-api-install check-terminology check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory gtk-axioms gtk-axiom-sample gtk-axioms-runtimes check-gtk-axioms automation-client-self-test check-policy lint-advisory sonar-local check check-agent-skills check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
+.PHONY: fmt build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke kani proof-strength proof-strength-list check-kani-shards check-settings-writes check-font-zoom-registration check-signal-connections check-thresholds formal-evaluation check-widget-shards check-temp-scope test-widget test-widget-headless test-widget-shard test-search-retirement-release test-workspace-row-states build-cache-prune check-build-cache-helpers check-rustc-frontend-threads check-precommit-scope pre-commit-docs automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke smoke-read-faults-build visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke responsiveness-build responsiveness-smoke check-responsiveness-lane check-agent-helpers mutants-smoke mutants-diff mutants-full mutants-list composition-hold-build \
+       check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-flatpak-ci-builds check-explicit-simd check-session-hygiene check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy check-cargo-public-api-install check-terminology check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory gtk-axioms gtk-axiom-sample gtk-axioms-runtimes check-gtk-axioms automation-client-self-test check-policy lint-advisory sonar-local check check-agent-skills check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
-       meson-build meson-test flatpak-deps flatpak flatpak-install cargo-sources update-deps-cooldown verify-flatpak-identity test-flatpak-identity-verifier test-flatpak-install-origin test-dev-desktop-staging \
+       meson-build meson-test flatpak-deps flatpak flatpak-install cargo-sources update-deps-cooldown verify-flatpak-identity test-flatpak-identity-verifier test-flatpak-install-origin check-flatpak-source-tree test-dev-desktop-staging \
        flathub-manifest verify-flathub-manifest verify-flathub-domain \
        cominotti-flatpak-repo verify-cominotti-flatpak-repo verify-cominotti-pages-limits cominotti-flatpak-smoke test-cominotti-flatpak-repo \
        test-release-helper test-flathub-manifest release release-bump \
@@ -187,6 +189,10 @@ KANI_MEASURE ?=
 # `make check-kani-shards` enforces. `none` opts out; on CI without a systemd
 # user manager the run is uncapped.
 KANI_MEMORY_MAX ?= 16G
+# Kani's compile phase keeps the 4 jobs its memory cap was sized for:
+# heavy.sh gives a command alone on the machine up to 16 (build.md,
+# "Compiler parallelism"), and every job is a kani-compiler process.
+KANI_BUILD_JOBS ?= 4
 # Proof-strength lane (scripts/proof-strength.py): Kani harnesses as a mutation
 # oracle, beside cargo-mutants' tests arm. LOCAL by default; see
 # docs/mutation-testing.md. MODULE is an ORACLES path of scripts/kani-shards.py
@@ -215,28 +221,67 @@ WIDGET_SHARD ?= all
 # durations (`widget-shards.py run --measure`).
 WIDGET_MEASURE ?=
 
-# Local cargo-mutants parallelism. Memory, not cores, bounds it: every
-# cargo-mutants job is a full cargo build plus nextest processes, and the whole
-# run executes inside one MUTANTS_MEMORY_MAX scope (scripts/with-memory-cap.sh,
-# no swap), admitted into the host-wide user-lushtext-heavy.slice (nested
-# under the user manager's user.slice, so it inherits the toolboxes' CPU
-# policy). Three jobs of four build jobs and four test threads fit a 36G scope
-# and keep jobs x build-jobs near the 16-core affinity; on 2026-10-20 runs at 6-8 build jobs and 8-12 test
-# threads inside a 12G cap were OOM-killed (a mutant whose test is killed reads
-# as caught, so such a run is discarded). CI lanes call scripts/run-mutants.sh
-# directly and leave MUTANTS_JOBS unset, so the sharded small runners keep the
-# serial default.
+# The repository's build cache root (scripts/build-cache.sh, the only place it
+# is computed): this checkout's directory there, resolved without creating it.
+# Recursively expanded, so only the recipes that use it run the helper; those
+# that write there call `./scripts/build-cache.sh checkout` first.
+BUILD_CACHE_CHECKOUT = $(shell ./scripts/build-cache.sh checkout-path)
+
+# Local cargo-mutants runs (design D2 of reduce-build-disk-writes): mirror mode.
+# The checkout's files are synced into MUTANTS_LOCAL_JOBS slots of a host-wide
+# pool (`scripts/build-cache.sh root`/mutants, MUTANTS_POOL_SIZE, default 3),
+# and each slot runs `cargo mutants --in-place --shard i/N` with its own fixed
+# target and build dirs (incremental kept: design D3) and workspace crates
+# kept out of sccache. Warm slots rebuild only what changed and leave nothing behind;
+# copy mode cold-built one tree per job (5.2 GB written each, measured) and
+# leaked every one into ~/.cache/cargo-build. A run that finds no free slot
+# exits 75 and names the holders instead of waiting. Memory, not cores, bounds
+# the slot count: every slot is a full cargo build plus nextest processes, and
+# the whole run executes inside one MUTANTS_MEMORY_MAX scope
+# (scripts/with-memory-cap.sh, no swap), admitted into the host-wide
+# user-lushtext-heavy.slice (nested under the user manager's user.slice, so it
+# inherits the toolboxes' CPU policy). Three slots of four build jobs and four test threads
+# fit a 36G scope and keep slots x build-jobs near the 16-core affinity; on
+# 2026-10-20 copy-mode runs at 6-8 build jobs and 8-12 test threads inside a
+# 12G cap were OOM-killed. A runaway TEST is stopped alone by the per-test
+# address-space limit below. CI lanes call scripts/run-mutants.sh directly in
+# copy mode (ci-pr, ci-full), so the sharded small runners are unchanged.
 MUTANTS_LOCAL_JOBS ?= 3
 MUTANTS_LOCAL_TEST_THREADS ?= 4
 MUTANTS_LOCAL_BUILD_JOBS ?= 4
 MUTANTS_MEMORY_MAX ?= 36G
-MUTANTS_LOCAL_PARALLELISM = MUTANTS_JOBS=$(MUTANTS_LOCAL_JOBS) MUTANTS_TEST_THREADS=$(MUTANTS_LOCAL_TEST_THREADS) MUTANTS_BUILD_JOBS=$(MUTANTS_LOCAL_BUILD_JOBS)
+# Per-test address-space limit (scripts/test-address-space-runner.sh, design
+# D5), for the mirror slots and the proof-strength tests arm: twice the
+# smallest power-of-two GiB at which the unmutated baselines pass, at least
+# 4 GiB. Measured 2026-11-15 in a slot: `cargo nextest run --workspace` (2462
+# tests) and the same with lushtext-core/property-tests (2557) both pass at
+# 2 GiB, the first size tried, so the default is 4G; a 64M limit fails the
+# listing pass, proving the runner is applied. It stops the recorded 15 GB
+# list_budget runaway. Details: evidence/address-space.md of
+# reduce-build-disk-writes. `none` disables it.
+LUSHTEXT_TEST_ADDRESS_SPACE ?= 4G
+export LUSHTEXT_TEST_ADDRESS_SPACE
+MUTANTS_LOCAL_PARALLELISM = MUTANTS_MIRROR=1 MUTANTS_LOCAL_JOBS=$(MUTANTS_LOCAL_JOBS) MUTANTS_TEST_THREADS=$(MUTANTS_LOCAL_TEST_THREADS) MUTANTS_BUILD_JOBS=$(MUTANTS_LOCAL_BUILD_JOBS)
 
 FLATPAK_REMOTE ?= flathub
 FLATPAK_REMOTE_URL ?= https://dl.flathub.org/repo/flathub.flatpakrepo
-FLATPAK_BUILD_DIR := build-flatpak
+# flatpak-builder's state dir holds the whole release Cargo build (it once
+# reached 97 GB in the checkout's .flatpak-builder/, snapshotted and copied by
+# cargo-mutants), so it and the app dir live in this checkout's build-cache
+# directory, on one mount: flatpak-builder hardlinks between them (design D7).
+FLATPAK_STATE_DIR ?= $(BUILD_CACHE_CHECKOUT)/flatpak-builder
+FLATPAK_BUILD_DIR ?= $(BUILD_CACHE_CHECKOUT)/flatpak-app
 FLATPAK_MANIFEST := build-aux/dev.cominotti.lushtext.Flatpak.json
-FLATPAK_BUILDER_FLAGS := --disable-rofiles-fuse --force-clean --user
+# `make flatpak` and `make flatpak-install` build a staged copy of the
+# checkout's git-visible tree (tracked files as on disk plus untracked,
+# non-ignored ones), never the checkout itself: the manifest's `dir` source
+# copies everything under `..`, ignored files included, so `target/`,
+# mutation output or an unreadable `.claude/handoffs/` directory became build
+# input (scripts/flatpak-source-tree.sh). The staged manifest is the same file.
+FLATPAK_SOURCE_DIR ?= $(BUILD_CACHE_CHECKOUT)/flatpak-source
+FLATPAK_STAGED_MANIFEST = $(FLATPAK_SOURCE_DIR)/tree/$(FLATPAK_MANIFEST)
+FLATPAK_STAGE_SOURCE = ./scripts/flatpak-source-tree.sh stage . "$(FLATPAK_SOURCE_DIR)" >/dev/null
+FLATPAK_BUILDER_FLAGS = --disable-rofiles-fuse --force-clean --user --state-dir="$(FLATPAK_STATE_DIR)"
 FLATPAK_BUILDER_DEPS_FLAGS := --assumeyes --install-deps-from=$(FLATPAK_REMOTE)
 FLATHUB_MANIFEST_OUT_DIR ?= build-aux/flathub
 FLATHUB_MANIFEST_COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
@@ -352,10 +397,14 @@ fuzz-smoke:
 # Every `#[kani::proof]` harness in the crates that own checked code. Fails when
 # the installed Kani is not the pinned version or when any harness fails;
 # `should_panic` harnesses count as passing only when Kani finds their
-# documented counterexample.
+# documented counterexample. Kani's units live in the build dir's own
+# target-triple tree, which no other build uses, so incremental compilation is
+# off for them (design D3 of reduce-build-disk-writes: 22 MB of incremental
+# cache per gtk-lush-widgets compile, 355 MB per lushtext-core one, for a
+# 12% faster rebuild).
 kani:
 	@set -eu; $(KANI_VERSION_GUARD); \
-	./scripts/with-memory-cap.sh --address-space "$(KANI_MEMORY_MAX)" ./scripts/kani-shards.py run "$(KANI_SHARD)" --target-dir "$(KANI_TARGET_DIR)" $(if $(KANI_MEASURE),--measure "$(KANI_MEASURE)")
+	CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=$(KANI_BUILD_JOBS) ./scripts/with-memory-cap.sh --address-space "$(KANI_MEMORY_MAX)" ./scripts/kani-shards.py run "$(KANI_SHARD)" --target-dir "$(KANI_TARGET_DIR)" $(if $(KANI_MEASURE),--measure "$(KANI_MEASURE)")
 
 # The pinned-Kani guard shared by the Kani and proof-strength lanes.
 KANI_VERSION_GUARD = installed=$$(cargo kani --version 2>/dev/null | sed -n 's/^Kani Rust Verifier \([0-9.]*\).*/\1/p' | head -n 1 || true); \
@@ -403,6 +452,19 @@ check-temp-scope:
 	@echo "Checking the temporary-file scope..."
 	$(TEMP_SCOPE) --self-test
 
+# Only the gtk-lush-proof-harness session helper starts a private headless
+# session (quiet-headless-session-services): no other tracked shell, Makefile,
+# workflow, container-build, Python or Rust code may name dbus-run-session,
+# dbus-daemon, dbus-launch, mutter, pipewire, pipewire-pulse or wireplumber
+# outside the benign contexts, copy the shared session-warning family, or let
+# the helper's quiet configuration drift. Self-tested failing-first, then the
+# real scan of the tracked tree, which fails on any finding.
+check-session-hygiene:
+	@echo "Checking that headless sessions start only through the session helper..."
+	./scripts/check-session-hygiene.py --self-test
+	./scripts/check-session-hygiene.py
+	python3 -I ./scripts/smoke_runtime_dir.py --self-test
+
 # Every LushText GSettings write and the one application settings instance
 # live in ui/settings_writes.rs (bound-window-construction-dispatch).
 check-settings-writes:
@@ -424,6 +486,15 @@ check-font-zoom-registration:
 	@echo "Checking that monospace widgets follow the editor font..."
 	./scripts/check-font-zoom-registration.py --self-test
 	./scripts/check-font-zoom-registration.py
+
+# Every string-named signal connect or emit in lushtext-core goes through
+# ui/signal_connect.rs, which checks the declared return type when the
+# handler is connected (`fix-extend-selection-abort`). Tests and GTK axiom
+# probes are outside its scope.
+check-signal-connections:
+	@echo "Checking that string-named signal connections check their return type..."
+	./scripts/check-signal-connections.py --self-test
+	./scripts/check-signal-connections.py
 
 # The shared-machine agent helpers (scripts/heavy.sh, measure.sh, wait-for.sh):
 # lock protocol, writer preference, exit-status and signal propagation,
@@ -449,6 +520,49 @@ check-agent-helpers:
 	LUSHTEXT_AGENT_LOCK_HELD=shared:$$$$ LUSHTEXT_MEMORY_CAP_KIB=1 LUSHTEXT_ADMISSION_NOWAIT=1 ./scripts/measure.sh --self-test
 	LUSHTEXT_AGENT_LOCK_HELD=exclusive:$$$$ ./scripts/wait-for.sh --self-test
 	./scripts/ci-image-widget-test.sh --self-test
+
+# The build-cache helpers of reduce-build-disk-writes: the cache root
+# (scripts/build-cache.sh, with its three text audits), the mutation slots'
+# sync and merge, the per-test address-space runner, the docs-only pre-commit
+# scope, the proof-strength relocation, and run-mutants.sh's mirror mode
+# (against a stub cargo). No cargo, temporary caches only.
+# The parallel front-end rustc-wrapper heavy.sh installs: shellcheck, its
+# fake-compiler self-test (only the checkout's own unoptimized units, scoped
+# RUSTC_BOOTSTRAP, the chain to the next wrapper, every passthrough case) and
+# the next-wrapper resolver's self-test.
+check-rustc-frontend-threads:
+	@echo "Checking the rustc front-end threads wrapper..."
+	@if command -v shellcheck >/dev/null 2>&1; then \
+		shellcheck -x scripts/rustc-frontend-threads.sh scripts/test-rustc-frontend-threads.sh; \
+	else \
+		echo "shellcheck not installed; skipping the lint half"; \
+	fi
+	$(TEMP_SCOPE) rustc-frontend-threads -- ./scripts/test-rustc-frontend-threads.sh
+	python3 -I ./scripts/next-rustc-wrapper.py --self-test
+
+check-build-cache-helpers:
+	@echo "Checking the build-cache helpers..."
+	@if command -v shellcheck >/dev/null 2>&1; then \
+		shellcheck -x scripts/build-cache.sh scripts/test-address-space-runner.sh scripts/rustc-passthrough.sh scripts/run-mutants.sh .githooks/pre-commit; \
+	else \
+		echo "shellcheck not installed; skipping the lint half"; \
+	fi
+	./scripts/build-cache.sh --self-test
+	./scripts/build-cache.sh audit
+	PYTHONDONTWRITEBYTECODE=1 python3 -B ./scripts/mutants-mirror.py --self-test
+	./scripts/test-address-space-runner.sh --self-test
+	PYTHONDONTWRITEBYTECODE=1 python3 -B ./scripts/precommit-scope.py --self-test
+	PYTHONDONTWRITEBYTECODE=1 python3 -B ./scripts/proof-strength.py --self-test
+	./scripts/run-mutants.sh --self-test
+
+# No Rust build input is on the docs-only commit allowlist (.githooks/pre-commit).
+check-precommit-scope:
+	@echo "Checking the docs-only pre-commit allowlist against Rust build inputs..."
+	PYTHONDONTWRITEBYTECODE=1 python3 -B ./scripts/precommit-scope.py check-includes
+
+# Remove the build-cache directories of checkouts that no longer exist.
+build-cache-prune:
+	./scripts/build-cache.sh prune
 
 # The GTK Lush API advisory's cargo-public-api install (restore-main-ci D3):
 # checksum, the one reviewed lockfile override, and the override's retirement.
@@ -642,17 +756,17 @@ end-user-smoke: automation-smoke builder-diagnostics-smoke visual-geometry-smoke
 
 # Small mutation pass for checking cargo-mutants tooling and timeout behavior.
 mutants-smoke:
-	@echo "Running cargo-mutants smoke scope (jobs=$(MUTANTS_LOCAL_JOBS), build-jobs=$(MUTANTS_LOCAL_BUILD_JOBS), test-threads=$(MUTANTS_LOCAL_TEST_THREADS))..."
+	@echo "Running cargo-mutants smoke scope (slots=$(MUTANTS_LOCAL_JOBS), build-jobs=$(MUTANTS_LOCAL_BUILD_JOBS), test-threads=$(MUTANTS_LOCAL_TEST_THREADS))..."
 	$(MUTANTS_LOCAL_PARALLELISM) ./scripts/with-memory-cap.sh "$(MUTANTS_MEMORY_MAX)" ./scripts/run-mutants.sh smoke
 
 # Mutation-test the current diff against origin/main.
 mutants-diff:
-	@echo "Running cargo-mutants against changed code (jobs=$(MUTANTS_LOCAL_JOBS), build-jobs=$(MUTANTS_LOCAL_BUILD_JOBS), test-threads=$(MUTANTS_LOCAL_TEST_THREADS))..."
+	@echo "Running cargo-mutants against changed code (slots=$(MUTANTS_LOCAL_JOBS), build-jobs=$(MUTANTS_LOCAL_BUILD_JOBS), test-threads=$(MUTANTS_LOCAL_TEST_THREADS))..."
 	$(MUTANTS_LOCAL_PARALLELISM) ./scripts/with-memory-cap.sh "$(MUTANTS_MEMORY_MAX)" ./scripts/run-mutants.sh diff
 
 # Mutation-test the configured deterministic scope.
 mutants-full:
-	@echo "Running configured cargo-mutants scope (jobs=$(MUTANTS_LOCAL_JOBS), build-jobs=$(MUTANTS_LOCAL_BUILD_JOBS), test-threads=$(MUTANTS_LOCAL_TEST_THREADS))..."
+	@echo "Running configured cargo-mutants scope (slots=$(MUTANTS_LOCAL_JOBS), build-jobs=$(MUTANTS_LOCAL_BUILD_JOBS), test-threads=$(MUTANTS_LOCAL_TEST_THREADS))..."
 	$(MUTANTS_LOCAL_PARALLELISM) ./scripts/with-memory-cap.sh "$(MUTANTS_MEMORY_MAX)" ./scripts/run-mutants.sh full
 
 # List configured mutants without running tests.
@@ -917,7 +1031,7 @@ gtk-lush-public-api-advisory:
 gtk-lush-api-advisory: gtk-lush-semver-advisory gtk-lush-public-api-advisory
 
 # Aggregate policy target for fast audits that sit beside rustfmt and Clippy.
-check-policy: check-filesystem-boundary check-temp-scope test-flatpak-install-origin check-agent-helpers check-cargo-public-api-install check-settings-writes check-font-zoom-registration check-thresholds check-responsiveness-lane check-kani-shards check-widget-shards check-gtk-axioms check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-flatpak-ci-builds check-explicit-simd check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test check-terminology
+check-policy: check-filesystem-boundary check-temp-scope check-rustc-frontend-threads test-flatpak-install-origin check-flatpak-source-tree check-agent-helpers check-build-cache-helpers check-precommit-scope check-session-hygiene check-cargo-public-api-install check-settings-writes check-font-zoom-registration check-signal-connections check-thresholds check-responsiveness-lane check-kani-shards check-widget-shards check-gtk-axioms check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-flatpak-ci-builds check-explicit-simd check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test check-terminology
 
 # Workspace folder-set terminology guard.
 # Runs in the local gate as well as CI because it scans resources, docs, and
@@ -941,6 +1055,11 @@ sonar-local:
 
 # Repo pre-commit gate
 pre-commit: check-fmt check-clippy check-policy
+
+# The pre-commit hook's gate for a docs-only commit (scripts/precommit-scope.py
+# docs-only): `pre-commit` minus Clippy, which no allowlisted path can affect
+# (`make check-precommit-scope`). `pre-commit` and `check` keep Clippy.
+pre-commit-docs: check-fmt check-policy
 
 # Lint + format + fast policy check
 check: pre-commit
@@ -1006,12 +1125,15 @@ flatpak-deps:
 	@echo "Ensuring Flathub remote is available for user Flatpak builds..."
 	flatpak remote-add --if-not-exists --user $(FLATPAK_REMOTE) $(FLATPAK_REMOTE_URL)
 	@echo "Installing Flatpak runtime dependencies from $(FLATPAK_REMOTE)..."
+	./scripts/build-cache.sh checkout >/dev/null
 	flatpak-builder $(FLATPAK_BUILDER_FLAGS) $(FLATPAK_BUILDER_DEPS_FLAGS) --install-deps-only $(FLATPAK_BUILD_DIR) $(FLATPAK_MANIFEST)
 
 # Flatpak build (sets up missing runtime/SDK deps from Flathub)
 flatpak: flatpak-deps
 	@echo "Building Flatpak..."
-	flatpak-builder $(FLATPAK_BUILDER_FLAGS) $(FLATPAK_BUILD_DIR) $(FLATPAK_MANIFEST)
+	./scripts/build-cache.sh checkout >/dev/null
+	$(FLATPAK_STAGE_SOURCE)
+	flatpak-builder $(FLATPAK_BUILDER_FLAGS) $(FLATPAK_BUILD_DIR) $(FLATPAK_STAGED_MANIFEST)
 
 # Flatpak build and install into the user installation.
 #
@@ -1029,9 +1151,11 @@ flatpak: flatpak-deps
 # A failed build touches no remote.
 flatpak-install: flatpak-deps
 	@echo "Building and installing Flatpak..."
+	./scripts/build-cache.sh checkout >/dev/null
+	$(FLATPAK_STAGE_SOURCE)
 	repo="$$(./scripts/flatpak-install-origin.sh path)" && \
 	./scripts/flatpak-install-origin.sh install "$$repo" "dev.cominotti.lushtext/$$(flatpak --default-arch)/master" -- \
-		flatpak-builder $(FLATPAK_BUILDER_FLAGS) --repo="$$repo" $(FLATPAK_BUILD_DIR) $(FLATPAK_MANIFEST)
+		flatpak-builder $(FLATPAK_BUILDER_FLAGS) --repo="$$repo" $(FLATPAK_BUILD_DIR) $(FLATPAK_STAGED_MANIFEST)
 
 # Verify the installed Flatpak export is the active production desktop identity
 verify-flatpak-identity:
@@ -1042,6 +1166,19 @@ verify-flatpak-identity:
 test-flatpak-identity-verifier:
 	@echo "Testing Flatpak identity verifier..."
 	$(TEMP_SCOPE) flatpak-identity-verifier -- ./scripts/test-flatpak-identity-verifier.sh
+
+# The git-visible source staging of flatpak and flatpak-install: shellcheck
+# plus a fixture self-test (dirty edits, deletions, symlinks, modes, ignored
+# and unreadable directories, and the refusals that protect directories the
+# script does not own)
+check-flatpak-source-tree:
+	@echo "Checking the Flatpak source staging..."
+	@if command -v shellcheck >/dev/null 2>&1; then \
+		shellcheck -x scripts/flatpak-source-tree.sh; \
+	else \
+		echo "shellcheck not installed; skipping the lint half"; \
+	fi
+	$(TEMP_SCOPE) flatpak-source-tree -- ./scripts/flatpak-source-tree.sh --self-test
 
 # The install-origin guard of flatpak-install, against real flatpak in a
 # private FLATPAK_USER_DIR (prints SKIP: without flatpak, ostree or flock)
@@ -1218,6 +1355,7 @@ help:
 	@echo "  check-flatpak-ci-builds Keep every CI Flatpak build on the shared composite action"
 	@echo "  check-explicit-simd Enforce the explicit-SIMD policy (allowlist, no CPU flags, memchr std)"
 	@echo "  check-workflow-boundaries Enforce workflow policy purity, mutation reach, and matrix roles"
+	@echo "  check-signal-connections Keep string-named signal connects/emits on ui/signal_connect.rs (return type checked at connect time)"
 	@echo "  check-accessibility-policy Enforce accessibility helper, matrix, and current-tree guardrails"
 	@echo "  check-visual-proof-policy Require visual geometry proof for local visual-sensitive changes"
 	@echo "  check-gtk-lush-policy Verify GTK Lush family scaffolding and dependency direction"
@@ -1266,8 +1404,14 @@ help:
 	@echo "  mutants-diff Changed-code mutation against origin/main"
 	@echo "  mutants-full Configured deterministic mutation scope"
 	@echo "  mutants-list List configured mutants without running tests"
+	@echo "  build-cache-prune Remove build-cache directories of checkouts that no longer exist"
+	@echo "  check-build-cache-helpers Self-test the build-cache, mutation-slot, address-space and pre-commit-scope helpers"
+	@echo "  check-rustc-frontend-threads Self-test heavy.sh's parallel front-end rustc-wrapper and its next-wrapper resolver"
+	@echo "  check-precommit-scope No Rust build input is on the docs-only commit allowlist"
 	@echo "  pre-commit   Repo pre-commit gate (fmt + all-feature clippy + policy audits)"
+	@echo "  pre-commit-docs The hook's docs-only gate (fmt + policy audits, no Clippy)"
 	@echo "  check-policy Fast policy audits, including filesystem and Blueprint checks"
+	@echo "  check-session-hygiene Only the session helper starts headless sessions"
 	@echo "  check-gtk-lush-policy Verify GTK Lush family scaffolding and dependency direction"
 	@echo "  check-gtk-lush-adoption Run adoption lab, stock fixture, and matrix checks"
 	@echo "  gtk-lush-adoption-lab Build/test the maintained GTK Lush adoption lab"

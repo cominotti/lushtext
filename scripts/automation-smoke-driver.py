@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 from smoke_runtime_dir import cleanup_runtime_root, create_runtime_root
+from smoke_session import SESSION_HYGIENE_EXIT_CODE, check_tools, compositor_command, session_command
 from smoke_warning_classifiers import is_benign_session_noise
 
 
@@ -419,9 +420,16 @@ def validate_outer_args(args: argparse.Namespace) -> None:
         raise RuntimeError("Missing /usr/bin/python3")
 
 
+# The automation lane takes no screenshots: no media, portals allowed.
+SESSION_PROFILE = "plain"
+
+
 def ensure_outer_tools() -> None:
-    for command in ("dbus-run-session", "gdbus", "gsettings", "mutter"):
+    for command in ("gdbus", "gsettings"):
         require_command(command)
+    unavailable = check_tools(SESSION_PROFILE)
+    if unavailable is not None:
+        raise RuntimeError(unavailable)
     result = subprocess.run(
         [str(SYSTEM_PYTHON), "-c", "import gi"],
         check=False,
@@ -487,7 +495,7 @@ def outer_run(args: argparse.Namespace) -> int:
 
 def run_session(args: argparse.Namespace, env: dict[str, str]) -> int:
     manifest = ScenarioManifest(args.artifact_dir)
-    manifest.reset(args, env, launch_mode="dbus-run-session+headless-mutter")
+    manifest.reset(args, env, launch_mode="headless-session-plain+compositor")
     fixture = Path(env["LUSHTEXT_AUTOMATION_SMOKE_FILE"])
     manifest.record_fixture(
         name="file-backed search fixture",
@@ -497,19 +505,24 @@ def run_session(args: argparse.Namespace, env: dict[str, str]) -> int:
     )
 
     log_path = args.artifact_dir / "logs/dbus-session.log"
-    command = [
-        "dbus-run-session",
-        "--",
-        str(SYSTEM_PYTHON),
-        str(SCRIPT_PATH),
-        *child_cli_args(args, "internal-run"),
-    ]
+    command = session_command(
+        SESSION_PROFILE,
+        [str(SYSTEM_PYTHON), str(SCRIPT_PATH), *child_cli_args(args, "internal-run")],
+        log_dir=args.artifact_dir / "logs/session-hygiene",
+    )
     with (
         manifest.step("launch private D-Bus session", "launch", artifacts=[log_path]),
         log_path.open("w", encoding="utf-8") as log,
     ):
         result = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT)
 
+    if result.returncode == SESSION_HYGIENE_EXIT_CODE:
+        tail_log(log_path, 160, sys.stderr)
+        manifest.complete(
+            "failed",
+            reason="SESSION-HYGIENE: the private session touched the host; see logs/session-hygiene",
+        )
+        return result.returncode
     if result.returncode != 0:
         tail_log(log_path, 160, sys.stderr)
         manifest.complete("failed", reason=f"child process exited with status {result.returncode}")
@@ -586,18 +599,9 @@ def internal_run(args: argparse.Namespace) -> int:
         }
     )
 
-    command = [
-        "mutter",
-        "--headless",
-        "--wayland",
-        "--no-x11",
-        "--virtual-monitor",
-        f"{WIDTH}x{HEIGHT}",
-        "--",
-        str(SYSTEM_PYTHON),
-        str(SCRIPT_PATH),
-        *child_cli_args(args, "mutter-child"),
-    ]
+    command = compositor_command(
+        WIDTH, HEIGHT, [str(SYSTEM_PYTHON), str(SCRIPT_PATH), *child_cli_args(args, "mutter-child")]
+    )
     log_path = artifact_dir / "logs/mutter-child.log"
     with (
         manifest.step("launch headless Mutter compositor", "launch", artifacts=[log_path]),
@@ -606,7 +610,7 @@ def internal_run(args: argparse.Namespace) -> int:
         result = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT)
     print(log_path.read_text(encoding="utf-8", errors="replace"))
     if result.returncode != 0:
-        manifest.complete("failed", reason=f"mutter child exited with status {result.returncode}")
+        manifest.complete("failed", reason=f"the compositor child exited with status {result.returncode}")
     return result.returncode
 
 

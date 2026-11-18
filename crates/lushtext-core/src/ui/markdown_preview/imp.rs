@@ -262,6 +262,10 @@ pub struct LushtextMarkdownPreview {
     /// The timed pass catches preview shell allocations that settle just after
     /// idle callbacks while still letting newer refresh requests replace it.
     pub(super) code_block_timeout_source_id: RefCell<Option<glib::SourceId>>,
+    /// The text view's horizontal adjustment observer that repairs
+    /// code-block widths after the text view's width changes; dropping it
+    /// disconnects it.
+    pub(super) code_block_width_observer: RefCell<Option<gtk_lush_viewport::ViewportObserver>>,
     /// One-shot callbacks waiting for the current deferred repair sequence.
     ///
     /// Window-level visual readiness uses this to avoid reporting ready before
@@ -377,7 +381,31 @@ impl ObjectImpl for LushtextMarkdownPreview {
 
         // Code blocks are embedded as child-anchor widgets, so they need to
         // follow the final text-view column width rather than the outer box.
-        for property_name in ["width", "left-margin", "right-margin"] {
+        // The width itself is observed through the text view's horizontal
+        // adjustment, whose page size GTK sets from the text view's allocated
+        // width: this `GtkBox` subclass is allocated by its `GtkBoxLayout`,
+        // which calls no `size_allocate` override, and `GtkWidget` has no
+        // `width` property to notify (`widget-wiring.md`, "Size-Dependent
+        // Constraints"). The adjustment changes inside the text view's
+        // allocation, so the repair runs from the deferred passes only.
+        let obj_weak = self.obj().downgrade();
+        let width_observer = gtk_lush_viewport::ViewportObserver::for_scrollable(
+            &*self.text_view,
+            move |change| {
+                if change.axis() == gtk_lush_viewport::ViewportAxis::Horizontal
+                    && let Some(obj) = obj_weak.upgrade()
+                {
+                    obj.queue_code_block_width_refresh_after_allocation();
+                }
+            },
+            |_| {},
+        );
+        debug_assert!(
+            width_observer.is_some(),
+            "the template's scrolled window gives the preview text view its adjustments"
+        );
+        self.code_block_width_observer.replace(width_observer);
+        for property_name in ["left-margin", "right-margin"] {
             let obj_weak = self.obj().downgrade();
             self.text_view
                 .connect_notify_local(Some(property_name), move |_, _| {
@@ -413,6 +441,7 @@ impl ObjectImpl for LushtextMarkdownPreview {
             snapshot.dispose();
         }
         self.global_signals.clear();
+        self.code_block_width_observer.take();
         if let Some(source_id) = self.code_block_idle_source_id.take() {
             source_id.remove();
         }
@@ -425,12 +454,7 @@ impl ObjectImpl for LushtextMarkdownPreview {
     }
 }
 
-impl WidgetImpl for LushtextMarkdownPreview {
-    fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
-        self.parent_size_allocate(width, height, baseline);
-        self.obj().queue_code_block_width_refresh();
-    }
-}
+impl WidgetImpl for LushtextMarkdownPreview {}
 impl BoxImpl for LushtextMarkdownPreview {}
 
 impl LushtextMarkdownPreview {
