@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- A124 and A125 probes and samples (`slice-large-directory-collapse` D25):
+  a bound-row removal run from a `G_PRIORITY_HIGH_IDLE` source outside any
+  frame creates and binds the entering rows inside the splice, leaves them
+  mapped, and the next frame runs no setup or bind; such a source, armed in
+  `after-paint`, in a dispatch while the next frame is due, or in its own
+  dispatch, runs before the next frame and reads the counter of the frame just
+  painted. Fixtures `fixtures::a124` (`idle_removal`, `IdleRemoval`,
+  `REMOVED_ROWS`, with A118's `tree_fixture`) and `fixtures::a125`
+  (`clock_fixture`, `ClockFixture`, `Event`, `read_case`). `RowCounters`
+  gains `binds`, counted by A118's fixture.
 - A127, A128 and A129 probes and samples (`stream-replace-all`): a regex
   `GtkSourceSearchContext::replace_all` expands GRegex references (`\N`,
   `\g<N>`, `\g<name>`, `\g<1>0` as group 1 then `0`) and leaves `$1`

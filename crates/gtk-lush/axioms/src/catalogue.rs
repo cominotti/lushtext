@@ -2003,6 +2003,43 @@ const CATALOGUE: &[Axiom] = &[
         probe: Some(probes::probe_a122),
     },
     Axiom {
+        id: AxiomId::new(124),
+        name: "a124_a_bound_row_removal_from_an_idle_leaves_the_frame_only_layout",
+        statement: "On a mapped, presented GtkListView over a GtkTreeListModel, a removal of \
+                    bound rows run from a one-shot G_PRIORITY_HIGH_IDLE source outside any \
+                    frame clock dispatch creates and binds the entering rows' widgets inside \
+                    the splice, leaves each of them and its list row widget mapped (so with \
+                    accessible hidden false) when the splice returns, and the next frame runs \
+                    no factory setup or bind for them",
+        dependent_designs: &[
+            "slice-large-directory-collapse D25: each bound collapse unit runs in a \
+             step-source dispatch of its own between frames, so the frame after it lays out \
+             that unit's rows and runs no step; D22's hidden rows are re-applied at the end \
+             of the step that created them",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a124),
+    },
+    Axiom {
+        id: AxiomId::new(125),
+        name: "a125_a_high_idle_source_runs_before_the_next_frame",
+        statement: "A one-shot G_PRIORITY_HIGH_IDLE source armed in a frame clock's \
+                    after-paint, in a dispatch that runs while the next frame is already due, or \
+                    in its own dispatch runs before the next frame's before-paint; read inside \
+                    it, gdk_frame_clock_get_frame_counter equals the counter of the frame just \
+                    painted, and it advances only when the next frame starts",
+        dependent_designs: &[
+            "slice-large-directory-collapse D25: the step source is armed by the input, by \
+             each frame's after-paint, by the between-frames idle and by its own dispatch, and \
+             the one-unit-per-frame-interval token reads the frame counter there, outside a \
+             frame dispatch",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a125),
+    },
+    Axiom {
         id: AxiomId::new(127),
         name: "a127_regex_replace_all_expands_gregex_references",
         statement: "With regex enabled, GtkSourceSearchContext::replace_all expands GRegex \

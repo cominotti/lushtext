@@ -142,6 +142,7 @@ pub fn tree_fixture(children: u32, after: u32) -> TreeFixture {
                     label.set_text(&text.string());
                 }
             }
+            counters.binds.set(counters.binds.get() + 1);
             counters.bound.borrow_mut().push(item.downgrade());
         });
     }

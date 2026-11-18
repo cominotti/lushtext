@@ -952,6 +952,19 @@ pub mod a127 {
     pub use crate::probes::a127::{DOCUMENT, EXPANSIONS, PATTERN, regex_search, replace_all_with};
 }
 
+/// The tree list the A124 probe removes bound rows from out of an idle, for
+/// its sample.
+pub mod a124 {
+    pub use crate::probes::a118::{AFTER_ROWS, SMALL_CHILDREN, tree_fixture};
+    pub use crate::probes::a124::{IdleRemoval, REMOVED_ROWS, idle_removal};
+}
+
+/// The ticking widget whose frame clock the A125 probe arms sources around,
+/// for its sample.
+pub mod a125 {
+    pub use crate::probes::a125::{ClockFixture, Event, clock_fixture, read_case};
+}
+
 /// The word-boundary searches the A128 probe compares, for its sample.
 pub mod a128 {
     pub use crate::probes::a128::{
