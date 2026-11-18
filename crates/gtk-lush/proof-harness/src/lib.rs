@@ -3,7 +3,8 @@
 //! Headless GTK proof harness helpers for gtk-rs applications.
 //!
 //! This crate owns the reusable mechanics of a widget-test harness:
-//! private headless Mutter launch, per-test child process isolation (with
+//! the private headless session (the [`session`] module: bus, private system
+//! bus, compositor, quiet media and the runtime guard), per-test child process isolation (with
 //! harness-owned per-test temporary directories),
 //! filter/list handling, bounded retry reporting, and GLib main-loop wait
 //! helpers. Consumer applications keep their own GTK initialization, resource
@@ -19,7 +20,6 @@
 use std::fmt;
 use std::io::{self, Write};
 use std::panic::{self, AssertUnwindSafe};
-use std::path::Path;
 use std::process::{Command, ExitCode};
 use std::time::{Duration, Instant};
 
@@ -27,6 +27,7 @@ use glib::prelude::IsA;
 use gtk4::prelude::GtkWindowExt;
 
 mod scratch;
+pub mod session;
 
 /// Exit code used when the harness itself or a child test fails.
 ///
@@ -223,6 +224,29 @@ pub struct RecommendedEnvironment {
 /// the portal service, a GPU, and — since the input-method entry landed — an
 /// input method.
 ///
+/// The [`session`] helper applies these values to `dbus-run-session` itself,
+/// before the bus starts, so services the bus activates inherit them; a
+/// per-test child only verifies them ([`verify_recommended_environment`]).
+///
+/// # Why `GTK_A11Y=test` and `ADW_DISABLE_PORTAL=1`
+///
+/// GTK 4 ignores `NO_AT_BRIDGE` and activates `org.a11y.Bus` from every client,
+/// and Libadwaita starts `xdg-desktop-portal`, its GTK backend and the document
+/// portal despite `GDK_DEBUG=no-portals`; measured, every widget session did
+/// both. `GTK_A11Y=test` gives each widget a test AT context that keeps its
+/// accessible properties, states and relations queryable and talks to no bus
+/// (`none` would drop the context, and `gtk_test_accessible_has_property`
+/// would then return false). `ADW_DISABLE_PORTAL=1` makes Libadwaita read
+/// GSettings instead of the settings portal.
+///
+/// **A consumer must not announce through the test context.**
+/// `GtkTestATContext` implements no `announce`, so `gtk_accessible_announce`
+/// on a realized widget kills the test process by SIGSEGV (GTK ledger A117,
+/// GTK 4.24.1 and `main`). Route announcements through one helper that skips
+/// the call when the widget's AT context is a `GtkTestATContext` (LushText's
+/// `ui::accessibility::announce`), and do not ask for the context under
+/// `GTK_A11Y=none`, where GTK creates none.
+///
 /// # Why `GTK_IM_MODULE` is on this list
 ///
 /// Mutter's headless session advertises `zwp_text_input_manager_v3`, so GTK
@@ -248,7 +272,7 @@ pub struct RecommendedEnvironment {
 /// not a desktop session, so do not start the client half of a desktop service
 /// against it.* It is not a claim that the underlying GTK race is fixed.
 #[must_use]
-pub const fn recommended_pre_gtk_environment() -> [RecommendedEnvironment; 5] {
+pub const fn recommended_pre_gtk_environment() -> [RecommendedEnvironment; 7] {
     [
         RecommendedEnvironment {
             key: "NO_AT_BRIDGE",
@@ -270,6 +294,14 @@ pub const fn recommended_pre_gtk_environment() -> [RecommendedEnvironment; 5] {
             key: "GTK_IM_MODULE",
             value: "gtk-im-context-simple",
         },
+        RecommendedEnvironment {
+            key: "GTK_A11Y",
+            value: "test",
+        },
+        RecommendedEnvironment {
+            key: "ADW_DISABLE_PORTAL",
+            value: "1",
+        },
     ]
 }
 
@@ -287,7 +319,9 @@ pub fn apply_headless_child_environment(command: &mut Command, config: &HarnessC
 /// The parent process relaunches into a private headless compositor unless the
 /// configured runner environment variable is already present. Inside the
 /// headless session, the parent process lists or filters tests, then spawns a
-/// fresh child process for each selected test.
+/// fresh child process for each selected test. A child runs only inside the
+/// session helper's inner stage (`session::SESSION_ACTIVE_ENV`) and with the
+/// recommended environment; otherwise it fails before GTK initializes.
 // A message, not a bare `#[must_use]`: `ExitCode` is itself `#[must_use]` on
 // newer std (Clippy's `double_must_use`), but not on every toolchain this crate
 // supports, and the message says what the caller owes.
@@ -297,12 +331,26 @@ pub fn run_registered_tests(
     config: &HarnessConfig,
     args: &[String],
 ) -> ExitCode {
+    if let Some(code) = session::run_inner_stage_if_requested() {
+        return code;
+    }
     let selection = TestSelection::from_args(args);
     if !selection.list_mode && std::env::var_os(config.headless_runner_env()).is_none() {
         return run_under_headless_compositor(config, args);
     }
 
     if let Ok(test_name) = std::env::var(config.child_test_env()) {
+        if let Err(outside) = verify_inside_session_in(|key| std::env::var_os(key).is_some()) {
+            eprintln!("{test_name}: {outside}");
+            return ExitCode::from(TEST_FAILURE_EXIT_CODE);
+        }
+        if let Err(missing) = verify_recommended_environment() {
+            eprintln!(
+                "{missing}: the per-test child expects the session launcher to set it \
+                 before the bus starts (gtk_lush_proof_harness::session)"
+            );
+            return ExitCode::from(TEST_FAILURE_EXIT_CODE);
+        }
         return run_single_test(tests, &test_name);
     }
 
@@ -315,35 +363,6 @@ pub fn run_registered_tests(
 }
 
 fn run_under_headless_compositor(config: &HarnessConfig, args: &[String]) -> ExitCode {
-    if let Err(missing) = check_headless_tooling() {
-        eprintln!(
-            "UNSUPPORTED-HOST: missing {missing}; install dbus-run-session and mutter \
-             to run private headless GTK tests"
-        );
-        return ExitCode::from(UNSUPPORTED_HOST_EXIT_CODE);
-    }
-
-    // The PID in the name lets a later run's sweep tell a killed session's
-    // runtime directory from a live one; `TempDir` removes it on every return.
-    let Ok(runtime_dir) = tempfile::Builder::new()
-        .prefix(&format!(
-            "{}{}-",
-            scratch::RUNTIME_DIR_PREFIX,
-            std::process::id()
-        ))
-        .tempdir()
-    else {
-        eprintln!("failed to create private widget-test runtime directory");
-        return ExitCode::from(TEST_FAILURE_EXIT_CODE);
-    };
-    if let Some(owner) = scratch::owner_uid(runtime_dir.path()) {
-        scratch::sweep_stale_scratch(
-            &std::env::temp_dir(),
-            scratch::RUNTIME_DIR_PREFIX,
-            scratch::PidlessEntries::ReclaimWhenIdle,
-            owner,
-        );
-    }
     let monitor = std::env::var(config.headless_monitor_env())
         .unwrap_or_else(|_| config.default_headless_monitor.to_string());
     let Ok(current_exe) = std::env::current_exe() else {
@@ -352,85 +371,76 @@ fn run_under_headless_compositor(config: &HarnessConfig, args: &[String]) -> Exi
     };
 
     eprintln!(
-        "running {} under private mutter --headless session ({monitor}); \
+        "running {} in a private headless session ({monitor}, profile {}); \
          live desktop display is not used",
-        config.runner_label
+        config.runner_label,
+        session::profiles::WIDGET.name
     );
 
-    let mut command = Command::new("dbus-run-session");
-    command
-        .arg("--")
-        .arg("mutter")
-        .arg("--headless")
-        .arg("--wayland")
-        .arg("--no-x11")
-        .arg("--virtual-monitor")
-        .arg(&monitor)
-        .arg("--")
-        .arg(current_exe)
-        .args(args)
-        .env("XDG_RUNTIME_DIR", runtime_dir.path());
-    apply_headless_child_environment(&mut command, config);
+    let mut command = vec![current_exe.into_os_string()];
+    command.extend(args.iter().map(std::ffi::OsString::from));
+    let options =
+        session::SessionOptions::from_profile(session::profiles::WIDGET).with_monitor(monitor);
+    session::run_under_compositor(
+        &options,
+        &command,
+        &[
+            ("GDK_BACKEND", "wayland"),
+            (config.headless_runner_env(), "1"),
+        ],
+        &["DISPLAY", "WAYLAND_DISPLAY"],
+    )
+}
 
-    let status = command.status();
-    scratch::release_session_runtime_dir(runtime_dir);
-    match status {
-        Ok(status) if status.success() => ExitCode::SUCCESS,
-        Ok(status) => status_to_exit_code(status.code()),
-        Err(error) => {
-            eprintln!(
-                "failed to launch private headless test session: {error}; \
-                 install dbus-run-session and mutter"
-            );
-            ExitCode::from(UNSUPPORTED_HOST_EXIT_CODE)
+/// Check that the recommended environment is in place, as the session
+/// launcher sets it; `Err` names the first variable that is missing or wrong.
+///
+/// Only a per-test child calls this: list mode and the relaunching parent run
+/// outside the session by design. A caller's `GSK_RENDERER` is accepted
+/// whatever its value, and `GTK_A11Y` accepts `test` or `none`.
+///
+/// # Errors
+///
+/// Returns the name of the first variable that does not hold its value.
+pub fn verify_recommended_environment() -> Result<(), String> {
+    verify_recommended_environment_in(|key| std::env::var(key).ok())
+}
+
+/// `Err` unless this process runs inside the session helper's inner stage,
+/// the only place that sets `session::SESSION_ACTIVE_ENV`: a per-test child
+/// started any other way (the runner variable set by hand in a desktop
+/// shell) would show its widgets on the caller's display, so it runs nothing.
+fn verify_inside_session_in(is_set: impl Fn(&str) -> bool) -> Result<(), String> {
+    if is_set(session::SESSION_ACTIVE_ENV) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} is not set: a per-test child runs only inside the private headless \
+             session (gtk_lush_proof_harness::session), never on the caller's display",
+            session::SESSION_ACTIVE_ENV
+        ))
+    }
+}
+
+/// [`verify_recommended_environment`] over any variable lookup.
+fn verify_recommended_environment_in(
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<(), String> {
+    for setting in recommended_pre_gtk_environment() {
+        let value = lookup(setting.key);
+        let accepted = match setting.key {
+            "GSK_RENDERER" => value.is_some(),
+            "GTK_A11Y" => session::verdict::gtk_a11y_value_is_accepted(value.as_deref()),
+            _ => value.as_deref() == Some(setting.value),
+        };
+        if !accepted {
+            return Err(format!(
+                "{}={} is not set (found {value:?})",
+                setting.key, setting.value
+            ));
         }
     }
-}
-
-fn check_headless_tooling() -> Result<(), &'static str> {
-    let Some(path) = std::env::var_os("PATH") else {
-        return Err("PATH");
-    };
-    if !command_exists_in_path("dbus-run-session", &path) {
-        return Err("dbus-run-session");
-    }
-    if !command_exists_in_path("mutter", &path) {
-        return Err("mutter");
-    }
     Ok(())
-}
-
-fn command_exists_in_path(command: &str, path: &std::ffi::OsStr) -> bool {
-    std::env::split_paths(path).any(|directory| {
-        let candidate = directory.join(command);
-        is_executable_file(&candidate)
-    })
-}
-
-fn is_executable_file(path: &Path) -> bool {
-    if !path.is_file() {
-        return false;
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        path.metadata()
-            .is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
-    }
-
-    #[cfg(not(unix))]
-    {
-        true
-    }
-}
-
-fn status_to_exit_code(code: Option<i32>) -> ExitCode {
-    ExitCode::from(
-        code.and_then(|value| u8::try_from(value).ok())
-            .unwrap_or(TEST_FAILURE_EXIT_CODE),
-    )
 }
 
 fn list_tests(selected: &[RegisteredTest], terse_list: bool) -> ExitCode {
@@ -673,6 +683,61 @@ mod tests {
 
     fn passing_test() {}
 
+    fn session_environment() -> std::collections::HashMap<&'static str, String> {
+        recommended_pre_gtk_environment()
+            .into_iter()
+            .map(|setting| (setting.key, setting.value.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn a_child_without_the_session_environment_names_the_missing_variable() {
+        assert_eq!(
+            verify_recommended_environment_in(|_| None),
+            Err("NO_AT_BRIDGE=1 is not set (found None)".to_string())
+        );
+        let mut env = session_environment();
+        assert_eq!(
+            verify_recommended_environment_in(|key| env.get(key).cloned()),
+            Ok(())
+        );
+        env.remove("ADW_DISABLE_PORTAL");
+        let error = verify_recommended_environment_in(|key| env.get(key).cloned())
+            .expect_err("a missing ADW_DISABLE_PORTAL must fail");
+        assert!(error.starts_with("ADW_DISABLE_PORTAL=1"), "{error}");
+    }
+
+    #[test]
+    fn a_child_outside_the_session_helper_runs_nothing() {
+        let error = verify_inside_session_in(|_| false)
+            .expect_err("a child without the session marker must refuse");
+        assert!(error.starts_with(session::SESSION_ACTIVE_ENV), "{error}");
+        assert_eq!(
+            verify_inside_session_in(|key| key == session::SESSION_ACTIVE_ENV),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_child_accepts_a_callers_renderer_and_gtk_a11y_none_only() {
+        let mut env = session_environment();
+        env.insert("GSK_RENDERER", "ngl".to_string());
+        env.insert("GTK_A11Y", "none".to_string());
+        assert_eq!(
+            verify_recommended_environment_in(|key| env.get(key).cloned()),
+            Ok(())
+        );
+        env.insert("GTK_A11Y", "atspi".to_string());
+        let error = verify_recommended_environment_in(|key| env.get(key).cloned())
+            .expect_err("GTK_A11Y=atspi must fail in a widget child");
+        assert!(error.starts_with("GTK_A11Y=test"), "{error}");
+        env.remove("GSK_RENDERER");
+        env.insert("GTK_A11Y", "test".to_string());
+        let error = verify_recommended_environment_in(|key| env.get(key).cloned())
+            .expect_err("an unset GSK_RENDERER must fail");
+        assert!(error.starts_with("GSK_RENDERER=cairo"), "{error}");
+    }
+
     #[test]
     fn selection_supports_list_exact_and_skip() {
         let args = vec![
@@ -726,59 +791,22 @@ mod tests {
         // an empty or `wayland` value would re-enable the backend it disables.
         assert_eq!(values[4].key, "GTK_IM_MODULE");
         assert_eq!(values[4].value, "gtk-im-context-simple");
-    }
-
-    #[test]
-    fn headless_tooling_probe_checks_required_commands() {
-        #[cfg(unix)]
-        use std::os::unix::fs::PermissionsExt;
-
-        let tempdir = tempfile::tempdir().expect("tempdir");
-        let dbus = tempdir.path().join("dbus-run-session");
-        let mutter = tempdir.path().join("mutter");
-        std::fs::write(&dbus, "").expect("dbus fixture");
-
-        assert!(!command_exists_in_path(
-            "dbus-run-session",
-            tempdir.path().as_os_str()
-        ));
-        #[cfg(unix)]
-        {
-            let mut permissions = std::fs::metadata(&dbus)
-                .expect("dbus metadata")
-                .permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&dbus, permissions).expect("dbus permissions");
-        }
-        assert!(command_exists_in_path(
-            "dbus-run-session",
-            tempdir.path().as_os_str()
-        ));
-        assert!(!command_exists_in_path(
-            "mutter",
-            tempdir.path().as_os_str()
-        ));
-
-        std::fs::write(&mutter, "").expect("mutter fixture");
-        #[cfg(unix)]
-        {
-            let mut permissions = std::fs::metadata(&mutter)
-                .expect("mutter metadata")
-                .permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&mutter, permissions).expect("mutter permissions");
-        }
-        assert!(command_exists_in_path("mutter", tempdir.path().as_os_str()));
+        // `test`, never `none`: `none` drops the AT context the accessible
+        // state assertions read.
+        assert_eq!((values[5].key, values[5].value), ("GTK_A11Y", "test"));
+        assert_eq!(
+            (values[6].key, values[6].value),
+            ("ADW_DISABLE_PORTAL", "1")
+        );
     }
 
     #[test]
     fn unsupported_host_exit_code_is_distinct_from_test_failure() {
         assert_ne!(UNSUPPORTED_HOST_EXIT_CODE, TEST_FAILURE_EXIT_CODE);
         assert_ne!(UNSUPPORTED_HOST_EXIT_CODE, 0);
-        assert_eq!(status_to_exit_code(Some(0)), ExitCode::from(0));
-        assert_eq!(
-            status_to_exit_code(Some(i32::from(TEST_FAILURE_EXIT_CODE))),
-            ExitCode::from(TEST_FAILURE_EXIT_CODE)
+        assert_ne!(
+            session::SESSION_HYGIENE_EXIT_CODE,
+            UNSUPPORTED_HOST_EXIT_CODE
         );
     }
 

@@ -192,7 +192,8 @@ readiness waits return `ready`, `predicate-timeout`, `unknown-predicate`, or
 `workflow-failure`; action validation distinguishes `unknown-action`,
 `unsupported-action`, and `parameter-mismatch`; artifact review uses
 `artifact-error`, visual-specific failures such as
-`visual-comparison-failed`, `state-mismatch`, and `warning-scan-failed`, or the
+`visual-comparison-failed`, `state-mismatch`, `warning-scan-failed`, and
+`session-hygiene` (the case's private session touched the host), or the
 distinct successful `artifact-skipped` status:
 
 ```sh

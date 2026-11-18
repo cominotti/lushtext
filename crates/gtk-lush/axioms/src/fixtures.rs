@@ -784,7 +784,7 @@ pub mod a94 {
 
 /// The fixture and values the A95 probe drives, for its sample.
 pub mod a95 {
-    pub use crate::probes::a95::{SIZES, time_select_far};
+    pub use crate::probes::a95::{SIZES, SLOW_SIZES, time_select_far};
 }
 
 /// The fixture and values the A96 probe drives, for its sample.
@@ -936,4 +936,13 @@ pub mod a119 {
 pub mod a120 {
     pub use crate::probes::a118::tree_fixture;
     pub use crate::probes::a120::{COLLAPSING_CLASS, COLLAPSING_CSS};
+}
+
+/// The text view whose `extend-selection` the A122 probe emits, for its
+/// sample.
+pub mod a122 {
+    pub use crate::probes::a122::{
+        DOCUMENT, LOCATION_OFFSET, connect_answer, document_view, emit_word_extension,
+    };
+    pub use crate::probes::text::TextViewFixture;
 }

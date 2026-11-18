@@ -2,7 +2,7 @@
 
 //! Widget tests for shared GTK accessibility helpers.
 
-use crate::common::ensure_gtk_init;
+use crate::common::{ensure_gtk_init, present_window};
 use gtk4::prelude::*;
 use lushtext_core::ui::accessibility::{
     self, AnnouncementLane, AnnouncementThrottler, RowAccessibility, test_audit::AccessibleAudit,
@@ -253,6 +253,26 @@ fn test_row_accessibility_helper_applies_and_clears_recycled_metadata() {
         &row,
         gtk4::AccessibleRelation::SetSize
     ));
+}
+
+#[test]
+fn test_announcing_through_a_realized_test_context_is_skipped_not_fatal() {
+    // Ledger A117: GtkTestATContext has no announce vfunc, so a raw
+    // gtk_accessible_announce here would kill the test process.
+    ensure_gtk_init();
+    let window = gtk4::Window::new();
+    window.set_child(Some(&gtk4::Label::new(Some("announcement target"))));
+    present_window(&window);
+    assert_eq!(window.at_context().type_().name(), "GtkTestATContext");
+
+    accessibility::announce(
+        &window,
+        "an announcement with no listener",
+        gtk4::AccessibleAnnouncementPriority::High,
+    );
+    accessibility::announce_with_lane(&window, "a status update", AnnouncementLane::StatusUpdate);
+
+    window.destroy();
 }
 
 #[test]

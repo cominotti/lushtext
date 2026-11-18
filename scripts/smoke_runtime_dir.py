@@ -21,9 +21,39 @@ import time
 from pathlib import Path
 
 
+# The deepest socket a session binds in its runtime directory is the session
+# helper's private system bus, and dbus-daemon refuses a socket path over 99
+# bytes (gtk-lush-proof-harness `DBUS_SOCKET_PATH_MAX`, below the kernel's 107).
+SESSION_DEEPEST_SOCKET = "gtk-lush-session/system-bus"
+DBUS_SOCKET_PATH_MAX = 99
+# Where the root goes when the temp directory is too deep (the harness's
+# `SHORT_RUNTIME_BASE`).
+SHORT_RUNTIME_BASE = "/tmp"
+# `tempfile.mkdtemp` appends eight random characters to the prefix.
+MKDTEMP_SUFFIX_CHARS = 8
+
+
+def runtime_dir_fits_sockets(runtime_dir: Path) -> bool:
+    """Whether a session in runtime_dir can bind its deepest socket."""
+    return len(os.fsencode(str(runtime_dir / SESSION_DEEPEST_SOCKET))) <= DBUS_SOCKET_PATH_MAX
+
+
+def runtime_base(prefix: str, temp_dir: str | None = None) -> str:
+    """The directory to create a runtime root in: the temp directory, unless
+    a runtime directory inside it could not bind the session's sockets.
+
+    A lane runs inside a ``with-temp-scope.sh`` scope, whose ``TMPDIR`` grows
+    with the scope's PID and label, so the check is made per run rather than
+    assumed from the prefix.
+    """
+    base = os.path.realpath(temp_dir or tempfile.gettempdir())
+    probe = Path(base) / (prefix + "X" * MKDTEMP_SUFFIX_CHARS) / "runtime"
+    return base if runtime_dir_fits_sockets(probe) else SHORT_RUNTIME_BASE
+
+
 def create_runtime_root(prefix: str) -> tuple[Path, Path]:
     """Create a short private runtime root and its mode-0700 ``runtime`` dir."""
-    runtime_root = Path(tempfile.mkdtemp(prefix=prefix))
+    runtime_root = Path(tempfile.mkdtemp(prefix=prefix, dir=runtime_base(prefix)))
     runtime_dir = runtime_root / "runtime"
     runtime_dir.mkdir()
     os.chmod(runtime_dir, 0o700)
@@ -98,3 +128,24 @@ def cleanup_runtime_root(runtime_root: Path, artifact_dir: Path) -> str:
         encoding="utf-8",
     )
     return "remove_failed"
+
+
+def _self_test() -> None:
+    """The fit rule at dbus's boundary, and the fallback for a deep TMPDIR."""
+    suffix = "/" + SESSION_DEEPEST_SOCKET
+    fits = "/" + "r" * (DBUS_SOCKET_PATH_MAX - len(suffix) - 1)
+    assert runtime_dir_fits_sockets(Path(fits))
+    assert not runtime_dir_fits_sockets(Path(fits + "r"))
+    # The crash lane's scope, which a 7-digit PID made one byte too long.
+    deep = "/tmp/lt-scope-2366576-crash-recovery-mg9Kpb"
+    assert runtime_base("lt-crash-rt-", deep) == SHORT_RUNTIME_BASE
+    assert runtime_base("lt-crash-rt-", "/tmp") == "/tmp"
+    print("smoke_runtime_dir self-test passed.")
+
+
+if __name__ == "__main__":
+    import sys
+
+    if sys.argv[1:] != ["--self-test"]:
+        raise SystemExit("usage: smoke_runtime_dir.py --self-test")
+    _self_test()

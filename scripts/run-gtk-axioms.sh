@@ -29,7 +29,9 @@
 #       the named samples (an unknown id fails the run), for interleaved
 #       re-test rounds. The sandbox has no session bus, so a sample whose
 #       fixture drives the compositor's RemoteDesktop (A59-A61, A64, A97)
-#       prints `skipped (needs RemoteDesktop): <id>` there (the run sets
+#       prints `skipped (needs RemoteDesktop): <id>` there, and a sample
+#       whose probe reads the session bus (A115, A116) prints
+#       `skipped (needs a session bus): <id>` (the run sets
 #       GTK_LUSH_AXIOMS_SANDBOX=1; the host lane never does). After each SDK
 #       it prints a summary: every sample's verdict or skip reason, and the
 #       SDK's toolkit versions.
@@ -38,17 +40,20 @@
 #       <png> after it settles. Evidence for review only; never committed.
 #   scripts/run-gtk-axioms.sh --self-test
 #       Check the warning classification, the result count (slow and
-#       RemoteDesktop skips) and the --only selection, without GTK.
+#       RemoteDesktop and session-bus skips) and the --only selection, without GTK.
 #
 # Probes and --check samples never touch the developer's live desktop: they run
-# under `dbus-run-session -- mutter --headless`, with the environment of
-# scripts/run-widget-tests.sh.
+# in a private headless session started by scripts/headless-session (the
+# `widget` profile, as scripts/run-widget-tests.sh: private system bus, no
+# media, no accessibility bus, no portals), which fails the run with exit 93
+# and SESSION-HYGIENE: lines if the session touched the host anyway.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXAMPLES_DIR="$REPO_ROOT/crates/gtk-lush/axioms/examples"
 UNSUPPORTED_HOST_EXIT_CODE=77
+HEADLESS_SESSION="$REPO_ROOT/scripts/headless-session"
 MONITOR="${GTK_AXIOMS_MONITOR:-1280x1024}"
 # Any warning or critical is a defect here, as in the widget lane, whatever
 # process or log domain printed it: a GLib-style "** (prog:pid): WARNING **"
@@ -56,10 +61,12 @@ MONITOR="${GTK_AXIOMS_MONITOR:-1280x1024}"
 # Broken pipe, a library's "*** BUG ***" report (pixman's invalid-rectangle
 # line, which bypasses GLib logging), or a runtime directory the session could
 # not remove all fail the lane. The private session's own mutter and dbus-daemon chatter is not ours;
-# BENIGN_NOISE_REGEX names exactly those lines, taken from the widget runner's
-# list of what the same headless session prints on the hosts and CI images.
+# BENIGN_NOISE_REGEX names exactly those lines: the session's own chatter here,
+# and the shared `headless-session-services` family of
+# smoke_warning_classifiers.py (read as POSIX ERE, never copied).
 WARNING_REGEX='(WARNING|CRITICAL|\*\*\* BUG \*\*\*|Broken pipe|cannot remove|^MESA: error:)'
-BENIGN_NOISE_REGEX='(^dbus-daemon\[[0-9]+\]: |^libmutter-Message:|^\*\* Message: .*Obtained a high priority EGL context$|^\*\* \(mutter:[0-9]+\): WARNING \*\*: ([0-9:.]+: )?Skipping layers 1\.\.n of your pipeline since the first layer is sliced\. |^\(mutter:[0-9]+\): mutter-WARNING \*\*: .*Failed to acquire org\.freedesktop\.locale1 proxy: Could not connect: No such file or directory$|^\(mutter:[0-9]+\): libmutter-WARNING \*\*: .*Failed to connect to colord daemon: Could not connect: No such file or directory$)'
+SESSION_SERVICES_REGEX="$(python3 -B "$REPO_ROOT/scripts/smoke_warning_classifiers.py" --print-regex headless-session-services)"
+BENIGN_NOISE_REGEX='(^dbus-daemon\[[0-9]+\]: |^libmutter-Message:|^\*\* Message: .*Obtained a high priority EGL context$|^\*\* \(mutter:[0-9]+\): WARNING \*\*: ([0-9:.]+: )?Skipping layers 1\.\.n of your pipeline since the first layer is sliced\. )|'"$SESSION_SERVICES_REGEX"
 
 # An SDK sandbox gets no D-Bus proxy and no document portal: the sample checks
 # need neither, and each is a Flatpak-side helper racing a sample's exit. With
@@ -71,7 +78,7 @@ BENIGN_NOISE_REGEX='(^dbus-daemon\[[0-9]+\]: |^libmutter-Message:|^\*\* Message:
 SANDBOX_FLAGS=(--no-session-bus --no-a11y-bus --no-documents-portal)
 
 usage() {
-    sed -n '4,41p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '4,43p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 require_command() {
@@ -82,11 +89,14 @@ require_command() {
 }
 
 # The one list of the samples' headless environment: exported on the host,
-# passed as --env flags into an SDK sandbox. A caller's GSK_RENDERER wins.
+# passed as --env flags into an SDK sandbox. A caller's GSK_RENDERER wins. On
+# the host the session helper sets the toolkit entries itself, before the bus
+# starts; the sandbox gets them only from here. `GTK_A11Y=test` keeps each
+# widget's test AT context (accessible state stays queryable) with no bus.
 HEADLESS_ENV=(
     GTK_LUSH_AXIOMS_HEADLESS=1
     NO_AT_BRIDGE=1
-    GTK_A11Y=none
+    GTK_A11Y=test
     ADW_DISABLE_PORTAL=1
     GDK_DEBUG=no-portals
     GTK_USE_PORTAL=0
@@ -174,11 +184,8 @@ example_binary() {
 # once the session's services have exited, and fails the run if the session
 # left any temporary entry behind.
 run_headless() {
-    require_command dbus-run-session
-    require_command mutter
     "$REPO_ROOT/scripts/with-temp-scope.sh" --session-runtime axioms -- \
-        dbus-run-session -- \
-        mutter --headless --wayland --no-x11 --virtual-monitor "$MONITOR" -- "$@"
+        "$HEADLESS_SESSION" run --profile widget --inherit-runtime-dir --monitor "$MONITOR" -- "$@"
 }
 
 scan_warnings() {
@@ -201,7 +208,6 @@ self_test() {
         'libmutter-Message: 02:16:19.694: Running Mutter (using mutter 50.4) as a Wayland display server'
         '** Message: 02:16:19.858: Obtained a high priority EGL context'
         "dbus-daemon[3411502]: [session uid=1000 pid=3411502 pidfd=5] Activated service 'org.freedesktop.systemd1' failed: Process org.freedesktop.systemd1 exited with status 1"
-        '(mutter:582): mutter-WARNING **: 09:42:29.034: Failed to acquire org.freedesktop.locale1 proxy: Could not connect: No such file or directory'
         '{"axiom":"A1","verdict":"holds","measured":{},"gtk":"4.22.2","adw":"1.9.0"}'
     )
     local defects=(
@@ -216,6 +222,8 @@ self_test() {
         'In pixman_region32_init_rect: Invalid rectangle passed *** BUG ***'
     )
     local failed=0
+    mapfile -t -O "${#benign[@]}" benign < <(python3 -B "$REPO_ROOT/scripts/smoke_warning_classifiers.py" \
+        --print-samples headless-session-services)
     printf '%s\n' "${benign[@]}" >"$log_file"
     if ! scan_warnings "$log_file"; then
         echo "Error: GTK axiom warning self-test rejected benign session output." >&2
@@ -236,11 +244,13 @@ self_test() {
         echo "Error: GTK axiom self-test miscounted a slow sample skipped by design." >&2
         failed=1
     fi
-    # A sample whose fixture needs RemoteDesktop, skipped inside an SDK
-    # sandbox (which has no session bus), likewise counts as a result.
+    # A sample whose fixture needs RemoteDesktop or reads the session bus,
+    # skipped inside an SDK sandbox (which has no session bus), likewise
+    # counts as a result; any other reason does not.
     printf '%s\n' '{"axiom":"A1","verdict":"holds"}' 'skipped (needs RemoteDesktop): A59' \
-        'skipped (needs RemoteDesktop): A59 extra' 'skipped (needs a session bus): A60' >"$log_file"
-    if ! scan_warnings "$log_file" || [[ "$(count_sample_results "$log_file")" -ne 2 ]]; then
+        'skipped (needs a session bus): A115' 'skipped (needs RemoteDesktop): A59 extra' \
+        'skipped (needs a session): A60' 'skipped (needs a session bus): A116 extra' >"$log_file"
+    if ! scan_warnings "$log_file" || [[ "$(count_sample_results "$log_file")" -ne 3 ]]; then
         echo "Error: GTK axiom self-test miscounted a sample skipped for lack of RemoteDesktop." >&2
         failed=1
     fi
@@ -316,8 +326,10 @@ SAMPLE_CHECK_LOOP='
 # How many sample results a log holds: one observation line per sample that
 # ran, plus one `skipped (slow): <id>` line per slow sample skipped by design
 # and, in an SDK sandbox only, one `skipped (needs RemoteDesktop): <id>` line
-# per sample whose fixture drives the compositor's RemoteDesktop.
-SAMPLE_RESULT_REGEX='^(\{"axiom"|skipped \((slow|needs RemoteDesktop)\): A[0-9]+$)'
+# per sample whose fixture drives the compositor's RemoteDesktop and one
+# `skipped (needs a session bus): <id>` line per sample whose probe reads the
+# session bus (A115, A116).
+SAMPLE_RESULT_REGEX='^(\{"axiom"|skipped \((slow|needs RemoteDesktop|needs a session bus)\): A[0-9]+$)'
 count_sample_results() {
     grep -cE "$SAMPLE_RESULT_REGEX" "$1" || true
 }
@@ -361,7 +373,12 @@ run_all() {
     done < <(all_examples)
 
     echo "==> Probe binary (gtk-lush-adoption-lab axiom_probes)"
-    if ! run_logged "$LOG_DIR/probes.log" "$REPO_ROOT/scripts/with-temp-scope.sh" axiom-probes -- \
+    # The probe runner runs inside the helper's session (its runner variable
+    # set, so the harness does not relaunch through the library), because the
+    # helper binary exports GTK_LUSH_SESSION_BIN, which the A115 and A116
+    # controls need for their nested sessions.
+    if ! run_logged "$LOG_DIR/probes.log" run_headless \
+        env GTK_LUSH_AXIOMS_PROBE_HEADLESS_RUNNER=1 \
         cargo test -p gtk-lush-adoption-lab --test axiom_probes; then
         echo "Error: the probe binary failed." >&2
         return 1
@@ -495,7 +512,7 @@ results, versions = {}, set()
 with open(log_file, encoding="utf-8", errors="replace") as handle:
     for line in handle:
         line = line.rstrip("\n")
-        skip = re.match(r"^skipped \((slow|needs RemoteDesktop)\): (A[0-9]+)$", line)
+        skip = re.match(r"^skipped \((slow|needs RemoteDesktop|needs a session bus)\): (A[0-9]+)$", line)
         if skip:
             results[skip.group(2)] = f"skipped ({skip.group(1)})"
             continue

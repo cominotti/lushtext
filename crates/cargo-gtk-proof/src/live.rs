@@ -9,12 +9,13 @@
 //! responsible for deciding when those artifacts can be counted as proof.
 
 use std::collections::HashMap;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
+use gtk_lush_proof_harness::session::{self, SESSION_HYGIENE_EXIT_CODE};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -30,10 +31,12 @@ use crate::{
 
 /// Application id used for isolated settings and process discovery.
 const APP_ID: &str = "dev.cominotti.lushtext";
-/// Time allowed for PipeWire to publish its socket before the run is considered environmental.
-const PIPEWIRE_READY_TIMEOUT: Duration = Duration::from_secs(10);
-/// Upper bound for the hidden Mutter child so broken launches cannot hang CI indefinitely.
+/// Upper bound for the hidden compositor child so broken launches cannot hang CI indefinitely.
 const MUTTER_CHILD_TIMEOUT: Duration = Duration::from_secs(120);
+/// Process-report status of a session whose runtime guard found it touched the host.
+pub(crate) const SESSION_HYGIENE_STATUS: &str = "session-hygiene";
+/// Directory of a case's session logs and hygiene report (`--log-dir`).
+const SESSION_HYGIENE_DIR: &str = "session-hygiene";
 /// Initial app settle period before first readiness checks start.
 const APP_LAUNCH_SETTLE: Duration = Duration::from_millis(750);
 /// Grace period for auxiliary services to flush logs after each case.
@@ -94,16 +97,12 @@ pub(crate) struct CaseSessionResult {
     pub(crate) report_path: PathBuf,
 }
 
-/// Paths to runtime programs used by the live process tree.
+/// Paths to runtime programs used by the live process tree. The session's
+/// own processes (bus, media, compositor) are the session helper's.
 #[derive(Clone, Debug)]
 struct LivePrograms {
     proof_tool: String,
-    dbus_run_session: String,
-    pipewire: String,
-    wireplumber: String,
-    pw_dump: String,
     gsettings: String,
-    mutter: String,
 }
 
 impl LivePrograms {
@@ -114,12 +113,7 @@ impl LivePrograms {
             .into_owned();
         Ok(Self {
             proof_tool,
-            dbus_run_session: "dbus-run-session".to_string(),
-            pipewire: "pipewire".to_string(),
-            wireplumber: "wireplumber".to_string(),
-            pw_dump: "pw-dump".to_string(),
             gsettings: "gsettings".to_string(),
-            mutter: "mutter".to_string(),
         })
     }
 }
@@ -185,7 +179,12 @@ fn case_session_needs_atspi_startup_retry(
     case_json: &Path,
     result: &CaseSessionResult,
 ) -> Result<bool, String> {
-    if result.timed_out || result.exit_code == Some(0) {
+    // A session-hygiene exit is never retried: a second session would touch
+    // the host again (the widget runner's rule too).
+    if result.timed_out
+        || result.exit_code == Some(0)
+        || result.exit_code == Some(i32::from(SESSION_HYGIENE_EXIT_CODE))
+    {
         return Ok(false);
     }
     let case_dir = case_dir_for(case_json)?;
@@ -218,36 +217,24 @@ fn run_case_session_with_programs(
         format!("{}\n", runtime.runtime_dir().display()),
     )
     .map_err(|error| format!("cannot write runtime-dir.txt: {error}"))?;
-    let mut env = runtime.process_environment();
-    env.push((
-        "LUSHTEXT_MUTTER_ARTIFACT_DIR".to_string(),
-        case_dir.to_string_lossy().into_owned(),
-    ));
-    let args = [
-        "--".to_string(),
+    let child = [
         programs.proof_tool.clone(),
         "run".to_string(),
         "--internal-session".to_string(),
         "--case-json".to_string(),
         case_json.to_string_lossy().into_owned(),
     ];
-    let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
     let session_log = case_dir.join("session.log");
-    let result = process::run_logged_command(
-        &programs.dbus_run_session,
-        &arg_refs,
-        &env,
-        &session_log,
-        timeout,
-    )?;
+    let mut command = runtime
+        .session_command(&child, &case_dir.join(SESSION_HYGIENE_DIR))
+        .map_err(|error| format!("cannot start the case's private session: {error}"))?;
+    command.env(
+        "LUSHTEXT_MUTTER_ARTIFACT_DIR",
+        case_dir.to_string_lossy().into_owned(),
+    );
+    let result = process::run_logged(command, &session_log, timeout)?;
     let cleanup = runtime.cleanup_runtime_dir();
-    let status = if result.timed_out {
-        "timed-out"
-    } else if result.exit_code == Some(0) {
-        "launched"
-    } else {
-        "failed"
-    };
+    let status = session_status(result.exit_code, result.timed_out);
     let report = ProcessReport {
         schema_version: model::SUPPORTED_SCHEMA_VERSION,
         status,
@@ -267,7 +254,22 @@ fn run_case_session_with_programs(
     })
 }
 
-/// Run the D-Bus-session child that supervises PipeWire, WirePlumber, and Mutter.
+/// Public status of a case session: a session-hygiene exit is its own class,
+/// so the case fails and verifies nothing from it.
+pub(crate) fn session_status(exit_code: Option<i32>, timed_out: bool) -> &'static str {
+    if timed_out {
+        "timed-out"
+    } else if exit_code == Some(0) {
+        "launched"
+    } else if exit_code == Some(i32::from(SESSION_HYGIENE_EXIT_CODE)) {
+        SESSION_HYGIENE_STATUS
+    } else {
+        "failed"
+    }
+}
+
+/// Run the session's inner child: case settings, then the compositor stage.
+/// The session helper already started the quiet media (screencast profile).
 pub(crate) fn run_internal_session(case_json: &Path) -> Result<(), String> {
     let programs = LivePrograms::current()?;
     run_internal_session_with_programs(case_json, &programs)
@@ -280,50 +282,23 @@ fn run_internal_session_with_programs(
     let case = read_json_value(case_json, "expanded visual case")?;
     let case_dir = case_dir_for(case_json)?;
     let runtime_dir = runtime_dir_from_env()?;
-    let mut children = Vec::new();
-    let mut logs = Vec::new();
     let result: Result<(), String> = (|| {
-        let pipewire_log = case_dir.join("pipewire.log");
-        children.push(process::start_logged_child(
-            &programs.pipewire,
-            &[],
-            &[],
-            &pipewire_log,
-        )?);
-        logs.push(artifacts::safe_display_path(&pipewire_log));
-        wait_for_pipewire(&runtime_dir, programs, &case_dir)?;
-
-        let wireplumber_log = case_dir.join("wireplumber.log");
-        children.push(process::start_logged_child(
-            &programs.wireplumber,
-            &[],
-            &[],
-            &wireplumber_log,
-        )?);
-        logs.push(artifacts::safe_display_path(&wireplumber_log));
-
         apply_gsettings(&case, programs, &case_dir)?;
-        run_mutter_for_case(&case, case_json, programs, &case_dir, &runtime_dir)?;
-        Ok(())
+        let command = compositor_command_for_case(&case, case_json, programs)?;
+        run_compositor_for_case(command, &case_dir, &runtime_dir)
     })();
 
-    // Tear children down in reverse launch order so session services outlive
-    // the clients that may still be flushing diagnostics through them.
-    for child in children.iter_mut().rev() {
-        let _ = child.terminate(PROCESS_CLEANUP_TIMEOUT);
-    }
-
     let status = if result.is_ok() { "launched" } else { "failed" };
-    let mut report_logs = logs;
-    report_logs.push(artifacts::safe_display_path(
-        &case_dir.join("mutter-child.log"),
-    ));
+    let report_logs = vec![
+        artifacts::safe_display_path(&case_dir.join(SESSION_HYGIENE_DIR)),
+        artifacts::safe_display_path(&case_dir.join("mutter-child.log")),
+    ];
     let report = ProcessReport {
         schema_version: model::SUPPORTED_SCHEMA_VERSION,
         status,
         stage: "internal-session",
         detail: match &result {
-            Ok(()) => "PipeWire, WirePlumber, and Mutter child launched".to_string(),
+            Ok(()) => "compositor child launched in the private session".to_string(),
             Err(error) => error.clone(),
         },
         exit_code: None,
@@ -2270,79 +2245,49 @@ impl VisualRect {
     }
 }
 
-fn run_mutter_for_case(
+/// The compositor stage around this binary's `--mutter-child` mode, with
+/// one virtual monitor of the case's size.
+fn compositor_command_for_case(
     case: &Value,
     case_json: &Path,
     programs: &LivePrograms,
-    case_dir: &Path,
-    runtime_dir: &Path,
-) -> Result<(), String> {
+) -> Result<std::process::Command, String> {
     let size = case_size(case)?;
     let monitor = format!("{}x{}", size.width, size.height);
-    let args = [
-        "--headless".to_string(),
-        "--wayland".to_string(),
-        "--no-x11".to_string(),
-        "--virtual-monitor".to_string(),
-        monitor,
-        "--".to_string(),
+    let child = [
         programs.proof_tool.clone(),
         "run".to_string(),
         "--mutter-child".to_string(),
         "--case-json".to_string(),
         case_json.to_string_lossy().into_owned(),
-    ];
-    let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-    let env = vec![
-        ("NO_AT_BRIDGE".to_string(), "1".to_string()),
-        (
-            "XDG_RUNTIME_DIR".to_string(),
-            runtime_dir.to_string_lossy().into_owned(),
-        ),
-    ];
-    let result = process::run_logged_command(
-        &programs.mutter,
-        &arg_refs,
-        &env,
+    ]
+    .map(OsString::from);
+    session::compositor_command(&[monitor], &child).map_err(|error| error.message)
+}
+
+fn run_compositor_for_case(
+    mut command: std::process::Command,
+    case_dir: &Path,
+    runtime_dir: &Path,
+) -> Result<(), String> {
+    command
+        .env("NO_AT_BRIDGE", "1")
+        .env("XDG_RUNTIME_DIR", runtime_dir);
+    let result = process::run_logged(
+        command,
         &case_dir.join("mutter-child.log"),
         MUTTER_CHILD_TIMEOUT,
     )?;
     if result.timed_out {
-        return Err("headless Mutter child timed out".to_string());
+        return Err("headless compositor child timed out".to_string());
     }
     if result.exit_code != Some(0) {
         return Err(format!(
-            "headless Mutter child exited with status {:?}",
+            "headless compositor child exited with status {:?}",
             result.exit_code
         ));
     }
     Ok(())
-}
-
-fn wait_for_pipewire(
-    runtime_dir: &Path,
-    programs: &LivePrograms,
-    case_dir: &Path,
-) -> Result<(), String> {
-    let deadline = Instant::now() + PIPEWIRE_READY_TIMEOUT;
-    let socket = runtime_dir.join("pipewire-0");
-    let log_path = case_dir.join("pw-dump-ready.log");
-    while Instant::now() < deadline {
-        if socket.exists() {
-            let result = process::run_logged_command(
-                &programs.pw_dump,
-                &[],
-                &[],
-                &log_path,
-                Duration::from_secs(1),
-            )?;
-            if !result.timed_out && result.exit_code == Some(0) {
-                return Ok(());
-            }
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-    Err("PipeWire did not become ready in the isolated runtime directory".to_string())
 }
 
 fn apply_gsettings(case: &Value, programs: &LivePrograms, case_dir: &Path) -> Result<(), String> {
@@ -2594,6 +2539,10 @@ fn process_detail(status: &str) -> String {
                 .to_string()
         }
         "timed-out" => "Rust live session process tree timed out".to_string(),
+        SESSION_HYGIENE_STATUS => {
+            "the private session touched the host (SESSION-HYGIENE lines in session.log)"
+                .to_string()
+        }
         _ => "Rust live session process tree failed".to_string(),
     }
 }
@@ -2621,38 +2570,68 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mutter_command_uses_case_size_and_hidden_child_mode() {
+    fn compositor_stage_needs_a_helper_session() {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let case_json = tempdir.path().join("case.json");
         let case = serde_json::json!({
             "schema_version": 1,
-            "case_id": "case",
-            "manifest": {},
             "size": { "width": 800, "height": 600 },
-            "color_scheme": "default",
-            "artifact_dir": "case",
-            "binary": "/bin/true",
-            "fixture": "/tmp/file.txt",
-            "gsettings": [],
         });
-        fs::write(&case_json, serde_json::to_vec(&case).expect("json")).expect("case write");
         let programs = LivePrograms {
             proof_tool: "/proof/tool".to_string(),
-            dbus_run_session: "dbus-run-session".to_string(),
-            pipewire: "pipewire".to_string(),
-            wireplumber: "wireplumber".to_string(),
-            pw_dump: "pw-dump".to_string(),
             gsettings: "gsettings".to_string(),
-            mutter: "/bin/false".to_string(),
         };
+        if std::env::var_os(session::SESSION_ACTIVE_ENV).is_some() {
+            let command =
+                compositor_command_for_case(&case, &case_json, &programs).expect("command");
+            assert_eq!(command.get_program(), session::MUTTER_COMMAND);
+            let args = command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair == ["--virtual-monitor", "800x600"])
+            );
+            assert!(args.ends_with(&[
+                "/proof/tool".to_string(),
+                "run".to_string(),
+                "--mutter-child".to_string(),
+                "--case-json".to_string(),
+                case_json.to_string_lossy().into_owned(),
+            ]));
+        } else {
+            let error = compositor_command_for_case(&case, &case_json, &programs)
+                .expect_err("the compositor stage runs only inside a helper session");
+            assert!(error.contains("only inside a helper session"), "{error}");
+        }
+    }
 
-        let error =
-            run_mutter_for_case(&case, &case_json, &programs, tempdir.path(), tempdir.path())
-                .expect_err("fake mutter fails after command construction");
+    #[test]
+    fn compositor_child_failure_is_reported_after_launch() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let error = run_compositor_for_case(
+            std::process::Command::new("/bin/false"),
+            tempdir.path(),
+            tempdir.path(),
+        )
+        .expect_err("a failing compositor child fails the case");
 
-        assert!(error.contains("headless Mutter child exited"));
+        assert!(error.contains("headless compositor child exited"));
         let log = fs::read_to_string(tempdir.path().join("mutter-child.log")).expect("log text");
         assert!(log.is_empty());
+    }
+
+    #[test]
+    fn a_session_hygiene_exit_is_its_own_status() {
+        assert_eq!(session_status(Some(0), false), "launched");
+        assert_eq!(session_status(Some(1), false), "failed");
+        assert_eq!(session_status(Some(93), true), "timed-out");
+        assert_eq!(
+            session_status(Some(i32::from(SESSION_HYGIENE_EXIT_CODE)), false),
+            SESSION_HYGIENE_STATUS
+        );
+        assert!(process_detail(SESSION_HYGIENE_STATUS).contains("SESSION-HYGIENE"));
     }
 
     #[test]
@@ -2702,6 +2681,21 @@ mod tests {
         )
         .expect("session log");
         assert!(!case_session_needs_atspi_startup_retry(&case_json, &failed).expect("classify"));
+
+        fs::write(
+            tempdir.path().join("session.log"),
+            "Unable to register the application: org.a11y.atspi.Registry: unit failed\n",
+        )
+        .expect("session log");
+        let hygiene = CaseSessionResult {
+            exit_code: Some(i32::from(SESSION_HYGIENE_EXIT_CODE)),
+            timed_out: false,
+            report_path: tempdir.path().join("process-report.json"),
+        };
+        assert!(
+            !case_session_needs_atspi_startup_retry(&case_json, &hygiene).expect("classify"),
+            "a session-hygiene exit is never retried, whatever its log says"
+        );
 
         let timed_out = CaseSessionResult {
             timed_out: true,

@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from smoke_runtime_dir import cleanup_runtime_root, create_runtime_root
+from smoke_session import SESSION_HYGIENE_EXIT_CODE, check_tools, compositor_command, session_command
 from smoke_warning_classifiers import is_benign_session_noise
 
 
@@ -99,8 +100,25 @@ def validate_outer_args(args: argparse.Namespace) -> None:
             raise RuntimeError(f"Missing helper: {path}")
 
 
+# The lane reads the AT-SPI tree and, when the host can, takes screenshots
+# through mutter's ScreenCast (quiet media). The inner stage learns which.
+SESSION_PROFILE = "accessibility"
+MEDIA_ENV = "LUSHTEXT_CRASH_SMOKE_SESSION_MEDIA"
+
+
+def session_media() -> tuple[str, ...]:
+    """The `check-tools`/`session` options this host supports: quiet media, or
+    media off (no screenshots) when the media daemons are missing."""
+    if check_tools(SESSION_PROFILE) is None:
+        return ()
+    unavailable = check_tools(SESSION_PROFILE, "--media", "off")
+    if unavailable is not None:
+        raise RuntimeError(unavailable)
+    return ("--media", "off")
+
+
 def ensure_outer_tools() -> None:
-    for command in ("dbus-run-session", "gdbus", "gsettings", "mutter"):
+    for command in ("gdbus", "gsettings"):
         require_command(command)
     subprocess.run(
         [str(SYSTEM_PYTHON), "-c", "import gi, pyatspi"],
@@ -223,13 +241,14 @@ def outer_run(args: argparse.Namespace) -> int:
     env = prepare_state(args)
 
     log_path = args.artifact_dir / "logs/dbus-session.log"
-    command = [
-        "dbus-run-session",
-        "--",
-        str(SYSTEM_PYTHON),
-        str(SCRIPT_PATH),
-        *child_cli_args(args, "internal-run"),
-    ]
+    media = session_media()
+    env[MEDIA_ENV] = "off" if media else "quiet"
+    command = session_command(
+        SESSION_PROFILE,
+        [str(SYSTEM_PYTHON), str(SCRIPT_PATH), *child_cli_args(args, "internal-run")],
+        log_dir=args.artifact_dir / "logs/session-hygiene",
+        options=media,
+    )
     runtime_root = Path(env["LUSHTEXT_CRASH_SMOKE_RUNTIME_ROOT"])
     runtime_dir = Path(env["XDG_RUNTIME_DIR"])
     # The runtime root lives in the system temp dir, outside the artifacts, so
@@ -245,6 +264,14 @@ def outer_run(args: argparse.Namespace) -> int:
         encoding="utf-8",
     )
 
+    if result.returncode == SESSION_HYGIENE_EXIT_CODE:
+        tail_log(log_path, 160, sys.stderr)
+        print(
+            "SESSION-HYGIENE: the crash recovery session touched the host; "
+            f"see {args.artifact_dir / 'logs/session-hygiene/session-hygiene.txt'}",
+            file=sys.stderr,
+        )
+        return result.returncode
     if result.returncode != 0:
         tail_log(log_path, 160, sys.stderr)
         return result.returncode
@@ -382,29 +409,21 @@ def internal_run(args: argparse.Namespace) -> int:
     processes: list[subprocess.Popen | None] = []
 
     try:
+        # The session helper runs quiet PipeWire and WirePlumber unless the
+        # host lacks them (MEDIA_ENV off): screenshots need them and gst.
         screenshot_enabled = False
-        screenshot_tools = ("gst-launch-1.0", "pipewire", "pw-dump", "wireplumber")
-        if all(shutil.which(command) is not None for command in screenshot_tools):
-            pipewire = start_logged(["pipewire"], artifact_dir / "logs/pipewire.log")
-            processes.append(pipewire)
-            try:
-                wait_for_pipewire(runtime_dir)
-                wireplumber = start_logged(["wireplumber"], artifact_dir / "logs/wireplumber.log")
-                processes.append(wireplumber)
-                screenshot_enabled = True
-            except Exception as exc:
-                terminate_process(pipewire)
-                processes.remove(pipewire)
-                (artifact_dir / "screenshots/skip.txt").write_text(
-                    f"SKIP: PipeWire screenshot support unavailable: {exc}\n",
-                    encoding="utf-8",
-                )
-        else:
-            missing = [command for command in screenshot_tools if shutil.which(command) is None]
+        if os.environ.get(MEDIA_ENV) != "quiet":
             (artifact_dir / "screenshots/skip.txt").write_text(
-                f"SKIP: screenshot tools unavailable: {', '.join(missing)}\n",
+                "SKIP: screenshot tools unavailable: the session runs without media on this host\n",
                 encoding="utf-8",
             )
+        elif shutil.which("gst-launch-1.0") is None:
+            (artifact_dir / "screenshots/skip.txt").write_text(
+                "SKIP: screenshot tools unavailable: gst-launch-1.0\n",
+                encoding="utf-8",
+            )
+        else:
+            screenshot_enabled = True
 
         try:
             atspi_address, registry = setup_atspi(artifact_dir)
@@ -418,18 +437,9 @@ def internal_run(args: argparse.Namespace) -> int:
         env = os.environ.copy()
         env["GDK_BACKEND"] = "wayland"
         env["LUSHTEXT_CRASH_SMOKE_SCREENSHOT"] = "1" if screenshot_enabled else "0"
-        command = [
-            "mutter",
-            "--headless",
-            "--wayland",
-            "--no-x11",
-            "--virtual-monitor",
-            f"{WIDTH}x{HEIGHT}",
-            "--",
-            str(SYSTEM_PYTHON),
-            str(SCRIPT_PATH),
-            *child_cli_args(args, "mutter-child"),
-        ]
+        command = compositor_command(
+            WIDTH, HEIGHT, [str(SYSTEM_PYTHON), str(SCRIPT_PATH), *child_cli_args(args, "mutter-child")]
+        )
         with (artifact_dir / "logs/mutter-child.log").open("w", encoding="utf-8") as log:
             result = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT)
         print((artifact_dir / "logs/mutter-child.log").read_text(encoding="utf-8", errors="replace"))
@@ -1211,7 +1221,7 @@ def write_crash_scenario_manifest(artifact_dir: Path, status: str, reason: objec
         "finished_at": now,
         "failure_reason": failure_reason,
         "skip_reason": skip_reason,
-        "launch_mode": "dbus-run-session+headless-mutter+sigkill-relaunch",
+        "launch_mode": "headless-session-accessibility+compositor+sigkill-relaunch",
         "helper_arguments": {
             "artifact_dir": str(artifact_dir),
             "binary": str(Path(os.environ.get("LUSHTEXT_CRASH_SMOKE_BINARY", "")).resolve())

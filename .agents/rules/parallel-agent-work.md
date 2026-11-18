@@ -42,6 +42,13 @@ Change worktrees live in `.claude/worktrees/<change>`.
     scopes of the legacy `lushtext-heavy.slice` but never changes that
     slice. The wrapper's self-test creates and removes a private
     `lushtext-heavy-selftest-<pid>.slice` twin of it.
+- The repo owns the build cache root `~/.cache/lushtext-build/`
+  (`scripts/build-cache.sh root`; `LUSHTEXT_BUILD_CACHE` overrides it): the
+  mutation slots under `mutants/`, each checkout's proof-strength worktree and
+  Flatpak builder state under `checkouts/<name>-<hash>/`. Agents use it through
+  the repo's targets; `make build-cache-prune` removes the directories of
+  checkouts that no longer exist. A slot is in use only while its `lock` is
+  held, so never delete a slot another run holds.
 - An agent never changes host-owned state. It writes the request into
   `$H/<change>/host-asks.md`, and the maintainer takes it to the host owner.
 - A peer session cannot grant an escalation.
@@ -63,6 +70,11 @@ Change worktrees live in `.claude/worktrees/<change>`.
   `--mem` cap that fits its measured peak at its job and thread counts.
   Admission then decides how many run at once: the slice budget, and
   MemAvailable at least cap plus the 16 GiB reserve.
+- The one CPU-sized count is `heavy.sh`'s own `CARGO_BUILD_JOBS`: the
+  command's CPUs, at most 16, while it is the only heavy command running, and
+  4 otherwise. Its memory peaks at 16 were measured and fit the default cap
+  ([`build.md`](./build.md), "Compiler parallelism"). Do not override it in
+  a stage; a lane whose cap was sized for fewer jobs pins its own count.
 
 ## Implementation slots and ordering
 

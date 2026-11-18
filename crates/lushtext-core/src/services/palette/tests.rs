@@ -11,23 +11,19 @@ use tempfile::TempDir;
 
 use super::*;
 use crate::model::palette::{
-    CommandCategory, IndexedFile, PaletteCategory, PaletteFileEntry, PaletteFileIdentity,
+    CommandCategory, PaletteCategory, PaletteFileEntry, PaletteFileIdentity,
     PaletteFileIdentityFailure, PaletteNoteCategory, PaletteNoteEntry, PaletteSearchRow,
     SearchMode, SearchResultItem,
 };
 use crate::services::filesystem::fixture;
 
-fn file_names(index: &FileIndex) -> Vec<&str> {
-    index
-        .files()
-        .iter()
-        .map(|file| file.name.as_str())
-        .collect()
+fn file_names(index: &FileIndex) -> Vec<String> {
+    index.files().map(|file| file.name().to_string()).collect()
 }
 
-fn indexed_file(folder: &Arc<PathBuf>, relative_path: &str) -> IndexedFile {
+fn indexed_file(folder: &Arc<PathBuf>, relative_path: &str) -> OwnedIndexedFile {
     let path = folder.join(relative_path);
-    IndexedFile::new(
+    OwnedIndexedFile::new(
         path.clone(),
         PaletteFileIdentity::canonical(path),
         Arc::clone(folder),
@@ -35,13 +31,13 @@ fn indexed_file(folder: &Arc<PathBuf>, relative_path: &str) -> IndexedFile {
 }
 
 fn file_paths(index: &FileIndex) -> Vec<PathBuf> {
-    index.files().iter().map(|file| file.path.clone()).collect()
+    index.files().map(|file| file.path()).collect()
 }
 
-fn indexed_file_by_path<'a>(index: &'a FileIndex, path: &Path) -> &'a IndexedFile {
+fn indexed_file_by_path(index: &FileIndex, path: &Path) -> OwnedIndexedFile {
     index
-        .files()
-        .iter()
+        .owned_files()
+        .into_iter()
         .find(|file| file.path == path)
         .unwrap_or_else(|| panic!("expected indexed file {}", path.display()))
 }
@@ -351,7 +347,7 @@ fn file_index_skips_hidden_files_and_directories() {
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
     assert_eq!(index.files().len(), 1);
-    assert_eq!(index.files()[0].name, "visible.txt");
+    assert_eq!(index.owned_files()[0].name, "visible.txt");
 }
 
 #[test]
@@ -370,7 +366,7 @@ fn file_index_visibility_reveals_dotfiles_but_keeps_excluded_and_internal_skips(
 
     let names = |index: &FileIndex| {
         let mut names = index
-            .files()
+            .owned_files()
             .iter()
             .map(|file| file.name.clone())
             .collect::<Vec<_>>();
@@ -415,7 +411,7 @@ fn file_index_always_indexes_dot_named_and_excluded_named_workspace_folders() {
         &WorkspaceEntryVisibility::new(false, [".git", "vendor"]),
     );
     let mut names = index
-        .files()
+        .owned_files()
         .iter()
         .map(|file| file.name.clone())
         .collect::<Vec<_>>();
@@ -476,10 +472,13 @@ fn file_index_canonical_alias_roots_keep_first_folder_precedence() {
     let index = FileIndex::rebuild(&[alias_root.clone(), real_root]);
 
     assert_eq!(index.len(), 1);
-    assert_eq!(index.files()[0].path, alias_root.join("main.rs"));
-    assert_eq!(index.files()[0].workspace_folder.as_ref(), &alias_root);
+    assert_eq!(index.owned_files()[0].path, alias_root.join("main.rs"));
     assert_eq!(
-        index.files()[0].identity.canonical_path(),
+        index.owned_files()[0].workspace_folder.as_ref(),
+        &alias_root
+    );
+    assert_eq!(
+        index.owned_files()[0].identity.canonical_path(),
         Some(
             crate::services::filesystem::metadata::canonical_path(&alias_root.join("main.rs"))
                 .expect("canonical alias")
@@ -495,12 +494,12 @@ fn file_index_retains_typed_identity_failure_without_cross_path_deduplication() 
     let missing_b = folder.join("missing-b.rs");
     let mut index = FileIndex::default();
 
-    index.add_path(missing_a.clone(), Arc::clone(&folder));
-    index.add_path(missing_b.clone(), Arc::clone(&folder));
+    index.add_path(&missing_a, &folder);
+    index.add_path(&missing_b, &folder);
 
     assert_eq!(index.len(), 2);
     assert_eq!(file_paths(&index), vec![missing_a, missing_b]);
-    assert!(index.files().iter().all(|file| matches!(
+    assert!(index.owned_files().iter().all(|file| matches!(
         file.identity,
         PaletteFileIdentity::Unavailable(PaletteFileIdentityFailure::NotFound)
     )));
@@ -513,12 +512,12 @@ fn grouped_search_excludes_open_identity_before_top_one_workspace_retention() {
     let workspace_alias = root.join("target.rs");
     let fallback = root.join("target_fallback.rs");
     let index = FileIndex::from(vec![
-        IndexedFile::new(
+        OwnedIndexedFile::new(
             workspace_alias.clone(),
             PaletteFileIdentity::canonical(canonical_best.clone()),
             Arc::clone(&root),
         ),
-        IndexedFile::new(
+        OwnedIndexedFile::new(
             fallback.clone(),
             PaletteFileIdentity::canonical(fallback.clone()),
             Arc::clone(&root),
@@ -625,8 +624,8 @@ fn file_index_workspace_folder_is_shared_with_arc() {
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
     assert!(Arc::ptr_eq(
-        &index.files()[0].workspace_folder,
-        &index.files()[1].workspace_folder
+        &index.owned_files()[0].workspace_folder,
+        &index.owned_files()[1].workspace_folder
     ));
 }
 
@@ -638,7 +637,7 @@ fn file_index_top_level_folder_named_as_ignored_dir_is_still_scanned() {
     fixture::write_text(&folder.join("index.js"), "");
 
     let index = FileIndex::rebuild(&[folder]);
-    assert!(file_names(&index).contains(&"index.js"));
+    assert!(file_names(&index).iter().any(|name| name == "index.js"));
 }
 
 #[test]
@@ -654,7 +653,7 @@ fn file_index_skips_ignored_directories() {
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
     assert_eq!(index.len(), 1);
-    assert!(file_names(&index).contains(&"main.rs"));
+    assert!(file_names(&index).iter().any(|name| name == "main.rs"));
 }
 
 #[cfg(unix)]
@@ -667,7 +666,7 @@ fn file_index_symlink_escape_outside_folder_is_rejected() {
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
     let names = file_names(&index);
-    assert!(names.contains(&"local.rs"));
+    assert!(names.iter().any(|name| name == "local.rs"));
     assert!(
         !names
             .iter()
@@ -685,14 +684,14 @@ fn file_index_symlink_cycle_does_not_duplicate_results() {
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
     let names = file_names(&index);
-    assert!(names.contains(&"file.rs"));
+    assert!(names.iter().any(|name| name == "file.rs"));
     assert_eq!(names.iter().filter(|name| **name == "file.rs").count(), 1);
 }
 
 #[test]
-fn max_indexed_files_constant_is_the_power_of_two_above_100k() {
-    assert_eq!(super::index::MAX_INDEXED_FILES, 128 * 1024);
-    assert_eq!(super::index::MAX_INDEXED_DIRECTORIES, 128 * 1024);
+fn max_indexed_files_constant_is_two_to_the_twentieth() {
+    assert_eq!(super::index::MAX_INDEXED_FILES, 1024 * 1024);
+    assert_eq!(super::index::MAX_INDEXED_DIRECTORIES, 1024 * 1024);
 }
 
 #[test]
@@ -704,7 +703,7 @@ fn empty_file_index_releases_a_large_reused_capacity_hint() {
 }
 
 #[test]
-fn file_index_retained_weight_charges_path_capacities_and_canonical_identity() {
+fn file_index_retained_weight_charges_folder_and_explicit_identity_not_raw_capacity() {
     let mut raw_path = PathBuf::from("/workspace/src/main.rs");
     raw_path.reserve(8 * 1024);
     let mut canonical_path = PathBuf::from("/canonical/workspace/src/main.rs");
@@ -715,17 +714,22 @@ fn file_index_retained_weight_charges_path_capacities_and_canonical_identity() {
     let canonical_capacity = canonical_path.capacity();
     let folder_capacity = folder_path.capacity();
     let folder = Arc::new(folder_path);
-    let index = FileIndex::from(vec![IndexedFile::new(
+    let index = FileIndex::from(vec![OwnedIndexedFile::new(
         raw_path,
         PaletteFileIdentity::canonical(canonical_path),
         folder,
     )]);
 
+    // The arena interns the raw path into its name storage and keeps the
+    // explicit canonical identity boxed to its length (`scale-file-index` D1),
+    // so the caller's spare capacity is not retained; the shared folder path
+    // is, at its capacity.
     let retained = index.retained_byte_weight();
-    let required_path_bytes = raw_capacity
-        .saturating_add(canonical_capacity)
-        .saturating_add(folder_capacity);
-    assert!(retained >= u64::try_from(required_path_bytes).unwrap_or(u64::MAX));
+    let canonical_len = "/canonical/workspace/src/main.rs".len();
+    let required = folder_capacity.saturating_add(canonical_len);
+    assert!(retained >= u64::try_from(required).unwrap_or(u64::MAX));
+    assert!(retained < u64::try_from(raw_capacity).unwrap_or(u64::MAX));
+    assert!(retained < u64::try_from(canonical_capacity).unwrap_or(u64::MAX));
     assert!(retained <= MAX_FILE_INDEX_RETAINED_BYTES);
 }
 
@@ -834,12 +838,12 @@ fn file_index_build_limit_accepts_exact_peak_and_truncates_deterministically_one
     assert!(second_metrics.peak_build_bytes < exact_limit);
     assert_eq!(
         first
-            .files()
+            .owned_files()
             .iter()
             .map(|file| file.path.clone())
             .collect::<Vec<_>>(),
         second
-            .files()
+            .owned_files()
             .iter()
             .map(|file| file.path.clone())
             .collect::<Vec<_>>()
@@ -1045,43 +1049,6 @@ fn file_index_coordinator_retains_only_active_and_latest_compact_request() {
 }
 
 #[test]
-fn truncate_to_index_limit_only_truncates_when_count_exceeds_limit() {
-    let folder = Arc::new(PathBuf::from("/workspace"));
-    let mut below_limit = vec![
-        indexed_file(&folder, "one.rs"),
-        indexed_file(&folder, "two.rs"),
-    ];
-    let mut at_limit = vec![
-        indexed_file(&folder, "one.rs"),
-        indexed_file(&folder, "two.rs"),
-        indexed_file(&folder, "three.rs"),
-    ];
-    let mut above_limit = vec![
-        indexed_file(&folder, "one.rs"),
-        indexed_file(&folder, "two.rs"),
-        indexed_file(&folder, "three.rs"),
-        indexed_file(&folder, "four.rs"),
-    ];
-
-    super::index::truncate_to_index_limit(&mut below_limit, 3);
-    super::index::truncate_to_index_limit(&mut at_limit, 3);
-    super::index::truncate_to_index_limit(&mut above_limit, 3);
-
-    assert_eq!(below_limit.len(), 2);
-    assert_eq!(at_limit.len(), 3);
-    assert_eq!(above_limit.len(), 3);
-    assert_eq!(above_limit[2].name, "three.rs");
-}
-
-#[test]
-fn compaction_threshold_starts_below_three_quarters_remaining() {
-    assert!(!super::index::should_compact_after_removal(4, 3));
-    assert!(super::index::should_compact_after_removal(4, 2));
-    assert!(!super::index::should_compact_after_removal(8, 6));
-    assert!(super::index::should_compact_after_removal(8, 5));
-}
-
-#[test]
 fn empty_query_returns_all_results_up_to_cap() {
     let dir = TempDir::new().expect("expected operation to succeed");
     for i in 0..100 {
@@ -1117,7 +1084,7 @@ fn search_commands_empty_query_returns_registry() {
 #[test]
 fn file_index_nonexistent_folder_returns_empty_index() {
     let index = FileIndex::rebuild(&[PathBuf::from("/nonexistent/path")]);
-    assert!(index.files().is_empty());
+    assert!(index.is_empty());
 }
 
 #[test]
@@ -1141,14 +1108,14 @@ fn add_file_registers_the_file_and_workspace_folder() {
     let path = folder.join("src/main.rs");
     let mut index = FileIndex::default();
 
-    index.add_file(IndexedFile::new(
+    index.add_file(OwnedIndexedFile::new(
         path.clone(),
         PaletteFileIdentity::canonical(path.clone()),
         Arc::clone(&folder),
     ));
 
     assert_eq!(index.len(), 1);
-    assert_eq!(index.files()[0].path, path);
+    assert_eq!(index.owned_files()[0].path, path);
     assert_eq!(
         index
             .workspace_folder_for(&folder.join("src/other.rs"))
@@ -1172,16 +1139,22 @@ fn add_file_replay_does_not_duplicate_an_existing_path() {
 #[test]
 fn add_file_does_not_exceed_index_cap() {
     let folder = Arc::new(PathBuf::from("/workspace"));
-    let files: Vec<IndexedFile> = (0..super::index::MAX_INDEXED_FILES)
-        .map(|i| indexed_file(&folder, &format!("src/file-{i}.rs")))
-        .collect();
-    let mut index = FileIndex::from(files);
+    // Streamed: the cap is 2^20 files, so never hold them as owned rows.
+    let mut index = FileIndex::from_paths((0..super::index::MAX_INDEXED_FILES).map(|i| {
+        let path = folder.join(format!("src/file-{i}.rs"));
+        (
+            path.clone(),
+            PaletteFileIdentity::canonical(path),
+            Arc::clone(&folder),
+        )
+    }));
+    assert_eq!(index.len(), super::index::MAX_INDEXED_FILES);
 
     index.add_file(indexed_file(&folder, "src/over-cap.rs"));
 
     assert_eq!(index.len(), super::index::MAX_INDEXED_FILES);
     assert!(
-        !index.files().iter().any(|file| file.name == "over-cap.rs"),
+        !index.files().any(|file| file.name() == "over-cap.rs"),
         "incremental updates should respect the same cap as full rebuilds"
     );
 }
@@ -1300,8 +1273,8 @@ fn file_index_recursion_depth_includes_boundary_and_skips_beyond_it() {
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
     let names = file_names(&index);
-    assert!(names.contains(&"boundary.txt"));
-    assert!(!names.contains(&"too-deep.txt"));
+    assert!(names.iter().any(|name| name == "boundary.txt"));
+    assert!(!names.iter().any(|name| name == "too-deep.txt"));
 }
 
 // --- drill-down-palette-categories: More rows, counts, category ranking ---
@@ -1312,7 +1285,7 @@ fn synthetic_index(count: usize) -> FileIndex {
         (0..count)
             .map(|n| {
                 let path = root.join(format!("dir{}/file{n}.rs", n % 7));
-                IndexedFile::new(
+                OwnedIndexedFile::new(
                     path.clone(),
                     PaletteFileIdentity::canonical(path),
                     Arc::clone(&root),
@@ -1322,7 +1295,7 @@ fn synthetic_index(count: usize) -> FileIndex {
     )
 }
 
-fn open_tab_for(file: &IndexedFile) -> PaletteFileEntry {
+fn open_tab_for(file: &OwnedIndexedFile) -> PaletteFileEntry {
     PaletteFileEntry::new(
         file.name.clone(),
         file.path.display().to_string(),
@@ -1369,7 +1342,7 @@ fn grouped(
 #[test]
 fn empty_query_workspace_group_ends_with_an_exact_more_row() {
     let index = synthetic_index(1_000);
-    let open_tabs: Vec<_> = index.files()[..32].iter().map(open_tab_for).collect();
+    let open_tabs: Vec<_> = index.owned_files()[..32].iter().map(open_tab_for).collect();
     let rows = grouped(&index, &open_tabs, &[], "", SearchMode::Files, 64);
     assert_eq!(
         more_rows(&rows),
@@ -1427,7 +1400,7 @@ fn commands_fit_the_cap_and_the_rule_holds_when_forced() {
 #[test]
 fn open_tabs_and_note_groups_end_with_more_rows_when_forced() {
     let index = synthetic_index(20);
-    let open_tabs: Vec<_> = index.files()[..6].iter().map(open_tab_for).collect();
+    let open_tabs: Vec<_> = index.owned_files()[..6].iter().map(open_tab_for).collect();
     let notes: Vec<_> = (0..9)
         .map(|n| PaletteNoteEntry {
             category: PaletteNoteCategory::Bookmarks,
@@ -1476,7 +1449,7 @@ fn ranking(
 #[test]
 fn the_category_ranking_lists_every_match_and_counts_a_cut() {
     let index = synthetic_index(1_000);
-    let open_tabs: Vec<_> = index.files()[..3].iter().map(open_tab_for).collect();
+    let open_tabs: Vec<_> = index.owned_files()[..3].iter().map(open_tab_for).collect();
     let whole = ranking(
         &index,
         &open_tabs,
@@ -1529,7 +1502,7 @@ proptest::proptest! {
         query in "(|f|fi|1|2|rs|d3|ile9)",
     ) {
         let index = synthetic_index(count);
-        let open_tabs: Vec<_> = index.files()[..open.min(count)].iter().map(open_tab_for).collect();
+        let open_tabs: Vec<_> = index.owned_files()[..open.min(count)].iter().map(open_tab_for).collect();
         let rows = grouped(&index, &open_tabs, &[], &query, SearchMode::Files, 64);
         let grouped_files = file_rows(&rows, "All Workspaces");
         let whole = ranking(&index, &open_tabs, &[], PaletteCategory::WorkspaceFiles, &query, 1 << 20);
@@ -1537,7 +1510,12 @@ proptest::proptest! {
             .ordinals
             .iter()
             .take(64)
-            .map(|ordinal| index.files()[*ordinal as usize].path.clone())
+            .map(|ordinal| {
+                index
+                    .file(crate::model::palette::FileOrdinal(*ordinal))
+                    .expect("a ranked ordinal names a file")
+                    .path()
+            })
             .collect();
         proptest::prop_assert_eq!(&ranked, &grouped_files);
         let hidden = more_rows(&rows)
@@ -1547,16 +1525,17 @@ proptest::proptest! {
         proptest::prop_assert_eq!(whole.matching, grouped_files.len() + hidden);
     }
 
-    /// The prefiltered exclusion equals the full one, symlinked aliases
-    /// included (design D1).
+    /// The exclusion over the key table admits exactly the files whose
+    /// canonical identity is not open, symlinked aliases included
+    /// (`scale-file-index` D4).
     #[test]
-    fn the_prefiltered_exclusion_equals_the_full_one(
+    fn the_exclusion_admits_exactly_the_unopened_identities(
         names in proptest::collection::vec("(a|b|c)(|x)\\.rs", 1..40),
         open_picks in proptest::collection::vec(0usize..40, 0..10),
         alias_picks in proptest::collection::vec(0usize..40, 0..10),
     ) {
         let root = Arc::new(PathBuf::from("/w"));
-        let files: Vec<IndexedFile> = names
+        let files: Vec<OwnedIndexedFile> = names
             .iter()
             .enumerate()
             .map(|(n, name)| {
@@ -1568,7 +1547,7 @@ proptest::proptest! {
                 } else {
                     path.clone()
                 };
-                IndexedFile::new(path, PaletteFileIdentity::canonical(canonical), Arc::clone(&root))
+                OwnedIndexedFile::new(path, PaletteFileIdentity::canonical(canonical), Arc::clone(&root))
             })
             .collect();
         let excluded: std::collections::HashSet<PathBuf> = open_picks
@@ -1577,9 +1556,17 @@ proptest::proptest! {
             .filter_map(|file| file.identity.canonical_path().map(PathBuf::from))
             .chain(std::iter::once(PathBuf::from("/real/target1.rs")))
             .collect();
-        let exclusion = OpenTabExclusion::new(&excluded);
-        for file in &files {
-            proptest::prop_assert_eq!(exclusion.admits(file), exclusion.admits_prefiltered(file));
+        let index = FileIndex::from(files);
+        let exclusion = OpenTabExclusion::new(&index, &excluded);
+        let mut expected_excluded = 0;
+        for file in index.files() {
+            let open = file
+                .identity()
+                .canonical_path()
+                .is_some_and(|path| excluded.contains(path));
+            expected_excluded += usize::from(open);
+            proptest::prop_assert_eq!(exclusion.admits(file.ordinal()), !open);
         }
+        proptest::prop_assert_eq!(exclusion.excluded(), expected_excluded);
     }
 }

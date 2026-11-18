@@ -57,6 +57,7 @@ use crate::model::held_input::{
     InsertFacts, NoDocumentCause, RemovalFacts, ReplayAnchor, SettleFacts, SettleVerdict,
     close_disposition, insert_disposition, removal_disposition, settle_verdict,
 };
+use crate::ui::signal_connect;
 use crate::ui::status_bar::MessageKind;
 use crate::ui::window::LushtextWindow;
 
@@ -282,7 +283,7 @@ impl LushtextEditorPage {
         // GtkTextView's `backspace` keybinding signal runs its class handler
         // last, so this one sees Backspace first.
         let editor = self.downgrade();
-        view.connect_local("backspace", false, move |values| {
+        signal_connect::connect_void(view, "backspace", false, move |values| {
             if let Some(editor) = editor.upgrade()
                 && editor.backspace_held_text()
                 && let Some(view) = values
@@ -291,7 +292,6 @@ impl LushtextEditorPage {
             {
                 view.stop_signal_emission_by_name("backspace");
             }
-            None
         });
     }
 

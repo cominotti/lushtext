@@ -208,6 +208,22 @@ pub(crate) fn run_logged_command(
     log_path: &Path,
     timeout: Duration,
 ) -> Result<LoggedCommandResult, String> {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .envs(env.iter().map(|(key, value)| (key, value)));
+    run_logged(command, log_path, timeout)
+}
+
+/// Run a prepared `command` to completion with bounded combined output
+/// capture and a hard timeout (the form of [`run_logged_command`] for a
+/// command another library built, such as a session stage).
+pub(crate) fn run_logged(
+    mut command: Command,
+    log_path: &Path,
+    timeout: Duration,
+) -> Result<LoggedCommandResult, String> {
+    let program = command.get_program().to_string_lossy().into_owned();
     let parent = log_path
         .parent()
         .ok_or_else(|| format!("{} has no parent directory", log_path.display()))?;
@@ -217,12 +233,7 @@ pub(crate) fn run_logged_command(
         .map_err(|error| format!("cannot create log {}: {error}", log_path.display()))?;
     let log = Arc::new(Mutex::new(BoundedLog::new(file)));
 
-    let mut command = Command::new(program);
-    command
-        .args(args)
-        .envs(env.iter().map(|(key, value)| (key, value)))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command
         .spawn()
         .map_err(|error| format!("cannot launch {program}: {error}"))?;

@@ -71,6 +71,18 @@ smoke_require_command() {
     fi
 }
 
+# Skip unless the host can run a private headless session of profile $1
+# (widget, plain, screencast or accessibility; extra check-tools options such
+# as `--media off` may follow). Sessions start only through
+# scripts/headless-session, which also builds its helper binary.
+smoke_require_session() {
+    local report status=0
+    report="$("$(dirname "${BASH_SOURCE[0]}")/headless-session" check-tools --profile "$@" 2>&1)" || status=$?
+    if (( status != 0 )); then
+        smoke_skip "the private headless session ($*) is unavailable (exit $status): ${report##*$'\n'}"
+    fi
+}
+
 smoke_artifact_dir() {
     local requested="$1"
     mkdir -p "$requested"

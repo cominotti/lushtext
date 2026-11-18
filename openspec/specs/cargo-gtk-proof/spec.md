@@ -3,7 +3,9 @@
 Define the Rust `cargo gtk-proof` tool used for visual proof schemas,
 compatibility corpus replay, artifact summaries, proof-policy checks, and the
 default same-session live visual runner.
+
 ## Requirements
+
 ### Requirement: Cargo GTK proof tool exposes stable proof subcommands
 The workspace SHALL provide a Rust cargo subcommand named `cargo-gtk-proof`
 whose binary can be invoked through cargo as `cargo gtk-proof`. The tool MUST
@@ -329,3 +331,13 @@ The runner SHALL evaluate these relationship assertions from the after-snapshot:
 - **WHEN** a replayed after-snapshot places a neighbour row one pixel below the end of the previous row
 - **THEN** `neighbour-rows-contiguous` fails and names both rectangles
 
+### Requirement: Live runner starts its session through the helper
+The `cargo-gtk-proof` live runner SHALL start its session bus, compositor, PipeWire and WirePlumber only through the `gtk-lush-proof-harness` session library, in the `screencast` profile. It SHALL report a `SESSION-HYGIENE:` verdict as a failed case and SHALL NOT count any invariant from that case as verified.
+
+#### Scenario: A live case runs
+- **WHEN** `cargo gtk-proof run` executes a visual-geometry case
+- **THEN** the case's runtime report names the helper and its profile instead of `dbus-run-session`, and the case's artifacts include the helper's hygiene report
+
+#### Scenario: A dirty session fails the case
+- **WHEN** the helper reports a violation for a case's session
+- **THEN** the case's status is failed with `failure_status: session-hygiene`, and the run's summary counts it

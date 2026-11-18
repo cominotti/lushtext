@@ -29,6 +29,7 @@ use super::policy::{
     PressInput, ProtectedAction, ViewportAxis, ViewportMotion, press_disposition, viewport_step,
 };
 use crate::ui::editor_page::LushtextEditorPage;
+use crate::ui::signal_connect;
 
 /// Keybinding signals whose default handler moves a mark, changes the buffer
 /// or the view state (design D3 step 5). `move-cursor` has its own handler.
@@ -83,7 +84,7 @@ impl LushtextEditorPage {
         let view = self.source_view();
         for name in STOPPED_SIGNALS {
             let page = self.downgrade();
-            view.connect_local(name, false, move |args| {
+            signal_connect::connect_void(view, name, false, move |args| {
                 if let Some(page) = page.upgrade()
                     && page.is_protected_view()
                     && let Some(Ok(view)) = args.first().map(glib::Value::get::<glib::Object>)
@@ -93,11 +94,10 @@ impl LushtextEditorPage {
                         page.notify_protected_preemption(action);
                     }
                 }
-                None
             });
         }
         let page = self.downgrade();
-        view.connect_local("copy-clipboard", false, move |args| {
+        signal_connect::connect_void(view, "copy-clipboard", false, move |args| {
             if let Some(page) = page.upgrade()
                 && page.is_protected_view()
                 && let Some(Ok(view)) = args.first().map(glib::Value::get::<glib::Object>)
@@ -107,14 +107,15 @@ impl LushtextEditorPage {
                 glib::signal::signal_stop_emission_by_name(&view, "copy-clipboard");
                 page.copy_protected_selection();
             }
-            None
         });
         let page = self.downgrade();
-        view.connect_local("extend-selection", false, move |_| {
-            // Returns whether the handler extended the selection; claiming it
-            // keeps GtkTextView's default from selecting.
-            let protected = page.upgrade().is_some_and(|page| page.is_protected_view());
-            protected.then(|| true.to_value())
+        signal_connect::connect_returning(view, "extend-selection", false, move |_| {
+            // `extend-selection` returns `gboolean` and stops at the first
+            // TRUE (ledger A122): TRUE in Protected View claims it, so
+            // GtkTextView's handler never selects; FALSE everywhere else lets
+            // the emission go on to it. Answering nothing aborted the process
+            // on every double click outside Protected View.
+            page.upgrade().is_some_and(|page| page.is_protected_view())
         });
         let page = self.downgrade();
         view.connect_move_cursor(move |view, step, count, extend| {

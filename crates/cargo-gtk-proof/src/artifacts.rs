@@ -473,8 +473,11 @@ mod tests {
         let path = write_non_proof_summary(
             tempdir.path(),
             source,
-            "missing required command: mutter",
-            vec!["mutter".to_string()],
+            format!(
+                "missing required command: {}",
+                gtk_lush_proof_harness::session::MUTTER_COMMAND
+            ),
+            vec![gtk_lush_proof_harness::session::MUTTER_COMMAND.to_string()],
         )
         .expect("summary");
         let value: Value =
@@ -556,7 +559,7 @@ mod tests {
         let environment = serde_json::json!({
             "schema_version": 1,
             "status": "unsupported-host",
-            "missing_capabilities": ["mutter"],
+            "missing_capabilities": [gtk_lush_proof_harness::session::MUTTER_COMMAND],
             "runtime": { "isolated": true }
         });
         let skip = serde_json::json!({

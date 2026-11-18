@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- A122 probe and sample (`fix-extend-selection-abort`): `GtkTextView`'s
+  `extend-selection` returns `gboolean`, runs its class handler last and
+  stops at the first TRUE, so a handler answering FALSE lets later handlers
+  and GtkTextView's own run, and one answering TRUE claims the emission.
+  Fixture `fixtures::a122` (`document_view`, `connect_answer`,
+  `emit_word_extension`, `DOCUMENT`, `LOCATION_OFFSET`).
+- A117 probe and sample (`quiet-headless-session-services`): with
+  `GTK_A11Y=test`, `gtk_accessible_announce` kills the process by SIGSEGV
+  (`GtkTestATContext` has no `announce` vfunc); with `GTK_A11Y=none` it
+  returns. The crashing call runs in a child of the probe (the same
+  executable with `GTK_LUSH_AXIOMS_CONTROL=A117`, core dumps off), exported
+  as `announce_in_child` and `AnnounceOutcome` for the sample. It needs no
+  session bus.
+- A115 and A116 probes and samples (`quiet-headless-session-services`):
+  `GTK_A11Y=test` keeps a `GtkTestATContext` with queryable accessible
+  properties and activates no `org.a11y.Bus`; `ADW_DISABLE_PORTAL=1` stops
+  Libadwaita activating `org.freedesktop.portal.Desktop`, which
+  `GDK_DEBUG=no-portals` alone does not. Each control runs in a nested
+  private session through the helper binary named by `SESSION_BIN_ENV`
+  (`GTK_LUSH_SESSION_BIN`), re-running the same executable as a control
+  child (`CONTROL_ENV`, `run_control_child_if_requested`, which samples and
+  the probe runner call first). New `SESSION_BUS_AXIOMS`,
+  `session_bus_skip_line` (`skipped (needs a session bus): <id>` in an SDK
+  sandbox), `session_bus_has_name`, `A11Y_BUS_NAME` and
+  `PORTAL_DESKTOP_NAME`.
+- A95 (`scale-file-index`): `SLOW_SIZES` (262,144 and 1,048,576 rows) are
+  measured as well when slow probes are included
+  (`fixtures::a95::SLOW_SIZES`), each held to the same `get_item` ceiling;
+  the pull-request lane keeps the fast 16,384 / 131,072 pair.
 - A114 probe and sample (`slice-large-directory-collapse` R4): a
   `GtkTreeListModel` keeps no row object for a node nothing references; the
   next `get_item` hands out a new object without the dead one's handlers,

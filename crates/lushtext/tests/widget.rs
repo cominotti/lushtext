@@ -16,9 +16,7 @@ use std::process::ExitCode;
 use lushtext_core::services::filesystem::fixture;
 use lushtext_core::services::test_isolation;
 
-use gtk_lush_proof_harness::{
-    HarnessConfig, RegisteredTest, recommended_pre_gtk_environment, run_registered_tests,
-};
+use gtk_lush_proof_harness::{HarnessConfig, RegisteredTest, run_registered_tests};
 
 include!(concat!(env!("OUT_DIR"), "/widget_test_registry.rs"));
 
@@ -27,36 +25,6 @@ const HEADLESS_RUNNER_ENV: &str = "LUSHTEXT_WIDGET_HEADLESS_RUNNER";
 const HEADLESS_MONITOR_ENV: &str = "LUSHTEXT_WIDGET_HEADLESS_MONITOR";
 const WIDGET_RUN_SCRATCH_PREFIX: &str = "lushtext-test-";
 const DEFAULT_HEADLESS_MONITOR: &str = gtk_lush_proof_harness::DEFAULT_HEADLESS_MONITOR;
-
-fn configure_widget_test_environment() {
-    // Widget tests need deterministic process-wide backends before any GTK
-    // initialization path runs.
-    //
-    // - `NO_AT_BRIDGE=1` disables the accessibility bus, which is absent in
-    //   the headless mutter session and otherwise emits AT-SPI warnings.
-    // - `GDK_DEBUG=no-portals` and `GTK_USE_PORTAL=0` keep GTK from starting
-    //   xdg-desktop-portal just to discover headless settings.
-    // - `GSK_RENDERER=cairo` keeps GTK on the CPU fallback renderer so
-    //   headless containers do not probe missing Mesa/EGL devices. The runner
-    //   can still override this when a renderer-specific bug is being chased.
-    // - `GTK_IM_MODULE=gtk-im-context-simple` keeps GTK off its Wayland
-    //   input-method backend. Headless mutter advertises
-    //   `zwp_text_input_manager_v3` with no input method behind it, and
-    //   destroying a focused `GtkEntry` — every inline rename confirming — then
-    //   races the compositor's reply into a SIGSEGV in `wl_proxy_get_version`.
-    //   This one is a crash guard, not warning suppression; see
-    //   `docs/next/persistent-format-hardening.md` S7B-6.
-    // SAFETY: the widget harness sets these variables before any test code
-    // initializes GTK, and they stay local to the per-test child process.
-    unsafe {
-        for setting in recommended_pre_gtk_environment() {
-            if setting.key == "GSK_RENDERER" && std::env::var_os(setting.key).is_some() {
-                continue;
-            }
-            std::env::set_var(setting.key, setting.value);
-        }
-    }
-}
 
 /// Give this process private app data before anything else runs.
 ///
@@ -102,7 +70,9 @@ fn isolate_app_data_environment() {
 
 fn main() -> ExitCode {
     isolate_app_data_environment();
-    configure_widget_test_environment();
+    // The pre-GTK environment (`recommended_pre_gtk_environment()`) is set by
+    // the session launcher before the private bus starts, so the services it
+    // activates inherit it too; the harness verifies it in each test child.
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let config = HarnessConfig::new(CHILD_TEST_ENV, HEADLESS_RUNNER_ENV, HEADLESS_MONITOR_ENV)

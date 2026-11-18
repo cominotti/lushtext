@@ -257,7 +257,17 @@ The headless verification toolchain, split into:
   in its CHANGELOG, its README, and `docs/next/persistent-format-hardening.md`
   S7B-6. Since 2026-09-29 the parent also owns every child's temporary files
   (one per-run root, a fresh `TMPDIR` per child attempt, a dead-PID sweep),
-  after a one-directory-per-child leak exhausted a tmpfs's inodes.
+  after a one-directory-per-child leak exhausted a tmpfs's inodes. Since
+  `quiet-headless-session-services` (2026-11) the crate holds the one
+  implementation of the private headless session, the `session` module, and
+  its first binary, `gtk-lush-session` (LushText's `scripts/headless-session`
+  shim builds and execs it): profiles (`widget`, `plain`, `screencast`,
+  `accessibility`), a private monitored system bus, quiet media, and a runtime
+  guard exiting `93` with `SESSION-HYGIENE:` lines. The recommended
+  environment grew to **seven** settings (`GTK_A11Y=test`,
+  `ADW_DISABLE_PORTAL=1`), applied by the launcher and only verified in the
+  per-test child; `cargo-gtk-proof` now depends on the harness for its
+  session stages (`session_command`, `compositor_command`).
 - **`gtk-lush-proof-spine`** (optional runtime crate): the readiness/snapshot
   protocol scaffolding — interface versioning, readiness predicates/blockers,
   bounded snapshot envelope — as traits the consumer implements with their own

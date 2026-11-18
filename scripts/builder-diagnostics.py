@@ -18,6 +18,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from smoke_session import HEADLESS_SESSION, SESSION_HYGIENE_EXIT_CODE, check_tools  # noqa: E402
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = REPO_ROOT / "scripts" / "builder-diagnostics-coverage.json"
@@ -61,8 +64,13 @@ ACTIONABLE_PATTERNS = [
 KNOWN_STANDALONE_LIMIT_PATTERNS = [
     re.compile(r"Invalid object type 'Adw", re.IGNORECASE),
     re.compile(r"Invalid object type 'Lushtext", re.IGNORECASE),
+    # GTK Lush widgets (`GtkLushClipBin`, `GtkLushViewportSliceBin`, ...) are
+    # registered by the app like LushText's own, so `gtk4-builder-tool`
+    # cannot know them either.
+    re.compile(r"Invalid object type 'GtkLush", re.IGNORECASE),
     re.compile(r"Failed to lookup template parent type Adw", re.IGNORECASE),
     re.compile(r"Failed to lookup template parent type Lushtext", re.IGNORECASE),
+    re.compile(r"Failed to lookup template parent type GtkLush", re.IGNORECASE),
     re.compile(r"template class .* not found", re.IGNORECASE),
     re.compile(r"Could not find object type", re.IGNORECASE),
     re.compile(r"Could not initialize windowing system", re.IGNORECASE),
@@ -299,14 +307,15 @@ def runtime_probe_env(runtime_dir: Path) -> dict[str, str]:
 
 
 def runtime_probes(manifest: dict[str, Any], artifact_dir: Path) -> list[dict[str, Any]]:
-    missing = [name for name in ("dbus-run-session", "mutter", "cargo") if not command_available(name)]
-    if missing:
+    missing = [name for name in ("cargo",) if not command_available(name)]
+    session_unavailable = check_tools("widget") if not missing else None
+    if missing or session_unavailable:
         return [
             {
                 "id": "runtime-preflight",
                 "status": "unsupported_runtime",
                 "status_code": 77,
-                "reason": f"missing commands: {', '.join(missing)}",
+                "reason": session_unavailable or f"missing commands: {', '.join(missing)}",
                 "templates": [],
             }
         ]
@@ -320,14 +329,16 @@ def runtime_probes(manifest: dict[str, Any], artifact_dir: Path) -> list[dict[st
             ignore_cleanup_errors=True,
         ) as runtime_dir:
             env = runtime_probe_env(Path(runtime_dir))
+            # The widget profile: private system bus, no media, no AT-SPI, no
+            # portals; exit SESSION_HYGIENE_EXIT_CODE if the probe touched
+            # the host anyway.
             command = [
-                "dbus-run-session",
-                "--",
-                "mutter",
-                "--headless",
-                "--wayland",
-                "--no-x11",
-                "--virtual-monitor",
+                str(HEADLESS_SESSION),
+                "run",
+                "--profile",
+                "widget",
+                "--inherit-runtime-dir",
+                "--monitor",
                 MONITOR,
                 "--",
                 "cargo",
@@ -448,7 +459,12 @@ def classify_logs(
                 {
                     "source": entry.get("stderr", ""),
                     "line": "0",
-                    "text": f"runtime probe {entry.get('id')} exited {entry.get('status_code')}",
+                    "text": (
+                        f"runtime probe {entry.get('id')} failed its session-hygiene check "
+                        "(SESSION-HYGIENE: the session touched the host)"
+                        if entry.get("status_code") == SESSION_HYGIENE_EXIT_CODE
+                        else f"runtime probe {entry.get('id')} exited {entry.get('status_code')}"
+                    ),
                 }
             )
 

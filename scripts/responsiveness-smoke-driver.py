@@ -12,9 +12,11 @@ protected-view changes consume.
 Subcommands (the shell wrapper `scripts/run-responsiveness-smoke.sh` calls
 them in order; nothing here runs against a live desktop):
 
-``session``  inside ``dbus-run-session``: start the AT-SPI registry when an
-             AT variant is selected, then run ``mutter --headless`` with
-             ``run`` as its child.
+``session``  inside the private headless session (``scripts/headless-session
+             session``, profile ``accessibility`` when the AT variant is
+             selected, ``plain`` otherwise): start the AT-SPI registry when
+             an AT variant is selected, then run the helper's
+             ``compositor`` stage with ``run`` as its child.
 ``run``      inside the private compositor: preflight, calibration, the case
              sweep, bisection, integrity checks. Writes ``results.jsonl``.
 ``report``   after the session: storage evidence, warning findings, the D7
@@ -28,6 +30,8 @@ them in order; nothing here runs against a live desktop):
              reference set, which the inherited affinity must equal and which
              must fit the cap (never trimmed); otherwise the first N CPUs of
              the inherited affinity.
+``session-profile`` the session helper profile the selected variants need
+             (``accessibility`` or ``plain``).
 ``self-test`` exercise the parsing, classification, noise, contamination,
              derivation and data-integrity logic on synthetic records, without
              GTK or a compositor.
@@ -78,6 +82,7 @@ ATSPI_REGISTRYD = Path("/usr/libexec/at-spi2-registryd")
 GENERATOR_PATH = REPO_ROOT / "scripts/generate-long-line-fixtures.py"
 
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
+import smoke_session  # noqa: E402
 from smoke_warning_classifiers import is_gdk_broken_pipe_teardown  # noqa: E402
 
 APP_ID = "dev.cominotti.lushtext"
@@ -5714,6 +5719,13 @@ def refuse_live_session() -> None:
         raise SystemExit("refusing: DISPLAY is set; the lane never talks to an X server")
 
 
+def session_profile() -> str:
+    """The helper profile the lane's session runs (design D2): ``accessibility``
+    whenever the ``at`` variant is selected, ``plain`` otherwise, both with
+    ``--media off``. Each variant still sets its own app environment."""
+    return "accessibility" if "at" in selected_variants() else "plain"
+
+
 def session_main(args: argparse.Namespace) -> int:
     refuse_live_session()
     # Before anything can start dconf-service on this private bus, point its
@@ -5732,12 +5744,14 @@ def session_main(args: argparse.Namespace) -> int:
     if shutil.which("ibus-daemon"):
         ibus = subprocess.Popen(["ibus-daemon", "--panel=disable", "--replace"], stdout=subprocess.DEVNULL, stderr=(args.artifact_dir / "logs/ibus.log").open("wb"))
     try:
-        command = [
-            "mutter", "--headless", "--wayland", "--no-x11", "--virtual-monitor", MONITOR, "--",
+        child = [
             str(SYSTEM_PYTHON), str(SCRIPT_PATH), "run", "--artifact-dir", str(args.artifact_dir), "--binary", str(args.binary), "--tier", args.tier,
         ]
         for pattern in args.case or []:
-            command += ["--case", pattern]
+            child += ["--case", pattern]
+        # The compositor stage of the helper session this driver runs in
+        # (scripts/run-responsiveness-smoke.sh starts it); never mutter by name.
+        command = [str(smoke_session.HEADLESS_SESSION), "compositor", "--monitor", MONITOR, "--", *child]
         env = os.environ.copy()
         env["GDK_BACKEND"] = "wayland"
         with (args.artifact_dir / "logs/mutter.log").open("w", encoding="utf-8") as log:
@@ -5795,11 +5809,8 @@ def environment_info(tier: str, renderer: str) -> dict[str, Any]:
                 break
     except OSError:
         pass
-    mutter = None
-    try:
-        mutter = subprocess.run(["mutter", "--version"], capture_output=True, text=True, check=False).stdout.splitlines()[0]
-    except Exception:  # noqa: BLE001
-        pass
+    # The compositor's version line, as the session helper reports it.
+    compositor, compositor_version = smoke_session.compositor_version(session_profile(), "--media", "off")
     affinity = sorted(os.sched_getaffinity(0))
     cpu_fields = cpu_set_fields(affinity, os.environ.get("LUSHTEXT_MEASURE_CPUS"), os.environ.get("LUSHTEXT_MEASURE_CPUS_SOURCE"))
     return {
@@ -5808,7 +5819,7 @@ def environment_info(tier: str, renderer: str) -> dict[str, Any]:
         "renderer": renderer,
         "monitor": MONITOR,
         "gtk_cursor_blink": False,
-        "toolkit": {"gtk4": pkg("gtk4"), "libadwaita": pkg("libadwaita-1"), "pango": pkg("pango"), "gtksourceview": pkg("gtksourceview-5"), "glib": pkg("glib-2.0"), "mutter": mutter},
+        "toolkit": {"gtk4": pkg("gtk4"), "libadwaita": pkg("libadwaita-1"), "pango": pkg("pango"), "gtksourceview": pkg("gtksourceview-5"), "glib": pkg("glib-2.0"), compositor: compositor_version},
         "kernel": " ".join(platform.uname()[i] for i in (0, 2, 4)),
         "cpu_model": cpu_model,
         **cpu_fields,
@@ -7262,6 +7273,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     sub.add_parser("self-test")
     affinity = sub.add_parser("lane-affinity", help="the lane's CPU list: measure.sh's reference (LUSHTEXT_MEASURE_CPUS), checked against this process's affinity and the cap, else the first N CPUs of the affinity")
     affinity.add_argument("max_cpus", type=int)
+    sub.add_parser("session-profile", help="the session helper profile the selected variants need")
     listener = sub.add_parser("atspi-listener")
     listener.add_argument("--output", type=Path, required=True)
     return parser.parse_args(argv)
@@ -7281,6 +7293,9 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             print(f"lane-affinity: {exc}", file=sys.stderr)
             return 1
+        return 0
+    if args.command == "session-profile":
+        print(session_profile())
         return 0
     if args.command == "atspi-listener":
         return atspi_listener_main(args.output)

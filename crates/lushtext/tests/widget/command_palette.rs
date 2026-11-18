@@ -11,16 +11,17 @@ use glib::prelude::ToValue;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::model::palette::{
-    CommandCategory, CommandDef, IndexedFile, PaletteFileEntry, PaletteFileIdentity,
+    CommandCategory, CommandDef, FileOrdinal, PaletteFileEntry, PaletteFileIdentity,
     PaletteNoteCategory, PaletteNoteEntry, PaletteNoteTarget, SearchMode,
 };
 use lushtext_core::model::workspace::{
     WorkspaceConfig, WorkspaceId, WorkspaceScope, WorkspacesFile,
 };
-use lushtext_core::services::palette::{FileIndex, MAX_INDEXED_FILES, NoteSourceRefreshRequest};
+use lushtext_core::services::palette::{FileIndex, NoteSourceRefreshRequest, OwnedIndexedFile};
 use lushtext_core::services::{json_store, workspace_manager};
 use lushtext_core::ui::accessibility::{self, test_audit::AccessibleAudit};
 use lushtext_core::ui::command_palette::item::PaletteItem;
+use lushtext_core::ui::command_palette::policy::LARGE_INDEX_RETIREMENT_FILES;
 use lushtext_core::ui::command_palette::{
     CommandPaletteTestPolicy, LushtextCommandPalette, apply_palette_row_accessibility_for_test,
     file_index_retirement_snapshot_for_test,
@@ -58,18 +59,14 @@ fn delay_palette_index_update_worker(delay: Duration) {
 
 fn in_memory_palette_index(prefix: &str, count: usize) -> FileIndex {
     let root = Arc::new(PathBuf::from(format!("/synthetic/{prefix}")));
-    FileIndex::from(
-        (0..count)
-            .map(|index| {
-                let path = root.join(format!("{prefix}-{index:05}.rs"));
-                IndexedFile::new(
-                    path.clone(),
-                    PaletteFileIdentity::canonical(path),
-                    Arc::clone(&root),
-                )
-            })
-            .collect::<Vec<_>>(),
-    )
+    FileIndex::from_paths((0..count).map(|index| {
+        let path = root.join(format!("{prefix}-{index:05}.rs"));
+        (
+            path.clone(),
+            PaletteFileIdentity::canonical(path),
+            Arc::clone(&root),
+        )
+    }))
 }
 
 /// Keep older command-palette assertions on the shared harness wait semantics.
@@ -243,13 +240,14 @@ fn rebuild_and_wait_until(
 #[test]
 fn test_palette_item_from_indexed_file() {
     ensure_gtk_init();
-    let file = IndexedFile {
+    let file = OwnedIndexedFile {
         path: "/home/user/project/src/main.rs".into(),
         identity: PaletteFileIdentity::canonical("/home/user/project/src/main.rs".into()),
         name: "main.rs".to_string(),
         workspace_folder: std::sync::Arc::new("/home/user/project".into()),
     };
-    let item = PaletteItem::from_indexed_file(&file);
+    let index = FileIndex::from(vec![file]);
+    let item = PaletteItem::from_indexed_file(index.file(FileOrdinal(0)).expect("one file"));
     assert_eq!(item.display_name(), "main.rs");
     assert_eq!(item.subtitle(), "src/main.rs");
     assert!(item.is_file());
@@ -295,13 +293,14 @@ fn test_palette_item_command_without_shortcut() {
 #[test]
 fn test_palette_item_file_at_workspace_folder_top_level() {
     ensure_gtk_init();
-    let file = IndexedFile {
+    let file = OwnedIndexedFile {
         path: "/home/user/project/Cargo.toml".into(),
         identity: PaletteFileIdentity::canonical("/home/user/project/Cargo.toml".into()),
         name: "Cargo.toml".to_string(),
         workspace_folder: std::sync::Arc::new("/home/user/project".into()),
     };
-    let item = PaletteItem::from_indexed_file(&file);
+    let index = FileIndex::from(vec![file]);
+    let item = PaletteItem::from_indexed_file(index.file(FileOrdinal(0)).expect("one file"));
     assert_eq!(item.subtitle(), "Cargo.toml");
 }
 
@@ -792,7 +791,7 @@ fn test_command_palette_incremental_index_worker_publishes_then_clears_readiness
     let palette = LushtextCommandPalette::new();
     let root = Arc::new(PathBuf::from("/synthetic/incremental-index"));
     let existing = root.join("existing.rs");
-    palette.set_file_index(FileIndex::from(vec![IndexedFile::new(
+    palette.set_file_index(FileIndex::from(vec![OwnedIndexedFile::new(
         existing.clone(),
         PaletteFileIdentity::canonical(existing),
         Arc::clone(&root),
@@ -826,12 +825,12 @@ fn test_incremental_index_delete_reaches_the_index() {
     let keep = root.join("keep-me.rs");
     let doomed = root.join("delete-me.rs");
     palette.set_file_index(FileIndex::from(vec![
-        IndexedFile::new(
+        OwnedIndexedFile::new(
             keep.clone(),
             PaletteFileIdentity::canonical(keep),
             Arc::clone(&root),
         ),
-        IndexedFile::new(
+        OwnedIndexedFile::new(
             doomed.clone(),
             PaletteFileIdentity::canonical(doomed.clone()),
             Arc::clone(&root),
@@ -873,7 +872,7 @@ fn test_incremental_index_rename_reaches_the_index() {
     let palette = LushtextCommandPalette::new();
     let root = Arc::new(PathBuf::from("/synthetic/incremental-rename"));
     let before = root.join("before-rename.rs");
-    palette.set_file_index(FileIndex::from(vec![IndexedFile::new(
+    palette.set_file_index(FileIndex::from(vec![OwnedIndexedFile::new(
         before.clone(),
         PaletteFileIdentity::canonical(before.clone()),
         Arc::clone(&root),
@@ -1022,7 +1021,10 @@ fn test_incremental_index_update_queue_coalesces_overflow_to_one_rebuild() {
 fn test_command_palette_retires_last_owned_full_index_off_gtk() {
     ensure_gtk_init();
     let palette = LushtextCommandPalette::new();
-    palette.set_file_index(in_memory_palette_index("retire-full", MAX_INDEXED_FILES));
+    palette.set_file_index(in_memory_palette_index(
+        "retire-full",
+        LARGE_INDEX_RETIREMENT_FILES,
+    ));
 
     palette.set_file_index(FileIndex::default());
 
@@ -1041,7 +1043,7 @@ fn test_command_palette_retires_last_owned_accepted_incremental_index_off_gtk() 
     let palette = LushtextCommandPalette::new();
     palette.set_file_index(in_memory_palette_index(
         "retire-accepted",
-        MAX_INDEXED_FILES,
+        LARGE_INDEX_RETIREMENT_FILES,
     ));
 
     palette.update_index_file_deleted(&PathBuf::from(
@@ -1066,7 +1068,7 @@ fn test_command_palette_retires_last_owned_rejected_incremental_index_off_gtk() 
     let palette = LushtextCommandPalette::new();
     palette.set_file_index(in_memory_palette_index(
         "retire-rejected",
-        MAX_INDEXED_FILES,
+        LARGE_INDEX_RETIREMENT_FILES,
     ));
     palette.update_index_file_deleted(&PathBuf::from("/synthetic/retire-rejected/missing.rs"));
     wait_until(Duration::from_secs(10), || {

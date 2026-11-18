@@ -119,14 +119,14 @@ fn has_context_tags(page: &LushtextEditorPage) -> bool {
 }
 
 /// The GLib criticals `capture` saw (warnings are the widget runner's job;
-/// the headless session logs benign ones), as `domain: message`. The headless
-/// session's missing accessibility bus is benign (the widget runner allowlists
-/// the same line).
+/// the headless session logs benign ones), as `domain: message`. None is
+/// benign: the session runs `GTK_A11Y=test`, so no AT-SPI registry critical
+/// can occur.
 fn criticals(capture: &LogCapture) -> Vec<String> {
     capture
         .entries()
         .into_iter()
-        .filter(|entry| entry.critical && !entry.message.contains("org.a11y.atspi.Registry"))
+        .filter(|entry| entry.critical)
         .map(|entry| format!("{}: {}", entry.domain, entry.message))
         .collect()
 }

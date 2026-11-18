@@ -33,9 +33,13 @@ pub(crate) mod a111;
 pub(crate) mod a112;
 pub(crate) mod a113;
 pub(crate) mod a114;
+pub(crate) mod a115;
+pub(crate) mod a116;
+pub(crate) mod a117;
 pub(crate) mod a118;
 pub(crate) mod a119;
 pub(crate) mod a120;
+pub(crate) mod a122;
 pub(crate) mod a13;
 pub(crate) mod a14;
 pub(crate) mod a15;
@@ -121,8 +125,13 @@ pub(crate) mod lazy_sections;
 pub(crate) mod post_open;
 pub(crate) mod remote_input;
 pub(crate) mod row_lists;
+pub(crate) mod session_names;
 pub use remote_input::{
     REMOTE_INPUT_AXIOMS, SANDBOX_ENV, in_sdk_sandbox, remote_desktop_skip_line,
+};
+pub use session_names::{
+    A11Y_BUS_NAME, CONTROL_ENV, PORTAL_DESKTOP_NAME, SESSION_BIN_ENV, SESSION_BUS_AXIOMS,
+    run_control_child_if_requested, session_bus_has_name, session_bus_skip_line,
 };
 pub(crate) mod text;
 
@@ -234,9 +243,13 @@ pub use a111::probe_a111;
 pub use a112::probe_a112;
 pub use a113::probe_a113;
 pub use a114::probe_a114;
+pub use a115::probe_a115;
+pub use a116::probe_a116;
+pub use a117::{AnnounceOutcome, announce_in_child, probe_a117};
 pub use a118::probe_a118;
 pub use a119::probe_a119;
 pub use a120::probe_a120;
+pub use a122::probe_a122;
 
 /// Settle after an adjustment or height change, before reading it back.
 pub(crate) const LAYOUT_SETTLE: Duration = Duration::from_millis(200);

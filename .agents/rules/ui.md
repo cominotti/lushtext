@@ -236,7 +236,9 @@ add a new one before calling the work complete.
   relations, states, and announcements through `crate::ui::accessibility`.
   Direct `gtk4::accessible::Property::*`, `update_state`, `update_relation`, or
   `announce` calls belong in that helper unless a local GTK contract requires an
-  explicit exception.
+  explicit exception. For announcements there is no exception: the helper skips
+  an AT context that cannot announce (`GtkTestATContext`, which crashes on
+  `announce`, ledger A117), and a direct call bypasses that guard.
 - Icon-only controls must have a product-facing accessible label and, when it
   helps sighted users, a visible tooltip. The label must describe the command,
   not the icon name.
@@ -250,7 +252,8 @@ add a new one before calling the work complete.
   announce every keystroke, heartbeat, hover transition, or repeated visual
   pulse.
 - Widget tests can use `ui::accessibility::test_audit::AccessibleAudit` for
-  metadata presence while the harness has `NO_AT_BRIDGE=1`. Real focus paths,
+  metadata presence: the harness runs with `GTK_A11Y=test`, which keeps
+  accessible state queryable without an AT-SPI bus. Real focus paths,
   accessible tree shape, and editor text behavior still need
   `make accessibility-smoke` or a documented manual screen-reader check.
 

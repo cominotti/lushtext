@@ -51,8 +51,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-smoke_require_command dbus-run-session
-smoke_require_command mutter
+# Screenshots need quiet media too; without it the driver runs media off.
+smoke_require_session accessibility --media off
 smoke_require_command gdbus
 smoke_require_command gsettings
 

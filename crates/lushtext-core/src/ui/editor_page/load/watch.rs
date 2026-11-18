@@ -21,6 +21,7 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 
 use crate::ui::editor_page::LushtextEditorPage;
+use crate::ui::signal_connect;
 
 /// The settle watch's state on one editor.
 #[derive(Default)]
@@ -39,13 +40,11 @@ impl LushtextEditorPage {
     /// scrolled window has given it one.
     pub(crate) fn setup_settle_watch(&self) {
         let editor = self.downgrade();
-        self.buffer()
-            .connect_local("highlight-updated", false, move |_| {
-                if let Some(editor) = editor.upgrade() {
-                    editor.record_settle_mark();
-                }
-                None
-            });
+        signal_connect::connect_void(&self.buffer(), "highlight-updated", false, move |_| {
+            if let Some(editor) = editor.upgrade() {
+                editor.record_settle_mark();
+            }
+        });
         let editor = self.downgrade();
         self.imp().source_view.connect_map(move |view| {
             let Some(editor) = editor.upgrade() else {

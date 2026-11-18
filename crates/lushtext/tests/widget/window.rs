@@ -40,7 +40,7 @@ use lushtext_core::model::encoding::{
 };
 use lushtext_core::model::local_history::LocalHistorySnapshotOrigin;
 use lushtext_core::model::note::RichNoteBody;
-use lushtext_core::model::palette::{IndexedFile, PaletteFileIdentity};
+use lushtext_core::model::palette::PaletteFileIdentity;
 use lushtext_core::model::recent_document::RecentDocumentEntry;
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::model::workspace::{
@@ -4423,11 +4423,13 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
     window
         .imp()
         .command_palette
-        .set_file_index(FileIndex::from(vec![IndexedFile::new(
-            palette_file.clone(),
-            PaletteFileIdentity::canonical(palette_file),
-            Arc::clone(&palette_folder),
-        )]));
+        .set_file_index(FileIndex::from(vec![
+            lushtext_core::services::palette::OwnedIndexedFile::new(
+                palette_file.clone(),
+                PaletteFileIdentity::canonical(palette_file),
+                Arc::clone(&palette_folder),
+            ),
+        ]));
     window
         .imp()
         .command_palette

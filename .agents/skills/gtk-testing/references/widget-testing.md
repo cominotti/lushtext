@@ -75,12 +75,40 @@ emit Mesa/EGL GPU-probe warnings just because no render device is available.
 Override `GSK_RENDERER` explicitly only when the test run is meant to chase a
 renderer-specific GTK bug.
 
-`gtk_lush_proof_harness::recommended_pre_gtk_environment()` sets five variables,
-and the principle behind all five is the same: **the private compositor
-advertises desktop services it cannot provide, so do not start the client half
-against it.** `NO_AT_BRIDGE=1` (no accessibility bus), `GDK_DEBUG=no-portals` and
-`GTK_USE_PORTAL=0` (no portal service), `GSK_RENDERER=cairo` (no GPU), and
-`GTK_IM_MODULE=gtk-im-context-simple` (no input method).
+`gtk_lush_proof_harness::recommended_pre_gtk_environment()` names seven
+variables, and the principle behind all seven is the same: **the private
+compositor advertises desktop services it cannot provide, so do not start the
+client half against it.** `NO_AT_BRIDGE=1` and `GTK_A11Y=test` (no accessibility
+bus), `GDK_DEBUG=no-portals`, `GTK_USE_PORTAL=0` and `ADW_DISABLE_PORTAL=1` (no
+portal service), `GSK_RENDERER=cairo` (no GPU), and
+`GTK_IM_MODULE=gtk-im-context-simple` (no input method). The session helper's
+`widget` profile sets them on the session bus launcher, before the bus starts,
+so the services the bus activates inherit them; the per-test child only checks
+them and fails before GTK starts, naming the variable, when one is missing. A
+hand-run `cargo test --test widget` still relaunches itself through the
+session library and is unaffected; only a per-test child launched by hand
+(the `LUSHTEXT_WIDGET_CHILD` path without the session) fails fast that way.
+
+**Use `GTK_A11Y=test`, never `none`, for a widget-test child.** GTK 4 ignores
+`NO_AT_BRIDGE` and starts `org.a11y.Bus` from every client under the default
+`atspi` backend; `test` gives each widget a `GtkTestATContext` that keeps its
+accessible properties, states and relations queryable through
+`gtk_test_accessible_*` (and `AccessibleAudit`) and talks to no bus. `none`
+creates no AT context at all, so `gtk_test_accessible_has_property` returns
+false and accessibility assertions silently stop meaning anything (ledger
+A115). Code that asks whether AT-SPI listens (`at_listeners`) sees no AT-SPI
+under `test`; its test-utils simulation hook answers for the test instead.
+`ADW_DISABLE_PORTAL=1` is needed because `GDK_DEBUG=no-portals` does not stop
+Libadwaita from activating the settings portal (A116).
+
+**Under `test`, a raw `announce` is a segfault.** `GtkTestATContext` has no
+`announce` vfunc, so `gtk_accessible_announce` on a realized widget kills the
+child with no panic and no output: the harness prints only `FAILED` (A117).
+`ui::accessibility::announce` skips a test context, so app code must announce
+only through it, and a test must never call `Accessible::announce` directly.
+A widget test that fails with no panic text is worth checking for this first:
+run its child under `gdb` inside `scripts/headless-session run --profile
+widget`.
 
 **The input-method one is the least obvious and it is a crash, not noise.**
 Headless Mutter advertises `zwp_text_input_manager_v3`, so GTK selects its
@@ -212,7 +240,26 @@ one `wait_until` drain chains every turn to the terminal and the in-flight state
 is never sampled: a test that passes on an idle machine and fails under load
 (reproduced 2 of 6 runs with CPUs saturated; `harden-flatpak-sdk-update-ci`).
 Assert in-flight states with `observed_between_dispatches`; keep `wait_until`
-for terminal states, which persist.
+for terminal states, which persist. When the test must also *act* while the
+workflow is in flight (supersede it, cancel it), hold it there instead through
+its test cadence seam: the workspace reconciliation test sets a one-hour batch
+delay until its superseding refresh, then restores 20 ms for the latest plan
+(`quiet-headless-session-services`; a 20 ms gap went unseen under load and
+printed `FLAKY:`).
+
+**A fixed iteration window starves a lower-priority source under load.** A
+test that iterates its own context for a fixed time and expects a
+`G_PRIORITY_DEFAULT` source to run between two dispatches of a
+higher-priority one is load-sensitive: once every iteration takes longer than
+the high-priority source's period, that source is ready at every prepare and
+GLib dispatches only it, so the lower-priority source can run in the window's
+last iteration, after which nothing records it. The in-tree case was
+`ui::responsiveness_probe::watchdog::tests::a_blocking_dispatch_is_recorded_between_its_bounds`
+(a 2 ms `G_PRIORITY_HIGH` watchdog and a 40 ms stalling idle in a 70 ms
+window; "lateness 756 µs below the lower bound" at a load of 8-12,
+`reduce-build-disk-writes` design D11). Iterate until the event that proves
+the outcome has happened (there: one watchdog dispatch after the stall), with
+a generous deadline, instead of for a fixed time.
 
 **`window.destroy()` does not dispose a window a test still holds** (ledger
 A21). A teardown test that needs the widget tree torn down must drop every

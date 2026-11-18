@@ -30,6 +30,7 @@ use super::policy::{
 };
 use super::projection_execution::{draw_marker_strip, sync_source_map_geometry};
 use crate::ui::editor_page::document_scale::inserted_run_start;
+use crate::ui::signal_connect;
 
 impl LushtextEditorPage {
     /// Install the per-tab minimap widgets and signal glue.
@@ -81,38 +82,40 @@ impl LushtextEditorPage {
             // insertion line (every multi-line insertion marked one line).
             // GTK's own lines then follow its paragraph delimiters (`\n`,
             // `\r`, `\r\n`, U+2029; ledger A42), CR-only and U+2029 included.
-            let handler_id = buffer.connect_local("insert-text", true, move |values| {
-                let editor = editor_weak.upgrade()?;
-                if editor.imp().minimap.tracking_suspended.get() {
-                    return None;
-                }
-                let end = values.get(1)?.get::<gtk4::TextIter>().ok()?;
-                let text = values.get(2)?.get::<&str>().ok()?;
-                let start = inserted_run_start(&editor.buffer(), &end, text);
-                editor.record_modified_line_marks(
-                    u32::try_from(start.line()).unwrap_or(0),
-                    u32::try_from(end.line()).unwrap_or(0),
-                );
-                editor.arm_minimap_refresh();
-                None
-            });
+            let handler_id =
+                signal_connect::connect_void(&buffer, "insert-text", true, move |values| {
+                    let editor = editor_weak.upgrade()?;
+                    if editor.imp().minimap.tracking_suspended.get() {
+                        return None;
+                    }
+                    let end = values.get(1)?.get::<gtk4::TextIter>().ok()?;
+                    let text = values.get(2)?.get::<&str>().ok()?;
+                    let start = inserted_run_start(&editor.buffer(), &end, text);
+                    editor.record_modified_line_marks(
+                        u32::try_from(start.line()).unwrap_or(0),
+                        u32::try_from(end.line()).unwrap_or(0),
+                    );
+                    editor.arm_minimap_refresh();
+                    Some(())
+                });
             imp.minimap.buffer_signals.track(&buffer, handler_id);
         }
         {
             let editor_weak = self.downgrade();
             // An after-handler too: the default handler has joined the lines
             // by now, so the line at the deletion point is the joined one.
-            let handler_id = buffer.connect_local("delete-range", true, move |values| {
-                let editor = editor_weak.upgrade()?;
-                if editor.imp().minimap.tracking_suspended.get() {
-                    return None;
-                }
-                let start = values.get(1)?.get::<gtk4::TextIter>().ok()?;
-                let line = u32::try_from(start.line()).unwrap_or(0);
-                editor.record_modified_line_marks(line, line);
-                editor.arm_minimap_refresh();
-                None
-            });
+            let handler_id =
+                signal_connect::connect_void(&buffer, "delete-range", true, move |values| {
+                    let editor = editor_weak.upgrade()?;
+                    if editor.imp().minimap.tracking_suspended.get() {
+                        return None;
+                    }
+                    let start = values.get(1)?.get::<gtk4::TextIter>().ok()?;
+                    let line = u32::try_from(start.line()).unwrap_or(0);
+                    editor.record_modified_line_marks(line, line);
+                    editor.arm_minimap_refresh();
+                    Some(())
+                });
             imp.minimap.buffer_signals.track(&buffer, handler_id);
         }
         {

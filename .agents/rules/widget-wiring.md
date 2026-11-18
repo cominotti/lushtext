@@ -128,6 +128,28 @@ teardown or recycling lifecycle:
 - `RegistrationBag` for controller-like cleanup callbacks that are not
   represented by a signal id or binding.
 
+**String-named signals go through `ui::signal_connect`.** A signal without a
+typed gtk-rs `connect_*` method (keybinding signals such as `backspace` or
+`extend-selection`, `GtkTextBuffer` `insert-text` as an after-handler, a
+frame-clock phase with `after`, an app-defined signal such as
+`content-changed`) is connected with `signal_connect::connect_void` (the
+handler returns `()` or `Option<()>`) or `signal_connect::connect_returning`
+(the handler returns the declared type, for example `bool` for `gboolean`),
+and emitted by name with `signal_connect::emit_void` or `emit_returning`. The
+helper looks the signal up and checks its declared return type **when the
+handler is connected**, so a mismatch fails every test that builds the
+surface. glib-rs's own `connect_local` checks the closure's
+`Option<glib::Value>` only inside the emission, in GLib's C marshaller, where
+the panic aborts the process: a `gboolean` handler that answered `None`
+aborted LushText on every double click (`fix-extend-selection-abort`, ledger
+A122). `connect`, `connect_local`, `connect_closure`, `connect_unsafe` (and
+their `_id` forms) and the `emit_by_name` family are banned in
+`crates/lushtext-core/src` outside `ui/signal_connect.rs`
+(`make check-signal-connections`, in `make check-policy`). Widget tests under
+`crates/lushtext/tests/**` and the GTK axiom probes under
+`crates/gtk-lush/axioms/**` are outside that gate: they connect and emit by
+name on purpose to drive the toolkit, and own their answers.
+
 Keep ordinary untracked `connect_*` calls when the source and target share the
 same widget/action lifetime and no later disconnect is needed. Keep
 event-controller ownership explicit when the controller itself is the lifetime
@@ -189,7 +211,7 @@ window width), prefer the closest live allocation signal over property
 notifications, and prove that signal actually fires in the relevant widget:
 
 - **`notify::default-width` / `notify::maximized`** fire *before* the new allocation is applied. Reading `window.width()` in these handlers returns the **old** stale value. This causes constraints to silently fail during maximize/unmaximize transitions.
-- **`size_allocate(width, height, baseline)`** receives the **actual allocated dimensions as parameters** when GTK calls the vfunc for that subclass. Prove it fires before wiring repair logic to it. GTK4 can skip a subclass override on widgets whose class installs a layout manager; `LushtextEditorPage` inherits the `GtkBoxLayout` path, so editor viewport reflow must be observed through `gtk_lush_viewport::ViewportObserver` on the source view's scroll-adjustment page sizes instead.
+- **`size_allocate(width, height, baseline)`** receives the **actual allocated dimensions as parameters** when GTK calls the vfunc for that subclass. Prove it fires before wiring repair logic to it. GTK4 does not call the override on a widget whose class installs a layout manager: `gtk_widget_allocate` hands the allocation to the layout manager. `LushtextEditorPage` and `LushtextMarkdownPreview` inherit the `GtkBoxLayout` path, so editor viewport reflow and the preview's code-block width repair are observed through `gtk_lush_viewport::ViewportObserver` on the text view's scroll-adjustment page sizes instead (the preview's dead override left code blocks at their old width after a resize, `quiet-headless-session-services`). `GtkWidget` has no `width` property either, so a `notify::width` handler never runs.
 - **`size_allocate` is top-down only** — it fires when the widget itself is resized, not when children change internally. For child-initiated changes, connect the child's own notification. For `GtkTextView`/`GtkSourceView` viewport width or height changes, the horizontal and vertical adjustments' `page-size` values are a reliable allocation-derived signal; use `gtk_lush_viewport::RestState`/`RestPause` to keep GTK-preserved transient offsets from replacing user scroll intent. A pause also hides real scrolls made during the burst, so a repair that runs when the burst settles must not undo one: the editor page records the value each vertical `changed` emission carries and counts a `value-changed` to any other value as a scroll (ledger A112: `configure` sets the value before `changed`, while `set_value` and `scroll_to_mark` move it with no `changed`), then the settle keeps that scroll and re-records the rest state, which the pause swallowed (`restore-main-ci`). Any path that ends a burst without its settle must take the same record: a hidden minimap's refresh cancels the settle, and `record_scroll_from_cancelled_reflow` keeps the rest state true there.
 - `size_allocate` fires on every layout pass. Keep the handler cheap (a comparison against a cached width, then at most one write). Guard GSettings writes with a value-change check to avoid D-Bus overhead.
 - If allocation-derived geometry updates an `AdwBreakpoint` condition, cache the derived condition or threshold and call `set_condition()` only when it actually changes. Reparsing or reinstalling breakpoint conditions on every animation frame adds main-thread layout churn.

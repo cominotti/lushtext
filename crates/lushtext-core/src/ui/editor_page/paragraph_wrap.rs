@@ -32,6 +32,7 @@ use gtk4::prelude::*;
 use super::LushtextEditorPage;
 use super::document_scale::{inserted_run_start, read_paragraph_chars};
 use crate::model::paragraph_wrap::{ParagraphWrap, long_interior_paragraphs, paragraph_wrap};
+use crate::ui::signal_connect;
 
 /// The tag that unwraps a paragraph: the gate applies it to the whole
 /// paragraph, and GTK reads it from the first character (ledger A53).
@@ -116,7 +117,7 @@ impl LushtextEditorPage {
         let buffer = self.buffer();
         let signals = &self.imp().document_scale.signals;
         let editor_weak = self.downgrade();
-        let id = buffer.connect_local("insert-text", true, move |values| {
+        let id = signal_connect::connect_void(&buffer, "insert-text", true, move |values| {
             let editor = editor_weak.upgrade()?;
             let end = values.get(1)?.get::<gtk4::TextIter>().ok()?;
             let run = values.get(2)?.get::<&str>().ok()?;
@@ -136,16 +137,16 @@ impl LushtextEditorPage {
                     editor.record_wrap_change(gate_paragraph(&buffer, line));
                 }
             }
-            None
+            Some(())
         });
         signals.track(&buffer, id);
         let editor_weak = self.downgrade();
-        let id = buffer.connect_local("delete-range", true, move |values| {
+        let id = signal_connect::connect_void(&buffer, "delete-range", true, move |values| {
             let editor = editor_weak.upgrade()?;
             let start = values.get(1)?.get::<gtk4::TextIter>().ok()?;
             let buffer = editor.buffer();
             editor.record_wrap_change(gate_paragraph(&buffer, start.line()));
-            None
+            Some(())
         });
         signals.track(&buffer, id);
     }

@@ -54,6 +54,7 @@ RUN dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps
         colord-devel \
         cups-devel \
         dbus-daemon \
+        dbus-tools \
         desktop-file-utils \
         findutils \
         flex \

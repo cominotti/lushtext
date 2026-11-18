@@ -86,9 +86,12 @@ sweep_stale_entries() {
 }
 
 SESSION_RUNTIME_NAME=".session-runtime"
-# Mutter listens on `$XDG_RUNTIME_DIR/wayland-0`; `sun_path` holds 108 bytes,
-# and the margin covers the session's other sockets beside it.
-SESSION_SOCKET_PATH_LIMIT=100
+# The deepest socket a session binds in its runtime directory is the session
+# helper's private system bus, and dbus-daemon refuses a socket path over 99
+# bytes (gtk-lush-proof-harness `DBUS_SOCKET_PATH_MAX`, below the kernel's
+# 107); Mutter's `wayland-0` beside it is shorter.
+SESSION_DEEPEST_SOCKET="gtk-lush-session/system-bus"
+SESSION_SOCKET_PATH_LIMIT=99
 SESSION_RELEASE_POLLS=200   # x 0.05 s = 10 s
 SESSION_RELEASE_POLL_SECONDS=0.05
 
@@ -175,9 +178,9 @@ run_scoped() {
     local status=0
     if [[ "$session_runtime" == true ]]; then
         local runtime_dir="$scope/$SESSION_RUNTIME_NAME"
-        local socket="$runtime_dir/wayland-0"
+        local socket="$runtime_dir/$SESSION_DEEPEST_SOCKET"
         if (( ${#socket} > SESSION_SOCKET_PATH_LIMIT )); then
-            echo "Error: the session's Wayland socket path would be ${#socket} bytes (limit $SESSION_SOCKET_PATH_LIMIT): $socket" >&2
+            echo "Error: the session's system bus socket path would be ${#socket} bytes (limit $SESSION_SOCKET_PATH_LIMIT): $socket" >&2
             echo "The temporary directory '$base' (TMPDIR) is too deep; point TMPDIR at a shorter one." >&2
             return 2
         fi

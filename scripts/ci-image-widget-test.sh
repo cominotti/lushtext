@@ -201,11 +201,15 @@ EOF
         || fail "dnf extraction gave '$out'"
 
     # The real workflow: the widget job's image and a dnf line that installs
-    # the headless session (mutter, dbus-daemon), which no non-GTK job has.
+    # the headless session (the compositor, the bus daemon, and the
+    # dbus-monitor the session helper watches its buses with), which no
+    # non-GTK job has. A `*packages` array is an inventory, not a spawn
+    # (`make check-session-hygiene`).
     out="$(ci_widget_image "$CI_WORKFLOW")"
     [[ "$out" == registry.fedoraproject.org/fedora:* ]] || fail "ci.yml widget image is '$out'"
     out="$(ci_widget_dnf_command "$CI_WORKFLOW")"
-    for package in gtk4-devel libadwaita-devel gtksourceview5-devel mutter dbus-daemon python3; do
+    local widget_packages=(gtk4-devel libadwaita-devel gtksourceview5-devel mutter dbus-daemon dbus-tools python3)
+    for package in "${widget_packages[@]}"; do
         [[ " $out " == *" $package "* ]] || fail "ci.yml widget dnf line lacks $package: '$out'"
     done
     [[ "$out" == dnf\ *install\ -y\ * ]] || fail "ci.yml widget dnf line is not an install: '$out'"

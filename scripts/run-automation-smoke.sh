@@ -42,10 +42,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-smoke_require_command dbus-run-session
+smoke_require_session plain
 smoke_require_command gdbus
 smoke_require_command gsettings
-smoke_require_command mutter
 
 [[ -x /usr/bin/python3 ]] || smoke_skip "/usr/bin/python3 is not available."
 /usr/bin/python3 -c 'import gi' >/dev/null 2>&1 || smoke_skip "system Python lacks PyGObject gi bindings."

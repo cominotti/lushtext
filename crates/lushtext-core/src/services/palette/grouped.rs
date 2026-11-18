@@ -256,11 +256,16 @@ fn append_file_groups(
     let workspace_rows = workspace_results
         .into_iter()
         .filter_map(|result| match result.item {
-            SearchResultItem::File(file) => Some(PaletteSearchRow::File {
-                display_name: file.name.clone(),
-                subtitle: file.relative_display(),
-                file_path: file.path.clone(),
-            }),
+            SearchResultItem::File(ordinal) => {
+                input
+                    .index
+                    .file(ordinal)
+                    .map(|file| PaletteSearchRow::File {
+                        display_name: file.name().to_string(),
+                        subtitle: file.relative_display(),
+                        file_path: file.path(),
+                    })
+            }
             SearchResultItem::OpenFile(_)
             | SearchResultItem::Command(_)
             | SearchResultItem::Note(_) => None,

@@ -1,0 +1,507 @@
+{
+ "comment": "cargo-mutants 27.0.0 output of a 12-mutant probe crate (stage 3 of reduce-build-disk-writes): `--in-place --shard 0/2` (s0), `--shard 1/2` (s1), and an empty shard (`--shard 1/2 --re` matching one mutant). Trimmed to the fields scripts/mutants-mirror.py reads; `files` lists every file the run wrote under mutants.out.",
+ "slots": {
+  "empty": {
+   "files": [
+    "caught.txt",
+    "debug.log",
+    "lock.json",
+    "missed.txt",
+    "mutants.json",
+    "timeout.txt",
+    "unviable.txt"
+   ],
+   "mutants": [],
+   "txt": {
+    "caught.txt": "",
+    "missed.txt": "",
+    "timeout.txt": "",
+    "unviable.txt": ""
+   }
+  },
+  "s0": {
+   "files": [
+    "caught.txt",
+    "debug.log",
+    "diff/src__lib.rs_line_1_col_23.diff",
+    "diff/src__lib.rs_line_1_col_23_001.diff",
+    "diff/src__lib.rs_line_2_col_23.diff",
+    "diff/src__lib.rs_line_2_col_23_001.diff",
+    "diff/src__lib.rs_line_2_col_23_002.diff",
+    "diff/src__lib.rs_line_3_col_37.diff",
+    "lock.json",
+    "log/baseline.log",
+    "log/src__lib.rs_line_1_col_23.log",
+    "log/src__lib.rs_line_1_col_23_001.log",
+    "log/src__lib.rs_line_2_col_23.log",
+    "log/src__lib.rs_line_2_col_23_001.log",
+    "log/src__lib.rs_line_2_col_23_002.log",
+    "log/src__lib.rs_line_3_col_37.log",
+    "missed.txt",
+    "mutants.json",
+    "outcomes.json",
+    "timeout.txt",
+    "unviable.txt"
+   ],
+   "mutants": [
+    {
+     "file": "src/lib.rs",
+     "name": "src/lib.rs:1:23: replace one -> i32 with 0"
+    },
+    {
+     "file": "src/lib.rs",
+     "name": "src/lib.rs:1:23: replace one -> i32 with -1"
+    },
+    {
+     "file": "src/lib.rs",
+     "name": "src/lib.rs:2:23: replace two -> i32 with 0"
+    },
+    {
+     "file": "src/lib.rs",
+     "name": "src/lib.rs:2:23: replace two -> i32 with 1"
+    },
+    {
+     "file": "src/lib.rs",
+     "name": "src/lib.rs:2:23: replace two -> i32 with -1"
+    },
+    {
+     "file": "src/lib.rs",
+     "name": "src/lib.rs:3:37: replace add -> i32 with 0"
+    }
+   ],
+   "outcomes": {
+    "cargo_mutants_version": "27.0.0",
+    "caught": 6,
+    "end_time": "2026-11-15T00:39:25.350609985Z",
+    "missed": 0,
+    "outcomes": [
+     {
+      "diff_path": null,
+      "log_path": "log/baseline.log",
+      "phase_results": [
+       {
+        "duration": 0.451,
+        "phase": "Build",
+        "process_status": "Success"
+       },
+       {
+        "duration": 0.102,
+        "phase": "Test",
+        "process_status": "Success"
+       }
+      ],
+      "scenario": "Baseline",
+      "summary": "Success"
+     },
+     {
+      "diff_path": "diff/src__lib.rs_line_1_col_23.diff",
+      "log_path": "log/src__lib.rs_line_1_col_23.log",
+      "phase_results": [
+       {
+        "duration": 0.152,
+        "phase": "Build",
+        "process_status": "Success"
+       },
+       {
+        "duration": 0.051,
+        "phase": "Test",
+        "process_status": {
+         "Failure": 101
+        }
+       }
+      ],
+      "scenario": {
+       "Mutant": {
+        "file": "src/lib.rs",
+        "name": "src/lib.rs:1:23: replace one -> i32 with 0",
+        "package": "probe"
+       }
+      },
+      "summary": "CaughtMutant"
+     },
+     {
+      "diff_path": "diff/src__lib.rs_line_1_col_23_001.diff",
+      "log_path": "log/src__lib.rs_line_1_col_23_001.log",
+      "phase_results": [
+       {
+        "duration": 0.151,
+        "phase": "Build",
+        "process_status": "Success"
+       },
+       {
+        "duration": 0.051,
+        "phase": "Test",
+        "process_status": {
+         "Failure": 101
+        }
+       }
+      ],
+      "scenario": {
+       "Mutant": {
+        "file": "src/lib.rs",
+        "name": "src/lib.rs:1:23: replace one -> i32 with -1",
+        "package": "probe"
+       }
+      },
+      "summary": "CaughtMutant"
+     },
+     {
+      "diff_path": "diff/src__lib.rs_line_2_col_23.diff",
+      "log_path": "log/src__lib.rs_line_2_col_23.log",
+      "phase_results": [
+       {
+        "duration": 0.151,
+        "phase": "Build",
+        "process_status": "Success"
+       },
+       {
+        "duration": 0.051,
+        "phase": "Test",
+        "process_status": {
+         "Failure": 101
+        }
+       }
+      ],
+      "scenario": {
+       "Mutant": {
+        "file": "src/lib.rs",
+        "name": "src/lib.rs:2:23: replace two -> i32 with 0",
+        "package": "probe"
+       }
+      },
+      "summary": "CaughtMutant"
+     },
+     {
+      "diff_path": "diff/src__lib.rs_line_2_col_23_001.diff",
+      "log_path": "log/src__lib.rs_line_2_col_23_001.log",
+      "phase_results": [
+       {
+        "duration": 0.151,
+        "phase": "Build",
+        "process_status": "Success"
+       },
+       {
+        "duration": 0.051,
+        "phase": "Test",
+        "process_status": {
+         "Failure": 101
+        }
+       }
+      ],
+      "scenario": {
+       "Mutant": {
+        "file": "src/lib.rs",
+        "name": "src/lib.rs:2:23: replace two -> i32 with 1",
+        "package": "probe"
+       }
+      },
+      "summary": "CaughtMutant"
+     },
+     {
+      "diff_path": "diff/src__lib.rs_line_2_col_23_002.diff",
+      "log_path": "log/src__lib.rs_line_2_col_23_002.log",
+      "phase_results": [
+       {
+        "duration": 0.201,
+        "phase": "Build",
+        "process_status": "Success"
+       },
+       {
+        "duration": 0.052,
+        "phase": "Test",
+        "process_status": {
+         "Failure": 101
+        }
+       }
+      ],
+      "scenario": {
+       "Mutant": {
+        "file": "src/lib.rs",
+        "name": "src/lib.rs:2:23: replace two -> i32 with -1",
+        "package": "probe"
+       }
+      },
+      "summary": "CaughtMutant"
+     },
+     {
+      "diff_path": "diff/src__lib.rs_line_3_col_37.diff",
+      "log_path": "log/src__lib.rs_line_3_col_37.log",
+      "phase_results": [
+       {
+        "duration": 0.201,
+        "phase": "Build",
+        "process_status": "Success"
+       },
+       {
+        "duration": 0.051,
+        "phase": "Test",
+        "process_status": {
+         "Failure": 101
+        }
+       }
+      ],
+      "scenario": {
+       "Mutant": {
+        "file": "src/lib.rs",
+        "name": "src/lib.rs:3:37: replace add -> i32 with 0",
+        "package": "probe"
+       }
+      },
+      "summary": "CaughtMutant"
+     }
+    ],
+    "start_time": "2026-11-15T00:39:23.481372028Z",
+    "success": 0,
+    "timeout": 0,
+    "total_mutants": 6,
+    "unviable": 0
+   },
+   "txt": {
+    "caught.txt": "src/lib.rs:1:23: replace one -> i32 with 0\nsrc/lib.rs:1:23: replace one -> i32 with -1\nsrc/lib.rs:2:23: replace two -> i32 with 0\nsrc/lib.rs:2:23: replace two -> i32 with 1\nsrc/lib.rs:2:23: replace two -> i32 with -1\nsrc/lib.rs:3:37: replace add -> i32 with 0\n",
+    "missed.txt": "",
+    "timeout.txt": "",
+    "unviable.txt": ""
+   }
+  },
+  "s1": {
+   "files": [
+    "caught.txt",
+    "debug.log",
+    "diff/src__lib.rs_line_3_col_37.diff",
+    "diff/src__lib.rs_line_3_col_37_001.diff",
+    "diff/src__lib.rs_line_3_col_39.diff",
+    "diff/src__lib.rs_line_3_col_39_001.diff",
+    "diff/src__lib.rs_line_4_col_28.diff",
+    "diff/src__lib.rs_line_4_col_28_001.diff",
+    "lock.json",
+    "log/baseline.log",
+    "log/src__lib.rs_line_3_col_37.log",
+    "log/src__lib.rs_line_3_col_37_001.log",
+    "log/src__lib.rs_line_3_col_39.log",
+    "log/src__lib.rs_line_3_col_39_001.log",
+    "log/src__lib.rs_line_4_col_28.log",
+    "log/src__lib.rs_line_4_col_28_001.log",
+    "missed.txt",
+    "mutants.json",
+    "outcomes.json",
+    "timeout.txt",
+    "unviable.txt"
+   ],
+   "mutants": [
+    {
+     "file": "src/lib.rs",
+     "name": "src/lib.rs:3:37: replace add -> i32 with 1"
+    },
+    {
+     "file": "src/lib.rs",
+     "name": "src/lib.rs:3:37: replace add -> i32 with -1"
+    },
+    {
+     "file": "src/lib.rs",
+     "name": "src/lib.rs:3:39: replace + with - in add"
+    },
+    {
+     "file": "src/lib.rs",
+     "name": "src/lib.rs:3:39: replace + with * in add"
+    },
+    {
+     "file": "src/lib.rs",
+     "name": "src/lib.rs:4:28: replace untested -> u32 with 0"
+    },
+    {
+     "file": "src/lib.rs",
+     "name": "src/lib.rs:4:28: replace untested -> u32 with 1"
+    }
+   ],
+   "outcomes": {
+    "cargo_mutants_version": "27.0.0",
+    "caught": 4,
+    "end_time": "2026-11-15T00:39:26.935932166Z",
+    "missed": 2,
+    "outcomes": [
+     {
+      "diff_path": null,
+      "log_path": "log/baseline.log",
+      "phase_results": [
+       {
+        "duration": 0.151,
+        "phase": "Build",
+        "process_status": "Success"
+       },
+       {
+        "duration": 0.051,
+        "phase": "Test",
+        "process_status": "Success"
+       }
+      ],
+      "scenario": "Baseline",
+      "summary": "Success"
+     },
+     {
+      "diff_path": "diff/src__lib.rs_line_3_col_37.diff",
+      "log_path": "log/src__lib.rs_line_3_col_37.log",
+      "phase_results": [
+       {
+        "duration": 0.151,
+        "phase": "Build",
+        "process_status": "Success"
+       },
+       {
+        "duration": 0.052,
+        "phase": "Test",
+        "process_status": {
+         "Failure": 101
+        }
+       }
+      ],
+      "scenario": {
+       "Mutant": {
+        "file": "src/lib.rs",
+        "name": "src/lib.rs:3:37: replace add -> i32 with 1",
+        "package": "probe"
+       }
+      },
+      "summary": "CaughtMutant"
+     },
+     {
+      "diff_path": "diff/src__lib.rs_line_3_col_37_001.diff",
+      "log_path": "log/src__lib.rs_line_3_col_37_001.log",
+      "phase_results": [
+       {
+        "duration": 0.151,
+        "phase": "Build",
+        "process_status": "Success"
+       },
+       {
+        "duration": 0.051,
+        "phase": "Test",
+        "process_status": {
+         "Failure": 101
+        }
+       }
+      ],
+      "scenario": {
+       "Mutant": {
+        "file": "src/lib.rs",
+        "name": "src/lib.rs:3:37: replace add -> i32 with -1",
+        "package": "probe"
+       }
+      },
+      "summary": "CaughtMutant"
+     },
+     {
+      "diff_path": "diff/src__lib.rs_line_3_col_39.diff",
+      "log_path": "log/src__lib.rs_line_3_col_39.log",
+      "phase_results": [
+       {
+        "duration": 0.151,
+        "phase": "Build",
+        "process_status": "Success"
+       },
+       {
+        "duration": 0.051,
+        "phase": "Test",
+        "process_status": {
+         "Failure": 101
+        }
+       }
+      ],
+      "scenario": {
+       "Mutant": {
+        "file": "src/lib.rs",
+        "name": "src/lib.rs:3:39: replace + with - in add",
+        "package": "probe"
+       }
+      },
+      "summary": "CaughtMutant"
+     },
+     {
+      "diff_path": "diff/src__lib.rs_line_3_col_39_001.diff",
+      "log_path": "log/src__lib.rs_line_3_col_39_001.log",
+      "phase_results": [
+       {
+        "duration": 0.151,
+        "phase": "Build",
+        "process_status": "Success"
+       },
+       {
+        "duration": 0.051,
+        "phase": "Test",
+        "process_status": {
+         "Failure": 101
+        }
+       }
+      ],
+      "scenario": {
+       "Mutant": {
+        "file": "src/lib.rs",
+        "name": "src/lib.rs:3:39: replace + with * in add",
+        "package": "probe"
+       }
+      },
+      "summary": "CaughtMutant"
+     },
+     {
+      "diff_path": "diff/src__lib.rs_line_4_col_28.diff",
+      "log_path": "log/src__lib.rs_line_4_col_28.log",
+      "phase_results": [
+       {
+        "duration": 0.151,
+        "phase": "Build",
+        "process_status": "Success"
+       },
+       {
+        "duration": 0.051,
+        "phase": "Test",
+        "process_status": "Success"
+       }
+      ],
+      "scenario": {
+       "Mutant": {
+        "file": "src/lib.rs",
+        "name": "src/lib.rs:4:28: replace untested -> u32 with 0",
+        "package": "probe"
+       }
+      },
+      "summary": "MissedMutant"
+     },
+     {
+      "diff_path": "diff/src__lib.rs_line_4_col_28_001.diff",
+      "log_path": "log/src__lib.rs_line_4_col_28_001.log",
+      "phase_results": [
+       {
+        "duration": 0.152,
+        "phase": "Build",
+        "process_status": "Success"
+       },
+       {
+        "duration": 0.051,
+        "phase": "Test",
+        "process_status": "Success"
+       }
+      ],
+      "scenario": {
+       "Mutant": {
+        "file": "src/lib.rs",
+        "name": "src/lib.rs:4:28: replace untested -> u32 with 1",
+        "package": "probe"
+       }
+      },
+      "summary": "MissedMutant"
+     }
+    ],
+    "start_time": "2026-11-15T00:39:25.517864034Z",
+    "success": 0,
+    "timeout": 0,
+    "total_mutants": 6,
+    "unviable": 0
+   },
+   "txt": {
+    "caught.txt": "src/lib.rs:3:37: replace add -> i32 with 1\nsrc/lib.rs:3:37: replace add -> i32 with -1\nsrc/lib.rs:3:39: replace + with - in add\nsrc/lib.rs:3:39: replace + with * in add\n",
+    "missed.txt": "src/lib.rs:4:28: replace untested -> u32 with 0\nsrc/lib.rs:4:28: replace untested -> u32 with 1\n",
+    "timeout.txt": "",
+    "unviable.txt": ""
+   }
+  }
+ }
+}
