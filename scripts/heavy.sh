@@ -141,6 +141,198 @@ fail() {
     return 1
 }
 
+# The admission self-test's cleanup (the subshell's EXIT trap): its sleepers,
+# then its private slice and that slice's envelope sub-slices, stopped and
+# reverted, and their admission queues.
+# shellcheck disable=SC2329 # the admission subshell's EXIT trap
+heavy_self_test_admission_cleanup() {
+    local pid unit units rt=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+    for pid in "${heavy_test_pids[@]}"; do
+        kill "$pid" 2>/dev/null || true
+    done
+    units=$(systemctl --user list-units --all --plain --no-legend "${heavy_test_slice%.slice}-env*.slice" 2>/dev/null | awk '{ print $1 }')
+    for unit in "$rt"/systemd/user.control/"${heavy_test_slice%.slice}"-env*.slice.d; do
+        [ -d "$unit" ] || continue
+        unit=${unit##*/}
+        units+=$'\n'${unit%.d}
+    done
+    # shellcheck disable=SC2086 # one unit per word
+    [ -z "${units//[[:space:]]/}" ] || {
+        systemctl --user stop $units >/dev/null 2>&1 || true
+        systemctl --user revert $units >/dev/null 2>&1 || true
+    }
+    systemctl --user stop "$heavy_test_slice" >/dev/null 2>&1 || true
+    systemctl --user revert "$heavy_test_slice" >/dev/null 2>&1 || true
+    rm -rf "${XDG_RUNTIME_DIR:-/tmp}/lushtext-heavy-admission.queue/${heavy_test_slice%.slice}"*
+}
+
+# Wait up to $2 seconds (default 10) for process $1 to exit; true if it did.
+heavy_wait_gone() {
+    timeout "${2:-10}" tail --pid="$1" -f /dev/null 2>/dev/null
+}
+
+# A 2G sleeper scope in the private slice, counted by admissions once this
+# returns.
+heavy_test_sleeper() {
+    local cgroup
+    systemd-run --user --scope --quiet --slice="$heavy_test_slice" -p MemoryMax=2G -p MemorySwapMax=0 sleep 30 &
+    heavy_test_sleeper_pid=$!
+    heavy_test_pids+=("$!")
+    for _ in $(seq 100); do
+        cgroup=$(systemctl --user show -p ControlGroup --value "$heavy_test_slice" 2>/dev/null || true)
+        [ -n "$cgroup" ] && compgen -G "/sys/fs/cgroup$cgroup/*.scope/memory.max" >/dev/null && return 0
+        sleep 0.05
+    done
+    return 1
+}
+
+# Stop the last sleeper and wait until its scope is gone.
+heavy_test_sleeper_stop() {
+    local pid=$heavy_test_sleeper_pid
+    kill "$pid" 2>/dev/null || true
+    heavy_wait_gone "$pid" 5 || true
+    sleep 0.2
+}
+
+# The admission cases (the window after the probe, --mem none, envelopes).
+# They run in a subshell with a private slice, admission lock and fast polls;
+# the exit status is the number of failed cases, each reported.
+heavy_self_test_admission() {
+    local dir=$1 intent=$2 lock=$3 me=$here/heavy.sh wrap=$here/with-memory-cap.sh
+    local failures=0 status out marker hp held
+    heavy_test_slice=user-lushtext-heavy-selftest-h$$.slice
+    heavy_test_pids=()
+    trap heavy_self_test_admission_cleanup EXIT
+    export LUSHTEXT_HEAVY_SLICE=$heavy_test_slice LUSHTEXT_ADMISSION_LOCK=$dir/admission.lock \
+        LUSHTEXT_ADMISSION_POLL_SECONDS=0.2 LUSHTEXT_HEAVY_MEMORY_MAX=3G LUSHTEXT_MEMORY_RESERVE=1G
+    hfail() {
+        echo "heavy self-test: $*" >&2
+        failures=$((failures + 1))
+    }
+    # The probe-then-admit race, made deterministic by a systemctl shim: the
+    # memory probe (--wait-admissible) sees the private slice empty, the
+    # admission sees it as it is. HEAVY_SHIM_ONCE makes only the first
+    # admission see it full (and stops HEAVY_SHIM_KILL first).
+    mkdir -p "$dir/shim"
+    cat >"$dir/shim/systemctl" <<'EOF'
+#!/usr/bin/env bash
+if [ "$*" = "--user show -p ControlGroup --value $HEAVY_SHIM_SLICE" ]; then
+    case $(tr '\0' ' ' <"/proc/$PPID/cmdline") in
+        *--wait-admissible*) exit 0 ;;
+    esac
+    if [ -n "${HEAVY_SHIM_ONCE:-}" ]; then
+        [ ! -e "$HEAVY_SHIM_ONCE" ] || exit 0
+        : >"$HEAVY_SHIM_ONCE"
+        if [ -n "${HEAVY_SHIM_KILL:-}" ]; then
+            kill "$HEAVY_SHIM_KILL" 2>/dev/null
+            timeout 5 tail --pid="$HEAVY_SHIM_KILL" -f /dev/null
+        fi
+    fi
+fi
+exec "$HEAVY_SHIM_REAL" "$@"
+EOF
+    chmod +x "$dir/shim/systemctl"
+    local real_systemctl shim_path
+    real_systemctl=$(command -v systemctl)
+    shim_path="$dir/shim:$PATH"
+
+    # (1) Memory taken between the probe and the admission: heavy.sh gives
+    # LOCK back (a measurement's INTENT then LOCK can be taken) and does not
+    # start the command.
+    if heavy_test_sleeper; then
+        marker=$dir/marker-window
+        PATH=$shim_path HEAVY_SHIM_SLICE=$heavy_test_slice HEAVY_SHIM_REAL=$real_systemctl \
+            "$me" --mem 2G -- touch "$marker" 2>"$dir/window.err" &
+        hp=$!
+        heavy_test_pids+=("$hp")
+        held=0
+        for _ in $(seq 100); do
+            flock -n -x "$lock" true || { held=1; break; }
+            sleep 0.05
+        done
+        status=0
+        if [ "$held" = 1 ]; then
+            flock -w 4 -x "$intent" flock -w 4 -x "$lock" true || status=$?
+        fi
+        if [ "$held" = 0 ]; then
+            hfail "the window case never reached its admission after LOCK (the systemctl shim no longer matches the wrapper)"
+        elif [ "$status" -ne 0 ] || [ -e "$marker" ]; then
+            hfail "a misfit found after LOCK kept LOCK held (exclusive try status $status, marker $([ -e "$marker" ] && echo created || echo absent))"
+        fi
+        kill -TERM "$hp" 2>/dev/null || true
+        heavy_wait_gone "$hp" || hfail "heavy.sh did not exit after SIGTERM in the window case"
+        heavy_test_sleeper_stop
+    else
+        hfail "the window case's sleeper never started"
+    fi
+
+    # (1) The command's own exit 75 is returned once, never retried, with
+    # --mem and with --envelope.
+    local file mode
+    for mode in "--mem 2G" "--envelope 2G"; do
+        file=$dir/exit75
+        : >"$file"
+        status=0
+        # shellcheck disable=SC2016,SC2086 # expanded by the inner shell; two words on purpose
+        timeout 30 "$me" $mode -- sh -c 'echo x >>"$0"; exit 75' "$file" 2>/dev/null || status=$?
+        [ "$status" -eq 75 ] && [ "$(wc -l <"$file")" -eq 1 ] \
+            || hfail "a command's own exit 75 under heavy.sh $mode gave status $status after $(wc -l <"$file") run(s), expected 75 after 1"
+    done
+
+    # (1) A busy admission lock: heavy.sh waits for it holding nothing.
+    local holder
+    marker=$dir/marker-busy
+    # shellcheck disable=SC2016 # expanded by the inner shell
+    sh -c 'exec 9>>"$0"; flock -x 9; exec sleep 5' "$LUSHTEXT_ADMISSION_LOCK" &
+    holder=$!
+    heavy_test_pids+=("$holder")
+    for _ in $(seq 100); do
+        flock -n "$LUSHTEXT_ADMISSION_LOCK" true || break
+        sleep 0.05
+    done
+    "$me" --mem 2G -- touch "$marker" 2>/dev/null &
+    hp=$!
+    heavy_test_pids+=("$hp")
+    sleep 0.5
+    status=0
+    flock -w 4 -x "$intent" flock -w 4 -x "$lock" true || status=$?
+    [ "$status" -eq 0 ] && [ ! -e "$marker" ] \
+        || hfail "behind a busy admission lock heavy.sh kept LOCK (exclusive try status $status) or started the command (marker $([ -e "$marker" ] && echo created || echo absent))"
+    heavy_wait_gone "$hp" 15 && [ -e "$marker" ] || hfail "heavy.sh did not run the command once the admission lock was free"
+
+    # (2) --mem none with an inner admission: refused at once (exit 2, naming
+    # --envelope), never waiting under LOCK.
+    if heavy_test_sleeper; then
+        "$me" --mem none -- "$wrap" 2G true 2>"$dir/none.err" &
+        hp=$!
+        heavy_test_pids+=("$hp")
+        status=0
+        flock -w 3 -x "$intent" flock -w 3 -x "$lock" true || status=$?
+        local refused="still running"
+        if heavy_wait_gone "$hp" 3; then
+            refused=0
+            wait "$hp" || refused=$?
+        fi
+        if [ "$refused" != 2 ] || ! grep -q -- '--envelope' "$dir/none.err" || [ "$status" -ne 0 ]; then
+            kill -TERM "$hp" 2>/dev/null || true
+            hfail "heavy.sh --mem none -- with-memory-cap.sh 2G gave status $refused (exclusive try status $status, stderr '$(tr '\n' ' ' <"$dir/none.err")'), expected 2 naming --envelope within 3 s"
+        fi
+        heavy_test_sleeper_stop
+    else
+        hfail "the --mem none case's sleeper never started"
+    fi
+
+    # (2) An envelope admits its inner scopes against itself, in scopes of
+    # their own inside its sub-slice, without the host reserve check.
+    # shellcheck disable=SC2016 # expanded by the inner shell
+    out=$(timeout 30 "$me" --envelope 2G -- sh -c 'LUSHTEXT_MEMORY_RESERVE=999999G "$0" 2G sed -n "s/^0:://p" /proc/self/cgroup' "$wrap" 2>"$dir/envelope.err" || true)
+    case $out in
+        */"${heavy_test_slice%.slice}"-env[0-9]*t[0-9]*.slice/lushtext-cap-*.scope) ;;
+        *) hfail "an inner 2G call in a 2G envelope ran in '$out' (stderr '$(tail -n 3 "$dir/envelope.err" | tr '\n' ' ')'), expected a lushtext-cap scope under ${heavy_test_slice%.slice}-env*.slice" ;;
+    esac
+    exit "$failures"
+}
+
 self_test() {
     local me=$here/heavy.sh dir status out pid m
     dir=$(mktemp -d "${TMPDIR:-/tmp}/heavy-self-test.XXXXXX")
@@ -332,7 +524,24 @@ self_test() {
         scope="args unexpanded, inside $slice, CPU $cpu given and $expected_cpus kept, LOCK held across the scope"
     fi
 
-    echo "heavy self-test: ok (exit status and SIGTERM propagate; parallelism $alone alone and 4 1 contended, kept when nested; LOCK held shared by the helper, not the command; a pending measurement blocks new starts; nested calls run in place; stale markers do not; a leftover daemon does not hold LOCK; measure.sh self-test passes inside heavy.sh; capped scope: $scope)"
+    local admission=skipped
+    if [ "${LUSHTEXT_ADMISSION_WINDOW_RED:-}" = 1 ] && command -v systemd-run >/dev/null 2>&1 \
+        && systemd-run --user --scope --quiet -p MemoryMax=1M true >/dev/null 2>&1; then
+        local real_max after_max leftovers rt=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+        real_max=$(systemctl --user show -p MemoryMax --value user-lushtext-heavy.slice 2>/dev/null || true)
+        status=0
+        (heavy_self_test_admission "$dir" "$intent" "$lock") || status=$?
+        after_max=$(systemctl --user show -p MemoryMax --value user-lushtext-heavy.slice 2>/dev/null || true)
+        [ "$after_max" = "$real_max" ] || { fail "the real user-lushtext-heavy.slice MemoryMax changed from '$real_max' to '$after_max'"; status=1; }
+        leftovers=$(compgen -G "$rt/systemd/user.control/user-lushtext-heavy-selftest-h$$.slice.d" || true)
+        leftovers+=$(compgen -G "$rt/systemd/user.control/user-lushtext-heavy-selftest-h$$-env*.slice.d" || true)
+        leftovers+=$(compgen -G "${XDG_RUNTIME_DIR:-/tmp}/lushtext-heavy-admission.queue/user-lushtext-heavy-selftest-h$$*" || true)
+        [ -z "$leftovers" ] || { fail "the admission cases left drop-ins or queues behind: $leftovers"; status=1; }
+        [ "$status" -eq 0 ] || { fail "$status admission case(s) failed"; return 1; }
+        admission="the window after the probe, a busy admission lock and --mem none give LOCK back; exit 75 is the command's; envelopes admit inner scopes; the real slice untouched"
+    fi
+
+    echo "heavy self-test: ok (exit status and SIGTERM propagate; parallelism $alone alone and 4 1 contended, kept when nested; LOCK held shared by the helper, not the command; a pending measurement blocks new starts; nested calls run in place; stale markers do not; a leftover daemon does not hold LOCK; measure.sh self-test passes inside heavy.sh; capped scope: $scope; admission: $admission)"
 }
 
 if [ "${1:-}" = "--self-test" ]; then

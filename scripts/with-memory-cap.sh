@@ -410,13 +410,14 @@ self_test_cleanup() {
     done
     systemctl --user stop "${self_test_slices[@]}" >/dev/null 2>&1 || true
     systemctl --user revert "${self_test_slices[@]}" >/dev/null 2>&1 || true
+    [ -z "${self_test_admission_lock:-}" ] || rm -f "$self_test_admission_lock"
 }
 
-# Start `sleep 10` in a 2G scope of slice $1 and wait until the scope's cgroup
-# exists, so an admission after this call counts it.
+# Start `sleep 10` in a scope of slice $1 capped at $2 (default 2G) and wait
+# until the scope's cgroup exists, so an admission after this call counts it.
 self_test_sleeper() {
-    local slice=$1 cgroup
-    systemd-run --user --scope --quiet --slice="$slice" -p MemoryMax=2G -p MemorySwapMax=0 sleep 10 &
+    local slice=$1 cap=${2:-2G} cgroup
+    systemd-run --user --scope --quiet --slice="$slice" -p MemoryMax="$cap" -p MemorySwapMax=0 sleep 10 &
     self_test_sleepers+=("$!")
     for _ in $(seq 100); do
         cgroup=$(systemctl --user show -p ControlGroup --value "$slice" 2>/dev/null || true)
@@ -445,6 +446,95 @@ self_test_flip_reader() {
     fi
 }
 
+# --admission-verdict on fixtures (KiB): no head, a head that reserves its
+# cap, a head that fits beside, a head short of host memory, and an
+# envelope (reserve `-`: no MemAvailable check, and the head always reserves).
+self_test_verdict_fixtures() {
+    local me=$0 g=1048576 fixture expected status
+    for fixture in \
+        "0|$((3 * g))|$((100 * g))|$((6 * g))|$g|$((2 * g))|" \
+        "1|$((3 * g))|$((100 * g))|$((6 * g))|$g|$((4 * g))|" \
+        "1|$((3 * g))|$((2 * g))|$((6 * g))|$g|$((2 * g))|" \
+        "1|$((3 * g))|$((100 * g))|$((6 * g))|$g|$((2 * g))|$((4 * g))" \
+        "0|$((3 * g))|$((100 * g))|$((10 * g))|$g|$((2 * g))|$((4 * g))" \
+        "0|$((3 * g))|$((40 * g))|$((48 * g))|$((16 * g))|$((2 * g))|$((36 * g))" \
+        "0|0|0|$((2 * g))|-|$((2 * g))|" \
+        "1|0|0|$((2 * g))|-|$((2 * g))|$((2 * g))" \
+        "1|$g|0|$((2 * g))|-|$((2 * g))|"; do
+        IFS='|' read -r expected a b c d e f <<<"$fixture"
+        status=0
+        # shellcheck disable=SC2086 # an empty head is no argument
+        "$me" --admission-verdict "$a" "$b" "$c" "$d" "$e" $f 2>/dev/null || status=$?
+        [ "$status" -eq "$expected" ] || self_test_fail "--admission-verdict $a $b $c $d $e $f gave status $status, expected $expected"
+    done
+}
+
+# A capped admission's wait for the admission lock and its order. Every case
+# uses this run's private slice and admission lock.
+self_test_admission_cases() {
+    local me=$0 status report marker holder start elapsed pid
+    # Start from empty slices: the earlier cases' sleepers (the legacy one is
+    # counted too) would otherwise still hold their caps.
+    for pid in "${self_test_sleepers[@]}"; do
+        kill "$pid" 2>/dev/null || true
+        timeout 5 tail --pid="$pid" -f /dev/null 2>/dev/null || true
+    done
+    # The check-once admission scripts/heavy.sh makes after LOCK waits at most
+    # 2 s for the admission lock: a lock still busy is a misfit, reported in
+    # the file and with exit 75, and nothing starts.
+    report=$(mktemp)
+    marker=$(mktemp -u "${TMPDIR:-/tmp}/with-memory-cap-marker.XXXXXX")
+    # shellcheck disable=SC2016 # expanded by the inner shell
+    sh -c 'exec 9>>"$0"; flock -x 9; exec sleep 6' "$LUSHTEXT_ADMISSION_LOCK" &
+    holder=$!
+    for _ in $(seq 100); do
+        flock -n "$LUSHTEXT_ADMISSION_LOCK" true || break
+        sleep 0.05
+    done
+    start=$(date +%s%N)
+    status=0
+    LUSHTEXT_ADMISSION_ONCE=$report LUSHTEXT_HEAVY_MEMORY_MAX=3G LUSHTEXT_MEMORY_RESERVE=1G timeout 5 "$me" 2G touch "$marker" 2>/dev/null || status=$?
+    elapsed=$((($(date +%s%N) - start) / 1000000))
+    kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null || true
+    [ "$status" -eq 75 ] && [ "$elapsed" -lt 4000 ] && grep -q '^misfit: ' "$report" && [ ! -e "$marker" ] \
+        || self_test_fail "a check-once admission behind a busy admission lock gave status $status after ${elapsed} ms (report '$(tr '\n' ' ' <"$report")', marker $([ -e "$marker" ] && echo created || echo absent)), expected 75 within 4 s, a 'misfit: ' line and no marker"
+    rm -f "$report" "$marker"
+
+    # Fair order: a 2G request does not overtake an older 4G waiter that has
+    # the host memory, while a NOWAIT one still does; the 4G waiter is
+    # admitted once the scope ahead of it ends.
+    local available need
+    available=$(mem_available_kib)
+    need=$(((4 + 1 + 4) * 1048576))
+    if [ "$available" -lt "$need" ]; then
+        echo "with-memory-cap self-test: fair-order case skipped (MemAvailable $((available / 1048576)) GiB < 9 GiB)" >&2
+        return 0
+    fi
+    if ! self_test_sleeper "$HEAVY_SLICE" 3G; then
+        self_test_fail "the fair-order sleeper never started in $HEAVY_SLICE"
+        return 0
+    fi
+    local sleeper=${self_test_sleepers[-1]} waiter
+    marker=$(mktemp -u "${TMPDIR:-/tmp}/with-memory-cap-marker.XXXXXX")
+    LUSHTEXT_HEAVY_MEMORY_MAX=6G LUSHTEXT_MEMORY_RESERVE=1G "$me" 4G touch "$marker" 2>/dev/null &
+    waiter=$!
+    sleep 1
+    status=0
+    LUSHTEXT_HEAVY_MEMORY_MAX=6G LUSHTEXT_MEMORY_RESERVE=1G timeout 3 "$me" 2G true 2>/dev/null || status=$?
+    [ "$status" -eq 124 ] || self_test_fail "a 2G request was not held behind an older 4G waiter in a 6G slice with 3G admitted (status $status, expected 124)"
+    status=0
+    LUSHTEXT_ADMISSION_NOWAIT=1 LUSHTEXT_HEAVY_MEMORY_MAX=6G LUSHTEXT_MEMORY_RESERVE=1G timeout 5 "$me" 2G true 2>/dev/null || status=$?
+    [ "$status" -eq 0 ] || self_test_fail "a NOWAIT 2G request was held behind an older waiter (status $status, expected 0)"
+    kill "$sleeper" 2>/dev/null || true
+    for _ in $(seq 100); do
+        [ -e "$marker" ] && break
+        sleep 0.1
+    done
+    [ -e "$marker" ] || self_test_fail "the 4G waiter was not admitted within 10 s of the scope ahead of it ending"
+    kill "$waiter" 2>/dev/null; wait "$waiter" 2>/dev/null || true
+    rm -f "$marker"
+}
+
 self_test() {
     local me=$0 status
     # Probe fresh scopes whatever this process inherited: run inside a capped
@@ -452,6 +542,12 @@ self_test() {
     # probe below would otherwise run in place and read the outer scope's
     # limits. The nested-call check sets the variable explicitly.
     unset LUSHTEXT_MEMORY_CAP_KIB LUSHTEXT_ADMISSION_NOWAIT
+    # A private admission lock: the cases below hold it for seconds, which on
+    # the real one would hold up every agent's admissions. Waiters poll fast.
+    export LUSHTEXT_ADMISSION_LOCK
+    LUSHTEXT_ADMISSION_LOCK=$(mktemp "${TMPDIR:-/tmp}/with-memory-cap-admission.XXXXXX")
+    self_test_admission_lock=$LUSHTEXT_ADMISSION_LOCK
+    export LUSHTEXT_ADMISSION_POLL_SECONDS=0.2
     # Every scope goes to a private, per-run slice below the real one. A scope
     # start applies the budget (LUSHTEXT_HEAVY_MEMORY_MAX) to its slice, and
     # the misfit cases below use 2G and 3G budgets: on the real slice that left
@@ -497,6 +593,9 @@ self_test() {
         || self_test_fail "a CPU refusal did not name both lists: '$message'"
     message=$("$me" --placement-verdict "" "$r" "$h" 8-23 8-23 8-23 2>&1 || true)
     [[ "$message" == *"/proc/self/cgroup"* ]] || self_test_fail "a failed read did not name the read: '$message'"
+    if [ "${LUSHTEXT_ADMISSION_WINDOW_RED:-}" = 1 ]; then
+        self_test_verdict_fixtures
+    fi
     self_test_flipped=0
     status=0; placement_check unused self_test_flip_reader 2>/dev/null || status=$?
     [ "$status" -eq 0 ] || self_test_fail "a CPU disagreement that the re-read resolves was refused (status $status)"
@@ -686,6 +785,9 @@ self_test() {
             else
                 self_test_fail "the legacy sleeper never started in $legacy_slice"
             fi
+        fi
+        if [ "${LUSHTEXT_ADMISSION_WINDOW_RED:-}" = 1 ]; then
+            self_test_admission_cases
         fi
         local after_max
         after_max=$(systemctl --user show -p MemoryMax --value "$real_slice" 2>/dev/null || true)
