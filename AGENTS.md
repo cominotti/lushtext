@@ -260,7 +260,7 @@ make fmt         # rustfmt everywhere, including widget tests cargo fmt cannot r
 make check       # fmt + all-feature Clippy + fast policy audits (= make pre-commit)
 make check-policy # the fast policy audits alone
 make check-session-hygiene # every private headless session starts through scripts/headless-session (in check-policy)
-make check-workflow-scripts # the versioned .claude/workflows scripts: syntax, phases, no personal data or copied rule text (in check-policy)
+make check-workflow-scripts # the versioned .claude/workflows scripts: syntax, phases, no personal data or copied rule text, and each script's stub-agent harness (in check-policy)
 make check-agent-docs # agent rules, skills, and the filesystem-boundary guidance
 make test        # all tests; widget shards run in parallel, each in its own capped headless session (agents: scripts/heavy.sh --envelope 16G -- make test)
 make test-unit / make test-int / make test-prop

@@ -17,6 +17,8 @@
 # copying them: any run of 12 consecutive words (case and punctuation
 # ignored) that also appears in a rule file fails, and a citation written
 # `<rule>.md "<Section>"` must name a heading that exists in that rule file.
+# Every script has a stub-agent harness beside it, `<name>.test.mjs`, run as
+# `node <name>.test.mjs <name>.js`; a missing or failing harness fails.
 #
 # With no script present it passes and says so. Without node it fails.
 # LUSHTEXT_NODE overrides the node binary (the self-test uses it).
@@ -151,6 +153,16 @@ PY
             echo "$script: node --check failed:" >&2
             sed 's/^/  /' "$tmpdir/node.err" >&2
             failed=1
+            continue
+        fi
+        local harness="${script%.js}.test.mjs"
+        if [ ! -f "$harness" ]; then
+            echo "$script: no stub-agent harness $(basename "$harness") beside it" >&2
+            failed=1
+        elif ! timeout 120 "$node" "$harness" "$script" >"$tmpdir/harness.out" 2>&1; then
+            echo "$script: harness $(basename "$harness") failed:" >&2
+            sed 's/^/  /' "$tmpdir/harness.out" >&2
+            failed=1
         fi
     done
     rm -rf "$tmpdir"
@@ -198,7 +210,20 @@ return { r }
 EOF
     }
     good >"$wf/a.js"
+    expect_fail_early() {
+        local err
+        if err=$(check_dir "$wf" "$rules" 2>&1); then self_test_fail "$1 passed"; fi
+        case "$err" in *"$2"*) ;; *) self_test_fail "$1: message lacks '$2': $err" ;; esac
+    }
+    expect_fail_early "a script without a harness" "no stub-agent harness"
+    cat >"$wf/a.test.mjs" <<'EOF'
+import { readFileSync } from 'node:fs'
+const src = readFileSync(process.argv[2], 'utf8')
+if (!src.includes("phase('Two')")) { console.error('harness: phase Two missing'); process.exit(1) }
+EOF
     check_dir "$wf" "$rules" >/dev/null 2>&1 || self_test_fail "a good script with top-level await and return failed"
+    good | sed "s/phase('Two')/phase('One')/" >"$wf/a.js"
+    expect_fail_early "a failing harness" "harness: phase Two missing"
 
     expect_fail() {
         local label=$1 needle=$2
@@ -231,7 +256,7 @@ EOF
     if [ "$rc" -eq 0 ] || ! grep -q "node not found" "$tmp/err"; then
         self_test_fail "a missing node did not fail with a message"
     fi
-    echo "check-workflow-scripts self-test: ok (empty dir passes; meta, wrapper with top-level await and return, node --check, phases, personal data and credentials, 12-word rule runs, section citations, missing node)"
+    echo "check-workflow-scripts self-test: ok (empty dir passes; meta, wrapper with top-level await and return, node --check, phases, personal data and credentials, 12-word rule runs, section citations, missing node, missing and failing harnesses)"
 }
 
 case "${1:-}" in

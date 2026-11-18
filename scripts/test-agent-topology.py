@@ -307,5 +307,59 @@ class ReviewLensTests(unittest.TestCase):
         self.assertEqual(self.flags(result), (True, False, True))
 
 
+
+class LensTriggerDriftTests(ReviewLensTests):
+    """The lens selector and the skills' trigger text agree in both directions."""
+
+    DATA = (
+        "Data-loss guard. Applies to Rust changes under ui/, services/ or model/ and to any code "
+        "touching spawn_blocking_then or persistence; invoke $data-safety by name."
+    )
+    PERF = (
+        "Performance entry point. Use for Rust changes in ui, services, model, benches or the GTK Lush "
+        "settle crates, their Cargo dependency changes, and search/replace questions."
+    )
+
+    def errors(self, data: str | None = None, perf: str | None = None) -> list[str]:
+        policy = dict(self.POLICY)
+        policy["performance"] = {**self.POLICY["performance"], "umbrella": "gtk-perf-review"}
+        return TOPOLOGY.lens_trigger_errors(
+            self.topology,
+            policy,
+            {"data-safety": self.DATA if data is None else data, "gtk-perf-review": self.PERF if perf is None else perf},
+        )
+
+    def test_matching_triggers_pass(self) -> None:
+        self.assertEqual(self.errors(), [])
+
+    def test_a_data_path_the_description_names_must_be_selected(self) -> None:
+        errors = self.errors(data=self.DATA.replace("model/ and", "model/, tests/ and"))
+        self.assertTrue(any("tests/" in e and "not in [data_safety].path_suffixes" in e for e in errors), errors)
+
+    def test_a_selected_data_path_must_be_named(self) -> None:
+        errors = self.errors(data=self.DATA.replace(", services/ or model/", " or services/"))
+        self.assertTrue(any("model/" in e and "not named" in e for e in errors), errors)
+
+    def test_a_data_keyword_the_description_names_must_be_selected(self) -> None:
+        errors = self.errors(data=self.DATA.replace("spawn_blocking_then or", "spawn_blocking_then, buffer state or"))
+        self.assertTrue(any("buffer state" in e and "no content pattern" in e for e in errors), errors)
+
+    def test_a_selected_data_keyword_must_be_named(self) -> None:
+        errors = self.errors(data=self.DATA.replace("spawn_blocking_then or persistence", "spawn_blocking_then"))
+        self.assertTrue(any("persistence" in e and "not named" in e for e in errors), errors)
+
+    def test_a_missing_data_trigger_clause_fails(self) -> None:
+        errors = self.errors(data="Data-loss guard for drafts.")
+        self.assertTrue(any("touching" in e for e in errors), errors)
+
+    def test_a_performance_area_the_description_names_must_be_selected(self) -> None:
+        errors = self.errors(perf=self.PERF.replace("settle crates", "settle and viewport crates"))
+        self.assertTrue(any("viewport" in e and "not in the performance scope" in e for e in errors), errors)
+
+    def test_a_selected_performance_area_must_be_named(self) -> None:
+        errors = self.errors(perf=self.PERF.replace("or the GTK Lush settle crates", "crates"))
+        self.assertTrue(any("settle" in e and "not named" in e for e in errors), errors)
+
+
 if __name__ == "__main__":
     unittest.main()

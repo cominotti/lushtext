@@ -285,12 +285,15 @@ Change worktrees live in `.claude/worktrees/<change>`.
     one whose `openspec/changes/<name>/` is already on `main`;
   - implementation: `openspec-apply-change`;
   - archive: `openspec-archive-change`.
-- **The versioned script is `.claude/workflows/programme-change.js`.** Run it
-  with `Workflow({scriptPath: '<main checkout>/.claude/workflows/programme-change.js', args})`;
-  the name form `Workflow({name: 'programme-change'})` works only where the
-  harness registers project workflows by name, and `scriptPath` loads only a
-  file inside the session's directories, so run the copy in the main
-  checkout, never one in a sibling worktree. `args.mode` is `new`,
+- **The versioned script is `.claude/workflows/programme-change.js`**, a
+  real file, never a symlink. The guaranteed way to run it is the path form
+  from the main checkout,
+  `Workflow({scriptPath: '.claude/workflows/programme-change.js', args})`:
+  `scriptPath` loads only files inside the session's directories, so never
+  run a copy in a sibling worktree. The name form
+  `Workflow({name: 'programme-change'})` is a convenience for sessions
+  started after the script reached `main`; a session that was already
+  running when it was added may not find it by name. `args.mode` is `new`,
   `fast-lane`, `revise`, `continue` or `review-only` (an existing pull
   request from `/simplify` on, stopping before the merge unless `args.merge`);
   `args.dry_run` prints the stages a mode would run. The script's header
@@ -310,7 +313,12 @@ Change worktrees live in `.claude/worktrees/<change>`.
   - works headless: never `make run`, never the live desktop, never the
     real application data or `~/.config`;
   - writes commit messages to a file and commits with `git commit -F`
-    through `heavy.sh`, which forwards no stdin.
+    through `heavy.sh`, which forwards no stdin;
+  - merges `origin/main` into its branch and never rebases a pushed branch
+    or pushes with `--force` or `--force-with-lease`: a rejected push means
+    fetch, merge, rerun the affected gates and push again. The
+    `refs/remotes/origin/*` refs are shared by every worktree, so a tip read
+    before another session's fetch is not evidence about your branch.
 - **Never `SendMessage` a running workflow agent.** It revives a second copy
   of that agent, which then edits the same worktree.
 - **Changes to the change-delivery rules keep the quality floor.** An edit
@@ -406,6 +414,19 @@ script, and inside a workflow both skills below run their single-pass forms.
      gtk-perf-review leaf checklists by name, since a workflow agent cannot
      delegate; `modules_moved`, inside such a fan-out, adds `rust-hex-arch`.
      With neither flag, `code-review` runs alone.
+     `scripts/agent-topology.py validate` (in `make check-agent-skills`)
+     checks the selector against the skills' trigger text in both
+     directions: every path and keyword the `data-safety` description names
+     is selected and every selected one is named, and the same for the areas
+     of the `gtk-perf-review` description against the performance scope.
+   - The script refuses a main-branch alias (`main`, `HEAD`, `heads/…`,
+     `refs/…`, `origin/…`, `remotes/…`, `tags/…`) as the change's branch, a
+     worktree outside `.claude/worktrees/`, and a PR value that is not a
+     number, `#number` or pull URL. The `code-review` lens ends with
+     `CODE-REVIEW-STATUS: ok` or `failed` after its `skill_findings_source`
+     line; the status line is the check, and an empty or summary-only body
+     marked `ok` still fails, since a `code-review high` pass always returns
+     findings.
 3. **One apply agent**, which wrote none of the code, dedupes the findings,
    checks each against the code, applies the confirmed ones in the worktree
    and records the rejected ones with reasons. It runs the three smokes once
@@ -413,9 +434,15 @@ script, and inside a workflow both skills below run their single-pass forms.
    together locally **before** any long gate, runs the full gates once on the
    result, each through `scripts/gate-trees.sh record`, and pushes at the
    end. It is the last agent that edits code.
-4. **The merge and archive agent** checks what the skills do not: every
-   `tasks.md` box, the verdicts, that the data-safety audit ran when it was
-   owed, and the docs. Then it follows "Merging".
+4. **The merge and archive agent** reviews the apply commit only, since
+   the lenses reviewed the rest. "No findings" is not the merge test, because
+   every review pass returns unverified findings: it merges unless that
+   review confirms a defect the apply commit introduced, or one in the
+   main-checkout guard, the main-branch protection or the push path; such a
+   defect gets one more fix commit, and only that commit is reviewed again.
+   It also checks what the skills do not: every `tasks.md` box, the
+   verdicts, that the data-safety audit ran when it was owed, and the docs.
+   Then it follows "Merging".
 
 ## Workflow agents
 

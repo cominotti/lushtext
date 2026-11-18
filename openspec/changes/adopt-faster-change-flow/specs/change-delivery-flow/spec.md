@@ -234,6 +234,18 @@ After implementation, `/simplify` SHALL run with an absolute worktree path. Find
 - **WHEN** the `code-review` lens returns "(none)" with no explanation
 - **THEN** the script reruns it once and then stops instead of treating it as zero findings
 
+#### Scenario: A lens marked ok over an empty body fails
+- **WHEN** the `code-review` lens ends with `CODE-REVIEW-STATUS: ok` but its findings are empty, only brackets, or only a "No findings" summary
+- **THEN** the script treats the lens as failed, reruns it once, and then stops
+
+#### Scenario: The selector and the skill triggers drift apart
+- **WHEN** the `data-safety` description names a path or keyword the `[data_safety]` table does not select, or the table selects one the description does not name, or the `gtk-perf-review` areas and the performance scope differ
+- **THEN** `scripts/agent-topology.py validate` fails naming the item and the direction
+
+#### Scenario: The merge test is not zero findings
+- **WHEN** the merge agent reviews the apply commit and finds only unconfirmed or pre-existing issues
+- **THEN** it merges, and it blocks only on a confirmed defect the apply commit introduced or one in the guard, the main-branch protection or the push path
+
 #### Scenario: One trio for both passes
 - **WHEN** `/simplify` and the apply agent both edit files under `crates/lushtext-core/src/ui/`
 - **THEN** the three smokes run once, before the single commit that holds both sets of edits
@@ -244,6 +256,14 @@ The workflow script SHALL compare the main checkout's `git status --porcelain`, 
 #### Scenario: A stage edits the main checkout
 - **WHEN** the guard agent's after-stage status, `HEAD` or branch of the main checkout differs from its before-stage reading
 - **THEN** the script stops the run and reports the difference
+
+#### Scenario: A main-branch alias is refused
+- **WHEN** the change, the branch argument or the spec stage's branch is `main`, `HEAD`, or starts with `heads/`, `refs/`, `origin/`, `remotes/` or `tags/`
+- **THEN** the script stops before the next agent runs
+
+#### Scenario: A PR value is normalized
+- **WHEN** an argument or a stage returns the PR as `7`, `#7` or `https://github.com/<owner>/<repo>/pull/7`
+- **THEN** every later prompt names `PR #7`, and any other value stops the run
 
 #### Scenario: A schema-less lens is still guarded
 - **WHEN** the `code-review` lens runs without a schema

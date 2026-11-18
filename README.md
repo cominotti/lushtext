@@ -557,7 +557,7 @@ implementation slots (`scripts/impl-slots.sh`), tree-keyed gate records
 (`scripts/gate-trees.sh`), the drain-first quiet gate of timing verdicts
 (`scripts/quiet-gate.py`) and fast-lane eligibility
 (`scripts/check-fast-lane.py`); `make check-workflow-scripts` checks the
-workflow scripts. The rules are in `.agents/rules/parallel-agent-work.md`.
+workflow scripts and runs their stub-agent harnesses. The rules are in `.agents/rules/parallel-agent-work.md`.
 
 ### UI Templates
 

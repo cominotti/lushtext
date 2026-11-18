@@ -359,6 +359,94 @@ class ChangedPath:
     path: str
 
 
+DESCRIPTION_RE = re.compile(r"^description:\s*(?P<q>[\"']?)(?P<text>.*?)(?P=q)\s*$", re.MULTILINE)
+DESCRIPTION_PATH_RE = re.compile(r"(?<![\w$/.-])([a-z_]+)/(?![\w/])")
+DATA_KEYWORD_CLAUSE_RE = re.compile(r"\btouching (?P<items>[^;]+);")
+PERF_AREA_CLAUSE_RE = re.compile(r"\bRust changes in (?P<items>.+?) crates\b")
+LIST_SPLIT_RE = re.compile(r"\s*,\s*|\s*\bor\b\s*|\s*\band\b\s*|\bthe GTK Lush\b\s*")
+
+
+def read_skill_description(skills_root: Path, skill: str) -> str:
+    """The frontmatter `description` of `.agents/skills/<skill>/SKILL.md`, or ''."""
+
+    try:
+        text = (skills_root / skill / "SKILL.md").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    match = DESCRIPTION_RE.search(text)
+    return match.group("text") if match else ""
+
+
+def _list_items(text: str) -> set[str]:
+    return {item.strip() for item in LIST_SPLIT_RE.split(text) if item.strip()}
+
+
+def lens_trigger_errors(
+    topology: "WorkspaceTopology",
+    policy: dict[str, object],
+    descriptions: dict[str, str],
+) -> list[str]:
+    """Check, in both directions, that the lens selector matches the skills' triggers.
+
+    `review-lenses` selects from machine tables; agents read the skills'
+    descriptions. Data safety: every `<name>/` path the description names is
+    a `[data_safety].path_suffixes` entry and every entry is named, and every
+    item of its "touching ...;" clause is a content-pattern keyword and every
+    keyword is in that clause. Performance: every area of the umbrella's
+    "Rust changes in ... crates" clause is in the scope `performance_path`
+    uses (package `performance-roots`, a `src` root counting as the package
+    directory's name, plus the fallback suffixes), and every scope area is
+    named.
+    """
+
+    errors: list[str] = []
+    data_policy = policy.get("data_safety") or {}
+    data_skill = data_policy.get("skill")
+    if isinstance(data_skill, str):
+        description = descriptions.get(data_skill, "")
+        named_paths = set(DESCRIPTION_PATH_RE.findall(description))
+        selected_paths = {PurePosixPath(s).name for s in data_policy.get("path_suffixes", ())}
+        for name in sorted(named_paths - selected_paths):
+            errors.append(f"{data_skill}: the description names {name}/, which is not in [data_safety].path_suffixes")
+        for name in sorted(selected_paths - named_paths):
+            errors.append(f"{data_skill}: [data_safety] path suffix {name}/ is not named in the description")
+        clause = DATA_KEYWORD_CLAUSE_RE.search(description)
+        keywords = {entry["keyword"] for entry in data_policy.get("content_patterns", ())}
+        if clause is None:
+            errors.append(f"{data_skill}: the description has no \"touching ...;\" trigger clause to check the keywords against")
+        else:
+            # Keywords may contain the list words themselves ("tab or window
+            # close"), so take each keyword out of the clause whole, then
+            # whatever is left between separators is an unselected trigger.
+            remainder = clause.group("items")
+            for keyword in sorted(keywords, key=len, reverse=True):
+                if keyword in remainder:
+                    remainder = remainder.replace(keyword, ",")
+                else:
+                    errors.append(f"{data_skill}: [data_safety] keyword {keyword!r} is not named in the description's trigger clause")
+            for item in sorted(_list_items(remainder)):
+                errors.append(f"{data_skill}: the description's trigger {item!r} has no content pattern in [data_safety]")
+    performance = policy.get("performance") or {}
+    umbrella = performance.get("umbrella")
+    if isinstance(umbrella, str):
+        description = descriptions.get(umbrella, "")
+        key = performance["package_metadata_key"]
+        scope = {PurePosixPath(s).name for s in performance.get("fallback_suffixes", ())}
+        for package in topology.packages:
+            for root in topology.role_roots(package, key):
+                scope.add(PurePosixPath(package.root).name if root == "src" else PurePosixPath(root).name)
+        clause = PERF_AREA_CLAUSE_RE.search(description)
+        if clause is None:
+            errors.append(f"{umbrella}: the description has no \"Rust changes in ... crates\" clause to check the scope against")
+        else:
+            named = _list_items(clause.group("items"))
+            for item in sorted(named - scope):
+                errors.append(f"{umbrella}: the description names {item!r}, which is not in the performance scope")
+            for item in sorted(scope - named):
+                errors.append(f"{umbrella}: performance scope area {item!r} is not named in the description")
+    return errors
+
+
 def collect_changes(repo_root: Path, base: str) -> tuple[list[ChangedPath], dict[str, str]]:
     """The change's paths against `base` and the changed text of each Rust file.
 
@@ -501,6 +589,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.command == "validate":
         errors = topology.validation_errors()
+        skills_root = repo_root / ".agents" / "skills"
+        errors.extend(
+            lens_trigger_errors(
+                topology,
+                policy,
+                {
+                    name: read_skill_description(skills_root, name)
+                    for name in (
+                        (policy.get("data_safety") or {}).get("skill"),
+                        policy["performance"].get("umbrella"),
+                    )
+                    if isinstance(name, str)
+                },
+            )
+        )
         try:
             discover_release_workflows(repo_root, policy)
         except ValueError as error:
