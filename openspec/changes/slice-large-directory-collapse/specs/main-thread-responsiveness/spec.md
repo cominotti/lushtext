@@ -80,18 +80,18 @@ A sidebar directory collapse by a route LushText owns SHALL draw its collapsed r
 - **WHEN** the folder header collapses two expanded roots of 4,096 entries each
 - **THEN** each side's completion is taken at the first frame that draws both roots collapsed; on `main`, whose deferred restore later expands the second root again, that frame is expected before the restore, and the verdict test reports it if it never comes
 
-### Requirement: A sidebar collapse shows its final picture no later than main's
-Where no row after the collapsing subtree is in the realized band at the input, the rows the viewport draws during a sidebar collapse by a route LushText owns SHALL be final in the first frame after the input. Otherwise they SHALL be final within the completion bar of the requirement above. The scrollbar is excluded; completion judges it.
+### Requirement: A sidebar collapse's picture is final in the first frame where nothing follows it
+Where no row follows the collapsing subtree in the flattened list and the directory row is on screen at the input, the rows the viewport draws during a sidebar collapse by a route LushText owns SHALL be final in the first frame after the input. Otherwise they SHALL be final within the completion bar of the requirement above. The scrollbar is excluded; completion judges it.
 
 #### Scenario: The picture is final in the first frame when nothing follows
-- **WHEN** the user collapses an expanded directory of 131,072 entries, or of 256, 4,096 or 16,385, with nothing after it
+- **WHEN** the user collapses an expanded directory of 131,072 entries, or of 256, 4,096 or 16,385, with no row after it in the list and its row on screen
 - **THEN** the first frame after the input draws the directory row collapsed and none of its children, and no later frame until the collapse settles draws a row the viewport did not show in that frame or moves one
 - **AND** only the scrollbar changes afterwards, when the collapse completes
 
 #### Scenario: The picture-final figure
 - **WHEN** the verdict test measures a collapse on `main` and on the branch
 - **THEN** after each frame dispatch it records the rows the viewport draws (a list-view child drawn with opacity above 0 inside the viewport, with its path and rendered top), and prints as picture-final the end of the first frame dispatch from which every later record until settled equals the last one
-- **AND** the branch's worst picture-final is within the first frame after the input where no row after the subtree was in the band at the input, and within the case's completion bar otherwise
+- **AND** the branch's worst picture-final is within the first frame after the input where no row followed the subtree in the list and the directory row was on screen at the input, and within the case's completion bar otherwise, including when rows follow the subtree outside the band
 - **AND** it prints each case's picture-final and completion beside `main`'s completion
 
 ### Requirement: Small-directory expansion is measured against the settle budget

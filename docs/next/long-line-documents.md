@@ -4590,7 +4590,7 @@ review", "Implementation decisions"); evidence in
     collapse ends; it has the input dispatch remove one unbound chunk, takes
     the path cache out of the chunk if the queued attribution confirms a
     frame, and pre-registers a one-frame selection margin for every
-    selection and go/no-go round. Five branch-only rounds are queued; the
+    selection and go/no-go round. Six branch-only rounds are queued; the
     slice model over each child store stays the recorded next step.
   - *What `stop-expander-bind-time-child-scans` must build on.* Its proposal
     says `row_factory.rs` is unchanged; this change makes that false. Build

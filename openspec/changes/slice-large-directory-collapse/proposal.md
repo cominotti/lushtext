@@ -104,8 +104,8 @@ stay drawn and shift each frame. The revision adds:
 
 - **The collapsing subtree's rows are hidden in the first frame**, paint-only
   (opacity and pointer targeting, no re-measure: new axiom A123), so where
-  nothing follows the subtree the sidebar shows its final picture in the
-  first frame, earlier than `main`'s frozen collapse; navigation keys
+  nothing follows the directory in the list and its row is on screen, the
+  sidebar shows its final picture in the first frame, earlier than `main`'s frozen collapse; navigation keys
   pressed meanwhile act when the collapse ends, and hidden rows take no
   pointer input and report `hidden` to assistive technologies.
 - **The input dispatch removes one chunk of unbound rows**, so the first
@@ -242,7 +242,7 @@ stay drawn and shift each frame. The revision adds:
   here, a finish slower than `main`'s, is superseded by the revision's
   completion bar below.)*
 - **Revised (R11):** the collapsing directory's visible children disappear
-  in the first frame. Where nothing follows them, that is the final picture,
+  in the first frame. Where nothing follows the directory and its row is on screen, that is the final picture,
   sooner than `main`'s frozen collapse; the scrollbar catches up when the
   collapse completes. With rows after the directory, the space below it is
   empty until those rows arrive, within the completion bar. A navigation key

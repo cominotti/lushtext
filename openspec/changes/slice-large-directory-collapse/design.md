@@ -43,10 +43,11 @@ GTK facts used below were read in the GTK 4.24.1 sources, saved in
   to the frame that draws the rows collapsed) is at most `main`'s plus two
   frames, or 100 ms where `main` is faster than that ("Design revision after
   stage 4", R3).
-- The picture the user sees is final no later than `main`'s: where nothing
-  follows the collapsing subtree in the realized band, its rows draw nothing
-  from the first frame after the input, and otherwise the picture is final
-  within the completion bar (R11, D22).
+- The picture the user sees is final no later than `main`'s where it can
+  be: where no row follows the collapsing subtree in the flattened list and
+  the directory row is on screen, its rows draw nothing from the first frame
+  after the input; otherwise the picture is final within the completion bar
+  (R11, D22).
 - The collapse's final state is `main`'s. That covers rows, expansion intent,
   watch targets, retired stores, the accessible state, and the scroll
   position when the directory row is on screen.
@@ -397,10 +398,11 @@ see D4.
   the settled time is printed and recorded, not judged. The paragraph below
   is the stage 1 text it replaces.
 - *Revised (R11):* the picture-final figure is enforced beside completion
-  (the first frame where nothing follows the subtree in the band, else the
-  completion bar), and constants and go/no-go rounds select only a
-  configuration one frame (16.7 ms) inside every bar; the final campaign is
-  judged at the bars themselves.
+  (the first frame where no row follows the subtree in the flattened list
+  and the directory row is on screen, else the completion bar), and
+  constants and go/no-go rounds select only a configuration one frame
+  (16.7 ms) inside every completion-bar figure; the final campaign is judged
+  at the bars themselves.
 - Time until collapsed is printed and recorded, not enforced. Its expected
   ceiling is
   `ceil(bound rows / SIDEBAR_REALIZED_ROWS_PER_FRAME) + ceil(unbound rows / (COLLAPSE_UNBOUND_CHUNK_ROWS × chunks per turn))`
@@ -1978,6 +1980,9 @@ names are kept).
   but the scrollbar still describes 131,072 rows and the user can scroll
   into blank space; with rows after it, a gap opens above them. Both stay
   recorded follow-ups if task 10.7's round misses the revised bar.
+  *Superseded by R11 (2026-11-18):* after the go/no-go missed, R11 takes
+  R9's (b), hiding the band, as D22, for what the user sees, and keeps R9's
+  (a), the slice model, as the recorded next step.
 - *Judging the settled time.* On both sides it ends with the probe-scan
   publication 0.40–0.45 s after the collapse (`main`'s dispatch starts
   402–450 ms after the input in the stage 4 campaign, the branch's 431–442 ms
@@ -2187,7 +2192,10 @@ every case is at most its bar minus one 60 Hz frame**, M = 16.7 ms
 (16,667 µs). That holds for the constants round (task 10.7), for the
 attribution gates below (Q4), and for any further go/no-go. "Its bar" is:
 - for completion, R3's bar plus R9's allowance;
-- for the new picture-final figure, its bar (below).
+- for the new picture-final figure, the completion bar where that is its
+  bar (below). Its first-frame bar is ordinal: the figure must fall in the
+  first frame dispatch after the input, and `INPUT_TO_FRAME_US` (16,666 µs)
+  less a frame would be nothing, so no margin applies to it.
 
 The final verdict campaign (task 7.2) is still judged at the bar itself,
 unrounded and unchanged. The margin chooses what goes into that campaign; it
@@ -2376,7 +2384,17 @@ thresholds are pre-registered to the rounds below and to task 10.7.
     about 8,400 entries; at 16,384, also 400:16,385 (about 16,180 unbound
     rows), whose 122.6 ms selection bar eight frames would also miss. Task
     10.7 therefore takes the chunk from candidates of at least 16,384 when
-    round Q5 shows such a chunk's turn within `B_INTERACT_US`.
+    the deciding Q5 round (Q5b if D24 is taken, else Q5a) shows such a
+    chunk's turn within `B_INTERACT_US`.
+  - *Seams:* the input's chunk is the policy's next step, taken only when
+    that step is an unbound removal (a bound unit or a collapse leaves the
+    input dispatch to D6 alone), and it honours the test pacing seam: under
+    `CollapsePacingForTest::Hold` the input removes nothing, so the ticked
+    tests that hold a collapse (9.4–9.7) see the store they see today.
+  - *Superseded text:* D6 ("the input dispatch does no row work") and R5's
+    D21 rejection ("the input dispatch does no row work") now mean no
+    **bound** row work; the one unbound chunk is D23's exception, which
+    creates and destroys no widget (A118).
   - *Bound:* the input dispatch stays within `B_INTERACT_US`. At the
     skip-cache rate (about 0.18 µs a row) one 8,192-row chunk is about
     1.5 ms and a 16,384-row chunk about 3 ms, beside the 0.2 ms input and
@@ -2415,7 +2433,8 @@ thresholds are pre-registered to the rounds below and to task 10.7.
 - R9's statement that a very large directory finishes later than `main`'s
   frozen collapse stays true of the **model** (the scrollbar and readiness).
   With D22, the **picture** a user sees is final in the first frame
-  wherever nothing follows the subtree.
+  wherever no row follows the subtree in the flattened list and the
+  directory row is on screen.
 
 #### Instruments and bars
 
@@ -2432,31 +2451,40 @@ thresholds are pre-registered to the rounds below and to task 10.7.
     snapshot until settled equals the last one. The scrollbar is excluded,
     because completion owns it. `main`'s side runs the same instrument; with
     nothing hidden there, it equals `main`'s completion.
-  - *Bar, nothing after the subtree in the band at intent:* the first frame
-    dispatch after the input, within `INPUT_TO_FRAME_US`.
-  - *Bar, otherwise:* the same case's completion bar.
+  - *Bar, when no row follows the subtree in the flattened list and the
+    directory row is on screen at the input* (0:N in the verdict test): the
+    first frame dispatch after the input, within `INPUT_TO_FRAME_US`. The
+    condition is not "no row after it in the band": with 400 rows after a
+    subtree that fills the band, those rows are outside the band at the
+    input and still arrive only at completion (the walk above), and with the
+    directory row above the viewport the viewport stays empty until
+    completion.
+  - *Bar, otherwise* (400:N, the header's first root, scrolled inside the
+    children): the same case's completion bar.
   - *Printed:* each case's distance to `main`'s completion, the figure this
     revision is judged by.
-- **Selection** uses the margin above on both figures; the final campaign
+- **Selection** uses the margin above on every completion-bar figure (not
+  on the ordinal first-frame bar); the final campaign
   uses the bars.
 
 #### Attribution rounds queued (branch only; `MEASURE-QUEUE.md`, "R11 design attribution")
 
-All five use the saved binary `rev5/bin/widget-attr-104`, whose switches
+All six use the saved binary `rev5/bin/widget-attr-104`, whose switches
 need no build. They run in the coordinator's quiet window, one round at a
 time, at a 1-minute load below 4.
 
 The perf-prefixed form has never run through the fixed `run-bin.sh`, which
 now goes through `scripts/headless-session`: a launch failure there is
-void, not a result. Task 10.12 reads the rounds before any code of D22–D24. Q4 runs last, because its gate reads Q2 and Q5.
+void, not a result. Task 10.12 reads the rounds before any code of D22–D24. Q4 runs last, because its gate reads Q2 and Q5a/Q5b.
 
 | round | factor varied | cases | purpose and pre-registered use |
 |---|---|---|---|
 | Q1 `slc-r11-pdw-104` | none (DWARF profile, 4 kHz, 16 KiB stacks) | 0:131,072, one rep | 104's split by phase: unbound, tail, retirement, evidence. It names D24's target if Q2 voids the path-cache one |
 | Q2 `slc-r11-skipcache-104` | `SLC_SKIP_CACHE=1` | 0:131,072 and 400:131,072, three reps | the path-cache splice's share on the real code. D24 is taken if the median 0:131,072 completion falls by at least 16.7 ms |
 | Q3 `slc-r11-d128-104`, `slc-r11-d256-104` | `SLC_DESTROY=128`, then `256` | collapse, 0 rows after, at 256, 4,096 and 131,072, three reps | whether a larger destroy-only unit cuts the tail by whole frames with the step within 8 ms and the frame within 12 ms. It bounds task 10.7's candidates |
-| Q5 `slc-r11-c16k-104` | `SLC_CHUNK=16384` | collapse at 0:131,072 and 400:16,385, three reps | a 16,384-row chunk's turn (the worst step) against `B_INTERACT_US`, which decides whether D23's chunk can cover 400:16,385 |
-| Q4 `slc-r11-base-104` | none (constants 32 / 64 / 8,192) | every collapse case and the header, three reps | the real code's completion per case. **Gate:** for each case, predict the reworked completion as Q4's worst, less one frame where D23 applies (the subtree has unbound rows, and they fit one chunk of the size Q5 admits: 16,384 if its worst step fits `B_INTERACT_US`, else 8,192), less Q2's median gain where D24 applies (subtrees above 16,384 rows). If any prediction exceeds bar − M, the change returns to design before D22–D24 are coded. Task 10.4's 12 ms acceptance is read here too (unit 32, worst frame at 400:256) |
+| Q5a `slc-r11-c16k-104` | `SLC_CHUNK=16384` | collapse at 0:131,072 and 400:16,385, three reps | a 16,384-row chunk's turn (the worst step) against `B_INTERACT_US`, with the path-cache splice still in the chunk |
+| Q5b `slc-r11-c16k-sc-104` | `SLC_CHUNK=16384 SLC_SKIP_CACHE=1` | the same | the same turn without the splice D24 removes. **Which decides:** Q5b if D24 is taken (Q2), because that is the chunk the reworked code runs; Q5a if it is not. The deciding round admits a 16,384-row chunk for D23 when its worst step fits `B_INTERACT_US` |
+| Q4 `slc-r11-base-104` | none (constants 32 / 64 / 8,192) | every collapse case and the header, three reps | the real code's completion per case. **Gate:** for each case, predict the reworked completion as Q4's worst, less one frame where D23 applies (the subtree has unbound rows, and they fit one chunk of the size the deciding Q5 round admits: 16,384 if its worst step fits `B_INTERACT_US`, else 8,192), less D24's credit: Q2's median gain for the same rows-after count at 131,072 rows, and that gain scaled by `R / 131,072` for a smaller subtree (the splice it removes is per row), so 16,385 rows get about an eighth of it. If any prediction exceeds bar − M, the change returns to design before D22–D24 are coded. Task 10.4's 12 ms acceptance is read here too (unit 32, worst frame at 400:256) |
 
 The queued "constants round (task 10.7)" on 104 is superseded: its first
 and fourth rounds are Q4 and Q3, and the rest would choose constants for code
@@ -2474,7 +2502,12 @@ this revision changes. Task 10.7 runs on the reworked binary.
 - **Task 10.10** is closed: its two rounds are recorded above.
 - Tasks 3.2, 5.2, 5.7 and 9.5 stay true as written. D22 adds tests and code
   beside them (tasks 10.13 and 10.14), and changes neither the expander
-  class nor its CSS, because hiding uses no CSS.
+  class nor its CSS, because hiding uses no CSS. One test in 3.2's list
+  changes with D23: `test_collapse_shows_in_the_first_frame` asserts the
+  projection "before any row is removed", which becomes "before any bound
+  row is removed"; task 10.9 revises it with D23's guard.
+- D6 and R5's D21 rejection are annotated where D23 is decided (above);
+  the decisions themselves are unchanged for bound rows.
 
 ## Risks / Trade-offs
 
@@ -2499,7 +2532,9 @@ this revision changes. Task 10.7 runs on the reworked binary.
   accessible state still flip in the first frame and nothing freezes. The
   400:131,072 figure under the reworked bookkeeping is not measured yet
   (queued); if it misses, the change returns to design with the slice-model
-  or band-hiding alternatives of R9.
+  or band-hiding alternatives of R9. *Superseded by R11:* the band is hidden
+  (D22) and the 400:131,072 figure is measured (R11); the slice model is the
+  recorded next step if R11's rounds or task 10.7 miss the selection bars.
 - **Hiding the band (D22) shows an empty region while the model drains.**
   With rows after the subtree, the region below the directory row is empty
   until they arrive (at or a frame before completion). When the directory
