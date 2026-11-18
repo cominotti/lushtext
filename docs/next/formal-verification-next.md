@@ -193,6 +193,10 @@ applied one at a time:
   durable write, copy, move and `temp_name::format` take `WriteLabel`, so a
   temp tag is always a known label; `kill_point::reach` keeps a string key,
   because the draft windows narrow on a draft id.
+- group 2, one owner for the app-data layout: **done** (2026-11-18).
+  `services/app_data_layout.rs` names every location once; the sweep and the
+  format-upgrade inventory decide each in an exhaustive `match`, and the
+  legacy folder-note sidecar directory is swept, last.
 
 ### N9. Use proofs as mutation killers
 

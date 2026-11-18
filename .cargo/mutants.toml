@@ -232,7 +232,9 @@ exclude_re = [
     "crates/lushtext-core/src/services/filesystem/write\\.rs:.*sync_parent_dir",
     # Race-only diagnostic branch: if the recents file vanishes between status
     # and read, both paths return an empty recent list; only the warning changes.
-    "crates/lushtext-core/src/services/recent_documents\\.rs:252:.*load_recent_file",
+    # Keyed on the `NotFound` guard (the function's only `==`), not a line: the
+    # former `:252:` anchor had drifted off the function and matched nothing.
+    "crates/lushtext-core/src/services/recent_documents\\.rs:.*: replace (match guard error\\.kind\\(\\) == std::io::ErrorKind::NotFound with (true|false)|== with !=) in load_recent_file",
     # Equivalent while the public JSON envelope is still v1.
     "crates/lushtext-core/src/services/format_upgrade/diagnostics\\.rs:.*latest_format_version -> u32 with 1",
     # Equivalent after the preceding exact-version branch in

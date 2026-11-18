@@ -30,6 +30,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
 
+use crate::services::app_data_layout::{AppDataLayout, AppDataLocation};
 use crate::services::filesystem::write::DurableWriteError;
 use crate::services::filesystem::{
     DirectoryScanPolicy, FileKind, WriteLabel, metadata as fs_metadata, mutate as fs_mutate,
@@ -38,10 +39,8 @@ use crate::services::filesystem::{
 
 use super::journal_core::{SetAsideNameStep, SetAsideSlot, set_aside_name_step};
 use super::set_aside_retention::{SetAsideFingerprint, SetAsideTotals, UserDecision, may_delete};
-use super::{MAX_AUTOMATIC_DRAFT_BYTES, draft_body_path, drafts_dir, read_draft_path_bounded};
+use super::{MAX_AUTOMATIC_DRAFT_BYTES, draft_body_path, read_draft_path_bounded};
 
-/// Subdirectory of `drafts/` holding preserved bodies that left the journal.
-const SET_ASIDE_DIR: &str = "set-aside";
 /// Largest number of set-aside names probed for one body before giving up.
 ///
 /// Kind: retry budget; a power of two, rounded up.
@@ -75,7 +74,7 @@ fn record_placement() {
 /// Returns the set-aside area: `{data_dir}/drafts/set-aside/`.
 #[must_use]
 pub fn dir(data_dir: &Path) -> PathBuf {
-    drafts_dir(data_dir).join(SET_ASIDE_DIR)
+    AppDataLayout::new(data_dir).path(AppDataLocation::SetAside)
 }
 
 /// How a draft body enters the set-aside area.

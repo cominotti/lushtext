@@ -2787,9 +2787,14 @@ Both wait for it because of `durable_write` overlap; the facts are:
 - Phase 0: a lineage index repaired from snapshot files derives each
   timestamp from the snapshot id (capture time), so a preserved stale draft's
   `saved_at_secs` stamp does not survive an index repair.
-- Phase 0: the startup leftover sweep skips the legacy folder-note sidecar
-  directory kept for older releases, and a pass over a directory larger than
-  its budget may leave leftovers for a later pass.
+- Phase 0: ~~the startup leftover sweep skips the legacy folder-note sidecar
+  directory kept for older releases~~ **fixed (2026-11-18, group 2 of
+  `apply-verification-altitude-redesigns`)**: the app-data layout
+  (`services/app_data_layout.rs`) marks that directory `SweptLast`, so the
+  sweep visits it after the lineages, with whatever budget remains; every
+  other directory keeps its order and share of the budget. Still open: a pass
+  over a directory larger than its budget may leave leftovers for a later
+  pass.
 - **Fixed (2026-09-24, `bound-draft-set-aside-retention`): the set-aside
   copy of a newer body was skipped.** The Quint vs TLA+ evaluation found it
   (E1): the real `draft_service`, driven against a Rust abstract disk model.

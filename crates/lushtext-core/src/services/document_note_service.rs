@@ -14,15 +14,13 @@ use crate::model::document_note::DocumentNoteDocument;
 use crate::model::note::RichNoteBody;
 use crate::model::note::RichNoteMergeDecision;
 use crate::model::sidecar_identity::DocumentSidecarIdentity;
+use crate::services::app_data_layout::{AppDataLayout, AppDataLocation};
 use crate::services::filesystem::{
     DirectoryScanPolicy, metadata as fs_metadata, mutate as fs_mutate, tree as fs_tree,
 };
 use crate::services::recovery_metadata::{RecoveryDiagnostic, RecoveryMetadataClass};
 
 use super::note_storage;
-
-/// Directory name that stores per-file document notes.
-const DOCUMENT_NOTES_DIR: &str = "document-notes";
 
 /// Lightweight workspace-facing document-note row for note browsers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,7 +43,7 @@ pub struct WorkspaceDocumentNoteListing {
 /// Resolve the document-note sidecar directory under the app data home.
 #[must_use]
 pub fn document_notes_dir(data_dir: &Path) -> PathBuf {
-    data_dir.join(DOCUMENT_NOTES_DIR)
+    AppDataLayout::new(data_dir).path(AppDataLocation::DocumentNotes)
 }
 
 /// Load the document note for a saved file, returning `None` when no note exists yet.

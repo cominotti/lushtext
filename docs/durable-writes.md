@@ -167,6 +167,15 @@ and `parse` refuses it. The names are pinned per label by
 `the_builder_emits_the_same_temp_name_for_every_known_label`, because the
 sweep reads names that older builds wrote.
 
+The startup sweep (`services/app_data_leftovers.rs`) does not keep its own
+list of where temps can land: it visits every location the app-data layout
+(`services/app_data_layout.rs`) marks swept, in a fixed order that spends its
+shared budget the same way on every launch: the flat directories, each
+format-upgrade run with its `items/`, each local-history lineage, then the
+legacy folder-note sidecar directory last. A file location is covered by its
+parent directory, which a unit test checks is swept, so a new location added
+to the layout is covered or fails to compile.
+
 The crash smoke's kill points (`services/kill_point.rs`, feature
 `crash-kill-points`) narrow on a key, `LUSHTEXT_KILL_AT=name@key#n`. The key
 is the write label's string for the durable-write and Replace All windows

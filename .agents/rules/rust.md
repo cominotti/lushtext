@@ -211,6 +211,15 @@ or before completing work that touches file I/O, persistence, tests, benches,
 rules, or skills. A clean run means no disallowed raw filesystem examples remain
 outside the approved backend and fixture modules.
 
+The app-data layout has one owner, `services/app_data_layout.rs`: every file
+and directory under the data home is an `AppDataLocation`, spelled only there.
+A service resolves its paths through `AppDataLayout` (its public helpers, such
+as `drafts_dir` or `bookmarks_dir`, delegate to it) and never re-spells a name
+as a `const` or literal. A new location is a new variant, which the startup
+leftover sweep (`sweep`: swept, swept last, or covered by its parent) and the
+format-upgrade inventory (scanned, covered by another scan, or exempt with a
+reason) must each decide in their exhaustive `match` before it compiles.
+
 Durable atomic writes on Linux require the full ordered filesystem contract:
 probe metadata, create the temp file with safe permissions, write and flush
 content, apply required metadata, call `sync_all()` on the temp file after those

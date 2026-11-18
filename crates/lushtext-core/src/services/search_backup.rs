@@ -10,6 +10,7 @@
 //! an upgrade; new runs never write them.
 
 use crate::model::sidecar_identity::stable_path_hash;
+use crate::services::app_data_layout::{AppDataLayout, AppDataLocation};
 use crate::services::content_search::{
     ContentDigest, MAIN_REPLACE_UNDO_BYTES, MAX_REPLACE_UNDO_RETAINED_BYTES, ReplaceUndoBackup,
     ReplaceUndoEntry, UndoOriginal, replace_undo_retained_byte_weight,
@@ -43,19 +44,38 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock, TryLockError};
 use std::time::Duration;
 
-/// Pre-public single-file backup path, retained only for clean-break recovery diagnostics.
-const BACKUP_FILE: &str = "replace-backup.json";
-/// Directory containing one pre-write undo snapshot per replaced file.
-const JOURNAL_DIR: &str = "replace-backup-journal";
-/// Commit marker proving a journal run has active, undoable entries.
-const JOURNAL_MANIFEST_FILE: &str = "manifest.json";
-/// Inactive marker written before cleanup so interrupted deletion cannot revive undo.
-const CLEANUP_MARKER_FILE: &str = "cleanup-in-progress.json";
-/// Subdirectory of the journal holding one raw original-bytes body per entry.
-///
-/// Its own directory, so the entry scans keep their `JOURNAL_SCAN_MAX_ENTRIES`
-/// coverage and the bodies get their own scan under the same bound (design D3).
-const BODIES_DIR: &str = "bodies";
+// The journal's names come from the app-data layout:
+// - `RetiredReplaceBackup`, the pre-public single-file backup, retained only
+//   for clean-break recovery diagnostics;
+// - `ReplaceJournalDir`, one pre-write undo snapshot per replaced file;
+// - `ReplaceJournalManifest`, the commit marker proving a journal run has
+//   active, undoable entries;
+// - `ReplaceCleanupMarker`, written before cleanup so interrupted deletion
+//   cannot revive undo;
+// - `ReplaceJournalBodies`, one raw original-bytes body per entry, in its own
+//   directory so the entry scans keep their `JOURNAL_SCAN_MAX_ENTRIES`
+//   coverage and the bodies get their own scan under the same bound
+//   (design D3).
+
+/// `location` under the data home `data_dir`.
+fn layout_path(data_dir: &Path, location: AppDataLocation) -> PathBuf {
+    AppDataLayout::new(data_dir).path(location)
+}
+
+/// The journal manifest's file name inside the journal directory.
+fn manifest_file_name() -> &'static str {
+    AppDataLocation::ReplaceJournalManifest.file_name()
+}
+
+/// The cleanup marker's file name inside the journal directory.
+fn cleanup_marker_file_name() -> &'static str {
+    AppDataLocation::ReplaceCleanupMarker.file_name()
+}
+
+/// The bodies directory's name inside the journal directory.
+fn bodies_dir_name() -> &'static str {
+    AppDataLocation::ReplaceJournalBodies.file_name()
+}
 /// Extension of a body file.
 const BODY_EXTENSION: &str = "body";
 /// How often a cancellable wait for the journal guard re-checks its flag.
@@ -262,13 +282,13 @@ pub fn load(data_dir: &Path) -> Result<ReplaceUndoBackup> {
 /// The directory holding the Replace All undo journal under `data_dir`.
 #[must_use]
 pub(crate) fn journal_dir(data_dir: &Path) -> PathBuf {
-    data_dir.join(JOURNAL_DIR)
+    layout_path(data_dir, AppDataLocation::ReplaceJournalDir)
 }
 
 /// The directory holding the journal's raw undo bodies under `data_dir`.
 #[must_use]
 pub(crate) fn bodies_dir(data_dir: &Path) -> PathBuf {
-    journal_dir(data_dir).join(BODIES_DIR)
+    layout_path(data_dir, AppDataLocation::ReplaceJournalBodies)
 }
 
 /// Load Replace All undo state with recovery diagnostics.
@@ -278,7 +298,7 @@ pub(crate) fn bodies_dir(data_dir: &Path) -> PathBuf {
 /// crash during cleanup cannot resurrect an unsafe undo action.
 #[must_use]
 pub fn load_recovering(data_dir: &Path) -> ReplaceBackupRecoveryLoad {
-    let journal_dir = data_dir.join(JOURNAL_DIR);
+    let journal_dir = layout_path(data_dir, AppDataLocation::ReplaceJournalDir);
     match fs_metadata::path_status(&journal_dir) {
         Ok(status) if status.is_directory() => return load_journal(data_dir, &journal_dir),
         Ok(status) if status.is_present() => {
@@ -315,7 +335,7 @@ pub fn load_recovering(data_dir: &Path) -> ReplaceBackupRecoveryLoad {
 
 /// Preserve the retired single-file backup without exposing it as undo state.
 fn load_retired_backup(data_dir: &Path) -> ReplaceBackupRecoveryLoad {
-    let path = data_dir.join(BACKUP_FILE);
+    let path = layout_path(data_dir, AppDataLocation::RetiredReplaceBackup);
     let load = load_enveloped_json_optional::<serde_json::Value>(
         &RecoveryLoadConfig::new(
             data_dir,
@@ -390,16 +410,13 @@ fn journal_lock() -> &'static Mutex<()> {
 /// The entry JSON of `path` in the journal under `data_dir`.
 #[must_use]
 pub fn entry_path(data_dir: &Path, path: &Path) -> PathBuf {
-    data_dir.join(JOURNAL_DIR).join(entry_file_name(path))
+    journal_dir(data_dir).join(entry_file_name(path))
 }
 
 /// The raw body file of `path` in the journal under `data_dir` (design D3).
 #[must_use]
 pub fn body_path(data_dir: &Path, path: &Path) -> PathBuf {
-    data_dir
-        .join(JOURNAL_DIR)
-        .join(BODIES_DIR)
-        .join(body_file_name(path))
+    bodies_dir(data_dir).join(body_file_name(path))
 }
 
 /// Shrink the journal to `backup`, never rebuilding it (design D3a).
@@ -426,14 +443,14 @@ pub fn shrink_journal_to(data_dir: &Path, backup: &ReplaceUndoBackup) -> Result<
         return delete(data_dir);
     }
 
-    let journal_dir = data_dir.join(JOURNAL_DIR);
+    let journal_dir = layout_path(data_dir, AppDataLocation::ReplaceJournalDir);
     let retained = backup
         .keys()
         .map(|path| entry_file_name(path))
         .collect::<HashSet<_>>();
     let is_superset = fs_metadata::path_status(&journal_dir)
         .is_ok_and(super::filesystem::types::PathStatus::is_directory)
-        && !fs_metadata::exists(&journal_dir.join(CLEANUP_MARKER_FILE))
+        && !fs_metadata::exists(&journal_dir.join(cleanup_marker_file_name()))
         && retained
             .iter()
             .all(|entry_file| fs_metadata::exists(&journal_dir.join(entry_file)));
@@ -496,7 +513,7 @@ fn remove_unlisted_journal_entries(
         if retained.contains(file_name) {
             continue;
         }
-        let body = journal_dir.join(BODIES_DIR).join(format!(
+        let body = journal_dir.join(bodies_dir_name()).join(format!(
             "{}.{BODY_EXTENSION}",
             file_name.trim_end_matches(".json")
         ));
@@ -553,7 +570,7 @@ impl Protocol for ShrinkRun {
 /// Remove bodies no retained entry names: orphans a crash between a body and
 /// its entry, or between an entry's removal and its body's, left (design D9).
 fn remove_unlisted_bodies(journal_dir: &Path, retained: &HashSet<String>) {
-    let bodies_dir = journal_dir.join(BODIES_DIR);
+    let bodies_dir = journal_dir.join(bodies_dir_name());
     let Ok(entries) = fs_tree::scan_directory(
         &bodies_dir,
         DirectoryScanPolicy {
@@ -588,7 +605,7 @@ fn remove_unlisted_bodies(journal_dir: &Path, retained: &HashSet<String>) {
 /// Returns an error when prior journal state cannot be made inactive and removed.
 pub fn begin_incremental_journal(data_dir: &Path) -> Result<()> {
     delete(data_dir)?;
-    let bodies = data_dir.join(JOURNAL_DIR).join(BODIES_DIR);
+    let bodies = layout_path(data_dir, AppDataLocation::ReplaceJournalBodies);
     fs_write::create_dir_all_durable(&bodies)
         .with_context(|| format!("failed to create {}", bodies.display()))?;
     Ok(())
@@ -633,10 +650,10 @@ pub fn save_stream_entry(data_dir: &Path, path: &Path, record: &StreamEntryRecor
 ///
 /// Returns an error when the active marker cannot be written durably.
 pub fn mark_incremental_journal_active(data_dir: &Path, launch: LaunchId) -> Result<()> {
-    let journal_dir = data_dir.join(JOURNAL_DIR);
+    let journal_dir = layout_path(data_dir, AppDataLocation::ReplaceJournalDir);
     fs_write::create_dir_all_durable(&journal_dir)
         .with_context(|| format!("failed to create {}", journal_dir.display()))?;
-    fs_mutate::remove_file_if_exists(&journal_dir.join(CLEANUP_MARKER_FILE)).with_context(
+    fs_mutate::remove_file_if_exists(&journal_dir.join(cleanup_marker_file_name())).with_context(
         || {
             format!(
                 "failed to clear replace journal cleanup marker in {}",
@@ -676,7 +693,7 @@ fn load_manifest_value(data_dir: &Path, journal_dir: &Path) -> Option<ReplaceJou
     load_enveloped_json_optional::<ReplaceJournalManifest>(
         &RecoveryLoadConfig::new(
             data_dir,
-            &journal_dir.join(JOURNAL_MANIFEST_FILE),
+            &journal_dir.join(manifest_file_name()),
             RecoveryMetadataClass::ReplaceAllUndoJournal,
         ),
         KIND_REPLACE_UNDO_MANIFEST,
@@ -776,10 +793,10 @@ pub fn mark_journal_active(data_dir: &Path, backup: &ReplaceUndoBackup) -> Resul
         );
     }
 
-    let journal_dir = data_dir.join(JOURNAL_DIR);
+    let journal_dir = layout_path(data_dir, AppDataLocation::ReplaceJournalDir);
     fs_write::create_dir_all_durable(&journal_dir)
         .with_context(|| format!("failed to create {}", journal_dir.display()))?;
-    fs_mutate::remove_file_if_exists(&journal_dir.join(CLEANUP_MARKER_FILE)).with_context(
+    fs_mutate::remove_file_if_exists(&journal_dir.join(cleanup_marker_file_name())).with_context(
         || {
             format!(
                 "failed to clear replace journal cleanup marker in {}",
@@ -811,7 +828,7 @@ fn save_journal_manifest(
     journal_dir: &Path,
     manifest: &ReplaceJournalManifest,
 ) -> Result<()> {
-    let manifest_path = journal_dir.join(JOURNAL_MANIFEST_FILE);
+    let manifest_path = journal_dir.join(manifest_file_name());
     let config = RecoveryLoadConfig::new(
         data_dir,
         &manifest_path,
@@ -833,7 +850,7 @@ pub fn cleanup_stale(data_dir: &Path) -> ReplaceBackupCleanupReport {
         Err(error) => ReplaceBackupCleanupReport {
             diagnostics: vec![RecoveryDiagnostic::repair_skipped(
                 RecoveryMetadataClass::ReplaceAllUndoJournal,
-                data_dir.join(JOURNAL_DIR),
+                layout_path(data_dir, AppDataLocation::ReplaceJournalDir),
                 format!("replace undo journal cleanup failed: {error}"),
             )],
         },
@@ -842,7 +859,7 @@ pub fn cleanup_stale(data_dir: &Path) -> ReplaceBackupCleanupReport {
 
 /// Load a journal directory only when its active manifest and entries agree.
 fn load_journal(data_dir: &Path, journal_dir: &Path) -> ReplaceBackupRecoveryLoad {
-    let cleanup_marker = journal_dir.join(CLEANUP_MARKER_FILE);
+    let cleanup_marker = journal_dir.join(cleanup_marker_file_name());
     if fs_metadata::exists(&cleanup_marker) {
         return ReplaceBackupRecoveryLoad {
             backup: ReplaceUndoBackup::new(),
@@ -855,7 +872,7 @@ fn load_journal(data_dir: &Path, journal_dir: &Path) -> ReplaceBackupRecoveryLoa
         };
     }
 
-    let manifest_path = journal_dir.join(JOURNAL_MANIFEST_FILE);
+    let manifest_path = journal_dir.join(manifest_file_name());
     let manifest_load = load_enveloped_json_optional::<ReplaceJournalManifest>(
         &RecoveryLoadConfig::new(
             data_dir,
@@ -1169,7 +1186,7 @@ fn is_journal_payload_file(path: &Path) -> bool {
     let Some(file_name) = path.file_name().and_then(OsStr::to_str) else {
         return false;
     };
-    if file_name == JOURNAL_MANIFEST_FILE || file_name == CLEANUP_MARKER_FILE {
+    if file_name == manifest_file_name() || file_name == cleanup_marker_file_name() {
         return false;
     }
     path.extension().and_then(OsStr::to_str) == Some("json")
@@ -1248,9 +1265,10 @@ fn effective_max_replace_undo_bytes() -> u64 {
 #[cfg(any(test, feature = "test-utils"))]
 pub mod fixture {
     use super::{
-        JOURNAL_DIR, KIND_REPLACE_UNDO_ENTRY, LaunchId, RecoveryLoadConfig, RecoveryMetadataClass,
-        ReplaceBackupDiskEntry, ReplaceJournalManifest, Result, StreamEntryRecord, TargetIdentity,
-        body_path, entry_path, save_enveloped_json_path, save_journal_manifest, save_stream_entry,
+        AppDataLocation, KIND_REPLACE_UNDO_ENTRY, LaunchId, RecoveryLoadConfig,
+        RecoveryMetadataClass, ReplaceBackupDiskEntry, ReplaceJournalManifest, Result,
+        StreamEntryRecord, TargetIdentity, body_path, entry_path, layout_path,
+        save_enveloped_json_path, save_journal_manifest, save_stream_entry,
     };
     use crate::services::content_search::{
         ContentDigest, ReplaceUndoBackup, ReplaceUndoEntry, UndoOriginal,
@@ -1326,7 +1344,7 @@ pub mod fixture {
         incremental: bool,
     ) -> Result<ReplaceUndoBackup> {
         super::delete(data_dir)?;
-        let journal_dir = data_dir.join(JOURNAL_DIR);
+        let journal_dir = layout_path(data_dir, AppDataLocation::ReplaceJournalDir);
         fs_write::create_dir_all_durable(&journal_dir)?;
         for (path, original, replaced) in files {
             let disk = ReplaceBackupDiskEntry {
@@ -1371,7 +1389,7 @@ pub mod fixture {
 pub fn delete(data_dir: &Path) -> Result<()> {
     mark_cleanup_in_progress(data_dir)?;
 
-    let legacy = data_dir.join(BACKUP_FILE);
+    let legacy = layout_path(data_dir, AppDataLocation::RetiredReplaceBackup);
     match fs_mutate::remove_file_if_exists(&legacy) {
         Ok(_) => {}
         Err(e) => {
@@ -1383,7 +1401,7 @@ pub fn delete(data_dir: &Path) -> Result<()> {
         }
     }
 
-    let journal_dir = data_dir.join(JOURNAL_DIR);
+    let journal_dir = layout_path(data_dir, AppDataLocation::ReplaceJournalDir);
     match fs_mutate::remove_dir_all_if_exists(&journal_dir) {
         Ok(_) => {
             if fs_metadata::exists(data_dir)
@@ -1403,8 +1421,8 @@ pub fn delete(data_dir: &Path) -> Result<()> {
 
 /// Write the inactive cleanup marker before removing legacy or journal state.
 fn mark_cleanup_in_progress(data_dir: &Path) -> Result<()> {
-    let legacy = data_dir.join(BACKUP_FILE);
-    let journal_dir = data_dir.join(JOURNAL_DIR);
+    let legacy = layout_path(data_dir, AppDataLocation::RetiredReplaceBackup);
+    let journal_dir = layout_path(data_dir, AppDataLocation::ReplaceJournalDir);
     let has_legacy = fs_metadata::path_status(&legacy)?.is_present();
     let has_journal = fs_metadata::path_status(&journal_dir)?.is_present();
     if !has_legacy && !has_journal {
@@ -1429,7 +1447,7 @@ fn mark_cleanup_in_progress(data_dir: &Path) -> Result<()> {
     let marker = ReplaceJournalCleanupMarker {
         reason: "stale replace undo journal cleanup started".to_string(),
     };
-    let marker_path = journal_dir.join(CLEANUP_MARKER_FILE);
+    let marker_path = journal_dir.join(cleanup_marker_file_name());
     let config = RecoveryLoadConfig::new(
         data_dir,
         &marker_path,
@@ -1590,7 +1608,7 @@ fn load_descriptor(
                 );
                 return None;
             }
-            let body = journal_dir.join(BODIES_DIR).join(&disk.body_file);
+            let body = journal_dir.join(bodies_dir_name()).join(&disk.body_file);
             if !fs_metadata::file_stat(&body).is_ok_and(|facts| facts.byte_size == original.len) {
                 // The entry stays in place for the cleanup marker's pass; a
                 // copy in the quarantine is the evidence (design D9).
@@ -1765,7 +1783,7 @@ mod tests {
 
     /// Write one body and its streamed entry, as pass A and P4 do.
     fn save_entry(data_dir: &Path, path: &Path, entry: &ReplaceUndoEntry) -> Result<()> {
-        let bodies = data_dir.join(JOURNAL_DIR).join(BODIES_DIR);
+        let bodies = layout_path(data_dir, AppDataLocation::ReplaceJournalBodies);
         fs_write::create_dir_all_durable(&bodies)?;
         let original = entry
             .original_bytes
@@ -1872,8 +1890,10 @@ mod tests {
     fn payload_filter_accepts_entries_and_rejects_journal_bookkeeping() {
         let dir = Path::new("/journal");
         assert!(is_journal_payload_file(&dir.join("abcd1234.json")));
-        assert!(!is_journal_payload_file(&dir.join(JOURNAL_MANIFEST_FILE)));
-        assert!(!is_journal_payload_file(&dir.join(CLEANUP_MARKER_FILE)));
+        assert!(!is_journal_payload_file(&dir.join(manifest_file_name())));
+        assert!(!is_journal_payload_file(
+            &dir.join(cleanup_marker_file_name())
+        ));
         assert!(!is_journal_payload_file(&dir.join("notes.txt")));
         assert!(!is_journal_payload_file(&dir.join("no-extension")));
         assert!(!is_journal_payload_file(Path::new("/")));
@@ -1953,7 +1973,8 @@ mod tests {
         let target = PathBuf::from("/tmp/a.rs");
         let entry = ReplaceUndoEntry::new(b"before".to_vec(), b"after".to_vec());
         save_entry(dir.path(), &target, &entry).expect("save the single entry file");
-        let manifest_path = dir.path().join(JOURNAL_DIR).join(JOURNAL_MANIFEST_FILE);
+        let manifest_path =
+            layout_path(dir.path(), AppDataLocation::ReplaceJournalDir).join(manifest_file_name());
         let manifest = ReplaceJournalManifest {
             incremental: false,
             entries: vec![
@@ -1995,9 +2016,7 @@ mod tests {
         let dir = TempDir::new().expect("expected operation to succeed");
         let full = journal_with(&["/tmp/a.rs", "/tmp/b.rs", "/tmp/c.rs"]);
         save(dir.path(), &full).expect("save full journal");
-        let retained_entry = dir
-            .path()
-            .join(JOURNAL_DIR)
+        let retained_entry = layout_path(dir.path(), AppDataLocation::ReplaceJournalDir)
             .join(entry_file_name(Path::new("/tmp/b.rs")));
         let retained_inode = fs_metadata::inode(&retained_entry).expect("stat retained entry");
 
@@ -2008,8 +2027,7 @@ mod tests {
         assert!(load.active, "a shrunken journal must stay active");
         assert_eq!(load.backup, remaining);
         assert!(!fs_metadata::exists(
-            &dir.path()
-                .join(JOURNAL_DIR)
+            &layout_path(dir.path(), AppDataLocation::ReplaceJournalDir)
                 .join(entry_file_name(Path::new("/tmp/a.rs")))
         ));
         // The load-bearing property, and what distinguishes a shrink from a full
@@ -2137,7 +2155,10 @@ mod tests {
                 .expect("empty journal loads empty")
                 .is_empty()
         );
-        assert!(!fs_metadata::exists(&dir.path().join(JOURNAL_DIR)));
+        assert!(!fs_metadata::exists(&layout_path(
+            dir.path(),
+            AppDataLocation::ReplaceJournalDir
+        )));
     }
 
     #[test]
@@ -2182,17 +2203,22 @@ mod tests {
         delete_entry(dir.path(), &path_a).expect("delete first journal entry");
 
         assert!(!fs_metadata::exists(
-            &dir.path().join(JOURNAL_DIR).join(entry_file_name(&path_a))
+            &layout_path(dir.path(), AppDataLocation::ReplaceJournalDir)
+                .join(entry_file_name(&path_a))
         ));
         assert!(fs_metadata::exists(
-            &dir.path().join(JOURNAL_DIR).join(entry_file_name(&path_b))
+            &layout_path(dir.path(), AppDataLocation::ReplaceJournalDir)
+                .join(entry_file_name(&path_b))
         ));
     }
 
     #[test]
     fn delete_blocks_retired_backup_cleanup_when_preservation_is_unsafe() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        fixture::create_dir(&dir.path().join(BACKUP_FILE));
+        fixture::create_dir(&layout_path(
+            dir.path(),
+            AppDataLocation::RetiredReplaceBackup,
+        ));
 
         let error = delete(dir.path()).expect_err("directory backup should fail deletion");
 
@@ -2242,7 +2268,8 @@ mod tests {
             ReplaceUndoEntry::new(b"before-b".to_vec(), b"after-b".to_vec()),
         );
         save(dir.path(), &backup).expect("save valid journal");
-        let corrupt_entry = dir.path().join(JOURNAL_DIR).join(entry_file_name(&path_a));
+        let corrupt_entry = layout_path(dir.path(), AppDataLocation::ReplaceJournalDir)
+            .join(entry_file_name(&path_a));
         fixture::write_text(&corrupt_entry, "not valid json {{{");
 
         let recovery = load_recovering(dir.path());
@@ -2265,7 +2292,7 @@ mod tests {
     #[test]
     fn malformed_legacy_backup_is_quarantined_and_inactive() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        let legacy = dir.path().join(BACKUP_FILE);
+        let legacy = layout_path(dir.path(), AppDataLocation::RetiredReplaceBackup);
         fixture::write_text(&legacy, "not valid json {{{");
 
         let load = load_recovering(dir.path());
@@ -2308,7 +2335,10 @@ mod tests {
     #[test]
     fn cleanup_stale_reports_cleanup_failure_as_diagnostic() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        fixture::create_dir(&dir.path().join(BACKUP_FILE));
+        fixture::create_dir(&layout_path(
+            dir.path(),
+            AppDataLocation::RetiredReplaceBackup,
+        ));
 
         let report = cleanup_stale(dir.path());
 
@@ -2317,13 +2347,19 @@ mod tests {
             report.diagnostics[0].problem,
             RecoveryProblem::RepairSkipped { .. }
         ));
-        assert!(fs_metadata::exists(&dir.path().join(BACKUP_FILE)));
+        assert!(fs_metadata::exists(&layout_path(
+            dir.path(),
+            AppDataLocation::RetiredReplaceBackup
+        )));
     }
 
     #[test]
     fn unsupported_journal_path_is_inactive() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        fixture::write_text(&dir.path().join(JOURNAL_DIR), "not a directory");
+        fixture::write_text(
+            &layout_path(dir.path(), AppDataLocation::ReplaceJournalDir),
+            "not a directory",
+        );
 
         let load = load_recovering(dir.path());
 
@@ -2388,7 +2424,8 @@ mod tests {
     #[test]
     fn active_journal_over_manifest_entry_cap_is_inactive() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        let manifest_path = dir.path().join(JOURNAL_DIR).join(JOURNAL_MANIFEST_FILE);
+        let manifest_path =
+            layout_path(dir.path(), AppDataLocation::ReplaceJournalDir).join(manifest_file_name());
         let entries = (0..=JOURNAL_SCAN_MAX_ENTRIES)
             .map(|index| ReplaceJournalManifestEntry {
                 path: PathBuf::from(format!("/tmp/file-{index}.rs")),
@@ -2425,7 +2462,8 @@ mod tests {
     #[test]
     fn exact_manifest_entry_cap_is_not_reported_as_over_cap() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        let manifest_path = dir.path().join(JOURNAL_DIR).join(JOURNAL_MANIFEST_FILE);
+        let manifest_path =
+            layout_path(dir.path(), AppDataLocation::ReplaceJournalDir).join(manifest_file_name());
         let entries = (0..JOURNAL_SCAN_MAX_ENTRIES)
             .map(|index| ReplaceJournalManifestEntry {
                 path: PathBuf::from(format!("/tmp/file-{index}.rs")),
@@ -2461,7 +2499,8 @@ mod tests {
     #[test]
     fn empty_manifest_with_matching_entry_count_is_not_active() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        let manifest_path = dir.path().join(JOURNAL_DIR).join(JOURNAL_MANIFEST_FILE);
+        let manifest_path =
+            layout_path(dir.path(), AppDataLocation::ReplaceJournalDir).join(manifest_file_name());
         let manifest = ReplaceJournalManifest {
             incremental: false,
             entries: Vec::new(),
@@ -2523,7 +2562,7 @@ mod tests {
         mark_journal_active(dir.path(), &backup).expect("exact cap should be accepted");
 
         assert!(fs_metadata::exists(
-            &dir.path().join(JOURNAL_DIR).join(JOURNAL_MANIFEST_FILE)
+            &layout_path(dir.path(), AppDataLocation::ReplaceJournalDir).join(manifest_file_name())
         ));
     }
 
@@ -2536,9 +2575,9 @@ mod tests {
         let orphan_entry = ReplaceUndoEntry::new(b"before-b".to_vec(), b"after-b".to_vec());
         save_entry(dir.path(), &active_path, &active_entry).expect("save active journal entry");
         save_entry(dir.path(), &orphan_path, &orphan_entry).expect("save orphan journal entry");
-        let journal_dir = dir.path().join(JOURNAL_DIR);
-        fixture::write_text(&journal_dir.join(JOURNAL_MANIFEST_FILE), "{}");
-        fixture::write_text(&journal_dir.join(CLEANUP_MARKER_FILE), "{}");
+        let journal_dir = layout_path(dir.path(), AppDataLocation::ReplaceJournalDir);
+        fixture::write_text(&journal_dir.join(manifest_file_name()), "{}");
+        fixture::write_text(&journal_dir.join(cleanup_marker_file_name()), "{}");
         fixture::write_text(&journal_dir.join("notes.txt"), "not a journal entry");
         let active_files = HashSet::from([entry_file_name(&active_path)]);
 
@@ -2566,7 +2605,8 @@ mod tests {
         let entry_b = ReplaceUndoEntry::new(b"before-b".to_vec(), b"after-b".to_vec());
 
         save_entry(dir.path(), &path_a, &entry_a).expect("save first journal entry");
-        let entry_a_path = dir.path().join(JOURNAL_DIR).join(entry_file_name(&path_a));
+        let entry_a_path = layout_path(dir.path(), AppDataLocation::ReplaceJournalDir)
+            .join(entry_file_name(&path_a));
         let inode_before = fs_metadata::inode(&entry_a_path).expect("stat first entry before");
 
         save_entry(dir.path(), &path_b, &entry_b).expect("save second journal entry");
@@ -2577,7 +2617,10 @@ mod tests {
             "saving a new file's journal entry must not rewrite older entries"
         );
         assert!(
-            fs_metadata::exists(&dir.path().join(JOURNAL_DIR).join(entry_file_name(&path_b))),
+            fs_metadata::exists(
+                &layout_path(dir.path(), AppDataLocation::ReplaceJournalDir)
+                    .join(entry_file_name(&path_b))
+            ),
             "the second per-file journal entry should be created independently"
         );
     }

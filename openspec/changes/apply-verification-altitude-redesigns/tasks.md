@@ -160,7 +160,7 @@ group's heavy commands.
 
 ## 2. One owner for the app-data layout (design G2)
 
-- [ ] 2.1 Write the characterization test first, against the unchanged
+- [x] 2.1 Write the characterization test first, against the unchanged
   services. For a fixed root, assert the exact path from every existing
   source:
   - the helpers: `drafts_dir`, `set_aside_dir`, `local_history_dir`,
@@ -173,7 +173,7 @@ group's heavy commands.
   - for a populated fixture data home (one file in every scanned location),
     the ordered `item.path.relative()` list that `format_upgrade::scan`
     returns, because the upgrade backups are named by those paths.
-- [ ] 2.2 Add the GTK-free `services/app_data_layout.rs` and register it in
+- [x] 2.2 Add the GTK-free `services/app_data_layout.rs` and register it in
   `services/mod.rs`. It holds:
   - `AppDataLocation`, with `Root` and `ReplaceJournalBodies`;
   - `ALL`;
@@ -182,7 +182,7 @@ group's heavy commands.
     `SweptLast` for `LegacyWorkspaceNotes` only, or `ParentSwept` for files;
     design G2);
   - the `AppDataLayout::new(root)` accessors.
-- [ ] 2.3 Switch the startup sweep in `app_data_leftovers.rs` to iterate the
+- [x] 2.3 Switch the startup sweep in `app_data_leftovers.rs` to iterate the
   layout. Keep the family expansion, `MAX_LINEAGES_PER_PASS`,
   `MAX_BACKUP_RUNS_PER_PASS`, and the budget. `ALL` must reproduce today's
   directory visit order, because the shared budget is spent in that order.
@@ -197,7 +197,7 @@ group's heavy commands.
   which fails on the unchanged tree. Add a test asserting that every file entry's parent is a
   swept entry. Confirm the existing sweep tests pass unchanged, including the
   style-schemes, set-aside, bodies, and backup-run cases.
-- [ ] 2.4 Switch the format-upgrade inventory to an exhaustive `match` over
+- [x] 2.4 Switch the format-upgrade inventory to an exhaustive `match` over
   `AppDataLocation`, in `format_upgrade/inventory.rs`, scanned in an explicit
   `INVENTORY_ORDER` that reproduces today's scan order, and delete its
   duplicated literals. Mark the replace journal's manifest, cleanup marker,
@@ -212,14 +212,14 @@ group's heavy commands.
   - `format-upgrade-backups/`.
 
   Confirm the existing inventory and apply tests pass.
-- [ ] 2.5 Route each service's path helpers through the layout, keeping the
+- [x] 2.5 Route each service's path helpers through the layout, keeping the
   public helper names as delegations, and delete the per-service name
   constants. This removes both `workspace-notes` spellings. Re-key the
   `recent_documents.rs:252:.*load_recent_file` `exclude_re` anchor in
   `.cargo/mutants.toml` against `scripts/heavy.sh -- make mutants-list`, as
   in 1.6, and check every other `exclude_re` that names a file this group
   edits (testing.md, "Path-keyed gates").
-- [ ] 2.6 Run 2.1's characterization test against the layout and check it is
+- [x] 2.6 Run 2.1's characterization test against the layout and check it is
   byte-identical. Add a unit test asserting that every location is `Swept`
   or `SweptLast`, or `ParentSwept` with a `Swept` parent, and that
   `LegacyWorkspaceNotes` is the only `SweptLast` entry.
@@ -227,7 +227,7 @@ group's heavy commands.
   run `scripts/heavy.sh --envelope 16G -- make test` and
   `scripts/heavy.sh -- make crash-recovery-smoke`, where supported. Confirm
   0.2's diff is empty. Kani: none.
-- [ ] 2.8 Sync the docs:
+- [x] 2.8 Sync the docs:
   - `.agents/rules/rust.md` (filesystem boundary: the app-data layout's
     single owner);
   - in `AGENTS.md`, the module layout (`services/app_data_layout.rs`) and the
