@@ -223,7 +223,7 @@ group's heavy commands.
   byte-identical. Add a unit test asserting that every location is `Swept`
   or `SweptLast`, or `ParentSwept` with a `Swept` parent, and that
   `LegacyWorkspaceNotes` is the only `SweptLast` entry.
-- [ ] 2.7 Data-safety audit: run the `data-safety` skill over the diff. Then
+- [x] 2.7 Data-safety audit: run the `data-safety` skill over the diff. Then
   run `scripts/heavy.sh --envelope 16G -- make test` and
   `scripts/heavy.sh -- make crash-recovery-smoke`, where supported. Confirm
   0.2's diff is empty. Kani: none.
@@ -283,7 +283,7 @@ group's heavy commands.
 
 ## 5. Registered and unregistered draft candidates as distinct types (design G5)
 
-- [ ] 5.1 Characterize first. On the unchanged tree, ensure these tests exist
+- [x] 5.1 Characterize first. On the unchanged tree, ensure these tests exist
   and pass, adding any that are missing:
   - first-body registration ordering;
   - a registration commit failure that leaves the candidate dirty and
@@ -293,10 +293,10 @@ group's heavy commands.
 
   Run the widget ones with `scripts/heavy.sh --envelope 16G -- make
   test-widget-shard WIDGET_SHARD=<the owning shard>`, as in 3.6.
-- [ ] 5.2 Add `WritableDraftCandidate` and `DirtyDraftCandidate::into_writable`
+- [x] 5.2 Add `WritableDraftCandidate` and `DirtyDraftCandidate::into_writable`
   to `ui/window/drafts/seams.rs`. `into_writable` checks the id and gives back
   both values on a mismatch. Remove `registered` from `DirtyDraftCandidate`.
-- [ ] 5.3 Make `register_new_draft_ids_then` hand `then` its
+- [x] 5.3 Make `register_new_draft_ids_then` hand `then` its
   `WritableDraftCandidate`s plus the refused ids. Keep
   `journal_core::may_write_after_registration` as the partition's gate: a
   candidate becomes writable only when the gate admits it and it holds its
@@ -305,29 +305,29 @@ group's heavy commands.
   `WritableDraftCandidate`, and delete both `ok_or_else` "not registered"
   branches. Leave the synchronous close flush in `journal.rs` as it is (design
   G5, scope note).
-- [ ] 5.4 Add a unit test showing that `into_writable` refuses a token for a
+- [x] 5.4 Add a unit test showing that `into_writable` refuses a token for a
   different id.
-- [ ] 5.5 Confirm that 5.1 passes, that `RegisteredDraft` gained no `Clone`,
+- [x] 5.5 Confirm that 5.1 passes, that `RegisteredDraft` gained no `Clone`,
   and that `journal_core.rs` and `model/draft.rs` are unchanged. G2's
   path-helper edits to `draft_service.rs` reach no harness. Kani: none. If any of them changed, run
   `setsid nohup scripts/heavy.sh --envelope 16G -- make kani KANI_SHARD=core-journal-and-write`
   and then `KANI_SHARD=core-second-writer`, once each, detached, on the final
   code, and record the times.
-- [ ] 5.6 Data-safety audit (`data-safety` skill). Check two things:
+- [x] 5.6 Data-safety audit (`data-safety` skill). Check two things:
   - refused candidates stay draft-dirty and retryable, with their failure
     accounting intact;
   - no close-pipeline candidate is dropped silently.
-- [ ] 5.7 Re-derive the `WFR-DRAFT-RECOVERY` seam cell (the candidate seam is
+- [x] 5.7 Re-derive the `WFR-DRAFT-RECOVERY` seam cell (the candidate seam is
   now a typestate pair). Then run
   `scripts/heavy.sh -- make check-workflow-boundaries`.
-- [ ] 5.8 Sync the docs:
+- [x] 5.8 Sync the docs:
   - phase 4 in `docs/next/formal-verification.md` (the token is now carried
     by type to the asynchronous writes);
   - N8 (group 5 done).
 
 ## 3. Bounded backoff for unrestored-copy retries (design G3)
 
-- [ ] 3.1 First add `unrestored_copy_failures` (each pending retry's failure
+- [x] 3.1 First add `unrestored_copy_failures` (each pending retry's failure
   count, sorted by draft id) to `DraftEvidence`, which changes no behaviour,
   so the test below fails on its cadence rather than on compilation. Then
   write a failing-first widget test. It makes every copy fail as the
@@ -341,20 +341,20 @@ group's heavy commands.
   attempts must happen at ticks 1, 3, 7, 15, and 27 and at no other tick,
   while the id stays in `restore_held_draft_ids` throughout. Add the widget
   module to its shard in `scripts/widget-shards.py` if it is new.
-- [ ] 3.2 Write a failing-first widget test showing that an autosave pass
+- [x] 3.2 Write a failing-first widget test showing that an autosave pass
   started by the first-dirty debounce or by a pending rerun attempts no copy
   and leaves the retry entry's failure count (and, after the change, its next
   due tick) unchanged. Use the same copy-failure fixture. If the test needs
   `autosave_tick_for_test` to set up a pending rerun, first let the entry's
   next due tick move past the ticks the test drives, so only the non-timer
   passes could attempt a copy.
-- [ ] 3.3 Add the pure `unrestored_copy_retry_delay_ticks` and
+- [x] 3.3 Add the pure `unrestored_copy_retry_delay_ticks` and
   `UNRESTORED_COPY_MAX_RETRY_TICKS = 12` to `ui/window/drafts/policy.rs`.
   Unit-test the doubling, the cap, and saturation at `u32::MAX` failures.
   Give the cap its rustdoc `Kind:` line and its `docs/thresholds.md` row as
   `out: time` (one minute of 5 s ticks, design G3), and run
   `scripts/heavy.sh -- make check-thresholds`.
-- [ ] 3.4 Make these changes:
+- [x] 3.4 Make these changes:
   - add `autosave_timer_ticks` to the drafts state;
   - add `periodic_autosave_tick`, which counts the tick, retries the due
     entries, and then calls `autosave_tick`;
@@ -368,14 +368,14 @@ group's heavy commands.
   rustdoc that states a per-tick retry: `drafts/mod.rs`, `journal.rs`
   (`preserve_unrestored_draft`, `retry_unrestored_copies`), and the field
   doc in `imp.rs`.
-- [ ] 3.5 Extend `DraftEvidence` with `unrestored_copy_next_due_ticks` and
+- [x] 3.5 Extend `DraftEvidence` with `unrestored_copy_next_due_ticks` and
   `autosave_timer_ticks`. Compute the retry fields and drop the map's `Ref`
   before building the struct, and keep the draft evidence's driven proofs
   green (workflow-convention.md, evidence surface invariants). If any new
   field reaches an automation snapshot through the Evidence Projection Map,
   update `docs/automation.md` and `docs/automation-reference.md`, then run
   `make check-automation-docs`.
-- [ ] 3.6 Confirm three things:
+- [x] 3.6 Confirm three things:
   - 3.1 and 3.2 pass;
   - `test_a_failed_set_aside_copy_keeps_autosave_off_the_unshown_draft`
     stays green unchanged;
@@ -385,16 +385,16 @@ group's heavy commands.
   Run them with `scripts/heavy.sh --envelope 16G -- make test-widget-shard
   WIDGET_SHARD=<the shard that owns window>`: the shard runner admits its own
   capped scopes, so it needs the envelope.
-- [ ] 3.7 Data-safety audit. Confirm that:
+- [x] 3.7 Data-safety audit. Confirm that:
   - no error path releases the hold;
   - Discard, close flush, and teardown behave as before while an id is held;
   - the backoff state is never persisted.
-- [ ] 3.8 Confirm 0.2's diff is empty, `journal_core.rs` included. Kani: none.
-- [ ] 3.9 Re-derive the `WFR-DRAFT-RECOVERY` row cells in
+- [x] 3.8 Confirm 0.2's diff is empty, `journal_core.rs` included. Kani: none.
+- [x] 3.9 Re-derive the `WFR-DRAFT-RECOVERY` row cells in
   `docs/workflow-readability-matrix.md` (policy and evidence), row-scoped and
   excluding `#[cfg(test)]` code, keeping the facade within the line budget.
   Then run `scripts/heavy.sh -- make check-workflow-boundaries`.
-- [ ] 3.10 Sync the docs:
+- [x] 3.10 Sync the docs:
   - phase 4 in `docs/next/formal-verification.md` (the retry now backs off,
     on timer ticks only);
   - the `AGENTS.md` "Draft persistence" decision;
@@ -404,26 +404,26 @@ group's heavy commands.
 
 ## 7. Close the change
 
-- [ ] 7.1 Run `scripts/heavy.sh -- make check` after each group, and
+- [x] 7.1 Run `scripts/heavy.sh -- make check` after each group, and
   `scripts/heavy.sh --envelope 16G -- make test` on the final tree. A `FLAKY`,
   `OOM-KILL:`, or `SESSION-HYGIENE:` line is a blocker.
-- [ ] 7.2 Run `scripts/heavy.sh --envelope 36G -- make mutants-diff` once on
+- [x] 7.2 Run `scripts/heavy.sh --envelope 36G -- make mutants-diff` once on
   the final tree. It covers `policy.rs`, `protocol_drive.rs`, and
   `app_data_layout.rs`. Triage every survivor, and confirm the re-keyed
   `exclude_re` entries match real mutants. If every slot is busy (exit 75),
   retry later, never in a loop inside one `heavy.sh`.
-- [ ] 7.3 Groups 3 and 5 touch `crates/lushtext-core/src/ui/` and
+- [x] 7.3 Groups 3 and 5 touch `crates/lushtext-core/src/ui/` and
   `crates/lushtext/tests/widget/`. On the tree that holds both groups, before
   their commit, run `scripts/heavy.sh -- make visual-geometry-smoke`,
   `scripts/heavy.sh -- make accessibility-smoke`, and
   `scripts/heavy.sh -- make visual-smoke`. Then commit groups 5 and 3
   together; the pre-commit `make check-policy` requires these proofs current
   for the UI-prefix files in `git status`.
-- [ ] 7.4 Record in the handoff:
+- [x] 7.4 Record in the handoff:
   - "Kani: none (no proven module touched)", with 0.2's empty diff;
   - "proof-strength: not owed";
   - "GTK axioms: none";
   - "no timing verdict", with design's reasons.
-- [ ] 7.5 In `docs/next/formal-verification-next.md`, mark N8 and change row
+- [x] 7.5 In `docs/next/formal-verification-next.md`, mark N8 and change row
   8 done, or re-defer each unapplied group with its trigger.
-- [ ] 7.6 Run `openspec validate apply-verification-altitude-redesigns --strict`.
+- [x] 7.6 Run `openspec validate apply-verification-altitude-redesigns --strict`.

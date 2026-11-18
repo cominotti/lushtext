@@ -2143,6 +2143,32 @@ mod tests {
         );
     }
 
+    /// Re-arming needs the journal's manifest: without one it fails and
+    /// writes none, and with one it records the new launch and keeps the
+    /// manifest's entries.
+    #[test]
+    fn rearm_journal_refuses_a_journal_without_a_manifest() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let journal = journal_dir(dir.path());
+        fixture::create_dir_all(&journal);
+        let launch = LaunchId { pid: 7, nonce: 9 };
+        assert!(
+            rearm_journal(&journal, launch).is_err(),
+            "a journal without a manifest is not re-armed"
+        );
+        assert!(
+            !fs_metadata::exists(&journal.join(manifest_file_name())),
+            "no manifest is invented"
+        );
+
+        save(dir.path(), &journal_with(&["/tmp/a.rs"])).expect("save journal");
+        rearm_journal(&journal, launch).expect("re-arm the journal");
+        let manifest = load_manifest_value(dir.path(), &journal).expect("manifest");
+        assert_eq!(manifest.pid, Some(7));
+        assert_eq!(manifest.launch_nonce, Some(9));
+        assert_eq!(manifest.entries.len(), 1);
+    }
+
     #[test]
     fn shrink_to_an_empty_journal_deletes_it() {
         let dir = TempDir::new().expect("expected operation to succeed");

@@ -509,18 +509,36 @@ impl LushtextWindow {
     /// history for a file, and the set-aside area). Autosave of the id stays
     /// held until the copy **exists**, so the copy always reads the unrestored
     /// body and a failed copy never lets autosave replace the only one; the
-    /// autosave tick retries it (`retry_unrestored_copies`).
+    /// periodic autosave tick retries it with backoff
+    /// (`retry_unrestored_copies`).
     pub(super) fn preserve_unrestored_draft(&self, entry: DraftEntry) {
         self.hold_draft_restore(&entry.draft_id);
         self.attempt_unrestored_copy(entry, 0);
     }
 
-    /// Retry every unrestored copy that failed, keeping each one's hold. Called
-    /// from the autosave tick, so a persistent failure costs one small worker
-    /// per tick rather than a loop.
+    /// Retry each failed unrestored copy whose backoff has elapsed, keeping
+    /// every hold. Called only from the periodic autosave tick
+    /// (`periodic_autosave_tick`), after it advanced `autosave_timer_ticks`:
+    /// an entry is attempted once that count reaches its due tick
+    /// (`policy::unrestored_copy_retry_delay_ticks`), and the others stay in
+    /// the map untouched. A persistent failure therefore costs at most one
+    /// small worker a minute.
     pub(super) fn retry_unrestored_copies(&self) {
-        let retries = std::mem::take(&mut *self.imp().drafts.unrestored_copy_retries.borrow_mut());
-        for (entry, failures) in retries.into_values() {
+        let now = self.imp().drafts.autosave_timer_ticks.get();
+        let due: Vec<(DraftEntry, u32)> = {
+            let mut retries = self.imp().drafts.unrestored_copy_retries.borrow_mut();
+            let due_ids: Vec<String> = retries
+                .iter()
+                .filter(|(_, (_, _, next_due_tick))| *next_due_tick <= now)
+                .map(|(draft_id, _)| draft_id.clone())
+                .collect();
+            due_ids
+                .iter()
+                .filter_map(|draft_id| retries.remove(draft_id))
+                .map(|(entry, failures, _)| (entry, failures))
+                .collect()
+        };
+        for (entry, failures) in due {
             self.attempt_unrestored_copy(entry, failures);
         }
     }
@@ -559,12 +577,16 @@ impl LushtextWindow {
                                 "Retry {failures} of unrestored draft copy {draft_id} failed: {error}"
                             );
                         }
-                        window
-                            .imp()
-                            .drafts
+                        let failures = failures.saturating_add(1);
+                        let drafts = &window.imp().drafts;
+                        let next_due_tick = drafts
+                            .autosave_timer_ticks
+                            .get()
+                            .saturating_add(policy::unrestored_copy_retry_delay_ticks(failures));
+                        drafts
                             .unrestored_copy_retries
                             .borrow_mut()
-                            .insert(draft_id, (entry, failures.saturating_add(1)));
+                            .insert(draft_id, (entry, failures, next_due_tick));
                         return;
                     }
                 };

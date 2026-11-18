@@ -320,6 +320,22 @@ mod tests {
         (dir, from, to)
     }
 
+    /// The boundary's durable copy writes the destination and keeps the
+    /// source, and reports a source it cannot read.
+    #[test]
+    fn copy_durable_keeps_the_source_and_reports_a_missing_one() {
+        let (dir, from, to) = renamed_pair();
+        copy_durable(&from, &to, WriteLabel::LOCAL_HISTORY_COPY).expect("copy");
+        fixture::assert_text(&to, "body");
+        fixture::assert_text(&from, "body");
+
+        let missing = dir.path().join("missing.txt");
+        let error = copy_durable(&missing, &dir.path().join("copy.txt"), WriteLabel::SAVE)
+            .expect_err("a missing source cannot be copied");
+        assert_eq!(error.kind(), ErrorKind::NotFound);
+        assert!(!fixture::exists(&dir.path().join("copy.txt")));
+    }
+
     /// `rust-1-100-adoption` A8: an `EOPNOTSUPP`/`ENOSYS` directory `fsync`
     /// after a completed rename is `Unsupported` too; it must not be read as
     /// "the kernel lacks `RENAME_NOREPLACE`", whose fallback then finds the

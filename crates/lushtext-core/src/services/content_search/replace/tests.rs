@@ -2568,6 +2568,32 @@ fn no_loss_a_small_file_whose_output_grows_past_10_mib_is_replaced_in_the_second
     assert!(fixture::read_text(&grows).starts_with("ggg"));
 }
 
+/// The first pass takes a file of exactly 10 MiB, the boundary itself; only a
+/// file past it waits for the second pass. With a payload that holds one of
+/// the two, the 10 MiB file wins although a 10 MiB + 1 byte file comes first
+/// in path order.
+#[test]
+fn no_loss_a_file_of_exactly_10_mib_is_replaced_in_the_first_pass() {
+    let dir = tempdir().expect("tempdir");
+    let past = sized(dir.path(), "a-past.txt", 10 * MIB + 1);
+    let exact = sized(dir.path(), "b-exact.txt", 10 * MIB);
+    // Each charges its source plus its output, about 20 MiB: 21 MiB holds
+    // one of them.
+    let (outcome, _journal) = apply_with_free(
+        &needle_to_thread(&[&past, &exact]),
+        LITTLE_FREE,
+        Some(21 * 1024 * 1024),
+    );
+    assert!(
+        outcome.undo_backup.contains_key(&exact),
+        "{:?}",
+        outcome.skip_report
+    );
+    assert!(!outcome.undo_backup.contains_key(&past));
+    assert!(fixture::read_text(&exact).starts_with("thread\n"));
+    assert!(fixture::read_text(&past).starts_with("needle\n"));
+}
+
 /// `main`'s test, end to end: an 11 MiB file first in path order, two 1 MiB
 /// files after it and a 24 MiB payload. `main` replaced the two small files
 /// in its first pass and then had no room for the large one; with little free

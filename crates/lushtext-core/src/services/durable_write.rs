@@ -1234,6 +1234,27 @@ mod tests {
         fixture::assert_text(&to, "snapshot");
     }
 
+    /// The parent-sync fault lets the given number of syncs succeed before it
+    /// fails one, so a test can pick which sync of a protocol fails.
+    #[test]
+    fn the_parent_sync_fault_lets_the_given_syncs_succeed_first() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let from = dir.path().join("from.txt");
+        let to = dir.path().join("to.txt");
+        fixture::write_text(&from, "moved");
+
+        // One sync may succeed: a same-directory rename, which syncs once,
+        // succeeds and leaves the fault armed for the next sync.
+        fail_parent_sync_after_for_test(1, std::io::ErrorKind::Other);
+        rename_durable_classified(&from, &to).expect("the one sync succeeds");
+        assert!(matches!(
+            FAIL_NEXT_PARENT_SYNC.with(std::cell::Cell::get),
+            Some((0, std::io::ErrorKind::Other))
+        ));
+        assert!(sync_parent_dir(&to).is_err(), "the next sync fails");
+        assert!(FAIL_NEXT_PARENT_SYNC.with(std::cell::Cell::get).is_none());
+    }
+
     /// A cross-directory rename whose destination-directory sync fails has
     /// already moved the entry: the failure is `AfterRename`, with the sync's
     /// error, after the source directory synced.

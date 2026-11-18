@@ -1225,8 +1225,13 @@ failing-first:
 - **the production hold did not match the proved model:** when the set-aside
   copy of an unrestored body failed, production released the restore hold
   anyway, so the next autosave replaced the only copy. The hold now stays and
-  each autosave tick retries the copy (`unrestored_copy_retries` in
-  `DraftEvidence`); widget test
+  the periodic autosave tick retries the copy (`unrestored_copy_retries` in
+  `DraftEvidence`; since `apply-verification-altitude-redesigns` group 3 only
+  the 5 s timer retries, with exponential backoff capped at 12 ticks, one
+  minute: `policy::unrestored_copy_retry_delay_ticks`, the due tick and
+  failure count of each retry in the evidence; the hold itself is untouched,
+  and delaying a retry only removes attempts, so S1–S4 are unaffected and
+  Kani is not rerun); widget test
   `test_a_failed_set_aside_copy_keeps_autosave_off_the_unshown_draft`;
 - **a preserved draft opened from `Preferences > Data` was never draft-dirty**
   (the bounded install suspends the handlers that mark it), so deleting its
@@ -1252,6 +1257,21 @@ ungated tree, and a scratch call to `draft_service::fixture::write_body` in
 `ui/window/drafts/journal.rs` compiled before the gate and after it failed with
 ``error[E0433]: cannot find `fixture` in `draft_service` ``. The deferral
 inventory entry for `write_body` is closed.
+
+**Token carried by type (2026-11-18, `apply-verification-altitude-redesigns`
+group 5).** The asynchronous autosave and close pipelines no longer check for
+the token at run time. A `DirtyDraftCandidate` holds none; the registration
+step turns it into a `WritableDraftCandidate` (candidate plus its
+`RegisteredDraft`) only through `DirtyDraftCandidate::into_writable`, which
+refuses a token minted for another id, and only when
+`journal_core::may_write_after_registration` admits it. The pipelines take only
+`WritableDraftCandidate`, so both "recovery metadata was not registered"
+branches in the body-write workers are gone, and a refused candidate's id is
+reported and kept draft-dirty as before. The synchronous close flush in
+`journal.rs` keeps its local `Option<RegisteredDraft>`: no stage boundary lies
+between its registration and its write. `journal_core.rs`, `model/draft.rs`
+and the token's minting surface are unchanged and the token is still not
+`Clone`, so no harness input moved (Kani: none).
 
 #### K8 — dropping axiom A6
 
