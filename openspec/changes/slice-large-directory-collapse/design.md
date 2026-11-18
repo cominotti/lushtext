@@ -383,6 +383,10 @@ see D4.
   inside the frame clock's dispatch (D4), so that one dispatch carries the
   step and the styling of one unit. The step's own time is read against
   `B_INTERACT_US`. The whole dispatch is read against `B_SETTLE_US`.
+  *Superseded by R13 (D25):* no step runs inside the frame clock's dispatch;
+  a bound unit runs in a step-source dispatch of its own between frames,
+  read against `B_INTERACT_US`, and the frame that lays out its rows runs no
+  step and is read against `B_SETTLE_US`.
 - Scope: the routes LushText owns (D5). The residual routes are measured and
   recorded, not judged.
 - Exception: if the smallest measured unit (8) still cannot keep a step within
@@ -517,7 +521,9 @@ For each step, the policy (D9) picks one removal:
      step that takes only chunks needs no frame of its own. They still run
      on ticks, which keeps one source. *Superseded by D19 (R5):* unbound
      chunks run from a `G_PRIORITY_DEFAULT_IDLE` source between frames, and
-     the tick takes bound units only.
+     the tick takes bound units only. *Superseded by D25 (R13):* no step
+     runs on the tick; a bound unit runs from its own step-source dispatch
+     between frames, and the frame after it styles its rows.
    - **One unit per frame clock, not per section.** The sections of a window
      share its frame clock. A window-wide token admits at most one bound unit
      per frame across every section's collapse (D7).
@@ -1623,7 +1629,8 @@ The order and the owned routes of D4–D7 stay. What changes:
   Unbound chunks create no widget (A118), so they need no frame: they run
   from a `G_PRIORITY_DEFAULT_IDLE` source between frames, several per frame
   interval, each turn within `LIST_TURN_SLICE_US` plus one chunk; the tick
-  takes bound units only. Their cost is cut to the toolkit's: LushText's
+  takes bound units only (*R13, D25:* no step runs on the tick any more;
+  bound units run from their own step-source dispatch between frames). Their cost is cut to the toolkit's: LushText's
   per-row bookkeeping in the chunk's `items-changed` handlers (the `PathBuf`
   loop, the path hashing, the palette index and the `canonicalize` of R2) is
   made O(chunk) or skipped for a collapsing subtree, and the removed
@@ -2387,6 +2394,10 @@ thresholds are pre-registered to the rounds below and to task 10.7.
     the end of the frame after the one that created or mapped it. Opacity and
     `can-target` are set at bind and GTK does not write them, so its pixels
     and pointer input are hidden from the start.
+    *Revised by R13 (D25):* the re-apply runs at the end of the step that
+    created the row (inserted rows are mapped inside the step), or from a
+    one-shot step source armed by the row's bind or the list's `map`; no
+    pass runs on the frame tick.
   - *Bind:* the bind path re-applies the opacity and `can-target` to a row
     rebound into a collapsing subtree, and clears all three on a row rebound
     anywhere else, because GTK recycles row widgets without resetting them.
@@ -2459,6 +2470,9 @@ thresholds are pre-registered to the rounds below and to task 10.7.
     `docs/accessibility.md` say so (task 8.3, reopened).
 - **D23 (new; revises implementation decision 18). The input dispatch
   removes at most one unbound chunk.**
+  *Moved by R13 (D25):* the chunk runs in the first step-source dispatch
+  after the input, not in the input dispatch, and is admitted by its own
+  dispatch time (R13, G2); the input dispatch does no row work.
   - *What:* after D6's intent and D22's hiding, the input dispatch runs one
     `COLLAPSE_UNBOUND_CHUNK_ROWS` chunk of the unbound rows, if any. It runs
     no bound unit (D21 stays rejected) and no turn-slice loop. Unbound chunks
@@ -2826,6 +2840,9 @@ and the old constants round SUPERSEDED in `MEASURE-QUEUE.md`. The decision
    write, and task 10.13 tests a created row and an unmap–map cycle. A123's
    read-back of a state it just set proved nothing; it now reads the
    presented tree.
+   *(R13, D25: the re-apply runs at the end of the step that created the
+   row, or from a one-shot step source its bind or the list's `map` arms;
+   no pass runs on the frame tick.)*
 3. **Membership by path prefix.** Overlapping workspace folders list one path
    twice; D22's hiding, the R6.5 projection and `stop_subtree_work` decide
    by tree position instead (task 10.13, with the two-folder fixture).
@@ -2850,6 +2867,382 @@ and the old constants round SUPERSEDED in `MEASURE-QUEUE.md`. The decision
 9. **Spec text D23 contradicted.** "Unbound rows leave between frames" and "A
    huge directory" now name the input's chunk; task 8.1 declares the new
    evidence counters, and task 8.3 adds the Orca checklist.
+
+### R13. The rows-after frame: the step leaves the frame (2026-11-18)
+
+**What this answers.** Task 10.4's acceptance, pre-registered by R5's D17
+("unit 32's worst frame at 400:256 at most 12 ms"), missed in round Q4
+(10.973 / 12.787 / 12.166 ms; R11, "Attribution results"), and every other
+400:* frame there sat at 9.6–14.7 ms. This revision attributes that frame
+from four rounds the coordinator ran for it, decides the mechanism, keeps the
+12 ms bar, pre-registers the margins for every case, and writes the fallback
+ladder and the closing rule so that a failed gate does not cost another
+design loop. `origin/main` had not moved since `bc109b04` (already merged).
+
+#### The rounds read
+
+The coordinator ran four branch-only rounds on `rev5/bin/widget-attr-104`
+on 2026-11-18, 08:47–08:53 (`MEASURE-QUEUE.md`, "frame attribution with rows
+after the subtree"), each through `scripts/measure.sh` on the reference CPUs
+8–23 at a 1-minute load of 2.80–3.98 before and after
+(`rev/attr2/measure.log`). None failed to launch. The readers and their
+output are in the handoff's `rev/r13/` (`README.md`, `summ-output.txt`,
+`trend-output.txt`, `pdw-400-256-dispatches.txt`).
+
+| round | factor | case: worst frame per rep (ms) | worst step per rep (ms) | completion per rep (ms) |
+|---|---|---|---|---|
+| `slc-r13-pdw-400-256` (DWARF, 1 rep) | none, under `perf` | 400:256: 8.7 | 4.2 | 115.4 |
+| `slc-r13-u16-400` | `SLC_UNIT=16` | 400:64: 5.5 / 10.2 / 11.0; 400:256: 9.7 / 10.6 / 6.6 | 2.7 / 7.2 / 7.5; 6.4 / 4.6 / 3.1 | 45.7–51.2; 211.9–214.9 |
+| `slc-r13-u64-400` | `SLC_UNIT=64` | 400:64: 8.3 / 8.9 / 9.0; 400:256: 15.6 / **17.8** / 16.0 | 4.1 / 4.6 / 4.5; 7.9 / **10.0** / 8.0 | 18.2–19.8; 72.6–76.9 |
+| `slc-r13-d128-400` | `SLC_DESTROY=128` | 400:64: 8.3 / 8.7 / 8.3; 400:256: 9.0 / **14.4** / 9.8; 400:4,096: 9.4 / 9.5 / 9.5 | 4.0 / 4.2 / 4.1; 4.3 / **9.6** / 4.7; 4.5 / 6.5 / 7.5 | 17.4–18.1; 115.4–120.3; 116.4–117.6 |
+| Q4 `slc-r11-base-104` (for comparison) | none | 400:64: 9.6 / 12.9 / **14.7**; 400:256: 11.0 / 12.8 / 12.2; 400:4,096: 11.1 / 12.0 / 12.8 | 4.0 / 7.2 / **9.1**; 4.3 / 5.4 / 5.8; 4.7 / 5.1 / 5.7 | 24.8–26.8; 119.3–123.2; 121.7–124.2 |
+
+**What the instrument's "layout" spans.** The verdict test's dispatch
+timeline (`workspace_tree_virtualization.rs`, `dispatch_timeline_shown`)
+times a frame dispatch from the start of the main-loop iteration to the end
+of the frame clock's `layout` signal, and the collapse's tick callback runs
+in the clock's update phase before it (`collapse_execution.rs`,
+`arm_collapse_source`). So `worst_frame_layout_us` contains the bound step:
+a unit frame is the step (teardown of the removed rows, creation and bind of
+the rows entering the band), then the layout proper (CSS, measure, allocate
+of the new rows), then the paint. In GTK 4.24.1 the entering rows' widgets
+are created inside the removal's `items-changed` emission
+(`gtklistitemmanager.c`, `gtk_list_item_manager_model_items_changed_cb`
+calls `gtk_list_item_manager_ensure_items`, which calls `create_widget` for
+a tile with no widget), and removed rows' widgets are kept only for the same
+item (`gtk_list_item_change_release` keys them by item;
+`gtk_list_item_change_get` reuses a removed widget only for that item, else
+one recycled from outside the tracked range, else creates one), so a
+removal that brings rows in creates every entering widget in the step. An
+inserted row is mapped at insertion when its parent is mapped
+(`gtkwidget.c`, `gtk_widget_reposition_after`, "Enforce mapped
+invariants").
+
+**Attribution, by question.**
+
+1. **The rows-after frame scales with the rows a dispatch brings into the
+   band; it is not a fixed cost of the band.**
+   - The profile (400:256, unit 32, 209 GTK-thread samples at 0.25 ms) has
+     seven band dispatches, at 13.3, 25.7, 41.5, 57.4, 73.7, 90.1 and
+     106.9 ms: five units of 32 rows, one of 14 rows (the rest of the 174
+     bound rows above `DIRECT_COLLAPSE_ROWS`), and the terminal collapse of
+     the last 32. The six 32-row dispatches hold 7.50–8.50 ms of CPU each,
+     the 14-row one 3.75 ms: about 0.24 ms a row and about 0.4 ms fixed.
+   - Across adjacent rounds in fresh processes (the advisor's reading, not
+     a fit through `u16`): unit 32 (`d128`, median 9.8 ms) against unit 64
+     (median 16.0 ms) at 400:256 is about 0.19 ms a row over about 3.6 ms.
+     The two readings differ in the fixed part (0.4 against 3.6 ms) but
+     agree that most of a 32-row frame is per row.
+   - Each 32-row dispatch's samples split as about 25–35 % step
+     (`items-changed`, `drain_child_store`, `set_expanded` in the chain),
+     40–50 % layout (allocate, measure, CSS), 5–10 % paint, and about 20 %
+     with a truncated chain; widget teardown sits under `items-changed` in
+     29 of 32 attributable samples. The profile is of a fast repetition
+     (8.7 ms worst frame), so it attributes a typical frame, not a slow one.
+   - `u16` is confounded and is not a fallback: its 16-row steps took up to
+     7.2–7.5 ms where `d128`'s 32-row steps took 4.0–4.2 ms at 400:64, and it
+     completes 400:256 in 211.9–214.9 ms against a 154.3 ms bar. `u64` fails
+     the frame (15.6–17.8 ms) and the step (7.9–10.0 ms). Neither unit is a
+     rung of the ladder below.
+2. **Destroy-only 128 does nothing with rows after, by construction.**
+   `collapse_removal_is_destroy_only` (`ui/sidebar/policy.rs`) requires
+   `rows_after == 0`, the flattened rows after the last realized one
+   (`collapse_execution.rs`, `step_facts`), which 400 rows after the subtree
+   never reach. `slc-r13-d128-400` is therefore a second unit-32 baseline
+   for 400:*. That gives seven unit-32 repetitions at 400:256 (8.7; 9.0 /
+   14.4 / 9.8; 11.0 / 12.8 / 12.2 ms) and six single-unit repetitions at
+   400:64 in fresh processes (8.3–9.0 ms) against Q4's 9.6 / 12.9 / 14.7.
+3. **Q4's frames are higher than the same work in other rounds, and case
+   order is the leading hypothesis (not established).** Every band frame of
+   Q4's 400:* series is 9.0–14.7 ms (its `over_interact` lists), against
+   8.0–9.8 ms, with one 14.4 ms, for the same unit-32 work in
+   `slc-r13-d128-400`, where 400:64
+   is the process's first case. 400:16,385 is 9.4–9.9 ms as the third case
+   of Q5a and Q5b and 10.6–12.2 ms as Q4's ninth; 400:4,096 is 9.4–9.5 ms as
+   `d128`'s third and 11.1–12.8 ms as Q4's eighth. The verdict test builds
+   one window per case (`tree_with_siblings`, through `LushtextWindow::new`
+   on the test application) and ends each case with `drop(tree.window)`,
+   which drops a Rust reference only: nothing closes or destroys the
+   window, so every earlier case's toplevel, with its sidebar, stays alive
+   and presented. Whether those windows (or LushText state they leave)
+   cost the later cases' frames, or the difference is the session, is not
+   separable from these rounds; round Q6 below separates order from
+   session, and a build-side round separates the windows from LushText's
+   own state.
+4. **Process isolation alone would not meet 12 ms.** Even in the
+   fresh-process round, one of three repetitions at 400:256 has a 14.39 ms
+   frame, carrying a 9.585 ms step.
+5. **Bound steps already break `B_INTERACT_US` at unit 32 (new finding).**
+   R11's gates read the worst step of Q2, Q3 and Q5 only. The bound-unit
+   steps in the 400:* cases reach 9.07 ms (Q4 400:64 rep 3, a case with no
+   unbound rows, so a bound unit or the terminal collapse) and 9.585 ms
+   (`d128` 400:256 rep 2, the first band dispatch, 12.9 ms after the
+   input); typical steps are 4.0–6.0 ms. D2 requires every step within
+   `B_INTERACT_US`, so unit 32 as built fails D2 in its tail, apart from the
+   frame figure. The tail is not attributed: the profile has no slow
+   repetition, and `u16`'s 7.2–7.5 ms 16-row steps suggest a part that does
+   not scale with the rows.
+
+#### Decision D25 (new). The bound step runs in a dispatch of its own, between frames
+
+- **What.** No collapse step runs inside the frame clock's dispatch. A bound
+  unit (`RemoveBound`, `CollapseDescendant` of bound rows, the terminal
+  `CollapseRow`) runs from a one-shot step source at `G_PRIORITY_HIGH_IDLE`
+  (100), above the frame clock's `GDK_PRIORITY_REDRAW` (120) and below
+  input (`GDK_PRIORITY_EVENTS`, 0). The source is armed:
+  - by the input dispatch (D6), so the first unit runs before the first
+    frame;
+  - by each frame's `after-paint` on the list's frame clock while the
+    collapse is pending, so the next unit runs right after that frame;
+  - by the between-frames idle (D19) when its turn leaves the next step
+    bound, so a unit that becomes next mid-interval runs before the next
+    frame, as the tick takes it today.
+  One source dispatch runs one step and nothing else. The token is
+  unchanged in meaning and key (R6.3): at most one unit of bound rows per
+  frame interval, read from the list's frame clock counter (a unit runs only
+  if no unit ran since the clock's last frame); the tick callback no longer
+  takes units and is removed. The frame then lays out that one unit's rows
+  and runs no step.
+- **Why it meets the frame figure.** It moves the step (about a third of a
+  32-row frame's samples, and 4.0–9.6 ms of measured step time) out of the
+  frame and leaves the frame the layout and paint of at most
+  `SIDEBAR_REALIZED_ROWS_PER_FRAME` new rows. The frame count is unchanged:
+  unit *k* is laid out by frame *k*, as now, because the input arms the first
+  unit and every frame arms the next. The bars do not move.
+- **What it does not cure.** The step's own time is unchanged, and its tail
+  (9.07 and 9.585 ms) is over `B_INTERACT_US`. The step ladder below owns
+  that.
+- **It is not D21.** D21 put the first unit into the input dispatch (its
+  `B_INTERACT_US` carried the row churn) and risked two units in the first
+  frame. D25 runs the unit in its own dispatch with its own budget, after the
+  input dispatch, and the token still admits one unit per frame interval.
+- **The first frame.** The work between the input and the end of the first
+  frame is the same as the current design's (input, D23's chunk, one unit,
+  the layout of its rows), only split into separate dispatches; when the
+  vsync is not yet due, the unit runs in the idle time before it, so the
+  first frame ends no later than today's and usually earlier.
+  `INPUT_TO_FRAME_US` is still checked by the verdict test (D6's scenario).
+- **D23, moved.** The one unbound chunk of D23 runs in the first step-source
+  dispatch after the input, not in the input dispatch, so the input
+  dispatch does no row work again (D6 and D21's rejection as written before
+  R11). The chunk is admitted by its own dispatch time (the ladder below),
+  no longer by the input's time plus A123's hiding time.
+- **D22's re-applied `hidden` (revises R12).** A row created by a step is
+  mapped at its insertion inside that step (above), so the step re-applies
+  `hidden` to the subtree rows it created before it returns. A row created
+  or mapped elsewhere (a scroll's band change, the sidebar mapped again)
+  arms the same one-shot source from its bind or from the list's `map`, which
+  re-applies it. No pass runs on the frame tick, so D22 adds no per-frame
+  work, which was the per-frame headroom the 12 ms bar kept. A row reports
+  `hidden` from the end of the dispatch after the one that created or mapped
+  it, no later than R12's "end of the frame after".
+- **Pacing seams.** `CollapsePacingForTest::Hold` holds the step source too;
+  `NoFrameClock` and the starvation fallback (D4, R6.2) are unchanged: with
+  no frame there is no `after-paint`, and the fallback steps.
+- **Axioms.** D25 relies on three toolkit facts, pinned as **A124** and
+  **A125** (task 2.8) on GNOME 51 and the GNOME 50 floor:
+  - A124: a removal that brings rows into a mapped list's band creates and
+    binds their widgets inside the `items-changed` emission, maps them at
+    insertion, and reuses a removed widget only for the same item; the frame
+    after it creates none and only styles, measures and allocates them.
+  - A125: a `G_PRIORITY_HIGH_IDLE` one-shot source armed in a frame's
+    `after-paint`, or in an input dispatch, runs before the next frame clock
+    dispatch even when that frame is already due.
+  If either is refuted on a toolkit, the change takes the closing rule
+  below with the current in-frame step.
+
+#### The bars, kept; the margins, pre-registered for every case
+
+The 12 ms figure is kept as R5 registered it, and no bar is re-registered.
+Its rationale was independent of any measurement: a quarter of
+`B_SETTLE_US` kept for the frame's other work and its variance. Every
+selection and go/no-go round from here on (G1–G5 below, task 10.7) applies
+these margins to **every repetition of every case** (the collapse cases 0:N
+and 400:N at 64, 256, 4,096, 16,385 and 131,072, and the folder header),
+fixed before G1 runs:
+
+| figure | selection bar | final campaign (task 7.2) |
+|---|---|---|
+| worst frame | 12 ms (`B_SETTLE_US` less a quarter, R5) | `B_SETTLE_US` |
+| input dispatch, every step, every chunk turn | 6 ms (`B_INTERACT_US` less a quarter, the same rule) | `B_INTERACT_US` |
+| completion (R3 + R9) | bar − M, M = 16.7 ms (R11) | the bar |
+| picture final (R11) | as R11 | as R11 |
+
+The 6 ms step margin is new here, by the same rule as the frame's, because
+the final campaign judges the worst of four rounds at 8 ms and unit 32's
+steps already reach 9.6 ms. It tightens R11 and R12's "fits `B_INTERACT_US`"
+for selection only; it relaxes nothing.
+
+**Predicted frames under D25 (not evidence; G1 measures them).** A 400:*
+frame keeps its layout and paint, about 55–75 % of today's frame by the
+profile's split (the step is 25–35 % of the samples, 20 % unattributed). On
+Q4's frames, the highest measured: 400:64 14.7 → 8.1–11.0 ms; 400:256 12.8 →
+7.0–9.6; 400:4,096 12.8 → 7.0–9.6; 400:16,385 12.2 → 6.7–9.2; 400:131,072
+14.5 → 8.0–10.9; the 0:N frames, 4.6–8.5 ms today, fall further.
+
+#### Gates and their fallback ladder
+
+Each gate names its first measurement and the rung that follows a miss, so
+a missed gate moves down its ladder and does not return the change to
+design. Every round is queued in `MEASURE-QUEUE.md` with its commands, cases,
+factor and bars, and read by the stage that queued it.
+
+- **G0, case order (queued now, Q6, no build).** Purpose: whether a case's
+  frames depend on the cases run before it in the process. Reading,
+  registered now: per pair, the median of the per-repetition worst frames at
+  each 400:* size, "after" against "alone". *Confirmed* if, in both pairs,
+  "after" exceeds "alone" by at least 1.0 ms at 400:256 and at three or more
+  of the five sizes; *refuted* if the difference at 400:256 is under 0.5 ms
+  in both pairs; otherwise *inconclusive*. If confirmed, task 11.2 makes the
+  verdict test destroy each case's window, on both sides (the `main` patch
+  too), failing-first, and a build-side round (windows destroyed, same
+  order) tells the windows from LushText's own state; LushText state that
+  grows across collapses is then a bug with its own failing-first test. Until
+  that fix lands, and whatever G0 says, G1 is judged in Q4's full case
+  order, the worst order measured.
+- **G1, D25's frame and step (first implementation task, task 11.3).**
+  Build D25 with a temporary `SLC_STEP_ROWS` hook (below) and queue round G1
+  on that binary: the full collapse case list and the header, 5
+  repetitions, Q4's order. Pass: every worst frame at most 12 ms, every step
+  and the input at most 6 ms, `INPUT_TO_FRAME_US` held, and every completion
+  at most bar − M after the credits of R11's gate (D24's from Q2, Q3's for
+  0:N). Ladder:
+  - *Frames pass, a step misses:* **S1**, steps of 16 bound rows. The
+    interval keeps its budget of `SIDEBAR_REALIZED_ROWS_PER_FRAME` rows, now
+    removed in steps of at most a new `COLLAPSE_STEP_ROWS` (cap, rounded
+    down), each its own step-source dispatch before the next frame;
+    `DIRECT_COLLAPSE_ROWS` drops to the step size, so the terminal collapse
+    is one step. That is a policy change (`next_collapse_step` takes the
+    rows the interval has left; Kani C1–C5 and the shard re-run, task
+    11.4). Measured by round G1b (`SLC_STEP_ROWS=16`). Its steps miss:
+    **S2**, 8 rows (`SLC_STEP_ROWS=8`); a step that still misses 8 ms at 8
+    rows is D2's existing toolkit-floor exception (A118, A124), recorded,
+    and its 6 ms selection miss is recorded as data.
+  - *Beside S1 and S2, the step tail:* G1 and G1b print every step over
+    4 ms with its kind (bound unit, terminal, chunk) and its rows. If the
+    tail does not scale with the step's rows (a 16-row step as slow as a
+    32-row one, as `u16` hints), **S3**: a DWARF profile round of the
+    slowest case at 10 repetitions names the fixed part, which is cut under
+    a failing-first test if it is LushText's, or recorded as a toolkit floor
+    if it is GTK's.
+  - *A frame misses 12 ms:* **F1**, a DWARF profile round of that case. D25's
+    frame holds only GTK's layout of the new rows and LushText's bind work
+    for them; a LushText cost it names (bind, D22's projection, the
+    accessible updates) is cut under a failing-first test, and G1 reruns
+    once. A smaller interval budget is not a rung: `u16` misses completion
+    by about 60 ms at 400:256. If F1 leaves a frame over 12 ms, the closing
+    rule applies.
+  - *Completion misses bar − M only for a lost first frame* (400:4,096, the
+    case with no slack, R11): it is G2's.
+- **G2, D23's chunk (in G1's round).** The chunk is the largest of 16,384,
+  8,192 and 4,096 whose one-chunk dispatch is at most 6 ms in every
+  repetition (`SLC_CHUNK`, measured at 0:131,072 and 400:16,385). If 4,096
+  misses, D23 is void, 400:4,096 keeps the measured completion without its
+  credit (121.9 ms predicted against 120.6 ms), and the closing rule applies
+  to that case's margin.
+- **G3, A123's hiding time (task 2.7, measured by its probe).** The input
+  dispatch (intent and hiding) must be at most 6 ms: `0.245 ms` (104's worst
+  input) plus the probe's time to hide the band. If it is over, the rows
+  outside the viewport are hidden by the first step-source dispatch instead,
+  before the first frame. A refuted A123 is R11's existing rule (back to
+  design with the probe's figures); the closing rule's tier C3 then applies
+  without D22.
+- **G4, the destroy-only unit (in G1's round, 0:256, 0:4,096 and
+  0:131,072).** 256 if its unit dispatch is at most 6 ms and its frame at
+  most 12 ms in every repetition (D24 removed the path-cache chunk that
+  failed Q3b), else 128 under the same bars, else 64. 128's Q3 figures
+  (7.325 ms step, 8.487 ms frame) were taken with the step in the frame and
+  at the 8 ms bar; G4 re-reads them under D25 and the 6 ms margin.
+- **G5, D24 (task 10.15).** Taken (Q2). Its invariants hold with their
+  tests, or D24 is void and the closing rule applies to 0:131,072's margin.
+
+The constants round (task 10.7) runs on the binary built after G1's ladder,
+D22 and D24, with the candidates the gates left, and the hooks go
+(task 10.11) after it.
+
+#### The closing rule, if this loop's gates also fail
+
+This is the last design loop for the rows-after frame and step margins.
+- **C1, no further loop.** If G1's ladder ends with a selection margin
+  missed (a frame over 12 ms, a step over 6 ms, a completion over bar − M),
+  the change does not return to design for it. It proceeds to the final
+  campaign (task 7.2) with the last rung reached.
+- **C2, it lands** if the final campaign meets D2's pass bar (input and
+  every step within `B_INTERACT_US`, every dispatch within `B_SETTLE_US`,
+  except D2's recorded toolkit-floor exceptions) and R3's completion bar
+  with R9's allowance, in every round, at the bars themselves. A selection
+  margin it missed is recorded as measured data in
+  `docs/next/long-line-documents.md` (BL's follow-ups), with the levers
+  left (below). A missed margin is not a budget exception, because the
+  budget holds.
+- **C3, scope reduction** if the final campaign misses a hard bar in some
+  case:
+  - What passes its own gates ships in every case: D24, the destroy-only
+    unit G4 admits, D17's lighter rows, D22 if A123 holds, D10's expansion
+    cap, R4's header fix and R6's fixes.
+  - A collapse class (no row after the band at intent, or rows after it)
+    keeps the paced collapse only if each dispatch over its budget is
+    attributed by a profile to the toolkit's per-widget work (A118, A124)
+    and is shorter than `main`'s worst dispatch in the same case, so no case
+    gets worse than `main`. Each such dispatch is then a recorded
+    toolkit-floor exception, an extension of D2's clause stated here before
+    the campaign. Otherwise that class keeps `main`'s direct collapse, which
+    is today's behaviour, and the deferral is recorded with its figures.
+  - Main's own figures, for scale and not as a bar: 400:64's worst frame is
+    18.0–20.2 ms with input 11.5–18.8 ms, and 400:256's is 56.1–72.6 ms in
+    one over-budget dispatch (`impl/campaign2/slc-v2-r1/r3-main-c1.log`).
+- **The deferral record** (C2 or C3) names the measured figure, the rung
+  reached and the levers recorded below.
+
+#### Alternatives considered
+
+- *Re-registering the frame bar between 12.8 and 16 ms.* Rejected: it would
+  be chosen from the data, and it would not help, because the final campaign
+  is judged worst of four rounds at 16 ms and unit-32 tails already reach
+  14.4–15.7 ms.
+- *Process isolation alone (G0's fix).* Rejected as a mechanism: the
+  fresh-process round still has a 14.39 ms frame. It is an instrument fix,
+  if G0 confirms it.
+- *Unit 16 in the frame.* Frames mostly under 11 ms, but completion
+  211.9–214.9 ms at 400:256 against 154.3 ms. *Unit 64:* frames
+  15.6–17.8 ms, steps up to 10.0 ms. Both rejected.
+- *A larger interval budget under D25* (64 rows laid out per frame, removed
+  in two step dispatches). It would halve the rows-after tail, but a 64-row
+  frame's layout plus two steps is about 17–20 ms of main-thread work per
+  16.7 ms interval, so the frame rate would drop during the collapse.
+  Recorded as a lever for the deferral record, not taken.
+- *GTK reusing a removed row's widget for an entering row.* GTK 4.24 keeps
+  removed widgets only for the same item and recycles only rows leaving the
+  tracked range (above). Reusing them in a removal would remove the creation
+  cost; it is not in LushText's control and joins task 8.4's upstream
+  report candidate.
+- *Lighter rows still* (beyond D17). The profile spreads the per-row cost
+  over creation, CSS and measure with no single heavy widget left, so there
+  is no target. Recorded as a lever.
+- *A `GtkSliceListModel`* (R11 (b)): unchanged, rejected; it touches only the
+  unbound phase.
+
+#### Attribution round queued
+
+`MEASURE-QUEUE.md`, "slice-large-directory-collapse: case-order A/B (design
+R13, G0)", PENDING: four rounds on `rev5/bin/widget-attr-104`, alone →
+after → alone → after, 6 repetitions each, branch only, factor the cases
+that run before the 400:* cases in the process. G1 and its rungs are queued
+by task 11.3 once their binary exists.
+
+#### What this revision changes in the tasks
+
+- **New:** 2.8 (A124, A125); 11.1 (read G0); 11.2 (the verdict test's
+  windows, if G0 confirms); 11.3 (D25 and gate G1); 11.4 (rungs S1–S3 and F1,
+  only as G1 requires); 11.5 (the closing rule's record).
+- **Revised:** 10.4 keeps its 12 ms acceptance, now read by G1 on D25 for
+  every case; 10.7 takes R13's margins and candidates; 10.9's guard and D23
+  move to the first step-source dispatch; 10.13's re-applied `hidden`
+  follows D25; 8.3 gains D25's wording.
+- **Annotated:** D2's step-in-the-frame bullet, D19's "the tick takes bound
+  units only" and R12's frame-tick re-apply are superseded by D25 where
+  they are written.
+- **Unchanged:** D22–D24 and R11's completion gate.
 
 ## Risks / Trade-offs
 
@@ -2877,6 +3270,14 @@ and the old constants round SUPERSEDED in `MEASURE-QUEUE.md`. The decision
   or band-hiding alternatives of R9. *Superseded by R11:* the band is hidden
   (D22) and the 400:131,072 figure is measured (R11); the slice model is the
   recorded next step if R11's rounds or task 10.7 miss the selection bars.
+- **D25 moves work between dispatches, not out of the main loop** (R13).
+  A unit interval still holds one step and one frame, about 9–13 ms of the
+  16.7 ms at unit 32, so the cadence holds; what changes is that neither
+  dispatch carries both. The step source runs above the frame clock's
+  priority, so a step that runs long delays the next frame by its own
+  length; the step ladder (S1–S3) bounds it. A124 and A125 pin the toolkit
+  behaviour it relies on; a refuted one takes R13's closing rule with the
+  in-frame step.
 - **Hiding the band (D22) shows an empty region while the model drains.**
   With rows after the subtree, the region below the directory row is empty
   until they arrive (at or a frame before completion). When the directory

@@ -85,7 +85,7 @@ From the input dispatch of a sliced collapse until it ends, every realized row i
 
 #### Scenario: A rebound row
 - **WHEN** a row widget is rebound or created during a collapse, into the collapsing subtree or out of it, or the sidebar is unmapped and mapped again before the collapse ends
-- **THEN** a row inside the subtree draws nothing and takes no pointer input from its bind, and reports `hidden` from the end of the frame after the one that created or mapped it, and a row outside every collapsing subtree draws, takes input and reports as on `main`
+- **THEN** a row inside the subtree draws nothing and takes no pointer input from its bind, and reports `hidden` no later than the end of the dispatch after the one that created or mapped it (a step re-applies it to the subtree rows it created; a row created or mapped elsewhere arms a one-shot source that does), with no pass on the frame tick, and a row outside every collapsing subtree draws, takes input and reports as on `main`
 
 #### Scenario: The collapse ends
 - **WHEN** the collapse completes, or is ended by a re-expansion, a removal, a model reset or disposal

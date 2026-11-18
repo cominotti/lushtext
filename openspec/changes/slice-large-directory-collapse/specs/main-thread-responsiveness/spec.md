@@ -6,8 +6,8 @@ Collapsing a sidebar directory by a route LushText owns SHALL keep the input dis
 #### Scenario: How the budgets are measured
 - **WHEN** the verdict test measures a collapse
 - **THEN** it runs on the optimized widget build with the sidebar presented, at host load below 4, interleaved with `main`
-- **AND** a frame-paced step's dispatch, which also styles the rows that step brought into the band, is read against `B_SETTLE_US` as a whole, and the step itself, timed apart from its frame, against `B_INTERACT_US`
-- **AND** at most one unit of bound rows is removed per frame across all the window's sections
+- **AND** every step runs in a dispatch of its own, outside the frame clock's dispatch, and is read against `B_INTERACT_US`; the frame that styles, measures and allocates the rows a step brought into the band runs no step and is read against `B_SETTLE_US`
+- **AND** at most one unit of bound rows is removed per frame interval (between two frames of the list's frame clock) across all the window's sections
 
 #### Scenario: A toolkit floor
 - **WHEN** a step cannot fit `B_INTERACT_US` at the smallest measured unit because of the toolkit's per-widget cost
@@ -23,7 +23,7 @@ Collapsing a sidebar directory by a route LushText owns SHALL keep the input dis
 
 #### Scenario: A huge directory
 - **WHEN** the user collapses an expanded directory of 131,072 entries, with nothing after it and with 400 rows after it
-- **THEN** the children no row widget is bound to are removed in chunks of at most `COLLAPSE_UNBOUND_CHUNK_ROWS`, the first in the input dispatch within `B_INTERACT_US` and the rest within the list turn slice, the bound children in units, and every dispatch fits its budget
+- **THEN** the children no row widget is bound to are removed in chunks of at most `COLLAPSE_UNBOUND_CHUNK_ROWS`, the first in the first step dispatch after the input within `B_INTERACT_US` and the rest within the list turn slice, the bound children in units, and every dispatch fits its budget
 
 #### Scenario: A collapse nobody draws
 - **WHEN** a sliced collapse starts or continues while the sidebar is hidden, the section body is collapsed or the window is unmapped, or while the list stays mapped but its frame clock delivers no frame
@@ -50,14 +50,19 @@ Collapsing a sidebar directory by a route LushText owns SHALL keep the input dis
 
 #### Scenario: The first frame takes the first step
 - **WHEN** a sliced collapse starts
-- **THEN** the input dispatch shows the intent, hides the subtree's realized rows, removes at most one chunk of `COLLAPSE_UNBOUND_CHUNK_ROWS` unbound rows and no bound row, arms the step sources, and stays within `B_INTERACT_US`
-- **AND** the first step after it runs no later than the first frame after the input: a bound unit from that frame's tick, which, when the input's chunk removed every unbound row of the subtree, is the collapse's first bound unit; or, when unbound rows remain, unbound chunks from the between-frames source in the interval right after that frame, so no second frame passes before the work continues
-- **AND** that frame takes no more than one unit of bound rows and shows the collapse
+- **THEN** the input dispatch shows the intent, hides the subtree's realized rows, removes no row, arms the step source, and stays within `B_INTERACT_US`
+- **AND** the step source, which runs above the frame clock's priority and below input, runs in its own dispatches before the first frame after the input: first at most one chunk of `COLLAPSE_UNBOUND_CHUNK_ROWS` unbound rows, then, when that chunk removed every unbound row of the subtree, the collapse's first bound unit; when unbound rows remain, the between-frames source continues them, so no second frame passes before the work continues
+- **AND** that first frame lays out at most one unit of bound rows, runs no step, and shows the collapse
 
 #### Scenario: Unbound rows leave between frames
 - **WHEN** a sliced collapse removes rows no widget is bound to
-- **THEN** those chunks run between frames, not one per frame tick, each turn within the list turn slice plus one chunk, and the frame ticks take bound units only
-- **AND** the one exception is the single chunk the input dispatch removes, which counts toward the input dispatch's `B_INTERACT_US` with the intent and the hiding
+- **THEN** those chunks run between frames, never inside a frame dispatch, each turn within the list turn slice plus one chunk
+- **AND** the first chunk after the input runs in the step source's own dispatch, alone, within `B_INTERACT_US`
+
+#### Scenario: A frame lays out one unit and runs no step
+- **WHEN** a sliced collapse with 400 rows after the directory removes bound rows
+- **THEN** each bound unit runs in a step-source dispatch armed by the input, by the previous frame's `after-paint` or by the between-frames source, at most one unit per frame interval
+- **AND** no rows leave the directory's stores during a frame clock dispatch, and the frame after the unit only styles, measures, allocates and paints the rows it brought into the band
 
 #### Scenario: The probe scan's publication is a named residual
 - **WHEN** a dispatch after the collapse publishes the scan that GTK's `is_expandable()` probe started for the collapsed directory
