@@ -124,6 +124,10 @@ An admission inside a measurement (`LUSHTEXT_ADMISSION_NOWAIT=1`, or a proven ex
 - **WHEN** an older 4G request is waiting and a 2G NOWAIT admission fits the slice budget on its own
 - **THEN** the NOWAIT admission is admitted
 
+#### Scenario: heavy.sh's check-once admission under NOWAIT ignores the queue
+- **WHEN** an older 4G request is waiting and `heavy.sh`'s check-once admission after `LOCK` runs with `LUSHTEXT_ADMISSION_NOWAIT=1` for a 2G cap that fits the slice budget on its own
+- **THEN** it is admitted
+
 ### Requirement: Admission order does not starve a large request
 Waiting admissions SHALL be ordered by arrival. While the oldest live waiter has the host memory for its cap plus the reserve, a later request SHALL be admitted only if it also fits the slice budget beside that waiter's cap. A waiter that is short of host memory SHALL reserve nothing. A waiter SHALL keep its place across `heavy.sh`'s retries. Dead waiters SHALL not count. The probe and the admission SHALL use the same decision.
 
@@ -143,3 +147,7 @@ Waiting admissions SHALL be ordered by arrival. While the oldest live waiter has
 #### Scenario: A dead waiter
 - **WHEN** the process that owned the oldest waiting ticket has exited
 - **THEN** its ticket neither reserves budget nor blocks later requests
+
+#### Scenario: A run in place takes no place in the order
+- **WHEN** `heavy.sh --mem 2G` runs inside a capped scope, inside an envelope, or with no user manager, so its command runs in place without a host admission
+- **THEN** it holds no ticket in the heavy slice's admission order while its command runs

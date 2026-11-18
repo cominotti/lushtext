@@ -134,7 +134,8 @@ every worktree (resolved from `git rev-parse --git-common-dir`;
 - **Heavy work** — `cargo build`/`check`/`clippy`/`test`, `make test`, Kani,
   cargo-mutants, proof-strength, smoke lanes, and `git commit` (its hook runs
   Clippy) — goes through `scripts/heavy.sh`. It takes one place in the
-  admission order (a ticket, kept across its retries), waits, holding
+  admission order (a ticket, kept across its retries; none when its command
+  runs in place, inside a capped scope or an envelope), waits, holding
   nothing, until `scripts/with-memory-cap.sh --wait-admissible <cap>` would
   admit the cap (default `12G`), probes `INTENT` shared, takes `LOCK` shared
   for the one command, sets its compiler parallelism (`CARGO_BUILD_JOBS` =
