@@ -83,6 +83,16 @@ purpose: task 10.7's queued round needs them, and they are removed by task
 10.11 before the gates of 7.3 and the landing commit 7.7. No box changes
 state.
 
+**Stage 3 continuation round (2026-11-18).** Checkpoint `314b6187`; task
+10.4 landed as `d453f62e` (its three smokes on that tree); `origin/main`
+merged as `79df23fa`. The go/no-go on the real code (0:131,072, completion at
+most 157.3 ms in every rep, design R9) and task 10.7's constants round are
+queued READY on one binary built from `d453f62e`
+(`rev5/bin/widget-attr-104`); the load stayed 6–14, so neither ran. If the
+go/no-go misses, the change returns to design (R9's alternatives) before the
+other boxes close. Ticked this round: 3.2, 4.3, 5.2–5.4, 8.3. Handoff:
+`rev5/notes.md`.
+
 **Revision review status (2026-11-15).** Reviewed against the code and the
 attribution logs (design R8): D21 rejected (task 10.9 is now a guard test),
 the watch contribution added to task 10.5, the expansion cap's first batch
@@ -158,14 +168,14 @@ before group 10. No box changes state.
 
 ## 4. Pure step policy and its proofs (design D9)
 
-- [ ] 4.1 Add `CollapseFacts`, `CollapseStep`, `next_collapse_step` and the four constants (D3, documented with their kind and measured basis per `.agents/rules/rust.md`) to `ui/sidebar/policy.rs`. Integer-only, `#![forbid(clippy::float_arithmetic)]` on the policy module, no GTK imports. Add the constants to the threshold inventory (`make check-thresholds`).
-- [ ] 4.2 Add `ui/sidebar/policy/kani_proofs.rs` with harnesses C1–C5 over the allocation-free core (design D9). Add the shard `core-sidebar-collapse` (gate `scheduled`, `measured_in` `PENDING DISPATCH (owed by slice-large-directory-collapse)` until task 7.5) and the `ORACLES` entry for `crates/lushtext-core/src/ui/sidebar/policy.rs`, scoped by `functions=` to the collapse core, to `scripts/kani-shards.py`. Run `make check-kani-shards`.
-- [ ] 4.3 Task 3.1's tests pass.
+- [ ] 4.1 (2026-11-18: the types, the policy and the constants exist, integer-only, in the inventory; owed: the constants' measured basis and rustdoc from task 10.7's round.) Add `CollapseFacts`, `CollapseStep`, `next_collapse_step` and the four constants (D3, documented with their kind and measured basis per `.agents/rules/rust.md`) to `ui/sidebar/policy.rs`. Integer-only, `#![forbid(clippy::float_arithmetic)]` on the policy module, no GTK imports. Add the constants to the threshold inventory (`make check-thresholds`).
+- [ ] 4.2 (2026-11-18: the harnesses, the shard and the `ORACLES` entry exist and `make check-kani-shards` passes in every hook run; owed: task 9.11's harness has never been compiled by Kani, which task 7.5's run does on the final policy.) Add `ui/sidebar/policy/kani_proofs.rs` with harnesses C1–C5 over the allocation-free core (design D9). Add the shard `core-sidebar-collapse` (gate `scheduled`, `measured_in` `PENDING DISPATCH (owed by slice-large-directory-collapse)` until task 7.5) and the `ORACLES` entry for `crates/lushtext-core/src/ui/sidebar/policy.rs`, scoped by `functions=` to the collapse core, to `scripts/kani-shards.py`. Run `make check-kani-shards`.
+- [x] 4.3 Task 3.1's tests pass. (2026-11-18, on 79df23fa: 91 sidebar unit and property tests, .claude/handoffs/slice-large-directory-collapse/rev5/unit-sidebar.log; rerun by 5.8 after 10.7 changes the constants.)
 - [x] 4.4 No commit (design D16).
 
 ## 5. The owned collapse (design D5–D8, D11)
 
-- [ ] 5.1 Add `ui/sidebar/workspace_section/collapse_execution.rs`:
+- [ ] 5.1 (2026-11-18: in; owed: the module doc still narrates every step from the tick, without D19's between-frames idle; it lands in the 7.7 tree, task 8.2's note.) Add `ui/sidebar/workspace_section/collapse_execution.rs`:
   - the entry points `collapse_directory(row, origin)` and `expand_directory(row, origin)`;
   - the collapse state in `imp.rs`, grouped with the scan runtime state;
   - the step source (design D4): a tick callback on the list view while it is mapped, as `ui/list_growth.rs` does; a `G_PRIORITY_LOW` timeout while it is not, or when no tick arrived within `COLLAPSE_FRAME_STARVATION_MS`; switched on `map`/`unmap`; with a test-policy switch that suppresses ticks for task 3.2;
@@ -173,14 +183,14 @@ before group 10. No box changes state.
   - the band read (list-view children → expander → `list_row()` → `position()`).
 
   The module doc narrates the stage order, its resumption points and its inversions.
-- [ ] 5.2 Start of a collapse (D6, D7):
+- [x] 5.2 Start of a collapse (D6, D7): (2026-11-18: in, with findings 5 and 9 applied (tasks 9.5, 9.9); covered by `test_collapse_shows_in_the_first_frame`, `test_rows_inside_a_collapsing_subtree_show_collapsed_and_ignore_disclosure` and `test_collapse_moves_selection_and_focus_to_the_directory`, passing in .claude/handoffs/slice-large-directory-collapse/rev5/sidebar-modules.log.)
   - the expander class;
   - the accessible state on the overlay and on the expander, re-applied by the bind path and the `notify::expanded` hook from the collapse state (design D6);
   - `expanded_paths` pruned for the subtree;
   - subtree store runtimes cancelled and refresh targets under it dropped;
   - selection and focus moved to the directory row.
-- [ ] 5.3 Cancellation paths (D7): re-expansion (refill through `populate_child_store`), an ancestor taking over, a refresh splice, a section rebuild, a model reset, and dispose. Each ends the collapse exactly once, with its reason in the evidence.
-- [ ] 5.4 Routes (D5):
+- [x] 5.3 Cancellation paths (D7): (2026-11-18: in, with findings 4, 7 and 9 applied (tasks 9.4, 9.7, 9.9); `test_expanding_again_mid_collapse_restores_every_entry`, `test_removing_a_collapsing_directory_cancels_the_collapse` and the 9.x tests pass in .claude/handoffs/slice-large-directory-collapse/rev5/sidebar-modules.log.) re-expansion (refill through `populate_child_store`), an ancestor taking over, a refresh splice, a section rebuild, a model reset, and dispose. Each ends the collapse exactly once, with its reason in the evidence.
+- [x] 5.4 Routes (D5): (2026-11-18: in, with findings 1, 6 and 10 applied (tasks 9.1, 9.6, 9.10); the key controller sits on the slice bin (implementation decision 12); no bind-time `observe_controllers()` loop remains; rule 12 of `make check-workflow-boundaries` passes; `test_collapse_routes_reach_the_entry_point`, `test_expand_routes_keep_gtk_behaviour` and `test_file_activation_still_emits_after_regular_icon_binding` pass in .claude/handoffs/slice-large-directory-collapse/rev5/sidebar-modules.log.)
   - `row_factory.rs` installs, at setup, one capture-phase `GestureClick` on the expander that lets the press through and claims the sequence on a release inside its current `expander` icon (design D5). Expanding activates `listitem.scroll-to` and calls the expand entry point; collapsing calls the collapse entry point. Remove the bind-time `observe_controllers()` loop and its comment, which A119 shows inert on 4.24.1, or re-aim it if A119 shows a toolkit where it acts. Confirm file-row double-click activation is unchanged (an existing test, or a new one).
   - Add the capture-phase key controller on the list view for exactly the bindings task 2.4 recorded as reachable, or none if A119 found none reachable (design D5).
   - Route `activate_file_at`, `folder_execution.rs`, `reveal_execution.rs` and `reorder_execution.rs` through the collapse entry point.
@@ -221,7 +231,7 @@ Order (design D16): do 8.2's `crates/lushtext-core/src/ui/sidebar/AGENTS.md` edi
   - `crates/lushtext-core/src/ui/sidebar/AGENTS.md`: the entry point is the only collapse caller, and the evidence surface hazard list;
   - `.agents/rules/ui.md`: File Tree.
 - [x] 8.3 Update `docs/accessibility.md` and the workspace-tree rows of `docs/accessibility-matrix.md`: the expanded state of the row and of its expander flips at intent, and focus moves to the directory row. Also state the two routes: row activation (`Enter`) takes the paced collapse, and the expander's AT-SPI actions keep GTK's direct collapse (design D5). Update `docs/automation.md` and `docs/automation-reference.md` for `collapse_pending` and the readiness change, then run `make check-automation-docs`. (2026-11-18, verified against the reworked code: `docs/accessibility.md` states the flip at intent, the focus move, the paced routes (`Enter`, double click, the arrow, the expander's collapse keys after `Tab`), the AT-SPI actions' direct collapse and the rename-entry residual route; the matrix row A11Y-WORKSPACE-REPRESENTATIVE carries the same and its widget tests; `collapse_pending` and the readiness change are in both automation docs. Task 10.4 changes no accessible name, role or state: the decorations it creates on demand were hidden from assistive technologies on every other row before. `make check-automation-docs` passes, .claude/handoffs/slice-large-directory-collapse/rev5/automation-docs.log.)
-- [ ] 8.4 Update `docs/next/long-line-documents.md`, BL record: re-attribute the exception, resolve the follow-ups (D12), and add this change's status. Add the recommendation that `stop-expander-bind-time-child-scans` be queued next, with the residual it owns. Append a note to the archived BL design's stage 4 decisions 1 and 2. Record the follow-ups:
+- [ ] 8.4 (2026-11-18: not started; the BL record's status and re-attribution depend on the go/no-go and constants rounds, and `origin/main` edited the same file in 79df23fa's merge.) Update `docs/next/long-line-documents.md`, BL record: re-attribute the exception, resolve the follow-ups (D12), and add this change's status. Add the recommendation that `stop-expander-bind-time-child-scans` be queued next, with the residual it owns. Append a note to the archived BL design's stage 4 decisions 1 and 2. Record the follow-ups:
   - lighter sidebar rows;
   - the upstream-report candidate for `gtk_list_item_change_finish` reusing unclaimed row widgets, drafted with the `upstream-gtk-reports` skill and never filed without per-report approval, listed in `docs/upstream-reports.md` as a candidate only.
 - [x] 8.5 README: no change unless the Features list describes sidebar collapse. Record the check.
