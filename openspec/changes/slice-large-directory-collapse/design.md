@@ -3518,6 +3518,47 @@ the input) is not D25's: `widget-attr-104` shows it in every G0 "after"
 repetition. It is the terminal's, outside G1's kinds; G5 and task 7.2 read
 it.
 
+#### A123 and gate G3 read; A119 corrected (tasks 2.7, 2.9, 2026-11-18)
+
+**A123 holds** on GNOME 51 (host, real input) and on the GNOME 50 floor
+(`//50`, input half skipped), with `//master` as a preview: hiding the
+band's subtree rows by opacity 0, `can-target` false and accessible `hidden`
+on the row widgets is paint-only (0 measures, setups and teardowns; band and
+allocation unchanged), draws no pixel of a hidden row whatever its
+selection, focus or hover, picks the list, and real pointer input over a
+hidden row does nothing. **G3 passes:** 204 rows hide in 0.29–0.33 ms, so
+the input dispatch hides every realized subtree row and nothing moves to
+the first step-source dispatch.
+
+Two findings change how D22 is built, not what it does:
+
+1. **A created row widget cannot be touched at bind.** The list binds a row
+   widget it creates before inserting it, and the widget is still floating
+   then (its child has no root). A Rust reference taken to it there sinks
+   the floating reference, and dropping it finalizes the widget before GTK
+   inserts it (the first probe run crashed in `gtk_widget_insert_after`). So
+   the bind path hides a rebound row only when its child is rooted, and a
+   created row is hidden after its insertion: by the end of the step that
+   created it (inserted rows are mapped inside the step, A124) or, for a row
+   created outside a step (a resize mid-collapse), by a one-shot
+   `G_PRIORITY_HIGH_IDLE` re-apply the bind arms. Such a row may draw for
+   the frame that created it; recorded, not hidden.
+2. **Only the rows the viewport shows are mapped.** The band's rows outside
+   the viewport stay unmapped (A10), and a row is mapped when it scrolls in
+   without a bind. GTK's `gtk_widget_map` writes `hidden` false after the
+   `map` emission, so D22 connects a `map` handler on each row it hides that
+   arms the same re-apply source, which writes `hidden` again once the
+   mapping dispatch has returned.
+
+**A119's accessible half, corrected.** `gtk_tree_list_row_set_expanded`
+notifies `children` right after `expanded`, and the expander re-runs its
+bind-time projection for every notify but `expanded` and `item`, so a real
+expansion writes the expander's state too. The old statement had never been
+observed: the lane ran that half under `GTK_A11Y=none`. D6 is unaffected:
+the sidebar's shown and model states differ only while a collapse is
+pending, when the row is GTK-expanded and no `set_expanded` reaches it until
+the terminal one.
+
 ### R14. Review of R13 (2026-11-18)
 
 Reviewed against the round logs (`rev/attr2/slc-r13-*.log`,

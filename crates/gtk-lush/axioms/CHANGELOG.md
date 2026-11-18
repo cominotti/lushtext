@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- A123 probe and sample (`slice-large-directory-collapse` D22): hiding one
+  subtree's realized row widgets by opacity 0, `can-target` false and
+  accessible `hidden` runs no row measure, setup or teardown, keeps the band
+  and allocation, draws no pixel (selected, focused or hovered), picks the
+  list, and real pointer input over a hidden row does nothing; a created row
+  is not in the list at bind and is hidden after its insertion; an unmap and
+  map rewrites `hidden` on the rows it maps. Fixture `fixtures::a123`
+  (`HideFixture`, `hide_fixture`, `hide_row`, `clear_row`, `read_band`,
+  `reset_counts`, `BandReading`).
+- A119's accessible half corrected (`slice-large-directory-collapse`): GTK
+  writes the expander's accessible `expanded` state at bind and on every row
+  notify other than `expanded` and `item`, and only the icon's on
+  `notify::expanded` alone; `set_expanded` notifies `children` after
+  `expanded`, so it writes both. The probe now emits `notify::expanded` alone
+  for the first check and checks a real `set_expanded` separately. The old
+  statement had never been observed: the lane ran with `GTK_A11Y=none` until
+  it moved to `GTK_A11Y=test`, which refuted it.
 - A124 and A125 probes and samples (`slice-large-directory-collapse` D25):
   a bound-row removal run from a `G_PRIORITY_HIGH_IDLE` source outside any
   frame creates and binds the entering rows inside the splice, leaves them
@@ -81,7 +98,8 @@
   overlay, but do once Tab moves the focus onto the expander, and an
   ancestor's capture-phase `Stop` prevents them, its parameterless class actions
   resolve before an inserted group, and it keeps the expander's accessible
-  `expanded` state only at bind; a class rule draws a checked arrow as the
+  `expanded` state at bind (corrected above: and on every row notify but
+  `expanded`); a class rule draws a checked arrow as the
   collapsed one in both directions. Inside an SDK sandbox A119 checks its
   input-free half and skips only its input half. New
   fixtures `fixtures::a118` to `fixtures::a120`.

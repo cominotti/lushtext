@@ -952,6 +952,14 @@ pub mod a127 {
     pub use crate::probes::a127::{DOCUMENT, EXPANSIONS, PATTERN, regex_search, replace_all_with};
 }
 
+/// The tree list whose subtree rows the A123 probe hides by opacity,
+/// `can-target` and accessible `hidden`, for its sample.
+pub mod a123 {
+    pub use crate::probes::a123::{
+        BandReading, HideFixture, clear_row, hide_fixture, hide_row, read_band, reset_counts,
+    };
+}
+
 /// The tree list the A124 probe removes bound rows from out of an idle, for
 /// its sample.
 pub mod a124 {

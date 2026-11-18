@@ -30,10 +30,15 @@
 //!   group inserted on the expander under the same prefix; activating
 //!   `listitem.collapse` collapses the row at once.
 //! - **Accessible state.** GTK sets the expander's accessible `expanded` state
-//!   when it binds a row, and on `notify::expanded` updates only the icon's.
-//!   GTK records no accessible state under `GTK_A11Y=none`, which the axiom
-//!   lane sets, so there the probe skips this half and says so; run the
-//!   sample with `GTK_A11Y=test` to observe it.
+//!   when it binds a row and whenever the row notifies a property other than
+//!   `expanded` and `item` (its notify handler re-runs the bind-time
+//!   projection, `gtktreeexpander.c:277-311`); on `notify::expanded` alone it
+//!   updates only the icon's. `gtk_tree_list_row_set_expanded` notifies
+//!   `children` right after `expanded` (`gtktreelistmodel.c:1217-1218`), so a
+//!   `set_expanded` writes the expander's state too, after every
+//!   `notify::expanded` handler has run. GTK records no accessible state under
+//!   `GTK_A11Y=none`, so there the probe skips this half and says so; the axiom
+//!   lane runs with `GTK_A11Y=test`, which records it.
 //!
 //! Real pointer and key input go through the private compositor
 //! (RemoteDesktop, `remote_input`); inside an SDK sandbox, which has none,
@@ -476,12 +481,22 @@ pub fn probe_a119() -> Observation {
                 gtk4::test_accessible_has_state(&expander, gtk4::AccessibleState::Expanded);
             let icon_state_at_bind =
                 gtk4::test_accessible_has_state(&icon, gtk4::AccessibleState::Expanded);
+            // `notify::expanded` alone, with the row's expansion unchanged.
             expander.reset_state(gtk4::AccessibleState::Expanded);
-            row.set_expanded(true);
+            row.notify("expanded");
             flush_events();
             let expander_state_after_notify =
                 gtk4::test_accessible_has_state(&expander, gtk4::AccessibleState::Expanded);
             let icon_state_after_notify =
+                gtk4::test_accessible_has_state(&icon, gtk4::AccessibleState::Expanded);
+            // A real expansion, which notifies `expanded` and then `children`.
+            expander.reset_state(gtk4::AccessibleState::Expanded);
+            icon.reset_state(gtk4::AccessibleState::Expanded);
+            row.set_expanded(true);
+            flush_events();
+            let expander_state_after_expand =
+                gtk4::test_accessible_has_state(&expander, gtk4::AccessibleState::Expanded);
+            let icon_state_after_expand =
                 gtk4::test_accessible_has_state(&icon, gtk4::AccessibleState::Expanded);
             recorder.measure(
                 "accessible_expanded_present(expander_at_bind,icon_at_bind,expander_after_notify,icon_after_notify)",
@@ -489,13 +504,22 @@ pub fn probe_a119() -> Observation {
                     "{expander_state_at_bind},{icon_state_at_bind},{expander_state_after_notify},{icon_state_after_notify}"
                 ),
             );
+            recorder.measure(
+                "accessible_expanded_present_after_set_expanded(expander,icon)",
+                format!("{expander_state_after_expand},{icon_state_after_expand}"),
+            );
             recorder.axiom(
                 expander_state_at_bind
                     && !icon_state_at_bind
                     && !expander_state_after_notify
                     && icon_state_after_notify,
                 "A119: GTK sets the expander's accessible expanded state at bind, and on \
-                 notify::expanded updates only the icon's",
+                 notify::expanded alone updates only the icon's",
+            )?;
+            recorder.axiom(
+                expander_state_after_expand && icon_state_after_expand,
+                "A119: set_expanded writes both the icon's and the expander's accessible \
+                 expanded state (the row's children notify re-runs the bind-time projection)",
             )?;
         } else {
             recorder.measure(

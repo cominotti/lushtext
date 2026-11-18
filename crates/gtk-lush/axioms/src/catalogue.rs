@@ -1957,7 +1957,9 @@ const CATALOGUE: &[Axiom] = &[
                     them; its three \
                     parameterless class actions resolve before an inserted listitem group and \
                     collapse at once; it sets the expander's accessible expanded state at bind \
-                    and only the icon's on notify::expanded",
+                    and on every other row notify, only the icon's on notify::expanded \
+                    alone, and both on set_expanded (whose children notify follows \
+                    expanded)",
         dependent_designs: &[
             "slice-large-directory-collapse D5/D6: the sidebar owns the click by a release \
              claim and the expander's class key bindings by a capture-phase key controller \
@@ -2001,6 +2003,27 @@ const CATALOGUE: &[Axiom] = &[
         slow: false,
         version_bound: None,
         probe: Some(probes::probe_a122),
+    },
+    Axiom {
+        id: AxiomId::new(123),
+        name: "a123_hiding_tree_rows_by_opacity_is_paint_only",
+        statement: "On a presented GtkListView over a GtkTreeListModel, hiding one subtree's \
+                    realized row widgets by opacity 0, can-target false and accessible hidden \
+                    runs no row measure, setup or teardown, keeps the band and the list's \
+                    allocation, draws no pixel of a hidden row (selected, focused or under the \
+                    pointer), picks no widget inside one, and a real hover, press or double \
+                    press over one prelights, selects and activates nothing; GTK writes a \
+                    created row's hidden state after its bind (gtk_widget_map) and again on \
+                    unmap and map, never while it stays mapped, and keeps the opacity and \
+                    can-target; clearing the rows is paint-only too",
+        dependent_designs: &[
+            "slice-large-directory-collapse D22: the collapsing subtree's rows are hidden at \
+             intent on their row widgets, re-applied at bind and after the step that created \
+             or mapped them, and cleared by every end of the collapse",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a123),
     },
     Axiom {
         id: AxiomId::new(124),
