@@ -68,7 +68,7 @@ Every commit goes through `scripts/heavy.sh --mem none -- git commit -F <file>`,
 
 ## 3. Rules (one commit)
 
-- [ ] 3.1 Edit `.agents/rules/parallel-agent-work.md`:
+- [x] 3.1 Edit `.agents/rules/parallel-agent-work.md`:
   - **"Implementation slots and ordering":** the cap of design D6 (ready units: entries or `###` parts) and `scripts/impl-slots.sh` replace the inline snippet. `READY` means runnable rounds a change waits on. The rule names `.claude/workflows/programme-change.js`, which lands in commit 4; no gate checks paths cited in rules (`scripts/check-agent-docs.sh` checks the index and `openspec/config.yaml` only, read at stage 2).
   - **New "Running a change"** section:
     - the stage sequence;
@@ -92,23 +92,23 @@ Every commit goes through `scripts/heavy.sh --mem none -- git commit -F <file>`,
     - an archive may follow in a second `MERGE-LOCK` hold when it owes Kani figures;
     - Kani figures land only in the archive commit, limited to the pending records' fields;
     - stage 3 dispatches on a twin ref `<branch>-kani-2` for a second concurrent run, deleted after the archive.
-- [ ] 3.2 `.agents/rules/verification-runs.md`:
+- [x] 3.2 `.agents/rules/verification-runs.md`:
   - **"Timing campaigns":** the verdict class and the non-inferiority verdict (design D3), and the drain-first criterion in place of "under load, queue" (design D7);
   - **"Shard budgets":** dispatch when stage 3 ends, stage 4 reads, re-dispatch triggers (design D2).
-- [ ] 3.3 `.agents/rules/build.md`, "Shard gates and budgets": one sentence pointing to `verification-runs.md` "Shard budgets" for when to dispatch. The gate's behaviour is unchanged.
-- [ ] 3.4 `AGENTS.md` rules index: update the `parallel-agent-work.md` entry (running a change, fast lane, design revisions, slot cap) and the `verification-runs.md` entry (verdict classes, dispatch timing).
+- [x] 3.3 `.agents/rules/build.md`, "Shard gates and budgets": one sentence pointing to `verification-runs.md` "Shard budgets" for when to dispatch. The gate's behaviour is unchanged.
+- [x] 3.4 `AGENTS.md` rules index: update the `parallel-agent-work.md` entry (running a change, fast lane, design revisions, slot cap) and the `verification-runs.md` entry (verdict classes, dispatch timing).
   - Add `make check-workflow-scripts` to "Build Commands" if `make check-policy`'s neighbours are listed there.
   - Check `README.md` for a list of policy targets and update it if one exists.
   - Run `scripts/heavy.sh -- make check-agent-docs`.
-- [ ] 3.4a Reword the failure message in `scripts/sonar-local.sh` (design D11), and its header comment at line 6, which says the same: fix the issues, or record a suspected false positive in the change's `host-asks.md`; only the maintainer changes Sonar state. Grep `.agents/`, `AGENTS.md`, `docs/` and `scripts/` for the same instruction, and reword any hit.
-- [ ] 3.5 Write the "Quality floor" self-check into the commit's handoff note `.claude/handoffs/adopt-faster-change-flow/floor-check.md`: for every edited rule paragraph, the existing rule it touches and why the floor holds, against design's "Quality floor" table.
+- [x] 3.4a Reword the failure message in `scripts/sonar-local.sh` (design D11), and its header comment at line 6, which says the same: fix the issues, or record a suspected false positive in the change's `host-asks.md`; only the maintainer changes Sonar state. Grep `.agents/`, `AGENTS.md`, `docs/` and `scripts/` for the same instruction, and reword any hit.
+- [x] 3.5 Write the "Quality floor" self-check into the commit's handoff note `.claude/handoffs/adopt-faster-change-flow/floor-check.md`: for every edited rule paragraph, the existing rule it touches and why the floor holds, against design's "Quality floor" table.
 - [ ] 3.6 Commit `docs(rules): adopt the faster change flow`, and push.
 
 ## 4. Versioned workflow script (one commit)
 
 - [ ] 4.0 Run the stage agent's probes of design D11 first, under a manual main-checkout guard (status, `HEAD` and branch before and after each): `code-review` with a local-branch target and with an absolute worktree-path target, each over a scratch branch whose committed and uncommitted edits both hold a planted bug; and `/simplify` with a worktree directory argument, across several files, and on committed branch changes. Record where each `code-review` run's findings came from (result text or fork transcript); this agent runs with a caller schema, so the same review without one is owed by the coordinator (note 19:52). Record each command, result and conclusion in `.claude/handoffs/adopt-faster-change-flow/probes.md`. A probe that edits the main checkout stops the work, and the coordinator is told. Then append a request to `.claude/handoffs/adopt-faster-change-flow/host-asks.md` for the two probes only the coordinator can run (a stage agent has no Agent or Workflow tool, and a probe PR is outside the outward-writes list): `agent(..., {isolation: 'worktree'})` and its cwd, and `code-review` on an open PR with a planted bug that differs from the main checkout.
 - [ ] 4.1 Write `.claude/workflows/programme-change.js` from the three session scripts (`programme-change-v2.js`, `-revise.js`, `-continue.js`; paths in the stage brief), as in design D8:
-  - modes `new`, `fast-lane`, `revise` and `continue` (design D8); `revision`, which runs the D4 decision and spike agents; `design_only`; `skip_impl`;
+  - modes `new`, `fast-lane`, `revise`, `continue` and `review-only` (design D8; note 20:34: an existing PR from `/simplify` on, stopping before the merge unless `args.merge`), and `args.dry_run`; `revision`, which runs the D4 decision and spike agents; `design_only`; `skip_impl`;
   - one shared stage-4 function;
   - stage 3 dispatches Kani budget runs (D2);
   - stage 4 reuses gate evidence on an identical tree and checks the ancestor (D1);
@@ -117,7 +117,10 @@ Every commit goes through `scripts/heavy.sh --mem none -- git commit -F <file>`,
   - the stages after implementation (D10), the `code-review` lens taking its findings from the result text or the fork transcript and failing without `skill_findings_source`, with `selectLenses` as a pure function mapping each flag to its own lenses (design D10 table) whose cases the script asserts at start-up, the `code-review` lens without a schema covering both the commits and `/simplify`'s edits in the form 4.0 chose (or the named two-call fallback), and `args.review_agent_type`;
   - the guard around every stage (D11): guard-read agents before and after every stage and around each parallel group, a script comparison and a stop, plus per-stage `TMPDIR` and brief files;
   - stage prompts that name `openspec-propose`/`openspec-update-change`, `openspec-apply-change` and `openspec-archive-change` instead of describing their procedure;
-  - prompts cite rule sections and carry no copied rule text, path, account, key or trailer.
+  - prompts cite rule sections and carry no copied rule text, path, account, key or trailer;
+  - every stage prompt says never to return while a command it started is still running, and the apply agent commits locally before the long gates and pushes at the end (note 20:16).
+- [ ] 4.1a Write the stub-agent harness `.claude/workflows/programme-change.test.mjs` (note 20:16): dry run and bad arguments; failed lenses ("(none)", a dead agent, a missing status line); a guard violation; a malformed selector; fast-lane ineligibility and violation; the finished path; review-only with and without `merge`. A copy of the script with its guard comparison disabled must fail it. `scripts/check-workflow-scripts.sh` runs `<name>.test.mjs` beside each script and fails when it is missing or fails, with self-test cases for both.
+- [x] 4.1b Fold notes 20:16 and 20:34 into `parallel-agent-work.md`: "Waiting" (never return with a command running), "Merging" (watch CI runs by id), "Running a change" (`review-only`, `dry_run`, the harness, `scriptPath` from the main checkout), "Stages after implementation" (commit before the long gates).
 - [ ] 4.2 Record in the commit message which session-script behaviours were kept, changed or dropped. The archive-previous stage's hardcoded `docs/next/long-line-documents.md` becomes `args.programme_record`.
 - [ ] 4.3 Run `scripts/heavy.sh -- make check-workflow-scripts`, then `git check-ignore -v .claude/workflows/programme-change.js`, which must print nothing.
 - [ ] 4.4 Check that the template's `code-review` target form and `/simplify` fallback match `probes.md` (4.0). State in `probes.md` which two probes the coordinator still owes. The template is not used until they are recorded and the template matches them; if `isolation: 'worktree'` gives a worktree cwd, the coordinator's merge-only run may simplify the template accordingly.

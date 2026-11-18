@@ -173,7 +173,7 @@ A timing verdict round SHALL first wait, holding no lock, for outside CPU use be
 - **THEN** `MEASURE-QUEUE.md` holds the coordinator's `Kind: CALIBRATION` entry with `Status: PENDING` and this change appends none, and no rule text admits a pass measured under load
 
 ### Requirement: Programme workflow scripts are versioned, sanitized and checked
-The programme's workflow script SHALL live in `.claude/workflows/`, take host details from `args`, and point to rule sections instead of copying them. `make check-workflow-scripts` SHALL syntax-check each script through a wrapper, check its phases, and fail on personal data, push credentials or copied rule sentences.
+The programme's workflow script SHALL live in `.claude/workflows/`, take host details from `args`, and point to rule sections instead of copying them. `make check-workflow-scripts` SHALL syntax-check each script through a wrapper, check its phases, fail on personal data, push credentials or copied rule sentences, and run the stub-agent harness `<name>.test.mjs` beside each script, failing when it is missing or fails.
 
 #### Scenario: A personal path is refused
 - **WHEN** a workflow script contains `/var/home/` or an SSH key name
@@ -190,6 +190,22 @@ The programme's workflow script SHALL live in `.claude/workflows/`, take host de
 #### Scenario: Node is missing
 - **WHEN** `node` is not on `PATH`
 - **THEN** the check fails with a message naming node instead of passing
+
+#### Scenario: The harness catches a disabled guard
+- **WHEN** the harness runs a copy of the script whose guard comparison is disabled
+- **THEN** its guard-violation case fails, and the harness reports the mutant as not caught if it does not
+
+#### Scenario: A script without a harness is refused
+- **WHEN** `.claude/workflows/<name>.js` has no `<name>.test.mjs` beside it
+- **THEN** `make check-workflow-scripts` fails naming the missing harness
+
+
+### Requirement: The programme workflow can start a change at its review stage
+The workflow script SHALL start a change at `/simplify` on an existing pull request and worktree (`mode: 'review-only'`) and stop before the merge stage unless the caller asks it to merge.
+
+#### Scenario: A review-only run starts at simplify
+- **WHEN** the script runs with `mode: 'review-only'`, an existing pull request and its worktree
+- **THEN** no spec or implementation agent runs, the first stage is `/simplify`, and the run stops before the merge stage unless `merge` is set
 
 ### Requirement: Implementation is followed by simplify, parallel findings-only lenses and one independent apply agent
 After implementation, `/simplify` SHALL run with an absolute worktree path. Findings-only lenses SHALL then run in parallel: `code-review high`, never `--fix`, covering the branch's commits and `/simplify`'s edits, plus one domain lens per `review-lenses` flag (data, performance; architecture only inside a fan-out). One agent that wrote no code SHALL verify, apply, run one smoke trio and the gates once.
@@ -232,6 +248,10 @@ The workflow script SHALL compare the main checkout's `git status --porcelain`, 
 #### Scenario: A schema-less lens is still guarded
 - **WHEN** the `code-review` lens runs without a schema
 - **THEN** guard agents read the main checkout before and after the lens group, and the script compares their readings
+
+#### Scenario: A stage agent backgrounds its gates
+- **WHEN** a stage agent's gates are still running
+- **THEN** it keeps waiting for them in the foreground and does not return, and the apply agent has committed its fixes locally before the long gates started
 
 #### Scenario: A Sonar issue looks like a false positive
 - **WHEN** a review agent believes a Sonar issue is a false positive

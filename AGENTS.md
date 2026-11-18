@@ -24,12 +24,12 @@ Keep this index in sync with `.agents/rules/*.md` (`scripts/check-agent-docs.sh`
 - `build.md` — build, dependencies, validation gates (including the docs-only pre-commit path), the build cache root, compiler parallelism (heavy.sh's jobs and the parallel front-end wrapper), CI, packaging (Meson, Flatpak, release, Snap), SonarQube scope, and how each lane runs: Kani, GTK axioms, property, fuzz, mutation (mirror slots, per-test address-space limit), benchmarks, end-user smoke, and the CI image widget lane
 - `documentation.md` — which documentation a change must update, including the accessibility and workflow matrices, `docs/next/` records, runbooks and memorials
 - `git.md` — git workflow and commit conventions
-- `parallel-agent-work.md` — how parallel agents share the workstation and reach `main`: host ownership, CPU and memory sizing, implementation slots, ordering, foreground waits, measurement queueing, serialized merges on local evidence, durability
+- `parallel-agent-work.md` — how parallel agents share the workstation and reach `main`: host ownership, CPU and memory sizing, implementation slots (five, three while a ready unit is queued; `scripts/impl-slots.sh`), ordering, foreground waits, drain-first measurements judged on busy CPUs (`scripts/quiet-gate.py`), serialized merges on local evidence with tree-keyed gate reuse (`scripts/gate-trees.sh`), durability, running a change through `.claude/workflows/programme-change.js`, the fast lane, design revisions, the stages after implementation, and the workflow-agent guard and outward writes
 - `preexisting-blockers.md` — mandatory no-exceptions rule: fix pre-existing blockers in the same work stream
 - `rust.md` — Rust language, filesystem boundary, error and literal ownership, power-of-two threshold rounding and the `make check-thresholds` inventory, explicit SIMD, module splitting, and state grouping
 - `testing.md` — what every Rust, script or fuzz edit needs: temporary-file ownership, test isolation from real app data, test-only code never shipping, proof obligations and gate order before a commit, Kani harness and GTK axiom probe authoring, runtime warnings
 - `ui.md` — UI and theming: widget hierarchy, staged composition, Libadwaita widget choice, state extremes, accessibility metadata, file tree and sidebar, inline alerts, dialogs, GSettings bindings, split views, large-buffer guardrails
-- `verification-runs.md` — shared-machine agent work (the `heavy.sh`/`measure.sh`/`wait-for.sh` lock protocol, envelopes for commands that admit their own memory scopes, the admission order, and wait rules) and which Kani, proof-strength, GTK axiom and timing runs a change needs, and when
+- `verification-runs.md` — shared-machine agent work (the `heavy.sh`/`measure.sh`/`wait-for.sh` lock protocol, envelopes for commands that admit their own memory scopes, the admission order, and wait rules) and which Kani, proof-strength, GTK axiom and timing runs a change needs, and when: Kani budget dispatch at the end of implementation, and the verdict classes (non-inferiority or improvement-gated)
 - `widget-wiring.md` — GTK widget composition and signal wiring, staged reveals, projection bindings, signal lifetimes, allocation-signal rules, custom-container adjustment ownership, focus restoration, transient dismissal, settle helpers, large lists, signal-delivery pitfalls, and widget-test rules
 - `workflow-convention.md` — the normative workflow readability convention: roles, role homes, seam value objects, policy purity and placement (including the whole-pixel geometry policy table), evidence-surface invariants and their driven proofs, intent-first naming, and re-derived measured cells
 
@@ -260,6 +260,7 @@ make fmt         # rustfmt everywhere, including widget tests cargo fmt cannot r
 make check       # fmt + all-feature Clippy + fast policy audits (= make pre-commit)
 make check-policy # the fast policy audits alone
 make check-session-hygiene # every private headless session starts through scripts/headless-session (in check-policy)
+make check-workflow-scripts # the versioned .claude/workflows scripts: syntax, phases, no personal data or copied rule text (in check-policy)
 make check-agent-docs # agent rules, skills, and the filesystem-boundary guidance
 make test        # all tests; widget shards run in parallel, each in its own capped headless session (agents: scripts/heavy.sh --envelope 16G -- make test)
 make test-unit / make test-int / make test-prop

@@ -2,8 +2,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 # Fetch SonarQube Cloud quality gate status and unresolved issues via REST API.
-# Fails when SonarQube Cloud reports any unresolved issue: each finding must be
-# fixed in code or explicitly accepted/marked false-positive in SonarQube Cloud.
+# Fails when SonarQube Cloud reports any unresolved issue: fix each finding in
+# code, or record a suspected false positive in the change's
+# .claude/handoffs/<change>/host-asks.md. Only the maintainer changes an issue's
+# status in SonarQube Cloud (.agents/rules/parallel-agent-work.md, "Workflow
+# agents").
 #
 # Uses uploaded CI-based analysis results. This script does not run the scanner.
 #
@@ -446,7 +449,7 @@ main() {
 	print_issue_table "$issue_count"
 
 	if (( issue_count > 0 )); then
-		fail "Sonar has ${issue_count} unresolved issue(s); fix them or mark them accepted/false-positive in SonarQube Cloud"
+		fail "Sonar has ${issue_count} unresolved issue(s); fix them, or record a suspected false positive in the change's .claude/handoffs/<change>/host-asks.md (only the maintainer changes Sonar issue status)"
 	fi
 }
 
