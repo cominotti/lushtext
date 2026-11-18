@@ -12,7 +12,7 @@ The evidence is the `slice-large-directory-collapse` worktree's runs and their l
   - That log ends in `run-widget-tests.sh: line 191: … Killed ( … run_with_widget_log … )`, then `widget-memory: peak 4096 MiB, oom_kill 4` inside a `MemoryMax=4G MemorySwapMax=0` scope.
   - `tmp.4wmLt5B8RQ` (17:39:07) pairs the same way with `final-tree-r1.log` (17:39:08). That log ends with heavy.sh's child `Killed` and `flood lines: 36539101`.
   - `tmp.sn5oJHrsL3` has no cargo trailer, so its run was killed from outside before the harness finished.
-- **The capture caused the out-of-memory kill.** `/tmp` is tmpfs. tmpfs pages are charged to the memory cgroup of the process that writes them. So the 3.9 GiB capture alone filled the 4 GiB scope, and the kernel killed processes in it, mutter among them. That is why the later tests fail with `GTK4 init failed`.
+- **The capture caused the out-of-memory kill.** `/tmp` is tmpfs. tmpfs pages are charged to the memory cgroup of the process that writes them. So the 3.9 GiB capture alone filled the 4 GiB scope, and the kernel killed four processes in it. Which ones is not recorded; that mutter was among them is inferred from the later tests' `GTK4 init failed` cascade.
 - **The scan made it worse.** After the harness finished, the scan copied every warning line, nearly the whole file, into a bash variable. The kernel then killed the subshell that held both the variable and the file's name.
 - **Nobody could clean up.**
   - The file's path was added to `OWNED_TEMP_PATHS` inside the `( … )` subshell of `run_headless`.
@@ -27,6 +27,7 @@ The evidence is the `slice-large-directory-collapse` worktree's runs and their l
   - `scripts/heavy.sh`'s `heavy-report.XXXXXX`, which carries no PID;
   - `scripts/with-memory-cap.sh`'s envelope pid file;
   - its self-test markers and directories. Six were left in `/tmp` from 2026-11-17.
+- Bounded temp files with no trap, removed on normal paths only: `scripts/ci-image-widget-test.sh`'s `setup_log`, `scripts/run-snap-smoke.sh`'s `LOG` (outside its `WORK_DIR` trap) and `scripts/blueprint-templates.sh`'s two `output_file`s. The visual and accessibility smoke session logs and the ci-image run logs are artifacts under their lanes' output directories, not temp files.
 
 `testing.md` says a leak is a defect, and `preexisting-blockers.md` makes it part of this work stream.
 
@@ -38,12 +39,13 @@ The evidence is the `slice-large-directory-collapse` worktree's runs and their l
   - for runners that need them, the lines the runner parses later, capped at 1 MiB, with overflow failing closed.
 
   The stage reads its input to EOF whatever the cap, so the harness never sees a broken pipe or stalls. The runner waits for the stage before it reads the verdict, and a missing summary fails the run.
-- **Nothing named on any exit path.** The stage writes to files that are unlinked as soon as they are opened and read back through `/proc/self/fd`. A normal exit, Ctrl-C, SIGTERM, an OOM kill or a `kill -9` of the runner therefore leaves no entry in any temporary directory. An orphaned pipeline still streaming after a `kill -9` stays within the cap. The command under test gets none of the stage's descriptors, so a daemon it leaves running cannot hold the verdict.
-- **`run-widget-tests.sh`** uses the stage instead of `tee "$log_file"` plus `check_for_unexpected_widget_warnings`' slurp. Any path the runner still owns is registered in the shell that owns the trap, never inside a `( … )` subshell. The classification self-test keeps every existing case and gains the bound, drain, wait, linger and abnormal-exit cases.
+- **Nothing named on any exit path.** The stage writes to files that are unlinked as soon as they are opened and read back through `/proc/self/fd`. They are created inside a PID-bearing `lt-scan-<pid>-XXXXXX` directory that is removed right after the opens, so a normal exit, Ctrl-C, SIGTERM, an OOM kill or a `kill -9` of the runner leaves no scan entry in any temporary directory; a `kill -9` inside that open window leaves at most one such directory, which the stale sweep reclaims. An orphaned pipeline still streaming after a `kill -9` stays within the cap. The command under test gets none of the stage's descriptors, so a daemon it leaves running cannot hold the verdict. The runner tees into the stage with `tee -p`, so a stage that dies fails the verdict closed without taking the harness or the live stream down.
+- **`run-widget-tests.sh`** uses the stage instead of `tee "$log_file"` plus `check_for_unexpected_widget_warnings`' slurp. `run_with_widget_log` runs in the top-level shell, and the headless environment moves into the `( … )` subshell that runs the command, which creates and registers nothing. Any path the runner still owns is registered in the shell that owns the trap. The classification self-test keeps every existing case and gains the bound, drain, wait, linger and abnormal-exit cases.
 - **`run-gtk-axioms.sh`** uses the same stage. Its consumers (result count, slow-skip count, the runtimes summary) read the kept result, skip and observation lines instead of a full log, and its plain `mktemp -d` log directory goes away.
-- **`run-mutants.sh`** detects the "no relevant mutants" phrase through the stage, with no capture and no unowned file.
-- **PID-bearing, reclaimable runner temp entries.** `heavy.sh`'s report and `with-memory-cap.sh`'s envelope pid file move into PID-bearing directories whose prefixes `scripts/with-temp-scope.sh`'s stale sweep reclaims. The agent-helper self-tests keep all their scratch, markers included, under one root removed by their trap.
-- **Local proof.** `make check-temp-scope` (in `make check-policy`) also runs `scripts/bounded-log-scan.sh --self-test` and `scripts/run-widget-tests.sh --self-test`, so the bound and the abnormal-exit cases run in the commit hook as well as in CI.
+- **`run-mutants.sh`** detects the "no relevant mutants" phrase through the stage in keep-only mode (no warning classification), with no capture and no unowned file.
+- **PID-bearing, reclaimable runner temp entries.** `heavy.sh`'s report and `with-memory-cap.sh`'s envelope pid file move into PID-bearing directories whose prefixes `scripts/with-temp-scope.sh`'s stale sweep reclaims, together with the stage's `lt-scan-`. The with-memory-cap self-test keeps all its scratch, markers included, under one root removed by its trap.
+- **The bounded no-trap temp files** of the ci-image, snap-smoke and Blueprint scripts are registered in a trap or moved under the lane's trapped directory.
+- **Local proof.** `make check-temp-scope` (in `make check-policy`) runs `scripts/run-widget-tests.sh --self-test` in place of its direct `with-temp-scope.sh --self-test`. That self-test already runs the temp scope's and now also runs `scripts/bounded-log-scan.sh --self-test`, so each runs once, in the commit hook as well as in CI's `ci.yml` step. The same recipe shellchecks both scripts.
 - **Docs.** `testing.md` "Temporary Files" (bounded captures; trap registration across subshells), `build.md` (the widget and axiom warning scans), and a dated entry in `docs/memorials/2026-10-20-test-data-incidents.md`.
 
 ## Non-goals
@@ -58,7 +60,7 @@ The evidence is the `slice-large-directory-collapse` worktree's runs and their l
 No change for the application or its users. For contributors and agents:
 
 - A flooding widget or axiom run now ends with a bounded report: the exact count of unexpected lines and the first 64 KiB of them. It no longer ends in an OOM kill and a multi-GiB tmpfs file.
-- Nothing is lost compared with main. The verdict is the same for every input; only the printed excerpt of a failing run is capped.
+- Nothing is lost compared with main. The verdict is the same for every input main could scan; only the printed excerpt of a failing run is capped. The two new failures are named: a scan that did not finish (the stage died), and kept lines over 1 MiB for the axiom runner.
 
 ## Capabilities
 
@@ -77,6 +79,7 @@ None. The temp-scope behaviour this change extends, the stale sweep's prefixes, 
   - `scripts/bounded-log-scan.sh` (new);
   - `scripts/run-widget-tests.sh`, `scripts/run-gtk-axioms.sh`, `scripts/run-mutants.sh`;
   - `scripts/heavy.sh` (report path), `scripts/with-memory-cap.sh` (envelope pid file and self-test scratch), `scripts/with-temp-scope.sh` (sweep prefixes);
+  - `scripts/ci-image-widget-test.sh`, `scripts/run-snap-smoke.sh`, `scripts/blueprint-templates.sh` (bounded temp files);
   - `Makefile` (the `check-temp-scope` recipe only).
 - **No Rust, GTK, persisted format, action or automation change.** Kani: none (no proven module touched). Timing: none (no timed path touched). GTK axioms: none (no toolkit behaviour relied on).
-- **Overlap:** `adopt-faster-change-flow` also edits `Makefile`, in different hunks (`.PHONY`, `check-policy`, the `check-agent-helpers` help line). The coordinator orders the two in the ledger.
+- **Overlap:** `adopt-faster-change-flow` also edits `Makefile` and `.agents/rules/build.md`. Its `Makefile` hunks (`.PHONY`, `check-policy`, the `check-agent-helpers` comment, shellcheck list and self-test lines, a new recipe, the help line) do not include `check-temp-scope`, which is why this change lints its scripts there. The files are still shared, so the coordinator orders the two in the ledger (`parallel-agent-work.md`).
