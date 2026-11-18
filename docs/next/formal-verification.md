@@ -2549,7 +2549,9 @@ table's length) and, at three rows, `i64` arithmetic in the run builder (now
 
 ### Replace All protocol and stream (`stream-replace-all`, 2026-11-17)
 
-**Status: implemented on the branch (PR #103); runner budgets measured.**
+**Status: merged (PR #103, `main` `ea30711f`) and archived 2026-11-18
+(`openspec/changes/archive/2026-11-18-stream-replace-all/`); runner budgets
+measured.**
 Two shards. Their budgets come from two dispatched `kani.yml` runs on
 `86bbcdb4` (task 3.3b, 2026-11-18), the larger of the two, rounded up to
 0.1:
