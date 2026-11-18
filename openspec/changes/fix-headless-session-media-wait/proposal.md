@@ -35,7 +35,7 @@ was only slow, by chance does not.
   and WirePlumber orders it after every other component, the linking hooks
   included (`evidence/baseline.md` §3). A pure predicate in
   `session::observe` reads it from `pw-dump`. With it, readiness took
-  61-160 ms at load 50, and 10 of 10 captures linked on their first try
+  61-85 ms (2 polls) at load 44-50, and 10 of 10 captures linked on their first try
   (§4).
 - A missed deadline is a loud session failure. The helper exits
   `TEST_FAILURE_EXIT_CODE` before the command starts, with a bounded
@@ -48,8 +48,13 @@ was only slow, by chance does not.
 - Proof: failing-first unit tests of the predicate and of the wait's outcome;
   a seeded real-session failure (WirePlumber's `policy` profile without
   `policy.standard`) that fails the lanes rather than skipping them; a seeded visual
-  defect the lanes still catch; and 10 consecutive green runs of each media
-  lane on the final tree, with per-lane wall time before and after.
+  defect the lanes still catch; `--expect-dirty` still catching all four
+  classes in three runs; the capture probe linking on its first try in 10
+  of 10 runs on the final helper (green lanes alone cannot show that, since
+  their captures tolerate a slow link); and 10 consecutive green runs of each
+  of the three main media lanes plus one of the crash-recovery and
+  command-palette notes lanes on the final tree, with per-lane wall time
+  before and after.
 - Docs: the proof-harness CHANGELOG and README, `.agents/rules/build.md`
   ("PipeWire and WirePlumber updates": re-verify the readiness signal on a
   WirePlumber update), the QH record in `docs/next/long-line-documents.md`

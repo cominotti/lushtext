@@ -89,8 +89,11 @@ load 50.18 → 50.44:
 | | readiness after | link + first buffer | capture since app start | session wall |
 | --- | --- | --- | --- | --- |
 | min | 61.0 ms | 0.141 s | 0.480 s | 2.31 s |
-| max | 160.2 ms | 0.180 s | 0.560 s | 3.18 s |
+| max | 79.8 ms | 0.180 s | 0.560 s | 3.18 s |
 
+Every one of these 20 sessions (§3 and §4) became ready on its second poll
+(`experiment-session-services.txt`, `capture/summary.txt`; corrected at spec
+review from an earlier "160.2 ms, 2-3 polls" that no saved log supports).
 10 of 10 exited 0, each wrote a 640 x 480 RGBA PNG, and every guard verdict
 was clean. The probe scripts are kept untracked in
 `.claude/handoffs/fix-headless-session-media-wait/baseline/` (they start no

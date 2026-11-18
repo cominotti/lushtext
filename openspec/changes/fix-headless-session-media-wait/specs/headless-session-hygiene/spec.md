@@ -15,13 +15,13 @@ With media on, the helper SHALL start the session's command only once WirePlumbe
 
 #### Scenario: The bare configuration still reaches its verdict
 - **WHEN** the helper runs with `--expect-dirty`, which starts WirePlumber's `main` profile
-- **THEN** readiness is decided by the same signal, and the mode reaches the runtime guard's verdict
+- **THEN** readiness is decided by the same signal, and the mode reaches the runtime guard's verdict with all four classes (`rtkit`, `bluez`, `hardware-device`, `module-rt`) reported
 
 ### Requirement: A media readiness miss fails the session
-If quiet media are not ready within `READY_TIMEOUT`, the helper SHALL NOT start the command. It SHALL save the last dump to the log directory as `pw-dump-not-ready.json`, print one bounded line naming WirePlumber, `session.services` and `policy.linking.standard`, and exit with `TEST_FAILURE_EXIT_CODE`.
+If quiet media are not ready within `READY_TIMEOUT`, the helper SHALL NOT start the command. It SHALL save the last successful dump, if any, to the log directory as `pw-dump-not-ready.json`, print one bounded line naming WirePlumber, `session.services` and `policy.linking.standard` that says where the dump was kept, that no `pw-dump` succeeded, or that `--log-dir` keeps it, and exit with `TEST_FAILURE_EXIT_CODE`.
 
 #### Scenario: WirePlumber never loads its linking policy
-- **WHEN** WirePlumber's `policy` profile is configured without `policy.standard`, or `session.services` is never set
+- **WHEN** WirePlumber's `policy` profile is configured without `policy.standard`, or `session.services` is never set, in a session given `--log-dir`
 - **THEN** after `READY_TIMEOUT` the helper exits `TEST_FAILURE_EXIT_CODE` without starting the command
 - **AND** the log directory holds `pw-dump-not-ready.json` and the session's daemons are stopped
 - **AND** the exit status is neither the unsupported-host code (77) nor `SESSION_HYGIENE_EXIT_CODE` (93)
