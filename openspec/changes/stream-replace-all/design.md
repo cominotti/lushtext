@@ -1266,3 +1266,80 @@ No budget exception is taken.
   - The delta's Cancel Replace All activation (`B_INTERACT_US`) and its
     "Saving a file while Replace All rewrites it" scenario have no lane
     case: widget tests prove their behaviour, not their dispatch time.
+
+## Stage-4 review (2026-11-18)
+
+The review read `origin/main..HEAD`, the eight Part C rounds' probe logs and
+the lane's judging code, and ran the data-safety checklists inline (the
+stage spawns no subagents).
+
+- **R1. (d)'s empty worst is measured-and-under, and the gate now proves
+  it.** In every run round each injected key reached the app (`delivery`:
+  typed = inserted = 5 or 6, none undelivered, all to the scratch editor),
+  the watchdog ticked at about 925 per second (1 ms tick, 1 ms late
+  threshold), the logs dropped no record, and each log continued 478–512 ms
+  past the last key. So no late record within one tick of a key means the
+  iteration that handled it took less than about 2 ms. The judging code did
+  not check any of that: a log with dropped records, no start record, no
+  watchdog ticks, or one that ended inside a window read `within`. It now
+  fails closed (`watchdog_coverage` in `scripts/responsiveness-smoke-driver.py`:
+  without that proof an absent late record is `not measured`, with the
+  reason in the quantity's note), for (p), (d), every span and every growth
+  frame. Self-test cases for each, failing on the previous code
+  (`.claude/handoffs/stream-replace-all/stage4-driver-failing-first.log`).
+- **R2. `frame_spans()` sums every layout of a frame**, from the first
+  layout's start to the paint's end, and a growth step is matched to the
+  first frame that ends after it (a frame whose first layout began before
+  the step ended is still its frame). In skips-r1 the growth frames read
+  0.25–0.44 ms before and 0.34–6.3 ms now.
+- **R3. Regenerated reading of the eight saved rounds** (copies of the
+  artifacts in `.claude/handoffs/stream-replace-all/part-c-artifacts/`,
+  regenerated in `part-c-regen/`, summary `stage4-regenerated-reading.txt`):
+  `met` in all eight. (a) 125–140 µs; (b) 12.9–13.3 ms, 10 records each;
+  (c) 74–98 µs; (d) 5–6 keys, no late iteration; (p) skips 11.9–12.6 ms, run
+  6.6–7.8 ms. The driver change does not touch the binary: `git diff
+  d4821940..HEAD` is empty under `crates/*/src`, so Part C's verdict
+  stands on the final tree.
+- **R4. C5's open decisions, closed.**
+  - *The dialog's open-animation frames:* the worst frame per round, every
+    layout counted, is 13.9–14.8 ms (35–36 frames), and the watchdog's
+    worst iteration there 14.8 ms, which classifies `within` `B_SETTLE_US`
+    (L + T = 15.8 ms). Within the budget that applies; no change owed.
+  - *The dispatch after a settings flush* (`main`'s `ui/settings_writes.rs`):
+    6.1–21.7 ms in the verdict rounds; during the run it read 9.7, 21.7, 11.5
+    and 6.1 ms, three of four over `B_INTERACT_US` (`sr-resp2-run-512mib-r2`:
+    21,655 µs),
+    and present on any flush, not only Replace All's. It is `main`'s code,
+    so it is its own change in the ledger (`settings-flush-follow-up`), which
+    also takes the queued Q-flush / Q-prepare attribution profiles.
+  - *Input-to-frame of three frames:* `sr-resp2-run-512mib-r2` key 4 read
+    17.6 ms / 3 frames and r4 key 5 17.0 ms / 3 frames; the late records
+    around those keys are at most 1.1 ms, so the keys' dispatches fit
+    `B_INTERACT_US` and the extra frame is frame scheduling, not work this
+    change does. Recorded with the same ledger change.
+  - *skips-r4's 42.3 ms replace-prepare dispatch* did not reproduce in the
+    eight verdict rounds ((p) at most 12.6 ms); Q-prepare stays with the
+    ledger change, not this one.
+  - *Cancel Replace All activation and saving while Replace All rewrites a
+    file* (this change's own requirement "Replace All presentation stays
+    within the interaction budgets") have no lane case. No task claims them
+    (task 9.1 names (a)–(d)); the widget tests prove their behaviour, not
+    their dispatch time. Those two clauses merge **unmeasured**; the lane
+    cases are their own ledger change (`replace-all-cancel-save-lane-cases`).
+- **R5. Data safety.** No finding. Replace safety: every target is
+  rewritten only after its body, entry and armed manifest are durable
+  (Kani-proved P2 → P4 → P5); a post-rename sync failure keeps the entry
+  (`RenamedUnconfirmed`); pass B re-checks both digests and the target's
+  facts under its guard before the rename; Cancel rolls back and a partial
+  rollback keeps an active journal of exactly the unrestored files; Stop and
+  Close closes only from the run's completion, after the rollback. Close
+  flow: closing during a run asks first, and the journal survives an
+  ordinary close. Decision D9's damaged body was traced: a missing or
+  truncated body drops the whole run's Undo and cleanup deletes the other
+  bodies, while every target keeps the bytes the user confirmed, as on
+  `main`; the protocol writes each body durably before its entry, so only
+  outside damage to `bodies/` reaches that path. Kept as D9 decided.
+- **R6. Owed widget tests, added** (`crates/lushtext/tests/widget/search_panel.rs`):
+  a key pressed while the Skipped Files list is still staged finishes the
+  growth in that dispatch, and a scroll starts the growth before the
+  512 ms delay. Each fails with its handler removed.

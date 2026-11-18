@@ -5835,18 +5835,50 @@ def render_task_completions(verdict: dict[str, Any] | None, b_settle_us: int) ->
 # "within".
 
 
-def dispatch_verdict(duration_us: int | None, dispatch_us: int | None, tick_us: int, slack_us: int, budget_us: int) -> str:
+def dispatch_verdict(duration_us: int | None, dispatch_us: int | None, tick_us: int, slack_us: int, budget_us: int, covered: bool = True) -> str:
     """One span's verdict: its exact duration, and the worst watchdog lateness
     of an iteration overlapping it (the whole dispatch around it, A69). No
     overlapping late record means the iteration stayed below the watchdog's
-    late threshold, within any budget here."""
+    late threshold, within any budget here, but only when the watchdog
+    provably watched that window (`covered`, `watchdog_coverage`): an absent
+    record is otherwise no evidence."""
     if duration_us is None:
         return "not measured"
     if duration_us > budget_us:
         return "over"
     if dispatch_us is None:
-        return "within"
+        return "within" if covered else "not measured"
     return classify(dispatch_us, tick_us, slack_us, budget_us)
+
+
+# Main-thread and watchdog record kinds whose timestamps show the probe log
+# continued past a judged window (a SIGKILLed app stops writing them).
+CONTINUITY_KINDS = ("late", "second", "span", "frame", "mark", "input")
+
+
+def record_time_us(record: dict) -> int | None:
+    value = record.get("t_us", record.get("end_us"))
+    return int(value) if value is not None else None
+
+
+def watchdog_coverage(parsed: dict, start_us: int, end_us: int) -> str | None:
+    """Why the absence of a late record in [start, end] is no evidence, or
+    None when it is (fail closed, stream-replace-all task 9.1): the probe
+    started, dropped no record, its watchdog was ticking (a `second` record
+    with ticks closing within a second before the window or anywhere after its
+    start), and the log continued at least one tick past the window's end, so
+    an iteration still running there would have left a record."""
+    if not parsed.get("started"):
+        return "no start record"
+    if parsed.get("dropped", 0):
+        return f"{parsed['dropped']} probe records dropped"
+    tick = int(parsed.get("tick_us", 2000))
+    if not any(int(r.get("ticks", 0)) > 0 and int(r["t_us"]) >= start_us - 1_000_000 for r in parsed["records"].get("second", [])):
+        return "no watchdog ticks recorded around the window"
+    last = max((t for kind in CONTINUITY_KINDS for r in parsed["records"].get(kind, []) if (t := record_time_us(r)) is not None), default=None)
+    if last is None or last < end_us + tick:
+        return "the probe log ends inside the window"
+    return None
 
 
 def combine_verdicts(verdicts: list[str]) -> str:
@@ -5875,35 +5907,49 @@ def judged_spans(parsed: dict, name: str, start_us: int, end_us: int, tick_us: i
         if not start_us <= span_start <= end_us:
             continue
         dispatch = worst_overlap(parsed, span_start, span_end)
+        gap = watchdog_coverage(parsed, span_start, span_end) if dispatch is None else None
         out.append(
             {
                 "start_us": span_start,
                 "duration_us": span_end - span_start,
                 "dispatch_us": dispatch,
-                "verdict": dispatch_verdict(span_end - span_start, dispatch, tick_us, slack_us, budget_us),
+                "verdict": dispatch_verdict(span_end - span_start, dispatch, tick_us, slack_us, budget_us, gap is None),
+                **({"gap": gap} if gap else {}),
             }
         )
     return out
 
 
-def frame_spans(parsed: dict) -> list[tuple[int, int]]:
-    """Each recorded frame's layout-plus-paint interval: a `frame_paint` span
-    starts where its frame's `frame_layout` ended (one stamp)."""
-    layouts = {int(r["end_us"]): int(r["start_us"]) for r in parsed["records"]["span"] if r.get("name") == "frame_layout"}
+def frame_spans(parsed: dict) -> list[tuple[int, int, int]]:
+    """Each recorded frame as (start, end, layout_us): from the start of its
+    first `frame_layout` to the end of its `frame_paint`, with the sum of every
+    layout of the frame. A `frame_paint` starts where its frame's last
+    `frame_layout` ended (one stamp); a frame may lay out more than once (a
+    growth frame: the step's layout, then a short second one), and every layout
+    after the previous frame's paint belongs to it."""
+    spans = parsed["records"]["span"]
+    layouts = sorted((int(r["start_us"]), int(r["end_us"])) for r in spans if r.get("name") == "frame_layout")
+    paints = sorted((int(r["start_us"]), int(r["end_us"])) for r in spans if r.get("name") == "frame_paint")
+    ends = {end for _, end in layouts}
     frames = []
-    for paint in parsed["records"]["span"]:
-        if paint.get("name") != "frame_paint":
+    previous_paint_end = None
+    for paint_start, paint_end in paints:
+        if paint_start not in ends:
+            previous_paint_end = paint_end
             continue
-        start = layouts.get(int(paint["start_us"]))
-        if start is not None:
-            frames.append((start, int(paint["end_us"])))
-    return sorted(frames)
+        own = [(a, b) for a, b in layouts if b <= paint_start and (previous_paint_end is None or a >= previous_paint_end)]
+        frames.append((min(a for a, _ in own), paint_end, sum(b - a for a, b in own)))
+        previous_paint_end = paint_end
+    return frames
 
 
 def quantity(name: str, bar: str, budget_us: int, items: list[dict[str, Any]], note: str = "") -> dict[str, Any]:
     verdicts = [item["verdict"] for item in items]
     values = [max(v for v in (item.get("duration_us"), item.get("dispatch_us")) if v is not None) for item in items if item.get("duration_us") is not None or item.get("dispatch_us") is not None]
-    if items and not note and all(item.get("dispatch_us") is None and item.get("duration_us") is None for item in items):
+    gaps = sorted({item["gap"] for item in items if item.get("gap")})
+    if gaps:
+        note = "; ".join(filter(None, [note, "not measured: " + ", ".join(gaps)]))
+    elif items and not note and all(item.get("dispatch_us") is None and item.get("duration_us") is None for item in items):
         note = "every dispatch below the watchdog's late threshold"
     return {
         "name": name,
@@ -5929,13 +5975,21 @@ def replace_all_judgement(parsed: dict, phases: list[dict], scenario: str | None
         phase = by_name.get(name)
         return (int(phase["start_us"]), int(phase["end_us"])) if phase else None
 
+    def lateness_item(window: tuple[int, int], budget_us: int, **fields: Any) -> dict[str, Any]:
+        """An item judged by the watchdog alone: its worst overlapping late
+        record, or, without one, within only when the watchdog covered it."""
+        worst = worst_overlap(parsed, *window)
+        if worst is not None:
+            return {**fields, "duration_us": None, "dispatch_us": worst, "verdict": classify(worst, tick, slack, budget_us)}
+        gap = watchdog_coverage(parsed, *window)
+        return {**fields, "duration_us": None, "dispatch_us": None, "verdict": "within" if gap is None else "not measured", **({"gap": gap} if gap else {})}
+
     prepare = phase_window("replace-prepare")
     if prepare:
-        worst = worst_overlap(parsed, *prepare)
         out["quantities"].append(
             quantity(
                 "p", "every dispatch delivering the search results or the Replace Preview rows (base requirement 'Workspace list dispatches fit the settle budget')", settle,
-                [{"start_us": prepare[0], "duration_us": None, "dispatch_us": worst, "verdict": "within" if worst is None else classify(worst, tick, slack, settle)}],
+                [lateness_item(prepare, settle, start_us=prepare[0])],
                 "the phase's worst watchdog lateness, after the scratch tab settled",
             )
         )
@@ -5969,13 +6023,17 @@ def replace_all_judgement(parsed: dict, phases: list[dict], scenario: str | None
             elif not growth:
                 items.append({"what": "growth frames", "duration_us": None, "dispatch_us": None, "verdict": "not measured"})
             for step in steps:
-                frame = next((f for f in frames if f[0] >= int(step["end_us"])), None)
+                # The first frame that ends after the step: matched on the
+                # frame's end, so a frame whose first layout began before the
+                # step ended is still the one that lays out its rows.
+                frame = next((f for f in frames if f[1] >= int(step["end_us"])), None)
                 if frame is None:
                     items.append({"what": "growth frame", "start_us": int(step["start_us"]), "duration_us": None, "dispatch_us": None, "verdict": "not measured"})
                     continue
-                start, stop = frame
+                start, stop, _ = frame
                 dispatch = worst_overlap(parsed, start, stop)
-                items.append({"what": "growth frame", "start_us": start, "duration_us": stop - start, "dispatch_us": dispatch, "verdict": dispatch_verdict(stop - start, dispatch, tick, slack, settle)})
+                gap = watchdog_coverage(parsed, start, stop) if dispatch is None else None
+                items.append({"what": "growth frame", "start_us": start, "duration_us": stop - start, "dispatch_us": dispatch, "verdict": dispatch_verdict(stop - start, dispatch, tick, slack, settle, gap is None), **({"gap": gap} if gap else {})})
         out["quantities"].append(quantity("b", "the Skipped Files opening dispatch, its first frame and the frame of each growth step of its staged first publish", settle, items))
         # Recorded, not judged: the dialog's other frames (its open
         # animation), with their paint share.
@@ -5983,8 +6041,7 @@ def replace_all_judgement(parsed: dict, phases: list[dict], scenario: str | None
             frames = [f for f in frame_spans(parsed) if dialog[0] <= f[0] <= dialog[1]]
             if frames:
                 worst = max(frames, key=lambda f: f[1] - f[0])
-                layouts = {int(r["start_us"]): int(r["end_us"]) - int(r["start_us"]) for r in parsed["records"]["span"] if r.get("name") == "frame_layout"}
-                out["recorded"].append({"what": "worst dialog frame (layout + paint)", "phase": "skipped-dialog", "value_us": worst[1] - worst[0], "detail": f"layout {layouts.get(worst[0])} us of it; {len(frames)} frames"})
+                out["recorded"].append({"what": "worst dialog frame (layout + paint)", "phase": "skipped-dialog", "value_us": worst[1] - worst[0], "detail": f"layout {worst[2]} us of it; {len(frames)} frames"})
     elif scenario == "run":
         run = phase_window("replace-run")
         beats = judged_spans(parsed, REPLACE_PROGRESS_HEARTBEAT_SPAN, *run, tick, slack, interact) if run else []
@@ -5996,8 +6053,7 @@ def replace_all_judgement(parsed: dict, phases: list[dict], scenario: str | None
                     continue
                 # The iteration that handled the key ran past it; a tick due
                 # within one tick of the key fires late by what is left of it.
-                dispatch = worst_overlap(parsed, int(record["t_us"]), int(record["t_us"]) + tick)
-                keys.append({"start_us": int(record["t_us"]), "duration_us": None, "dispatch_us": dispatch, "target": record.get("target"), "verdict": "within" if dispatch is None else classify(dispatch, tick, slack, interact)})
+                keys.append(lateness_item((int(record["t_us"]), int(record["t_us"]) + tick), interact, start_us=int(record["t_us"]), target=record.get("target")))
         out["quantities"].append(quantity("d", "every typing dispatch during the 512 MiB run", interact, keys, "" if keys else "no key reached the app (RemoteDesktop unavailable?)"))
     # Recorded, not judged: the dispatch right after each settings flush.
     for record in parsed["records"]["span"]:
@@ -6815,10 +6871,15 @@ def self_test() -> int:
         {"name": "replace-completion", "start_us": 100_000, "end_us": 200_000},
         {"name": "skipped-dialog", "start_us": 200_000, "end_us": 400_000},
     ]
+    # A watchdog that ticked through the whole log (`watchdog_coverage`).
+    ra_alive = [{"t_us": t, "ticks": 990} for t in range(1_000_000, 4_000_001, 1_000_000)]
     ra_skips = {
         "tick_us": 1_000,
+        "started": True,
+        "dropped": 0,
         "records": {
             "late": [{"t_us": 205_000, "ready_us": 201_000, "lateness_us": 4_000}],
+            "second": ra_alive,
             "input": [],
             "span": [
                 {"name": REPLACE_COMPLETION_SPAN, "start_us": 150_000, "end_us": 152_000},
@@ -6828,25 +6889,48 @@ def self_test() -> int:
                 {"name": SKIPPED_FILES_GROWTH_STEP_SPAN, "start_us": 239_000, "end_us": 239_100},
                 {"name": "frame_layout", "start_us": 210_000, "end_us": 213_000},
                 {"name": "frame_paint", "start_us": 213_000, "end_us": 215_000},
-                {"name": "frame_layout", "start_us": 240_000, "end_us": 250_000},
-                {"name": "frame_paint", "start_us": 250_000, "end_us": 258_000},
+                # A growth frame lays out twice: the step's rows, then a short
+                # second layout that the paint follows.
+                {"name": "frame_layout", "start_us": 240_000, "end_us": 246_000},
+                {"name": "frame_layout", "start_us": 246_500, "end_us": 247_000},
+                {"name": "frame_paint", "start_us": 247_000, "end_us": 258_000},
                 {"name": "frame_layout", "start_us": 260_000, "end_us": 261_000},
                 {"name": "frame_paint", "start_us": 261_000, "end_us": 262_000},
             ],
         },
     }
+    expect(frame_spans(ra_skips) == [(210_000, 215_000, 3_000), (240_000, 258_000, 6_500), (260_000, 262_000, 1_000)], "a frame runs from its first layout to its paint and sums every layout of it")
     judged = replace_all_judgement(ra_skips, ra_skips_phases, "skips", ra_budgets, 500)
     by_q = {q["name"]: q for q in judged["quantities"]}
     expect(by_q["a"]["verdict"] == "within" and by_q["a"]["count"] == 1, "(a) reads the completion span")
-    expect(by_q["b"]["verdict"] == "over" and by_q["b"]["worst_us"] == 18_000, "(b) judges the frame that lays out a growth step (18 ms) against B_settle")
+    expect(by_q["b"]["verdict"] == "over" and by_q["b"]["worst_us"] == 18_000, "(b) judges the whole frame that lays out a growth step (18 ms, both layouts) against B_settle")
     expect(sum(1 for i in by_q["b"]["items"] if i.get("what") == "growth frame") == 1, "(b) takes the frame of each growth step, not the animation's other frames")
-    judged_missing = replace_all_judgement({"tick_us": 1_000, "records": {"late": [], "input": [], "span": []}}, ra_skips_phases, "skips", ra_budgets, 500)
+    expect(judged["recorded"][0]["value_us"] == 18_000 and judged["recorded"][0]["detail"].startswith("layout 6500 us"), "the worst dialog frame records every layout of it")
+    # A step that ends inside its frame's first layout still matches that frame.
+    inside = {**ra_skips, "records": {**ra_skips["records"], "span": [dict(r, end_us=241_000) if r["name"] == SKIPPED_FILES_GROWTH_STEP_SPAN else r for r in ra_skips["records"]["span"]]}}
+    inside_b = {q["name"]: q for q in replace_all_judgement(inside, ra_skips_phases, "skips", ra_budgets, 500)["quantities"]}["b"]
+    expect(inside_b["worst_us"] == 18_000, "a growth step is matched to the frame that ends after it")
+    judged_missing = replace_all_judgement({"tick_us": 1_000, "started": True, "dropped": 0, "records": {"late": [], "second": ra_alive, "input": [], "span": []}}, ra_skips_phases, "skips", ra_budgets, 500)
     expect(judged_missing["verdict"] == "not measured", "a skips run without spans is not measured")
+    # Fail closed: without proof the watchdog watched a window, no late
+    # record there is no evidence of a short dispatch.
+    for label, broken in (
+        ("dropped records", {**ra_skips, "dropped": 3}),
+        ("no start record", {**ra_skips, "started": False}),
+        ("no watchdog ticks", {**ra_skips, "records": {**ra_skips["records"], "second": []}}),
+    ):
+        verdicts = {q["name"]: q["verdict"] for q in replace_all_judgement(broken, ra_skips_phases, "skips", ra_budgets, 500)["quantities"]}
+        expect(verdicts["p"] == "not measured" and verdicts["a"] == "not measured", f"{label}: an absent late record is not measured, never within")
+    truncated = {**ra_skips, "records": {**ra_skips["records"], "late": [], "second": [{"t_us": 100_000, "ticks": 990}], "span": [r for r in ra_skips["records"]["span"] if r["start_us"] < 153_000]}}
+    expect({q["name"]: q["verdict"] for q in replace_all_judgement(truncated, ra_skips_phases, "skips", ra_budgets, 500)["quantities"]}["a"] == "not measured", "a log that ends inside the window is not measured")
     ra_run_phases = [{"name": "replace-prepare", "start_us": 0, "end_us": 100_000}, {"name": "replace-run", "start_us": 100_000, "end_us": 2_000_000}]
     ra_run = {
         "tick_us": 1_000,
+        "started": True,
+        "dropped": 0,
         "records": {
             "late": [{"t_us": 610_000, "ready_us": 600_500, "lateness_us": 9_500}],
+            "second": ra_alive,
             "input": [{"event": "key-press", "t_us": 600_000, "target": "editor"}, {"event": "key-press", "t_us": 900_000, "target": "editor"}],
             "span": [{"name": REPLACE_PROGRESS_HEARTBEAT_SPAN, "start_us": 700_000, "end_us": 700_300}],
         },
@@ -6854,7 +6938,12 @@ def self_test() -> int:
     judged_run = {q["name"]: q for q in replace_all_judgement(ra_run, ra_run_phases, "run", ra_budgets, 500)["quantities"]}
     expect(judged_run["c"]["verdict"] == "within" and judged_run["c"]["count"] == 1, "(c) reads each heartbeat span")
     expect(judged_run["d"]["verdict"] == "over" and judged_run["d"]["worst_us"] == 9_500, "(d) takes the iteration that ran past a key")
-    no_beats = replace_all_judgement({"tick_us": 1_000, "records": {"late": [], "input": [], "span": []}}, ra_run_phases, "run", ra_budgets, 500)
+    quiet_run = {**ra_run, "records": {**ra_run["records"], "late": []}}
+    expect({q["name"]: q["verdict"] for q in replace_all_judgement(quiet_run, ra_run_phases, "run", ra_budgets, 500)["quantities"]} == {"p": "within", "c": "within", "d": "within"}, "keys with no late iteration around them are within while the watchdog ticked")
+    blind_run = {**quiet_run, "dropped": 1}
+    blind = {q["name"]: q for q in replace_all_judgement(blind_run, ra_run_phases, "run", ra_budgets, 500)["quantities"]}
+    expect(blind["d"]["verdict"] == "not measured" and "dropped" in blind["d"]["note"], "(d) with dropped probe records is not measured, and says why")
+    no_beats = replace_all_judgement({"tick_us": 1_000, "started": True, "dropped": 0, "records": {"late": [], "second": ra_alive, "input": [], "span": []}}, ra_run_phases, "run", ra_budgets, 500)
     expect({q["name"]: q["verdict"] for q in no_beats["quantities"]} == {"p": "within", "c": "not measured", "d": "not measured"}, "a run with no heartbeat or no key is not measured")
     # `save/during-validation` runs in both tiers, and its run rows reach the
     # report table (spawn-completion-priority D5).

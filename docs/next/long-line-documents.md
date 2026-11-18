@@ -5308,6 +5308,19 @@ What landed on the branch, and what is still owed, is the change's
   paint, no lane case for Cancel or save-while-rewriting) are in that
   design section. The two `kani.yml` dispatches for the new shards' budgets
   (3.3b) belong to the merge stage.
+- **Responsiveness verdict (task 9.1, part C, coordinator 2026-11-18,
+  `scripts/measure.sh`, eight rounds on `d4821940` interleaved skips/run
+  r1–r4, every kept round at a 1-minute load below 4): met.** (a) 125–140 µs
+  and (b) 12.9–13.3 ms against `B_SETTLE_US`; (c) 74–98 µs and (d) 5–6 keys
+  with no late iteration against `B_INTERACT_US`; (p) at most 12.6 ms. The
+  stage-4 review (design, "Stage-4 review") made the lane fail closed on a
+  log that cannot prove the watchdog watched a window and summed every layout
+  of a frame; the regenerated reading of the saved rounds is still `met` in
+  all eight. The dispatch after a settings flush (`main`'s
+  `ui/settings_writes.rs`, up to 21.7 ms during the run) and the lane cases
+  for Cancel and saving during a run are their own ledger changes
+  (`settings-flush-follow-up`, `replace-all-cancel-save-lane-cases`); the
+  delta's Cancel and save clauses merge unmeasured.
 - **Prepared AppStream release note.** "Replace All rewrites files up to
   512 MiB without holding them in memory, reports its progress, can be
   cancelled, lists the files it skipped with the reason, and offers to
