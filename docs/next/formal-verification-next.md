@@ -49,7 +49,7 @@ change adopts it.
 | 5 | `measure-proof-strength-with-mutation` (**implemented 2026-10-10**) | N9. The harness-file mutant exclusion is owned by change 1. **Done**; the per-module table, triage, and lane decision are in the programme record, "Proof strength (N9)" | 1 |
 | 6 | `bound-draft-set-aside-retention` | Fix first: the E1 set-aside naming defect (a body counts as kept only under a byte-identical copy; Kani K9). Then N10 set-aside retention: no automatic deletion, a soft bound that asks for review, and the 256-entry listing bug fixed | — |
 | 7 | `add-sidebar-visual-proof-scenario` (**implemented 2026-10-10**) | N10 sidebar proof: the `reveal-workspace-path` action and the rendered-row pixel check. **Done**: `win.reveal-workspace-path`, the `workspace-path-revealed` readiness predicate, `ViewportSliceBin::outer_request_pending()`, and the `workspace-tree-reveal` scenario type with the `workspace-tree-rendered-row-anchors` invariant (programme record, §4) | — |
-| 8 | `apply-verification-altitude-redesigns` (**implemented 2026-11-18**) | N8, as six groups that can be applied one at a time. **Done**: all six groups applied (the `Protocol` driver, one app-data layout owner, the unrestored-copy backoff, `WriteLabel` down to the temp name, the writable draft-candidate type, explicit smoke-binary roles); status per group under N8 | 1, 6 |
+| 8 | `apply-verification-altitude-redesigns` (**merged 2026-11-18, PR #117, `main` `8d4f5d7b`; archived 2026-11-18** as `openspec/changes/archive/2026-11-18-apply-verification-altitude-redesigns/`) | N8, as six groups that can be applied one at a time. **Done**: all six groups applied (the `Protocol` driver, one app-data layout owner, the unrestored-copy backoff, `WriteLabel` down to the temp name, the writable draft-candidate type, explicit smoke-binary roles); status per group under N8 | 1, 6 |
 | 9 | `verify-shell-conformance-against-proven-cores` | N11: the imperative shells checked against the Kani-proven cores used as oracles | 1, 3 |
 | — | `evaluate-verus-for-unbounded-proofs` (**implemented 2026-11-15**; merged as `11769e02` (PR #107) and archived 2026-11-15) | The Verus deductive verifier on claims Kani holds only for bounded scopes, after the two Kani-first attempts. Evaluation only. **Done**: [`formal-verification-verus.md`](./formal-verification-verus.md) recommended keeping Kani alone, which the maintainer accepted on 2026-11-15, closing the evaluation without V2 and without a Kani follow-up; V1 reproduced its known answers, the Kani inductive step was not proved within budget, and V2 was not completed | — |
 | — | `evaluate-quint-and-tlaplus-empirically` (**implemented 2026-09-24**) | An empirical Quint vs TLA+ comparison, with open exploration. Evaluation only. **Done**: [`formal-verification-quint-vs-tlaplus.md`](./formal-verification-quint-vs-tlaplus.md) decided Kani only for maintained properties, TLA+ with TLC for the disposable N6 sketch, and no Quint; its E1 run found a set-aside defect, fixed first in change 6 | — |
@@ -170,8 +170,9 @@ harness becomes a proof. Until then there is nothing to do, which is correct.
 
 ### N8. The remaining altitude proposals from the two `/simplify` passes
 
-**Done** by `apply-verification-altitude-redesigns` (2026-11-18); every group
-is listed below with its status.
+**Done** by `apply-verification-altitude-redesigns` (2026-11-18; merged as PR
+#117, `main` `8d4f5d7b`, and archived the same day); every group is listed
+below with its status.
 
 Each is a redesign that this change left out on purpose:
 
