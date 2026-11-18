@@ -34,6 +34,70 @@ use crate::services::filesystem::write_protocol::{
     WriteClass, WriteProtocol,
 };
 use crate::services::filesystem::{sys, temp_name};
+use crate::services::protocol_drive::{Protocol, drive};
+
+/// The durable write as [`drive`] runs it: an action's outcome is one
+/// [`StepOutcome`], and the end is the write's [`WriteClass`].
+impl Protocol for WriteProtocol {
+    type Action = WriteAction;
+    type Outcome = StepOutcome;
+    type End = WriteClass;
+
+    fn end(action: WriteAction) -> Option<WriteClass> {
+        match action {
+            WriteAction::Finish(class) => Some(class),
+            _ => None,
+        }
+    }
+
+    fn advance(&mut self, outcome: StepOutcome) -> WriteAction {
+        let (next, action) = self.step(outcome);
+        *self = next;
+        action
+    }
+}
+
+/// The durable move by copy as [`drive`] runs it: an outcome is whether the
+/// action succeeded, and the end is whether the move completed.
+impl Protocol for MoveProtocol {
+    type Action = MoveAction;
+    type Outcome = bool;
+    type End = bool;
+
+    fn end(action: MoveAction) -> Option<bool> {
+        match action {
+            MoveAction::Finish(done) => Some(done),
+            _ => None,
+        }
+    }
+
+    fn advance(&mut self, succeeded: bool) -> MoveAction {
+        let (next, action) = self.step(succeeded);
+        *self = next;
+        action
+    }
+}
+
+/// The durable rename as [`drive`] runs it: an outcome is whether the action
+/// succeeded, and the end is the rename's [`RenameClass`].
+impl Protocol for RenameProtocol {
+    type Action = RenameAction;
+    type Outcome = bool;
+    type End = RenameClass;
+
+    fn end(action: RenameAction) -> Option<RenameClass> {
+        match action {
+            RenameAction::Finish(class) => Some(class),
+            _ => None,
+        }
+    }
+
+    fn advance(&mut self, succeeded: bool) -> RenameAction {
+        let (next, action) = self.step(succeeded);
+        *self = next;
+        action
+    }
+}
 
 /// Process-local counter for temp-file names that may be created concurrently.
 ///
@@ -276,15 +340,15 @@ where
     F: FnOnce(&mut dyn Write) -> std::io::Result<()>,
 {
     // The shell: every decision is `WriteProtocol`'s. Each action is exactly
-    // one backend call, and its outcome goes back to the protocol unchanged;
-    // the shell only keeps the resources those calls produce and the latest
-    // error, which the protocol's classification is reported with.
-    let (mut protocol, mut action) = WriteProtocol::start();
+    // one backend call, and its outcome goes back to the protocol unchanged
+    // (`drive`); the shell only keeps the resources those calls produce and
+    // the latest error, which the protocol's classification is reported with.
+    let (mut protocol, first) = WriteProtocol::start();
     let mut metadata_plan = None;
     let mut temp: Option<(PathBuf, sys::File)> = None;
     let mut write_content = Some(write_content);
     let mut last_error: Option<std::io::Error> = None;
-    loop {
+    let class = drive(&mut protocol, first, |action| {
         let outcome = match action {
             WriteAction::ProbeMetadata => {
                 outcome_of(MetadataPlan::probe(path, metadata_source), &mut last_error)
@@ -364,23 +428,22 @@ where
                 }
                 Ok(())
             }
-            WriteAction::Finish(class) => {
-                let mut error = || {
-                    last_error
-                        .take()
-                        .unwrap_or_else(|| std::io::Error::other("durable write failed"))
-                };
-                return match class {
-                    WriteClass::Success => Ok(()),
-                    WriteClass::BeforeRename => Err(DurableWriteError::BeforeRename(error())),
-                    WriteClass::AfterRename => Err(DurableWriteError::AfterRename(error())),
-                };
-            }
+            WriteAction::Finish(_) => unreachable!("`drive` never executes the terminal action"),
         };
-        (protocol, action) = protocol.step(match outcome {
+        match outcome {
             Ok(()) => StepOutcome::Done,
             Err(step_outcome) => step_outcome,
-        });
+        }
+    });
+    let mut error = || {
+        last_error
+            .take()
+            .unwrap_or_else(|| std::io::Error::other("durable write failed"))
+    };
+    match class {
+        WriteClass::Success => Ok(()),
+        WriteClass::BeforeRename => Err(DurableWriteError::BeforeRename(error())),
+        WriteClass::AfterRename => Err(DurableWriteError::AfterRename(error())),
     }
 }
 
@@ -584,29 +647,32 @@ fn run_rename_protocol(
     to: &Path,
     rename: fn(&Path, &Path) -> std::io::Result<()>,
 ) -> Result<(), DurableWriteError> {
-    let (mut protocol, mut action) =
+    let (mut protocol, first) =
         RenameProtocol::start(parent_or_current(from) != parent_or_current(to));
     let mut last_error = None;
-    loop {
+    let class = drive(&mut protocol, first, |action| {
         let result = match action {
             RenameAction::Rename => rename(from, to),
             RenameAction::SyncSourceDir => sync_parent_dir(from),
             RenameAction::SyncDestinationDir => sync_parent_dir(to),
-            RenameAction::Finish(class) => {
-                let error = || last_error.unwrap_or_else(|| std::io::Error::other("rename failed"));
-                return match class {
-                    RenameClass::Success => Ok(()),
-                    RenameClass::BeforeRename => Err(DurableWriteError::BeforeRename(error())),
-                    RenameClass::AfterRename => Err(DurableWriteError::AfterRename(error())),
-                };
-            }
+            RenameAction::Finish(_) => unreachable!("`drive` never executes the terminal action"),
         };
-        let succeeded = result.is_ok();
-        if let Err(error) = result {
-            last_error = Some(error);
-        }
-        (protocol, action) = protocol.step(succeeded);
+        succeeded_keeping_error(result, &mut last_error)
+    });
+    let error = || last_error.unwrap_or_else(|| std::io::Error::other("rename failed"));
+    match class {
+        RenameClass::Success => Ok(()),
+        RenameClass::BeforeRename => Err(DurableWriteError::BeforeRename(error())),
+        RenameClass::AfterRename => Err(DurableWriteError::AfterRename(error())),
     }
+}
+
+/// Whether one backend call succeeded, keeping its error as the latest one.
+fn succeeded_keeping_error(
+    result: std::io::Result<()>,
+    last_error: &mut Option<std::io::Error>,
+) -> bool {
+    result.map_err(|error| *last_error = Some(error)).is_ok()
 }
 
 /// Create one directory and sync the parent directory that received the entry.
@@ -650,23 +716,21 @@ pub fn copy_durable(from: &Path, to: &Path, tmp_tag: &str) -> std::io::Result<()
 /// Returns an error if the copy fails, the source cannot be removed, or the
 /// source directory cannot be synced after removal.
 pub fn move_durable(from: &Path, to: &Path, tmp_tag: &str) -> std::io::Result<()> {
-    let (mut protocol, mut action) = MoveProtocol::start();
+    let (mut protocol, first) = MoveProtocol::start();
     let mut last_error = None;
-    loop {
+    let moved = drive(&mut protocol, first, |action| {
         let result = match action {
             MoveAction::Copy => copy_durable(from, to, tmp_tag),
-            MoveAction::RemoveSource => sys::remove_file(from),
+            MoveAction::RemoveSource => remove_move_source(from),
             MoveAction::SyncSourceDir => sync_parent_dir(from),
-            MoveAction::Finish(true) => return Ok(()),
-            MoveAction::Finish(false) => {
-                return Err(last_error.unwrap_or_else(|| std::io::Error::other("move failed")));
-            }
+            MoveAction::Finish(_) => unreachable!("`drive` never executes the terminal action"),
         };
-        let succeeded = result.is_ok();
-        if let Err(error) = result {
-            last_error = Some(error);
-        }
-        (protocol, action) = protocol.step(succeeded);
+        succeeded_keeping_error(result, &mut last_error)
+    });
+    if moved {
+        Ok(())
+    } else {
+        Err(last_error.unwrap_or_else(|| std::io::Error::other("move failed")))
     }
 }
 
@@ -803,9 +867,12 @@ static TEMP_AFTER_CONTENT_OBSERVER: OnceLock<Mutex<Option<TempObserver>>> = Once
 thread_local! {
     /// Test hook for failures that happen after metadata is applied but before rename.
     static FAIL_FINAL_TEMP_SYNC_AFTER_METADATA: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Test hook for the post-rename parent-directory sync failure path: the
-    /// error kind the next parent-directory sync fails with, if any.
-    static FAIL_NEXT_PARENT_SYNC: std::cell::Cell<Option<std::io::ErrorKind>> = const { std::cell::Cell::new(None) };
+    /// Test hook for the post-rename parent-directory sync failure path: how
+    /// many parent-directory syncs still succeed first, and the error kind the
+    /// one after them fails with, if any.
+    static FAIL_NEXT_PARENT_SYNC: std::cell::Cell<Option<(u32, std::io::ErrorKind)>> = const { std::cell::Cell::new(None) };
+    /// Test hook for a move whose source removal fails after the copy is durable.
+    static FAIL_NEXT_SOURCE_REMOVAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Test hook for a rename refused because source and target are on different filesystems.
     static FAIL_NEXT_RENAME_CROSS_DEVICE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Test hook for a platform without `RENAME_NOREPLACE`.
@@ -833,7 +900,30 @@ pub(in crate::services) fn fail_next_rename_cross_device_for_test() {
 /// same kind `RENAME_NOREPLACE`'s absence has.
 #[cfg(test)]
 pub(crate) fn fail_next_parent_sync_for_test(kind: std::io::ErrorKind) {
-    FAIL_NEXT_PARENT_SYNC.with(|fail| fail.set(Some(kind)));
+    fail_parent_sync_after_for_test(0, kind);
+}
+
+/// Let `succeeding` parent-directory syncs on this test thread succeed, then
+/// fail the next one with an error of `kind`.
+#[cfg(test)]
+fn fail_parent_sync_after_for_test(succeeding: u32, kind: std::io::ErrorKind) {
+    FAIL_NEXT_PARENT_SYNC.with(|fail| fail.set(Some((succeeding, kind))));
+}
+
+/// Make the next move on this test thread fail to remove its source, after
+/// the destination is durable.
+#[cfg(test)]
+fn fail_next_source_removal_for_test() {
+    FAIL_NEXT_SOURCE_REMOVAL.with(|fail| fail.set(true));
+}
+
+/// Remove a moved file's source (tests can fail it).
+fn remove_move_source(from: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if FAIL_NEXT_SOURCE_REMOVAL.with(|fail| fail.replace(false)) {
+        return Err(std::io::Error::other("injected source removal failure"));
+    }
+    sys::remove_file(from)
 }
 
 /// Create a directory tree and sync each directory entry that was newly created.
@@ -868,11 +958,15 @@ pub fn create_dir_all_durable(path: &Path) -> std::io::Result<()> {
 /// Returns an error if the parent directory cannot be opened or synced.
 pub fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
     #[cfg(test)]
-    if let Some(kind) = FAIL_NEXT_PARENT_SYNC.with(|fail| fail.replace(None)) {
-        return Err(std::io::Error::new(
-            kind,
-            "injected parent directory sync failure",
-        ));
+    if let Some((succeeding, kind)) = FAIL_NEXT_PARENT_SYNC.with(|fail| fail.replace(None)) {
+        if succeeding > 0 {
+            FAIL_NEXT_PARENT_SYNC.with(|fail| fail.set(Some((succeeding - 1, kind))));
+        } else {
+            return Err(std::io::Error::new(
+                kind,
+                "injected parent directory sync failure",
+            ));
+        }
     }
 
     sync_dir(parent_or_current(path))
@@ -1117,6 +1211,57 @@ mod tests {
         move_durable(&from, &to, "copy").expect_err("the destination sync failed");
 
         fixture::assert_text(&from, "snapshot");
+    }
+
+    /// A move whose source removal fails after the copy is durable keeps both
+    /// files: the destination is already the durable copy, and the source is
+    /// never lost (`MoveProtocol`, `RemoveSource` failed).
+    #[test]
+    fn move_durable_keeps_both_files_when_the_source_cannot_be_removed() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let from = dir.path().join("from.txt");
+        let to = dir.path().join("to.txt");
+        fixture::write_text(&from, "snapshot");
+
+        fail_next_source_removal_for_test();
+        let error = move_durable(&from, &to, "copy").expect_err("the source removal failed");
+
+        assert_eq!(error.to_string(), "injected source removal failure");
+        fixture::assert_text(&from, "snapshot");
+        fixture::assert_text(&to, "snapshot");
+    }
+
+    /// A cross-directory rename whose destination-directory sync fails has
+    /// already moved the entry: the failure is `AfterRename`, with the sync's
+    /// error, after the source directory synced.
+    #[test]
+    fn a_cross_directory_rename_whose_destination_sync_fails_is_after_rename() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let from = dir.path().join("a/from.txt");
+        let to = dir.path().join("b/to.txt");
+        create_dir_all_durable(&dir.path().join("a")).expect("source directory");
+        create_dir_all_durable(&dir.path().join("b")).expect("destination directory");
+        fixture::write_text(&from, "moved");
+
+        // The source directory's sync succeeds; the destination's fails.
+        fail_parent_sync_after_for_test(1, std::io::ErrorKind::Other);
+        let error = rename_durable_classified(&from, &to)
+            .expect_err("the destination directory sync failed");
+
+        assert!(
+            matches!(error, DurableWriteError::AfterRename(_)),
+            "the rename landed before the failed sync: {error:?}"
+        );
+        assert_eq!(
+            error.io_error().to_string(),
+            "injected parent directory sync failure"
+        );
+        assert!(
+            FAIL_NEXT_PARENT_SYNC.with(std::cell::Cell::get).is_none(),
+            "exactly two directory syncs ran"
+        );
+        assert!(!fixture::exists(&from));
+        fixture::assert_text(&to, "moved");
     }
 
     #[cfg(unix)]

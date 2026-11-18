@@ -76,6 +76,7 @@ src/
 ├── services/                   # Application logic and driven adapters (no GTK)
 │   ├── filesystem/             # THE filesystem boundary (reads, metadata, traversal, mutation, durable writes, leftovers, fixtures)
 │   ├── durable_write.rs, app_data_leftovers.rs  # crash-durable write shell over the Kani-checked write protocol; startup leftover sweep
+│   ├── protocol_drive.rs       # the `Protocol` trait and the one `drive` loop every proven-core shell runs its core with
 │   ├── json_store.rs, json_format.rs, recovery_metadata.rs, format_upgrade/  # JSON load/save and data_dir(); versioned envelopes; recovery-aware loading; sealed format upgrades
 │   ├── editor_io.rs + editor_io/  # load planning, bounded ingestion and decoding, save helpers, health analysis (text_scans: the one explicit-SIMD kernel)
 │   ├── draft_service.rs + draft_service/  # draft persistence; journal_core.rs (Kani), set_aside.rs, set_aside_retention.rs

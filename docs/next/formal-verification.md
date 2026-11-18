@@ -2699,6 +2699,26 @@ Both wait for it because of `durable_write` overlap; the facts are:
     action` style; a conformance lane that drives shells against proven
     cores should treat them as one more proven core and their shells
     (`replace/apply.rs`, `replace/undo.rs`) as one more shell.
+- **Group 1 of `apply-verification-altitude-redesigns` (2026-11-18)** gives
+  the conformance change its single tap site. `services/protocol_drive.rs`
+  holds the `Protocol` trait (`Action`, `Outcome`, `End`, `end`, `advance`)
+  and the one loop `drive`, outside both Kani oracle modules, which stay
+  byte-identical. Six shells run through it: `atomic_write_stream_with_metadata`,
+  `run_rename_protocol` and `move_durable` (`durable_write.rs`, over
+  `WriteProtocol`, `RenameProtocol`, `MoveProtocol`), the Replace All apply
+  and undo shells (`replace/apply.rs`, `replace/undo.rs`, over
+  `ReplaceFileProtocol` and `ReplaceUndoProtocol`), and the journal shrink
+  (`search_backup.rs`, a private `ShrinkRun` over `shrink_step`). Every action
+  and outcome of every shell passes the one `execute(action)` call in
+  `drive`, so a tap there observes each run and can inject a crash before or
+  after an action; typed fault injection (a faithful `Fail` with its
+  `last_error`) stays with the conformance change, because only a shell's
+  `execute` arm builds it. A nested durable write (a move's `Copy`) is a
+  nested `drive` on the same thread. No fallback was needed: the Replace
+  apply closure kept its arms. The group also fixed a pre-existing shrink
+  defect its characterization test found: the orphan-body cleanup removed a
+  body whose entry the shrink had failed to remove, leaving that entry
+  referencing a missing body; the shrink now keeps it.
 
 ## 4. Deferral inventory
 

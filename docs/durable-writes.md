@@ -36,7 +36,14 @@ temp, rename, sync directory, remove temp, finish with a classification).
 `MoveProtocol` and `RenameProtocol` do the same for `move_durable` and
 `rename_durable`. `durable_write.rs` is only the shell: it executes each action
 with exactly one backend call and feeds that call's outcome back unchanged, so
-every ordering and classification decision lives in the core. Because the core
+every ordering and classification decision lives in the core. The loop that
+does this exists once, `services/protocol_drive.rs`: each core implements its
+`Protocol` trait beside its shell, and every shell (the write, move and rename
+here, and Replace All's apply, undo and journal-shrink shells) calls
+`protocol_drive::drive` with a closure that executes one action. A move's
+`Copy` action runs a whole durable write, a `drive` nested inside the move's.
+A source check (`no_shell_steps_its_core_outside_protocol_advance`) fails if a
+shell steps its core in a loop of its own. Because the core
 is finite and I/O-free, Kani (`make kani`) explores every outcome sequence and
 every crash point of the real core against a model disk with POSIX crash
 semantics, and proves:

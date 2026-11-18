@@ -18,11 +18,11 @@ group's heavy commands.
 
 ## 0. Start
 
-- [ ] 0.1 Acquire the implementation slot (parallel-agent-work.md,
+- [x] 0.1 Acquire the implementation slot (parallel-agent-work.md,
   "Implementation slots"), and release it however the stage ends. If
   `origin/main` moved past the branch point, merge it into the branch; never
   rebase.
-- [ ] 0.2 Record the Kani baseline:
+- [x] 0.2 Record the Kani baseline:
   `git diff --stat "$(git merge-base HEAD origin/main)" -- crates/lushtext-core/src/services/filesystem/write_protocol.rs crates/lushtext-core/src/services/content_search/replace/protocol.rs crates/lushtext-core/src/services/draft_service/journal_core.rs crates/lushtext-core/src/services/draft_service/set_aside_retention.rs crates/lushtext-core/src/model/draft.rs ':(glob)**/kani_proofs.rs'`
   must print nothing. The merge base keeps a `main` that moved later from
   showing files this branch never touched. Re-run it at the end of every
@@ -32,7 +32,7 @@ group's heavy commands.
 
 ## 1. One `Protocol` driver for every proven-core shell (design G1)
 
-- [ ] 1.1 Characterize the shells on the unchanged tree. Confirm these tests
+- [x] 1.1 Characterize the shells on the unchanged tree. Confirm these tests
   pass:
   - the durable-write unit and fault-injection tests;
   - the three Kani-consolidation characterization tests (content, rename,
@@ -54,7 +54,7 @@ group's heavy commands.
 
   Command: `scripts/heavy.sh -- make test-unit`. It runs the library tests,
   these included, through the temp scope.
-- [ ] 1.2 Add `services/protocol_drive.rs`, holding the `Protocol` trait
+- [x] 1.2 Add `services/protocol_drive.rs`, holding the `Protocol` trait
   (`Action`, `Outcome`, `End`, `end`, `advance`) and `drive`, and register it
   in `services/mod.rs`. Unit-test `drive` with a small counting protocol for
   four properties:
@@ -62,7 +62,7 @@ group's heavy commands.
   - it executes each other action exactly once, in order;
   - it feeds every outcome back unchanged;
   - it supports a nested `drive` from inside `execute`.
-- [ ] 1.3 Implement `Protocol` beside each shell, delegating to the unchanged
+- [x] 1.3 Implement `Protocol` beside each shell, delegating to the unchanged
   inherent `start` / `step`:
   - in `durable_write.rs`: `WriteProtocol`, `MoveProtocol`, and
     `RenameProtocol`;
@@ -72,7 +72,7 @@ group's heavy commands.
     `advance` calls the free `shrink_step` with the action it keeps.
 
   Do not edit `write_protocol.rs` or `replace/protocol.rs`.
-- [ ] 1.4 Rewrite the six loops as `start`, then one `drive` with an
+- [x] 1.4 Rewrite the six loops as `start`, then one `drive` with an
   `execute` closure, then a `finish` mapping. The six are:
   - `atomic_write_stream_with_metadata`;
   - `run_rename_protocol`;
@@ -96,17 +96,17 @@ group's heavy commands.
 
   If the apply closure needs the design's fallback, take it and record why in
   the module doc.
-- [ ] 1.4a Add the "no loop of their own" source check (design G1): in each
+- [x] 1.4a Add the "no loop of their own" source check (design G1): in each
   of the four files that hold the six shells, the core's `step` (or
   `shrink_step`) is called only inside its
   `Protocol::advance` implementation, unless the module documentation
   records the fallback exception. Write it as a `#[test]` over
   `include_str!` of the files, or as a rule in an existing policy script.
   Confirm it fails on the tree before 1.4, then passes after.
-- [ ] 1.5 Re-run 1.1's tests and the `drive` unit tests. Then run
+- [x] 1.5 Re-run 1.1's tests and the `drive` unit tests. Then run
   `scripts/heavy.sh -- make crash-recovery-smoke` where supported, and check
   that the durable-write and Replace kill-point scenarios pass.
-- [ ] 1.6 Pre-existing blocker: re-key the stale `durable_write.rs`
+- [x] 1.6 Pre-existing blocker: re-key the stale `durable_write.rs`
   `exclude_re` entries in `.cargo/mutants.toml`:
   - line 131, `FileWriteLock::acquire`, whose function no longer exists;
   - lines 504 and 515, the non-Unix `MetadataPlan` stubs, now at 743 and 754;
@@ -118,8 +118,8 @@ group's heavy commands.
   reason in the commit. The listing applies `exclude_re`, so check that an
   entry still matches by listing with that entry removed and finding the
   mutant it should hide.
-- [ ] 1.7 Confirm 0.2's diff is still empty. Kani: none.
-- [ ] 1.8 Sync the docs:
+- [x] 1.7 Confirm 0.2's diff is still empty. Kani: none.
+- [x] 1.8 Sync the docs:
   - `docs/durable-writes.md` (the shells run through `drive`);
   - the "build on" section of `docs/next/formal-verification.md`, which
     names the single tap site and the six shells for the conformance change;

@@ -16,6 +16,7 @@ use crate::services::content_search::{
 };
 use crate::services::content_search::{ShrinkAction, shrink_step};
 use crate::services::filesystem::leftovers::LaunchId;
+use crate::services::protocol_drive::{Protocol, drive};
 use crate::services::{
     filesystem::{
         DirectoryScanPolicy, metadata as fs_metadata, mutate as fs_mutate, tree as fs_tree,
@@ -449,11 +450,13 @@ pub fn shrink_journal_to(data_dir: &Path, backup: &ReplaceUndoBackup) -> Result<
     {
         mark_journal_active(data_dir, backup)?;
     }
-    let retained_bodies = backup
+    let mut retained_bodies = backup
         .keys()
         .map(|path| body_file_name(path))
         .collect::<HashSet<_>>();
-    remove_unlisted_journal_entries(&journal_dir, &retained);
+    // A body whose entry could not be removed is still referenced by that
+    // entry, so it is not an orphan (design D9).
+    retained_bodies.extend(remove_unlisted_journal_entries(&journal_dir, &retained));
     remove_unlisted_bodies(&journal_dir, &retained_bodies);
     Ok(())
 }
@@ -462,8 +465,14 @@ pub fn shrink_journal_to(data_dir: &Path, backup: &ReplaceUndoBackup) -> Result<
 ///
 /// Best-effort by design: the journal is already durable and correct, and a
 /// leftover entry is only an orphan diagnostic, so a removal failure must not be
-/// reported as a failed journal write.
-fn remove_unlisted_journal_entries(journal_dir: &Path, retained: &HashSet<String>) {
+/// reported as a failed journal write. Returns the body file names kept
+/// because their entry could not be removed, which the orphan-body cleanup
+/// after it must keep too.
+fn remove_unlisted_journal_entries(
+    journal_dir: &Path,
+    retained: &HashSet<String>,
+) -> HashSet<String> {
+    let mut kept_bodies = HashSet::new();
     let entries = match fs_tree::scan_directory(
         journal_dir,
         DirectoryScanPolicy {
@@ -474,7 +483,7 @@ fn remove_unlisted_journal_entries(journal_dir: &Path, retained: &HashSet<String
         Ok(entries) => entries,
         Err(error) => {
             tracing::warn!("Failed to scan replace undo journal for shrink cleanup: {error}");
-            return;
+            return kept_bodies;
         }
     };
     for entry in entries {
@@ -493,23 +502,51 @@ fn remove_unlisted_journal_entries(journal_dir: &Path, retained: &HashSet<String
         ));
         // The entry goes before its body, and a body whose entry could not be
         // removed stays: no entry may reference a missing body (design D9).
-        let mut action = ShrinkAction::RemoveEntry;
-        loop {
-            let (target, succeeded) = match action {
-                ShrinkAction::RemoveEntry => {
-                    (&entry.path, fs_mutate::remove_file_if_exists(&entry.path))
+        let mut run = ShrinkRun(ShrinkAction::RemoveEntry);
+        let body_kept = drive(&mut run, ShrinkAction::RemoveEntry, |action| {
+            let target = match action {
+                ShrinkAction::RemoveEntry => &entry.path,
+                ShrinkAction::RemoveBody => &body,
+                ShrinkAction::Finish { .. } => {
+                    unreachable!("`drive` never executes the terminal action")
                 }
-                ShrinkAction::RemoveBody => (&body, fs_mutate::remove_file_if_exists(&body)),
-                ShrinkAction::Finish { .. } => break,
             };
-            if let Err(error) = &succeeded {
+            let removed = fs_mutate::remove_file_if_exists(target);
+            if let Err(error) = &removed {
                 tracing::warn!(
                     "Failed to remove superseded replace undo file {}: {error}",
                     target.display()
                 );
             }
-            action = shrink_step(action, succeeded.is_ok());
+            removed.is_ok()
+        });
+        if body_kept && let Some(body_name) = body.file_name().and_then(OsStr::to_str) {
+            kept_bodies.insert(body_name.to_owned());
         }
+    }
+    kept_bodies
+}
+
+/// One retired entry's shrink as [`drive`] runs it. The free
+/// [`shrink_step`] maps the current action to the next, so the run keeps the
+/// current action; its end is whether the body was kept.
+struct ShrinkRun(ShrinkAction);
+
+impl Protocol for ShrinkRun {
+    type Action = ShrinkAction;
+    type Outcome = bool;
+    type End = bool;
+
+    fn end(action: ShrinkAction) -> Option<bool> {
+        match action {
+            ShrinkAction::Finish { body_kept } => Some(body_kept),
+            ShrinkAction::RemoveEntry | ShrinkAction::RemoveBody => None,
+        }
+    }
+
+    fn advance(&mut self, succeeded: bool) -> ShrinkAction {
+        self.0 = shrink_step(self.0, succeeded);
+        self.0
     }
 }
 
@@ -2045,6 +2082,47 @@ mod tests {
             "the cleanup marker keeps the journal inactive"
         );
         assert!(load.backup.is_empty());
+    }
+
+    /// D9 through `shrink_step`: a retired entry and its body are both
+    /// removed, and the retained entry keeps both of its files.
+    #[test]
+    fn shrink_removes_both_files_of_each_retired_entry() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        save(dir.path(), &journal_with(&["/tmp/a.rs", "/tmp/b.rs"])).expect("save journal");
+
+        shrink_journal_to(dir.path(), &journal_with(&["/tmp/b.rs"])).expect("shrink journal");
+
+        let retired = Path::new("/tmp/a.rs");
+        assert!(!fs_metadata::exists(&entry_path(dir.path(), retired)));
+        assert!(!fs_metadata::exists(&body_path(dir.path(), retired)));
+        let retained = Path::new("/tmp/b.rs");
+        assert!(fs_metadata::exists(&entry_path(dir.path(), retained)));
+        assert!(fs_metadata::exists(&body_path(dir.path(), retained)));
+    }
+
+    /// D9 through `shrink_step`: the entry goes before its body, so when a
+    /// retired entry cannot be removed its body stays, and no entry is left
+    /// referencing a missing body, not even through the orphan-body cleanup
+    /// that follows.
+    #[test]
+    fn shrink_keeps_the_body_of_a_retired_entry_it_cannot_remove() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        save(dir.path(), &journal_with(&["/tmp/a.rs", "/tmp/b.rs"])).expect("save journal");
+        let retired = Path::new("/tmp/a.rs");
+        let entry = entry_path(dir.path(), retired);
+        // A non-empty directory where the entry file was: unlinking it fails.
+        fs_mutate::remove_file_if_exists(&entry).expect("remove the entry file");
+        fixture::create_dir_all(&entry);
+        fixture::write_text(&entry.join("keep"), "x");
+
+        shrink_journal_to(dir.path(), &journal_with(&["/tmp/b.rs"])).expect("shrink journal");
+
+        assert!(fs_metadata::exists(&entry), "the entry removal failed");
+        assert!(
+            fs_metadata::exists(&body_path(dir.path(), retired)),
+            "a body whose entry could not be removed is kept"
+        );
     }
 
     #[test]

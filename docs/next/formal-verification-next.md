@@ -181,6 +181,15 @@ Each is a redesign that this change left out on purpose:
 
 Take them up when a change touches that area anyway, not as a campaign.
 
+`apply-verification-altitude-redesigns` (row 8) takes all six, as groups
+applied one at a time:
+
+- group 1, the `Protocol` trait: **done** (2026-11-18).
+  `services/protocol_drive.rs` holds the trait and the one `drive` loop; the
+  write, move and rename shells and the Replace All apply, undo and
+  journal-shrink shells run through it, and a source check fails a shell that
+  steps its core in a loop of its own.
+
 ### N9. Use proofs as mutation killers
 
 **Done** by `measure-proof-strength-with-mutation` (2026-10-10); see
