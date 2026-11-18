@@ -5201,7 +5201,7 @@ the same time, so each count was attributed per process (`runtime-proof.md`
 four verdict rounds, plus two `dense/2000` attribution pairs that cleared the
 one flagged stage, a single-rep 22 ms dispatch (design, "Measurement").
 
-## SR `stream-replace-all` (implementation record, in progress, 2026-11-15)
+## SR `stream-replace-all` (implementation record, in progress, 2026-11-15; re-planned 2026-11-17)
 
 Queue item 2. Status: **implementation in progress; PR open, not merged.**
 What landed on the branch, and what is still owed, is the change's
@@ -5218,17 +5218,25 @@ What landed on the branch, and what is still owed, is the change's
   behind Show Skipped Files (a lazy list); a run reports progress and can be
   cancelled, which rolls back every rewritten file. Legacy inline journals
   still load and undo.
-- **Kani.** New shards `core-replace-protocol` (3 harnesses) and
-  `core-replace-stream` (1 harness: split independence on at most 8 bytes,
-  chunks 1–4, at most 2 edits), both `scheduled`; their budgets in
+- **Kani.** New shards `core-replace-protocol` (3 harnesses, verified
+  locally) and `core-replace-stream` (the stream's UTF-8 seams and byte
+  scan, 2 harnesses), both `scheduled`; their budgets in
   `scripts/kani-shards.py` are `PENDING DISPATCH (owed by stream-replace-all)`.
-- **Owed before merge** (`tasks.md`): the M9 memory baseline and verdict at a
-  load below 4 (the first baseline run sat at a 1-minute load of 9–48 and is
-  non-verdict: 16 MiB peak growth 33.9 MiB on `main`, matching the design
-  baseline), the chunk-size measurement (2.4), the GTK axioms for Replace in
-  Editor (1.3), Replace in Editor itself (5.4), the close-during-run dialog
-  (6.3), the recovery temp sweep and crash smoke (7.x), the responsiveness lane
-  cases (9.1) and the wall-time record (9.3).
+  The stage-1 revision (2026-11-17) found the engine's line logic out of
+  CBMC's reach (one engine run over 2 symbolic bytes passed 8 GiB), so it is
+  checked by a bounded exhaustive unit test instead; the record is in
+  `docs/next/formal-verification.md`, "Replace All protocol and stream".
+- **Owed before merge** (`tasks.md`, re-planned 2026-11-17 into non-visual
+  groups G1–G4 and one visual commit G5): the service data-safety tests
+  (no-loss, undo cap and partial-restore cases, the 48 `main` test names'
+  successors, a cancel whose entry removal fails), the GTK axioms A127–A129
+  for Replace in Editor, Replace in Editor itself, the close-during-run
+  dialog's tests, the crash smoke case, the accessibility smoke case, and the
+  verdicts. Memory cases (M9) run through `heavy.sh`, being load-independent;
+  `main`'s first repetition (2026-11-14) is within 2 % of PT's figures (16 MiB
+  peak growth 33.2 MiB). The timing verdicts (chunk size, wall time,
+  responsiveness cases) are queued in `MEASURE-QUEUE.md`, `NOT READY` until
+  the final code.
 - **Prepared AppStream release note.** "Replace All rewrites files up to
   512 MiB without holding them in memory, reports its progress, can be
   cancelled, and lists the files it skipped, with the reason."

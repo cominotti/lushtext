@@ -247,12 +247,16 @@ SETTLE_EVIDENCE_MEASURED_IN = (
 REPLACE_MEASURED_IN = "PENDING DISPATCH (owed by stream-replace-all): one local make kani run"
 REPLACE_PROTOCOL_LOCAL_MINUTES = 5.0
 REPLACE_PROTOCOL_LOCAL_PEAK_GIB = 3.0
-REPLACE_STREAM_LOCAL_MINUTES = 5.0
-REPLACE_STREAM_LOCAL_PEAK_GIB = 3.0
+# core-replace-stream after the stage-1 revision (design D11, "Kani memory"):
+# the two UTF-8 harnesses, one `make kani KANI_MEASURE` run on 2026-11-17
+# (3.72 min, 3.42 GiB peak; utf8 seams 135.9 s, byte scan 6.5 s), rounded up.
+REPLACE_STREAM_LOCAL_MINUTES = 4.0
+REPLACE_STREAM_LOCAL_PEAK_GIB = 4.0
 REPLACE_PROTOCOL_RUN_SECONDS = 60.0
 REPLACE_UNDO_SECONDS = 60.0
 REPLACE_SHRINK_SECONDS = 10.0
-REPLACE_STREAM_SECONDS = 120.0
+REPLACE_UTF8_SEAMS_SECONDS = 135.9
+REPLACE_UTF8_SCAN_SECONDS = 6.5
 
 SHARDS: dict[str, Shard] = {
     "widgets-geometry": Shard(
@@ -643,9 +647,10 @@ SHARDS: dict[str, Shard] = {
         measured_in=CLOSE_PROTECTED_MEASURED_IN,
     ),
     # stream-replace-all: the Replace All per-file and undo protocols (design
-    # D11, properties 1-5) and the streaming engine's split independence. Local
-    # figures from one `make kani` run each until two kani.yml dispatches
-    # replace them.
+    # D11, properties 1-5) and the stream's UTF-8 seams (the engine's line
+    # logic is checked exhaustively by a unit test instead: CBMC could not hold
+    # one engine run, design D11 "Kani memory"). Local figures until two
+    # kani.yml dispatches replace them.
     "core-replace-protocol": Shard(
         "lushtext-core",
         ("services::content_search::replace::protocol::kani_proofs::",),
@@ -656,7 +661,7 @@ SHARDS: dict[str, Shard] = {
     ),
     "core-replace-stream": Shard(
         "lushtext-core",
-        ("services::content_search::replace::stream::kani_proofs::",),
+        ("services::content_search::replace::stream::utf8::kani_proofs::",),
         gate="scheduled",
         ci_minutes=REPLACE_STREAM_LOCAL_MINUTES,
         ci_peak_gib=REPLACE_STREAM_LOCAL_PEAK_GIB,
@@ -742,7 +747,7 @@ _PREVIEW = "ui::markdown_preview::policy::kani_proofs::"
 _BUDGET = "model::responsiveness_budget::kani_proofs::"
 _WRITE_BATCH = "model::settings_write_batch::kani_proofs::"
 _REPLACE_PROTOCOL = "services::content_search::replace::protocol::kani_proofs::"
-_REPLACE_STREAM = "services::content_search::replace::stream::kani_proofs::"
+_REPLACE_UTF8 = "services::content_search::replace::stream::utf8::kani_proofs::"
 # document-scale-policy local seconds: the verification times of `make kani` on
 # this workstation (Kani 0.68.0, 2026-10-20), cheapest first per module.
 PROFILE_CARRY_SECONDS = 13.64
@@ -1093,9 +1098,12 @@ ORACLES: dict[str, Oracle] = {
             _h(_REPLACE_PROTOCOL + "an_apply_run_keeps_every_target_recoverable", REPLACE_PROTOCOL_RUN_SECONDS, "ci"),
         ),
     ),
-    "crates/lushtext-core/src/services/content_search/replace/stream.rs": Oracle(
+    "crates/lushtext-core/src/services/content_search/replace/stream/utf8.rs": Oracle(
         _CORE,
-        (_h(_REPLACE_STREAM + "the_stream_does_not_depend_on_its_chunk_size", REPLACE_STREAM_SECONDS, "ci"),),
+        (
+            _h(_REPLACE_UTF8 + "the_byte_scan_matches_core_from_utf8", REPLACE_UTF8_SCAN_SECONDS, "ci"),
+            _h(_REPLACE_UTF8 + "utf8_seams_do_not_depend_on_the_chunk_size", REPLACE_UTF8_SEAMS_SECONDS, "ci"),
+        ),
     ),
 }
 

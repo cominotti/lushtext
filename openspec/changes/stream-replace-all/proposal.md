@@ -157,8 +157,9 @@ None.
   the progress announcements are accessible.
 - `crash-restart-recovery-coverage`: Replace All kill windows are covered by
   the crash smoke.
-- `formal-verification-kani`: the per-file journal protocol and the chunked
-  engine's split independence are proved.
+- `formal-verification-kani`: the per-file journal protocol and the stream's
+  UTF-8 seams are proved, and the engine's line logic is checked
+  exhaustively over a bounded domain (design D11, "Kani memory").
 
 ## Impact
 
@@ -194,6 +195,8 @@ None.
   - `docs/accessibility.md` and `docs/accessibility-matrix.md`;
   - `docs/end-user-coverage.md`;
   - the programme record.
-- **Kani.** Two new shards, `core-replace-protocol` and `core-replace-stream`.
+- **Kani.** Two new shards, `core-replace-protocol` and `core-replace-stream`
+  (the latter holds the UTF-8 seams; the engine's line logic has a bounded
+  exhaustive unit test instead).
 - **GTK axioms.** GtkSourceView's regex replacement syntax and its whole-word
   boundaries, each with a probe and a sample.

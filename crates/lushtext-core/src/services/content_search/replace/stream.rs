@@ -14,15 +14,18 @@
 //!   `\n`, and the `\r` is removed from it then;
 //! - an edit applies only when its whole line still equals the line the search
 //!   recorded, and any mismatch fails the file as [`ReplacementTextOutcome::StaleLine`];
-//! - UTF-8 is validated incrementally: an incomplete sequence at the end of a
-//!   chunk (at most three bytes) is carried into the next one.
+//! - UTF-8 is validated incrementally ([`utf8`]): an incomplete sequence at
+//!   the end of a chunk (at most three bytes) is carried into the next one.
 //!
 //! The engine is I/O-free apart from its [`Write`] sink. It is generic over the
-//! digest of its source and output, so production feeds SHA-256 and the Kani
-//! harness a recording sink (design D11).
+//! digest of its source and output, so production feeds SHA-256 and the tests
+//! a recording sink (design D11).
+
+mod utf8;
 
 use std::io::Write;
 
+use self::utf8::Utf8Carry;
 use super::ReplaceConstructionMetrics;
 use crate::model::content_search::{MAX_REPLACE_PREVIEW_ROWS, Replacement};
 
@@ -59,13 +62,13 @@ impl DigestSink for Sha256Sink {
     }
 }
 
-/// A digest that keeps the bytes themselves, for the Kani harness and the
-/// equivalence tests, where SHA-256 is out of reach or beside the point.
-#[cfg(any(test, kani))]
+/// A digest that keeps the bytes themselves, for the equivalence tests,
+/// where SHA-256 is beside the point.
+#[cfg(test)]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct RecordingSink(pub(crate) Vec<u8>);
 
-#[cfg(any(test, kani))]
+#[cfg(test)]
 impl DigestSink for RecordingSink {
     fn update(&mut self, bytes: &[u8]) {
         self.0.extend_from_slice(bytes);
@@ -73,11 +76,11 @@ impl DigestSink for RecordingSink {
 }
 
 /// A digest that discards its input, for a stream whose digest is not needed.
-#[cfg(any(test, kani))]
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct NoDigest;
 
-#[cfg(any(test, kani))]
+#[cfg(test)]
 impl DigestSink for NoDigest {
     fn update(&mut self, _bytes: &[u8]) {}
 }
@@ -224,97 +227,30 @@ pub(super) struct StreamSummary<S, O> {
     pub(super) metrics: ReplaceConstructionMetrics,
 }
 
-/// Incremental UTF-8 validation that carries an incomplete trailing sequence.
-#[derive(Debug, Default)]
-struct Utf8Carry {
-    pending: [u8; 4],
-    len: usize,
-}
-
-impl Utf8Carry {
-    /// Validate the next chunk; `Err` means the stream is not UTF-8.
-    fn feed(&mut self, mut chunk: &[u8]) -> Result<(), ()> {
-        if self.len > 0 {
-            let expected = utf8_sequence_len(self.pending[0]);
-            let take = (expected - self.len).min(chunk.len());
-            self.pending[self.len..self.len + take].copy_from_slice(&chunk[..take]);
-            self.len += take;
-            chunk = &chunk[take..];
-            if self.len < expected {
-                return Ok(());
-            }
-            validate_utf8(&self.pending[..expected]).map_err(|_| ())?;
-            self.len = 0;
-        }
-        match validate_utf8(chunk) {
-            Ok(()) => Ok(()),
-            Err((valid_up_to, true)) => {
-                let tail = &chunk[valid_up_to..];
-                self.pending[..tail.len()].copy_from_slice(tail);
-                self.len = tail.len();
-                Ok(())
-            }
-            Err((_, false)) => Err(()),
-        }
-    }
-
-    /// The stream ended; an unfinished sequence is invalid.
-    fn finish(&self) -> Result<(), ()> {
-        if self.len == 0 { Ok(()) } else { Err(()) }
-    }
-}
-
-/// Length of the sequence a valid UTF-8 lead byte starts.
-fn utf8_sequence_len(lead: u8) -> usize {
-    match lead {
-        0xF0..=0xF7 => 4,
-        0xE0..=0xEF => 3,
-        0xC0..=0xDF => 2,
-        _ => 1,
-    }
-}
-
-/// `Ok`, or the valid prefix length and whether the error is only an
-/// incomplete sequence at the end of the input.
-#[cfg(not(kani))]
-fn validate_utf8(bytes: &[u8]) -> Result<(), (usize, bool)> {
-    simdutf8::compat::from_utf8(bytes)
-        .map(|_| ())
-        .map_err(|error| (error.valid_up_to(), error.error_len().is_none()))
-}
-
-/// The byte-loop path for the Kani harness: `simdutf8`'s runtime-detected SIMD
-/// is out of CBMC's reach (design D2).
-#[cfg(kani)]
-fn validate_utf8(bytes: &[u8]) -> Result<(), (usize, bool)> {
-    core::str::from_utf8(bytes)
-        .map(|_| ())
-        .map_err(|error| (error.valid_up_to(), error.error_len().is_none()))
-}
-
 /// Offset of the first `\n` in `bytes`.
-#[cfg(not(kani))]
 fn find_newline(bytes: &[u8]) -> Option<usize> {
     memchr::memchr(b'\n', bytes)
-}
-
-/// The byte-loop path for the Kani harness: `memchr`'s runtime-detected SIMD
-/// is out of CBMC's reach, as `simdutf8`'s is (design D2).
-#[cfg(kani)]
-fn find_newline(bytes: &[u8]) -> Option<usize> {
-    bytes.iter().position(|&byte| byte == b'\n')
 }
 
 /// The chunked streaming engine (design D2).
 ///
 /// Its result does not depend on how the source is chunked: whether a file is
 /// replaced, and a replaced file's output, count, lengths and digests, are
-/// the same at every chunk size, and on valid UTF-8 so is the outcome. Kani
-/// proves this (`stream/kani_proofs.rs`, shard `core-replace-stream`) for
-/// sources of at most 8 bytes, chunk sizes 1 to 4 against the whole source,
-/// at most two edits and output limits up to 16 bytes; the property test
-/// `streaming_engine_matches_the_reference_at_every_chunk_size` samples
-/// larger inputs against the reference builder.
+/// the same at every chunk size, and on valid UTF-8 so is the outcome. Two
+/// checks carry this (design D11, "Kani memory"):
+///
+/// - Kani proves the UTF-8 seams ([`utf8`], shard `core-replace-stream`): fed
+///   in chunks of 1 to 4 bytes, the carry rejects exactly the sources of at
+///   most 8 arbitrary bytes that a one-shot validation rejects. The engine
+///   itself is out of CBMC's reach: one run over 2 symbolic bytes with one
+///   fixed edit and no sinks passed 8 GiB in symbolic execution.
+/// - The unit test
+///   `the_engine_does_not_depend_on_its_chunk_size_over_a_bounded_domain`
+///   checks every source, edit set, chunk size and output limit of a bounded
+///   domain exhaustively, against the whole feed and the reference builder,
+///   and the property test
+///   `streaming_engine_matches_the_reference_at_every_chunk_size` samples
+///   larger inputs against the reference builder.
 pub(super) struct ReplaceStream<'e, W, S, O> {
     edits: &'e [StreamEdit<'e>],
     next_edit: usize,
@@ -601,9 +537,9 @@ impl<'e, W: Write, S: DigestSink, O: DigestSink> ReplaceStream<'e, W, S, O> {
 
 /// Run the engine over a whole in-memory source, in chunks of `chunk_len`.
 ///
-/// For tests, the property target and the Kani harness: production always
+/// For tests and the property target: production always
 /// feeds a file through a producer.
-#[cfg(any(test, kani, feature = "property-tests"))]
+#[cfg(any(test, feature = "property-tests"))]
 pub(super) fn stream_whole<S: DigestSink, O: DigestSink>(
     source: &[u8],
     edits: &[StreamEdit<'_>],
@@ -800,6 +736,3 @@ pub fn apply_replacements_to_text_reference_for_property_test(
     let mut file_replacements: Vec<&Replacement> = replacements.iter().collect();
     build_replaced_text_reference(original_text, &mut file_replacements).ok()
 }
-
-#[cfg(kani)]
-mod kani_proofs;

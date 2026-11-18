@@ -2547,6 +2547,83 @@ as did a symbolic `Vec` capacity (the policy sizes the group vector from the
 table's length) and, at three rows, `i64` arithmetic in the run builder (now
 `i32`, saturating).
 
+### Replace All protocol and stream (`stream-replace-all`, 2026-11-17)
+
+**Status: in progress on the branch (PR #103), not merged.** Two scheduled
+shards, both owed a dispatch before the change is archived
+(`PENDING DISPATCH (owed by stream-replace-all)` in `scripts/kani-shards.py`):
+
+- `core-replace-protocol` (`replace/protocol/kani_proofs.rs`, 3 harnesses):
+  the per-file apply protocol P0–P6 and the undo protocol U0–U3 of the
+  I/O-free `replace/protocol.rs`, composed with an abstract durable write
+  that assumes the write-protocol theorems (a failed write is `BeforeRename`
+  and leaves the previous bytes). 3/3 verified locally on `23ef433a`
+  (0.34 min, 1.59 GiB). Its first run found a counterexample: a cancelled
+  file whose entry removal fails keeps its entry and body. The protocol was
+  right (never an entry without its body, the target keeps its bytes), so
+  the contract and the harness changed, and a cover pins that path. The
+  mutation check that reorders cleanup is still owed (the change's task
+  3.2a).
+- `core-replace-stream` (`replace/stream/utf8/kani_proofs.rs`, 2 harnesses):
+  the stream's UTF-8 seams (8 arbitrary bytes, chunks 1–4) and the
+  `cfg(kani)` byte scan against `core::str::from_utf8` (4 bytes).
+
+**Reduced bound (fit order step 3), recorded here and in the harness doc.**
+The engine's line logic is not Kani-proved. Every harness that ran the
+engine passed the 12 GiB runner margin in CBMC's symbolic execution, down to
+one run over 2 symbolic bytes with one fixed edit and no sinks (8.47 GiB at
+3.4 min); the probes, from symbolic edit text through a concrete-shape ladder,
+are tabulated in the change's design D11, "Kani memory". The trace is
+dominated by slice-index and `copy_from_slice` failure paths and `memcmp`, so
+the cost is the engine's slicing under CBMC, not the harness's domain. The
+line logic's split independence is instead checked exhaustively over a
+bounded domain by a unit test (every source of at most 4 characters over
+`a`, `b`, `\r`, `\n`, `é`, every edit set of at most two edits over small
+tables, every chunk size, two output limits; 7.5 s in a debug build), and
+sampled at scale by the property test against the reference builder. What
+this weakens: the property holds for the enumerated domain and is sampled
+beyond it, not proved for every byte value.
+
+**What `apply-verification-altitude-redesigns` and
+`verify-shell-conformance-against-proven-cores` build on once this merges.**
+Both wait for it because of `durable_write` overlap; the facts are:
+
+- `services/durable_write.rs`, `services/filesystem/write_protocol.rs` and
+  their Kani shards are **unchanged** by this branch (`git diff` against
+  `main` is empty for both; the change's design D3 forbids touching them).
+  The durable-rename classification of #105 (`RenameClass`) reached the
+  branch through its merges, and Replace All consumes it only through
+  `DurableWriteError`.
+- New boundary surface they must carry along:
+  - `filesystem/write.rs`: `atomic_replace_workspace_file_stream(path,
+    label, producer)`, the streaming counterpart of
+    `atomic_replace_workspace_file` (resolved target identity, then the
+    target's own leftover sweep); Replace All's pass B and Undo call it with
+    `WriteLabel::REPLACE`, and pass A writes bodies with
+    `atomic_replace_stream(…, WriteLabel::REPLACE_UNDO_BODY)`.
+  - `filesystem/types.rs`: the new label `REPLACE_UNDO_BODY`
+    (`"replace-undo-body"`); `WriteLabel::KNOWN` grows from 10 to 11, and the
+    temp-name and leftover tests list it. Group 4 of
+    `apply-verification-altitude-redesigns` (entry points taking
+    `WriteLabel`) gains these call sites.
+  - `filesystem/leftovers.rs`: `is_journal_owned_leftover`, keyed on the
+    manifest's recorded `(pid, launch_nonce)` pair and that pair differing
+    from the current launch's, plus a bounded per-parent sweep used by
+    recovery, undo and discard (design D9).
+  - `services/kill_point.rs`: four `KillWindow`s
+    (`replace-body-before-entry`, `replace-entry-before-target-rename`,
+    `replace-target-renamed-before-finish`,
+    `replace-undo-before-target-rename`) and the occurrence ordinal of
+    `LUSHTEXT_KILL_AT` (`name@label#n`).
+  - `services/search_backup.rs`: stream entries plus raw bodies under
+    `replace-backup-journal/bodies/`, shrink-only journal paths, and a
+    manifest carrying `pid` and `launch_nonce`.
+  - `services/content_search/replace/protocol.rs`: the I/O-free
+    `ReplaceFileProtocol` / `ReplaceUndoProtocol` in the `step(outcome) ->
+    action` style; a conformance lane that drives shells against proven
+    cores should treat them as one more proven core and their shells
+    (`replace/apply.rs`, `replace/undo.rs`) as one more shell.
+
 ## 4. Deferral inventory
 
 - ~~`sliced-protected-install` (C3): the planner's whole-plan properties
@@ -2749,3 +2826,11 @@ table's length) and, at three rows, `i64` arithmetic in the run builder (now
   process kind, or GTK Lush publication needing a claim outside the per-bin
   domain. On a trigger, the Kani inductive step above (with F1) is finished
   first, and Verus is reopened with V2 only if that fails.
+- `stream-replace-all`: the Replace All stream engine's line logic is checked
+  by a bounded exhaustive unit test, not Kani (section "Replace All protocol
+  and stream" above): one engine run over 2 symbolic bytes already passed
+  the 12 GiB runner margin. The candidate follow-up is an altitude change, not
+  a bigger budget: split the line logic into a byte-step line cursor whose
+  chunked loop is a fold over single steps, so split independence holds by
+  construction and Kani proves the one-step machine. It is not queued; it
+  becomes worth a change if the engine's line handling changes again.

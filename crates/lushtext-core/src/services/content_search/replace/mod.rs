@@ -338,7 +338,11 @@ pub fn undo_after_metadata_hook_registry_is_empty_for_test() -> bool {
 }
 
 /// Report whether an Undo after-metadata hook is still registered for `target`.
-#[cfg(any(test, feature = "test-utils"))]
+///
+/// Gated to match its only consumer, the `test-utils` re-export in
+/// `content_search/mod.rs`: no unit test of this crate calls it since the
+/// replace tests moved to the streaming engine.
+#[cfg(feature = "test-utils")]
 #[must_use]
 pub fn undo_after_metadata_hook_is_registered_for_test(target: &Path) -> bool {
     UNDO_AFTER_METADATA_HOOKS.get().is_some_and(|registry| {

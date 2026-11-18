@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use super::stream::{
-    NoDigest, RecordingSink, ReplacementTextOutcome, build_replaced_text_reference, plan_edits,
-    stream_whole,
+    NoDigest, RecordingSink, ReplacementTextOutcome, StreamEdit, build_replaced_text_reference,
+    plan_edits, stream_whole,
 };
 use super::*;
 use crate::model::content_search::{
@@ -1169,5 +1169,181 @@ fn the_engine_buffers_only_targeted_lines() {
         summary.metrics.retained_line_bytes <= 16,
         "an untargeted 1 MiB line is streamed, not buffered: {}",
         summary.metrics.retained_line_bytes
+    );
+}
+
+/// Every edit set of at most two edits over the bounded-domain tables: by line
+/// (lines 1 to 3), and without overlap on one line.
+fn bounded_domain_edit_sets(path: &Path) -> Vec<Vec<Replacement>> {
+    const LINES: [&str; 4] = ["", "a", "ab", "\r"];
+    const REPLACEMENTS: [&str; 2] = ["", "x\n"];
+    let ranges = |line: &str, from: usize| {
+        (from..=line.len())
+            .flat_map(move |start| (start..=line.len()).map(move |end| start..end))
+            .collect::<Vec<_>>()
+    };
+    let mut singles = Vec::new();
+    for line_number in 1..=2u64 {
+        for line in LINES {
+            for range in ranges(line, 0) {
+                for replacement in REPLACEMENTS {
+                    singles.push(make_replacement(
+                        path,
+                        line_number,
+                        line,
+                        replacement,
+                        range.clone(),
+                    ));
+                }
+            }
+        }
+    }
+    let mut sets: Vec<Vec<Replacement>> = singles.iter().cloned().map(|one| vec![one]).collect();
+    for first in &singles {
+        for replacement in REPLACEMENTS {
+            for range in ranges(&first.original_line, first.match_range.end) {
+                let second = make_replacement(
+                    path,
+                    first.line_number,
+                    &first.original_line,
+                    replacement,
+                    range,
+                );
+                sets.push(vec![first.clone(), second]);
+            }
+            for line_number in first.line_number + 1..=3 {
+                for line in LINES {
+                    for range in ranges(line, 0) {
+                        let second = make_replacement(path, line_number, line, replacement, range);
+                        sets.push(vec![first.clone(), second]);
+                    }
+                }
+            }
+        }
+    }
+    sets
+}
+
+/// One edit set of the bounded check: the reference builder's text and count
+/// (`None` when it does not replace), and the engine's planned edits.
+type PlannedEdits<'a> = (Option<(String, usize)>, Vec<StreamEdit<'a>>);
+
+/// The bounded exhaustive check that stands in for the engine's Kani harness
+/// (design D11, "Kani memory"; CBMC could not hold even one engine run over 2
+/// symbolic bytes within the shard margin). Domain: every source of at most
+/// four characters over `a`, `b`, `\r`, `\n` and `é` (the byte classes the
+/// line logic distinguishes, and a two-byte character a seam can cut), no edit
+/// and every edit set of
+/// [`bounded_domain_edit_sets`], every chunk size from 1 to the source length,
+/// and two output limits: none, and one byte below the whole output. At every
+/// point the chunked feed equals the whole feed, a replaced file equals the
+/// reference builder, the output stays within the limit and the digests record
+/// exactly the bytes fed and written.
+#[test]
+fn the_engine_does_not_depend_on_its_chunk_size_over_a_bounded_domain() {
+    const ALPHABET: [&str; 5] = ["a", "b", "\r", "\n", "\u{e9}"];
+    const MAX_SOURCE: u32 = 4;
+    let path = PathBuf::from("/t.txt");
+    let edit_sets = bounded_domain_edit_sets(&path);
+    let mut sources = vec![Vec::new()];
+    for len in 1..=MAX_SOURCE {
+        for code in 0..ALPHABET.len().pow(len) {
+            let mut rest = code;
+            let mut source = String::new();
+            for _ in 0..len {
+                source.push_str(ALPHABET[rest % ALPHABET.len()]);
+                rest /= ALPHABET.len();
+            }
+            sources.push(source.into_bytes());
+        }
+    }
+    let (mut replaced_runs, mut crlf_seams, mut cut_characters) = (0usize, 0usize, 0usize);
+    for source in &sources {
+        let text = std::str::from_utf8(source).expect("the alphabet is UTF-8");
+        let mut planned: Vec<PlannedEdits<'_>> = vec![(Some((text.to_string(), 0)), Vec::new())];
+        for set in &edit_sets {
+            let mut refs: Vec<&Replacement> = set.iter().collect();
+            let Ok(edits) = plan_edits(&mut refs, || false) else {
+                continue;
+            };
+            let mut refs: Vec<&Replacement> = set.iter().collect();
+            planned.push((build_replaced_text_reference(text, &mut refs).ok(), edits));
+        }
+        for (reference, edits) in &planned {
+            let whole_len = source.len().max(1);
+            let unlimited = stream_whole(
+                source,
+                edits,
+                whole_len,
+                u64::MAX,
+                RecordingSink::default(),
+                RecordingSink::default(),
+            );
+            let replaced = matches!(unlimited.0.outcome, ReplacementTextOutcome::Replaced { .. });
+            assert_eq!(
+                replaced.then(|| (unlimited.1.clone(), unlimited.0.outcome)),
+                reference.as_ref().map(|(expected, count)| (
+                    expected.as_bytes().to_vec(),
+                    ReplacementTextOutcome::Replaced {
+                        replacement_count: *count
+                    }
+                )),
+                "{text:?} against the reference"
+            );
+            let mut limits = vec![u64::MAX];
+            if let Some(below) = (unlimited.1.len() as u64).checked_sub(1) {
+                limits.push(below);
+            }
+            for limit in limits {
+                let whole = stream_whole(
+                    source,
+                    edits,
+                    whole_len,
+                    limit,
+                    RecordingSink::default(),
+                    RecordingSink::default(),
+                );
+                for chunk in 1..=whole_len {
+                    let split = stream_whole(
+                        source,
+                        edits,
+                        chunk,
+                        limit,
+                        RecordingSink::default(),
+                        RecordingSink::default(),
+                    );
+                    for (summary, out) in [&whole, &split] {
+                        assert!(summary.output_len <= limit);
+                        assert_eq!(summary.output_len, out.len() as u64);
+                        assert_eq!(&summary.output_digest.0, out);
+                    }
+                    // On valid UTF-8 the outcome itself does not depend on the
+                    // chunking; the bytes written before a stop may.
+                    assert_eq!(split.0.outcome, whole.0.outcome, "{text:?} chunk {chunk}");
+                    if matches!(whole.0.outcome, ReplacementTextOutcome::Replaced { .. }) {
+                        assert_eq!(split.1, whole.1, "{text:?} chunk {chunk}");
+                        assert_eq!(split.0.source_digest.0, *source);
+                        assert_eq!(whole.0.source_digest.0, *source);
+                        replaced_runs += 1;
+                        let mut seams = (chunk..source.len()).step_by(chunk);
+                        if !edits.is_empty()
+                            && seams
+                                .clone()
+                                .any(|seam| source[seam - 1] == b'\r' && source[seam] == b'\n')
+                        {
+                            crlf_seams += 1;
+                        }
+                        if !edits.is_empty() && seams.any(|seam| source[seam] & 0xC0 == 0x80) {
+                            cut_characters += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Coverage of the cases the Kani harness covered with `kani::cover!`.
+    assert!(
+        replaced_runs > 0 && crlf_seams > 0 && cut_characters > 0,
+        "{replaced_runs} {crlf_seams} {cut_characters}"
     );
 }
