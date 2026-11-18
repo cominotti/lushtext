@@ -18,7 +18,7 @@ Interventions 1 (the 10 s headless-session media wait), 2 (parallel smoke cases)
 The decisions become normative rules in `.agents/rules/`, and the programme's workflow scripts move into the repository. No product code changes.
 
 - **Gate reuse on a no-op merge** (intervention 3, `parallel-agent-work.md` "Merging"):
-  - When the `origin/main` merge under `MERGE-LOCK` leaves the tree identical to one a gate passed on, recorded by tree hash, that gate is not rerun.
+  - When the `origin/main` merge under `MERGE-LOCK` leaves the tree identical to one a gate passed on, recorded by tree hash through the tested `scripts/gate-trees.sh`, that gate is not rerun.
   - Any merge that changes the tree reruns the gates for both sides, as today.
   - New: just before `gh pr merge`, the agent re-fetches and requires `origin/main` to be an ancestor of `HEAD`. GitHub's merge commit then has exactly the tree the gates ran on.
 - **Kani budget dispatch at the end of implementation** (intervention 5, `verification-runs.md` "Shard budgets", `parallel-agent-work.md` "Merging"):
@@ -31,18 +31,19 @@ The decisions become normative rules in `.agents/rules/`, and the programme's wo
   - Its improvement verdict is queued for a named follow-up, and no document claims the improvement until that verdict passes.
 - **Design-loop limit** (decision 2, `parallel-agent-work.md`): when a change that has had two design revisions is blocked again, an independent agent decides whether to continue, re-scope or shelve it, and the maintainer is told. A third revision starts with an attribution spike that writes no OpenSpec artifacts.
 - **Fast lane** (decision 3, `parallel-agent-work.md`):
-  - It applies to changes with no path in the shipped app crates, resources, proven modules or gate implementations, and no timing verdict.
-  - Edits to rule text are allowed only with a declared "Gate effect: none", which stage 4 verifies.
+  - It applies to changes whose every path is on an allowlist (`docs/`, `openspec/`, root Markdown, and agent guidance with a declaration), and no timing verdict. Any other path, including a new directory, makes a change not eligible, so shipped code, proofs and gate implementations can never be fast by omission. That admits 2 of the last 20 PR merges.
+  - Edits to rule and skill text are allowed only with a declared "Gate effect: none", which stage 4 verifies.
   - Spec and spec review are done by one agent. `design.md` is optional.
   - The independent stage-4 reviewer also reviews the spec and re-checks eligibility against the real diff. A violation sends the change back to a full spec review.
   - A versioned checker decides eligibility from paths.
 - **Slot cap** (decision 4, `parallel-agent-work.md` "Implementation slots and ordering"):
-  - At most five implementation slots, or three while `MEASURE-QUEUE.md` holds a verdict campaign whose latest status is `READY`.
-  - A stage that queues a runnable verdict now marks it `READY <sha>`. `PENDING` is kept for verdicts that are not runnable yet, and for attribution and calibration entries.
+  - At most five implementation slots, or three while `MEASURE-QUEUE.md` holds an entry or `###` part whose latest status is `READY`.
+  - A stage that queues runnable rounds a change waits on (a verdict, or pre-registered gate or selection rounds) now marks them `READY <sha>`. `PENDING` is kept for rounds that are not runnable yet, and for non-blocking attribution and calibration entries.
   - Acquisition and release move from a copy-pasted snippet into a tested helper.
 - **Quiet-window criterion unchanged** (decision 6, `parallel-agent-work.md` "Measurements"):
   - A pre-registered calibration experiment is queued. It compares lane cases on a quiet host with rounds where the global load is at least 4 but the reference CPUs are quiet.
   - The criterion changes only if the distributions match, and only by the maintainer's decision.
+  - Its off-reference rounds are the one explicit exception to the load-below-4 precondition, and are never quoted as verdicts.
 - **Stages after implementation** (coordinator notes of 2026-11-18 18:50-19:25, maintainer-approved):
   1. `/simplify`, invoked with an absolute worktree path;
   2. findings-only review lenses in parallel: `code-review high <target>` never with `--fix`, plus, when the change touches data or performance, the `data-safety` audit, the `gtk-perf-review` leaf checklists and `rust-hex-arch`;
@@ -51,8 +52,8 @@ The decisions become normative rules in `.agents/rules/`, and the programme's wo
 
   The fan-out is chosen by a self-checked function over flags from `scripts/agent-topology.py review-lenses`. That subcommand reads the triggers the skills declare: `performance-scope` and a new `[data_safety]` table in `skill-policy.toml`.
 - **Workflow-agent guard and outward writes:**
-  - The script compares the main checkout's status, `HEAD` and branch before and after every stage, and stops on any difference.
-  - Agents make no outward writes beyond the listed ones (branch push, PR, merge, archive push, `kani.yml` dispatch). Sonar, GitHub settings, upstream comments and releases go to `host-asks.md`.
+  - The script compares the main checkout's status, `HEAD` and branch, read by guard agents before and after every stage, and stops on any difference.
+  - Agents make no outward writes beyond the listed ones (branch and twin-ref push and deletion, PR, merge, archive push, `kani.yml` dispatch). Sonar, GitHub settings, upstream comments and releases go to `host-asks.md`.
   - `scripts/sonar-local.sh` stops telling the reader to mark issues accepted.
 - **Versioned workflow scripts** (`.claude/workflows/`):
   - One sanitized `programme-change.js` replaces the three session scripts. It has modes `new`, `fast-lane`, `revise` and `continue`, and stages bound to the OpenSpec skills, so no fragment exists in three copies.
@@ -96,6 +97,7 @@ None. The Kani shard-budget requirement in `formal-verification-kani` already sa
 - **Rules:** `.agents/rules/parallel-agent-work.md` (slots, "Running a change", design revisions, fast lane, measurements, merging), `.agents/rules/verification-runs.md` ("Timing campaigns", "Shard budgets"), `.agents/rules/build.md` ("Shard gates and budgets", one sentence), `AGENTS.md` rules index (the `parallel-agent-work.md` and `verification-runs.md` entries).
 - **Scripts:**
   - `scripts/impl-slots.sh`, new, with `--self-test`;
+  - `scripts/gate-trees.sh`, new, with `--self-test`;
   - `scripts/check-fast-lane.py`, new, with `--self-test`;
   - `scripts/check-workflow-scripts.sh`, new, with `--self-test`;
   - the `Makefile` targets `check-workflow-scripts` and `check-agent-helpers`.

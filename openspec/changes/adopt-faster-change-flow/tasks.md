@@ -34,23 +34,29 @@ Every commit goes through `scripts/heavy.sh --mem none -- git commit -F <file>`,
     - no entries;
     - the last status `READY`;
     - a stage-queued verdict `Status: READY <sha>`;
+    - `Kind: SELECTION ROUNDS` with `Status: READY <sha>` (counts);
     - a `PENDING (NOT READY …)` verdict;
     - `READY` then `RAN`;
     - `PENDING` calibration;
     - an earlier `READY` superseded and a later entry `DONE`;
+    - an entry with `### ` parts whose part B ends `READY` and part C ends `DONE` (counts);
+    - a copy of the live queue's heading and `Status:` structure at implementation time (expect the ready units the coordinator counts in the ledger);
     - plus acquire, wait, timeout (exit 124) and release on a temporary slot directory.
 
   It honours `LUSHTEXT_AGENT_LOCK_DIR`-style overrides for the handoff directory, so the self-test touches no real queue or slot.
-- [ ] 2.2 `scripts/check-fast-lane.py [--base REF] [--paths FILE] [--self-test]`, as in design D5.
-  - It reads `ORACLES` from `scripts/kani-shards.py` and the `use` paths of every `kani_proofs*.rs` instead of a hand list, and fails closed.
+- [ ] 2.1a `scripts/gate-trees.sh` (`record <worktree> --gate '<gate>' -- <command…>`, `lookup <worktree> --gate '<gate>'`), as in design D1. `record` reads `git status --porcelain` and `HEAD^{tree}` before and after, runs the command as its child, and appends a line only on exit 0 with a clean, unchanged tree. It honours the same handoff-directory override as 2.1.
+  - Its `--self-test`, written first and seen failing against a stub, uses a temporary repository: a clean pass records; a dirty-before, dirty-after or tree-changing run records nothing; a failing command records nothing and returns its exit status; `lookup` finds only the same gate string on the same tree.
+- [ ] 2.2 `scripts/check-fast-lane.py [--base REF] [--paths FILE] [--self-test]`, as in design D5: an allowlist with the classes `eligible`, `declare` and `not eligible`, failing closed on any unlisted path, reading both sides of a rename, and promoting an `eligible` path that `Makefile`, `.githooks/`, `.github/` or `scripts/` names literally to `declare`.
   - Its self-test, written first and seen failing, covers:
-    - eligible: a `docs/` and `openspec/` path set;
-    - `declare`: `.agents/rules/x.md`, `AGENTS.md`, a nested `AGENTS.md`, `Makefile`;
-    - not eligible: `crates/lushtext-core/src/app.rs`, `resources/ui/x.blp`, a `model/paragraph_boundary.rs` edit, `crates/gtk-lush/widgets/src/` with a Kani harness, `scripts/check-visual-proof-policy.py`, `crates/gtk-lush/proof-harness/src/session/mod.rs`, `.claude/workflows/x.js` and an untracked new file under a shipped prefix.
-  - As evidence that it is fit for use, run it over the last 25 first-parent merges on `main`. Stage 1 counted 5 of 25 eligible by hand, and the run must reproduce that or explain the difference.
+    - eligible: a `docs/memorials/` and `openspec/changes/` path set;
+    - `declare`: `.agents/rules/x.md`, `.agents/skills/x/SKILL.md`, `AGENTS.md`, `SOUL.md`, `Makefile`, and a `docs/` path a gate names;
+    - not eligible: `crates/lushtext-core/src/app.rs`, `crates/lushtext-core/src/ui/AGENTS.md`, `crates/lushtext/tests/widget/x.rs`, `crates/gtk-lush/settle/src/lib.rs`, `resources/ui/x.blp`, `Cargo.lock`, `.cargo/mutants.toml`, `.gitignore`, `scripts/flatpak-source-tree.sh`, `scripts/agent-topology.py`, `.agents/skills/skill-policy.toml`, `.claude/workflows/x.js`, a rename from `docs/x.md` to `scripts/x.sh`, an untracked new file, and a new top-level directory;
+    - that every `kani_proofs*.rs` in `git ls-files` and every `ORACLES` key of `scripts/kani-shards.py` classes `not eligible`.
+  - As evidence that it is fit for use, run it over the PR merges among the last 25 first-parent merges on `main` at stage 2 (`bc109b04` and back). Stage 2 counted 2 of 20 (#116 eligible, #98 `declare`), and the run must reproduce that or explain the difference.
 - [ ] 2.3 `scripts/check-workflow-scripts.sh [--self-test]`, as in design D8: meta check, wrapper, `node --check`, phase titles, personal-data and credential patterns, copied 12-word rule sentences, and rule references.
   - **Rule references:** prompts cite sections as `<file>.md "<Section>"`, and the check fails when a cited heading does not exist in that file.
-  - When `node` is missing, it fails with a message.
+  - When `node` is missing, it fails with a message. With no `.claude/workflows/*.js` present it passes and says so (this commit lands before the script).
+  - Copied rule text is any run of 12 consecutive words, normalized for case and punctuation, that also appears in `.agents/rules/*.md`.
   - The self-test, written first and seen failing, seeds each failure, including a top-level `await` and `return` that must parse.
 - [ ] 2.3a Review-lens routing (design D10):
   - a `[data_safety]` table in `.agents/skills/skill-policy.toml`, holding path suffixes and content patterns, the machine form of the `data-safety` description;
@@ -61,15 +67,15 @@ Every commit goes through `scripts/heavy.sh --mem none -- git commit -F <file>`,
 - [ ] 2.4 Re-check that `openspec validate <change> --strict` passes for a change with no `design.md`, on the CLI version in use. Stage 1 found it valid on 2026-11-18 (design D5). Use a temporary copy of this change in a scratch directory. If it fails, change D5 to require a short `design.md` in the fast lane.
 - [ ] 2.5 `Makefile`:
   - `check-workflow-scripts` (in `check-policy`; put the prerequisite on its own line if `check-policy`'s list has been split by then);
-  - `check-agent-helpers` runs `impl-slots.sh --self-test` and `check-fast-lane.py --self-test`, and shellchecks the two shell scripts.
+  - `check-agent-helpers` runs `impl-slots.sh --self-test`, `gate-trees.sh --self-test` and `check-fast-lane.py --self-test`, and shellchecks the three shell scripts.
 
-  Run `scripts/heavy.sh -- make check-agent-helpers` and `scripts/heavy.sh -- make check-workflow-scripts`.
-- [ ] 2.6 Commit `chore(build): add the slot, fast-lane, review-lens and workflow-script helpers`, and push.
+  Run `scripts/heavy.sh -- make check-agent-helpers`, `scripts/heavy.sh -- make check-workflow-scripts` and `scripts/heavy.sh -- make check-agent-skills`. The last one is not in `check-policy` (only CI's `ci.yml` runs it), and 2.3a edits its inputs.
+- [ ] 2.6 Commit `chore(build): add the slot, gate-record, fast-lane, review-lens and workflow-script helpers`, and push.
 
 ## 3. Rules (one commit)
 
 - [ ] 3.1 Edit `.agents/rules/parallel-agent-work.md`:
-  - **"Implementation slots and ordering":** the cap of design D6 and `scripts/impl-slots.sh` replace the inline snippet. `READY` is reserved for verdict campaigns.
+  - **"Implementation slots and ordering":** the cap of design D6 (ready units: entries or `###` parts) and `scripts/impl-slots.sh` replace the inline snippet. `READY` means runnable rounds a change waits on. The rule names `.claude/workflows/programme-change.js`, which lands in commit 4; no gate checks paths cited in rules (`scripts/check-agent-docs.sh` checks the index and `openspec/config.yaml` only, read at stage 2).
   - **New "Running a change"** section:
     - the stage sequence;
     - the versioned script, its modes and the fast-lane flag;
@@ -80,13 +86,14 @@ Every commit goes through `scripts/heavy.sh --mem none -- git commit -F <file>`,
   - **New "Fast lane"** section (design D5): the exclusions, `declare` paths and the "Gate effect: none" declaration that stage 4 verifies.
   - **New "Design revisions"** section (design D4).
   - **New "Stages after implementation"** section (design D10): order, single-pass behaviour of both skills inside workflows, absolute-path `/simplify`, findings-only `code-review` without a schema, failed-lens rule, fan-out criterion by reference to the skills' triggers, the apply agent, and one smoke trio.
-  - **New "Workflow agents"** section (design D11): the script-enforced main-checkout guard; `git -C`/absolute paths; per-agent `TMPDIR`; `timeout` on every harness; the brief file re-read; the outward-writes list, with everything else going to `host-asks.md`; and a citation of the maintainer's observed-behaviour note as evidence only.
+  - **New "Workflow agents"** section (design D11): the script-enforced main-checkout guard read by guard agents, and what the coordinator does when the main checkout must move during a run; `git -C`/absolute paths; per-agent `TMPDIR`; `timeout` on every harness; the brief file re-read; the outward-writes list (including deleting the change branch and twin ref), with everything else going to `host-asks.md`; and a citation of the maintainer's observed-behaviour note as evidence only.
   - **"Measurements":**
     - the criterion is unchanged until the calibration matches and the maintainer decides (design D7);
+    - the one exception to the load precondition: the calibration's `calib-off-*` rounds, non-verdict and never quoted as verdicts (design D7);
     - non-inferiority changes as in D3;
-    - the entry rule of D6: a verdict whose tree is final is queued as `Status: READY <sha>`, a not-yet-runnable one as `PENDING (NOT READY: <reason>)`, and attribution and calibration entries as `PENDING`.
+    - the entry rule of D6: runnable rounds a change waits on, on a final tree, are queued as `Status: READY <sha>`, ones not runnable yet as `PENDING (NOT READY: <reason>)`, and non-blocking attribution and calibration entries as `PENDING`.
   - **"Merging":**
-    - step 2: reuse on an identical tree via `gate-trees.log` (design D1);
+    - step 2: reuse on an identical tree via `scripts/gate-trees.sh` (design D1);
     - a new check before step 3: re-fetch, and require `origin/main` to be an ancestor of `HEAD`;
     - the CI exception now covers only correctness evidence, with budget runs as in D2;
     - an archive may follow in a second `MERGE-LOCK` hold when it owes Kani figures;
@@ -100,12 +107,13 @@ Every commit goes through `scripts/heavy.sh --mem none -- git commit -F <file>`,
   - Add `make check-workflow-scripts` to "Build Commands" if `make check-policy`'s neighbours are listed there.
   - Check `README.md` for a list of policy targets and update it if one exists.
   - Run `scripts/heavy.sh -- make check-agent-docs`.
-- [ ] 3.4a Reword the failure message in `scripts/sonar-local.sh` (design D11): fix the issues, or record a suspected false positive in the change's `host-asks.md`; only the maintainer changes Sonar state. Grep `.agents/`, `AGENTS.md` and `docs/` for the same instruction, and reword any hit.
+- [ ] 3.4a Reword the failure message in `scripts/sonar-local.sh` (design D11), and its header comment at line 6, which says the same: fix the issues, or record a suspected false positive in the change's `host-asks.md`; only the maintainer changes Sonar state. Grep `.agents/`, `AGENTS.md`, `docs/` and `scripts/` for the same instruction, and reword any hit.
 - [ ] 3.5 Write the "Quality floor" self-check into the commit's handoff note `.claude/handoffs/adopt-faster-change-flow/floor-check.md`: for every edited rule paragraph, the existing rule it touches and why the floor holds, against design's "Quality floor" table.
 - [ ] 3.6 Commit `docs(rules): adopt the faster change flow`, and push.
 
 ## 4. Versioned workflow script (one commit)
 
+- [ ] 4.0 Run the stage agent's probes of design D11 first, under a manual main-checkout guard (status, `HEAD` and branch before and after each): `code-review` with a local-branch target and with an absolute worktree-path target, each over a scratch branch whose committed and uncommitted edits both hold a planted bug; and `/simplify` with a worktree directory argument, across several files, and on committed branch changes. Record each command, result and conclusion in `.claude/handoffs/adopt-faster-change-flow/probes.md`. A probe that edits the main checkout stops the work, and the coordinator is told. Then append a request to `.claude/handoffs/adopt-faster-change-flow/host-asks.md` for the two probes only the coordinator can run (a stage agent has no Agent or Workflow tool, and a probe PR is outside the outward-writes list): `agent(..., {isolation: 'worktree'})` and its cwd, and `code-review` on an open PR with a planted bug that differs from the main checkout.
 - [ ] 4.1 Write `.claude/workflows/programme-change.js` from the three session scripts (`programme-change-v2.js`, `-revise.js`, `-continue.js`; paths in the stage brief), as in design D8:
   - modes `new`, `revise` and `continue`; `fast_lane`; `revision`, which runs the D4 decision and spike agents; `design_only`; `skip_impl`;
   - one shared stage-4 function;
@@ -113,25 +121,20 @@ Every commit goes through `scripts/heavy.sh --mem none -- git commit -F <file>`,
   - stage 4 reuses gate evidence on an identical tree and checks the ancestor (D1);
   - the slot helper (D6);
   - the non-inferiority branch of "ready, measurement pending" (D3);
-  - the stages after implementation (D10), with `selectLenses` as a pure function whose cases the script asserts at start-up, the `code-review` lens without a schema, and `args.review_agent_type`;
-  - the guard around every stage (D11): before and after fields in every stage schema, a script comparison and a stop, plus per-stage `TMPDIR` and brief files;
+  - the stages after implementation (D10), with `selectLenses` as a pure function mapping each flag to its own lenses (design D10 table) whose cases the script asserts at start-up, the `code-review` lens without a schema covering both the commits and `/simplify`'s edits in the form 4.0 chose (or the named two-call fallback), and `args.review_agent_type`;
+  - the guard around every stage (D11): guard-read agents before and after every stage and around each parallel group, a script comparison and a stop, plus per-stage `TMPDIR` and brief files;
   - stage prompts that name `openspec-propose`/`openspec-update-change`, `openspec-apply-change` and `openspec-archive-change` instead of describing their procedure;
   - prompts cite rule sections and carry no copied rule text, path, account, key or trailer.
 - [ ] 4.2 Record in the commit message which session-script behaviours were kept, changed or dropped. The archive-previous stage's hardcoded `docs/next/long-line-documents.md` becomes `args.programme_record`.
 - [ ] 4.3 Run `scripts/heavy.sh -- make check-workflow-scripts`, then `git check-ignore -v .claude/workflows/programme-change.js`, which must print nothing.
-- [ ] 4.4 Run the probes of design D11 before the template is used, and record each command, result and conclusion in `.claude/handoffs/adopt-faster-change-flow/probes.md`. They are owed, not optional:
-  - `code-review` on an open PR with a planted bug that differs from the main checkout;
-  - `code-review` with local-branch and absolute-worktree-path targets;
-  - `/simplify` with a worktree directory argument, several files, and committed branch changes;
-  - `agent(..., {isolation: 'worktree'})` and its cwd.
-
-  Each probe runs under the main-checkout guard. Set the template's `code-review` target form and `/simplify` fallback from the results. A probe that edits the main checkout stops the work, and the coordinator is told.
+- [ ] 4.4 Check that the template's `code-review` target form and `/simplify` fallback match `probes.md` (4.0). State in `probes.md` which two probes the coordinator still owes. The template is not used until they are recorded and the template matches them; if `isolation: 'worktree'` gives a worktree cwd, the coordinator's merge-only run may simplify the template accordingly.
 - [ ] 4.5 Commit `chore(workflow): version the programme-change workflow`, and push.
 
 ## 5. Final gates and PR
 
-- [ ] 5.1 Run these on the final tree, and record each passing gate's tree in `gate-trees.log` (design D1):
+- [ ] 5.1 Run these on the final tree through `scripts/gate-trees.sh record` (design D1):
   - `scripts/heavy.sh -- make check-policy`;
+  - `scripts/heavy.sh -- make check-agent-skills` and `scripts/heavy.sh -- make check-agent-docs` (neither is in `check-policy`);
   - `openspec validate adopt-faster-change-flow --strict`;
   - `openspec validate --all` (errors gate).
 - [ ] 5.2 Open the PR. Its body lists:
@@ -141,4 +144,4 @@ Every commit goes through `scripts/heavy.sh --mem none -- git commit -F <file>`,
   - that decision 7 is recorded, not implemented.
 
   It ends with the required Claude Code line. Do not merge, and do not wait for CI.
-- [ ] 5.3 **This change's stage 4 does not merge** (maintainer, coordinator note 2026-11-18 19:00): it reviews and fixes as usual, then ends with the verdict "ready, Fable template review pending". The coordinator runs the independent Fable review of `.claude/workflows/programme-change.js`, then a merge-only run with its fixes.
+- [ ] 5.3 **This change's stage 4 does not merge** (maintainer, coordinator note 2026-11-18 19:00): it reviews and fixes as usual, then ends with the verdict "ready, Fable template review pending". The coordinator runs the independent Fable review of `.claude/workflows/programme-change.js` and its two owed probes (4.4), then a merge-only run with their fixes.

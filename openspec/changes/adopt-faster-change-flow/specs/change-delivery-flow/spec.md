@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Merge-lock gates reuse evidence only for an identical tree
-Under `MERGE-LOCK`, a gate the merge step owes SHALL be skipped only when the change's gate record has a pass for that gate on the post-merge `HEAD^{tree}`, written while the worktree was clean. Every other case SHALL run the gate. Before `gh pr merge`, the agent SHALL re-fetch and require `origin/main` to be an ancestor of `HEAD`.
+Under `MERGE-LOCK`, a gate the merge step owes SHALL be skipped only when `scripts/gate-trees.sh` finds a pass for that gate on the post-merge `HEAD^{tree}`, recorded while the worktree was clean. Every other case SHALL run the gate. Before `gh pr merge`, the agent SHALL re-fetch and require `origin/main` to be an ancestor of `HEAD`.
 
 #### Scenario: A no-op merge reuses the recorded runs
 - **WHEN** `git merge origin/main` reports "Already up to date" and `gate-trees.log` has passing `make check` and `make test` lines with `tree=` equal to `HEAD^{tree}`, written on a clean worktree
@@ -16,8 +16,8 @@ Under `MERGE-LOCK`, a gate the merge step owes SHALL be skipped only when the ch
 - **THEN** the merge step runs `make test`
 
 #### Scenario: A dirty run records nothing
-- **WHEN** a gate passes while `git status --porcelain` is not empty
-- **THEN** no line is written to `gate-trees.log`
+- **WHEN** `gate-trees.sh record` runs a gate that passes while `git status --porcelain` is not empty before or after it
+- **THEN** no line is written to `gate-trees.log`, and `gate-trees.sh lookup` for that tree exits 1
 
 #### Scenario: Main moves before the PR merge
 - **WHEN** `origin/main` gains a commit after the merge step and before `gh pr merge`
@@ -103,11 +103,15 @@ When a change that has had two design revisions is blocked again, an agent that 
 - **THEN** the change is marked `SHELVED` in the ledger and the programme record, and holds no slot or lock
 
 ### Requirement: The fast lane is limited to changes outside shipped code, proofs and gates
-A change MAY use the fast lane only when `scripts/check-fast-lane.py` finds no path in shipped app crates, resources, proven modules or gate implementations, and it plans no timing verdict. Rule-text paths SHALL carry a declared "Gate effect: none". One agent writes and self-reviews the spec. The stage-4 reviewer SHALL review the spec, re-run the check and verify the declaration. A violation SHALL require an independent spec review.
+A change MAY use the fast lane only when `scripts/check-fast-lane.py` classes every path `eligible` or `declare` from an allowlist, and it plans no timing verdict. Any path not on the allowlist SHALL make it not eligible. `declare` paths SHALL carry a "Gate effect: none" section. One agent writes and self-reviews the spec. The stage-4 reviewer SHALL review the spec, re-run the check and verify the declaration. A violation SHALL require an independent spec review.
 
-#### Scenario: A docs and tooling change
-- **WHEN** a change edits only `docs/`, `openspec/` and a release-notes helper outside every excluded path
+#### Scenario: A documentation change
+- **WHEN** a change edits only `docs/memorials/` and `openspec/` paths that no gate names
 - **THEN** the checker reports it eligible, and one agent writes and self-reviews the spec
+
+#### Scenario: An unlisted path is not eligible
+- **WHEN** a change adds a new top-level directory, or edits `crates/gtk-lush/settle/src/`, `crates/lushtext/tests/widget/`, `Cargo.toml` or `.gitignore`
+- **THEN** the checker reports it not eligible
 
 #### Scenario: A shipped file appears late
 - **WHEN** the stage-4 diff includes a file under `crates/lushtext-core/src/`
@@ -119,11 +123,11 @@ A change MAY use the fast lane only when `scripts/check-fast-lane.py` finds no p
 - **AND** stage 4 verifies it line by line, and a rule edit that narrows a gate is a violation
 
 #### Scenario: Gate implementations are not fast
-- **WHEN** a change edits `scripts/check-visual-proof-policy.py` or `crates/gtk-lush/proof-harness/`
+- **WHEN** a change edits `scripts/flatpak-source-tree.sh`, `scripts/agent-topology.py`, `.agents/skills/skill-policy.toml` or `crates/gtk-lush/proof-harness/`
 - **THEN** the checker reports it not eligible
 
 ### Requirement: Implementation slots shrink while a verdict campaign is ready
-At most five implementation stages SHALL run at once, and at most three while `MEASURE-QUEUE.md` holds an entry whose last `Status:` line starts with `READY`. A stage SHALL queue a verdict whose tree is final as `READY <sha>`, and only verdict campaigns SHALL use `READY`. `scripts/impl-slots.sh` SHALL compute the cap at every acquisition attempt.
+At most five implementation stages SHALL run at once, and at most three while `MEASURE-QUEUE.md` holds a unit (an entry, or each `###` part of one) whose last `Status:` line starts with `READY`. A stage SHALL queue runnable rounds a change waits on, on a final tree, as `READY <sha>`; non-blocking attribution and calibration SHALL use `PENDING`. `scripts/impl-slots.sh` SHALL compute the cap at every acquisition attempt.
 
 #### Scenario: A ready verdict lowers the cap
 - **WHEN** one queue entry's last status is `READY 5855754a` and three slots are held
@@ -137,16 +141,24 @@ At most five implementation stages SHALL run at once, and at most three while `M
 - **WHEN** a stage-3 agent queues its four interleaved rounds for its final commit
 - **THEN** the entry's status is `READY <that sha>`, and the cap is three until the last status changes
 
+#### Scenario: A ready part of a multi-part entry counts
+- **WHEN** an entry's part B ends with `Status: READY <sha>` and its later part C ends with `Status: DONE`
+- **THEN** the cap is three
+
 #### Scenario: A calibration entry does not count
 - **WHEN** the only open entry is `Kind: CALIBRATION` with `Status: PENDING`
 - **THEN** the cap is five
 
 ### Requirement: The quiet-window criterion changes only after a matching calibration
-The quiet-window criterion SHALL stay the global 1-minute load below 4 for 30 s. It SHALL change only when a pre-registered calibration shows that rounds with quiet reference CPUs under global load match quiet-host rounds, and then only by the maintainer's decision. The calibration SHALL pin nothing and change no host state.
+The quiet-window criterion SHALL stay the global 1-minute load below 4 for 30 s. It SHALL change only when a pre-registered calibration shows that rounds with quiet reference CPUs under global load match quiet-host rounds, and then only by the maintainer's decision. The calibration SHALL pin nothing and change no host state. Its off-reference rounds SHALL be the only `measure.sh` rounds exempt from the load precondition, and SHALL never be quoted as verdicts.
 
 #### Scenario: The calibration is queued, not run as a verdict
 - **WHEN** this change is implemented
 - **THEN** `MEASURE-QUEUE.md` holds a `Kind: CALIBRATION` entry with `Status: PENDING`, its cases, arms, probe and match bar
+
+#### Scenario: An off-reference round is classified on the measured window
+- **WHEN** the probe before `measure.sh` meets the candidate criterion but the probe inside the measured command does not
+- **THEN** the round is recorded and excluded from both arms
 
 #### Scenario: Distributions differ
 - **WHEN** the off-reference arm's median or p90 for a case is outside the pre-registered tolerance
@@ -172,7 +184,7 @@ The programme's workflow script SHALL live in `.claude/workflows/`, take host de
 - **THEN** the check fails with a message naming node instead of passing
 
 ### Requirement: Implementation is followed by simplify, parallel findings-only lenses and one independent apply agent
-After implementation, `/simplify` SHALL run with an absolute worktree path. Findings-only lenses SHALL then run in parallel: `code-review high <target>`, never `--fix`, plus the data-safety, perf-leaf and architecture lenses when `review-lenses` flags data or performance. One agent that wrote no code SHALL verify, apply, run one smoke trio and the gates once.
+After implementation, `/simplify` SHALL run with an absolute worktree path. Findings-only lenses SHALL then run in parallel: `code-review high`, never `--fix`, covering the branch's commits and `/simplify`'s edits, plus one domain lens per `review-lenses` flag (data, performance; architecture only inside a fan-out). One agent that wrote no code SHALL verify, apply, run one smoke trio and the gates once.
 
 #### Scenario: A docs-and-tooling change gets one lens
 - **WHEN** `review-lenses` reports neither data nor performance for the PR's paths
@@ -181,6 +193,14 @@ After implementation, `/simplify` SHALL run with an absolute worktree path. Find
 #### Scenario: A data-path change fans out
 - **WHEN** the diff edits `crates/lushtext-core/src/services/draft_service.rs`
 - **THEN** the `code-review`, `data-safety` and the three perf-leaf lenses run in parallel, each writing `review-findings-<lens>.md`
+
+#### Scenario: A performance-only change gets the perf lenses only
+- **WHEN** the diff edits only `crates/gtk-lush/settle/src/` and `review-lenses` reports performance but not data
+- **THEN** the `code-review` and the three perf-leaf lenses run, and the `data-safety` lens does not
+
+#### Scenario: The code-review lens sees the simplify edits
+- **WHEN** the probes show that a branch target misses uncommitted work
+- **THEN** the lens also runs `high <absolute worktree path>` over `simplify.patch`, and both outputs form the one lens
 
 #### Scenario: An empty code-review result is a failure
 - **WHEN** the `code-review` lens returns "(none)" with no explanation
@@ -191,11 +211,15 @@ After implementation, `/simplify` SHALL run with an absolute worktree path. Find
 - **THEN** the three smokes run once, before the single commit that holds both sets of edits
 
 ### Requirement: Workflow agents keep the main checkout untouched and make only listed outward writes
-The workflow script SHALL compare the main checkout's `git status --porcelain`, `HEAD` and branch before and after every stage, and stop on any difference. A workflow agent's outward writes SHALL be limited to the change branch, its twin Kani ref, the PR, the merge under `MERGE-LOCK`, the archive push and `kani.yml` dispatches. Every other external change SHALL go to `host-asks.md`.
+The workflow script SHALL compare the main checkout's `git status --porcelain`, `HEAD` and branch, read by guard agents before and after every stage, and stop on any difference. Outward writes SHALL be limited to pushing and deleting the change branch and its twin Kani ref, the PR, the merge under `MERGE-LOCK`, the archive push and `kani.yml` dispatches. Every other external change SHALL go to `host-asks.md`.
 
 #### Scenario: A stage edits the main checkout
-- **WHEN** an agent's after-stage status, `HEAD` or branch of the main checkout differs from its before-stage values
+- **WHEN** the guard agent's after-stage status, `HEAD` or branch of the main checkout differs from its before-stage reading
 - **THEN** the script stops the run and reports the difference
+
+#### Scenario: A schema-less lens is still guarded
+- **WHEN** the `code-review` lens runs without a schema
+- **THEN** guard agents read the main checkout before and after the lens group, and the script compares their readings
 
 #### Scenario: A Sonar issue looks like a false positive
 - **WHEN** a review agent believes a Sonar issue is a false positive
