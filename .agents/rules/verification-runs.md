@@ -38,8 +38,8 @@ Then:
   a local run is the only evidence before merge. When a change edits a harness
   or a module a scheduled shard reads, run **that shard once**, after the code
   is final (not after every edit), detached so an agent interruption cannot
-  kill it (`setsid nohup scripts/heavy.sh -- make kani KANI_SHARD=<shard>`;
-  `heavy.sh` also waits for a running timing campaign).
+  kill it (`setsid nohup scripts/heavy.sh --envelope 16G -- make kani
+  KANI_SHARD=<shard>`; `heavy.sh` also waits for a running timing campaign).
 - **No proven module touched:** the spec records "Kani: none (no proven
   module touched)" and no stage runs Kani. Never run every shard locally: a
   full `make kani` belongs to the weekly or dispatched CI lane. A GTK bump does
@@ -133,21 +133,29 @@ every worktree (resolved from `git rev-parse --git-common-dir`;
 
 - **Heavy work** — `cargo build`/`check`/`clippy`/`test`, `make test`, Kani,
   cargo-mutants, proof-strength, smoke lanes, and `git commit` (its hook runs
-  Clippy) — goes through `scripts/heavy.sh`. It waits, holding nothing, until
-  `scripts/with-memory-cap.sh --wait-admissible <cap>` would admit the cap
-  (default `12G`), probes `INTENT` shared, takes `LOCK` shared for the one
-  command, sets its compiler parallelism (`CARGO_BUILD_JOBS` = its CPUs up
-  to 16 and 8 front-end threads when it is the only holder of `LOCK`, 4 jobs
-  and 1 thread otherwise: [`build.md`](./build.md), "Compiler parallelism"),
-  and runs it as a child inside `scripts/with-memory-cap.sh <cap>`. Its CPU affinity is the inherited one,
+  Clippy) — goes through `scripts/heavy.sh`. It takes one place in the
+  admission order (a ticket, kept across its retries; none when its command
+  runs in place, inside a capped scope or an envelope), waits, holding
+  nothing, until `scripts/with-memory-cap.sh --wait-admissible <cap>` would
+  admit the cap (default `12G`), probes `INTENT` shared, takes `LOCK` shared
+  for the one command, sets its compiler parallelism (`CARGO_BUILD_JOBS` =
+  its CPUs up to 16 and 8 front-end threads when it is the only holder of
+  `LOCK`, 4 jobs and 1 thread otherwise: [`build.md`](./build.md), "Compiler
+  parallelism"), and runs it as a child inside `scripts/with-memory-cap.sh
+  <cap>`. That admission is the real one and checks once: if another
+  admission took the memory since the probe, it starts nothing, and
+  `heavy.sh` releases `LOCK`, waits for memory holding nothing and retries,
+  re-reading the parallelism after `LOCK` each time. A command's own exit 75
+  is returned unchanged. Its CPU affinity is the inherited one,
   intersected with the slice's cpuset: the capped scope nests under the user
   manager's `user.slice` and inherits the toolboxes' CPU policy, the kernel
   refuses CPUs outside that cpuset, and a self-imposed mask (`taskset`) only
   narrows it. By the host's CPU tooling (CST), heavy work runs on CPUs 12-23
   in the idle class while a game runs. **Memory before
-  locks**: a helper never waits for memory while holding `LOCK`, and never
-  reserves memory while waiting for a lock. `make test`/`test-widget` admit
-  their own per-shard scopes, so run them as `heavy.sh --mem none`.
+  locks**: no admission waits for memory while its process tree holds
+  `LOCK`, except an envelope's admission of its own command's scopes. A
+  ticket kept while `heavy.sh` waits for `INTENT` or `LOCK` holds a place in
+  the order, not memory, and no measurement waits behind it.
   Admission reserves a scope's cap only while its command runs: a daemon the
   command leaves in the scope (the sccache server its first compile started)
   keeps the scope alive but not the reservation. Scopes are named
@@ -155,6 +163,38 @@ every worktree (resolved from `git rev-parse --git-common-dir`;
   started (`run-p<pid>-*.scope`) still counts while anything is in it, and
   `systemctl --user set-property --runtime <scope> MemoryMax=infinity`
   releases it without killing the daemon.
+- **Commands that admit their own scopes run in an envelope**:
+  `scripts/heavy.sh --envelope <size> -- <command>` reserves `<size>` on the
+  host once, and the command runs in a sub-slice of that size, where each of
+  its capped calls gets a scope of its own admitted against the envelope
+  alone. So it waits only for the same command's earlier scopes, never for
+  other agents' memory under `LOCK`. An OOM kill anywhere in the envelope
+  prints `OOM-KILL:` and fails the run; a clean run prints
+  `heavy: envelope <sub-slice>: peak <MiB> MiB, oom_kill 0`. Size it by the
+  inner caps that run at once, and check the size against that peak:
+
+  | Lane | Run it as |
+  | --- | --- |
+  | `make test`, `make test-widget`, `make test-widget-headless` | `heavy.sh --envelope 16G` (the 16G widget build, then 2G per shard) |
+  | `make mutants-smoke`, `mutants-diff`, `mutants-full` | `heavy.sh --envelope <MUTANTS_MEMORY_MAX>` (36G by default) |
+  | `make kani` | `heavy.sh --envelope 16G` (`KANI_MEMORY_MAX`; `heavy.sh -- make kani` runs it in place at 12G) |
+  | `make proof-strength` | `heavy.sh --envelope 16G` (`PROOF_STRENGTH_MEMORY_MAX`) |
+
+  `--mem none` is only for commands that admit nothing (`git commit`, the CI
+  image lane, Docker). Any other capped admission above 1G whose process
+  tree provably holds `LOCK` shared is refused with exit 2 and a message
+  naming `--envelope`, and the recipes above refuse `heavy.sh --mem none` at
+  once through `with-memory-cap.sh --preflight`. A nested `heavy.sh` with a
+  cap inside `heavy.sh --mem none` is refused the same way.
+- **Admission order is fair.** Waiting admissions are ordered by arrival.
+  While the oldest live waiter has the host memory for its cap plus the
+  reserve, a later request is admitted only if it also fits beside that
+  waiter's cap, so a stream of small requests cannot starve a large one.
+  The cost is a head-of-line wait: while a 36G request heads the queue, a
+  later one is admitted only while the caps admitted plus it stay within
+  12G of the 48G budget. A waiter short of host memory reserves nothing.
+  Measurement admissions (`LUSHTEXT_ADMISSION_NOWAIT=1`, or inside a proven
+  exclusive `LOCK`) ignore the order and fail fast with 75.
 - **Measurements** — the responsiveness lane, interleaved benches, any timing
   verdict — go through `scripts/measure.sh`: `INTENT` exclusively, then `LOCK`
   exclusively, so new heavy starts wait while the running ones drain. Before

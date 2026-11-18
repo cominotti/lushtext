@@ -245,7 +245,7 @@ holds `LOCK` ([measurements and reasons](../../docs/memorials/2026-11-17-compile
   16, and **8** front-end threads. **Sharing the machine**:
   `CARGO_BUILD_JOBS=4` and 1 thread. A command whose `--mem` cap is below
   the 12G default keeps 4 jobs and 1 thread too, since that cap was sized for
-  them. A nested `heavy.sh` keeps what the outer one set; one inside a
+  them. For `heavy.sh --envelope <size>` the envelope size is the cap. A nested `heavy.sh` keeps what the outer one set; one inside a
   measurement takes the shared setting. The policy is
   the pure `heavy_parallelism`; its table is in `heavy.sh --self-test`.
 - The threads go to the checkout's own crates through
@@ -547,7 +547,12 @@ are in [`testing.md`](./testing.md). This section covers the lane.
   `user.slice` now sees our scopes' pressure, and its candidates include the
   toolbox containers; a thrashing heavy scope is normally the one killed, and
   each scope's no-swap cap makes the kernel kill inside it first, so an oomd
-  kill of a toolbox is traced to here. Any command
+  kill of a toolbox is traced to here. Agents run the lane as
+  `scripts/heavy.sh --envelope 16G -- make kani`, which gives the run its
+  `KANI_MEMORY_MAX` of 16G (`heavy.sh -- make kani` runs it in place in
+  `heavy.sh`'s default 12G scope, and `--mem none` is refused by the recipe's
+  preflight); an envelope's sub-slice is seen by systemd-oomd like a scope.
+  Any command
   run under the wrapper sizes its own parallelism to fit the cap (Kani keeps
   `cargo -j 4` through `KANI_BUILD_JOBS` whatever `heavy.sh` set, at most 4
   test threads), one capped heavy run per agent at a time. A run that
@@ -589,7 +594,8 @@ are in [`testing.md`](./testing.md). This section covers the lane.
   oracle harness is missing, a harness is in no oracle list and not excepted,
   or a harness file imports from a module that is neither, so a new harness is
   added to both tables. `make proof-strength` (`scripts/proof-strength.py`,
-  `docs/mutation-testing.md`; `PROOF_STRENGTH_MEMORY_MAX`, default `16G`) runs
+  `docs/mutation-testing.md`; `PROOF_STRENGTH_MEMORY_MAX`, default `16G`,
+  started as `scripts/heavy.sh --envelope 16G -- make proof-strength ...`) runs
   the module's mutants against those harnesses in a disposable worktree,
   `<checkout-cache>/proof-strength/wt` in the build cache root (results stay in
   `target/proof-strength/results`). The Kani arm pins its build dir inside the
@@ -796,7 +802,11 @@ mode used to cold-build one tree per job (5.2 GB each) into a new
   **not** discarded. The whole-run `MUTANTS_MEMORY_MAX` scope (default `36G`,
   with `MUTANTS_LOCAL_BUILD_JOBS=4` and `MUTANTS_LOCAL_TEST_THREADS=4` per slot)
   stays, for builds; a run whose scope was OOM-killed is still discarded,
-  because an OOM-killed test reads as caught.
+  because an OOM-killed test reads as caught. Agents start the targets as
+  `scripts/heavy.sh --envelope <MUTANTS_MEMORY_MAX> -- make mutants-...`
+  (`--envelope 36G` by default, `24G` with `MUTANTS_MEMORY_MAX=24G`), so the
+  scope is admitted against the envelope instead of waiting under `LOCK`; a
+  run's own exit 75 (every slot busy) comes back unchanged.
 - **Disk.** The pool is bounded by its size, not by the number of worktrees:
   at most 3 x `MUTANTS_SLOT_MAX_GIB` (24 GiB). A warm slot holds about
   10-11 GiB per dependency set, and one past the bound is emptied and built
@@ -1035,10 +1045,13 @@ the widget suite on its platform first.
   stderr `FLAKY:` line; `--retries 1` reruns a failed **shard** in a new
   session and prints `FLAKY-SHARD:`. Both are blockers per
   `preexisting-blockers.md`. Under `with-memory-cap.sh` a run that OOM-killed
-  anything fails with `OOM-KILL:`, never green. Start `make test` and
-  `make test-widget` unwrapped (they admit one scope per shard plus one for
-  the shared build); `make test-widget-shard WIDGET_SHARD=<shard>` reproduces
-  one CI shard. The runner defaults to `GSK_RENDERER=cairo`.
+  anything fails with `OOM-KILL:`, never green, and so does an envelope.
+  Agents start `make test`, `make test-widget` and `make test-widget-headless`
+  as `scripts/heavy.sh --envelope 16G -- make <target>`: they admit one scope
+  for the shared build and one per shard, which inside the envelope are
+  admitted against its 16G alone (`heavy.sh --mem none` is refused by the
+  recipe's preflight; `verification-runs.md`, "Shared-machine agent work");
+  `make test-widget-shard WIDGET_SHARD=<shard>` reproduces one CI shard. The runner defaults to `GSK_RENDERER=cairo`.
 - `.github/workflows/kani.yml` — the Kani lane in measurement mode, one shard
   per matrix job; pull requests and pushes to `main` run only the
   `pull-request` shards (`widgets-geometry`, `core-geometry-policies`,

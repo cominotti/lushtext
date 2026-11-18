@@ -69,3 +69,57 @@ The same night, a review subagent waited for the merge lock with a background
 loop and a monitor, then ended its turn. A subagent that ends its turn is
 finished, so the merge never happened. Waits are now foreground, bounded
 Bash calls.
+
+## The admission window and the starved 36G scope (2026-11-15)
+
+Two incidents on the same night, both in the memory admission of
+`scripts/heavy.sh` and `scripts/with-memory-cap.sh`.
+
+**Waiting for memory under `LOCK`.** At 01:37 a default-cap `heavy.sh` passed
+its memory probe, took `INTENT` and `LOCK`, passed a second, check-once
+probe, and then started the wrapper, whose blocking admission printed
+`waiting for memory: 48 GiB of 48 GiB admitted to user-lushtext-heavy.slice,
+61 GiB available, need 12 GiB plus a 16 GiB reserve` while `LOCK` was held
+shared. Another change's `measure.sh` waited behind about eight shared
+holders, and every new heavy start queued behind its `INTENT`. The 36G scope
+in front came from `heavy.sh --mem none -- make mutants-smoke`
+(`.claude/handoffs/nest-heavy-slices-under-user-slice/stage3-notes.md`).
+
+- *Why probing first did not close the window.* A probe is a check, and the
+  admission was a second check that could block. Another admission landing
+  between the re-probe and the wrapper's `admit` made `admit` wait, with
+  `LOCK` held. Any probe-then-admit sequence has that gap.
+- *Why `--mem none` could not.* The rules ran the lanes that admit their own
+  scopes (`make test` with its widget build and shards, `make mutants-*`,
+  `make kani`, `make proof-strength`) as `heavy.sh --mem none`. Their
+  admissions then ran inside the command, while `heavy.sh` held `LOCK`
+  shared, and they waited by design.
+- *What replaced them.* The admission after `LOCK` is now the real one, made
+  once: a misfit starts nothing, and `heavy.sh` releases `LOCK`, waits for
+  memory holding nothing, and retries. Commands that admit their own scopes
+  run in `heavy.sh --envelope <size>`, which reserves the size on the host
+  once and admits the command's scopes against the envelope alone. Any other
+  capped admission under a proven shared `LOCK` is refused with exit 2
+  (`close-heavy-admission-window`).
+
+**The starved 36G scope.** In `reduce-build-disk-writes` stage 3 a 36G
+`make mutants-smoke` scope waited about an hour and was rerun at 24G (lane
+case 11.3). Its log, after the D10 fix, read `waiting for memory: 42 GiB of
+48 GiB admitted to lushtext-heavy.slice, 58 GiB available, need 36 GiB plus
+a 16 GiB reserve`: 58 GiB available against the 52 GiB the request needed,
+so the slice budget blocked it, not physical memory. The wrapper prints its
+waiting message once, so the log proves only the first poll; the hour comes
+from the handoff's timestamps, which attribute it to a stream of small
+admissions taking each budget slot that freed. The other 36G waits of that
+change were weaker evidence (one 36G holder each, three of them before D10).
+
+- *Why.* Admission was first-fit. A large request fits only when a large
+  part of the budget is free at once, while a small request fits into any
+  slot that frees, so small requests could keep a large one out
+  indefinitely.
+- *What replaced it.* Waiting admissions take tickets in a per-slice queue.
+  While the oldest live waiter has the host memory for its cap plus the
+  reserve, a later request is admitted only if it also fits beside that cap.
+  The cost is a head-of-line wait: a 36G head holds later work to 12G of the
+  48G budget until it is admitted. A head short of physical memory reserves
+  nothing, because that memory is not the queue's to wait for.
