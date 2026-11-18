@@ -17,8 +17,9 @@
 - **THEN** `heavy.sh` exits 75 once, without retrying the command
 
 #### Scenario: A busy admission lock
-- **WHEN** the admission lock is held by another process for longer than 2 s while `heavy.sh` makes its admission after `LOCK`
-- **THEN** `heavy.sh` releases `LOCK` without starting the command, and an exclusive lock on `LOCK` can then be acquired
+- **WHEN** the admission lock is held by another process for longer than 2 s while the check-once admission that `heavy.sh` makes after `LOCK` runs
+- **THEN** that admission exits 75 within about 3 s with a `misfit: ` line in the report, and starts no scope and no command
+- **AND** `heavy.sh` then releases `LOCK`
 
 #### Scenario: A caller that asked never to wait
 - **WHEN** `heavy.sh` runs with `LUSHTEXT_ADMISSION_NOWAIT=1` and its admission after `LOCK` does not fit
@@ -42,6 +43,10 @@
 #### Scenario: A nested envelope runs in place
 - **WHEN** `with-memory-cap.sh --envelope 2G` starts inside a capped scope or inside an envelope
 - **THEN** it starts no placeholder and no sub-slice, and its command runs in place
+
+#### Scenario: A nested envelope under a shared LOCK is refused
+- **WHEN** `heavy.sh --mem none -- heavy.sh --envelope 2G -- true` runs
+- **THEN** the inner `heavy.sh` exits 2 with a message naming `--envelope`, and no scope is admitted
 
 #### Scenario: The envelope is counted on the host
 - **WHEN** a 2G envelope is running in a slice whose budget is 3G

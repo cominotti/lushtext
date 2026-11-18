@@ -142,7 +142,8 @@ There is no application change. For agents and maintainers:
 - A pending measurement is no longer delayed by a heavy command that started
   waiting for memory after taking `LOCK`. A memory-short heavy start now waits
   holding nothing.
-- `heavy.sh --mem none -- make test` (also `test-widget`, `mutants-*`, `kani`,
+- `heavy.sh --mem none -- make test` (also `test-widget`,
+  `test-widget-headless`, `mutants-*`, `kani`,
   `proof-strength`) now fails at its first inner admission with exit 2 and a
   message naming `--envelope`. The documented forms become
   `heavy.sh --envelope 16G -- make test` and
@@ -171,7 +172,8 @@ There is no application change. For agents and maintainers:
 - `scripts/heavy.sh`, `scripts/with-memory-cap.sh`, `scripts/agent-locks.sh`
   (sourced by the wrapper for the LOCK proof), and their `--self-test`s
   (`make check-agent-helpers`).
-- `Makefile` comments for `test`, `test-widget`, `mutants-*`, `kani`,
+- `Makefile` comments for `test`, `test-widget`, `test-widget-headless`,
+  `mutants-*`, `kani`,
   `proof-strength`, and the `widget-shards.py` docstring.
 - Docs: `.agents/rules/verification-runs.md`,
   `.agents/rules/parallel-agent-work.md`, `.agents/rules/build.md`,

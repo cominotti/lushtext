@@ -40,7 +40,8 @@ Rules for every task:
   `scripts/with-memory-cap.sh` by keeping both sides' cases. Write
   `.claude/handoffs/close-heavy-admission-window/coordinator-note.md` (design,
   "Risks"): after merging `main`, `heavy.sh --mem none -- make
-  test|test-widget|mutants-*|kani|proof-strength` exits 2. Give the
+  test|test-widget|test-widget-headless|mutants-*|kani|proof-strength`
+  exits 2. Give the
   replacement for each from the design's per-lane table. State the
   head-of-line cost too: while a 36G head has the host memory, a later
   request is admitted only while the caps admitted plus that request stay
@@ -70,7 +71,16 @@ Rules for every task:
     and `<marker>` must not exist until the sibling lets go. On `main` it
     fails: `admit`'s blocking `flock 9` waits under `LOCK`. Never hold the
     real admission lock in a test: it would hold up every agent's
-    admissions.
+    admissions. This case alone does not prove the 2 s bound, because
+    `heavy.sh` takes its ticket under the admission lock (D5) before it
+    takes `LOCK`, so it may never reach the once-admission. The bound is
+    proved by the next case.
+  - **(1) The once-admission's 2 s bound**, in `with-memory-cap.sh
+    --self-test`: while a sibling holds the private admission lock for 6 s,
+    `LUSHTEXT_ADMISSION_ONCE=<file> with-memory-cap.sh 2G touch <marker>`
+    against an empty private slice must exit 75 within about 3 s, with a
+    `misfit: ` line in `<file>` and no `<marker>`. On `main` it fails:
+    `LUSHTEXT_ADMISSION_ONCE` is ignored, and `admit` blocks on `flock 9`.
   - **(2) `--mem none` inner path**, in `heavy.sh --self-test`: with the
     private slice full (2G sleeper, budget 3G, reserve 1G), run
     `heavy.sh --mem none -- with-memory-cap.sh 2G true`. It must exit 2
@@ -184,6 +194,8 @@ the default 12G included. The "window after the probe" case also needs group
   - `--preflight 2G` under a proven shared `LOCK` exits 2, and outside one
     exits 0;
   - an inner 4G call in a 2G envelope exits 2;
+  - a nested `heavy.sh --envelope 2G` under an outer `heavy.sh --mem none`
+    (private locks) exits 2 naming `--envelope`, and admits nothing;
   - `--address-space` inside an envelope still sets `RLIMIT_AS` to 7/8 of the
     inner cap (the Kani path);
   - a stale marker is admitted as an ordinary call;
@@ -259,7 +271,9 @@ the default 12G included. The "window after the probe" case also needs group
   Confirm that `make check-policy` and the pre-commit hook admit nothing above
   1G except the wrapper's self-test (which sheds the marker). Record the list
   in `evidence/call-sites.md`.
-- [ ] 4.2 Update the Makefile comments of `test`, `test-widget`, `mutants-*`,
+- [ ] 4.2 Update the Makefile comments of `test`, `test-widget`,
+  `test-widget-headless` (every user of `CARGO_TEST_WIDGET` and
+  `CARGO_TEST_WIDGET_HEADLESS`), `mutants-*`,
   `kani` and `proof-strength`, and `widget-shards.py`'s docstring, to name
   `heavy.sh --envelope <size>` with the per-lane size, and drop the "Start
   them unwrapped" advice. Start each of those recipes with
@@ -319,6 +333,7 @@ the default 12G included. The "window after the probe" case also needs group
 - [ ] 5.3 `.agents/rules/build.md`:
   - "Compiler parallelism": the envelope size is the cap;
   - the CI section's "Start `make test` and `make test-widget` unwrapped"
+    (and `make test-widget-headless`)
     becomes `heavy.sh --envelope 16G`;
   - "Formal Verification (Kani)", "Memory": `heavy.sh --envelope 16G -- make
     kani` and the 12G in-place fact;

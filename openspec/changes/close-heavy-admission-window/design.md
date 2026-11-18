@@ -39,7 +39,8 @@ How the helpers run on `main` (`c16d6fdc`):
 - **`measure.sh`** takes `INTENT` and then `LOCK`, both exclusively, and
   exports `LUSHTEXT_ADMISSION_NOWAIT=1` to its command.
 - **Commands that admit their own scopes:**
-  - `widget-shards.py parallel` (`make test`, `make test-widget`): a 16G
+  - `widget-shards.py parallel` (`make test`, `make test-widget`,
+    `make test-widget-headless`): a 16G
     build scope, then one 2G scope per shard, three shards today;
   - `make mutants-*`: 36G;
   - `make kani`: 16G, `--address-space`;
@@ -64,7 +65,7 @@ helpers' behaviour is proved by their self-tests.
 | Widget shard peak 864 MiB, cap 2G; widget build cap 16G at `--build-jobs 4`. The whole workspace cold at 16 jobs peaks at 9.5 GiB. | Makefile `WIDGET_*` comments; `build.md`, "Compiler parallelism" |
 
 Host behaviour the envelope relies on. It was probed by this change's spec
-review on 2026-11-17 (kernel 7.2, systemd 262), in a private slice
+review on 2026-11-17 (kernel 7.2.15, systemd 262.1), in a private slice
 `user-lushtext-heavy-selftest-r<pid>.slice` and its sub-slice
 `…-r<pid>-env1t2.slice` (MemoryMax 512M, one `sleep` scope), then stopped and
 reverted, with no drop-in left. It is recorded in the wrapper's header as H4
@@ -247,7 +248,17 @@ exclusive `LOCK`) it is admitted at the host level, checking once (D4).
 `heavy.sh`'s nested in-place path for `--envelope` does not `exec`. It runs
 the wrapper as a child with a report file (`agent_trap_signals`,
 `agent_run_child`) and applies the same OOM decision, so an envelope inside a
-measurement still fails on an OOM kill.
+measurement still fails on an OOM kill. It names that file in
+`LUSHTEXT_ENVELOPE_REPORT`, never in `LUSHTEXT_ADMISSION_ONCE`. ONCE is the
+one exemption from D4's shared-`LOCK` refusal, and it belongs only to the
+admission `heavy.sh` itself makes after taking `LOCK`. A nested `heavy.sh
+--envelope` under an outer `heavy.sh --mem none` is therefore refused with
+exit 2, as any other admission under a shared `LOCK` is. It is not admitted
+whenever it happens to fit, which is the random failure D4 rejects. Inside a
+measurement its misfit exits 75, and nothing is retried, because a nested call
+cannot release the outer `LOCK`. On the main path, `heavy.sh` sets both
+variables to its one report file. The wrapper unsets both before the `exec`,
+and hands the path to the placeholder as an argument.
 
 `heavy.sh --envelope <size>` runs the D1 path with `with-memory-cap.sh
 --envelope <size> <cmd>` as its child. `heavy_parallelism` receives `<size>`
@@ -261,7 +272,7 @@ can run at once.
 
 | Lane | Inner admissions | Envelope | Reserved compared with `main` |
 | --- | --- | --- | --- |
-| `make test`, `make test-widget` | 16G build (`WIDGET_BUILD_MEMORY_MAX`), then 3 x 2G shards (`WIDGET_SHARD_MEMORY_MAX`; 864 MiB measured peak) | 16G, provisional | 16G for the whole run. `main` holds 0 in the non-widget phase (uncapped), 16G for the build and 6G for the shards |
+| `make test`, `make test-widget`, `make test-widget-headless` | 16G build (`WIDGET_BUILD_MEMORY_MAX`), then 3 x 2G shards (`WIDGET_SHARD_MEMORY_MAX`; 864 MiB measured peak) | 16G, provisional | 16G for the whole run. `main` holds 0 in the non-widget phase (uncapped), 16G for the build and 6G for the shards |
 | `make mutants-*` | `MUTANTS_MEMORY_MAX` (36G default) | the same value | unchanged |
 | `make kani` | `KANI_MEMORY_MAX` 16G, `--address-space` | 16G | `heavy.sh -- make kani` on `main` runs in place at 12G; the envelope gives Kani its 16G |
 | `make proof-strength` | `PROOF_STRENGTH_MEMORY_MAX` 16G | 16G | unchanged |
@@ -497,7 +508,8 @@ back.
   (`with-memory-cap.sh --preflight <cap>`): it applies D4's check without
   admitting anything, and exits 2 at once in the same case. The preflight
   checks the cap the recipe will actually admit. It is skipped where the
-  recipe admits nothing above 1G: `make test` and `make test-widget` with
+  recipe admits nothing above 1G: `make test`, `make test-widget` and
+  `make test-widget-headless` with
   `WIDGET_PARALLEL=0` (one serial session, no inner scope) and any lane whose
   cap is `none` (`KANI_MEMORY_MAX=none`). Otherwise a valid `--mem none`
   run would be refused for an admission it never makes.
