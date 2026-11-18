@@ -31,7 +31,7 @@ The decisions become normative rules in `.agents/rules/`, and the programme's wo
   - Its improvement verdict is queued for a named follow-up, and no document claims the improvement until that verdict passes.
 - **Design-loop limit** (decision 2, `parallel-agent-work.md`): when a change that has had two design revisions is blocked again, an independent agent decides whether to continue, re-scope or shelve it, and the maintainer is told. A third revision starts with an attribution spike that writes no OpenSpec artifacts.
 - **Fast lane** (decision 3, `parallel-agent-work.md`):
-  - It applies to changes whose every path is on an allowlist (`docs/`, `openspec/`, root Markdown, and agent guidance with a declaration), and no timing verdict. Any other path, including a new directory, makes a change not eligible, so shipped code, proofs and gate implementations can never be fast by omission. That admits 2 of the last 20 PR merges.
+  - It applies to changes whose every path is on an allowlist (`docs/`, `openspec/`, root Markdown, and agent guidance with a declaration, except the two change-delivery rule files), and no timing verdict. Any other path, including a new directory, makes a change not eligible, so shipped code, proofs and gate implementations can never be fast by omission. That admits 2 of the last 20 PR merges.
   - Edits to rule and skill text are allowed only with a declared "Gate effect: none", which stage 4 verifies.
   - Spec and spec review are done by one agent. `design.md` is optional.
   - The independent stage-4 reviewer also reviews the spec and re-checks eligibility against the real diff. A violation sends the change back to a full spec review.
@@ -46,7 +46,7 @@ The decisions become normative rules in `.agents/rules/`, and the programme's wo
   - Its off-reference rounds are the one explicit exception to the load-below-4 precondition, and are never quoted as verdicts.
 - **Stages after implementation** (coordinator notes of 2026-11-18 18:50-19:25, maintainer-approved):
   1. `/simplify`, invoked with an absolute worktree path;
-  2. findings-only review lenses in parallel: `code-review high <target>` never with `--fix`, plus, when the change touches data or performance, the `data-safety` audit, the `gtk-perf-review` leaf checklists and `rust-hex-arch`;
+  2. findings-only review lenses in parallel: `code-review high <target>` never with `--fix`, plus one domain lens per flag: the `data-safety` audit when the change touches data, the `gtk-perf-review` leaf checklists when it touches performance, and `rust-hex-arch` when modules move inside such a fan-out;
   3. one independent agent verifies and applies the findings, runs one smoke trio and the full gates once;
   4. a merge and archive agent.
 
@@ -80,7 +80,7 @@ The decisions become normative rules in `.agents/rules/`, and the programme's wo
 
 ## User-visible impact
 
-None for LushText users: no product code, persisted format, setting, action or D-Bus member changes. Compared with `main`, agents gain these rules: an archive can come after the merge in a second lock hold, a change may merge on non-inferiority, fast-lane changes get no separate spec-review agent, and implementation slots drop to three while a verdict campaign is ready. Each of these is listed with the existing rule it touches in `design.md`, "Quality floor".
+None for LushText users: no product code, persisted format, setting, action or D-Bus member changes. Compared with `main`, agents gain these rules: an archive can come after the merge in a second lock hold, a change may merge on non-inferiority, fast-lane changes get no separate spec-review agent, and implementation slots drop to three while rounds a change waits on are ready. Each of these is listed with the existing rule it touches in `design.md`, "Quality floor".
 
 ## Capabilities
 

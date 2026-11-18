@@ -110,7 +110,7 @@ A change MAY use the fast lane only when `scripts/check-fast-lane.py` classes ev
 - **THEN** the checker reports it eligible, and one agent writes and self-reviews the spec
 
 #### Scenario: An unlisted path is not eligible
-- **WHEN** a change adds a new top-level directory, or edits `crates/gtk-lush/settle/src/`, `crates/lushtext/tests/widget/`, `Cargo.toml` or `.gitignore`
+- **WHEN** a change adds a new top-level directory, or edits `crates/gtk-lush/settle/src/`, `crates/lushtext/tests/widget/`, `Cargo.toml`, `.gitignore` or `.agents/rules/parallel-agent-work.md`
 - **THEN** the checker reports it not eligible
 
 #### Scenario: A shipped file appears late
@@ -126,7 +126,7 @@ A change MAY use the fast lane only when `scripts/check-fast-lane.py` classes ev
 - **WHEN** a change edits `scripts/flatpak-source-tree.sh`, `scripts/agent-topology.py`, `.agents/skills/skill-policy.toml` or `crates/gtk-lush/proof-harness/`
 - **THEN** the checker reports it not eligible
 
-### Requirement: Implementation slots shrink while a verdict campaign is ready
+### Requirement: Implementation slots shrink while ready rounds are queued
 At most five implementation stages SHALL run at once, and at most three while `MEASURE-QUEUE.md` holds a unit (an entry, or each `###` part of one) whose last `Status:` line starts with `READY`. A stage SHALL queue runnable rounds a change waits on, on a final tree, as `READY <sha>`; non-blocking attribution and calibration SHALL use `PENDING`. `scripts/impl-slots.sh` SHALL compute the cap at every acquisition attempt.
 
 #### Scenario: A ready verdict lowers the cap

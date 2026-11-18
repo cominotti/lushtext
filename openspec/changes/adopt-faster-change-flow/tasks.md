@@ -20,9 +20,14 @@ Every commit goes through `scripts/heavy.sh --mem none -- git commit -F <file>`,
 - [ ] 1.4 Write the calibration probe `.claude/handoffs/adopt-faster-change-flow/quiet-probe.sh`:
   - it prints one line with the date, the global 1-minute load, the per-CPU busy fraction for `scripts/measure.sh --print-reference-cpus` over 30 s from two `/proc/stat` reads, their mean and maximum, and `/proc/pressure/cpu` `some avg10`;
   - it runs and prints one line (not heavy);
-  - beside it, a round runner `calib-round.sh <arm-label> <case>` that runs the probe and then `scripts/measure.sh --label calib-<label> --lock-timeout 300 --log .../calibration/measure.log -- env RESPONSIVENESS_VARIANTS=plain scripts/run-responsiveness-smoke.sh --binary <prebuilt> --artifact-dir .../calibration/<label> --case <case>`.
+  - beside it, a round runner `calib-round.sh <case> <n>` (design D7):
+    1. it runs the probe before `measure.sh` and picks the candidate arm: `quiet` when the current criterion holds (the 30 s load check of "Measurements"), `off` when the global load is at least 4 and the candidate criterion holds, otherwise it records the reading and stops without measuring;
+    2. it runs `scripts/measure.sh --label calib-<arm>-<case-slug>-<n> --lock-timeout 300 --log .../calibration/measure.log -- <inner>`, where `<inner>` runs the probe again, inside the lock, and then `env RESPONSIVENESS_VARIANTS=plain scripts/run-responsiveness-smoke.sh --binary <prebuilt> --artifact-dir .../calibration/<label> --case <case>`;
+    3. it keeps the round in its arm only when both readings satisfy that arm's condition, and otherwise marks it excluded, with both readings.
+  - Only `calib-off-*` rounds skip the load precondition, and nothing quotes them as verdicts or lane figures.
 - [ ] 1.5 Append the calibration entry to `.claude/handoffs/MEASURE-QUEUE.md` under `flock`, with `Kind: CALIBRATION` and `Status: PENDING`, never `READY`. It holds:
   - the two cases, the binary build command (through `heavy.sh`) and the arms with their pre-registered thresholds (design D7);
+  - the two probe readings per round, the both-readings rule, and the `calib-off-*` exception to the load precondition with its bounds;
   - at least 8 rounds per arm, interleaving the two cases;
   - the match bar, the 7-day host-ask fallback and the artifact directory;
   - "result goes to the maintainer; the criterion changes only by maintainer decision".
@@ -49,10 +54,10 @@ Every commit goes through `scripts/heavy.sh --mem none -- git commit -F <file>`,
 - [ ] 2.2 `scripts/check-fast-lane.py [--base REF] [--paths FILE] [--self-test]`, as in design D5: an allowlist with the classes `eligible`, `declare` and `not eligible`, failing closed on any unlisted path, reading both sides of a rename, and promoting an `eligible` path that `Makefile`, `.githooks/`, `.github/` or `scripts/` names literally to `declare`.
   - Its self-test, written first and seen failing, covers:
     - eligible: a `docs/memorials/` and `openspec/changes/` path set;
-    - `declare`: `.agents/rules/x.md`, `.agents/skills/x/SKILL.md`, `AGENTS.md`, `SOUL.md`, `Makefile`, and a `docs/` path a gate names;
-    - not eligible: `crates/lushtext-core/src/app.rs`, `crates/lushtext-core/src/ui/AGENTS.md`, `crates/lushtext/tests/widget/x.rs`, `crates/gtk-lush/settle/src/lib.rs`, `resources/ui/x.blp`, `Cargo.lock`, `.cargo/mutants.toml`, `.gitignore`, `scripts/flatpak-source-tree.sh`, `scripts/agent-topology.py`, `.agents/skills/skill-policy.toml`, `.claude/workflows/x.js`, a rename from `docs/x.md` to `scripts/x.sh`, an untracked new file, and a new top-level directory;
+    - `declare`: `.agents/rules/build.md`, `.agents/skills/x/SKILL.md`, `AGENTS.md`, `SOUL.md`, `Makefile`, and a `docs/` path a gate names;
+    - not eligible: `crates/lushtext-core/src/app.rs`, `crates/lushtext-core/src/ui/AGENTS.md`, `crates/lushtext/tests/widget/x.rs`, `crates/gtk-lush/settle/src/lib.rs`, `resources/ui/x.blp`, `Cargo.lock`, `.cargo/mutants.toml`, `.gitignore`, `.agents/rules/parallel-agent-work.md`, `.agents/rules/verification-runs.md`, `scripts/flatpak-source-tree.sh`, `scripts/agent-topology.py`, `.agents/skills/skill-policy.toml`, `.claude/workflows/x.js`, a rename from `docs/x.md` to `scripts/x.sh`, an untracked new file, and a new top-level directory;
     - that every `kani_proofs*.rs` in `git ls-files` and every `ORACLES` key of `scripts/kani-shards.py` classes `not eligible`.
-  - As evidence that it is fit for use, run it over the PR merges among the last 25 first-parent merges on `main` at stage 2 (`bc109b04` and back). Stage 2 counted 2 of 20 (#116 eligible, #98 `declare`), and the run must reproduce that or explain the difference.
+  - As evidence that it is fit for use, run it over the PR merges among the last 25 first-parent merges on `main` at stage 2 (`bc109b04` and back). Stage 2 counted 2 of 20 (#116 eligible, #98 `declare`) with the classifier saved at `.claude/handoffs/adopt-faster-change-flow/fast-lane-baseline.py`, and the run must reproduce that or explain the difference.
 - [ ] 2.3 `scripts/check-workflow-scripts.sh [--self-test]`, as in design D8: meta check, wrapper, `node --check`, phase titles, personal-data and credential patterns, copied 12-word rule sentences, and rule references.
   - **Rule references:** prompts cite sections as `<file>.md "<Section>"`, and the check fails when a cited heading does not exist in that file.
   - When `node` is missing, it fails with a message. With no `.claude/workflows/*.js` present it passes and says so (this commit lands before the script).
@@ -115,7 +120,7 @@ Every commit goes through `scripts/heavy.sh --mem none -- git commit -F <file>`,
 
 - [ ] 4.0 Run the stage agent's probes of design D11 first, under a manual main-checkout guard (status, `HEAD` and branch before and after each): `code-review` with a local-branch target and with an absolute worktree-path target, each over a scratch branch whose committed and uncommitted edits both hold a planted bug; and `/simplify` with a worktree directory argument, across several files, and on committed branch changes. Record each command, result and conclusion in `.claude/handoffs/adopt-faster-change-flow/probes.md`. A probe that edits the main checkout stops the work, and the coordinator is told. Then append a request to `.claude/handoffs/adopt-faster-change-flow/host-asks.md` for the two probes only the coordinator can run (a stage agent has no Agent or Workflow tool, and a probe PR is outside the outward-writes list): `agent(..., {isolation: 'worktree'})` and its cwd, and `code-review` on an open PR with a planted bug that differs from the main checkout.
 - [ ] 4.1 Write `.claude/workflows/programme-change.js` from the three session scripts (`programme-change-v2.js`, `-revise.js`, `-continue.js`; paths in the stage brief), as in design D8:
-  - modes `new`, `revise` and `continue`; `fast_lane`; `revision`, which runs the D4 decision and spike agents; `design_only`; `skip_impl`;
+  - modes `new`, `fast-lane`, `revise` and `continue` (design D8); `revision`, which runs the D4 decision and spike agents; `design_only`; `skip_impl`;
   - one shared stage-4 function;
   - stage 3 dispatches Kani budget runs (D2);
   - stage 4 reuses gate evidence on an identical tree and checks the ancestor (D1);
