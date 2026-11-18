@@ -1,7 +1,7 @@
 Scope:
 - **Tests:** none for product behaviour, because no behaviour changes. The new helpers are tested by `--self-test` cases, written first and seen failing against a stub that exits 0, then made to pass.
 - **Kani:** none (no proven module touched).
-- **Timing:** none (no timed path touched). The calibration is queued as a non-verdict experiment.
+- **Timing:** none (no timed path touched). The calibration is the coordinator's non-verdict queue entry (design D7, stage-3 revision).
 - **GTK axioms:** none.
 - **Smokes:** none (no UI-prefix path).
 
@@ -9,28 +9,15 @@ Every commit goes through `scripts/heavy.sh --mem none -- git commit -F <file>`,
 
 ## 1. Records (memorial and handoff files)
 
-- [ ] 1.1 Write `docs/memorials/2026-11-18-change-flow-time.md`:
+- [x] 1.1 Write `docs/memorials/2026-11-18-change-flow-time.md`:
   - the analysis's verdict, the time breakdown with its method and limits, the before/after table, the Kani share, the ranked interventions and the weakest assumptions (sections 1-4 and 8 of the analysis);
-  - the maintainer's decisions of 2026-11-18, dated: 1, 2, 3, 4 and 6 accepted, 5 rejected, 7 open;
+  - the maintainer's decisions of 2026-11-18, dated: 1, 2, 3, 4 and 6 accepted, 5 rejected, 7 approved later with conditions (smoke-gate-coherence); the 19:39 decision on the quiet-window criterion (levels 1, 2 and the conditional level 3);
   - which engineering changes own interventions 1, 2 and 4.
 
   No normative text: every rule it explains links back to its rule section.
-- [ ] 1.2 Add its row to the table in `docs/memorials/README.md`: "the change-flow rules (no-op merge reuse, Kani dispatch timing, non-inferiority merges, design-loop limit, fast lane, slot cap, quiet-window calibration) and their measured baseline".
-- [ ] 1.3 Append to `.claude/handoffs/PARALLEL-LEDGER.md` (gitignored, append-only) the lines of design D9 (a), (b) and (c). Grep first, and write only the lines that are not already there.
-- [ ] 1.4 Write the calibration probe `.claude/handoffs/adopt-faster-change-flow/quiet-probe.sh`:
-  - it prints one line with the date, the global 1-minute load, the per-CPU busy fraction for `scripts/measure.sh --print-reference-cpus` over 30 s from two `/proc/stat` reads, their mean and maximum, and `/proc/pressure/cpu` `some avg10`;
-  - it runs and prints one line (not heavy);
-  - beside it, a round runner `calib-round.sh <case> <n>` (design D7):
-    1. it runs the probe before `measure.sh` and picks the candidate arm: `quiet` when the current criterion holds (the 30 s load check of "Measurements"), `off` when the global load is at least 4 and the candidate criterion holds, otherwise it records the reading and stops without measuring;
-    2. it runs `scripts/measure.sh --label calib-<arm>-<case-slug>-<n> --lock-timeout 300 --log .../calibration/measure.log -- <inner>`, where `<inner>` runs the probe again, inside the lock, and then `env RESPONSIVENESS_VARIANTS=plain scripts/run-responsiveness-smoke.sh --binary <prebuilt> --artifact-dir .../calibration/<label> --case <case>`;
-    3. it keeps the round in its arm only when both readings satisfy that arm's condition, and otherwise marks it excluded, with both readings.
-  - Only `calib-off-*` rounds skip the load precondition, and nothing quotes them as verdicts or lane figures.
-- [ ] 1.5 Append the calibration entry to `.claude/handoffs/MEASURE-QUEUE.md` under `flock`, with `Kind: CALIBRATION` and `Status: PENDING`, never `READY`. It holds:
-  - the two cases, the binary build command (through `heavy.sh`) and the arms with their pre-registered thresholds (design D7);
-  - the two probe readings per round, the both-readings rule, and the `calib-off-*` exception to the load precondition with its bounds;
-  - at least 8 rounds per arm, interleaving the two cases;
-  - the match bar, the 7-day host-ask fallback and the artifact directory;
-  - "result goes to the maintainer; the criterion changes only by maintainer decision".
+- [x] 1.2 Add its row to the table in `docs/memorials/README.md`: "the change-flow rules (no-op merge reuse, Kani dispatch timing, non-inferiority merges, design-loop limit, fast lane, slot cap, drain-first quiet criterion) and their measured baseline".
+- [x] 1.3 Append to `.claude/handoffs/PARALLEL-LEDGER.md` (gitignored, append-only) the lines of design D9 (a), (b) and (c). Grep first, and write only the lines that are not already there.
+- [x] 1.4 Confirm that `.claude/handoffs/MEASURE-QUEUE.md` holds the coordinator's "Calibration: G0 rounds under outside load" entry (`Kind: CALIBRATION`, `Status: PENDING`) and append nothing (design D7, stage-3 revision: it replaces stage 1's handoff probe, round runner and calibration entry).
 
 ## 2. Helpers with self-tests (one commit)
 
@@ -51,6 +38,8 @@ Every commit goes through `scripts/heavy.sh --mem none -- git commit -F <file>`,
   It honours `LUSHTEXT_AGENT_LOCK_DIR`-style overrides for the handoff directory, so the self-test touches no real queue or slot.
 - [ ] 2.1a `scripts/gate-trees.sh` (`record <worktree> --gate '<gate>' -- <command…>`, `lookup <worktree> --gate '<gate>'`), as in design D1. `record` reads `git status --porcelain` and `HEAD^{tree}` before and after, runs the command as its child, and appends a line only on exit 0 with a clean, unchanged tree. It honours the same handoff-directory override as 2.1.
   - Its `--self-test`, written first and seen failing against a stub, uses a temporary repository: a clean pass records; a dirty-before, dirty-after or tree-changing run records nothing; a failing command records nothing and returns its exit status; `lookup` finds only the same gate string on the same tree.
+- [ ] 2.1b `scripts/quiet-gate.py` (`outsiders`, `wait-outsiders`, `busy`, `run`, `--self-test`), as in design D7. Our own work is read from the parent slice of `scripts/with-memory-cap.sh --print-slice` (by `systemctl --user show -p ControlGroup`), the legacy slice, and the `cst-sccache-*.scope` siblings; no uid or home path is hardcoded.
+  - Its `--self-test`, written first and seen failing against a stub, uses fixture `/proc/stat` and `cpu.stat` files and sub-second windows: busy CPUs from two stat reads; outsiders = root minus our slices; `wait-outsiders` succeeds below the bar and exits 124 above it; `run --mode gate` exits 76 without running the command on a busy pre-sample, 77 on a busy post sample after exit 0, and the command's status otherwise; `--mode calib` never gates; every reading is logged; an unreadable stat or `cpu.stat` exits 2 with no reading.
 - [ ] 2.2 `scripts/check-fast-lane.py [--base REF] [--paths FILE] [--self-test]`, as in design D5: an allowlist with the classes `eligible`, `declare` and `not eligible`, failing closed on any unlisted path, reading both sides of a rename, and promoting an `eligible` path that `Makefile`, `.githooks/`, `.github/` or `scripts/` names literally to `declare`.
   - Its self-test, written first and seen failing, covers:
     - eligible: a `docs/memorials/` and `openspec/changes/` path set;
@@ -72,10 +61,10 @@ Every commit goes through `scripts/heavy.sh --mem none -- git commit -F <file>`,
 - [ ] 2.4 Re-check that `openspec validate <change> --strict` passes for a change with no `design.md`, on the CLI version in use. Stage 1 found it valid on 2026-11-18 (design D5). Use a temporary copy of this change in a scratch directory. If it fails, change D5 to require a short `design.md` in the fast lane.
 - [ ] 2.5 `Makefile`:
   - `check-workflow-scripts` (in `check-policy`; put the prerequisite on its own line if `check-policy`'s list has been split by then);
-  - `check-agent-helpers` runs `impl-slots.sh --self-test`, `gate-trees.sh --self-test` and `check-fast-lane.py --self-test`, and shellchecks the three shell scripts.
+  - `check-agent-helpers` runs `impl-slots.sh --self-test`, `gate-trees.sh --self-test`, `check-fast-lane.py --self-test` and `quiet-gate.py --self-test`, and shellchecks the shell scripts.
 
   Run `scripts/heavy.sh -- make check-agent-helpers`, `scripts/heavy.sh -- make check-workflow-scripts` and `scripts/heavy.sh -- make check-agent-skills`. The last one is not in `check-policy` (only CI's `ci.yml` runs it), and 2.3a edits its inputs.
-- [ ] 2.6 Commit `chore(build): add the slot, gate-record, fast-lane, review-lens and workflow-script helpers`, and push.
+- [ ] 2.6 Commit `chore(build): add the slot, gate-record, quiet-gate, fast-lane, review-lens and workflow-script helpers`, and push.
 
 ## 3. Rules (one commit)
 
@@ -93,8 +82,7 @@ Every commit goes through `scripts/heavy.sh --mem none -- git commit -F <file>`,
   - **New "Stages after implementation"** section (design D10): order, single-pass behaviour of both skills inside workflows, absolute-path `/simplify`, findings-only `code-review` without a schema, failed-lens rule, fan-out criterion by reference to the skills' triggers, the apply agent, and one smoke trio.
   - **New "Workflow agents"** section (design D11): the script-enforced main-checkout guard read by guard agents, and what the coordinator does when the main checkout must move during a run; `git -C`/absolute paths; per-agent `TMPDIR`; `timeout` on every harness; the brief file re-read; the outward-writes list (including deleting the change branch and twin ref), with everything else going to `host-asks.md`; and a citation of the maintainer's observed-behaviour note as evidence only.
   - **"Measurements":**
-    - the criterion is unchanged until the calibration matches and the maintainer decides (design D7);
-    - the one exception to the load precondition: the calibration's `calib-off-*` rounds, non-verdict and never quoted as verdicts (design D7);
+    - the drain-first criterion of design D7 replaces the 1-minute-load check: `quiet-gate.py wait-outsiders`, `measure.sh --lock-timeout 2400`, `quiet-gate.py run`, the kept-round rule, and the detached run plus `wait-for.sh` for a stage agent; level 3 is not written;
     - non-inferiority changes as in D3;
     - the entry rule of D6: runnable rounds a change waits on, on a final tree, are queued as `Status: READY <sha>`, ones not runnable yet as `PENDING (NOT READY: <reason>)`, and non-blocking attribution and calibration entries as `PENDING`.
   - **"Merging":**
@@ -105,7 +93,7 @@ Every commit goes through `scripts/heavy.sh --mem none -- git commit -F <file>`,
     - Kani figures land only in the archive commit, limited to the pending records' fields;
     - stage 3 dispatches on a twin ref `<branch>-kani-2` for a second concurrent run, deleted after the archive.
 - [ ] 3.2 `.agents/rules/verification-runs.md`:
-  - **"Timing campaigns":** the verdict class and the non-inferiority verdict (design D3);
+  - **"Timing campaigns":** the verdict class and the non-inferiority verdict (design D3), and the drain-first criterion in place of "under load, queue" (design D7);
   - **"Shard budgets":** dispatch when stage 3 ends, stage 4 reads, re-dispatch triggers (design D2).
 - [ ] 3.3 `.agents/rules/build.md`, "Shard gates and budgets": one sentence pointing to `verification-runs.md` "Shard budgets" for when to dispatch. The gate's behaviour is unchanged.
 - [ ] 3.4 `AGENTS.md` rules index: update the `parallel-agent-work.md` entry (running a change, fast lane, design revisions, slot cap) and the `verification-runs.md` entry (verdict classes, dispatch timing).
@@ -118,7 +106,7 @@ Every commit goes through `scripts/heavy.sh --mem none -- git commit -F <file>`,
 
 ## 4. Versioned workflow script (one commit)
 
-- [ ] 4.0 Run the stage agent's probes of design D11 first, under a manual main-checkout guard (status, `HEAD` and branch before and after each): `code-review` with a local-branch target and with an absolute worktree-path target, each over a scratch branch whose committed and uncommitted edits both hold a planted bug; and `/simplify` with a worktree directory argument, across several files, and on committed branch changes. Record each command, result and conclusion in `.claude/handoffs/adopt-faster-change-flow/probes.md`. A probe that edits the main checkout stops the work, and the coordinator is told. Then append a request to `.claude/handoffs/adopt-faster-change-flow/host-asks.md` for the two probes only the coordinator can run (a stage agent has no Agent or Workflow tool, and a probe PR is outside the outward-writes list): `agent(..., {isolation: 'worktree'})` and its cwd, and `code-review` on an open PR with a planted bug that differs from the main checkout.
+- [ ] 4.0 Run the stage agent's probes of design D11 first, under a manual main-checkout guard (status, `HEAD` and branch before and after each): `code-review` with a local-branch target and with an absolute worktree-path target, each over a scratch branch whose committed and uncommitted edits both hold a planted bug; and `/simplify` with a worktree directory argument, across several files, and on committed branch changes. Record where each `code-review` run's findings came from (result text or fork transcript); this agent runs with a caller schema, so the same review without one is owed by the coordinator (note 19:52). Record each command, result and conclusion in `.claude/handoffs/adopt-faster-change-flow/probes.md`. A probe that edits the main checkout stops the work, and the coordinator is told. Then append a request to `.claude/handoffs/adopt-faster-change-flow/host-asks.md` for the two probes only the coordinator can run (a stage agent has no Agent or Workflow tool, and a probe PR is outside the outward-writes list): `agent(..., {isolation: 'worktree'})` and its cwd, and `code-review` on an open PR with a planted bug that differs from the main checkout.
 - [ ] 4.1 Write `.claude/workflows/programme-change.js` from the three session scripts (`programme-change-v2.js`, `-revise.js`, `-continue.js`; paths in the stage brief), as in design D8:
   - modes `new`, `fast-lane`, `revise` and `continue` (design D8); `revision`, which runs the D4 decision and spike agents; `design_only`; `skip_impl`;
   - one shared stage-4 function;
@@ -126,7 +114,7 @@ Every commit goes through `scripts/heavy.sh --mem none -- git commit -F <file>`,
   - stage 4 reuses gate evidence on an identical tree and checks the ancestor (D1);
   - the slot helper (D6);
   - the non-inferiority branch of "ready, measurement pending" (D3);
-  - the stages after implementation (D10), with `selectLenses` as a pure function mapping each flag to its own lenses (design D10 table) whose cases the script asserts at start-up, the `code-review` lens without a schema covering both the commits and `/simplify`'s edits in the form 4.0 chose (or the named two-call fallback), and `args.review_agent_type`;
+  - the stages after implementation (D10), the `code-review` lens taking its findings from the result text or the fork transcript and failing without `skill_findings_source`, with `selectLenses` as a pure function mapping each flag to its own lenses (design D10 table) whose cases the script asserts at start-up, the `code-review` lens without a schema covering both the commits and `/simplify`'s edits in the form 4.0 chose (or the named two-call fallback), and `args.review_agent_type`;
   - the guard around every stage (D11): guard-read agents before and after every stage and around each parallel group, a script comparison and a stop, plus per-stage `TMPDIR` and brief files;
   - stage prompts that name `openspec-propose`/`openspec-update-change`, `openspec-apply-change` and `openspec-archive-change` instead of describing their procedure;
   - prompts cite rule sections and carry no copied rule text, path, account, key or trailer.
@@ -146,7 +134,8 @@ Every commit goes through `scripts/heavy.sh --mem none -- git commit -F <file>`,
   - the local evidence;
   - the "Quality floor" table;
   - that in-flight runs keep their session scripts until their next stage boundary;
-  - that decision 7 is recorded, not implemented.
+  - that decision 7 was approved with conditions and is implemented by smoke-gate-coherence, not here;
+  - that the stage-3 revision (design "Stage-3 revision") had no spec review.
 
   It ends with the required Claude Code line. Do not merge, and do not wait for CI.
 - [ ] 5.3 **This change's stage 4 does not merge** (maintainer, coordinator note 2026-11-18 19:00): it reviews and fixes as usual, then ends with the verdict "ready, Fable template review pending". The coordinator runs the independent Fable review of `.claude/workflows/programme-change.js` and its two owed probes (4.4), then a merge-only run with their fixes.

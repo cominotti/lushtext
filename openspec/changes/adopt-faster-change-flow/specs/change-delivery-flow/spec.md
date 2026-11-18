@@ -69,10 +69,10 @@ A change on a timed path SHALL state in design, before any verdict round, either
 - **THEN** the class stays until the maintainer decides
 
 ### Requirement: Non-inferiority merges keep a pre-registered verdict
-A non-inferiority change SHALL merge only on a pre-registered non-inferiority verdict through `measure.sh` at load < 4, interleaved. It passes when every touched case is within its band of `main` and no case `main` meets breaks `B_INTERACT_US` or `B_SETTLE_US`. The improvement verdict SHALL go to a named follow-up. No document SHALL claim the improvement before that verdict passes.
+A non-inferiority change SHALL merge only on a pre-registered non-inferiority verdict through `measure.sh`, interleaved and judged quiet by the timing-verdict criterion. It passes when every touched case is within its band of `main` and no case `main` meets breaks `B_INTERACT_US` or `B_SETTLE_US`. The improvement verdict SHALL go to a named follow-up. No document SHALL claim the improvement before that verdict passes.
 
 #### Scenario: The verdict is within the band
-- **WHEN** four interleaved rounds at load < 4 put every touched case's branch median within the pre-registered band of `main`'s
+- **WHEN** four interleaved kept rounds put every touched case's branch median within the pre-registered band of `main`'s
 - **THEN** the change may merge, and its improvement verdict is queued for `<change>-improvement-verdict`
 
 #### Scenario: A budget is broken
@@ -149,20 +149,28 @@ At most five implementation stages SHALL run at once, and at most three while `M
 - **WHEN** the only open entry is `Kind: CALIBRATION` with `Status: PENDING`
 - **THEN** the cap is five
 
-### Requirement: The quiet-window criterion changes only after a matching calibration
-The quiet-window criterion SHALL stay the global 1-minute load below 4 for 30 s. It SHALL change only when a pre-registered calibration shows that rounds with quiet reference CPUs under global load match quiet-host rounds, and then only by the maintainer's decision. The calibration SHALL pin nothing and change no host state. Its off-reference rounds SHALL be the only `measure.sh` rounds exempt from the load precondition, and SHALL never be quoted as verdicts.
+### Requirement: Timing verdicts run after a drain and are judged on busy CPUs
+A timing verdict round SHALL first wait, holding no lock, for outside CPU use below 3.5 CPUs over 30 s, then run through `measure.sh --lock-timeout 2400` inside `scripts/quiet-gate.py run`. It SHALL run only after an in-lock 30 s sample below 4 busy CPUs, and be kept only when it exits 0 and the run and a 30 s post sample are both below 4 busy CPUs. The 1-minute load SHALL NOT be the criterion, and no rule SHALL count a round measured under load as a pass.
 
-#### Scenario: The calibration is queued, not run as a verdict
+#### Scenario: Outside load holds the round back
+- **WHEN** host CPU use outside `user-lushtext.slice` and the `cst-sccache-*` scopes stays at 3.5 CPUs or more for the whole wait
+- **THEN** `quiet-gate.py wait-outsiders` exits 124 holding no lock, and the remaining rounds are queued in `MEASURE-QUEUE.md`
+
+#### Scenario: A busy in-lock sample skips the round
+- **WHEN** the 30 s sample taken inside the exclusive lock shows 4 or more busy CPUs
+- **THEN** `quiet-gate.py run` exits 76 without running the round, and the round is retried or queued, never kept
+
+#### Scenario: A busy post sample voids the round
+- **WHEN** the round exits 0 but the 30 s sample after it shows 4 or more busy CPUs
+- **THEN** `quiet-gate.py run` exits 77, the log line says the round was not kept, and it is not a verdict
+
+#### Scenario: Unreadable counters fail closed
+- **WHEN** `/proc/stat` or a slice's `cpu.stat` cannot be read
+- **THEN** the helper exits 2 and prints no reading, so no round is admitted on a missing measurement
+
+#### Scenario: The calibration is the coordinator's entry
 - **WHEN** this change is implemented
-- **THEN** `MEASURE-QUEUE.md` holds a `Kind: CALIBRATION` entry with `Status: PENDING`, its cases, arms, probe and match bar
-
-#### Scenario: An off-reference round is classified on the measured window
-- **WHEN** the probe before `measure.sh` meets the candidate criterion but the probe inside the measured command does not
-- **THEN** the round is recorded and excluded from both arms
-
-#### Scenario: Distributions differ
-- **WHEN** the off-reference arm's median or p90 for a case is outside the pre-registered tolerance
-- **THEN** the criterion stays as it is
+- **THEN** `MEASURE-QUEUE.md` holds the coordinator's `Kind: CALIBRATION` entry with `Status: PENDING` and this change appends none, and no rule text admits a pass measured under load
 
 ### Requirement: Programme workflow scripts are versioned, sanitized and checked
 The programme's workflow script SHALL live in `.claude/workflows/`, take host details from `args`, and point to rule sections instead of copying them. `make check-workflow-scripts` SHALL syntax-check each script through a wrapper, check its phases, and fail on personal data, push credentials or copied rule sentences.
@@ -202,6 +210,10 @@ After implementation, `/simplify` SHALL run with an absolute worktree path. Find
 - **WHEN** the probes show that a branch target misses uncommitted work
 - **THEN** the lens also runs `high <absolute worktree path>` over `simplify.patch`, and both outputs form the one lens
 
+#### Scenario: The code-review lens reads the fork's findings
+- **WHEN** the Skill call returns only "Skill execution completed" and an `agentId`
+- **THEN** the lens reads the findings from that fork's transcript and prints `skill_findings_source: fork-transcript` with them, and a lens output with no `skill_findings_source` line fails the lens
+
 #### Scenario: An empty code-review result is a failure
 - **WHEN** the `code-review` lens returns "(none)" with no explanation
 - **THEN** the script reruns it once and then stops instead of treating it as zero findings
@@ -231,7 +243,7 @@ A change to the change-delivery rules SHALL be reviewed at spec review and at st
 - the data-safety review;
 - an independent code reviewer;
 - every gate on every tree reaching `main`;
-- pre-registered verdicts at load < 4 through `measure.sh`;
+- pre-registered verdicts through `measure.sh`, judged quiet by the timing-verdict criterion;
 - `B_INTERACT_US` and `B_SETTLE_US`;
 - flakes as blockers;
 - every lane, shard, scenario and assertion.

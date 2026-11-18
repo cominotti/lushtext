@@ -1,6 +1,6 @@
 ## Why
 
-On 2026-11-18 the maintainer accepted the recommendations of the change-flow analysis: interventions 1-5 and decisions 1, 2, 3, 4 and 6. Decision 5 was rejected and decision 7 is still open. The maintainer asked that they become permanent for all new work, in future sessions too, and that the adjustments themselves be reviewed. The accepted process decisions so far live only in the coordinator's session: three workflow scripts under `~/.claude/projects/.../workflows/scripts/`, ledger lines in the gitignored `PARALLEL-LEDGER.md`, and the user's auto-memory. A new session would not find them. The scripts also repeat rule text in a `RULES` string, and that copy has already drifted from the rules: the rules say nothing about `COORDINATOR-NOTE.txt`, and the scripts still carry a five-slot cap that decision 4 changed.
+On 2026-11-18 the maintainer accepted the recommendations of the change-flow analysis: interventions 1-5 and decisions 1, 2, 3, 4 and 6. Decision 5 was rejected. Decision 7 was approved later that day with conditions, and belongs to the smoke-gate-coherence change. At 19:39 the maintainer also replaced the quiet-window criterion (levels 1-3 below). The maintainer asked that they become permanent for all new work, in future sessions too, and that the adjustments themselves be reviewed. The accepted process decisions so far live only in the coordinator's session: three workflow scripts under `~/.claude/projects/.../workflows/scripts/`, ledger lines in the gitignored `PARALLEL-LEDGER.md`, and the user's auto-memory. A new session would not find them. The scripts also repeat rule text in a `RULES` string, and that copy has already drifted from the rules: the rules say nothing about `COORDINATOR-NOTE.txt`, and the scripts still carry a five-slot cap that decision 4 changed.
 
 Measured baseline, from the analysis (233 agent transcripts, 25 `runs.log` files, 83 merged PRs, 2026-11-05 to 2026-11-18; figures and method in the memorial this change adds):
 
@@ -27,7 +27,7 @@ The decisions become normative rules in `.agents/rules/`, and the programme's wo
   - The archive records the figures. `make check-kani-shards` already refuses an archive that still owes them.
 - **Non-inferiority merges** (decision 1, `verification-runs.md` "Timing campaigns"):
   - A change declares its verdict class in design before any verdict round is run.
-  - A change in the non-inferiority class merges on a pre-registered non-inferiority verdict, which is still run through `measure.sh`, interleaved, at load < 4.
+  - A change in the non-inferiority class merges on a pre-registered non-inferiority verdict, which is still run through `measure.sh`, interleaved, and judged quiet.
   - Its improvement verdict is queued for a named follow-up, and no document claims the improvement until that verdict passes.
 - **Design-loop limit** (decision 2, `parallel-agent-work.md`): when a change that has had two design revisions is blocked again, an independent agent decides whether to continue, re-scope or shelve it, and the maintainer is told. A third revision starts with an attribution spike that writes no OpenSpec artifacts.
 - **Fast lane** (decision 3, `parallel-agent-work.md`):
@@ -40,10 +40,11 @@ The decisions become normative rules in `.agents/rules/`, and the programme's wo
   - At most five implementation slots, or three while `MEASURE-QUEUE.md` holds an entry or `###` part whose latest status is `READY`.
   - A stage that queues runnable rounds a change waits on (a verdict, or pre-registered gate or selection rounds) now marks them `READY <sha>`. `PENDING` is kept for rounds that are not runnable yet, and for non-blocking attribution and calibration entries.
   - Acquisition and release move from a copy-pasted snippet into a tested helper.
-- **Quiet-window criterion unchanged** (decision 6, `parallel-agent-work.md` "Measurements"):
-  - A pre-registered calibration experiment is queued. It compares lane cases on a quiet host with rounds where the global load is at least 4 but the reference CPUs are quiet.
-  - The criterion changes only if the distributions match, and only by the maintainer's decision.
-  - Its off-reference rounds are the one explicit exception to the load-below-4 precondition, and are never quoted as verdicts.
+- **Quiet-window criterion: drain first, judged on busy CPUs** (decision 6, replaced by the maintainer's decision of 2026-11-18 19:39, level 1; `parallel-agent-work.md` "Measurements", `verification-runs.md` "Timing campaigns"):
+  - Holding nothing, wait until CPU use outside our own slices is below 3.5 CPUs over 30 s; then `measure.sh --lock-timeout 2400`; inside the lock, run only after a 30 s sample below 4 busy CPUs, and keep the round only if the run and a 30 s sample after it are also below 4.
+  - The bar stays 4; the metric changes from the 1-minute load to busy CPUs, which admits some rounds the old rule refused. The maintainer decided that loosening.
+  - A tested helper, `scripts/quiet-gate.py`, implements the three steps and fails closed.
+  - Level 2, a calibration under outside load, is the coordinator's queue entry. Level 3 (a pass under load counts for absolute budgets) waits for it and is not written into any rule.
 - **Stages after implementation** (coordinator notes of 2026-11-18 18:50-19:25, maintainer-approved):
   1. `/simplify`, invoked with an absolute worktree path;
   2. findings-only review lenses in parallel: `code-review high <target>` never with `--fix`, plus one domain lens per flag: the `data-safety` audit when the change touches data, the `gtk-perf-review` leaf checklists when it touches performance, and `rust-hex-arch` when modules move inside such a fan-out;
@@ -62,7 +63,7 @@ The decisions become normative rules in `.agents/rules/`, and the programme's wo
   - `make check-workflow-scripts` (in `make check-policy`) syntax-checks each script through a wrapper and refuses personal data and copied rule text.
 - **Records:**
   - A dated memorial holds the analysis and its figures.
-  - Append-only ledger lines record that interventions 2 and 4 belong to "smoke gate coherence", and that decision 7 (widget-test edits voiding the smokes) is an open option there, not implemented.
+  - Append-only ledger lines record that interventions 2 and 4 belong to "smoke gate coherence", and that decision 7 (widget-test edits no longer voiding the smokes) was approved with conditions and is implemented there, not here.
   - The `AGENTS.md` rules index entries are kept in sync.
 - **This change's own merge waits for the maintainer.** It requires an independent Fable review of the new template. Its stage 4 ends with "ready, Fable template review pending" and does not merge. The coordinator runs that review, then a merge-only run with its fixes.
 
@@ -74,8 +75,8 @@ The decisions become normative rules in `.agents/rules/`, and the programme's wo
   - flakes stay blockers;
   - the data-safety review and the independent code reviewer stay on every change.
 - Interventions 1, 2 and 4, and instrumentation (intervention 7), are not implemented here.
-- Decision 5 (host desktop apps): nothing. Decision 7: recorded as an option only.
-- The quiet-window criterion itself does not change.
+- Decision 5 (host desktop apps): nothing. Decision 7: recorded only; smoke-gate-coherence implements it.
+- Level 3 of the quiet-window decision is not implemented.
 - In-flight workflow runs keep the session scripts they started with. The new rules apply at each run's next stage boundary.
 
 ## User-visible impact
@@ -100,6 +101,7 @@ None. The Kani shard-budget requirement in `formal-verification-kani` already sa
   - `scripts/gate-trees.sh`, new, with `--self-test`;
   - `scripts/check-fast-lane.py`, new, with `--self-test`;
   - `scripts/check-workflow-scripts.sh`, new, with `--self-test`;
+  - `scripts/quiet-gate.py`, new, with `--self-test`;
   - the `Makefile` targets `check-workflow-scripts` and `check-agent-helpers`.
 - **Workflows:** `.claude/workflows/programme-change.js`, new and versioned.
 - **Skill routing and wording:**
@@ -108,4 +110,4 @@ None. The Kani shard-budget requirement in `formal-verification-kani` already sa
   - `scripts/agent-topology.py` gets `review-lenses`, tested in `scripts/test-agent-topology.py`;
   - `scripts/sonar-local.sh` gets its failure message reworded.
 - **Docs:** `docs/memorials/2026-11-18-change-flow-time.md` and its index row in `docs/memorials/README.md`.
-- **Handoff files (gitignored, append-only):** `PARALLEL-LEDGER.md` lines, and one `MEASURE-QUEUE.md` calibration entry.
+- **Handoff files (gitignored, append-only):** `PARALLEL-LEDGER.md` lines. No `MEASURE-QUEUE.md` entry: the coordinator's calibration entry is the experiment.

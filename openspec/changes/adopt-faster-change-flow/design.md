@@ -4,7 +4,7 @@ Timing: none (no timed path touched). Kani: none (no proven module touched). GTK
 
 ## Context
 
-The maintainer's decisions of 2026-11-18 (ledger line 155) accept interventions 1-5 and decisions 1, 2, 3, 4 and 6 of the change-flow analysis, reject decision 5 and leave decision 7 open. They also ask that the decisions become permanent for future sessions and that the adjustments be reviewed. The analysis itself is copied into `docs/memorials/2026-11-18-change-flow-time.md` (task 1.1). This design records only the figures each decision depends on.
+The maintainer's decisions of 2026-11-18 (ledger line 155) accept interventions 1-5 and decisions 1, 2, 3, 4 and 6 of the change-flow analysis, reject decision 5 and leave decision 7 open. Later the same day the maintainer approved decision 7 with conditions, owned by the smoke-gate-coherence change (ledger 18:36), and replaced the quiet-window criterion (ledger 19:39, D7). They also ask that the decisions become permanent for future sessions and that the adjustments be reviewed. The analysis itself is copied into `docs/memorials/2026-11-18-change-flow-time.md` (task 1.1). This design records only the figures each decision depends on.
 
 ### Measured baseline (from the analysis; method and limits in the memorial)
 
@@ -32,7 +32,7 @@ Yes, with five refinements, each justified below:
 
 1. The three scripts become **one** script with modes. Reason: their five shared prompt fragments (`RULES`, `KANI`, `EFFICIENCY`, `SLOTS`, `MEASURE`) and the stage-4 merge text are byte-identical copies today. Three versioned copies would drift without a gate.
 2. The fast lane is an **allowlist** (stage-2 correction; stage 1 wrote a denylist). Only documentation, OpenSpec artifacts and agent guidance can be fast, guidance needs a declaration, and the two change-delivery rule files are never fast. Reason: a hand denylist fails open. Stage 1's list missed the GTK Lush runtime crates, `crates/lushtext/tests/`, the Cargo manifests, `.cargo/`, `build-aux/`, `.github/actions/`, the scripts `check-policy` runs, and this change's own lens-routing inputs. A gate edit, or an edit to the change-delivery rules, is where the quality floor erodes, so it keeps an independent spec review, which costs 17 min; other guidance is fast only with a declaration that stage 4 verifies.
-3. The calibration's "load confined off CPUs 8-23" is taken from rounds as they occur, not produced by a pinned load generator. Reason: the rules forbid agents to pin (`parallel-agent-work.md`, "CPU and memory"). The cpuset is host-owned, and the maintainer rejected decision 5, which was about steering desktop apps. Rounds taken as they occur test the population the new criterion would actually admit.
+3. Calibration rounds are taken from the load as it occurs, not produced by a pinned load generator. Reason: the rules forbid agents to pin (`parallel-agent-work.md`, "CPU and memory"). The cpuset is host-owned, and the maintainer rejected decision 5, which was about steering desktop apps. (Stage-3 revision: the maintainer's level 2 calibration, queued by the coordinator, follows the same principle; see D7.)
 4. B1 adds a cheap strengthening: before `gh pr merge`, re-fetch and require `origin/main` to be an ancestor of `HEAD`. Reason: today `main` can move between the lock's merge and `gh pr merge`, through a direct docs push or an external session. GitHub's merge commit would then have a tree no gate ran on. The rule "every gate on every distinct tree that reaches `main`" needs this check.
 5. The slot snippet becomes a tested helper (`scripts/impl-slots.sh`). Reason: the cap now depends on parsing the queue, and an untested inline `awk` in a prompt is how the cap would silently fail open.
 
@@ -101,7 +101,7 @@ Yes, with five refinements, each justified below:
 - **Pass bar.** The verdict passes when both hold:
   - for every touched case, the branch median is no worse than `main`'s median plus the band;
   - no case that `main` meets within `B_INTERACT_US` or `B_SETTLE_US` goes over that budget on the branch.
-- **How it runs.** It runs like every verdict today: four rounds interleaved `main` → branch → `main` → branch, through `measure.sh` at load < 4. **It blocks the merge.** A queued non-inferiority verdict still means "ready, measurement pending".
+- **How it runs.** It runs like every verdict today: four rounds interleaved `main` → branch → `main` → branch, through `measure.sh`, judged quiet by the criterion of "Measurements" (D7). **It blocks the merge.** A queued non-inferiority verdict still means "ready, measurement pending".
 - **The improvement verdict** is queued against a follow-up named in the ledger as `NEW CHANGE PROPOSED: <change>-improvement-verdict`, because the change itself is archived.
   - Until that verdict passes, no document claims the improvement: README, `AGENTS.md`, `CHANGELOG`, programme records and the PR body.
   - The change's own requirements do not assert the improvement bar. That requirement belongs to the follow-up.
@@ -161,7 +161,7 @@ Yes, with five refinements, each justified below:
 - **The cap.**
   - 5 by default.
   - 3 while `$H/MEASURE-QUEUE.md` holds at least one **ready unit**. A unit is a `## ` entry, or each `### ` part of an entry that has parts. A unit is ready when its **last** `- Status:` line starts with `READY`. Queue entries already carry several `Status:` lines, which is why only the last one counts. Parts count separately because the live `stream-replace-all` entry keeps one `Status:` per part: judged per `## ` section, a `READY` part followed by a `DONE` part would leave the cap at 5 (stage-2 correction).
-  - **What `READY` means** (stage-2 correction). `READY <sha>` marks rounds that are runnable now and that a change is waiting on: a verdict campaign, or pre-registered gate or selection rounds whose result decides the change's next step. The live `slice-large-directory-collapse` "D25 gates" entry (`Kind: SELECTION ROUNDS`, `Status: READY 5855754a`) is one, and ledger line 155 already counts it. `PENDING` marks rounds that are not runnable yet, or that no change is waiting on: non-blocking attribution, and the calibration of D7, which would otherwise hold the cap at 3 for its whole 7-day window.
+  - **What `READY` means** (stage-2 correction). `READY <sha>` marks rounds that are runnable now and that a change is waiting on: a verdict campaign, or pre-registered gate or selection rounds whose result decides the change's next step. The live `slice-large-directory-collapse` "D25 gates" entry (`Kind: SELECTION ROUNDS`, `Status: READY 5855754a`) is one, and ledger line 155 already counts it. `PENDING` marks rounds that are not runnable yet, or that no change is waiting on: non-blocking attribution, and the calibration of D7, which would otherwise hold the cap at 3 for as long as it waits for outside load.
   - **The entry rule changes with it** (`parallel-agent-work.md`, "Measurements"). Today the rule says a stage queues every entry as `Status: PENDING`, so a ready campaign queued by the rule would sit outside the count, and the cap would fail open. From now on:
     - a stage queues rounds it waits on, whose tree is final, as `Status: READY <sha>`, where `<sha>` is the commit the rounds measure;
     - rounds it will wait on that are not runnable yet stay `PENDING (NOT READY: <reason>)` until their owner replaces the line with `READY <sha>`;
@@ -191,31 +191,29 @@ Yes, with five refinements, each justified below:
   - Counting every non-`DONE` entry. Pending attribution entries would hold the cap at 3 for days.
   - Reserving `READY` for final verdict campaigns, stage 1's form. The live selection rounds that ledger line 155 counts would have had to be relabelled `PENDING`, and they lower the cap for the same reason a verdict does: a change waits on a quiet window.
 
-### D7. Quiet-window criterion: calibrate, do not change (decision 6)
+### D7. Quiet-window criterion: drain first, judged on busy CPUs (decision 6; maintainer decision 2026-11-18 19:39, level 1)
 
-- **The rule.** The criterion stays a global 1-minute load below 4 for 30 s. It changes only if the calibration below shows matching distributions, and then only by the maintainer's decision, recorded in the ledger and in `parallel-agent-work.md`.
-- **The experiment, a `MEASURE-QUEUE.md` entry with `Kind: CALIBRATION` and `Status: PENDING`:**
-  - **Cases:** `baseline/small` and `paragraph/250000/css/txt/wrap-on/minimap-off`, `RESPONSIVENESS_VARIANTS=plain`, one binary built once with `heavy.sh` and used by every round.
-  - **Probe, twice per round.** The probe runs once before `measure.sh` (the reading a quiet-window gate would act on) and once inside the measured command, after `measure.sh` has drained heavy work and just before the lane starts. Each time it reads `/proc/stat` twice, 30 s apart, and records:
-    - the busy fraction of each reference CPU (`measure.sh --print-reference-cpus`);
-    - their mean and maximum;
-    - `/proc/pressure/cpu` `some avg10`;
-    - the global 1-minute load.
-    The probe is a handoff script, not a rule helper.
-  - **Arms:**
-    - *Quiet*: the current criterion holds.
-    - *Off-reference load*: global load ≥ 4, while the candidate criterion holds (reference mean busy < 0.10, maximum < 0.25, CPU `some avg10` < 5.0, all pre-registered here).
-    - A round belongs to an arm only when **both** probe readings satisfy that arm's condition. Rounds that fit neither arm, or whose two readings disagree, are recorded and excluded. Stage 2 added the second reading: a probe taken only before `measure.sh` sees other agents' heavy work on the reference CPUs, which `measure.sh` then drains, so it alone would misclassify rounds.
-  - **Exception to "Measurements", explicit and recorded.** The rule requires the 1-minute load below 4 for 30 s before **each** `measure.sh` call. The off-reference arm needs load ≥ 4 by definition, so its rounds skip that precondition. Bounds of the exception: it covers only rounds labelled `calib-off-*` of this queue entry; they are non-verdict, judge no budget, and are never quoted as a verdict or a lane figure; they still go through `measure.sh --lock-timeout 300`, which pins, takes the exclusive lock and records the load. The quiet arm keeps the precondition. The exception is written into "Measurements" next to the criterion, and the floor table has its row.
-  - **Load placement.** The load is whatever the host is running. Nothing is pinned and no host state is changed. `measure.sh` drains heavy work, so the off-reference load is desktop and light agent work: the population that blocks quiet windows today. If the off-reference arm collects fewer than 8 rounds in 7 days, the coordinator files a host ask for a confined load generator (`$H/<change>/host-asks.md`) instead of pinning.
-  - **Rounds:** at least 8 per arm, each case through `measure.sh --lock-timeout 300`.
-  - **Pre-registered match:**
-    - for each case and its primary metrics (the lane's worst-dispatch and settle figures), the off-reference arm's median and p90 lie within max(5 %, the quiet arm's own interquartile range) of the quiet arm's;
-    - no round in the off-reference arm breaks a budget that the same case meets in every quiet round.
-  - **Result:** the coordinator reports to the maintainer, who decides.
+Stage-3 revision. Stage 1 and stage 2 wrote "calibrate, do not change": keep the 1-minute load below 4 and queue a calibration of a reference-CPU criterion. At 19:39 the maintainer found the load rule too strict and approved three levels (ledger, 2026-11-18T19:39:20; coordinator note of 19:47). This decision now carries level 1 only.
+
+- **Why the old criterion failed.** In the #109 G1 window, 3 of 4 tries in 2 h 40 min exited 75: our own `make visual-geometry-smoke` and `make check-clippy` held `LOCK` past the 300 s lock timeout. The fourth was voided at a pre-drain load of 5.69. The 1-minute load lags: just after `measure.sh` drains our heavy work it still holds that work's average, so a pre-lock load check refuses windows that are quiet by the time the round runs. Desktop apps alone hold the load at 5-6.
+- **Level 1, in force with this change** (`parallel-agent-work.md`, "Measurements"):
+  1. **Outsiders first, holding nothing.** Wait until host CPU use outside our own work is below 3.5 CPUs over 30 s. Our own work is the `user-lushtext.slice` cgroup (the parent of `scripts/with-memory-cap.sh --print-slice`), the legacy `lushtext-heavy.slice`, and the shared `cst-sccache-*.scope` siblings, which can run our compiles. Reason: our own heavy work drains under `measure.sh`'s `INTENT`; only outside load decides whether a window can be quiet.
+  2. **Drain.** `measure.sh --lock-timeout 2400`, long enough for the longest heavy command to finish under `INTENT`, instead of 300 s.
+  3. **In-lock gate.** Inside the exclusive lock, sample busy CPUs (`/proc/stat`) for 30 s. Run the round only below 4. A round is **kept** when it exits 0 and both the busy CPUs over the whole command (the round's own use included, as the old "after" load was) and a 30 s sample after it are below 4.
+  - The bar stays 4. Only the metric changes, from the 1-minute load to busy CPUs. `measure.sh` still records the load, which is no longer the criterion.
+  - **This admits rounds the old rule refused.** Busy CPUs are at most the load: the load also counts runnable tasks waiting for a CPU and tasks in D state. That is a loosening, and it is the maintainer's decision. The floor table records it.
+- **The helper.** `scripts/quiet-gate.py` replaces the coordinator's reference scripts (`rev/busy.py`, `rev/gated-run.sh` of `slice-large-directory-collapse`); nothing in a rule points at a handoff script.
+  - `outsiders [--window S]` prints the outside CPU use; `wait-outsiders [--below 3.5] [--window 30] [--timeout S]` waits holding nothing (exit 0, or 124 at the timeout); `busy [--window S]` prints busy CPUs.
+  - `run --label L --log FILE [--mode gate|calib] -- <command…>` is the in-lock wrapper. In `gate` mode it exits 76 without running the command when the pre-sample is not below 4, and 77 when the command exited 0 but the run or post sample was not below 4 (ran, not kept). Otherwise it returns the command's status. `calib` records the samples and never gates. Every reading goes to the log as one line.
+  - It fails closed: an unreadable `/proc/stat` or `cpu.stat`, or an unresolvable slice, exits 2 and prints no reading. Exit 76 and 77 are distinct from `measure.sh`'s 75 and 78.
+  - Windows, thresholds and the cgroup and stat sources are overridable, so the self-test in `make check-agent-helpers` never sleeps 30 s and reads no real slice.
+- **A stage agent and the 2400 s timeout.** A foreground Bash call lasts at most 600 s. A stage agent runs the round detached (`setsid nohup`), as scheduled Kani shards do, and waits with `scripts/wait-for.sh --pid <pid> --timeout 540` in repeated foreground calls. If `wait-outsiders` times out, or `measure.sh` exits 75, the remaining rounds are queued as before.
+- **Level 2, the calibration.** The coordinator's queue entry "Calibration: G0 rounds under outside load" (`Kind: CALIBRATION`, `Status: PENDING`) is the experiment; this change appends no other entry. Its pre-registered reading (direction: load never makes a round look better; magnitude: reported) is in that entry.
+- **Level 3 is not written into any rule.** For absolute budget gates, a PASS under load would count and a FAIL under load would be inconclusive. The maintainer approved it conditionally: it takes effect only after level 2's direction reading holds, and then by a rule edit of its own. Comparative and improvement verdicts stay quiet-only either way. The memorial records the condition.
 - **Rejected:**
-  - A pinned generator on CPUs 0-7. It conflicts with the rules (refinement 3).
-  - Changing the criterion now. There is no evidence that shared cache, memory bandwidth and frequency do not couple the two CPU sets.
+  - Stage 1's calibration of a per-reference-CPU criterion (reference mean busy < 0.10). The reference set 8-23 is the toolbox's whole affinity, and the sample showed about 50 % busy on each reference CPU, so the candidate arm could not fill.
+  - Keeping the 1-minute load and only raising `--lock-timeout`. The lagging average still voids the drained window.
+  - Applying level 3 now. Its premise is what level 2 tests.
 
 ### D8. Versioned workflow scripts
 
@@ -272,7 +270,7 @@ Yes, with five refinements, each justified below:
 - Memorial `docs/memorials/2026-11-18-change-flow-time.md`: the analysis's sections 1-4 and 8, its figures and method, and the decisions with their dates. Indexed in `docs/memorials/README.md`.
 - `PARALLEL-LEDGER.md`, append-only, coordinator file (gitignored), each line written only if not already present:
   - (a) "smoke gate coherence" absorbs intervention 2 (parallel smoke cases, `--jobs N` sized by memory, after `fix-headless-session-media-wait`) and intervention 4 (the `make check` tree-hash stamp for the commit hook);
-  - (b) decision 7 (drop `crates/lushtext/tests/widget/` from the three smoke fingerprints, with parity tests) is an OPEN OPTION in that change, pending the maintainer, and not implemented;
+  - (b) decision 7 (drop `crates/lushtext/tests/widget/` from the three smoke fingerprint lists, with a parity test) was APPROVED by the maintainer at 18:36 with conditions (the three fingerprint lists only, the static accessibility check stays, the residual risk declared). It belongs to that change and is not implemented here. Stage-3 revision: stage 1 recorded it as open, which the ledger had already superseded;
   - (c) ordering: smoke gate coherence starts after `fix-headless-session-media-wait` merges, since intervention 2 depends on intervention 1.
 
 ### D10. Stages after implementation (coordinator notes of 18:50-19:25, maintainer-approved)
@@ -287,6 +285,7 @@ Yes, with five refinements, each justified below:
     - if one form covers both, the lens uses it;
     - otherwise, the fallback named now: the lens runs `high <local branch>` for the commits and a second `high <absolute worktree path>` call for the uncommitted edits, with `simplify.patch` handed to the second call as its scope. Both outputs count as the one `code-review` lens, and either one failing (below) fails the lens.
     - It never gets `--fix`: with `--fix` a forked review edited the main checkout in probe 2.
+    - **Where the findings are** (stage-3 revision, notes 19:47 and 19:52). Observed return paths differ: a caller without a schema got the findings as text in the Skill result; a caller with a schema got only "Skill execution completed"; another got only `{status: "forked", agentId, "Skill execution completed"}`, with the findings as the input of the fork's last `StructuredOutput` call in `subagents/agent-<agentId>.jsonl` of the session's transcript directory. The lens has no schema, takes the findings from the result text, and reads the fork transcript whenever the result carries none. It prints `skill_findings_source: result-text` or `skill_findings_source: fork-transcript` with them; a lens output with neither is a failed lens.
     - Its agent has no schema, because with a schema the fork's output was lost. Its text is passed on verbatim.
     - A "(none)" with no explanation is a failed lens, not zero findings. The script reruns it once, then stops.
   - **(b) Domain lenses, only in a fan-out:**
@@ -351,12 +350,14 @@ Yes, with five refinements, each justified below:
 | D2 dispatch in stage 3; merge without unfinished budget runs | "Merging" CI exception; "Shard budgets" | Correctness shards still run locally. A seen failure still blocks. `check-kani-shards` still refuses the archive. No wait under `MERGE-LOCK`. |
 | D2 archive commit carries figure fields in `scripts/kani-shards.py` | "Merging" step 4 (the archive is the only direct push) | It is still the one direct push. Its tree gets the hook's full `make check`, because that file is not docs-only. Its diff is limited to pending records' `measured_in` and figure fields, and stage 4 checks that. |
 | D6 entry rule `READY <sha>` | "Measurements" (queue entries `Status: PENDING`) | Only the label changes. The verdict, its gates and who runs it do not change. |
-| D3 non-inferiority merge | "Timing campaigns"; "Measurements" ("ready, measurement pending") | The non-inferiority verdict still runs through `measure.sh`, interleaved, at load < 4, and blocks the merge. The class is frozen before measurement. The budgets are unchanged, and a case `main` meets cannot be broken. No improvement claim without its verdict. |
+| D3 non-inferiority merge | "Timing campaigns"; "Measurements" ("ready, measurement pending") | The non-inferiority verdict still runs through `measure.sh`, interleaved, judged quiet by the criterion of "Measurements", and blocks the merge. The class is frozen before measurement. The budgets are unchanged, and a case `main` meets cannot be broken. No improvement claim without its verdict. |
 | D4 design-loop limit | standing autonomy decision; `preexisting-blockers.md` | Adds review; removes no gate. A shelved change merges nothing. |
 | D5 fast lane | four-stage workflow | An allowlist: only `docs/`, `openspec/` and root Markdown are eligible, guidance needs a declared, verified "Gate effect: none", and every other path, including any new directory, is not eligible. Keeps the independent stage-4 reviewer, who now also reviews the spec. Fails closed to a full review. |
 | D6 slot cap | "Implementation slots and ordering" | Fewer concurrent stages; no gate changes. |
-| D7 calibration | "Measurements" | The criterion does not change. The experiment is non-verdict. No pin, no host change. |
-| D7 off-reference rounds at load ≥ 4 | "Measurements" (load < 4 before each `measure.sh` call) | An explicit, bounded exception: only `calib-off-*` rounds of the one calibration entry, never quoted as a verdict or a lane figure, still through `measure.sh`. Every verdict keeps the precondition. |
+| D7 busy CPUs replace the 1-minute load | "Measurements" (load < 4 for 30 s before each `measure.sh` call; recorded load < 4) | **A loosening, decided by the maintainer** (2026-11-18 19:39, ledger). Busy CPUs are at most the load, so some rounds the old rule refused are now kept. The bar stays 4, and the samples now describe the window actually measured, after the drain, where the old pre-lock check read a lagging average. Every verdict still runs through `measure.sh`, interleaved, pre-registered, and blocks the merge as before. |
+| D7 `--lock-timeout 2400` | "Measurements" (`--lock-timeout 300`) | Changes placement only: `measure.sh` holds `INTENT` up to 40 min while our heavy work drains, so new heavy starts wait longer. No gate is skipped. |
+| D7 in-lock gate and kept-round rule | "Measurements" (a round whose recorded load is >= 4 is non-verdict) | A round runs only after a quiet in-lock sample and is kept only when the run and a post sample are also below 4: three readings where there were two. The helper fails closed. |
+| D7 level 3 not written | none | No rule text admits a PASS under load until the maintainer's condition (level 2 direction) is met and a later change writes it. |
 | D8 scripts | every rule the `RULES` string copied | Rules stay the only normative text. The scripts point to them. The checker refuses copies and personal data. |
 | D10 review stages | four-stage workflow; "an independent reviewer" | Adds `/simplify` and parallel lenses. The reviewer that applies fixes wrote none of the code. The gates run once, on the final tree. The merge agent still checks tasks, verdicts, the data-safety audit and docs. |
 | D11 guard and outward writes | "Host ownership" (agents never change host-owned state) | Strengthens: script-enforced main-checkout guard; outward writes limited to an explicit list. |
@@ -366,7 +367,7 @@ Unchanged:
 - data-safety review;
 - an independent code reviewer on every change;
 - every gate on every distinct tree reaching `main`;
-- pre-registered verdicts at load < 4 through `measure.sh`;
+- pre-registered verdicts through `measure.sh`, judged quiet by the criterion of "Measurements" (its metric changed by the maintainer's decision, D7);
 - `B_INTERACT_US` and `B_SETTLE_US`;
 - flakes as blockers;
 - no lane, shard, scenario or assertion deleted;
@@ -393,3 +394,15 @@ The spec review checked the artifacts against the code, the rules, the live queu
 | D1's records were written by hand | `scripts/gate-trees.sh` with a self-test | Same reason as refinement 5 |
 | `make check-agent-skills` is outside `check-policy` and runs only in CI | Tasks 2.5 and 5.1 run it locally | Merges go in on local evidence |
 
+
+## Stage-3 revision (2026-11-18, implementation stage)
+
+The coordinator's notes of 19:25 and 19:47 arrived after the stage-2 review (its last commit is 19:41), and the ledger had already superseded one stage-1 record. The implementation stage folded them in. **No spec review has seen these rows: stage 4 checks each against the "Quality floor" table.**
+
+| Source | Change | Why |
+|---|---|---|
+| Note 19:47 (maintainer decision 19:39, level 1) | D7 rewritten: drain first, busy CPUs instead of the 1-minute load, `--lock-timeout 2400`, in-lock gate; `scripts/quiet-gate.py` replaces tasks 1.4/1.5's handoff probe and calibration entry; the spec requirement on the quiet-window criterion is replaced; D3 and the floor list cite the criterion instead of "load < 4"; three floor rows replace two | The maintainer replaced the criterion; the floor table must say it is a loosening |
+| Note 19:47 (level 2) | No calibration entry appended; the coordinator's "Calibration: G0 rounds under outside load" is the experiment | One experiment, already queued |
+| Note 19:47 (level 3) | Not written into any rule; memorial only | It is conditional on level 2 |
+| Notes 19:47 and 19:52 | The `code-review` lens takes its findings from the result text or, when it carries none, from the fork transcript (`subagents/agent-<agentId>.jsonl`, the last `StructuredOutput` input), reports `skill_findings_source`, and a lens with neither source is FAILED (D10). The probes add the same review with and without a caller schema | The return path depends on the caller |
+| Ledger 18:36 | Decision 7 recorded as APPROVED with conditions and owned by smoke-gate-coherence, not "open" (D9 (b), proposal, memorial, PR body) | Stage 1's record was stale |
