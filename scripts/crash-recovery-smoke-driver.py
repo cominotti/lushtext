@@ -46,6 +46,22 @@ RETRYABLE_UNTITLED_MARKER = "CRASH_SMOKE_NEWER_UNACCEPTED_GENERATION"
 BOOKMARK_WARNING = "Some bookmark data could not be loaded"
 LAZY_DRAFT_FIXTURE_BYTES = 32 * 1024 * 1024 + 1
 
+# Which binary each launch runs. `seed` prepares state and is stopped
+# normally; `victim` is the launch that is killed, by an external signal or at
+# a kill point; `relaunch` must recover the user's work. Only the victim runs
+# the kill-point binary (when one is supplied): with `LUSHTEXT_KILL_AT` unset
+# it is the ordinary binary, because the `crash-kill-points` feature gates
+# only `kill_point::reach` (`scripts/check-kill-point-gating.sh`).
+LAUNCH_ROLES = ("seed", "victim", "relaunch")
+
+# Byte strings only kill-point code puts in a binary. The ordinary binary,
+# and a release binary when one exists, must hold none of them. The
+# conformance change extends this list with its tap's markers.
+KILL_POINT_MARKERS = (
+    b"LUSHTEXT_KILL_AT",
+    b"LUSHTEXT_KILL_AT: aborting inside",
+)
+
 
 OWNED_ARTIFACT_NAMES = {
     "assertions",
@@ -92,6 +108,10 @@ def validate_outer_args(args: argparse.Namespace) -> None:
     args.binary = args.binary.resolve()
     if not args.binary.is_file() or not os.access(args.binary, os.X_OK):
         raise RuntimeError(f"LushText binary is not executable: {args.binary}")
+    if args.kill_point_binary is not None:
+        args.kill_point_binary = args.kill_point_binary.resolve()
+        if not args.kill_point_binary.is_file() or not os.access(args.kill_point_binary, os.X_OK):
+            raise RuntimeError(f"kill-point binary is not executable: {args.kill_point_binary}")
     if not SYSTEM_PYTHON.is_file():
         raise RuntimeError("Missing /usr/bin/python3")
     if not ATSPI_REGISTRYD.is_file():
@@ -236,10 +256,56 @@ def prepare_state(args: argparse.Namespace) -> dict[str, str]:
     return env
 
 
+def role_binary(args: argparse.Namespace, role: str) -> Path:
+    """The binary a launch of `role` runs (see `LAUNCH_ROLES`)."""
+    if role not in LAUNCH_ROLES:
+        raise ValueError(f"unknown launch role: {role}")
+    if role == "victim" and args.kill_point_binary is not None:
+        return args.kill_point_binary
+    return args.binary
+
+
+def assert_no_kill_points(args: argparse.Namespace, artifact_dir: Path) -> None:
+    """Fail before any scenario if the ordinary binary, or a release binary
+    when one is built, carries kill-point code. Records each checked binary
+    in `assertions/no-kill-points.json`."""
+    candidates = [args.binary]
+    release = REPO_ROOT / "target/release/lushtext"
+    if release.is_file() and release.resolve() != args.binary:
+        candidates.append(release.resolve())
+    checked = []
+    for binary in candidates:
+        data = binary.read_bytes()
+        found = [marker.decode("ascii") for marker in KILL_POINT_MARKERS if marker in data]
+        checked.append({"binary": str(binary), "bytes": len(data), "markers_found": found})
+    passed = all(not entry["markers_found"] for entry in checked)
+    (artifact_dir / "assertions").mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "assertions/no-kill-points.json").write_text(
+        json.dumps(
+            {
+                "result": "passed" if passed else "failed",
+                "markers": [marker.decode("ascii") for marker in KILL_POINT_MARKERS],
+                "binaries": checked,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    if not passed:
+        offenders = ", ".join(entry["binary"] for entry in checked if entry["markers_found"])
+        raise RuntimeError(f"kill-point code found in a binary that must not carry it: {offenders}")
+
+
 def outer_run(args: argparse.Namespace) -> int:
     validate_outer_args(args)
     ensure_outer_tools()
     env = prepare_state(args)
+    try:
+        assert_no_kill_points(args, args.artifact_dir)
+    except Exception:
+        cleanup_runtime_root(Path(env["LUSHTEXT_CRASH_SMOKE_RUNTIME_ROOT"]), args.artifact_dir)
+        raise
 
     log_path = args.artifact_dir / "logs/dbus-session.log"
     media = session_media()
@@ -581,9 +647,10 @@ def launch_app(
     phase: str,
     extra_args: list[str],
     *,
-    binary: Path | None = None,
+    role: str,
     env_overrides: dict[str, str] | None = None,
 ) -> subprocess.Popen:
+    binary = role_binary(args, role)
     env = os.environ.copy()
     env.pop("LUSHTEXT_KILL_AT", None)
     env.update(
@@ -598,13 +665,16 @@ def launch_app(
     )
     env.update(env_overrides or {})
     app = subprocess.Popen(
-        [str(binary or args.binary), *extra_args],
+        [str(binary), *extra_args],
         stdout=(artifact_dir / f"logs/lushtext-{phase}.stdout").open("wb"),
         stderr=(artifact_dir / f"logs/lushtext-{phase}.stderr").open("wb"),
         env=env,
     )
     (artifact_dir / f"logs/lushtext-{phase}.pid").write_text(str(app.pid), encoding="utf-8")
-    print(f"Launched {phase} PID: {app.pid}", flush=True)
+    (artifact_dir / f"logs/lushtext-{phase}.role").write_text(
+        f"role={role}\nbinary={binary}\n", encoding="utf-8"
+    )
+    print(f"Launched {phase} ({role}) PID: {app.pid}", flush=True)
     return app
 
 
@@ -1318,7 +1388,7 @@ def mutter_child(args: argparse.Namespace) -> int:
     app_env["AT_SPI_BUS_ADDRESS"] = os.environ["AT_SPI_BUS_ADDRESS"]
 
     bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
-    first_app = launch_app(args, artifact_dir, "before-crash", [str(file_backed)])
+    first_app = launch_app(args, artifact_dir, "before-crash", [str(file_backed)], role="victim")
     try:
         wait_for_window_actions(bus)
         wait_for_automation_object(bus)
@@ -1358,7 +1428,7 @@ def mutter_child(args: argparse.Namespace) -> int:
 
     expand_accepted_drafts_for_lazy_restore(data_dir, artifact_dir)
 
-    relaunch = launch_app(args, artifact_dir, "after-relaunch", [])
+    relaunch = launch_app(args, artifact_dir, "after-relaunch", [], role="relaunch")
     try:
         wait_for_window_actions(bus)
         wait_for_automation_object(bus)
@@ -1453,7 +1523,7 @@ def kill_inside_draft_write(
         artifact_dir,
         f"kill-{name}",
         [str(document)],
-        binary=args.kill_point_binary,
+        role="victim",
         env_overrides={**env, "LUSHTEXT_KILL_AT": kill_at},
     )
     try:
@@ -1474,7 +1544,7 @@ def kill_inside_draft_write(
     snapshot_metadata(data_dir, root / "metadata-after-kill")
 
     relaunch = launch_app(
-        args, artifact_dir, f"relaunch-{name}", [str(document)], env_overrides=env
+        args, artifact_dir, f"relaunch-{name}", [str(document)], role="relaunch", env_overrides=env
     )
     try:
         wait_for_window_actions(bus)
@@ -1501,7 +1571,7 @@ def kill_after_stale_preservation(
     name = "stale-preserved-before-retire"
     root, document, env = kill_point_state(artifact_dir, name)
     data_dir = Path(env["LUSHTEXT_DATA_DIR"])
-    first = launch_app(args, artifact_dir, f"seed-{name}", [str(document)], env_overrides=env)
+    first = launch_app(args, artifact_dir, f"seed-{name}", [str(document)], role="seed", env_overrides=env)
     try:
         wait_for_window_actions(bus)
         wait_for_automation_object(bus)
@@ -1535,7 +1605,7 @@ def kill_after_stale_preservation(
         artifact_dir,
         f"kill-{name}",
         [],
-        binary=args.kill_point_binary,
+        role="victim",
         env_overrides={**env, "LUSHTEXT_KILL_AT": name},
     )
     try:
@@ -1548,7 +1618,7 @@ def kill_after_stale_preservation(
         raise RuntimeError(f"{name}: the stale edits were not preserved before the kill")
     snapshot_metadata(data_dir, root / "metadata-after-kill")
 
-    relaunch = launch_app(args, artifact_dir, f"relaunch-{name}", [], env_overrides=env)
+    relaunch = launch_app(args, artifact_dir, f"relaunch-{name}", [], role="relaunch", env_overrides=env)
     try:
         wait_for_window_actions(bus)
         wait_for_automation_object(bus)
@@ -1696,7 +1766,7 @@ def start_replace_all(bus, artifact_dir: Path) -> None:
 
 def undo_after_relaunch(args, bus, artifact_dir: Path, name: str, phase: str, files: list[Path], env: dict[str, str]):
     """Relaunch, require the recovered Undo, run it, and require every original."""
-    relaunch = launch_app(args, artifact_dir, f"{phase}-{name}", [], env_overrides=env)
+    relaunch = launch_app(args, artifact_dir, f"{phase}-{name}", [], role="relaunch", env_overrides=env)
     try:
         show_search_panel(bus, artifact_dir)
         wait_for_content_search(bus, "the recovered Undo being offered", lambda state: state.get("has_undo_backup"))
@@ -1730,7 +1800,7 @@ def kill_inside_replace_all(args, bus, artifact_dir: Path, name: str, kill_at: s
             artifact_dir,
             f"kill-{name}",
             [],
-            binary=args.kill_point_binary,
+            role="victim",
             env_overrides={**env, "LUSHTEXT_KILL_AT": kill_at},
         )
         try:
@@ -1763,7 +1833,7 @@ def kill_inside_later_launch_undo(args, bus, artifact_dir: Path) -> dict:
     kill_at = "replace-undo-before-target-rename@replace#3"
     root, workspace, files, env = replace_state(artifact_dir, name)
     try:
-        first = launch_app(args, artifact_dir, f"seed-{name}", [], env_overrides=env)
+        first = launch_app(args, artifact_dir, f"seed-{name}", [], role="seed", env_overrides=env)
         try:
             start_replace_all(bus, artifact_dir)
             wait_for_content_search(
@@ -1780,7 +1850,7 @@ def kill_inside_later_launch_undo(args, bus, artifact_dir: Path) -> dict:
             artifact_dir,
             f"kill-{name}",
             [],
-            binary=args.kill_point_binary,
+            role="victim",
             env_overrides={**env, "LUSHTEXT_KILL_AT": kill_at},
         )
         try:

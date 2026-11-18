@@ -1495,6 +1495,15 @@ kill-point code (`strings target/release/lushtext` finds neither
 `LUSHTEXT_KILL_AT` nor the abort message; the feature binary finds both), and
 no Meson, Flatpak, or Snap build passes the feature.
 
+Since `apply-verification-altitude-redesigns` (group 6) the release check is
+automated: the crash smoke reads the ordinary binary, and
+`target/release/lushtext` when one is built, and fails before any scenario on
+either kill-point marker (`assertions/no-kill-points.json`).
+`make check-kill-point-gating` (in `make check-policy`) keeps the feature
+gating only `kill_point::reach`, so the victim launches run the ordinary binary
+plus kill points; every launch records its role (`seed`, `victim`,
+`relaunch`) and binary, and `seed` and `relaunch` always run the ordinary one.
+
 ### Step 8a — Set-aside retention (`bound-draft-set-aside-retention`)
 
 **Status: complete (2026-09-24).** N10's set-aside size bound, decided as

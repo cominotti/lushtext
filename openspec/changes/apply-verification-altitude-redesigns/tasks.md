@@ -244,7 +244,7 @@ group's heavy commands.
 
 ## 6. Explicit smoke-binary roles (design G6)
 
-- [ ] 6.1 Add `scripts/check-kill-point-gating.sh` and wire it into
+- [x] 6.1 Add `scripts/check-kill-point-gating.sh` and wire it into
   `make check-policy`. It keys on gating sites (design G6):
   - `feature = "crash-kill-points"` in Rust only in
     `services/kill_point.rs`;
@@ -256,25 +256,25 @@ group's heavy commands.
   Confirm it fails first: add a temporary second
   `cfg(feature = "crash-kill-points")` site, see the failure, then remove the
   site. Add a `--self-test` if `check-agent-helpers`' pattern requires one.
-- [ ] 6.2 Add the role table to `scripts/crash-recovery-smoke-driver.py`.
+- [x] 6.2 Add the role table to `scripts/crash-recovery-smoke-driver.py`.
   `seed` and `relaunch` are always `--binary`. `victim` is
   `--kill-point-binary` when supplied, and `--binary` otherwise.
   `launch_app(role=…)` replaces `binary=`, and every one of its 11 calls
   names a role. Each phase writes `logs/lushtext-<phase>.role` with its role
   and binary.
-- [ ] 6.3 Add the marker guard. It reads the ordinary binary's bytes, and
+- [x] 6.3 Add the marker guard. It reads the ordinary binary's bytes, and
   `target/release/lushtext` if present, and fails on `LUSHTEXT_KILL_AT` or
   `LUSHTEXT_KILL_AT: aborting inside`. It writes
   `assertions/no-kill-points.json`, and keeps its marker list in one place.
   Confirm it fails first by passing the kill-point binary as `--binary`.
-- [ ] 6.4 Run `scripts/heavy.sh -- make crash-recovery-smoke`. Confirm three
+- [x] 6.4 Run `scripts/heavy.sh -- make crash-recovery-smoke`. Confirm three
   things:
   - the external-signal scenario passes with the kill-point victim;
   - every `seed` and `relaunch` launch is the ordinary binary;
   - the guard passes.
 
   Record the artifacts in the handoff directory.
-- [ ] 6.5 Sync the docs:
+- [x] 6.5 Sync the docs:
   - `docs/end-user-coverage.md` and the crash-smoke section of
     `.agents/rules/build.md` (roles, guard, and gating check);
   - K5 in `docs/next/formal-verification.md` (the release check is now

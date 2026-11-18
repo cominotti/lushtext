@@ -197,6 +197,11 @@ applied one at a time:
   `services/app_data_layout.rs` names every location once; the sweep and the
   format-upgrade inventory decide each in an exhaustive `match`, and the
   legacy folder-note sidecar directory is swept, last.
+- group 6, explicit smoke-binary roles: **done** (2026-11-18). The crash
+  smoke's launches are `seed`, `victim` or `relaunch`, and only the victim
+  runs the kill-point binary; `make check-kill-point-gating` keeps the feature
+  gating only `kill_point::reach`, and the lane fails when the ordinary or
+  release binary carries a kill-point marker.
 
 ### N9. Use proofs as mutation killers
 
