@@ -5290,12 +5290,24 @@ What landed on the branch, and what is still owed, is the change's
   (91.8 %); the pre-registered rule takes the smallest power of two within
   5 % of the best, so `REPLACE_STREAM_CHUNK_BYTES` went from 1 MiB to
   262,144 in its own non-visual commit.
-- **Still owed:** the timing verdicts queued in `MEASURE-QUEUE.md`
-  ("stream-replace-all: timing verdicts", parts B wall time and C
-  responsiveness, `READY` on the 256 KiB commit; the load stayed above 4
-  through the stage). A functional run of the two lane cases passed every
-  phase at load 6–10 (not a verdict). The two `kani.yml` dispatches for the
-  new shards' budgets (3.3b) belong to the merge stage.
+- **Wall-time verdict (task 9.3, part B, coordinator 2026-11-18): met.**
+  16 MiB: branch median 86.5 ms against `main`'s 96.5 ms (bar 2 × main +
+  50 ms); 2,000 small files: ratio of medians 1.446 (bar 1.6; the branch's
+  fsyncs are 67.5–68.2 s of its 70 s); 512 MiB recorded at 1,270 / 923 ms.
+- **Responsiveness (task 9.1, part C): judged again.** The eight rounds of
+  2026-11-18 derived no verdict: the lane's pass status judged no bar, and
+  the watchdog read 16.5–20.2 ms on every Skipped Files opening. That
+  dispatch realized GTK's whole band of about 205 rows from the full
+  16,384-row model (counted, failing-first); the dialog's first publish is
+  now staged. The lane now judges (a) the completion, (b) the dialog's
+  opening, first frame and growth frames, (c) each heartbeat, (d) each
+  typing dispatch and (p) replace-prepare from probe spans, failing closed
+  (design, "Stage-3 round: judging task 9.1"). Part C is queued `READY`
+  again; its open decisions (the dispatch after a settings flush, one
+  unattributed 42 ms replace-prepare dispatch, the dialog's Cairo animation
+  paint, no lane case for Cancel or save-while-rewriting) are in that
+  design section. The two `kani.yml` dispatches for the new shards' budgets
+  (3.3b) belong to the merge stage.
 - **Prepared AppStream release note.** "Replace All rewrites files up to
   512 MiB without holding them in memory, reports its progress, can be
   cancelled, lists the files it skipped with the reason, and offers to

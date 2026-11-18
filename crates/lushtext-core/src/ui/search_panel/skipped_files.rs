@@ -17,10 +17,22 @@
 //! (`policy::skip_sections`), one heading per reason, as the notes browser's
 //! `GtkSectionModel` does (`ui/window/notes/row_model.rs`). The report never
 //! changes while the dialog shows it, so no row is ever retargeted.
+//!
+//! # Why its first publish is staged
+//!
+//! Handed all 16,384 rows at once, the list realized GTK's whole band of
+//! about 205 rows inside the dispatch that opened the dialog (the lane's
+//! opening dispatch read 16.5–20.2 ms; `stream-replace-all` task 9.1). The
+//! model lists `model::list_budget::staged_first_rows` first and grows one
+//! step per frame (`ui::list_growth::RowGrowth`), as the notes browser does
+//! (`.agents/rules/ui.md`, "Realized List Rows"), once the dialog's open
+//! animation is over or the list scrolls; any key finishes the growth first,
+//! so keyboard navigation lands where it would on the whole list.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gtk4::gio;
@@ -31,6 +43,7 @@ use libadwaita::prelude::AdwDialogExt;
 
 use crate::model::content_search::{ReplaceSkipReason, ReplaceSkipReport};
 use crate::ui::accessibility;
+use crate::ui::list_growth::RowGrowth;
 use crate::ui::row_text::LushtextRowText;
 
 use super::LushtextSearchPanel;
@@ -40,6 +53,11 @@ use super::policy;
 const SKIPPED_FILES_WIDTH_SP: i32 = 560;
 /// Height of the dialog, in sp.
 const SKIPPED_FILES_HEIGHT_SP: i32 = 520;
+/// How long the staged first publish waits before it grows: past the
+/// dialog's open animation (about 330 ms in the lane), whose frames are
+/// paint-bound, so no growth step lands in them. Only how soon the
+/// scrollbar's thumb settles depends on it.
+const SKIPPED_FILES_GROWTH_DELAY: std::time::Duration = std::time::Duration::from_millis(512);
 
 mod row_imp {
     use super::{Cell, PathBuf, RefCell, glib};
@@ -109,6 +127,11 @@ mod model_imp {
         pub(super) live: RefCell<HashMap<u32, glib::WeakRef<SkippedFileRow>>>,
         /// Row objects built on demand (evidence: only around the realized rows).
         pub(super) item_requests: Cell<u64>,
+        /// Rows a staged first publish lists so far; `None` once every file
+        /// is listed.
+        pub(super) listed: Cell<Option<u32>>,
+        /// When the dialog began opening (monotonic µs), for the growth span.
+        pub(super) opened_us: Cell<i64>,
     }
 
     #[glib::object_subclass]
@@ -121,10 +144,18 @@ mod model_imp {
     impl ObjectImpl for SkippedFilesModel {}
 
     impl SkippedFilesModel {
-        pub(super) fn len(&self) -> u32 {
+        /// Every file the report lists, whether or not GTK is told yet.
+        pub(super) fn full_len(&self) -> u32 {
             self.report.borrow().as_ref().map_or(0, |report| {
                 u32::try_from(report.files().len()).unwrap_or(u32::MAX)
             })
+        }
+
+        /// The rows GTK is told about: the listed rows of a growing first
+        /// publish, then every file.
+        pub(super) fn len(&self) -> u32 {
+            let full = self.full_len();
+            self.listed.get().map_or(full, |listed| listed.min(full))
         }
     }
 
@@ -138,6 +169,9 @@ mod model_imp {
         }
 
         fn item(&self, position: u32) -> Option<glib::Object> {
+            if position >= self.len() {
+                return None;
+            }
             let mut live = self.live.borrow_mut();
             if let Some(row) = live.get(&position).and_then(glib::WeakRef::upgrade) {
                 return Some(row.upcast());
@@ -168,7 +202,8 @@ mod model_imp {
                 .borrow()
                 .iter()
                 .find(|(_, start, end)| (*start..*end).contains(&position))
-                .map_or((len, u32::MAX), |(_, start, end)| (*start, *end))
+                // A section is cut at the listed rows while the list grows.
+                .map_or((len, u32::MAX), |(_, start, end)| (*start, (*end).min(len)))
         }
     }
 }
@@ -187,13 +222,88 @@ impl SkippedFilesModel {
             .sections
             .replace(policy::skip_sections(report.files()));
         model.imp().report.replace(Some(report));
+        let full = model.imp().full_len();
+        let first = crate::model::list_budget::staged_first_rows(full);
+        model.imp().listed.set((first < full).then_some(first));
         model
+            .imp()
+            .opened_us
+            .set(crate::ui::construction_spans::now_us());
+        model
+    }
+
+    /// List the next growth step (`model::list_budget::next_growth`); `false`
+    /// once every file is listed.
+    fn grow_step(&self) -> bool {
+        crate::ui::responsiveness_probe::span(
+            crate::ui::responsiveness_probe::SKIPPED_FILES_GROWTH_STEP_SPAN,
+            || self.grow_one_step(),
+        )
+    }
+
+    fn grow_one_step(&self) -> bool {
+        let imp = self.imp();
+        let Some(listed) = imp.listed.get() else {
+            return false;
+        };
+        let full = imp.full_len();
+        let Some(next) = crate::model::list_budget::next_growth(listed, full) else {
+            imp.listed.set(None);
+            self.record_growth_end();
+            return false;
+        };
+        imp.listed.set((next < full).then_some(next));
+        self.items_changed(listed, 0, next - listed);
+        if next < full {
+            true
+        } else {
+            self.record_growth_end();
+            false
+        }
+    }
+
+    /// List every file a growing first publish has not listed yet.
+    fn finish_growth(&self) {
+        let imp = self.imp();
+        let Some(listed) = imp.listed.take() else {
+            return;
+        };
+        let full = imp.full_len();
+        if full > listed {
+            self.items_changed(listed, 0, full - listed);
+        }
+        self.record_growth_end();
+    }
+
+    /// Files a growing first publish has still to list.
+    fn growing_rows(&self) -> u32 {
+        self.imp().full_len() - self.imp().len()
+    }
+
+    fn record_growth_end(&self) {
+        crate::ui::responsiveness_probe::record_span(
+            crate::ui::responsiveness_probe::SKIPPED_FILES_GROWTH_SPAN,
+            self.imp().opened_us.get(),
+            crate::ui::construction_spans::now_us(),
+        );
     }
 
     /// Row objects the model has built: GTK asks only for the rows it realizes.
     #[must_use]
     pub fn item_requests(&self) -> u64 {
         self.imp().item_requests.get()
+    }
+
+    /// Rows the model lists to GTK.
+    #[must_use]
+    pub fn listed(&self) -> u32 {
+        self.imp().len()
+    }
+}
+
+impl crate::ui::list_growth::GrowingRows for SkippedFilesModel {
+    fn grow(&self) -> bool {
+        self.grow_step()
     }
 }
 
@@ -205,6 +315,13 @@ impl LushtextSearchPanel {
     /// selects its tab, and prefills the in-tab bar from the run's request. A
     /// file too large to open, or unreadable, has no action.
     pub fn show_skipped_files(&self) {
+        crate::ui::responsiveness_probe::span(
+            crate::ui::responsiveness_probe::SKIPPED_FILES_OPEN_SPAN,
+            || self.present_skipped_files(),
+        );
+    }
+
+    fn present_skipped_files(&self) {
         let Some(report) = self.last_skip_report() else {
             return;
         };
@@ -266,6 +383,30 @@ impl LushtextSearchPanel {
             }
         });
 
+        crate::ui::responsiveness_probe::observe_first_frame(
+            &list_view,
+            crate::ui::responsiveness_probe::SKIPPED_FILES_FIRST_FRAME_SPAN,
+        );
+        // A key that moves the selection lands where it would on the whole
+        // list: a first publish still growing lists the rest first.
+        let growth: Rc<RefCell<Option<RowGrowth>>> = Rc::default();
+        let keys = gtk4::EventControllerKey::new();
+        keys.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        keys.connect_key_pressed({
+            let growth = Rc::clone(&growth);
+            let model = model.downgrade();
+            move |_, _, _, _| {
+                if let Some(model) = model.upgrade()
+                    && model.growing_rows() > 0
+                {
+                    drop(growth.borrow_mut().take());
+                    model.finish_growth();
+                }
+                glib::Propagation::Proceed
+            }
+        });
+        list_view.add_controller(keys);
+
         let scroller = gtk4::ScrolledWindow::new();
         scroller.set_hscrollbar_policy(gtk4::PolicyType::Never);
         scroller.set_vexpand(true);
@@ -294,7 +435,9 @@ impl LushtextSearchPanel {
             .map(|widget| widget.downgrade());
         dialog.connect_closed({
             let panel = self.downgrade();
+            let growth = Rc::clone(&growth);
             move |_| {
+                drop(growth.borrow_mut().take());
                 let target = previous_focus
                     .as_ref()
                     .and_then(glib::WeakRef::upgrade)
@@ -312,6 +455,53 @@ impl LushtextSearchPanel {
         });
         dialog.present(Some(self));
         list_view.grab_focus();
+        // The growth runs from the list's frame clock once the dialog shows;
+        // a panel in no mapped window has no frame to spare, so it lists
+        // every file at once (nobody sees that list being built).
+        //
+        // It waits out the dialog's open animation: under the Cairo renderer
+        // each of its frames paints the whole window for 10–14 ms while their
+        // layout takes under 1 ms (the lane's `frame_paint` spans, task 9.1),
+        // and a growth step adds up to 2.6 ms of layout to its frame. The
+        // listed rows already fill the viewport, so nothing on screen waits.
+        // A scroll starts it at once, and a key finishes it.
+        if model.growing_rows() == 0 {
+            return;
+        }
+        if !self.root().is_some_and(|root| root.is_mapped()) {
+            model.finish_growth();
+            return;
+        }
+        let start_growth: Rc<dyn Fn()> = Rc::new({
+            let growth = Rc::clone(&growth);
+            let model = model.downgrade();
+            let list_view = list_view.downgrade();
+            move || {
+                let (Some(model), Some(list_view)) = (model.upgrade(), list_view.upgrade()) else {
+                    return;
+                };
+                if growth.borrow().is_some() || model.growing_rows() == 0 {
+                    return;
+                }
+                growth
+                    .borrow_mut()
+                    .replace(RowGrowth::start(Box::new(model), &list_view));
+            }
+        });
+        // A wheel or touchpad scroll starts it at once. (The adjustment's
+        // own `value-changed` is no sign of the user: the list moves it while
+        // the dialog animates in.)
+        let scroll = gtk4::EventControllerScroll::new(gtk4::EventControllerScrollFlags::VERTICAL);
+        scroll.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        scroll.connect_scroll({
+            let start_growth = Rc::clone(&start_growth);
+            move |_, _, _| {
+                start_growth();
+                glib::Propagation::Proceed
+            }
+        });
+        scroller.add_controller(scroll);
+        glib::timeout_add_local_once(SKIPPED_FILES_GROWTH_DELAY, move || start_growth());
     }
 
     /// Connect Open and Replace in Editor, which a Skipped Files row activates.

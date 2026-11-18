@@ -93,6 +93,30 @@ pub(crate) const TASK_COMPLETION_SPAN: &str = "task_completion";
 /// A81), so the lane measures the iteration around both.
 pub(crate) const TASK_HANDOFF_SPAN: &str = "task_handoff";
 
+/// The span of Replace All's completion terminal on GTK (`stream-replace-all`
+/// task 9.1, bar (a): `B_SETTLE_US`).
+pub(crate) const REPLACE_COMPLETION_SPAN: &str = "replace_completion";
+
+/// The span of one dispatch of the Replace All progress poll (task 9.1,
+/// bar (c): `B_INTERACT_US`).
+pub(crate) const REPLACE_PROGRESS_HEARTBEAT_SPAN: &str = "replace_progress_heartbeat";
+
+/// The span of the dispatch that opens the Skipped Files dialog (task 9.1,
+/// bar (b): `B_SETTLE_US`).
+pub(crate) const SKIPPED_FILES_OPEN_SPAN: &str = "skipped_files_open";
+
+/// The span over the layout and paint of the Skipped Files list's first
+/// frame after it maps (task 9.1, bar (b): `B_SETTLE_US`).
+pub(crate) const SKIPPED_FILES_FIRST_FRAME_SPAN: &str = "skipped_files_first_frame";
+
+/// The span from the Skipped Files dialog's opening to the end of its staged
+/// first publish (every file listed).
+pub(crate) const SKIPPED_FILES_GROWTH_SPAN: &str = "skipped_files_growth";
+
+/// The span of one growth step of the Skipped Files list's staged first
+/// publish: the lane judges the frame that lays out its rows.
+pub(crate) const SKIPPED_FILES_GROWTH_STEP_SPAN: &str = "skipped_files_growth_step";
+
 /// Run `work` and record it as one span named `name` in the measurement
 /// build, so the lane can attribute a long dispatch to the work inside it.
 /// Without the `responsiveness-probes` feature it only runs `work`.
@@ -194,6 +218,28 @@ pub(crate) fn observe_editor(_view: &sourceview5::View) {}
 #[cfg(feature = "responsiveness-probes")]
 pub(crate) fn observe_editor(view: &sourceview5::View) {
     measurement::observe_editor(view);
+}
+
+/// Record the layout and paint of the first frame after `widget` maps as one
+/// span named `name` (the shape of `post_open_first_editor_frame`).
+///
+/// Without the `responsiveness-probes` feature this is an empty function.
+#[cfg(not(feature = "responsiveness-probes"))]
+#[inline]
+pub(crate) fn observe_first_frame(
+    _widget: &impl gtk4::prelude::IsA<gtk4::Widget>,
+    _name: &'static str,
+) {
+}
+
+/// Record the layout and paint of the first frame after `widget` maps as one
+/// span named `name` (the shape of `post_open_first_editor_frame`).
+#[cfg(feature = "responsiveness-probes")]
+pub(crate) fn observe_first_frame(
+    widget: &impl gtk4::prelude::IsA<gtk4::Widget>,
+    name: &'static str,
+) {
+    measurement::observe_first_frame(widget.as_ref(), name);
 }
 
 /// The largest watchdog lateness observed since the probe was installed, which
@@ -628,6 +674,45 @@ mod measurement {
                         start_us,
                         glib::monotonic_time(),
                     );
+                    for handler in own.borrow_mut().drain(..) {
+                        clock.disconnect(handler);
+                    }
+                }));
+        });
+    }
+
+    /// See `super::observe_first_frame`: one span from the `before-paint` of
+    /// the first frame after `widget` maps to that frame's `after-paint`.
+    pub(super) fn observe_first_frame(widget: &gtk4::Widget, name: &'static str) {
+        if probe().is_none() {
+            return;
+        }
+        let first_frame = Rc::new(Cell::new(false));
+        widget.connect_map(move |widget| {
+            if first_frame.replace(true) {
+                return;
+            }
+            let Some(clock) = widget.frame_clock() else {
+                return;
+            };
+            let start = Rc::new(Cell::new(None::<i64>));
+            let handlers = Rc::new(RefCell::new(Vec::new()));
+            let stamp = Rc::clone(&start);
+            handlers
+                .borrow_mut()
+                .push(clock.connect_before_paint(move |_| {
+                    if stamp.get().is_none() {
+                        stamp.set(Some(glib::monotonic_time()));
+                    }
+                }));
+            let own = Rc::clone(&handlers);
+            handlers
+                .borrow_mut()
+                .push(clock.connect_after_paint(move |clock| {
+                    let Some(start_us) = start.get() else {
+                        return;
+                    };
+                    super::record_span(name, start_us, glib::monotonic_time());
                     for handler in own.borrow_mut().drain(..) {
                         clock.disconnect(handler);
                     }

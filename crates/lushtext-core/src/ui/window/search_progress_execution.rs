@@ -91,29 +91,13 @@ impl LushtextWindow {
         self.stop_replace_progress_tracking();
         let window_weak = self.downgrade();
         let announced = std::cell::Cell::new(false);
+        // Each poll dispatch is one span in the measurement build
+        // (`stream-replace-all` task 9.1, bar (c): `B_INTERACT_US`).
         let source_id = glib::timeout_add_local(REPLACE_PROGRESS_POLL, move || {
-            let Some(window) = window_weak.upgrade() else {
-                return glib::ControlFlow::Break;
-            };
-            let Some(progress) = window.imp().search_panel.replace_run_progress() else {
-                window.imp().search_progress.replace_poll_source_id.take();
-                return glib::ControlFlow::Break;
-            };
-            let (done, total, _, phase) = progress.snapshot();
-            let message = format_replace_progress_message(
-                done,
-                total,
-                phase == crate::services::content_search::ReplacePhase::RollingBack,
-            );
-            window.update_search_progress_message(&message);
-            if !announced.replace(true) {
-                window.announce_workflow_update(
-                    crate::ui::accessibility::AnnouncementLane::StatusUpdate,
-                    "replace-all-progress",
-                    "Replace All is running",
-                );
-            }
-            glib::ControlFlow::Continue
+            crate::ui::responsiveness_probe::span(
+                crate::ui::responsiveness_probe::REPLACE_PROGRESS_HEARTBEAT_SPAN,
+                || poll_replace_progress(&window_weak, &announced),
+            )
         });
         self.imp()
             .search_progress
@@ -336,6 +320,36 @@ impl LushtextWindow {
             source_id.remove();
         }
     }
+}
+
+/// One dispatch of the Replace All progress poll: publish the run's progress
+/// and announce it once; `Break` once the run has ended.
+fn poll_replace_progress(
+    window_weak: &glib::WeakRef<LushtextWindow>,
+    announced: &std::cell::Cell<bool>,
+) -> glib::ControlFlow {
+    let Some(window) = window_weak.upgrade() else {
+        return glib::ControlFlow::Break;
+    };
+    let Some(progress) = window.imp().search_panel.replace_run_progress() else {
+        window.imp().search_progress.replace_poll_source_id.take();
+        return glib::ControlFlow::Break;
+    };
+    let (done, total, _, phase) = progress.snapshot();
+    let message = format_replace_progress_message(
+        done,
+        total,
+        phase == crate::services::content_search::ReplacePhase::RollingBack,
+    );
+    window.update_search_progress_message(&message);
+    if !announced.replace(true) {
+        window.announce_workflow_update(
+            crate::ui::accessibility::AnnouncementLane::StatusUpdate,
+            "replace-all-progress",
+            "Replace All is running",
+        );
+    }
+    glib::ControlFlow::Continue
 }
 
 #[cfg(test)]

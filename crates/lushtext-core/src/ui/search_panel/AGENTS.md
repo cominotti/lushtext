@@ -44,8 +44,12 @@ This folder owns the workspace-wide content search panel adapter.
   `search-complete` pending) through the rollback.
 - The skip report is plain data (`ReplaceSkipReport`); `skipped_files.rs` is a
   called presentation surface over a lazy `GListModel` + `GtkSectionModel` that
-  builds a row object only when GTK asks for it. Its pure decisions stay in
-  `policy.rs` and its observable state in `evidence.rs`.
+  builds a row object only when GTK asks for it. Its first publish is staged
+  (`list_budget::staged_first_rows`, then `ui::list_growth::RowGrowth` once the
+  dialog's open animation is over or the list scrolls; a key finishes it):
+  handed every row at once, GTK realized its whole band (about 205 rows, A1)
+  inside the opening dispatch. Its pure decisions stay in `policy.rs` and its
+  observable state in `evidence.rs`.
 - **Open and Replace in Editor** (`win.replace-in-editor`) prefills the in-tab
   bar from the run's **request** (`policy::ReplaceRunIntent`: the accepted
   preview ticket's query spec plus its replacement text, captured on preview

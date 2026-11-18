@@ -4288,8 +4288,33 @@ fn test_skipped_files_dialog_builds_only_realized_rows() {
     });
     assert_eq!(skipped_for(&panel, ReplaceSkipReason::NotUtf8), FILES);
 
+    // The opening dispatch builds only the staged first rows: handed the
+    // whole model at once, the list realized GTK's whole band of about 205
+    // rows inside that dispatch (A1), 16.5–20.2 ms in the lane (task 9.1).
     activate_action(&window, "show-search-panel-skipped-files");
-    flush_after_delay(Duration::from_millis(200));
+    let opening = panel.evidence();
+    let opening_requests = opening
+        .skipped_files_item_requests
+        .expect("the dialog's model is alive while it is shown");
+    assert!(
+        opening_requests <= u64::from(lushtext_core::model::list_budget::LIST_FIRST_ROWS),
+        "the opening dispatch builds at most the staged first rows; it built {opening_requests}",
+    );
+    assert!(
+        opening
+            .skipped_files_listed
+            .is_some_and(|listed| listed <= lushtext_core::model::list_budget::LIST_FIRST_ROWS),
+        "the dialog first lists only the staged rows: {:?}",
+        opening.skipped_files_listed
+    );
+    // Once shown, the list's frame clock runs the growth.
+    wait_until(Duration::from_secs(5), || {
+        skipped_files_list(&window).is_realized()
+    });
+    // The growth lists every row within a few frames.
+    wait_until(Duration::from_secs(10), || {
+        panel.evidence().skipped_files_listed == Some(u32::try_from(FILES).expect("FILES fits u32"))
+    });
     let requests = panel
         .evidence()
         .skipped_files_item_requests
@@ -4298,6 +4323,14 @@ fn test_skipped_files_dialog_builds_only_realized_rows() {
     assert!(
         requests < 1024,
         "a lazy model builds the realized band, not {FILES} rows; it built {requests}",
+    );
+    // A key moves the selection over the whole list: End lands on the last
+    // file, which the growth listed (or a key finishes first).
+    let list = skipped_files_list(&window);
+    assert_eq!(
+        list.model().map(|model| model.n_items()),
+        Some(u32::try_from(FILES).expect("FILES fits u32")),
+        "every skipped file is listed once the growth ends"
     );
     window.visible_dialog().expect("dialog").close();
     flush_events();

@@ -571,7 +571,9 @@ Protected View notice.
   plus `GtkSectionModel`, built like the notes browser's
   (`ui/window/notes/row_model.rs`, ledger A93–A95). Rows are created only when
   GTK asks for them, and the reason headings come from a header factory, so
-  opening the dialog costs the same at 3 rows as at 16,384. A `GListStore` of
+  opening the dialog costs the same at 3 rows as at 16,384, given a staged
+  first publish (stage-3 round, C2–C3: handed every row at once, GTK
+  realized its whole band in the opening dispatch). A `GListStore` of
   row objects would create one GObject per row on GTK.
 - The report crosses to GTK as a plain-disposal-owned payload (at most
   `MAX_REPLACE_SKIP_LIST_BYTES` of paths). It is retired off GTK when the next
@@ -1158,3 +1160,109 @@ R1–R8 decision, including the bound reduction (R2). Its corrections:
   owns the merge watches its own `kani.yml` runs under
   `parallel-agent-work.md`'s CI-evidence exception, before it takes
   `MERGE-LOCK`.
+
+## Stage-3 round: judging task 9.1 (2026-11-18)
+
+Part C of the queued timing verdicts ran eight branch rounds at load below 4,
+but its verdict was never derived: the lane's `status: passed` judges no bar,
+and the only per-phase figure, the watchdog's worst lateness, read over the
+bars (skipped-dialog 16.5–20.2 ms in every round, replace-run 16.2 ms in r3).
+This round made the lane judge the delta's quantities, attributed every
+over-bar figure from the saved artifacts, and fixed the one this change owns.
+No budget exception is taken.
+
+- **C1. What the lane judges** (`scripts/responsiveness-smoke-driver.py`,
+  "Replace All against the budgets", in `report.md`, `report.json` and
+  `summary.json`'s `replace_all_verdict`). The measurement build records a
+  span for each judged dispatch (`ui/responsiveness_probe.rs`); a value is
+  the larger of the span's exact duration and the watchdog lateness of the
+  main-loop iteration around it, classified as the lane classifies every
+  stall (`within` only when `L + T` fits, `over` only when `L − eps` does
+  not). The two cases run the watchdog at a 1 ms tick and record every
+  frame's layout and paint. A quantity without its records is `not
+  measured`, never `within`, and the run is `met` only when every quantity
+  of every repetition is `within`:
+  - (a) `replace_completion`, the run's completion terminal, `B_SETTLE_US`;
+  - (b) `skipped_files_open` (the opening dispatch),
+    `skipped_files_first_frame` (the layout and paint of the list's first
+    frame after it maps) and the frame that lays out each growth step of
+    the staged first publish (`skipped_files_growth_step`), `B_SETTLE_US`;
+  - (c) every `replace_progress_heartbeat` during the 512 MiB run,
+    `B_INTERACT_US`;
+  - (d) every typing dispatch during that run: the iteration within one tick
+    of each key press, `B_INTERACT_US`;
+  - (p) replace-prepare: the delta does not name it, but the base
+    requirement "Workspace list dispatches fit the settle budget" judges
+    every dispatch that delivers the search results or installs the Replace
+    Preview rows against `B_SETTLE_US`, so it is a bar too. Its window now
+    starts once the scratch tab exists and has settled, so the window's own
+    opening (C4, C6) is not counted in it.
+
+  Regenerated over copies of the eight saved rounds, the new reading is
+  `not measured` for (a)–(c) (the spans did not exist) and `not met` for
+  skips-r4's (p) (42.3 ms): it fails closed.
+- **C2. Attribution of the saved rounds.**
+  - *Skipped-dialog, 16.5–20.2 ms:* the action dispatch, not a frame (r1:
+    ready 2.7 ms into the phase, ending just before the next frame began).
+    Counted, not timed: right after `win.show-search-panel-skipped-files`
+    returns, the lazy model had built 205 row objects, GTK's whole band
+    (A1), because the list was handed all 16,384 rows at construction
+    (failing-first, `failing-first.log`). D7's "opening the dialog costs the
+    same at 3 rows as at 16,384" held for the row objects a model builds,
+    not for the band GTK realizes from a full model: it holds only with a
+    staged first publish (C3).
+  - *The dialog's later frames, 10–14 ms:* paint, not layout. A functional
+    run with every frame's phases recorded shows the open animation's
+    frames painting the whole window for 10–14 ms under the lane's Cairo
+    renderer while their layout takes 15–600 µs. They are toolkit paint,
+    recorded, not judged (C5).
+  - *replace-run r3, 16.2 ms (r1, r2, r4: 5.0–7.3 ms):* neither a heartbeat
+    nor a key's dispatch. In all eight rounds every `settings_flush` span is
+    followed, 1–5 ms later, by a 5–16 ms dispatch that no span covers; in
+    the run it is the flush of `search-panel-visible`, set by
+    replace-prepare and held back by typing until 256 ms of input quiet.
+    Its inside is not in the artifacts (C5).
+  - *skips-r4 replace-prepare, 42.3 ms:* one dispatch 3.64 s into the
+    phase, overlapping no span and no frame; r1–r3 read 11.4–14.5 ms. Not
+    attributable from the artifacts (C5).
+- **C3. The fix: a staged first publish for the Skipped Files list**
+  (`ui/search_panel/skipped_files.rs`), the notes browser's pattern
+  (`.agents/rules/ui.md`, "Realized List Rows"): the model lists
+  `staged_first_rows` (32) first and grows `next_growth` steps from the
+  list's frame clock (`ui::list_growth::RowGrowth`); a section is cut at the
+  listed rows; any key finishes the growth first; a panel in no mapped
+  window lists everything at once. The growth waits out the open animation
+  (512 ms after opening, or the first wheel or touchpad scroll, whichever is
+  first): the 32 rows already fill the viewport, and a step adds up to
+  2.6 ms of layout to a frame that the animation's paint already holds at
+  10–14 ms. Only the moment the scrollbar's thumb settles depends on the
+  delay. The evidence reports the listed length
+  (`SearchPanelEvidence::skipped_files_listed`). Functional runs through
+  `heavy.sh` at load 3–4 (not verdicts): opening dispatch 4.4–10.5 ms,
+  first frame 12.9–13.3 ms, growth frames 0.2–0.3 ms of layout and paint
+  after the animation (the iteration around each at most 2.3 ms),
+  completion 0.1 ms, one heartbeat 0.1 ms, five keys below the watchdog's
+  late threshold. The replace engine is untouched, so Part B and the memory
+  rounds stand.
+- **C4. Reading of Part C, amended** (`MEASURE-QUEUE.md`): the verdict is
+  the report's `replace_all_verdict`, `met` only when (a), (b), (c), (d) and
+  (p) are `within` in all four rounds of each case. `not measured` (for
+  example (d) without RemoteDesktop) or `indeterminate` is not met.
+- **C5. Open decisions, not closed by this round.**
+  - The dispatch after a settings flush (5–16 ms, owner
+    `ui/settings_writes.rs`; the base requirement "GSettings backend writes
+    stay off the construction and interaction paths" asks the flush path to
+    keep every dispatch within its budget). It is `main`'s code and not
+    owned by this change; the report records it per flush, and an
+    attribution profile is queued as `PENDING`. Whether it is a
+    pre-existing blocker for this change or its own ledger change is the
+    coordinator's call.
+  - skips-r4's 42.3 ms replace-prepare dispatch, judged by (p): if the
+    verdict rounds reproduce it, Part C is not met and its attribution
+    profile (queued) decides the fix.
+  - The dialog's open-animation frames under Cairo (10–14 ms, 19 ms at load
+    near 4): recorded per run with their layout share; the delta judges the
+    first frame only.
+  - The delta's Cancel Replace All activation (`B_INTERACT_US`) and its
+    "Saving a file while Replace All rewrites it" scenario have no lane
+    case: widget tests prove their behaviour, not their dispatch time.

@@ -340,119 +340,129 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                         Err(error) => GuardedReplaceApplyResult::Failed(error),
                     }
                 },
+                // The completion terminal is one span in the measurement build
+                // (`stream-replace-all` task 9.1, bar (a): `B_SETTLE_US`).
                 move |window, result| {
-                    let imp = window.imp();
-                    window.stop_replace_progress_tracking();
-                    match result {
-                        GuardedReplaceApplyResult::Applied {
-                            result: replace_result,
-                            backup,
-                            skip_report,
-                            cancelled,
-                        } => {
-                            let replace_result = *replace_result;
-                            imp.search_panel.record_replace_apply_counts(
-                                crate::ui::search_panel::policy::ReplaceApplyCounts {
-                                    replaced: u32::try_from(replace_result.replaced_count)
-                                        .unwrap_or(u32::MAX),
-                                    skipped: u32::try_from(replace_result.skipped_count)
-                                        .unwrap_or(u32::MAX),
-                                    errors: u32::try_from(replace_result.error_count)
-                                        .unwrap_or(u32::MAX),
-                                },
-                            );
-                            let mut msg = if cancelled {
-                                format!(
-                                    "Replace All cancelled; {} files could not be restored",
-                                    replace_result.files_affected,
-                                )
-                            } else {
-                                format!(
-                                    "Replaced {} of {} matches in {} files",
-                                    replace_result.replaced_count,
-                                    total_replacements,
-                                    replace_result.files_affected,
-                                )
-                            };
-                            if let Some(clause) =
-                                crate::ui::search_panel::policy::skip_completion_clause(
-                                    &skip_report,
-                                )
-                            {
-                                msg.push_str(&clause);
-                            }
-                            if replace_result.error_count > 0 {
-                                msg.push_str(&format!(" ({} errors)", replace_result.error_count));
-                            }
-                            let kind = if replace_result.error_count == 0 && !cancelled {
-                                MessageKind::Info
-                            } else {
-                                MessageKind::Warning
-                            };
-                            window.publish_status_message(&msg, kind);
-                            if matches!(kind, MessageKind::Info) {
-                                window.announce_workflow_update(
-                                    AnnouncementLane::StatusUpdate,
-                                    "replace-all-complete",
-                                    &msg,
-                                );
-                            }
-                            imp.search_panel.finish_replace_run(Some(*skip_report));
+                    crate::ui::responsiveness_probe::span(
+                        crate::ui::responsiveness_probe::REPLACE_COMPLETION_SPAN,
+                        move || {
+                            let imp = window.imp();
+                            window.stop_replace_progress_tracking();
+                            match result {
+                                GuardedReplaceApplyResult::Applied {
+                                    result: replace_result,
+                                    backup,
+                                    skip_report,
+                                    cancelled,
+                                } => {
+                                    let replace_result = *replace_result;
+                                    imp.search_panel.record_replace_apply_counts(
+                                        crate::ui::search_panel::policy::ReplaceApplyCounts {
+                                            replaced: u32::try_from(replace_result.replaced_count)
+                                                .unwrap_or(u32::MAX),
+                                            skipped: u32::try_from(replace_result.skipped_count)
+                                                .unwrap_or(u32::MAX),
+                                            errors: u32::try_from(replace_result.error_count)
+                                                .unwrap_or(u32::MAX),
+                                        },
+                                    );
+                                    let mut msg = if cancelled {
+                                        format!(
+                                            "Replace All cancelled; {} files could not be restored",
+                                            replace_result.files_affected,
+                                        )
+                                    } else {
+                                        format!(
+                                            "Replaced {} of {} matches in {} files",
+                                            replace_result.replaced_count,
+                                            total_replacements,
+                                            replace_result.files_affected,
+                                        )
+                                    };
+                                    if let Some(clause) =
+                                        crate::ui::search_panel::policy::skip_completion_clause(
+                                            &skip_report,
+                                        )
+                                    {
+                                        msg.push_str(&clause);
+                                    }
+                                    if replace_result.error_count > 0 {
+                                        msg.push_str(&format!(
+                                            " ({} errors)",
+                                            replace_result.error_count
+                                        ));
+                                    }
+                                    let kind = if replace_result.error_count == 0 && !cancelled {
+                                        MessageKind::Info
+                                    } else {
+                                        MessageKind::Warning
+                                    };
+                                    window.publish_status_message(&msg, kind);
+                                    if matches!(kind, MessageKind::Info) {
+                                        window.announce_workflow_update(
+                                            AnnouncementLane::StatusUpdate,
+                                            "replace-all-complete",
+                                            &msg,
+                                        );
+                                    }
+                                    imp.search_panel.finish_replace_run(Some(*skip_report));
 
-                            if let Some(backup) = backup {
-                                if imp
-                                    .search_panel
-                                    .publish_undo_journal_for_generation(backup, undo_generation)
-                                {
-                                    window.announce_workflow_update(
-                                        AnnouncementLane::StatusUpdate,
-                                        "replace-all-undo-available",
-                                        "Undo is available for the last Replace All",
+                                    if let Some(backup) = backup {
+                                        if imp.search_panel.publish_undo_journal_for_generation(
+                                            backup,
+                                            undo_generation,
+                                        ) {
+                                            window.announce_workflow_update(
+                                                AnnouncementLane::StatusUpdate,
+                                                "replace-all-undo-available",
+                                                "Undo is available for the last Replace All",
+                                            );
+                                        }
+                                    } else {
+                                        imp.search_panel
+                                            .clear_undo_backup_for_generation(undo_generation);
+                                    }
+
+                                    // Reload affected open tabs to show updated content.
+                                    let affected_paths = replace_result
+                                        .affected_open_paths
+                                        .into_iter()
+                                        .collect::<HashSet<_>>();
+                                    reload_affected_tabs(&window, &affected_paths);
+                                }
+                                GuardedReplaceApplyResult::Superseded => {
+                                    imp.search_panel.finish_replace_run(None);
+                                    window.publish_status_message(
+                                        "Replace All was superseded before any files changed",
+                                        MessageKind::Warning,
                                     );
                                 }
-                            } else {
-                                imp.search_panel
-                                    .clear_undo_backup_for_generation(undo_generation);
+                                GuardedReplaceApplyResult::Cancelled => {
+                                    imp.search_panel.finish_replace_run(None);
+                                    imp.search_panel
+                                        .clear_undo_backup_for_generation(undo_generation);
+                                    window.publish_status_message(
+                                        "Replace All cancelled; every file was restored",
+                                        MessageKind::Info,
+                                    );
+                                    window.announce_workflow_update(
+                                        AnnouncementLane::StatusUpdate,
+                                        "replace-all-cancelled",
+                                        "Replace All cancelled; every file was restored",
+                                    );
+                                }
+                                GuardedReplaceApplyResult::Failed(e) => {
+                                    imp.search_panel.finish_replace_run(None);
+                                    window.publish_status_message(
+                                        &format!("Replace failed: {e}"),
+                                        MessageKind::Error,
+                                    );
+                                }
                             }
-
-                            // Reload affected open tabs to show updated content.
-                            let affected_paths = replace_result
-                                .affected_open_paths
-                                .into_iter()
-                                .collect::<HashSet<_>>();
-                            reload_affected_tabs(&window, &affected_paths);
-                        }
-                        GuardedReplaceApplyResult::Superseded => {
-                            imp.search_panel.finish_replace_run(None);
-                            window.publish_status_message(
-                                "Replace All was superseded before any files changed",
-                                MessageKind::Warning,
-                            );
-                        }
-                        GuardedReplaceApplyResult::Cancelled => {
-                            imp.search_panel.finish_replace_run(None);
-                            imp.search_panel
-                                .clear_undo_backup_for_generation(undo_generation);
-                            window.publish_status_message(
-                                "Replace All cancelled; every file was restored",
-                                MessageKind::Info,
-                            );
-                            window.announce_workflow_update(
-                                AnnouncementLane::StatusUpdate,
-                                "replace-all-cancelled",
-                                "Replace All cancelled; every file was restored",
-                            );
-                        }
-                        GuardedReplaceApplyResult::Failed(e) => {
-                            imp.search_panel.finish_replace_run(None);
-                            window.publish_status_message(
-                                &format!("Replace failed: {e}"),
-                                MessageKind::Error,
-                            );
-                        }
-                    }
-                    imp.search_panel.finish_replace_transaction();
-                    window.close_if_requested_after_replace_run();
+                            imp.search_panel.finish_replace_transaction();
+                            window.close_if_requested_after_replace_run();
+                        },
+                    );
                 },
             );
         });

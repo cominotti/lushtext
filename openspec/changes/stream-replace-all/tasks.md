@@ -622,6 +622,13 @@ path moves that edit to G5.
   - (c) the progress heartbeat during a 512 MiB run, within `B_interact`
     (the lane for "Replace All reports progress for long runs");
   - (d) typing in another tab during a 512 MiB run, within `B_interact`.
+
+  Amended 2026-11-18 (design "Stage-3 round: judging task 9.1"): the eight
+  rounds of 2026-11-18 derived no verdict, so the lane now judges (a)–(d),
+  and replace-prepare as (p), from probe spans (C1); the opening dispatch's
+  16.5–20.2 ms was GTK's whole band realized from a full model (C2), fixed by
+  a staged first publish (C3); part C is `READY` again on the commit that
+  carries both, read by C4, with C5's open decisions.
 - [x] 9.2 Memory verdict, the M9 method, as in 4.8: four rounds
   interleaved `main` → branch → `main` → branch through `heavy.sh` (design
   R3), on the final code. Rerun on `e05d2abd` (the 256 KiB chunk of task

@@ -37,6 +37,7 @@ use gtk4::prelude::*;
 use crate::model::content_search::SearchQuerySpec;
 
 use super::LushtextSearchPanel;
+use super::skipped_files::SkippedFilesModel;
 
 /// One consistent read of the workspace search and Replace All preview workflow.
 ///
@@ -178,6 +179,9 @@ pub struct SearchPanelEvidence {
     pub skipped_files_offered: bool,
     /// Row objects the open Skipped Files dialog's lazy model has built.
     pub skipped_files_item_requests: Option<u64>,
+    /// Rows the open Skipped Files dialog lists: its staged first rows while
+    /// its first publish grows, then every listed file (the final length).
+    pub skipped_files_listed: Option<u32>,
 
     // --- undo journal ---
     /// Whether a Replace All undo backup is available.
@@ -280,9 +284,11 @@ impl LushtextSearchPanel {
         let replace_skip_counts = skip_report.as_ref().map_or([0; 11], |report| {
             crate::model::content_search::ReplaceSkipReason::ALL.map(|reason| report.count(reason))
         });
-        let skipped_files_item_requests = self
-            .skipped_files_model()
-            .map(|model| model.item_requests());
+        let skipped_files_model = self.skipped_files_model();
+        let skipped_files_item_requests = skipped_files_model
+            .as_ref()
+            .map(SkippedFilesModel::item_requests);
+        let skipped_files_listed = skipped_files_model.as_ref().map(SkippedFilesModel::listed);
         // The identity clone is a separate short borrow for the same reason.
         #[cfg(feature = "test-utils")]
         let undo_backup = preview.undo_backup.borrow().clone();
@@ -358,6 +364,7 @@ impl LushtextSearchPanel {
             replace_skip_not_listed: skip_report.as_ref().map_or(0, |report| report.not_listed()),
             skipped_files_offered: skip_report.is_some(),
             skipped_files_item_requests,
+            skipped_files_listed,
 
             has_undo_backup,
             undo_backup_generation: preview
