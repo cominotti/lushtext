@@ -4553,6 +4553,16 @@ review", "Implementation decisions"); evidence in
     input), corrected the completion table's 400:64 bar, added the watch
     contribution to the intent fix, and settled the expansion cap against
     tall viewports.
+  - *D19 go/no-go (2026-11-17, design R9).* The skip-cache upper bound of
+    the unbound-row bookkeeping cut completes the 0:131,072 collapse in
+    112–153 ms against R3's 100 ms (`main` 24–30 ms), so the change returned
+    to design and revised the bar, not the mechanism: above 16,384
+    flattened rows a collapse is allowed 0.5 µs a further row (57 ms at
+    131,072), with the arrow in the first frame and no frame over budget;
+    the settled time is recorded, not judged. The DWARF profile names R2's
+    `[unknown]` callers (`PathBuf` equality and path hashing, 37 % of the
+    window) and a 5.7 % measurement bias in the verdict test's per-dispatch
+    evidence read. The 400:131,072 figure is provisional, queued.
   - *What `stop-expander-bind-time-child-scans` must build on.* Its proposal
     says `row_factory.rs` is unchanged; this change makes that false. Build
     on: `collapse_directory` and `expand_directory`

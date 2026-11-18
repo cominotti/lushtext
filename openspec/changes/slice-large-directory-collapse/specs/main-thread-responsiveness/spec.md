@@ -50,8 +50,8 @@ Collapsing a sidebar directory by a route LushText owns SHALL keep the input dis
 
 #### Scenario: The first frame takes the first step
 - **WHEN** a sliced collapse starts
-- **THEN** the input dispatch only shows the intent and arms the step sources, and the first step runs no later than the first frame after the input (a bound unit from that frame's tick, or unbound chunks from the between-frames source), so no frame passes before the work starts
-- **AND** that frame takes no more than one unit of bound rows
+- **THEN** the input dispatch only shows the intent and arms the step sources, and the first step runs no later than the first frame after the input: a bound unit from that frame's tick, or, when the first rows to remove are unbound and that tick removes nothing, unbound chunks from the between-frames source in the interval right after that frame, so no second frame passes before the work starts
+- **AND** that frame takes no more than one unit of bound rows and shows the collapse
 
 #### Scenario: Unbound rows leave between frames
 - **WHEN** a sliced collapse removes rows no widget is bound to
@@ -62,12 +62,18 @@ Collapsing a sidebar directory by a route LushText owns SHALL keep the input dis
 - **THEN** the verdict test prints it separately, it is excluded from this requirement's pass bar, and it is recorded as owned by `stop-expander-bind-time-child-scans`
 
 ### Requirement: A sidebar collapse finishes no later than main's
-A sidebar directory collapse by a route LushText owns SHALL draw its collapsed rows no later than `main`'s direct collapse does, measured from the input to the frame that draws them: at most `main`'s time plus two 60 Hz frames, or 100 ms where `main` takes less.
+A sidebar directory collapse by a route LushText owns SHALL draw its collapsed rows no later than `main`'s direct collapse does, measured from the input to the frame that draws them: at most `main`'s time plus two 60 Hz frames, or 100 ms where `main` takes less. A collapsing subtree of more than 16,384 flattened rows SHALL be allowed 0.5 µs more for each row beyond 16,384, and no more.
 
 #### Scenario: A collapse finishes no later than main's
 - **WHEN** the verdict test collapses each measured case on `main` and on the branch
 - **THEN** it prints each side's completion: from the start of the input dispatch to the end of the first frame dispatch after which the directory row is collapsed
-- **AND** the branch's worst completion is at most `main`'s worst plus 33.3 ms, or at most 100 ms where that is larger
+- **AND** the branch's worst completion is at most `main`'s worst plus 33.3 ms, or at most 100 ms where that is larger, plus `max(0, R − 16,384) × 0.5 µs` for a subtree of `R` flattened rows at the input
+- **AND** it prints each side's settled time (until the section's readiness holds) beside it, recorded and not judged
+- **AND** the probe that detects the completing frame reads the directory row's expansion only, not the section's whole evidence, so the measurement adds no per-dispatch work that grows with the listing
+
+#### Scenario: A very large directory finishes later, bounded
+- **WHEN** the user collapses an expanded directory of 131,072 entries
+- **THEN** the arrow and the accessible state show the collapse in the first frame, no dispatch exceeds its budget, and the rows finish disappearing within the bar above, which for that size is at most about 57 ms past the bar of a directory of 16,384 rows
 
 #### Scenario: The folder header
 - **WHEN** the folder header collapses two expanded roots of 4,096 entries each

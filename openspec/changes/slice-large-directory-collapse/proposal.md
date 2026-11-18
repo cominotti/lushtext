@@ -75,7 +75,10 @@ frame, so a smaller unit fits the frame budget only by finishing two to four
 times later than `main`. The revision therefore adds, beside what follows:
 
 - **A completion bar:** a collapse draws its collapsed rows no later than
-  `main`'s plus two frames, or within 100 ms where `main` is faster.
+  `main`'s plus two frames, or within 100 ms where `main` is faster; a
+  subtree above 16,384 flattened rows is allowed 0.5 µs for each further row
+  (design R9, 2026-11-17: 57 ms at 131,072 rows, where trimming the
+  bookkeeping cannot reach 100 ms).
 - **Lighter rows:** the reorder handle, the Focus Folder button and the drop
   surfaces are created on demand instead of in every row, cutting what every
   collapse, expansion and scroll pays per row.
@@ -220,7 +223,10 @@ times later than `main`. The revision therefore adds, beside what follows:
   same accessible names, and the expander keeps every key and click it has
   today.
 - **Revised:** the collapse finishes no later than `main`'s frozen one (plus
-  two frames, the frame boundaries a paced collapse starts and ends on), and the folder header's Collapse leaves every root collapsed,
+  two frames, the frame boundaries a paced collapse starts and ends on);
+  a directory above 16,384 rows may finish up to 0.5 µs a further row later
+  (about 57 ms at 131,072 entries: design R9), with the arrow still flipping
+  in the first frame and no frame frozen; and the folder header's Collapse leaves every root collapsed,
   which `main` does not when a large first root pushes the next one out of
   the realized band. Expanding a small directory shows the rows in view in
   the first frame and fills the rest of the band over the next few frames

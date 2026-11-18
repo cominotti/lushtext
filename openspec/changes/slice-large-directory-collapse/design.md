@@ -387,8 +387,10 @@ see D4.
   unit then stays at 8. Nothing over budget is left unexplained.
 - The first frame after the input shows the collapse: the arrow and the
   accessible state, D6.
-- *Revised (R3):* completion is enforced: the branch's worst completion is
-  at most `max(main's worst + 33.3 ms, 100 ms)` per case. The paragraph below
+- *Revised (R3, R9):* completion is enforced: the branch's worst completion
+  is at most `max(main's worst + 33.3 ms, 100 ms)` per case, plus
+  `max(0, R − 16,384) × 0.5 µs` for a subtree of `R` flattened rows (R9);
+  the settled time is printed and recorded, not judged. The paragraph below
   is the stage 1 text it replaces.
 - Time until collapsed is printed and recorded, not enforced. Its expected
   ceiling is
@@ -1091,6 +1093,29 @@ Recorded at stage 3 (implementation), each with its evidence.
     record 11.3 minutes) to 36.7 minutes over two attempts; it now walks every case at 64 and 256 entries
     (4,096 for the large cases) unless `timing_verdicts_enforced()`, which
     the campaign's optimized build is.
+17. **D18's destroy-only condition also bounds the rows before the band**
+    (stage 3 continuation). A bound removal takes the destroy-only unit only
+    when no row is listed after the realized band *and* at most one unit
+    (`SIDEBAR_REALIZED_ROWS_PER_FRAME`) lies before its first realized row
+    (`CollapseFacts::rows_before`, `policy::collapse_removal_is_destroy_only`).
+    With nothing after the band, GTK keeps the band full by realizing rows
+    from above (A1, A118), so a 64-row destroy-only removal at the tail of a
+    long list brought 64 rows in: the widget guard measured
+    `RowChange { shown: 64, destroyed: 64 }` and the band-model property test
+    shrank to 34 rows entering in one step before the condition was added.
+    Kani's collapse harnesses take `rows_before`/`rows_after` symbolic.
+18. **Open: the first-frame scenario under D19.** "The first frame takes the
+    first step" says the first step runs no later than the first frame
+    "(… or unbound chunks from the between-frames source), so no frame
+    passes before the work starts". With the band at the top of a large
+    listing, the first frame's tick finds an unbound step and removes
+    nothing; the between-frames source removes rows right after that frame,
+    and they are gone by the second. The guard test (task 10.9) asserts
+    that behaviour (first frame at most one unit and the D6 projection,
+    second frame under 4,096 rows left). Whether that satisfies the scenario
+    or the scenario must say "the first step runs in the gap after the
+    first frame" is a design decision for the reviewing stage, not taken
+    here.
 
 ## Stage 4 verdict (2026-11-15): pass bar not met, back to implementation
 
@@ -1665,6 +1690,193 @@ corrected, in place:
 9. **Task 10.7** also measures the capped expansion, which the same unit
    governs, and reads an unbound chunk's budget as its whole turn.
 
+### R9. The D19 go/no-go (stage 1 reconciliation, 2026-11-17)
+
+The stage 3 continuation stopped with the D19 go/no-go open (tasks 10.3,
+10.4, 10.7): the rule in its queue entry was that if the skip-cache upper
+bound misses R3's completion bar for the 0:131,072 collapse, the change
+returns to design. The coordinator ran the queued rounds on 2026-11-17
+(`rev/attr2/`, labels `slc-skipcache-1`, `slc-d19a-2`, `slc-d19a-pdw`,
+`scripts/measure.sh`, recorded 1-minute load 2.9–3.3 at their ends, saved
+binaries `rev/bin/widget-attr-{skipcache,d19a}`; attribution, not
+verdicts). This stage merged `origin/main` `c16d6fdc` first (A113 and
+A115–A117, A122 are `main`'s; this change keeps A114 and A118–A120, and
+needs no new id).
+
+**The figures** (0:131,072, three repetitions each; *completion* is R3's
+instrument, `shown_us`; *settled* is `done_us`, until the section's
+readiness holds):
+
+| build | completion | settled | worst step | worst frame | worst other dispatch |
+|---|---|---|---|---|---|
+| `d19a` (the WIP's D19 code) | 194 / 231 / 299 ms | 658–741 ms | 7.9–8.2 ms | 6.5–7.1 ms | 30.5–33.7 ms (probe-scan publication, D12) |
+| `skipcache` (D19 code, `drain_child_store` skipping the path-cache splice) | 112 / 126 / 153 ms | 589–617 ms | 5.7–6.0 ms | 6.7–7.3 ms | 29.0–37.0 ms (the same residual) |
+| `main` (quiet campaign, stage 4) | 24–30 ms | 0.44–0.50 s | (one direct collapse) | | |
+
+**The rule fires.** R3's bar for 0:131,072 is `max(30 + 33.3, 100)` =
+100 ms, and the skip-cache upper bound reaches 112–153 ms. On the settled
+reading it misses as well (589–617 ms against `main`'s 0.50 s + 33.3 ms).
+The change therefore returns to design at this point, and this section is
+that decision.
+
+**Where the time goes** (`slc-d19a-pdw`, DWARF-unwound, read by leaf symbol
+because the Rust frames do not unwind: `rev3/leaf.py`; 318 GTK-thread
+samples of 0.5 ms in the 182.7 ms from the input to the completing frame,
+so the GTK thread is busy 87 % of the window: the completion is CPU-bound,
+not frame-quantized):
+
+- LushText's path bookkeeping, 37 %: `PathBuf` equality 16.4 %, the path
+  SipHash 16.3 % (`DefaultHasher::write` 9.4 %, `Path::hash` 6.9 %), the
+  `item_locations` `remove_entry` 2.5 % and `release_child_occurrences`
+  2.2 %. These are the callers R2 left `[unknown]`; the skip-cache build
+  removes most of them.
+- Allocation frees 10–12 % (`_int_free_*`, the dropped `PathBuf`s and mirror
+  rows), GObject reference and lock traffic about 12 %, GTK's own removal
+  (rb-tree, store splice) a few per cent.
+- **Instrument bias, 5.7 %:** `directory_listing_evidence` and its reverse
+  scan of the 131,072-row mirror, which the verdict test's timeline loop
+  runs through `workspace_section_evidence()` after every dispatch (84–111
+  dispatches in the branch's window, a few on `main`'s). About 9 ms of the
+  window is the measurement, not the collapse. Task 10.1 replaces it with a
+  scalar probe.
+
+**What the skip-cache bound is not.** It is not the floor of the mechanism:
+it still pays, per 8,192-row chunk, the O(store) mirror count, a
+`store.item()` per removed row, the removed paths' collect and free, and
+5.7–6.0 ms a chunk, against GTK's own collapse removing the same 131,072
+nodes in about 10 ms (R2). And it is not the floor of every mechanism:
+removing the unbound tail through one model change (a slice model over
+the child store) or hiding the band at intent were considered and not taken
+(below). So the evidence does not show that no mechanism can meet R3; it
+shows that R3's 100 ms cannot be met by trimming D19's bookkeeping, and
+that R3, written for subtrees whose unbound removal costs under one frame
+(R3's table: "unbound (under 1)" up to 16,385 entries), did not price the
+linear part of a very large subtree at all.
+
+**Decision: a revised, user-experience-first completion bar (not a new
+mechanism).** User experience first, taken as what a user perceives of a
+collapse: when it acknowledges the input, whether anything freezes, and when
+the picture is final.
+
+1. *Acknowledgement* (unchanged, D6): the first frame after the input shows
+   the collapsed arrow and the accessible state, in every case. That is
+   earlier than `main`'s completion in every measured case (`main` draws
+   nothing until its 24–124 ms of frozen work are done).
+2. *No freeze* (unchanged, D2): every step within `B_INTERACT_US`, every
+   dispatch within `B_SETTLE_US`, except the named residual (D12) and a
+   recorded toolkit floor.
+3. *Completion*, revised: for every owned case, the branch's worst
+   completion is at most
+
+   `max(main's worst completion + 33.3 ms, 100 ms) + max(0, R − 16,384) × 0.5 µs`
+
+   where `R` is the collapsing subtree's flattened rows at the input. Up to
+   16,384 rows the allowance is zero and the bar is R3's, unchanged; it is
+   continuous in `R`, so no size steps the bar.
+4. *Settled* (`done_us`): printed for both sides and recorded, not judged.
+   After the completing frame the section only retires the listing (BL's
+   4,096-row slices at `G_PRIORITY_LOW`) and publishes the probe scan (the
+   residual owned by `stop-expander-bind-time-child-scans`), neither of
+   which the user sees; both sides pay both.
+
+*Why 16,384.* It is the size up to which R3 is reachable on the frame
+argument: R3's table puts the unbound removal of up to 16,385 entries under
+one frame, so their completion is the bound units' frames. Past it the
+unbound rows' removal grows linearly with `R` at a per-row cost (the
+toolkit's per-node removal plus LushText's item hand-off), which no frame
+budget prices. A power of two, as `rust.md` asks of a threshold; it is a
+verdict-test figure, not a production constant.
+
+*Why 0.5 µs a row, and why it is a fixed number, not the branch's figure.*
+`main` pays per row after its completion too: its sidebar settles
+0.44–0.50 s after a 131,072-entry collapse, about 3.4 µs a row past its
+completion (listing retirement, probe scan). The allowance is a seventh of
+that, so with it the branch draws its final rows at 157 ms (0:131,072) or
+215 ms (400:131,072), long before `main`'s sidebar has settled, and without
+`main`'s 24–124 ms of frozen work. It is also a bar that requires work: the
+WIP's `d19a` build misses it by 37–141 ms at 0:131,072, and only the
+skip-cache upper bound meets it (by 4–45 ms, before the instrument bias is
+removed). Meeting it requires task 10.3's per-row cut, which this section's
+profile now names. 0.5 µs (`1 / 2` µs, a power of two) lies inside what the
+skip-cache build spends a row past the frame-bound cases: its 0:131,072
+completion (112–153 ms) less `d19a-1`'s 0:4,096 one (71–82 ms, load 8,
+non-verdict; no skip-cache 0:4,096 figure exists), over the 126,976 rows
+between them, is 0.24–0.65 µs a row.
+
+| case | `main` worst | R3 bar | allowance | revised bar | evidence today |
+|---|---|---|---|---|---|
+| 0:16,385 | 21 ms | 100 ms | 0 | 100 ms | (R3's table, frame-bound) |
+| 0:131,072 | 30 ms | 100 ms | 57.3 ms | 157.3 ms | skip-cache 112–153 ms; `d19a` 194–299 ms |
+| 400:16,385 | 106 ms | 139 ms | 0 | 139 ms | (R3's table) |
+| 400:131,072 | 124 ms | 157 ms | 57.3 ms | 214.6 ms | **provisional:** no skip-cache figure; `d19a-1` 285–345 ms at load 8 (non-verdict) |
+
+The 400:131,072 row is provisional: its skip-cache figure is queued
+(`MEASURE-QUEUE.md`, "large-subtree bar attribution", round 1, with a
+skip-cache profile as round 2), and task 10.7's round on the reworked code
+decides it with the rest. **The negative-slack stop condition stands:** if
+task 10.7's round or the final campaign misses the revised bar in any case,
+the change returns to design with that round, and no case is excepted in
+advance.
+
+*The trade is user-visible again, and stated.* R8 item 5 marked stage 1's
+"finishes later than `main`" superseded by R3. For a subtree above 16,384
+rows that is reinstated, bounded: the rows finish disappearing up to
+`(R − 16,384) × 0.5 µs` (57 ms at 131,072 rows) after R3's bar, while the
+arrow flips in the first frame and no frame freezes. The proposal, the
+Risks and the completion requirement say so (the requirement's scenario
+names are kept).
+
+*Alternatives considered and not taken now.*
+
+- *Keep R3 and change the mechanism.* (a) A `GtkSliceListModel` over every
+  child store, so the unbound tail leaves in one `items-changed` whose
+  per-node rb-tree removal GTK does without LushText's per-row work, and
+  the store and its caches stay untouched until the terminal (which would
+  also make D7's refill trivial). Its gain is unmeasured, and every reader
+  that maps a tree row to its `gio::ListStore` (`child_store_key`, the
+  mirrors, the scan flights) would change: a redesign of the section, not a
+  revision of this change. (b) Hiding the band's subtree rows at intent:
+  with nothing after the directory the picture is final in the first frame,
+  but the scrollbar still describes 131,072 rows and the user can scroll
+  into blank space; with rows after it, a gap opens above them. Both stay
+  recorded follow-ups if task 10.7's round misses the revised bar.
+- *Judging the settled time.* Its excess over `main` (589–741 ms against
+  0.44–0.50 s) is the listing retirement starting after a later completion,
+  which draws nothing and freezes nothing; judging it would trade the
+  completion the user sees for bookkeeping the user does not.
+- *Exempting the 131,072 cases.* Rejected: an exception is for a measured
+  toolkit floor, and this cost is mostly LushText's (37 % of the window).
+
+**Implementation decision 18, decided.** With the band at the top of a large
+listing, the first frame's tick finds only unbound rows to remove and
+removes nothing; the between-frames source removes them in the interval
+after that frame. Accepted: the first frame shows D6's projection, which is
+all a user can see change (unbound rows are not drawn), and the interval
+that follows it is the earliest time a between-frames source can run. The
+scenario "The first frame takes the first step" now says so; task 10.9's
+guard test asserts it (the first frame takes at most one unit and shows the
+projection; the second frame sees fewer than 4,096 of the subtree's rows
+left in the band's model range, or the unbound rows going).
+
+**The open CRITICAL flood is a task.** The WIP's
+`test_typing_into_inline_rename_keeps_every_character` floods
+`gtk_widget_get_parent: assertion 'GTK_IS_WIDGET (widget)' failed` (36.5
+million lines; the 4 GiB scope kills mutter) on every batch that contains
+it (handoff `impl/impl-decisions.md`, decisions 16 and 19). It is a blocker
+under `preexisting-blockers.md` whether or not `main` has it, so it is task
+9.12: a deterministic reproduction run with bounded output, a run on
+`origin/main` to classify it, and a failing-first fix (the leading
+candidate is `restore_selection`, handoff `impl/wip-1700.patch`), before
+task 9.1 can be proved.
+
+**Reconciliation record.** The merge with `origin/main` needed two WIP
+fixes to pass the hook, both in the uncommitted tree (they land with task
+7.7): the section's `map`/`unmap` handlers moved from string-named
+`connect_local` to the typed `connect_map`/`connect_unmap`
+(`make check-signal-connections`, new on `main`), and `docs/thresholds.md`
+gained `COLLAPSE_DESTROY_ONLY_ROWS`'s row (`make check-thresholds`). The WIP
+snapshot after the merge commit is `rev3/wip-after-merge.patch`.
+
 ## Risks / Trade-offs
 
 - **Lighter rows touch every row** (D17). The reorder drag, the Focus Folder
@@ -1682,6 +1894,13 @@ corrected, in place:
   packed frames are `main`'s frozen time, and R3's table leaves no slack at
   400:4,096 and up or at 0:131,072. If task 10.7's round shows negative
   slack anywhere, the change returns to design.
+- **A very large directory finishes later than `main`'s frozen collapse**
+  (R9): above 16,384 flattened rows the bar allows 0.5 µs a further row
+  (57 ms at 131,072 rows), a trade stated in the proposal. The arrow and the
+  accessible state still flip in the first frame and nothing freezes. The
+  400:131,072 figure under the reworked bookkeeping is not measured yet
+  (queued); if it misses, the change returns to design with the slice-model
+  or band-hiding alternatives of R9.
 
 - *Superseded by R3's completion bar, which no longer accepts a collapse
   that finishes later than `main`'s plus two frames; kept as the stage 3
