@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: List row-widget churn and tree-expander disclosure are ledger axioms
-The ledger SHALL record, each with a probe, a catalogue entry and a sample verified on GNOME 51 and the GNOME 50 floor: how a mapped `GtkListView` destroys and creates row widgets when rows are removed; `GtkTreeExpander`'s click, key, action and AT-SPI routes and how an application can own them; how a CSS class overrides the expander's checked arrow; and that `GtkTreeListModel` hands out a new row object, without the data and handlers of the one that died, for a node nothing references.
+The ledger SHALL record, each with a probe, a catalogue entry and a sample verified on GNOME 51 and the GNOME 50 floor: how a mapped `GtkListView` destroys and creates row widgets when rows are removed; `GtkTreeExpander`'s click, key, action and AT-SPI routes and how an application can own them; how a CSS class overrides the expander's checked arrow; that `GtkTreeListModel` hands out a new row object, without the data and handlers of the one that died, for a node nothing references.
 
 #### Scenario: Removing rows from a mapped list
 - **WHEN** the probe removes 16, 64 and 256 bound rows, with 0 and 400 rows after them, and separately the rows no widget is bound to after the band and before it, from a presented `GtkListView` over a `GtkTreeListModel`
@@ -25,3 +25,10 @@ The ledger SHALL record, each with a probe, a catalogue entry and a sample verif
 #### Scenario: A91 is corrected
 - **WHEN** the ledger's A91 row is updated by this change
 - **THEN** it states its node-teardown share of a collapse (about a tenth in the stage 1 profile) and points to the new row-widget axiom for the rest
+
+### Requirement: Hiding a list row by opacity and targeting is a ledger axiom
+The ledger SHALL record, with a probe, a catalogue entry and a sample verified on GNOME 51 and the GNOME 50 floor, whether hiding a realized `GtkListView` row's child by opacity 0, `can-target` false and the accessible `hidden` state is paint-only.
+
+#### Scenario: Hiding a row is paint-only
+- **WHEN** the probe sets opacity 0, `can-target` false and the accessible `hidden` state on the children of a presented `GtkListView`'s realized rows over a `GtkTreeListModel`, on GNOME 51 and the GNOME 50 floor
+- **THEN** it records whether the list runs any measure, factory setup or teardown, whether the band's position and the list's allocation change, whether the hidden rows draw any pixel, which widget the pointer picks over them, and the accessible state read back

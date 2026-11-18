@@ -74,3 +74,33 @@ Every LushText route that collapses a directory row SHALL go through one section
 #### Scenario: Removal while collapsing
 - **WHEN** a refresh splice, a section rebuild or a model reset removes a collapsing directory row
 - **THEN** the collapse is cancelled, GTK removes what is left directly (a measured residual), and the drained stores are retired as before
+
+### Requirement: A collapsing subtree's rows are hidden from the intent
+From the input dispatch of a sliced collapse until it ends, every realized row inside the collapsing subtree SHALL draw nothing, take no pointer input and report `hidden` to assistive technologies, without changing any row's measure, so the list realizes, binds and tears down exactly the rows it would without the hiding. The keyboard focus SHALL never be drawn on a hidden row. When the collapse ends, by any end, every row it hid SHALL draw, take input and report as on `main`.
+
+#### Scenario: The rows vanish without a re-measure
+- **WHEN** a sliced collapse of a directory of 4,096 entries starts with its children in the realized band
+- **THEN** after the input dispatch every realized row of the subtree has opacity 0, is not a pointer target and reports `hidden`, while the directory row and every row outside the subtree are unchanged
+- **AND** the list view's realized children, the factory's setup and teardown counts and the band's position are the same as just before the input
+
+#### Scenario: A rebound row
+- **WHEN** a row widget is rebound during a collapse, into the collapsing subtree or out of it
+- **THEN** a row inside the subtree is hidden and a row outside every collapsing subtree draws, takes input and reports as on `main`
+
+#### Scenario: The collapse ends
+- **WHEN** the collapse completes, or is ended by a re-expansion, a removal, a model reset or disposal
+- **THEN** no realized row stays hidden, and after a re-expansion the children draw again in the next frame while the store is refilled
+
+#### Scenario: A click on the hidden region
+- **WHEN** the user clicks or hovers where hidden rows lie during a collapse
+- **THEN** nothing is selected, activated, expanded, collapsed or peeked
+
+#### Scenario: Navigation keys during a collapse
+- **WHEN** the focus is on the collapsing directory row or on a hidden row and the user presses Up, Down, Page Up, Page Down, Home or End, or a keypad form, with or without Shift or Ctrl
+- **THEN** the key is held, no painted frame shows the focus on a hidden row, and when the collapse ends the held keys act in the order pressed from the directory row, as they would on `main` after its frozen collapse returned
+- **AND** a Down pressed during the collapse of a directory with rows after it leaves the focus on the row after the directory
+
+#### Scenario: Assistive technologies
+- **WHEN** an assistive technology reads the tree during a collapse
+- **THEN** the hidden rows report `hidden`, the directory row and its expander report `expanded` false, and once the collapse ends the tree reads as `main`'s after its collapse
+

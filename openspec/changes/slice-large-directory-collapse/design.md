@@ -43,6 +43,10 @@ GTK facts used below were read in the GTK 4.24.1 sources, saved in
   to the frame that draws the rows collapsed) is at most `main`'s plus two
   frames, or 100 ms where `main` is faster than that ("Design revision after
   stage 4", R3).
+- The picture the user sees is final no later than `main`'s: where nothing
+  follows the collapsing subtree in the realized band, its rows draw nothing
+  from the first frame after the input, and otherwise the picture is final
+  within the completion bar (R11, D22).
 - The collapse's final state is `main`'s. That covers rows, expansion intent,
   watch targets, retired stores, the accessible state, and the scroll
   position when the directory row is on screen.
@@ -392,6 +396,11 @@ see D4.
   `max(0, R − 16,384) × 0.5 µs` for a subtree of `R` flattened rows (R9);
   the settled time is printed and recorded, not judged. The paragraph below
   is the stage 1 text it replaces.
+- *Revised (R11):* the picture-final figure is enforced beside completion
+  (the first frame where nothing follows the subtree in the band, else the
+  completion bar), and constants and go/no-go rounds select only a
+  configuration one frame (16.7 ms) inside every bar; the final campaign is
+  judged at the bars themselves.
 - Time until collapsed is printed and recorded, not enforced. Its expected
   ceiling is
   `ceil(bound rows / SIDEBAR_REALIZED_ROWS_PER_FRAME) + ceil(unbound rows / (COLLAPSE_UNBOUND_CHUNK_ROWS × chunks per turn))`
@@ -852,6 +861,15 @@ field, so `docs/automation.md` and `docs/automation-reference.md` are updated.
 - A91, corrected: node teardown grows with the children;
 - A110: unmapped-list retirement.
 
+*Added by R11 (2026-11-18):* **A123**, from the change's reserve
+A123–A126 (free on `main` and on every pushed branch, checked at the
+revision): hiding a presented `GtkListView` row's child by opacity 0 and
+`can-target` false is paint-only. It runs no measure, setup or teardown,
+leaves the band and the list's allocation where they are, draws no pixel of
+the row, lets the pointer pick the list instead, and the row child's
+accessible `hidden` state reads back. Probe and sample on GNOME 51 and the
+GNOME 50 floor (task 2.7); D22 relies on it.
+
 **New**, provisional ids (final = next free at apply time). They were
 written as A112–A114, became A113–A115 at apply time, because `main` took
 A112 (`restore-main-ci`) first, and became **A118–A120** at the post-stage-4
@@ -1116,6 +1134,10 @@ Recorded at stage 3 (implementation), each with its evidence.
     second frame under 4,096 rows left). Whether that satisfies the scenario
     or the scenario must say "the first step runs in the gap after the
     first frame" was left to the reviewing stage; R9 took it.
+    *Revised by D23 (R11, 2026-11-18):* the input dispatch now removes one
+    unbound chunk, so where that chunk covers the subtree's unbound rows the
+    first frame's tick takes the first bound unit; the between-frames
+    source still takes whatever unbound rows remain after it.
 19. **The inline-rename CRITICAL flood is pre-existing, and fixed here
     (task 9.12, 2026-11-17).** The rename's focus-leave handler removed the
     entry from its row inside GTK's focus crossing; the crossing's IN-phase
@@ -1921,6 +1943,11 @@ decides.
 | 400:16,385 | 106 ms | 139 ms | 0 | 139 ms | (R3's table) |
 | 400:131,072 | 124 ms | 157 ms | 57.3 ms | 214.6 ms | **provisional:** no skip-cache figure; `d19a-1` 285–345 ms at load 8 (non-verdict) |
 
+*Measured since (R11, task 10.10):* the old skip-cache binary completed
+400:131,072 in 149.9 / 168.3 / 213.0 ms at loads of 4.1–4.9 (attribution),
+inside 214.6 ms, with a worst step of 8.2 ms in one repetition. The
+paragraph below is the R9 text it answers.
+
 The 400:131,072 row is provisional: its skip-cache figure is queued
 (`MEASURE-QUEUE.md`, "large-subtree bar attribution", round 1, with a
 skip-cache profile as round 2), and task 10.7's round on the reworked code
@@ -2045,6 +2072,410 @@ could have met; and the stop condition stays. Corrected, in place:
 9. **Task 10.10's profile** was ordered after task 10.3, which it is meant
    to inform; 10.3 now uses it if it arrives first and does not wait for it.
 
+### R11. The go/no-go on the real code, and the design it returns to (2026-11-18)
+
+**The result, recorded as it is.** The coordinator ran the queued go/no-go
+on 2026-11-18 at 04:41 (`MEASURE-QUEUE.md`, "go/no-go on the real code",
+label `slc-gonogo-104`, `scripts/measure.sh`, 1-minute load 3.86 at its end
+and below 4 before it; saved binary `rev5/bin/widget-attr-104`, which is
+`314b6187` plus task 10.4, opt-level 2; log `rev/attr2/slc-gonogo-104.log`).
+At 0:131,072 the completion (`input_us + shown_us`) was **157.0 / 156.1 /
+157.6 ms** against R9's 157.3 ms, which every repetition had to meet. The
+third misses by 0.3 ms, so the result is **NOGO** by the pre-registered rule,
+and this section does not reinterpret or round it. The same round recorded:
+- worst frame 4.5–4.6 ms (layout 3.8–3.9 ms);
+- worst step 5.9–6.0 ms, within `B_INTERACT_US`;
+- settled 694–710 ms, with one unshown dispatch of 32.0–34.4 ms (the
+  probe-scan residual of D12);
+- 100–104 dispatches from the input until settled;
+- input dispatch 0.2 ms.
+
+The result is not circular: production code does not pace on R9's figure,
+which only `evidence.rs` reads. The drag start that the same queue entry
+measured is 1.9 ms for 18 realized rows (`slc-dragstart-104.log`;
+implementation decision 23's open question, within `B_INTERACT_US` at that
+band).
+
+The queued R9 row is measured too (task 10.10). The **old** skip-cache
+binary (`rev/bin/widget-attr-skipcache`: D19 code, 16-widget rows, the
+path-cache splice skipped), at 400:131,072, completed in **149.9 / 168.3 /
+213.0 ms** against R9's 214.6 ms, with:
+- worst frame 12.3–14.7 ms;
+- worst step 6.6 / 7.3 / **8.2 ms**, the last **over `B_INTERACT_US`**;
+- settled 614–716 ms.
+
+Its runs were at 1-minute loads of 4.94 and 4.10 at their ends, so they are
+attribution, not verdicts (`slc-skipcache-400.log`, `progress.log`).
+
+#### Attribution: where the time goes
+
+**What was read, and what it covers.** The only profile of this window is
+of the **old skip-cache binary**, `rev/attr2/slc-skipcache-pdw.data`:
+- recorded 02:20 at load 2.57, `cpu-clock:u` at 4 kHz, DWARF call graphs of
+  16 KiB, 0:131,072, one repetition;
+- completion 111.3 ms, settled 584.5 ms;
+- read by window, the input to the completing frame, on the GTK thread
+  (tid 1627932), with `perf script` and `perf report --time`; the readers
+  and their output are in the handoff's `rev/r11/` (`README.md`,
+  `skipcache-window.txt`).
+
+The GTK thread has 333 samples there: 83.3 ms of CPU in 111.3 ms of wall
+time. `widget-attr-104`, the binary that missed, has **no profile and no
+per-dispatch timeline**: its log prints only per-case summaries. Its split
+below is therefore an inference from the two builds, and the rounds queued
+at the end of this section measure it.
+
+**The skip-cache window has two phases.** Samples in 5 ms buckets, by the
+first matching frame in each call chain:
+
+| from the input | what runs | GTK-thread CPU |
+|---|---|---|
+| 0–30 ms | the unbound chunks, back to back (119 of a possible 120 samples). Totals over the window, nearly all in this phase: the store splice's `items-changed` into the tree list model (rb-tree node removal) 8.5 ms, `store.item()` collecting the removed items 7.3 ms, the rest of the splice 3.0 ms, `drain_child_store`'s own work 2.3 ms, `PathBuf` drops 2.8 ms, the verdict test's evidence read 2.0 ms, unattributed 5.5 ms | 29.8 ms |
+| 30–111 ms | five **frame-paced** band dispatches, at about 45, 60, 75, 90 and 107 ms, 15–17 ms apart: the destroy-only units and the terminal collapse (list item manager teardown 8.8 ms in the window, frame layout and paint 5.3 ms). Between them the `G_PRIORITY_LOW` listing retirement drops the removed `FileTreeItem`s, 22.8 ms in all | about 53 ms, of which 22.8 ms retirement |
+
+So the coordinator's reading of the go/no-go ("about 100 dispatches before
+shown, CPU-bound time slices back to back, not frame-quantized") holds for
+the first phase only. The count of dispatches cannot tell the two readings
+apart: the retirement source is a 1 ms `G_PRIORITY_LOW` timeout, which
+yields many short dispatches between frames. In the skip-cache window the
+**tail is frame-quantized**: about four bound frames after the unbound
+phase. That is `ceil(207 / 64)` destroy-only units of D18 for the band of
+about 207 rows, plus the terminal. Together they are about 65–80 ms of the
+111 ms.
+
+**Levers this refutes.**
+- *The listing retirement.* Its drops run at `G_PRIORITY_LOW`. They fill the
+  gaps between band frames, and the frames keep their cadence, so they are
+  not on the completion path. Pausing them during a collapse would not
+  shorten it. Not taken.
+- *The evidence instruments.* About 3 ms in the window (12 samples). Task
+  10.1 already removed most of the bias R9 measured. Not a lever.
+- *Unattributed.* 33 of the 333 samples carry no call chain and are
+  reported as such (8.3 ms).
+
+**The `widget-attr-104` split (inference, to be measured).**
+- The band tail cannot be cheaper in frames: 104 has the same destroy-only
+  unit of 64, and its lighter rows shorten each frame (worst 4.5 ms against
+  6.3–7.3 ms in the skip-cache build), not their number. With four or five
+  frames, about 65–80 ms of its 157 ms are the tail, and the unbound phase
+  is the remaining 75–90 ms.
+- That is about 45–60 ms more than the skip-cache build's 30 ms. The one
+  known difference on that path is the path-cache splice that
+  `SLC_SKIP_CACHE` skips: `drain_child_rows_cache`'s per-row `item_locations`
+  and `visible_path_counts` removals, a `PathBuf` hash and an equality test
+  each. Task 10.3 cut it from R9's `d19a` figure (194–299 ms) but did not
+  remove it.
+- `widget-attr-104` still reads `SLC_SKIP_CACHE`, `SLC_DESTROY`, `SLC_UNIT`
+  and `SLC_CHUNK`, so rounds Q1–Q2 below measure this split without a build.
+
+**The three causes asked about.**
+- *Per-row bookkeeping:* inferred to be the larger part of 104's unbound
+  phase (the path-cache splice), plus about 9.5 ms of LushText's own work in
+  the skip-cache build (the item collect and `drain_child_store`).
+- *GTK's list-model removal:* about 11.5 ms (the tree list model's node
+  removal and the store splice), close to GTK's own collapse of the same
+  131,072 nodes in about 10 ms (R2).
+- *The evidence instruments:* about 3 ms.
+
+The time the user waits is the sum of a CPU-bound unbound phase and a
+frame-quantized tail of four to five frames.
+
+#### The pre-registered selection margin (fixed before the candidates)
+
+**Rule.** A configuration is **selected** only if **every repetition of
+every case is at most its bar minus one 60 Hz frame**, M = 16.7 ms
+(16,667 µs). That holds for the constants round (task 10.7), for the
+attribution gates below (Q4), and for any further go/no-go. "Its bar" is:
+- for completion, R3's bar plus R9's allowance;
+- for the new picture-final figure, its bar (below).
+
+The final verdict campaign (task 7.2) is still judged at the bar itself,
+unrounded and unchanged. The margin chooses what goes into that campaign; it
+does not move the line the campaign is judged on.
+
+**Why one frame.**
+- The tail moves in frame quanta (the timeline above): a configuration
+  within one frame of the bar fails as soon as one frame slips, for example
+  when one dispatch runs past a vsync. That is a coin flip across the four
+  rounds and eleven cases of the final campaign.
+- The repetitions of a configuration can sit very close together, and the
+  bar can still split them. 104's three are within 1.5 ms of each other, and
+  the bar falls inside that span. The old skip-cache build's spread 112–153
+  and 150–213 ms. Neither kind of spread is what the margin is for. It is
+  for the unit in which a configuration fails, which is one frame.
+- One frame is also the smallest step D23 and D18 below buy, so a margin
+  smaller than a frame could not separate the candidates.
+
+**What it says about 104.** At 0:131,072 the selection bar is
+157.3 − 16.7 = **140.6 ms**, and 104's 156.1–157.6 ms miss it by **15.5–17.0 ms,
+a whole frame**, not by 0.3 ms.
+
+Selection bars per case. `main`'s worst completions are R3's, from the
+stage 4 campaign; `R` is the subtree's flattened rows.
+
+| case | `main` worst | bar | bar − M |
+|---|---|---|---|
+| 0:64, 0:256, 0:4,096, 0:16,385 | 11–23 ms | 100 ms | 83.3 ms |
+| 0:131,072 | 30 ms | 157.3 ms | 140.6 ms |
+| 400:64 | 37 ms | 100 ms | 83.3 ms |
+| 400:256 | 121 ms | 154.3 ms | 137.6 ms |
+| 400:4,096 | 104 ms | 137.3 ms | 120.6 ms |
+| 400:16,385 | 106 ms | 139.3 ms | 122.6 ms |
+| 400:131,072 | 124 ms | 214.6 ms | 197.9 ms |
+| header, two roots of 4,096 | 115 ms | 148.3 ms | 131.6 ms |
+
+#### Candidates, by the phase each can touch
+
+The three candidates are not exclusive. Each touches a different phase of
+the timeline above, so they are judged by phase and in combination, by their
+distance to `main`. On `main` a 0:131,072 collapse freezes the sidebar for
+24–30 ms, and then the picture is final.
+
+- **(a) Tuning the per-step work** touches both phases.
+  - The unbound phase: the path-cache splice leaves the chunk (D24, below).
+  - The tail's frame count: the destroy-only unit (D18's constant, 64 today),
+    and whether the first bound unit runs in the first frame (D23, below).
+  - The unit and the chunk size are secondary. R2 showed that the unit trades
+    frame cost for frame count, and the chunk size moves only the unbound
+    phase's slicing.
+- **(b) A `GtkSliceListModel` over each child store** touches the unbound
+  phase only. The unbound rows would leave through the slice's
+  `items-changed`, without the store splice and without LushText's per-row
+  work. Of the skip-cache build's 30 ms phase, GTK's node removal (8.5 ms)
+  stays either way. So (b) can save at most about 20 ms over (a)'s D24,
+  which removes the path-cache work too, and nothing in the tail. Its cost is
+  a redesign of the section, as R9 recorded: every reader that maps a tree
+  row to its `gio::ListStore` (`child_store_key`, the mirrors, the scan
+  flights) changes, and D7's refill becomes a model change of up to 131,072
+  rows. **Not taken.** If D24 does not reach the selection bar, it is the
+  recorded next step.
+- **(c) Hiding the band at intent** touches neither phase. It changes what
+  the sidebar draws while both run: the collapsing subtree's realized rows
+  draw nothing from the first frame on. It cannot move `shown_us`, so it
+  cannot pass the completion bar alone. It is the only candidate that brings
+  the picture the user sees to `main`'s, or ahead of it.
+
+**What the user sees, frame by frame.** The band is the about 207 rows GTK
+realizes around the viewport (A1). The verdict window's 800 px viewport
+shows about 23 of them. Entering rows arrive at the band's tail, below the
+viewport (A118). A sliced collapse has more than `DIRECT_COLLAPSE_ROWS`
+(32) subtree rows, so at intent the rows after the subtree are below the
+viewport at that height.
+
+- **Nothing after the subtree** (0:N).
+  - *Today:* the arrow flips in the first frame. Each band unit then removes
+    the band's first 64 children, and the children below shift up, so the
+    viewport shows a different set of children each frame, four or five
+    times, until the terminal empties it. At 0:131,072 the children stay
+    drawn for about 155 ms.
+  - *With (c):* the first frame draws the directory row collapsed and
+    nothing below it. That is the final picture, except the scrollbar, which
+    keeps describing the subtree until the model completes.
+- **Rows after the subtree** (400:N).
+  - *Today:* the viewport shows the children shifting by a unit each frame,
+    seven times at unit 32, and the rows after the subtree appear only when
+    the last children leave the viewport.
+  - *With (c):* the first frame draws the directory row collapsed and an
+    empty region below it. The rows after the subtree enter at the band's
+    tail and reach the viewport in the last unit or two, in their final
+    places. The picture is final at or one frame before completion. Only in
+    a viewport taller than the subtree do rows after it show at intent; a
+    gap above them then closes unit by unit.
+- **Scrolled inside the children** (the folder header's collapse with the
+  directory row above the viewport).
+  - *Today:* the children shift each frame, then the final scroll position
+    of D8 shows the final picture.
+  - *With (c):* the viewport is empty until completion, then the same final
+    picture.
+
+  The empty viewport is the trade (c) makes in this configuration, stated in
+  Risks: no row that is about to disappear is drawn, and the wait is bounded
+  by the completion bar.
+
+**Distance to `main`, predicted from the timeline.** These are estimates,
+not measurements; the rounds below and task 10.7 measure them.
+
+| configuration | picture final, 0:131,072 | completion, 0:131,072 | completion, 400:4,096 |
+|---|---|---|---|
+| `main` | 24–30 ms (frozen until then) | 24–30 ms | 94–104 ms (frozen) |
+| 104, measured | about 155 ms (children drawn, shifting) | 156.1–157.6 ms | not measured on 104 (Q4) |
+| (a): D23, D24, destroy-only unit 64–128 | about 90–110 ms | about 90–110 ms | about 105–110 ms (7 frames, frame 1 included) |
+| (b) on top of (a) | as (a), less up to 20 ms | as (a), less up to 20 ms | as (a) |
+| (c) alone | the first frame (about 5–17 ms) | 156–158 ms: fails the selection bar | as today |
+| **(a) + (c)** | **the first frame** | about 90–110 ms | about 105–110 ms |
+
+Only (a) + (c) does both things: it ends the picture's wait in the first
+frame, earlier than `main`, wherever nothing follows the subtree, and it
+moves the completion under its selection bar. With rows after the subtree,
+nothing can make the rows after it arrive sooner. About 207 rows must be
+created at 0.3–0.6 ms each, which no 16 ms frame holds, so (a) packs them
+into seven frames (D23). `main` also freezes for 94–124 ms in those cases.
+
+#### Decision
+
+(a) + (c), as four decisions. Their mechanisms are fixed here; their
+thresholds are pre-registered to the rounds below and to task 10.7.
+
+- **D22 (new). The collapsing subtree's realized rows are hidden at intent,
+  paint-only.**
+  - *What:* in the input dispatch, the entry point sets, on every realized
+    row in the collapsing subtree (the band read of D6 already finds them):
+    the row child's opacity to 0 (`gtk_widget_set_opacity`), `can-target`
+    false, and the accessible `hidden` state, true on the row child that
+    D6's projection already writes.
+  - *Bind:* the bind path re-applies the hidden state to a row rebound into
+    a collapsing subtree, and clears it on a row rebound anywhere else.
+  - *End:* the collapse's end clears it on every realized row it set, by any
+    end (`Completed`, `ReExpanded`, `Removed`, a model reset, dispose).
+  - *Why paint-only:* anything that changes a row's measure (visibility, a
+    size request, a CSS class whose rules change size) would make the list
+    realize more rows to fill the viewport (A1). That is the cost this change
+    exists to bound, and it is why D4 rejected hiding or detaching the
+    list, which tears every row down. Opacity and `can-target` change
+    neither the row's measure nor its binding. `set_opacity` is used rather
+    than a CSS class: a class change revalidates the CSS of about 200
+    subtrees, and CSS validation was 26 % of a unit frame (R2).
+  - *Axiom:* A123 (task 2.7) pins it on GNOME 51 and the GNOME 50 floor,
+    with a probe:
+    - hiding a presented list's rows this way runs no measure, setup or
+      teardown, and leaves the band and the list's allocation unchanged;
+    - a hidden row draws no pixels;
+    - the pointer picks the list, not the row;
+    - the accessible state reads `hidden`.
+
+    If A123 is refuted on either toolkit, the change returns to design with
+    the probe's figures.
+- **D22, focus, pointer and assistive technologies.** Specified as new
+  scenarios with failing-first tests (tasks 10.13 and 10.14):
+  - *Focus:* no painted frame shows the keyboard focus on a hidden row.
+    D6 already moves the focus to the directory row. While a collapse is
+    pending, the section's capture-phase key controller (implementation
+    decision 12) holds the list-navigation keys pressed on the collapsing
+    directory row or on a hidden row: Up, Down, Page Up, Page Down, Home,
+    End, their keypad forms, with or without Shift and Ctrl. When the
+    collapse ends, it applies them in order from the directory row, as
+    `main` applies keys queued behind its frozen collapse. A Down pressed
+    in the interval lands on the row after the directory.
+  - *Pointer:* a click or a hover on the hidden region selects, activates,
+    expands and peeks nothing, because the rows are not targets.
+  - *Assistive technologies:* hidden rows report `hidden`. The directory row
+    keeps D6's `expanded` false, and the accessibility smoke and
+    `docs/accessibility.md` say so (task 8.3, reopened).
+- **D23 (new; revises implementation decision 18). The input dispatch
+  removes at most one unbound chunk.**
+  - *What:* after D6's intent and D22's hiding, the input dispatch runs one
+    `COLLAPSE_UNBOUND_CHUNK_ROWS` chunk of the unbound rows, if any. It runs
+    no bound unit (D21 stays rejected) and no turn-slice loop. Unbound chunks
+    create no widget (A118), so this adds no row churn to the input.
+  - *Why:* where the subtree's unbound rows fit one chunk, the first frame's
+    tick then finds bound rows and takes the first unit. Without it, the
+    frame that implementation decision 18 accepted is lost. Without that
+    frame 400:4,096 needs eight frames (about 122–127 ms, over its 120.6 ms
+    selection bar), and with it seven (about 105–110 ms).
+  - *Which cases it covers:* at the 8,192-row candidate, every subtree up to
+    about 8,400 entries; at 16,384, also 400:16,385 (about 16,180 unbound
+    rows), whose 122.6 ms selection bar eight frames would also miss. Task
+    10.7 therefore takes the chunk from candidates of at least 16,384 when
+    round Q5 shows such a chunk's turn within `B_INTERACT_US`.
+  - *Bound:* the input dispatch stays within `B_INTERACT_US`. At the
+    skip-cache rate (about 0.18 µs a row) one 8,192-row chunk is about
+    1.5 ms and a 16,384-row chunk about 3 ms, beside the 0.2 ms input and
+    D22's projection. If task 10.7's round shows the
+    input over `B_INTERACT_US`, the chunk shrinks to the largest power of
+    two that fits, and the frame table is re-derived.
+- **D24 (new). The path cache leaves the chunk.**
+  - *What:* a chunk that drains a store whose parent's path cache that store
+    owns no longer removes its rows' `item_locations` and
+    `visible_path_counts` entries one by one. At the collapse's intent the
+    parent's cache is detached whole: one map removal and a generation
+    advance. The detached paths go to the listing retirement, which removes
+    their entries in slices after the collapse completes, as it already
+    retires the mirror rows.
+  - *Correctness:* a lookup for a path under the detached parent misses from
+    the intent on. A location records its cache generation, and a lookup
+    confirms it against the live cache. The retirement removes an entry only
+    if it still carries the retired generation, so a re-expansion that
+    re-caches the directory before the retirement ends keeps its entries.
+  - *Condition, pre-registered:* D24 is taken if round Q2 shows the
+    path-cache splice costing at least one frame (16.7 ms) of 104's median
+    0:131,072 completion. If it costs less, D24 is void, and the
+    largest LushText cost that round Q1's profile names in the unbound phase
+    is cut instead, under the same failing-first discipline.
+- **D18's constant, re-chosen under the margin.** `COLLAPSE_DESTROY_ONLY_ROWS`
+  candidates are 64, 128 and 256. Task 10.7 takes the largest whose worst
+  step fits `B_INTERACT_US` and whose worst frame fits the 12 ms of task 10.4.
+  At 104's lighter rows a 64-row destroy-only frame is 4.5 ms, 3.9 ms of it
+  layout, so 128 may fit; round Q3 measures it. Every frame it saves is
+  16.7 ms of completion in every case with nothing after the subtree.
+
+**What stays.**
+- D4's order, D17–D19, D20, D21's rejection and the one-unit-per-frame
+  token are unchanged.
+- R3's and R9's bars stay the verdict's bars, unrounded.
+- R9's statement that a very large directory finishes later than `main`'s
+  frozen collapse stays true of the **model** (the scrollbar and readiness).
+  With D22, the **picture** a user sees is final in the first frame
+  wherever nothing follows the subtree.
+
+#### Instruments and bars
+
+- **Completion** (`shown_us`, R3) is unchanged, and so is its bar, R3's plus
+  R9's allowance. It still records the frame after which the directory row
+  is GTK-collapsed, which is when the scrollbar and the model are final. The
+  change does not pass by redefining it.
+- **Picture final** (`picture_final_us`, new; task 10.16).
+  - *Snapshot:* after each frame dispatch, the verdict test records the rows
+    the viewport draws. A row counts when it is a list-view child with
+    opacity above 0 that intersects the viewport; it is recorded with its
+    path and its rendered top relative to the viewport.
+  - *Figure:* the end of the first frame dispatch from which every later
+    snapshot until settled equals the last one. The scrollbar is excluded,
+    because completion owns it. `main`'s side runs the same instrument; with
+    nothing hidden there, it equals `main`'s completion.
+  - *Bar, nothing after the subtree in the band at intent:* the first frame
+    dispatch after the input, within `INPUT_TO_FRAME_US`.
+  - *Bar, otherwise:* the same case's completion bar.
+  - *Printed:* each case's distance to `main`'s completion, the figure this
+    revision is judged by.
+- **Selection** uses the margin above on both figures; the final campaign
+  uses the bars.
+
+#### Attribution rounds queued (branch only; `MEASURE-QUEUE.md`, "R11 design attribution")
+
+All five use the saved binary `rev5/bin/widget-attr-104`, whose switches
+need no build. They run in the coordinator's quiet window, one round at a
+time, at a 1-minute load below 4.
+
+The perf-prefixed form has never run through the fixed `run-bin.sh`, which
+now goes through `scripts/headless-session`: a launch failure there is
+void, not a result. Task 10.12 reads the rounds before any code of D22–D24. Q4 runs last, because its gate reads Q2 and Q5.
+
+| round | factor varied | cases | purpose and pre-registered use |
+|---|---|---|---|
+| Q1 `slc-r11-pdw-104` | none (DWARF profile, 4 kHz, 16 KiB stacks) | 0:131,072, one rep | 104's split by phase: unbound, tail, retirement, evidence. It names D24's target if Q2 voids the path-cache one |
+| Q2 `slc-r11-skipcache-104` | `SLC_SKIP_CACHE=1` | 0:131,072 and 400:131,072, three reps | the path-cache splice's share on the real code. D24 is taken if the median 0:131,072 completion falls by at least 16.7 ms |
+| Q3 `slc-r11-d128-104`, `slc-r11-d256-104` | `SLC_DESTROY=128`, then `256` | collapse, 0 rows after, at 256, 4,096 and 131,072, three reps | whether a larger destroy-only unit cuts the tail by whole frames with the step within 8 ms and the frame within 12 ms. It bounds task 10.7's candidates |
+| Q5 `slc-r11-c16k-104` | `SLC_CHUNK=16384` | collapse at 0:131,072 and 400:16,385, three reps | a 16,384-row chunk's turn (the worst step) against `B_INTERACT_US`, which decides whether D23's chunk can cover 400:16,385 |
+| Q4 `slc-r11-base-104` | none (constants 32 / 64 / 8,192) | every collapse case and the header, three reps | the real code's completion per case. **Gate:** for each case, predict the reworked completion as Q4's worst, less one frame where D23 applies (the subtree has unbound rows, and they fit one chunk of the size Q5 admits: 16,384 if its worst step fits `B_INTERACT_US`, else 8,192), less Q2's median gain where D24 applies (subtrees above 16,384 rows). If any prediction exceeds bar − M, the change returns to design before D22–D24 are coded. Task 10.4's 12 ms acceptance is read here too (unit 32, worst frame at 400:256) |
+
+The queued "constants round (task 10.7)" on 104 is superseded: its first
+and fourth rounds are Q4 and Q3, and the rest would choose constants for code
+this revision changes. Task 10.7 runs on the reworked binary.
+
+#### Ticked boxes this revision voids
+
+- **Task 10.9** (the guard that the input dispatch does no row work, and
+  implementation decision 18's interval) is reopened: D23 has the input
+  dispatch take one unbound chunk, and the guard now asserts that and that
+  the first frame takes the first unit where the chunk covers the unbound
+  rows.
+- **Task 8.3** (accessibility and automation docs) is reopened for D22's
+  hidden rows.
+- **Task 10.10** is closed: its two rounds are recorded above.
+- Tasks 3.2, 5.2, 5.7 and 9.5 stay true as written. D22 adds tests and code
+  beside them (tasks 10.13 and 10.14), and changes neither the expander
+  class nor its CSS, because hiding uses no CSS.
+
 ## Risks / Trade-offs
 
 - **Lighter rows touch every row** (D17). The reorder drag, the Focus Folder
@@ -2069,6 +2500,24 @@ could have met; and the stop condition stays. Corrected, in place:
   400:131,072 figure under the reworked bookkeeping is not measured yet
   (queued); if it misses, the change returns to design with the slice-model
   or band-hiding alternatives of R9.
+- **Hiding the band (D22) shows an empty region while the model drains.**
+  With rows after the subtree, the region below the directory row is empty
+  until they arrive (at or a frame before completion). When the directory
+  row is above the viewport, the whole viewport is empty until completion.
+  The scrollbar describes the subtree until completion in every case.
+  Accepted: no row about to disappear is drawn, the wait is bounded by the
+  completion bar, and `main` shows a frozen, stale picture for the same
+  cases. The visual and accessibility smokes, and D22's focus, pointer and
+  assistive-technology scenarios, guard it. If A123 does not hold on a
+  toolkit, the change returns to design.
+- **Held navigation keys (D22) change when a key acts, not what it does.**
+  A Down pressed during a collapse acts when the collapse ends, as on
+  `main` it acts when the frozen collapse returns. A collapse that never
+  ends would hold the keys forever, which D4's starvation fallback rules
+  out.
+- **The selection margin (R11) can leave no configuration.** If no
+  configuration clears every bar by one frame, the change returns to design
+  again; the margin is not relaxed to let one through.
 - **R9's bar is met today only by the upper bound, and thinly.** The
   skip-cache build is the best case of cutting the path-cache bookkeeping
   alone (the further cuts task 10.3 lists, the O(store) mirror count, the

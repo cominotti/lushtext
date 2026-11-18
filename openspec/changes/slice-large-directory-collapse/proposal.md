@@ -95,6 +95,27 @@ times later than `main`. The revision therefore adds, beside what follows:
   points now record intent themselves and the hook is installed at bind (new
   axiom, A114).
 
+**Revised after the go/no-go on the real code (2026-11-18; design R11).**
+The 0:131,072 collapse completed in 156.1–157.6 ms against R9's 157.3 ms, so
+the change returned to design. The profile splits a collapse into a
+CPU-bound phase that removes the rows no widget shows, and a frame-paced
+tail of four or five frames for the realized band, during which the children
+stay drawn and shift each frame. The revision adds:
+
+- **The collapsing subtree's rows are hidden in the first frame**, paint-only
+  (opacity and pointer targeting, no re-measure: new axiom A123), so where
+  nothing follows the subtree the sidebar shows its final picture in the
+  first frame, earlier than `main`'s frozen collapse; navigation keys
+  pressed meanwhile act when the collapse ends, and hidden rows take no
+  pointer input and report `hidden` to assistive technologies.
+- **The input dispatch removes one chunk of unbound rows**, so the first
+  frame takes the first band unit where that chunk covers them.
+- **The path cache leaves the chunk** and is retired after the collapse, if
+  the queued attribution confirms it costs at least a frame.
+- **A selection margin of one frame:** constants and go/no-go rounds choose
+  only a configuration at least 16.7 ms inside every bar; the final campaign
+  is still judged at the bars.
+
 - **An owned, sliced collapse.** Every LushText route that collapses a
   directory goes through one section entry point:
   - the expander click, which LushText takes over from `GtkTreeExpander`'s
@@ -169,6 +190,10 @@ times later than `main`. The revision therefore adds, beside what follows:
     node nothing references, so `get_item` hands out a new row object
     without the object data and `notify::expanded` handler of the one that
     died (design R4).
+  - A123: hiding a list row's child by opacity 0 and `can-target` false is
+    paint-only: no measure, setup or teardown, the band and allocation
+    unchanged, no pixel drawn, the pointer picks the list, and the
+    accessible `hidden` state reads back (design R11, D22).
 - **Records corrected.** A91's row stops claiming the collapse's cost and
   keeps the node-teardown share it measured. BL's exception text in
   `docs/next/long-line-documents.md` and the archived design is annotated with
@@ -216,6 +241,13 @@ times later than `main`. The revision therefore adds, beside what follows:
   up, every frame drawn and input handled throughout. *(Stage 1's estimate
   here, a finish slower than `main`'s, is superseded by the revision's
   completion bar below.)*
+- **Revised (R11):** the collapsing directory's visible children disappear
+  in the first frame. Where nothing follows them, that is the final picture,
+  sooner than `main`'s frozen collapse; the scrollbar catches up when the
+  collapse completes. With rows after the directory, the space below it is
+  empty until those rows arrive, within the completion bar. A navigation key
+  pressed during the collapse acts when it ends, as it does on `main` after
+  the freeze.
 - Selection or keyboard focus on a child of a collapsing directory moves to
   the directory row as the collapse starts, on the direct path too. On `main`
   it lands wherever `GtkSingleSelection` puts it once the child is gone.

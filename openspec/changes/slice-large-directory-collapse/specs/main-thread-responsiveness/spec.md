@@ -50,7 +50,8 @@ Collapsing a sidebar directory by a route LushText owns SHALL keep the input dis
 
 #### Scenario: The first frame takes the first step
 - **WHEN** a sliced collapse starts
-- **THEN** the input dispatch only shows the intent and arms the step sources, and the first step runs no later than the first frame after the input: a bound unit from that frame's tick, or, when the first rows to remove are unbound and that tick removes nothing, unbound chunks from the between-frames source in the interval right after that frame, so no second frame passes before the work starts
+- **THEN** the input dispatch shows the intent, hides the subtree's realized rows, removes at most one chunk of `COLLAPSE_UNBOUND_CHUNK_ROWS` unbound rows and no bound row, arms the step sources, and stays within `B_INTERACT_US`
+- **AND** the first step after it runs no later than the first frame after the input: a bound unit from that frame's tick, which, when the input's chunk removed every unbound row of the subtree, is the collapse's first bound unit; or, when unbound rows remain, unbound chunks from the between-frames source in the interval right after that frame, so no second frame passes before the work continues
 - **AND** that frame takes no more than one unit of bound rows and shows the collapse
 
 #### Scenario: Unbound rows leave between frames
@@ -73,11 +74,25 @@ A sidebar directory collapse by a route LushText owns SHALL draw its collapsed r
 
 #### Scenario: A very large directory finishes later, bounded
 - **WHEN** the user collapses an expanded directory of 131,072 entries
-- **THEN** the arrow and the accessible state show the collapse in the first frame, no dispatch exceeds its budget, and the rows finish disappearing within the bar above, which for that size allows at most 57.3 ms past the same case's bar without the allowance (`main`'s worst plus 33.3 ms, or 100 ms)
+- **THEN** the arrow and the accessible state show the collapse in the first frame, its visible children are hidden in that frame, no dispatch exceeds its budget, and the rows finish leaving the model within the bar above, which for that size allows at most 57.3 ms past the same case's bar without the allowance (`main`'s worst plus 33.3 ms, or 100 ms)
 
 #### Scenario: The folder header
 - **WHEN** the folder header collapses two expanded roots of 4,096 entries each
 - **THEN** each side's completion is taken at the first frame that draws both roots collapsed; on `main`, whose deferred restore later expands the second root again, that frame is expected before the restore, and the verdict test reports it if it never comes
+
+### Requirement: A sidebar collapse shows its final picture no later than main's
+Where no row after the collapsing subtree is in the realized band at the input, the rows the viewport draws during a sidebar collapse by a route LushText owns SHALL be final in the first frame after the input. Otherwise they SHALL be final within the completion bar of the requirement above. The scrollbar is excluded; completion judges it.
+
+#### Scenario: The picture is final in the first frame when nothing follows
+- **WHEN** the user collapses an expanded directory of 131,072 entries, or of 256, 4,096 or 16,385, with nothing after it
+- **THEN** the first frame after the input draws the directory row collapsed and none of its children, and no later frame until the collapse settles draws a row the viewport did not show in that frame or moves one
+- **AND** only the scrollbar changes afterwards, when the collapse completes
+
+#### Scenario: The picture-final figure
+- **WHEN** the verdict test measures a collapse on `main` and on the branch
+- **THEN** after each frame dispatch it records the rows the viewport draws (a list-view child drawn with opacity above 0 inside the viewport, with its path and rendered top), and prints as picture-final the end of the first frame dispatch from which every later record until settled equals the last one
+- **AND** the branch's worst picture-final is within the first frame after the input where no row after the subtree was in the band at the input, and within the case's completion bar otherwise
+- **AND** it prints each case's picture-final and completion beside `main`'s completion
 
 ### Requirement: Small-directory expansion is measured against the settle budget
 The sidebar expansion verdict SHALL also cover directories of 64, 256 and 1,024 entries, with and without 400 rows after them, on a first expansion and right after a collapse. A dispatch that applies a directory's rows and exceeds `B_SETTLE_US` SHALL be attributed with a profile before it is fixed, and fixed as the attribution shows.

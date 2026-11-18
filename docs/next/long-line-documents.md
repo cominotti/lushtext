@@ -4578,6 +4578,20 @@ review", "Implementation decisions"); evidence in
     `[unknown]` callers (`PathBuf` equality and path hashing, 37 % of the
     window) and a 5.7 % measurement bias in the verdict test's per-dispatch
     evidence read. The 400:131,072 figure is provisional, queued.
+  - *Go/no-go on the real code (2026-11-18, design R11).* The reworked
+    code (task 10.4's lighter rows included) completed the 0:131,072
+    collapse in 156.1–157.6 ms against R9's 157.3 ms in every repetition:
+    NOGO, so the change returned to design again. The profile splits a
+    collapse into a CPU-bound phase that removes the rows no widget shows
+    and a frame-paced tail of four or five band frames, during which the
+    children stay drawn. The revision hides the collapsing subtree's
+    realized rows in the first frame, paint-only (new axiom A123), so where
+    nothing follows the subtree the picture is final before `main`'s frozen
+    collapse ends; it has the input dispatch remove one unbound chunk, takes
+    the path cache out of the chunk if the queued attribution confirms a
+    frame, and pre-registers a one-frame selection margin for every
+    selection and go/no-go round. Five branch-only rounds are queued; the
+    slice model over each child store stays the recorded next step.
   - *What `stop-expander-bind-time-child-scans` must build on.* Its proposal
     says `row_factory.rs` is unchanged; this change makes that false. Build
     on: `collapse_directory` and `expand_directory`
