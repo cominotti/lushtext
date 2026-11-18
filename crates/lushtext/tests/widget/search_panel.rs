@@ -4336,6 +4336,152 @@ fn test_skipped_files_dialog_builds_only_realized_rows() {
     flush_events();
 }
 
+/// Skipped files the staged-growth tests list: past the staged first rows,
+/// so the dialog opens with a growth left to run.
+const STAGED_GROWTH_FILES: usize = 256;
+
+/// A window whose last Replace All skipped [`STAGED_GROWTH_FILES`] files
+/// (not UTF-8), ready to open Show Skipped Files.
+fn window_with_staged_skipped_files() -> (
+    LushtextWindow,
+    lushtext_core::ui::search_panel::LushtextSearchPanel,
+    tempfile::TempDir,
+) {
+    use lushtext_core::model::content_search::ReplaceSkipReason;
+    let window = test_window();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let files: Vec<_> = (0..STAGED_GROWTH_FILES)
+        .map(|index| dir.path().join(format!("f{index:04}.txt")))
+        .collect();
+    for file in &files {
+        fixture::write_text(file, "needle\nplain\n");
+    }
+    let count = u32::try_from(STAGED_GROWTH_FILES).expect("the fixture count fits u32");
+    let panel = replace_all_over_with(
+        &window,
+        dir.path(),
+        ReplaceAllFixture {
+            search_matches: count,
+            preview_rows: count,
+            budget: Duration::from_secs(60),
+        },
+        "thread",
+        || {
+            for file in &files {
+                fixture::write_bytes(file, b"needle\ncaf\xe9\n");
+            }
+        },
+    );
+    wait_until(Duration::from_secs(30), || {
+        panel.evidence().skipped_files_offered
+    });
+    assert_eq!(
+        skipped_for(&panel, ReplaceSkipReason::NotUtf8),
+        STAGED_GROWTH_FILES
+    );
+    (window, panel, dir)
+}
+
+/// The Skipped Files list's own controller of `T` (capture phase), which the
+/// dialog adds beside GTK's internal ones.
+fn skipped_files_capture_controller<T: IsA<gtk4::EventController> + IsA<glib::Object>>(
+    widget: &gtk4::Widget,
+) -> T {
+    let controllers = widget.observe_controllers();
+    (0..controllers.n_items())
+        .filter_map(|index| controllers.item(index).and_downcast::<T>())
+        .find(|controller| controller.propagation_phase() == gtk4::PropagationPhase::Capture)
+        .expect("the Skipped Files dialog's capture-phase controller")
+}
+
+/// stream-replace-all task 9.1 (design C3, widget-wiring.md "Testing"): a key
+/// pressed while the Skipped Files list still lists only its staged first
+/// rows finishes the growth in that dispatch, so keyboard navigation lands
+/// where it would on the whole list.
+#[test]
+fn test_skipped_files_key_finishes_the_staged_growth() {
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let (window, panel, _dir) = window_with_staged_skipped_files();
+    let full = u32::try_from(STAGED_GROWTH_FILES).expect("the fixture count fits u32");
+
+    activate_action(&window, "show-search-panel-skipped-files");
+    // Same turn as the opening: neither the frame clock nor the 512 ms delay
+    // has run, so only the key can list the rest.
+    let list = skipped_files_list(&window);
+    assert_eq!(
+        panel.evidence().skipped_files_listed,
+        Some(lushtext_core::model::list_budget::LIST_FIRST_ROWS),
+        "the dialog opens with only the staged first rows listed"
+    );
+    let keys: gtk4::EventControllerKey = skipped_files_capture_controller(list.upcast_ref());
+    let args: [&dyn ToValue; 3] = [
+        &gtk4::gdk::Key::End,
+        &0u32,
+        &gtk4::gdk::ModifierType::empty(),
+    ];
+    let stopped: bool = glib::object::ObjectExt::emit_by_name(&keys, "key-pressed", &args);
+    assert!(
+        !stopped,
+        "the key goes on to the list once the growth is done"
+    );
+    assert_eq!(
+        panel.evidence().skipped_files_listed,
+        Some(full),
+        "a key finishes the growth before the list handles it"
+    );
+    assert_eq!(list.model().map(|model| model.n_items()), Some(full));
+    window.visible_dialog().expect("dialog").close();
+    flush_events();
+}
+
+/// stream-replace-all task 9.1 (design C3): the growth waits out the dialog's
+/// open animation (512 ms), but a wheel or touchpad scroll starts it at once.
+#[test]
+fn test_skipped_files_scroll_starts_the_staged_growth() {
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let (window, panel, _dir) = window_with_staged_skipped_files();
+    let first = lushtext_core::model::list_budget::LIST_FIRST_ROWS;
+    // The delay the dialog waits before growing on its own
+    // (`SKIPPED_FILES_GROWTH_DELAY`).
+    let delay = Duration::from_millis(512);
+
+    let opened = std::time::Instant::now();
+    activate_action(&window, "show-search-panel-skipped-files");
+    let list = skipped_files_list(&window);
+    let scroller = list
+        .parent()
+        .and_downcast::<gtk4::ScrolledWindow>()
+        .expect("the Skipped Files list sits in its scroller");
+    let scroll: gtk4::EventControllerScroll =
+        skipped_files_capture_controller(scroller.upcast_ref());
+    let _: bool = glib::object::ObjectExt::emit_by_name(&scroll, "scroll", &[&0.0f64, &1.0f64]);
+    assert_eq!(
+        panel.evidence().skipped_files_listed,
+        Some(first),
+        "a scroll starts the growth; the list's frame clock runs its steps"
+    );
+    wait_until(Duration::from_secs(5), || {
+        panel
+            .evidence()
+            .skipped_files_listed
+            .is_some_and(|listed| listed > first)
+    });
+    let grown_after = opened.elapsed();
+    println!(
+        "skipped-files-scroll-growth {{\"first_step_after_ms\":{}}}",
+        grown_after.as_millis()
+    );
+    assert!(
+        grown_after < delay,
+        "the scroll started the growth before the {delay:?} delay ran out; the first step came after {grown_after:?}"
+    );
+    window.visible_dialog().expect("dialog").close();
+    flush_events();
+}
+
 /// stream-replace-all 5.5a: when every file is open with unsaved changes,
 /// nothing runs, and the report lists each file as `UnsavedChanges`.
 #[test]
