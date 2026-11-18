@@ -39,6 +39,7 @@ Because no Kani form of the engine that was tried fitted the shard margin (desig
 - **THEN** the bounded check fails on the chunked feed's outcome
 
 #### Scenario: An invalid source is never replaced
-- **WHEN** the check feeds every source of at most 3 symbols over the valid alphabet plus the bytes `0x80`, `0xC3` and `0xFF`, with the same edit sets, chunk sizes and limits
+- **WHEN** the check feeds every source of at most 3 symbols over the valid alphabet plus the bytes `0x80`, `0xC3` and `0xFF`, with no edit and every single edit of the same tables, every chunk size and the same limits
 - **THEN** no source that is not valid UTF-8 is `Replaced` at any chunk size, it ends `NotUtf8`, `StaleLine` or `OutputLimitExceeded`, and with no edit and no limit it ends `NotUtf8`
+- **AND** an invalid source split by a seam is reached at least once
 - **AND** a mutant whose end of stream skips the UTF-8 carry's final check fails the check

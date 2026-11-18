@@ -294,7 +294,11 @@ impl<'a> UndoSession<'a> {
 
 /// U1: what the file holds now, by length and digest. Anything unreadable
 /// or past the file limit reads as diverged, so it is never written.
-fn current_content(path: &Path, entry: &ReplaceUndoEntry, facts: &FileFacts) -> CurrentContent {
+pub(super) fn current_content(
+    path: &Path,
+    entry: &ReplaceUndoEntry,
+    facts: &FileFacts,
+) -> CurrentContent {
     let size = facts.byte_size;
     if size > effective_max_replace_file_bytes()
         || (size != entry.original.len && size != entry.replaced.len)

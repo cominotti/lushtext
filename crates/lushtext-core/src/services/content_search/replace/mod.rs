@@ -71,11 +71,6 @@ thread_local! {
     static TEST_MAX_REPLACE_FILE_BYTES: Cell<Option<u64>> = const { Cell::new(None) };
 }
 
-#[cfg(test)]
-thread_local! {
-    static TEST_REQUIRE_ACTIVE_JOURNAL_BEFORE_WRITE: Cell<bool> = const { Cell::new(false) };
-}
-
 #[cfg(any(test, feature = "test-utils"))]
 type UndoAfterMetadataHook = Box<dyn FnOnce(&Path) + Send + 'static>;
 #[cfg(any(test, feature = "test-utils"))]
@@ -199,6 +194,71 @@ fn run_before_target_write_hook_for_test(path: &Path) {
 #[cfg(not(test))]
 #[inline(always)]
 fn run_before_target_write_hook_for_test(_path: &Path) {}
+
+/// Which journal removal of a file's own cleanup a fault seam fails.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CleanupRemovalFault {
+    /// The entry JSON's removal.
+    Entry,
+    /// The body's removal.
+    Body,
+}
+
+#[cfg(test)]
+thread_local! {
+    static CLEANUP_REMOVAL_FAULTS: std::cell::RefCell<Vec<(PathBuf, CleanupRemovalFault)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Fail the next removal of `which` that a run's per-file cleanup of `target`
+/// attempts, on this test thread (task 4.11). Keyed by the exact target, one
+/// shot; `clear_cleanup_removal_faults_for_test` disarms what is left.
+#[cfg(test)]
+pub(super) fn fail_next_cleanup_removal_for_test(target: &Path, which: CleanupRemovalFault) {
+    CLEANUP_REMOVAL_FAULTS.with(|faults| faults.borrow_mut().push((target.to_path_buf(), which)));
+}
+
+/// Disarm every cleanup-removal fault still armed on this test thread.
+#[cfg(test)]
+pub(super) fn clear_cleanup_removal_faults_for_test() {
+    CLEANUP_REMOVAL_FAULTS.with(|faults| faults.borrow_mut().clear());
+}
+
+#[cfg(test)]
+fn take_cleanup_removal_fault(path: &Path, which: CleanupRemovalFault) -> bool {
+    CLEANUP_REMOVAL_FAULTS.with(|faults| {
+        let mut faults = faults.borrow_mut();
+        let found = faults
+            .iter()
+            .position(|(target, fault)| target == path && *fault == which);
+        found.map(|index| faults.remove(index)).is_some()
+    })
+}
+
+/// Whether the run's cleanup of `path` must fail its entry removal (tests only).
+#[cfg(test)]
+fn fail_cleanup_entry_removal_for_test(path: &Path) -> bool {
+    take_cleanup_removal_fault(path, CleanupRemovalFault::Entry)
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn fail_cleanup_entry_removal_for_test(_path: &Path) -> bool {
+    false
+}
+
+/// Whether the run's cleanup of `path` must fail its body removal (tests only).
+#[cfg(test)]
+fn fail_cleanup_body_removal_for_test(path: &Path) -> bool {
+    take_cleanup_removal_fault(path, CleanupRemovalFault::Body)
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn fail_cleanup_body_removal_for_test(_path: &Path) -> bool {
+    false
+}
 
 /// Cleanup ownership for one armed before-rename failure seam.
 ///
@@ -339,10 +399,10 @@ pub fn undo_after_metadata_hook_registry_is_empty_for_test() -> bool {
 
 /// Report whether an Undo after-metadata hook is still registered for `target`.
 ///
-/// Gated to match its only consumer, the `test-utils` re-export in
-/// `content_search/mod.rs`: no unit test of this crate calls it since the
-/// replace tests moved to the streaming engine.
-#[cfg(feature = "test-utils")]
+/// Used by the hook-isolation unit tests (task 4.10, and the performance
+/// smoke's `replace_undo_workflows` filter, which runs without `test-utils`)
+/// and by the `test-utils` re-export in `content_search/mod.rs`.
+#[cfg(any(test, feature = "test-utils"))]
 #[must_use]
 pub fn undo_after_metadata_hook_is_registered_for_test(target: &Path) -> bool {
     UNDO_AFTER_METADATA_HOOKS.get().is_some_and(|registry| {

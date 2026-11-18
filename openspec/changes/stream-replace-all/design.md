@@ -772,8 +772,10 @@ job returns before it waits for the guard.
   equals the whole feed's, a replaced file's output, count and digests equal
   the whole feed's, a replaced file equals the reference builder
   (`build_replaced_text_reference`), the output stays within the limit, and
-  the digests record exactly the bytes fed and written. It runs in 7.5 s in a
-  debug build, so it stays in the ordinary unit suite. Two logged mutants
+  the digests record exactly the bytes fed and written. It ran in 7.5 s in a
+  debug build in stage 1; with task 3.3c's additions (below) it runs in
+  17.6 s (debug, at a 1-minute load of 9.4), so it stays in the ordinary
+  unit suite. Two logged mutants
   fail it (`failing-first.log`): one that mishandles a lone `\r` line (at the
   reference comparison) and a seam-only one, in which `collect` keeps only
   the last piece of a targeted line split across chunks (at the chunked
@@ -798,6 +800,22 @@ job returns before it waits for the guard.
     only on an untargeted line, and the collected-line path never sees a
     cut character inside a line that matches. Task 3.3c adds a recorded line
     with `é`.
+
+  *Done (stage 3).* The line table is `""`, `a`, `ab`, `\r`, `aé` (ranges on
+  character boundaries only, as a preview records them) and the replacements
+  `""`, `x\n`. The second domain is every source of at most 3 symbols over
+  `a`, `b`, `\r`, `\n`, `é`, `0x80`, `0xC3`, `0xFF` (585 sources), with no
+  edit and every **single** edit, not the two-edit sets: the single edits
+  already reach every way an invalid byte can meet a targeted line, and the
+  two-edit sets would multiply the run time. A coverage guard counts each
+  case the retired harness covered (two edits applied, the limit stopping a
+  file, a stale line, a CRLF seam, an unterminated final line replaced
+  across a seam, a cut character inside a replaced targeted line, an invalid
+  source split by a seam) and fails at zero. The logged mutant in which
+  `finish_outcome` skips `Utf8Carry::finish` fails it (a lone `0xC3` is
+  `Replaced`). The whole check runs in 17.6 s in a debug build, above the
+  15 s estimate; the tables were not trimmed, because each one feeds a
+  coverage case.
 
   Its coverage guard also counts every case the retired covers named (two
   edits applied, the limit stopping a file, a stale line, an unterminated

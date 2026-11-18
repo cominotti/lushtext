@@ -2562,8 +2562,21 @@ shards, both owed a dispatch before the change is archived
   file whose entry removal fails keeps its entry and body. The protocol was
   right (never an entry without its body, the target keeps its bytes), so
   the contract and the harness changed, and a cover pins that path. The
-  mutation check that reorders cleanup is still owed (the change's task
-  3.2a).
+  final run on the final protocol inputs (stage 3, snapshot `fe8c3205`)
+  verified 3/3 in 1.66 min at 1.66 GiB (per harness 13.1 s, 0.47 s,
+  0.05 s), the local figure in the shard table until the dispatches. The
+  mutation check that reorders cleanup so a body goes before its entry
+  fails `an_apply_run_keeps_every_target_recoverable` at "a body is removed
+  only after its entry" (task 3.2a, the change's `failing-first.log`).
+  `make proof-strength` of `replace/protocol.rs`, Kani arm (on `fe8c3205`):
+  16 mutants, 8 unviable, 3 killed, 5 survivors. Two were real gaps, the
+  re-arm of an Undo in a later launch (design D6) dropped after an entry
+  that restores nothing, or never taken; the unit test
+  `undo_in_a_later_launch_rearms_the_manifest_for_this_launch` now kills
+  both. Three are equivalent for safety and stay: re-arming on every file
+  or every entry (the guard `journal.armed` or `rearm_needed` forced) only
+  repeats an idempotent manifest write. The properties are safety
+  properties, so no harness can tell them apart.
 - `core-replace-stream` (`replace/stream/utf8/kani_proofs.rs`, 2 harnesses):
   the stream's UTF-8 seams (8 arbitrary bytes, chunks 1–4) and the
   `cfg(kani)` byte scan against `core::str::from_utf8` (4 bytes).
@@ -2585,20 +2598,25 @@ unrolling at the ladder's `unwind(6)`, about twice what a 2-byte source
 needs, and no probe lowered the unwind bound to the domain's need. The cost
 is the engine under CBMC, not the harness's sinks or comparisons.
 
-The line logic's split independence is instead checked exhaustively over a
-bounded domain by a unit test: every source of at most 4 characters over
-`a`, `b`, `\r`, `\n`, `é`, every edit set of at most two edits over small
-tables, every chunk size and two output limits; it takes 7.5 s in a debug
-build. A property test samples larger inputs against the reference builder.
+The line logic's split independence is instead checked exhaustively over
+two bounded domains by a unit test: every source of at most 4 characters
+over `a`, `b`, `\r`, `\n`, `é` with every edit set of at most two edits
+over small tables (a recorded line `aé` among them, so a seam cuts a
+character inside a targeted line), and every source of at most 3 symbols
+over those plus the bytes `0x80`, `0xC3`, `0xFF` with every single edit,
+where a source that is not UTF-8 must never be replaced. Both run every
+chunk size and two output limits, and a coverage guard fails if a case the
+retired harness covered is never reached. It takes 17.6 s in a debug build.
+A property test samples larger inputs against the reference builder.
 
 What this weakens:
 - the property holds for the enumerated domain and is sampled beyond it,
   not proved for every byte value;
 - "an invalid source is never replaced at any chunk size" was a property of
   the retired whole-engine harness over arbitrary bytes. It is now the
-  carry's proof composed with the engine by reading the code. The change's
-  task 3.3c adds a bounded invalid-byte domain and a targeted line holding
-  `é` to the unit test.
+  carry's proof composed with the engine by reading the code, plus the unit
+  test's bounded invalid-byte domain (a mutant that skips the carry's final
+  check fails it).
 
 The seam harness's whole-source verdict over 8 bytes is the byte scan's,
 whose equality with `core::str::from_utf8` is proved only up to 4 bytes. The

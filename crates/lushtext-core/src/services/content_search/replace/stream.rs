@@ -234,24 +234,32 @@ fn find_newline(bytes: &[u8]) -> Option<usize> {
 
 /// The chunked streaming engine (design D2).
 ///
-/// Its result does not depend on how the source is chunked: whether a file is
-/// replaced, and a replaced file's output, count, lengths and digests, are
-/// the same at every chunk size, and on valid UTF-8 so is the outcome. Two
-/// checks carry this (design D11, "Kani memory"):
+/// It is built so that its result does not depend on how the source is
+/// chunked: whether a file is replaced, and a replaced file's output, count,
+/// lengths and digests, and on valid UTF-8 the outcome too. What establishes
+/// this is bounded, not a proof for every input (design D11, "Kani memory"):
 ///
 /// - Kani proves the UTF-8 seams ([`utf8`], shard `core-replace-stream`): fed
 ///   in chunks of 1 to 4 bytes, the carry rejects exactly the sources of at
-///   most 8 arbitrary bytes that a one-shot validation rejects. The engine
-///   itself was out of CBMC's reach: one run over 2 symbolic bytes with one
-///   fixed edit and no sinks was past 8 GiB and still growing in symbolic
-///   execution when it was stopped.
+///   most 8 arbitrary bytes that its one-shot byte scan rejects. The engine
+///   forms that were tried did not fit the shard margin, so the line logic
+///   has no Kani proof.
 /// - The unit test
 ///   `the_engine_does_not_depend_on_its_chunk_size_over_a_bounded_domain`
-///   checks every source, edit set, chunk size and output limit of a bounded
-///   domain exhaustively, against the whole feed and the reference builder,
-///   and the property test
+///   checks two bounded domains exhaustively, at every chunk size and with
+///   and without a binding output limit: every source of at most 4
+///   characters over `a`, `b`, `\r`, `\n` and `é` with every edit set of at
+///   most two edits from small tables, against the whole feed and the
+///   reference builder; and every source of at most 3 symbols over those
+///   plus the bytes `0x80`, `0xC3` and `0xFF` with every single edit, where
+///   a source that is not UTF-8 is never replaced.
+/// - The property test
 ///   `streaming_engine_matches_the_reference_at_every_chunk_size` samples
-///   larger inputs against the reference builder.
+///   larger valid inputs, chunk sizes 1 to 16, against the reference builder.
+///
+/// Beyond those domains the independence is reasoned from the code, not
+/// checked: `feed` validates a chunk's UTF-8 before the line logic sees it,
+/// and `finish_outcome` checks the carry's end before any `Replaced`.
 pub(super) struct ReplaceStream<'e, W, S, O> {
     edits: &'e [StreamEdit<'e>],
     next_edit: usize,

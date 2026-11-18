@@ -102,7 +102,7 @@ path moves that edit to G5.
 - [ ] 1.2 Measure the plain-disposal reservation that `main`'s undo backup
   takes on GTK after six 10 MiB files. Use evidence, not a timing. Record it
   as the GTK-side baseline.
-- [ ] 1.3 GTK axioms **A127, A128, A129** (a, b, c), each with a probe and a
+- [x] 1.3 GTK axioms **A127, A128, A129** (a, b, c), each with a probe and a
   sample in `gtk-lush-axioms` (group G2; if `main` has taken one of them by
   then, use the next of A130–A131 and say so); run the three samples with
   `make gtk-axiom-sample AXIOM=<id> CHECK=1` on the shipped toolkit and the
@@ -189,7 +189,7 @@ path moves that edit to G5.
 - [x] 3.2 Write `replace/protocol/kani_proofs.rs` and add shard
   `core-replace-protocol` to `scripts/kani-shards.py` (D11, properties 1–5).
   Verified 3/3 on `23ef433a` (0.34 min, 1.59 GiB peak).
-- [ ] 3.2a Mutation check of `core-replace-protocol`, logged: reorder cleanup
+- [x] 3.2a Mutation check of `core-replace-protocol`, logged: reorder cleanup
   so the body goes before the entry, and show the counterexample in which an
   entry references a missing body (the delta's "A reordered cleanup is
   caught"). Run it once through `make kani KANI_SHARD=core-replace-protocol`
@@ -222,7 +222,7 @@ path moves that edit to G5.
   `timeout 540 gh run watch <id> --exit-status` calls, before it takes
   `MERGE-LOCK`, never while holding it. Without these figures the archive
   commit fails its hook (`PENDING DISPATCH (owed by stream-replace-all)`).
-- [ ] 3.3c (group G1; stage-2 review, design D11) Close the bounded check's
+- [x] 3.3c (group G1; stage-2 review, design D11) Close the bounded check's
   two gaps, which the retired engine harness `an_invalid_source_is_never_replaced`
   used to cover:
   - **Invalid sources.** Add a second domain: every source of at most 3
@@ -285,19 +285,19 @@ path moves that edit to G5.
   extending the generated states with bodies: missing, truncated, orphaned
   and mixed kinds. Undo is never offered for a journal without validated
   originals.
-- [ ] 3.5a Failing-first: a crash between the fourth file's body and its
+- [x] 3.5a Failing-first: a crash between the fourth file's body and its
   entry leaves an active journal whose Undo restores the first three files,
   and cleanup removes the orphan body (D9). The property
   `an_orphan_body_never_costs_undo` covers the loader's half; this task is
   the end-to-end service test through the `replace-body-before-entry` kill
   seam (or its test-only equivalent).
-- [ ] 3.5b Failing-first (design D9 as revised in stage 1): a journal of
+- [x] 3.5b Failing-first (design D9 as revised in stage 1): a journal of
   three stream entries whose second body is truncated offers no Undo, copies
   that entry to the recovery quarantine, writes the cleanup marker, and
   startup cleanup then removes the journal with every body; the three target
   files keep their replaced bytes. A relaunch between the load and the
   cleanup still offers no Undo.
-- [ ] 3.6 Format upgrade: update `format_upgrade/{inventory,plan,diagnostics}.rs`
+- [x] 3.6 Format upgrade: update `format_upgrade/{inventory,plan,diagnostics}.rs`
   for the new kind and the body files (`inventory.rs` and `plan.rs` are done;
   `diagnostics.rs` is not). Verify the newer-version diagnostics with
   `make run-format-upgrade-newer-manual-test`'s data, headless, through its
@@ -317,7 +317,7 @@ path moves that edit to G5.
   `main`'s `apply_replacements_inner` admission, including a file whose
   output, not its source, crosses 10 MiB and one stopped by the retained
   weight.
-- [ ] 4.3 Failing-first no-loss tests through `apply_replacements` with the
+- [x] 4.3 Failing-first no-loss tests through `apply_replacements` with the
   fake free-space probe and the test-only per-file limit. They cover the
   provisional P1 waiver and its final decision at P3 (design D4):
   - `no_loss_every_file_main_replaced_is_replaced_with_little_free_space`;
@@ -339,7 +339,7 @@ path moves that edit to G5.
 - [x] 4.5 Failing-first: another writer appends to the target during pass B,
   using a test hook after pass A. No rename happens, the file is skipped as
   `ChangedDuringReplace`, and its body and entry are removed (D5).
-- [ ] 4.6 `replace/undo.rs`: streaming undo and rollback (D6). Done: a
+- [x] 4.6 `replace/undo.rs`: streaming undo and rollback (D6). Done: a
   diverged file, a body corrupted after the run, Undo and rollback with less
   free space than the reserve
   (`a_rollback_with_less_free_space_than_the_reserve_restores_every_file`).
@@ -379,7 +379,7 @@ path moves that edit to G5.
   returns before it waits; and
   `a_run_that_replaces_nothing_removes_the_superseded_journal`. The widget
   half lands in G5.
-- [ ] 4.10 Test continuity (design R4). For each of the 48 names in
+- [x] 4.10 Test continuity (design R4). For each of the 48 names in
   `.claude/handoffs/stream-replace-all/main-replace-tests-missing-on-branch.txt`,
   record in `decisions.md` the branch test that now guards the same
   behaviour, or write one. Each successor is shown to fail against a logged
@@ -421,7 +421,7 @@ path moves that edit to G5.
   `scripts/heavy.sh -- scripts/run-performance-smoke.sh --filter replace_undo_workflows`.
   Grep `scripts/`, `.github/`, `Makefile`, `.cargo/` and `docs/` for every
   other successor name that changes.
-- [ ] 4.11 Failing-first (decision 21): a cancelled file whose entry removal,
+- [x] 4.11 Failing-first (decision 21): a cancelled file whose entry removal,
   then whose body removal, fails through a per-target fault seam. The target
   keeps its original bytes, the journal stays active with that entry and its
   body (never an entry without its body), and the next Undo finds the target

@@ -314,7 +314,7 @@ fn stale_reserved_apply_cannot_overwrite_newer_committed_journal_or_file() {
 }
 
 #[test]
-fn apply_waits_for_an_editor_save_guard_on_the_same_target() {
+fn test_apply_replacements_waits_for_existing_save_guard_on_same_target() {
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -753,14 +753,15 @@ fn undo_recognises_an_already_restored_file_and_skips_a_diverged_one() {
     );
     let backup = outcome.expect("replace").undo_backup;
     fixture::write_text(&restored, "needle\n");
-    fixture::write_text(&diverged, "edited after\n");
+    // The replaced length, other bytes: only the digest tells it diverged.
+    fixture::write_text(&diverged, "dOne\n");
 
     let undone = undo_replacements(&backup);
 
     assert_eq!(undone.restored_count(), 1);
     assert_eq!(undone.skipped_count, 1);
     assert!(undone.remaining_backup.contains_key(&diverged));
-    assert_eq!(fixture::read_text(&diverged), "edited after\n");
+    assert_eq!(fixture::read_text(&diverged), "dOne\n");
 }
 
 #[test]
@@ -815,8 +816,12 @@ fn undo_with_less_free_space_than_the_reserve_restores_every_file() {
     }
 }
 
+/// Growth after U0's metadata, past the file limit (the test limit), is
+/// caught by the bounded hash and skipped: the file is never restored over,
+/// even when its first bytes are still exactly what Replace All wrote.
 #[test]
-fn undo_growth_after_metadata_is_skipped_without_reading_it_whole() {
+fn undo_growth_after_metadata_is_skipped_without_unbounded_allocation() {
+    const LIMIT: u64 = 4096;
     let dir = tempdir().expect("tempdir");
     let file = dir.path().join("grown.txt");
     fixture::write_text(&file, "needle\n");
@@ -826,14 +831,26 @@ fn undo_growth_after_metadata_is_skipped_without_reading_it_whole() {
     );
     let backup = outcome.expect("replace").undo_backup;
     let _hook = register_undo_after_metadata_hook_for_test(&file, |path| {
-        fixture::write_repeated_bytes(path, b"x", 64 * 1024);
+        // The replaced bytes, then more, up to one byte past the limit.
+        let mut grown = b"after\n".to_vec();
+        grown.resize(usize::try_from(LIMIT + 1).expect("small"), b'x');
+        fixture::write_bytes(path, &grown);
     });
+    set_max_replace_file_bytes_for_test(Some(LIMIT));
 
     let undone = undo_replacements(&backup);
+    set_max_replace_file_bytes_for_test(None);
 
     assert_eq!(undone.restored_count(), 0);
     assert_eq!(undone.skipped_count, 1);
+    assert_eq!(undone.failed_count, 0);
     assert_eq!(undone.remaining_backup, backup);
+    assert_eq!(
+        fs_metadata::file_facts(&file)
+            .expect("grown target facts")
+            .byte_size,
+        LIMIT + 1
+    );
 }
 
 #[test]
@@ -1172,21 +1189,38 @@ fn the_engine_buffers_only_targeted_lines() {
     );
 }
 
-/// Every edit set of at most two edits over the bounded-domain tables: by line
-/// (lines 1 to 3), and without overlap on one line.
-fn bounded_domain_edit_sets(path: &Path) -> Vec<Vec<Replacement>> {
-    const LINES: [&str; 4] = ["", "a", "ab", "\r"];
-    const REPLACEMENTS: [&str; 2] = ["", "x\n"];
-    let ranges = |line: &str, from: usize| {
-        (from..=line.len())
-            .flat_map(move |start| (start..=line.len()).map(move |end| start..end))
-            .collect::<Vec<_>>()
-    };
+/// The recorded lines of the bounded check's edit tables: the line classes the
+/// engine distinguishes, and `aé`, whose two-byte character a seam can cut
+/// inside a targeted line.
+const BOUNDED_LINES: [&str; 5] = ["", "a", "ab", "\r", "a\u{e9}"];
+/// The bounded check's replacement texts: an empty one and one that adds a
+/// line.
+const BOUNDED_REPLACEMENTS: [&str; 2] = ["", "x\n"];
+
+/// Every range of `line` that starts at or after `from` and whose ends are
+/// character boundaries (a preview never records a range inside a character).
+fn bounded_ranges(line: &str, from: usize) -> Vec<std::ops::Range<usize>> {
+    let bounds: Vec<usize> = (from..=line.len())
+        .filter(|&index| line.is_char_boundary(index))
+        .collect();
+    bounds
+        .iter()
+        .flat_map(|&start| {
+            bounds
+                .iter()
+                .filter(move |&&end| end >= start)
+                .map(move |&end| start..end)
+        })
+        .collect()
+}
+
+/// Every single edit of the bounded tables, on line 1 or 2.
+fn bounded_domain_single_edits(path: &Path) -> Vec<Replacement> {
     let mut singles = Vec::new();
     for line_number in 1..=2u64 {
-        for line in LINES {
-            for range in ranges(line, 0) {
-                for replacement in REPLACEMENTS {
+        for line in BOUNDED_LINES {
+            for range in bounded_ranges(line, 0) {
+                for replacement in BOUNDED_REPLACEMENTS {
                     singles.push(make_replacement(
                         path,
                         line_number,
@@ -1198,12 +1232,18 @@ fn bounded_domain_edit_sets(path: &Path) -> Vec<Vec<Replacement>> {
             }
         }
     }
+    singles
+}
+
+/// Every edit set of at most two edits over the bounded tables: by line
+/// (lines 1 to 3), and without overlap on one line.
+fn bounded_domain_edit_sets(singles: &[Replacement]) -> Vec<Vec<Replacement>> {
     let mut sets: Vec<Vec<Replacement>> = singles.iter().cloned().map(|one| vec![one]).collect();
-    for first in &singles {
-        for replacement in REPLACEMENTS {
-            for range in ranges(&first.original_line, first.match_range.end) {
+    for first in singles {
+        for replacement in BOUNDED_REPLACEMENTS {
+            for range in bounded_ranges(&first.original_line, first.match_range.end) {
                 let second = make_replacement(
-                    path,
+                    &first.path,
                     first.line_number,
                     &first.original_line,
                     replacement,
@@ -1212,9 +1252,10 @@ fn bounded_domain_edit_sets(path: &Path) -> Vec<Vec<Replacement>> {
                 sets.push(vec![first.clone(), second]);
             }
             for line_number in first.line_number + 1..=3 {
-                for line in LINES {
-                    for range in ranges(line, 0) {
-                        let second = make_replacement(path, line_number, line, replacement, range);
+                for line in BOUNDED_LINES {
+                    for range in bounded_ranges(line, 0) {
+                        let second =
+                            make_replacement(&first.path, line_number, line, replacement, range);
                         sets.push(vec![first.clone(), second]);
                     }
                 }
@@ -1224,126 +1265,1551 @@ fn bounded_domain_edit_sets(path: &Path) -> Vec<Vec<Replacement>> {
     sets
 }
 
-/// One edit set of the bounded check: the reference builder's text and count
-/// (`None` when it does not replace), and the engine's planned edits.
-type PlannedEdits<'a> = (Option<(String, usize)>, Vec<StreamEdit<'a>>);
-
-/// The bounded exhaustive check that stands in for the engine's Kani harness
-/// (design D11, "Kani memory": even one engine run over 2 symbolic bytes was
-/// past 8 GiB and still growing in CBMC when stopped). Domain: every source of at most
-/// four characters over `a`, `b`, `\r`, `\n` and `é` (the byte classes the
-/// line logic distinguishes, and a two-byte character a seam can cut), no edit
-/// and every edit set of
-/// [`bounded_domain_edit_sets`], every chunk size from 1 to the source length,
-/// and two output limits: none, and one byte below the whole output. At every
-/// point the chunked feed equals the whole feed, a replaced file equals the
-/// reference builder, the output stays within the limit and the digests record
-/// exactly the bytes fed and written.
-#[test]
-fn the_engine_does_not_depend_on_its_chunk_size_over_a_bounded_domain() {
-    const ALPHABET: [&str; 5] = ["a", "b", "\r", "\n", "\u{e9}"];
-    const MAX_SOURCE: u32 = 4;
-    let path = PathBuf::from("/t.txt");
-    let edit_sets = bounded_domain_edit_sets(&path);
+/// Every source of up to `max_len` symbols over `alphabet`, the empty one
+/// included.
+fn bounded_sources(alphabet: &[&[u8]], max_len: u32) -> Vec<Vec<u8>> {
     let mut sources = vec![Vec::new()];
-    for len in 1..=MAX_SOURCE {
-        for code in 0..ALPHABET.len().pow(len) {
+    for len in 1..=max_len {
+        for code in 0..alphabet.len().pow(len) {
             let mut rest = code;
-            let mut source = String::new();
+            let mut source = Vec::new();
             for _ in 0..len {
-                source.push_str(ALPHABET[rest % ALPHABET.len()]);
-                rest /= ALPHABET.len();
+                source.extend_from_slice(alphabet[rest % alphabet.len()]);
+                rest /= alphabet.len();
             }
-            sources.push(source.into_bytes());
+            sources.push(source);
         }
     }
-    let (mut replaced_runs, mut crlf_seams, mut cut_characters) = (0usize, 0usize, 0usize);
-    for source in &sources {
-        let text = std::str::from_utf8(source).expect("the alphabet is UTF-8");
-        let mut planned: Vec<PlannedEdits<'_>> = vec![(Some((text.to_string(), 0)), Vec::new())];
-        for set in &edit_sets {
+    sources
+}
+
+/// One edit set of the bounded check: the reference builder's text and count
+/// (`None` when it does not replace, or the source is not UTF-8), and the
+/// engine's planned edits.
+type PlannedEdits<'a> = (Option<(String, usize)>, Vec<StreamEdit<'a>>);
+
+/// How often the bounded check reached each case the retired engine harness
+/// covered with `kani::cover!`; each must be reached at least once.
+#[derive(Debug, Default)]
+struct BoundedCoverage {
+    replaced_runs: usize,
+    two_edits_applied: usize,
+    limit_stops: usize,
+    stale_lines: usize,
+    crlf_seams: usize,
+    unterminated_final_line_across_a_seam: usize,
+    cut_character_in_a_replaced_line: usize,
+    invalid_sources: usize,
+    invalid_source_split_by_a_seam: usize,
+}
+
+/// The one-based line that byte `index` of `source` is in.
+fn line_of(source: &[u8], index: usize) -> u64 {
+    1 + source[..index]
+        .iter()
+        .filter(|&&byte| byte == b'\n')
+        .count() as u64
+}
+
+/// Check every edit set, chunk size and output limit of one source.
+fn check_bounded_source(
+    source: &[u8],
+    edit_sets: &[Vec<Replacement>],
+    coverage: &mut BoundedCoverage,
+) {
+    use ReplacementTextOutcome as Outcome;
+    let text = std::str::from_utf8(source).ok();
+    if text.is_none() {
+        coverage.invalid_sources += 1;
+    }
+    let mut planned: Vec<PlannedEdits<'_>> = vec![(text.map(|t| (t.to_string(), 0)), Vec::new())];
+    for set in edit_sets {
+        let mut refs: Vec<&Replacement> = set.iter().collect();
+        let Ok(edits) = plan_edits(&mut refs, || false) else {
+            continue;
+        };
+        let reference = text.and_then(|text| {
             let mut refs: Vec<&Replacement> = set.iter().collect();
-            let Ok(edits) = plan_edits(&mut refs, || false) else {
-                continue;
-            };
-            let mut refs: Vec<&Replacement> = set.iter().collect();
-            planned.push((build_replaced_text_reference(text, &mut refs).ok(), edits));
-        }
-        for (reference, edits) in &planned {
-            let whole_len = source.len().max(1);
-            let unlimited = stream_whole(
-                source,
-                edits,
-                whole_len,
-                u64::MAX,
-                RecordingSink::default(),
-                RecordingSink::default(),
-            );
-            let replaced = matches!(unlimited.0.outcome, ReplacementTextOutcome::Replaced { .. });
+            build_replaced_text_reference(text, &mut refs).ok()
+        });
+        planned.push((reference, edits));
+    }
+    let whole_len = source.len().max(1);
+    for (reference, edits) in &planned {
+        let unlimited = stream_whole(
+            source,
+            edits,
+            whole_len,
+            u64::MAX,
+            RecordingSink::default(),
+            RecordingSink::default(),
+        );
+        let replaced = matches!(unlimited.0.outcome, Outcome::Replaced { .. });
+        if text.is_some() {
             assert_eq!(
                 replaced.then(|| (unlimited.1.clone(), unlimited.0.outcome)),
                 reference.as_ref().map(|(expected, count)| (
                     expected.as_bytes().to_vec(),
-                    ReplacementTextOutcome::Replaced {
+                    Outcome::Replaced {
                         replacement_count: *count
                     }
                 )),
-                "{text:?} against the reference"
+                "{source:?} against the reference"
             );
-            let mut limits = vec![u64::MAX];
-            if let Some(below) = (unlimited.1.len() as u64).checked_sub(1) {
-                limits.push(below);
+        }
+        let mut limits = vec![u64::MAX];
+        if let Some(below) = (unlimited.1.len() as u64).checked_sub(1) {
+            limits.push(below);
+        }
+        for limit in limits {
+            let whole = stream_whole(
+                source,
+                edits,
+                whole_len,
+                limit,
+                RecordingSink::default(),
+                RecordingSink::default(),
+            );
+            match whole.0.outcome {
+                Outcome::OutputLimitExceeded if limit != u64::MAX => coverage.limit_stops += 1,
+                Outcome::StaleLine { .. } => coverage.stale_lines += 1,
+                _ => {}
             }
-            for limit in limits {
-                let whole = stream_whole(
+            for chunk in 1..=whole_len {
+                let split = stream_whole(
                     source,
                     edits,
-                    whole_len,
+                    chunk,
                     limit,
                     RecordingSink::default(),
                     RecordingSink::default(),
                 );
-                for chunk in 1..=whole_len {
-                    let split = stream_whole(
-                        source,
-                        edits,
-                        chunk,
-                        limit,
-                        RecordingSink::default(),
-                        RecordingSink::default(),
-                    );
-                    for (summary, out) in [&whole, &split] {
-                        assert!(summary.output_len <= limit);
-                        assert_eq!(summary.output_len, out.len() as u64);
-                        assert_eq!(&summary.output_digest.0, out);
+                for (summary, out) in [&whole, &split] {
+                    assert!(summary.output_len <= limit);
+                    assert_eq!(summary.output_len, out.len() as u64);
+                    assert_eq!(&summary.output_digest.0, out);
+                }
+                let seams: Vec<usize> = (chunk..source.len()).step_by(chunk).collect();
+                if text.is_none() {
+                    // A source that is not UTF-8 is never replaced, at any chunk
+                    // size; where it stops may depend on the chunking.
+                    for outcome in [whole.0.outcome, split.0.outcome] {
+                        assert!(
+                            matches!(
+                                outcome,
+                                Outcome::NotUtf8
+                                    | Outcome::StaleLine { .. }
+                                    | Outcome::OutputLimitExceeded
+                            ),
+                            "{source:?} chunk {chunk} limit {limit}: {outcome:?}"
+                        );
                     }
-                    // On valid UTF-8 the outcome itself does not depend on the
-                    // chunking; the bytes written before a stop may.
-                    assert_eq!(split.0.outcome, whole.0.outcome, "{text:?} chunk {chunk}");
-                    if matches!(whole.0.outcome, ReplacementTextOutcome::Replaced { .. }) {
-                        assert_eq!(split.1, whole.1, "{text:?} chunk {chunk}");
-                        assert_eq!(split.0.source_digest.0, *source);
-                        assert_eq!(whole.0.source_digest.0, *source);
-                        replaced_runs += 1;
-                        let mut seams = (chunk..source.len()).step_by(chunk);
-                        if !edits.is_empty()
-                            && seams
-                                .clone()
-                                .any(|seam| source[seam - 1] == b'\r' && source[seam] == b'\n')
-                        {
-                            crlf_seams += 1;
-                        }
-                        if !edits.is_empty() && seams.any(|seam| source[seam] & 0xC0 == 0x80) {
-                            cut_characters += 1;
-                        }
+                    if edits.is_empty() && limit == u64::MAX {
+                        assert_eq!(
+                            split.0.outcome,
+                            Outcome::NotUtf8,
+                            "{source:?} chunk {chunk}"
+                        );
+                    }
+                    if !seams.is_empty() {
+                        coverage.invalid_source_split_by_a_seam += 1;
+                    }
+                    continue;
+                }
+                // On valid UTF-8 the outcome itself does not depend on the
+                // chunking; the bytes written before a stop may.
+                assert_eq!(
+                    split.0.outcome, whole.0.outcome,
+                    "{source:?} chunk {chunk} limit {limit}"
+                );
+                let Outcome::Replaced { replacement_count } = whole.0.outcome else {
+                    continue;
+                };
+                assert_eq!(split.1, whole.1, "{source:?} chunk {chunk}");
+                assert_eq!(split.0.source_digest.0, *source);
+                assert_eq!(whole.0.source_digest.0, *source);
+                coverage.replaced_runs += 1;
+                if replacement_count == 2 {
+                    coverage.two_edits_applied += 1;
+                }
+                if edits.is_empty() {
+                    continue;
+                }
+                let targeted = |index: usize| {
+                    let line = line_of(source, index);
+                    edits.iter().any(|edit| edit.line_number == line)
+                };
+                if seams
+                    .iter()
+                    .any(|&seam| source[seam - 1] == b'\r' && source[seam] == b'\n')
+                {
+                    coverage.crlf_seams += 1;
+                }
+                if seams
+                    .iter()
+                    .any(|&seam| source[seam] & 0xC0 == 0x80 && targeted(seam))
+                {
+                    coverage.cut_character_in_a_replaced_line += 1;
+                }
+                if source.last().is_some_and(|&last| last != b'\n') {
+                    let final_start = source
+                        .iter()
+                        .rposition(|&byte| byte == b'\n')
+                        .map_or(0, |newline| newline + 1);
+                    if targeted(final_start) && seams.iter().any(|&seam| seam > final_start) {
+                        coverage.unterminated_final_line_across_a_seam += 1;
                     }
                 }
             }
         }
     }
-    // Coverage of the cases the Kani harness covered with `kani::cover!`.
+}
+
+/// The bounded exhaustive check that stands in for the engine's Kani harness
+/// (design D11, "Kani memory": no engine form that was tried fitted the shard
+/// margin). Two domains:
+///
+/// - every source of at most four characters over `a`, `b`, `\r`, `\n` and
+///   `é`, no edit and every edit set of at most two edits from
+///   [`bounded_domain_edit_sets`] (recorded lines `""`, `a`, `ab`, `\r`, `aé`;
+///   replacements `""`, `x\n`; lines 1 to 3);
+/// - every source of at most three symbols over those five plus the single
+///   bytes `0x80`, `0xC3` and `0xFF`, no edit and every single edit. Validity
+///   is computed per source: `0xC3 0x80` is U+00C0.
+///
+/// Each point runs every chunk size from 1 to the source length and two
+/// output limits: none, and one byte below the whole output. On a valid
+/// source the chunked feed's outcome equals the whole feed's, a replaced
+/// file's output equals the whole feed's and the reference builder's, the
+/// output stays within the limit and the digests record exactly the bytes fed
+/// and written. A source that is not UTF-8 is never `Replaced`: it ends
+/// `NotUtf8`, `StaleLine` or `OutputLimitExceeded`, and with no edit and no
+/// limit `NotUtf8`, at every chunk size. A coverage guard asserts that each
+/// case the retired harness covered is reached.
+#[test]
+fn the_engine_does_not_depend_on_its_chunk_size_over_a_bounded_domain() {
+    let path = PathBuf::from("/t.txt");
+    let singles = bounded_domain_single_edits(&path);
+    let edit_sets = bounded_domain_edit_sets(&singles);
+    let valid: [&[u8]; 5] = [b"a", b"b", b"\r", b"\n", "\u{e9}".as_bytes()];
+    let mut coverage = BoundedCoverage::default();
+    for source in bounded_sources(&valid, 4) {
+        check_bounded_source(&source, &edit_sets, &mut coverage);
+    }
+    let with_invalid: [&[u8]; 8] = [
+        b"a",
+        b"b",
+        b"\r",
+        b"\n",
+        "\u{e9}".as_bytes(),
+        b"\x80",
+        b"\xC3",
+        b"\xFF",
+    ];
+    let single_sets: Vec<Vec<Replacement>> = singles.into_iter().map(|one| vec![one]).collect();
+    for source in bounded_sources(&with_invalid, 3) {
+        check_bounded_source(&source, &single_sets, &mut coverage);
+    }
+    for (case, count) in [
+        ("replaced runs", coverage.replaced_runs),
+        ("two edits applied", coverage.two_edits_applied),
+        ("the limit stopping a file", coverage.limit_stops),
+        ("a stale line", coverage.stale_lines),
+        ("a CRLF split by a seam", coverage.crlf_seams),
+        (
+            "an unterminated final line replaced across a seam",
+            coverage.unterminated_final_line_across_a_seam,
+        ),
+        (
+            "a cut character inside a replaced targeted line",
+            coverage.cut_character_in_a_replaced_line,
+        ),
+        ("an invalid source", coverage.invalid_sources),
+        (
+            "an invalid source split by a seam",
+            coverage.invalid_source_split_by_a_seam,
+        ),
+    ] {
+        assert!(
+            count > 0,
+            "bounded check never reached {case}: {coverage:?}"
+        );
+    }
+}
+
+// --- continuity with `main`'s tests (task 4.10) and recovery (3.5a, 3.5b, 4.11)
+
+/// Copy the journal under `data_dir` (entries, manifest and bodies) into
+/// `snapshot`: the disk state a crash at this instant would leave.
+fn snapshot_journal(data_dir: &Path, snapshot: &Path) {
+    for (from, to) in [
+        (
+            search_backup::journal_dir(data_dir),
+            search_backup::journal_dir(snapshot),
+        ),
+        (
+            search_backup::bodies_dir(data_dir),
+            search_backup::bodies_dir(snapshot),
+        ),
+    ] {
+        fixture::create_dir_all(&to);
+        for name in fixture::entry_names(&from) {
+            let source = from.join(&name);
+            if fs_metadata::path_status(&source)
+                .is_ok_and(|status| status.is_present() && !status.is_directory())
+            {
+                fixture::write_bytes(&to.join(&name), fixture::read_bytes(&source));
+            }
+        }
+    }
+}
+
+#[test]
+fn test_apply_replacements_waits_for_startup_journal_recovery_guard() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let dir = tempdir().expect("tempdir");
+    let journal = tempdir().expect("journal");
+    let file = dir.path().join("test.rs");
+    fixture::write_text(&file, "needle\n");
+    let replacements = vec![make_replacement(&file, 1, "needle", "replaced", 0..6)];
+    let recovery_guard =
+        search_backup::acquire_journal_guard().expect("simulate startup journal recovery");
+    let journal_path = journal.path().to_path_buf();
+    let (tx, rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let _free = fs_metadata::fake_free_space_for_test(AMPLE_FREE);
+        let result = apply_replacements(
+            &replacements,
+            &HashSet::new(),
+            &AtomicBool::new(false),
+            &journal_path,
+        );
+        tx.send(result).expect("send replace result");
+    });
     assert!(
-        replaced_runs > 0 && crlf_seams > 0 && cut_characters > 0,
-        "{replaced_runs} {crlf_seams} {cut_characters}"
+        rx.recv_timeout(Duration::from_millis(50)).is_err(),
+        "Replace All must wait while startup owns journal recovery"
+    );
+    assert_eq!(fixture::read_text(&file), "needle\n");
+
+    drop(recovery_guard);
+    let result = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("replace finishes after the recovery guard drops")
+        .expect("replace succeeds");
+    worker.join().expect("replace worker joins");
+    assert_eq!(result.result.files_affected, 1);
+    assert_eq!(fixture::read_text(&file), "replaced\n");
+    assert!(
+        search_backup::load(journal.path())
+            .expect("load active journal")
+            .contains_key(&file)
+    );
+}
+
+#[test]
+fn test_apply_replacements_cancel() {
+    let dir = tempdir().expect("tempdir");
+    let file_a = dir.path().join("a.txt");
+    let file_b = dir.path().join("b.txt");
+    fixture::write_text(&file_a, "needle\n");
+    fixture::write_text(&file_b, "needle\n");
+    let journal = tempdir().expect("journal");
+    let _free = fs_metadata::fake_free_space_for_test(AMPLE_FREE);
+    let result = apply_replacements(
+        &[
+            make_replacement(&file_a, 1, "needle", "replaced", 0..6),
+            make_replacement(&file_b, 1, "needle", "replaced", 0..6),
+        ],
+        &HashSet::new(),
+        &AtomicBool::new(true),
+        journal.path(),
+    );
+    assert!(result.is_err(), "a cancelled Replace All aborts");
+    assert_eq!(fixture::read_text(&file_a), "needle\n");
+    assert_eq!(fixture::read_text(&file_b), "needle\n");
+    assert!(
+        search_backup::load(journal.path())
+            .expect("load")
+            .is_empty()
+    );
+
+    // A cancel inside the last file, after `a` was replaced: the run still
+    // aborts, `b` keeps its bytes and `a` is rolled back.
+    let journal = tempdir().expect("journal");
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let cancel_in_hook = cancel.clone();
+    super::register_before_target_write_hook_for_test(&file_b, move || {
+        cancel_in_hook.store(true, Ordering::Relaxed);
+    });
+    let result = apply_replacements(
+        &[
+            make_replacement(&file_a, 1, "needle", "replaced", 0..6),
+            make_replacement(&file_b, 1, "needle", "replaced", 0..6),
+        ],
+        &HashSet::new(),
+        &cancel,
+        journal.path(),
+    );
+    assert!(result.is_err(), "a cancel in the last file aborts the run");
+    assert_eq!(fixture::read_text(&file_a), "needle\n", "a is rolled back");
+    assert_eq!(fixture::read_text(&file_b), "needle\n");
+    assert!(
+        search_backup::load(journal.path())
+            .expect("load")
+            .is_empty()
+    );
+}
+
+/// No target is written when its undo state cannot be made durable: neither
+/// when the journal cannot be prepared (so no body is written), nor when the
+/// entry cannot be written after its body. `main` aborted the run here; the
+/// branch reports the file under `UndoJournalFailed` and leaves it alone.
+#[test]
+fn test_apply_replacements_aborts_when_undo_journal_cannot_be_persisted() {
+    let dir = tempdir().expect("tempdir");
+    let file = dir.path().join("test.rs");
+    let journal_path = dir.path().join("journal-is-a-file");
+    fixture::write_text(&file, "let needle = 42;\n");
+    fixture::write_text(&journal_path, "not a directory");
+    let replacements = [make_replacement(
+        &file,
+        1,
+        "let needle = 42;",
+        "haystack",
+        4..10,
+    )];
+    let _free = fs_metadata::fake_free_space_for_test(AMPLE_FREE);
+    let unprepared = apply_replacements(
+        &replacements,
+        &HashSet::new(),
+        &AtomicBool::new(false),
+        &journal_path,
+    );
+    let unprepared = unprepared.expect("an unpreparable journal is a skip");
+    assert_eq!(unprepared.result.files_affected, 0);
+    assert_eq!(
+        unprepared
+            .skip_report
+            .count(ReplaceSkipReason::UndoJournalFailed),
+        1
+    );
+    assert!(unprepared.undo_backup.is_empty());
+    assert_eq!(
+        fixture::read_text(&file),
+        "let needle = 42;\n",
+        "file bytes stay unchanged when the journal cannot be prepared"
+    );
+
+    // The entry's path is taken by a non-empty directory once the body is
+    // written: the entry write fails, and the target is never renamed.
+    let journal = tempdir().expect("journal");
+    let blocked = search_backup::entry_path(journal.path(), &file);
+    register_after_pass_a_hook_for_test(&file, move |_| {
+        fixture::create_dir_all(&blocked);
+        fixture::write_text(&blocked.join("occupied"), "x");
+    });
+    let outcome = apply_replacements(
+        &replacements,
+        &HashSet::new(),
+        &AtomicBool::new(false),
+        journal.path(),
+    )
+    .expect("a failed entry is a skip");
+    assert_eq!(outcome.result.files_affected, 0);
+    assert_eq!(
+        outcome
+            .skip_report
+            .count(ReplaceSkipReason::UndoJournalFailed),
+        1
+    );
+    assert!(outcome.undo_backup.is_empty());
+    assert_eq!(
+        fixture::read_text(&file),
+        "let needle = 42;\n",
+        "file bytes stay unchanged when the entry cannot be saved"
+    );
+}
+
+/// `main` failed a run whose only file was missing; the branch reports it as
+/// `Unreadable` in the skip report (design D7), and writes nothing.
+#[test]
+fn test_apply_replacements_nonexistent_file() {
+    let dir = tempdir().expect("tempdir");
+    let missing = dir.path().join("does_not_exist.rs");
+    let (outcome, journal) = apply(
+        &[make_replacement(
+            &missing,
+            1,
+            "phantom line",
+            "replacement",
+            0..7,
+        )],
+        &HashSet::new(),
+    );
+    let outcome = outcome.expect("a missing file is reported, not fatal");
+    assert_eq!(outcome.result.files_affected, 0);
+    assert_eq!(outcome.skip_report.count(ReplaceSkipReason::Unreadable), 1);
+    assert_eq!(outcome.result.error_count, 1);
+    assert!(outcome.undo_backup.is_empty());
+    assert!(!fs_metadata::exists(&missing));
+    assert!(
+        search_backup::load(journal.path())
+            .expect("load")
+            .is_empty()
+    );
+}
+
+#[test]
+fn test_apply_replacements_skip_paths() {
+    let dir = tempdir().expect("tempdir");
+    let file_a = dir.path().join("a.rs");
+    let file_b = dir.path().join("b.rs");
+    fixture::write_text(&file_a, "needle\n");
+    fixture::write_text(&file_b, "needle\n");
+    let skip = HashSet::from([file_b.clone()]);
+    let (outcome, _journal) = apply(
+        &[
+            make_replacement(&file_a, 1, "needle", "replaced", 0..6),
+            make_replacement(&file_b, 1, "needle", "replaced", 0..6),
+        ],
+        &skip,
+    );
+    let outcome = outcome.expect("replace");
+    assert_eq!(outcome.result.replaced_count, 1, "only a.rs is replaced");
+    assert_eq!(outcome.result.files_affected, 1);
+    assert_eq!(outcome.result.skipped_count, 1);
+    assert_eq!(
+        outcome.result.skipped_sample[0],
+        file_b.display().to_string()
+    );
+    assert_eq!(
+        outcome.skip_report.count(ReplaceSkipReason::UnsavedChanges),
+        1
+    );
+    assert!(outcome.undo_backup.contains_key(&file_a));
+    assert!(!outcome.undo_backup.contains_key(&file_b));
+    assert_eq!(fixture::read_text(&file_b), "needle\n");
+}
+
+/// At the test limit: a file exactly at the per-file limit is replaced.
+#[test]
+fn test_apply_replacements_allows_file_at_exact_size_cap() {
+    const LIMIT: u64 = 4096;
+    let dir = tempdir().expect("tempdir");
+    let file = dir.path().join("exact.rs");
+    let original_line = "a".repeat(usize::try_from(LIMIT).expect("small"));
+    fixture::write_text(&file, &original_line);
+    set_max_replace_file_bytes_for_test(Some(LIMIT));
+    let (outcome, _journal) = apply(
+        &[make_replacement(&file, 1, &original_line, "b", 0..1)],
+        &HashSet::new(),
+    );
+    set_max_replace_file_bytes_for_test(None);
+    let outcome = outcome.expect("a file at the limit is replaceable");
+    assert_eq!(outcome.result.files_affected, 1);
+    assert_eq!(outcome.result.replaced_count, 1);
+    assert_eq!(outcome.result.skipped_count, 0);
+    assert_eq!(outcome.result.error_count, 0);
+    assert_eq!(
+        fs_metadata::file_facts(&file)
+            .expect("stat replaced file")
+            .byte_size,
+        LIMIT
+    );
+    assert!(outcome.undo_backup.contains_key(&file));
+}
+
+/// At the test limit: a file one byte over it is skipped from its metadata,
+/// before the body admission that precedes every read (P0 before P1 and P2).
+/// With no free space at all, any later decision would read
+/// `NotEnoughDiskSpace`, and its bytes, which are not UTF-8, would read
+/// `NotUtf8`: the reason proves the size check came first.
+#[test]
+fn test_apply_replacements_skips_over_file_size_cap_before_reading() {
+    const LIMIT: u64 = 4096;
+    let dir = tempdir().expect("tempdir");
+    let file = dir.path().join("huge.rs");
+    fixture::write_repeated_bytes(&file, b"\xff", LIMIT + 1);
+    let journal = tempdir().expect("journal");
+    let read = std::sync::Arc::new(AtomicBool::new(false));
+    let read_in_hook = read.clone();
+    register_after_pass_a_hook_for_test(&file, move |_| {
+        read_in_hook.store(true, Ordering::Relaxed);
+    });
+    set_max_replace_file_bytes_for_test(Some(LIMIT));
+    let _free = fs_metadata::fake_free_space_for_test(0);
+    let outcome = apply_replacements(
+        &[make_replacement(&file, 1, "needle", "replaced", 0..6)],
+        &HashSet::new(),
+        &AtomicBool::new(false),
+        journal.path(),
+    );
+    set_max_replace_file_bytes_for_test(None);
+    let outcome = outcome.expect("an oversized file is a skip, not fatal");
+    assert_eq!(outcome.result.replaced_count, 0);
+    assert_eq!(outcome.result.files_affected, 0);
+    assert_eq!(outcome.result.skipped_count, 1);
+    assert_eq!(outcome.result.skipped_sample[0], file.display().to_string());
+    assert_eq!(
+        outcome
+            .skip_report
+            .count(ReplaceSkipReason::LargerThanOpenTier),
+        1
+    );
+    assert!(
+        outcome.result.error_sample[0].contains("Replace All limit"),
+        "{}",
+        outcome.result.error_sample[0]
+    );
+    assert!(!read.load(Ordering::Relaxed), "no pass A ran");
+    assert!(!fs_metadata::exists(&search_backup::body_path(
+        journal.path(),
+        &file
+    )));
+    assert!(outcome.undo_backup.is_empty());
+}
+
+/// U1's verdict on what a target holds now: replaced (restore it), already
+/// original (no write), or changed since the run (never written over); and a
+/// missing target fails, keeping its entry.
+#[test]
+fn rollback_disposition_refuses_a_file_changed_after_replacement() {
+    use super::protocol::CurrentContent;
+    let dir = tempdir().expect("tempdir");
+    let file = dir.path().join("test.rs");
+    fixture::write_text(&file, "original\n");
+    let (outcome, _journal) = apply(
+        &[make_replacement(&file, 1, "original", "replaced", 0..8)],
+        &HashSet::new(),
+    );
+    let backup = outcome.expect("replace").undo_backup;
+    let entry = &backup[&file];
+    let verdict = |path: &Path| {
+        let facts = fs_metadata::file_facts(path).expect("facts");
+        super::undo::current_content(path, entry, &facts)
+    };
+
+    assert_eq!(verdict(&file), CurrentContent::Replaced);
+    fixture::write_text(&file, "original\n");
+    assert_eq!(verdict(&file), CurrentContent::Original);
+    // An editor save of a later target can land mid-rollback, because the
+    // per-file guard is released as rollback moves on.
+    fixture::write_text(&file, "user saved this after Replace All\n");
+    assert_eq!(verdict(&file), CurrentContent::Diverged);
+    // Same length as the replaced bytes, other content: only the digest tells.
+    fixture::write_text(&file, "replaceD\n");
+    assert_eq!(verdict(&file), CurrentContent::Diverged);
+
+    fixture::remove_file(&file);
+    let rollback = super::undo::rollback_applied_files(&backup);
+    assert!(
+        rollback.remaining.contains_key(&file),
+        "an unreadable target is reported, never written on a guess"
+    );
+    assert!(!fs_metadata::exists(&file));
+}
+
+#[test]
+fn rollback_keeps_the_journal_when_a_target_changed_mid_rollback() {
+    let dir = tempdir().expect("tempdir");
+    let restorable = dir.path().join("restorable.rs");
+    let changed = dir.path().join("changed.rs");
+    fixture::write_text(&restorable, "original\n");
+    fixture::write_text(&changed, "original\n");
+    let (outcome, journal) = apply(
+        &[
+            make_replacement(&restorable, 1, "original", "replaced", 0..8),
+            make_replacement(&changed, 1, "original", "replaced", 0..8),
+        ],
+        &HashSet::new(),
+    );
+    let backup = outcome.expect("replace").undo_backup;
+    // The replaced length, other bytes: only the digest tells it changed.
+    fixture::write_text(&changed, "rEplaced\n");
+
+    let rollback = super::undo::rollback_applied_files(&backup);
+
+    assert_eq!(
+        fixture::read_text(&restorable),
+        "original\n",
+        "an unchanged target is still rolled back"
+    );
+    assert_eq!(
+        fixture::read_text(&changed),
+        "rEplaced\n",
+        "a target changed after replacement is not overwritten"
+    );
+    assert_eq!(rollback.errors.total_count(), 1);
+    assert_eq!(rollback.remaining.len(), 1);
+    assert!(rollback.remaining.contains_key(&changed));
+    // The unrestored target keeps its entry and body: the journal stays.
+    assert!(fs_metadata::exists(&backup[&changed].entry_file));
+    assert!(fs_metadata::exists(&search_backup::body_path(
+        journal.path(),
+        &changed
+    )));
+    assert!(!fs_metadata::exists(&backup[&restorable].entry_file));
+}
+
+/// One target's apply in its own journal directory: the undo descriptors.
+fn applied_backup(target: &Path) -> (ReplaceUndoBackup, TempDir) {
+    fixture::write_text(target, "before\n");
+    let (outcome, journal) = apply(
+        &[make_replacement(target, 1, "before", "after", 0..6)],
+        &HashSet::new(),
+    );
+    (outcome.expect("replace").undo_backup, journal)
+}
+
+#[test]
+fn undo_hooks_fire_only_for_their_own_target_across_interleaved_undos() {
+    use std::sync::{Arc, Mutex};
+    let dir = tempdir().expect("tempdir");
+    let first = dir.path().join("first.txt");
+    let second = dir.path().join("second.txt");
+    let (first_backup, _first_journal) = applied_backup(&first);
+    let (second_backup, _second_journal) = applied_backup(&second);
+    let fired = Arc::new(Mutex::new(Vec::new()));
+    let first_recorder = Arc::clone(&fired);
+    let _first_guard = register_undo_after_metadata_hook_for_test(&first, move |path| {
+        first_recorder
+            .lock()
+            .expect("record first hook")
+            .push(path.to_path_buf());
+    });
+    let second_recorder = Arc::clone(&fired);
+    let _second_guard = register_undo_after_metadata_hook_for_test(&second, move |path| {
+        second_recorder
+            .lock()
+            .expect("record second hook")
+            .push(path.to_path_buf());
+    });
+
+    // Undo the second target first: a single-slot seam would let this
+    // operation steal and consume the first target's hook.
+    assert_eq!(undo_replacements(&second_backup).restored_count(), 1);
+    assert_eq!(
+        fired.lock().expect("fired after second undo").as_slice(),
+        std::slice::from_ref(&second)
+    );
+    assert!(undo_after_metadata_hook_is_registered_for_test(&first));
+    assert!(!undo_after_metadata_hook_is_registered_for_test(&second));
+
+    assert_eq!(undo_replacements(&first_backup).restored_count(), 1);
+    assert_eq!(
+        fired.lock().expect("fired after both undos").as_slice(),
+        &[second, first.clone()]
+    );
+    assert!(!undo_after_metadata_hook_is_registered_for_test(&first));
+}
+
+#[test]
+fn parallel_undo_operations_consume_only_their_own_target_hooks() {
+    use std::sync::{Arc, Mutex};
+    let dir = tempdir().expect("tempdir");
+    let fired = Arc::new(Mutex::new(Vec::new()));
+    let mut targets = Vec::new();
+    let mut backups = Vec::new();
+    let mut journals = Vec::new();
+    let mut guards = Vec::new();
+    for index in 0..8 {
+        let target = dir.path().join(format!("target-{index}.txt"));
+        let (backup, journal) = applied_backup(&target);
+        let recorder = Arc::clone(&fired);
+        let owner = target.clone();
+        guards.push(register_undo_after_metadata_hook_for_test(
+            &target,
+            move |path| {
+                // A hook that ran for another target's undo is a leak.
+                assert_eq!(path, owner.as_path(), "a hook ran for another target");
+                recorder
+                    .lock()
+                    .expect("record parallel hook")
+                    .push(path.to_path_buf());
+            },
+        ));
+        targets.push(target);
+        backups.push(backup);
+        journals.push(journal);
+    }
+
+    let leaked = std::thread::scope(|scope| {
+        // Every undo is spawned before any is joined, so they overlap.
+        let mut undos = Vec::with_capacity(backups.len());
+        for backup in &backups {
+            undos.push(scope.spawn(move || {
+                assert_eq!(undo_replacements(backup).restored_count(), 1);
+            }));
+        }
+        undos
+            .into_iter()
+            .map(std::thread::ScopedJoinHandle::join)
+            .filter(Result::is_err)
+            .count()
+    });
+    assert_eq!(leaked, 0, "every undo ran only its own target's hook");
+
+    let mut fired_paths = fired.lock().expect("parallel fired paths").clone();
+    fired_paths.sort();
+    assert_eq!(fired_paths, targets);
+    for target in &targets {
+        assert!(!undo_after_metadata_hook_is_registered_for_test(target));
+        assert_eq!(fixture::read_text(target), "before\n");
+    }
+    eprintln!(
+        "replace-undo-hook-isolation-evidence targets={} fired={} leaked=0",
+        targets.len(),
+        fired_paths.len()
+    );
+    drop(guards);
+}
+
+/// The entry and its body are durable, and the journal active, before the
+/// target's rename (P2 and P4 before P5).
+#[test]
+fn test_apply_replacements_persists_undo_journal_before_success() {
+    let dir = tempdir().expect("tempdir");
+    let journal = tempdir().expect("journal");
+    let file = dir.path().join("test.rs");
+    fixture::write_text(&file, "let needle = 42;\n");
+    let journal_path = journal.path().to_path_buf();
+    let target = file.clone();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let seen_in_hook = seen.clone();
+    super::register_before_target_write_hook_for_test(&file, move || {
+        let persisted = search_backup::load(&journal_path).expect("load before the rename");
+        *seen_in_hook.lock().expect("hook lock") = Some((
+            persisted.contains_key(&target),
+            fs_metadata::exists(&search_backup::body_path(&journal_path, &target)),
+            fixture::read_text(&target),
+        ));
+    });
+    let _free = fs_metadata::fake_free_space_for_test(AMPLE_FREE);
+    let outcome = apply_replacements(
+        &[make_replacement(
+            &file,
+            1,
+            "let needle = 42;",
+            "haystack",
+            4..10,
+        )],
+        &HashSet::new(),
+        &AtomicBool::new(false),
+        journal.path(),
+    )
+    .expect("replace");
+    let (active, body, target_bytes) = seen.lock().expect("seen").take().expect("hook ran");
+    assert!(active, "the journal lists the entry before the rename");
+    assert!(body, "the body is on disk before the rename");
+    assert_eq!(target_bytes, "let needle = 42;\n");
+    assert_eq!(
+        search_backup::load(journal.path()).expect("load"),
+        outcome.undo_backup
+    );
+}
+
+/// At the test limit: Undo restores a file whose current size is exactly the
+/// per-file limit.
+#[test]
+fn test_undo_replacements_allows_current_file_at_exact_size_cap() {
+    const LIMIT: u64 = 4096;
+    let dir = tempdir().expect("tempdir");
+    let file = sized(dir.path(), "exact-cap.txt", 4096);
+    set_max_replace_file_bytes_for_test(Some(LIMIT));
+    let (outcome, _journal) = apply(
+        &[make_replacement(&file, 1, "needle", "thread", 0..6)],
+        &HashSet::new(),
+    );
+    let backup = outcome.expect("replace").undo_backup;
+    assert_eq!(
+        fs_metadata::file_facts(&file).expect("facts").byte_size,
+        LIMIT
+    );
+
+    let undone = undo_replacements(&backup);
+    set_max_replace_file_bytes_for_test(None);
+
+    assert_eq!(undone.restored_count(), 1);
+    assert_eq!(undone.skipped_count, 0);
+    assert_eq!(undone.failed_count, 0);
+    assert!(undone.remaining_backup.is_empty());
+    assert!(fixture::read_text(&file).starts_with("needle\n"));
+}
+
+/// A bounded-read I/O failure during a partial restore (the second file's
+/// body is gone) keeps that entry, and only it, for a retry.
+#[test]
+fn test_undo_replacements_keeps_failed_entries_after_partial_restore() {
+    let dir = tempdir().expect("tempdir");
+    let restored = dir.path().join("a-restored.rs");
+    let failed = dir.path().join("b-failed.rs");
+    fixture::write_text(&restored, "before\n");
+    fixture::write_text(&failed, "before\n");
+    let (outcome, journal) = apply(
+        &[
+            make_replacement(&restored, 1, "before", "after", 0..6),
+            make_replacement(&failed, 1, "before", "after", 0..6),
+        ],
+        &HashSet::new(),
+    );
+    let backup = outcome.expect("replace").undo_backup;
+    fixture::remove_file(&search_backup::body_path(journal.path(), &failed));
+
+    let undone = undo_replacements(&backup);
+
+    assert_eq!(undone.restored_count(), 1);
+    assert_eq!(undone.failed_count, 1);
+    assert_eq!(undone.failed_sample[0], failed.display().to_string());
+    assert_eq!(undone.skipped_count, 0);
+    assert_eq!(undone.remaining_count(), 1);
+    assert_eq!(undone.remaining_backup.get(&failed), backup.get(&failed));
+    assert_eq!(fixture::read_text(&restored), "before\n");
+    assert_eq!(fixture::read_text(&failed), "after\n");
+}
+
+/// Task 3.5a (design D9): a crash between the fourth file's body and its
+/// entry leaves an active journal of the first three, whose Undo restores
+/// them, and cleanup removes the orphan body. The crash state is the journal
+/// copied at the `replace-body-before-entry` window (the after-pass-A hook
+/// sits at the same point as that kill point).
+#[test]
+fn a_crash_between_the_fourth_body_and_its_entry_keeps_undo_for_the_first_three() {
+    let dir = tempdir().expect("tempdir");
+    let journal = tempdir().expect("journal");
+    let crashed = tempdir().expect("crash snapshot");
+    let files: Vec<_> = (0..5)
+        .map(|index| {
+            let file = dir.path().join(format!("f{index}.txt"));
+            fixture::write_text(&file, "needle\n");
+            file
+        })
+        .collect();
+    let data_dir = journal.path().to_path_buf();
+    let snapshot = crashed.path().to_path_buf();
+    // At the window the first three targets are replaced and the fourth is
+    // not yet: record their bytes as the crash leaves them.
+    let at_crash = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let at_crash_in_hook = at_crash.clone();
+    let targets = files.clone();
+    register_after_pass_a_hook_for_test(&files[3], move |_| {
+        snapshot_journal(&data_dir, &snapshot);
+        *at_crash_in_hook.lock().expect("crash bytes") = targets
+            .iter()
+            .map(|file| fixture::read_bytes(file))
+            .collect();
+    });
+    let _free = fs_metadata::fake_free_space_for_test(AMPLE_FREE);
+    let replacements: Vec<_> = files
+        .iter()
+        .map(|file| make_replacement(file, 1, "needle", "thread", 0..6))
+        .collect();
+    let outcome = apply_replacements(
+        &replacements,
+        &HashSet::new(),
+        &AtomicBool::new(false),
+        journal.path(),
+    );
+    outcome.expect("the uncrashed run completes");
+    // Put the targets back as the crash left them.
+    for (file, bytes) in files.iter().zip(at_crash.lock().expect("bytes").iter()) {
+        fixture::write_bytes(file, bytes);
+    }
+    let orphan = search_backup::body_path(crashed.path(), &files[3]);
+    assert!(
+        fs_metadata::exists(&orphan),
+        "the crash left the fourth body"
+    );
+    assert!(!fs_metadata::exists(&search_backup::entry_path(
+        crashed.path(),
+        &files[3]
+    )));
+
+    let recovered = search_backup::load_recovering(crashed.path());
+    assert!(recovered.active, "an orphan body never costs Undo");
+    let backup = recovered.active_backup();
+    assert_eq!(
+        backup.keys().cloned().collect::<Vec<_>>(),
+        files[..3].to_vec()
+    );
+
+    // Undo the first two, then retire them: the shrink keeps the third
+    // file's entry and body and removes the orphan (design D9).
+    let first_two: ReplaceUndoBackup = backup
+        .iter()
+        .take(2)
+        .map(|(path, entry)| (path.clone(), entry.clone()))
+        .collect();
+    assert_eq!(undo_replacements(&first_two).restored_count(), 2);
+    let third: ReplaceUndoBackup = backup
+        .iter()
+        .skip(2)
+        .map(|(path, entry)| (path.clone(), entry.clone()))
+        .collect();
+    search_backup::shrink_journal_to(crashed.path(), &third).expect("shrink to the third");
+    assert!(
+        !fs_metadata::exists(&orphan),
+        "cleanup removes the orphan body"
+    );
+    assert!(fs_metadata::exists(&search_backup::body_path(
+        crashed.path(),
+        &files[2]
+    )));
+    assert_eq!(undo_replacements(&third).restored_count(), 1);
+    for file in &files {
+        assert_eq!(fixture::read_text(file), "needle\n");
+    }
+}
+
+/// Task 3.5b (design D9): a journal of three stream entries whose second body
+/// is truncated offers no Undo, copies that entry to the recovery quarantine
+/// and writes the cleanup marker, so a relaunch before cleanup offers none
+/// either; startup cleanup then removes the journal with every body, and the
+/// three targets keep their replaced bytes.
+#[test]
+fn a_truncated_body_costs_the_runs_undo_and_never_a_files_bytes() {
+    let dir = tempdir().expect("tempdir");
+    let files: Vec<_> = (0..3)
+        .map(|index| {
+            let file = dir.path().join(format!("f{index}.txt"));
+            fixture::write_text(&file, "needle\n");
+            file
+        })
+        .collect();
+    let replacements: Vec<_> = files
+        .iter()
+        .map(|file| make_replacement(file, 1, "needle", "thread", 0..6))
+        .collect();
+    let (outcome, journal) = apply(&replacements, &HashSet::new());
+    assert_eq!(outcome.expect("replace").result.files_affected, 3);
+    let truncated = search_backup::body_path(journal.path(), &files[1]);
+    fixture::write_bytes(&truncated, b"need");
+
+    let first = search_backup::load_recovering(journal.path());
+    assert!(!first.active, "no Undo for a run with a damaged body");
+    assert!(
+        first.diagnostics.iter().any(|diagnostic| diagnostic
+            .preservation
+            .quarantine_path()
+            .is_some_and(fs_metadata::exists)),
+        "the damaged entry is preserved in quarantine: {:?}",
+        first.diagnostics
+    );
+    assert!(first.active_backup().is_empty());
+    assert!(fs_metadata::exists(
+        &search_backup::journal_dir(journal.path()).join("cleanup-in-progress.json")
+    ));
+
+    let relaunch = search_backup::load_recovering(journal.path());
+    assert!(!relaunch.active, "a relaunch before cleanup offers no Undo");
+
+    assert!(
+        search_backup::cleanup_stale(journal.path())
+            .diagnostics
+            .is_empty()
+    );
+    assert!(!fs_metadata::exists(&search_backup::journal_dir(
+        journal.path()
+    )));
+    for file in &files {
+        assert_eq!(fixture::read_text(file), "thread\n");
+        assert!(!fs_metadata::exists(&search_backup::body_path(
+            journal.path(),
+            file
+        )));
+    }
+}
+
+/// The run of task 4.11: `a` is replaced and then changed by someone else
+/// (so rollback keeps it and the journal), and `b` is cancelled in pass B,
+/// after its entry and body exist, with `fault` failing one of its cleanup
+/// removals. Returns the journal and both paths.
+fn cancelled_run_with_failed_cleanup(
+    dir: &Path,
+    fault: super::CleanupRemovalFault,
+) -> (TempDir, PathBuf, PathBuf) {
+    let journal = tempdir().expect("journal");
+    let a = dir.join("a.txt");
+    let b = dir.join("b.txt");
+    fixture::write_text(&a, "needle\n");
+    fixture::write_text(&b, "needle\n");
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let cancel_in_hook = cancel.clone();
+    let a_in_hook = a.clone();
+    super::register_before_target_write_hook_for_test(&b, move || {
+        fixture::write_text(&a_in_hook, "edited elsewhere\n");
+        cancel_in_hook.store(true, Ordering::Relaxed);
+    });
+    super::fail_next_cleanup_removal_for_test(&b, fault);
+    let _free = fs_metadata::fake_free_space_for_test(AMPLE_FREE);
+    let outcome = apply_replacements(
+        &[
+            make_replacement(&a, 1, "needle", "thread", 0..6),
+            make_replacement(&b, 1, "needle", "thread", 0..6),
+        ],
+        &HashSet::new(),
+        &cancel,
+        journal.path(),
+    );
+    super::clear_cleanup_removal_faults_for_test();
+    let outcome = outcome.expect("a rollback that keeps a file reports it");
+    assert!(outcome.cancelled);
+    assert_eq!(
+        outcome.undo_backup.keys().cloned().collect::<Vec<_>>(),
+        vec![a.clone()]
+    );
+    assert_eq!(fixture::read_text(&b), "needle\n", "b keeps its original");
+    (journal, a, b)
+}
+
+/// Task 4.11 (decision 21): when a cancelled file's entry removal fails, its
+/// entry and body both stay, so no entry references a missing body; the
+/// journal stays active, and the next Undo finds the target already original
+/// (U1) and retires the entry, then the body.
+#[test]
+fn a_cancelled_file_whose_entry_removal_fails_keeps_both_and_undo_retires_them() {
+    let dir = tempdir().expect("tempdir");
+    let (journal, a, b) =
+        cancelled_run_with_failed_cleanup(dir.path(), super::CleanupRemovalFault::Entry);
+    let entry = search_backup::entry_path(journal.path(), &b);
+    let body = search_backup::body_path(journal.path(), &b);
+    assert!(fs_metadata::exists(&entry));
+    assert!(
+        fs_metadata::exists(&body),
+        "never an entry without its body"
+    );
+
+    let recovered = search_backup::load_recovering(journal.path());
+    assert!(recovered.active);
+    let backup = recovered.active_backup();
+    assert!(backup.contains_key(&a) && backup.contains_key(&b));
+
+    let undone = undo_replacements(&backup);
+    assert!(!undone.remaining_backup.contains_key(&b));
+    assert!(
+        undone.remaining_backup.contains_key(&a),
+        "a, changed elsewhere, stays"
+    );
+    assert_eq!(fixture::read_text(&b), "needle\n");
+    assert!(!fs_metadata::exists(&entry), "U3 retires the entry");
+    assert!(!fs_metadata::exists(&body), "then the body");
+}
+
+/// Task 4.11: when the entry removal succeeds and the body removal fails, the
+/// body is an orphan: benign, never listed, removed by cleanup (design D9).
+#[test]
+fn a_cancelled_file_whose_body_removal_fails_leaves_only_an_orphan_body() {
+    let dir = tempdir().expect("tempdir");
+    let (journal, a, b) =
+        cancelled_run_with_failed_cleanup(dir.path(), super::CleanupRemovalFault::Body);
+    let body = search_backup::body_path(journal.path(), &b);
+    assert!(!fs_metadata::exists(&search_backup::entry_path(
+        journal.path(),
+        &b
+    )));
+    assert!(
+        fs_metadata::exists(&body),
+        "the failed removal left the body"
+    );
+
+    let recovered = search_backup::load_recovering(journal.path());
+    assert!(recovered.active, "an orphan body never costs Undo");
+    let backup = recovered.active_backup();
+    assert_eq!(backup.keys().cloned().collect::<Vec<_>>(), vec![a]);
+    search_backup::shrink_journal_to(journal.path(), &backup).expect("shrink");
+    assert!(
+        !fs_metadata::exists(&body),
+        "cleanup removes the orphan body"
+    );
+}
+
+// --- no loss against `main` with little free space (task 4.3, design D4) ----
+
+/// Little free space: far below the 1 GiB reserve, far above what the waived
+/// files of these runs need.
+const LITTLE_FREE: u64 = 64 * 1024 * 1024;
+const MIB: usize = 1024 * 1024;
+
+/// Apply with `free` bytes free on every filesystem and `main`'s undo payload
+/// overridden to `undo_budget` when given.
+fn apply_with_free(
+    replacements: &[Replacement],
+    free: u64,
+    undo_budget: Option<u64>,
+) -> (ApplyReplacementsOutcome, TempDir) {
+    let journal = tempdir().expect("journal");
+    let _free = fs_metadata::fake_free_space_for_test(free);
+    super::TEST_MAX_REPLACE_UNDO_BYTES.with(|cap| cap.set(undo_budget));
+    let outcome = apply_replacements(
+        replacements,
+        &HashSet::new(),
+        &AtomicBool::new(false),
+        journal.path(),
+    );
+    super::TEST_MAX_REPLACE_UNDO_BYTES.with(|cap| cap.set(None));
+    (outcome.expect("replace"), journal)
+}
+
+fn needle_to_thread(files: &[&PathBuf]) -> Vec<Replacement> {
+    files
+        .iter()
+        .map(|file| make_replacement(file, 1, "needle", "thread", 0..6))
+        .collect()
+}
+
+/// Every file `main` replaced, in both of its passes, is replaced with less
+/// free space than the reserve: P1's provisional waiver admits each body and
+/// P3's final charge confirms it.
+#[test]
+fn no_loss_every_file_main_replaced_is_replaced_with_little_free_space() {
+    let dir = tempdir().expect("tempdir");
+    let small: Vec<_> = (0..3)
+        .map(|index| sized(dir.path(), &format!("a-small-{index}.txt"), MIB))
+        .collect();
+    // 12 MiB: `main` replaced it in its second pass.
+    let twelve = sized(dir.path(), "b-twelve.txt", 12 * MIB);
+    let all: Vec<_> = small.iter().chain(std::iter::once(&twelve)).collect();
+    let (outcome, _journal) = apply_with_free(&needle_to_thread(&all), LITTLE_FREE, None);
+    assert_eq!(
+        outcome.result.files_affected, 4,
+        "{:?}",
+        outcome.skip_report
+    );
+    assert!(outcome.skip_report.is_empty());
+    for file in all {
+        assert!(fixture::read_text(file).starts_with("thread\n"));
+    }
+}
+
+/// A file `main` skipped (17 MiB, past its 16 MiB limit) earlier in path
+/// order needs the reserve and is skipped, and the files `main` replaced
+/// after it are replaced.
+#[test]
+fn no_loss_a_large_file_early_never_displaces_a_file_main_replaced() {
+    let dir = tempdir().expect("tempdir");
+    let large = sized(dir.path(), "a-large.txt", 17 * MIB);
+    let twelve = sized(dir.path(), "b-twelve.txt", 12 * MIB);
+    let small = sized(dir.path(), "c-small.txt", MIB);
+    // `main`'s two files exactly fill this payload: 12 + 12 + 1 + 1 MiB.
+    let budget = Some(26 * 1024 * 1024);
+    let (outcome, _journal) = apply_with_free(
+        &needle_to_thread(&[&large, &twelve, &small]),
+        LITTLE_FREE,
+        budget,
+    );
+    assert!(outcome.undo_backup.contains_key(&twelve));
+    assert!(outcome.undo_backup.contains_key(&small));
+    assert!(!outcome.undo_backup.contains_key(&large));
+    assert_eq!(
+        outcome
+            .skip_report
+            .count(ReplaceSkipReason::NotEnoughDiskSpace),
+        1
+    );
+    assert!(fixture::read_text(&large).starts_with("needle\n"));
+}
+
+/// A 9 MiB file whose output grows past 10 MiB is deferred to the second
+/// pass, where `main` deferred it, so the smaller file after it in path order
+/// is charged first. With a payload that fits only one of them, `main`'s
+/// choice wins: the smaller file is replaced and the grown one needs the
+/// reserve.
+#[test]
+fn no_loss_a_small_file_whose_output_grows_past_10_mib_is_deferred_as_on_main() {
+    let dir = tempdir().expect("tempdir");
+    let grows = sized(dir.path(), "a-grows.txt", 9 * MIB);
+    let small = sized(dir.path(), "b-small.txt", MIB);
+    let growth = "g".repeat(2 * MIB);
+    let replacements = vec![
+        make_replacement(&grows, 1, "needle", &growth, 0..6),
+        make_replacement(&small, 1, "needle", "thread", 0..6),
+    ];
+    // The grown file charges 9 + 11 MiB, the small one 2 MiB: 21 MiB holds
+    // either alone, not both.
+    let (outcome, _journal) = apply_with_free(&replacements, LITTLE_FREE, Some(21 * 1024 * 1024));
+    assert!(
+        outcome.undo_backup.contains_key(&small),
+        "{:?}",
+        outcome.skip_report
+    );
+    assert!(!outcome.undo_backup.contains_key(&grows));
+    assert_eq!(
+        outcome
+            .skip_report
+            .count(ReplaceSkipReason::NotEnoughDiskSpace),
+        1
+    );
+    assert!(fixture::read_text(&grows).starts_with("needle\n"));
+}
+
+/// The other half of the deferral: with room in the payload for both, the
+/// grown file is replaced in the second pass with the reserve waived, as
+/// `main` replaced it, even with little free space. A first pass that took it
+/// at its grown output would find it outside `main`'s 10 MiB and refuse it.
+#[test]
+fn no_loss_a_small_file_whose_output_grows_past_10_mib_is_replaced_in_the_second_pass() {
+    let dir = tempdir().expect("tempdir");
+    let grows = sized(dir.path(), "a-grows.txt", 9 * MIB);
+    let small = sized(dir.path(), "b-small.txt", MIB);
+    let growth = "g".repeat(2 * MIB);
+    let replacements = vec![
+        make_replacement(&grows, 1, "needle", &growth, 0..6),
+        make_replacement(&small, 1, "needle", "thread", 0..6),
+    ];
+    // 9 + 11 MiB and 2 MiB: 26 MiB holds both.
+    let (outcome, _journal) = apply_with_free(&replacements, LITTLE_FREE, Some(26 * 1024 * 1024));
+    assert!(
+        outcome.undo_backup.contains_key(&small) && outcome.undo_backup.contains_key(&grows),
+        "{:?}",
+        outcome.skip_report
+    );
+    assert!(fixture::read_text(&grows).starts_with("ggg"));
+}
+
+/// `main`'s test, end to end: an 11 MiB file first in path order, two 1 MiB
+/// files after it and a 24 MiB payload. `main` replaced the two small files
+/// in its first pass and then had no room for the large one; with little free
+/// space the branch does the same.
+#[test]
+fn no_loss_a_larger_file_never_displaces_a_file_main_replaced() {
+    let dir = tempdir().expect("tempdir");
+    let large = sized(dir.path(), "a-large.txt", 11 * MIB);
+    let small = [
+        sized(dir.path(), "b-small-0.txt", MIB),
+        sized(dir.path(), "b-small-1.txt", MIB),
+    ];
+    let (outcome, _journal) = apply_with_free(
+        &needle_to_thread(&[&large, &small[0], &small[1]]),
+        LITTLE_FREE,
+        Some(24 * 1024 * 1024),
+    );
+    for file in &small {
+        assert!(
+            outcome.undo_backup.contains_key(file),
+            "{:?}",
+            outcome.result.error_sample
+        );
+        assert!(fixture::read_text(file).starts_with("thread\n"));
+    }
+    assert_eq!(outcome.result.files_affected, 2);
+    assert_eq!(outcome.result.skipped_count, 1);
+    assert_eq!(
+        outcome.result.skipped_sample[0],
+        large.display().to_string()
+    );
+    assert!(fixture::read_text(&large).starts_with("needle\n"));
+}
+
+#[test]
+fn dropped_hook_guard_removes_unconsumed_registration() {
+    let dir = tempdir().expect("tempdir");
+    let target = dir.path().join("unconsumed.txt");
+    let (backup, _journal) = applied_backup(&target);
+    let fired = std::sync::Arc::new(AtomicBool::new(false));
+    let hook_fired = fired.clone();
+    let guard = register_undo_after_metadata_hook_for_test(&target, move |_| {
+        hook_fired.store(true, Ordering::SeqCst);
+    });
+    assert!(undo_after_metadata_hook_is_registered_for_test(&target));
+    drop(guard);
+    assert!(!undo_after_metadata_hook_is_registered_for_test(&target));
+
+    assert_eq!(undo_replacements(&backup).restored_count(), 1);
+    assert!(
+        !fired.load(Ordering::SeqCst),
+        "a dropped guard's hook never fires"
+    );
+}
+
+/// The engine is fed by a bounded stream that checks cancellation before
+/// every chunk: a run cancelled after a few dense chunks stops there, before
+/// the targeted last line, and never reports a replacement.
+#[test]
+fn streaming_line_discovery_observes_cancellation_between_dense_chunks() {
+    use crate::services::filesystem::read::{BoundedStreamError, stream_bounded};
+    let dir = tempdir().expect("tempdir");
+    let file = dir.path().join("cancel-dense.txt");
+    let original = "x\n".repeat(5_000);
+    fixture::write_text(&file, &original);
+    let path = file.clone();
+    let replacements = [make_replacement(&path, 5_000, "x", "y", 0..1)];
+    let mut refs: Vec<&Replacement> = replacements.iter().collect();
+    let edits = plan_edits(&mut refs, || false).expect("edits");
+    let mut stream =
+        super::stream::ReplaceStream::new(&edits, u64::MAX, Vec::new(), NoDigest, NoDigest);
+    let checks = std::cell::Cell::new(0usize);
+    let streamed = stream_bounded(
+        &file,
+        u64::MAX,
+        64,
+        || {
+            let next = checks.get() + 1;
+            checks.set(next);
+            next >= 4
+        },
+        |chunk| stream.feed(chunk),
+    );
+    assert!(matches!(streamed, Err(BoundedStreamError::Cancelled)));
+    let (summary, out) = stream.finish().expect("a Vec sink cannot fail");
+    assert_eq!(summary.source_len, 3 * 64, "three chunks before the cancel");
+    assert!(summary.metrics.source_lines < 5_000);
+    assert!(!matches!(
+        summary.outcome,
+        ReplacementTextOutcome::Replaced { .. }
+    ));
+    assert!(out.len() <= 3 * 64);
+}
+
+#[test]
+fn test_apply_replacements_reverse_order() {
+    let dir = tempdir().expect("tempdir");
+    let file = dir.path().join("test.rs");
+    fixture::write_text(&file, "ab cd\nef gh\n");
+    // Listed last edit first: the planner sorts them into source order.
+    let (outcome, _journal) = apply(
+        &[
+            make_replacement(&file, 2, "ef gh", "UV", 3..5),
+            make_replacement(&file, 1, "ab cd", "ZW", 3..5),
+            make_replacement(&file, 1, "ab cd", "XY", 0..2),
+        ],
+        &HashSet::new(),
+    );
+    assert_eq!(outcome.expect("replace").result.replaced_count, 3);
+    assert_eq!(fixture::read_text(&file), "XY ZW\nef UV\n");
+}
+
+/// A file that changed size after the run is skipped from its metadata,
+/// before its bytes are hashed. The after-metadata hook then puts the replaced
+/// bytes back: a check that read the file instead of trusting U0's size would
+/// see them, try to restore, and fail on the changed facts rather than skip.
+#[test]
+fn test_undo_replacements_skips_externally_grown_file_before_reading() {
+    let dir = tempdir().expect("tempdir");
+    let file = dir.path().join("test.rs");
+    let (backup, _journal) = applied_backup(&file);
+    fixture::write_text(&file, "after plus a large external edit\n");
+    let _hook = register_undo_after_metadata_hook_for_test(&file, |path| {
+        fixture::write_text(path, "after\n");
+    });
+
+    let outcome = undo_replacements(&backup);
+
+    assert_eq!(outcome.restored_count(), 0);
+    assert_eq!(outcome.skipped_count, 1);
+    assert_eq!(outcome.skipped_sample[0], file.display().to_string());
+    assert_eq!(outcome.failed_count, 0);
+    assert_eq!(outcome.remaining_backup, backup);
+    assert_eq!(fixture::read_text(&file), "after\n");
+}
+
+/// `main`'s undo payload, exactly full, still admits the file: with little
+/// free space its reserve is waived (design D4).
+#[test]
+fn test_apply_replacements_allows_entry_at_exact_undo_cap() {
+    let dir = tempdir().expect("tempdir");
+    let file = dir.path().join("exact-undo.rs");
+    fixture::write_text(&file, "needle\n");
+    let exact = u64::try_from("needle\n".len() + "done\n".len()).expect("tiny");
+    let (outcome, _journal) = apply_with_free(
+        &[make_replacement(&file, 1, "needle", "done", 0..6)],
+        LITTLE_FREE,
+        Some(exact),
+    );
+    assert_eq!(outcome.result.files_affected, 1);
+    assert_eq!(fixture::read_text(&file), "done\n");
+}
+
+/// One byte over `main`'s undo payload: `main` skipped the file, so it needs
+/// the reserve, and with little free space it is skipped without a write.
+#[test]
+fn test_apply_replacements_rejects_entry_one_byte_over_undo_cap_without_write() {
+    let dir = tempdir().expect("tempdir");
+    let file = dir.path().join("one-over-undo.rs");
+    fixture::write_text(&file, "needle\n");
+    let exact = u64::try_from("needle\n".len() + "done\n".len()).expect("tiny");
+    let (outcome, journal) = apply_with_free(
+        &[make_replacement(&file, 1, "needle", "done", 0..6)],
+        LITTLE_FREE,
+        Some(exact - 1),
+    );
+    assert_eq!(outcome.result.files_affected, 0);
+    assert_eq!(outcome.result.replaced_count, 0);
+    assert_eq!(outcome.result.skipped_count, 1);
+    assert_eq!(
+        outcome
+            .skip_report
+            .count(ReplaceSkipReason::NotEnoughDiskSpace),
+        1
+    );
+    assert!(outcome.undo_backup.is_empty());
+    assert_eq!(outcome.metrics.undo_live_bytes, 0);
+    assert_eq!(fixture::read_text(&file), "needle\n");
+    assert!(!fs_metadata::exists(&search_backup::body_path(
+        journal.path(),
+        &file
+    )));
+}
+
+/// Design D6: an Undo in a later launch than the manifest records re-arms the
+/// manifest for this launch before it restores, so the journal's owner is the
+/// launch whose restore temps may be left beside a target. The first entry
+/// is already original and restores nothing: the re-arm is still owed to the
+/// next one, which restores. The third has diverged, so the journal stays.
+#[test]
+fn undo_in_a_later_launch_rearms_the_manifest_for_this_launch() {
+    use crate::services::filesystem::leftovers::LaunchId;
+    let dir = tempdir().expect("tempdir");
+    let files = ["a.txt", "b.txt", "c.txt"].map(|name| dir.path().join(name));
+    for file in &files {
+        fixture::write_text(file, "needle\n");
+    }
+    let replacements: Vec<_> = files
+        .iter()
+        .map(|file| make_replacement(file, 1, "needle", "thread", 0..6))
+        .collect();
+    let (outcome, journal) = apply(&replacements, &HashSet::new());
+    let mut backup = outcome.expect("replace").undo_backup;
+    let current = LaunchId::current();
+    let earlier = LaunchId {
+        pid: current.pid.wrapping_add(1),
+        nonce: current.nonce.wrapping_add(1),
+    };
+    // The journal as an earlier launch left it.
+    search_backup::mark_incremental_journal_active(journal.path(), earlier).expect("re-own");
+    for entry in backup.values_mut() {
+        entry.launch = earlier;
+    }
+    let manifest_launch = || {
+        let text = fixture::read_text(&journal.path().join("replace-backup-journal/manifest.json"));
+        let value: serde_json::Value = serde_json::from_str(&text).expect("manifest json");
+        fn find(value: &serde_json::Value, key: &str) -> Option<u64> {
+            match value {
+                serde_json::Value::Object(map) => map
+                    .get(key)
+                    .and_then(serde_json::Value::as_u64)
+                    .or_else(|| map.values().find_map(|v| find(v, key))),
+                _ => None,
+            }
+        }
+        (find(&value, "pid"), find(&value, "launch_nonce"))
+    };
+    assert_eq!(
+        manifest_launch(),
+        (Some(u64::from(earlier.pid)), Some(u64::from(earlier.nonce)))
+    );
+    fixture::write_text(&files[0], "needle\n");
+    fixture::write_text(&files[2], "thrEad\n");
+
+    let undone = undo_replacements(&backup);
+
+    assert_eq!(undone.restored_count(), 2);
+    assert_eq!(undone.skipped_count, 1);
+    assert_eq!(fixture::read_text(&files[1]), "needle\n");
+    assert_eq!(
+        manifest_launch(),
+        (Some(u64::from(current.pid)), Some(u64::from(current.nonce))),
+        "the later launch's Undo owns the journal it restores through"
     );
 }

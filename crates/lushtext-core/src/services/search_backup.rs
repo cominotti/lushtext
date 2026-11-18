@@ -350,8 +350,25 @@ fn load_retired_backup(data_dir: &Path) -> ReplaceBackupRecoveryLoad {
 pub fn acquire_journal_guard_cancellable(
     cancel: &AtomicBool,
 ) -> Result<Option<MutexGuard<'static, ()>>> {
+    acquire_journal_guard_while_current(|| !cancel.load(Ordering::Relaxed))
+}
+
+/// Wait for the journal guard while `current` holds (design D3a).
+///
+/// A journal disk job passes its generation check here, so a job a newer
+/// one superseded returns before it waits, and while it waits, instead of
+/// holding a worker slot until the guard is free. `current` is checked
+/// before every attempt; the caller checks it again once it holds the guard.
+/// Returns `Ok(None)` when `current` stopped holding first.
+///
+/// # Errors
+///
+/// Returns an error if a previous holder panicked while owning the guard.
+pub fn acquire_journal_guard_while_current(
+    mut current: impl FnMut() -> bool,
+) -> Result<Option<MutexGuard<'static, ()>>> {
     loop {
-        if cancel.load(Ordering::Relaxed) {
+        if !current() {
             return Ok(None);
         }
         match journal_lock().try_lock() {
@@ -1538,10 +1555,20 @@ fn load_descriptor(
             }
             let body = journal_dir.join(BODIES_DIR).join(&disk.body_file);
             if !fs_metadata::file_stat(&body).is_ok_and(|facts| facts.byte_size == original.len) {
-                malformed(
-                    diagnostics,
-                    "replace undo journal entry's body is missing or has the wrong size",
-                );
+                // The entry stays in place for the cleanup marker's pass; a
+                // copy in the quarantine is the evidence (design D9).
+                diagnostics.push(crate::services::recovery_metadata::copy_into_quarantine(
+                    &RecoveryLoadConfig::new(
+                        data_dir,
+                        entry_path,
+                        RecoveryMetadataClass::ReplaceAllUndoJournal,
+                    ),
+                    RecoveryProblem::RepairSkipped {
+                        detail:
+                            "replace undo journal entry's body is missing or has the wrong size"
+                                .to_string(),
+                    },
+                ));
                 return None;
             }
             Some(LoadedDescriptor {
@@ -2475,5 +2502,53 @@ mod tests {
             fs_metadata::exists(&dir.path().join(JOURNAL_DIR).join(entry_file_name(&path_b))),
             "the second per-file journal entry should be created independently"
         );
+    }
+
+    /// Design D3a: a journal disk job a newer one superseded returns before it
+    /// waits for the guard, and one superseded while waiting returns too, so
+    /// neither holds a worker slot behind a long Replace All run.
+    #[test]
+    fn a_superseded_journal_disk_job_returns_before_it_waits() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicU32;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let held = acquire_journal_guard().expect("a run holds the journal guard");
+        let generation = Arc::new(AtomicU32::new(2));
+        let (tx, rx) = mpsc::channel();
+        let stale = generation.clone();
+        let worker = std::thread::spawn(move || {
+            let acquired =
+                acquire_journal_guard_while_current(|| stale.load(Ordering::Acquire) == 1)
+                    .expect("not poisoned");
+            tx.send(acquired.is_none()).expect("send");
+        });
+        assert!(
+            rx.recv_timeout(Duration::from_secs(5))
+                .expect("a superseded job returns while the guard is held"),
+            "a superseded job never takes the guard"
+        );
+        worker.join().expect("worker joins");
+
+        let (tx, rx) = mpsc::channel();
+        let waiting = generation.clone();
+        let worker = std::thread::spawn(move || {
+            let acquired =
+                acquire_journal_guard_while_current(|| waiting.load(Ordering::Acquire) == 2)
+                    .expect("not poisoned");
+            tx.send(acquired.is_none()).expect("send");
+        });
+        assert!(
+            rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "a current job waits for the guard"
+        );
+        generation.store(3, Ordering::Release);
+        assert!(
+            rx.recv_timeout(Duration::from_secs(5))
+                .expect("superseded while waiting, the job returns"),
+        );
+        worker.join().expect("worker joins");
+        drop(held);
     }
 }

@@ -245,18 +245,20 @@ SETTLE_EVIDENCE_MEASURED_IN = (
 # stream-replace-all local figures (`make kani KANI_MEASURE=...`, Kani 0.68.0,
 # this workstation), owed a dispatch before the change is archived.
 REPLACE_MEASURED_IN = "PENDING DISPATCH (owed by stream-replace-all): one local make kani run"
-REPLACE_PROTOCOL_LOCAL_MINUTES = 5.0
-REPLACE_PROTOCOL_LOCAL_PEAK_GIB = 3.0
+# core-replace-protocol: the final `make kani KANI_MEASURE` run on the final
+# protocol inputs (stage 3, 2026-11-17, snapshot fe8c3205; 1.66 min, 1.66 GiB
+# peak at a 1-minute load of 9.4), rounded up.
+REPLACE_PROTOCOL_LOCAL_MINUTES = 2.0
+REPLACE_PROTOCOL_LOCAL_PEAK_GIB = 2.0
 # core-replace-stream after the stage-1 revision (design D11, "Kani memory"):
 # the two UTF-8 harnesses, one `make kani KANI_MEASURE` run on 2026-11-17
 # (3.72 min, 3.42 GiB peak; utf8 seams 135.9 s, byte scan 6.5 s), rounded up.
 REPLACE_STREAM_LOCAL_MINUTES = 4.0
 REPLACE_STREAM_LOCAL_PEAK_GIB = 4.0
-# Placeholders, not measurements: stream-replace-all task 9.4's KANI_MEASURE
-# run on the final code replaces them with per-harness verification seconds.
-REPLACE_PROTOCOL_RUN_SECONDS = 60.0
-REPLACE_UNDO_SECONDS = 60.0
-REPLACE_SHRINK_SECONDS = 10.0
+# Per-harness verification seconds of that run (task 9.4).
+REPLACE_PROTOCOL_RUN_SECONDS = 13.1
+REPLACE_UNDO_SECONDS = 0.5
+REPLACE_SHRINK_SECONDS = 0.05
 REPLACE_UTF8_SEAMS_SECONDS = 135.9
 REPLACE_UTF8_SCAN_SECONDS = 6.5
 

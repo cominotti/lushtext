@@ -788,7 +788,7 @@ fn process_file(
                     }
                 }
             }
-            FileAction::RemoveEntry => match search_backup::delete_entry(data_dir, path) {
+            FileAction::RemoveEntry => match remove_own_entry(data_dir, path) {
                 Ok(()) => FileOutcome::Done,
                 Err(e) => {
                     run.errors.push(format!(
@@ -798,7 +798,7 @@ fn process_file(
                     FileOutcome::Failed
                 }
             },
-            FileAction::RemoveBody => match search_backup::delete_body(data_dir, path) {
+            FileAction::RemoveBody => match remove_own_body(data_dir, path) {
                 Ok(()) => FileOutcome::Done,
                 Err(e) => {
                     run.errors.push(format!(
@@ -847,6 +847,22 @@ fn process_file(
             FileResult::Cancelled
         }
     }
+}
+
+/// Cleanup: remove this file's own entry (tests can fail it, task 4.11).
+fn remove_own_entry(data_dir: &Path, path: &Path) -> anyhow::Result<()> {
+    if super::fail_cleanup_entry_removal_for_test(path) {
+        anyhow::bail!("injected entry removal failure");
+    }
+    search_backup::delete_entry(data_dir, path)
+}
+
+/// Cleanup: remove this file's own body (tests can fail it, task 4.11).
+fn remove_own_body(data_dir: &Path, path: &Path) -> anyhow::Result<()> {
+    if super::fail_cleanup_body_removal_for_test(path) {
+        anyhow::bail!("injected body removal failure");
+    }
+    search_backup::delete_body(data_dir, path)
 }
 
 fn skip_detail(reason: ReplaceSkipReason, error: &impl std::fmt::Display) -> String {
