@@ -44,14 +44,23 @@ What the revision changed:
 
 An independent review re-read every claim against 187c6299 and kept all six
 groups. It corrected these points in place:
-- **G1:** the "shared driver" requirement now carries the same documented
-  exception as "no loop of their own", which the fallback relies on. A source
-  check makes "no loop of their own" testable failing-first.
+- **G1:** there are **six** shells, not five: `search_backup::shrink_journal_to`
+  steps the Kani-checked `shrink_step` (`replace/protocol.rs`, harness
+  `shrink_removes_the_entry_before_the_body`) in a loop of the same shape.
+  The "shared driver" requirement now carries the same documented exception
+  as "no loop of their own", which the fallback relies on. A source check
+  makes "no loop of their own" testable failing-first.
 - **G2:** the sweep's family order (format-upgrade runs, then local-history
   lineages) is the reverse of their order in `ALL`, so it is now explicit and
-  pinned. The layout records a truthful `holds_durable_writes` plus a separate
-  sweep decision: `workspace-notes/` does hold durable writes, because a
-  format upgrade rewrites its sidecars in place. The inventory's decision for
+  pinned. `workspace-notes/` does hold durable writes, because a format
+  upgrade rewrites its sidecars in place (`format_upgrade/apply.rs`,
+  `atomic_replace(&item.absolute_path, …)`). The existing requirement "The
+  leftover sweep covers every app-data directory that holds durable writes"
+  therefore already demands that it be swept, so the layout sweeps it, last,
+  after the lineages, which closes the phase-0 deferral and leaves every
+  existing directory's share of the budget unchanged. `holds_durable_writes`
+  is replaced by one `sweep` decision, since every location holds durable
+  writes. The inventory's decision for
   each entry, including "covered by another entry's scan", lives in the
   inventory's own match, so the layout does not depend on `format_upgrade`.
   The characterization also pins the inventory's recorded relative paths,
@@ -69,13 +78,14 @@ groups. It corrected these points in place:
   cannot make it print a file this branch never touched.
 - **Smokes:** each commit that touches the UI prefixes needs the three smokes
   current (testing.md), so groups 5 and 3 land together after one smoke run.
+  They stay separately described and separately revertible by hand.
 
 ### Measured baseline at 187c6299
 
 Line counts are from `wc -l`, and counts from `grep` over
 `crates/lushtext-core/src`.
 
-**Group 1.** Five shell loops share one shape: start, then loop over the
+**Group 1.** Six shell loops share one shape: start, then loop over the
 action, one call, feed the outcome back.
 - In `services/durable_write.rs` (1,688 lines), there are three:
   `atomic_write_stream_with_metadata` (lines 269–385, about 115 lines),
@@ -84,6 +94,9 @@ action, one call, feed the outcome back.
   `ReplaceFileProtocol`. Its loop spans lines 482–821.
 - `content_search/replace/undo.rs` (402 lines) drives
   `ReplaceUndoProtocol`. Its loop spans lines 181–255.
+- `search_backup.rs` drives the journal shrink in `shrink_journal_to`: one
+  loop per retired entry (lines 496–512) over `ShrinkAction`, stepped by the
+  free function `shrink_step(action, succeeded) -> ShrinkAction`.
 
 The cores step in two styles:
 - `WriteProtocol`, `MoveProtocol`, and `RenameProtocol` use
@@ -92,21 +105,25 @@ The cores step in two styles:
 - The two Replace protocols use `fn step(&mut self, outcome) -> Action`. Their
   shells read `protocol.journal()` and `protocol.rearm_needed()` after the
   loop.
+- The shrink has no state of its own: `shrink_step` maps the current action
+  and a `bool` to the next action.
 
 Termination within a bound is **already proved** for every core:
 - `run_write` panics "the write did not finish within WRITE_STEPS actions";
 - the move and rename harnesses panic "did not finish";
-- both Replace harnesses `expect("every … reaches Finish within its bound")`.
+- both Replace harnesses `expect("every … reaches Finish within its bound")`;
+- `shrink_removes_the_entry_before_the_body` steps `shrink_step` to `Finish`
+  within a two-action bound.
 
 `scripts/kani-shards.py` names four oracle modules in this area:
 - `filesystem/write_protocol.rs`, shard `core-journal-and-write`, scheduled;
 - `content_search/replace/protocol.rs`, shard `core-replace-protocol`,
-  pull-request gated;
+  pull-request gated (three harnesses: file, undo, and shrink);
 - `draft_service/journal_core.rs`;
 - `draft_service/set_aside_retention.rs`.
 
-No harness file imports `durable_write`, `apply`, `undo`, `draft_service.rs`,
-or `ui::window`.
+No harness file imports `durable_write`, `apply`, `undo`, `search_backup`,
+`draft_service.rs`, or `ui::window`.
 
 **Group 2.** App-data names are spelled in three places:
 1. 25 name constants in 17 files, counted as the `const *_DIR`, `*_FILE`,
@@ -139,7 +156,9 @@ The legacy `workspace-notes/` directory is inventoried (a fixed JSON directory
 scan), and `format_upgrade/apply.rs` rewrites an upgradeable item in place
 with `atomic_replace`, so durable-write temps can appear there. The sweep
 skips it, which is the recorded phase-0 deferral ("the startup leftover sweep
-skips the legacy folder-note sidecar directory"). Format-upgrade backups are
+skips the legacy folder-note sidecar directory"), although the existing
+requirement "The leftover sweep covers every app-data directory that holds
+durable writes" covers it. Format-upgrade backups are
 named by `stable_path_hash(item.path.relative())` (`format_upgrade/backup.rs`),
 so the inventory's recorded relative paths are on-disk names too.
 
@@ -216,8 +235,10 @@ these places only:
 ## Goals / Non-Goals
 
 **Goals:**
-- Each group lands alone, with no behaviour change except in group 3 (retry
-  cadence) and group 6 (a stronger smoke).
+- Each group is applied alone, with no behaviour change except in group 2
+  (the legacy folder-note directory is swept, last), group 3 (retry cadence),
+  and group 6 (a stronger smoke). Groups 5 and 3 share one commit for the
+  smoke proofs (Migration Plan).
 - Every persisted path, temp name, and on-disk byte stays identical. Each
   refactor that touches persistence is proved identical by a characterization
   test captured before the move.
@@ -268,12 +289,16 @@ pub(crate) fn drive<P: Protocol>(
 }
 ```
 
-The five implementations sit **beside their shells**:
+The six implementations sit **beside their shells**:
 - `durable_write.rs` holds `WriteProtocol`, `MoveProtocol`, and
   `RenameProtocol`, whose `advance` is `let (next, a) = self.step(o);
   *self = next; a`.
 - `replace/apply.rs` holds `ReplaceFileProtocol`, and `replace/undo.rs` holds
   `ReplaceUndoProtocol`. For these two, `advance` is `step`.
+- `search_backup.rs` holds a private `ShrinkRun(ShrinkAction)`, which keeps
+  the current action because the free `shrink_step` takes it:
+  `advance` is `self.0 = shrink_step(self.0, ok); self.0`. Its `end` maps
+  `Finish { body_kept }`. `protocol.rs` is not edited.
 
 `&mut P` lets the Replace shells read `journal()` and `rearm_needed()` after
 `drive` returns. Each shell becomes three parts:
@@ -308,8 +333,8 @@ would prove nothing new, and adding it to a scheduled shard would cost:
 `MAX_ACTIONS` is dropped with it.
 
 *What `verify-shell-conformance-against-proven-cores` inherits:*
-- **One per-action site for all five shells.** `drive` is the one place
-  where every action and every outcome pass, for all five shells. That
+- **One per-action site for all six shells.** `drive` is the one place
+  where every action and every outcome pass, for all six shells. That
   change's D3 tap therefore lives once around the single `execute(action)`
   call, gated as it describes, instead of at a call site in each loop. That
   one site is enough to **observe** every action and outcome, and to
@@ -327,15 +352,17 @@ would prove nothing new, and adding it to a scheduled shard would cost:
 - **The nested trace.** A nested `Copy` is a nested `drive` call, so the tap
   sees the child run on the same thread, between the parent's `before` and
   `after`. That is its "child trace".
-- **Two more shells.** The Replace apply and Undo shells become drivable shells
-  with `ReplaceFileProtocol` and `ReplaceUndoProtocol` as their oracles. The
-  programme record already says to treat them that way.
+- **Three more shells.** The Replace apply, Undo, and journal-shrink shells
+  become drivable shells with `ReplaceFileProtocol`, `ReplaceUndoProtocol`,
+  and `shrink_step` as their oracles. The programme record already says to
+  treat the first two that way; the shrink joins them.
 - **The marker guard from G6.** It extends the guard's marker list with the
   tap's markers, and does not add a second `strings` step.
 
-*No loop of their own, checked:* a source check covers the five shell files.
-In each, the core's `step` may be called only inside that core's
-`Protocol::advance` implementation, unless the module documentation records
+*No loop of their own, checked:* a source check covers the six shells' files
+(`durable_write.rs`, `replace/apply.rs`, `replace/undo.rs`, and
+`search_backup.rs`). In each, the core's `step` (or `shrink_step`) may be
+called only inside that core's `Protocol::advance` implementation, unless the module documentation records
 the fallback exception below. It is a `#[test]` over `include_str!` of the
 files, or a rule in an existing policy script, and it fails on the unchanged
 tree, where every shell steps its core in its own loop.
@@ -353,9 +380,9 @@ In the second case the conformance change taps that loop directly.
 
 *Alternatives considered:*
 - A `macro_rules!` shell. It hides control flow.
-- Leaving the loops as they are. Five hand copies of termination and outcome
+- Leaving the loops as they are. Six hand copies of termination and outcome
   feedback would stay, each free to diverge, and the conformance change would
-  need five tap sites.
+  need six tap sites.
 
 ### G2. `services/app_data_layout.rs`: an enum of locations, exhaustive consumers
 
@@ -376,14 +403,17 @@ A GTK-free module defines:
   - `Directory`;
   - `LineageFamily { index: "index.json" }`, children one level down;
   - `RunFamily { items: "items" }`;
-- `holds_durable_writes(self) -> bool`, which is truthful: it is `true` for
-  every directory that any durable write, a format-upgrade rewrite included,
-  can create a temp in;
-- `sweep(self)`, one of:
-  - `Swept`, for a directory or family entry the startup sweep visits;
-  - `ParentSwept`, for a file entry, whose temps land in its parent;
-  - `NotSwept(reason)`, either because the entry holds no durable writes or
-    as a recorded deferral.
+- `sweep(self)`, how the startup sweep covers the durable-write temps that
+  land there, one of:
+  - `Swept`, for a directory or family entry visited in the main pass;
+  - `SweptLast`, for `LegacyWorkspaceNotes` only, visited after the
+    lineages (below);
+  - `ParentSwept`, for a file entry, whose temps land in its parent.
+
+  Every location holds durable writes today (a format upgrade rewrites every
+  inventoried item in place), so there is no not-swept case and no
+  `holds_durable_writes` flag. A future location that holds none adds a
+  `NotSwept(reason)` variant with it.
 
 `AppDataLayout::new(root)` resolves paths from a root.
 
@@ -403,9 +433,11 @@ The consumers take it over as follows:
   - **File entries are never swept themselves.** Their `sweep` is
     `ParentSwept`, and a unit test asserts that each one's parent is a
     `Swept` entry.
-  - **Coverage is checked.** A unit test asserts that every entry that
-    `holds_durable_writes` is `Swept` or `ParentSwept`, or is `NotSwept` with
-    a reason. The only such deferral is `LegacyWorkspaceNotes`.
+  - **The legacy directory goes last.** `LegacyWorkspaceNotes` is
+    `SweptLast`: the sweep visits it after the lineages, with whatever budget
+    remains. Every directory swept before keeps its visit order and its share
+    of the budget, and the phase-0 deferral closes. The same pin test covers
+    it.
 - **The format-upgrade inventory** decides each location through an
   **exhaustive `match`** in `format_upgrade/inventory.rs`, so the layout
   does not depend on `format_upgrade`. The decision is one of:
@@ -463,12 +495,12 @@ move the same test runs against the layout and must be byte-identical.
 - `format-upgrade-backups/`: the upgrade's own backups. Inventorying them
   would be circular.
 
-The legacy `workspace-notes/` directory is inventoried but not swept, which
-is the existing phase-0 deferral. It records `holds_durable_writes = true`
-(a format upgrade rewrites its sidecars in place) and `sweep` =
-`NotSwept("phase-0 deferral: legacy folder-note sidecars kept for older
-releases")`. Sweeping it would close that deferral, but it changes what the
-sweep visits and spends, so it is left to the deferral's own trigger.
+The legacy `workspace-notes/` directory is inventoried, and from this group on
+it is swept too (`SweptLast`). A format upgrade can leave a temp there, so the
+existing coverage requirement already asks for it; visiting it last keeps
+every other directory's share of the budget. This is G2's one behaviour
+change: the sweep may remove a stale, provably-ours temp it skipped before.
+It closes the phase-0 deferral entry.
 
 *Alternatives considered:*
 - A `const` table of structs. Coverage would then depend on a runtime test
@@ -697,8 +729,9 @@ binary.
 
 ## Data-safety audit (groups that touch persistence)
 
-**G1** rewrites the shell of every durable write and of Replace All and
-Undo. The audit covers:
+**G1** rewrites the shell of every durable write, of Replace All and Undo,
+and of the journal shrink, whose order (entry before body, the body kept when
+the entry's removal fails) must hold exactly as `shrink_step` decides. The audit covers:
 - the action-to-call mapping: exactly one call per action, and the outcome
   passed back unchanged;
 - `last_error` carriage into `BeforeRename` and `AfterRename`;
@@ -719,6 +752,8 @@ user's data would not be deleted, but it would become invisible: the next
 session or draft write would create fresh state beside it, and orphan cleanup
 would inspect the wrong directory. Mitigations:
 - the byte-identical characterization table;
+- the one directory newly swept (`workspace-notes/`, last) goes through the
+  unchanged provably-ours, stale-only predicate;
 - no rename of any location;
 - orphan-cleanup inspection and execution both resolving through the same
   owner;

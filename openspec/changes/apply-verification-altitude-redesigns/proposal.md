@@ -5,7 +5,8 @@ redesigns that `consolidate-formal-verification-on-kani` deliberately left out
 (N8 in `docs/next/formal-verification-next.md`). Each one removes a place where
 a safety property holds only by convention:
 - hand-copied shell loops around proven protocol cores (three when proposed,
-  five since `stream-replace-all` added the Replace All and Undo shells);
+  six since `stream-replace-all` added the Replace All, Undo, and journal
+  shrink shells);
 - app-data directory names spelled independently in several places;
 - an unbounded once-per-pass retry;
 - a `&str` tag that can name a label outside the closed set;
@@ -19,18 +20,21 @@ comes next, builds on group 1's shared driver. The plan was re-derived against
 187c6299 (revision of 2026-11-18, design "Revision against 187c6299"). All six
 groups still apply. Groups 1, 3, and 4 changed in substance, groups 2 and 6 in
 detail, and group 5 is unchanged except for a recorded scope note. The groups
-stay **independently applicable**.
+stay **independently applicable**; groups 5 and 3 share one commit only
+because the UI-prefix smoke proofs digest their files together.
 
 ## What Changes
 
 1. **One `Protocol` driver for every proven-core shell.**
    - A GTK-free, I/O-free `services/protocol_drive.rs` holds a `Protocol` trait
      (`Action`, `Outcome`, `End`, `end`, `advance`) and one `drive` loop.
-   - Five shells use it:
+   - Six shells use it:
      - in `services/durable_write.rs`: the atomic write, `run_rename_protocol`,
        and `move_durable`;
      - the Replace All apply shell (`content_search/replace/apply.rs`);
-     - the Replace All Undo shell (`content_search/replace/undo.rs`).
+     - the Replace All Undo shell (`content_search/replace/undo.rs`);
+     - the undo-journal shrink (`search_backup::shrink_journal_to`), which
+       steps `shrink_step`.
    - Each trait implementation sits beside its shell and delegates to the
      core's unchanged inherent `start` / `step`, so no Kani-checked module
      changes.
@@ -45,6 +49,9 @@ stay **independently applicable**.
    - The startup leftover sweep (`app_data_leftovers.rs`) and the
      format-upgrade inventory (`format_upgrade/inventory.rs`) derive what they
      visit from it through exhaustive matches.
+   - The sweep also visits the legacy `workspace-notes/` directory, last,
+     where a format upgrade can leave a temp. This closes a phase-0 deferral
+     that the existing sweep-coverage requirement already rules out.
    - Services resolve their paths through it.
    - `json_store::data_dir()` is unchanged.
    - No on-disk path changes, proved by a characterization table captured
@@ -118,7 +125,8 @@ body is never written for an unregistered id". design.md justifies each.
 - **Group 1:**
   - new `services/protocol_drive.rs`;
   - `services/durable_write.rs`;
-  - `services/content_search/replace/{apply,undo}.rs`.
+  - `services/content_search/replace/{apply,undo}.rs` and
+    `services/search_backup.rs` (the shrink loop).
 
   Untouched: `services/filesystem/write_protocol.rs` and
   `services/content_search/replace/protocol.rs`, which are Kani oracles.

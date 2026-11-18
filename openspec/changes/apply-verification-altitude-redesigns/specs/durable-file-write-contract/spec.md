@@ -2,13 +2,13 @@
 
 ### Requirement: Proven-protocol shells run through one shared driver
 Every shell of an I/O-free, Kani-checked protocol core (durable write, move,
-rename, Replace All file apply, Undo entry) SHALL run it through one shared,
+rename, Replace All file apply, Undo entry, journal shrink) SHALL run it through one shared,
 I/O-free driver loop, unless its module documentation records why it cannot.
 The driver SHALL stop at the core's terminal action, execute every other
 action with exactly one executor call, and feed that outcome back unchanged.
 
 #### Scenario: One execution site per action
-- **WHEN** any durable write, move, rename, Replace All file, or Undo entry runs through a shell that uses the shared driver
+- **WHEN** any durable write, move, rename, Replace All file, Undo entry, or journal shrink runs through a shell that uses the shared driver
 - **THEN** each non-terminal action of its core is executed by exactly one executor call inside the shared driver, and the core receives that call's outcome unchanged
 
 #### Scenario: A nested protocol run is a nested drive
@@ -34,9 +34,9 @@ shared driver.
 ### Requirement: The app-data layout has one owner
 Every app-data file and directory SHALL be named once, in one GTK-free layout
 owner. Each entry SHALL record its relative path, its kind (file, directory,
-or nested family), whether durable writes create temp files there, and whether
-the startup leftover sweep visits it, or why not. Services SHALL resolve their
-app-data paths through the owner. Changing the owner MUST NOT
+or nested family), and how the startup leftover sweep covers the durable-write
+temps that land there. Services SHALL resolve their app-data paths through
+the owner. Changing the owner MUST NOT
 change any existing location's resolved path, unless a format-upgrade
 converter migrates it.
 
@@ -63,10 +63,16 @@ exempt, without editing either consumer's list.
 
 ### Requirement: The startup sweep spends its budget in a fixed order
 The startup leftover sweep SHALL visit its flat directories, then the
-format-upgrade runs, then the local-history lineages, in one tested order
-that taking its locations from the layout owner does not change, because it
+format-upgrade runs, then the local-history lineages, and only then the
+legacy folder-note sidecar directory, in one tested order. The directories
+swept before the layout owner SHALL keep their order, because the sweep
 spends one bounded budget in visit order.
 
 #### Scenario: The sweep spends its budget in a fixed order
 - **WHEN** the startup sweep runs over a data home whose directories and families together exceed its budget
-- **THEN** it visits the flat directories, then the format-upgrade runs, then the local-history lineages, in the same order as before the layout owner, so the same leftovers are removed
+- **THEN** it visits the flat directories, then the format-upgrade runs, then the local-history lineages, in the same order as before the layout owner, so the same leftovers are removed from them
+- **AND** the legacy folder-note sidecar directory is visited last, with what budget remains
+
+#### Scenario: A stale leftover in the legacy folder-note directory is swept
+- **WHEN** startup finds a stale provably-ours temp file in the legacy `workspace-notes` directory, left by a format-upgrade rewrite
+- **THEN** it is removed under the same rules as the other app-data directories, if the pass's budget reaches it

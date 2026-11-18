@@ -47,7 +47,10 @@ group's heavy commands.
   - `rename_durable` when a cross-directory destination sync fails
     (`AfterRename`);
   - a Replace apply file whose entry removal fails during cleanup, so the
-    body is kept.
+    body is kept;
+  - a journal shrink (`search_backup::shrink_journal_to`) whose retired
+    entry cannot be removed, so its body is kept, and one whose entry and
+    body are both removed, entry first.
 
   Command: `scripts/heavy.sh -- make test-unit`. It runs the library tests,
   these included, through the temp scope.
@@ -64,30 +67,38 @@ group's heavy commands.
   - in `durable_write.rs`: `WriteProtocol`, `MoveProtocol`, and
     `RenameProtocol`;
   - `ReplaceFileProtocol` in `replace/apply.rs`;
-  - `ReplaceUndoProtocol` in `replace/undo.rs`.
+  - `ReplaceUndoProtocol` in `replace/undo.rs`;
+  - a private `ShrinkRun(ShrinkAction)` in `search_backup.rs`, whose
+    `advance` calls the free `shrink_step` with the action it keeps.
 
   Do not edit `write_protocol.rs` or `replace/protocol.rs`.
-- [ ] 1.4 Rewrite the five loops as `start`, then one `drive` with an
-  `execute` closure, then a `finish` mapping. The five are:
+- [ ] 1.4 Rewrite the six loops as `start`, then one `drive` with an
+  `execute` closure, then a `finish` mapping. The six are:
   - `atomic_write_stream_with_metadata`;
   - `run_rename_protocol`;
   - `move_durable`;
   - the apply loop of `replace/apply.rs`;
-  - the entry loop of `replace/undo.rs`.
+  - the entry loop of `replace/undo.rs`;
+  - the per-entry shrink loop of `search_backup::shrink_journal_to`, keeping
+    its warning per failed removal.
 
   Keep each of these exactly where it is:
   - `last_error` carriage;
   - temp removal;
   - every `kill_point::reach`: the `DurableRenamedBeforeDirSync` window in
     the `SyncDir` arm, and `ReplaceBodyBeforeEntry` in the apply loop's
-    `WriteBody` arm. The other three Replace windows (`apply.rs` 297 and 973,
-    `undo.rs` 396) lie outside the loops and must not move;
+    `WriteBody` arm. The other three Replace windows are not in a loop body
+    and must not move: `apply.rs` 297 runs after a file's protocol has
+    finished, and `apply.rs` 973 and `undo.rs` 396 sit in the helpers the
+    `WriteTarget` and `WriteRestore` arms call (`write_target_from_body`,
+    `write_restore`);
   - the guard drop after the loop.
 
   If the apply closure needs the design's fallback, take it and record why in
   the module doc.
 - [ ] 1.4a Add the "no loop of their own" source check (design G1): in each
-  of the five shell files, the core's `step` is called only inside its
+  of the four files that hold the six shells, the core's `step` (or
+  `shrink_step`) is called only inside its
   `Protocol::advance` implementation, unless the module documentation
   records the fallback exception. Write it as a `#[test]` over
   `include_str!` of the files, or as a rule in an existing policy script.
@@ -111,7 +122,7 @@ group's heavy commands.
 - [ ] 1.8 Sync the docs:
   - `docs/durable-writes.md` (the shells run through `drive`);
   - the "build on" section of `docs/next/formal-verification.md`, which
-    names the single tap site and the five shells for the conformance change;
+    names the single tap site and the six shells for the conformance change;
   - N8 in `docs/next/formal-verification-next.md` (group 1 done);
   - the `AGENTS.md` module layout (`services/protocol_drive.rs`);
   - `README.md`: evaluate it per `documentation.md`. Its architecture section
@@ -167,10 +178,9 @@ group's heavy commands.
   - `AppDataLocation`, with `Root` and `ReplaceJournalBodies`;
   - `ALL`;
   - per location: its relative path, kind (`LineageFamily` carries
-    `index.json`, and `RunFamily` carries `items`), a truthful
-    `holds_durable_writes`, and `sweep` (`Swept`, `ParentSwept` for files, or
-    `NotSwept(reason)`; `LegacyWorkspaceNotes` is the one deferral, design
-    G2);
+    `index.json`, and `RunFamily` carries `items`), and `sweep` (`Swept`,
+    `SweptLast` for `LegacyWorkspaceNotes` only, or `ParentSwept` for files;
+    design G2);
   - the `AppDataLayout::new(root)` accessors.
 - [ ] 2.3 Switch the startup sweep in `app_data_leftovers.rs` to iterate the
   layout. Keep the family expansion, `MAX_LINEAGES_PER_PASS`,
@@ -178,9 +188,13 @@ group's heavy commands.
   directory visit order, because the shared budget is spent in that order.
   The families are expanded in an explicit `FAMILY_SWEEP_ORDER`: the
   format-upgrade runs with their `items/`, then the local-history lineages,
-  as today and unlike their order in `ALL`. Add a test that pins the whole
-  visit order (flat directories, runs, lineages), failing-first against a
-  deliberately reordered list and against families expanded in `ALL` order. Add a test asserting that every file entry's parent is a
+  as today and unlike their order in `ALL`. `LegacyWorkspaceNotes`
+  (`SweptLast`) is visited after the lineages. Add a test that pins the whole
+  visit order (flat directories, runs, lineages, then the legacy directory),
+  failing-first against a deliberately reordered list and against families
+  expanded in `ALL` order. Add a failing-first test that a stale,
+  provably-ours temp in `workspace-notes/` is removed and a fresh one kept,
+  which fails on the unchanged tree. Add a test asserting that every file entry's parent is a
   swept entry. Confirm the existing sweep tests pass unchanged, including the
   style-schemes, set-aside, bodies, and backup-run cases.
 - [ ] 2.4 Switch the format-upgrade inventory to an exhaustive `match` over
@@ -206,10 +220,9 @@ group's heavy commands.
   in 1.6, and check every other `exclude_re` that names a file this group
   edits (testing.md, "Path-keyed gates").
 - [ ] 2.6 Run 2.1's characterization test against the layout and check it is
-  byte-identical. Add a unit test asserting that every location that
-  `holds_durable_writes` is `Swept`, or `ParentSwept` with a `Swept` parent,
-  or `NotSwept` with a reason, and that `LegacyWorkspaceNotes` is the only
-  `NotSwept` entry that holds durable writes.
+  byte-identical. Add a unit test asserting that every location is `Swept`
+  or `SweptLast`, or `ParentSwept` with a `Swept` parent, and that
+  `LegacyWorkspaceNotes` is the only `SweptLast` entry.
 - [ ] 2.7 Data-safety audit: run the `data-safety` skill over the diff. Then
   run `scripts/heavy.sh --envelope 16G -- make test` and
   `scripts/heavy.sh -- make crash-recovery-smoke`, where supported. Confirm
@@ -220,8 +233,10 @@ group's heavy commands.
   - in `AGENTS.md`, the module layout (`services/app_data_layout.rs`) and the
     "Filesystem boundary" decision;
   - `docs/durable-writes.md` (sweep coverage comes from the layout);
-  - the deferral inventory in `docs/next/formal-verification.md` (the legacy
-    `workspace-notes/` entry now points at the layout exemption);
+  - the deferral inventory in `docs/next/formal-verification.md`: mark the
+    phase-0 entry "the startup leftover sweep skips the legacy folder-note
+    sidecar directory" fixed (swept last since this group), keeping its
+    second half, the per-pass budget, as it is;
   - N8 (group 2 done);
   - `README.md` evaluated as in 1.8, and
     `grep -rn 'leftover\|sweep' .agents/skills/*/references/` checked for a
@@ -275,6 +290,9 @@ group's heavy commands.
     retryable, with no body written;
   - a steady-state, already registered id;
   - the asynchronous close pipeline registering before its write.
+
+  Run the widget ones with `scripts/heavy.sh --envelope 16G -- make
+  test-widget-shard WIDGET_SHARD=<the owning shard>`, as in 3.6.
 - [ ] 5.2 Add `WritableDraftCandidate` and `DirtyDraftCandidate::into_writable`
   to `ui/window/drafts/seams.rs`. `into_writable` checks the id and gives back
   both values on a mismatch. Remove `registered` from `DirtyDraftCandidate`.
