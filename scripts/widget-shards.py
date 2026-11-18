@@ -18,6 +18,11 @@ shard's output prefixed `[<shard>]`, keeps each shard's whole output in
 `target/widget-parallel/<shard>.log`, lets every shard finish, and prints one
 summary. `--retries N` is passed to the runner, which reruns a failed shard in
 a new session; a shard that needed a rerun is printed as `FLAKY-SHARD:`.
+Because it admits those scopes itself, agents start it inside an envelope,
+`scripts/heavy.sh --envelope 16G -- make test` (or `test-widget`,
+`test-widget-headless`): the build and shard scopes are then admitted
+against the envelope's 16G alone, and the Makefile's preflight refuses
+`heavy.sh --mem none`, under which they would wait for memory under LOCK.
 
 `check` (part of `make check-policy`, no build needed) discovers every widget
 test from `crates/lushtext/tests/widget/*.rs` with the rule
@@ -737,7 +742,8 @@ def parallel(static_tests: list[str], args: argparse.Namespace) -> int:
     if os.environ.get("LUSHTEXT_MEMORY_CAP_KIB"):
         print(
             "widget-shards: already inside a memory-capped scope, so every shard shares that one cap "
-            "instead of its own; start the parallel run unwrapped to give each shard its own scope",
+            "instead of its own; run it as scripts/heavy.sh --envelope 16G -- make ... to give each "
+            "shard its own scope",
             file=sys.stderr,
         )
     build = [

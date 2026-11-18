@@ -29,7 +29,7 @@ Keep this index in sync with `.agents/rules/*.md` (`scripts/check-agent-docs.sh`
 - `rust.md` — Rust language, filesystem boundary, error and literal ownership, power-of-two threshold rounding and the `make check-thresholds` inventory, explicit SIMD, module splitting, and state grouping
 - `testing.md` — what every Rust, script or fuzz edit needs: temporary-file ownership, test isolation from real app data, test-only code never shipping, proof obligations and gate order before a commit, Kani harness and GTK axiom probe authoring, runtime warnings
 - `ui.md` — UI and theming: widget hierarchy, staged composition, Libadwaita widget choice, state extremes, accessibility metadata, file tree and sidebar, inline alerts, dialogs, GSettings bindings, split views, large-buffer guardrails
-- `verification-runs.md` — shared-machine agent work (the `heavy.sh`/`measure.sh`/`wait-for.sh` lock protocol and wait rules) and which Kani, proof-strength, GTK axiom and timing runs a change needs, and when
+- `verification-runs.md` — shared-machine agent work (the `heavy.sh`/`measure.sh`/`wait-for.sh` lock protocol, envelopes for commands that admit their own memory scopes, the admission order, and wait rules) and which Kani, proof-strength, GTK axiom and timing runs a change needs, and when
 - `widget-wiring.md` — GTK widget composition and signal wiring, staged reveals, projection bindings, signal lifetimes, allocation-signal rules, custom-container adjustment ownership, focus restoration, transient dismissal, settle helpers, large lists, signal-delivery pitfalls, and widget-test rules
 - `workflow-convention.md` — the normative workflow readability convention: roles, role homes, seam value objects, policy purity and placement (including the whole-pixel geometry policy table), evidence-surface invariants and their driven proofs, intent-first naming, and re-derived measured cells
 
@@ -248,7 +248,7 @@ archived OpenSpec changes.
 
 ## Build Commands
 
-`make help` prints the whole catalogue; `.agents/rules/build.md` describes each lane. Heavy commands go through `scripts/heavy.sh` (which also sets their compiler parallelism: `build.md`, "Compiler parallelism") and timing verdicts through `scripts/measure.sh` (`.agents/rules/verification-runs.md`, "Shared-machine agent work"; `make check-agent-helpers` self-tests the helpers).
+`make help` prints the whole catalogue; `.agents/rules/build.md` describes each lane. Heavy commands go through `scripts/heavy.sh` (which also sets their compiler parallelism: `build.md`, "Compiler parallelism"; commands that admit their own memory scopes run in `heavy.sh --envelope <size>`) and timing verdicts through `scripts/measure.sh` (`.agents/rules/verification-runs.md`, "Shared-machine agent work"; `make check-agent-helpers` self-tests the helpers).
 
 ```
 make build-debug / make build   # debug / release build
@@ -258,7 +258,7 @@ make check       # fmt + all-feature Clippy + fast policy audits (= make pre-com
 make check-policy # the fast policy audits alone
 make check-session-hygiene # every private headless session starts through scripts/headless-session (in check-policy)
 make check-agent-docs # agent rules, skills, and the filesystem-boundary guidance
-make test        # all tests; widget shards run in parallel, each in its own capped headless session (start it unwrapped)
+make test        # all tests; widget shards run in parallel, each in its own capped headless session (agents: scripts/heavy.sh --envelope 16G -- make test)
 make test-unit / make test-int / make test-prop
 make test-widget-shard WIDGET_SHARD=<shard>  # one CI widget shard, exactly as CI runs it
 make check-widget-shards # every widget test in exactly one shard, each measured within 20 minutes

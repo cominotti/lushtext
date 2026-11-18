@@ -126,9 +126,13 @@ endif
 # Full widget runs (`test`, `test-widget`, `test-widget-headless`) run the
 # shards of scripts/widget-shards.py in parallel by default, each in its own
 # memory scope, temp scope, D-Bus session, and headless Mutter, after one shared
-# build (`widget-shards.py parallel`). Start them unwrapped: the driver admits
-# one scripts/with-memory-cap.sh scope per shard, and an outer cap would make
-# every shard share it. WIDGET_PARALLEL=0 runs today's single serial session.
+# build (`widget-shards.py parallel`). Agents start them as
+# `scripts/heavy.sh --envelope 16G -- make test` (also test-widget,
+# test-widget-headless): the driver admits one scripts/with-memory-cap.sh
+# scope for the build and one per shard, which inside the envelope are
+# admitted against its 16G alone, while an outer `--mem` cap would make every
+# shard share it and `--mem none` is refused (the WIDGET_PREFLIGHT below).
+# WIDGET_PARALLEL=0 runs today's single serial session, which admits nothing.
 #   WIDGET_PARALLEL_JOBS     at most this many shards at once (default: all)
 #   WIDGET_SHARD_MEMORY_MAX  per-shard scope cap (default 2G in widget-shards.py:
 #                            largest measured shard peak, 864 MiB, x 1.5)
@@ -139,10 +143,14 @@ WIDGET_PARALLEL ?= 1
 ifeq ($(WIDGET_PARALLEL),0)
 CARGO_TEST_WIDGET          = ./scripts/run-widget-tests.sh --headless
 CARGO_TEST_WIDGET_HEADLESS = ./scripts/run-widget-tests.sh --headless --retries 1
+WIDGET_PREFLIGHT =
 else
 # widget-shards.py reads the other WIDGET_* knobs from the environment.
 CARGO_TEST_WIDGET          = ./scripts/widget-shards.py parallel
 CARGO_TEST_WIDGET_HEADLESS = ./scripts/widget-shards.py parallel --retries 1
+# Refuse a run under a shared LOCK that is not an envelope before the first
+# phase, rather than at the widget build after the whole non-widget phase.
+WIDGET_PREFLIGHT = ./scripts/with-memory-cap.sh --preflight "$${WIDGET_BUILD_MEMORY_MAX:-16G}" && ./scripts/with-memory-cap.sh --preflight "$${WIDGET_SHARD_MEMORY_MAX:-2G}"
 endif
 CARGO_TEST_SEARCH_RETIREMENT_RELEASE = CARGO_PROFILE_TEST_DEBUG_ASSERTIONS=false ./scripts/run-widget-tests.sh --headless -- --exact search_panel::test_search_retirement_categories_release_actual_ownership_over_bounded_turns
 CARGO_TEST_WORKSPACE_ROW_STATES = ./scripts/run-widget-tests.sh --headless --retries 1 -- workspace_row_state
@@ -187,7 +195,10 @@ KANI_MEASURE ?=
 # fails its own allocation before the OOM killer fires (an OOM kill in a user
 # scope makes GNOME notify that memory is nearly full). 16G stays above the 12 GiB per-shard CI budget
 # `make check-kani-shards` enforces. `none` opts out; on CI without a systemd
-# user manager the run is uncapped.
+# user manager the run is uncapped. Agents run it as
+# `scripts/heavy.sh --envelope 16G -- make kani`, which gives Kani this 16G;
+# `heavy.sh -- make kani` runs it in place in heavy.sh's default 12G scope,
+# and `heavy.sh --mem none -- make kani` is refused by the preflight.
 KANI_MEMORY_MAX ?= 16G
 # Kani's compile phase keeps the 4 jobs its memory cap was sized for:
 # heavy.sh gives a command alone on the machine up to 16 (build.md,
@@ -200,7 +211,8 @@ KANI_BUILD_JOBS ?= 4
 # tests, kani, or both.
 PROOF_STRENGTH_MODULE ?= all
 # The whole run (Kani arm, each CBMC held to 12 GiB of address space, and the
-# cargo-mutants tests arm) executes inside one capped scope.
+# cargo-mutants tests arm) executes inside one capped scope. Agents run it as
+# `scripts/heavy.sh --envelope 16G -- make proof-strength ...`.
 PROOF_STRENGTH_MEMORY_MAX ?= 16G
 PROOF_STRENGTH_TIER ?= all
 PROOF_STRENGTH_SHARD ?=
@@ -238,8 +250,9 @@ BUILD_CACHE_CHECKOUT = $(shell ./scripts/build-cache.sh checkout-path)
 # exits 75 and names the holders instead of waiting. Memory, not cores, bounds
 # the slot count: every slot is a full cargo build plus nextest processes, and
 # the whole run executes inside one MUTANTS_MEMORY_MAX scope
-# (scripts/with-memory-cap.sh, no swap), admitted into the host-wide
-# user-lushtext-heavy.slice (nested under the user manager's user.slice, so it
+# (scripts/with-memory-cap.sh, no swap; agents run the target as
+# `scripts/heavy.sh --envelope <MUTANTS_MEMORY_MAX> -- make mutants-...`),
+# admitted into the host-wide user-lushtext-heavy.slice (nested under the user manager's user.slice, so it
 # inherits the toolboxes' CPU policy). Three slots of four build jobs and four test threads
 # fit a 36G scope and keep slots x build-jobs near the 16-core affinity; on
 # 2026-10-20 copy-mode runs at 6-8 build jobs and 8-12 test threads inside a
@@ -341,6 +354,7 @@ clear-lushtext-xdg:
 # Run all tests
 test:
 	@echo "Running all tests..."
+	$(WIDGET_PREFLIGHT)
 	$(CARGO_TEST_NON_WIDGET)
 	$(CARGO_TEST_WIDGET_HEADLESS)
 
@@ -403,7 +417,7 @@ fuzz-smoke:
 # cache per gtk-lush-widgets compile, 355 MB per lushtext-core one, for a
 # 12% faster rebuild).
 kani:
-	@set -eu; $(KANI_VERSION_GUARD); \
+	@set -eu; ./scripts/with-memory-cap.sh --preflight "$(KANI_MEMORY_MAX)"; $(KANI_VERSION_GUARD); \
 	CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=$(KANI_BUILD_JOBS) ./scripts/with-memory-cap.sh --address-space "$(KANI_MEMORY_MAX)" ./scripts/kani-shards.py run "$(KANI_SHARD)" --target-dir "$(KANI_TARGET_DIR)" $(if $(KANI_MEASURE),--measure "$(KANI_MEASURE)")
 
 # The pinned-Kani guard shared by the Kani and proof-strength lanes.
@@ -419,7 +433,7 @@ KANI_VERSION_GUARD = installed=$$(cargo kani --version 2>/dev/null | sed -n 's/^
 # same module, and report the kill rates of both arms joined on mutant name.
 # Resumable; one Kani run at a time.
 proof-strength:
-	@set -eu; $(KANI_VERSION_GUARD); \
+	@set -eu; ./scripts/with-memory-cap.sh --preflight "$(PROOF_STRENGTH_MEMORY_MAX)"; $(KANI_VERSION_GUARD); \
 	./scripts/with-memory-cap.sh "$(PROOF_STRENGTH_MEMORY_MAX)" ./scripts/proof-strength.py measure --module "$(PROOF_STRENGTH_MODULE)" --tier "$(PROOF_STRENGTH_TIER)" \
 		--arm "$(PROOF_STRENGTH_ARM)" $(if $(PROOF_STRENGTH_SHARD),--shard "$(PROOF_STRENGTH_SHARD)")
 
@@ -597,11 +611,13 @@ fuzz-operation-smoke:
 # Widget tests under the private headless runner.
 test-widget:
 	@echo "Running widget tests..."
+	$(WIDGET_PREFLIGHT)
 	$(CARGO_TEST_WIDGET)
 
 # Widget tests with the same headless setup used in CI
 test-widget-headless:
 	@echo "Running widget tests under mutter --headless..."
+	$(WIDGET_PREFLIGHT)
 	$(CARGO_TEST_WIDGET_HEADLESS)
 
 # One CI widget shard, run exactly as the `Widget Tests (<shard>)` job runs it:
@@ -757,16 +773,19 @@ end-user-smoke: automation-smoke builder-diagnostics-smoke visual-geometry-smoke
 # Small mutation pass for checking cargo-mutants tooling and timeout behavior.
 mutants-smoke:
 	@echo "Running cargo-mutants smoke scope (slots=$(MUTANTS_LOCAL_JOBS), build-jobs=$(MUTANTS_LOCAL_BUILD_JOBS), test-threads=$(MUTANTS_LOCAL_TEST_THREADS))..."
+	./scripts/with-memory-cap.sh --preflight "$(MUTANTS_MEMORY_MAX)"
 	$(MUTANTS_LOCAL_PARALLELISM) ./scripts/with-memory-cap.sh "$(MUTANTS_MEMORY_MAX)" ./scripts/run-mutants.sh smoke
 
 # Mutation-test the current diff against origin/main.
 mutants-diff:
 	@echo "Running cargo-mutants against changed code (slots=$(MUTANTS_LOCAL_JOBS), build-jobs=$(MUTANTS_LOCAL_BUILD_JOBS), test-threads=$(MUTANTS_LOCAL_TEST_THREADS))..."
+	./scripts/with-memory-cap.sh --preflight "$(MUTANTS_MEMORY_MAX)"
 	$(MUTANTS_LOCAL_PARALLELISM) ./scripts/with-memory-cap.sh "$(MUTANTS_MEMORY_MAX)" ./scripts/run-mutants.sh diff
 
 # Mutation-test the configured deterministic scope.
 mutants-full:
 	@echo "Running configured cargo-mutants scope (slots=$(MUTANTS_LOCAL_JOBS), build-jobs=$(MUTANTS_LOCAL_BUILD_JOBS), test-threads=$(MUTANTS_LOCAL_TEST_THREADS))..."
+	./scripts/with-memory-cap.sh --preflight "$(MUTANTS_MEMORY_MAX)"
 	$(MUTANTS_LOCAL_PARALLELISM) ./scripts/with-memory-cap.sh "$(MUTANTS_MEMORY_MAX)" ./scripts/run-mutants.sh full
 
 # List configured mutants without running tests.
