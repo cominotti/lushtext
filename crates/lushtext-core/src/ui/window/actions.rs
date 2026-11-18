@@ -269,6 +269,16 @@ impl LushtextWindow {
                     window.imp().search_panel.request_replace_cancel();
                 })
                 .build(),
+            gio::ActionEntry::builder("replace-in-editor")
+                .parameter_type(Some(glib::VariantTy::STRING))
+                .activate(|window: &Self, _, parameter| {
+                    let Some(path) = parameter.and_then(glib::Variant::get::<String>) else {
+                        tracing::error!("replace-in-editor: expected string parameter");
+                        return;
+                    };
+                    window.replace_in_editor(std::path::Path::new(&path));
+                })
+                .build(),
             gio::ActionEntry::builder("show-search-panel-skipped-files")
                 .activate(|window: &Self, _, _| window.imp().search_panel.show_skipped_files())
                 .build(),

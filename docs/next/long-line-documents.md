@@ -5241,18 +5241,35 @@ What landed on the branch, and what is still owed, is the change's
   logic (one engine run over 2 symbolic bytes was past 8 GiB when stopped),
   so it is checked by a bounded exhaustive unit test instead; the record is in
   `docs/next/formal-verification.md`, "Replace All protocol and stream".
-- **Owed before merge** (`tasks.md`, re-planned 2026-11-17 into non-visual
-  groups G1–G4 and one visual commit G5): the service data-safety tests
-  (no-loss, undo cap and partial-restore cases, the 48 `main` test names'
-  successors, a cancel whose entry removal fails), the GTK axioms A127–A129
-  for Replace in Editor, Replace in Editor itself, the close-during-run
-  dialog's tests, the crash smoke case, the accessibility smoke case, and the
-  verdicts. Memory cases (M9) run through `heavy.sh`, being load-independent;
-  `main`'s first repetition (2026-11-14) is within 2 % of PT's figures (16 MiB
-  peak growth 33.2 MiB). The timing verdicts (chunk size, wall time,
-  responsiveness cases) are queued in `MEASURE-QUEUE.md`, `NOT READY` until
-  the final code.
+- **Landed by the stage-3 continuation (2026-11-17/18).** G1: the service
+  data-safety tests, the 46-mutant campaign over the protocol and the
+  apply/undo paths (all killed) and the `core-replace-protocol` shard's
+  final local run. G2: GTK axioms A127 (GRegex replacement syntax), A128
+  (`at-word-boundaries` against the ASCII whole-word rule) and A129 (GRegex
+  constructs), each with a probe and a sample. G3: the crash smoke drives
+  the four Replace All kill windows on the third of five files and a
+  later-launch Undo kill; it found and fixed a pre-existing `main` bug (a
+  search panel restored visible from GSettings left its actions disabled, so
+  Undo after a relaunch did nothing). G4: the branch-side M9 measurement
+  test and pass/fsync timers. G5: **Open and Replace in Editor**
+  (`win.replace-in-editor`: a Skipped Files row opens the file at its first
+  skipped line with the in-tab bar prefilled from the run's request, the
+  regex template translated per A127 and property-tested against a GRegex
+  model), the application-wide undo journal (a run in one window refuses an
+  apply or Undo in another and retires every window's Undo), the cancel
+  button and app-quit tests, an accessibility smoke case
+  (`workspace-search-replace-skipped`) and two responsiveness lane cases
+  (`replace-all/skips-16384`: completion terminal and Skipped Files dialog;
+  `replace-all/run-512mib`: progress and typing during the run).
+- **Still owed** (`tasks.md`): the memory verdicts (4.8, 9.2, M9 through
+  `heavy.sh`), `main`'s M9 repetitions 2 and 3 (1.1) and the GTK-side
+  disposal baseline (1.2), and the timing verdicts queued in
+  `MEASURE-QUEUE.md` ("stream-replace-all: timing verdicts": part A, chunk
+  size, `READY de4b8e8c`; parts B and C after the G5 commit). The two
+  `kani.yml` dispatches for the new shards' budgets (3.3b) belong to the
+  merge stage.
 - **Prepared AppStream release note.** "Replace All rewrites files up to
   512 MiB without holding them in memory, reports its progress, can be
-  cancelled, and lists the files it skipped, with the reason."
+  cancelled, lists the files it skipped with the reason, and offers to
+  finish each of them in the editor with the replacement ready."
 

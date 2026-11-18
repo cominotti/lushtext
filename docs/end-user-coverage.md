@@ -129,7 +129,8 @@ they are not default PR gates:
   properties, normal and constrained Markdown preview, the preview-only document
   alert (`preview-mode-document-alert` in light, dark, and low Background
   Opacity, asserting it is one opaque band above an uncovered preview), zero-folder/representative/dense/awkward/
-  constrained workspace states, workspace-refresh readiness, short-layout
+  constrained workspace states, workspace-refresh readiness, the Skipped Files
+  dialog after a Replace All that skipped one file (`replace-all-skipped-files`), short-layout
   chrome, no-notes, few/dense/constrained notes, few/dense/constrained
   bookmarks, command-palette files/commands/notes/no-results/dense-files/
   dismissed states, dark style, high contrast, large text, reduced motion,
@@ -239,9 +240,18 @@ they are not default PR gates:
   the target's temp file holds its new bytes), `replace-target-renamed-before-finish`
   (the target is renamed, the run has not finished), and
   `replace-undo-before-target-rename` (an Undo's restore temp holds the
-  original bytes). A Replace All crash-recovery case driving those windows is
-  not yet part of the lane (stream-replace-all task 7.3); the windows and the
-  ordinal are unit-tested in `services/kill_point.rs`.
+  original bytes). The lane drives them on the third of five files, each
+  in a fresh profile and workspace: a kill in `replace-body-before-entry` or
+  `replace-entry-before-target-rename` leaves the first two files replaced
+  and the rest original, a kill in `replace-target-renamed-before-finish` or
+  in the target's `durable-renamed-before-dirsync@replace` leaves three
+  replaced, and in every case the relaunch offers Undo for exactly the
+  replaced files and Undo restores every one and empties the journal. A fifth
+  case kills an Undo run in a later launch inside
+  `replace-undo-before-target-rename` (two files restored, three still
+  replaced) and checks the next relaunch rearms the manifest for itself and
+  finishes the Undo. The windows and the ordinal are also unit-tested in
+  `services/kill_point.rs`.
 - `make portal-sandbox-smoke` records available Flatpak/Snap runtime state,
   writes `permission-posture.txt`, preserves portal bus-name diagnostics, and
   runs supported confined smoke checks while skipping clearly when runtimes are

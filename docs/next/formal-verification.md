@@ -2573,13 +2573,27 @@ shards, both owed a dispatch before the change is archived
   re-arm of an Undo in a later launch (design D6) dropped after an entry
   that restores nothing, or never taken; the unit test
   `undo_in_a_later_launch_rearms_the_manifest_for_this_launch` now kills
-  both. Three are equivalent for safety and stay: re-arming on every file
-  or every entry (the guard `journal.armed` or `rearm_needed` forced) only
-  repeats an idempotent manifest write. The properties are safety
-  properties, so no harness can tell them apart.
+  both. Three are equivalent for safety: re-arming on every file or every
+  entry (the guard `journal.armed` or `rearm_needed` forced) only repeats an
+  idempotent manifest write, so no safety harness can tell them apart. The
+  tests arm (on `ab547a86`: 16 mutants, 8 unviable, 5 caught) missed the same
+  three. They are not left standing: the protocol's own unit tests
+  `a_run_prepares_and_arms_the_journal_once` and
+  `a_later_launch_undo_rearms_the_manifest_once` count the arm and re-arm
+  actions (one per run, one per later-launch Undo, none otherwise), and each
+  of the three, applied by hand, fails one of them (stage 3 continuation,
+  2026-11-18; `.claude/handoffs/stream-replace-all/stage3-protocol-mutant-*.log`).
 - `core-replace-stream` (`replace/stream/utf8/kani_proofs.rs`, 2 harnesses):
   the stream's UTF-8 seams (8 arbitrary bytes, chunks 1–4) and the
   `cfg(kani)` byte scan against `core::str::from_utf8` (4 bytes).
+  `make proof-strength` of `replace/stream/utf8.rs` (2026-11-18): 36 mutants
+  in each arm, none unviable. The Kani arm (on `ab547a86`) kills 35; its one
+  survivor is `validate_utf8` → `Ok(())` in the `cfg(not(kani))` `simdutf8`
+  path, which Kani never compiles, and the tests arm kills it
+  (`the_byte_scan_matches_simdutf8`). The tests arm (on `de4b8e8c`) kills 35;
+  its one miss is the same mutation of the `cfg(kani)` wrapper, which the
+  tests never compile, and the Kani arm kills it. Every mutant is killed by
+  one arm, which is the split the design expected.
 
 **Reduced bound (fit order step 3), recorded here and in the harness doc.**
 The engine's line logic is not Kani-proved. Every harness form that ran the

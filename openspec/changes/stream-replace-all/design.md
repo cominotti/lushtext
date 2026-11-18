@@ -59,6 +59,25 @@ replace code has not changed since, apart from d704a908's search-budget edits
 | six 10 MiB files (64 MiB undo cap binds: 3 replaced, 3 skipped) | 99.9–100.3 MiB | about 73 MiB | — |
 | six 16 MiB files (64 MiB undo cap binds: 1 replaced, 5 skipped) | 94.0–94.4 MiB | about 67 MiB | — |
 
+Re-measured three times on `main` (task 1.1; repetition 1 on 2026-11-14,
+repetitions 2 and 3 on 2026-11-18 at `562fff58`, the `main` this branch last
+merged; `heavy.sh`, VmHWM in kB): one 10 MiB file 49,552 / 49,472 / 49,384;
+one 16 MiB file 61,696 / 61,472 / 61,784 (growth 33.2 / 33.2 / 33.1 MiB);
+six 10 MiB files 100,244 / 100,200 / 100,364 (3 replaced, 3 skipped); six
+16 MiB files 94,712 / 94,440 / 94,908 (1 replaced, 5 skipped). Every
+repetition is within 1 % of the others and of PT's ranges above (the table's "MiB" is VmHWM kB / 1000), so
+nothing needed investigating (`.claude/handoffs/stream-replace-all/mem/evidence.txt`).
+
+**GTK-side baseline (task 1.2, evidence).** After a Replace All over six
+10 MiB files on `main` `562fff58` (3 replaced, 3 skipped by the undo cap), the
+search panel's undo owner retains **62,915,133 bytes** on the GTK thread
+(`undo_backup_retained_bytes`): each replaced file's original and replaced
+bodies, 3 × 2 × 10,485,760 bytes, plus about 573 bytes of descriptors, all of
+it handed to the plain-disposal lane when the undo is consumed or superseded.
+On this branch the same owner holds descriptors only, at most 4 KiB per file
+(`test_undo_owner_on_gtk_holds_descriptors_not_file_bytes`), whatever the
+files' sizes (`.claude/handoffs/stream-replace-all/mem/1.2-main.json`).
+
 The last row is a visible loss on `main` today: five of six 16 MiB files are
 skipped for undo budget. Growth is linear at about 2.1 times the file size. Taking the per-file cap to
 512 MiB without streaming would cost about 1.1 GiB of worker memory per file.

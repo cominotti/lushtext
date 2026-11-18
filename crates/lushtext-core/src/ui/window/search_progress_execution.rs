@@ -135,10 +135,6 @@ impl LushtextWindow {
         }
     }
 
-    /// Start delayed status-bar progress tracking for a new workspace search.
-    ///
-    /// Clears stale progress, arms the 500 ms visibility delay, and starts the
-    /// heartbeat timer that keeps active progress notifications alive.
     /// A close arrived while a Replace All run is in flight: ask what to do.
     pub(crate) fn request_close_during_replace_run(&self) {
         if self.imp().search_progress.close_after_replace_run.get() {
@@ -231,6 +227,10 @@ impl LushtextWindow {
         }
     }
 
+    /// Start delayed status-bar progress tracking for a new workspace search.
+    ///
+    /// Clears stale progress, arms the 500 ms visibility delay, and starts the
+    /// heartbeat timer that keeps active progress notifications alive.
     pub(crate) fn prepare_search_progress_tracking(&self) {
         self.finish_search_progress_tracking();
         let imp = self.imp();

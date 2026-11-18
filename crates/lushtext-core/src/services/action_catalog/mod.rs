@@ -846,6 +846,20 @@ const ACTION_CATALOG: &[ActionCatalogEntry] = &[
     ),
     ActionCatalogEntry::new(
         ActionScope::Window,
+        "replace-in-editor",
+        "Open and Replace in Editor",
+        ActionValueType::String,
+        ActionValueType::None,
+        "Takes the path of a file the last Replace All skipped or partly replaced (a file too large to open, or unreadable, is refused); opens it at its first skipped line, opens the in-tab replace bar and prefills it from that run's query, options and replacement. Writes nothing.",
+        "window/search",
+        &[ActionSurface::DbusAction],
+        ExternalActivationSafety::ContextualUserCommand,
+        ActionExposure::Exported,
+        "action-win-replace-in-editor",
+        &[ActionCoverageLane::Unit, ActionCoverageLane::Widget],
+    ),
+    ActionCatalogEntry::new(
+        ActionScope::Window,
         "show-search-panel-skipped-files",
         "Show Skipped Files",
         ActionValueType::None,
@@ -856,7 +870,10 @@ const ACTION_CATALOG: &[ActionCatalogEntry] = &[
         ExternalActivationSafety::ContextualUserCommand,
         ActionExposure::Exported,
         "action-win-show-search-panel-skipped-files",
-        &[ActionCoverageLane::Widget],
+        &[
+            ActionCoverageLane::Widget,
+            ActionCoverageLane::AccessibilitySmoke,
+        ],
     ),
     ActionCatalogEntry::new(
         ActionScope::Window,
@@ -2378,6 +2395,12 @@ pub const BASELINE_WINDOW_ACTIONS: &[ObservedAction] = &[
         ActionScope::Window,
         "cancel-search-panel-replacements",
         ActionValueType::None,
+        ActionValueType::None,
+    ),
+    ObservedAction::new(
+        ActionScope::Window,
+        "replace-in-editor",
+        ActionValueType::String,
         ActionValueType::None,
     ),
     ObservedAction::new(

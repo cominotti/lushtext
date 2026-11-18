@@ -37,6 +37,7 @@ use crate::model::content_search::{
 };
 use crate::model::list_budget::grouped_thousands;
 use crate::services::single_flight::SingleFlightCoordinator;
+use crate::ui::search_bar::policy::EditorReplacePrefill;
 
 /// Bytes one generated preview row retains besides its charged source text.
 ///
@@ -506,11 +507,13 @@ pub fn skipped_file_subtitle(file: &ReplaceSkippedFile) -> String {
     subtitle
 }
 
-/// Whether a skipped file can be finished in the editor: every reason except a
-/// file larger than the largest LushText opens.
+/// Whether a skipped file's row offers Open and Replace in Editor: every reason
+/// [`replace_in_editor_availability`] does not refuse. A row names no line
+/// length, so a document that turns out to be protected is decided when it
+/// opens (the Protected View notice).
 #[must_use]
-pub const fn skipped_file_opens_in_editor(reason: ReplaceSkipReason) -> bool {
-    !matches!(reason, ReplaceSkipReason::LargerThanOpenTier)
+pub fn skipped_file_opens_in_editor(reason: ReplaceSkipReason) -> bool {
+    replace_in_editor_availability(reason, None) != ReplaceInEditorAvailability::NotOpenable
 }
 
 /// The completion clause for skipped files (" · N skipped"), or `None`.
@@ -597,6 +600,43 @@ pub fn replace_in_editor_availability(
     }
 }
 
+/// What one Replace All run asked for, captured from the preview it applied
+/// and kept with its skip report (design D7), so Open and Replace in Editor
+/// prefills the run's request, never the panel's live fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplaceRunIntent {
+    /// The query and options the run searched with.
+    pub query: SearchQuerySpec,
+    /// The replacement template, in Rust `regex` syntax in regex mode.
+    pub replacement: String,
+}
+
+/// Build the in-tab bar's prefill for `intent` (design D7): the query and
+/// options unchanged; the replacement copied in literal mode, translated by
+/// [`rust_replacement_to_gtksourceview`] in regex mode, and `None` when it
+/// names a group the pattern lacks or the pattern does not compile.
+#[must_use]
+pub fn editor_replace_prefill(intent: &ReplaceRunIntent) -> EditorReplacePrefill {
+    let options = &intent.query.options;
+    let replacement = if options.regex {
+        regex::Regex::new(&intent.query.query)
+            .ok()
+            .and_then(|pattern| {
+                let names: Vec<Option<&str>> = pattern.capture_names().collect();
+                rust_replacement_to_gtksourceview(&intent.replacement, &names)
+            })
+    } else {
+        Some(intent.replacement.clone())
+    };
+    EditorReplacePrefill {
+        query: intent.query.query.clone(),
+        replacement,
+        regex: options.regex,
+        case_sensitive: options.case_sensitive,
+        whole_word: options.whole_word,
+    }
+}
+
 /// Translate a Rust `regex` replacement template into GtkSourceView's (GRegex)
 /// syntax, for prefilling the in-tab bar (design D7).
 ///
@@ -607,7 +647,8 @@ pub fn replace_in_editor_availability(
 /// becomes `\g<N>` or `\g<name>` (never `\N`, so `${1}0` stays group 1 then
 /// `0`), `$$` becomes `$`, a `$` that starts no reference stays `$`, and a
 /// backslash becomes `\\`. A reference to a group the pattern does not have
-/// returns `None`: Rust expands it to nothing, GtkSourceView would fail it.
+/// returns `None`, `${}` (the empty name) included: Rust expands it to
+/// nothing, GtkSourceView would fail it.
 #[must_use]
 pub fn rust_replacement_to_gtksourceview(
     template: &str,
@@ -632,7 +673,10 @@ pub fn rust_replacement_to_gtksourceview(
         let (name, consumed) = if let Some(braced) = after.strip_prefix('{') {
             match braced.find('}') {
                 Some(end) if end > 0 => (&braced[..end], end + 2),
-                _ => ("", 0),
+                // `${}` names the empty group, which no pattern has: Rust
+                // expands it to nothing.
+                Some(_) => return None,
+                None => ("", 0),
             }
         } else {
             let end = after
@@ -1153,11 +1197,14 @@ mod skip_report_tests {
     }
 
     #[test]
-    fn only_a_file_too_large_to_open_has_no_editor_action() {
+    fn only_a_file_too_large_or_unreadable_has_no_editor_action() {
         for reason in ReplaceSkipReason::ALL {
             assert_eq!(
                 skipped_file_opens_in_editor(reason),
-                reason != ReplaceSkipReason::LargerThanOpenTier
+                !matches!(
+                    reason,
+                    ReplaceSkipReason::LargerThanOpenTier | ReplaceSkipReason::Unreadable
+                )
             );
             assert!(!skip_reason_heading(reason).is_empty());
         }
@@ -1167,6 +1214,7 @@ mod skip_report_tests {
 #[cfg(test)]
 mod replace_in_editor_tests {
     use super::*;
+    use crate::model::content_search::ContentSearchOptions;
 
     const NAMES: [Option<&str>; 3] = [None, None, Some("word")];
 
@@ -1200,6 +1248,40 @@ mod replace_in_editor_tests {
             rust_replacement_to_gtksourceview("${missing}", &NAMES),
             None
         );
+        assert_eq!(rust_replacement_to_gtksourceview("${}", &NAMES), None);
+    }
+
+    fn intent(query: &str, replacement: &str, regex: bool) -> ReplaceRunIntent {
+        ReplaceRunIntent {
+            query: SearchQuerySpec::new(
+                query,
+                ContentSearchOptions {
+                    regex,
+                    case_sensitive: true,
+                    whole_word: true,
+                    ..ContentSearchOptions::default()
+                },
+            ),
+            replacement: replacement.to_string(),
+        }
+    }
+
+    #[test]
+    fn the_prefill_carries_the_run_request() {
+        let literal = editor_replace_prefill(&intent("a$1", "b\\$2", false));
+        assert_eq!(literal.query, "a$1");
+        assert_eq!(literal.replacement.as_deref(), Some("b\\$2"));
+        assert!(!literal.regex && literal.case_sensitive && literal.whole_word);
+
+        let regex = editor_replace_prefill(&intent(r"(\w+)-(?P<n>\d)", "$2${1}0$n", true));
+        assert_eq!(regex.query, r"(\w+)-(?P<n>\d)");
+        assert_eq!(regex.replacement.as_deref(), Some("\\g<2>\\g<1>0\\g<n>"));
+        assert!(regex.regex);
+
+        let missing = editor_replace_prefill(&intent(r"(\w+)", "$2", true));
+        assert_eq!(missing.replacement, None);
+        let invalid = editor_replace_prefill(&intent("(", "x", true));
+        assert_eq!(invalid.replacement, None);
     }
 
     #[test]
@@ -1233,6 +1315,173 @@ mod replace_in_editor_tests {
                     replace_in_editor_availability(reason, Some(u64::MAX)),
                     Offered
                 );
+            }
+        }
+    }
+
+    /// GRegex's replacement expansion as GtkSourceView applies it, restricted
+    /// to what the translator emits: `\\` is a backslash, `\g<N>` and
+    /// `\g<name>` a group (a missing one expands to nothing), and every other
+    /// character is literal, `$` included. Ledger A127 pins each rule against
+    /// real GtkSourceView ([`A127_OBSERVED`]).
+    fn gregex_expand(template: &str, captures: &regex::Captures<'_>) -> String {
+        let mut out = String::new();
+        let mut rest = template;
+        while let Some(position) = rest.find('\\') {
+            out.push_str(&rest[..position]);
+            let tail = &rest[position + 1..];
+            if let Some(after) = tail.strip_prefix('\\') {
+                out.push('\\');
+                rest = after;
+            } else if let Some(group) = tail.strip_prefix("g<")
+                && let Some(end) = group.find('>')
+            {
+                let name = &group[..end];
+                let found = match name.parse::<usize>() {
+                    Ok(number) => captures.get(number),
+                    Err(_) => captures.name(name),
+                };
+                out.push_str(found.map_or("", |m| m.as_str()));
+                rest = &group[end + 1..];
+            } else {
+                out.push('\\');
+                rest = tail;
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// Ledger A127, as GtkSourceView 5.20, 5.22 and 5.23 replaced
+    /// `foo-bar baz-qux` for `(?P<first>\w+)-(\w+)` (the probe's
+    /// `EXPANSIONS`): each GRegex replacement and the buffer it left.
+    const A127_PATTERN: &str = r"(?P<first>\w+)-(\w+)";
+    const A127_DOCUMENT: &str = "foo-bar baz-qux";
+    const A127_OBSERVED: [(&str, &str); 4] = [
+        (r"\g<2>-\g<1>", "bar-foo qux-baz"),
+        (r"\g<first>!", "foo! baz!"),
+        (r"\g<1>0", "foo0 baz0"),
+        ("$1", "$1 $1"),
+    ];
+
+    fn gregex_replace_all(pattern: &regex::Regex, text: &str, template: &str) -> String {
+        let mut out = String::new();
+        let mut last = 0;
+        for captures in pattern.captures_iter(text) {
+            let whole = captures.get(0).expect("group 0");
+            out.push_str(&text[last..whole.start()]);
+            out.push_str(&gregex_expand(template, &captures));
+            last = whole.end();
+        }
+        out.push_str(&text[last..]);
+        out
+    }
+
+    #[test]
+    fn the_gregex_model_matches_axiom_a127() {
+        let pattern = regex::Regex::new(A127_PATTERN).expect("pattern");
+        for (template, observed) in A127_OBSERVED {
+            assert_eq!(
+                gregex_replace_all(&pattern, A127_DOCUMENT, template),
+                observed,
+                "{template}"
+            );
+        }
+        // And the translated Rust templates land on the same buffers.
+        let names: Vec<_> = pattern.capture_names().collect();
+        for (rust, observed) in [
+            ("$2-$1", "bar-foo qux-baz"),
+            ("${first}!", "foo! baz!"),
+            ("${1}0", "foo0 baz0"),
+            ("$$1", "$1 $1"),
+        ] {
+            let translated = rust_replacement_to_gtksourceview(rust, &names).expect("groups exist");
+            assert_eq!(
+                gregex_replace_all(&pattern, A127_DOCUMENT, &translated),
+                observed,
+                "{rust} -> {translated}"
+            );
+            assert_eq!(pattern.replace_all(A127_DOCUMENT, rust), observed, "{rust}");
+        }
+    }
+
+    const PROPERTY_PATTERN: &str = r"(\w+)-(?P<word>\w+)";
+    const PROPERTY_TEXT: &str = "foo-bar";
+
+    /// Pieces whose concatenation never forms a reference to a missing group:
+    /// every reference is braced, and no bare `$` precedes a word character.
+    const CLOSED_PIECES: [&str; 12] = [
+        "${1}", "${0}", "${2}", "${word}", "$$", "\\", "a", "0", "é", " ", "{", "}",
+    ];
+    /// Any pieces, including bare `$`, unbraced and missing references.
+    const OPEN_PIECES: [&str; 16] = [
+        "$1",
+        "$0",
+        "$word",
+        "$3",
+        "${missing}",
+        "$",
+        "${",
+        "$$",
+        "\\",
+        "a",
+        "1",
+        "_",
+        "é",
+        " ",
+        "{",
+        "}",
+    ];
+
+    fn rust_expand(captures: &regex::Captures<'_>, template: &str) -> String {
+        let mut out = String::new();
+        captures.expand(template, &mut out);
+        out
+    }
+
+    proptest::proptest! {
+        /// A template with no missing reference translates, and GtkSourceView
+        /// expands the translation to exactly what Rust expands the template to.
+        #[test]
+        fn a_closed_template_expands_alike(
+            pieces in proptest::collection::vec(proptest::sample::select(&CLOSED_PIECES[..]), 0..12),
+        ) {
+            let pattern = regex::Regex::new(PROPERTY_PATTERN).expect("pattern");
+            let captures = pattern.captures(PROPERTY_TEXT).expect("match");
+            let names: Vec<_> = pattern.capture_names().collect();
+            let template = pieces.concat();
+            let translated = rust_replacement_to_gtksourceview(&template, &names);
+            proptest::prop_assert!(translated.is_some(), "{template}");
+            proptest::prop_assert_eq!(
+                gregex_expand(translated.as_deref().unwrap_or_default(), &captures),
+                rust_expand(&captures, &template),
+                "{}", template
+            );
+        }
+
+        /// Any template either translates to the same expansion, or names a
+        /// group the pattern does not have, which Rust expands to nothing.
+        #[test]
+        fn any_template_expands_alike_or_is_refused(
+            pieces in proptest::collection::vec(proptest::sample::select(&OPEN_PIECES[..]), 0..12),
+        ) {
+            let pattern = regex::Regex::new(PROPERTY_PATTERN).expect("pattern");
+            let captures = pattern.captures(PROPERTY_TEXT).expect("match");
+            let names: Vec<_> = pattern.capture_names().collect();
+            let template = pieces.concat();
+            match rust_replacement_to_gtksourceview(&template, &names) {
+                Some(translated) => proptest::prop_assert_eq!(
+                    gregex_expand(&translated, &captures),
+                    rust_expand(&captures, &template),
+                    "{} -> {}", template, translated
+                ),
+                None => {
+                    // Refused only for a reference: a template without `$` has none.
+                    proptest::prop_assert!(
+                        template.contains('$'),
+                        "a refused template names a group: {}", template
+                    );
+                }
             }
         }
     }

@@ -35,6 +35,7 @@ use std::time::Duration;
 
 /// Callback type for file-open events (path, line_number).
 type OpenFileCallback = Box<dyn Fn(&Path, u32)>;
+type ReplaceInEditorCallback = Box<dyn Fn(&Path)>;
 
 /// Callback type for navigation events from F4/Shift+F4 (path, line_number).
 type NavigateCallback = Box<dyn Fn(&Path, u32)>;
@@ -220,6 +221,12 @@ pub struct SearchPreviewState {
     pub last_apply_counts: Cell<Option<super::policy::ReplaceApplyCounts>>,
     /// Cancel flag and progress counters of the Replace All run in flight.
     pub(super) replace_run: RefCell<Option<super::replace_execution::ReplaceRunControl>>,
+    /// The request of the last accepted preview, which a Replace All run applies.
+    pub(super) accepted_preview_intent: RefCell<Option<super::policy::ReplaceRunIntent>>,
+    /// The request of the run in flight, captured as it began.
+    pub(super) run_intent: RefCell<Option<super::policy::ReplaceRunIntent>>,
+    /// The request of the run whose skip report Show Skipped Files offers.
+    pub(super) last_run_intent: RefCell<Option<Arc<super::policy::ReplaceRunIntent>>>,
     /// Files the last Replace All run skipped or partly replaced (design D7).
     pub(super) last_skip_report:
         RefCell<Option<Arc<crate::model::content_search::ReplaceSkipReport>>>,
@@ -258,6 +265,8 @@ pub struct SearchCallbacks {
     pub undo_callback: RefCell<Option<UndoCallback>>,
     /// Called when the panel needs to surface a short status message.
     pub message_callback: RefCell<Option<MessageCallback>>,
+    /// Called when a Skipped Files row is activated: Open and Replace in Editor.
+    pub replace_in_editor_callback: RefCell<Option<ReplaceInEditorCallback>>,
 }
 
 /// Private template implementation for the workspace search panel.
@@ -471,6 +480,7 @@ impl ObjectSubclass for LushtextSearchPanel {
 impl ObjectImpl for LushtextSearchPanel {
     fn constructed(&self) {
         self.parent_constructed();
+        self.obj().register_application_panel();
         for entry in [
             self.search_entry.upcast_ref::<gtk4::Editable>(),
             self.glob_entry.upcast_ref(),

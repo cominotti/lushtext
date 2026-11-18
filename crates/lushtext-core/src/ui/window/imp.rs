@@ -132,6 +132,14 @@ pub struct SearchProgressState {
     pub replace_poll_source_id: RefCell<Option<glib::SourceId>>,
     /// A close waits for the Replace All run in flight (design D8).
     pub close_after_replace_run: Cell<bool>,
+    /// Open and Replace in Editor waiting for its tab's load to settle
+    /// (stream-replace-all design D7): the editor, weakly, and the prefill.
+    pub pending_editor_replace: RefCell<
+        Option<(
+            glib::WeakRef<crate::ui::editor_page::LushtextEditorPage>,
+            crate::ui::search_bar::policy::EditorReplacePrefill,
+        )>,
+    >,
 }
 
 /// Session-persistence state for the main window shell.

@@ -229,7 +229,7 @@ REPETITIONS = {"quick": 1, "full": 3}
 # The minimap marker cases (`bin-minimap-markers-per-row`): pairs of a marked
 # long line and a short line.
 MINIMAP_MARKER_PAIRS = (2_048, 131_072)
-GROUPS = ("baseline", "paragraph", "dense", "total-size", "delimiters", "session", "eviction", "save", "reload", "install", "invisibles", "markdown", "editorconfig", "recovery", "keystroke", "protected", "highlight", "reanalysis", "restyle-populated", "minimap-markers")
+GROUPS = ("baseline", "paragraph", "dense", "total-size", "delimiters", "session", "eviction", "save", "reload", "install", "invisibles", "markdown", "editorconfig", "recovery", "keystroke", "protected", "highlight", "reanalysis", "restyle-populated", "minimap-markers", "replace-all")
 VARIANTS = ("plain", "at", "probe-im", "ibus")
 BISECT_STEPS = 4
 
@@ -286,7 +286,25 @@ PHASE_KINDS = {
     "place-short": "navigation",
     "key-short": "interaction",
     "verify": "navigation",
+    # stream-replace-all task 9.1: Replace All's GTK side. Preparing the run
+    # (search, preview) is navigation; the completion terminal and opening
+    # the Skipped Files dialog are settles (B_settle); the dispatches during a
+    # 512 MiB run, its progress heartbeat and typing in another tab, are
+    # interactions (B_interact).
+    "replace-prepare": "navigation",
+    "replace-completion": "settle",
+    "skipped-dialog": "settle",
+    "replace-run": "interaction",
 }
+# stream-replace-all task 9.1: the skip-heavy run lists REPLACE_ALL_SKIPS files
+# whose only match is on a line the preview cannot show (LineTooLong), plus
+# one file it replaces; the long run rewrites one file of
+# REPLACE_ALL_RUN_BYTES, the largest Replace All accepts.
+REPLACE_ALL_SKIPS = 16_384
+REPLACE_ALL_LONG_LINE = 10 * 1024
+REPLACE_ALL_RUN_BYTES = 512 * 1024 * 1024
+REPLACE_ALL_QUERY = "replace-needle"
+REPLACE_ALL_REPLACEMENT = "replace-thread"
 # The C6 cases (design D8): a ~200 kB Markdown document with the side-by-side
 # preview, an EditorConfig tab width other than the setting's on the dense 710
 # document, three 16 kB documents restored from the session, and two 64 kB
@@ -1995,6 +2013,7 @@ def build_cases(tier: str) -> list[Case]:
                 )
             )
     cases.extend(protected_cases())
+    cases.extend(replace_all_cases())
     for length in grid["invisibles"]:
         for mode in ("off", "all"):
             cases.append(paragraph_case(length, "txt", True, False, group="invisibles", invisibles=mode))
@@ -2004,6 +2023,75 @@ def build_cases(tier: str) -> list[Case]:
             for wrap in (True, False):
                 cases.append(keystroke_case(length, flavor, ext, wrap))
     return cases
+
+
+def replace_all_cases() -> list[Case]:
+    """stream-replace-all task 9.1, in both tiers: a run that skips
+    REPLACE_ALL_SKIPS files (its completion terminal, then the Skipped Files
+    dialog) and a run over one 512 MiB file (its progress heartbeat, and
+    typing in another tab while it runs). Their fixtures are written by
+    `replace_all_flow` into a workspace on the disk scope."""
+    return [
+        Case(
+            f"replace-all/skips-{REPLACE_ALL_SKIPS}",
+            "replace-all",
+            None,
+            settings={"word-wrap": True, "show-minimap": False},
+            flow="replace-all",
+            length=REPLACE_ALL_SKIPS,
+            attrs={"scenario": "skips"},
+        ),
+        Case(
+            "replace-all/run-512mib",
+            "replace-all",
+            None,
+            settings={"word-wrap": True, "show-minimap": False},
+            flow="replace-all",
+            length=REPLACE_ALL_RUN_BYTES,
+            attrs={"scenario": "run"},
+        ),
+    ]
+
+
+def seed_replace_all_workspace(data_dir: Path, folder: Path, scenario: str, run_bytes: int = REPLACE_ALL_RUN_BYTES) -> None:
+    """Write the Replace All fixture into `folder` and the `workspaces.json`
+    that restores it: `skips` writes REPLACE_ALL_SKIPS long-line files, any
+    other scenario one `run_bytes` file. Synthetic text only, never a user
+    file."""
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "a-replaced.txt").write_text(f"{REPLACE_ALL_QUERY} short\n", encoding="utf-8")
+    if scenario == "skips":
+        tail = "x" * REPLACE_ALL_LONG_LINE
+        for index in range(REPLACE_ALL_SKIPS):
+            (folder / f"long-{index:05}.txt").write_text(f"{tail}{REPLACE_ALL_QUERY}\n", encoding="utf-8")
+    else:
+        line = ("a" * 127) + "\n"
+        head = f"{REPLACE_ALL_QUERY}\n"
+        with (folder / "b-large.txt").open("w", encoding="utf-8") as out:
+            out.write(head)
+            remaining = run_bytes - len(head)
+            block = line * 8192
+            while remaining >= len(block):
+                out.write(block)
+                remaining -= len(block)
+            out.write(line * (remaining // len(line)))
+            out.write("a" * (remaining % len(line)))
+    data_dir.mkdir(parents=True, exist_ok=True)
+    workspaces = {
+        "kind": "dev.cominotti.lushtext.workspace-state",
+        "version": 1,
+        "data": {
+            "current_scope": {"kind": "all"},
+            "workspaces": [
+                {
+                    "id": "responsiveness-replace-all",
+                    "name": "Replace All",
+                    "folders": [{"id": "responsiveness-replace-all-folder", "path": str(folder)}],
+                }
+            ],
+        },
+    }
+    (data_dir / "workspaces.json").write_text(json.dumps(workspaces, indent=2) + "\n", encoding="utf-8")
 
 
 def protected_cases() -> list[Case]:
@@ -3459,6 +3547,8 @@ class Runner:
                     ok = self.open_phase(phases, relaunch, cap, predicate="session-restore-complete") and self.standard_interactions(phases, tabs=len(files), recover=recover, ctx=ctx)
             elif case.flow == "save":
                 ok = self.save_during_validation_flow(rep_dir, env, files, phases, launches, cap, state_env)
+            elif case.flow == "replace-all":
+                ok = self.replace_all_flow(rep_dir, env, case, phases, launches, cap, state_env)
             elif case.flow == "recovery":
                 ok = self.recovery_flow(rep_dir, env, files, phases, launches, cap, attach, state_env, ctx, recover)
             elif case.flow == "seeded-recovery":
@@ -3663,6 +3753,128 @@ class Runner:
             return False, "save-never-landed"
 
         return self.run_phase(phases, "save", cap, body, extra)
+
+    def wait_content_search(self, predicate: Callable[[dict], bool], deadline: float) -> tuple[bool, str]:
+        """Poll the snapshot's `content_search` until `predicate` holds; a
+        timeout names the last state's counts (no content)."""
+        state: Any = None
+        while time.monotonic() < deadline:
+            state = find_key(self.snapshot(), "content_search")
+            if isinstance(state, dict) and predicate(state):
+                return True, "ok"
+            time.sleep(0.05)
+        keys = ("file_count", "searching", "replace_preview_mode", "replace_preview_pending", "replace_preview_count", "replace_in_flight", "skipped_files_offered")
+        last = {key: state.get(key) for key in keys} if isinstance(state, dict) else state
+        return False, f"content-search-timeout {json.dumps(last, sort_keys=True)}"
+
+    def replace_all_flow(self, rep_dir: Path, env: dict[str, str], case: Case, phases: list[dict], launches: list[Launch], cap: float, state_env: dict[str, str]) -> bool:
+        """`replace-all/*` (stream-replace-all task 9.1).
+
+        The fixture is a workspace on the disk scope (a Replace All fsyncs
+        every file it writes). An unmeasured `replace-prepare` phase shows
+        the panel, searches and builds the preview through the panel's
+        actions. Then:
+
+        - `skips`: `replace-completion` confirms and lasts until the run's
+          terminal has published its skip report (B_settle); `skipped-dialog`
+          opens Show Skipped Files over REPLACE_ALL_SKIPS rows (B_settle).
+        - `run`: `replace-run` confirms and lasts until the 512 MiB run ends;
+          its progress heartbeat runs throughout, and, with RemoteDesktop
+          input, keys are typed into the scratch tab while it runs
+          (B_interact).
+        Only files of the case's own workspace are ever written."""
+        from gi.repository import GLib
+
+        scenario = case.attrs.get("scenario")
+        self.disk_scope.mkdir(parents=True, exist_ok=True)
+        folder = Path(tempfile.mkdtemp(prefix="replace-all-", dir=self.disk_scope))
+        try:
+            seed_replace_all_workspace(Path(state_env["LUSHTEXT_DATA_DIR"]), folder, scenario)
+            scratch = Path(state_env["STATE_ROOT"]) / "scratch" / "typing.txt"
+            scratch.parent.mkdir(parents=True, exist_ok=True)
+            scratch.write_text("typing target\n", encoding="utf-8")
+            launch = self.launch(rep_dir, env, [scratch], "main")
+            launches.append(launch)
+            if not self.open_phase(phases, launch, cap):
+                return False
+            # The short file, plus the large file's first line in the run.
+            expected_previews = 1 if scenario == "skips" else 2
+            expected_files = 1 + (REPLACE_ALL_SKIPS if scenario == "skips" else 1)
+            # A failed body's own status, kept beside the phase's (a timeout
+            # is reported as `exceeded_cap` and would hide it).
+            diag: dict[str, Any] = {}
+
+            def recorded(body: Callable[[list[dict], float], tuple[bool, str]]) -> Callable[[list[dict], float], tuple[bool, str]]:
+                def wrapped(inj, deadline):
+                    ok, status = body(inj, deadline)
+                    if not ok:
+                        diag["failure"] = status
+                    return ok, status
+
+                return wrapped
+
+            def prepare(_inj, deadline):
+                if not self.action("win", "set-search-panel-visible", [GLib.Variant("b", True)], deadline):
+                    return False, "panel-action-failed"
+                if not self.action("win", "set-search-panel-query", [self._string(REPLACE_ALL_QUERY)], deadline):
+                    return False, "query-action-failed"
+                # The query is debounced, so `search-complete` can hold before
+                # the search starts: wait for every file's results instead.
+                ok, status = self.wait_content_search(lambda state: state.get("file_count") == expected_files and not state.get("searching"), deadline)
+                if not ok:
+                    return ok, f"search-{status}"
+                if not self.action("win", "set-search-panel-replace-query", [self._string(REPLACE_ALL_REPLACEMENT)], deadline):
+                    return False, "replace-query-action-failed"
+                if not self.action("win", "preview-search-panel-replacements", None, deadline):
+                    return False, "preview-action-failed"
+                return self.wait_content_search(
+                    lambda state: state.get("replace_preview_mode") and not state.get("replace_preview_pending") and state.get("replace_preview_count") == expected_previews,
+                    deadline,
+                )
+
+            if not self.run_phase(phases, "replace-prepare", self.install_cap_s, recorded(prepare), diag):
+                return False
+
+            def finished(state: dict) -> bool:
+                return not state.get("replace_in_flight") and not state.get("replace_preview_pending") and bool(state.get("skipped_files_offered") or state.get("has_undo_backup"))
+
+            if scenario == "skips":
+
+                def completion(_inj, deadline):
+                    if not self.action("win", "confirm-search-panel-replacements", None, deadline):
+                        return False, "confirm-action-failed"
+                    return self.wait_content_search(lambda state: finished(state) and bool(state.get("skipped_files_offered")), deadline)
+
+                if not self.run_phase(phases, "replace-completion", self.install_cap_s, recorded(completion), diag):
+                    return False
+
+                def dialog(_inj, deadline):
+                    if not self.action("win", "show-search-panel-skipped-files", None, deadline):
+                        return False, "dialog-action-failed"
+                    time.sleep(1.0)
+                    return self.wait_ready("app-startup", deadline)
+
+                return self.run_phase(phases, "skipped-dialog", cap, recorded(dialog), diag)
+
+            def run(inj, deadline):
+                if self.rd.available:
+                    focused, status = self.editor_click(inj, measured=False)
+                    if not focused:
+                        return False, f"focus-{status}"
+                if not self.action("win", "confirm-search-panel-replacements", None, deadline):
+                    return False, "confirm-action-failed"
+                while time.monotonic() < deadline:
+                    state = find_key(self.snapshot(), "content_search")
+                    if isinstance(state, dict) and finished(state):
+                        return True, "ok"
+                    if self.rd.available:
+                        self.rd.tap(ord("t"), inj)
+                    time.sleep(0.2)
+                return False, "run-timeout"
+
+            return self.run_phase(phases, "replace-run", self.install_cap_s, recorded(run), diag)
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
 
     def recovery_flow(self, rep_dir: Path, env: dict[str, str], files: list[Path], phases: list[dict], launches: list[Launch], cap: float, attach: Callable, state_env: dict[str, str], ctx: dict | None, recover: Callable[[], bool]) -> bool:
         """`recovery/small-drafts`: file-backed drafts recovered at startup.
@@ -6296,6 +6508,22 @@ def self_test() -> int:
         if not condition:
             failures.append(label)
 
+    # stream-replace-all task 9.1: both Replace All cases in both tiers,
+    # fixture-free (the flow writes the workspace), with their phase kinds.
+    for tier in ("quick", "full"):
+        replace = {c.id: c for c in build_cases(tier) if c.group == "replace-all"}
+        expect(set(replace) == {f"replace-all/skips-{REPLACE_ALL_SKIPS}", "replace-all/run-512mib"}, f"{tier}: the two replace-all cases")
+        expect(all(c.flow == "replace-all" and c.fixture is None for c in replace.values()), f"{tier}: replace-all cases use their own flow")
+    expect(PHASE_KINDS["replace-completion"] == "settle" and PHASE_KINDS["skipped-dialog"] == "settle", "replace-all terminals are settles")
+    expect(PHASE_KINDS["replace-run"] == "interaction" and PHASE_KINDS["replace-prepare"] == "navigation", "the run is an interaction, preparing it is not measured")
+    with tempfile.TemporaryDirectory() as replace_tmp:
+        replace_root = Path(replace_tmp)
+        seed_replace_all_workspace(replace_root / "data", replace_root / "ws", "run", run_bytes=1024 * 1024 + 77)
+        large = replace_root / "ws/b-large.txt"
+        expect(large.stat().st_size == 1024 * 1024 + 77, "the run fixture is exactly the size asked for")
+        expect(large.open("rb").readline() == f"{REPLACE_ALL_QUERY}\n".encode(), "the run fixture's one match is on its first line")
+        state = json.loads((replace_root / "data/workspaces.json").read_text(encoding="utf-8"))
+        expect(state["data"]["workspaces"][0]["folders"][0]["path"] == str(replace_root / "ws"), "the replace-all workspace restores its folder")
     # `save/during-validation` runs in both tiers, and its run rows reach the
     # report table (spawn-completion-priority D5).
     for tier in ("quick", "full"):

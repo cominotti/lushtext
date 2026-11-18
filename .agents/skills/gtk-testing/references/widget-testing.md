@@ -300,6 +300,20 @@ call `wait_for_painted_frame(&window)` (`tests/widget/common.rs`) before
 asserting where focus went. (The preview alert copy releases focus before it
 hides for this reason.)
 
+**`gtk_widget_activate` does not click an unrealized button.** A
+`GtkButton`'s `activate` plays the press only on a realized widget and emits
+`clicked` when the press animation ends, so on a panel the test never showed
+nothing happens (`stream-replace-all`'s Cancel Replace All test timed out
+this way). Emit `clicked` (`button.emit_clicked()`) for an unrealized button,
+or show the surface first and wait past the press.
+
+**`GtkSearchEntry` delays `search-changed`** (150 ms by default): text set
+programmatically reaches a `search-changed` handler only after that delay.
+A test that sets the text and immediately acts on the search (an in-bar
+Replace All, a match count) reads the old query; either wait past the delay
+or, when production itself prefills and acts at once, apply the query
+synchronously the way `search_bar::execution::apply_query` does.
+
 If the question becomes "what does GTK consider visible, mapped, realized, or accessible here?", stop and read:
 
 - [../../gtk4-libadwaita-internals/references/lifecycle-and-ownership.md](../../gtk4-libadwaita-internals/references/lifecycle-and-ownership.md)

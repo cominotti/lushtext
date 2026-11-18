@@ -86,7 +86,7 @@ path moves that edit to G5.
 
 ## 1. Baseline and toolkit facts (before any fix)
 
-- [ ] 1.1 Re-measure M9 on `origin/main` with PT's method: a release lib
+- [x] 1.1 Re-measure M9 on `origin/main` with PT's method: a release lib
   test, one process per measured call, VmHWM reset first, three
   repetitions, through `heavy.sh` (memory, design R3).
   - Cases: one 10 MiB file, one 16 MiB file, six 10 MiB and six 16 MiB files.
@@ -99,7 +99,7 @@ path moves that edit to G5.
     verdict: it is one of 9.3's queued rounds.
   - Record the figures against design "Measured baseline". A difference of
     more than 5 % from PT's figures is investigated before going on.
-- [ ] 1.2 Measure the plain-disposal reservation that `main`'s undo backup
+- [x] 1.2 Measure the plain-disposal reservation that `main`'s undo backup
   takes on GTK after six 10 MiB files. Use evidence, not a timing. Record it
   as the GTK-side baseline.
 - [x] 1.3 GTK axioms **A127, A128, A129** (a, b, c), each with a probe and a
@@ -367,7 +367,7 @@ path moves that edit to G5.
   flat across file sizes" scenarios (a release test also runs the 400 MiB
   case once). If this fails, the cause is found and fixed. It is never
   waived.
-- [ ] 4.9 One journal per application (design D3a). Failing-first widget
+- [x] 4.9 One journal per application (design D3a). Failing-first widget
   tests with two windows:
   - a run in window B retires window A's Undo, with one status message;
   - an apply in window A while window B's run is in flight is refused, and
@@ -436,7 +436,7 @@ path moves that edit to G5.
   preview-ineligible matches (`LineTooLong`, `InvalidPreview`) in by file.
   Test the 16,384-file failure-heavy case for exact counts and the bounded
   list.
-- [ ] 5.2 `ui/search_panel/policy.rs`: `replace_in_editor_availability` and
+- [x] 5.2 `ui/search_panel/policy.rs`: `replace_in_editor_availability` and
   `rust_replacement_to_gtksourceview`, with unit and property tests and in
   the mutation scope (group G5: `policy.rs` is under the fingerprinted `ui/`
   prefix). Done: both functions and their unit tests. Owed: the property
@@ -447,7 +447,7 @@ path moves that edit to G5.
   `GtkSectionModel` (design D7, the notes browser's pattern), the reason
   headings and the rows (D7). Follow `.agents/rules/ui.md` (grouped-row
   dialog readability, adaptive dialog sizing) and `widget-wiring.md`.
-- [ ] 5.4 Add `win.replace-in-editor(s)` to the action catalog, and
+- [x] 5.4 Add `win.replace-in-editor(s)` to the action catalog, and
   `LushtextSearchBar::prefill_replace`. Widget tests:
   - an unsaved tab is selected with the bar prefilled, and the buffer is
     unchanged;
@@ -458,7 +458,7 @@ path moves that edit to G5.
     edited;
   - no row action for `LargerThanOpenTier`;
   - a Protected View open shows the notice.
-- [ ] 5.5a Failing-first widget test: every file of a run is open with
+- [x] 5.5a Failing-first widget test: every file of a run is open with
   unsaved changes. The early return in `ui/window/search.rs` ("No
   replacements to apply…") now produces the skip report, and Show Skipped
   Files lists each file with `UnsavedChanges` and the editor action.
@@ -470,7 +470,7 @@ path moves that edit to G5.
   focus. The dialog's model is lazy: opening it at 16,384 rows creates only
   the realized rows (evidence through the model's item-call count, as the
   notes browser's A93 probe counts them).
-- [ ] 5.6 Land the visual edits together, as group G5. The first visual
+- [x] 5.6 Land the visual edits together, as group G5. The first visual
   commit (`2adaf083`) carried 5.3, 5.5 and the Cancel Replace All button
   state; what is left (5.2, 5.4, 5.5a, 6.2, 6.3, 8.2 and the fingerprinted
   docs) lands in **one** commit, with its widget tests green. The commit
@@ -491,14 +491,14 @@ path moves that edit to G5.
 - [x] 6.1 Add `ReplaceProgress` atomics, and a progress poll on the
   notification bus with the search-progress delay and heartbeat (D8). The
   progress is announced once.
-- [ ] 6.2 Failing-first: cancelling in the middle of the third of five files
+- [x] 6.2 Failing-first: cancelling in the middle of the third of five files
   leaves the third untouched, restores the first two and clears the journal.
   The test drives `win.cancel-search-panel-replacements` and also the button,
   which becomes "Cancel Replace All". Done: the held third file and the
   action. Owed: the button is **clicked** (`gtk_widget_activate` on it, or
   its `clicked` emission through `ui/signal_connect.rs`'s helpers), not only
   read by label, and the same three assertions hold.
-- [ ] 6.3 Failing-first: `close_request` during a run opens "Replace All Is
+- [x] 6.3 Failing-first: `close_request` during a run opens "Replace All Is
   Still Running" (D8). The dialog exists
   (`ui/window/search_progress_execution.rs`, decision 10); its tests do not.
   Test three paths:
@@ -564,7 +564,7 @@ path moves that edit to G5.
   through rollback. Update `docs/automation.md` and
   `docs/automation-reference.md`, then run `make check-automation-docs` and
   `make automation-client-self-test` if the client changed.
-- [ ] 8.2 (group G5) `make accessibility-smoke` gets a skipped-files case,
+- [x] 8.2 (group G5) `make accessibility-smoke` gets a skipped-files case,
   and `win.show-search-panel-skipped-files` then lists `AccessibilitySmoke`
   in its catalog lanes (decision 11). Update `docs/accessibility.md`, the
   rows in `docs/accessibility-matrix.md` and the Orca checklist row for the
@@ -586,7 +586,7 @@ path moves that edit to G5.
   - re-derived measured cells.
 
   The facade stays at most 370 lines. Run `make check-workflow-boundaries`.
-- [ ] 8.5 Update `README.md` (Replace All up to 512 MiB, Skipped Files,
+- [x] 8.5 Update `README.md` (Replace All up to 512 MiB, Skipped Files,
   Cancel), `AGENTS.md` (the module layout, including `replace/stream/utf8.rs`,
   the "Multi-file Replace All" and "Replace/Undo bounded evidence"
   decisions), `ui/search_panel/AGENTS.md`, `docs/end-user-coverage.md` (the
@@ -594,7 +594,7 @@ path moves that edit to G5.
   pitfall appears. `ui/search_panel/AGENTS.md` and
   `docs/end-user-coverage.md` are fingerprinted and land in G5; the rest may
   land earlier.
-- [ ] 8.6 Programme record (`docs/next/long-line-documents.md`):
+- [x] 8.6 Programme record (`docs/next/long-line-documents.md`):
   - item 2's status;
   - the prepared AppStream release notes ("Replace All rewrites files up to
     512 MiB … lists skipped files and offers to finish them in the editor");

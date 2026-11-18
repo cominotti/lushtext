@@ -163,6 +163,12 @@ impl LushtextSearchPanel {
             .preview_cancel_token
             .replace(Some(cancel.clone()));
         let ticket = request.ticket.clone();
+        // The request a Replace All of this preview applies (design D7): the
+        // replacement entry is a single-line GTK field, so the copy is small.
+        let intent = super::policy::ReplaceRunIntent {
+            query: request.ticket.query_spec().clone(),
+            replacement: request.replacement_text.clone(),
+        };
         spawn_blocking_then(
             self.clone(),
             move || {
@@ -193,6 +199,7 @@ impl LushtextSearchPanel {
                     imp.preview.checked_match_ids.replace(checked);
                     let total = outcome.replacements.len();
                     imp.preview.preview_outcome.replace(Some(outcome));
+                    imp.preview.accepted_preview_intent.replace(Some(intent));
                     imp.preview.preview_mode.set(true);
 
                     panel.refresh_preview_summary();
@@ -383,8 +390,12 @@ impl LushtextSearchPanel {
             progress: Arc::new(ReplaceProgress::default()),
         };
         imp.preview.replace_run.replace(Some(control.clone()));
+        imp.preview
+            .run_intent
+            .replace(imp.preview.accepted_preview_intent.borrow().clone());
         imp.skipped_files_button.set_visible(false);
         imp.preview.last_skip_report.replace(None);
+        imp.preview.last_run_intent.replace(None);
         imp.replace_all_button.set_label("Cancel Replace All");
         self.update_replace_button_sensitivity();
         control
@@ -441,7 +452,17 @@ impl LushtextSearchPanel {
         imp.preview.replace_run.replace(None);
         imp.replace_all_button.set_label("Replace All");
         let report = report.filter(|report| !report.is_empty()).map(Arc::new);
+        // A run that never began (every file unsaved, 5.5a) applies the
+        // accepted preview's request in this same turn.
+        let intent = imp
+            .preview
+            .run_intent
+            .take()
+            .or_else(|| imp.preview.accepted_preview_intent.borrow().clone());
         imp.skipped_files_button.set_visible(report.is_some());
+        imp.preview
+            .last_run_intent
+            .replace(report.as_ref().and(intent).map(Arc::new));
         imp.preview.last_skip_report.replace(report);
         self.update_replace_button_sensitivity();
     }
@@ -450,6 +471,28 @@ impl LushtextSearchPanel {
     #[must_use]
     pub fn last_skip_report(&self) -> Option<Arc<ReplaceSkipReport>> {
         self.imp().preview.last_skip_report.borrow().clone()
+    }
+
+    /// What Open and Replace in Editor needs for `path` (design D7): its row
+    /// in the last run's skip report and that run's request, or `None` when
+    /// the report does not list it.
+    #[must_use]
+    pub fn replace_in_editor_target(
+        &self,
+        path: &std::path::Path,
+    ) -> Option<(
+        crate::model::content_search::ReplaceSkippedFile,
+        Arc<super::policy::ReplaceRunIntent>,
+    )> {
+        let preview = &self.imp().preview;
+        let intent = preview.last_run_intent.borrow().clone()?;
+        let report = preview.last_skip_report.borrow().clone()?;
+        let file = report
+            .files()
+            .iter()
+            .find(|file| file.path == path)?
+            .clone();
+        Some((file, intent))
     }
 
     /// Exit preview mode: clear preview state and restore normal result display.

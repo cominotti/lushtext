@@ -98,9 +98,16 @@ Expected screen-reader behavior includes:
   skipped files ends with `· N skipped` and shows `Show Skipped Files`, whose
   dialog (`Skipped Files`) lists each file by name and folder/line under its
   reason heading in a list named `Skipped files`; `Escape` returns focus to
-  the button. Closing the window during a run asks first (`Replace All Is
+  the button. Activating a row is Open and Replace in Editor
+  (`win.replace-in-editor`): the file opens (or its tab is selected) at its
+  first skipped line with the in-tab replace bar open and prefilled from the
+  run, and focus lands in the bar's search entry; a file too large to open, or
+  unreadable, has no row action and its description says why. A file that
+  opens in Protected View gets the find bar and the Protected View notice.
+  Closing the window or quitting during a run asks first (`Replace All Is
   Still Running`), each option explained by a grouped row. No file content is
-  exposed.
+  exposed. The accessibility smoke case `workspace-search-replace-skipped`
+  proves the button and the dialog's list and summary through AT-SPI.
 - The hidden-files view mode is one check item in the main menu, one switch in
   `Preferences > Workspace`, and one per-search `Hidden files` toggle in the
   workspace search panel; all report pressed/checked state. The excluded-names

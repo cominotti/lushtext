@@ -283,25 +283,10 @@ impl LushtextSearchBar {
             }
         });
         let bar_weak = self.obj().downgrade();
-        self.search_entry.connect_search_changed(move |entry| {
-            let Some(bar) = bar_weak.upgrade() else {
-                return;
-            };
-            let imp = bar.imp();
-            if bar.dispatch_external_find(super::ExternalFindRequest::QueryChanged) {
-                bar.emit_search_state_changed();
-                return;
+        self.search_entry.connect_search_changed(move |_| {
+            if let Some(bar) = bar_weak.upgrade() {
+                super::execution::apply_query(&bar);
             }
-            if let Some(ref settings) = *imp.search_settings.borrow() {
-                let text = entry.text();
-                if text.is_empty() {
-                    settings.set_search_text(None);
-                } else {
-                    settings.set_search_text(Some(text.as_str()));
-                }
-            }
-            bar.update_match_info();
-            bar.emit_search_state_changed();
         });
 
         // Enter/Shift+Enter on the search entry for match navigation.

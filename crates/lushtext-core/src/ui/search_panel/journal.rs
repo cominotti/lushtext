@@ -104,6 +104,28 @@ pub(crate) fn guard_undo_backup_on_worker(
     crate::ui::plain_disposal::try_own_for_gtk(weight, backup)
 }
 
+thread_local! {
+    /// Every search panel of the application, weakly: all windows run on the
+    /// GTK thread, and the undo journal is one per application (design D3a).
+    static APPLICATION_PANELS: std::cell::RefCell<Vec<glib::WeakRef<LushtextSearchPanel>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The application's other live search panels.
+fn other_application_panels(
+    this: &LushtextSearchPanel,
+) -> impl Iterator<Item = LushtextSearchPanel> {
+    let panels: Vec<LushtextSearchPanel> = APPLICATION_PANELS.with(|panels| {
+        panels
+            .borrow()
+            .iter()
+            .filter_map(glib::WeakRef::upgrade)
+            .filter(|panel| panel != this)
+            .collect()
+    });
+    panels.into_iter()
+}
+
 /// Release this panel's reference to a superseded undo journal.
 ///
 /// The destruction itself is **not** performed here. Releasing the last
@@ -235,11 +257,23 @@ impl LushtextSearchPanel {
     }
 
     /// Claim the sole UI Replace All apply/undo transaction and its journal generation.
+    ///
+    /// The journal is one per application (design D3a): while another
+    /// window's panel holds its transaction (a run, its rollback or an Undo),
+    /// this one is refused, with a status message, and nothing waits.
     pub(crate) fn begin_replace_transaction(&self) -> Option<ReplaceJournalFreshness> {
         let imp = self.imp();
-        if imp.preview.replace_transaction_pending.replace(true) {
+        if imp.preview.replace_transaction_pending.get() {
             return None;
         }
+        if other_application_panels(self).any(|panel| panel.replace_transaction_claimed()) {
+            self.publish_journal_message(
+                "Another window is running Replace All or its Undo; try again when it finishes",
+                crate::services::notifications::NotificationSeverity::Warning,
+            );
+            return None;
+        }
+        imp.preview.replace_transaction_pending.set(true);
         let generation = self.reserve_undo_backup_generation();
         imp.preview
             .replace_transaction_generation
@@ -313,10 +347,39 @@ impl LushtextSearchPanel {
     }
 
     /// Retire the prior recovery projection once a newer Replace All is committed to start.
+    ///
+    /// Supersession is application-wide (design D3a): the journal on disk
+    /// keeps only the latest run, so every other window's panel retires its
+    /// Undo too and says so once in its status bar.
     pub(crate) fn supersede_prior_undo_for_replace(&self) {
         let retired = self.imp().preview.undo_backup.replace(None);
         self.hide_undo_button();
         release_superseded_undo_journal(retired);
+        for panel in other_application_panels(self) {
+            let retired = panel.imp().preview.undo_backup.replace(None);
+            if retired.is_none() {
+                continue;
+            }
+            // Advance the generation, so a disk job of the retired journal
+            // in flight returns instead of touching the new run's journal.
+            panel.reserve_undo_backup_generation();
+            panel.hide_undo_button();
+            release_superseded_undo_journal(retired);
+            panel.publish_journal_message(
+                "Undo for the earlier Replace All is no longer available",
+                crate::services::notifications::NotificationSeverity::Info,
+            );
+        }
+    }
+
+    /// Join the application's set of search panels (design D3a); called once
+    /// from `constructed`.
+    pub(super) fn register_application_panel(&self) {
+        APPLICATION_PANELS.with(|panels| {
+            let mut panels = panels.borrow_mut();
+            panels.retain(|panel| panel.upgrade().is_some());
+            panels.push(self.downgrade());
+        });
     }
 
     /// Record the counts the most recent durable apply reported.
@@ -577,11 +640,20 @@ impl LushtextSearchPanel {
                 let _retired = retired;
                 #[cfg(feature = "test-utils")]
                 super::test_policy::delay_undo_backup_disk();
-                let _disk_guard = search_backup::acquire_journal_guard()?;
-                if !super::policy::journal_generation_is_current(
-                    generation_counter.load(Ordering::Acquire),
-                    generation,
-                ) {
+                // A superseded job returns before it waits, and while it
+                // waits, instead of holding a worker slot (design D3a).
+                let is_current = || {
+                    super::policy::journal_generation_is_current(
+                        generation_counter.load(Ordering::Acquire),
+                        generation,
+                    )
+                };
+                let Some(_disk_guard) =
+                    search_backup::acquire_journal_guard_while_current(is_current)?
+                else {
+                    return Ok(());
+                };
+                if !is_current() {
                     return Ok(());
                 }
                 // Shrink, never rebuild (design D3a): the only production
@@ -632,11 +704,20 @@ impl LushtextSearchPanel {
                 let _retired = retired;
                 #[cfg(feature = "test-utils")]
                 super::test_policy::delay_undo_backup_disk();
-                let _disk_guard = search_backup::acquire_journal_guard()?;
-                if !super::policy::journal_generation_is_current(
-                    generation_counter.load(Ordering::Acquire),
-                    generation,
-                ) {
+                // A superseded job returns before it waits, and while it
+                // waits, instead of holding a worker slot (design D3a).
+                let is_current = || {
+                    super::policy::journal_generation_is_current(
+                        generation_counter.load(Ordering::Acquire),
+                        generation,
+                    )
+                };
+                let Some(_disk_guard) =
+                    search_backup::acquire_journal_guard_while_current(is_current)?
+                else {
+                    return Ok(());
+                };
+                if !is_current() {
                     return Ok(());
                 }
                 search_backup::delete(&data_dir)

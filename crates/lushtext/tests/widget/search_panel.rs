@@ -21,6 +21,7 @@ use lushtext_core::services::notifications::{
 };
 use lushtext_core::services::{json_store, search_backup};
 use lushtext_core::ui::accessibility::{self, test_audit::AccessibleAudit};
+use lushtext_core::ui::editor_page::LushtextEditorPage;
 use lushtext_core::ui::plain_disposal::hold_disposal_capacity_for_test;
 use lushtext_core::ui::search_panel::item::SearchResultItem;
 use lushtext_core::ui::search_panel::{
@@ -4329,10 +4330,7 @@ fn test_replace_all_with_every_file_unsaved_reports_each_file() {
 
     let panel = window.imp().search_panel.get();
     panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
-    panel.start_search(&search_spec("needle"));
-    wait_until(Duration::from_secs(15), || {
-        !panel.imp().runtime.searching.get() && panel.imp().runtime.total_matches.get() == 1
-    });
+    search_through_fields(&panel, "needle", false, 1);
     panel.enter_preview_mode("thread");
     wait_until(Duration::from_secs(15), || {
         let evidence = panel.evidence();
@@ -4349,6 +4347,35 @@ fn test_replace_all_with_every_file_unsaved_reports_each_file() {
     assert_eq!(skipped_for(&panel, ReplaceSkipReason::UnsavedChanges), 1);
     assert!(!evidence.has_undo_backup);
     assert!(!evidence.replace_in_flight);
+    let report = panel.last_skip_report().expect("the run's skip report");
+    assert_eq!(report.files().len(), 1);
+    assert_eq!(report.files()[0].path, file);
+    assert_eq!(report.files()[0].reason, ReplaceSkipReason::UnsavedChanges);
+
+    // 5.4: Open and Replace in Editor selects the unsaved tab and prefills
+    // the bar from the run's request, though the panel's fields were edited
+    // since, and the buffer is left as it was.
+    let other = dir.path().join("other.txt");
+    fixture::write_text(&other, "plain\n");
+    window.open_document(&other);
+    wait_until(Duration::from_secs(10), || {
+        crate::common::active_editor(&window).file_path().as_deref() == Some(other.as_path())
+    });
+    panel.set_query("edited");
+    panel.imp().replace_entry.set_text("edited too");
+    activate_action(&window, "show-search-panel-skipped-files");
+    skipped_files_list(&window).emit_by_name::<()>("activate", &[&0u32]);
+    wait_until(Duration::from_secs(10), || {
+        let selected = crate::common::active_editor(&window);
+        selected.file_path().as_deref() == Some(file.as_path())
+            && selected.search_bar().is_replace_revealed()
+    });
+    let bar = editor.search_bar();
+    assert_eq!(bar.search_entry().text().as_str(), "needle");
+    assert_eq!(bar.replace_entry().text().as_str(), "thread");
+    assert_eq!(crate::common::editor_text(&editor), "needle\nedit\n");
+    assert!(editor.is_modified());
+    fixture::assert_text(&file, "needle\n");
 }
 
 /// stream-replace-all 5.5b: a file with a match on a short line and one on a
@@ -4404,6 +4431,28 @@ fn test_replace_all_reports_a_partly_replaced_file() {
 /// first two, never writes the third, and leaves no journal and no Undo.
 #[test]
 fn test_cancel_replace_all_mid_run_restores_every_file() {
+    cancel_mid_run_restores_every_file(|window, _| {
+        activate_action(window, "cancel-search-panel-replacements");
+    });
+}
+
+/// stream-replace-all 6.2: the same, through the button: Replace All becomes
+/// Cancel Replace All, and clicking it cancels the run.
+#[test]
+fn test_clicking_cancel_replace_all_mid_run_restores_every_file() {
+    cancel_mid_run_restores_every_file(|_, panel| {
+        let button = panel.imp().replace_all_button.get();
+        assert!(button.is_sensitive());
+        // The panel is not realized here, so `gtk_widget_activate` would not
+        // play the press; emit the `clicked` a press ends with.
+        button.emit_clicked();
+        assert_eq!(button.label().as_deref(), Some("Cancelling…"));
+    });
+}
+
+/// Run five files, hold the third, cancel through `cancel`, and assert that
+/// every file is original, the journal is empty and the button is restored.
+fn cancel_mid_run_restores_every_file(cancel: impl FnOnce(&LushtextWindow, &LushtextSearchPanel)) {
     ensure_gtk_init();
     let _data = isolated_data_dir();
     let data_dir = json_store::data_dir();
@@ -4448,7 +4497,7 @@ fn test_cancel_replace_all_mid_run_restores_every_file() {
         Some("Cancel Replace All")
     );
     assert!(panel.imp().replace_all_button.is_sensitive());
-    activate_action(&window, "cancel-search-panel-replacements");
+    cancel(&window, &panel);
     assert!(panel.evidence().replace_cancel_requested);
 
     wait_until(Duration::from_secs(30), || {
@@ -4510,6 +4559,11 @@ fn replace_all_held_at_second_file(
 /// Close the window during the run and return the dialog it asks with.
 fn close_during_run(window: &LushtextWindow) -> libadwaita::AlertDialog {
     window.close();
+    still_running_dialog(window)
+}
+
+/// Wait for "Replace All Is Still Running" and return it.
+fn still_running_dialog(window: &LushtextWindow) -> libadwaita::AlertDialog {
     wait_until(Duration::from_secs(5), || {
         window
             .visible_dialog()
@@ -4666,4 +4720,512 @@ fn test_undo_owner_on_gtk_holds_descriptors_not_file_bytes() {
         evidence.undo_backup_retained_bytes,
     );
     let _ = search_backup::delete(&data_dir);
+}
+
+/// A panel restored visible from GSettings takes its automation actions with
+/// it: `set-search-panel-query` through `undo-search-panel-replacements`
+/// require a visible panel and must be enabled when it is (found by the
+/// stream-replace-all crash smoke, whose relaunch's Undo did nothing).
+#[test]
+fn test_a_panel_restored_visible_enables_its_actions() {
+    use lushtext_core::config::keys;
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let settings = lushtext_core::ui::settings_writes::shared();
+    settings
+        .set_boolean(keys::SEARCH_PANEL_VISIBLE, true)
+        .expect("set search-panel-visible");
+    let window = test_window();
+    present_window(&window);
+    wait_until(Duration::from_secs(5), || {
+        window.imp().search_panel_revealer.reveals_child()
+    });
+    let enabled = |name: &str| gtk4::gio::prelude::ActionGroupExt::is_action_enabled(&window, name);
+    for name in [
+        "set-search-panel-query",
+        "set-search-panel-replace-query",
+        "preview-search-panel-replacements",
+        "confirm-search-panel-replacements",
+        "undo-search-panel-replacements",
+    ] {
+        assert!(
+            enabled(name),
+            "{name} is disabled on a restored visible panel"
+        );
+    }
+    settings
+        .set_boolean(keys::SEARCH_PANEL_VISIBLE, false)
+        .expect("reset search-panel-visible");
+    window.close();
+}
+
+// ---------------------------------------------------------------------------
+// stream-replace-all: Open and Replace in Editor (5.4), one journal per
+// application (4.9) and quitting during a run (6.3)
+// ---------------------------------------------------------------------------
+
+/// The window's status-bar text.
+fn status_text(window: &LushtextWindow) -> String {
+    window
+        .imp()
+        .status_bar
+        .imp()
+        .message_label
+        .label()
+        .to_string()
+}
+
+/// Search through the panel's own fields, as a user types the query, so the
+/// preview and its Replace All carry the query a Skipped Files row prefills.
+fn search_through_fields(panel: &LushtextSearchPanel, query: &str, regex: bool, matches: u32) {
+    panel.imp().regex_toggle.set_active(regex);
+    panel.set_query(query);
+    wait_until(Duration::from_secs(15), || {
+        !panel.imp().runtime.searching.get() && panel.imp().runtime.total_matches.get() == matches
+    });
+}
+
+/// Search, preview and confirm through the panel's fields, running
+/// `before_confirm` between the preview and the confirmation, and wait for
+/// the skip report.
+fn replace_all_through_fields(
+    window: &LushtextWindow,
+    dir: &std::path::Path,
+    query: &str,
+    regex: bool,
+    replacement: &str,
+    before_confirm: impl FnOnce(),
+) -> LushtextSearchPanel {
+    let panel = window.imp().search_panel.get();
+    panel.set_workspace_folders(vec![dir.to_path_buf()]);
+    search_through_fields(&panel, query, regex, 1);
+    panel.enter_preview_mode(replacement);
+    wait_until(Duration::from_secs(15), || {
+        let evidence = panel.evidence();
+        evidence.replace_preview_count == 1 && !evidence.replace_preview_pending
+    });
+    before_confirm();
+    panel.activate_confirm_replacements();
+    wait_until(Duration::from_secs(20), || {
+        panel.evidence().skipped_files_offered && !panel.evidence().replace_in_flight
+    });
+    panel
+}
+
+/// Run `win.replace-in-editor` for `path`.
+fn replace_in_editor(window: &LushtextWindow, path: &std::path::Path) {
+    gtk4::gio::prelude::ActionGroupExt::activate_action(
+        window,
+        "replace-in-editor",
+        Some(&path.to_str().expect("UTF-8 fixture path").to_variant()),
+    );
+    flush_events();
+}
+
+/// The selected tab's editor once it shows `path` loaded with its replace
+/// bar open.
+fn wait_for_prefilled_editor(
+    window: &LushtextWindow,
+    path: &std::path::Path,
+    replace_row: bool,
+) -> lushtext_core::ui::editor_page::LushtextEditorPage {
+    wait_until(Duration::from_secs(15), || {
+        let Some(editor) = window
+            .imp()
+            .tab_view
+            .selected_page()
+            .and_then(|page| page.child().downcast::<LushtextEditorPage>().ok())
+        else {
+            return false;
+        };
+        editor.file_path().as_deref() == Some(path)
+            && editor.load_state() == lushtext_core::ui::editor_page::EditorLoadState::Loaded
+            && editor.is_search_visible()
+            && editor.search_bar().is_replace_revealed() == replace_row
+            && !editor.search_bar().search_entry().text().is_empty()
+    });
+    crate::common::active_editor(window)
+}
+
+/// Open `path` and make it unsaved, so a Replace All skips it.
+fn open_unsaved(window: &LushtextWindow, path: &std::path::Path) -> LushtextEditorPage {
+    window.open_document(path);
+    wait_until(Duration::from_secs(10), || {
+        let editor = crate::common::active_editor(window);
+        editor.file_path().as_deref() == Some(path)
+            && editor.load_state() == lushtext_core::ui::editor_page::EditorLoadState::Loaded
+            && editor.accepts_user_edits()
+    });
+    let editor = crate::common::active_editor(window);
+    let buffer = editor.buffer();
+    buffer.insert(&mut buffer.end_iter(), "edit\n");
+    wait_until(Duration::from_secs(5), || editor.is_modified());
+    editor
+}
+
+/// stream-replace-all 5.4: a closed file opens at its first skipped line,
+/// with the bar prefilled, and nothing is replaced in it.
+#[test]
+fn test_replace_in_editor_opens_a_closed_file_at_its_first_skipped_line() {
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let window = test_window();
+    present_window(&window);
+
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let file = dir.path().join("mixed.txt");
+    let long_line = format!("{}needle\n", "x".repeat(10 * 1024));
+    fixture::write_text(&file, &format!("needle short\n{long_line}"));
+    let panel = window.imp().search_panel.get();
+    panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
+    search_through_fields(&panel, "needle", false, 2);
+    panel.enter_preview_mode("thread");
+    wait_until(Duration::from_secs(15), || {
+        let evidence = panel.evidence();
+        evidence.replace_preview_count == 1 && !evidence.replace_preview_pending
+    });
+    panel.activate_confirm_replacements();
+    wait_until(Duration::from_secs(20), || {
+        panel.evidence().skipped_files_offered && !panel.evidence().replace_in_flight
+    });
+    let replaced = format!("thread short\n{long_line}");
+    fixture::assert_text(&file, &replaced);
+    assert_eq!(window.imp().tab_view.n_pages(), 0, "the file is closed");
+
+    replace_in_editor(&window, &file);
+    let editor = wait_for_prefilled_editor(&window, &file, true);
+    let bar = editor.search_bar();
+    assert_eq!(bar.search_entry().text().as_str(), "needle");
+    assert_eq!(bar.replace_entry().text().as_str(), "thread");
+    let buffer = editor.buffer();
+    let caret = buffer.iter_at_mark(&buffer.get_insert());
+    assert_eq!(caret.line(), 1, "the caret is on the first skipped line");
+    assert_eq!(crate::common::editor_text(&editor), replaced);
+    assert!(!editor.is_modified(), "prefilling replaces nothing");
+}
+
+/// stream-replace-all 5.4: in regex mode the run's template is translated
+/// for GtkSourceView, `${1}0` staying group 1 then `0`, and applying it in
+/// the bar gives what Workspace Replace All would have written (A127).
+#[test]
+fn test_replace_in_editor_translates_a_regex_replacement() {
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let window = test_window();
+    present_window(&window);
+    crate::common::wait_for_startup_data_flow(&window);
+
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let file = dir.path().join("pair.txt");
+    fixture::write_text(&file, "foo-bar\n");
+    let editor = open_unsaved(&window, &file);
+    let _panel =
+        replace_all_through_fields(&window, dir.path(), r"(\w+)-(\w+)", true, "$2-${1}0", || {});
+
+    replace_in_editor(&window, &file);
+    let shown = wait_for_prefilled_editor(&window, &file, true);
+    assert_eq!(shown, editor);
+    let bar = editor.search_bar();
+    assert_eq!(bar.search_entry().text().as_str(), r"(\w+)-(\w+)");
+    assert_eq!(bar.replace_entry().text().as_str(), r"\g<2>-\g<1>0");
+    let settings = bar
+        .search_context()
+        .expect("the bar's search session")
+        .settings();
+    assert!(sourceview5::prelude::SearchSettingsExt::is_regex_enabled(
+        &settings
+    ));
+    assert_eq!(crate::common::editor_text(&editor), "foo-bar\nedit\n");
+
+    bar.replace_all();
+    flush_events();
+    assert_eq!(crate::common::editor_text(&editor), "bar-foo0\nedit\n");
+    fixture::assert_text(&file, "foo-bar\n");
+}
+
+/// stream-replace-all 5.4: a template that names a group the pattern lacks
+/// is not carried over; the field stays empty and says why.
+#[test]
+fn test_replace_in_editor_leaves_a_missing_group_replacement_empty() {
+    use lushtext_core::ui::search_bar::policy::MISSING_GROUP_PLACEHOLDER;
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let window = test_window();
+    present_window(&window);
+    crate::common::wait_for_startup_data_flow(&window);
+
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let file = dir.path().join("pair.txt");
+    fixture::write_text(&file, "foo-bar\n");
+    let editor = open_unsaved(&window, &file);
+    let _panel = replace_all_through_fields(&window, dir.path(), r"(\w+)-(\w+)", true, "$3", || {});
+
+    replace_in_editor(&window, &file);
+    wait_for_prefilled_editor(&window, &file, true);
+    let bar = editor.search_bar();
+    assert_eq!(bar.search_entry().text().as_str(), r"(\w+)-(\w+)");
+    assert!(bar.replace_entry().text().is_empty());
+    assert_eq!(
+        bar.replace_entry().placeholder_text().as_deref(),
+        Some(MISSING_GROUP_PLACEHOLDER)
+    );
+}
+
+/// stream-replace-all 5.4: a file too large to open has no row action, and
+/// the action refuses it and any path the last run did not skip.
+#[test]
+fn test_replace_in_editor_has_no_action_for_a_file_too_large_to_open() {
+    use lushtext_core::model::content_search::ReplaceSkipReason;
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let window = test_window();
+    present_window(&window);
+
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let big = dir.path().join("big.txt");
+    fixture::write_text(&big, "needle\n");
+    let panel = replace_all_through_fields(&window, dir.path(), "needle", false, "thread", || {
+        fixture::create_sparse_file(
+            &big,
+            lushtext_core::model::document_scale::REFUSE_TO_OPEN + 1,
+        );
+    });
+    assert_eq!(
+        skipped_for(&panel, ReplaceSkipReason::LargerThanOpenTier),
+        1
+    );
+
+    activate_action(&window, "show-search-panel-skipped-files");
+    skipped_files_list(&window).emit_by_name::<()>("activate", &[&0u32]);
+    flush_after_delay(Duration::from_millis(200));
+    assert!(window.visible_dialog().is_some(), "the row has no action");
+    assert_eq!(window.imp().tab_view.n_pages(), 0);
+    window.visible_dialog().expect("dialog").close();
+    flush_events();
+
+    replace_in_editor(&window, &big);
+    flush_after_delay(Duration::from_millis(200));
+    assert_eq!(window.imp().tab_view.n_pages(), 0);
+    assert_eq!(
+        status_text(&window),
+        "This skipped file cannot be opened in the editor"
+    );
+    replace_in_editor(&window, &dir.path().join("never-skipped.txt"));
+    assert_eq!(
+        status_text(&window),
+        "Replace in Editor needs a file the last Replace All skipped"
+    );
+    assert_eq!(window.imp().tab_view.n_pages(), 0);
+}
+
+/// stream-replace-all 5.4: a file that opens in Protected View keeps its
+/// replace row hidden and shows the Protected View notice; find still gets
+/// the query.
+#[test]
+fn test_replace_in_editor_on_a_protected_document_shows_the_notice() {
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let window = test_window();
+    present_window(&window);
+
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let file = dir.path().join("giant.txt");
+    let giant = format!("needle{}\n", "x".repeat(60_000));
+    fixture::write_text(&file, &format!("needle short\n{giant}"));
+    let panel = window.imp().search_panel.get();
+    panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
+    search_through_fields(&panel, "needle", false, 2);
+    panel.enter_preview_mode("thread");
+    wait_until(Duration::from_secs(15), || {
+        let evidence = panel.evidence();
+        evidence.replace_preview_count == 1 && !evidence.replace_preview_pending
+    });
+    panel.activate_confirm_replacements();
+    wait_until(Duration::from_secs(20), || {
+        panel.evidence().skipped_files_offered && !panel.evidence().replace_in_flight
+    });
+
+    replace_in_editor(&window, &file);
+    let editor = wait_for_prefilled_editor(&window, &file, false);
+    assert!(editor.is_protected_view());
+    assert_eq!(editor.search_bar().search_entry().text().as_str(), "needle");
+    assert_eq!(
+        status_text(&window),
+        "Replace is not available in this view-only document with very long lines."
+    );
+}
+
+/// Another window of `window`'s application, once its startup has settled.
+fn second_window(window: &LushtextWindow) -> LushtextWindow {
+    let app = window
+        .application()
+        .and_downcast::<libadwaita::Application>()
+        .expect("the test window's application");
+    let second = LushtextWindow::new(&app);
+    present_window(&second);
+    crate::common::wait_for_startup_data_flow(&second);
+    second
+}
+
+/// The refusal a second window's apply or Undo gets during a run.
+const OTHER_WINDOW_BUSY: &str =
+    "Another window is running Replace All or its Undo; try again when it finishes";
+
+/// stream-replace-all 4.9: a run in window B retires window A's Undo, and A
+/// says so once.
+#[test]
+fn test_a_run_in_another_window_retires_this_windows_undo() {
+    const RETIRED: &str = "Undo for the earlier Replace All is no longer available";
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let window_a = test_window();
+    present_window(&window_a);
+    crate::common::wait_for_startup_data_flow(&window_a);
+    let window_b = second_window(&window_a);
+
+    let dir_a = tempfile::tempdir().expect("expected operation to succeed");
+    fixture::write_text(&dir_a.path().join("a.txt"), "needle\n");
+    let panel_a = replace_all_over(&window_a, dir_a.path(), 1, "thread");
+    wait_until(Duration::from_secs(20), || {
+        panel_a.evidence().has_undo_backup
+    });
+
+    let dir_b = tempfile::tempdir().expect("expected operation to succeed");
+    fixture::write_text(&dir_b.path().join("b.txt"), "needle\n");
+    let panel_b = replace_all_over(&window_b, dir_b.path(), 1, "thread");
+    wait_until(Duration::from_secs(20), || {
+        panel_b.evidence().has_undo_backup
+    });
+
+    assert!(!panel_a.evidence().has_undo_backup);
+    assert!(!panel_a.imp().undo_button.property::<bool>("visible"));
+    assert_eq!(status_text(&window_a), RETIRED);
+    assert_ne!(status_text(&window_b), RETIRED);
+}
+
+/// stream-replace-all 4.9: an apply in window A while window B's run is in
+/// flight is refused, touches no file, and keeps A's preview.
+#[test]
+fn test_an_apply_while_another_window_runs_is_refused() {
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let window_a = test_window();
+    present_window(&window_a);
+    crate::common::wait_for_startup_data_flow(&window_a);
+    let window_b = second_window(&window_a);
+
+    let dir_a = tempfile::tempdir().expect("expected operation to succeed");
+    let file_a = dir_a.path().join("a.txt");
+    fixture::write_text(&file_a, "needle\n");
+    let panel_a = window_a.imp().search_panel.get();
+    panel_a.set_workspace_folders(vec![dir_a.path().to_path_buf()]);
+    panel_a.start_search(&search_spec("needle"));
+    wait_until(Duration::from_secs(15), || {
+        !panel_a.imp().runtime.searching.get() && panel_a.imp().runtime.total_matches.get() == 1
+    });
+    panel_a.enter_preview_mode("thread");
+    wait_until(Duration::from_secs(15), || {
+        let evidence = panel_a.evidence();
+        evidence.replace_preview_count == 1 && !evidence.replace_preview_pending
+    });
+
+    let dir_b = tempfile::tempdir().expect("expected operation to succeed");
+    let (panel_b, files_b) = replace_all_held_at_second_file(&window_b, dir_b.path());
+    panel_a.activate_confirm_replacements();
+    flush_after_delay(Duration::from_millis(300));
+    let evidence = panel_a.evidence();
+    assert!(!evidence.replace_transaction_pending && !evidence.replace_in_flight);
+    assert_eq!(status_text(&window_a), OTHER_WINDOW_BUSY);
+    assert!(
+        panel_a.imp().preview.preview_mode.get(),
+        "A can retry its preview"
+    );
+    fixture::assert_text(&file_a, "needle\n");
+
+    wait_until(Duration::from_secs(30), || {
+        !panel_b.evidence().replace_in_flight && !panel_b.evidence().replace_transaction_pending
+    });
+    for path in &files_b {
+        fixture::assert_text(path, "thread\n");
+    }
+    fixture::assert_text(&file_a, "needle\n");
+}
+
+/// stream-replace-all 4.9: an Undo in window A while window B's run is in
+/// flight is refused. B's run already retired A's Undo, so the test puts
+/// the retired journal back to reach the application-wide gate itself.
+#[test]
+fn test_an_undo_while_another_window_runs_is_refused() {
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let window_a = test_window();
+    present_window(&window_a);
+    crate::common::wait_for_startup_data_flow(&window_a);
+    let window_b = second_window(&window_a);
+
+    let dir_a = tempfile::tempdir().expect("expected operation to succeed");
+    let file_a = dir_a.path().join("a.txt");
+    fixture::write_text(&file_a, "needle\n");
+    let panel_a = replace_all_over(&window_a, dir_a.path(), 1, "thread");
+    wait_until(Duration::from_secs(20), || {
+        panel_a.evidence().has_undo_backup
+    });
+    let journal = panel_a
+        .imp()
+        .preview
+        .undo_backup
+        .borrow()
+        .clone()
+        .expect("A's undo journal");
+
+    let dir_b = tempfile::tempdir().expect("expected operation to succeed");
+    let (panel_b, files_b) = replace_all_held_at_second_file(&window_b, dir_b.path());
+    assert!(
+        !panel_a.evidence().has_undo_backup,
+        "B's run retired A's Undo"
+    );
+    panel_a.imp().preview.undo_backup.replace(Some(journal));
+    panel_a.activate_undo_replacements();
+    flush_after_delay(Duration::from_millis(300));
+    assert!(!panel_a.evidence().replace_transaction_pending);
+    assert_eq!(status_text(&window_a), OTHER_WINDOW_BUSY);
+    fixture::assert_text(&file_a, "thread\n");
+
+    wait_until(Duration::from_secs(30), || {
+        !panel_b.evidence().replace_in_flight && !panel_b.evidence().replace_transaction_pending
+    });
+    for path in &files_b {
+        fixture::assert_text(path, "thread\n");
+    }
+    fixture::assert_text(&file_a, "thread\n");
+}
+
+/// stream-replace-all 6.3: quitting the application during a run asks the
+/// same question; Stop and Close rolls back and then closes.
+#[test]
+fn test_quitting_during_replace_all_asks_and_stop_and_close_restores_every_file() {
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let data_dir = json_store::data_dir();
+    let window = test_window();
+    present_window(&window);
+    crate::common::wait_for_startup_data_flow(&window);
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let (_panel, files) = replace_all_held_at_second_file(&window, dir.path());
+
+    let app = window.application().expect("the test window's application");
+    gtk4::gio::prelude::ActionGroupExt::activate_action(&app, "quit", None);
+    let dialog = still_running_dialog(&window);
+    dialog.emit_by_name::<()>("response", &[&"stop-and-close"]);
+    dialog.force_close();
+    wait_until(Duration::from_secs(30), || !window.is_visible());
+    for path in &files {
+        fixture::assert_text(path, "needle\n");
+    }
+    assert!(
+        search_backup::load(&data_dir)
+            .expect("load journal")
+            .is_empty(),
+        "a rolled-back run leaves no active journal",
+    );
 }

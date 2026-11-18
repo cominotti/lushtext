@@ -384,3 +384,86 @@ pub(crate) fn shrink_step(action: ShrinkAction, succeeded: bool) -> ShrinkAction
 
 #[cfg(kani)]
 mod kani_proofs;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Run one file's apply protocol with every action succeeding; return its
+    /// actions and the journal facts it hands the next file.
+    fn replace_one(journal: RunJournalState) -> (Vec<FileAction>, RunJournalState) {
+        let (mut protocol, mut action) = ReplaceFileProtocol::start(journal);
+        let mut actions = vec![action];
+        while !matches!(action, FileAction::Finish(_)) {
+            action = protocol.step(FileOutcome::Done);
+            actions.push(action);
+        }
+        (actions, protocol.journal())
+    }
+
+    /// Run one entry's undo protocol over a file that still holds the
+    /// replaced bytes; return its actions and whether the next entry must
+    /// still re-arm.
+    fn undo_one(rearm_needed: bool) -> (Vec<UndoAction>, bool) {
+        let (mut protocol, mut action) = ReplaceUndoProtocol::start(rearm_needed, true);
+        let mut actions = vec![action];
+        while !matches!(action, UndoAction::Finish(_)) {
+            let outcome = match action {
+                UndoAction::HashCurrent => UndoOutcome::Current(CurrentContent::Replaced),
+                _ => UndoOutcome::Done,
+            };
+            action = protocol.step(outcome);
+            actions.push(action);
+        }
+        (actions, protocol.rearm_needed())
+    }
+
+    /// A run prepares the journal and arms its manifest once, on its first
+    /// file, however many files follow (design D3a, P4).
+    #[test]
+    fn a_run_prepares_and_arms_the_journal_once() {
+        let mut journal = RunJournalState {
+            prepared: false,
+            armed: false,
+        };
+        let mut all = Vec::new();
+        for _ in 0..3 {
+            let (actions, next) = replace_one(journal);
+            assert_eq!(
+                actions.last(),
+                Some(&FileAction::Finish(FileEnd::Replaced { durable: true }))
+            );
+            all.extend(actions);
+            journal = next;
+        }
+        let count = |wanted: FileAction| all.iter().filter(|action| **action == wanted).count();
+        assert_eq!(count(FileAction::PrepareJournal), 1);
+        assert_eq!(count(FileAction::ArmJournal), 1);
+        assert_eq!(count(FileAction::WriteTarget), 3);
+        assert!(journal.prepared && journal.armed);
+    }
+
+    /// An Undo in a later launch re-arms the manifest once, before its first
+    /// restore, and an Undo of this launch's run never does (design D9).
+    #[test]
+    fn a_later_launch_undo_rearms_the_manifest_once() {
+        for (rearm_first, expected) in [(true, 1), (false, 0)] {
+            let mut rearm = rearm_first;
+            let mut rearms = 0;
+            for _ in 0..3 {
+                let (actions, next) = undo_one(rearm);
+                assert_eq!(
+                    actions.last(),
+                    Some(&UndoAction::Finish(UndoEnd::Restored { retired: true }))
+                );
+                rearms += actions
+                    .iter()
+                    .filter(|action| **action == UndoAction::RearmJournal)
+                    .count();
+                rearm = next;
+            }
+            assert_eq!(rearms, expected, "rearm needed at the start: {rearm_first}");
+            assert!(!rearm);
+        }
+    }
+}

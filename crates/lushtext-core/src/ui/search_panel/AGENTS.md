@@ -46,6 +46,22 @@ This folder owns the workspace-wide content search panel adapter.
   called presentation surface over a lazy `GListModel` + `GtkSectionModel` that
   builds a row object only when GTK asks for it. Its pure decisions stay in
   `policy.rs` and its observable state in `evidence.rs`.
+- **Open and Replace in Editor** (`win.replace-in-editor`) prefills the in-tab
+  bar from the run's **request** (`policy::ReplaceRunIntent`: the accepted
+  preview ticket's query spec plus its replacement text, captured on preview
+  acceptance and copied at `begin_replace_run`), never from the panel's live
+  fields, which the user may have edited since. A regex template reaches
+  GtkSourceView only through `policy::rust_replacement_to_gtksourceview`
+  (ledger A127); a reference to a missing group leaves the field empty with
+  its reason. The action writes nothing. Its availability is
+  `policy::replace_in_editor_availability`; a row whose file cannot open has
+  no action.
+- **The undo journal is one per application** (design D3a): `journal.rs`
+  keeps a thread-local registry of every panel. A transaction (a run, its
+  rollback, an Undo) in one window refuses an apply or Undo in another with a
+  status message, never queues it; a run's start retires every window's Undo
+  and each window that lost one says so once. Never scope either back to one
+  panel.
 - Preserve match-navigation and progress-callback contracts with the window shell.
 
 ## Editing Rules

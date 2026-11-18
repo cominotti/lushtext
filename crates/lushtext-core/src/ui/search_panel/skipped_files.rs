@@ -200,9 +200,10 @@ impl SkippedFilesModel {
 impl LushtextSearchPanel {
     /// Present the Skipped Files dialog for the last Replace All run.
     ///
-    /// Activating a row opens its file at the first skipped line through the
-    /// panel's open-file callback, which selects an already open tab; a file
-    /// too large to open has no action.
+    /// Activating a row is Open and Replace in Editor (`win.replace-in-editor`,
+    /// design D7): the window opens the file at its first skipped line, or
+    /// selects its tab, and prefills the in-tab bar from the run's request. A
+    /// file too large to open, or unreadable, has no action.
     pub fn show_skipped_files(&self) {
         let Some(report) = self.last_skip_report() else {
             return;
@@ -235,7 +236,7 @@ impl LushtextSearchPanel {
         accessibility::set_labelled_description(
             &list_view,
             "Skipped files",
-            "Files Replace All did not replace; activate one to open it at its first skipped line",
+            "Files Replace All did not replace; activate one to open it in the editor with the replacement ready",
         );
         list_view.connect_activate({
             let panel = self.downgrade();
@@ -257,8 +258,10 @@ impl LushtextSearchPanel {
                 if let Some(dialog) = dialog.upgrade() {
                     dialog.close();
                 }
-                if let Some(ref callback) = *panel.imp().callbacks.open_file_callback.borrow() {
-                    callback(&path, row.imp().line.get());
+                if let Some(ref callback) =
+                    *panel.imp().callbacks.replace_in_editor_callback.borrow()
+                {
+                    callback(&path);
                 }
             }
         });
@@ -309,6 +312,14 @@ impl LushtextSearchPanel {
         });
         dialog.present(Some(self));
         list_view.grab_focus();
+    }
+
+    /// Connect Open and Replace in Editor, which a Skipped Files row activates.
+    pub fn connect_replace_in_editor<F: Fn(&std::path::Path) + 'static>(&self, f: F) {
+        self.imp()
+            .callbacks
+            .replace_in_editor_callback
+            .replace(Some(Box::new(f)));
     }
 
     /// The open dialog's model, read by the evidence surface.
@@ -370,7 +381,9 @@ fn build_row_factory() -> gtk4::SignalListItemFactory {
         }
         item.set_activatable(row.imp().actionable.get());
         let action = if row.imp().actionable.get() {
-            "Activate to open at the first skipped line"
+            "Activate to open it in the editor with the replacement ready"
+        } else if row.reason() == ReplaceSkipReason::Unreadable {
+            "Cannot be read, so it does not open in the editor"
         } else {
             "Too large to open in the editor"
         };

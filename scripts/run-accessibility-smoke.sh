@@ -39,6 +39,7 @@ ACCESSIBILITY_CASES=(
     workspace-search-dense-constrained
     workspace-search-capped
     workspace-search-replace-undo
+    workspace-search-replace-skipped
     workspace-tree-no-workspace
     workspace-tree
     workspace-tree-zero-folder
@@ -354,6 +355,7 @@ MATRIX_ROWS_BY_CASE = {
     "workspace-search-dense-constrained": ["A11Y-WORKSPACE-SEARCH-DENSE-NORESULTS"],
     "workspace-search-capped": ["A11Y-WORKSPACE-SEARCH-DENSE-NORESULTS"],
     "workspace-search-replace-undo": ["A11Y-WORKSPACE-SEARCH-REPLACE"],
+    "workspace-search-replace-skipped": ["A11Y-WORKSPACE-SEARCH-REPLACE-SKIPPED"],
     "workspace-tree-no-workspace": ["A11Y-WORKSPACE-NO-CONTEXT"],
     "workspace-tree": ["A11Y-WORKSPACE-REPRESENTATIVE"],
     "workspace-tree-zero-folder": ["A11Y-WORKSPACE-ZERO-FOLDER"],
@@ -1083,6 +1085,17 @@ replace-needle beta
 EOF
 }
 
+# One file Replace All rewrites and one whose only match is on a 10 KiB line,
+# which the preview cannot show: the run ends with one skipped file
+# (`stream-replace-all`, Show Skipped Files).
+seed_replace_skipped_workspace_for_capture() {
+    local capture="$1"
+    seed_replace_workspace_for_capture "$capture"
+    local long_tail
+    long_tail="$(printf '%*s' 10240 '' | tr ' ' x)"
+    printf '%sreplace-needle\n' "$long_tail" >"$ARTIFACT_DIR/fixtures/replace-long-line.txt"
+}
+
 # The Open popover filters recent documents by fuzzy subsequence over the
 # whole path, so the fixture paths must not depend on where the checkout or the
 # artifact directory lives: a long enough checkout path fuzzily contains
@@ -1712,6 +1725,29 @@ assert_anchor "workspace-search-replace-undo" "workspace search" "entry" "Worksp
 assert_anchor "workspace-search-replace-undo" "workspace search" "text" "Workspace replacement text"
 assert_anchor "workspace-search-replace-undo" "workspace search" "button" "Undo replacements"
 assert_anchor "workspace-search-replace-undo" "workspace search" "label" "Replaced 2 of 2 matches in 1 files"
+fi
+
+if case_selected "workspace-search-replace-skipped"; then
+seed_replace_skipped_workspace_for_capture "workspace-search-replace-skipped"
+run_accessibility_capture "workspace-search-replace-skipped" \
+    --step window-action:toggle-search-panel \
+    --step wait-window-action:set-search-panel-query \
+    --step window-string-action:set-search-panel-query=replace-needle \
+    --step wait-predicate:search-complete \
+    --step wait-atspi-text:"3 results in 2 files" \
+    --step window-string-action:set-search-panel-replace-query=after-needle \
+    --step wait-window-action:preview-search-panel-replacements \
+    --step window-action:preview-search-panel-replacements \
+    --step wait-predicate:search-complete \
+    --step wait-atspi-text:"Include replacement at line 1" \
+    --step window-action:confirm-search-panel-replacements \
+    --step wait-atspi-text:"Show Skipped Files" \
+    --step wait-window-action:show-search-panel-skipped-files \
+    --step window-action:show-search-panel-skipped-files \
+    --step wait-atspi-text:"1 file not replaced"
+assert_anchor "workspace-search-replace-skipped" "workspace search" "button" "Show Skipped Files"
+assert_anchor "workspace-search-replace-skipped" "skipped files dialog" "list" "Skipped files"
+assert_anchor "workspace-search-replace-skipped" "skipped files dialog" "label" "1 file not replaced"
 fi
 
 if case_selected "workspace-tree-no-workspace"; then

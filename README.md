@@ -117,7 +117,11 @@ local history, and careful recovery behavior.
   All streams each file, so it rewrites files up to 512 MiB without holding
   them in memory, reports its progress, can be cancelled (every file it
   already rewrote is restored), and lists any file it skipped, with the
-  reason, behind Show Skipped Files. A search has no match limit: it keeps results within a
+  reason, behind Show Skipped Files; activating a listed file opens it at its
+  first skipped line with the in-tab replace bar ready, prefilled from the run
+  (regex replacements translated for the editor). With several windows, the
+  undo journal is one per application: a run in one window retires the others'
+  Undo and refuses a second run or Undo until it finishes. A search has no match limit: it keeps results within a
   memory budget (256 MiB, far above what the old 16,384-match cap kept), and
   past it says how many matches are shown and how many more were found.
 
@@ -639,7 +643,8 @@ role so its whole story stays in one place:
 `crates/lushtext-core/src/ui/search_panel/` is the first workflow arranged this
 way, the reference example, and the first migrated end to end: `mod.rs` narrates
 the search and Replace All stages, `policy.rs` holds the pure single-flight,
-retirement-budget, preview-freshness, and Replace All admission policy,
+retirement-budget, preview-freshness, and Replace All admission policy (plus
+the skip report wording and the Open and Replace in Editor translation),
 `execution.rs`/`retirement.rs`/`replace_execution.rs`/`journal.rs` are its
 coordination jobs — `journal.rs` owning the durable, generation-guarded undo
 record that Undo restores from — and `evidence.rs` is the surface its widget

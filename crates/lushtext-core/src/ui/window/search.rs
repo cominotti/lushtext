@@ -96,6 +96,14 @@ pub fn setup_search_panel(window: &LushtextWindow) {
         }
     });
 
+    // --- Skipped Files row: Open and Replace in Editor (design D7) ---
+    let window_weak = window.downgrade();
+    imp.search_panel.connect_replace_in_editor(move |path| {
+        if let Some(window) = window_weak.upgrade() {
+            window.replace_in_editor(path);
+        }
+    });
+
     // --- F4/Shift+F4 navigation: open file at line (same as activation) ---
     let window_weak = window.downgrade();
     imp.search_panel
@@ -556,6 +564,10 @@ pub fn setup_search_panel(window: &LushtextWindow) {
     let panel_visible = imp.settings.boolean(keys::SEARCH_PANEL_VISIBLE);
     if panel_visible {
         imp.search_panel_revealer.set_reveal_child(true);
+        // The actions that require a visible panel follow it, as they do when
+        // the panel opens (`setup_actions` ran in an earlier stage and left
+        // them disabled).
+        window.set_search_panel_actions_enabled(true);
         // Don't grab focus on startup — let session restore handle focus.
     }
 
@@ -761,10 +773,10 @@ impl LushtextWindow {
     }
 }
 
-/// Open a file at a specific line number. Shared by result activation (double-click/Enter)
-/// and F4/Shift+F4 navigation. Handles evicted tabs, already-loaded buffers, and
-/// newly-opened tabs where the async load is still in progress.
-fn open_file_at_line(window: &LushtextWindow, path: &std::path::Path, line: u32) {
+/// Open a file at a specific line number. Shared by result activation (double-click/Enter),
+/// F4/Shift+F4 navigation and Open and Replace in Editor. Handles evicted tabs,
+/// already-loaded buffers, and newly-opened tabs where the async load is still in progress.
+pub(super) fn open_file_at_line(window: &LushtextWindow, path: &std::path::Path, line: u32) {
     window.open_document(path);
 
     let tab_view = &window.imp().tab_view;
