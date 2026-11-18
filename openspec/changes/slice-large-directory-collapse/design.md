@@ -1104,7 +1104,8 @@ Recorded at stage 3 (implementation), each with its evidence.
     `RowChange { shown: 64, destroyed: 64 }` and the band-model property test
     shrank to 34 rows entering in one step before the condition was added.
     Kani's collapse harnesses take `rows_before`/`rows_after` symbolic.
-18. **Open: the first-frame scenario under D19.** "The first frame takes the
+18. **The first-frame scenario under D19 (decided in design R9, 2026-11-17:
+    accepted, and the scenario reworded).** "The first frame takes the
     first step" says the first step runs no later than the first frame
     "(… or unbound chunks from the between-frames source), so no frame
     passes before the work starts". With the band at the top of a large
@@ -1114,8 +1115,7 @@ Recorded at stage 3 (implementation), each with its evidence.
     that behaviour (first frame at most one unit and the D6 projection,
     second frame under 4,096 rows left). Whether that satisfies the scenario
     or the scenario must say "the first step runs in the gap after the
-    first frame" is a design decision for the reviewing stage, not taken
-    here.
+    first frame" was left to the reviewing stage; R9 took it.
 
 ## Stage 4 verdict (2026-11-15): pass bar not met, back to implementation
 
@@ -1709,15 +1709,17 @@ readiness holds):
 
 | build | completion | settled | worst step | worst frame | worst other dispatch |
 |---|---|---|---|---|---|
-| `d19a` (the WIP's D19 code) | 194 / 231 / 299 ms | 658–741 ms | 7.9–8.2 ms | 6.5–7.1 ms | 30.5–33.7 ms (probe-scan publication, D12) |
+| `d19a` (the WIP's D19 code) | 194 / 231 / 299 ms | 658–741 ms | 7.9–8.2 ms (**over `B_INTERACT_US` in two reps**) | 6.5–7.1 ms | 30.5–33.7 ms (probe-scan publication, D12) |
 | `skipcache` (D19 code, `drain_child_store` skipping the path-cache splice) | 112 / 126 / 153 ms | 589–617 ms | 5.7–6.0 ms | 6.7–7.3 ms | 29.0–37.0 ms (the same residual) |
-| `main` (quiet campaign, stage 4) | 24–30 ms | 0.44–0.50 s | (one direct collapse) | | |
+| `main` (quiet campaign, stage 4) | 24–30 ms | 438.5–502.8 ms | (one direct collapse) | | 32.8–44.6 ms (the same residual) |
 
 **The rule fires.** R3's bar for 0:131,072 is `max(30 + 33.3, 100)` =
 100 ms, and the skip-cache upper bound reaches 112–153 ms. On the settled
 reading it misses as well (589–617 ms against `main`'s 0.50 s + 33.3 ms).
 The change therefore returns to design at this point, and this section is
-that decision.
+that decision. The `d19a` build also misses D2: its worst step is 8.1–8.2 ms
+in two repetitions, over `B_INTERACT_US`; task 10.3's per-row cut must close
+that as well.
 
 **Where the time goes** (`slc-d19a-pdw`, DWARF-unwound, read by leaf symbol
 because the Rust frames do not unwind: `rev3/leaf.py`; 318 GTK-thread
@@ -1774,10 +1776,11 @@ the picture is final.
    16,384 rows the allowance is zero and the bar is R3's, unchanged; it is
    continuous in `R`, so no size steps the bar.
 4. *Settled* (`done_us`): printed for both sides and recorded, not judged.
-   After the completing frame the section only retires the listing (BL's
-   4,096-row slices at `G_PRIORITY_LOW`) and publishes the probe scan (the
-   residual owned by `stop-expander-bind-time-child-scans`), neither of
-   which the user sees; both sides pay both.
+   After the completing frame the section retires the listing (BL's
+   4,096-row slices at `G_PRIORITY_LOW`) and, 0.43–0.45 s later on both
+   sides, publishes the probe scan (the residual owned by
+   `stop-expander-bind-time-child-scans`); the settled time's excess over
+   `main`'s is the completion's.
 
 *Why 16,384.* It is the size up to which R3 is reachable on the frame
 argument: R3's table puts the unbound removal of up to 16,385 entries under
@@ -1787,25 +1790,25 @@ toolkit's per-node removal plus LushText's item hand-off), which no frame
 budget prices. A power of two, as `rust.md` asks of a threshold; it is a
 verdict-test figure, not a production constant.
 
-*Why 0.5 µs a row, and why it is a fixed number, not the branch's figure.*
-`main` pays per row after its completion too: its sidebar settles
-0.44–0.50 s after a 131,072-entry collapse, about 3.4 µs a row past its
-completion (listing retirement, probe scan). The allowance is a seventh of
-that, so with it the branch draws its final rows at 157 ms (0:131,072) or
-215 ms (400:131,072), long before `main`'s sidebar has settled, and without
-`main`'s 24–124 ms of frozen work. It is also a bar that requires work: the
-WIP's `d19a` build misses it by 37–141 ms at 0:131,072, and only the
-skip-cache upper bound meets it (by 4–45 ms, before the instrument bias is
-removed). Meeting it requires task 10.3's per-row cut, which this section's
-profile now names. 0.5 µs (`1 / 2` µs, a power of two) lies inside what the
-skip-cache build spends a row past the frame-bound cases: its 0:131,072
-completion (112–153 ms) less `d19a-1`'s 0:4,096 one (71–82 ms, load 8,
-non-verdict; no skip-cache 0:4,096 figure exists), over the 126,976 rows
-between them, is 0.24–0.65 µs a row.
+*Why 0.5 µs a row: a declared, bounded trade, not a figure taken from
+`main`.* `main` has no comparable per-row cost to anchor it: its direct
+collapse removes the subtree inside one 24–30 ms dispatch, and its settled
+time (438.5–502.8 ms at 131,072) is not a per-row cost either, but the
+probe-scan publication of D12, which comes 0.40–0.45 s after the collapse on
+both sides (on the branch 431–442 ms after the completing frame). So the
+allowance is a choice this change declares and bounds: 0.5 µs (`1 / 2` µs,
+a power of two) lies inside what the skip-cache build spends a row past the
+frame-bound cases, its 0:131,072 completion (112–153 ms) less `d19a-1`'s
+0:4,096 one (71–82 ms, load 8, non-verdict; no skip-cache 0:4,096 figure
+exists) over the 126,976 rows between them, 0.24–0.65 µs a row. It is a bar
+that requires work: the WIP's `d19a` build misses it by 37–141 ms at
+0:131,072, and only the skip-cache upper bound meets it, by 4–45 ms before
+the instrument bias is removed. Meeting it requires task 10.3's per-row cut,
+which this section's profile now names, and the margin is thin (Risks).
 
 | case | `main` worst | R3 bar | allowance | revised bar | evidence today |
 |---|---|---|---|---|---|
-| 0:16,385 | 21 ms | 100 ms | 0 | 100 ms | (R3's table, frame-bound) |
+| 0:16,385 | 17–19 ms (input 15.7–17.9 ms plus its 1.0–1.1 ms frame, campaign table) | 100 ms | 0 | 100 ms | (R3's frame argument) |
 | 0:131,072 | 30 ms | 100 ms | 57.3 ms | 157.3 ms | skip-cache 112–153 ms; `d19a` 194–299 ms |
 | 400:16,385 | 106 ms | 139 ms | 0 | 139 ms | (R3's table) |
 | 400:131,072 | 124 ms | 157 ms | 57.3 ms | 214.6 ms | **provisional:** no skip-cache figure; `d19a-1` 285–345 ms at load 8 (non-verdict) |
@@ -1840,10 +1843,11 @@ names are kept).
   but the scrollbar still describes 131,072 rows and the user can scroll
   into blank space; with rows after it, a gap opens above them. Both stay
   recorded follow-ups if task 10.7's round misses the revised bar.
-- *Judging the settled time.* Its excess over `main` (589–741 ms against
-  0.44–0.50 s) is the listing retirement starting after a later completion,
-  which draws nothing and freezes nothing; judging it would trade the
-  completion the user sees for bookkeeping the user does not.
+- *Judging the settled time.* On both sides it ends with the probe-scan
+  publication about 0.43–0.45 s after the completion, so its excess over
+  `main` (589–741 ms against 438.5–502.8 ms) is the completion's excess,
+  which the completion bar already judges; judging it again would add
+  nothing the user sees.
 - *Exempting the 131,072 cases.* Rejected: an exception is for a measured
   toolkit floor, and this cost is mostly LushText's (37 % of the window).
 
@@ -1901,6 +1905,12 @@ snapshot after the merge commit is `rev3/wip-after-merge.patch`.
   400:131,072 figure under the reworked bookkeeping is not measured yet
   (queued); if it misses, the change returns to design with the slice-model
   or band-hiding alternatives of R9.
+- **R9's bar is met today only by the upper bound, and thinly.** The
+  skip-cache build is the per-row cut's best case, and it clears 157.3 ms by
+  4 ms at the worst of three non-verdict repetitions (by about 13 ms once
+  the 9 ms instrument bias goes). A real cut that keeps any of the
+  bookkeeping, or a quiet verdict that differs, can miss; task 10.7's round
+  is the stop condition.
 
 - *Superseded by R3's completion bar, which no longer accepts a collapse
   that finishes later than `main`'s plus two frames; kept as the stage 3

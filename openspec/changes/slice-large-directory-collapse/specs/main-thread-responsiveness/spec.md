@@ -61,7 +61,7 @@ Collapsing a sidebar directory by a route LushText owns SHALL keep the input dis
 - **WHEN** a dispatch after the collapse publishes the scan that GTK's `is_expandable()` probe started for the collapsed directory
 - **THEN** the verdict test prints it separately, it is excluded from this requirement's pass bar, and it is recorded as owned by `stop-expander-bind-time-child-scans`
 
-### Requirement: A sidebar collapse finishes no later than main's
+### Requirement: A sidebar collapse finishes within main's time plus a bounded allowance
 A sidebar directory collapse by a route LushText owns SHALL draw its collapsed rows no later than `main`'s direct collapse does, measured from the input to the frame that draws them: at most `main`'s time plus two 60 Hz frames, or 100 ms where `main` takes less. A collapsing subtree of more than 16,384 flattened rows SHALL be allowed 0.5 µs more for each row beyond 16,384, and no more.
 
 #### Scenario: A collapse finishes no later than main's
