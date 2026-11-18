@@ -97,8 +97,10 @@ struct ChildReconcileProgress {
     /// one 256-row batch created about 200 of them in one dispatch (19 ms,
     /// and a 19 ms frame after it, at 10,000 entries; `main` the same). So
     /// the first `CHILD_APPEND_BATCH_SIZE` rows go in batches of
-    /// `FIRST_BATCH_ROWS`, the turn's time slice stops after a few of them,
-    /// and the load waits past one frame after the very first.
+    /// `FIRST_BATCH_ROWS`, and the load waits past one frame after each of
+    /// them, so the band fills one unit a frame
+    /// (`slice-large-directory-collapse` D10: about 200 row widgets created
+    /// in one frame were 40-60 ms on `main`).
     warming_up: bool,
     /// Rows a previous store of this directory left in the path caches, when
     /// this load's store took the directory over (a collapse and re-expansion,
@@ -149,13 +151,25 @@ const RETIRED_LISTING_ROWS_PER_UNIT: usize = 4 * 1024;
 pub(crate) struct RetiringListing {
     store: gio::ListStore,
     mirror: Vec<DirectoryRowState>,
+    /// Rows a sliced collapse already took out of a live store, held here so
+    /// their disposal runs in these slices instead of inside the collapse
+    /// step that removed them (`slice-large-directory-collapse` D19).
+    items: Vec<glib::Object>,
+    /// The path-cache copies of those rows' paths, freed in these slices
+    /// too rather than in the collapse step (task 10.3).
+    paths: Vec<PathBuf>,
 }
 
-/// Rows per batch while a directory that was empty receives its first
-/// `CHILD_APPEND_BATCH_SIZE` rows (see `ChildReconcileProgress::warming_up`).
+/// Rows per batch, one batch per frame, while a directory that was empty
+/// receives its first `CHILD_APPEND_BATCH_SIZE` rows (see
+/// `ChildReconcileProgress::warming_up`); equal to
+/// `policy::SIDEBAR_REALIZED_ROWS_PER_FRAME`, the unit of row widgets one
+/// frame may create (`slice-large-directory-collapse` D10).
 ///
-/// Kind: cap; a power of two, rounded down.
-const FIRST_BATCH_ROWS: usize = 32;
+/// Kind: derived; the frame unit, so one constant governs collapse steps and
+/// expansion batches alike.
+const FIRST_BATCH_ROWS: usize =
+    crate::ui::sidebar::policy::SIDEBAR_REALIZED_ROWS_PER_FRAME as usize;
 /// Changed rows at or below one batch retain the calibrated direct splice path.
 ///
 /// Kind: cap; a power of two, rounded down.
@@ -555,9 +569,21 @@ fn retire_child_store(section: &LushtextWorkspaceSection, store: gio::ListStore)
         .remove(&store_key);
     imp.child_store_paths.borrow_mut().remove(&store_key);
     imp.child_store_refs.borrow_mut().remove(&store_key);
-    imp.retiring_child_stores
-        .borrow_mut()
-        .push_back(RetiringListing { store, mirror });
+    queue_listing_retirement(
+        section,
+        RetiringListing {
+            store,
+            mirror,
+            items: Vec::new(),
+            paths: Vec::new(),
+        },
+    );
+}
+
+/// Queue `listing` for the sliced retirement, arming its source.
+fn queue_listing_retirement(section: &LushtextWorkspaceSection, listing: RetiringListing) {
+    let imp = section.imp();
+    imp.retiring_child_stores.borrow_mut().push_back(listing);
     if imp.child_store_retirement_source.borrow().is_some() {
         return;
     }
@@ -602,7 +628,13 @@ fn drain_retiring_listings(section: &LushtextWorkspaceSection) -> bool {
             return false;
         };
         let items = listing.store.n_items();
-        if items > 0 {
+        if !listing.items.is_empty() {
+            let keep = listing
+                .items
+                .len()
+                .saturating_sub(RETIRED_LISTING_ROWS_PER_UNIT);
+            listing.items.truncate(keep);
+        } else if items > 0 {
             let unit = u32::try_from(RETIRED_LISTING_ROWS_PER_UNIT).unwrap_or(u32::MAX);
             let take = items.min(unit);
             listing
@@ -614,9 +646,19 @@ fn drain_retiring_listings(section: &LushtextWorkspaceSection) -> bool {
                 .len()
                 .saturating_sub(RETIRED_LISTING_ROWS_PER_UNIT);
             listing.mirror.truncate(keep);
+        } else if !listing.paths.is_empty() {
+            let keep = listing
+                .paths
+                .len()
+                .saturating_sub(RETIRED_LISTING_ROWS_PER_UNIT);
+            listing.paths.truncate(keep);
         }
         units += 1;
-        if listing.store.n_items() > 0 || !listing.mirror.is_empty() {
+        if !listing.items.is_empty()
+            || listing.store.n_items() > 0
+            || !listing.mirror.is_empty()
+            || !listing.paths.is_empty()
+        {
             section
                 .imp()
                 .retiring_child_stores
@@ -980,19 +1022,33 @@ pub(super) fn drain_child_store(
     start: u32,
     count: u32,
 ) {
+    // The removed items' last reference would otherwise go inside the
+    // splice, finalizing every `FileTreeItem` in this step (design D19):
+    // hold them, and let the listing retirement drop them in slices.
+    let removed_items: Vec<glib::Object> = (start..start.saturating_add(count))
+        .filter_map(|index| store.item(index))
+        .collect();
     store.splice(start, count, &[] as &[glib::Object]);
     let store_key = child_store_key(store);
-    let (old_path_rows, removed_paths, path_start) = {
+    // Per row, this step pays only the moves: the removed mirror rows and
+    // path-cache copies go to the listing retirement whole, and the path
+    // count is read from the end (placeholder rows only ever end a listing),
+    // so no step walks the store (task 10.3).
+    let (old_path_rows, removed_rows, path_start, path_count) = {
         let mut mirrors = section.imp().child_row_mirrors.borrow_mut();
         let mirror = mirrors.entry(store_key).or_default();
+        let old_path_rows = mirror.len()
+            - mirror
+                .iter()
+                .rev()
+                .take_while(|row| row.path.is_none())
+                .count();
         let start = (start as usize).min(mirror.len());
         let end = start.saturating_add(count as usize).min(mirror.len());
-        let old_path_rows = mirror.iter().filter(|row| row.path.is_some()).count();
-        let removed = mirror
-            .drain(start..end)
-            .filter_map(|row| row.path)
-            .collect::<Vec<_>>();
-        (old_path_rows, removed, start.min(old_path_rows))
+        let removed = mirror.drain(start..end).collect::<Vec<_>>();
+        let path_start = start.min(old_path_rows);
+        let path_end = end.min(old_path_rows);
+        (old_path_rows, removed, path_start, path_end - path_start)
     };
     advance_child_mirror_generation(section, store_key);
     let parent = section
@@ -1001,16 +1057,32 @@ pub(super) fn drain_child_store(
         .borrow()
         .get(&store_key)
         .cloned();
-    if let Some(parent) = parent
+    // ATTRIBUTION PATCH (not committed): `SLC_SKIP_CACHE=1` bypasses the
+    // cache splice, the upper bound of task 10.3's bookkeeping cut.
+    static SLC_SKIP_CACHE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let skip_cache = *SLC_SKIP_CACHE.get_or_init(|| std::env::var_os("SLC_SKIP_CACHE").is_some());
+    let mut removed_paths = Vec::new();
+    if !skip_cache
+        && let Some(parent) = parent
         && section.imp().child_cache_owners.borrow().get(&parent) == Some(&store_key)
     {
-        section.splice_child_rows_cache(
+        removed_paths = section.drain_child_rows_cache(
             store_key,
             &parent,
             path_start,
+            path_count,
             old_path_rows,
-            &removed_paths,
-            &[],
+        );
+    }
+    if !removed_items.is_empty() || !removed_rows.is_empty() || !removed_paths.is_empty() {
+        queue_listing_retirement(
+            section,
+            RetiringListing {
+                store: gio::ListStore::new::<glib::Object>(),
+                mirror: removed_rows,
+                items: removed_items,
+                paths: removed_paths,
+            },
         );
     }
 }
@@ -1174,6 +1246,15 @@ fn apply_scanned_children(section: &LushtextWorkspaceSection, scanned: ScannedCh
     }
     retire_removed_child_subtrees(section, &plan);
 
+    // A directory that was empty brings its rows into the realized band one
+    // unit a frame (`slice-large-directory-collapse` D10), so only a load of
+    // at most one unit takes the direct splice.
+    let mirror_was_empty = section
+        .imp()
+        .child_row_mirrors
+        .borrow()
+        .get(&store_key)
+        .is_none_or(Vec::is_empty);
     match plan {
         DirectoryReconciliationPlan::Unchanged => {
             finish_child_reconciliation(section, &store, &dir_path, &token, ticket);
@@ -1183,7 +1264,9 @@ fn apply_scanned_children(section: &LushtextWorkspaceSection, scanned: ScannedCh
             removed,
             replacement,
             ..
-        } if removed.saturating_add(replacement.len()) <= CHILD_RECONCILE_DIRECT_ROWS => {
+        } if removed.saturating_add(replacement.len()) <= CHILD_RECONCILE_DIRECT_ROWS
+            && !(mirror_was_empty && replacement.len() > FIRST_BATCH_ROWS) =>
+        {
             let items = build_child_items(&replacement);
             splice_child_store(section, &store, position, removed, &replacement, &items);
             finish_child_reconciliation(section, &store, &dir_path, &token, ticket);
@@ -1194,12 +1277,6 @@ fn apply_scanned_children(section: &LushtextWorkspaceSection, scanned: ScannedCh
             replacement,
             ..
         } => {
-            let mirror_was_empty = section
-                .imp()
-                .child_row_mirrors
-                .borrow()
-                .get(&child_store_key(&store))
-                .is_none_or(Vec::is_empty);
             // A directory that takes several turns ends with a loading row
             // until its last batch; the row is part of the mirror, so a later
             // reconciliation removes it if this one is superseded.
@@ -1303,12 +1380,12 @@ fn apply_next_reconcile_batch(
         if !turn_continues(elapsed, batches_this_turn) {
             break;
         }
-        let (position, removed, rows) = {
+        let (position, removed, rows, small_batch) = {
             let mut progress = progress.borrow_mut();
             if progress.remove_remaining > 0 {
                 let removed = progress.remove_remaining.min(CHILD_APPEND_BATCH_SIZE);
                 progress.remove_remaining -= removed;
-                (progress.position, removed, Vec::new())
+                (progress.position, removed, Vec::new(), false)
             } else {
                 let batch_rows =
                     if progress.warming_up && progress.inserted < CHILD_APPEND_BATCH_SIZE {
@@ -1325,16 +1402,14 @@ fn apply_next_reconcile_batch(
                 }
                 let position = progress.position.saturating_add(progress.inserted);
                 progress.inserted = progress.inserted.saturating_add(rows.len());
-                (position, 0, rows)
+                let small_batch = batch_rows == FIRST_BATCH_ROWS && !rows.is_empty();
+                (position, 0, rows, small_batch)
             }
         };
         let items = build_child_items(&rows);
         let generation = splice_child_store(section, &store, position, removed, &rows, &items);
         progress.borrow_mut().mirror_generation = generation;
         batches_this_turn += 1;
-        let first_small_batch = progress.borrow().warming_up
-            && !rows.is_empty()
-            && progress.borrow().inserted == rows.len();
 
         let complete = {
             let progress = progress.borrow();
@@ -1345,7 +1420,9 @@ fn apply_next_reconcile_batch(
             finish_child_reconciliation(section, &store, &dir_path, &token, ticket);
             return;
         }
-        if first_small_batch {
+        // Each warming-up batch waits past a frame, so the frame after it
+        // creates at most one unit of row widgets (D10).
+        if small_batch {
             after_frame = true;
             break;
         }
@@ -1470,7 +1547,17 @@ fn finish_child_reconciliation(
         finish_child_scan(section, store_key, ticket);
         return;
     }
-    let _ = dir_path;
+    let shown = section
+        .imp()
+        .retained_child_stores
+        .borrow()
+        .get(dir_path)
+        .is_some_and(|retained| retained == store);
+    section
+        .imp()
+        .refresh_runtime
+        .last_scan_terminal
+        .replace(Some((dir_path.to_path_buf(), shown)));
     let terminal_started_us = glib::monotonic_time();
     schedule_child_state_restore(section);
     section.sync_file_row_states();
@@ -1716,7 +1803,9 @@ pub(super) fn schedule_child_state_restore(section: &LushtextWorkspaceSection) {
             }
             let pending_selection = section.imp().pending_selection.borrow().clone();
             if let Some(path) = pending_selection {
-                section.select_and_scroll_to(&path);
+                // A background restore: it keeps the focus where the user
+                // has it (an inline-rename entry), task 9.12.
+                section.restore_selection(&path);
             }
         }
     });
@@ -1828,6 +1917,14 @@ impl LushtextWorkspaceSection {
         else {
             return;
         };
+        if row.is_expanded() && self.row_inside_collapsing_subtree(row) {
+            // GTK's own expansion (drag hover, AT-SPI `listitem.expand`) of
+            // a row whose ancestor collapses: undo it, recording no intent
+            // (design R6.7). LushText's expand entry point ends the covering
+            // collapse first, so it never reaches here.
+            self.undo_expansion_inside_collapse(row);
+            return;
+        }
         let mut expanded = self.imp().expanded_paths.borrow_mut();
         if row.is_expanded() {
             expanded.insert(path.clone());
@@ -2133,6 +2230,56 @@ impl LushtextWorkspaceSection {
                 .get()
                 .max(operations),
         );
+    }
+
+    /// Remove `count` path rows at `path_start` from a directory's path
+    /// caches for a sliced collapse (`drain_child_store`), returning the
+    /// removed sibling paths for the caller to retire. Equal to
+    /// [`Self::splice_child_rows_cache`] with nothing inserted, without
+    /// cloning a path; falls back to the same full recache when the caches
+    /// disagree with the store's mirror.
+    pub(super) fn drain_child_rows_cache(
+        &self,
+        store_key: usize,
+        parent_dir: &Path,
+        path_start: usize,
+        count: usize,
+        old_path_rows: usize,
+    ) -> Vec<PathBuf> {
+        let imp = self.imp();
+        let consistent =
+            imp.child_paths.borrow().get(parent_dir).map_or(0, Vec::len) == old_path_rows;
+        if !consistent {
+            let rows = imp
+                .child_row_mirrors
+                .borrow()
+                .get(&store_key)
+                .cloned()
+                .unwrap_or_default();
+            self.recache_child_rows_from_mirror(parent_dir, &rows);
+            let refresh = &imp.refresh_runtime;
+            refresh
+                .cache_full_rebuilds
+                .set(refresh.cache_full_rebuilds.get().saturating_add(1));
+            return Vec::new();
+        }
+        let (removed, operations) = drain_child_cache(
+            &imp.folder_paths.borrow(),
+            &mut imp.child_paths.borrow_mut(),
+            &mut imp.visible_path_counts.borrow_mut(),
+            &mut imp.item_locations.borrow_mut(),
+            parent_dir,
+            path_start,
+            count,
+        );
+        let refresh = &imp.refresh_runtime;
+        refresh.cache_batch_operations_high_water.set(
+            refresh
+                .cache_batch_operations_high_water
+                .get()
+                .max(operations),
+        );
+        removed
     }
 
     pub(super) fn rename_cached_item(&self, old_path: &Path, new_path: &Path) {
@@ -2759,6 +2906,51 @@ fn splice_child_cache(
     ))
 }
 
+/// [`splice_child_cache`] with nothing inserted, for a sliced collapse: take
+/// `count` sibling paths at `path_start` out of `parent_dir`'s list (moved,
+/// not cloned) and release their occurrences. Returns the removed paths and
+/// the operations performed.
+fn drain_child_cache(
+    folder_paths: &[PathBuf],
+    child_paths: &mut HashMap<PathBuf, Vec<PathBuf>>,
+    visible_path_counts: &mut HashMap<PathBuf, usize>,
+    item_locations: &mut HashMap<PathBuf, ItemLocation>,
+    parent_dir: &Path,
+    path_start: usize,
+    count: usize,
+) -> (Vec<PathBuf>, usize) {
+    let Some(siblings) = child_paths.get_mut(parent_dir) else {
+        return (Vec::new(), 0);
+    };
+    let start = path_start.min(siblings.len());
+    let end = start.saturating_add(count).min(siblings.len());
+    let removed = siblings.drain(start..end).collect::<Vec<_>>();
+    let mut operations = removed.len();
+    if !removed.is_empty() {
+        for (offset, path) in siblings.iter().enumerate().skip(start) {
+            operations = operations.saturating_add(1);
+            if let Some(location) = item_locations.get_mut(path)
+                && location.parent_dir.as_deref() == Some(parent_dir)
+            {
+                location.index = offset;
+            }
+        }
+    }
+    if siblings.is_empty() {
+        child_paths.remove(parent_dir);
+    }
+    let recover =
+        release_child_occurrences(visible_path_counts, item_locations, parent_dir, &removed);
+    operations = operations.saturating_add(resolve_unique_occurrences(
+        folder_paths,
+        child_paths,
+        visible_path_counts,
+        item_locations,
+        recover,
+    ));
+    (removed, operations)
+}
+
 /// Forget `removed`, rows of `parent_dir` that left the caches' sibling list
 /// already (a superseded store's rows, purged in slices): their occurrence
 /// counts and locations, resolving any path left unique elsewhere.
@@ -2791,24 +2983,24 @@ fn release_child_occurrences(
 ) -> Vec<PathBuf> {
     let mut recover = Vec::new();
     for path in removed {
-        let next = visible_path_counts
-            .get(path)
-            .copied()
-            .unwrap_or(0)
-            .saturating_sub(1);
-        if next == 0 {
-            visible_path_counts.remove(path);
-            item_locations.remove(path);
-        } else {
-            visible_path_counts.insert(path.clone(), next);
-            if item_locations
-                .get(path)
-                .is_some_and(|location| location.parent_dir.as_deref() == Some(parent_dir))
-            {
-                item_locations.remove(path);
+        // One lookup per map for the common, unique path (task 10.3): take
+        // its count out, and only a duplicate puts the rest back.
+        match visible_path_counts.remove(path) {
+            Some(count) if count > 1 => {
+                let next = count - 1;
+                visible_path_counts.insert(path.clone(), next);
+                if item_locations
+                    .get(path)
+                    .is_some_and(|location| location.parent_dir.as_deref() == Some(parent_dir))
+                {
+                    item_locations.remove(path);
+                }
+                if next == 1 {
+                    recover.push(path.clone());
+                }
             }
-            if next == 1 {
-                recover.push(path.clone());
+            _ => {
+                item_locations.remove(path);
             }
         }
     }
@@ -2970,6 +3162,72 @@ mod index_tests {
                 &folder_paths,
                 &[(parent.clone(), indexed(&new)), (other_parent, other_rows)],
             );
+            prop_assert_eq!(counts, expected_counts);
+            prop_assert_eq!(locations, expected_locations);
+            if new.is_empty() {
+                prop_assert!(!child_paths.contains_key(&parent));
+            } else {
+                prop_assert_eq!(child_paths.get(&parent), Some(&new));
+            }
+        }
+    }
+
+    proptest! {
+        /// The sliced collapse's drain (task 10.3) leaves the caches exactly
+        /// as the full rebuild after the same removal, and returns the
+        /// removed sibling paths in order.
+        #[test]
+        fn drained_child_cache_matches_the_full_rebuild(
+            folder_ids in prop::collection::vec(0u8..8, 0..12),
+            other_ids in prop::collection::vec(0u8..8, 0..24),
+            old_ids in prop::collection::vec(0u8..8, 0..40),
+            start in 0usize..40,
+            removed in 0usize..40,
+        ) {
+            let parent = PathBuf::from("/workspace/parent");
+            let other_parent = PathBuf::from("/workspace/other");
+            let folder_paths = folder_ids.into_iter().map(test_path).collect::<Vec<_>>();
+            let old = old_ids.into_iter().map(test_path).collect::<Vec<_>>();
+            let start = start.min(old.len());
+            let end = start.saturating_add(removed).min(old.len());
+            let mut new = old.clone();
+            let expected_removed = new.drain(start..end).collect::<Vec<_>>();
+            let other_rows = other_ids
+                .into_iter()
+                .enumerate()
+                .map(|(index, id)| (index, test_path(id)))
+                .collect::<Vec<_>>();
+            let indexed = |rows: &[PathBuf]| {
+                rows.iter().cloned().enumerate().collect::<Vec<_>>()
+            };
+            let (mut counts, mut locations) = oracle(
+                &folder_paths,
+                &[
+                    (parent.clone(), indexed(&old)),
+                    (other_parent.clone(), other_rows.clone()),
+                ],
+            );
+            let mut child_paths = HashMap::from([(
+                other_parent.clone(),
+                other_rows.iter().map(|(_, path)| path.clone()).collect::<Vec<_>>(),
+            )]);
+            if !old.is_empty() {
+                child_paths.insert(parent.clone(), old);
+            }
+            let (drained, _) = drain_child_cache(
+                &folder_paths,
+                &mut child_paths,
+                &mut counts,
+                &mut locations,
+                &parent,
+                start,
+                removed,
+            );
+            let (expected_counts, expected_locations) = oracle(
+                &folder_paths,
+                &[(parent.clone(), indexed(&new)), (other_parent, other_rows)],
+            );
+            prop_assert_eq!(drained, expected_removed);
             prop_assert_eq!(counts, expected_counts);
             prop_assert_eq!(locations, expected_locations);
             if new.is_empty() {

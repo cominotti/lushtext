@@ -173,6 +173,11 @@ pub enum CollapsePacingForTest {
     NoFrameClock = 1,
     /// No step runs at all, so a test can act while a collapse is pending.
     Hold = 2,
+    /// The list stays mapped and no tick callback is installed, as a stopped
+    /// frame clock of a mapped window leaves it: only the fallback's
+    /// mapped-and-starved branch runs, after `COLLAPSE_FRAME_STARVATION_MS`
+    /// (design R6.2).
+    MappedNoTicks = 3,
 }
 
 /// Pace sliced collapses as `pacing` says.
@@ -195,6 +200,7 @@ pub(super) fn collapse_pacing() -> CollapsePacingForTest {
     match POLICY.collapse_pacing.load(Ordering::Acquire) {
         1 => CollapsePacingForTest::NoFrameClock,
         2 => CollapsePacingForTest::Hold,
+        3 => CollapsePacingForTest::MappedNoTicks,
         _ => CollapsePacingForTest::FrameClock,
     }
 }

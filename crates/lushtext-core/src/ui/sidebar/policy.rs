@@ -1095,6 +1095,15 @@ pub const DIRECT_COLLAPSE_ROWS: u32 = 32;
 /// Kind: cap; a power of two, rounded down.
 pub const SIDEBAR_REALIZED_ROWS_PER_FRAME: u32 = 32;
 
+/// Rows bound to a row widget that one collapse step removes when no row
+/// would enter the realized band in their place (nothing listed after the
+/// band): such a removal only destroys row widgets, at about a third of a
+/// replacement's cost (design D18, R2), so it may take more rows than
+/// [`SIDEBAR_REALIZED_ROWS_PER_FRAME`] within the same frame budget.
+///
+/// Kind: cap; a power of two, rounded down.
+pub const COLLAPSE_DESTROY_ONLY_ROWS: u32 = 64;
+
 /// Rows no widget is bound to that one removal takes: their removal destroys
 /// and creates no widget (A110, A118), and costs LushText's mirror
 /// bookkeeping plus GTK's rb-tree removal (design D3, Prototype A: 4.9–6.6 ms
@@ -1112,6 +1121,7 @@ pub const COLLAPSE_UNBOUND_CHUNK_ROWS: u32 = 8_192;
 pub const COLLAPSE_FRAME_STARVATION_MS: u64 = 128;
 
 const _: () = assert!(DIRECT_COLLAPSE_ROWS <= SIDEBAR_REALIZED_ROWS_PER_FRAME);
+const _: () = assert!(SIDEBAR_REALIZED_ROWS_PER_FRAME <= COLLAPSE_DESTROY_ONLY_ROWS);
 
 /// One expanded store of a collapsing subtree, as GTK lists it now.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1136,6 +1146,16 @@ pub struct CollapseFacts<'a> {
     /// its focus row, the selection), strictly ascending; see
     /// [`collapse_band`].
     pub band: &'a [u32],
+    /// Flattened rows the model lists after the last realized row: the rows
+    /// a bound removal would bring into the band from below.
+    pub rows_after: u32,
+    /// Flattened rows the model lists before the first realized row: the
+    /// rows a bound removal could bring into the band from above, when the
+    /// removal shortens a view scrolled to its end and the view clamps.
+    /// A bound removal is destroy-only (design D18) when `rows_after` is zero
+    /// and at most one unit of rows lies before the band, so at most a unit
+    /// can enter whatever the view does.
+    pub rows_before: u32,
 }
 
 /// The one removal a collapse step applies.
@@ -1180,6 +1200,42 @@ pub fn collapse_band(mut positions: Vec<u32>) -> Vec<u32> {
     positions
 }
 
+/// The window-wide one-unit-per-frame token of one frame clock (design D4,
+/// R6.2, R6.3): the frame counter of the last frame a bound unit ran in, and
+/// whether a starved step took a unit since, which the next tick must not
+/// follow with another.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FrameUnitToken {
+    /// The frame counter of the last frame a unit ran in.
+    pub taken_frame: Option<i64>,
+    /// A starved step took a unit outside any frame since.
+    pub starved_unit_ran: bool,
+}
+
+/// Whether a tick in `frame` may take a unit, and the token after the tick
+/// read it (design R6.2, R6.3). A unit is free unless one already ran in this
+/// very frame; a stored counter **above** the clock's current one is stale
+/// (another clock, or one whose counter restarted) and frees the unit. A
+/// starved unit's flag is consumed by the first tick that reads it, which
+/// takes no unit, so two units never share one layout.
+#[must_use]
+pub const fn tick_takes_unit(token: FrameUnitToken, frame: i64) -> (bool, FrameUnitToken) {
+    if token.starved_unit_ran {
+        return (
+            false,
+            FrameUnitToken {
+                taken_frame: token.taken_frame,
+                starved_unit_ran: false,
+            },
+        );
+    }
+    let free = match token.taken_frame {
+        None => true,
+        Some(taken) => taken != frame,
+    };
+    (free, token)
+}
+
 /// The next removal of a collapse (design D4, D9):
 ///
 /// 1. the directory's whole remaining subtree is at most
@@ -1194,16 +1250,73 @@ pub fn collapse_band(mut positions: Vec<u32>) -> Vec<u32> {
 ///      → [`CollapseStep::RemoveUnbound`];
 ///    - else, every row of it held, its head rows down to
 ///      [`DIRECT_COLLAPSE_ROWS`] left, [`SIDEBAR_REALIZED_ROWS_PER_FRAME`] at
-///      most → [`CollapseStep::RemoveBound`].
+///      most, or [`COLLAPSE_DESTROY_ONLY_ROWS`] when the removal can only
+///      destroy row widgets ([`collapse_removal_is_destroy_only`], design
+///      D18) → [`CollapseStep::RemoveBound`].
 ///
 /// Allocation-free and integer-only, so Kani proves it directly (C1–C5,
 /// `policy/kani_proofs.rs`). With no store it collapses the row.
+/// ATTRIBUTION PATCH (not committed): the unit from `SLC_UNIT`, default the
+/// constant, and the direct cap at most the unit.
+#[must_use]
+pub fn slc_attribution_unit_rows() -> u32 {
+    static UNIT: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *UNIT.get_or_init(|| {
+        std::env::var("SLC_UNIT")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(SIDEBAR_REALIZED_ROWS_PER_FRAME)
+    })
+}
+
+/// ATTRIBUTION PATCH (not committed).
+#[must_use]
+pub fn slc_attribution_direct_rows() -> u32 {
+    DIRECT_COLLAPSE_ROWS.min(slc_attribution_unit_rows())
+}
+
+/// ATTRIBUTION PATCH (not committed): the destroy-only unit from
+/// `SLC_DESTROY`, default the constant.
+#[must_use]
+pub fn slc_attribution_destroy_only_rows() -> u32 {
+    static UNIT: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *UNIT.get_or_init(|| {
+        std::env::var("SLC_DESTROY")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(COLLAPSE_DESTROY_ONLY_ROWS)
+            .max(slc_attribution_unit_rows())
+    })
+}
+
+/// ATTRIBUTION PATCH (not committed): the unbound chunk from `SLC_CHUNK`,
+/// default the constant.
+#[must_use]
+pub fn slc_attribution_chunk_rows() -> u32 {
+    static UNIT: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *UNIT.get_or_init(|| {
+        std::env::var("SLC_CHUNK")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(COLLAPSE_UNBOUND_CHUNK_ROWS)
+    })
+}
+
+/// Whether a bound removal can only destroy row widgets (design D18): no
+/// row is listed after the band, and at most [`SIDEBAR_REALIZED_ROWS_PER_FRAME`]
+/// rows before it, which bounds what a view clamped at its end can bring in
+/// from above.
+#[must_use]
+pub const fn collapse_removal_is_destroy_only(facts: &CollapseFacts<'_>) -> bool {
+    facts.rows_after == 0 && facts.rows_before <= SIDEBAR_REALIZED_ROWS_PER_FRAME
+}
+
 #[must_use]
 pub fn next_collapse_step(facts: &CollapseFacts<'_>) -> CollapseStep {
     let Some(root) = facts.stores.first() else {
         return CollapseStep::CollapseRow;
     };
-    if root.span <= DIRECT_COLLAPSE_ROWS {
+    if root.span <= slc_attribution_direct_rows() {
         return CollapseStep::CollapseRow;
     }
     let mut chosen = 0;
@@ -1213,7 +1326,7 @@ pub fn next_collapse_step(facts: &CollapseFacts<'_>) -> CollapseStep {
         }
     }
     let store = facts.stores[chosen];
-    if chosen != 0 && store.length <= DIRECT_COLLAPSE_ROWS {
+    if chosen != 0 && store.length <= slc_attribution_direct_rows() {
         return CollapseStep::CollapseDescendant(chosen);
     }
     let first = store.first_row;
@@ -1230,24 +1343,29 @@ pub fn next_collapse_step(facts: &CollapseFacts<'_>) -> CollapseStep {
         }
     });
     if let Some((start, count)) = last_unheld {
-        let chunk = count.min(COLLAPSE_UNBOUND_CHUNK_ROWS);
+        let chunk = count.min(slc_attribution_chunk_rows());
         return CollapseStep::RemoveUnbound {
             store: chosen,
             start: start + count - chunk - first,
             count: chunk,
         };
     }
-    let surplus = store.length.saturating_sub(DIRECT_COLLAPSE_ROWS);
+    let surplus = store.length.saturating_sub(slc_attribution_direct_rows());
     if surplus == 0 {
         // The directory's own store, all held and small, under a span that
         // nothing above collapsed: only reachable with inconsistent facts
         // (a span larger than the stores account for). Collapse it.
         return CollapseStep::CollapseRow;
     }
+    let unit = if collapse_removal_is_destroy_only(facts) {
+        slc_attribution_destroy_only_rows()
+    } else {
+        slc_attribution_unit_rows()
+    };
     CollapseStep::RemoveBound {
         store: chosen,
         start: 0,
-        count: surplus.min(SIDEBAR_REALIZED_ROWS_PER_FRAME),
+        count: surplus.min(unit),
     }
 }
 
@@ -1275,7 +1393,93 @@ mod collapse_tests {
     }
 
     fn step(stores: &[CollapseStore], band: &[u32]) -> CollapseStep {
-        next_collapse_step(&CollapseFacts { stores, band })
+        next_collapse_step(&CollapseFacts {
+            stores,
+            band,
+            rows_after: 1,
+            rows_before: 0,
+        })
+    }
+
+    fn step_with(
+        stores: &[CollapseStore],
+        band: &[u32],
+        rows_before: u32,
+        rows_after: u32,
+    ) -> CollapseStep {
+        next_collapse_step(&CollapseFacts {
+            stores,
+            band,
+            rows_after,
+            rows_before,
+        })
+    }
+
+    /// Design D18: with every row of the store held, a removal with nothing
+    /// listed after the band and at most a unit before it takes the larger
+    /// destroy-only unit; a row after the band, or more than a unit before
+    /// it (a view clamped at its end refills from above), keeps the unit.
+    #[test]
+    fn a_removal_with_nothing_to_bring_in_takes_the_destroy_only_unit() {
+        let band: Vec<u32> = (10..311).collect();
+        let held = flat(300);
+        let destroy_only = CollapseStep::RemoveBound {
+            store: 0,
+            start: 0,
+            count: super::COLLAPSE_DESTROY_ONLY_ROWS,
+        };
+        let unit = CollapseStep::RemoveBound {
+            store: 0,
+            start: 0,
+            count: SIDEBAR_REALIZED_ROWS_PER_FRAME,
+        };
+        assert_eq!(step_with(&held, &band, 10, 0), destroy_only);
+        assert_eq!(
+            step_with(&held, &band, SIDEBAR_REALIZED_ROWS_PER_FRAME, 0),
+            destroy_only
+        );
+        assert_eq!(step_with(&held, &band, 10, 1), unit);
+        assert_eq!(
+            step_with(&held, &band, SIDEBAR_REALIZED_ROWS_PER_FRAME + 1, 0),
+            unit
+        );
+        // Never below the direct rows.
+        assert_eq!(
+            step_with(&flat(80), &(10..91).collect::<Vec<_>>(), 0, 0),
+            CollapseStep::RemoveBound {
+                store: 0,
+                start: 0,
+                count: 80 - DIRECT_COLLAPSE_ROWS,
+            }
+        );
+    }
+
+    /// Design R6.2, R6.3: one unit per frame of one clock; a counter that
+    /// moved on (or back: another clock, a restarted one) frees it; a
+    /// starved unit makes the next tick take none, once.
+    #[test]
+    fn the_frame_unit_token_frees_one_unit_per_frame() {
+        use super::{FrameUnitToken, tick_takes_unit};
+        let fresh = FrameUnitToken::default();
+        assert_eq!(tick_takes_unit(fresh, 7), (true, fresh));
+        let taken = FrameUnitToken {
+            taken_frame: Some(7),
+            starved_unit_ran: false,
+        };
+        assert!(!tick_takes_unit(taken, 7).0, "one unit per frame");
+        assert!(tick_takes_unit(taken, 8).0, "the next frame frees it");
+        assert!(
+            tick_takes_unit(taken, 3).0,
+            "a stored counter above the clock's is stale and frees the unit"
+        );
+        let starved = FrameUnitToken {
+            taken_frame: Some(7),
+            starved_unit_ran: true,
+        };
+        let (free, after) = tick_takes_unit(starved, 9);
+        assert!(!free, "the tick after a starved unit takes none");
+        assert_eq!(after, taken, "and consumes the flag");
+        assert!(tick_takes_unit(after, 10).0);
     }
 
     #[test]
@@ -1580,7 +1784,10 @@ mod collapse_tests {
             loop {
                 let stores = subtree.stores();
                 let held = model.positions(subtree.directory);
-                let next = step(&stores, &held);
+                let band_end = (model.top + model.band).min(model.total);
+                let rows_before = model.top;
+                let rows_after = model.total - band_end;
+                let next = step_with(&stores, &held, rows_before, rows_after);
                 let bound_in = |start: u32, count: u32| -> u32 {
                     u32::try_from(
                         held.iter().filter(|p| **p >= start && **p < start + count).count(),
@@ -1614,11 +1821,30 @@ mod collapse_tests {
                             prop_assert!(count <= COLLAPSE_UNBOUND_CHUNK_ROWS);
                             unbound_steps += 1;
                         } else {
-                            prop_assert!(count <= SIDEBAR_REALIZED_ROWS_PER_FRAME);
+                            let destroy_only = rows_after == 0
+                                && rows_before <= SIDEBAR_REALIZED_ROWS_PER_FRAME;
+                            let cap = if destroy_only {
+                                super::COLLAPSE_DESTROY_ONLY_ROWS
+                            } else {
+                                SIDEBAR_REALIZED_ROWS_PER_FRAME
+                            };
+                            prop_assert!(count <= cap);
                             prop_assert!(facts.length - count >= DIRECT_COLLAPSE_ROWS);
                             unit_steps += 1;
                         }
+                        // Rows of the old band that stay, against the new
+                        // band: the rest entered it (design D2, D18).
+                        let removed_in_band = band_end
+                            .min(flat_start + count)
+                            .saturating_sub(model.top.max(flat_start));
+                        let surviving = band_end - model.top - removed_in_band;
                         model.remove(flat_start, count);
+                        let new_band = (model.top + model.band).min(model.total) - model.top;
+                        let entering = new_band.saturating_sub(surviving);
+                        prop_assert!(
+                            entering <= SIDEBAR_REALIZED_ROWS_PER_FRAME,
+                            "{entering} rows entered the band in one step"
+                        );
                         if store == 1 {
                             let (at, rows) = subtree.child.expect("the child store");
                             subtree.child = Some((at, rows - count));

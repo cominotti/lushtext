@@ -1100,6 +1100,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/ui/sidebar/policy.rs` | `PERSIST_DEBOUNCE_MS` | 150 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
 | `crates/lushtext-core/src/ui/sidebar/policy.rs` | `DIRECT_COLLAPSE_ROWS` | 32 | cap | power of two, rounded down; rows at or below which a collapse is GTK's direct `set_expanded(false)`, at most one unit (`slice-large-directory-collapse` D3) |
 | `crates/lushtext-core/src/ui/sidebar/policy.rs` | `SIDEBAR_REALIZED_ROWS_PER_FRAME` | 32 | cap | power of two, rounded down; bound rows one collapse step removes, so the row widgets a frame creates (A118; `slice-large-directory-collapse` D3) |
+| `crates/lushtext-core/src/ui/sidebar/policy.rs` | `COLLAPSE_DESTROY_ONLY_ROWS` | 64 | cap | power of two, rounded down; bound rows a collapse step removes when no row enters the band, a destroy-only removal (`slice-large-directory-collapse` D18) |
 | `crates/lushtext-core/src/ui/sidebar/policy.rs` | `COLLAPSE_UNBOUND_CHUNK_ROWS` | 8,192 | cap | power of two, rounded down; unbound rows one removal takes, half of the 16,384 that fit the turn slice (`slice-large-directory-collapse` D3) |
 | `crates/lushtext-core/src/ui/sidebar/policy.rs` | `COLLAPSE_FRAME_STARVATION_MS` | 128 | out: time | time unit; how long a mapped list may go without a frame tick before the fallback steps (`slice-large-directory-collapse` D4) |
 | `crates/lushtext-core/src/ui/sidebar/policy.rs` | `REVEAL_SETTLE_FRAME_BUDGET` | 64 | coverage window | rounded up (D5) |
@@ -1140,7 +1141,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `CHILD_APPEND_BATCH_SIZE` | 256 | cap | power of two |
 | `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `STALE_CACHE_ROWS_PER_UNIT` | 4,096 | cap | power of two; a superseded store's cached rows forgotten per unit of a load (`bound-lists-by-budget-not-count`) |
 | `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `RETIRED_LISTING_ROWS_PER_UNIT` | 4,096 | cap | power of two; a collapsed directory's retired store items or mirror rows dropped per unit of a low-priority retirement turn (`bound-lists-by-budget-not-count`, stage 4 review) |
-| `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `FIRST_BATCH_ROWS` | 32 | cap | power of two; the first rows of an empty directory, while the list creates its row widgets (`bound-lists-by-budget-not-count`) |
+| `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `FIRST_BATCH_ROWS` | 32 | derived | `SIDEBAR_REALIZED_ROWS_PER_FRAME`; rows per batch, one batch a frame, while an empty directory receives its first rows (`bound-lists-by-budget-not-count`; `slice-large-directory-collapse` D10) |
 | `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `CHILD_RECONCILE_DIRECT_ROWS` | 256 | cap | power of two |
 
 ### `crates/lushtext-core/src/ui/sidebar/workspace_section/watch.rs`

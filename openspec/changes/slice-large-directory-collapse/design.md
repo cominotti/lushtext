@@ -1116,6 +1116,52 @@ Recorded at stage 3 (implementation), each with its evidence.
     second frame under 4,096 rows left). Whether that satisfies the scenario
     or the scenario must say "the first step runs in the gap after the
     first frame" was left to the reviewing stage; R9 took it.
+19. **The inline-rename CRITICAL flood is pre-existing, and fixed here
+    (task 9.12, 2026-11-17).** The rename's focus-leave handler removed the
+    entry from its row inside GTK's focus crossing; the crossing's IN-phase
+    loop (`synthesize_focus_change_events`, gtkwindow.c, GTK 4.24.1) then
+    walks parents from a widget that has none and spins on
+    `gtk_widget_get_parent: assertion 'GTK_IS_WIDGET (widget)' failed`. The
+    same flood reproduces on `main` (`c16d6fdc`), so it is not this change's;
+    `preexisting-blockers.md` puts it in scope anyway. Two triggers, each with
+    a deterministic test: any focus move out of the entry, and a background
+    child-state restore that scrolls with `FOCUS`. Fix: the teardown runs from
+    an idle and only if the window's focus is no longer in the entry (a check
+    of `GtkEventControllerFocus`'s `contains-focus` failed: window
+    deactivation also emits `leave`), and `restore_selection` selects and
+    scrolls without `FOCUS` while the focus is inside a row. The widget
+    harness's `LogCapture` now aborts a run after 4,096 captured warnings, so
+    a flood fails one test instead of filling the disk. Latent and harmless,
+    recorded for the follow-ups: the rename's focus controller is attached
+    after `grab_focus`, so in a window not activated since the rename began a
+    click elsewhere does not end the rename.
+20. **The expansion cap goes through the batch path BL already had (task
+    6.1).** A load into an empty listing of more than one unit no longer
+    takes the direct splice (which put up to 256 rows into one frame, 203
+    row widgets measured), and every warming-up batch waits past a frame on
+    BL's 20 ms timer, which already gives one frame per batch (two painted
+    frames per batch in the test's trace), so `ui/list_growth.rs`'s tick
+    pacing is not needed. `FIRST_BATCH_ROWS` is now derived from
+    `SIDEBAR_REALIZED_ROWS_PER_FRAME`, so task 10.7 decides one unit for
+    collapse steps and expansion batches; the attribution hook does not move
+    it (compile-time), so 10.7 measures the capped expansion at unit 32 only.
+    A refresh that changes at most 256 rows of a listing that is not empty
+    keeps the direct splice: it is not an expansion.
+21. **The verdict timeline reads no evidence before the completing frame
+    (task 10.1).** The convention forbids a per-field `*_for_test` getter, so
+    instead of a scalar probe the surface's own cost moved: a listing's
+    `directory_listing_evidence` reads only its placeholder tail (placeholders
+    only ever end a listing), and the timeline attributes scan terminals per
+    dispatch only from the completing frame on, counting earlier ones once
+    (`terminals_before_shown`). The D12 residual lands 430-480 ms after the
+    completing frame in every 0:131,072 rep of `rev/attr2/slc-d19a-2.log`,
+    so no residual attribution is lost. The `done` predicates read the row's
+    expansion first and the evidence only once the row is collapsed.
+22. **Task 10.4 was not started in the 2026-11-17 stage**, which spent its
+    quiet-machine-independent time on 9.12, 9.1, 6.1 and the instruments;
+    its queued 10.7 round is marked NOT READY until the next stage puts the
+    lighter rows in the round's binary, because 10.7's frame margin is
+    10.4's.
 
 ## Stage 4 verdict (2026-11-15): pass bar not met, back to implementation
 

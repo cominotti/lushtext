@@ -58,7 +58,7 @@
 //!   GTK removes what is left directly.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -71,8 +71,8 @@ use super::LushtextWorkspaceSection;
 use crate::model::list_budget::turn_continues;
 use crate::ui::accessibility;
 use crate::ui::sidebar::policy::{
-    COLLAPSE_FRAME_STARVATION_MS, CollapseFacts, CollapseStep, CollapseStore, DIRECT_COLLAPSE_ROWS,
-    SIDEBAR_REALIZED_ROWS_PER_FRAME, collapse_band, next_collapse_step,
+    COLLAPSE_FRAME_STARVATION_MS, CollapseFacts, CollapseStep, CollapseStore, FrameUnitToken,
+    collapse_band, next_collapse_step, tick_takes_unit,
 };
 
 /// The expander class whose application CSS draws the checked arrow as
@@ -148,6 +148,10 @@ struct CollapseRecord {
     origin: CollapseOrigin,
     /// The expanded descendant rows captured at the start, shallowest first.
     descendants: Vec<ExpandedDescendant>,
+    /// Collapsing descendants this collapse took over, with their routes: a
+    /// re-expansion of this directory collapses them again, since the user
+    /// collapsed them first (design R6.4).
+    taken_over: Vec<(PathBuf, CollapseOrigin)>,
     steps: u64,
     rows_left: u32,
     bound_rows_left: u32,
@@ -164,46 +168,121 @@ pub(super) struct CollapseRuntimeState {
     collapsing_paths: RefCell<HashSet<PathBuf>>,
     tick: RefCell<Option<gtk4::TickCallbackId>>,
     fallback: RefCell<Option<glib::SourceId>>,
+    /// The `G_PRIORITY_DEFAULT_IDLE` source removing unbound rows between
+    /// frames (design D19), while one is armed.
+    between: RefCell<Option<glib::SourceId>>,
     /// `g_get_monotonic_time()` of the last step source run.
     last_step_us: Cell<i64>,
     last_end: Cell<Option<CollapseEnd>>,
     steps_total: Cell<u64>,
     direct_total: Cell<u64>,
     starved_steps_total: Cell<u64>,
+    /// Steps the between-frames idle ran (design D19, task 10.3).
+    between_steps_total: Cell<u64>,
+    /// The longest `run_collapse_step` call since the queue last went from
+    /// empty to running, in microseconds of `glib::monotonic_time` around
+    /// the call (never read from GTK): the step's own time against
+    /// `B_INTERACT_US`, apart from the frame that carries it (design D2,
+    /// task 10.1).
+    step_us_max: Cell<u64>,
+}
+
+/// The collapse queue and its totals, as the evidence reports them.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CollapseTotals {
+    /// Running collapses in request order.
+    pub collapses: Vec<CollapseEvidence>,
+    /// Why the most recent collapse ended.
+    pub last_end: Option<CollapseEnd>,
+    /// Collapse steps taken.
+    pub steps_total: u64,
+    /// Collapses GTK's direct call made whole.
+    pub direct_total: u64,
+    /// Steps the low-priority fallback ran.
+    pub starved_steps_total: u64,
+    /// Steps the between-frames idle ran: unbound chunks removed outside
+    /// any frame (design D19).
+    pub between_steps_total: u64,
+    /// The longest step since the queue last started running, in
+    /// microseconds.
+    pub step_us_max: u64,
 }
 
 thread_local! {
-    /// The frame counter, per frame clock, of the last frame a bound unit
-    /// ran in: the window-wide one-unit-per-frame token (design D4). A
-    /// starved step stores the next frame's counter, so the first tick after
-    /// it takes no unit.
-    static UNIT_FRAMES: RefCell<HashMap<usize, i64>> = RefCell::new(HashMap::new());
+    /// The window-wide one-unit-per-frame token (design D4), one entry per
+    /// live frame clock, keyed by a weak reference so a closed window's entry
+    /// goes with its clock (design R6.3).
+    static UNIT_TOKENS: RefCell<Vec<(glib::WeakRef<gtk4::gdk::FrameClock>, FrameUnitToken)>> =
+        const { RefCell::new(Vec::new()) };
 }
 
-fn clock_key(clock: &gtk4::gdk::FrameClock) -> usize {
-    clock.as_ptr() as usize
-}
-
-fn unit_free_in_frame(clock: &gtk4::gdk::FrameClock) -> bool {
-    let frame = clock.frame_counter();
-    UNIT_FRAMES.with(|frames| {
-        frames
-            .borrow()
-            .get(&clock_key(clock))
-            .is_none_or(|taken| *taken < frame)
+/// Read and update `clock`'s token through `update`, dropping dead clocks'.
+fn with_unit_token<T>(
+    clock: &gtk4::gdk::FrameClock,
+    update: impl FnOnce(FrameUnitToken) -> (T, FrameUnitToken),
+) -> T {
+    UNIT_TOKENS.with(|tokens| {
+        let mut tokens = tokens.borrow_mut();
+        tokens.retain(|(weak, _)| weak.upgrade().is_some());
+        let index = tokens
+            .iter()
+            .position(|(weak, _)| weak.upgrade().as_ref() == Some(clock));
+        let token = index.map_or_else(FrameUnitToken::default, |index| tokens[index].1);
+        let (result, token) = update(token);
+        match index {
+            Some(index) => tokens[index].1 = token,
+            None => tokens.push((clock.downgrade(), token)),
+        }
+        result
     })
 }
 
-fn take_unit(clock: &gtk4::gdk::FrameClock, frame: i64) {
-    UNIT_FRAMES.with(|frames| {
-        let mut frames = frames.borrow_mut();
-        // One entry per window that ever collapsed; drop the rest if a
-        // long session accumulates windows.
-        if frames.len() > 64 {
-            frames.clear();
-        }
-        frames.insert(clock_key(clock), frame);
+/// Whether a tick of `clock` may take a unit now (`policy::tick_takes_unit`).
+fn tick_unit_free(clock: &gtk4::gdk::FrameClock) -> bool {
+    let frame = clock.frame_counter();
+    with_unit_token(clock, |token| tick_takes_unit(token, frame))
+}
+
+/// Record that a tick of `clock` took a unit in its current frame.
+fn record_tick_unit(clock: &gtk4::gdk::FrameClock) {
+    let frame = clock.frame_counter();
+    with_unit_token(clock, |token| {
+        (
+            (),
+            FrameUnitToken {
+                taken_frame: Some(frame),
+                ..token
+            },
+        )
     });
+}
+
+/// Record that a starved step took a unit outside any frame of `clock`, so
+/// the next tick takes none (design R6.2).
+fn record_starved_unit(clock: &gtk4::gdk::FrameClock) {
+    with_unit_token(clock, |token| {
+        (
+            (),
+            FrameUnitToken {
+                starved_unit_ran: true,
+                ..token
+            },
+        )
+    });
+}
+
+/// Which source runs a step, and so which steps it may take (design D4,
+/// D19).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StepSource {
+    /// The frame tick: at most one bound unit, no unbound chunk (those run
+    /// between frames).
+    Tick { unit_allowed: bool },
+    /// The idle between frames: unbound chunks only, while the turn lasts.
+    Between,
+    /// The low-priority fallback (unmapped list, or a mapped list's clock
+    /// starved): unbound chunks and at most one bound unit.
+    Fallback { starved: bool },
 }
 
 /// What one step reads from GTK: the policy's facts plus the objects they
@@ -213,6 +292,10 @@ struct StepFacts {
     store_objects: Vec<gio::ListStore>,
     rows: Vec<gtk4::TreeListRow>,
     band: Vec<u32>,
+    /// Flattened rows after the last realized row (design D18).
+    rows_after: u32,
+    /// Flattened rows before the first realized row (design D18).
+    rows_before: u32,
 }
 
 impl LushtextWorkspaceSection {
@@ -235,6 +318,10 @@ impl LushtextWorkspaceSection {
         origin: CollapseOrigin,
     ) {
         let mut direct_rows = 0u32;
+        let runtime = &self.imp().collapse_runtime;
+        if runtime.queue.borrow().is_empty() {
+            runtime.step_us_max.set(0);
+        }
         for row in rows {
             let Some(path) = directory_path(row) else {
                 continue;
@@ -244,14 +331,15 @@ impl LushtextWorkspaceSection {
             }
             let Some((span, descendants)) = self.capture_subtree(row, &path) else {
                 // The subtree's rows could not be located (a path shown twice by
-                // overlapping folders): GTK's direct collapse, as before.
-                self.move_selection_and_focus_to(row, u32::MAX);
+                // overlapping folders): GTK's direct collapse, as before,
+                // leaving selection and focus where they are (design R6.10).
                 self.collapse_now(row);
                 continue;
             };
             self.move_selection_and_focus_to(row, span);
-            if span <= DIRECT_COLLAPSE_ROWS
-                && direct_rows.saturating_add(span) <= SIDEBAR_REALIZED_ROWS_PER_FRAME
+            if span <= crate::ui::sidebar::policy::slc_attribution_direct_rows()
+                && direct_rows.saturating_add(span)
+                    <= crate::ui::sidebar::policy::slc_attribution_unit_rows()
             {
                 direct_rows += span;
                 self.collapse_now(row);
@@ -277,6 +365,7 @@ impl LushtextWorkspaceSection {
         // ancestor) still needs its own expansion.
         if !row.is_expanded() && row.position() != gtk4::INVALID_LIST_POSITION {
             row.set_expanded(true);
+            self.record_entry_point_transition(row);
         }
         row.is_expanded()
     }
@@ -285,6 +374,44 @@ impl LushtextWorkspaceSection {
     /// collapsing.
     pub(in crate::ui::sidebar) fn row_shows_expanded(&self, row: &gtk4::TreeListRow) -> bool {
         row.is_expanded() && directory_path(row).is_none_or(|path| !self.path_is_collapsing(&path))
+    }
+
+    /// Whether `row` lies strictly inside a collapsing subtree: its
+    /// disclosure routes do nothing (design R6.5).
+    pub(in crate::ui::sidebar) fn row_inside_collapsing_subtree(
+        &self,
+        row: &gtk4::TreeListRow,
+    ) -> bool {
+        let Some(path) = row
+            .item()
+            .and_downcast::<FileTreeItem>()
+            .and_then(|item| item.path())
+        else {
+            return false;
+        };
+        path.parent()
+            .is_some_and(|parent| self.path_is_collapsing(parent))
+    }
+
+    /// Collapse `row` again, from an idle, after GTK expanded it inside a
+    /// collapsing subtree (design R6.7): its store holds at most a loading
+    /// row, and collapsing inside the `notify::expanded` that reported the
+    /// expansion would re-enter the tree list model.
+    pub(super) fn undo_expansion_inside_collapse(&self, row: &gtk4::TreeListRow) {
+        let section = self.downgrade();
+        let row = row.downgrade();
+        glib::idle_add_local_once(move || {
+            let (Some(section), Some(row)) = (section.upgrade(), row.upgrade()) else {
+                return;
+            };
+            if row.is_expanded() && section.row_inside_collapsing_subtree(&row) {
+                if let Some(path) = directory_path(&row) {
+                    section.stop_subtree_work(&path);
+                }
+                row.set_expanded(false);
+                section.refresh_workspace_watch_row(&row);
+            }
+        });
     }
 
     /// Whether `path` is collapsing or lies under a collapsing directory.
@@ -305,13 +432,10 @@ impl LushtextWorkspaceSection {
         expander: &gtk4::TreeExpander,
         row: &gtk4::TreeListRow,
     ) {
-        let collapsing = directory_path(row).is_some_and(|path| {
-            self.imp()
-                .collapse_runtime
-                .collapsing_paths
-                .borrow()
-                .contains(&path)
-        });
+        // A collapsing directory and every expanded directory inside its
+        // subtree show collapsed (design R6.5).
+        let collapsing = row.is_expanded()
+            && directory_path(row).is_some_and(|path| self.path_is_collapsing(&path));
         if collapsing {
             expander.add_css_class(COLLAPSING_CLASS);
             accessibility::set_expanded(overlay, Some(false));
@@ -328,9 +452,7 @@ impl LushtextWorkspaceSection {
 
     /// The collapse queue and totals, for the evidence surface. Reads only
     /// `Cell`/`RefCell` state.
-    pub(crate) fn collapse_evidence(
-        &self,
-    ) -> (Vec<CollapseEvidence>, Option<CollapseEnd>, u64, u64, u64) {
+    pub(crate) fn collapse_evidence(&self) -> CollapseTotals {
         let runtime = &self.imp().collapse_runtime;
         let collapses = runtime
             .queue
@@ -344,13 +466,15 @@ impl LushtextWorkspaceSection {
                 bound_rows_left: record.bound_rows_left,
             })
             .collect();
-        (
+        CollapseTotals {
             collapses,
-            runtime.last_end.get(),
-            runtime.steps_total.get(),
-            runtime.direct_total.get(),
-            runtime.starved_steps_total.get(),
-        )
+            last_end: runtime.last_end.get(),
+            steps_total: runtime.steps_total.get(),
+            direct_total: runtime.direct_total.get(),
+            starved_steps_total: runtime.starved_steps_total.get(),
+            between_steps_total: runtime.between_steps_total.get(),
+            step_us_max: runtime.step_us_max.get(),
+        }
     }
 
     /// End every collapse: the model is being reset or the section disposed.
@@ -376,8 +500,7 @@ impl LushtextWorkspaceSection {
             runtime.last_step_us.set(glib::monotonic_time());
         }
         let list = &*self.imp().file_tree_view;
-        let ticks = frame_ticks_allowed();
-        if ticks && list.is_mapped() && runtime.tick.borrow().is_none() {
+        if frame_ticks_allowed() && list.is_mapped() && runtime.tick.borrow().is_none() {
             let section = self.downgrade();
             let id = list.add_tick_callback(move |_, clock| {
                 let Some(section) = section.upgrade() else {
@@ -388,10 +511,13 @@ impl LushtextWorkspaceSection {
                     .collapse_runtime
                     .last_step_us
                     .set(glib::monotonic_time());
-                let unit = unit_free_in_frame(clock);
-                if section.run_collapse_step(unit, false) {
-                    take_unit(clock, clock.frame_counter());
+                let unit_allowed = tick_unit_free(clock);
+                if section.run_collapse_step(StepSource::Tick { unit_allowed }) {
+                    record_tick_unit(clock);
                 }
+                // The unit may have left unbound rows to remove (a drained
+                // descendant collapsed, the next store's tail).
+                section.arm_between_frames_source();
                 if section.imp().collapse_runtime.queue.borrow().is_empty() {
                     section.imp().collapse_runtime.tick.borrow_mut().take();
                     section.stop_collapse_sources();
@@ -401,6 +527,7 @@ impl LushtextWorkspaceSection {
             });
             runtime.tick.replace(Some(id));
         }
+        self.arm_between_frames_source();
         if runtime.fallback.borrow().is_none() {
             let section = self.downgrade();
             let id = glib::timeout_add_local_full(
@@ -423,6 +550,30 @@ impl LushtextWorkspaceSection {
         }
     }
 
+    /// Arm the idle that removes unbound rows between frames (design D19):
+    /// they create no row widget (A118), so they need no frame, and below
+    /// the frame clock's priority they never delay one. It stops at the
+    /// first turn that finds only unit steps; the tick re-arms it.
+    fn arm_between_frames_source(&self) {
+        let runtime = &self.imp().collapse_runtime;
+        if runtime.queue.borrow().is_empty() || runtime.between.borrow().is_some() {
+            return;
+        }
+        let section = self.downgrade();
+        let id = glib::idle_add_local_full(glib::Priority::DEFAULT_IDLE, move || {
+            let Some(section) = section.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            let worked = section.run_between_frames_step();
+            if worked && !section.imp().collapse_runtime.queue.borrow().is_empty() {
+                return glib::ControlFlow::Continue;
+            }
+            section.imp().collapse_runtime.between.borrow_mut().take();
+            glib::ControlFlow::Break
+        });
+        runtime.between.replace(Some(id));
+    }
+
     fn stop_collapse_sources(&self) {
         let runtime = &self.imp().collapse_runtime;
         if let Some(tick) = runtime.tick.borrow_mut().take() {
@@ -431,18 +582,29 @@ impl LushtextWorkspaceSection {
         if let Some(source) = runtime.fallback.borrow_mut().take() {
             source.remove();
         }
+        if let Some(source) = runtime.between.borrow_mut().take() {
+            source.remove();
+        }
         runtime.last_step_us.set(0);
     }
 
+    /// One turn of the between-frames idle; whether it removed any rows.
+    fn run_between_frames_step(&self) -> bool {
+        let before = self.imp().collapse_runtime.steps_total.get();
+        self.run_collapse_step(StepSource::Between);
+        self.imp().collapse_runtime.steps_total.get() != before
+    }
+
     /// The fallback: steps while nothing draws the list, or once a mapped
-    /// list's frame clock has starved (design D4).
+    /// list's frame clock has starved (design D4). A starved step takes a
+    /// unit whatever the token holds, and flags it so the next tick takes
+    /// none (design R6.2).
     fn run_fallback_step(&self) {
         let runtime = &self.imp().collapse_runtime;
         let list = &*self.imp().file_tree_view;
         let now = glib::monotonic_time();
-        let ticks = frame_ticks_allowed();
-        if list.is_mapped() && ticks {
-            if runtime.tick.borrow().is_none() {
+        if list.is_mapped() && !frame_ticks_off_unmapped() {
+            if frame_ticks_allowed() && runtime.tick.borrow().is_none() {
                 // Mapped again since the last check: pace from frames.
                 self.arm_collapse_source();
             }
@@ -453,27 +615,39 @@ impl LushtextWorkspaceSection {
                 return;
             }
             runtime.last_step_us.set(now);
-            let clock = list.frame_clock();
-            let unit = clock.as_ref().is_none_or(unit_free_in_frame);
-            if self.run_collapse_step(unit, true)
-                && let Some(clock) = clock
+            if self.run_collapse_step(StepSource::Fallback { starved: true })
+                && let Some(clock) = list.frame_clock()
             {
-                take_unit(&clock, clock.frame_counter().saturating_add(1));
+                record_starved_unit(&clock);
             }
             return;
         }
         runtime.last_step_us.set(now);
         let starved = list.is_mapped();
-        self.run_collapse_step(true, starved);
+        self.run_collapse_step(StepSource::Fallback { starved });
     }
 
-    /// One step over the queue: unbound chunks while the turn lasts, and at
-    /// most one bound unit if `unit_allowed`. Returns whether a unit ran.
-    fn run_collapse_step(&self, unit_allowed: bool, starved: bool) -> bool {
+    /// One step over the queue from `source`: unbound chunks while the turn
+    /// lasts, and at most one bound unit, as `source` allows. Returns
+    /// whether a unit ran.
+    fn run_collapse_step(&self, source: StepSource) -> bool {
         if steps_held() {
             return false;
         }
         let started = glib::monotonic_time();
+        let unit_taken = self.run_collapse_step_from(started, source);
+        let took = u64::try_from(glib::monotonic_time().saturating_sub(started)).unwrap_or(0);
+        let runtime = &self.imp().collapse_runtime;
+        runtime.step_us_max.set(runtime.step_us_max.get().max(took));
+        unit_taken
+    }
+
+    fn run_collapse_step_from(&self, started: i64, source: StepSource) -> bool {
+        let (unbound_allowed, unit_allowed, starved) = match source {
+            StepSource::Tick { unit_allowed } => (false, unit_allowed, false),
+            StepSource::Between => (true, false, false),
+            StepSource::Fallback { starved } => (true, true, starved),
+        };
         let mut chunks = 0usize;
         let mut unit_taken = false;
         let mut index = 0;
@@ -503,6 +677,8 @@ impl LushtextWorkspaceSection {
                 let step = next_collapse_step(&CollapseFacts {
                     stores: &facts.stores,
                     band: &facts.band,
+                    rows_after: facts.rows_after,
+                    rows_before: facts.rows_before,
                 });
                 record.rows_left = facts.stores.first().map_or(0, |store| store.span);
                 record.bound_rows_left = held_in(&facts);
@@ -511,6 +687,9 @@ impl LushtextWorkspaceSection {
                         break;
                     }
                     unit_taken = true;
+                } else if !unbound_allowed {
+                    // Unbound rows leave between frames (design D19).
+                    break;
                 }
                 record.steps += 1;
                 runtime.steps_total.set(runtime.steps_total.get() + 1);
@@ -518,6 +697,11 @@ impl LushtextWorkspaceSection {
                     runtime
                         .starved_steps_total
                         .set(runtime.starved_steps_total.get() + 1);
+                }
+                if matches!(source, StepSource::Between) {
+                    runtime
+                        .between_steps_total
+                        .set(runtime.between_steps_total.get() + 1);
                 }
                 chunks += 1;
                 match step {
@@ -547,11 +731,13 @@ impl LushtextWorkspaceSection {
                         let row = facts.rows[store].clone();
                         drop(facts);
                         row.set_expanded(false);
+                        self.record_entry_point_transition(&row);
                     }
                     CollapseStep::CollapseRow => {
                         let row = facts.rows[0].clone();
                         drop(facts);
                         row.set_expanded(false);
+                        self.record_entry_point_transition(&row);
                         record.rows_left = 0;
                         record.bound_rows_left = 0;
                         ended = Some(CollapseEnd::Completed);
@@ -618,6 +804,8 @@ impl LushtextWorkspaceSection {
             stores[parent].span = stores[parent].span.saturating_add(stores[index].span);
         }
         let mut band = Vec::with_capacity(256);
+        let mut first_realized = None::<u32>;
+        let mut last_realized = None::<u32>;
         super::for_each_realized_file_row_overlay(self, |overlay| {
             if let Some(row) = overlay
                 .child()
@@ -627,9 +815,21 @@ impl LushtextWorkspaceSection {
                 let position = row.position();
                 if position != gtk4::INVALID_LIST_POSITION {
                     band.push(position);
+                    last_realized = Some(last_realized.map_or(position, |last| last.max(position)));
+                    first_realized =
+                        Some(first_realized.map_or(position, |first| first.min(position)));
                 }
             }
         });
+        let listed = self
+            .imp()
+            .tree_model
+            .try_borrow()
+            .ok()
+            .and_then(|model| model.as_ref().map(ListModelExt::n_items))
+            .unwrap_or(0);
+        let rows_after = last_realized.map_or(listed, |last| listed.saturating_sub(last + 1));
+        let rows_before = first_realized.unwrap_or(0);
         if let Some(selection) = self
             .imp()
             .file_tree_view
@@ -646,6 +846,8 @@ impl LushtextWorkspaceSection {
             store_objects,
             rows,
             band: collapse_band(band),
+            rows_after,
+            rows_before,
         })
     }
 
@@ -757,8 +959,19 @@ impl LushtextWorkspaceSection {
             self.stop_subtree_work(&path);
         }
         row.set_expanded(false);
+        self.record_entry_point_transition(row);
         let runtime = &self.imp().collapse_runtime;
         runtime.direct_total.set(runtime.direct_total.get() + 1);
+    }
+
+    /// Record the expansion intent of a transition an entry point made, and
+    /// refresh the row's own watch contribution (design R4, D20). The row's
+    /// expansion hook does both for a row object it lives on, but GTK hands
+    /// out a fresh row object, without the hook, for a row no widget shows
+    /// (ledger A114); both calls are idempotent with the hook's.
+    fn record_entry_point_transition(&self, row: &gtk4::TreeListRow) {
+        self.record_row_expansion_transition(row);
+        self.refresh_workspace_watch_row(row);
     }
 
     /// Stage 1 of a sliced collapse (design D6, D7).
@@ -772,44 +985,57 @@ impl LushtextWorkspaceSection {
         let imp = self.imp();
         // A collapsing descendant is taken over: its rows are drained as part
         // of this subtree, and it keeps its collapsed projection.
-        let taken_over: Vec<usize> = imp
-            .collapse_runtime
-            .queue
-            .borrow()
-            .iter()
-            .enumerate()
-            .filter(|(_, record)| record.path.starts_with(&path))
-            .map(|(index, _)| index)
-            .collect();
-        for index in taken_over.into_iter().rev() {
-            imp.collapse_runtime.queue.borrow_mut().remove(index);
-            imp.collapse_runtime
-                .last_end
-                .set(Some(CollapseEnd::TakenOver));
+        let mut taken_over = Vec::new();
+        {
+            let mut queue = imp.collapse_runtime.queue.borrow_mut();
+            let mut index = 0;
+            while index < queue.len() {
+                if queue[index].path.starts_with(&path) {
+                    let record = queue.remove(index);
+                    taken_over.push((record.path, record.origin));
+                    taken_over.extend(record.taken_over);
+                    imp.collapse_runtime
+                        .last_end
+                        .set(Some(CollapseEnd::TakenOver));
+                } else {
+                    index += 1;
+                }
+            }
         }
         imp.collapse_runtime
             .collapsing_paths
             .borrow_mut()
             .insert(path.clone());
-        self.project_collapsing(row, true);
+        self.reproject_realized_rows();
         // Intent: the subtree is collapsed from now on.
         imp.expanded_paths
             .borrow_mut()
             .retain(|candidate| !candidate.starts_with(&path));
         // No load, scan or refresh may append to a store being drained.
         self.stop_subtree_work(&path);
-        imp.collapse_runtime
-            .queue
-            .borrow_mut()
-            .push(CollapseRecord {
+        // Several collapses drain bottom-up (design R5, D7): a later
+        // subtree's rows leave while unbound, so an earlier one's units bring
+        // in only rows already collapsed. Removals never reorder two disjoint
+        // subtrees, so the order holds for the queue's lifetime.
+        let position = row.position();
+        let mut queue = imp.collapse_runtime.queue.borrow_mut();
+        let at = queue
+            .iter()
+            .position(|record| record.row.position() < position)
+            .unwrap_or(queue.len());
+        queue.insert(
+            at,
+            CollapseRecord {
                 row: row.clone(),
                 path,
                 origin,
                 descendants,
+                taken_over,
                 steps: 0,
                 rows_left: 0,
                 bound_rows_left: 0,
-            });
+            },
+        );
     }
 
     /// Cancel every scan, load turn and queued refresh target in the subtree
@@ -842,7 +1068,7 @@ impl LushtextWorkspaceSection {
             .borrow_mut()
             .retain(|candidate| !candidate.starts_with(&record.path));
         runtime.last_end.set(Some(end));
-        self.project_collapsing(&record.row, false);
+        self.reproject_realized_rows();
     }
 
     /// End every collapse whose subtree holds `path` because `path` is being
@@ -871,16 +1097,42 @@ impl LushtextWorkspaceSection {
                 .retain(|candidate| !path.starts_with(candidate));
             return;
         }
+        let mut recollapse: Vec<(gtk4::TreeListRow, CollapseOrigin)> = Vec::new();
         for record in covering {
             self.finish_collapse(&record, CollapseEnd::ReExpanded);
             let root = record.row.clone();
             if !root.is_expanded() {
                 continue;
             }
+            // A taken-over descendant the expansion does not reach ends as
+            // the user left it: collapsed (design R6.4).
+            let stays_collapsed = |candidate: &Path| {
+                record
+                    .taken_over
+                    .iter()
+                    .any(|(taken, _)| candidate.starts_with(taken) && !path.starts_with(taken))
+            };
             let mut refill = vec![(record.path.clone(), root)];
             for (descendant, row) in &record.descendants {
+                if stays_collapsed(descendant) {
+                    continue;
+                }
                 if row.is_expanded() && self.row_is_live(row) {
                     refill.push((descendant.clone(), row.clone()));
+                }
+            }
+            for (taken, origin) in &record.taken_over {
+                if path.starts_with(taken) {
+                    continue;
+                }
+                if let Some((_, row)) = record
+                    .descendants
+                    .iter()
+                    .find(|(descendant, _)| descendant == taken)
+                    && row.is_expanded()
+                    && self.row_is_live(row)
+                {
+                    recollapse.push((row.clone(), *origin));
                 }
             }
             for (path, row) in refill {
@@ -890,30 +1142,44 @@ impl LushtextWorkspaceSection {
                 }
             }
         }
+        for (row, origin) in recollapse {
+            self.collapse_directory(&row, origin);
+        }
         self.arm_collapse_source();
     }
 
-    /// Show `row` collapsed (or restore GTK's state) on its realized widget.
-    fn project_collapsing(&self, row: &gtk4::TreeListRow, collapsing: bool) {
+    /// Re-project every realized directory row from the collapse state:
+    /// the rows of a collapsing subtree show collapsed, and a row whose path
+    /// left the collapsing set shows GTK's state again (design R6.4, R6.5).
+    /// One pass over the realized band (about 200 rows, ledger A1).
+    fn reproject_realized_rows(&self) {
         super::for_each_realized_file_row_overlay(self, |overlay| {
             let Some(expander) = overlay.child().and_downcast::<gtk4::TreeExpander>() else {
                 return;
             };
-            if expander.list_row().as_ref() != Some(row) {
+            let Some(row) = expander.list_row() else {
+                return;
+            };
+            let Some(path) = directory_path(&row) else {
+                return;
+            };
+            let collapsing = row.is_expanded() && self.path_is_collapsing(&path);
+            let shown_collapsing = expander.has_css_class(COLLAPSING_CLASS);
+            if collapsing == shown_collapsing {
                 return;
             }
-            let expanded = row.is_expanded() && !collapsing;
             if collapsing {
                 expander.add_css_class(COLLAPSING_CLASS);
             } else {
                 expander.remove_css_class(COLLAPSING_CLASS);
             }
+            let expanded = row.is_expanded() && !collapsing;
             accessibility::set_expanded(&overlay, Some(expanded));
             accessibility::set_expanded(&expander, Some(expanded));
             if let Some(item) = row.item().and_downcast::<FileTreeItem>() {
                 accessibility::set_description(
                     &overlay,
-                    &super::row_accessibility::file_tree_row_description(&item, row, self),
+                    &super::row_accessibility::file_tree_row_description(&item, &row, self),
                 );
             }
         });
@@ -1003,26 +1269,18 @@ impl LushtextWorkspaceSection {
     }
 
     /// The expander holding the window's keyboard focus inside this
-    /// section's list, if any: the expander itself or an ancestor of the
-    /// focused widget, as GTK delivers the class bindings.
+    /// section's list, if any. Only the expander itself counts (design
+    /// R6.1): a widget inside it, such as the inline rename entry, takes its
+    /// keys first, as on `main`, and a key it does not consume reaches GTK's
+    /// binding, a residual route.
     fn focused_expander(&self) -> Option<gtk4::TreeExpander> {
         let window = self.root().and_downcast::<gtk4::Window>()?;
-        let list = self
-            .imp()
-            .file_tree_view
-            .upcast_ref::<gtk4::Widget>()
-            .clone();
-        let mut current = gtk4::prelude::GtkWindowExt::focus(&window);
-        while let Some(widget) = current {
-            if widget == list {
-                return None;
-            }
-            if let Some(expander) = widget.downcast_ref::<gtk4::TreeExpander>() {
-                return Some(expander.clone());
-            }
-            current = widget.parent();
-        }
-        None
+        let expander = gtk4::prelude::GtkWindowExt::focus(&window)?
+            .downcast::<gtk4::TreeExpander>()
+            .ok()?;
+        expander
+            .is_ancestor(&*self.imp().file_tree_view)
+            .then_some(expander)
     }
 
     /// Act on `intent` for `expander`'s row where the collapse entry points
@@ -1034,6 +1292,12 @@ impl LushtextWorkspaceSection {
         let Some(path) = directory_path(&row) else {
             return false;
         };
+        if self.row_inside_collapsing_subtree(&row) {
+            // A row whose ancestor collapses shows collapsed and ignores
+            // disclosure (design R6.5): no key may end the ancestor's
+            // collapse or start GTK's own toggle.
+            return true;
+        }
         let collapsing = self.path_is_collapsing(&path);
         let shown_expanded = row.is_expanded() && !collapsing;
         match intent {
@@ -1087,6 +1351,20 @@ fn frame_ticks_allowed() -> bool {
     #[cfg(not(feature = "test-utils"))]
     {
         true
+    }
+}
+
+/// Whether a test runs the fallback as if the list were unmapped, skipping
+/// the starvation timeout (`test_policy::CollapsePacingForTest::NoFrameClock`).
+fn frame_ticks_off_unmapped() -> bool {
+    #[cfg(feature = "test-utils")]
+    {
+        crate::ui::sidebar::test_policy::collapse_pacing()
+            == crate::ui::sidebar::test_policy::CollapsePacingForTest::NoFrameClock
+    }
+    #[cfg(not(feature = "test-utils"))]
+    {
+        false
     }
 }
 

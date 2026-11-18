@@ -425,6 +425,36 @@ impl LushtextWorkspaceSection {
         }
     }
 
+    /// Restore `target_path`'s selection after a background refresh, moving
+    /// the keyboard focus with it only when a row or the list itself held
+    /// the focus. A refresh must not take the focus from a widget inside a
+    /// row, such as an inline-rename entry: that would end the rename the
+    /// user is typing into (`slice-large-directory-collapse` task 9.12).
+    pub(in crate::ui::sidebar) fn restore_selection(&self, target_path: &Path) {
+        let Some((position, _)) = self.flattened_row_for_path(target_path) else {
+            return;
+        };
+        let list = &*self.imp().file_tree_view;
+        let list_widget: &gtk4::Widget = list.upcast_ref();
+        let focus_inside_a_row = list
+            .root()
+            .and_then(|root| root.focus())
+            .is_some_and(|focus| {
+                &focus != list_widget
+                    && focus.parent().as_ref() != Some(list_widget)
+                    && focus.is_ancestor(list_widget)
+            });
+        if focus_inside_a_row {
+            if let Some(selection) = list.model().and_downcast::<gtk4::SingleSelection>() {
+                selection.set_selected(position);
+                list.scroll_to(position, gtk4::ListScrollFlags::NONE, None);
+            }
+            self.imp().pending_selection.borrow_mut().take();
+        } else {
+            self.select_and_scroll_to_position(position);
+        }
+    }
+
     /// Select and `scroll_to` the flattened-model `position`, and drop any pending
     /// selection: the half of [`Self::select_and_scroll_to`] after its lookup, for
     /// a caller that already holds the row's position.

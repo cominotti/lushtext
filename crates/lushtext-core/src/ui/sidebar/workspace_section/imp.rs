@@ -166,6 +166,12 @@ pub struct RefreshRuntimeState {
     pub scan_stale_completions: Cell<u64>,
     /// Current latest-only scans that published terminal reconciliation state.
     pub scan_terminal_publications: Cell<u64>,
+    /// The directory of the latest scan terminal publication, and whether
+    /// its store was the one the directory's shown row lists (the section's
+    /// retained store) rather than a store no row shows, such as the one an
+    /// `is_expandable()` probe creates (`slice-large-directory-collapse`
+    /// D12, task 1.4).
+    pub last_scan_terminal: RefCell<Option<(PathBuf, bool)>>,
     /// Largest active emptiness-probe count for any one configured folder.
     pub empty_probe_active_per_folder_high_water: Cell<usize>,
     /// Largest pending emptiness-probe count for any one configured folder.
@@ -452,15 +458,18 @@ impl ObjectImpl for LushtextWorkspaceSection {
         super::row_factory::setup(self);
         // A collapse paces from frames while the list is mapped and from the
         // low-priority fallback while it is not (`collapse_execution`).
-        for signal in ["map", "unmap"] {
-            let section = self.obj().downgrade();
-            self.file_tree_view.connect_local(signal, false, move |_| {
-                if let Some(section) = section.upgrade() {
-                    section.arm_collapse_source();
-                }
-                None
-            });
-        }
+        let section = self.obj().downgrade();
+        self.file_tree_view.connect_map(move |_| {
+            if let Some(section) = section.upgrade() {
+                section.arm_collapse_source();
+            }
+        });
+        let section = self.obj().downgrade();
+        self.file_tree_view.connect_unmap(move |_| {
+            if let Some(section) = section.upgrade() {
+                section.arm_collapse_source();
+            }
+        });
         self.obj().register_folder_reorder_section();
         super::context_menus::setup_file_context_menu(self);
         super::context_menus::setup_header_context_menu(self);

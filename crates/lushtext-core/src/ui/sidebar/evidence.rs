@@ -574,6 +574,15 @@ pub struct WorkspaceSectionEvidence {
     /// Steps the low-priority fallback ran for a mapped list whose frame
     /// clock starved, or for an unmapped list.
     pub collapse_starved_steps_total: u64,
+    /// Steps the between-frames idle ran: unbound chunks removed outside any
+    /// frame (`slice-large-directory-collapse` D19, task 10.3).
+    pub collapse_between_steps_total: u64,
+    /// The longest collapse step since the queue last started running, in
+    /// microseconds (task 10.1).
+    pub collapse_step_us_max: u64,
+    /// The directory of the latest child-scan terminal publication, and
+    /// whether its store was the shown (retained) one (D12, task 1.4).
+    pub last_scan_terminal: Option<(std::path::PathBuf, bool)>,
 }
 
 impl LushtextWorkspaceSection {
@@ -634,13 +643,17 @@ impl LushtextWorkspaceSection {
 
         let reorder_drag_hover_fallback_count = workspace_section::drag_hover_child_model_count();
 
-        let (
+        let workspace_section::CollapseTotals {
             collapses,
-            last_collapse_end,
-            collapse_steps_total,
-            collapse_direct_total,
-            collapse_starved_steps_total,
-        ) = self.collapse_evidence();
+            last_end: last_collapse_end,
+            steps_total: collapse_steps_total,
+            direct_total: collapse_direct_total,
+            starved_steps_total: collapse_starved_steps_total,
+            between_steps_total: collapse_between_steps_total,
+            step_us_max: collapse_step_us_max,
+        } = self.collapse_evidence();
+
+        let last_scan_terminal = refresh.last_scan_terminal.borrow().clone();
 
         let (open_row_paths, active_row_paths) = {
             let snapshot = imp.file_row_state_snapshot.borrow();
@@ -688,6 +701,9 @@ impl LushtextWorkspaceSection {
             collapse_steps_total,
             collapse_direct_total,
             collapse_starved_steps_total,
+            collapse_between_steps_total,
+            collapse_step_us_max,
+            last_scan_terminal,
         }
     }
 
@@ -702,12 +718,24 @@ impl LushtextWorkspaceSection {
             .iter()
             .filter_map(|(key, rows)| {
                 let path = paths.get(key)?.clone();
-                let listed = rows.iter().filter(|row| row.path.is_some()).count();
-                let budget = rows.iter().rev().find_map(|row| match row.placeholder {
+                // Placeholder rows only ever end a listing, so the tail after
+                // the last path row holds them all: reading it alone keeps
+                // this read O(placeholders) rather than O(listing), which a
+                // timeline that reads the surface after every dispatch of a
+                // 131,072-row collapse otherwise paid
+                // (`slice-large-directory-collapse` design R9, task 10.1).
+                let tail = rows
+                    .iter()
+                    .rev()
+                    .take_while(|row| row.path.is_none())
+                    .count();
+                let listed = rows.len() - tail;
+                let tail = &rows[listed..];
+                let budget = tail.iter().rev().find_map(|row| match row.placeholder {
                     Some(DirectoryPlaceholder::Budget { total, .. }) => Some(total),
                     _ => None,
                 });
-                let loading = rows
+                let loading = tail
                     .iter()
                     .filter(|row| row.placeholder == Some(DirectoryPlaceholder::Loading))
                     .count();

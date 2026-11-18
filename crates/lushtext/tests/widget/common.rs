@@ -870,6 +870,13 @@ pub struct CapturedLog {
 }
 
 static LOG_CAPTURED: std::sync::Mutex<Option<Vec<CapturedLog>>> = std::sync::Mutex::new(None);
+
+/// The warnings and criticals one [`LogCapture`] keeps before it aborts the
+/// process as a flood: far above what any test logs on purpose, far below
+/// the tens of millions of lines a spinning toolkit loop writes before the
+/// memory cap kills the headless compositor (`slice-large-directory-collapse`
+/// task 9.12).
+const LOG_CAPTURE_FLOOD_LIMIT: usize = 4_096;
 static LOG_WRITER: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 
 /// The GLib warnings and criticals logged while a capture is alive.
@@ -907,6 +914,21 @@ impl LogCapture {
                             domain: field("GLIB_DOMAIN"),
                             message: field("MESSAGE"),
                         });
+                        if messages.len() >= LOG_CAPTURE_FLOOD_LIMIT {
+                            // A toolkit loop that logs on every turn (GTK's
+                            // focus-crossing walk spinning on
+                            // `gtk_widget_get_parent (NULL)`) never returns
+                            // to the test, so no assertion can report it:
+                            // end the process with one line instead of
+                            // tens of millions.
+                            eprintln!(
+                                "LogCapture: {} warnings and criticals while one capture was alive, \
+                                 the last {:?}; aborting the flood",
+                                messages.len(),
+                                field("MESSAGE"),
+                            );
+                            std::process::abort();
+                        }
                     }
                 }
                 glib::log_writer_default(level, fields)

@@ -956,6 +956,9 @@ ORACLES: dict[str, Oracle] = {
         (
             _h(_COLLAPSE + "a_descendant_goes_before_its_ancestor", 8.25, "ci"),
             _h(_COLLAPSE + "every_step_makes_bounded_progress", 84.79, "ci"),
+            # Placeholder seconds (copied from the harness above) until the
+            # detached core-sidebar-collapse run measures it (slice-large-directory-collapse 9.11).
+            _h(_COLLAPSE + "the_collapse_rank_strictly_decreases", 84.79, "ci"),
             _h(_COLLAPSE + "each_step_takes_what_its_bound_allows", 156.41, "local"),
         ),
         functions=("next_collapse_step",),

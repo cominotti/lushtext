@@ -50,7 +50,7 @@
 //! already owns exactly one `policy.rs` at its canonical role home.
 
 mod collapse_execution;
-pub use collapse_execution::{CollapseEnd, CollapseEvidence, CollapseOrigin};
+pub use collapse_execution::{CollapseEnd, CollapseEvidence, CollapseOrigin, CollapseTotals};
 mod context_menus;
 mod file_execution;
 mod folder_execution;
@@ -782,7 +782,9 @@ fn activate_file_at(
             .and_then(|item| item.downcast::<FileTreeItem>().ok())
     {
         if file_item.is_dir() && !file_item.is_placeholder() && file_item.is_empty() != Some(true) {
-            if section.row_shows_expanded(tree_row) {
+            if section.row_inside_collapsing_subtree(tree_row) {
+                // On `main` this row is already gone (design R6.5).
+            } else if section.row_shows_expanded(tree_row) {
                 section
                     .collapse_directory(tree_row, collapse_execution::CollapseOrigin::Activation);
             } else {

@@ -143,7 +143,11 @@ Expected screen-reader behavior includes:
   an expand key on a collapsing row ends the collapse. The expander's AT-SPI
   actions (`listitem.collapse`, `listitem.toggle-expand`) keep GTK's direct
   collapse, which behaves as before and may take one long frame on a very
-  large directory.
+  large directory. The collapse keys are taken only while the focus is on
+  the expander itself: while an inline rename's entry holds the focus,
+  every key it consumes (`minus`, `slash`, `plus` and the rest) is typed
+  into the name, and a key it does not consume reaches GTK's own expander
+  binding, exactly as before this change (a residual route).
 
 - The main window exposes the tab strip, shell buttons, workspace sidebar
   toggle, document-properties toggle, status metadata, editor region, and

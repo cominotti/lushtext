@@ -351,6 +351,7 @@ pub(super) fn setup(imp: &imp::LushtextWorkspaceSection) {
                     show_focus,
                 });
                 install_expanded_accessibility_hook(&overlay, &tree_row, &file_item, &section);
+                section.install_expanded_watch_hook(&tree_row);
                 section.apply_collapse_projection(&overlay, &expander, &tree_row);
                 super::sync_file_row_state_for_overlay(&section, &overlay);
             } else {
@@ -489,7 +490,9 @@ fn install_arrow_gesture(expander: &gtk4::TreeExpander) {
         let mut current: Option<gtk4::Widget> = expander.parent();
         while let Some(widget) = current {
             if let Some(section) = widget.downcast_ref::<super::LushtextWorkspaceSection>() {
-                if section.row_shows_expanded(&row) {
+                if section.row_inside_collapsing_subtree(&row) {
+                    // On `main` this row is already gone (design R6.5).
+                } else if section.row_shows_expanded(&row) {
                     section.collapse_directory(&row, super::CollapseOrigin::Arrow);
                 } else if section.expand_directory(&row) {
                     let _ = expander.activate_action("listitem.scroll-to", None);
