@@ -50,7 +50,9 @@
 //! already owns exactly one `policy.rs` at its canonical role home.
 
 mod collapse_execution;
-pub use collapse_execution::{CollapseEnd, CollapseEvidence, CollapseOrigin, CollapseTotals};
+pub use collapse_execution::{
+    CollapseEnd, CollapseEvidence, CollapseOrigin, CollapseTotals, StepDispatch, StepDispatchKind,
+};
 mod context_menus;
 mod file_execution;
 mod folder_execution;

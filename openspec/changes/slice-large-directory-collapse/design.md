@@ -3337,6 +3337,175 @@ repetitions, profiled as the R13 profile was. Task 11.1 reads it.
   that record earlier returns stay as written.
 - **Unchanged:** D22–D24 and R11's completion gate.
 
+#### Gates G0 and G0b read (task 11.1, 2026-11-18)
+
+**G0, case order.** The coordinator ran the four rounds on
+`rev5/bin/widget-attr-104` in the queued order (alone-1 10:07, after-1
+10:22, alone-2 11:43, after-2 13:58), each kept round at a 1-minute load
+below 4 before and after (3.81 / 3.03, 3.64 / 3.33, 2.32 / 2.67,
+3.29 / 3.12, `rev/attr2/measure.log`; tries at a load of 4 or more, or
+that `measure.sh` refused with 75, were discarded and rerun in the same
+position). Every log holds 6 repetitions of each case it lists. Reader
+`rev6/g0/g0.py`, output `rev6/g0/g0-output.txt`.
+
+| 400:N | pair 1 frame median, alone / after (diff) | pair 2 frame median, alone / after (diff) | pair 1 step median, alone / after | pair 2 step median, alone / after |
+|---|---|---|---|---|
+| 64 | 10.956 / 10.193 (−0.763) | 9.417 / 11.783 (+2.366) | 6.439 / 4.400 | 4.745 / 5.877 |
+| 256 | 13.936 / 11.057 (**−2.879**) | 9.648 / 14.002 (**+4.354**) | 9.029 / 4.661 | 4.765 / 7.738 |
+| 4,096 | 9.559 / 13.052 (+3.492) | 11.154 / 11.806 (+0.652) | 6.090 / 5.499 | 5.236 / 5.220 |
+| 16,385 | 9.886 / 11.624 (+1.737) | 10.031 / 11.740 (+1.709) | 8.811 / 5.264 | 4.989 / 4.968 |
+| 131,072 | 12.112 / 13.213 (+1.101) | 12.793 / 13.532 (+0.740) | 7.449 / 6.501 | 7.171 / 7.606 |
+
+**Reading, as pre-registered: inconclusive.** Pair 1's difference at
+400:256 is −2.879 ms (not ≥ 1.0 ms), so the order effect is not
+confirmed; pair 2's is +4.354 ms (not < 0.5 ms), so it is not refuted.
+Both pairs have three sizes at ≥ 1.0 ms. By R13, task 11.2 (destroy each
+case's window) runs only on *confirmed*, so it is not done, and G1 is
+judged in Q4's full case order, the worst order measured, as R13 already
+requires whatever G0 says. The window-per-case finding of R13 item 3
+stays an untested hypothesis, recorded, not acted on.
+
+**The step tail, per repetition (for S3).** The worst steps of the 400:*
+cases across the four rounds (24 repetitions per size) spread 4.0–10.2 ms
+at 400:64, 4.2–11.2 ms at 400:256, 4.3–9.1 ms at 400:4,096,
+4.5–10.3 ms at 400:16,385 and 5.8–10.9 ms at 400:131,072; every size has
+a repetition over 6 ms in at least three of the four rounds (400:4,096 and
+larger in all four), and 26 of the 120 are over 8 ms (`g0-output.txt`
+lists every repetition). The tail is
+frequent, not rare: under D25 the 6 ms step margin is not met at 32 rows,
+which is why S1 is G1's expected path.
+
+**G0b, the tail profile.** One DWARF round, 10 repetitions each of 400:64
+and 400:256, run at a load of 2.74 / 2.61 (`slc-r14-g0b-pdw-400`); readers
+`rev6/g0/tail.py`, `diff.py` and `diff-first.py`, outputs
+`tail-output.txt`, `diff-output.txt` and `diff-first-output.txt`, the GTK
+thread's samples in `rev6/g0/wall.txt`. 13 of the 20 repetitions have a
+worst step over 6 ms (5 at 400:64, 8 at 400:256; 7.5–13.0 ms).
+
+- **Where the tail sits.** In all 13 slow repetitions the slow step is the
+  collapse's **first bound-unit dispatch** (the first frame at 400:64,
+  offset 0.01 ms; the first band dispatch at 400:256, 12.8–13.6 ms after
+  the input). The later bound dispatches of those repetitions are 8.1–9.7 ms
+  frames carrying 4–5 ms steps, with one exception: 400:64 repetition 1's
+  second (terminal) dispatch took 17.8 ms. The first dispatch of the 7
+  typical repetitions is 8.6–9.7 ms, and 11.4 ms in 400:256 repetition 1.
+  So the tail is concentrated in, but not caused by being, the first
+  dispatch: 7 first dispatches are not slow.
+- **What the excess is.** Against the 7 typical first dispatches of the same
+  cases (39.0 samples of 0.25 ms each on average; `diff-first-output.txt`),
+  the 13 slow ones hold 59.2. The growth is inside the step's removal
+  emission: `g_list_store_splice` → `gtk_tree_list_model_items_changed_cb`
+  19.5 against 10.9 samples per dispatch; under it
+  `gtk_list_item_manager_ensure_items` 9.3 / 3.6, row widget creation
+  (`gtk_list_view_create_list_widget` 3.9 / 1.7, `gtk_widget_init` 9.6 /
+  4.4, with GTK's per-widget `gtk_widget_add_controller` →
+  `gtk_shortcut_controller_set_widget` 5.6 / 2.1) and
+  `gtk_tree_list_model_clear_node` 3.6 / 1.4. Against the later dispatches
+  (`diff-output.txt`) the picture is the same. The slow removals create
+  about twice the row widgets a typical one does; why the count varies from
+  one repetition to the next is **not shown** by the profile (GTK recycling
+  a removed widget only from outside the tracked range, R13, is a
+  hypothesis, not a finding). The layout share grows less (CSS lookups), and
+  no new function appears.
+- **Whose cost.** GTK's. LushText frames are in at most 2 samples of any
+  slow dispatch (0 in 12 of the 13); the growth is not in the row factory's
+  setup or bind. There is no fixed LushText cost to cut before G1, so task
+  11.3's build carries no S3 cut. The excess is GTK's per-widget creation
+  inside a removal (A118; A124 pins it from an idle), recorded for D2's
+  toolkit-floor clause.
+- **What follows for the ladder.** *Prediction, not evidence:* if the
+  excess is per widget created, smaller steps (S1, S2) shrink it with the
+  rest of the step. G1's per-step print therefore carries, for every
+  step-source dispatch over 4 ms, its kind, its rows and the row widgets the
+  factory created in it, so G1b and G1c decide it; if a 16-row step is still
+  as slow as a 32-row one, S3's further DWARF round follows as R13 writes it.
+
+#### A124 and A125 (task 2.8, 2026-11-18)
+
+Both hold on GNOME 51 (GTK 4.24.1, host and `org.gnome.Sdk//51`) and on the
+GNOME 50 floor (`//50`, GTK 4.22.2); logs `rev6/sample-A124-51.log`,
+`rev6/sample-A125-51.log`, `rev6/axioms-runtimes-a124-a125.log`.
+
+- **A124.** From a `G_PRIORITY_HIGH_IDLE` idle outside any frame, removing
+  32 bound rows of a 256-entry directory with 400 rows after it ran 32
+  setups and 32 binds inside the splice, all 32 entering rows mapped at its
+  return, and the next frame ran no setup or bind (layout 2.4–2.5 ms, debug
+  build). D25's premise holds: the frame after a step-source unit only lays
+  out and paints.
+- **A125.** A source armed in `after-paint` (working 4 ms, re-armed once)
+  and one armed in a 20 ms default-priority dispatch while the next frame was
+  due both ran before the next `before-paint`; each read the counter of the
+  frame just painted (10, 10; 11), and the next frame read the next counter.
+  The 4 ms source did not delay the next frame (16.65 ms gap against
+  16.44 ms). The token can read the counter from the step source.
+- **Nightly preview (not a restatement).** On `//master` (GTK 4.25.1) A124
+  is violated: the splice runs 0 setups and 32 binds, so GTK 4.25 reuses the
+  removed row widgets for the entering rows, and only 19 of the 32 entering
+  rows are mapped when it returns. A125 holds there. Recorded in the ledger
+  for the next toolkit adoption: the reuse removes the per-row creation cost
+  that G0b names as the step tail, and rows left unmapped at the splice's
+  return would change when D22's re-apply must run.
+
+D25 is built (R13: "If either is refuted on a toolkit, the change takes the
+closing rule"; neither is refuted on a shipped or floor toolkit).
+
+#### Task 11.3: D25 built, G1 queued (2026-11-18)
+
+D25 is in `collapse_execution.rs` with the per-interval budget behind
+`SLC_STEP_ROWS`; G1, G1b, G1c, G2 and G4 are queued as one entry on one
+binary (`rev6/bin/widget-attr-d25`, `MEASURE-QUEUE.md`, "D25 gates G1, G1b,
+G1c, G2 and G4"). Implementation decisions, each taken for the user's
+frames first:
+
+1. **The token counts rows, not units.** `FrameUnitToken` holds the counter
+   of the interval and the bound rows removed in it
+   (`policy::interval_rows_left`, `record_interval_rows`); a counter other
+   than the stored one, earlier or later, starts a fresh interval (R6.3). A
+   step takes `policy::bound_step_rows`: a bound removal at most
+   `SLC_STEP_ROWS` and what the interval has left; a destroy-only removal
+   only on an untouched interval, charging the whole budget (it creates no
+   widget, D18); a direct collapse only when its rows fit what is left. With
+   the hook unset, one 32-row step spends the interval, as before.
+2. **A starved fallback unit spends its interval.** R6.2's flag is replaced
+   by charging the whole budget to the current counter, so the frame that
+   lays a starved unit out takes no other.
+3. **No busy loop between frames.** A step-source dispatch that stopped at a
+   bound step it could not take (the interval spent) does not arm the
+   between-frames idle, which would arm the source again and stop at the same
+   step: the first build ran 597 step dispatches over 6 frames at 400:256.
+   `test_bound_units_run_outside_the_frame` bounds the idle dispatches per
+   interval (at most two) and fails without the guard (10, 39, 33 and 53 per
+   interval, `rev6/d25-loop-failing-first.log`).
+4. **Unrealize is covered by unmap.** A widget is unmapped before it
+   unrealizes, and `unmap` disconnects the `after-paint` handler through
+   `arm_collapse_source`; `map` reconnects it to the clock the list has then.
+5. **D22's re-apply is not in this build.** A123 (task 2.7) is not yet run,
+   so no step re-applies `hidden`; G1 measures the step without it, and the
+   whole-dispatch timer will include it once D22 lands.
+6. **Evidence.** The section's evidence gains the step dispatches of the
+   current run (kind, rows, row widgets created, time, frame counter,
+   at most `STEP_DISPATCH_LOG_ROWS`), their longest time, whether the
+   `after-paint` handler is connected, its runs and the factory's setups. The
+   verdict print adds one `collapse-steps` line per case.
+
+Tests, failing-first against the pre-D25 core
+(`rev6/d25-failing-first.log`): `test_bound_units_run_outside_the_frame`
+(rows left inside every frame dispatch, `B 31 203` to `A 31 171` and so on),
+`test_the_step_source_runs_before_the_next_frame` (every interval's unit
+left after the next `before-paint`) and the revised guard of task 10.9
+(`[4096, 203]`: nothing left before the first frame).
+`test_the_step_source_leaves_no_frame_handler` reads fields the old evidence
+does not have. All four pass on D25 (`rev6/d25-new-tests.log`), the
+strengthened first one also checks that D23's chunk and the first bound
+unit both run before the first frame and that no interval removes more than
+`SIDEBAR_REALIZED_ROWS_PER_FRAME` bound rows; the module passes
+(`rev6/wtv-module-d25.log`, before the loop fix, and `make test` after it).
+
+The late 33–41 ms "unshown" dispatch at 0:131,072 (about 670–700 ms after
+the input) is not D25's: `widget-attr-104` shows it in every G0 "after"
+repetition. It is the terminal's, outside G1's kinds; G5 and task 7.2 read
+it.
+
 ### R14. Review of R13 (2026-11-18)
 
 Reviewed against the round logs (`rev/attr2/slc-r13-*.log`,

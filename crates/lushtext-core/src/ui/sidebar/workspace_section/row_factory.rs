@@ -37,18 +37,25 @@ use gtk4::{self, glib};
 pub(super) fn setup(imp: &imp::LushtextWorkspaceSection) {
     let factory = gtk4::SignalListItemFactory::new();
 
+    let setup_section = imp.obj().downgrade();
     factory.connect_setup(move |_factory, list_item| {
         // Factory callbacks receive generic GObjects from GTK, so
         // downcast_ref checks the runtime type before using ListItem APIs.
         let list_item = list_item
             .downcast_ref::<gtk4::ListItem>()
             .expect("item is ListItem");
+        // Row widgets created, for the collapse's per-step evidence (design
+        // D25, R13: the step tail is GTK's creation inside a removal).
+        if let Some(section) = setup_section.upgrade() {
+            section.count_row_setup();
+        }
 
         // Every recycled row carries only what every row shows (design D17):
         // the overlay, the expander, the content box, the open indicator, the
         // icon and the label. The reorder drag handle, the drop surfaces and the
         // Focus Folder button, with their controllers, are created on demand by
-        // `bind` for the rows that use them (`ensure_row_decorations`).
+        // `bind` for the rows that use them (`ensure_focus_button`,
+        // `reorder_execution::ensure_folder_reorder_*`).
         let overlay = gtk4::Overlay::new();
         overlay.add_css_class("workspace-folder-dnd-surface");
         overlay.add_css_class("workspace-file-row-state-surface");

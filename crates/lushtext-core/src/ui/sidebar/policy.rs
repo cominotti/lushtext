@@ -1200,40 +1200,117 @@ pub fn collapse_band(mut positions: Vec<u32>) -> Vec<u32> {
     positions
 }
 
-/// The window-wide one-unit-per-frame token of one frame clock (design D4,
-/// R6.2, R6.3): the frame counter of the last frame a bound unit ran in, and
-/// whether a starved step took a unit since, which the next tick must not
-/// follow with another.
+/// The window-wide frame-interval token of one frame clock (design D4, D25,
+/// R6.2, R6.3): the counter of the frame whose interval the latest bound rows
+/// were removed in, and how many bound rows that interval has removed.
+///
+/// Under D25 every bound step runs between frames, from the step source or
+/// the starved fallback, and reads the counter there: it equals the counter
+/// of the frame just painted (ledger A125), so the rows charged against one
+/// counter are the ones the next frame lays out.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct FrameUnitToken {
-    /// The frame counter of the last frame a unit ran in.
+    /// The frame counter of the interval the latest bound rows left in.
     pub taken_frame: Option<i64>,
-    /// A starved step took a unit outside any frame since.
-    pub starved_unit_ran: bool,
+    /// Bound rows that interval removed.
+    pub rows_taken: u32,
 }
 
-/// Whether a tick in `frame` may take a unit, and the token after the tick
-/// read it (design R6.2, R6.3). A unit is free unless one already ran in this
-/// very frame; a stored counter **above** the clock's current one is stale
-/// (another clock, or one whose counter restarted) and frees the unit. A
-/// starved unit's flag is consumed by the first tick that reads it, which
-/// takes no unit, so two units never share one layout.
+/// Bound rows the interval after frame `frame` may still remove, of
+/// `budget` (design D25, R13's S1). An interval keyed by another counter,
+/// earlier or **later** (another clock, or one whose counter restarted,
+/// design R6.3), is stale and leaves the whole budget.
 #[must_use]
-pub const fn tick_takes_unit(token: FrameUnitToken, frame: i64) -> (bool, FrameUnitToken) {
-    if token.starved_unit_ran {
-        return (
-            false,
-            FrameUnitToken {
-                taken_frame: token.taken_frame,
-                starved_unit_ran: false,
-            },
-        );
+pub const fn interval_rows_left(token: FrameUnitToken, frame: i64, budget: u32) -> u32 {
+    match token.taken_frame {
+        Some(taken) if taken == frame => budget.saturating_sub(token.rows_taken),
+        _ => budget,
     }
-    let free = match token.taken_frame {
-        None => true,
-        Some(taken) => taken != frame,
-    };
-    (free, token)
+}
+
+/// The token after `rows` bound rows left in the interval after frame
+/// `frame` (design D25): added to that interval's rows, or starting it.
+#[must_use]
+pub const fn record_interval_rows(token: FrameUnitToken, frame: i64, rows: u32) -> FrameUnitToken {
+    match token.taken_frame {
+        Some(taken) if taken == frame => FrameUnitToken {
+            taken_frame: Some(frame),
+            rows_taken: token.rows_taken.saturating_add(rows),
+        },
+        _ => FrameUnitToken {
+            taken_frame: Some(frame),
+            rows_taken: rows,
+        },
+    }
+}
+
+/// The bound rows one step may remove, given the policy's `step` and the
+/// interval's `rows_left` (design D25, R13's S1): `None` when the step must
+/// wait for the next frame interval, else the rows to charge and, for a
+/// [`CollapseStep::RemoveBound`], the count to remove.
+///
+/// - A destroy-only removal ([`collapse_removal_is_destroy_only`]) is one
+///   whole interval: it runs only when the interval has removed nothing, and
+///   charges the whole `budget` (design D18: it creates no row widget, and
+///   its unit is [`COLLAPSE_DESTROY_ONLY_ROWS`]).
+/// - Any other bound removal takes at most `step_rows` and at most what the
+///   interval has left.
+/// - A direct collapse of the directory or of a drained descendant (`rows`
+///   left in it, at most the direct cap) runs only when they fit what is
+///   left.
+/// - An unbound removal is not this function's: it never waits for an
+///   interval.
+#[must_use]
+pub const fn bound_step_rows(
+    step: CollapseStep,
+    rows: u32,
+    destroy_only: bool,
+    rows_left: u32,
+    budget: u32,
+    step_rows: u32,
+) -> Option<(u32, u32)> {
+    match step {
+        CollapseStep::RemoveUnbound { count, .. } => Some((0, count)),
+        CollapseStep::RemoveBound { count, .. } if destroy_only => {
+            if rows_left == budget {
+                Some((budget, count))
+            } else {
+                None
+            }
+        }
+        CollapseStep::RemoveBound { count, .. } => {
+            let mut take = count;
+            if take > step_rows {
+                take = step_rows;
+            }
+            if take > rows_left {
+                take = rows_left;
+            }
+            if take == 0 { None } else { Some((take, take)) }
+        }
+        CollapseStep::CollapseDescendant(_) | CollapseStep::CollapseRow => {
+            if rows <= rows_left && rows_left > 0 {
+                Some((rows, rows))
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// ATTRIBUTION PATCH (not committed; design R13, task 11.3): the bound rows
+/// one step-source dispatch may remove, from `SLC_STEP_ROWS`, default the
+/// unit, clamped to at least 1 and at most the unit. Removed by task 10.11.
+#[must_use]
+pub fn slc_attribution_step_rows() -> u32 {
+    static ROWS: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *ROWS.get_or_init(|| {
+        std::env::var("SLC_STEP_ROWS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_else(slc_attribution_unit_rows)
+            .clamp(1, slc_attribution_unit_rows().max(1))
+    })
 }
 
 /// The next removal of a collapse (design D4, D9):
@@ -1272,7 +1349,9 @@ pub fn slc_attribution_unit_rows() -> u32 {
 /// ATTRIBUTION PATCH (not committed).
 #[must_use]
 pub fn slc_attribution_direct_rows() -> u32 {
-    DIRECT_COLLAPSE_ROWS.min(slc_attribution_unit_rows())
+    DIRECT_COLLAPSE_ROWS
+        .min(slc_attribution_unit_rows())
+        .min(slc_attribution_step_rows())
 }
 
 /// ATTRIBUTION PATCH (not committed): the destroy-only unit from
@@ -1454,32 +1533,107 @@ mod collapse_tests {
         );
     }
 
-    /// Design R6.2, R6.3: one unit per frame of one clock; a counter that
-    /// moved on (or back: another clock, a restarted one) frees it; a
-    /// starved unit makes the next tick take none, once.
+    /// Design D25, R6.2, R6.3: an interval of one clock admits at most its
+    /// budget of bound rows; a counter that moved on (or back: another clock,
+    /// a restarted one) starts a new interval with the whole budget.
     #[test]
-    fn the_frame_unit_token_frees_one_unit_per_frame() {
-        use super::{FrameUnitToken, tick_takes_unit};
+    fn the_frame_interval_token_admits_one_budget_per_interval() {
+        use super::{FrameUnitToken, interval_rows_left, record_interval_rows};
         let fresh = FrameUnitToken::default();
-        assert_eq!(tick_takes_unit(fresh, 7), (true, fresh));
-        let taken = FrameUnitToken {
-            taken_frame: Some(7),
-            starved_unit_ran: false,
-        };
-        assert!(!tick_takes_unit(taken, 7).0, "one unit per frame");
-        assert!(tick_takes_unit(taken, 8).0, "the next frame frees it");
-        assert!(
-            tick_takes_unit(taken, 3).0,
-            "a stored counter above the clock's is stale and frees the unit"
+        assert_eq!(interval_rows_left(fresh, 7, 32), 32);
+        let taken = record_interval_rows(fresh, 7, 16);
+        assert_eq!(interval_rows_left(taken, 7, 32), 16, "16 of 32 left");
+        let full = record_interval_rows(taken, 7, 16);
+        assert_eq!(full.rows_taken, 32);
+        assert_eq!(interval_rows_left(full, 7, 32), 0, "the interval is spent");
+        assert_eq!(
+            interval_rows_left(full, 8, 32),
+            32,
+            "the next frame frees it"
         );
-        let starved = FrameUnitToken {
-            taken_frame: Some(7),
-            starved_unit_ran: true,
+        assert_eq!(
+            interval_rows_left(full, 3, 32),
+            32,
+            "a stored counter above the clock's is stale and frees the interval"
+        );
+        let next = record_interval_rows(full, 8, 8);
+        assert_eq!(
+            next,
+            FrameUnitToken {
+                taken_frame: Some(8),
+                rows_taken: 8
+            },
+            "a new interval starts from its own rows"
+        );
+        assert_eq!(
+            interval_rows_left(record_interval_rows(fresh, 7, 40), 7, 32),
+            0,
+            "an over-budget charge saturates at zero left"
+        );
+    }
+
+    /// Design D25, R13's S1: what one step may take from the interval.
+    #[test]
+    fn a_bound_step_takes_at_most_the_step_rows_and_what_the_interval_has_left() {
+        use super::{CollapseStep, bound_step_rows};
+        let bound = |count| CollapseStep::RemoveBound {
+            store: 0,
+            start: 0,
+            count,
         };
-        let (free, after) = tick_takes_unit(starved, 9);
-        assert!(!free, "the tick after a starved unit takes none");
-        assert_eq!(after, taken, "and consumes the flag");
-        assert!(tick_takes_unit(after, 10).0);
+        // Unit 32, steps of 16: two steps per interval.
+        assert_eq!(
+            bound_step_rows(bound(32), 0, false, 32, 32, 16),
+            Some((16, 16))
+        );
+        assert_eq!(
+            bound_step_rows(bound(32), 0, false, 16, 32, 16),
+            Some((16, 16))
+        );
+        assert_eq!(bound_step_rows(bound(32), 0, false, 0, 32, 16), None);
+        assert_eq!(
+            bound_step_rows(bound(10), 0, false, 16, 32, 16),
+            Some((10, 10))
+        );
+        assert_eq!(
+            bound_step_rows(bound(32), 0, false, 8, 32, 16),
+            Some((8, 8))
+        );
+        // Steps of the unit: one step per interval.
+        assert_eq!(
+            bound_step_rows(bound(32), 0, false, 32, 32, 32),
+            Some((32, 32))
+        );
+        // A destroy-only removal is a whole interval.
+        assert_eq!(
+            bound_step_rows(bound(64), 0, true, 32, 32, 16),
+            Some((32, 64))
+        );
+        assert_eq!(bound_step_rows(bound(64), 0, true, 16, 32, 16), None);
+        // Direct collapses run when their rows fit what is left.
+        assert_eq!(
+            bound_step_rows(CollapseStep::CollapseRow, 12, false, 16, 32, 16),
+            Some((12, 12))
+        );
+        assert_eq!(
+            bound_step_rows(CollapseStep::CollapseRow, 20, false, 16, 32, 16),
+            None
+        );
+        assert_eq!(
+            bound_step_rows(CollapseStep::CollapseDescendant(1), 0, false, 0, 32, 16),
+            None,
+            "a spent interval admits no collapse, even of an empty store"
+        );
+        // Unbound removals never wait.
+        let unbound = CollapseStep::RemoveUnbound {
+            store: 0,
+            start: 5,
+            count: 100,
+        };
+        assert_eq!(
+            bound_step_rows(unbound, 0, false, 0, 32, 16),
+            Some((0, 100))
+        );
     }
 
     #[test]

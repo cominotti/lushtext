@@ -580,6 +580,19 @@ pub struct WorkspaceSectionEvidence {
     /// The longest collapse step since the queue last started running, in
     /// microseconds (task 10.1).
     pub collapse_step_us_max: u64,
+    /// The longest step-source dispatch or between-frames turn since the
+    /// queue last started running, in microseconds (design D25, R14).
+    pub collapse_step_dispatch_us_max: u64,
+    /// Those dispatches and turns, in order, at most a bounded number per run
+    /// (design D25).
+    pub collapse_step_dispatches: Vec<workspace_section::StepDispatch>,
+    /// Whether the section's collapse `after-paint` handler is connected
+    /// (design D25: only while a collapse is pending on a mapped list).
+    pub collapse_after_paint_connected: bool,
+    /// `after-paint` emissions that handler ran, ever.
+    pub collapse_after_paint_runs: u64,
+    /// Row widgets the section's factory created, ever.
+    pub row_setups: u64,
     /// The directory of the latest child-scan terminal publication, and
     /// whether its store was the shown (retained) one (D12, task 1.4).
     pub last_scan_terminal: Option<(std::path::PathBuf, bool)>,
@@ -651,6 +664,11 @@ impl LushtextWorkspaceSection {
             starved_steps_total: collapse_starved_steps_total,
             between_steps_total: collapse_between_steps_total,
             step_us_max: collapse_step_us_max,
+            step_dispatch_us_max: collapse_step_dispatch_us_max,
+            step_dispatches: collapse_step_dispatches,
+            after_paint_connected: collapse_after_paint_connected,
+            after_paint_runs: collapse_after_paint_runs,
+            row_setups,
         } = self.collapse_evidence();
 
         let last_scan_terminal = refresh.last_scan_terminal.borrow().clone();
@@ -703,6 +721,11 @@ impl LushtextWorkspaceSection {
             collapse_starved_steps_total,
             collapse_between_steps_total,
             collapse_step_us_max,
+            collapse_step_dispatch_us_max,
+            collapse_step_dispatches,
+            collapse_after_paint_connected,
+            collapse_after_paint_runs,
+            row_setups,
             last_scan_terminal,
         }
     }

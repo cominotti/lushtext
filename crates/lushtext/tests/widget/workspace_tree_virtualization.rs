@@ -2923,12 +2923,11 @@ fn test_collapse_shows_in_the_first_frame() {
     assert!(crate::common::accessible_expanded_is(&expander, false));
     let overlay = expander.parent().expect("the row overlay");
     assert!(crate::common::accessible_expanded_is(&overlay, false));
-    // Design D21 (a guard, revised for D19; task 10.9): the first frame after
-    // the input changes at most one unit of row widgets, and rows leave from
-    // its tick or from the gap right after it (the between-frames idle runs
-    // below the frame clock), so before the second frame's tick the subtree
-    // holds fewer rows than at the input. `before-paint` precedes the
-    // frame's update phase, where the tick runs.
+    // Design D21 (a guard, revised for D19 and D25; task 10.9): the first
+    // frame after the input changes at most one unit of row widgets, and the
+    // step source the input armed runs before that frame (ledger A125), so
+    // its `before-paint` already sees fewer rows than the input left; the
+    // second frame's sees fewer still.
     let clock = tree
         .section
         .imp()
@@ -2968,13 +2967,13 @@ fn test_collapse_shows_in_the_first_frame() {
     clock.disconnect(before_handler);
     let frames = frames.borrow().clone();
     let before_tick_rows = before_tick_rows.borrow().clone();
-    assert_eq!(
-        before_tick_rows[0], 4096,
-        "the input dispatch removed no row: {before_tick_rows:?}"
+    assert!(
+        before_tick_rows[0] < 4096,
+        "the step source ran before the first frame: {before_tick_rows:?}"
     );
     assert!(
-        before_tick_rows[1] < 4096,
-        "before the second frame's tick the subtree holds fewer rows: {before_tick_rows:?}"
+        before_tick_rows[1] < before_tick_rows[0],
+        "and again before the second: {before_tick_rows:?}"
     );
     assert!(
         RowChange::over_unit(&[frames[0].1]).is_none(),
@@ -2990,6 +2989,266 @@ fn test_collapse_shows_in_the_first_frame() {
     });
     let expander = expander_for(&tree.section, &nested).expect("the row is realized");
     assert!(!expander.has_css_class(COLLAPSING_CLASS));
+    drop(tree.window);
+}
+
+/// One frame's view of a collapse: the phase (`before-paint` or
+/// `after-paint`), the frame counter, and the collapsing subtree's listed
+/// rows then (0 once GTK has collapsed the row or its store is gone).
+type FramePhaseRows = (char, i64, u32);
+
+/// Record, for every frame until `nested` is collapsed, the subtree's rows at
+/// `before-paint` and at `after-paint` (design D25).
+fn collapse_rows_per_frame_phase(tree: &LargeTree, nested: &Path) -> Vec<FramePhaseRows> {
+    let store = shown_store(tree, nested);
+    let clock = tree
+        .section
+        .imp()
+        .file_tree_view
+        .frame_clock()
+        .expect("a mapped list has a frame clock");
+    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::<FramePhaseRows>::new()));
+    let row = row_for_path(&tree.section, nested).expect("directory row");
+    let rows = move || {
+        if row.is_expanded() {
+            store.upgrade().map_or(0, |store| store.n_items())
+        } else {
+            0
+        }
+    };
+    let before = {
+        let events = std::rc::Rc::clone(&events);
+        let rows = rows.clone();
+        clock.connect_before_paint(move |clock| {
+            events
+                .borrow_mut()
+                .push(('B', clock.frame_counter(), rows()));
+        })
+    };
+    let after = {
+        let events = std::rc::Rc::clone(&events);
+        clock.connect_after_paint(move |clock| {
+            events
+                .borrow_mut()
+                .push(('A', clock.frame_counter(), rows()));
+        })
+    };
+    activate_tree_row(&tree.section, nested);
+    wait_until(Duration::from_secs(60), || {
+        collapse_settled(&tree.section, nested)
+    });
+    clock.disconnect(before);
+    clock.disconnect(after);
+    events.borrow().clone()
+}
+
+/// Design D25 (task 11.3): no collapse step runs inside the frame clock's
+/// dispatch: between a frame's `before-paint` and its `after-paint` the
+/// collapsing subtree loses no row, while rows do leave over the collapse.
+/// Fails before D25: the tick removed each bound unit in the frame's update
+/// phase, between the two.
+#[test]
+fn test_bound_units_run_outside_the_frame() {
+    let (tree, nested) = expanded_nested(4096, 400);
+    let events = collapse_rows_per_frame_phase(&tree, &nested);
+    let inside: Vec<_> = events
+        .windows(2)
+        .filter(|pair| pair[0].0 == 'B' && pair[1].0 == 'A' && pair[0].1 == pair[1].1)
+        .filter(|pair| pair[1].2 < pair[0].2)
+        .map(|pair| (pair[0], pair[1]))
+        .collect();
+    assert!(
+        inside.is_empty(),
+        "rows left inside a frame dispatch: {inside:?} (all: {events:?})"
+    );
+    assert!(
+        events.first().is_some_and(|first| first.2 < 4096),
+        "rows left before the first frame: {events:?}"
+    );
+    // The step-source dispatches, each tagged with the counter of the frame
+    // painted before it (ledger A125), so the ones before the first frame
+    // carry a counter below that frame's.
+    use lushtext_core::ui::sidebar::workspace_section::StepDispatchKind as Kind;
+    let dispatches = tree
+        .section
+        .workspace_section_evidence()
+        .collapse_step_dispatches;
+    let first_frame = events.first().map_or(i64::MAX, |first| first.1);
+    let before_first: Vec<Kind> = dispatches
+        .iter()
+        .filter(|dispatch| dispatch.frame_counter < first_frame)
+        .map(|dispatch| dispatch.kind)
+        .filter(|kind| *kind != Kind::Between && *kind != Kind::Idle)
+        .collect();
+    assert!(
+        before_first.first() == Some(&Kind::Chunk) && before_first.contains(&Kind::Bound),
+        "D23's chunk, then the first bound unit (its dispatch re-armed the source), both \
+         before the first frame: {before_first:?} (all: {dispatches:?})"
+    );
+    // At most one unit of bound rows per frame interval (no removal here is
+    // destroy-only: 400 rows follow the subtree).
+    let unit = lushtext_core::ui::sidebar::policy::SIDEBAR_REALIZED_ROWS_PER_FRAME;
+    let mut per_interval = std::collections::BTreeMap::<i64, (u32, u32)>::new();
+    for dispatch in &dispatches {
+        let entry = per_interval.entry(dispatch.frame_counter).or_default();
+        match dispatch.kind {
+            Kind::Bound | Kind::Descendant | Kind::Terminal => entry.0 += dispatch.rows,
+            Kind::Idle => entry.1 += 1,
+            Kind::Chunk | Kind::Between => {}
+        }
+    }
+    let over: Vec<_> = per_interval
+        .iter()
+        .filter(|(_, (rows, _))| *rows > unit)
+        .collect();
+    assert!(
+        over.is_empty(),
+        "an interval removed more than {unit} bound rows: {over:?}"
+    );
+    // No busy loop between frames: an interval runs at most two dispatches
+    // that take no step (the between-frames idle and the step source must
+    // not re-arm each other while the interval is spent).
+    let idling: Vec<_> = per_interval
+        .iter()
+        .filter(|(_, (_, idle))| *idle > 2)
+        .collect();
+    assert!(
+        idling.is_empty(),
+        "intervals with more than two idle step dispatches: {idling:?}"
+    );
+    drop(tree.window);
+}
+
+/// Design D25 (task 11.3): each frame's `after-paint` arms the step source,
+/// which runs before the next frame (ledger A125): while the subtree still
+/// lists rows at a frame's `after-paint`, the next frame's `before-paint`
+/// sees fewer. Fails before D25: the unit left in the next frame's update
+/// phase, after its `before-paint`.
+#[test]
+fn test_the_step_source_runs_before_the_next_frame() {
+    let (tree, nested) = expanded_nested(4096, 400);
+    let events = collapse_rows_per_frame_phase(&tree, &nested);
+    let stalled: Vec<_> = events
+        .windows(2)
+        .filter(|pair| pair[0].0 == 'A' && pair[1].0 == 'B' && pair[0].2 > 0)
+        .filter(|pair| pair[1].2 >= pair[0].2)
+        .map(|pair| (pair[0], pair[1]))
+        .collect();
+    assert!(
+        stalled.is_empty(),
+        "a frame interval with rows pending removed none before the next frame: {stalled:?} \
+         (all: {events:?})"
+    );
+    // With the frame clock suppressed the fallback still completes it.
+    let _pacing = Pacing::set(CollapsePacing::NoFrameClock);
+    expand_and_load(&tree, &nested, 4096);
+    activate_tree_row(&tree.section, &nested);
+    wait_until(Duration::from_secs(60), || {
+        collapse_settled(&tree.section, &nested)
+    });
+    drop(tree.window);
+}
+
+/// Design D25 (task 11.3): the section's `after-paint` handler lives only
+/// while a collapse is pending: connected during it, disconnected once it
+/// ends, and no frame runs it after.
+#[test]
+fn test_the_step_source_leaves_no_frame_handler() {
+    let (tree, nested) = expanded_nested(4096, 400);
+    assert!(
+        !tree
+            .section
+            .workspace_section_evidence()
+            .collapse_after_paint_connected,
+        "no handler before any collapse"
+    );
+    activate_tree_row(&tree.section, &nested);
+    assert!(
+        tree.section
+            .workspace_section_evidence()
+            .collapse_after_paint_connected,
+        "the input connects the handler on the mapped list"
+    );
+    wait_until(Duration::from_secs(60), || {
+        collapse_settled(&tree.section, &nested)
+    });
+    let evidence = tree.section.workspace_section_evidence();
+    assert!(
+        !evidence.collapse_after_paint_connected,
+        "the end of the collapse disconnects it: {}",
+        collapse_state(&tree.section)
+    );
+    assert!(evidence.collapse_after_paint_runs > 0, "frames ran it");
+    let runs = evidence.collapse_after_paint_runs;
+    flush_after_delay(Duration::from_millis(300));
+    assert_eq!(
+        tree.section
+            .workspace_section_evidence()
+            .collapse_after_paint_runs,
+        runs,
+        "no frame runs it after the collapse"
+    );
+    // Cancelled by a re-expansion: the handler goes with the collapse.
+    expand_and_load(&tree, &nested, 4096);
+    flush_after_delay(Duration::from_millis(200));
+    activate_tree_row(&tree.section, &nested);
+    assert!(
+        tree.section
+            .workspace_section_evidence()
+            .collapse_after_paint_connected,
+        "the second collapse connects it again"
+    );
+    // A second activation, before any step ran, expands the row again.
+    activate_tree_row(&tree.section, &nested);
+    assert_eq!(
+        tree.section.workspace_section_evidence().last_collapse_end,
+        Some(lushtext_core::ui::sidebar::workspace_section::CollapseEnd::ReExpanded),
+        "the second activation re-expanded the row"
+    );
+    assert!(
+        !tree
+            .section
+            .workspace_section_evidence()
+            .collapse_after_paint_connected,
+        "the re-expansion that ends the collapse disconnects it: {}",
+        collapse_state(&tree.section)
+    );
+    wait_for_refresh_idle(&tree.section);
+    // Across an unmap and map mid-collapse: off while unmapped, back on map,
+    // and the collapse still completes from frames.
+    expand_and_load(&tree, &nested, 4096);
+    flush_after_delay(Duration::from_millis(200));
+    activate_tree_row(&tree.section, &nested);
+    tree.section.set_visible(false);
+    assert!(
+        !tree
+            .section
+            .workspace_section_evidence()
+            .collapse_after_paint_connected,
+        "unmapping the list disconnects it"
+    );
+    tree.section.set_visible(true);
+    let pending = !tree
+        .section
+        .workspace_section_evidence()
+        .collapses
+        .is_empty();
+    assert_eq!(
+        tree.section
+            .workspace_section_evidence()
+            .collapse_after_paint_connected,
+        pending,
+        "mapping it again reconnects it while the collapse is pending"
+    );
+    wait_until(Duration::from_secs(60), || {
+        collapse_settled(&tree.section, &nested)
+    });
+    assert!(
+        !tree
+            .section
+            .workspace_section_evidence()
+            .collapse_after_paint_connected
+    );
     drop(tree.window);
 }
 
@@ -5129,6 +5388,44 @@ fn print_case(
         timeline.dispatches.len(),
         timeline.over(B_INTERACT_US),
         timeline.over(B_SETTLE_US),
+    );
+    print_step_dispatches(section, case, siblings, entries, timeline.mono_start_us);
+}
+
+/// The step dispatches of the case just printed (design D25, R14): their
+/// longest, how many there were, and each one over 4 ms with its kind, rows,
+/// row widgets created and offset from the input, one `collapse-steps` line.
+fn print_step_dispatches(
+    section: &LushtextWorkspaceSection,
+    case: &str,
+    siblings: usize,
+    entries: usize,
+    mono_start_us: i64,
+) {
+    const SHOWN_OVER_US: u64 = 4_000;
+    let evidence = section.workspace_section_evidence();
+    let over: Vec<String> = evidence
+        .collapse_step_dispatches
+        .iter()
+        .filter(|dispatch| dispatch.took_us > SHOWN_OVER_US)
+        .map(|dispatch| {
+            format!(
+                "{{\"kind\":\"{:?}\",\"rows\":{},\"created\":{},\"took_us\":{},\"offset_us\":{},\"frame\":{}}}",
+                dispatch.kind,
+                dispatch.rows,
+                dispatch.rows_created,
+                dispatch.took_us,
+                dispatch.start_mono_us.saturating_sub(mono_start_us),
+                dispatch.frame_counter,
+            )
+        })
+        .collect();
+    println!(
+        "collapse-steps {{\"case\":\"{case}\",\"siblings\":{siblings},\"entries\":{entries},\"step_dispatch_us_max\":{},\"step_dispatches\":{},\"after_paint_runs\":{},\"over_4ms\":[{}]}}",
+        evidence.collapse_step_dispatch_us_max,
+        evidence.collapse_step_dispatches.len(),
+        evidence.collapse_after_paint_runs,
+        over.join(","),
     );
 }
 

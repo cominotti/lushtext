@@ -33,22 +33,39 @@
 //!    here instead, until the input has removed one unit of rows that way.
 //! 2. **Steps**: each step reads the subtree's expanded stores and GTK's held
 //!    positions, asks the pure `policy::next_collapse_step` for one removal,
-//!    and applies it: unbound chunks while `turn_continues` holds, and at most
-//!    one bound unit, which one window-wide token admits once per frame
-//!    across every section's collapse (design D4, D7).
+//!    and applies it: unbound chunks while `turn_continues` holds, and bound
+//!    rows within one window-wide token's budget per frame interval, across
+//!    every section's collapse (design D4, D7, D25).
 //! 3. **Terminal**: the directory's direct `set_expanded(false)`, after which
 //!    the row's own expansion hook retires the drained listing as before.
 //!
 //! # Resumption points and inversions
 //!
-//! - **The frame tick.** While the list is mapped, steps resume from a tick
-//!   callback on the list view, in the frame's update phase, so the widgets a
-//!   unit creates are styled in that frame.
+//! - **The step source (design D25).** While the list is mapped, every bound
+//!   step runs from a one-shot `G_PRIORITY_HIGH_IDLE` source, between frames,
+//!   one step per dispatch: above the frame clock and below input, so it runs
+//!   before the next frame even when that frame is due (ledger A125), and the
+//!   frame then only lays out the rows the step brought in (A124). It is armed
+//!   by the input dispatch, by each frame's `after-paint` on the list's frame
+//!   clock (one handler per section, connected while a collapse is pending on
+//!   a mapped list), by the between-frames idle when the next step is bound,
+//!   and by its own dispatch after D23's chunk or while the interval has rows
+//!   left. Its first dispatch after the input takes one unbound chunk (D23).
+//!   A frame interval removes at most `SIDEBAR_REALIZED_ROWS_PER_FRAME` bound
+//!   rows (the token reads the frame counter, which equals the counter of the
+//!   frame just painted there).
+//! - **The frame tick.** While the list is mapped and a collapse is pending, a
+//!   tick callback stays registered, taking no step: it keeps the clock
+//!   updating every frame, so every frame emits `after-paint`, and it
+//!   refreshes the starvation clock.
+//! - **The between-frames idle (design D19).** Unbound chunks leave from a
+//!   `G_PRIORITY_DEFAULT_IDLE` source, below the frame clock, while the turn
+//!   lasts.
 //! - **The low-priority fallback.** While the list is not mapped, or a mapped
 //!   list's frame clock has not ticked within `COLLAPSE_FRAME_STARVATION_MS`,
-//!   steps resume from a `G_PRIORITY_LOW` timeout with the same bounds. The
-//!   first tick after a starved step takes no unit, so two units never share
-//!   one layout.
+//!   steps resume from a `G_PRIORITY_LOW` timeout with the same bounds. A
+//!   starved unit spends its frame interval, so two units never share one
+//!   layout.
 //! - **Inversion: re-expansion.** An expansion of a collapsing row, by any
 //!   route, ends the collapse (`CollapseEnd::ReExpanded`) and refills the
 //!   partly drained store through `populate_child_store`, the existing scan
@@ -72,7 +89,8 @@ use crate::model::list_budget::turn_continues;
 use crate::ui::accessibility;
 use crate::ui::sidebar::policy::{
     COLLAPSE_FRAME_STARVATION_MS, CollapseFacts, CollapseStep, CollapseStore, FrameUnitToken,
-    collapse_band, next_collapse_step, tick_takes_unit,
+    bound_step_rows, collapse_band, collapse_removal_is_destroy_only, interval_rows_left,
+    next_collapse_step, record_interval_rows,
 };
 
 /// The expander class whose application CSS draws the checked arrow as
@@ -185,6 +203,74 @@ pub(super) struct CollapseRuntimeState {
     /// `B_INTERACT_US`, apart from the frame that carries it (design D2,
     /// task 10.1).
     step_us_max: Cell<u64>,
+    /// The one-shot `G_PRIORITY_HIGH_IDLE` step source (design D25), while
+    /// armed. Its callback takes the id first, so nothing removes a source
+    /// that is dispatching.
+    step_source: RefCell<Option<glib::SourceId>>,
+    /// The section's `after-paint` handler on the list's frame clock (design
+    /// D25): at most one, connected while a collapse is pending on a mapped
+    /// list, disconnected when the queue empties, the list unmaps, the
+    /// section is disposed, and with the tick.
+    after_paint: RefCell<Option<(glib::WeakRef<gtk4::gdk::FrameClock>, glib::SignalHandlerId)>>,
+    /// Whether the next step-source dispatch may take D23's one unbound
+    /// chunk: set when a sliced collapse starts.
+    first_chunk_pending: Cell<bool>,
+    /// `after-paint` emissions the section's handler ran.
+    after_paint_runs: Cell<u64>,
+    /// The longest step-source dispatch (the whole callback) or
+    /// between-frames turn since the queue last started running, in
+    /// microseconds (design R14: what the 6 ms margin and `B_INTERACT_US`
+    /// read).
+    step_dispatch_us_max: Cell<u64>,
+    /// The step-source dispatches and between-frames turns since the queue
+    /// last started running, at most `STEP_DISPATCH_LOG_ROWS`.
+    step_dispatches: RefCell<Vec<StepDispatch>>,
+    /// Row widgets the factory created (`setup`), ever.
+    row_setups: Cell<u64>,
+}
+
+/// Step dispatches the evidence keeps per collapse run: more than the
+/// longest measured collapse's step-source dispatches and between-frames
+/// turns (about 130 at 400:131,072).
+///
+/// Kind: cap; an evidence log, rounded down.
+const STEP_DISPATCH_LOG_ROWS: usize = 1024;
+
+/// What one step-source dispatch or between-frames turn did (design D25,
+/// R14).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StepDispatchKind {
+    /// Removed bound rows of a store.
+    Bound,
+    /// Collapsed a drained descendant directly.
+    Descendant,
+    /// Collapsed the directory: the terminal step.
+    Terminal,
+    /// Removed one unbound chunk (D23's, from the step source).
+    Chunk,
+    /// A between-frames turn: unbound chunks while the turn lasted.
+    Between,
+    /// Took no step (the interval was spent, or the next step was unbound).
+    Idle,
+}
+
+/// One step-source dispatch or between-frames turn, as the evidence reports
+/// it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StepDispatch {
+    /// `glib::monotonic_time()` at its start, microseconds.
+    pub start_mono_us: i64,
+    /// The whole callback's time, microseconds.
+    pub took_us: u64,
+    /// What it did.
+    pub kind: StepDispatchKind,
+    /// Rows it removed.
+    pub rows: u32,
+    /// Row widgets the factory created inside it.
+    pub rows_created: u32,
+    /// The list's frame counter it read (-1 with no clock): the interval it
+    /// charged.
+    pub frame_counter: i64,
 }
 
 /// The collapse queue and its totals, as the evidence reports them.
@@ -206,6 +292,17 @@ pub struct CollapseTotals {
     /// The longest step since the queue last started running, in
     /// microseconds.
     pub step_us_max: u64,
+    /// The longest step-source dispatch or between-frames turn since the
+    /// queue last started running, in microseconds.
+    pub step_dispatch_us_max: u64,
+    /// Those dispatches and turns, in order.
+    pub step_dispatches: Vec<StepDispatch>,
+    /// Whether the section's `after-paint` handler is connected.
+    pub after_paint_connected: bool,
+    /// `after-paint` emissions its handler ran, ever.
+    pub after_paint_runs: u64,
+    /// Row widgets the factory created, ever.
+    pub row_setups: u64,
 }
 
 thread_local! {
@@ -237,37 +334,21 @@ fn with_unit_token<T>(
     })
 }
 
-/// Whether a tick of `clock` may take a unit now (`policy::tick_takes_unit`).
-fn tick_unit_free(clock: &gtk4::gdk::FrameClock) -> bool {
-    let frame = clock.frame_counter();
-    with_unit_token(clock, |token| tick_takes_unit(token, frame))
-}
-
-/// Record that a tick of `clock` took a unit in its current frame.
-fn record_tick_unit(clock: &gtk4::gdk::FrameClock) {
+/// Bound rows the interval after `clock`'s last painted frame may still
+/// remove (`policy::interval_rows_left`, design D25).
+fn clock_rows_left(clock: &gtk4::gdk::FrameClock, budget: u32) -> u32 {
     let frame = clock.frame_counter();
     with_unit_token(clock, |token| {
-        (
-            (),
-            FrameUnitToken {
-                taken_frame: Some(frame),
-                ..token
-            },
-        )
-    });
+        (interval_rows_left(token, frame, budget), token)
+    })
 }
 
-/// Record that a starved step took a unit outside any frame of `clock`, so
-/// the next tick takes none (design R6.2).
-fn record_starved_unit(clock: &gtk4::gdk::FrameClock) {
+/// Charge `rows` bound rows to the interval after `clock`'s last painted
+/// frame.
+fn charge_clock_rows(clock: &gtk4::gdk::FrameClock, rows: u32) {
+    let frame = clock.frame_counter();
     with_unit_token(clock, |token| {
-        (
-            (),
-            FrameUnitToken {
-                starved_unit_ran: true,
-                ..token
-            },
-        )
+        ((), record_interval_rows(token, frame, rows))
     });
 }
 
@@ -275,14 +356,27 @@ fn record_starved_unit(clock: &gtk4::gdk::FrameClock) {
 /// D19).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StepSource {
-    /// The frame tick: at most one bound unit, no unbound chunk (those run
-    /// between frames).
-    Tick { unit_allowed: bool },
+    /// The step source (design D25): one step, either D23's one unbound
+    /// chunk (`first_chunk`) or bound rows within the interval's budget.
+    Step { first_chunk: bool },
     /// The idle between frames: unbound chunks only, while the turn lasts.
     Between,
     /// The low-priority fallback (unmapped list, or a mapped list's clock
-    /// starved): unbound chunks and at most one bound unit.
+    /// starved): unbound chunks and at most one bound unit, which spends the
+    /// frame interval.
     Fallback { starved: bool },
+}
+
+/// What one turn of a step source did.
+#[derive(Clone, Copy, Debug, Default)]
+struct StepOutcome {
+    /// The bound step it ran: its kind and rows.
+    bound: Option<(StepDispatchKind, u32)>,
+    /// Unbound chunks it removed, and their rows.
+    chunks: u32,
+    chunk_rows: u32,
+    /// Whether it stopped at a bound step it could not take here.
+    stopped_at_bound: bool,
 }
 
 /// What one step reads from GTK: the policy's facts plus the objects they
@@ -321,6 +415,8 @@ impl LushtextWorkspaceSection {
         let runtime = &self.imp().collapse_runtime;
         if runtime.queue.borrow().is_empty() {
             runtime.step_us_max.set(0);
+            runtime.step_dispatch_us_max.set(0);
+            runtime.step_dispatches.borrow_mut().clear();
         }
         for row in rows {
             let Some(path) = directory_path(row) else {
@@ -346,6 +442,7 @@ impl LushtextWorkspaceSection {
                 continue;
             }
             self.start_sliced_collapse(row, path, origin, descendants);
+            runtime.first_chunk_pending.set(true);
         }
         self.arm_collapse_source();
     }
@@ -474,7 +571,21 @@ impl LushtextWorkspaceSection {
             starved_steps_total: runtime.starved_steps_total.get(),
             between_steps_total: runtime.between_steps_total.get(),
             step_us_max: runtime.step_us_max.get(),
+            step_dispatch_us_max: runtime.step_dispatch_us_max.get(),
+            step_dispatches: runtime.step_dispatches.borrow().clone(),
+            after_paint_connected: runtime.after_paint.borrow().is_some(),
+            after_paint_runs: runtime.after_paint_runs.get(),
+            row_setups: runtime.row_setups.get(),
         }
+    }
+
+    /// Count one row widget the factory created (design R13: the step tail is
+    /// GTK's creation inside a removal; the evidence reports it per step).
+    pub(super) fn count_row_setup(&self) {
+        let runtime = &self.imp().collapse_runtime;
+        runtime
+            .row_setups
+            .set(runtime.row_setups.get().saturating_add(1));
     }
 
     /// End every collapse: the model is being reset or the section disposed.
@@ -500,32 +611,31 @@ impl LushtextWorkspaceSection {
             runtime.last_step_us.set(glib::monotonic_time());
         }
         let list = &*self.imp().file_tree_view;
-        if frame_ticks_allowed() && list.is_mapped() && runtime.tick.borrow().is_none() {
-            let section = self.downgrade();
-            let id = list.add_tick_callback(move |_, clock| {
-                let Some(section) = section.upgrade() else {
-                    return glib::ControlFlow::Break;
-                };
-                section
-                    .imp()
-                    .collapse_runtime
-                    .last_step_us
-                    .set(glib::monotonic_time());
-                let unit_allowed = tick_unit_free(clock);
-                if section.run_collapse_step(StepSource::Tick { unit_allowed }) {
-                    record_tick_unit(clock);
-                }
-                // The unit may have left unbound rows to remove (a drained
-                // descendant collapsed, the next store's tail).
-                section.arm_between_frames_source();
-                if section.imp().collapse_runtime.queue.borrow().is_empty() {
-                    section.imp().collapse_runtime.tick.borrow_mut().take();
-                    section.stop_collapse_sources();
-                    return glib::ControlFlow::Break;
-                }
-                glib::ControlFlow::Continue
-            });
-            runtime.tick.replace(Some(id));
+        if frame_ticks_allowed() && list.is_mapped() {
+            if runtime.tick.borrow().is_none() {
+                // The frame requester and starvation clock (design D25): it
+                // takes no step.
+                let section = self.downgrade();
+                let id = list.add_tick_callback(move |_, _| {
+                    let Some(section) = section.upgrade() else {
+                        return glib::ControlFlow::Break;
+                    };
+                    let runtime = &section.imp().collapse_runtime;
+                    runtime.last_step_us.set(glib::monotonic_time());
+                    if runtime.queue.borrow().is_empty() {
+                        runtime.tick.borrow_mut().take();
+                        section.stop_collapse_sources();
+                        return glib::ControlFlow::Break;
+                    }
+                    glib::ControlFlow::Continue
+                });
+                runtime.tick.replace(Some(id));
+            }
+            self.connect_after_paint();
+            self.arm_step_source();
+        } else {
+            // No frame draws the list: nothing may arm a step from frames.
+            self.disconnect_after_paint();
         }
         self.arm_between_frames_source();
         if runtime.fallback.borrow().is_none() {
@@ -547,6 +657,151 @@ impl LushtextWorkspaceSection {
                 },
             );
             runtime.fallback.replace(Some(id));
+        }
+    }
+
+    /// Connect the section's one `after-paint` handler to the list's current
+    /// frame clock (design D25), replacing one on a clock the list no longer
+    /// has. `unmap` disconnects it (through `arm_collapse_source`), which also
+    /// covers an unrealize, since a widget is unmapped before it unrealizes;
+    /// `map` connects it again to the clock the list has then.
+    fn connect_after_paint(&self) {
+        let runtime = &self.imp().collapse_runtime;
+        let Some(clock) = self.imp().file_tree_view.frame_clock() else {
+            return;
+        };
+        if runtime
+            .after_paint
+            .borrow()
+            .as_ref()
+            .is_some_and(|(connected, _)| connected.upgrade().as_ref() == Some(&clock))
+        {
+            return;
+        }
+        self.disconnect_after_paint();
+        let section = self.downgrade();
+        let id = clock.connect_after_paint(move |_| {
+            if let Some(section) = section.upgrade() {
+                let runtime = &section.imp().collapse_runtime;
+                runtime
+                    .after_paint_runs
+                    .set(runtime.after_paint_runs.get().saturating_add(1));
+                section.arm_step_source();
+            }
+        });
+        runtime.after_paint.replace(Some((clock.downgrade(), id)));
+    }
+
+    fn disconnect_after_paint(&self) {
+        let connected = self.imp().collapse_runtime.after_paint.borrow_mut().take();
+        if let Some((clock, id)) = connected
+            && let Some(clock) = clock.upgrade()
+        {
+            clock.disconnect(id);
+        }
+    }
+
+    /// Arm the one-shot step source (design D25) while a collapse is pending
+    /// on a mapped list that paces from frames; at most one is armed.
+    fn arm_step_source(&self) {
+        let runtime = &self.imp().collapse_runtime;
+        if runtime.queue.borrow().is_empty()
+            || runtime.step_source.borrow().is_some()
+            || !frame_ticks_allowed()
+            || !self.imp().file_tree_view.is_mapped()
+        {
+            return;
+        }
+        let section = self.downgrade();
+        let id = glib::idle_add_local_full(glib::Priority::HIGH_IDLE, move || {
+            if let Some(section) = section.upgrade() {
+                section
+                    .imp()
+                    .collapse_runtime
+                    .step_source
+                    .borrow_mut()
+                    .take();
+                section.run_step_source_dispatch();
+            }
+            glib::ControlFlow::Break
+        });
+        runtime.step_source.replace(Some(id));
+    }
+
+    /// One step-source dispatch (design D25): one step, timed as a whole, and
+    /// the source armed again after D23's chunk or while the interval has
+    /// bound rows left.
+    fn run_step_source_dispatch(&self) {
+        // A list unmapped since the source was armed paces from the
+        // fallback; `map` arms the source again.
+        if steps_held() || !frame_ticks_allowed() || !self.imp().file_tree_view.is_mapped() {
+            return;
+        }
+        let runtime = &self.imp().collapse_runtime;
+        let started = glib::monotonic_time();
+        runtime.last_step_us.set(started);
+        let setups_before = runtime.row_setups.get();
+        let clock = self.imp().file_tree_view.frame_clock();
+        let frame_counter = clock
+            .as_ref()
+            .map_or(-1, gtk4::gdk::FrameClock::frame_counter);
+        let first_chunk = runtime.first_chunk_pending.replace(false);
+        let outcome = self.run_collapse_step(StepSource::Step { first_chunk });
+        let pending = !runtime.queue.borrow().is_empty();
+        if pending {
+            let budget = crate::ui::sidebar::policy::slc_attribution_unit_rows();
+            let rows_left = clock
+                .as_ref()
+                .map_or(0, |clock| clock_rows_left(clock, budget));
+            if outcome.chunks > 0 || (outcome.bound.is_some() && rows_left > 0) {
+                self.arm_step_source();
+            }
+            // Unbound rows may be next (a step left a drained descendant's
+            // tail, or the next step is a chunk). Not after a dispatch that
+            // stopped at a bound step it could not take: the between-frames
+            // idle would arm this source again, which would stop there again,
+            // a busy loop between frames.
+            if !outcome.stopped_at_bound {
+                self.arm_between_frames_source();
+            }
+        } else {
+            self.stop_collapse_sources();
+        }
+        let (kind, rows) = match outcome.bound {
+            Some(bound) => bound,
+            None if outcome.chunks > 0 => (StepDispatchKind::Chunk, outcome.chunk_rows),
+            None => (StepDispatchKind::Idle, 0),
+        };
+        self.record_step_dispatch(started, kind, rows, setups_before, frame_counter);
+    }
+
+    /// Add one dispatch to the evidence log (bounded) and its time to the
+    /// maximum.
+    fn record_step_dispatch(
+        &self,
+        started: i64,
+        kind: StepDispatchKind,
+        rows: u32,
+        setups_before: u64,
+        frame_counter: i64,
+    ) {
+        let runtime = &self.imp().collapse_runtime;
+        let took_us = u64::try_from(glib::monotonic_time().saturating_sub(started)).unwrap_or(0);
+        runtime
+            .step_dispatch_us_max
+            .set(runtime.step_dispatch_us_max.get().max(took_us));
+        let rows_created = u32::try_from(runtime.row_setups.get().saturating_sub(setups_before))
+            .unwrap_or(u32::MAX);
+        let mut log = runtime.step_dispatches.borrow_mut();
+        if log.len() < STEP_DISPATCH_LOG_ROWS {
+            log.push(StepDispatch {
+                start_mono_us: started,
+                took_us,
+                kind,
+                rows,
+                rows_created,
+                frame_counter,
+            });
         }
     }
 
@@ -585,14 +840,40 @@ impl LushtextWorkspaceSection {
         if let Some(source) = runtime.between.borrow_mut().take() {
             source.remove();
         }
+        if let Some(source) = runtime.step_source.borrow_mut().take() {
+            source.remove();
+        }
+        self.disconnect_after_paint();
+        runtime.first_chunk_pending.set(false);
         runtime.last_step_us.set(0);
     }
 
-    /// One turn of the between-frames idle; whether it removed any rows.
+    /// One turn of the between-frames idle; whether it removed any rows. A
+    /// turn that ends at a bound step arms the step source, so a unit that
+    /// becomes next mid-interval runs before the next frame (design D25).
     fn run_between_frames_step(&self) -> bool {
-        let before = self.imp().collapse_runtime.steps_total.get();
-        self.run_collapse_step(StepSource::Between);
-        self.imp().collapse_runtime.steps_total.get() != before
+        let runtime = &self.imp().collapse_runtime;
+        let started = glib::monotonic_time();
+        let setups_before = runtime.row_setups.get();
+        let frame_counter = self
+            .imp()
+            .file_tree_view
+            .frame_clock()
+            .map_or(-1, |clock| clock.frame_counter());
+        let outcome = self.run_collapse_step(StepSource::Between);
+        if outcome.chunks > 0 {
+            self.record_step_dispatch(
+                started,
+                StepDispatchKind::Between,
+                outcome.chunk_rows,
+                setups_before,
+                frame_counter,
+            );
+        }
+        if outcome.stopped_at_bound {
+            self.arm_step_source();
+        }
+        outcome.chunks > 0
     }
 
     /// The fallback: steps while nothing draws the list, or once a mapped
@@ -615,11 +896,7 @@ impl LushtextWorkspaceSection {
                 return;
             }
             runtime.last_step_us.set(now);
-            if self.run_collapse_step(StepSource::Fallback { starved: true })
-                && let Some(clock) = list.frame_clock()
-            {
-                record_starved_unit(&clock);
-            }
+            self.run_collapse_step(StepSource::Fallback { starved: true });
             return;
         }
         runtime.last_step_us.set(now);
@@ -628,31 +905,68 @@ impl LushtextWorkspaceSection {
     }
 
     /// One step over the queue from `source`: unbound chunks while the turn
-    /// lasts, and at most one bound unit, as `source` allows. Returns
-    /// whether a unit ran.
-    fn run_collapse_step(&self, source: StepSource) -> bool {
+    /// lasts (one, for the step source's D23 chunk), and at most one bound
+    /// step within the frame interval's budget, as `source` allows.
+    fn run_collapse_step(&self, source: StepSource) -> StepOutcome {
         if steps_held() {
-            return false;
+            return StepOutcome::default();
         }
         let started = glib::monotonic_time();
-        let unit_taken = self.run_collapse_step_from(started, source);
+        let outcome = self.run_collapse_step_from(started, source);
         let took = u64::try_from(glib::monotonic_time().saturating_sub(started)).unwrap_or(0);
         let runtime = &self.imp().collapse_runtime;
         runtime.step_us_max.set(runtime.step_us_max.get().max(took));
-        unit_taken
+        outcome
     }
 
-    fn run_collapse_step_from(&self, started: i64, source: StepSource) -> bool {
-        let (unbound_allowed, unit_allowed, starved) = match source {
-            StepSource::Tick { unit_allowed } => (false, unit_allowed, false),
-            StepSource::Between => (true, false, false),
-            StepSource::Fallback { starved } => (true, true, starved),
+    /// The bound rows `source` may still remove in this frame interval, of
+    /// `budget`: the step source reads the window-wide token (design D25); the
+    /// fallback takes a unit whatever it holds (design R6.2).
+    fn interval_rows_left_for(&self, source: StepSource, budget: u32) -> u32 {
+        match source {
+            StepSource::Step { .. } => self
+                .imp()
+                .file_tree_view
+                .frame_clock()
+                .map_or(0, |clock| clock_rows_left(&clock, budget)),
+            StepSource::Fallback { .. } => budget,
+            StepSource::Between => 0,
+        }
+    }
+
+    /// Charge a bound step's rows to the interval: the step source its rows,
+    /// a starved fallback unit the whole budget, so the frame that lays it out
+    /// carries no other unit (design R6.2, D25).
+    fn charge_interval(&self, source: StepSource, rows: u32, budget: u32) {
+        let Some(clock) = self.imp().file_tree_view.frame_clock() else {
+            return;
         };
+        match source {
+            StepSource::Step { .. } => charge_clock_rows(&clock, rows),
+            StepSource::Fallback { starved: true } => charge_clock_rows(&clock, budget),
+            StepSource::Fallback { starved: false } | StepSource::Between => {}
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one step loop over the queue; ATTRIBUTION PATCH (task 11.3) adds the \
+                  interval budget, which task 11.4 moves into the policy"
+    )]
+    fn run_collapse_step_from(&self, started: i64, source: StepSource) -> StepOutcome {
+        let (unbound_allowed, bound_allowed, chunk_limit, starved) = match source {
+            StepSource::Step { first_chunk } => (first_chunk, true, 1, false),
+            StepSource::Between => (true, false, usize::MAX, false),
+            StepSource::Fallback { starved } => (true, true, usize::MAX, starved),
+        };
+        let budget = crate::ui::sidebar::policy::slc_attribution_unit_rows();
+        let step_rows = crate::ui::sidebar::policy::slc_attribution_step_rows();
+        let one_step = matches!(source, StepSource::Step { .. });
+        let mut outcome = StepOutcome::default();
         let mut chunks = 0usize;
-        let mut unit_taken = false;
         let mut index = 0;
         let runtime = &self.imp().collapse_runtime;
-        loop {
+        'records: loop {
             // Take the record out while it steps: removals emit
             // `items-changed`, whose handlers read the queue.
             let record = {
@@ -664,6 +978,7 @@ impl LushtextWorkspaceSection {
             };
             let mut record = record;
             let mut ended = None;
+            let mut dispatch_done = false;
             loop {
                 let elapsed =
                     u64::try_from(glib::monotonic_time().saturating_sub(started)).unwrap_or(0);
@@ -674,22 +989,60 @@ impl LushtextWorkspaceSection {
                     ended = Some(CollapseEnd::Removed);
                     break;
                 };
-                let step = next_collapse_step(&CollapseFacts {
+                let policy_facts = CollapseFacts {
                     stores: &facts.stores,
                     band: &facts.band,
                     rows_after: facts.rows_after,
                     rows_before: facts.rows_before,
-                });
+                };
+                let mut step = next_collapse_step(&policy_facts);
                 record.rows_left = facts.stores.first().map_or(0, |store| store.span);
                 record.bound_rows_left = held_in(&facts);
                 if step.takes_unit() {
-                    if unit_taken || !unit_allowed {
+                    if outcome.bound.is_some() || !bound_allowed {
+                        outcome.stopped_at_bound = true;
                         break;
                     }
-                    unit_taken = true;
-                } else if !unbound_allowed {
-                    // Unbound rows leave between frames (design D19).
+                    let rows = match step {
+                        CollapseStep::CollapseRow => facts.stores[0].span,
+                        CollapseStep::CollapseDescendant(store) => facts.stores[store].span,
+                        CollapseStep::RemoveBound { .. } | CollapseStep::RemoveUnbound { .. } => 0,
+                    };
+                    let destroy_only = matches!(step, CollapseStep::RemoveBound { .. })
+                        && collapse_removal_is_destroy_only(&policy_facts);
+                    let rows_left = self.interval_rows_left_for(source, budget);
+                    let Some((charge, count)) =
+                        bound_step_rows(step, rows, destroy_only, rows_left, budget, step_rows)
+                    else {
+                        // The interval is spent: the next frame's
+                        // `after-paint` arms the next step.
+                        outcome.stopped_at_bound = true;
+                        break;
+                    };
+                    if let CollapseStep::RemoveBound { store, start, .. } = step {
+                        step = CollapseStep::RemoveBound {
+                            store,
+                            start,
+                            count,
+                        };
+                    }
+                    self.charge_interval(source, charge, budget);
+                    outcome.bound = Some((
+                        match step {
+                            CollapseStep::CollapseRow => StepDispatchKind::Terminal,
+                            CollapseStep::CollapseDescendant(_) => StepDispatchKind::Descendant,
+                            CollapseStep::RemoveBound { .. }
+                            | CollapseStep::RemoveUnbound { .. } => StepDispatchKind::Bound,
+                        },
+                        count,
+                    ));
+                } else if !unbound_allowed || chunks >= chunk_limit {
+                    // Unbound rows leave between frames (design D19), except
+                    // D23's one chunk.
                     break;
+                } else if let CollapseStep::RemoveUnbound { count, .. } = step {
+                    outcome.chunks += 1;
+                    outcome.chunk_rows = outcome.chunk_rows.saturating_add(count);
                 }
                 record.steps += 1;
                 runtime.steps_total.set(runtime.steps_total.get() + 1);
@@ -704,6 +1057,7 @@ impl LushtextWorkspaceSection {
                         .set(runtime.between_steps_total.get() + 1);
                 }
                 chunks += 1;
+                dispatch_done = one_step;
                 match step {
                     CollapseStep::RemoveUnbound {
                         store,
@@ -744,6 +1098,9 @@ impl LushtextWorkspaceSection {
                         break;
                     }
                 }
+                if dispatch_done {
+                    break;
+                }
             }
             if let Some(end) = ended {
                 self.finish_collapse(&record, end);
@@ -751,8 +1108,11 @@ impl LushtextWorkspaceSection {
                 runtime.queue.borrow_mut().insert(index, record);
                 index += 1;
             }
+            if dispatch_done {
+                break 'records;
+            }
         }
-        unit_taken
+        outcome
     }
 
     /// Read one step's facts, or `None` once the row has left the model or

@@ -1128,6 +1128,12 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/ui/sidebar/reveal_execution.rs` | `REVEAL_RESCROLL_BUDGET` | 2 | retry budget | power of two; re-issued scrolls once a clipped target row is realized (`bound-lists-by-budget-not-count`) |
 | `crates/lushtext-core/src/ui/sidebar/reveal_execution.rs` | `REVEAL_NEIGHBOURS_PER_SIDE` | 4 | out: presentation | presentation shape: rows or lines a surface shows (D1) |
 
+### `crates/lushtext-core/src/ui/sidebar/workspace_section/collapse_execution.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-core/src/ui/sidebar/workspace_section/collapse_execution.rs` | `STEP_DISPATCH_LOG_ROWS` | 1,024 | cap | power of two, rounded down; step-source dispatches and between-frames turns the collapse evidence keeps per run, above the about 130 of the longest measured collapse (`slice-large-directory-collapse` D25) |
+
 ### `crates/lushtext-core/src/ui/sidebar/workspace_section/peek_execution.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
