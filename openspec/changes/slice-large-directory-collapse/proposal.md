@@ -109,7 +109,14 @@ stay drawn and shift each frame. The revision adds:
   pressed meanwhile act when the collapse ends, and hidden rows take no
   pointer input and report `hidden` to assistive technologies.
 - **The input dispatch removes one chunk of unbound rows**, so the first
-  frame takes the first band unit where that chunk covers them.
+  frame takes the first band unit where that chunk covers them. *(Design
+  R13: the chunk runs in the first step dispatch after the input instead.)*
+- **The bound step leaves the frame** (design R13, D25): each unit of bound
+  rows runs in a dispatch of its own between frames, and the frame after it
+  only lays out the rows it brought into the band, so neither dispatch
+  carries both; the 12 ms frame bar stays, with selection margins
+  pre-registered for every case and a closing rule that ends the design
+  loops for the rows-after margins.
 - **The path cache leaves the chunk** and is retired after the collapse, if
   the queued attribution confirms it costs at least a frame.
 - **A selection margin of one frame:** constants and go/no-go rounds choose

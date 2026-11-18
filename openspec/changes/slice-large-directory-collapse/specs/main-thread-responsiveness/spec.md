@@ -31,7 +31,7 @@ Collapsing a sidebar directory by a route LushText owns SHALL keep the input dis
 
 #### Scenario: Several directories at once
 - **WHEN** the folder header collapses two expanded roots of 4,096 entries each in one input
-- **THEN** both rows show the collapse in the first frame, every frame takes at most one unit of bound rows across both collapses, and both complete
+- **THEN** both rows show the collapse in the first frame, every frame interval takes at most one unit of bound rows across both collapses, and both complete
 - **AND** the later root drains first, so the earlier root's steps bring into the band no row of a subtree that is itself being collapsed
 
 #### Scenario: A small directory

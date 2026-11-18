@@ -1535,7 +1535,7 @@ after the directory there is no slack for a smaller unit, and lighter rows
 (D17) buy margin inside each frame, not fewer frames. Task 10.7 re-derives
 this table from its measured costs before choosing the constants, and if any
 case has negative slack the change returns to design with that round. No
-case is excepted in advance.
+case is excepted in advance. *(Superseded by R13's closing rule C1: a miss moves down R13's ladder or to C1–C3, not back to design.)*
 
 ### R4. `main`'s folder-header collapse never settles: a real expansion-intent bug
 
@@ -1612,7 +1612,7 @@ The order and the owned routes of D4–D7 stay. What changes:
   the lighter rows (task 10.4) shows unit 32's worst frame at 400:256 at most
   12 ms (a quarter of margin under `B_SETTLE_US`). If it does not, the change
   returns to design with that round, rather than shipping a collapse slower
-  than `main`. Row lightening was a recorded follow-up (D4 "Rejected"); it
+  than `main`. *(Superseded by R13's closing rule C1: a miss moves down R13's ladder or to C1–C3, not back to design.)* Row lightening was a recorded follow-up (D4 "Rejected"); it
   is in scope now because R2 shows nothing else can meet D2 and R3 together.
   Its visual, focus and accessibility behaviour must stay `main`'s: the
   accessibility and visual smokes and the reorder and Focus Folder widget
@@ -1963,7 +1963,7 @@ skip-cache profile as round 2), and task 10.7's round on the reworked code
 decides it with the rest. **The negative-slack stop condition stands:** if
 task 10.7's round or the final campaign misses the revised bar in any case,
 the change returns to design with that round, and no case is excepted in
-advance.
+advance. *(Superseded by R13's closing rule C1: a miss moves down R13's ladder or to C1–C3, not back to design.)*
 
 *The trade is user-visible again, and stated.* R8 item 5 marked stage 1's
 "finishes later than `main`" superseded by R3. For a subtree above 16,384
@@ -2433,7 +2433,8 @@ thresholds are pre-registered to the rounds below and to task 10.7.
     - the time to hide and to clear about 207 rows, the band's size.
 
     If A123 is refuted on either toolkit, the change returns to design with
-    the probe's figures.
+    the probe's figures. *(Superseded by R13, G3: a refuted A123 drops D22
+    without a design loop.)*
 - **D22, focus, pointer and assistive technologies.** Specified as new
   scenarios with failing-first tests (tasks 10.13 and 10.14):
   - *Focus:* no painted frame shows the keyboard focus on a hidden row.
@@ -3000,9 +3001,17 @@ invariants").
   One source dispatch runs one step and nothing else. The token is
   unchanged in meaning and key (R6.3): at most one unit of bound rows per
   frame interval, read from the list's frame clock counter (a unit runs only
-  if no unit ran since the clock's last frame); the tick callback no longer
-  takes units and is removed. The frame then lays out that one unit's rows
-  and runs no step.
+  if no unit ran since the clock's last frame). The frame then lays out that
+  one unit's rows and runs no step.
+- **What keeps the frames coming.** The tick callback stays registered while
+  a collapse is pending on a mapped list, but takes no step: it keeps the
+  frame clock updating every vsync, so every frame emits `after-paint` and
+  arms the next unit even when a step removed nothing (a removal's own
+  `gtk_widget_queue_resize` would request a frame only when rows left), and
+  it refreshes the starvation clock of D4. A starved clock still hands the
+  steps to the `G_PRIORITY_LOW` fallback after
+  `COLLAPSE_FRAME_STARVATION_MS`, and a starved unit counts against the
+  interval like any other (R6.2's flag reads the same counter).
 - **Why it meets the frame figure.** It moves the step (about a third of a
   32-row frame's samples, and 4.0–9.6 ms of measured step time) out of the
   frame and leaves the frame the layout and paint of at most
@@ -3041,10 +3050,13 @@ invariants").
   no frame there is no `after-paint`, and the fallback steps.
 - **Axioms.** D25 relies on three toolkit facts, pinned as **A124** and
   **A125** (task 2.8) on GNOME 51 and the GNOME 50 floor:
-  - A124: a removal that brings rows into a mapped list's band creates and
-    binds their widgets inside the `items-changed` emission, maps them at
-    insertion, and reuses a removed widget only for the same item; the frame
-    after it creates none and only styles, measures and allocates them.
+  - A124: A118 already records that a removal creates and binds the
+    entering rows' widgets inside its `items-changed` and never reuses a
+    removed one for another item. A124 adds what D25 needs beyond it: run
+    from an idle outside any frame clock dispatch, the removal leaves every
+    entering widget mapped, with accessible `hidden` false, when the
+    emission returns, and the next frame runs no setup or bind for them and
+    only styles, measures, allocates and paints them.
   - A125: a `G_PRIORITY_HIGH_IDLE` one-shot source armed in a frame's
     `after-paint`, or in an input dispatch, runs before the next frame clock
     dispatch even when that frame is already due.
@@ -3107,6 +3119,12 @@ factor and bars, and read by the stage that queued it.
   and the input at most 6 ms, `INPUT_TO_FRAME_US` held, and every completion
   at most bar − M after the credits of R11's gate (D24's from Q2, Q3's for
   0:N). Ladder:
+  - **S1 is the expected path, not a fallback.** At 32 rows the measured
+    steps already exceed the 6 ms margin (Q4 7.2 and 9.1 ms at 400:64,
+    `d128` 6.5–9.6 ms at 400:*, Q3's 7.325 ms at destroy-only 128, Q2's
+    7.2 ms), so G1's binary carries the per-interval row budget and the
+    temporary `SLC_STEP_ROWS` hook from the start, and G1, G1b (16) and G1c
+    (8) are queued as one entry on one build in one quiet window.
   - *Frames pass, a step misses:* **S1**, steps of 16 bound rows. The
     interval keeps its budget of `SIDEBAR_REALIZED_ROWS_PER_FRAME` rows, now
     removed in steps of at most a new `COLLAPSE_STEP_ROWS` (cap, rounded
@@ -3114,7 +3132,8 @@ factor and bars, and read by the stage that queued it.
     `DIRECT_COLLAPSE_ROWS` drops to the step size, so the terminal collapse
     is one step. That is a policy change (`next_collapse_step` takes the
     rows the interval has left; Kani C1–C5 and the shard re-run, task
-    11.4). Measured by round G1b (`SLC_STEP_ROWS=16`). Its steps miss:
+    11.4; task 11.3's binary carries the same budget behind the hook).
+    Measured by round G1b (`SLC_STEP_ROWS=16`). Its steps miss:
     **S2**, 8 rows (`SLC_STEP_ROWS=8`); a step that still misses 8 ms at 8
     rows is D2's existing toolkit-floor exception (A118, A124), recorded,
     and its 6 ms selection miss is recorded as data.
@@ -3134,9 +3153,18 @@ factor and bars, and read by the stage that queued it.
     rule applies.
   - *Completion misses bar − M only for a lost first frame* (400:4,096, the
     case with no slack, R11): it is G2's.
-- **G2, D23's chunk (in G1's round).** The chunk is the largest of 16,384,
-  8,192 and 4,096 whose one-chunk dispatch is at most 6 ms in every
-  repetition (`SLC_CHUNK`, measured at 0:131,072 and 400:16,385). If 4,096
+  - *`INPUT_TO_FRAME_US` misses:* **T1**, the first bound unit is armed by
+    the first frame's `after-paint` instead of the input, so the first frame
+    shows the intent alone; the lost frame is re-read against the completion
+    margin, and a case it pushes over bar − M goes to C1.
+- **G2, the unbound chunk (in G1's entry).** `COLLAPSE_UNBOUND_CHUNK_ROWS`
+  is the largest of 16,384, 8,192 and 4,096 for which, in every repetition,
+  both D23's one-chunk dispatch and every between-frames turn
+  (`LIST_TURN_SLICE_US`, 4 ms, plus one chunk) are at most 6 ms (`SLC_CHUNK`,
+  measured at 0:131,072 and 400:16,385). The turn bounds the chunk to about
+  2 ms: at D24's rate (about 0.18 µs a row, the skip-cache figure) that is
+  8,192 rows or less, predicted, not measured. If 4,096 misses the turn, the
+  chunk is the largest smaller power of two that fits it, and D23 is void. If 4,096
   misses, D23 is void, 400:4,096 keeps the measured completion without its
   credit (121.9 ms predicted against 120.6 ms), and the closing rule applies
   to that case's margin.
@@ -3144,9 +3172,10 @@ factor and bars, and read by the stage that queued it.
   dispatch (intent and hiding) must be at most 6 ms: `0.245 ms` (104's worst
   input) plus the probe's time to hide the band. If it is over, the rows
   outside the viewport are hidden by the first step-source dispatch instead,
-  before the first frame. A refuted A123 is R11's existing rule (back to
-  design with the probe's figures); the closing rule's tier C3 then applies
-  without D22.
+  before the first frame. A refuted A123 drops D22 without a design loop
+  (C1): D22 is not built, task 11.5 removes the picture-final requirement's
+  first-frame bar and D22's scenarios from the delta specs, and the rest
+  proceeds.
 - **G4, the destroy-only unit (in G1's round, 0:256, 0:4,096 and
   0:131,072).** 256 if its unit dispatch is at most 6 ms and its frame at
   most 12 ms in every repetition (D24 removed the path-cache chunk that
@@ -3188,6 +3217,9 @@ This is the last design loop for the rows-after frame and step margins.
     toolkit-floor exception, an extension of D2's clause stated here before
     the campaign. Otherwise that class keeps `main`'s direct collapse, which
     is today's behaviour, and the deferral is recorded with its figures.
+  - A class that misses R3's completion bar with R9's allowance keeps
+    `main`'s direct collapse: a collapse slower than `main`'s by more than
+    the bar is what R3 rules out, whatever its frames.
   - Main's own figures, for scale and not as a bar: 400:64's worst frame is
     18.0–20.2 ms with input 11.5–18.8 ms, and 400:256's is 56.1–72.6 ms in
     one over-budget dispatch (`impl/campaign2/slc-v2-r1/r3-main-c1.log`).
@@ -3233,15 +3265,20 @@ by task 11.3 once their binary exists.
 #### What this revision changes in the tasks
 
 - **New:** 2.8 (A124, A125); 11.1 (read G0); 11.2 (the verdict test's
-  windows, if G0 confirms); 11.3 (D25 and gate G1); 11.4 (rungs S1–S3 and F1,
-  only as G1 requires); 11.5 (the closing rule's record).
+  windows, if G0 confirms); 11.3 (D25 and gate G1); 11.4 (rungs S1–S3, T1 and
+  F1, as G1 requires); 11.5 (the closing rule's record).
 - **Revised:** 10.4 keeps its 12 ms acceptance, now read by G1 on D25 for
   every case; 10.7 takes R13's margins and candidates; 10.9's guard and D23
   move to the first step-source dispatch; 10.13's re-applied `hidden`
   follows D25; 8.3 gains D25's wording.
-- **Annotated:** D2's step-in-the-frame bullet, D19's "the tick takes bound
-  units only" and R12's frame-tick re-apply are superseded by D25 where
-  they are written.
+- **Annotated:** D2's step-in-the-frame bullet, D4's and D19's "the tick
+  takes bound units only", D22's re-apply, D23's input chunk and R12's
+  frame-tick re-apply are superseded by D25 where they are written. Every
+  forward-looking "returns to design" exit written before R13 (R3's and
+  R9's negative-slack stop, D17's acceptance, D22's refuted A123, R11's
+  selection-margin risk, the Risks bullets, tasks 2.7, 10.4 and 10.7) is
+  superseded by C1 and annotated where it is written; the history sections
+  that record earlier returns stay as written.
 - **Unchanged:** D22–D24 and R11's completion gate.
 
 ## Risks / Trade-offs
@@ -3249,7 +3286,7 @@ by task 11.3 once their binary exists.
 - **Lighter rows touch every row** (D17). The reorder drag, the Focus Folder
   button and the drop surfaces are created on demand, so their tests, the
   accessibility smoke and the visual smokes guard them; if the acceptance
-  round of task 10.4 misses its figure, the change goes back to design.
+  round of task 10.4 misses its figure, the change goes back to design. *(Superseded by R13's closing rule C1: a miss moves down R13's ladder or to C1–C3, not back to design.)*
   The gain is a hypothesis, not a profile: these decorations are
   `visible = false` in most rows on `main` (`row_factory.rs`), and the
   profile does not separate their share of the CSS validation (26 % of a unit
@@ -3260,7 +3297,7 @@ by task 11.3 once their binary exists.
 - **The completion bar is new and tight at 400 rows after** (R3): seven
   packed frames are `main`'s frozen time, and R3's table leaves no slack at
   400:4,096 and up or at 0:131,072. If task 10.7's round shows negative
-  slack anywhere, the change returns to design.
+  slack anywhere, the change returns to design. *(Superseded by R13's closing rule C1: a miss moves down R13's ladder or to C1–C3, not back to design.)*
 - **A very large directory finishes later than `main`'s frozen collapse**
   (R9): above 16,384 flattened rows the bar allows 0.5 µs a further row
   (57 ms at 131,072 rows), a trade stated in the proposal. The arrow and the
@@ -3287,7 +3324,8 @@ by task 11.3 once their binary exists.
   completion bar, and `main` shows a frozen, stale picture for the same
   cases. The visual and accessibility smokes, and D22's focus, pointer and
   assistive-technology scenarios, guard it. If A123 does not hold on a
-  toolkit, the change returns to design.
+  toolkit, the change returns to design. *(Superseded by R13, G3: D22 is
+  dropped without a design loop.)*
 - **D22's cost under a real assistive technology** (R12). The verdict test
   runs with `GTK_A11Y=test`, which emits nothing; with AT-SPI each `hidden`
   change of about 207 rows emits a state change and a children change, a cost
@@ -3305,7 +3343,7 @@ by task 11.3 once their binary exists.
   out.
 - **The selection margin (R11) can leave no configuration.** If no
   configuration clears every bar by one frame, the change returns to design
-  again; the margin is not relaxed to let one through.
+  again; the margin is not relaxed to let one through. *(Superseded by R13's closing rule C1: a miss moves down R13's ladder or to C1–C3, not back to design.)*
 - **R9's bar is met today only by the upper bound, and thinly.** The
   skip-cache build is the best case of cutting the path-cache bookkeeping
   alone (the further cuts task 10.3 lists, the O(store) mirror count, the

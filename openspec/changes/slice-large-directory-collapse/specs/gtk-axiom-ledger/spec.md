@@ -39,7 +39,7 @@ The ledger SHALL record, each with a probe, a catalogue entry and a sample verif
 
 #### Scenario: Removal-time creation
 - **WHEN** the probe removes 32 bound rows, with 400 rows after them, from a presented `GtkListView` over a `GtkTreeListModel`, outside any frame clock dispatch, and counts factory setup and bind calls and reads each new row widget's mapped state when the removal returns and during the next frame
-- **THEN** it records whether every entering row's widget is created, bound and mapped inside the removal's `items-changed` emission, whether a removed widget is reused for any other item, and that the next frame creates and binds none and only styles, measures and allocates them
+- **THEN** it records, beyond what the row-widget churn axiom already records (creation inside `items-changed`, no reuse for another item), whether every entering row widget is mapped, with the accessible `hidden` state false, when the removal returns, and whether the next frame runs no setup or bind for them and only styles, measures, allocates and paints them
 
 #### Scenario: A high-idle step before a due frame
 - **WHEN** the probe arms a `G_PRIORITY_HIGH_IDLE` one-shot source in a frame's `after-paint`, and separately in a dispatch that runs while the next frame is already due, and records the order of that source and the next frame clock dispatch
