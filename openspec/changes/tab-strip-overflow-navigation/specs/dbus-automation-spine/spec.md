@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Tab overflow navigation has deterministic readiness
-The readiness blocker `tab-overflow` SHALL be present while a tab-strip scroll step or hold is in progress, while the strip's overflow controls have a reconcile pending, and while the All Tabs popover is still publishing or retiring rows. The aggregate predicates `visual-geometry-settled`, `accessibility-settled` and `idle` SHALL include it, and a timeout SHALL name it as the bounded blocker.
+The readiness blocker `tab-overflow` SHALL be present while a tab-strip scroll step or hold is in progress, while the strip's overflow controls have a reconcile pending, and while the All Tabs popover is still publishing or retiring rows. The aggregate predicates `visual-geometry-settled`, `accessibility-settled` and `idle` SHALL include it, a timeout SHALL name it as the bounded blocker, and a `tab-overflow` workflow event SHALL be derived from it.
 
 #### Scenario: Waiting for a scroll step
 - **WHEN** automation activates `win.scroll-tabs-forward` and then waits for `visual-geometry-settled`
@@ -23,11 +23,11 @@ The snapshot object `window.tab_strip` SHALL expose `overflowing`, `scroll_back_
 - **THEN** the snapshot reports the popover visible with `active_transient_surface` `all-tabs-popover`, then hidden
 
 ### Requirement: Visual geometry exposes the tab overflow surfaces
-The visual-geometry snapshot SHALL expose the named surfaces `tab-strip-overflow-controls`, the bounds of the trailing control group, and `all-tabs-popover`, the popover's bounds. A surface that is not shown SHALL be reported absent with a reason.
+The visual-geometry snapshot SHALL expose the named surfaces `tab-strip-overflow-controls`, the bounds of the trailing control group, and `all-tabs-popover`, the popover's bounds. A surface that is not shown SHALL be reported absent with reason `controls-hidden` or `popover-closed`.
 
 #### Scenario: Controls absent while tabs fit
 - **WHEN** a client reads visual geometry while all tabs fit and fewer than two tabs are open
-- **THEN** `tab-strip-overflow-controls` is reported absent with a reason
+- **THEN** `tab-strip-overflow-controls` is reported absent with reason `controls-hidden`
 
 #### Scenario: Controls present on overflow
 - **WHEN** the strip overflows

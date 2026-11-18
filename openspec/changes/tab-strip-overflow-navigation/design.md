@@ -127,7 +127,11 @@ shows.
   (`:1301`), a press on a partly visible tab (`:2963`), drag placeholders
   (`:2220`, `:2332`, `:2630`), and drag autoscroll (`:1463`). The guard
   therefore cancels our animation and the repeat source on every public event
-  that precedes one of them, so the strip's own scroll wins:
+  that precedes one of them, so the strip's own scroll wins.
+  **Cancelling means `adw_animation_pause()`, never `reset()` or `skip()`.**
+  Both of those write a value into the adjustment, and that outside
+  `value-changed` would pause the box animation that just started
+  (`adw-tab-box.c:882-885`). The guarded events are:
   - `AdwTabView` `notify::selected-page`, `page-attached`, `page-detached`,
     `page-reordered` and `notify::is-transferring-page`. Without these, our
     per-frame writes would pause the box's `scroll_to_tab` animation (F6), and a
@@ -137,12 +141,21 @@ shows.
     `BOTH_AXES` and no `KINETIC`. Its handler always returns propagate, so it
     runs before the box's bubble-phase vertical controller (F1) and steals
     nothing (spec "Wheel during a scroll step").
-  - A capture-phase `GtkGestureClick` on the `AdwTabBar` (any button, also
-    touch) that observes `pressed` and never claims. It covers a press on a
-    partly visible tab, the start of a reorder drag and drag autoscroll, which
-    have no public signal of their own. It does not cover presses on our own
-    controls: a press inside the end group is ignored, by target.
+  - A capture-phase `GtkGestureClick` on the `AdwTabBar` that observes
+    `pressed` and never claims. It uses `set_button(0)` so it sees any button,
+    and it also fires on touch. It covers a press on a partly visible tab, the
+    start of a reorder drag and drag autoscroll, none of which has a public
+    signal. It stays in state NONE, so it never denies the box's bubble-phase
+    gestures (`adw-tab-box.c:3780-3796`).
+  - A press on our own end group is ignored. The observer resolves
+    `bar.pick(x, y)` and tests whether the result descends from the group. Both
+    observers act, and count, only while a step or hold is active, so presses
+    and scrolling inside the open popover (whose parent chain runs through the
+    bar) are inert.
   - A direction change.
+  - While `is-transferring-page` is true, a step requested by keyboard or
+    automation is refused: the box's drag autoscroll (`:1463`) owns the strip
+    then.
 - **One-frame race, accepted.** By F6, a step written in the same frame in which a
   box scroll animation reaches `FINISHED`, before that frame's allocation, can be
   reverted to the box's target. The user sees a step that did not move, and the
@@ -376,10 +389,11 @@ child-visible. That reattaches and lays out its document, which
   events. Without it, a smoke could capture mid-animation.
 - **Visual-geometry surfaces:** `tab-strip-overflow-controls` (the end group's
   bounds) and `all-tabs-popover`, following the open popover's entries
-  (`ui/automation.rs:1572-1608`). Both have pixel anchors on the rendered
+  (`ui/automation.rs:1579-1608`). Both have pixel anchors on the rendered
   buttons. They are reported absent with reasons `controls-hidden` and
   `popover-closed`. The generic `active-transient` surface
-  (`ui/automation.rs:1568-1576`) also reports the popover.
+  (`push_active_transient_surface`, `ui/automation.rs:1562-1577`) also
+  reports the popover.
 - **One derivation.** The blocker, the snapshot fields and `TabOverflowEvidence`
   all read one production state, the workflow's `TabOverflowState` held by the
   window. The evidence is a `test-utils` view of that state, so the exported
@@ -440,7 +454,14 @@ child-visible. That reattaches and lays out its document, which
 - **[Animations do not advance in presented widget tests]** → `test_policy.rs`
   completes them at once under `test-utils` (`widget-wiring.md`, "Timed
   animations"). Cancellation is therefore tested during a hold, whose repeat
-  source stays pending under a long test delay. Writing the adjustment directly
+  source stays pending under a long test delay. Tests start and end the hold by
+  emitting the hold gesture's `pressed` and `released` signals by name, and they
+  emit the bar's observers, found through `observe_controllers()`, the same
+  way. Widget tests are outside `check-signal-connections`. A claim is a no-op
+  without an event sequence. Cancellation is asserted as `repeat_active` and
+  `animation_active` false, `guard_cancellations` incremented, and the
+  adjustment value unchanged by the cancellation. The box's own animation does
+  not advance in these tests either, so nothing more can be asserted. Writing the adjustment directly
   only proves that enablement follows the position. Pointer behaviour (no extra
   step on release, `focus-on-click`) cannot be synthesized in widget tests, which
   create no event sequence. Widget tests assert the properties (`focus-on-click`,

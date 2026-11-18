@@ -76,7 +76,12 @@ Mirror the A122 commit (`3a086b0e`): a ledger row, `CHANGELOG.md`, an
 - [ ] 2.3 Write failing-first widget tests in a new
   `crates/lushtext/tests/widget/tab_overflow_navigation.rs`, assigned to a shard
   in `scripts/widget-shards.py`. Animations complete at once through
-  `tab_overflow/test_policy.rs`. Each must fail on main (no controls, no actions):
+  `tab_overflow/test_policy.rs`. A hold is started and ended by emitting its
+  gesture's `pressed` and `released` by name, and the bar's observers are found
+  through `observe_controllers()` and emitted the same way (design, Risks).
+  Where a test needs code that does not exist yet, it fails by not compiling.
+  Until group 3 the end group holds only the two scroll buttons, so the All Tabs
+  focus hand-off and every popover case belong in 3.1. Each must fail on main (no controls, no actions):
   - no buttons while tabs fit;
   - the buttons appear on overflow and the strip's allocated height is unchanged;
   - closing tabs until they fit beside the buttons hides them, and a width in the
@@ -84,21 +89,25 @@ Mirror the A122 commit (`3a086b0e`): a ledger row, `CHANGELOG.md`, an
   - pinned-only overflow shows no buttons;
   - Forward scrolls without changing `selected-page`, text or focus;
   - edge enablement on both actions;
-  - focus hands off when a focused button disables;
-  - hold-repeat stops at the edge, adds no step on release, and its source is gone
-    when the button hides mid-hold;
+  - focus hands off between the two scroll buttons, and to the editor, when a
+    focused button disables;
+  - hold-repeat stops at the edge, an emitted `released` adds no step, and its
+    source is gone when the button hides mid-hold (the real pointer release is
+    proved in 2.8's accessibility smoke and task 4.3);
   - during a hold, with a long `test_policy` repeat delay keeping it pending,
-    each of these cancels the repeat and leaves the strip's own scroll in
-    effect: selecting a tab, a page attach, `page-reordered`,
-    `is-transferring-page`, and the bar's scroll controller and press gesture
-    emitted directly;
+    each of these cancels it, asserted as `repeat_active` and
+    `animation_active` false, `guard_cancellations` incremented and the
+    adjustment value unchanged by the cancellation (pause, never reset):
+    selecting a tab, a page attach, `page-reordered`, `is-transferring-page`,
+    and the bar's scroll controller and press gesture emitted directly;
+  - a press resolved inside the end group, and any observer emission while no
+    step is active, cancel nothing and count nothing;
+  - a keyboard step is refused while `is-transferring-page` is true;
   - the scroll buttons have `focus-on-click` false, and their hold gesture runs in
     the capture phase (properties; the real press is proved in 2.8's
     accessibility smoke and task 4.3);
   - wheel-like movement, simulated by writing the adjustment, updates enablement
     only;
-  - the group detaches with the popover closed first, when a tab closes down to
-    one or Focus Mode starts while the popover is open;
   - pinned tabs stay put;
   - Focus Mode and the no-tab state hide the group (`group_attached` false);
   - a restored 40-tab session publishes the controls once at the terminal;
@@ -123,9 +132,11 @@ Mirror the A122 commit (`3a086b0e`): a ledger row, `CHANGELOG.md`, an
   Verify with the widget tests.
 - [ ] 2.6 Automation (the scroll half of the `dbus-automation-spine` delta):
   - the snapshot fields `window.tab_strip.{overflowing,scroll_back_enabled,scroll_forward_enabled,tab_count}`;
-  - the readiness blocker `tab-overflow` (animation, repeat, reconcile);
+  - the readiness blocker `tab-overflow` (animation, repeat, reconcile),
+    included in `visual-geometry-settled`, `accessibility-settled` and
+    `idle`, with a derived `tab-overflow` workflow event;
   - the visual-geometry surface `tab-strip-overflow-controls` with pixel
-    anchors;
+    anchors, absent with reason `controls-hidden`;
   - catalog rows for both scroll actions.
 
   Document all of it in `docs/automation.md` and `docs/automation-reference.md`.
@@ -179,7 +190,10 @@ Mirror the A122 commit (`3a086b0e`): a ledger row, `CHANGELOG.md`, an
   - 256 tabs at the minimum size, with only the list scrolling;
   - `Ctrl+Shift+O` in a focused editor with one tab changes no text and opens
     nothing;
-  - one announcement per settled query.
+  - one announcement per settled query;
+  - the group detaches with the popover closed first, when a tab closes down to
+    one or Focus Mode starts while the popover is open;
+  - focus hands off to All Tabs when both scroll buttons are disabled.
 - [ ] 3.2 Write `resources/ui/all-tabs-popover.blp` and run
   `make blueprint-generate`. Implement `tab_overflow/all_tabs_popover/{mod,imp,item}.rs`
   (D6): `LushtextRowText` rows, `RowAccessibility`, `RowGrowth`,
@@ -199,9 +213,11 @@ Mirror the A122 commit (`3a086b0e`): a ledger row, `CHANGELOG.md`, an
   popup, filter, close, growth and retirement. Verify with the widget tests.
 - [ ] 3.5 Automation (the popover half of the `dbus-automation-spine` delta):
   - `surfaces.all_tabs_popover_visible`;
-  - `active_transient_surface` = `all-tabs-popover`;
+  - `active_transient_surface` = `all-tabs-popover`, and the generic
+    `active-transient` visual surface (`push_active_transient_surface`);
   - the readiness blocker covering growth and retirement;
-  - the visual-geometry surface `all-tabs-popover`;
+  - the visual-geometry surface `all-tabs-popover`, absent with reason
+    `popover-closed`;
   - catalog rows for the three popover actions.
 
   Document them. Verify with `make check-automation-docs` and, if the client
