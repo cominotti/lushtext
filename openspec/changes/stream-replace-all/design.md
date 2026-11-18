@@ -149,9 +149,16 @@ makes D4's disk admission the only bound. Recorded as a follow-up if users ask.
 ### D2. A chunked streaming engine with the same edit semantics
 
 `replace/stream.rs` holds the engine. It is GTK-free and I/O-trait-based
-(`Read` in, `Write` out). It reads 1 MiB chunks (`REPLACE_STREAM_CHUNK_BYTES`,
-an internal cap, a power of two; tasks 2.4 and 9.3 measure 256 KiB against
-1 MiB for throughput).
+(`Read` in, `Write` out). It reads 256 KiB chunks (`REPLACE_STREAM_CHUNK_BYTES`,
+an internal cap, a power of two). The size is task 2.4's verdict
+(2026-11-18, `scripts/measure.sh`, 12 rounds on one 512 MiB file with the
+journal on, interleaved 256K, 1M, 4M, 4M, 1M, 256K twice, every round's
+1-minute load 2.45–3.84): median throughput 606 MiB/s at 256 KiB (95.9 % of
+the best; 97 % without its cold first round), 632 MiB/s at 1 MiB (the best)
+and 580 MiB/s at 4 MiB (91.8 %), VmHWM 29.6–29.8, 30.3–30.7 and
+33.1–33.3 MiB. The pre-registered rule takes the smallest power of two within
+5 % of the best median, so 256 KiB replaces the 1 MiB the implementation
+shipped first.
 
 - It keeps today's sorted `PendingEdit`s and monotonic line numbering.
 - UTF-8 is validated incrementally with `simdutf8::compat`: an incomplete
@@ -1135,7 +1142,8 @@ R1–R8 decision, including the bound reduction (R2). Its corrections:
   implementation, and `stream.rs` is not fingerprinted. So G5 does not wait
   for part A. A size other than the shipped 1 MiB lands in its own commit
   whenever part A reports, and parts B and C and the memory rounds run on a
-  tree with both.
+  tree with both. Part A reported 256 KiB (D2), which landed in its own
+  non-visual commit after G5.
 - **S5. A path-keyed gate names a missing test** (task 4.10).
   `scripts/run-performance-smoke.sh`'s `replace_undo_workflows` filter runs
   `parallel_undo_operations_consume_only_their_own_target_hooks`, which the

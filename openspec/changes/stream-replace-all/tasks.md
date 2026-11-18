@@ -74,7 +74,7 @@ path moves that edit to G5.
   `READY`. G5 does not wait for part A (`parallel-agent-work.md`: a queued
   verdict does not hold up implementation). If part A picks a size other
   than the shipped 1 MiB, the constant changes in its own commit, whenever
-  part A reports. `stream.rs` is not fingerprinted, so that commit never
+  part A reports (it reported 256 KiB: task 2.4). `stream.rs` is not fingerprinted, so that commit never
   repeats the smokes.
 - **G5, the visual commit:** 4.9 (widget tests), 5.2, 5.4, 5.5a, 5.6, 6.2,
   6.3, 8.2 and every fingerprinted doc of 8.1/8.5. Run `make
@@ -174,6 +174,12 @@ path moves that edit to G5.
   rounds of 4.8 and 9.2 run only on a tree that has both G5 and the chosen
   constant. When the implementation stage turns part C `READY`, it adds that
   condition to part C's line in the queue entry.
+  **Verdict (coordinator, 2026-11-18 04:08–04:40, 12/12 rounds at a 1-minute
+  load of 2.45–3.84):** median throughput 256 KiB 606 MiB/s (95.9 % of the
+  best), 1 MiB 632 MiB/s (best), 4 MiB 580 MiB/s (91.8 %); the rule picks
+  **256 KiB** (`REPLACE_STREAM_CHUNK_BYTES` = 262,144), committed on its own
+  after G5, with the memory rounds of 4.8/9.2 rerun on that commit and the
+  part B and C binaries rebuilt from it (design D2).
 - [x] 2.5 Failing-first unit tests for `NotUtf8` at a chunk seam, for a
   targeted line split across three chunks, and for a non-targeted 64 MiB line
   that is never buffered (allocation evidence through

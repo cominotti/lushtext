@@ -42,7 +42,8 @@ files with their reasons and an "Open and replace in editor" action.
 - **Streaming per-file replace, in constant memory, up to the open tier.**
   - `MAX_REPLACE_FILE_BYTES` becomes `DocumentScale::REFUSE_TO_OPEN`
     (512 MiB). It is referenced, not copied.
-  - Each file streams in fixed chunks of 1 MiB (`REPLACE_STREAM_CHUNK_BYTES`)
+  - Each file streams in fixed chunks of 256 KiB (`REPLACE_STREAM_CHUNK_BYTES`,
+    measured in task 2.4)
     through the same sorted-edit, stale-line-checked construction as today.
     UTF-8 validation carries the incomplete trailing sequence across chunk
     boundaries, and the line cursor carries a split CRLF and any line longer

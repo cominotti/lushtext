@@ -33,8 +33,11 @@ use crate::model::content_search::{MAX_REPLACE_PREVIEW_ROWS, Replacement};
 ///
 /// Kind: cap; a power of two. Retained memory is two of these buffers
 /// at most (the producer's read buffer and the durable writer's), independent
-/// of the file's size (design D2; chosen by stream-replace-all task 2.4).
-pub const REPLACE_STREAM_CHUNK_BYTES: usize = 1024 * 1024;
+/// of the file's size (design D2). Chosen by stream-replace-all task 2.4: the
+/// smallest power of two whose median throughput on a 512 MiB file is within
+/// 5 % of the best measured size (256 KiB 606 MiB/s, 1 MiB 632 MiB/s, 4 MiB
+/// 580 MiB/s; 2026-11-18).
+pub const REPLACE_STREAM_CHUNK_BYTES: usize = 256 * 1024;
 
 #[cfg(test)]
 thread_local! {

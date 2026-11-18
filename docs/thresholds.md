@@ -487,7 +487,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/services/content_search/replace/stream.rs` | `REPLACE_STREAM_CHUNK_BYTES` | 1,048,576 | cap | power of two; two buffers retained per file at most (`stream-replace-all` D2) |
+| `crates/lushtext-core/src/services/content_search/replace/stream.rs` | `REPLACE_STREAM_CHUNK_BYTES` | 262,144 | cap | power of two; two buffers retained per file at most; the smallest size within 5 % of the best measured throughput (`stream-replace-all` D2, task 2.4) |
 ### `crates/lushtext-core/src/services/draft_service.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |

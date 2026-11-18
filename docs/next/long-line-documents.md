@@ -5223,7 +5223,7 @@ What landed on the branch, and what is still owed, is the change's
 `tasks.md`; this section records the posture and the evidence as it arrives.
 
 - **Built.** Replace All streams each file (`services/content_search/replace/stream.rs`,
-  1 MiB chunks) in two passes: pass A writes the original bytes as a raw undo
+  256 KiB chunks, task 2.4's verdict below) in two passes: pass A writes the original bytes as a raw undo
   body and both digests, the descriptor entry is journalled, pass B streams the
   replaced bytes through `atomic_replace_workspace_file_stream`. The per-file
   order is the I/O-free `replace/protocol.rs` machine (P0–P6, undo U0–U3). The
@@ -5272,9 +5272,16 @@ What landed on the branch, and what is still owed, is the change's
   replaced. `main`'s repetitions 2 and 3 (task 1.1) are within 1 % of PT's
   figures; on the GTK side `main` retains 62,915,133 bytes of undo after six
   10 MiB files (task 1.2), the branch descriptors only.
+- **Chunk-size verdict (task 2.4, part A of the queued entry, coordinator
+  2026-11-18, `scripts/measure.sh`, 12 interleaved rounds on one 512 MiB file
+  at a 1-minute load of 2.45–3.84): 256 KiB.** Median throughput 256 KiB
+  606 MiB/s (95.9 % of the best), 1 MiB 632 MiB/s (best), 4 MiB 580 MiB/s
+  (91.8 %); the pre-registered rule takes the smallest power of two within
+  5 % of the best, so `REPLACE_STREAM_CHUNK_BYTES` went from 1 MiB to
+  262,144 in its own non-visual commit.
 - **Still owed:** the timing verdicts queued in `MEASURE-QUEUE.md`
-  ("stream-replace-all: timing verdicts", parts A chunk size, B wall time
-  and C responsiveness, all `READY`, in that order; the load stayed above 4
+  ("stream-replace-all: timing verdicts", parts B wall time and C
+  responsiveness, `READY` on the 256 KiB commit; the load stayed above 4
   through the stage). A functional run of the two lane cases passed every
   phase at load 6–10 (not a verdict). The two `kani.yml` dispatches for the
   new shards' budgets (3.3b) belong to the merge stage.
