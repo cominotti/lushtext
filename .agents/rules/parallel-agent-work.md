@@ -68,8 +68,14 @@ Change worktrees live in `.claude/worktrees/<change>`.
   A refused run is not a verdict; queue it.
 - Size parallelism by memory, never by `nproc`. Give each heavy command a
   `--mem` cap that fits its measured peak at its job and thread counts.
-  Admission then decides how many run at once: the slice budget, and
-  MemAvailable at least cap plus the 16 GiB reserve.
+  A command that admits its own scopes (`make test`, `make mutants-*`,
+  `make kani`, `make proof-strength`) gets an `--envelope` instead, sized by
+  the inner caps that run at once (`verification-runs.md`, "Shared-machine
+  agent work", has the per-lane sizes). Admission then decides how many run
+  at once, in arrival order: the slice budget, and MemAvailable at least cap
+  plus the 16 GiB reserve. A large request at the head of the queue holds
+  later ones back while it has the memory, so schedule a 36G mutation run
+  beside other changes' heavy work only when that wait is intended.
 - The one CPU-sized count is `heavy.sh`'s own `CARGO_BUILD_JOBS`: the
   command's CPUs, at most 16, while it is the only heavy command running, and
   4 otherwise. Its memory peaks at 16 were measured and fit the default cap

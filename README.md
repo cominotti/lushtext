@@ -538,7 +538,10 @@ status 75 when every slot is busy. `make build-cache-prune` removes the
 directories of checkouts that no longer exist.
 
 On a workstation shared by several agents or terminals, run heavy commands
-through `scripts/heavy.sh -- <command>`, timing measurements through
+through `scripts/heavy.sh -- <command>` (commands that admit their own memory
+scopes, such as `make test`, `make mutants-*`, `make kani` and
+`make proof-strength`, through `scripts/heavy.sh --envelope <size> --
+<command>`), timing measurements through
 `scripts/measure.sh -- <command>`, and waits through `scripts/wait-for.sh`; they
 implement the lock protocol in `.agents/rules/verification-runs.md`
 ("Shared-machine agent work"), and `make check-agent-helpers` self-tests them.

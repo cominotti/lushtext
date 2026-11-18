@@ -4258,6 +4258,12 @@ separate change, in this order:
        its own design, because `--mem none` callers admit under LOCK by
        design. Details:
        `.claude/handoffs/nest-heavy-slices-under-user-slice/stage3-notes.md`.
+       **Done** by `close-heavy-admission-window` (2026-11-17; merged as PR #115, `main` `2b4f29a2`, archived 2026-11-18 as
+       `openspec/changes/archive/2026-11-18-close-heavy-admission-window/`): the admission
+       after LOCK checks once and a misfit makes `heavy.sh` release LOCK and
+       wait holding nothing; self-admitting lanes run in
+       `heavy.sh --envelope <size>`; any other admission under a proven
+       shared LOCK is refused with exit 2.
    - `reduce-build-disk-writes` (merged 2026-11-15 as `fb727d4a`, PR #108,
      archived as
      `openspec/changes/archive/2026-11-15-reduce-build-disk-writes/`;
@@ -4322,6 +4328,15 @@ separate change, in this order:
          lane case 11.3 ran at 24G instead.
        - Any fix keeps `LUSHTEXT_ADMISSION_NOWAIT=1`'s fail-fast 75. The
          measurement rounds depend on it.
+       - **Done** by `close-heavy-admission-window` (2026-11-17; merged as PR #115 and archived 2026-11-18), which keeps
+         D10, the legacy counting and NOWAIT's 75: the mutants admission now
+         runs in `heavy.sh --envelope <MUTANTS_MEMORY_MAX>`, and admission is
+         in arrival order, the oldest waiter that has the host memory
+         reserving its cap.
+         Its stage-4 review fixed, failing first, a ticket that outlived
+         its admission when `heavy.sh` ran in place, a caller's
+         `RUSTC_WRAPPER` lost on a misfit-retry, and the check-once
+         admission honouring the order under NOWAIT (design, "Review").
    Also recorded: a process-wide retained-byte ledger for many expanded
    huge sidebar directories (the budget, like the count before it, is per
    directory). From BN (besides `lighten-notes-browser-rows`, queued above):
