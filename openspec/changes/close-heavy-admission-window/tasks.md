@@ -266,12 +266,12 @@ the default 12G included. The "window after the probe" case also needs group
 
 ## 4. Call sites and lane cases
 
-- [ ] 4.1 Audit every caller that admits more than 1G inside a command:
+- [x] 4.1 Audit every caller that admits more than 1G inside a command:
   `grep -n with-memory-cap` over `Makefile`, `scripts/` and `.githooks/`.
   Confirm that `make check-policy` and the pre-commit hook admit nothing above
   1G except the wrapper's self-test (which sheds the marker). Record the list
   in `evidence/call-sites.md`.
-- [ ] 4.2 Update the Makefile comments of `test`, `test-widget`,
+- [x] 4.2 Update the Makefile comments of `test`, `test-widget`,
   `test-widget-headless` (every user of `CARGO_TEST_WIDGET` and
   `CARGO_TEST_WIDGET_HEADLESS`), `mutants-*`,
   `kani` and `proof-strength`, and `widget-shards.py`'s docstring, to name
@@ -281,7 +281,7 @@ the default 12G included. The "window after the probe" case also needs group
   none` run fails before its first phase rather than after it. Skip the
   preflight where the recipe admits nothing above 1G (`WIDGET_PARALLEL=0`, a
   `none` cap; design, "Risks"). Do not change any default cap.
-- [ ] 4.3 Lane case: run `scripts/heavy.sh --envelope 16G -- make test` once
+- [x] 4.3 Lane case: run `scripts/heavy.sh --envelope 16G -- make test` once
   on the final scripts. Record the output in `evidence/lane-make-test.md`:
   - the envelope's placeholder, sub-slice and root scope
     (`systemctl --user list-units 'lushtext-*'` and the cgroup tree during
@@ -296,7 +296,7 @@ the default 12G included. The "window after the probe" case also needs group
   - `/proc/loadavg` before and after.
 
   A `FLAKY:` line is a blocker (`preexisting-blockers.md`).
-- [ ] 4.4 Lane case: run `scripts/heavy.sh --envelope 24G -- make mutants-smoke
+- [x] 4.4 Lane case: run `scripts/heavy.sh --envelope 24G -- make mutants-smoke
   MUTANTS_MEMORY_MAX=24G MUTANTS_LOCAL_JOBS=1 MUTANTS_RE=<a narrow regex of a
   few mutants>`. The case proves placement, not size. A 36G envelope would
   itself be a head that holds back the parallel programme changes, and lane
@@ -304,18 +304,18 @@ the default 12G included. The "window after the probe" case also needs group
   `evidence/lane-mutants.md` that the inner scope landed in the envelope,
   the run's summary, and that no admission waited under `LOCK`. Exit 75
   (slots busy) is retried later and is not a failure.
-- [ ] 4.5 Lane case: `scripts/heavy.sh --mem none -- make mutants-smoke`
+- [x] 4.5 Lane case: `scripts/heavy.sh --mem none -- make mutants-smoke`
   and `scripts/heavy.sh --mem none -- make test` each exit 2 within a second
   with the `--envelope` message (the preflight), before any slot is taken or
   any test runs. Also check, without running it, that the `test-widget`
   recipe with `WIDGET_PARALLEL=0` has no preflight (`make -n test-widget
   WIDGET_PARALLEL=0`).
-- [ ] 4.6 Commit ("build: run self-admitting lanes in heavy.sh envelopes")
+- [x] 4.6 Commit ("build: run self-admitting lanes in heavy.sh envelopes")
   and push.
 
 ## 5. Documentation (`documentation.md`)
 
-- [ ] 5.1 `.agents/rules/verification-runs.md`, "Shared-machine agent work":
+- [x] 5.1 `.agents/rules/verification-runs.md`, "Shared-machine agent work":
   - the heavy-work bullet's step order (one admission after `LOCK`, retry
     holding nothing);
   - "Memory before locks", and the clause "never reserves memory while
@@ -327,10 +327,10 @@ the default 12G included. The "window after the probe" case also needs group
   - the refusal (exit 2);
   - the fair order;
   - `--mem none` only for commands that admit nothing.
-- [ ] 5.2 `.agents/rules/parallel-agent-work.md`, "CPU and memory": size an
+- [x] 5.2 `.agents/rules/parallel-agent-work.md`, "CPU and memory": size an
   admitting command's envelope by its concurrent inner caps; a `--mem` cap
   fits the measured peak, as today.
-- [ ] 5.3 `.agents/rules/build.md`:
+- [x] 5.3 `.agents/rules/build.md`:
   - "Compiler parallelism": the envelope size is the cap;
   - the CI section's "Start `make test` and `make test-widget` unwrapped"
     (and `make test-widget-headless`)
@@ -339,7 +339,7 @@ the default 12G included. The "window after the probe" case also needs group
     kani` and the 12G in-place fact;
   - "Mutation Testing": the `MUTANTS_MEMORY_MAX` envelope;
   - the proof-strength lane.
-- [ ] 5.4 `AGENTS.md` (and so `.claude/CLAUDE.md`): the `make test` line's
+- [x] 5.4 `AGENTS.md` (and so `.claude/CLAUDE.md`): the `make test` line's
   "(start it unwrapped)" becomes the envelope form. Check `README.md`,
   `docs/mutation-testing.md`, `docs/runbooks/*.md` and
   `.agents/skills/*/references/*.md` for `--mem none` call sites of
@@ -347,16 +347,16 @@ the default 12G included. The "window after the probe" case also needs group
   `AGENTS.md` for `build.md`, `parallel-agent-work.md` and
   `verification-runs.md` if their stated scope changes. Run `make
   check-agent-docs`.
-- [ ] 5.5 Append to `docs/memorials/shared-machine-lock-incidents.md` a
+- [x] 5.5 Append to `docs/memorials/shared-machine-lock-incidents.md` a
   dated section, "The admission window and the starved 36G scope
   (2026-11-15)". It covers the two incidents with their log lines, why
   probing first did not close the window, why `--mem none` could not, the
   budget-dimension evidence for fairness, and what replaced each.
-- [ ] 5.6 `docs/next/long-line-documents.md`: mark the
+- [x] 5.6 `docs/next/long-line-documents.md`: mark the
   "Observed, pre-existing, deferred" entry and the "Facts
   `close-heavy-admission-window` builds on" entry done, citing this change
   (no rewrite of the history around them).
-- [ ] 5.7 Commit (docs) and push.
+- [x] 5.7 Commit (docs) and push.
 
 ## 6. Final gates
 

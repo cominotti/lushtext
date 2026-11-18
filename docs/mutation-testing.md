@@ -86,7 +86,11 @@ make mutants-list
 ```
 
 Those call `scripts/run-mutants.sh` in **mirror mode** (`MUTANTS_MIRROR=1`),
-which centralizes flags and safety checks. Useful environment overrides:
+which centralizes flags and safety checks. On a workstation shared by agents,
+start them as `scripts/heavy.sh --envelope 36G -- make mutants-smoke` (the
+envelope equals `MUTANTS_MEMORY_MAX`): the run's memory scope is then
+admitted against the envelope, and `heavy.sh --mem none` is refused at once
+(`.agents/rules/verification-runs.md`, "Shared-machine agent work"). Useful environment overrides:
 
 ```sh
 MUTANTS_TIMEOUT=600 make mutants-full
