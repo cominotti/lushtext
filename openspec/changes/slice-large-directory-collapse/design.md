@@ -2319,7 +2319,7 @@ nothing can make the rows after it arrive sooner. About 207 rows must be
 created at 0.3–0.6 ms each, which no 16 ms frame holds, so (a) packs them
 into seven frames (D23). `main` also freezes for 94–124 ms in those cases.
 
-**The frame count is not settled (R12).** The table's rows-after figures use
+**The frame count is not settled (R12; measured in "Attribution results" below: five band dispatches at 0:131,072, seven at 400:4,096).** The table's rows-after figures use
 R3's count, `ceil(175 / unit) + 1` frames, which is what `next_collapse_step`
 computes for a band of about 207 bound rows (bound units take the store down
 to `DIRECT_COLLAPSE_ROWS`, then one terminal `CollapseRow`): at unit 32, six
@@ -2640,6 +2640,160 @@ this revision changes. Task 10.7 runs on the reworked binary.
   row is removed"; task 10.9 revises it with D23's guard.
 - D6 and R5's D21 rejection are annotated where D23 is decided (above);
   the decisions themselves are unchanged for bound rows.
+
+#### Attribution results (task 10.12, 2026-11-18): the gates, and the return to design
+
+**The rounds.** The coordinator ran Q1–Q5b and Q4 on 2026-11-18 between
+07:49 and 08:24 on `rev5/bin/widget-attr-104`, through `scripts/measure.sh`
+on the reference CPUs 8–23. Every kept try has a 1-minute load below 4
+before and after it (`rev/attr2/measure.log`, `progress.log`). Q2 and Q4
+each had one try discarded because its load reached 4.02 or 4.27. Their logs
+hold the second try (08:09 and 08:22, as their mutter timestamps show). No
+round failed to launch. The perf-prefixed Q1 ran through the fixed
+`run-bin.sh` and printed its verdict line.
+
+The readers are in the handoff's `rev/r11/`:
+- `gates.py` applies the gates below to the logs, and `gates-output.txt` is
+  its output;
+- `q1cls.py` classifies Q1's samples, and `q1-104-window.txt` is its output,
+  with the extracts `q1-104-leaf.txt` and `q1-104-chain.txt` (GTK thread
+  tid 838398, window 924329.206817–924329.370666 s).
+
+**Q1: 104's 0:131,072 window.** Completion is 164.2 ms. It runs under
+`perf`, so it is attribution only: its 11.7 ms step comes 19 µs after the
+input, the first unbound chunk, and is perf's overhead on that turn. The GTK
+thread has 558 samples, 139.5 ms of CPU. 233 of them carry no call chain
+(perf: "lost 1 chunks") and are classed by their leaf symbol alone.
+
+| phase, ms from the input | what runs | CPU |
+|---|---|---|
+| 0–97, unbound | the path-cache splice: `PathBuf` equality, the path SipHash, `Path::components`, the `item_locations` and `child_paths` `remove_entry`. 222 samples | 55.5 ms |
+| 0–97, unbound | GTK's tree-list-model node removal and the store splice | about 20 ms |
+| 0–97, unbound | frees, and other work with no attributable caller | about 17 ms |
+| 97–164, band tail | five band dispatches, at 97.6, 114.9, 132.6, 144.6 and 161.4 ms, the last the terminal `collapse_row`. Between them, frees with no call chain (the listing retirement's drops, by their leaves `g_object_unref` and `_int_free_chunk`) | about 24 ms of frees, 7.3 ms band teardown, 6.8 ms frame |
+| whole window | the evidence instruments: no sample | 0 |
+
+So the unbound phase is about 97 ms here, against the skip-cache build's
+30 ms. More than half of it is the path-cache splice, which confirms R11's
+inference (75–90 ms) and names D24's target.
+
+**The tail's frame count, against R3's.** At 0:131,072, destroy-only unit 64,
+Q1 counts **five** band dispatches. That is four units and the terminal, one
+more than R3's `ceil(175 / 64) + 1` = 4, as in the skip-cache window. With
+rows after the subtree, Q4's frames over 8 ms at 400:4,096 (unit 32) fall at
+about 13, 26, 43, 59, 76 and 110 ms, with one more at about 93 ms under 8 ms.
+That is seven band frames, R3's `ceil(175 / 32) + 1` = 7.
+
+The first frame after the input (at about 0 ms) runs no unit there. Its tick
+finds unbound rows, which wait for the between-frames source, so that frame
+is lost. At 400:64, which has no unbound rows, the first frame after the
+input takes a unit at once (frames over 8 ms at about 0 and 16 ms). This
+measures R11's claim for D23: where the input's chunk covers the unbound
+rows, it buys back that lost frame.
+
+R11's frame table is corrected by these counts:
+- 0:N takes `ceil(207 / unit) + 1` band frames;
+- 400:N takes `ceil(175 / unit) + 1`, plus the lost first frame without D23;
+- the "(a)" row's 400:4,096 completion is Q4's prediction below, 105.2 ms
+  with D23, not R11's 105–110 ms estimate.
+
+**Q2: the path-cache share. D24 is taken.** At 0:131,072, Q2's median is
+95.1 ms.
+- Against the go/no-go's median of 157.0 ms (the queue entry's reference) the
+  gain is **62.0 ms**, at least 16.7 ms.
+- Against Q4's median of 158.9 ms (the same session) it is **63.9 ms**.
+- The gate below uses Q4's figure, because only Q4 has a 400:131,072
+  baseline. With 62.0 ms, 0:131,072 predicts 88.0 ms, which also passes.
+- At 400:131,072: Q4's 216.8 ms against Q2's 142.2 ms, a gain of **74.6 ms**.
+
+Q2's worst step is 7.200 ms. Its worst frame is 15.7 ms at 400:131,072 in
+one repetition, and 9.4–9.6 ms in the other two.
+
+**Q3: the destroy-only unit. 128 is admitted; 256 is not.**
+- Unit 128: worst step 7.325 ms and worst frame 8.487 ms, within 8 and
+  12 ms. Medians are 55.7 ms at 0:256, 55.4 ms at 0:4,096 and 144.5 ms at
+  0:131,072, against Q4's 71.2, 77.8 and 158.9 ms.
+- Unit 256: worst frame 8.159 ms. Its worst step is 8.925 ms, with 8.402 ms
+  in another repetition, both at 0:131,072, so it is over 8 ms by the rule
+  as written.
+- Those two steps are the first between-frames dispatch, 14–25 µs after the
+  input. That is the first 8,192-row unbound chunk with the path cache in it,
+  the turn Q4 also shows at 8.8 ms with unit 64, not a destroy-only unit.
+  D24 removes that work, so task 10.7 may measure 256 again on the reworked
+  code. Until then, Q3 bounds its destroy-only candidates to 64 and 128.
+
+**Q5: D23's chunk. 16,384 is not admitted.**
+- Q5a (path cache in): worst step 15.370 ms.
+- Q5b decides, because D24 is taken. Its worst step is 7.985 ms (400:131,072).
+  Plus 104's worst input dispatch (0.245 ms) that is 8.230 ms, over
+  `B_INTERACT_US` before A123's hiding time is added.
+  - `step_us_max` cannot tell a chunk turn from a bound unit in that case.
+  - The rule reads the worst step, so it is applied as written.
+- The fallback is 8,192, under the same sum: Q2's worst step 7.200 ms plus
+  0.245 ms is 7.445 ms. So 8,192 is admitted only if A123 measures the band's
+  hiding at 0.555 ms or less. Otherwise the chunk is the next smaller power
+  of two that fits.
+- 400:4,096's unbound rows (about 3,889) fit a 4,096-row chunk too, so its
+  D23 credit below holds for any admitted chunk of 4,096 rows or more.
+
+**Q4: the completion gate passes in every case.** Each prediction is Q4's
+worst completion, less:
+- one frame (16.667 ms) where D23 applies: unbound rows that fit one chunk,
+  taken here at 8,192;
+- D24's credit: Q2's gain for the same rows-after count, scaled by
+  `R / 131,072`;
+- for 0:N, Q3's median gain at unit 128 (0:16,385 takes 0:4,096's, 0:64
+  none).
+
+| case | Q4 worst | D23 | D24 | Q3 | prediction | bar − M | |
+|---|---|---|---|---|---|---|---|
+| 0:64 | 7.7 | – | 0.0 | – | 7.6 | 83.3 | pass |
+| 0:256 | 75.5 | 16.7 | 0.1 | 15.6 | 43.1 | 83.3 | pass |
+| 0:4,096 | 79.5 | 16.7 | 2.0 | 22.4 | 38.5 | 83.3 | pass |
+| 0:16,385 | 78.3 | – (does not fit 8,192) | 8.0 | 22.4 | 48.0 | 83.3 | pass |
+| 0:131,072 | 164.3 | – | 63.9 | 14.4 | 86.1 | 140.6 | pass |
+| 400:64 | 26.8 | – | 0.0 | – | 26.8 | 83.3 | pass |
+| 400:256 | 123.2 | 16.7 | 0.1 | – | 106.4 | 137.6 | pass |
+| 400:4,096 | 124.2 | 16.7 | 2.3 | – | 105.2 | 120.6 | pass, **only with D23** (121.9 without it) |
+| 400:16,385 | 125.9 | – | 9.3 | – | 116.6 | 122.6 | pass |
+| 400:131,072 | 218.3 | – | 74.6 | – | 143.8 | 197.9 | pass |
+| header, two roots of 4,096 | 92.6 | – | – | – | 92.6 | 131.6 | pass |
+
+400:4,096's pass depends on D23's chunk being admitted at 4,096 rows or
+more, and so on A123's measured hiding time (Q5 above). That dependency is
+stated here, not assumed.
+
+**Task 10.4's acceptance is missed, and the change returns to design.**
+- **The rule:** R11's Q4 row reads task 10.4's acceptance, which R5's D17
+  pre-registered: "unit 32's worst frame at 400:256 at most 12 ms. If it
+  does not, the change returns to design with that round".
+- **The result:** Q4's worst frames at 400:256 are **10.973 / 12.787 /
+  12.166 ms**. Two repetitions and the median are over 12 ms; layout is
+  12.0 ms of the 12.8 ms frame. R11 defines no credit for this figure, and
+  none is taken.
+- **What the lighter rows bought:** in the stage 4 campaign (before task
+  10.4), the rows-after collapses at unit 32 had frames of 16.8–29.9 ms. The
+  rows are lighter now, but not by D17's margin.
+- **The other rows-after frames in the same rounds,** recorded as data for
+  the design stage, not as a waiver:
+  - Q4 (unit 32): 400:64 9.6–14.7 ms, its first frame;
+    400:4,096 11.1–12.8 ms; 400:16,385 10.6–12.2 ms;
+    400:131,072 13.2–14.5 ms;
+  - Q5a and Q5b: 400:16,385 9.4–9.9 ms;
+  - Q2: 400:131,072 9.4 / 9.6 / 15.7 ms.
+
+  Every one is within `B_SETTLE_US`; none of the 0:N frames reaches 9 ms.
+
+**Consequence.** Following the rule as written:
+- No code of D22–D24 and no A123 probe is written.
+- Task 10.12 is done; task 10.4 stays open with this miss.
+- The change returns to design with these rounds.
+
+The design stage owns the next step: the frame figure D17 promised, or a
+re-registered acceptance with its rationale. Every completion prediction
+passes, D24 and unit 128 are admitted, and D23's chunk waits for A123's
+hiding time. These results carry over to whichever mechanism the design
+keeps.
 
 ### R12. Review of R11 (2026-11-18)
 
