@@ -5281,8 +5281,8 @@ What landed on the branch, and what is still owed, is the change's
   3.0, and below 8). Six 10 MiB files: `main` 50.7 / 50.8 with 3 replaced
   and 3 skipped, branch 1.7 / 1.7 with all 6 replaced; six 16 MiB files:
   `main` 33.4 / 33.3 with 1 replaced and 5 skipped, branch 1.7 / 1.6 with all
-  6 replaced. Every branch figure is 0.4–1.4 MiB below its 1 MiB-chunk
-  round, at most the 1.5 MiB that two smaller buffers save.
+  6 replaced. Every branch figure is 0.4–1.7 MiB below its 1 MiB-chunk
+  round.
 - **Chunk-size verdict (task 2.4, part A of the queued entry, coordinator
   2026-11-18, `scripts/measure.sh`, 12 interleaved rounds on one 512 MiB file
   at a 1-minute load of 2.45–3.84): 256 KiB.** Median throughput 256 KiB
