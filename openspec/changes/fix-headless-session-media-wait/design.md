@@ -116,32 +116,34 @@ deadline and a dump source (`FnMut() -> Option<String>`) and returns
 and `pw_dump`; the unit tests pass a fake source and a deadline of a few
 milliseconds.
 
-### D4. Lanes fail, never skip, on a media readiness failure
+### D4. The WirePlumber miss is never a host-support skip; the PipeWire skip class is deferred
 
 The visual (`scripts/run-visual-smoke.sh`) and command-palette notes
 (`scripts/run-command-palette-notes-smoke.sh`) runners grep a failed
 capture's session log for host-support phrases. A match records the case as
-`skipped` and calls `smoke_skip`, which **exits 0 for the whole lane**. One
-of those phrases is `PipeWire did not become ready`, and today only the
-helper prints it: the capture scripts' own
-`wait_for_pipewire` (`capture-lushtext-mutter.py`,
-`crash-recovery-smoke-driver.py`), which printed the longer "… in the
-isolated runtime directory" form, is defined but never called. So a helper
-PipeWire readiness failure turns the visual lane green with `SKIP:`.
+`skipped` and calls `smoke_skip`, which **exits 0 for the whole lane**. The
+accessibility, visual-geometry and crash-recovery lanes decide host support
+before any session, from `check-tools` and the commands they need, and fail
+a case whose session fails.
 
-This is the same defect class as the ignored WirePlumber wait, which this
-change makes loud. So:
+The D3 line is worded to match none of those phrases. The implementation
+greps it against every runner's skip patterns, and the seeded failure (D7.1)
+proves the lanes fail on it.
 
-- the phrase leaves both runners' skip patterns;
-- the two dead `wait_for_pipewire` definitions are deleted;
-- the WirePlumber diagnostic (D3) contains none of the phrases.
+**Deferred: `PipeWire did not become ready`.** One of the skip phrases came
+with `9a483f80` (2026-06-07). Then the capture script started PipeWire
+itself (`wait_for_pipewire`), and a host where PipeWire could not start was
+a host-support skip. Since PR #110 only the helper prints the phrase, and
+both `wait_for_pipewire` definitions (`capture-lushtext-mutter.py`,
+`crash-recovery-smoke-driver.py`) are uncalled. So a helper PipeWire
+readiness failure now turns the visual lane green with `SKIP:`.
 
-Host support is decided before any session starts: missing commands come
-from `check-tools` (exit 77) and `Missing required command`, which stay skip
-classes. A daemon that is installed but does not come up is a failure. The
-scheduled `end-user-smoke.yml` lane may turn red because of this; that would be
-a real signal, and it is checked once at the end of the programme with the
-rest of CI.
+Whether that should become a failure depends on hosts this stage cannot
+observe: the scheduled `end-user-smoke.yml` containers run the lane, and CI
+is not polled during the programme. It also touches two fingerprinted
+scripts. So it is not part of this change. It is recorded as a
+`NEW CHANGE PROPOSED` line (`media-skip-classification`) in
+`.claude/handoffs/PARALLEL-LEDGER.md`.
 
 ### D5. `READY_TIMEOUT` stays 10 s
 
@@ -175,6 +177,10 @@ Two proofs, neither committed:
      101 with the D3 line after about 10 s;
    - one case each of `make visual-smoke`, `make visual-geometry-smoke` and
      `make accessibility-smoke` fails, and none skips.
+
+   These runs use their own artifact directories, or they run before the
+   green runs of D8, so the last summary of each lane before the commit is a
+   passing one.
 
    The edit is reverted before any gate runs. `make check-session-hygiene`
    never sees it; its drift check covers module-rt and `hardware.*`, not
@@ -220,8 +226,9 @@ lane-cost record exists.
   `.agents/rules/build.md`, "PipeWire and WirePlumber updates", as a
   re-check owed on every WirePlumber update, beside the module lists.
 - **No timing verdict.** Lane wall time is not a budgeted path.
-- **No application code, UI file or rule outside build.md changes**, so the
-  UI-prefix proof obligations do not apply. The lanes run anyway, as D8.
+- **No application code, UI file, smoke runner or rule outside build.md
+  changes**, so neither the UI-prefix nor the fingerprinted-script proof
+  obligations apply. The lanes run anyway, as D8.
 
 ## Risks
 
@@ -232,6 +239,7 @@ lane-cost record exists.
 - **A future WirePlumber that renames the service or the property.** The
   session then fails loudly at readiness (D3), and the build.md update check
   points at the predicate.
-- **A scheduled CI container where PipeWire does not start** turns from skip
-  to fail (D4). That is intended, and is read once at the end of the
-  programme.
+- **A scheduled CI container where WirePlumber never loads its policy**
+  turns from a silent pass, or a later capture failure, into a session
+  failure. That is intended, and is read once at the end of the programme
+  with the rest of CI.

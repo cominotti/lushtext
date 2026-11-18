@@ -40,11 +40,10 @@ was only slow, by chance does not.
 - A missed deadline is a loud session failure. The helper exits
   `TEST_FAILURE_EXIT_CODE` before the command starts, with a bounded
   diagnostic and the last dump saved to the log directory. The diagnostic is
-  worded so that no lane's host-support classifier reads it as a skip, and
-  the visual and command-palette notes runners stop classifying the helper's
-  own "PipeWire did not become ready" failure as a host-support skip (their
-  `smoke_skip` exits 0 for the whole lane); two uncalled `wait_for_pipewire`
-  helpers go.
+  worded so that no lane's host-support classifier reads it as a skip. (The
+  visual and notes runners still classify the helper's own "PipeWire did not
+  become ready" as a skip; that is deferred to a proposed change, design
+  D4.)
   `READY_TIMEOUT` stays 10 s; it is now only the failure deadline.
 - Proof: failing-first unit tests of the predicate and of the wait's outcome;
   a seeded real-session failure (WirePlumber's `policy` profile without
@@ -62,7 +61,7 @@ was only slow, by chance does not.
 
 - `headless-session-hygiene`: ADDED requirements "Quiet media are ready
   before the command starts", "A media readiness miss fails the session" and
-  "Lanes fail on a media readiness failure".
+  "Lanes fail on a WirePlumber readiness miss".
 
 ## Impact
 

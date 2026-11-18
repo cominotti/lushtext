@@ -26,10 +26,10 @@ If quiet media are not ready within `READY_TIMEOUT`, the helper SHALL NOT start 
 - **AND** the log directory holds `pw-dump-not-ready.json` and the session's daemons are stopped
 - **AND** the exit status is neither the unsupported-host code (77) nor `SESSION_HYGIENE_EXIT_CODE` (93)
 
-### Requirement: Lanes fail on a media readiness failure
-A smoke lane SHALL report a case whose session failed media readiness as failed, and SHALL NOT classify it as a host-support skip. A media daemon that is installed but does not become ready SHALL NOT count as missing host support.
+### Requirement: Lanes fail on a WirePlumber readiness miss
+A smoke lane SHALL report a case whose session failed because WirePlumber did not load its linking policy as failed. No lane SHALL classify that failure as a host-support skip.
 
-#### Scenario: A media readiness failure fails the lane
-- **WHEN** a smoke case's session fails because PipeWire did not become ready or WirePlumber did not load its linking policy
+#### Scenario: A WirePlumber readiness miss fails the lane
+- **WHEN** a smoke case's session fails because WirePlumber did not load its linking policy
 - **THEN** the lane reports the case as failed and exits nonzero
 - **AND** the lane prints no `SKIP:` line for that case

@@ -39,14 +39,16 @@ every 250 ms for 10 s, then `pw-metadata`, `wpctl status` and `pw-cli ls`):
 - `wpctl status` exited 0 and showed the `Settings / Default Configured
   Devices` section that the `default` metadata backs.
 
-So WirePlumber's `policy` profile does publish the `default` metadata. Every
-object `pw-dump` omitted is an empty metadata object (no entries; `default` is
-empty because the session has no audio devices), and every one it printed has
-entries. The helper waits for the object through a tool that never prints it.
+So WirePlumber's `policy` profile does publish the `default` metadata, and
+the helper waits for it through a tool that never prints it. Observation, not
+verified for each object: the metadata objects `pw-dump` printed all have
+entries, and `default`, which it omitted, has none (`pw-metadata -n default`
+listed no entry: the session has no audio devices); the other five omitted
+ones were not inspected. The fix does not depend on why `pw-dump` omits them.
 The same holds in every saved session: 0 of 99 `pw-dump.json` files of a
 visual-geometry run, 0 of 59 of an accessibility run and 0 of 45 of a visual
-run contain `"metadata.name": "default"` (dumps under the worktrees'
-`build/smoke/*/…/session-hygiene/`, 2026-11-18).
+run contain `"metadata.name": "default"` (`grep -l` over the dumps under the
+worktrees' `build/smoke/*/…/session-hygiene/`, 2026-11-18).
 
 ## 3. The signal WirePlumber does publish when its policy is loaded
 
@@ -61,7 +63,9 @@ run contain `"metadata.name": "default"` (dumps under the worktrees'
   end"), so the property appears only after every other component of the
   profile, the linking hooks included, has loaded.
 
-Every saved dump has it on client 31, `application.name = "WirePlumber
+All 203 of those saved dumps contain a `"session.services"` value listing
+`policy.linking.standard` (`grep -l`, the same 99 + 59 + 45 files). In the
+two dumps opened it sits on client 31, `application.name = "WirePlumber
 (policy)"`, for example
 `"session.services": "[policy.device.routes, policy.device.profile, policy.default-nodes, policy.linking.standard, policy.linking.role-based]"`.
 The member order differs between dumps, so it is matched as a list member.
@@ -92,7 +96,11 @@ was clean. The probe scripts are kept untracked in
 `.claude/handoffs/fix-headless-session-media-wait/baseline/` (they start no
 daemon themselves, but `make check-session-hygiene` scans tracked files).
 
-## 5. Lane wall time before (from `.claude/handoffs/stream-replace-all/runs.log`)
+## 5. Lane wall time before
+
+The 2026-11-18 column is from `.claude/handoffs/stream-replace-all/runs.log`
+(lines 253-258). The 2026-11-06 column is the devflow plan's figure (one
+run, n = 1, from that day's agent logs), not from `runs.log`.
 
 | Lane | 2026-11-06 (before PR #110) | 2026-11-18 round 1 (09:17-10:04, load 4.0-9.5) | media sessions per run | 10 s waits per run |
 | --- | --- | --- | --- | --- |

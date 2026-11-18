@@ -33,14 +33,13 @@
 
 ## Commit plan
 
-- **G1:** helper code, unit tests and the GTK Lush docs (tasks 1-3, 5.1-5.4).
-  None of these paths is fingerprinted by the smoke proofs.
-- **G2:** the runner and capture-script edits (task 4). Those paths are
-  fingerprinted (`scripts/accessibility_source_fingerprint.py`,
-  `scripts/check-visual-proof-policy.py`). G2 is also the commit the smokes
-  of task 6 are made for, so it lands right after them, and any edit after a
-  smoke means rerunning it.
-- **G3:** evidence and the records (tasks 5.5-5.6, 7), docs only.
+- **G1:** helper code, unit tests and the GTK Lush and rule docs (tasks 1-5.4).
+  No path of this change is under the UI prefixes or in the smoke proofs'
+  fingerprint lists (`scripts/accessibility_source_fingerprint.py`,
+  `scripts/check-visual-proof-policy.py`; checked at spec stage), so the
+  commit hook owes no smoke. If an implementation fix does touch such a path,
+  that commit lands right after the task 6 smokes.
+- **G2:** evidence and the records (tasks 5.5, 6, 7), docs only.
 
 ## 1. Failing-first tests (no behaviour change yet)
 
@@ -108,25 +107,30 @@
   If WirePlumber refuses the override, use
   `support.session-services = disabled` instead and record which seed was
   used.
-- [ ] 3.2 With the seed still in place and task 4 applied, run one case each
-  of `make visual-smoke`, `make visual-geometry-smoke` and
-  `make accessibility-smoke` (filtered to one case each). Each must fail: no
-  `SKIP:`, nonzero exit, the D3 line in the case log.
+- [ ] 3.2 With the seed still in place, run one case each of
+  `make visual-smoke`, `make visual-geometry-smoke` and
+  `make accessibility-smoke`, filtered to one case each and with their own
+  artifact directories if the lane allows it. Each must fail: no `SKIP:`, a
+  nonzero exit, and the D3 line in the case log. These runs come before
+  task 6.2, so each lane's last summary is a passing one.
 - [ ] 3.3 Revert the seed (`git diff` empty for the fragment) and rebuild.
   Log 3.1-3.2 in `failing-first.log`.
 
-## 4. Lanes fail, never skip, on media readiness (D4)
+## 4. The WirePlumber miss is never a skip (D4)
 
-- [ ] 4.1 Remove `PipeWire did not become ready` from the host-support skip
-  patterns of `scripts/run-visual-smoke.sh` and
-  `scripts/run-command-palette-notes-smoke.sh`. Keep `Missing required
-  command` and the AT-SPI phrases.
-- [ ] 4.2 Delete the uncalled `wait_for_pipewire` from
-  `.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py`
-  and `scripts/crash-recovery-smoke-driver.py`. Grep that nothing calls them,
-  and that the D3 line matches no remaining skip pattern of any runner.
-- [ ] 4.3 `make check-session-hygiene`, `make check-end-user-smoke-workflow`
-  and `make check-agent-docs` pass (each through `heavy.sh`).
+- [ ] 4.1 Grep the D3 line against the host-support skip patterns of every
+  media lane's runner and capture script. At spec stage that meant
+  `scripts/run-visual-smoke.sh` and `scripts/run-command-palette-notes-smoke.sh`
+  (patterns), and `scripts/run-accessibility-smoke.sh`,
+  `scripts/visual-geometry-smoke.py` and `scripts/crash-recovery-smoke-driver.py`,
+  which have pre-session checks only. It must match none.
+- [ ] 4.2 `make check-session-hygiene` and `make check-agent-docs` pass
+  (each through `heavy.sh`).
+- [ ] 4.3 Confirm the `NEW CHANGE PROPOSED: media-skip-classification` line
+  (written at spec stage) is still in `.claude/handoffs/PARALLEL-LEDGER.md`.
+  It covers the deferred `PipeWire did not become ready` skip class and the
+  two uncalled `wait_for_pipewire` helpers. Do not widen this change with
+  them.
 
 ## 5. Documentation (`.agents/rules/documentation.md`)
 
@@ -151,15 +155,16 @@
 - [ ] 5.5 `docs/next/long-line-documents.md`, QH section: a follow-up
   paragraph with the cause, the fix and the lane wall times before and after
   (task 6), from `evidence/`.
-- [ ] 5.6 `docs/end-user-coverage.md` and `.agents/rules/build.md`,
-  "End-User Smoke Lanes": state that a media readiness failure (PipeWire or
-  WirePlumber) is a failure, not a host-support skip, if either text
-  describes the skip classes. Otherwise record that nothing needed changing.
 
 ## 6. Lane proof on the final tree (D8)
 
-- [ ] 6.1 After G1 and G2 are final, run each media lane 10 consecutive
-  times, green, one `heavy.sh` call per run:
+- [ ] 6.1 Seeded defect (D7.2, uncommitted), **before** the green runs: a
+  temporary change inside a protected region of one visual-geometry scenario
+  must make `make visual-geometry-smoke` fail its invariant. A wrong
+  accessible name on one anchor must make `make accessibility-smoke` fail.
+  Revert both, and log them in `failing-first.log`.
+- [ ] 6.2 After G1 is final, run each media lane 10 consecutive times,
+  green, one `heavy.sh` call per run:
   - `make visual-geometry-smoke`;
   - `make accessibility-smoke`;
   - `make visual-smoke`.
@@ -168,18 +173,12 @@
   `evidence/lanes.md`. A failure, `FLAKY`, `OOM-KILL:`, `SESSION-HYGIENE:` or
   `SKIP:` line is a blocker: investigate it, fix the cause, and restart that
   lane's count.
-- [ ] 6.2 Seeded defect (D7.2, uncommitted): a temporary change inside a
-  protected region of one visual-geometry scenario must make
-  `make visual-geometry-smoke` fail its invariant. A wrong accessible name on
-  one anchor must make `make accessibility-smoke` fail. Revert both, and log
-  them in `failing-first.log`.
 - [ ] 6.3 Compare the means with the baseline (visual-geometry 24.2,
   accessibility 13.0, visual 9.8 min). If the visual lane stays clearly above
   about 3 min at a comparable load, write a `NEW CHANGE PROPOSED` line for
   the remainder in `.claude/handoffs/PARALLEL-LEDGER.md` and say so in
   `evidence/lanes.md`.
-- [ ] 6.4 Commit G2 right after the last smoke run, so the smoke fingerprints
-  stay current.
+- [ ] 6.4 The last run of each lane before any commit is a green one.
 
 ## 7. Final gates
 
