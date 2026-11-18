@@ -85,7 +85,7 @@ From the input dispatch of a sliced collapse until it ends, every realized row i
 
 #### Scenario: A rebound row
 - **WHEN** a row widget is rebound or created during a collapse, into the collapsing subtree or out of it, or the sidebar is unmapped and mapped again before the collapse ends
-- **THEN** a row inside the subtree is hidden and reports `hidden` before the next frame paints, and a row outside every collapsing subtree draws, takes input and reports as on `main`
+- **THEN** a row inside the subtree draws nothing and takes no pointer input from its bind, and reports `hidden` from the end of the frame after the one that created or mapped it, and a row outside every collapsing subtree draws, takes input and reports as on `main`
 
 #### Scenario: The collapse ends
 - **WHEN** the collapse completes, or is ended by a re-expansion, a removal, a model reset or disposal
@@ -102,8 +102,9 @@ From the input dispatch of a sliced collapse until it ends, every realized row i
 - **AND** each held key lands where GTK's own binding for it lands on the final tree, Page Up and Page Down included
 
 #### Scenario: A key after a held key
-- **WHEN** a navigation key is held during a collapse and the user then presses Return, Space, Delete, F2, Menu or another key
-- **THEN** that key is held behind it and acts, when the collapse ends, on the row the held navigation reached, as on `main`; a key the section cannot replay is consumed, never applied to the directory row ahead of the keys before it
+- **WHEN** a navigation key is held during a collapse and the user then presses a key whose effect depends on the focused row (activation, peek, the context menu)
+- **THEN** that key is held behind it and acts, when the collapse ends, on the row the held navigation reached, as on `main`, never on the directory row ahead of the keys before it
+- **AND** a key whose effect does not depend on the focused row (Escape, Tab, a window accelerator) acts at once
 
 #### Scenario: A path listed by two workspace folders
 - **WHEN** two overlapping workspace folders list the collapsing directory's path, and one occurrence is collapsed

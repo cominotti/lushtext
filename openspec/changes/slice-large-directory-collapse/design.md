@@ -2381,10 +2381,12 @@ thresholds are pre-registered to the rounds below and to task 10.7.
     handler outlasts that write on a created row, or on any row after the
     sidebar is unmapped and mapped again mid-collapse (the "collapse nobody
     draws" scenario). The state is therefore re-applied after insertion: by
-    the collapse's pass at the next frame's layout phase (or the low-priority
-    step source when no frame comes) for every realized subtree row that does
-    not read `hidden`, a read of at most the band. Opacity and `can-target`
-    are not written by GTK, so they persist.
+    the collapse's tick of the next frame (or the low-priority step source
+    when no frame comes) for every realized subtree row that does not read
+    `hidden`, a read of at most the band, so such a row reports `hidden` from
+    the end of the frame after the one that created or mapped it. Opacity and
+    `can-target` are set at bind and GTK does not write them, so its pixels
+    and pointer input are hidden from the start.
   - *Bind:* the bind path re-applies the opacity and `can-target` to a row
     rebound into a collapsing subtree, and clears all three on a row rebound
     anywhere else, because GTK recycles row widgets without resetting them.
@@ -2406,9 +2408,10 @@ thresholds are pre-registered to the rounds below and to task 10.7.
       teardown, and leaves the band and the list's allocation unchanged;
     - a hidden row draws no pixels, including when it is selected, focused
       or under the pointer;
-    - the pointer picks the list, not the row, and a real press and double
-      press over a hidden row select and activate nothing, and leave the row
-      without the prelight state;
+    - the pointer picks the list, not the row, on both toolkits; and, on
+      GNOME 51 only (the GNOME 50 SDK run skips real input, implementation
+      decision 14), a real press and double press over a hidden row select
+      and activate nothing and leave the row without the prelight state;
     - whether the presented accessible tree, read under `GTK_A11Y=test`,
       omits the hidden rows and their descendants (if it keeps the
       descendants, `hidden` is also written on the overlay, D6's projection
@@ -2431,19 +2434,22 @@ thresholds are pre-registered to the rounds below and to task 10.7.
     collapse ends, it applies them in order from the directory row, as
     `main` applies keys queued behind its frozen collapse. A Down pressed
     in the interval lands on the row after the directory.
-  - *Order behind a held key (R12):* once a key is held, every later key
-    press the controller sees while the collapse is pending is held behind
-    it, not only navigation keys. Otherwise Down then Return would activate
+  - *Order behind a held key (R12):* once a key is held, a later key whose
+    effect depends on the focused row is held behind it too, not applied to
+    the directory row ahead of it. Otherwise Down then Return would activate
     the directory row (a re-expansion, D7) where `main` activates the row
-    after it, and Down then Delete would offer to delete the directory.
-    Held keys replay in order when the collapse ends: navigation through the
-    pure helper of task 10.14, and Return, KP_Enter, Space (peek), Delete,
-    F2, Menu and Shift+F10 through the section's own handlers on the row the
-    replayed navigation reached. Any other key pressed while keys are held
-    is consumed and counted in the section's evidence, never applied ahead
-    of the keys before it. Each replayed navigation key lands where GTK's
-    own binding lands on the final tree (Page Up and Page Down by the list's
-    page at that time), which task 10.14's parity test checks against GTK.
+    after it. Those keys are, from the routes in the code today: Return and
+    KP_Enter (row activation), Space (the peek controller on the list view,
+    `peek_execution.rs`), and Menu and Shift+F10 (the context menu,
+    `context_menus.rs`); the sidebar has no Delete or F2 key route. Every
+    other key (Escape, Tab, window accelerators) propagates as on any other
+    frame. Held keys replay in order when the collapse ends, navigation
+    through the pure helper of task 10.14 and the others through the route
+    each takes, on the row the replayed navigation reached; task 10.14
+    re-reads the routes at apply time and holds exactly the row-dependent
+    ones. Each replayed navigation key lands where GTK's own binding lands
+    on the final tree (Page Up and Page Down by the list's page at that
+    time), which task 10.14's parity test checks against GTK.
   - *Pointer:* a click or a hover on the hidden region selects, activates,
     expands and peeks nothing, and paints no hover background, because the
     row widgets are not targets and the list view under them has no click
@@ -2664,9 +2670,9 @@ and the old constants round SUPERSEDED in `MEASURE-QUEUE.md`. The decision
    twice; D22's hiding, the R6.5 projection and `stop_subtree_work` decide
    by tree position instead (task 10.13, with the two-folder fixture).
 4. **Keys after a held key.** Down then Return would have activated the
-   directory row; every key after a held key is held behind it (D22, task
-   10.14), and replayed navigation has a parity test against GTK's bindings,
-   Page Up and Page Down included.
+   directory row; a row-dependent key after a held key is held behind it,
+   every other key propagates (D22, task 10.14), and replayed navigation has
+   a parity test against GTK's bindings, Page Up and Page Down included.
 5. **D23's admission.** It quoted the skip-cache rate only; without D24 a
    16,384-row chunk is about 9.4–11.3 ms on its own, and the input also
    carries D22's hiding. The deciding Q5 round now admits a size only with
@@ -2728,8 +2734,9 @@ and the old constants round SUPERSEDED in `MEASURE-QUEUE.md`. The decision
   smoke has no collapse case today; task 10.13 adds one (a 4,096-entry
   directory collapsed with the bus and a listener up, the tree asserted
   after it) and records its input dispatch once (from the smoke-only
-  responsiveness probe's dispatch log, or a timer the case adds). If it is over `B_INTERACT_US` there, the hiding of rows
-  outside the viewport moves to the first frame's pass.
+  responsiveness probe's dispatch log, or a timer the case adds). If it is
+  over `B_INTERACT_US` there, the hiding of rows outside the viewport moves
+  to the first frame's pass.
 - **Held navigation keys (D22) change when a key acts, not what it does.**
   A Down pressed during a collapse acts when the collapse ends, as on
   `main` it acts when the frozen collapse returns. A collapse that never
