@@ -973,6 +973,12 @@ pub mod a125 {
     pub use crate::probes::a125::{ClockFixture, Event, clock_fixture, read_case};
 }
 
+/// The list whose key presses the A126 probe holds and puts back on the
+/// display's queue, for its sample.
+pub mod a126 {
+    pub use crate::probes::a126::{HoldFixture, Mark, hold_fixture};
+}
+
 /// The word-boundary searches the A128 probe compares, for its sample.
 pub mod a128 {
     pub use crate::probes::a128::{

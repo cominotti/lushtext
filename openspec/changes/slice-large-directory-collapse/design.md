@@ -3585,6 +3585,42 @@ the terminal one.
   is: a `map` that could not connect it (under the `Hold` seam) left the tick
   refreshing `last_step_us` forever with nothing arming the step source.
 
+#### A126 and the held keys (task 10.14, 2026-11-18)
+
+D22 holds the list-navigation keys while a collapse is pending and applies
+them when it ends. Task 10.14 first named the mechanism as a pure helper that
+maps each held key to a target position, applied through `scroll_to`. It now
+**puts the held key events back on GDK's queue** (`gdk_display_put_event`)
+once the collapse has ended and a frame has laid out the final tree, and GTK
+routes them as it routes any press. Reasons:
+
+- *It is `main`'s mechanism.* On `main` the frozen collapse leaves the keys
+  in GDK's queue, and GTK delivers them afterwards against the final tree.
+  The spec's bars ("as on `main` after its frozen collapse returned", "where
+  GTK's own binding lands") then hold by construction.
+- *A target-position helper cannot match GTK without copying it.* `Page_Up`
+  and `Page_Down` read tile allocations (`gtklistbase.c`,
+  `gtk_list_base_move_cursor_page_*`); a plain or Shift move on a focused,
+  unselected row selects that row and does not move
+  (`handle_selecting_unselected_cursor`); Ctrl moves focus without selecting.
+- *The row-dependent keys have three routes:* Return, ISO_Enter and KP_Enter
+  are the row widget's `activate-keybinding` (`gtklistfactorywidget.c`);
+  Space and KP_Space with any Ctrl/Shift are `listitem.select` plus the
+  sidebar's peek controller; Menu and Shift+F10 are the context menu's. A
+  re-queued event takes each route unchanged.
+- *The keypad forms are GTK no-ops.* `GtkListBase` binds no `KP_` navigation
+  key and `gdk_key_event_matches` does not match `KP_Down` to `Down`, so a
+  held keypad key replays as nothing, which is what GTK does with it.
+
+**A126** pins the toolkit half: a stopped press, put back from a later
+dispatch, comes back through the capture phase as the same event, in put
+order, before a `G_PRIORITY_LOW` idle, and the list's binding acts on it
+(GTK 4.24.1, twice; the 4.22.2 floor by source, `gdk_display_put_event`
+unchanged). The API is deprecated since 4.10 with no replacement, so its one
+call carries `#[expect(deprecated, reason)]` (`rust.md`, "Lint Suppression").
+The pure half in `ui/sidebar/policy.rs` classifies a key (navigation,
+row-dependent, other) and decides hold or propagate.
+
 ### R14. Review of R13 (2026-11-18)
 
 Reviewed against the round logs (`rev/attr2/slc-r13-*.log`,

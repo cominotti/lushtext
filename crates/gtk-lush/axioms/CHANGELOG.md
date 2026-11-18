@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- A126 probe and sample (`slice-large-directory-collapse` D22): a key press
+  a capture-phase controller stopped, put back later with
+  `gdk_display_put_event`, is delivered again through GTK's route as the same
+  event, and the focused list's binding acts on it from the focus of that
+  time; presses put back together arrive in order, before a low-priority
+  idle. Fixture `fixtures::a126` (`HoldFixture`, `Mark`, `hold_fixture`). The
+  probe drives real input for its whole verdict, so A126 joins
+  `REMOTE_INPUT_AXIOMS`.
 - A123 probe and sample (`slice-large-directory-collapse` D22): hiding one
   subtree's realized row widgets by opacity 0, `can-target` false and
   accessible `hidden` runs no row measure, setup or teardown, keeps the band

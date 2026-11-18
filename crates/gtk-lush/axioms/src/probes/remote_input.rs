@@ -43,6 +43,7 @@ pub const REMOTE_INPUT_AXIOMS: &[crate::AxiomId] = &[
     crate::AxiomId::new(61),
     crate::AxiomId::new(64),
     crate::AxiomId::new(97),
+    crate::AxiomId::new(126),
 ];
 
 /// Whether [`SANDBOX_ENV`] says this run is inside an SDK sandbox.

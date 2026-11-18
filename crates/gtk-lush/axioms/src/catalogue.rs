@@ -2063,6 +2063,25 @@ const CATALOGUE: &[Axiom] = &[
         probe: Some(probes::probe_a125),
     },
     Axiom {
+        id: AxiomId::new(126),
+        name: "a126_a_held_key_press_put_back_is_delivered_again",
+        statement: "A key press a capture-phase key controller stopped, put back on the \
+                    display's event queue later with gdk_display_put_event, is delivered again \
+                    through GTK's normal route as the same GdkEvent: capture controllers see it \
+                    again and the focused list's class key binding acts on it from the focus of \
+                    that time; presses put back in one dispatch arrive in the order put, before a \
+                    G_PRIORITY_LOW idle added in that dispatch",
+        dependent_designs: &[
+            "slice-large-directory-collapse D22: the sidebar holds the navigation keys pressed \
+             while a collapse is pending, so the focus never lands on a hidden row, and puts \
+             them back once the collapse has ended and a frame has laid out the final tree, \
+             so GTK applies them as it applies the keys queued behind main's frozen collapse",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a126),
+    },
+    Axiom {
         id: AxiomId::new(127),
         name: "a127_regex_replace_all_expands_gregex_references",
         statement: "With regex enabled, GtkSourceSearchContext::replace_all expands GRegex \
