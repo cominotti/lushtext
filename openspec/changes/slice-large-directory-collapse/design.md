@@ -3444,7 +3444,11 @@ GNOME 50 floor (`//50`, GTK 4.22.2); logs `rev6/sample-A124-51.log`,
   rows are mapped when it returns. A125 holds there. Recorded in the ledger
   for the next toolkit adoption: the reuse removes the per-row creation cost
   that G0b names as the step tail, and rows left unmapped at the splice's
-  return would change when D22's re-apply must run.
+  return would change when D22's re-apply must run. A118 is violated on
+  `//master` too (`rev6/axioms-runtimes-a118-a120.log`: the head removal
+  runs no setup and keeps 16 of 16 removed widgets as survivors), so the
+  nightly's reuse is one toolkit change that A118 and A124 both see, not a
+  defect of A124's fixture.
 
 D25 is built (R13: "If either is refuted on a toolkit, the change takes the
 closing rule"; neither is refuted on a shipped or floor toolkit).
@@ -3500,6 +3504,14 @@ strengthened first one also checks that D23's chunk and the first bound
 unit both run before the first frame and that no interval removes more than
 `SIDEBAR_REALIZED_ROWS_PER_FRAME` bound rows; the module passes
 (`rev6/wtv-module-d25.log`, before the loop fix, and `make test` after it).
+
+**G1's reading, made precise before it runs (2026-11-18).** G1's "every
+step" is every step-source dispatch of kind Bound, Descendant or Terminal in
+the `collapse-steps` line. Chunk dispatches (D23's chunk in the step source)
+and between-frames turns are G2's: without D24 they still carry the
+path-cache splice (5.4–8.5 ms at 131,072 in the dry runs). `INPUT_TO_FRAME_US`
+is not printed by the verdict test on this binary, so G1 does not judge it
+and rung T1 cannot be read from G1's logs; task 7.1's verdict print owes it.
 
 The late 33–41 ms "unshown" dispatch at 0:131,072 (about 670–700 ms after
 the input) is not D25's: `widget-attr-104` shows it in every G0 "after"
