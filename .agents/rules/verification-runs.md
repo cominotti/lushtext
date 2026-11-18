@@ -38,8 +38,8 @@ Then:
   a local run is the only evidence before merge. When a change edits a harness
   or a module a scheduled shard reads, run **that shard once**, after the code
   is final (not after every edit), detached so an agent interruption cannot
-  kill it (`setsid nohup scripts/heavy.sh -- make kani KANI_SHARD=<shard>`;
-  `heavy.sh` also waits for a running timing campaign).
+  kill it (`setsid nohup scripts/heavy.sh --envelope 16G -- make kani
+  KANI_SHARD=<shard>`; `heavy.sh` also waits for a running timing campaign).
 - **No proven module touched:** the spec records "Kani: none (no proven
   module touched)" and no stage runs Kani. Never run every shard locally: a
   full `make kani` belongs to the weekly or dispatched CI lane. A GTK bump does
