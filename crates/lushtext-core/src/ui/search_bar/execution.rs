@@ -340,3 +340,56 @@ fn selection_or_cursor(buffer: &sourceview5::Buffer) -> (gtk4::TextIter, gtk4::T
         (iter, iter)
     })
 }
+
+/// Prefill the bar for "Open and Replace in Editor" (stream-replace-all
+/// design D7): set each option the run used, then the query and the
+/// replacement, so the session searches once for the final query. The
+/// caller has revealed the bar; Protected View keeps its replace row hidden.
+pub(super) fn prefill_replace(bar: &LushtextSearchBar, prefill: &policy::EditorReplacePrefill) {
+    if let Some(group) = bar.imp().options_group.borrow().clone() {
+        for (option, enabled) in prefill.options() {
+            let name = option.action_name();
+            let Some(action) = group
+                .lookup_action(name)
+                .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
+            else {
+                continue;
+            };
+            let current: bool = action
+                .state()
+                .and_then(|state| state.get())
+                .unwrap_or(false);
+            if current != enabled {
+                action.set_state(&enabled.to_variant());
+                bar.apply_option_state(name, enabled);
+            }
+        }
+    }
+    let replace_entry = bar.replace_entry();
+    replace_entry.set_text(prefill.replacement.as_deref().unwrap_or_default());
+    replace_entry.set_placeholder_text(Some(prefill.replacement_placeholder()));
+    bar.search_entry().set_text(&prefill.query);
+    // Search at once rather than after the entry's search delay, so an
+    // in-bar Replace All right after the prefill uses the prefilled query.
+    apply_query(bar);
+}
+
+/// Stage 2 — apply the search entry's text to the session: the search
+/// settings, or Protected View's external find. Run from the entry's
+/// `search-changed` and by the prefill.
+pub(super) fn apply_query(bar: &LushtextSearchBar) {
+    if bar.dispatch_external_find(super::ExternalFindRequest::QueryChanged) {
+        bar.emit_search_state_changed();
+        return;
+    }
+    if let Some(ref settings) = *bar.imp().search_settings.borrow() {
+        let text = bar.search_entry().text();
+        if text.is_empty() {
+            settings.set_search_text(None);
+        } else {
+            settings.set_search_text(Some(text.as_str()));
+        }
+    }
+    bar.update_match_info();
+    bar.emit_search_state_changed();
+}

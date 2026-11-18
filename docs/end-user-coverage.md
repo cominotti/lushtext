@@ -129,7 +129,8 @@ they are not default PR gates:
   properties, normal and constrained Markdown preview, the preview-only document
   alert (`preview-mode-document-alert` in light, dark, and low Background
   Opacity, asserting it is one opaque band above an uncovered preview), zero-folder/representative/dense/awkward/
-  constrained workspace states, workspace-refresh readiness, short-layout
+  constrained workspace states, workspace-refresh readiness, the Skipped Files
+  dialog after a Replace All that skipped one file (`replace-all-skipped-files`), short-layout
   chrome, no-notes, few/dense/constrained notes, few/dense/constrained
   bookmarks, command-palette files/commands/notes/no-results/dense-files/
   dismissed states, dark style, high contrast, large text, reduced motion,
@@ -229,7 +230,28 @@ they are not default PR gates:
   `stale-preserved-before-retire` protocol windows, using a separate binary built
   with the smoke-only `crash-kill-points` feature (`LUSHTEXT_KILL_AT`), and requires
   no lost work after each relaunch. Release, Meson, Flatpak, and Snap builds never
-  enable that feature and contain no kill-point code.
+  enable that feature and contain no kill-point code. `LUSHTEXT_KILL_AT` takes
+  `name[@label][#n]`: the window name, optionally the durable-write label it
+  must be reached under, and optionally a one-based occurrence ordinal counted
+  over the reaches that match the name and label, so a Replace All run can be
+  killed on its third file rather than its first. Replace All adds four
+  windows: `replace-body-before-entry` (an undo body is durable, its journal
+  entry is not), `replace-entry-before-target-rename` (the entry is durable and
+  the target's temp file holds its new bytes), `replace-target-renamed-before-finish`
+  (the target is renamed, the run has not finished), and
+  `replace-undo-before-target-rename` (an Undo's restore temp holds the
+  original bytes). The lane drives them on the third of five files, each
+  in a fresh profile and workspace: a kill in `replace-body-before-entry` or
+  `replace-entry-before-target-rename` leaves the first two files replaced
+  and the rest original, a kill in `replace-target-renamed-before-finish` or
+  in the target's `durable-renamed-before-dirsync@replace` leaves three
+  replaced, and in every case the relaunch offers Undo for exactly the
+  replaced files and Undo restores every one and empties the journal. A fifth
+  case kills an Undo run in a later launch inside
+  `replace-undo-before-target-rename` (two files restored, three still
+  replaced) and checks the next relaunch rearms the manifest for itself and
+  finishes the Undo. The windows and the ordinal are also unit-tested in
+  `services/kill_point.rs`.
 - `make portal-sandbox-smoke` records available Flatpak/Snap runtime state,
   writes `permission-posture.txt`, preserves portal bus-name diagnostics, and
   runs supported confined smoke checks while skipping clearly when runtimes are

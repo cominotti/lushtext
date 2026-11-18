@@ -11,8 +11,9 @@ use crate::services::json_format::{
     KIND_BOOKMARK_SIDECAR, KIND_DOCUMENT_NOTE_SIDECAR, KIND_DRAFT_MANIFEST,
     KIND_FOLDER_NOTE_SIDECAR, KIND_LEGACY_WORKSPACE_NOTE_SIDECAR, KIND_LOCAL_HISTORY_INDEX,
     KIND_MIGRATION_LEDGER, KIND_REPLACE_UNDO_CLEANUP_MARKER, KIND_REPLACE_UNDO_ENTRY,
-    KIND_REPLACE_UNDO_MANIFEST, KIND_RETIRED_REPLACE_UNDO_BACKUP, KIND_SAVED_SEARCHES,
-    KIND_SEARCH_HISTORY, KIND_SESSION, KIND_WORKSPACE_STATE, SUPPORTED_JSON_VERSION,
+    KIND_REPLACE_UNDO_MANIFEST, KIND_REPLACE_UNDO_STREAM_ENTRY, KIND_RETIRED_REPLACE_UNDO_BACKUP,
+    KIND_SAVED_SEARCHES, KIND_SEARCH_HISTORY, KIND_SESSION, KIND_WORKSPACE_STATE,
+    SUPPORTED_JSON_VERSION,
 };
 
 /// Default maximum number of sidecar files scanned per app-owned sidecar directory.
@@ -110,8 +111,13 @@ pub enum FormatMetadataKind {
     MigrationLedger,
     /// Replace All undo journal manifest.
     ReplaceUndoManifest,
-    /// Replace All per-file undo entry.
+    /// Replace All per-file undo entry, legacy inline form.
     ReplaceUndoEntry,
+    /// Replace All per-file undo entry, streamed form (a descriptor whose
+    /// original bytes are in a body file).
+    ReplaceUndoStreamEntry,
+    /// Raw original bytes of one streamed Replace All undo entry.
+    ReplaceUndoBody,
     /// Replace All cleanup marker.
     ReplaceUndoCleanupMarker,
     /// Retired pre-public single-file Replace All backup.
@@ -126,7 +132,7 @@ impl FormatMetadataKind {
             Self::WorkspaceState => Some(KIND_WORKSPACE_STATE),
             Self::Session => Some(KIND_SESSION),
             Self::DraftManifest => Some(KIND_DRAFT_MANIFEST),
-            Self::DraftBody => None,
+            Self::DraftBody | Self::ReplaceUndoBody => None,
             Self::SavedSearches => Some(KIND_SAVED_SEARCHES),
             Self::SearchHistory => Some(KIND_SEARCH_HISTORY),
             Self::BookmarkSidecar => Some(KIND_BOOKMARK_SIDECAR),
@@ -137,6 +143,7 @@ impl FormatMetadataKind {
             Self::MigrationLedger => Some(KIND_MIGRATION_LEDGER),
             Self::ReplaceUndoManifest => Some(KIND_REPLACE_UNDO_MANIFEST),
             Self::ReplaceUndoEntry => Some(KIND_REPLACE_UNDO_ENTRY),
+            Self::ReplaceUndoStreamEntry => Some(KIND_REPLACE_UNDO_STREAM_ENTRY),
             Self::ReplaceUndoCleanupMarker => Some(KIND_REPLACE_UNDO_CLEANUP_MARKER),
             Self::RetiredReplaceUndoBackup => Some(KIND_RETIRED_REPLACE_UNDO_BACKUP),
         }
@@ -160,6 +167,8 @@ impl FormatMetadataKind {
             Self::MigrationLedger => "migration ledger",
             Self::ReplaceUndoManifest => "replace undo manifest",
             Self::ReplaceUndoEntry => "replace undo entry",
+            Self::ReplaceUndoStreamEntry => "replace undo stream entry",
+            Self::ReplaceUndoBody => "replace undo body",
             Self::ReplaceUndoCleanupMarker => "replace undo cleanup marker",
             Self::RetiredReplaceUndoBackup => "retired replace undo backup",
         }
@@ -182,6 +191,8 @@ impl FormatMetadataKind {
             | Self::MigrationLedger
             | Self::ReplaceUndoManifest
             | Self::ReplaceUndoEntry
+            | Self::ReplaceUndoStreamEntry
+            | Self::ReplaceUndoBody
             | Self::ReplaceUndoCleanupMarker
             | Self::RetiredReplaceUndoBackup => true,
         }
@@ -377,6 +388,16 @@ mod tests {
             (
                 FormatMetadataKind::ReplaceUndoEntry,
                 "replace undo entry",
+                true,
+            ),
+            (
+                FormatMetadataKind::ReplaceUndoStreamEntry,
+                "replace undo stream entry",
+                true,
+            ),
+            (
+                FormatMetadataKind::ReplaceUndoBody,
+                "replace undo body",
                 true,
             ),
             (

@@ -1022,8 +1022,10 @@ the widget suite on its platform first.
   CI-only: `scripts/ci-image-widget-test.sh` reads the `widget-tests` job's
   image and `dnf` line from `ci.yml`, refuses to run when the image's toolkit
   differs from the host's, and runs the binary already built here (build it
-  first, `scripts/heavy.sh -- cargo test -p lushtext --test widget --no-run`)
-  in a fresh container per run, N times (`--runs`), limited by `--cpus N` (a
+  first, `scripts/heavy.sh -- cargo test -p lushtext --test widget --no-run`,
+  and the session helper, `scripts/heavy.sh -- cargo build -p
+  gtk-lush-proof-harness --bin gtk-lush-session`, which it passes as
+  `GTK_LUSH_SESSION_BIN` because the image has no cargo) in a fresh container per run, N times (`--runs`), limited by `--cpus N` (a
   quota; never `taskset`). Each run is CI's own step, with `cargo` shimmed to
   that binary: `scripts/run-widget-tests.sh --headless --retries 1 -- <test
   args>`, or `scripts/widget-shards.py run NAME` for `--shard NAME`, one shard
@@ -1055,8 +1057,8 @@ the widget suite on its platform first.
 - `.github/workflows/kani.yml` — the Kani lane in measurement mode, one shard
   per matrix job; pull requests and pushes to `main` run only the
   `pull-request` shards (`widgets-geometry`, `core-geometry-policies`,
-  `core-minimap-fit`, `core-list-budget`, `core-protected-fold`); schedule and
-  dispatch run every shard.
+  `core-minimap-fit`, `core-list-budget`, `core-protected-fold`,
+  `core-replace-protocol`); schedule and dispatch run every shard.
 - `.github/workflows/end-user-smoke.yml` — scheduled/manual smoke lanes plus a
   split benchmark-report matrix. Its containers run as root with no system
   D-Bus and no `/dev/fuse`: failed-load fixtures use the `smoke-read-faults`

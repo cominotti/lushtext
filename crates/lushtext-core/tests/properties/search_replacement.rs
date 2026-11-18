@@ -15,9 +15,12 @@ use lushtext_core::model::content_search::{
 };
 use lushtext_core::services::content_search::{
     apply_replacements_to_text_for_property_test,
+    apply_replacements_to_text_in_chunks_for_property_test,
     apply_replacements_to_text_reference_for_property_test,
+    apply_replacements_to_text_reference_outcome_for_property_test,
 };
 use proptest::prelude::*;
+use sha2::Digest as _;
 
 use crate::support;
 
@@ -26,6 +29,46 @@ const MAX_RANGE_OFFSET: usize = support::MAX_TEXT_FRAGMENT_CHARS * 2;
 
 proptest! {
     #![proptest_config(support::property_config())]
+
+    /// Stream-replace-all task 2.2: at every chunk size from 1 to 16 (so with
+    /// a seam at every byte offset), the streaming engine produces the
+    /// reference builder's text and count, and SHA-256 digests of the source
+    /// and of that text, over LF, CRLF, lone CR, multi-byte, empty and
+    /// unterminated final lines; a file it does not replace ends with the
+    /// reference's outcome.
+    #[test]
+    fn streaming_engine_matches_the_reference_at_every_chunk_size(
+        lines in prop::collection::vec(stream_line(), 1..=support::MAX_VECTOR_LEN),
+        crlf in prop::collection::vec(any::<bool>(), support::MAX_VECTOR_LEN),
+        raw_replacements in prop::collection::vec(replacement_input(), 0..=support::MAX_VECTOR_LEN),
+        trailing_newline in any::<bool>(),
+    ) {
+        let mut original_text = String::new();
+        for (index, line) in lines.iter().enumerate() {
+            original_text.push_str(line);
+            if index + 1 < lines.len() || trailing_newline {
+                original_text.push_str(if crlf[index % crlf.len()] { "\r\n" } else { "\n" });
+            }
+        }
+        let replacements = build_unique_line_replacements(&lines, raw_replacements);
+        let reference = apply_replacements_to_text_reference_outcome_for_property_test(
+            &original_text,
+            &replacements,
+        );
+        let source_digest: [u8; 32] = sha2::Sha256::digest(original_text.as_bytes()).into();
+        let expected = reference.map(|(text, count)| {
+            let digest: [u8; 32] = sha2::Sha256::digest(text.as_bytes()).into();
+            (text, count, source_digest, digest)
+        });
+        for chunk_len in 1..=16 {
+            let actual = apply_replacements_to_text_in_chunks_for_property_test(
+                &original_text,
+                &replacements,
+                chunk_len,
+            );
+            prop_assert_eq!(&actual, &expected, "chunk length {}", chunk_len);
+        }
+    }
 
     #[test]
     fn replacements_clip_ranges_and_apply_from_later_positions_first(
@@ -115,6 +158,17 @@ proptest! {
             Some((expected, 1)),
         );
     }
+}
+
+/// One line for the streaming property: ASCII, a lone `\r` inside the line,
+/// multi-byte characters, or empty.
+fn stream_line() -> impl Strategy<Value = String> {
+    prop_oneof![
+        support::text_fragment(),
+        "[a-c\r]{0,6}".prop_map(|line| line.trim_end_matches('\r').to_string()),
+        "[a\u{e9}\u{4e2d}\u{1f600}]{0,4}",
+        Just(String::new()),
+    ]
 }
 
 /// Generate one raw replacement tuple before binding it to the generated text.

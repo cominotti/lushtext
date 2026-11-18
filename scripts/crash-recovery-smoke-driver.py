@@ -14,6 +14,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -621,7 +622,13 @@ def run_helper(command: list[str], env: dict[str, str], stdout_path: Path, stder
     return result
 
 
-def set_editor_text(artifact_dir: Path, app_env: dict[str, str], phase: str, text: str) -> None:
+def set_editor_text(
+    artifact_dir: Path, app_env: dict[str, str], phase: str, text: str, *, kill_pid: int | None = None
+) -> None:
+    """Set the editor's text through AT-SPI. With `kill_pid`, the helper
+    SIGKILLs that process the moment the text is set, so no autosave (the
+    750 ms first-dirty debounce or the 5 s tick) can run in between."""
+    kill = ["--kill-pid", str(kill_pid)] if kill_pid is not None else []
     result = run_helper(
         [
             str(SYSTEM_PYTHON),
@@ -634,6 +641,7 @@ def set_editor_text(artifact_dir: Path, app_env: dict[str, str], phase: str, tex
             text,
             "--timeout",
             "12",
+            *kill,
         ],
         app_env,
         artifact_dir / f"assertions/{phase}-set-text.stdout",
@@ -1336,8 +1344,8 @@ def mutter_child(args: argparse.Namespace) -> int:
             app_env,
             "untitled-newer-unaccepted",
             f"{RETRYABLE_UNTITLED_MARKER}\nThis edit is killed before the 750ms acceptance window.\n",
+            kill_pid=first_app.pid,
         )
-        os.kill(first_app.pid, signal.SIGKILL)
         first_app.wait(timeout=5)
         (artifact_dir / "assertions/sigkill.txt").write_text(
             f"pid={first_app.pid}\nreturncode={first_app.returncode}\n",
@@ -1562,6 +1570,270 @@ def kill_after_stale_preservation(
     return {"scenario": name, "kill_at": name, "result": "passed", "abort_returncode": returncode}
 
 
+REPLACE_NEEDLE = "crash-replace-needle"
+REPLACE_WITH = "crash-replace-thread"
+REPLACE_FILE_COUNT = 5
+
+
+def replace_original(index: int) -> str:
+    return f"{REPLACE_NEEDLE} in file {index}\nan ordinary line\n{REPLACE_NEEDLE} again\n"
+
+
+def replace_replaced(index: int) -> str:
+    return replace_original(index).replace(REPLACE_NEEDLE, REPLACE_WITH)
+
+
+def replace_state(artifact_dir: Path, name: str) -> tuple[Path, Path, list[Path], dict[str, str]]:
+    """A fresh app-data directory and a five-file workspace for one scenario.
+
+    The workspace lives in its own temporary directory, outside the
+    repository, so no `.gitignore` above it hides the files from the search
+    (the caller removes it). Its files sort in the order Replace All visits
+    them, so `#3` names the third.
+    """
+    root = artifact_dir / "kill-points" / name
+    if root.exists():
+        shutil.rmtree(root)
+    data_dir = root / "data"
+    data_dir.mkdir(parents=True)
+    workspace = Path(tempfile.mkdtemp(prefix="lt-crash-replace-"))
+    files = []
+    for index in range(1, REPLACE_FILE_COUNT + 1):
+        path = workspace / f"file-{index}.txt"
+        path.write_text(replace_original(index), encoding="utf-8")
+        files.append(path)
+    workspaces = {
+        "kind": "dev.cominotti.lushtext.workspace-state",
+        "version": 1,
+        "data": {
+            "current_scope": {"kind": "all"},
+            "workspaces": [
+                {
+                    "id": "crash-replace-workspace",
+                    "name": "Crash Replace",
+                    "folders": [{"id": "crash-replace-folder", "path": str(workspace)}],
+                }
+            ],
+        },
+    }
+    (data_dir / "workspaces.json").write_text(json.dumps(workspaces, indent=2) + "\n", encoding="utf-8")
+    return root, workspace, files, {"LUSHTEXT_DATA_DIR": str(data_dir)}
+
+
+def replace_disk_state(files: list[Path]) -> list[str]:
+    """Each file as `original`, `replaced` or `other`."""
+    states = []
+    for index, path in enumerate(files, start=1):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if text == replace_original(index):
+            states.append("original")
+        elif text == replace_replaced(index):
+            states.append("replaced")
+        else:
+            states.append("other")
+    return states
+
+
+def activate_window_string_action(bus, action_name: str, value: str) -> None:
+    from gi.repository import GLib
+
+    bus_call(
+        bus,
+        APP_ID,
+        WINDOW_OBJECT_PATH,
+        "org.gtk.Actions",
+        "Activate",
+        GLib.Variant("(sava{sv})", (action_name, [GLib.Variant("s", value)], {})),
+    )
+
+
+def content_search_state(bus) -> dict:
+    window = snapshot_json(bus).get("window") or {}
+    return window.get("content_search") or {}
+
+
+def wait_for_content_search(bus, what: str, holds, timeout: float = 30) -> dict:
+    deadline = time.monotonic() + timeout
+    state: dict = {}
+    while time.monotonic() < deadline:
+        state = content_search_state(bus)
+        if holds(state):
+            return state
+        time.sleep(0.2)
+    raise RuntimeError(f"Replace All smoke: {what} did not happen in {timeout}s: {state!r}")
+
+
+def show_search_panel(bus, artifact_dir: Path) -> None:
+    wait_for_window_actions(bus)
+    wait_for_automation_object(bus)
+    wait_for_ready(bus, artifact_dir, "workspace-refresh-complete", 30000)
+    if not content_search_state(bus).get("visible"):
+        activate_window_action(bus, "toggle-search-panel")
+    wait_for_content_search(bus, "the search panel showing", lambda state: state.get("visible"))
+
+
+def start_replace_all(bus, artifact_dir: Path) -> None:
+    """Search, preview and confirm a Replace All over the five files."""
+    show_search_panel(bus, artifact_dir)
+    activate_window_string_action(bus, "set-search-panel-query", REPLACE_NEEDLE)
+    wait_for_ready(bus, artifact_dir, "search-complete", 30000)
+    wait_for_content_search(
+        bus,
+        "the search finding every file",
+        lambda state: state.get("file_count") == REPLACE_FILE_COUNT and not state.get("searching"),
+    )
+    activate_window_string_action(bus, "set-search-panel-replace-query", REPLACE_WITH)
+    activate_window_action(bus, "preview-search-panel-replacements")
+    wait_for_ready(bus, artifact_dir, "search-complete", 30000)
+    wait_for_content_search(
+        bus,
+        "the replace preview",
+        lambda state: state.get("replace_preview_count") == 2 * REPLACE_FILE_COUNT
+        and not state.get("replace_preview_pending"),
+    )
+    activate_window_action(bus, "confirm-search-panel-replacements")
+
+
+def undo_after_relaunch(args, bus, artifact_dir: Path, name: str, phase: str, files: list[Path], env: dict[str, str]):
+    """Relaunch, require the recovered Undo, run it, and require every original."""
+    relaunch = launch_app(args, artifact_dir, f"{phase}-{name}", [], env_overrides=env)
+    try:
+        show_search_panel(bus, artifact_dir)
+        wait_for_content_search(bus, "the recovered Undo being offered", lambda state: state.get("has_undo_backup"))
+        write_automation_snapshot(bus, artifact_dir, f"{phase}-{name}-before-undo")
+        activate_window_action(bus, "undo-search-panel-replacements")
+        deadline = time.monotonic() + 30
+        states = replace_disk_state(files)
+        while time.monotonic() < deadline and states != ["original"] * REPLACE_FILE_COUNT:
+            time.sleep(0.2)
+            states = replace_disk_state(files)
+        if states != ["original"] * REPLACE_FILE_COUNT:
+            raise RuntimeError(f"{name}: Undo after relaunch left {states}")
+        wait_for_content_search(
+            bus, "the Undo retiring the journal", lambda state: not state.get("has_undo_backup")
+        )
+        write_automation_snapshot(bus, artifact_dir, f"{phase}-{name}-after-undo")
+    finally:
+        terminate_process(relaunch)
+    journal = Path(env["LUSHTEXT_DATA_DIR"]) / "replace-backup-journal"
+    leftovers = sorted(str(p.relative_to(journal)) for p in journal.rglob("*") if p.is_file()) if journal.exists() else []
+    if leftovers:
+        raise RuntimeError(f"{name}: the journal kept files after a complete Undo: {leftovers}")
+
+
+def kill_inside_replace_all(args, bus, artifact_dir: Path, name: str, kill_at: str, expected: list[str]) -> dict:
+    """Abort Replace All on the third of five files, relaunch and undo."""
+    root, workspace, files, env = replace_state(artifact_dir, name)
+    try:
+        victim = launch_app(
+            args,
+            artifact_dir,
+            f"kill-{name}",
+            [],
+            binary=args.kill_point_binary,
+            env_overrides={**env, "LUSHTEXT_KILL_AT": kill_at},
+        )
+        try:
+            start_replace_all(bus, artifact_dir)
+            returncode = wait_for_exit(victim, 60)
+        finally:
+            terminate_process(victim)
+        if returncode != -signal.SIGABRT:
+            raise RuntimeError(f"{name}: expected an abort at {kill_at}, got return code {returncode}")
+        after_kill = replace_disk_state(files)
+        if after_kill != expected:
+            raise RuntimeError(f"{name}: after the kill the files were {after_kill}, expected {expected}")
+        snapshot_metadata(Path(env["LUSHTEXT_DATA_DIR"]), root / "metadata-after-kill")
+        undo_after_relaunch(args, bus, artifact_dir, name, "relaunch", files, env)
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+    return {
+        "scenario": name,
+        "kill_at": kill_at,
+        "result": "passed",
+        "abort_returncode": returncode,
+        "files_after_kill": after_kill,
+    }
+
+
+def kill_inside_later_launch_undo(args, bus, artifact_dir: Path) -> dict:
+    """Replace All in one launch; abort its Undo in a later launch on the
+    third file's restore; relaunch and finish the Undo."""
+    name = "replace-undo-before-target-rename"
+    kill_at = "replace-undo-before-target-rename@replace#3"
+    root, workspace, files, env = replace_state(artifact_dir, name)
+    try:
+        first = launch_app(args, artifact_dir, f"seed-{name}", [], env_overrides=env)
+        try:
+            start_replace_all(bus, artifact_dir)
+            wait_for_content_search(
+                bus,
+                "the Replace All finishing with an Undo",
+                lambda state: state.get("has_undo_backup") and not state.get("replace_in_flight"),
+            )
+            if replace_disk_state(files) != ["replaced"] * REPLACE_FILE_COUNT:
+                raise RuntimeError(f"{name}: the seed Replace All left {replace_disk_state(files)}")
+        finally:
+            terminate_process(first)
+        victim = launch_app(
+            args,
+            artifact_dir,
+            f"kill-{name}",
+            [],
+            binary=args.kill_point_binary,
+            env_overrides={**env, "LUSHTEXT_KILL_AT": kill_at},
+        )
+        try:
+            show_search_panel(bus, artifact_dir)
+            wait_for_content_search(bus, "the Undo being offered", lambda state: state.get("has_undo_backup"))
+            activate_window_action(bus, "undo-search-panel-replacements")
+            returncode = wait_for_exit(victim, 60)
+        finally:
+            terminate_process(victim)
+        if returncode != -signal.SIGABRT:
+            raise RuntimeError(f"{name}: expected an abort at {kill_at}, got return code {returncode}")
+        expected = ["original", "original", "replaced", "replaced", "replaced"]
+        after_kill = replace_disk_state(files)
+        if after_kill != expected:
+            raise RuntimeError(f"{name}: after the kill the files were {after_kill}, expected {expected}")
+        snapshot_metadata(Path(env["LUSHTEXT_DATA_DIR"]), root / "metadata-after-kill")
+        undo_after_relaunch(args, bus, artifact_dir, name, "relaunch", files, env)
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+    return {
+        "scenario": name,
+        "kill_at": kill_at,
+        "result": "passed",
+        "abort_returncode": returncode,
+        "files_after_kill": after_kill,
+    }
+
+
+def run_replace_all_kill_points(args, bus, artifact_dir: Path) -> list[dict]:
+    """The stream-replace-all windows on the third of five files (design D9)."""
+    two = ["replaced", "replaced", "original", "original", "original"]
+    three = ["replaced", "replaced", "replaced", "original", "original"]
+    return [
+        kill_inside_replace_all(
+            args, bus, artifact_dir, "replace-body-before-entry",
+            "replace-body-before-entry@replace-undo-body#3", two,
+        ),
+        kill_inside_replace_all(
+            args, bus, artifact_dir, "replace-entry-before-target-rename",
+            "replace-entry-before-target-rename@replace#3", two,
+        ),
+        kill_inside_replace_all(
+            args, bus, artifact_dir, "replace-target-renamed-before-finish",
+            "replace-target-renamed-before-finish@replace#3", three,
+        ),
+        kill_inside_replace_all(
+            args, bus, artifact_dir, "replace-renamed-before-dirsync",
+            "durable-renamed-before-dirsync@replace#3", three,
+        ),
+        kill_inside_later_launch_undo(args, bus, artifact_dir),
+    ]
+
+
 def run_kill_point_scenarios(args: argparse.Namespace, bus, artifact_dir: Path, app_env: dict[str, str]) -> list[dict]:
     """Kill the real process inside each named protocol window and relaunch."""
     if args.kill_point_binary is None:
@@ -1582,6 +1854,7 @@ def run_kill_point_scenarios(args: argparse.Namespace, bus, artifact_dir: Path, 
             "durable-renamed-before-dirsync@draft",
         ),
         kill_after_stale_preservation(args, bus, artifact_dir, app_env),
+        *run_replace_all_kill_points(args, bus, artifact_dir),
     ]
     (artifact_dir / "assertions/kill-points.json").write_text(
         json.dumps(results, indent=2) + "\n", encoding="utf-8"

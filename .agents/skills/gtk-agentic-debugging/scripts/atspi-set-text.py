@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import signal
 import sys
 import time
 from collections import deque
@@ -127,6 +129,15 @@ def main() -> int:
     parser.add_argument("--max-depth", type=int, default=44)
     parser.add_argument("--max-nodes", type=int, default=20000)
     parser.add_argument("--list", action="store_true")
+    parser.add_argument(
+        "--kill-pid",
+        type=int,
+        help=(
+            "SIGKILL this process the moment the text is set, before this "
+            "helper's own AT-SPI teardown, so a crash smoke can kill the app "
+            "within milliseconds of an edit it must not have persisted"
+        ),
+    )
     args = parser.parse_args()
 
     if not args.list and args.text is None:
@@ -171,6 +182,9 @@ def main() -> int:
         return 1
 
     editable.setTextContents(args.text)
+    if args.kill_pid is not None:
+        os.kill(args.kill_pid, signal.SIGKILL)
+        print(f"killed pid={args.kill_pid} right after setting the text")
     print(
         f"set text app={app!r} name={name!r} role={role!r} "
         f"focused={focused} text={args.text!r}"

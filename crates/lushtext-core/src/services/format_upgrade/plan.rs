@@ -136,12 +136,23 @@ pub(crate) fn build_plan_with_registry(
             FormatMetadataKind::Session | FormatMetadataKind::DraftManifest
         ) && matches!(action_for_item(item), FormatPlanAction::StartFreshOnly)
     });
+    // Likewise, an undo journal whose manifest or entries move aside takes
+    // its bodies with it: a body is the only copy of a file's original bytes.
+    let preserve_undo_bodies = inventory.items.iter().any(|item| {
+        matches!(
+            item.kind,
+            FormatMetadataKind::ReplaceUndoManifest
+                | FormatMetadataKind::ReplaceUndoEntry
+                | FormatMetadataKind::ReplaceUndoStreamEntry
+        ) && matches!(action_for_item(item), FormatPlanAction::StartFreshOnly)
+    });
     for item in &inventory.items {
         // If session or draft-manifest metadata must move aside, preserve
         // current draft bodies with it so unsaved text is not stranded behind
         // fresh startup defaults.
-        let action = if preserve_draft_bodies
-            && item.kind == FormatMetadataKind::DraftBody
+        let preserved_body = (preserve_draft_bodies && item.kind == FormatMetadataKind::DraftBody)
+            || (preserve_undo_bodies && item.kind == FormatMetadataKind::ReplaceUndoBody);
+        let action = if preserved_body
             && matches!(item.classification, FormatClassification::Current { .. })
         {
             FormatPlanAction::StartFreshOnly
@@ -200,6 +211,8 @@ fn group_kind(kind: FormatMetadataKind) -> FormatPlanGroupKind {
         | FormatMetadataKind::DraftBody
         | FormatMetadataKind::ReplaceUndoManifest
         | FormatMetadataKind::ReplaceUndoEntry
+        | FormatMetadataKind::ReplaceUndoStreamEntry
+        | FormatMetadataKind::ReplaceUndoBody
         | FormatMetadataKind::ReplaceUndoCleanupMarker => FormatPlanGroupKind::Guarded,
         _ => FormatPlanGroupKind::Independent,
     }
@@ -330,6 +343,8 @@ mod tests {
             FormatMetadataKind::DraftBody,
             FormatMetadataKind::ReplaceUndoManifest,
             FormatMetadataKind::ReplaceUndoEntry,
+            FormatMetadataKind::ReplaceUndoStreamEntry,
+            FormatMetadataKind::ReplaceUndoBody,
             FormatMetadataKind::ReplaceUndoCleanupMarker,
         ] {
             assert_eq!(group_kind(kind), FormatPlanGroupKind::Guarded);
@@ -349,5 +364,59 @@ mod tests {
         ] {
             assert_eq!(group_kind(kind), FormatPlanGroupKind::Independent);
         }
+    }
+
+    /// Task 3.6: the data `make run-format-upgrade-newer-manual-test` prepares
+    /// (a session of version 999 and a draft body), plus an undo journal whose
+    /// streamed entry a newer build wrote. The entry is a future-version
+    /// blocker that never offers Convert, and Start Fresh moves its raw body
+    /// aside with it: the body is the only copy of the file's original bytes.
+    #[test]
+    fn a_newer_streamed_undo_entry_blocks_and_start_fresh_keeps_its_body() {
+        let dir = TempDir::new().expect("temp dir");
+        write_json(
+            &dir.path().join("session.json"),
+            &json!({"kind": KIND_SESSION, "version": 999, "data": {"tabs": [], "active_tab_index": null}}),
+        );
+        fixture::create_dir_all(&dir.path().join("drafts"));
+        fixture::write_text(
+            &dir.path().join("drafts/manual-test.draft"),
+            "manual draft body preserved by Start Fresh\n",
+        );
+        let target = dir.path().join("target.txt");
+        crate::services::search_backup::fixture::write_stream_journal(
+            dir.path(),
+            &[(&target, b"before\n", b"after\n")],
+        )
+        .expect("journal");
+        let entry = crate::services::search_backup::entry_path(dir.path(), &target);
+        let mut value: serde_json::Value =
+            serde_json::from_str(&fixture::read_text(&entry)).expect("entry json");
+        value["version"] = json!(999);
+        write_json(&entry, &value);
+
+        let inventory = crate::services::format_upgrade::scan(dir.path());
+        let plan = build_plan(&inventory);
+
+        assert!(plan.has_future_version_blocker());
+        assert!(!plan.offers_convert());
+        let item = |kind: FormatMetadataKind| {
+            plan.actions()
+                .find(|planned| planned.item.kind == kind)
+                .unwrap_or_else(|| panic!("{} planned", kind.label()))
+        };
+        let stream_entry = item(FormatMetadataKind::ReplaceUndoStreamEntry);
+        assert!(stream_entry.item.classification.is_future_version());
+        assert_eq!(stream_entry.item.kind.label(), "replace undo stream entry");
+        let body = item(FormatMetadataKind::ReplaceUndoBody);
+        assert_eq!(body.action, FormatPlanAction::StartFreshOnly);
+        assert_eq!(
+            body.item.path.relative().extension(),
+            Some(std::ffi::OsStr::new("body"))
+        );
+        assert_eq!(
+            item(FormatMetadataKind::DraftBody).action,
+            FormatPlanAction::StartFreshOnly
+        );
     }
 }

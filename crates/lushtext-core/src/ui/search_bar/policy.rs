@@ -115,6 +115,53 @@ pub fn match_count_announcement(search_text: &str, current: i32, total: i32) -> 
     })
 }
 
+/// What "Open and Replace in Editor" puts in the bar (stream-replace-all
+/// design D7): the run's query and options, and the replacement translated
+/// for GtkSourceView, or `None` when it names a group the pattern lacks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditorReplacePrefill {
+    /// The search text, unchanged.
+    pub query: String,
+    /// The replacement in GtkSourceView's syntax; `None` leaves the field
+    /// empty with [`MISSING_GROUP_PLACEHOLDER`].
+    pub replacement: Option<String>,
+    /// Regex mode.
+    pub regex: bool,
+    /// Case-sensitive matching.
+    pub case_sensitive: bool,
+    /// Whole-word matching (`at-word-boundaries`, ledger A128).
+    pub whole_word: bool,
+}
+
+impl EditorReplacePrefill {
+    /// Each option with the state the prefill sets.
+    #[must_use]
+    pub const fn options(&self) -> [(SearchOption, bool); 3] {
+        [
+            (SearchOption::Regex, self.regex),
+            (SearchOption::CaseSensitive, self.case_sensitive),
+            (SearchOption::WholeWord, self.whole_word),
+        ]
+    }
+
+    /// The replacement field's placeholder: why it is empty, or the usual one.
+    #[must_use]
+    pub const fn replacement_placeholder(&self) -> &'static str {
+        if self.replacement.is_some() {
+            REPLACE_PLACEHOLDER
+        } else {
+            MISSING_GROUP_PLACEHOLDER
+        }
+    }
+}
+
+/// The replacement field's usual placeholder (`search-bar.blp`).
+pub const REPLACE_PLACEHOLDER: &str = "Replace…";
+/// The replacement field's placeholder when the run's replacement names a
+/// capture group the pattern does not have, so it was not carried over.
+pub const MISSING_GROUP_PLACEHOLDER: &str =
+    "Replacement not carried over: it names a group the pattern lacks";
+
 #[cfg(test)]
 mod tests {
     use super::*;

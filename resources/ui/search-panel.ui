@@ -158,6 +158,13 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                     <property name="visible">false</property>
                   </object>
                 </child>
+                <child>
+                  <object class="GtkButton" id="skipped_files_button">
+                    <property name="label" translatable="yes">Show Skipped Files</property>
+                    <property name="visible">false</property>
+                    <property name="tooltip-text" translatable="yes">List the files Replace All did not replace</property>
+                  </object>
+                </child>
               </object>
             </child>
           </object>

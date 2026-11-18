@@ -153,3 +153,47 @@ pub(crate) fn kind_from_metadata(metadata: &sys::Metadata) -> FileKind {
         FileKind::Other
     }
 }
+
+#[cfg(any(test, feature = "test-utils"))]
+thread_local! {
+    static TEST_FREE_SPACE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// Bytes an unprivileged process may still write on the filesystem holding
+/// `path`, from `statvfs` (`f_bavail * f_frsize`).
+///
+/// Callers treat an error as "unknown" and rely on a failing write being
+/// classified before its rename.
+///
+/// # Errors
+///
+/// Returns the platform's error, or `Unsupported` where no probe exists.
+pub fn free_space(path: &Path) -> std::io::Result<u64> {
+    #[cfg(any(test, feature = "test-utils"))]
+    if let Some(fake) = TEST_FREE_SPACE.with(std::cell::Cell::get) {
+        return Ok(fake);
+    }
+    sys::free_space(path)
+}
+
+/// Restores the real free-space probe on this thread when dropped.
+#[cfg(any(test, feature = "test-utils"))]
+#[must_use = "dropping the guard restores the real probe at once"]
+pub struct FakeFreeSpaceGuard {
+    previous: Option<u64>,
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl Drop for FakeFreeSpaceGuard {
+    fn drop(&mut self) {
+        TEST_FREE_SPACE.with(|cell| cell.set(self.previous));
+    }
+}
+
+/// Make [`free_space`] report `bytes` on this thread until the guard drops.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn fake_free_space_for_test(bytes: u64) -> FakeFreeSpaceGuard {
+    FakeFreeSpaceGuard {
+        previous: TEST_FREE_SPACE.with(|cell| cell.replace(Some(bytes))),
+    }
+}

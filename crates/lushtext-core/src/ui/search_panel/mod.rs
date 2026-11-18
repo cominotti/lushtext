@@ -53,18 +53,19 @@
 //!    single apply transaction, opens a fresh attempt, and hands the partition
 //!    to `replace_execution::apply_checked_replacements`.
 //! 4. **Write the files and record the journal.** The window's Replace All
-//!    callback takes `journal`'s reserved generation, writes the files, and
-//!    publishes the resulting undo journal back through
-//!    `journal::publish_undo_journal_for_generation`.
+//!    callback takes `journal`'s reserved generation, opens the run
+//!    (`replace_execution::begin_replace_run`: Cancel and progress), streams
+//!    the files, publishes the undo journal back through
+//!    `journal::publish_undo_journal_for_generation`, and ends the run with its
+//!    skip report (`replace_execution::finish_replace_run`), which
+//!    `skipped_files` shows.
 //! 5. **Offer undo.** [`LushtextSearchPanel::activate_undo_replacements`]
 //!    delegates to `journal::hand_back_undo_backup`, which hands the backup
 //!    back to the window; the window claims the panel through
 //!    `journal::begin_undo_restore` and reports through
 //!    `journal::finish_undo_restore`.
 //!
-//! Ten inversions connect those stages — one per point where control leaves
-//! this workflow and later resumes at a named place. With the search order's
-//! two above, the workflow has twelve. Each module documents its own in detail.
+//! Ten inversions connect those stages (twelve with the search order's two):
 //!
 //! - Stage 2's reservation may be refused: the request parks and resumes in
 //!   `replace_execution`'s `preview_capacity_wakeup`, revalidated by `may_dispatch`.
@@ -81,6 +82,7 @@
 //!   stage 5 via `begin_undo_restore` and `finish_undo_restore`.
 //! - `journal`'s disk save and delete resume in completion closures that only
 //!   report, the in-memory journal being already published under its guard.
+//!   Stage 4's progress resumes in the window's 500 ms poll.
 //! - Startup recovery re-enters `journal::load_persisted_undo_backup` from a
 //!   disposal-capacity wakeup when admission defers it, and otherwise resumes
 //!   in a worker completion that re-checks the journal generation.
@@ -93,7 +95,7 @@
 //! | pure policy | `policy` |
 //! | coordination | `execution` (streaming search), `retirement` (bounded result disposal), `replace_execution` (the Replace All preview attempt and checked apply), `journal` (the durable undo journal, its transaction gate, and its three generation-guarded fields) |
 //! | evidence | `evidence` |
-//! | called presentation surface (no role) | `imp`, `list_factory`, `item`, `results`, `history`, `accessibility` |
+//! | called presentation surface (no role) | `imp`, `list_factory`, `item`, `results`, `history`, `accessibility`, `skipped_files` |
 //!
 //! See `docs/workflow-readability-matrix.md`, row `WFR-SEARCH-REPLACE`.
 
@@ -113,6 +115,7 @@ pub mod policy;
 mod replace_execution;
 mod results;
 mod retirement;
+mod skipped_files;
 #[cfg(feature = "test-utils")]
 mod test_policy;
 
@@ -123,7 +126,7 @@ pub use accessibility::apply_search_result_row_accessibility_for_test;
 // type. Re-exporting it unconditionally would widen this crate's default public
 // API for an internal readability goal.
 #[cfg(feature = "test-utils")]
-pub use evidence::SearchPanelEvidence;
+pub use evidence::{ReplaceProgressEvidence, SearchPanelEvidence};
 pub(crate) use journal::own_undo_journal_payload;
 #[cfg(feature = "test-utils")]
 pub use retirement::{SearchRetirementOwnership, SearchRetirementSliceObservation};
@@ -133,6 +136,7 @@ pub use test_policy::SearchPanelTestPolicy;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[cfg(feature = "test-utils")]
 use crate::model::content_search::Replacement;
 use crate::services::content_search::ReplaceUndoBackup;
 use crate::services::notifications::NotificationSeverity;
@@ -145,7 +149,8 @@ use self::item::SearchResultItem;
 
 pub(crate) type GuardedReplaceUndoBackup =
     crate::ui::plain_disposal::DisposalOwned<ReplaceUndoBackup>;
-pub(crate) type GuardedReplacements = crate::ui::plain_disposal::DisposalOwned<Vec<Replacement>>;
+pub(crate) type GuardedReplacements =
+    crate::ui::plain_disposal::DisposalOwned<crate::model::content_search::CheckedReplaceRun>;
 
 glib::wrapper! {
     /// Workspace search and Replace All panel owned by the main window shell.
@@ -157,10 +162,7 @@ glib::wrapper! {
         @implements gtk4::Accessible, gtk4::Buildable, gtk4::ConstraintTarget, gtk4::Orientable;
 }
 
-/// Callback update emitted by the search panel while one search is running.
-///
-/// A named enum keeps callers from depending on positional booleans for
-/// "progress vs done" semantics.
+/// Callback update emitted while one search runs (named, not positional booleans).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchProgressUpdate {
     /// A non-empty search worker has started after the input debounce.
@@ -173,10 +175,8 @@ pub enum SearchProgressUpdate {
     Done { files_searched: usize },
 }
 
-/// Grouped GTK state for one file section in the hierarchical results list.
-///
-/// The search panel keeps the file-header item together with its child store so
-/// result streaming and list-factory lookups share one named bundle.
+/// One file section of the results tree: its header item and child store,
+/// shared by result streaming and list-factory lookups.
 #[derive(Clone)]
 pub struct SearchFileGroup {
     /// Root-level row representing one file in the results tree.
@@ -332,8 +332,8 @@ impl LushtextSearchPanel {
     /// Register the raw-vector callback used by the external widget harness.
     #[cfg(feature = "test-utils")]
     pub fn connect_replace_all<F: Fn(Vec<Replacement>) + 'static>(&self, f: F) {
-        self.connect_guarded_replace_all(move |replacements| {
-            f(replacements.into_inner_for_current_install());
+        self.connect_guarded_replace_all(move |run| {
+            f(run.into_inner_for_current_install().replacements);
         });
     }
 
