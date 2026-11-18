@@ -5,6 +5,8 @@ Timing: none (no timed path touched; the helpers' behaviour is proved by
 their self-tests, and `measure.sh` is unchanged).
 GTK axioms: none (no toolkit behaviour relied on; no UI, GTK or Rust file
 changes).
+Smokes: none (no UI-prefix file touched; the visual, geometry and
+accessibility smokes stay current).
 
 Rules for every task:
 
@@ -12,10 +14,13 @@ Rules for every task:
   `.claude/handoffs/close-heavy-admission-window/`.
 - Every heavy command goes through `scripts/heavy.sh [--mem <cap>] -- <cmd>`,
   one command per call. `heavy.sh` resolves its sibling scripts from its own
-  directory, so a copy extracted with `git show` does not run. Until groups 2
-  and 3 are committed, run heavy commands through the main checkout's
+  directory, so a copy extracted with `git show` does not run. Up to and
+  including the commit of 3.6, launch heavy commands with the main checkout's
   `scripts/heavy.sh` (that is `main`'s copy; read-only use, the main checkout
-  is never edited), and record which copy ran each lane.
+  is never edited). The gates those commands run (`make check-agent-helpers`,
+  the hook's `check-policy`) still execute the worktree's scripts, which are
+  what is under test. From group 4 on, launch with the worktree's
+  `scripts/heavy.sh`. Record which copy launched each lane.
 - Every commit goes through `scripts/heavy.sh --mem none -- git commit -F
   <file>`: signed, conventional, staged by name, ending with `Co-Authored-By:
   Claude Opus 5.5 <noreply@anthropic.com>`. Push per task group.
@@ -36,7 +41,10 @@ Rules for every task:
   `.claude/handoffs/close-heavy-admission-window/coordinator-note.md` (design,
   "Risks"): after merging `main`, `heavy.sh --mem none -- make
   test|test-widget|mutants-*|kani|proof-strength` exits 2. Give the
-  replacement for each from the design's per-lane table.
+  replacement for each from the design's per-lane table. State the
+  head-of-line cost too: while a 36G head has the host memory, a later
+  request is admitted only while the caps admitted plus that request stay
+  within 12G of the 48G budget.
 - [ ] 1.2 Add the cases below. Each must fail on the current scripts. Record
   each failure line, and the script version it ran against, in
   `evidence/red.md`. A case that cannot run (no systemd user manager) skips
@@ -52,7 +60,17 @@ Rules for every task:
     sleeper and both slices from an `EXIT` trap.
   - **(1) Exit 75 is the command's**: `heavy.sh --mem 2G -- sh -c 'echo x
     >>"$0"; exit 75' <file>` in a private slice that fits. It must exit 75
-    with exactly one line in `<file>`. (It passes on `main`, as a guard.)
+    with exactly one line in `<file>`. (It passes on `main`, as a guard.) The
+    same with `heavy.sh --envelope 2G` must also exit 75 with one line. On
+    `main` it fails: `--envelope` is a usage error.
+  - **(1) A busy admission lock**, in `heavy.sh --self-test`: a sibling holds
+    the private admission lock (`LUSHTEXT_ADMISSION_LOCK`, design D7) for 5 s
+    while `heavy.sh --mem 2G -- touch <marker>` runs against an empty private
+    slice. Within 4 s an exclusive try on the private `LOCK` must succeed,
+    and `<marker>` must not exist until the sibling lets go. On `main` it
+    fails: `admit`'s blocking `flock 9` waits under `LOCK`. Never hold the
+    real admission lock in a test: it would hold up every agent's
+    admissions.
   - **(2) `--mem none` inner path**, in `heavy.sh --self-test`: with the
     private slice full (2G sleeper, budget 3G, reserve 1G), run
     `heavy.sh --mem none -- with-memory-cap.sh 2G true`. It must exit 2
@@ -66,9 +84,12 @@ Rules for every task:
     `main` it fails: `--envelope` is a usage error.
   - **(3) Fair order**, in `with-memory-cap.sh --self-test`, all in the private
     slice:
-    - a 3G sleeper runs (budget 6G, reserve 1G), then a 4G blocking request
+    - a 3G sleeper runs (budget 6G, reserve 1G,
+      `LUSHTEXT_ADMISSION_POLL_SECONDS=0.2`), then a 4G blocking request
       waits in the background. After 1 s, `timeout 3 with-memory-cap.sh 2G
-      true` must time out (124). On `main` it is admitted at once.
+      true` must time out (124). Then the sleeper is stopped, and the 4G
+      request must be admitted within 3 s. On `main` the 2G request is
+      admitted at once.
     - a 2G NOWAIT request in the same state must still be admitted (0). It
       passes on `main`, as a guard.
   - **`--admission-verdict` fixtures**, for the cases in the
@@ -85,7 +106,7 @@ Rules for every task:
 
 ## 2. with-memory-cap.sh: verdict, queue, check-once, refusal, envelope
 
-Groups 2 and 3 land as **one** commit (3.5). Once the wrapper refuses an
+Groups 2 and 3 land as **one** commit (3.6). Once the wrapper refuses an
 admission under a shared `LOCK` without `LUSHTEXT_ADMISSION_ONCE` (2.4), the
 old `heavy.sh` loop would make every capped `heavy.sh` call above 1G exit 2,
 the default 12G included. The "window after the probe" case also needs group
@@ -101,12 +122,21 @@ the default 12G included. The "window after the probe" case also needs group
   `--ticket <cap> <owner-pid>` (prints the path) and `LUSHTEXT_ADMISSION_TICKET`
   (excluded from the heads, removed on admission). A blocking `admit` without
   a ticket takes and removes its own. NOWAIT and exclusive-mode admissions
-  take none and ignore the head.
-- [ ] 2.3 Check-once mode (D1): with `LUSHTEXT_ADMISSION_ONCE=<file>`, a
-  misfit writes the waiting message to `<file>` and exits 75 before any scope.
-  Unset it, and `LUSHTEXT_ADMISSION_TICKET`, before the `exec`.
+  take none and ignore the head. Inner admissions of an envelope use the
+  envelope's own queue and never the heavy slice's (design D3). Read the
+  poll interval from `LUSHTEXT_ADMISSION_POLL_SECONDS` (default 15) in the
+  probe and in `admit`, and the admission lock path from
+  `LUSHTEXT_ADMISSION_LOCK` (default as today). Both are for the self-tests
+  and are documented only in the wrapper's header.
+- [ ] 2.3 Check-once mode (D1): with `LUSHTEXT_ADMISSION_ONCE=<file>`, the
+  admission lock is waited for at most 2 s (busy counts as a misfit), and a
+  misfit writes one `misfit: <waiting message>` line to `<file>` and exits 75
+  before any scope. Unset it, and `LUSHTEXT_ADMISSION_TICKET`, before the
+  `exec`.
 - [ ] 2.4 The `LOCK` proof (D4): source `scripts/agent-locks.sh`, and for caps
-  above 1G that are not nested in place, run `agent_lock_inherited`. With
+  above 1G that are not nested in place, run `agent_lock_inherited`, only
+  when `LUSHTEXT_AGENT_LOCK_HELD` is set (then call `agent_lock_paths`
+  first). With
   `exclusive` outside an envelope, check once (75). With `shared`, without
   `LUSHTEXT_ADMISSION_ONCE` and outside an envelope, exit 2 with the message
   of D4. Otherwise behave as today.
@@ -121,9 +151,18 @@ the default 12G included. The "window after the probe" case also needs group
   - inner calls recognise the envelope from `/proc/self/cgroup` and admit
     against the sub-slice's `memory.max`, with no reserve check, no legacy
     slice and no NOWAIT, and skip the per-call slice `set-property` (D3);
-  - a sentinel scope in the sub-slice keeps it alive until the placeholder
-    has read its `memory.peak` and `oom_kill` and written the `envelope:`
-    line to the report file (D2, "Envelope peak and OOM kills");
+  - a sentinel scope in the sub-slice, with `OOMPolicy=continue`, keeps it
+    alive until the placeholder has read its `memory.peak` and `oom_kill`
+    and written the `envelope:` line to the report file (D2, "Envelope peak
+    and OOM kills"). Then the placeholder removes the sub-slice's queue
+    directory;
+  - before admitting, under the admission lock, sweep the envelope
+    sub-slices of this heavy slice whose placeholder is gone (D2, "A
+    SIGKILLed placeholder");
+  - inside a capped scope or an envelope, `--envelope` runs its command in
+    place (D2, "Nested envelopes");
+  - add H4 to H6 (design, "Baseline") to the wrapper's header, next to H1 to
+    H3;
   - `--preflight <cap>` applies D4's check without admitting anything;
   - CI without a user manager runs uncapped; elsewhere the wrapper refuses, as
     today.
@@ -150,7 +189,19 @@ the default 12G included. The "window after the probe" case also needs group
   - a stale marker is admitted as an ordinary call;
   - a head short of memory (900G budget, an 800G waiter) does not block a 2G
     request;
-  - a dead ticket does not block.
+  - a dead ticket does not block;
+  - an older host-level ticket (a live owner with a 4G cap) does not hold
+    back a 2G inner call in a 2G envelope;
+  - `--envelope 2G` inside `LUSHTEXT_MEMORY_CAP_KIB=…` and inside an
+    envelope runs in place, with no new placeholder or sub-slice;
+  - an envelope whose placeholder is SIGKILLed (its own private envelope,
+    never another run's) leaves a drop-in that the next envelope admission
+    sweeps;
+  - the H4 to H6 re-probes: the sub-slice nests under the private slice and
+    is not counted as a scope there, and a revert under a live scope leaves
+    `memory.max` at `max` with the scope running;
+  - the private slices' queue directories are gone after the run, and the
+    leftover check fails on one that is not.
 
 - [ ] 2.7 `shellcheck -x` the wrapper, and run its `--self-test` directly.
   The wrapper cases of 1.2 must pass. No commit yet (group 2 note).
@@ -163,13 +214,16 @@ the default 12G included. The "window after the probe" case also needs group
   3. the parallelism read after `LOCK`;
   4. traps and the marker;
   5. `agent_run_child` with `LUSHTEXT_ADMISSION_ONCE=<report>`;
-  6. on 75 with a non-empty report, close fd 7, clear the marker and traps,
-     sleep 1 s, then go round again; exit 75 at once if the caller had
-     `LUSHTEXT_ADMISSION_NOWAIT=1`.
+  6. on 75 with a `misfit: ` line in the report, close fd 7, clear the
+     marker and traps, truncate the report, sleep 1 s, then go round again.
+     Exit 75 at once if the caller had `LUSHTEXT_ADMISSION_NOWAIT=1`. Exit 75
+     without a `misfit: ` line is the command's and is returned.
 
   Remove the step-4 NOWAIT re-probe. Keep the nested in-place path. There,
-  `--envelope` runs `exec with-memory-cap.sh --envelope <size>`, and inside an
-  envelope or a measurement the wrapper's own rules apply.
+  `--envelope` runs `with-memory-cap.sh --envelope <size>` as a child with
+  a report file, through `agent_trap_signals` and `agent_run_child`, and
+  applies 3.5's decision. Inside an envelope or a measurement, the wrapper's
+  own rules apply (D2, "Nested envelopes").
 - [ ] 3.2 `--envelope <size>`: mutually exclusive with `--mem` (usage error
   otherwise). Pass `<size>` to `heavy_parallelism` as the cap. Add table rows
   for envelope sizes (for example `16 1 16G:16 8`, `16 1 36G:16 8`,
@@ -177,10 +231,13 @@ the default 12G included. The "window after the probe" case also needs group
 - [ ] 3.3 Take one ticket per invocation (`--ticket <cap> $$`), keep it
   across retries, remove it in the `EXIT` trap. `--mem none` takes none.
 - [ ] 3.4 Update `heavy.sh`'s header: steps, memory before locks, envelopes.
-  Run the whole `heavy.sh --self-test`, which must pass every case of 1.2,
-  every existing case, and a new case: the parallelism probe after a forced
-  misfit-retry still reports the contended or alone setting read after
-  `LOCK`.
+  Make `heavy.sh --self-test` follow D7: a private `LUSHTEXT_HEAVY_SLICE` for
+  every case with a budget override, stop and revert from its `EXIT` trap,
+  the real slice's `MemoryMax` unchanged at the end, and no drop-in or queue
+  directory left. Run the whole `heavy.sh --self-test`, which must pass every
+  case of 1.2, every existing case, and a new case: the parallelism probe
+  after a forced misfit-retry still reports the contended or alone setting
+  read after `LOCK`.
 - [ ] 3.5 Envelope OOM: after the child exits, wait a bounded few seconds for
   the `envelope:` line. On `oom_kill > 0`, print `OOM-KILL: envelope <name>:
   …` and exit non-zero even when the command exited 0. A missing line after
@@ -204,10 +261,12 @@ the default 12G included. The "window after the probe" case also needs group
   in `evidence/call-sites.md`.
 - [ ] 4.2 Update the Makefile comments of `test`, `test-widget`, `mutants-*`,
   `kani` and `proof-strength`, and `widget-shards.py`'s docstring, to name
-  `heavy.sh --envelope <size>` with the per-lane size. Start each of those
-  recipes with `./scripts/with-memory-cap.sh --preflight <its inner cap>`, so
-  a `--mem none` run fails before its first phase rather than after it. Do not
-  change any default cap.
+  `heavy.sh --envelope <size>` with the per-lane size, and drop the "Start
+  them unwrapped" advice. Start each of those recipes with
+  `./scripts/with-memory-cap.sh --preflight <its inner cap>`, so a `--mem
+  none` run fails before its first phase rather than after it. Skip the
+  preflight where the recipe admits nothing above 1G (`WIDGET_PARALLEL=0`, a
+  `none` cap; design, "Risks"). Do not change any default cap.
 - [ ] 4.3 Lane case: run `scripts/heavy.sh --envelope 16G -- make test` once
   on the final scripts. Record the output in `evidence/lane-make-test.md`:
   - the envelope's placeholder, sub-slice and root scope
@@ -223,15 +282,20 @@ the default 12G included. The "window after the probe" case also needs group
   - `/proc/loadavg` before and after.
 
   A `FLAKY:` line is a blocker (`preexisting-blockers.md`).
-- [ ] 4.4 Lane case: run `scripts/heavy.sh --envelope 36G -- make mutants-smoke
-  MUTANTS_LOCAL_JOBS=1 MUTANTS_RE=<a narrow regex of a few mutants>`. Record
-  in `evidence/lane-mutants.md` that the 36G inner scope landed in the
-  envelope, the run's summary, and that no admission waited under `LOCK`.
-  Exit 75 (slots busy) is retried later and is not a failure.
+- [ ] 4.4 Lane case: run `scripts/heavy.sh --envelope 24G -- make mutants-smoke
+  MUTANTS_MEMORY_MAX=24G MUTANTS_LOCAL_JOBS=1 MUTANTS_RE=<a narrow regex of a
+  few mutants>`. The case proves placement, not size. A 36G envelope would
+  itself be a head that holds back the parallel programme changes, and lane
+  case 11.3 of `reduce-build-disk-writes` ran at 24G. Record in
+  `evidence/lane-mutants.md` that the inner scope landed in the envelope,
+  the run's summary, and that no admission waited under `LOCK`. Exit 75
+  (slots busy) is retried later and is not a failure.
 - [ ] 4.5 Lane case: `scripts/heavy.sh --mem none -- make mutants-smoke`
   and `scripts/heavy.sh --mem none -- make test` each exit 2 within a second
   with the `--envelope` message (the preflight), before any slot is taken or
-  any test runs.
+  any test runs. Also check, without running it, that the `test-widget`
+  recipe with `WIDGET_PARALLEL=0` has no preflight (`make -n test-widget
+  WIDGET_PARALLEL=0`).
 - [ ] 4.6 Commit ("build: run self-admitting lanes in heavy.sh envelopes")
   and push.
 
@@ -240,7 +304,10 @@ the default 12G included. The "window after the probe" case also needs group
 - [ ] 5.1 `.agents/rules/verification-runs.md`, "Shared-machine agent work":
   - the heavy-work bullet's step order (one admission after `LOCK`, retry
     holding nothing);
-  - "Memory before locks";
+  - "Memory before locks", and the clause "never reserves memory while
+    waiting for a lock": a ticket kept while waiting for a lock holds a
+    place in the order, not memory, and no measurement waits behind it
+    (design D5);
   - replace "run them as `heavy.sh --mem none`" with the envelope rule and
     the per-lane table;
   - the refusal (exit 2);
@@ -261,7 +328,10 @@ the default 12G included. The "window after the probe" case also needs group
   "(start it unwrapped)" becomes the envelope form. Check `README.md`,
   `docs/mutation-testing.md`, `docs/runbooks/*.md` and
   `.agents/skills/*/references/*.md` for `--mem none` call sites of
-  admitting lanes, and update each one. Run `make check-agent-docs`.
+  admitting lanes, and update each one. Update the Rules Index lines of
+  `AGENTS.md` for `build.md`, `parallel-agent-work.md` and
+  `verification-runs.md` if their stated scope changes. Run `make
+  check-agent-docs`.
 - [ ] 5.5 Append to `docs/memorials/shared-machine-lock-incidents.md` a
   dated section, "The admission window and the starved 36G scope
   (2026-11-15)". It covers the two incidents with their log lines, why

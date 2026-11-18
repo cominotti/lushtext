@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: heavy.sh never waits for memory while holding LOCK
-`scripts/heavy.sh` SHALL perform its memory admission after taking `LOCK` shared as one non-blocking check. A misfit SHALL start no scope and no command: it releases `LOCK` and waits for memory while holding no lock of the protocol, then retries. The command's own exit status, including 75, SHALL reach the caller unchanged. Its compiler parallelism SHALL be read after `LOCK` is held on every attempt.
+`scripts/heavy.sh` SHALL perform its memory admission after taking `LOCK` shared as one non-blocking check, waiting at most 2 s for the admission lock. A misfit SHALL start no scope and no command: it releases `LOCK` and waits for memory holding no lock of the protocol, then retries. The command's own exit status, including 75, SHALL reach the caller unchanged. Its compiler parallelism SHALL be read after `LOCK` is taken, on every attempt.
 
 #### Scenario: Memory taken between the probe and the admission
 - **WHEN** the memory probe sees room for the cap, and another admission takes it before `heavy.sh`'s own admission after `LOCK`
@@ -11,6 +11,14 @@
 #### Scenario: The command's own exit 75
 - **WHEN** the admission fits and the command itself exits 75
 - **THEN** `heavy.sh` exits 75 once, without retrying the command
+
+#### Scenario: The command's own exit 75 in an envelope
+- **WHEN** a command under `heavy.sh --envelope 2G` exits 75 and the envelope's report line has been written
+- **THEN** `heavy.sh` exits 75 once, without retrying the command
+
+#### Scenario: A busy admission lock
+- **WHEN** the admission lock is held by another process for longer than 2 s while `heavy.sh` makes its admission after `LOCK`
+- **THEN** `heavy.sh` releases `LOCK` without starting the command, and an exclusive lock on `LOCK` can then be acquired
 
 #### Scenario: A caller that asked never to wait
 - **WHEN** `heavy.sh` runs with `LUSHTEXT_ADMISSION_NOWAIT=1` and its admission after `LOCK` does not fit
@@ -26,6 +34,14 @@
 #### Scenario: An inner admission does not wait for other agents
 - **WHEN** a command runs under `heavy.sh --envelope 2G` and starts a 2G capped call while the host slice is otherwise full
 - **THEN** the inner call is admitted at once, in its own scope inside the envelope
+
+#### Scenario: An inner admission ignores the host queue
+- **WHEN** an older 4G request holds the heavy slice's oldest ticket and has the host memory, and a capped 2G call starts inside a 2G envelope
+- **THEN** the inner call is admitted at once
+
+#### Scenario: A nested envelope runs in place
+- **WHEN** `with-memory-cap.sh --envelope 2G` starts inside a capped scope or inside an envelope
+- **THEN** it starts no placeholder and no sub-slice, and its command runs in place
 
 #### Scenario: The envelope is counted on the host
 - **WHEN** a 2G envelope is running in a slice whose budget is 3G
@@ -60,12 +76,16 @@
 An envelope's reservation SHALL end when its root command exits, even when a daemon the command started is still in the envelope. The sub-slice's runtime limits SHALL be reverted when the root command exits.
 
 #### Scenario: A leftover daemon in an envelope
-- **WHEN** a command under a 2G envelope starts a detached daemon and exits
+- **WHEN** a command under a 2G envelope starts a detached daemon and exits, and the envelope's report line has been written
 - **THEN** a 2G NOWAIT admission into a 3G slice then succeeds
 - **AND** the envelope's sub-slice no longer has its `MemoryMax` drop-in
 
+#### Scenario: A killed placeholder is swept
+- **WHEN** an envelope's placeholder was SIGKILLed, and a later envelope is admitted into the same heavy slice
+- **THEN** the dead envelope's sub-slice drop-in and queue directory are removed
+
 ### Requirement: No other admission waits under a shared LOCK
-When a capped call's process tree provably holds `LOCK` shared (the marker's PID is an ancestor and its fd 7 is `LOCK`), the call SHALL be refused with exit 2 before any admission, with a message naming `heavy.sh --envelope`, unless it is `heavy.sh`'s own admission after `LOCK` or it runs inside an envelope. Calls nested in place, caps of 1G or less and `none` SHALL be unaffected.
+When a capped call's process tree provably holds `LOCK` shared (the marker's PID is an ancestor and its fd 7 is `LOCK`), the call SHALL be refused with exit 2 before any admission, with a message naming `heavy.sh --envelope`, unless it is `heavy.sh`'s own admission after `LOCK` or runs inside an envelope. `--preflight <cap>` SHALL apply this check and admit nothing. Calls nested in place, caps of 1G or less and `none` SHALL be unaffected.
 
 #### Scenario: --mem none with an inner admission
 - **WHEN** `heavy.sh --mem none -- scripts/with-memory-cap.sh 2G true` runs
@@ -79,6 +99,14 @@ When a capped call's process tree provably holds `LOCK` shared (the marker's PID
 #### Scenario: Commands that admit nothing
 - **WHEN** `heavy.sh --mem none -- git commit` runs the pre-commit hook
 - **THEN** the hook's self-tests pass, because they shed the enclosing helper's marker
+
+#### Scenario: The preflight refuses before the first phase
+- **WHEN** `heavy.sh --mem none -- make mutants-smoke` runs
+- **THEN** it exits 2 with the `--envelope` message before any mutation slot is taken
+
+#### Scenario: A lane run that admits nothing is not refused
+- **WHEN** `heavy.sh --mem none -- make test-widget WIDGET_PARALLEL=0` runs
+- **THEN** no preflight refuses it, because the serial run admits no scope
 
 ### Requirement: Measurement admissions keep failing fast
 An admission inside a measurement (`LUSHTEXT_ADMISSION_NOWAIT=1`, or a proven exclusive `LOCK`) outside an envelope SHALL check once and exit 75 on a misfit without starting a scope. It SHALL take no place in the admission order and SHALL not be held back by older waiters.

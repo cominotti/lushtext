@@ -36,15 +36,23 @@ programme (`preexisting-blockers.md`; deferral in
    from `heavy.sh --mem none -- make mutants-smoke`.
 3. **First-fit admission starves large requests.** In
    `reduce-build-disk-writes` stage 3, a 36G `make mutants-smoke` scope
-   waited about an hour behind a stream of small admissions and was rerun at
-   24G (lane case 11.3). Its log reads `waiting for memory: 42 GiB of 48 GiB
-   admitted to lushtext-heavy.slice, 58 GiB available, need 36 GiB plus a 16
-   GiB reserve`. That is 58 GiB available against the 52 GiB the request
-   needed, so the slice budget was what blocked it, not physical memory.
-   Every recorded 36G wait of that change shows the same: 54-62 GiB
-   available, budget full (`.claude/handoffs/reduce-build-disk-writes/rounds*/`
-   and `warm/` logs). Each small request fit on its own and took the space the
-   large one was waiting for.
+   waited about an hour and was rerun at 24G (lane case 11.3). That change's
+   handoff attributes the wait to a stream of small admissions
+   (`implementation-handoff.md`). Its log reads `waiting for memory: 42 GiB
+   of 48 GiB admitted to lushtext-heavy.slice, 58 GiB available, need 36 GiB
+   plus a 16 GiB reserve` (`lane-11.3/run-36G-starved.log`, 04:37, after the
+   D10 fix `a19df33d` at 00:10). That is 58 GiB available against the 52 GiB
+   the request needed, so the slice budget blocked it, not physical memory.
+   The wrapper prints its waiting message once per wait, so the log proves the
+   budget was binding at the first poll, and the hour comes from the
+   handoff's timestamps. The other 36G waits in that change's `warm/` and
+   `rounds*/` logs are weaker evidence. Four of them read "36 of 48
+   admitted", one 36G holder. Three of those predate `a19df33d`, when a
+   leftover sccache server pinned a finished 36G scope (D10), and the 02:35
+   `main` round counted with `main`'s pre-D10 copy. D10 fixed that pin, so
+   they show only that the budget, not MemAvailable (54-62 GiB), was the
+   binding dimension. The self-test case of task 1.2 reproduces the
+   starvation deterministically.
 
 Measured state of the slice at the start of this change (2026-11-17,
 read-only): budget 48G (`MemoryMax=51539607552`) and three live scopes of
@@ -99,7 +107,15 @@ right now.
 
 None. `heavy-work-placement` (where scopes sit, CPU inheritance, legacy-slice
 counting) keeps every requirement. Envelope sub-slices nest under the heavy
-slice the same way, and the placement check runs in them unchanged.
+slice the same way (measured, design H4), so a scope inside one still lies
+under `…/user-lushtext-heavy.slice/`, and the placement check runs in them
+unchanged. Its legacy-counting requirement governs admissions into the heavy
+slice. An envelope's inner admissions go into its sub-slice, where no wrapper
+copy from before the rename can start a scope. `widget-test-ci-sharding`
+also holds: each shard keeps its own admitted scope, under the heavy slice's
+path, and waits for admission rather than starting uncapped. Under
+`heavy.sh --mem none` the run is refused by the recipe's preflight before any
+shard starts.
 
 ## Non-goals
 
@@ -113,6 +129,11 @@ slice the same way, and the placement check runs in them unchanged.
 - Changing `measure.sh`'s lock order or its `--lock-timeout` behaviour.
 - Fair ordering for copies of the wrapper from before this change. They share
   the admission lock but ignore the queue until their worktrees merge `main`.
+- Unwrapped runs (`make test` with no `heavy.sh` at all). They hold no lock,
+  so their admissions may still wait without stalling anyone. They are not
+  protected from running beside a measurement either, as today. The docs stop
+  recommending them ("start it unwrapped" goes), and nothing refuses them,
+  because CI and a developer's terminal run them that way.
 
 ## User-visible impact
 
@@ -133,7 +154,12 @@ There is no application change. For agents and maintainers:
     that phase runs uncapped, and through its shard phase, where today it
     holds 6G;
   - small requests may wait behind an older large one while its cap is
-    reserved;
+    reserved. With the 48G budget, a 36G head admits a later request only
+    while the caps admitted plus that request stay within 12G. With more than
+    10G already admitted, every request above 1G host-wide waits until enough
+    running scopes end for the head to be admitted. That holds while the host
+    has the memory for the head (36G plus the 16G reserve, so MemAvailable of
+    at least 52 GiB);
   - a run whose inner caps add up to more than its envelope runs those scopes
     one after another within it.
 - `heavy.sh -- make kani` keeps working. It runs Kani in place at the default

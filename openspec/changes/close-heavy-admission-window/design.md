@@ -58,10 +58,30 @@ helpers' behaviour is proved by their self-tests.
 | Fact | Source |
 | --- | --- |
 | A default-cap `heavy.sh` passed both probes, then printed `waiting for memory: 48 GiB of 48 GiB admitted …, 61 GiB available, need 12 GiB plus a 16 GiB reserve` while holding `LOCK` shared. Another change's `measure.sh` waited behind about eight shared holders. The 36G scope in front came from `heavy.sh --mem none -- make mutants-smoke`. | `.claude/handoffs/nest-heavy-slices-under-user-slice/stage3-notes.md` (2026-11-15 01:37) |
-| A 36G mutants scope waited about an hour. Its log: `42 GiB of 48 GiB admitted, 58 GiB available, need 36 GiB plus a 16 GiB reserve`. | `.claude/handoffs/reduce-build-disk-writes/lane-11.3/run-36G-starved.log`; lane case 11.3 |
-| Every 36G wait in that change's round logs reads 54-62 GiB available against the 52 GiB needed, with 36-48 GiB of the slice admitted. The **budget** blocked them, not physical memory. | `.claude/handoffs/reduce-build-disk-writes/{warm,rounds,rounds-nonverdict}/*/run.log`, `warm/*.log` |
+| A 36G mutants scope waited about an hour, after D10 (`a19df33d`, 2026-11-15 00:10). Its log, printed once at the first poll: `42 GiB of 48 GiB admitted, 58 GiB available, need 36 GiB plus a 16 GiB reserve`. The handoff attributes the hour to a stream of small admissions. | `.claude/handoffs/reduce-build-disk-writes/lane-11.3/run-36G-starved.log` (04:37); `implementation-handoff.md`; lane case 11.3 |
+| The other seven 36G waits in that change's logs read 54-62 GiB available against the 52 GiB needed, with 36-48 GiB admitted: the **budget** was the binding dimension, not physical memory. They are not starvation evidence. Four read "36 of 48", one 36G holder; three of those are from before `a19df33d` (the sccache pin D10 fixed), and the 02:35 `main` round counted with `main`'s pre-D10 copy. | `.claude/handoffs/reduce-build-disk-writes/{warm,rounds,rounds-nonverdict}/*` (2026-11-14 23:39 to 2026-11-15 02:54) |
 | 2026-11-17 snapshot: budget 48G. Three live scopes of 16G, 12G and 16G (44 GiB admitted) used 2.7, 1.2 and 5.2 GiB. MemAvailable 40 GiB, load 5.9. | `systemctl --user show`, `/sys/fs/cgroup`, `/proc/meminfo` at stage 1 |
 | Widget shard peak 864 MiB, cap 2G; widget build cap 16G at `--build-jobs 4`. The whole workspace cold at 16 jobs peaks at 9.5 GiB. | Makefile `WIDGET_*` comments; `build.md`, "Compiler parallelism" |
+
+Host behaviour the envelope relies on. It was probed by this change's spec
+review on 2026-11-17 (kernel 7.2, systemd 262), in a private slice
+`user-lushtext-heavy-selftest-r<pid>.slice` and its sub-slice
+`…-r<pid>-env1t2.slice` (MemoryMax 512M, one `sleep` scope), then stopped and
+reverted, with no drop-in left. It is recorded in the wrapper's header as H4
+to H6, next to H1 to H3, and the self-test re-probes it:
+
+- **H4.** A `<stem>-env<P>t<ns>.slice` nests directly under `<stem>.slice`
+  (H1). Its scopes are not `*.scope` children of the parent slice (0 there).
+- **H5.** `systemctl --user revert` of a sub-slice holding a live scope
+  removes its runtime drop-ins, and `memory.max` reads `max`. The scope keeps
+  running.
+- **H6.** The sub-slice's `memory.peak` and the `oom_kill` line of
+  `memory.events` can be read while a scope is in it. Its cgroup outlived the
+  scope's exit by at least 0.5 s. The sentinel (D2) does not rely on that.
+
+Each slice also carries the distribution's
+`/usr/lib/systemd/user/slice.d/10-oomd-per-slice-defaults.conf` drop-in
+(systemd-oomd; see "Risks").
 
 The app already uses the same fairness pattern for its own loads:
 `model::file_load` has
@@ -99,16 +119,26 @@ After `LOCK`, `heavy.sh` starts the child with `LUSHTEXT_ADMISSION_ONCE=<report
 file>` (a private temp file owned by this `heavy.sh`). With that set, the
 wrapper's admission checks once, under the admission lock.
 
-- **Misfit:** the wrapper writes one line to the report file (the waiting
-  message) and exits 75. No scope and no command have started.
+- **Admission lock busy:** it waits for the admission lock at most 2 s, as a
+  NOWAIT admission does, and a lock still busy counts as a misfit. The
+  blocking `flock 9` of `admit` could otherwise wait under `LOCK` for as long
+  as another admission's watcher holds it (up to 10 s,
+  `release_admission_once_scoped`), or for an old wrapper copy.
+- **Misfit:** the wrapper writes one line starting `misfit: ` (the waiting
+  message) to the report file, and exits 75. No scope and no command have
+  started.
 - **Fit:** it admits and starts the scope exactly as today. It unsets
   `LUSHTEXT_ADMISSION_ONCE` before the `exec`, so nothing inside the command
   inherits it.
 
-`heavy.sh` treats "75 **and** a non-empty report" as a misfit. It closes fd 7,
-removes its traps and the marker, sleeps one second, and goes back to step 1.
-Exit 75 with an empty report is the command's own status (mutation slots
-busy, a measurement inside) and is returned unchanged. Each attempt
+`heavy.sh` treats "75 **and** a `misfit: ` line in the report" as a misfit.
+The report is not otherwise empty in every case, because an envelope's
+placeholder writes its `envelope: ` line to the same file (D2), and the
+envelope lanes are the ones whose commands exit 75 (`run-mutants.sh`, slots
+busy). On a misfit `heavy.sh` closes fd 7, removes its traps and the marker,
+truncates the report, sleeps one second, and goes back to step 1. Exit 75
+without a `misfit: ` line is the command's own status (mutation slots busy, a
+measurement inside) and is returned unchanged. Each attempt
 recomputes the parallelism after `LOCK`, as #114 requires, and re-arms the
 signal traps, because `agent_run_child` clears them. The step-4 NOWAIT
 re-probe is removed: the admission itself is now the check, so there is no
@@ -186,13 +216,38 @@ as `run-widget-tests.sh` does for a shard. The self-tests check the reading
 on a normal run, and the decision on fixture lines. They never provoke a real
 OOM kill, because one in a user scope can raise a GNOME notification.
 
+The sentinel scope gets `OOMPolicy=continue`, like every scope the wrapper
+starts, so that an OOM kill inside the sub-slice never marks a unit
+`oom-kill`. That marking is the result gsd-housekeeping turns into a desktop
+notification.
+
 **D10 holds.** When the root command exits, `tail --pid` returns, the
 placeholder reverts the sub-slice and exits, and the envelope's admission
-ends. An sccache server left in the sub-slice keeps it alive, but holds no
-admission and no `MemoryMax`. If the placeholder itself is SIGKILLed, its PID
-leaves its scope and the reservation ends with it. The sub-slice's runtime
-drop-in then stays until the next revert or logout; the self-test's cleanup
-and leftover check cover the envelope sub-slices too (D7).
+ends. That happens a moment after the root, once the placeholder has written
+its `envelope: ` line, so a check that the reservation has ended first waits
+for that line. An sccache server left in the sub-slice keeps it alive, but
+holds no admission and no `MemoryMax`. The placeholder also removes the
+sub-slice's queue directory (D5).
+
+**A SIGKILLed placeholder.** Its PID leaves its scope, and the reservation
+ends with it. Its sub-slice's runtime drop-in and queue directory would then
+stay until logout, because each sub-slice name is unique and nothing reverts
+it again. So every envelope admission, under the admission lock, sweeps
+first. It reverts each `<heavy-stem>-env<P>t<ns>.slice` drop-in of its own
+heavy slice whose placeholder no longer holds `P` (no live
+`lushtext-cap-<P>-*.scope` with `P` in its `cgroup.procs`), and removes
+that sub-slice's queue directory. The self-test's cleanup and leftover check
+cover the envelope sub-slices too (D7).
+
+**Nested envelopes.** `with-memory-cap.sh --envelope <size>` runs its command
+in place when it is already inside a capped scope (`LUSHTEXT_MEMORY_CAP_KIB`
+set) or inside an envelope (D3's cgroup proof). The outer scope or envelope
+then bounds it and reports its OOM kills. Inside a measurement (a proven
+exclusive `LOCK`) it is admitted at the host level, checking once (D4).
+`heavy.sh`'s nested in-place path for `--envelope` does not `exec`. It runs
+the wrapper as a child with a report file (`agent_trap_signals`,
+`agent_run_child`) and applies the same OOM decision, so an envelope inside a
+measurement still fails on an OOM kill.
 
 `heavy.sh --envelope <size>` runs the D1 path with `with-memory-cap.sh
 --envelope <size> <cmd>` as its child. `heavy_parallelism` receives `<size>`
@@ -264,7 +319,10 @@ envelope's admission then works as follows:
   started inside a measurement fails fast at its own admission, at the host
   level.
 
-The queue (D5) applies per slice, so an envelope has its own queue.
+The queue (D5) applies per slice, so an envelope has its own queue. An inner
+admission never consults the heavy slice's queue. If it did, it would
+deadlock: an older host-level head waits for the envelope's reservation to
+end, while the envelope's own scopes wait behind that head.
 
 ### D4. No other admission under a shared LOCK
 
@@ -272,7 +330,10 @@ Before admitting, the wrapper sources `scripts/agent-locks.sh` and runs
 `agent_lock_inherited`. That is the existing proof: the marker's PID is an
 ancestor, and its fd 7 is `LOCK`. `LUSHTEXT_AGENT_LOCK_DIR` is honoured, so
 self-tests use their private locks. The check runs only for a cap above 1G,
-outside an in-place nested call, with scopes available. Then, by mode:
+outside an in-place nested call, with scopes available, and only when
+`LUSHTEXT_AGENT_LOCK_HELD` is set. Without the marker there is nothing to
+prove, and `agent_lock_paths` (which creates the lock directory and runs
+`git`) is not called. Then, by mode:
 
 - **`exclusive`** (inside a measurement, outside an envelope; inside one,
   D3 applies): check once, exit 75 on a misfit,
@@ -333,6 +394,24 @@ time and name their fix.
   it, and holding its admission behind a ticket would only make it fail with
   75.
 
+- **Queue directories.** A queue directory lives as long as its slice. The
+  placeholder removes its envelope's directory (D2), and the self-test removes
+  its private slices' directories in its `EXIT` trap. The leftover check
+  covers them too (D7).
+- **Poll interval.** A waiting admission and the probe sleep 15 s between
+  checks, as today. `LUSHTEXT_ADMISSION_POLL_SECONDS` overrides that for the
+  self-tests, which set it to 0.2 s, so that a case can see a waiter admitted
+  after the scope ahead of it ends without a 15 s sleep in every commit hook.
+  It is not documented as an operator knob.
+- **The rule "never reserves memory while waiting for a lock".** A ticket
+  that `heavy.sh` keeps while it waits for `INTENT` or `LOCK` holds a place
+  in the order. It is not a reservation of memory. It holds back no
+  measurement, because NOWAIT and exclusive admissions ignore the head. The
+  other waiters it holds back would wait for `INTENT` anyway. Only an
+  admission that holds no lock at all can wait behind it (an unwrapped run's
+  inner scope), and the head is admitted next in any case. The rules text is
+  reworded to say this (task 5.1).
+
 This is EASY backfill: only the head reserves. A small request still runs
 beside a large waiter whenever both fit, so the slice stays used. The head is
 admitted as soon as the work admitted before it frees the budget, because
@@ -377,7 +456,25 @@ envelope sub-slices. None of them touches the real slice budget.
   `LOCK`, would hit D4's refusal.
 - The cleanup and the leftover-drop-in check widen from
   `*selftest-<child>.slice.d` to `*selftest-<child>*.slice.d`, which covers
-  the envelope sub-slices, a SIGKILLed owner included.
+  the envelope sub-slices, a SIGKILLed owner included. The leftover check
+  also fails on a queue directory of those slices.
+- `heavy.sh --self-test` today runs its capped case against the real slice
+  (a 64M cap, with no budget override). Every new `heavy.sh` case that sets
+  `LUSHTEXT_HEAVY_MEMORY_MAX` or `LUSHTEXT_MEMORY_RESERVE` first exports a
+  private `LUSHTEXT_HEAVY_SLICE=user-lushtext-heavy-selftest-h<pid>.slice`,
+  because the wrapper applies the budget to its slice with `set-property`.
+  `heavy.sh`'s `EXIT` trap stops and reverts those slices (with their envelope
+  sub-slices) and removes their queue directories, as the wrapper's does. At
+  the end it checks that the real slice's `MemoryMax` is unchanged and that
+  no drop-in or queue directory of its private slices is left.
+- Self-tests set `LUSHTEXT_ADMISSION_POLL_SECONDS=0.2` (D5).
+- The case for a busy admission lock (D1) holds a private one, named by
+  `LUSHTEXT_ADMISSION_LOCK` (default
+  `${XDG_RUNTIME_DIR:-/tmp}/lushtext-heavy-admission.lock`, as today), and
+  never the real one: holding the real lock for seconds would hold up every
+  agent's admissions. Overriding `XDG_RUNTIME_DIR` instead would break
+  `systemctl --user`. Cases that use the private lock use private slices
+  only, so they need no serialization with other agents.
 
 The race in (1) is made deterministic, with no timing involved, by a
 `systemctl` shim on `PATH`. It answers only `show -p ControlGroup --value
@@ -398,7 +495,19 @@ back.
   first inner admission only after the whole non-widget phase. The admitting
   Makefile recipes therefore start with a cheap preflight
   (`with-memory-cap.sh --preflight <cap>`): it applies D4's check without
-  admitting anything, and exits 2 at once in the same case.
+  admitting anything, and exits 2 at once in the same case. The preflight
+  checks the cap the recipe will actually admit. It is skipped where the
+  recipe admits nothing above 1G: `make test` and `make test-widget` with
+  `WIDGET_PARALLEL=0` (one serial session, no inner scope) and any lane whose
+  cap is `none` (`KANI_MEMORY_MAX=none`). Otherwise a valid `--mem none`
+  run would be refused for an admission it never makes.
+- **Head-of-line waits.** While a large head has the host memory, small
+  requests wait whenever they do not fit beside it (proposal, "Loss compared
+  with `main`", with the 36G figures). Accepted: this is what makes the head
+  admissible at all. It ends as soon as the head is admitted, and a head
+  short of physical memory reserves nothing. The coordinator note states the
+  figures, so that the programme does not schedule a 36G mutants run beside
+  other changes' heavy work without meaning to.
 - **Mixed wrapper copies during the transition.** Worktrees that have not
   merged this change still use first-fit, ignore tickets, and wait under
   `LOCK` through their own `heavy.sh`. They share the admission lock, and they
@@ -409,8 +518,9 @@ back.
   that in-flight changes whose tasks read `heavy.sh --mem none -- make test`
   get exit 2 after merging `main`, and must switch to `--envelope 16G`.
 - **systemd-oomd** sees envelope sub-slices like scopes (already recorded in
-  `build.md`, "Memory"). The sub-slice's `MemoryMax` makes the kernel kill
-  inside the envelope first.
+  `build.md`, "Memory"). Each slice carries the distribution's
+  `10-oomd-per-slice-defaults.conf` drop-in (H4 probe). The sub-slice's
+  `MemoryMax` makes the kernel kill inside the envelope first.
 - **The `systemctl` shim** checks the caller through `/proc/<ppid>/cmdline`.
   If the wrapper's process structure changes, the shim fails loudly, because
   the case then cannot reach its precondition and says so. It does not pass
