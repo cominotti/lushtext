@@ -151,7 +151,16 @@ Expected screen-reader behavior includes:
   keyboard focus was inside the directory they move to the directory row
   itself, so a screen reader never follows a row that is about to disappear.
   The rows then go in the background; the change is not announced, as GTK's own
-  collapse is not. Activating the directory row (`Enter`, or a double click),
+  collapse is not. From the same dispatch, every realized row of the
+  collapsing subtree is hidden (design D22): it draws nothing, takes no pointer
+  input (a click, a double click or a hover on that region selects, activates
+  or prelights nothing), and reports the accessible `hidden` state, so AT-SPI
+  does not present it (ledger A123; the state is written again after GTK maps a
+  row, which resets it). Any end of the collapse (completion, re-expansion,
+  removal, a reload) shows the rows again. Which rows are inside is decided by
+  the tree, not by path, so the same directory listed again under an
+  overlapping workspace folder is neither hidden nor stopped from loading
+  (`accessibility-smoke` case `workspace-tree-large-collapse`). Activating the directory row (`Enter`, or a double click),
   clicking its arrow, and the tree's collapse keys with focus on the row's
   expander, which `Tab` reaches from the row (`minus`, `slash`, their keypad
   forms, `Shift+Left` and `Ctrl+Shift+Left`, reversed in right-to-left text,

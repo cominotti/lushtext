@@ -2555,6 +2555,19 @@ which took 227 s, 390 s and 265 s. The `<` to `<=` mutant of the band's upper
 cut is excluded as equivalent in `.cargo/mutants.toml`, so neither arm sees
 it.
 
+**Fourth harness and the attribution hooks (2026-11-18).** Task 9.11 added
+`the_collapse_rank_strictly_decreases`; the shard's first local run with it
+failed all four harnesses, not on a property but on unwinding: the WIP
+attribution hooks (`slc_attribution_*`, read inside `next_collapse_step`) read
+the environment, and `env::var` reaches `memchr` and `io::Error`, which CBMC
+cannot unwind. Under `cfg(kani)` the hooks now return the production
+constants, so the proof covers the shipped policy, and the shard passes: 4
+harnesses, 4.41 min, 2.44 GiB peak locally (the record rises to 4.5 min, still
+`PENDING DISPATCH (owed by slice-large-directory-collapse)` until two
+dispatched `kani.yml` runs). The hooks leave with task 10.11; this debt must be
+settled by those two dispatched runs, or moved to an active change, before
+this change is archived.
+
 ### Minimap marker row binning (`bin-minimap-markers-per-row`, 2026-11-07)
 
 `fit_marker_bounds`, `MarkerProjectionSpace` and their three harnesses

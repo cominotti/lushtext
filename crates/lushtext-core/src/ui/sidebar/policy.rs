@@ -1303,14 +1303,24 @@ pub const fn bound_step_rows(
 /// unit, clamped to at least 1 and at most the unit. Removed by task 10.11.
 #[must_use]
 pub fn slc_attribution_step_rows() -> u32 {
-    static ROWS: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *ROWS.get_or_init(|| {
-        std::env::var("SLC_STEP_ROWS")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or_else(slc_attribution_unit_rows)
-            .clamp(1, slc_attribution_unit_rows().max(1))
-    })
+    // Kani proves the production policy: no environment is read under it
+    // (an `env::var` reaches `memchr` and `io::Error`, which CBMC cannot
+    // unwind).
+    #[cfg(kani)]
+    {
+        SIDEBAR_REALIZED_ROWS_PER_FRAME
+    }
+    #[cfg(not(kani))]
+    {
+        static ROWS: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+        *ROWS.get_or_init(|| {
+            std::env::var("SLC_STEP_ROWS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or_else(slc_attribution_unit_rows)
+                .clamp(1, slc_attribution_unit_rows().max(1))
+        })
+    }
 }
 
 /// The next removal of a collapse (design D4, D9):
@@ -1337,13 +1347,23 @@ pub fn slc_attribution_step_rows() -> u32 {
 /// constant, and the direct cap at most the unit.
 #[must_use]
 pub fn slc_attribution_unit_rows() -> u32 {
-    static UNIT: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *UNIT.get_or_init(|| {
-        std::env::var("SLC_UNIT")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(SIDEBAR_REALIZED_ROWS_PER_FRAME)
-    })
+    // Kani proves the production policy: no environment is read under it
+    // (an `env::var` reaches `memchr` and `io::Error`, which CBMC cannot
+    // unwind).
+    #[cfg(kani)]
+    {
+        SIDEBAR_REALIZED_ROWS_PER_FRAME
+    }
+    #[cfg(not(kani))]
+    {
+        static UNIT: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+        *UNIT.get_or_init(|| {
+            std::env::var("SLC_UNIT")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(SIDEBAR_REALIZED_ROWS_PER_FRAME)
+        })
+    }
 }
 
 /// ATTRIBUTION PATCH (not committed).
@@ -1358,27 +1378,47 @@ pub fn slc_attribution_direct_rows() -> u32 {
 /// `SLC_DESTROY`, default the constant.
 #[must_use]
 pub fn slc_attribution_destroy_only_rows() -> u32 {
-    static UNIT: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *UNIT.get_or_init(|| {
-        std::env::var("SLC_DESTROY")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(COLLAPSE_DESTROY_ONLY_ROWS)
-            .max(slc_attribution_unit_rows())
-    })
+    // Kani proves the production policy: no environment is read under it
+    // (an `env::var` reaches `memchr` and `io::Error`, which CBMC cannot
+    // unwind).
+    #[cfg(kani)]
+    {
+        COLLAPSE_DESTROY_ONLY_ROWS.max(SIDEBAR_REALIZED_ROWS_PER_FRAME)
+    }
+    #[cfg(not(kani))]
+    {
+        static UNIT: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+        *UNIT.get_or_init(|| {
+            std::env::var("SLC_DESTROY")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(COLLAPSE_DESTROY_ONLY_ROWS)
+                .max(slc_attribution_unit_rows())
+        })
+    }
 }
 
 /// ATTRIBUTION PATCH (not committed): the unbound chunk from `SLC_CHUNK`,
 /// default the constant.
 #[must_use]
 pub fn slc_attribution_chunk_rows() -> u32 {
-    static UNIT: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *UNIT.get_or_init(|| {
-        std::env::var("SLC_CHUNK")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(COLLAPSE_UNBOUND_CHUNK_ROWS)
-    })
+    // Kani proves the production policy: no environment is read under it
+    // (an `env::var` reaches `memchr` and `io::Error`, which CBMC cannot
+    // unwind).
+    #[cfg(kani)]
+    {
+        COLLAPSE_UNBOUND_CHUNK_ROWS
+    }
+    #[cfg(not(kani))]
+    {
+        static UNIT: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+        *UNIT.get_or_init(|| {
+            std::env::var("SLC_CHUNK")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(COLLAPSE_UNBOUND_CHUNK_ROWS)
+        })
+    }
 }
 
 /// Whether a bound removal can only destroy row widgets (design D18): no

@@ -237,6 +237,7 @@ pub(super) fn setup(imp: &imp::LushtextWorkspaceSection) {
                 install_expanded_accessibility_hook(&overlay, &tree_row, &file_item, section);
                 section.install_expanded_watch_hook(&tree_row);
                 section.apply_collapse_projection(&overlay, &expander, &tree_row);
+                section.project_collapse_hiding(&overlay, &tree_row);
                 super::sync_file_row_state_for_overlay(section, &overlay);
             } else {
                 accessibility::clear_row_accessibility(&overlay);

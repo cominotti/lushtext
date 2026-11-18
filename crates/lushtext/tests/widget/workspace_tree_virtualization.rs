@@ -5898,3 +5898,571 @@ fn test_a_reorder_drag_gives_every_realized_row_a_shield() {
     );
     drop(tree.window);
 }
+
+/// Each realized row widget (the list's child, the row overlay's parent),
+/// with whether its tree row lies strictly inside `directory`'s subtree by
+/// tree ancestry, and its row's flattened position.
+fn realized_row_widgets(
+    section: &LushtextWorkspaceSection,
+    directory: &Path,
+) -> Vec<(gtk4::Widget, bool, u32)> {
+    let mut rows = Vec::new();
+    let mut child = section.imp().file_tree_view.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        let Some(row) = widget
+            .first_child()
+            .and_downcast::<gtk4::Overlay>()
+            .and_then(|overlay| overlay.child().and_downcast::<gtk4::TreeExpander>())
+            .and_then(|expander| expander.list_row())
+        else {
+            continue;
+        };
+        let mut inside = false;
+        let mut ancestor = row.parent();
+        while let Some(candidate) = ancestor {
+            if candidate
+                .item()
+                .and_downcast::<FileTreeItem>()
+                .and_then(|item| item.path())
+                .as_deref()
+                == Some(directory)
+            {
+                inside = true;
+                break;
+            }
+            ancestor = candidate.parent();
+        }
+        rows.push((widget, inside, row.position()));
+    }
+    rows
+}
+
+/// Whether a row widget is hidden the way D22 hides it.
+fn row_widget_hidden(widget: &gtk4::Widget) -> bool {
+    widget.opacity() == 0.0 && !widget.can_target()
+}
+
+/// Whether a row widget carries none of D22's hiding.
+fn row_widget_shown(widget: &gtk4::Widget) -> bool {
+    widget.opacity() == 1.0 && widget.can_target()
+}
+
+/// Design D22 (task 10.13): after the input dispatch every realized row of
+/// the collapsing subtree is hidden on its row widget (opacity 0, no pointer
+/// target, accessible `hidden`), the directory row and every row outside the
+/// subtree are unchanged, and the list realized, created and placed nothing
+/// for it (ledger A123). Fails without D22: the subtree's rows still draw.
+#[test]
+fn test_collapse_hides_the_subtree_rows_in_the_first_frame() {
+    for siblings in [0, 400] {
+        let (tree, nested) = expanded_nested(4096, siblings);
+        let before = realized_row_widgets(&tree.section, &nested);
+        let setups = tree.section.workspace_section_evidence().row_setups;
+        let first = before.iter().map(|(_, _, position)| *position).min();
+        let pacing = Pacing::set(CollapsePacing::Hold);
+        activate_tree_row(&tree.section, &nested);
+        let after = realized_row_widgets(&tree.section, &nested);
+        assert_eq!(
+            after.len(),
+            before.len(),
+            "{siblings}: the list's children are those it had"
+        );
+        assert_eq!(
+            tree.section.workspace_section_evidence().row_setups,
+            setups,
+            "{siblings}: no row widget was created"
+        );
+        assert_eq!(
+            after.iter().map(|(_, _, position)| *position).min(),
+            first,
+            "{siblings}: the band did not move"
+        );
+        let inside: Vec<_> = after.iter().filter(|(_, inside, _)| *inside).collect();
+        assert!(inside.len() > 100, "{siblings}: the band holds the subtree");
+        for (widget, inside, position) in &after {
+            if *inside {
+                assert!(
+                    row_widget_hidden(widget) && crate::common::accessible_hidden(widget),
+                    "{siblings}: subtree row {position} is hidden"
+                );
+            } else {
+                assert!(
+                    row_widget_shown(widget),
+                    "{siblings}: row {position} outside the subtree is unchanged"
+                );
+            }
+        }
+        assert_eq!(
+            usize::try_from(
+                tree.section
+                    .workspace_section_evidence()
+                    .collapse_hidden_rows
+            )
+            .unwrap_or(usize::MAX),
+            inside.len()
+        );
+        drop(pacing);
+        wait_until(Duration::from_secs(60), || {
+            collapse_settled(&tree.section, &nested)
+        });
+        drop(tree.window);
+    }
+}
+
+/// Design D22: scrolling during a held collapse rebinds rows into the
+/// subtree, which are hidden, and rows out of it, which are not; rows the
+/// scroll maps read `hidden` once the dispatch that mapped them has returned
+/// (A123: GTK's map writes it false).
+#[test]
+fn test_a_rebound_row_in_a_collapsing_subtree_stays_hidden() {
+    let (tree, nested) = expanded_nested(4096, 400);
+    let pacing = Pacing::set(CollapsePacing::Hold);
+    activate_tree_row(&tree.section, &nested);
+    let index = tree_index_for_path(&tree.section, &nested).expect("row index");
+    let list = tree.section.imp().file_tree_view.clone();
+    for (target, label) in [
+        (index + 2000, "inside the subtree"),
+        (index + 4096 + 60, "across the subtree's end"),
+        (index + 100, "back inside"),
+    ] {
+        list.scroll_to(target, gtk4::ListScrollFlags::NONE, None);
+        flush_after_delay(Duration::from_millis(200));
+        let rows = realized_row_widgets(&tree.section, &nested);
+        assert!(
+            rows.iter().any(|(_, inside, _)| *inside),
+            "{label}: subtree rows are realized"
+        );
+        for (widget, inside, position) in &rows {
+            if *inside {
+                assert!(row_widget_hidden(widget), "{label}: row {position} hidden");
+                if widget.is_mapped() {
+                    assert!(
+                        crate::common::accessible_hidden(widget),
+                        "{label}: mapped row {position} reads hidden"
+                    );
+                }
+            } else {
+                assert!(row_widget_shown(widget), "{label}: row {position} shown");
+            }
+        }
+    }
+    assert!(
+        !tree
+            .section
+            .workspace_section_evidence()
+            .collapses
+            .is_empty(),
+        "the collapse was held throughout"
+    );
+    drop(pacing);
+    wait_until(Duration::from_secs(60), || {
+        collapse_settled(&tree.section, &nested)
+    });
+    drop(tree.window);
+}
+
+/// Design D22: every end of a collapse (completion, re-expansion, removal,
+/// a model reset) leaves no realized row hidden, and after a re-expansion
+/// the children are shown again.
+#[test]
+fn test_every_collapse_end_shows_the_rows_again() {
+    let assert_nothing_hidden = |section: &LushtextWorkspaceSection, end: &str| {
+        let mut child = section.imp().file_tree_view.first_child();
+        while let Some(widget) = child {
+            child = widget.next_sibling();
+            assert!(row_widget_shown(&widget), "{end}: a row stays hidden");
+        }
+        assert_eq!(
+            section.workspace_section_evidence().collapse_hidden_rows,
+            0,
+            "{end}"
+        );
+    };
+    // Completion.
+    let (tree, nested) = expanded_nested(4096, 400);
+    activate_tree_row(&tree.section, &nested);
+    wait_until(Duration::from_secs(60), || {
+        collapse_settled(&tree.section, &nested)
+    });
+    assert_nothing_hidden(&tree.section, "completion");
+    // Re-expansion.
+    expand_and_load(&tree, &nested, 4096);
+    flush_after_delay(Duration::from_millis(300));
+    let pacing = Pacing::set(CollapsePacing::Hold);
+    activate_tree_row(&tree.section, &nested);
+    assert!(
+        tree.section
+            .workspace_section_evidence()
+            .collapse_hidden_rows
+            > 0
+    );
+    activate_tree_row(&tree.section, &nested);
+    drop(pacing);
+    wait_until(Duration::from_secs(60), || {
+        row_for_path(&tree.section, &nested).is_some_and(|row| row.is_expanded())
+            && !tree
+                .section
+                .workspace_section_evidence()
+                .refresh_blocks_readiness
+    });
+    assert_nothing_hidden(&tree.section, "re-expansion");
+    assert!(
+        realized_row_widgets(&tree.section, &nested)
+            .iter()
+            .any(|(_, inside, _)| *inside),
+        "re-expansion: the children are listed and drawn"
+    );
+    // A model reset while the collapse is held.
+    let pacing = Pacing::set(CollapsePacing::Hold);
+    activate_tree_row(&tree.section, &nested);
+    assert!(
+        tree.section
+            .workspace_section_evidence()
+            .collapse_hidden_rows
+            > 0
+    );
+    tree.section
+        .queue_auto_refresh_for_test(vec![tree.root.clone()]);
+    tree.section.apply_queued_refresh_for_test();
+    wait_until(Duration::from_secs(60), || {
+        tree.section
+            .workspace_section_evidence()
+            .collapses
+            .is_empty()
+            && !tree
+                .section
+                .workspace_section_evidence()
+                .refresh_blocks_readiness
+    });
+    drop(pacing);
+    assert_nothing_hidden(&tree.section, "model reset");
+    drop(tree.window);
+    // Removal of the collapsing directory.
+    let (tree, nested) = expanded_nested(4096, 400);
+    let pacing = Pacing::set(CollapsePacing::Hold);
+    activate_tree_row(&tree.section, &nested);
+    fixture::remove_dir_all(&nested);
+    tree.section
+        .queue_auto_refresh_for_test(vec![tree.root.clone()]);
+    tree.section.apply_queued_refresh_for_test();
+    wait_until(Duration::from_secs(60), || {
+        row_for_path(&tree.section, &nested).is_none()
+            && !tree
+                .section
+                .workspace_section_evidence()
+                .refresh_blocks_readiness
+    });
+    drop(pacing);
+    assert_nothing_hidden(&tree.section, "removal");
+    drop(tree.window);
+}
+
+/// Design D22 (ledger A123): a row the list creates during a collapse (a
+/// bound step's removal brings new row widgets into the band, A118) is not in
+/// the list at its bind, and is hidden once inserted, by the end of the step
+/// that created it: it draws nothing, takes no pointer and reads `hidden`.
+/// Hiding the sidebar and showing it again mid-collapse maps the rows again,
+/// and every mapped hidden row reads `hidden` again (GTK's map writes it
+/// false). No hiding pass runs inside a frame clock dispatch.
+#[test]
+fn test_a_created_row_in_a_collapsing_subtree_reports_hidden() {
+    let (tree, nested) = expanded_nested(4096, 400);
+    let syncs_in_frames = std::rc::Rc::new(std::cell::Cell::new(0u64));
+    let clock = tree
+        .section
+        .imp()
+        .file_tree_view
+        .frame_clock()
+        .expect("a mapped list has a frame clock");
+    let before_syncs = std::rc::Rc::new(std::cell::Cell::new(0u64));
+    let handlers = {
+        let section = tree.section.clone();
+        let syncs_at_before = std::rc::Rc::clone(&before_syncs);
+        let before = clock.connect_before_paint(move |_| {
+            syncs_at_before.set(section.workspace_section_evidence().collapse_hidden_syncs);
+        });
+        let section = tree.section.clone();
+        let before_syncs = std::rc::Rc::clone(&before_syncs);
+        let syncs_in_frames = std::rc::Rc::clone(&syncs_in_frames);
+        let after = clock.connect_after_paint(move |_| {
+            let now = section.workspace_section_evidence().collapse_hidden_syncs;
+            syncs_in_frames.set(syncs_in_frames.get() + now.saturating_sub(before_syncs.get()));
+        });
+        [before, after]
+    };
+    let setups = tree.section.workspace_section_evidence().row_setups;
+    activate_tree_row(&tree.section, &nested);
+    pump_dispatches_until(Duration::from_secs(30), || {
+        tree.section.workspace_section_evidence().row_setups > setups
+    });
+    // No main-loop turn since a step created rows: hold the collapse there.
+    let pacing = Pacing::set(CollapsePacing::Hold);
+    assert!(
+        !tree
+            .section
+            .workspace_section_evidence()
+            .collapses
+            .is_empty(),
+        "the collapse is pending after the step that created rows"
+    );
+    let check = |when: &str| {
+        let rows = realized_row_widgets(&tree.section, &nested);
+        assert!(rows.iter().any(|(_, inside, _)| *inside), "{when}");
+        for (widget, inside, position) in rows {
+            if inside {
+                assert!(row_widget_hidden(&widget), "{when}: row {position} hidden");
+                if widget.is_mapped() {
+                    assert!(
+                        crate::common::accessible_hidden(&widget),
+                        "{when}: mapped row {position} reads hidden"
+                    );
+                }
+            } else {
+                assert!(row_widget_shown(&widget), "{when}: row {position} shown");
+            }
+        }
+    };
+    check("after the step that created rows");
+    flush_after_delay(Duration::from_millis(200));
+    check("frames later");
+    tree.sidebar.set_visible(false);
+    flush_after_delay(Duration::from_millis(200));
+    tree.sidebar.set_visible(true);
+    flush_after_delay(Duration::from_millis(400));
+    check("after the sidebar was hidden and shown");
+    for handler in handlers {
+        clock.disconnect(handler);
+    }
+    assert_eq!(
+        syncs_in_frames.get(),
+        0,
+        "no hiding pass ran between a frame's before-paint and after-paint"
+    );
+    drop(pacing);
+    wait_until(Duration::from_secs(60), || {
+        collapse_settled(&tree.section, &nested)
+    });
+    drop(tree.window);
+}
+
+/// Design D22 (ledger A123): real pointer input over the hidden rows of a
+/// held collapse (a hover, a press, a double press) selects, activates,
+/// expands and prelights nothing: the rows take no pointer, and the press
+/// lands on the list.
+#[test]
+fn test_a_click_on_hidden_rows_changes_nothing() {
+    use crate::common::press_with_real_pointer;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let (tree, nested) = expanded_nested(4096, 0);
+    let pacing = Pacing::set(CollapsePacing::Hold);
+    activate_tree_row(&tree.section, &nested);
+    // Connected after the activation: a second `activate` handler would
+    // toggle the directory back.
+    let activated: Rc<RefCell<Vec<PathBuf>>> = Rc::default();
+    let recorder = Rc::clone(&activated);
+    tree.section
+        .connect_file_activated(move |path| recorder.borrow_mut().push(path.to_path_buf()));
+    let index = tree_index_for_path(&tree.section, &nested).expect("row index");
+    let target = realized_row_widgets(&tree.section, &nested)
+        .into_iter()
+        .find(|(_, inside, position)| *inside && *position == index + 3)
+        .map(|(widget, _, _)| widget)
+        .expect("a hidden subtree row near the directory");
+    assert!(
+        row_widget_hidden(&target),
+        "opacity {} can-target {} {}",
+        target.opacity(),
+        target.can_target(),
+        collapse_state(&tree.section)
+    );
+    let selected = selection(&tree.section).selected();
+    let rows = tree
+        .section
+        .imp()
+        .tree_model
+        .borrow()
+        .as_ref()
+        .map(gtk4::TreeListModel::n_items);
+    for presses in [1, 2] {
+        press_with_real_pointer(&tree.window, &target, presses);
+        flush_after_delay(Duration::from_millis(500));
+        assert_eq!(
+            selection(&tree.section).selected(),
+            selected,
+            "{presses}: the selection stays on the directory row"
+        );
+        assert!(
+            activated.borrow().is_empty(),
+            "{presses}: nothing is activated"
+        );
+        assert_eq!(
+            tree.section
+                .imp()
+                .tree_model
+                .borrow()
+                .as_ref()
+                .map(gtk4::TreeListModel::n_items),
+            rows,
+            "{presses}: nothing expands or collapses"
+        );
+        assert!(
+            !target.state_flags().contains(gtk4::StateFlags::PRELIGHT),
+            "{presses}: the hidden row under the pointer is not prelit"
+        );
+        assert!(row_widget_hidden(&target), "{presses}: it stays hidden");
+    }
+    assert_eq!(
+        tree.section.workspace_section_evidence().collapses.len(),
+        1,
+        "the collapse was held throughout"
+    );
+    drop(pacing);
+    wait_until(Duration::from_secs(60), || {
+        collapse_settled(&tree.section, &nested)
+    });
+    drop(tree.window);
+}
+
+/// Design D22, R6.5 (task 10.13): with two overlapping folders (`root/` and
+/// `root/shared/`), a sliced collapse of `shared/` under `root/` decides its
+/// subtree by tree ancestry: the second folder's occurrence of `shared/`,
+/// its root row included, is not hidden, carries no collapsing class, reads
+/// expanded, and keeps loading the listing it started in the same dispatch.
+/// Fails with path membership: the path prefix marked the second folder
+/// collapsing and `stop_subtree_work` cancelled its load.
+#[test]
+fn test_overlapping_folders_hide_only_the_collapsing_occurrence() {
+    ensure_gtk_init();
+    let count = 4096;
+    let dir = tempfile::tempdir().expect("overlapping folders tempdir");
+    let root = dir.path().join("root");
+    let shared = root.join("shared");
+    seed_files(&shared, count);
+    save_workspaces(vec![WorkspaceConfig::with_folders(
+        WorkspaceId::new("overlap"),
+        "overlap",
+        vec![
+            WorkspaceFolder::new(root.clone()),
+            WorkspaceFolder::new(shared.clone()),
+        ],
+    )]);
+    let (window, sidebar) = present_sidebar_window(800);
+    let section = mapped_sections(&sidebar, 1).remove(0);
+    let row_at_depth = |path: &Path, depth: u32| {
+        let model = section.imp().tree_model.borrow().as_ref().cloned()?;
+        (0..model.n_items())
+            .filter_map(|index| model.item(index).and_downcast::<gtk4::TreeListRow>())
+            .find(|row| {
+                row.depth() == depth
+                    && row
+                        .item()
+                        .and_downcast::<FileTreeItem>()
+                        .and_then(|item| item.path())
+                        .as_deref()
+                        == Some(path)
+            })
+    };
+    let children = |row: &gtk4::TreeListRow| {
+        row.children()
+            .and_downcast::<gtk4::gio::ListStore>()
+            .map_or(0, |store| store.n_items())
+    };
+    // Only `root/` is expanded, then `shared/` under it, fully loaded.
+    wait_until(Duration::from_secs(30), || {
+        row_at_depth(&root, 0).is_some() && row_at_depth(&shared, 0).is_some()
+    });
+    wait_for_refresh_idle(&section);
+    row_at_depth(&root, 0).expect("root/").set_expanded(true);
+    wait_until(Duration::from_secs(30), || {
+        row_at_depth(&shared, 1).is_some()
+    });
+    wait_for_refresh_idle(&section);
+    let inner = row_at_depth(&shared, 1).expect("shared/ under root/");
+    inner.set_expanded(true);
+    wait_until(Duration::from_secs(60), || {
+        children(&inner) == u32::try_from(count).unwrap_or(u32::MAX)
+            && !section
+                .workspace_section_evidence()
+                .refresh_blocks_readiness
+    });
+    flush_after_delay(Duration::from_millis(300));
+    let pacing = Pacing::set(CollapsePacing::Hold);
+    // The second folder starts loading `shared/`, and in the same dispatch
+    // the occurrence under `root/` collapses.
+    let outer = row_at_depth(&shared, 0).expect("the shared/ folder row");
+    outer.set_expanded(true);
+    section
+        .imp()
+        .file_tree_view
+        .emit_by_name::<()>("activate", &[&inner.position()]);
+    assert_eq!(
+        section.workspace_section_evidence().collapses.len(),
+        1,
+        "a sliced collapse: {}",
+        collapse_state(&section)
+    );
+    wait_until(Duration::from_secs(60), || {
+        children(&outer) == u32::try_from(count).unwrap_or(u32::MAX)
+    });
+    // Bring the second folder's rows into the band.
+    let target = outer.position() + 100;
+    section
+        .imp()
+        .file_tree_view
+        .scroll_to(target, gtk4::ListScrollFlags::NONE, None);
+    flush_after_delay(Duration::from_millis(600));
+    let mut seen_outer = 0;
+    let mut positions = Vec::new();
+    let mut child = section.imp().file_tree_view.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        let Some(expander) = widget
+            .first_child()
+            .and_downcast::<gtk4::Overlay>()
+            .and_then(|overlay| overlay.child().and_downcast::<gtk4::TreeExpander>())
+        else {
+            continue;
+        };
+        let Some(row) = expander.list_row() else {
+            continue;
+        };
+        positions.push(row.position());
+        let in_outer = row == outer || row.parent().as_ref() == Some(&outer);
+        if !in_outer {
+            continue;
+        }
+        seen_outer += 1;
+        assert!(
+            row_widget_shown(&widget) && !crate::common::accessible_hidden(&widget),
+            "row {} of the second folder is not hidden",
+            row.position()
+        );
+        if row == outer {
+            assert!(!expander.has_css_class(COLLAPSING_CLASS));
+            assert!(crate::common::accessible_expanded_is(&expander, true));
+        }
+    }
+    assert!(
+        seen_outer > 100,
+        "the second folder's rows are realized: target {target}, band {:?}..{:?}",
+        positions.iter().min(),
+        positions.iter().max()
+    );
+    assert!(
+        !section.workspace_section_evidence().collapses.is_empty(),
+        "the collapse was held throughout"
+    );
+    drop(pacing);
+    wait_until(Duration::from_secs(60), || {
+        !inner.is_expanded()
+            && !section
+                .workspace_section_evidence()
+                .refresh_blocks_readiness
+    });
+    assert!(outer.is_expanded(), "the second folder stays expanded");
+    assert_eq!(children(&outer), u32::try_from(count).unwrap_or(u32::MAX));
+    drop(window);
+    drop(sidebar);
+}

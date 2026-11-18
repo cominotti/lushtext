@@ -29,6 +29,7 @@
 //!    its expander report `expanded = false`, the subtree's expansion intent
 //!    is pruned, its scans and loads and queued refresh targets are cancelled,
 //!    and selection and focus inside the subtree move to the directory row.
+//!    Every realized row of the subtree is hidden (design D22, below).
 //!    A subtree of at most `DIRECT_COLLAPSE_ROWS` rows collapses directly
 //!    here instead, until the input has removed one unit of rows that way.
 //! 2. **Steps**: each step reads the subtree's expanded stores and GTK's held
@@ -38,6 +39,29 @@
 //!    every section's collapse (design D4, D7, D25).
 //! 3. **Terminal**: the directory's direct `set_expanded(false)`, after which
 //!    the row's own expansion hook retires the drained listing as before.
+//!
+//! # Membership and hidden rows (design D22)
+//!
+//! Which rows are inside a collapsing subtree is decided by tree ancestry
+//! against the collapsing rows, held strongly for the collapse's lifetime,
+//! never by path: with overlapping workspace folders a directory is listed
+//! twice, and the occurrence that is not collapsing keeps its projection, its
+//! visibility and its loads. The arrow and accessible projection (R6.5), the
+//! hiding below and `stop_subtree_work` all read that membership; the
+//! path-keyed refresh and scan paths still key on the collapsing paths.
+//!
+//! From the input dispatch until any end of the collapse, the **row widget**
+//! (the list's child, the row overlay's parent) of each realized subtree row
+//! has opacity 0, `can-target` false and the accessible `hidden` state, so it
+//! draws nothing, takes no pointer input and AT-SPI does not present it; none
+//! of the three changes the row's measure or allocation (ledger A123). GTK
+//! recycles row widgets without resetting them, so a bind projects the state
+//! both ways. A row widget the list is creating is not in the list at its bind
+//! and is still floating (touching it from Rust would finalize it), and
+//! `gtk_widget_map` writes `hidden` false after its `map` emission: the end of
+//! each bound step, and a one-shot `G_PRIORITY_HIGH_IDLE` re-apply armed by a
+//! created row's bind or a hidden row's `map`, walk the band (about 200 rows,
+//! A1) and write the state again. No pass runs on the frame clock.
 //!
 //! # Resumption points and inversions
 //!
@@ -184,6 +208,13 @@ pub(super) struct CollapseRuntimeState {
     /// queued directories and the descendants an ancestor took over. The row
     /// factory reads it on bind, so a rebound row keeps its projection.
     collapsing_paths: RefCell<HashSet<PathBuf>>,
+    /// The rows of those directories, held strongly, so a child row's
+    /// `TreeListRow::parent` returns these objects: membership in a
+    /// collapsing subtree is decided by tree ancestry against them, never by
+    /// path (design D22, R6.5), so the second occurrence of a directory under
+    /// an overlapping workspace folder is not inside. Unlike the queue, it
+    /// keeps a record's row while that record's step runs.
+    collapsing_rows: RefCell<Vec<gtk4::TreeListRow>>,
     tick: RefCell<Option<gtk4::TickCallbackId>>,
     fallback: RefCell<Option<glib::SourceId>>,
     /// The `G_PRIORITY_DEFAULT_IDLE` source removing unbound rows between
@@ -227,6 +258,18 @@ pub(super) struct CollapseRuntimeState {
     step_dispatches: RefCell<Vec<StepDispatch>>,
     /// Row widgets the factory created (`setup`), ever.
     row_setups: Cell<u64>,
+    /// The row widgets of the collapsing subtrees' realized rows that D22
+    /// hid, each with its `map` handler (design D22, ledger A123).
+    hidden_rows: RefCell<Vec<(glib::WeakRef<gtk4::Widget>, glib::SignalHandlerId)>>,
+    /// The one-shot `G_PRIORITY_HIGH_IDLE` re-apply of D22's hiding, while
+    /// armed: a created row's bind (its row widget is not yet in the list,
+    /// A123) and a hidden row's `map` (GTK writes `hidden` false after the
+    /// `map` emission) arm it.
+    hidden_reapply: RefCell<Option<glib::SourceId>>,
+    /// Passes over the band that projected D22's hiding, ever.
+    hidden_syncs: Cell<u64>,
+    /// Of those, the passes the re-apply source ran.
+    hidden_reapply_runs: Cell<u64>,
 }
 
 /// Step dispatches the evidence keeps per collapse run: more than the
@@ -303,6 +346,12 @@ pub struct CollapseTotals {
     pub after_paint_runs: u64,
     /// Row widgets the factory created, ever.
     pub row_setups: u64,
+    /// Row widgets hidden now (design D22).
+    pub hidden_rows: u32,
+    /// Passes over the band that projected the hiding, ever.
+    pub hidden_syncs: u64,
+    /// Of those, the passes the re-apply source ran.
+    pub hidden_reapply_runs: u64,
 }
 
 thread_local! {
@@ -422,7 +471,7 @@ impl LushtextWorkspaceSection {
             let Some(path) = directory_path(row) else {
                 continue;
             };
-            if !row.is_expanded() || self.path_is_collapsing(&path) {
+            if !row.is_expanded() || self.row_is_collapsing(row) {
                 continue;
             }
             let Some((span, descendants)) = self.capture_subtree(row, &path) else {
@@ -444,6 +493,9 @@ impl LushtextWorkspaceSection {
             self.start_sliced_collapse(row, path, origin, descendants);
             runtime.first_chunk_pending.set(true);
         }
+        // D22: the subtree's realized rows draw nothing and take no pointer
+        // from the input dispatch on (G3: about 0.3 ms for the band, A123).
+        self.sync_hidden_rows();
         self.arm_collapse_source();
     }
 
@@ -453,7 +505,7 @@ impl LushtextWorkspaceSection {
     /// the row is expanded afterwards.
     pub(in crate::ui::sidebar) fn expand_directory(&self, row: &gtk4::TreeListRow) -> bool {
         if let Some(path) = directory_path(row)
-            && self.path_is_collapsing(&path)
+            && self.row_is_collapsing(row)
         {
             self.cancel_collapses_covering(&path);
         }
@@ -470,7 +522,7 @@ impl LushtextWorkspaceSection {
     /// Whether `row` reads as expanded to the user: GTK-expanded and not
     /// collapsing.
     pub(in crate::ui::sidebar) fn row_shows_expanded(&self, row: &gtk4::TreeListRow) -> bool {
-        row.is_expanded() && directory_path(row).is_none_or(|path| !self.path_is_collapsing(&path))
+        row.is_expanded() && (directory_path(row).is_none() || !self.row_is_collapsing(row))
     }
 
     /// Whether `row` lies strictly inside a collapsing subtree: its
@@ -479,15 +531,7 @@ impl LushtextWorkspaceSection {
         &self,
         row: &gtk4::TreeListRow,
     ) -> bool {
-        let Some(path) = row
-            .item()
-            .and_downcast::<FileTreeItem>()
-            .and_then(|item| item.path())
-        else {
-            return false;
-        };
-        path.parent()
-            .is_some_and(|parent| self.path_is_collapsing(parent))
+        self.row_in_collapsing_subtree(row)
     }
 
     /// Collapse `row` again, from an idle, after GTK expanded it inside a
@@ -503,7 +547,7 @@ impl LushtextWorkspaceSection {
             };
             if row.is_expanded() && section.row_inside_collapsing_subtree(&row) {
                 if let Some(path) = directory_path(&row) {
-                    section.stop_subtree_work(&path);
+                    section.stop_subtree_work(&row, &path, &[]);
                 }
                 row.set_expanded(false);
                 section.refresh_workspace_watch_row(&row);
@@ -531,8 +575,8 @@ impl LushtextWorkspaceSection {
     ) {
         // A collapsing directory and every expanded directory inside its
         // subtree show collapsed (design R6.5).
-        let collapsing = row.is_expanded()
-            && directory_path(row).is_some_and(|path| self.path_is_collapsing(&path));
+        let collapsing =
+            row.is_expanded() && directory_path(row).is_some() && self.row_is_collapsing(row);
         if collapsing {
             expander.add_css_class(COLLAPSING_CLASS);
             accessibility::set_expanded(overlay, Some(false));
@@ -576,6 +620,17 @@ impl LushtextWorkspaceSection {
             after_paint_connected: runtime.after_paint.borrow().is_some(),
             after_paint_runs: runtime.after_paint_runs.get(),
             row_setups: runtime.row_setups.get(),
+            hidden_rows: u32::try_from(
+                runtime
+                    .hidden_rows
+                    .borrow()
+                    .iter()
+                    .filter(|(row, _)| row.upgrade().is_some())
+                    .count(),
+            )
+            .unwrap_or(u32::MAX),
+            hidden_syncs: runtime.hidden_syncs.get(),
+            hidden_reapply_runs: runtime.hidden_reapply_runs.get(),
         }
     }
 
@@ -594,10 +649,12 @@ impl LushtextWorkspaceSection {
         let ended = !runtime.queue.borrow().is_empty();
         runtime.queue.borrow_mut().clear();
         runtime.collapsing_paths.borrow_mut().clear();
+        runtime.collapsing_rows.borrow_mut().clear();
         if ended {
             runtime.last_end.set(Some(CollapseEnd::Removed));
         }
         self.stop_collapse_sources();
+        self.clear_hidden_rows();
     }
 
     /// Start or stop the step sources for the list's mapped state.
@@ -885,8 +942,13 @@ impl LushtextWorkspaceSection {
         let list = &*self.imp().file_tree_view;
         let now = glib::monotonic_time();
         if list.is_mapped() && !frame_ticks_off_unmapped() {
-            if frame_ticks_allowed() && runtime.tick.borrow().is_none() {
-                // Mapped again since the last check: pace from frames.
+            if frame_ticks_allowed()
+                && (runtime.tick.borrow().is_none() || runtime.after_paint.borrow().is_none())
+            {
+                // Mapped again since the last check, or frames allowed again
+                // after a map that could not connect them: pace from frames.
+                // The tick alone keeps `last_step_us` fresh, so without its
+                // `after-paint` handler no step would ever run.
                 self.arm_collapse_source();
             }
             let idle_us = now.saturating_sub(runtime.last_step_us.get());
@@ -908,6 +970,16 @@ impl LushtextWorkspaceSection {
     /// lasts (one, for the step source's D23 chunk), and at most one bound
     /// step within the frame interval's budget, as `source` allows.
     fn run_collapse_step(&self, source: StepSource) -> StepOutcome {
+        let outcome = self.run_collapse_step_inner(source);
+        // D22: rows a bound removal created entered the list inside the step,
+        // after their bind (A123); hide them before the next frame.
+        if outcome.bound.is_some() && !self.imp().collapse_runtime.queue.borrow().is_empty() {
+            self.sync_hidden_rows();
+        }
+        outcome
+    }
+
+    fn run_collapse_step_inner(&self, source: StepSource) -> StepOutcome {
         if steps_held() {
             return StepOutcome::default();
         }
@@ -1316,7 +1388,7 @@ impl LushtextWorkspaceSection {
     /// nobody sees (design D7).
     fn collapse_now(&self, row: &gtk4::TreeListRow) {
         if let Some(path) = directory_path(row) {
-            self.stop_subtree_work(&path);
+            self.stop_subtree_work(row, &path, &[]);
         }
         row.set_expanded(false);
         self.record_entry_point_transition(row);
@@ -1366,13 +1438,17 @@ impl LushtextWorkspaceSection {
             .collapsing_paths
             .borrow_mut()
             .insert(path.clone());
+        imp.collapse_runtime
+            .collapsing_rows
+            .borrow_mut()
+            .push(row.clone());
         self.reproject_realized_rows();
         // Intent: the subtree is collapsed from now on.
         imp.expanded_paths
             .borrow_mut()
             .retain(|candidate| !candidate.starts_with(&path));
         // No load, scan or refresh may append to a store being drained.
-        self.stop_subtree_work(&path);
+        self.stop_subtree_work(row, &path, &descendants);
         // Several collapses drain bottom-up (design R5, D7): a later
         // subtree's rows leave while unbound, so an earlier one's units bring
         // in only rows already collapsed. Removals never reorder two disjoint
@@ -1401,13 +1477,37 @@ impl LushtextWorkspaceSection {
     /// Cancel every scan, load turn and queued refresh target in the subtree
     /// of `path` (the directory's own pending refresh stays: it refreshes the
     /// directory's row, not its children).
-    fn stop_subtree_work(&self, path: &Path) {
+    fn stop_subtree_work(
+        &self,
+        row: &gtk4::TreeListRow,
+        path: &Path,
+        descendants: &[ExpandedDescendant],
+    ) {
         let imp = self.imp();
+        // Membership by the subtree's own rows (design D22): the stores of
+        // the row and its captured descendants are this occurrence's. A store
+        // or refresh under the path that another workspace folder also lists
+        // (overlapping folders) belongs, or may belong, to that folder's
+        // occurrence, and keeps loading; on the direct path, which captured
+        // no descendants, such a store of this occurrence is detached by
+        // GTK's collapse, and its stale batches are dropped as any detached
+        // store's are.
+        let own_stores: Vec<usize> = std::iter::once(row)
+            .chain(descendants.iter().map(|(_, descendant)| descendant))
+            .filter_map(|candidate| candidate.children().and_downcast::<gio::ListStore>())
+            .map(|store| super::scan_execution::child_store_key(&store))
+            .collect();
+        let other_roots = self.other_folder_roots(row);
+        let listed_elsewhere =
+            |candidate: &Path| other_roots.iter().any(|root| candidate.starts_with(root));
         let store_keys: Vec<usize> = imp
             .child_store_paths
             .borrow()
             .iter()
-            .filter(|(_, store_path)| store_path.starts_with(path))
+            .filter(|(key, store_path)| {
+                store_path.starts_with(path)
+                    && (own_stores.contains(key) || !listed_elsewhere(store_path))
+            })
             .map(|(key, _)| *key)
             .collect();
         for key in store_keys {
@@ -1416,8 +1516,28 @@ impl LushtextWorkspaceSection {
         imp.refresh_runtime
             .pending_paths
             .borrow_mut()
-            .retain(|pending| !pending.starts_with(path) || pending == path);
+            .retain(|pending| {
+                !pending.starts_with(path) || pending == path || listed_elsewhere(pending)
+            });
         super::scan_execution::sync_child_scan_busy_state(self);
+    }
+
+    /// The workspace folder roots other than the one `row` lies under.
+    fn other_folder_roots(&self, row: &gtk4::TreeListRow) -> Vec<PathBuf> {
+        let mut top = row.clone();
+        while let Some(parent) = top.parent() {
+            top = parent;
+        }
+        let own = directory_path(&top);
+        let Some(model) = self.imp().tree_model.borrow().as_ref().cloned() else {
+            return Vec::new();
+        };
+        let roots = model.model();
+        (0..roots.n_items())
+            .filter_map(|index| roots.item(index).and_downcast::<FileTreeItem>())
+            .filter_map(|item| item.path())
+            .filter(|root| Some(root) != own.as_ref())
+            .collect()
     }
 
     /// End one collapse with `end`.
@@ -1427,8 +1547,13 @@ impl LushtextWorkspaceSection {
             .collapsing_paths
             .borrow_mut()
             .retain(|candidate| !candidate.starts_with(&record.path));
+        runtime.collapsing_rows.borrow_mut().retain(|candidate| {
+            candidate != &record.row && !row_descends_from(candidate, &record.row)
+        });
         runtime.last_end.set(Some(end));
         self.reproject_realized_rows();
+        // D22: by any end, no row of the subtree stays hidden.
+        self.sync_hidden_rows();
     }
 
     /// End every collapse whose subtree holds `path` because `path` is being
@@ -1455,6 +1580,12 @@ impl LushtextWorkspaceSection {
                 .collapsing_paths
                 .borrow_mut()
                 .retain(|candidate| !path.starts_with(candidate));
+            imp.collapse_runtime
+                .collapsing_rows
+                .borrow_mut()
+                .retain(|candidate| {
+                    directory_path(candidate).is_none_or(|own| !path.starts_with(own))
+                });
             return;
         }
         let mut recollapse: Vec<(gtk4::TreeListRow, CollapseOrigin)> = Vec::new();
@@ -1508,6 +1639,184 @@ impl LushtextWorkspaceSection {
         self.arm_collapse_source();
     }
 
+    /// Whether `row` lies strictly inside a collapsing subtree, by tree
+    /// ancestry against the collapsing rows (design D22, R6.5): never by
+    /// path, so a second occurrence of a directory under an overlapping
+    /// workspace folder is not inside.
+    pub(super) fn row_in_collapsing_subtree(&self, row: &gtk4::TreeListRow) -> bool {
+        let collapsing = self.imp().collapse_runtime.collapsing_rows.borrow();
+        !collapsing.is_empty()
+            && collapsing
+                .iter()
+                .any(|candidate| row_descends_from(row, candidate))
+    }
+
+    /// Whether `row` is a collapsing directory or lies inside one's subtree,
+    /// by tree ancestry (design R6.5).
+    fn row_is_collapsing(&self, row: &gtk4::TreeListRow) -> bool {
+        let collapsing = self.imp().collapse_runtime.collapsing_rows.borrow();
+        !collapsing.is_empty()
+            && collapsing
+                .iter()
+                .any(|candidate| candidate == row || row_descends_from(row, candidate))
+    }
+
+    /// Project D22's hiding on a freshly bound row (design D22). A row widget
+    /// the list is creating is not in the list yet at bind, and is still
+    /// floating: a reference to it taken here would sink that reference, and
+    /// dropping it would finalize the widget before GTK inserts it (ledger
+    /// A123). Such a row (its overlay has no root) only arms the re-apply,
+    /// which hides it once it is in the list; a rebound row is hidden or
+    /// cleared here, because GTK recycles row widgets without resetting them.
+    pub(super) fn project_collapse_hiding(&self, overlay: &gtk4::Overlay, row: &gtk4::TreeListRow) {
+        let runtime = &self.imp().collapse_runtime;
+        if runtime.collapsing_rows.borrow().is_empty() && runtime.hidden_rows.borrow().is_empty() {
+            return;
+        }
+        let inside = self.row_in_collapsing_subtree(row);
+        if overlay.root().is_none() {
+            if inside {
+                self.arm_hidden_reapply();
+            }
+            return;
+        }
+        let Some(row_widget) = overlay.parent() else {
+            return;
+        };
+        if inside {
+            self.hide_row_widget(&row_widget);
+        } else {
+            self.clear_row_widget(&row_widget);
+        }
+    }
+
+    /// One pass over the realized band (about 200 rows, A1): every row
+    /// inside a collapsing subtree is hidden, every other row the hiding
+    /// touched is cleared, and the `hidden` state is written again on the
+    /// hidden rows, which GTK's `map` resets (A123).
+    fn sync_hidden_rows(&self) {
+        let runtime = &self.imp().collapse_runtime;
+        runtime.hidden_syncs.set(runtime.hidden_syncs.get() + 1);
+        if runtime.queue.borrow().is_empty() {
+            self.clear_hidden_rows();
+            return;
+        }
+        let mut row_widget = self.imp().file_tree_view.first_child();
+        while let Some(widget) = row_widget {
+            row_widget = widget.next_sibling();
+            let Some(row) = widget
+                .first_child()
+                .and_downcast::<gtk4::Overlay>()
+                .and_then(|overlay| overlay.child().and_downcast::<gtk4::TreeExpander>())
+                .and_then(|expander| expander.list_row())
+            else {
+                continue;
+            };
+            if self.row_in_collapsing_subtree(&row) {
+                self.hide_row_widget(&widget);
+            } else {
+                self.clear_row_widget(&widget);
+            }
+        }
+        runtime
+            .hidden_rows
+            .borrow_mut()
+            .retain(|(row, _)| row.upgrade().is_some());
+        for (row, _) in runtime.hidden_rows.borrow().iter() {
+            if let Some(row) = row.upgrade() {
+                accessibility::set_hidden(&row, true);
+            }
+        }
+    }
+
+    /// Hide one row widget (opacity 0, `can-target` false, accessible
+    /// `hidden`: paint-only, A123), once.
+    fn hide_row_widget(&self, row_widget: &gtk4::Widget) {
+        let runtime = &self.imp().collapse_runtime;
+        if runtime
+            .hidden_rows
+            .borrow()
+            .iter()
+            .any(|(hidden, _)| hidden.upgrade().as_ref() == Some(row_widget))
+        {
+            return;
+        }
+        row_widget.set_opacity(0.0);
+        row_widget.set_can_target(false);
+        accessibility::set_hidden(row_widget, true);
+        let section = self.downgrade();
+        let handler = row_widget.connect_map(move |_| {
+            if let Some(section) = section.upgrade() {
+                section.arm_hidden_reapply();
+            }
+        });
+        runtime
+            .hidden_rows
+            .borrow_mut()
+            .push((row_widget.downgrade(), handler));
+    }
+
+    /// Clear what [`Self::hide_row_widget`] set on `row_widget`, if it set
+    /// anything. The `hidden` state is reset, not written false, so GTK's map
+    /// writes govern it again.
+    fn clear_row_widget(&self, row_widget: &gtk4::Widget) {
+        let runtime = &self.imp().collapse_runtime;
+        let entry = {
+            let mut hidden = runtime.hidden_rows.borrow_mut();
+            hidden
+                .iter()
+                .position(|(row, _)| row.upgrade().as_ref() == Some(row_widget))
+                .map(|index| hidden.swap_remove(index))
+        };
+        if let Some((_, handler)) = entry {
+            row_widget.disconnect(handler);
+            row_widget.set_opacity(1.0);
+            row_widget.set_can_target(true);
+            accessibility::set_hidden(row_widget, false);
+        }
+    }
+
+    /// Clear every row the hiding touched: no collapse is pending.
+    fn clear_hidden_rows(&self) {
+        let runtime = &self.imp().collapse_runtime;
+        let hidden: Vec<_> = runtime.hidden_rows.borrow_mut().drain(..).collect();
+        for (row, handler) in hidden {
+            if let Some(row) = row.upgrade() {
+                row.disconnect(handler);
+                row.set_opacity(1.0);
+                row.set_can_target(true);
+                accessibility::set_hidden(&row, false);
+            }
+        }
+        if let Some(source) = runtime.hidden_reapply.borrow_mut().take() {
+            source.remove();
+        }
+    }
+
+    /// Arm the one-shot re-apply of D22's hiding: at `G_PRIORITY_HIGH_IDLE`,
+    /// so it runs once the dispatch that created or mapped a row has
+    /// returned, before the next frame when it is armed between frames
+    /// (A125). It runs no step.
+    fn arm_hidden_reapply(&self) {
+        let runtime = &self.imp().collapse_runtime;
+        if runtime.hidden_reapply.borrow().is_some() || runtime.queue.borrow().is_empty() {
+            return;
+        }
+        let section = self.downgrade();
+        let id = glib::idle_add_local_full(glib::Priority::HIGH_IDLE, move || {
+            if let Some(section) = section.upgrade() {
+                let runtime = &section.imp().collapse_runtime;
+                runtime.hidden_reapply.borrow_mut().take();
+                runtime
+                    .hidden_reapply_runs
+                    .set(runtime.hidden_reapply_runs.get() + 1);
+                section.sync_hidden_rows();
+            }
+            glib::ControlFlow::Break
+        });
+        runtime.hidden_reapply.replace(Some(id));
+    }
+
     /// Re-project every realized directory row from the collapse state:
     /// the rows of a collapsing subtree show collapsed, and a row whose path
     /// left the collapsing set shows GTK's state again (design R6.4, R6.5).
@@ -1520,10 +1829,10 @@ impl LushtextWorkspaceSection {
             let Some(row) = expander.list_row() else {
                 return;
             };
-            let Some(path) = directory_path(&row) else {
+            if directory_path(&row).is_none() {
                 return;
-            };
-            let collapsing = row.is_expanded() && self.path_is_collapsing(&path);
+            }
+            let collapsing = row.is_expanded() && self.row_is_collapsing(&row);
             let shown_collapsing = expander.has_css_class(COLLAPSING_CLASS);
             if collapsing == shown_collapsing {
                 return;
@@ -1649,16 +1958,16 @@ impl LushtextWorkspaceSection {
         let Some(row) = expander.list_row() else {
             return false;
         };
-        let Some(path) = directory_path(&row) else {
+        if directory_path(&row).is_none() {
             return false;
-        };
+        }
         if self.row_inside_collapsing_subtree(&row) {
             // A row whose ancestor collapses shows collapsed and ignores
             // disclosure (design R6.5): no key may end the ancestor's
             // collapse or start GTK's own toggle.
             return true;
         }
-        let collapsing = self.path_is_collapsing(&path);
+        let collapsing = self.row_is_collapsing(&row);
         let shown_expanded = row.is_expanded() && !collapsing;
         match intent {
             DisclosureKey::Collapse | DisclosureKey::Toggle if shown_expanded => {
@@ -1756,6 +2065,18 @@ fn held_in(facts: &StepFacts) -> u32 {
 }
 
 /// The path of the directory `row` shows, if it shows a real directory.
+/// Whether `ancestor` is a strict ancestor of `row` in the tree list model.
+fn row_descends_from(row: &gtk4::TreeListRow, ancestor: &gtk4::TreeListRow) -> bool {
+    let mut parent = row.parent();
+    while let Some(candidate) = parent {
+        if &candidate == ancestor {
+            return true;
+        }
+        parent = candidate.parent();
+    }
+    false
+}
+
 fn directory_path(row: &gtk4::TreeListRow) -> Option<PathBuf> {
     row.item()
         .and_downcast::<FileTreeItem>()

@@ -156,6 +156,30 @@ event-controller ownership explicit when the controller itself is the lifetime
 owner. Remaining row-data uses should be scalar state, not hidden signal or
 binding ownership.
 
+## Work Between Frames
+
+Work that must land before the next frame but must not run inside it (the
+sidebar's paced collapse, `slice-large-directory-collapse` D25, ledger
+A124/A125) runs from a **one-shot `G_PRIORITY_HIGH_IDLE` source**: above the
+frame clock's own priority and below input, so it runs between frames even
+when a frame is due, and the frame then lays out only what it changed.
+
+- Arm it from the input dispatch, from a frame's `after-paint` on the widget's
+  frame clock, and from its own dispatch while work is left; at most one is
+  armed, and its id is cleared at the start of its dispatch.
+- Connect the `after-paint` handler only while work is pending on a mapped
+  widget, one handler per owner, on the clock the widget has now; disconnect it
+  on `unmap` and reconnect it on `map`, and make any periodic fallback reconnect
+  it when it finds the widget mapped without it, because a tick callback alone
+  keeps the clock running without anything ever arming the source.
+- A tick callback may stay registered to keep frames coming, but takes no
+  step: a step inside the frame clock's update phase is a step inside the frame.
+- A per-frame budget read outside a frame keys on the frame counter, which
+  between frames equals the counter of the frame just painted.
+- Widget state the work must re-apply after GTK writes it (a `map` that resets
+  an accessible state) is re-applied from the same kind of source, armed by the
+  event, never from the frame tick.
+
 ## Action Catalog And Automation Docs
 
 Every user operation exposed through an app action, window action, command

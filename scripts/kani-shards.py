@@ -183,13 +183,14 @@ LIST_BUDGET_MINUTES = 2.8
 # Raised to 1.8 by stream-replace-all's dispatches (1.78 GiB in both).
 LIST_BUDGET_PEAK_GIB = 1.8
 # slice-large-directory-collapse task 7.5: the local `make kani` figure of the
-# new shard (2026-11-15: 4.29 min, 2.44 GiB peak), owed two dispatched kani.yml
-# runs before the change is archived.
-SIDEBAR_COLLAPSE_MINUTES = 4.3
+# new shard (2026-11-15: 4.29 min, 2.44 GiB peak; 2026-11-18 with task 9.11's
+# fourth harness: 4.41 min, 2.44 GiB), owed two dispatched kani.yml runs before
+# the change is archived.
+SIDEBAR_COLLAPSE_MINUTES = 4.5
 SIDEBAR_COLLAPSE_PEAK_GIB = 2.5
 SIDEBAR_COLLAPSE_MEASURED_IN = (
     "PENDING DISPATCH (owed by slice-large-directory-collapse): local make kani "
-    "2026-11-15, 4.29 min / 2.44 GiB"
+    "2026-11-18, 4.41 min / 2.44 GiB"
 )
 LIST_BUDGET_MEASURED_IN = (
     "runs 42322273437, 42331071390 (pull_request, max of the two); with the B5 "
@@ -1004,9 +1005,9 @@ ORACLES: dict[str, Oracle] = {
         (
             _h(_COLLAPSE + "a_descendant_goes_before_its_ancestor", 8.25, "ci"),
             _h(_COLLAPSE + "every_step_makes_bounded_progress", 84.79, "ci"),
-            # Placeholder seconds (copied from the harness above) until the
-            # detached core-sidebar-collapse run measures it (slice-large-directory-collapse 9.11).
-            _h(_COLLAPSE + "the_collapse_rank_strictly_decreases", 84.79, "ci"),
+            # Measured by the detached core-sidebar-collapse run of
+            # 2026-11-18 (slice-large-directory-collapse 7.5, task 9.11's harness).
+            _h(_COLLAPSE + "the_collapse_rank_strictly_decreases", 28.6, "local"),
             _h(_COLLAPSE + "each_step_takes_what_its_bound_allows", 156.41, "local"),
         ),
         functions=("next_collapse_step",),

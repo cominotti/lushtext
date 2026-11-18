@@ -3559,6 +3559,32 @@ the sidebar's shown and model states differ only while a collapse is
 pending, when the row is GTK-expanded and no `set_expanded` reaches it until
 the terminal one.
 
+#### D22 as implemented (task 10.13, 2026-11-18)
+
+- **Membership.** A `collapsing_rows` list beside `collapsing_paths` holds each
+  collapsing row strongly from intent to its end (the queue removes a record
+  while its step runs, so binds inside a step would otherwise miss it). A row is
+  collapsing when it is one of them or descends from one by
+  `TreeListRow::parent`; the R6.5 projection, D22 and the disclosure routes read
+  this. The refresh and scan paths keep `path_is_collapsing`: they key on paths
+  by construction, and a refresh of a path refreshes every occurrence.
+- **`stop_subtree_work`.** It cancels the stores of the collapsing row and its
+  captured descendants, plus path-prefixed stores and queued refreshes that no
+  other workspace folder root covers. On the direct path (nothing captured), a
+  store of this occurrence under another folder root keeps its load until
+  GTK's collapse detaches it, and its batches are dropped as any detached
+  store's; the other occurrence keeps loading (the overlap test).
+- **Re-apply.** The band is walked at intent, at the end of each bound step
+  that leaves a collapse pending, at every end, and by a one-shot
+  `G_PRIORITY_HIGH_IDLE` source armed by a created row's bind (its overlay has
+  no root yet, A123) or a hidden row's `map`. No pass runs on the frame clock
+  (`collapse_hidden_syncs` stays still between `before-paint` and
+  `after-paint`).
+- **Fallback re-arm.** The fallback now re-arms the frame pacing when the list
+  is mapped and the `after-paint` handler is missing, not only when the tick
+  is: a `map` that could not connect it (under the `Hold` seam) left the tick
+  refreshing `last_step_us` forever with nothing arming the step source.
+
 ### R14. Review of R13 (2026-11-18)
 
 Reviewed against the round logs (`rev/attr2/slc-r13-*.log`,

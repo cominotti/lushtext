@@ -593,6 +593,12 @@ pub struct WorkspaceSectionEvidence {
     pub collapse_after_paint_runs: u64,
     /// Row widgets the section's factory created, ever.
     pub row_setups: u64,
+    /// Row widgets of collapsing subtrees hidden now (design D22).
+    pub collapse_hidden_rows: u32,
+    /// Passes over the band that projected that hiding, ever.
+    pub collapse_hidden_syncs: u64,
+    /// Of those, the passes its one-shot re-apply source ran.
+    pub collapse_hidden_reapply_runs: u64,
     /// The directory of the latest child-scan terminal publication, and
     /// whether its store was the shown (retained) one (D12, task 1.4).
     pub last_scan_terminal: Option<(std::path::PathBuf, bool)>,
@@ -669,6 +675,9 @@ impl LushtextWorkspaceSection {
             after_paint_connected: collapse_after_paint_connected,
             after_paint_runs: collapse_after_paint_runs,
             row_setups,
+            hidden_rows: collapse_hidden_rows,
+            hidden_syncs: collapse_hidden_syncs,
+            hidden_reapply_runs: collapse_hidden_reapply_runs,
         } = self.collapse_evidence();
 
         let last_scan_terminal = refresh.last_scan_terminal.borrow().clone();
@@ -726,6 +735,9 @@ impl LushtextWorkspaceSection {
             collapse_after_paint_connected,
             collapse_after_paint_runs,
             row_setups,
+            collapse_hidden_rows,
+            collapse_hidden_syncs,
+            collapse_hidden_reapply_runs,
             last_scan_terminal,
         }
     }

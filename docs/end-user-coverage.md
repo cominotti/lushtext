@@ -282,7 +282,13 @@ they are not default PR gates:
   directory budgets (`LUSHTEXT_SEARCH_RETAINED_BYTES`,
   `LUSHTEXT_SIDEBAR_DIRECTORY_RETAINED_BYTES`) so small fixtures reach the
   limited-search label and the "Showing X of Y entries" budget row, which the
-  real hundreds-of-MiB budgets would not. The lane writes bounded per-scenario manifests, assertion JSONL,
+  real hundreds-of-MiB budgets would not. The `workspace-tree-large-collapse`
+  case reveals an entry of a 4,096-entry directory, collapses the directory
+  with the AT-SPI bus and the tree listener up (a sliced collapse whose
+  subtree rows are hidden from intent until it ends,
+  `slice-large-directory-collapse` D22), waits for `workspace-refresh-complete`
+  and asserts the directory and its sibling are presented while no entry of
+  the subtree is. The lane writes bounded per-scenario manifests, assertion JSONL,
   warning status, screenshots, AT-SPI tree/focus excerpts, `summary.txt`, and
   `summary.json`; unsupported AT-SPI or compositor hosts skip with an explicit
   reason that does not count as coverage. It complements widget tests that

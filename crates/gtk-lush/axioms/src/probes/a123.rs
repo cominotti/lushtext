@@ -155,9 +155,9 @@ pub enum BindHiding {
     HideAndMark,
 }
 
-/// The A123 tree: a directory expanded over [`SUBTREE_ROWS`] children, then
-/// [`AFTER_ROWS`] siblings, in a list whose rows are an item child (a
-/// [`MeasureCountingBin`]) holding a tree expander with an icon and a label.
+/// The A123 tree: a directory expanded over `SUBTREE_ROWS` (256) children, then
+/// `AFTER_ROWS` (400) siblings, in a list whose rows are an item child (a
+/// bin counting its measures) holding a tree expander with an icon and a label.
 #[derive(Clone)]
 pub struct HideFixture {
     /// The directory's child store.
