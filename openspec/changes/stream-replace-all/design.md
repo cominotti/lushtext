@@ -1281,12 +1281,16 @@ stage spawns no subagents).
   past the last key. So no late record within one tick of a key means the
   iteration that handled it took less than about 2 ms. The judging code did
   not check any of that: a log with dropped records, no start record, no
-  watchdog ticks, or one that ended inside a window read `within`. It now
+  watchdog ticks, or one that ended inside a window read `within`, and (d)
+  never compared the keys it judged with the keys the lane typed. It now
   fails closed (`watchdog_coverage` in `scripts/responsiveness-smoke-driver.py`:
   without that proof an absent late record is `not measured`, with the
   reason in the quantity's note), for (p), (d), every span and every growth
-  frame. Self-test cases for each, failing on the previous code
-  (`.claude/handoffs/stream-replace-all/stage4-driver-failing-first.log`).
+  frame, and (d) is `not measured` unless the run phase's `delivery` is
+  verified with every typed key delivered to the scratch editor and one key
+  record per typed key. Self-test cases for each, failing on the previous
+  code (`.claude/handoffs/stream-replace-all/stage4-driver-failing-first.log`,
+  `stage4-driver-delivery-failing-first.log`).
 - **R2. `frame_spans()` sums every layout of a frame**, from the first
   layout's start to the paint's end, and a growth step is matched to the
   first frame that ends after it (a frame whose first layout began before
@@ -1355,3 +1359,20 @@ stage spawns no subagents).
   on the final tree. Both runs measured every shard, and the eleven figures
   they exceeded (by up to 1.1 min or 0.2 GiB) are raised, none lowered, as
   `close-protected-install-proof-strength` did.
+- **R8. Closing Skipped Files before the growth starts.** Traced, no
+  finding: `closed` drops a running growth, and the 512 ms timer that fires
+  during the close animation holds the list and the model weakly, so it
+  starts a growth only while the closing list still exists; the growth's
+  tick callback belongs to the list (`RowGrowth` holds the list weakly), so
+  it ends with it and nothing outlives the dialog. At worst a few growth
+  steps run on a list that is fading out.
+- **R9. The scroll test's margin, and a pre-existing lane defect fixed.**
+  The scroll test asserts a wall-clock order (the first growth step before
+  the 512 ms delay): the step came 97–102 ms after the opening in the
+  toolbox (three runs and the `surfaces` shard) and in the CI image lane
+  under `--cpus 4` (eight runs), a fivefold margin. The CI image lane itself
+  could not run any widget test: the launcher's `scripts/headless-session`
+  builds the session helper with cargo, which the image does not have, so
+  every run ended `UNSUPPORTED-HOST`. `scripts/ci-image-widget-test.sh` now
+  passes the host-built helper as `GTK_LUSH_SESSION_BIN` (and says to build
+  it first); `.agents/rules/build.md`, "CI image lane", says so too.

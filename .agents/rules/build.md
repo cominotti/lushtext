@@ -1022,8 +1022,10 @@ the widget suite on its platform first.
   CI-only: `scripts/ci-image-widget-test.sh` reads the `widget-tests` job's
   image and `dnf` line from `ci.yml`, refuses to run when the image's toolkit
   differs from the host's, and runs the binary already built here (build it
-  first, `scripts/heavy.sh -- cargo test -p lushtext --test widget --no-run`)
-  in a fresh container per run, N times (`--runs`), limited by `--cpus N` (a
+  first, `scripts/heavy.sh -- cargo test -p lushtext --test widget --no-run`,
+  and the session helper, `scripts/heavy.sh -- cargo build -p
+  gtk-lush-proof-harness --bin gtk-lush-session`, which it passes as
+  `GTK_LUSH_SESSION_BIN` because the image has no cargo) in a fresh container per run, N times (`--runs`), limited by `--cpus N` (a
   quota; never `taskset`). Each run is CI's own step, with `cargo` shimmed to
   that binary: `scripts/run-widget-tests.sh --headless --retries 1 -- <test
   args>`, or `scripts/widget-shards.py run NAME` for `--shard NAME`, one shard

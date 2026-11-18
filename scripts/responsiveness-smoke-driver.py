@@ -6054,6 +6054,17 @@ def replace_all_judgement(parsed: dict, phases: list[dict], scenario: str | None
                 # The iteration that handled the key ran past it; a tick due
                 # within one tick of the key fires late by what is left of it.
                 keys.append(lateness_item((int(record["t_us"]), int(record["t_us"]) + tick), interact, start_us=int(record["t_us"]), target=record.get("target")))
+        # Every key the lane typed must have reached the scratch editor: a
+        # key lost on the way leaves no record to judge, so a short count is
+        # not measured, never within.
+        delivery = (by_name.get("replace-run") or {}).get("delivery") or {}
+        typed = delivery.get("typed")
+        lost = None
+        if keys and not (delivery.get("verified") and typed == len(keys) and delivery.get("undelivered") == 0 and delivery.get("to_editor") == typed):
+            lost = f"{len(keys)} key records against delivery {delivery or 'unrecorded'}"
+            for item in keys:
+                item["verdict"] = "not measured"
+                item["gap"] = lost
         out["quantities"].append(quantity("d", "every typing dispatch during the 512 MiB run", interact, keys, "" if keys else "no key reached the app (RemoteDesktop unavailable?)"))
     # Recorded, not judged: the dispatch right after each settings flush.
     for record in parsed["records"]["span"]:
@@ -6923,7 +6934,8 @@ def self_test() -> int:
         expect(verdicts["p"] == "not measured" and verdicts["a"] == "not measured", f"{label}: an absent late record is not measured, never within")
     truncated = {**ra_skips, "records": {**ra_skips["records"], "late": [], "second": [{"t_us": 100_000, "ticks": 990}], "span": [r for r in ra_skips["records"]["span"] if r["start_us"] < 153_000]}}
     expect({q["name"]: q["verdict"] for q in replace_all_judgement(truncated, ra_skips_phases, "skips", ra_budgets, 500)["quantities"]}["a"] == "not measured", "a log that ends inside the window is not measured")
-    ra_run_phases = [{"name": "replace-prepare", "start_us": 0, "end_us": 100_000}, {"name": "replace-run", "start_us": 100_000, "end_us": 2_000_000}]
+    ra_delivered = {"typed": 2, "undelivered": 0, "to_editor": 2, "verified": True}
+    ra_run_phases = [{"name": "replace-prepare", "start_us": 0, "end_us": 100_000}, {"name": "replace-run", "start_us": 100_000, "end_us": 2_000_000, "delivery": ra_delivered}]
     ra_run = {
         "tick_us": 1_000,
         "started": True,
@@ -6940,6 +6952,15 @@ def self_test() -> int:
     expect(judged_run["d"]["verdict"] == "over" and judged_run["d"]["worst_us"] == 9_500, "(d) takes the iteration that ran past a key")
     quiet_run = {**ra_run, "records": {**ra_run["records"], "late": []}}
     expect({q["name"]: q["verdict"] for q in replace_all_judgement(quiet_run, ra_run_phases, "run", ra_budgets, 500)["quantities"]} == {"p": "within", "c": "within", "d": "within"}, "keys with no late iteration around them are within while the watchdog ticked")
+    for label, delivery in (
+        ("a key the lane typed never arrived", {**ra_delivered, "typed": 3, "to_editor": 3}),
+        ("a key went elsewhere", {**ra_delivered, "to_editor": 1}),
+        ("delivery unverified", {**ra_delivered, "verified": False}),
+        ("no delivery record", None),
+    ):
+        phases = [ra_run_phases[0], {**ra_run_phases[1], "delivery": delivery}]
+        lost = {q["name"]: q for q in replace_all_judgement(quiet_run, phases, "run", ra_budgets, 500)["quantities"]}["d"]
+        expect(lost["verdict"] == "not measured" and "delivery" in lost["note"], f"(d) is not measured when {label}")
     blind_run = {**quiet_run, "dropped": 1}
     blind = {q["name"]: q for q in replace_all_judgement(blind_run, ra_run_phases, "run", ra_budgets, 500)["quantities"]}
     expect(blind["d"]["verdict"] == "not measured" and "dropped" in blind["d"]["note"], "(d) with dropped probe records is not measured, and says why")
