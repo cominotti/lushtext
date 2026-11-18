@@ -79,8 +79,8 @@ kills the three mutation survivors it owes them.
   - Generated, enabled-indexed operation scripts drive the real
     `draft_service` over a tempdir, in lockstep with the journal model, and
     compare an abstraction of disk and returned state after every step.
-  - Crashes happen between service calls, because a panic inside one would
-    poison the manifest lock.
+  - Crashes happen between model steps, because a panic inside a service
+    call would poison the manifest lock.
   - Reach floors and a two-mutant calibration keep the property from passing
     vacuously.
 - **Widen the journal fault domain.** `Fault { None, BeforeEffect,
@@ -156,9 +156,9 @@ _None._
   - the scheduled Kani shards `core-journal-and-write`,
     `core-journal-liveness`, `core-second-writer` and `core-multi-window` each
     run once, detached, on the final code;
-  - their budgets become `PENDING DISPATCH (owed by this change)` until a
-    `kani.yml` dispatch at the end of implementation;
-  - proof strength is owed, with its Kani arm sharded;
+  - their budgets become `PENDING DISPATCH (owed by this change)` until two
+    `kani.yml` dispatches at the end of implementation;
+  - proof strength is owed for `journal_core`, with its Kani arm sharded;
   - no GTK axiom, and no timing verdict: no hot path changes, and the
     uninstalled tap costs one thread-local check per action in `test-utils`
     builds only.

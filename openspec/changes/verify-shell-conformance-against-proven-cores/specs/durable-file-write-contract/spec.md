@@ -22,7 +22,8 @@ other threads. Shipping builds SHALL compile it to nothing.
 
 ### Requirement: Durable-write faults are injected at the backend call
 Typed faults SHALL be injected by making one fallible backend call return an
-error, addressed by protocol kind, run, action, and call index. The shell
+error, addressed within a protocol run, by a run's destination, or by call
+order across the whole armed scope. The shell
 SHALL build its outcome and recorded error through its ordinary error path,
 so an injected failure, name collision, cross-device rename, or unsupported
 no-replace rename is handled exactly as a real one. The existing single-point
@@ -46,7 +47,7 @@ model's live state. Each action's call count SHALL be pinned.
 
 #### Scenario: Outcomes reflect the backend
 - **WHEN** any action of an atomic write, copy, move, or rename completes in the enumeration
-- **THEN** the outcome fed back is success exactly when every fallible call of that action succeeded, except a temp removal, whose outcome the core provably ignores
+- **THEN** the outcome fed back is success exactly when every fallible call of that action succeeded, except a temp removal, whose outcome the core provably ignores, a metadata probe that finds an absent destination it does not require, which succeeds, and content writing, whose outcome is the content stream's
 - **AND** the action's number of fallible calls equals the pinned table's entry
 
 #### Scenario: The real disk matches the live model

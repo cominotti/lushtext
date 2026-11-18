@@ -8,14 +8,13 @@
 
 ## 1. Share the environment models (D1). This is its own commit, before any other group
 
-- [ ] 1.1 Move the write model into `services/filesystem/write_protocol/disk_model.rs`, gated `cfg(any(kani, test, feature = "test-utils"))`. It covers `Content`, `Entry`, `TempInode`, `Disk`, and the `Shell` mutant. The choices become arguments: `Disk::execute(action, shell, outcome)` and `Disk::after_crash(durable_branch)`. The harnesses pass `kani::any()`, and `kani_proofs.rs` keeps only the harness functions
-- [ ] 1.2 Move the journal model into `services/draft_service/journal_model.rs` under the same gate. Route its in-step choices through `Choices`, with a `KaniChoices` implementation that is exactly today's `kani::any()`/`kani::assume`. Keep `Window`/`Process` and `Scope`. Make S1–S4 model methods that return their verdict, which the harnesses assert
+- [ ] 1.1 Move the write model into `services/filesystem/write_protocol/disk_model.rs`, gated `cfg(any(kani, test, feature = "test-utils"))`. It covers `Content`, `Entry`, `TempInode`, `Disk`, and the `Shell` mutant. The choices become arguments: `Disk::execute(action, shell, outcome)` and `Disk::after_crash(durable_branch)`. Move the transfer harnesses' inline environment there too, as `MoveDisk` and `RenameNamespace` with `execute(action, succeeded)`. The harnesses pass `kani::any()` and keep their assertions. Their bodies change only at the choice call sites
+- [ ] 1.2 Move the journal model into `services/draft_service/journal_model.rs` under the same gate. Route its in-step choices through `Choices`, with a `KaniChoices` implementation that is exactly today's `kani::any()`/`kani::assume`. `KaniChoices` stays in `kani_proofs.rs`. Keep `Window`/`Process` and `Scope`. Make S1–S4 model methods that return their verdict, which the harnesses assert
 - [ ] 1.3 Add both modules to `.cargo/mutants.toml` `exclude_globs`, with a verification-code reason, and to `NOT_ORACLE_MODULES` in `scripts/kani-shards.py`. Then check that each of these passes, and that `make mutants-list` shows no other file's count changing:
   - `make check-kani-shards`;
   - `make check-workflow-boundaries`;
   - `make check-filesystem-boundary`;
   - `cargo check -p lushtext --bins --locked`, with default features
-- [ ] 1.4 Run `scripts/heavy.sh -- cargo kani -p lushtext-core --only-codegen` once, with `CARGO_INCREMENTAL=0`. It runs no CBMC, and shows the moved harnesses still compile under Kani before any other group builds on them. The full shard runs are task 9.1
 
 ## 2. The conformance tap (D3)
 
@@ -27,23 +26,24 @@
   - plans addressed by kind, run, action ordinal, and call index;
   - before-action hooks;
   - `TapCrash` before and after an action;
-  - `tap::content_written`.
+  - `tap::content_written`;
+  - the three address forms of D3: protocol-scoped, destination-scoped, and scope-wide.
 
-  Call it from `drive`, around `execute`, and from the fallible `sys.rs` primitives listed in D3. Outside the gate, every call is an `#[inline(always)]` no-op
-- [ ] 2.4 Re-express the six durable-write hooks as one-entry plans, and delete their thread-locals and the observer `OnceLock`. The hooks are `FAIL_FINAL_TEMP_SYNC_AFTER_METADATA`, `FAIL_NEXT_PARENT_SYNC`, `FAIL_NEXT_SOURCE_REMOVAL`, `FAIL_NEXT_RENAME_CROSS_DEVICE`, `NEXT_NO_REPLACE_UNSUPPORTED`, and `TEMP_AFTER_CONTENT_OBSERVER`. The cross-device plan fails `sys::rename` inside the protocol. All 40 `durable_write` tests pass unchanged, and any other test using these hooks passes too
+  Call it from `drive`, around `execute`, and from every fallible `sys.rs` primitive the durable-write shells and the draft service reach. Enumerate that list from the code, and pin it in a test so that a primitive added without a tap call fails. Outside the gate, every call is an `#[inline(always)]` no-op
+- [ ] 2.4 Re-express the six durable-write hooks as one-entry plans, and delete their thread-locals and the observer `OnceLock`. The hooks are `FAIL_FINAL_TEMP_SYNC_AFTER_METADATA`, `FAIL_NEXT_PARENT_SYNC`, `FAIL_NEXT_SOURCE_REMOVAL`, `FAIL_NEXT_RENAME_CROSS_DEVICE`, `NEXT_NO_REPLACE_UNSUPPORTED`, and `TEMP_AFTER_CONTENT_OBSERVER`. The cross-device plan fails `sys::rename` inside the protocol. All 40 `durable_write` tests keep their assertions. The four that read a hook cell directly (the parent-sync counter near lines 1251, 1255, and 1284, and the observer near line 1592) read the tap's plan state instead
 - [ ] 2.5 Extend `KILL_POINT_MARKERS` in `scripts/crash-recovery-smoke-driver.py` with the `TapCrash` payload text and one unique tap string. Check with `strings` that `cargo build --release -p lushtext` contains neither. Run `make crash-recovery-smoke` once on the final code (task 10.1) to show the guard passes
-- [ ] 2.6 Unwind audit over the final code. List every `Drop` impl and every lock on the unwind path of each primitive that D4 crashes inside. Record that none does I/O and that none is poisoned and read afterwards. Record in the handoff why the draft driver crashes only between calls: the manifest lock `expect`s on poison
+- [ ] 2.6 Unwind audit over the final code. List every `Drop` impl and every lock on the unwind path of each primitive that D4 crashes inside. Record that none does I/O and that none is poisoned and read afterwards. Record in the handoff why the draft driver crashes only between model steps: the manifest lock `expect`s on poison
 
 ## 3. Write-shell conformance (D4)
 
 - [ ] 3.1 Implement `services/conformance/{mod,ops,write_shell}.rs` (test-utils). It steps the shared `Disk` from the tap trace and checks, after every action, the D4 list:
-  - outcome against backend results, with the `RemoveTemp` indifference;
+  - outcome against backend results, with the `RemoveTemp` indifference, the absent-destination probe, and the content stream as the named exceptions;
   - the pinned call table;
   - destination bytes against `visible()`;
   - temp presence against `linked`;
   - temp mode no wider.
 
-  At the terminal action it checks the result variant against the core's class. After a crash it checks the destination against `after_crash(false)`, the `temp_name` parse, and `is_sweepable_leftover` after aging the leftover with `fixture::set_modified`
+  At the terminal action it checks the result variant against the core's class. For moves and renames it checks the real source and destination against `MoveDisk` and `RenameNamespace`. After a crash it checks the destination against `after_crash(false)`, the `temp_name` parse, and `is_sweepable_leftover`. That predicate is given the real file's facts and a `LeftoverClock` naming another launch, with `now` past `STALE_LEFTOVER_AGE`
 - [ ] 3.2 Add the deterministic exhaustive test over (primitive × destination state × action ordinal × call index × injection). It includes `MAX_TEMP_NAME_ATTEMPTS` consecutive collisions, runs in `make test`, and takes at most 5 s. Pin the per-action call table as its own test
 - [ ] 3.3 Add `tests/properties/shell_conformance_write.rs` (64 cases: modes, payload sizes, two injections per run), and register it in `tests/properties.rs`
 - [ ] 3.4 Triage every divergence under the classification requirement. Commit the shrunk case as a failing deterministic test, fix it, and record it in the programme record. A core defect follows task 7.4
@@ -59,11 +59,11 @@
   - the held authority.
 
   Unknown files in the drafts directory fail the abstraction. If local history is too costly to read at every step, read it at preservation steps and at startup, and record the restriction
-- [ ] 4.3 Implement the single-window driver with enabled-indexed ops (D2): the window half is model-owned, and a crash drops every held value between calls. Enable only `BeforeEffect`, `Crash`, and `Startup`. It must pass on the real service before task 5 widens anything. Each divergence goes through task 3.4
+- [ ] 4.3 Implement the single-window driver with enabled-indexed ops (D2): the window half is model-owned, and a crash drops every held value between model steps. Enable only `BeforeEffect` (scope-wide call 0), `Crash`, and `Startup`. It must pass on the real service before task 5 widens anything. Each divergence goes through task 3.4
 - [ ] 4.4 Add `tests/properties/shell_conformance_drafts.rs` (≤ 16 ops, 64 cases) with the D2 shrink config
 - [ ] 4.5 Add the reach test: a fixed seed and the default case count, with recorded floors for `WriteBody`, `Commit`, `DeletionStep`, `RestoreApply`, `ExecCleanup`, and `Startup`. Then run the two-mutant calibration on scratch, never-merged commits:
   - a set-aside copy that `preserve_stale_draft_body` skips;
-  - a delete that runs before its entry removal.
+  - `remove_manifest_entry` returning `Ok` while it leaves the entry on disk.
 
   Record the number of cases each needed in the design and in `docs/property-testing.md`
 - [ ] 4.6 On a scratch, never-merged injected divergence, show that shrinking reaches a minimal script within the nextest `property` profile ceiling and persists it to the regression file
@@ -78,7 +78,7 @@
   - the set-aside copy's after-rename stays a success, as its shell decides.
 
   The harnesses choose the fault with `kani::any()`
-- [ ] 5.2 Enable `AfterEffect` (the kept branch only, since in-process tests cannot revert) and `At(k)` in the drafts driver. An intermediate multi-write state that matches neither model outcome is a step-atomicity environment finding. Resolve it by extending the model or by reordering the shell behind a failing-first test, and record which
+- [ ] 5.2 Enable `AfterEffect` and `At(k)` in the drafts driver. `AfterEffect` is the destination-scoped `SyncDir` of the step's committing write, and only its kept branch is testable, because in-process tests cannot revert. `At(k)` is scope-wide call k. An intermediate multi-write state that matches neither model outcome is a step-atomicity environment finding. Resolve it by extending the model or by reordering the shell behind a failing-first test, and record which
 - [ ] 5.3 If Kani or conformance finds a counterexample over `AfterEffect`, handle it as task 7.4, with reachability evidence from real errors
 
 ## 6. Replace shells (D8)
@@ -87,7 +87,7 @@
   - a same-size, new-mtime target modification, skipped under the pass-A reason;
   - a raised cancel plus a bodies directory replaced by a file, ending `Cancelled`, under each of the two cancel mutants.
 
-  Show with `cargo mutants --file content_search/replace/apply.rs --re '<the three lines>'`, through `heavy.sh --envelope 36G`, that the three are now caught, and record that in `docs/mutation-testing.md` and the programme record's deferral entry
+  Show that the three are now caught with `scripts/heavy.sh --envelope 36G -- env MUTANTS_SMOKE_FILE=crates/lushtext-core/src/services/content_search/replace/apply.rs MUTANTS_RE='<the three mutants>' make mutants-smoke`, which takes a mirror slot or exits 75 when none is free (retry later, never in a loop), and record that in `docs/mutation-testing.md` and the programme record's deferral entry
 
 ## 7. Divergence discipline and budgets
 
@@ -118,8 +118,8 @@
 
   Any harness time more than 20 % off its record is explained in the programme record. A broken margin follows the D6 fallback order. Update the `ORACLES` seconds
 - [ ] 9.2 Set the four shard records to `PENDING DISPATCH (owed by verify-shell-conformance-against-proven-cores)`, with the local figures, and pass `make check-kani-shards`
-- [ ] 9.3 Run `make proof-strength` for `journal_core` and `write_protocol`, detached, through `heavy.sh --envelope 16G`, with the Kani arm sharded (`PROOF_STRENGTH_SHARD=k/n`). Triage each survivor in the programme record
-- [ ] 9.4 At the end of implementation, after the final push, dispatch `kani.yml` once on the branch and record the run id in the handoff. Do not watch it: the archive records the larger figure of two runs (this dispatch, plus the next scheduled run or a second dispatch) in the four shard records
+- [ ] 9.3 Run `make proof-strength` for `journal_core` only (D9: only its harnesses widen their domain), detached, through `heavy.sh --envelope 16G`, with the Kani arm sharded (`PROOF_STRENGTH_SHARD=k/n`). Triage each survivor in the programme record
+- [ ] 9.4 At the end of implementation, after the final push, dispatch `kani.yml` twice on the branch and record both run ids in the handoff. Do not watch them. The archive records the larger figure of the two runs in each of the four shard records, because the archive commit's hook fails on a pending record
 
 ## 10. Final verification
 

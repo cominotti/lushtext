@@ -146,6 +146,14 @@ site is the same nondeterminism, so the state space is unchanged. No `Choices`
 trait is needed for a model whose choices are all per call. The stateright
 port `env.rs` used the same explicit-argument transformation.
 
+**Transfer models.** The move and rename harnesses keep their environment
+inline today: `source_present` and `destination_durable` for a move;
+`renamed`, `source_synced` and `destination_synced` for a rename. That
+environment moves into the same module, as a `MoveDisk` and a
+`RenameNamespace`, each with `execute(action, succeeded)`. The harnesses keep
+their assertions over these fields. Without them, a move or rename would have
+no disk oracle, and D4 could check only its classification.
+
 **Journal model.** The model moves into
 `services/draft_service/journal_model.rs`, under the same gate. Some of its
 choices are taken inside a step, under a state-dependent `kani::assume`: the
@@ -160,7 +168,9 @@ pub(crate) trait Choices {
 }
 ```
 
-- `KaniChoices` implements it with `kani::any()` and `kani::assume`.
+- `KaniChoices` implements it with `kani::any()` and `kani::assume`. It lives
+  in `kani_proofs.rs`, the only `cfg(kani)`-only code besides the proof
+  functions.
 - The conformance driver's `ScriptChoices` answers from the generated script.
 
 The action, id and fault stay explicit arguments of `Journal::step`, as they
@@ -174,8 +184,13 @@ cross-check.
   - `NOT_ORACLE_MODULES` in `scripts/kani-shards.py`, because a harness file
     imports from them and `make check-kani-shards` requires that every module
     a harness imports is an oracle or an exception.
-- `kani_proofs.rs` keeps only the `#[kani::proof]` functions, so the
-  harness-module rule (`testing.md`, "Kani Harnesses") still holds.
+- `kani_proofs.rs` keeps the `#[kani::proof]` functions, their assertions
+  and `KaniChoices`, so the harness-module rule (`testing.md`, "Kani
+  Harnesses") still holds.
+- The harness bodies change only at their choice call sites. No harness
+  compile runs before task 9.1: the four shards run once, after the final
+  code, and a compile-only run would be a second run. `make check` compiles
+  the models under `cfg(test)` from the first commit.
 
 **Order.** The move is one commit, before the tap, the drivers or the
 widening. The affected scheduled shards run once, after the final code (D9).
@@ -218,7 +233,9 @@ to:
 - **Mutant calibration.** Two scratch, never-merged mutants of the service
   are each caught within the default case count, and the counts are recorded:
   - `preserve_stale_draft_body` skipping its set-aside copy;
-  - `delete_draft_file` running before `remove_manifest_entry`.
+  - `remove_manifest_entry` returning `Ok` while leaving the entry on disk,
+    an effect mutant. The deletion order is the driver's, taken from
+    `journal_core`, so an order mutant would not be a service mutant.
 
 **Shrink budget.** The conformance properties take their config from
 `support::property_config()`, with `max_shrink_iters = 256` and
@@ -271,13 +288,27 @@ The injected error then takes the real error path:
   real cross-device branch.
 
 Each fault is therefore as faithful as a real one, with no generic outcome
-forging in `drive`. An injection's address is:
-- the protocol kind;
-- the run occurrence in the armed scope;
-- the action ordinal in that run;
-- the call index in that action;
-- the error to inject: `Other`, `AlreadyExists`, `CrossDevice`, or
-  `Unsupported`.
+forging in `drive`. An injection carries the error to inject (`Other`,
+`AlreadyExists`, `CrossDevice`, or `Unsupported`) and one of three addresses:
+- **protocol-scoped**: the protocol kind, the run occurrence in the armed
+  scope, the action ordinal in that run, and the call index in that action.
+  D4 enumerates these;
+- **destination-scoped**: the protocol kind, a destination path and an
+  action. The tap learns a run's destination from that run's rename call.
+  The drafts driver's `AfterEffect` is "the `SyncDir` of the `Write` run whose
+  destination is the manifest" (or the body);
+- **scope-wide**: the k-th fallible call since the plan was installed, any
+  primitive, inside or outside a protocol run. Service steps make calls
+  outside any run: `create_dir_all_durable`, the target resolution in
+  `write_body_file` (`canonicalize`, `symlink_metadata`),
+  `remove_file_if_exists`, and manifest and body reads. D5's `BeforeEffect`
+  is scope-wide call 0: every failure before the step's first effect looks
+  the same to the window. D7's `At(k)` is scope-wide call k.
+
+The covered primitives are every fallible `sys.rs` function the durable-write
+shells and the draft service reach. Task 2.3 enumerates them from the code
+and pins the list in a test, so a primitive added later without a tap call
+fails it.
 
 **Content.** `WriteContent` writes through the temp file's `Write`, not a
 `sys.rs` primitive. A content fault comes from one of two places:
@@ -288,6 +319,8 @@ forging in `drive`. An injection's address is:
 
 **Per-action call table (it replaces "exactly one fallible call").** Reading
 the shell shows that the inherited claim is false for some actions:
+- `ProbeMetadata` succeeds on a `NotFound` when the destination is absent and
+  no metadata source is required;
 - `ApplyMetadata` makes no call when there is no metadata source (a new
   file);
 - `WriteContent` makes no `sys.rs` call;
@@ -299,12 +332,18 @@ pins the table: `(kind, action, source present) → count`. A shell change that
 adds a call to an action fails that test, and the new call becomes a new
 injection point, enumerated automatically. The checked contract is that **the
 outcome fed back equals the result of the action's calls**:
-- `Done` exactly when every call succeeded;
+- `Done` exactly when every call succeeded, with two named exceptions: the
+  probe's `NotFound` on an absent, not-required destination is `Done`, and
+  a `WriteContent` failure comes from the content stream (the producer or
+  `tap::content_written`), not a backend call;
 - otherwise the failing call's class;
 - except `RemoveTemp`, whose outcome the core provably ignores.
 
 **The existing hooks** are re-expressed as one-entry tap plans, and their 40
-tests must pass unchanged:
+tests must keep their assertions. Four tests read a hook cell directly: the
+parent-sync counter near lines 1251, 1255 and 1284, and the observer near
+line 1592. Those reads move to the tap's plan-state query ("armed",
+"consumed"), with no other change. The hooks are:
 - the five thread-locals;
 - `TEMP_AFTER_CONTENT_OBSERVER`;
 - the early-return cross-device and no-replace paths.
@@ -328,7 +367,7 @@ A crash inside either would poison state that a restarted *process* would not
 have. Changing that poison handling is out of scope: poison is the right
 production signal there. So **panic crashes are used only where the test
 calls a durable-write primitive directly** (D4), and the draft driver
-crashes only between service calls (D5). Task 2.6 re-runs this audit over the
+crashes only between model steps (D5). Task 2.6 re-runs this audit over the
 final code.
 
 ### D4. Write-shell conformance: exhaustive, against the shared disk model
@@ -358,8 +397,11 @@ three more checks run:
 - the destination is `Old` or `New`, equal to the model's
   `after_crash(false)`, the live branch;
 - every leftover parses through `temp_name` as LushText's own;
-- `filesystem::leftovers::is_sweepable_leftover` accepts it, once its age is
-  set past the threshold with `fixture::set_modified`.
+- `filesystem::leftovers::is_sweepable_leftover` accepts it. The predicate is
+  pure, so the test passes the real file's facts with a `LeftoverClock` that
+  names another launch and a `now` past `STALE_LEFTOVER_AGE`. A leftover
+  minted by the test carries the test's own launch, which the sweep
+  deliberately keeps.
 
 **Exhaustive, deterministic.** The protocols are finite: at most 16 actions
 in a write plus the finish, and 3 in a transfer. The enumeration is
@@ -377,7 +419,7 @@ proptest property over the same driver adds what enumeration does not vary:
 modes, payload sizes, and two injections in one run
 (`tests/properties/shell_conformance_write.rs`, 64 cases).
 
-### D5. Draft-service conformance: one window, crashes between calls
+### D5. Draft-service conformance: one window, crashes between model steps
 
 **Driver role.** At service level there is no GTK window, so the model's
 window half (editors, tokens, known entries, holds) is **model-owned**. The
@@ -404,8 +446,9 @@ Task 4.1 checks the table against the real call sites in
 `ui/window/drafts/` and `ui/window/session_restore/`. Where they differ, the
 coordination is the source of truth, and the table here is corrected.
 
-**Crashes happen between calls.** The model's actions are atomic, so its
-`Crash` falls between two of them. That is where the driver crashes, by
+**Crashes happen between model steps.** The model's actions are atomic, so
+its `Crash` falls between two of them, never between two service calls of one
+step. That is where the driver crashes, by
 dropping its in-memory values: the D3 audit forbids a panic inside a call
 that holds the manifest lock. Faults inside a multi-write call are D7's
 `At(k)`. A process killed inside a call is K5's, through the
@@ -461,9 +504,11 @@ deferral.
   - `Crash` chooses, through `Choices::flag`, whether each unconfirmed
     effect survives or reverts;
   - a later successful durable write into the same directory clears the bit,
-    because its own directory sync makes the earlier rename durable. Bodies
-    live in `drafts/` and the manifest in the data directory, so the bit is
-    per directory.
+    because its own directory sync makes the earlier rename durable. The
+    bodies and the manifest share `drafts/` (`app_data_layout`:
+    `drafts/manifest.json`), so a successful manifest commit confirms the
+    earlier body renames and unlinks there. Set-aside copies live in
+    `drafts/set-aside/`, a directory of their own.
 - **The unsynced body unlink is unconfirmed too.** `delete_draft_file`
   (`DeletionStep::DeleteBody`) removes the body with
   `remove_file_if_exists`, which syncs no directory, so a crash may bring the
@@ -476,8 +521,10 @@ deferral.
   after-rename placement as placed. That is a success outcome, and it is
   modelled as the `None` fault.
 
-Kani checks S1–S4 over the widened domain. L1 is stated without faults, but
-its three-action prefix admits them, so the liveness shard re-runs too.
+Kani checks S1–S4 over the widened domain. L1 is stated without faults, so
+it is not checked over `AfterEffect` itself. Its three-action prefix admits
+faults, so L1 is re-checked with that prefix widened, and the liveness shard
+re-runs.
 
 *Fallback, registered in advance.* If a shard breaks its margin (≤ 25 min,
 ≤ 12 GiB), the runbook order applies (`docs/runbooks/kani-shards.md`): split
@@ -552,12 +599,16 @@ mutation-testing doc records the three as killed.
   `core-replace-protocol` is not touched (D8) and is left to CI.
 - **Budgets.** The four records become
   `PENDING DISPATCH (owed by verify-shell-conformance-against-proven-cores)`
-  with their local figures. At the **end of stage 3**, one `kani.yml`
-  dispatch runs on the pushed final code. It is not watched in stage 4. The
-  archive records the larger of the dispatched figures, from two runs: the
-  dispatch, plus the following weekly schedule or a second dispatch.
-- **Proof strength is owed**, because the journal harnesses assert their
-  properties over a widened domain. It runs once on the final code, with its
+  with their local figures. At the **end of stage 3**, **two** `kani.yml`
+  dispatches run on the pushed final code, as #103 did. A scheduled shard
+  runs only weekly or on dispatch, and the archive commit's hook fails on a
+  pending record, so the next scheduled run cannot be relied on. Stage 4 does
+  not watch them. The archive records the larger figure of the two runs in
+  each record.
+- **Proof strength is owed for `journal_core` only**, because only the
+  journal harnesses assert their properties over a widened domain. The write
+  and transfer harnesses keep their assertions unchanged, and only their
+  environment moves, so `write_protocol` owes none. It runs once on the final code, with its
   Kani arm sharded (`PROOF_STRENGTH_SHARD=k/n`), detached. Its survivors are
   triaged in the programme record.
 - **GTK axioms: none.** The change relies on no toolkit behaviour (no

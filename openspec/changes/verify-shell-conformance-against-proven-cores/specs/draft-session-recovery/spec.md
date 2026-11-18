@@ -4,7 +4,7 @@
 A generated conformance test SHALL drive the real draft service over a
 temporary data directory, in lockstep with the journal model, through the
 service calls the drafts coordination makes for each model action. Crashes
-SHALL fall between service calls. After every step, the real manifest
+SHALL fall between model steps. After every step, the real manifest
 entries, bodies, backing versions, token, and authority SHALL equal the
 model's. The real preserved copies SHALL include every copy the model
 preserved.

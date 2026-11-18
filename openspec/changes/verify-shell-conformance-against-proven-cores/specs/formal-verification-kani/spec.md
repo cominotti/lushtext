@@ -61,11 +61,12 @@ The journal model's fault SHALL be `None`, `BeforeEffect`, or `AfterEffect`.
 the window treats the step as failed. An unsynced body removal SHALL also be
 unconfirmed. A crash SHALL be free to keep or revert any unconfirmed effect.
 A later successful durable write into the same directory SHALL confirm it.
-S1–S4 and L1 SHALL be checked over this domain.
+S1–S4 SHALL be checked over this domain, and L1 SHALL be re-checked with its
+fault-admitting prefix widened to it.
 
 #### Scenario: An after-rename failure is in the proved domain
 - **WHEN** a registration, body write, manifest commit, or entry removal fails after its rename landed
-- **THEN** the model represents that step as live, unconfirmed, and reported failed, and S1–S4 and L1 are checked over that outcome
+- **THEN** the model represents that step as live, unconfirmed, and reported failed, S1–S4 are checked over that outcome, and L1 holds after any prefix that contains it
 
 #### Scenario: A crash may revert an unconfirmed effect
 - **WHEN** a crash follows an after-effect fault, or an unsynced body removal, before any later durable write into the same directory
