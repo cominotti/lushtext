@@ -80,12 +80,12 @@ From the input dispatch of a sliced collapse until it ends, every realized row i
 
 #### Scenario: The rows vanish without a re-measure
 - **WHEN** a sliced collapse of a directory of 4,096 entries starts with its children in the realized band
-- **THEN** after the input dispatch every realized row of the subtree has opacity 0, is not a pointer target and reports `hidden`, while the directory row and every row outside the subtree are unchanged
+- **THEN** after the input dispatch the row widget of every realized row of the subtree (the list view's child) has opacity 0, is not a pointer target and reports `hidden`, while the directory row and every row outside the subtree are unchanged
 - **AND** the list view's realized children, the factory's setup and teardown counts and the band's position are the same as just before the input
 
 #### Scenario: A rebound row
-- **WHEN** a row widget is rebound during a collapse, into the collapsing subtree or out of it
-- **THEN** a row inside the subtree is hidden and a row outside every collapsing subtree draws, takes input and reports as on `main`
+- **WHEN** a row widget is rebound or created during a collapse, into the collapsing subtree or out of it, or the sidebar is unmapped and mapped again before the collapse ends
+- **THEN** a row inside the subtree is hidden and reports `hidden` before the next frame paints, and a row outside every collapsing subtree draws, takes input and reports as on `main`
 
 #### Scenario: The collapse ends
 - **WHEN** the collapse completes, or is ended by a re-expansion, a removal, a model reset or disposal
@@ -93,12 +93,21 @@ From the input dispatch of a sliced collapse until it ends, every realized row i
 
 #### Scenario: A click on the hidden region
 - **WHEN** the user clicks or hovers where hidden rows lie during a collapse
-- **THEN** nothing is selected, activated, expanded, collapsed or peeked
+- **THEN** nothing is selected, activated, expanded, collapsed or peeked, and no hover background is drawn
 
 #### Scenario: Navigation keys during a collapse
 - **WHEN** the focus is on the collapsing directory row or on a hidden row and the user presses Up, Down, Page Up, Page Down, Home or End, or a keypad form, with or without Shift or Ctrl
 - **THEN** the key is held, no painted frame shows the focus on a hidden row, and when the collapse ends the held keys act in the order pressed from the directory row, as they would on `main` after its frozen collapse returned
 - **AND** a Down pressed during the collapse of a directory with rows after it leaves the focus on the row after the directory
+- **AND** each held key lands where GTK's own binding for it lands on the final tree, Page Up and Page Down included
+
+#### Scenario: A key after a held key
+- **WHEN** a navigation key is held during a collapse and the user then presses Return, Space, Delete, F2, Menu or another key
+- **THEN** that key is held behind it and acts, when the collapse ends, on the row the held navigation reached, as on `main`; a key the section cannot replay is consumed, never applied to the directory row ahead of the keys before it
+
+#### Scenario: A path listed by two workspace folders
+- **WHEN** two overlapping workspace folders list the collapsing directory's path, and one occurrence is collapsed
+- **THEN** only rows inside that occurrence's subtree are hidden and show collapsed; the other folder's rows, its root row included, draw, take input and report as on `main`, and its loads and refreshes continue
 
 #### Scenario: Assistive technologies
 - **WHEN** an assistive technology reads the tree during a collapse

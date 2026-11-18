@@ -2319,6 +2319,25 @@ nothing can make the rows after it arrive sooner. About 207 rows must be
 created at 0.3–0.6 ms each, which no 16 ms frame holds, so (a) packs them
 into seven frames (D23). `main` also freezes for 94–124 ms in those cases.
 
+**The frame count is not settled (R12).** The table's rows-after figures use
+R3's count, `ceil(175 / unit) + 1` frames, which is what `next_collapse_step`
+computes for a band of about 207 bound rows (bound units take the store down
+to `DIRECT_COLLAPSE_ROWS`, then one terminal `CollapseRow`): at unit 32, six
+units and the terminal, seven frames. The skip-cache timeline above has five
+band dispatches where that count gives four at unit 64 (`ceil(175 / 64)` is
+three, plus the terminal), and the reading above wrote it as
+`ceil(207 / 64)` units plus the terminal. If that extra dispatch is in the
+rows-after tail too, 400:4,096 takes eight frames even with D23, about
+117–133 ms against its 120.6 ms selection bar, and nothing in (a) shortens
+a rows-after tail except D23's frame and the unit, whose larger values R2
+priced in frame cost. The predicted 105–110 ms are therefore not evidence.
+Q4's gate does not use this table: it starts from Q4's measured completions,
+which carry the real frame count, so the gate, not this table, decides; and
+task 10.12 records the band dispatches Q1's profile counts against
+`ceil(175 / unit) + 1` and corrects the table either way. If 400:N then
+misses its selection bar, the change returns to design with that round, as
+the gate already says.
+
 #### Decision
 
 (a) + (c), as four decisions. Their mechanisms are fixed here; their
@@ -2327,14 +2346,52 @@ thresholds are pre-registered to the rounds below and to task 10.7.
 - **D22 (new). The collapsing subtree's realized rows are hidden at intent,
   paint-only.**
   - *What:* in the input dispatch, the entry point sets, on every realized
-    row in the collapsing subtree (the band read of D6 already finds them):
-    the row child's opacity to 0 (`gtk_widget_set_opacity`), `can-target`
-    false, and the accessible `hidden` state, true on the row child that
-    D6's projection already writes.
-  - *Bind:* the bind path re-applies the hidden state to a row rebound into
-    a collapsing subtree, and clears it on a row rebound anywhere else.
+    row in the collapsing subtree (the band read of D6 already finds them),
+    on the **row widget**, the list view's child that hosts the row (the
+    overlay's parent, read as `mapped_row_widgets` already reads it, R12):
+    opacity 0 (`gtk_widget_set_opacity`), `can-target` false, and the
+    accessible `hidden` state.
+  - *Why the row widget, not the overlay (R12):* the row widget is GTK's
+    `row` CSS node, which draws the row's hover and selected background and
+    its focus ring (`.navigation-sidebar > row`) outside the overlay's render
+    node; it carries the list's click gesture (on `GtkListFactoryWidget`,
+    the row widget's parent class: a press selects, a double press
+    activates); and GTK presents it to assistive technologies as the list
+    item, with its position in the set. With the overlay alone hidden, a
+    hovered row would still paint its background, `gtk_widget_pick` would
+    return the row widget and a click would select the hidden item, and the
+    tree would keep about 200 empty list items. With `can-target` false on
+    the row widget, the pointer picks the list view, which has no click
+    gesture of its own (`gtklistbase.c`: only the rubber band, off here).
+  - *Membership (R12):* a row is in the collapsing subtree when the
+    collapsing directory's item is one of its `TreeListRow` ancestors' items,
+    or by its flattened position inside the subtree's span, never by path
+    prefix. The same path can be listed twice, under two overlapping
+    workspace folders (task 9.10's fixture), and a path test
+    (`path_is_collapsing`, as the R6.5 projection uses it today) would hide
+    the other folder's rows, and that folder's own root row when it is the
+    collapsing path, for the whole collapse. The R6.5 projection and
+    `stop_subtree_work` take the same membership (task 10.13).
+  - *GTK's own `hidden` writes (R12):* `gtk_widget_map` writes `hidden`
+    false after the `map` emission returns, and `gtk_widget_unmap` writes it
+    true (`gtkwidget.c`, `gtk_widget_map`/`gtk_widget_unmap`), and the list
+    item manager binds a new row widget before inserting it, so mapping it
+    (`gtklistitemmanager.c`, `gtk_list_item_base_update` then
+    `gtk_widget_insert_after`). Neither a bind-time write nor a `map`
+    handler outlasts that write on a created row, or on any row after the
+    sidebar is unmapped and mapped again mid-collapse (the "collapse nobody
+    draws" scenario). The state is therefore re-applied after insertion: by
+    the collapse's pass at the next frame's layout phase (or the low-priority
+    step source when no frame comes) for every realized subtree row that does
+    not read `hidden`, a read of at most the band. Opacity and `can-target`
+    are not written by GTK, so they persist.
+  - *Bind:* the bind path re-applies the opacity and `can-target` to a row
+    rebound into a collapsing subtree, and clears all three on a row rebound
+    anywhere else, because GTK recycles row widgets without resetting them.
   - *End:* the collapse's end clears it on every realized row it set, by any
-    end (`Completed`, `ReExpanded`, `Removed`, a model reset, dispose).
+    end (`Completed`, `ReExpanded`, `Removed`, a model reset, dispose). The
+    `hidden` state is reset, not written false, so GTK's map writes govern it
+    again.
   - *Why paint-only:* anything that changes a row's measure (visibility, a
     size request, a CSS class whose rules change size) would make the list
     realize more rows to fill the viewport (A1). That is the cost this change
@@ -2344,12 +2401,22 @@ thresholds are pre-registered to the rounds below and to task 10.7.
     than a CSS class: a class change revalidates the CSS of about 200
     subtrees, and CSS validation was 26 % of a unit frame (R2).
   - *Axiom:* A123 (task 2.7) pins it on GNOME 51 and the GNOME 50 floor,
-    with a probe:
+    with a probe on the row widgets:
     - hiding a presented list's rows this way runs no measure, setup or
       teardown, and leaves the band and the list's allocation unchanged;
-    - a hidden row draws no pixels;
-    - the pointer picks the list, not the row;
-    - the accessible state reads `hidden`.
+    - a hidden row draws no pixels, including when it is selected, focused
+      or under the pointer;
+    - the pointer picks the list, not the row, and a real press and double
+      press over a hidden row select and activate nothing, and leave the row
+      without the prelight state;
+    - whether the presented accessible tree, read under `GTK_A11Y=test`,
+      omits the hidden rows and their descendants (if it keeps the
+      descendants, `hidden` is also written on the overlay, D6's projection
+      target), and that GTK's map write turns a created
+      row's state back to not hidden (the record that makes the re-applying
+      pass necessary), while a write after insertion holds until the next
+      unmap;
+    - the time to hide and to clear about 207 rows, the band's size.
 
     If A123 is refuted on either toolkit, the change returns to design with
     the probe's figures.
@@ -2364,8 +2431,23 @@ thresholds are pre-registered to the rounds below and to task 10.7.
     collapse ends, it applies them in order from the directory row, as
     `main` applies keys queued behind its frozen collapse. A Down pressed
     in the interval lands on the row after the directory.
+  - *Order behind a held key (R12):* once a key is held, every later key
+    press the controller sees while the collapse is pending is held behind
+    it, not only navigation keys. Otherwise Down then Return would activate
+    the directory row (a re-expansion, D7) where `main` activates the row
+    after it, and Down then Delete would offer to delete the directory.
+    Held keys replay in order when the collapse ends: navigation through the
+    pure helper of task 10.14, and Return, KP_Enter, Space (peek), Delete,
+    F2, Menu and Shift+F10 through the section's own handlers on the row the
+    replayed navigation reached. Any other key pressed while keys are held
+    is consumed and counted in the section's evidence, never applied ahead
+    of the keys before it. Each replayed navigation key lands where GTK's
+    own binding lands on the final tree (Page Up and Page Down by the list's
+    page at that time), which task 10.14's parity test checks against GTK.
   - *Pointer:* a click or a hover on the hidden region selects, activates,
-    expands and peeks nothing, because the rows are not targets.
+    expands and peeks nothing, and paints no hover background, because the
+    row widgets are not targets and the list view under them has no click
+    gesture.
   - *Assistive technologies:* hidden rows report `hidden`. The directory row
     keeps D6's `expanded` false, and the accessibility smoke and
     `docs/accessibility.md` say so (task 8.3, reopened).
@@ -2401,6 +2483,17 @@ thresholds are pre-registered to the rounds below and to task 10.7.
     D22's projection. If task 10.7's round shows the
     input over `B_INTERACT_US`, the chunk shrinks to the largest power of
     two that fits, and the frame table is re-derived.
+  - *Bound, corrected (R12):* the skip-cache rate is the rate only if D24 is
+    taken. If D24 is void the chunk keeps the path-cache splice, and 104's
+    inferred unbound phase (75–90 ms for about 130,865 rows) is
+    0.57–0.69 µs a row: about 4.7–5.6 ms an 8,192-row chunk and 9.4–11.3 ms
+    a 16,384-row one. And the input dispatch also carries D6's intent and
+    D22's hiding of about 207 rows, which no round has measured yet. So the
+    deciding Q5 round admits a chunk size for D23 only when its worst chunk
+    turn, plus 104's worst input dispatch (0.245 ms), plus A123's measured
+    time to hide the band, fits `B_INTERACT_US` (task 10.12); task 10.7's
+    round on the reworked binary, which measures the input dispatch whole,
+    has the last word.
 - **D24 (new). The path cache leaves the chunk.**
   - *What:* a chunk that drains a store whose parent's path cache that store
     owns no longer removes its rows' `item_locations` and
@@ -2414,6 +2507,39 @@ thresholds are pre-registered to the rounds below and to task 10.7.
     confirms it against the live cache. The retirement removes an entry only
     if it still carries the retired generation, so a re-expansion that
     re-caches the directory before the retirement ends keeps its entries.
+  - *The rest of the cache (R12).* `item_locations` is not the only map the
+    splice keeps. `visible_path_counts` and `item_locations` are flat,
+    section-wide maps keyed by path (`imp.rs`), and only `child_paths` is per
+    parent, so "one map removal" detaches `child_paths[parent]` alone. D24
+    therefore owes, before code, these invariants, each with a failing-first
+    test in task 10.15:
+    - *Counts describe live occurrences.* From the intent on, no reader of
+      `visible_path_counts` (`visible_path_is_ambiguous`,
+      `cache_item_location`, `forget_visible_path_occurrence`) counts an
+      occurrence under a detached parent. Without it, a re-expansion before
+      the retirement ends re-counts every child to 2, drops every location
+      as ambiguous (`cache_item_location`), and the retirement's decrements
+      then call `restore_unique_item_location`, a walk of every cached
+      sibling list, once a path. A path the other overlapping folder still
+      shows must be locatable during the collapse and after it.
+    - *Every reader confirms the generation:* `rename_cached_item`,
+      `remove_cached_item`, `shift_cached_indices`, the scan and refresh
+      lookups, and `capture_subtree`.
+    - *Order and nesting:* the intent detaches the cache of every store in
+      the subtree (one removal each), after `capture_subtree` and D6's
+      selection move have read the locations they need. A later collapse
+      that takes over this one (task 9.4) finds the taken-over stores through
+      the collapse records, not through the detached caches.
+    - *No fallback per chunk:* a chunk on a store whose parent cache is
+      detached skips the cache whole. It never reaches
+      `drain_child_rows_cache`'s consistency fallback, which would see
+      `child_paths[parent]` missing and re-cache the store from its mirror
+      on every chunk: `cache_full_rebuilds` stays 0 across the collapse.
+    - *No per-row work inside a step:* if no shape of the counts meets the
+      first invariant without per-row work in the steps (duplicates arise
+      only from overlapping workspace folders, which may bound that work to
+      paths counted more than once), D24 is void, and the next lever that
+      Q1 names applies, as below.
   - *Condition, pre-registered:* D24 is taken if round Q2 shows the
     path-cache splice costing at least one frame (16.7 ms) of 104's median
     0:131,072 completion. If it costs less, D24 is void, and the
@@ -2444,8 +2570,8 @@ thresholds are pre-registered to the rounds below and to task 10.7.
   change does not pass by redefining it.
 - **Picture final** (`picture_final_us`, new; task 10.16).
   - *Snapshot:* after each frame dispatch, the verdict test records the rows
-    the viewport draws. A row counts when it is a list-view child with
-    opacity above 0 that intersects the viewport; it is recorded with its
+    the viewport draws. A row counts when it is a list-view child (the row
+    widget D22 hides) with opacity above 0 that intersects the viewport; it is recorded with its
     path and its rendered top relative to the viewport.
   - *Figure:* the end of the first frame dispatch from which every later
     snapshot until settled equals the last one. The scrollbar is excluded,
@@ -2484,7 +2610,7 @@ void, not a result. Task 10.12 reads the rounds before any code of D22–D24. Q4
 | Q3 `slc-r11-d128-104`, `slc-r11-d256-104` | `SLC_DESTROY=128`, then `256` | collapse, 0 rows after, at 256, 4,096 and 131,072, three reps | whether a larger destroy-only unit cuts the tail by whole frames with the step within 8 ms and the frame within 12 ms. It bounds task 10.7's candidates |
 | Q5a `slc-r11-c16k-104` | `SLC_CHUNK=16384` | collapse at 0:131,072 and 400:16,385, three reps | a 16,384-row chunk's turn (the worst step) against `B_INTERACT_US`, with the path-cache splice still in the chunk |
 | Q5b `slc-r11-c16k-sc-104` | `SLC_CHUNK=16384 SLC_SKIP_CACHE=1` | the same | the same turn without the splice D24 removes. **Which decides:** Q5b if D24 is taken (Q2), because that is the chunk the reworked code runs; Q5a if it is not. The deciding round admits a 16,384-row chunk for D23 when its worst step fits `B_INTERACT_US` |
-| Q4 `slc-r11-base-104` | none (constants 32 / 64 / 8,192) | every collapse case and the header, three reps | the real code's completion per case. **Gate:** for each case, predict the reworked completion as Q4's worst, less one frame where D23 applies (the subtree has unbound rows, and they fit one chunk of the size the deciding Q5 round admits: 16,384 if its worst step fits `B_INTERACT_US`, else 8,192), less D24's credit: Q2's median gain for the same rows-after count at 131,072 rows, and that gain scaled by `R / 131,072` for a smaller subtree (the splice it removes is per row), so 16,385 rows get about an eighth of it. If any prediction exceeds bar − M, the change returns to design before D22–D24 are coded. Task 10.4's 12 ms acceptance is read here too (unit 32, worst frame at 400:256) |
+| Q4 `slc-r11-base-104` | none (constants 32 / 64 / 8,192) | every collapse case and the header, three reps | the real code's completion per case. **Gate:** for each case, predict the reworked completion as Q4's worst, less one frame where D23 applies (the subtree has unbound rows, and they fit one chunk of the size the deciding Q5 round admits: 16,384 if its worst step fits `B_INTERACT_US`, else 8,192), less D24's credit: Q2's median gain for the same rows-after count at 131,072 rows, and that gain scaled by `R / 131,072` for a smaller subtree (the splice it removes is per row), so 16,385 rows get about an eighth of it, and, for a case with no row after the subtree, less Q3's credit when Q3 admits a larger destroy-only unit (R12): Q4's median less Q3's median at the same case for the largest admitted unit, with 0:16,385 taking the 0:4,096 figure (the same band, so the same frames saved) and 0:64 none (it has no destroy-only unit). If any prediction exceeds bar − M, the change returns to design before D22–D24 are coded. Task 10.4's 12 ms acceptance is read here too (unit 32, worst frame at 400:256) |
 
 The queued "constants round (task 10.7)" on 104 is superseded: its first
 and fourth rounds are Q4 and Q3, and the rest would choose constants for code
@@ -2508,6 +2634,56 @@ this revision changes. Task 10.7 runs on the reworked binary.
   row is removed"; task 10.9 revises it with D23's guard.
 - D6 and R5's D21 rejection are annotated where D23 is decided (above);
   the decisions themselves are unchanged for bound rows.
+
+### R12. Review of R11 (2026-11-18)
+
+Reviewed against the code, the GTK 4.24.1 sources in the handoff
+(`gtk-src-4.24.1/`), the go/no-go and skip-cache logs and the queue entry.
+The recorded figures hold: the go/no-go's three completions are
+`input_us + shown_us` = 157.0 / 156.1 / 157.6 ms at 1-minute loads of 3.38
+before and 3.86 after (`rev/attr2/measure.log`); the skip-cache window and
+its buckets are `rev/r11/skipcache-window.txt`; the six rounds are PENDING
+and the old constants round SUPERSEDED in `MEASURE-QUEUE.md`. The decision
+(a) + (c) stands. Corrected in place:
+
+1. **D22 hid the wrong widget.** The overlay is the list item's child; the
+   row widget around it draws the hover, selected and focus styling, owns the
+   click gesture and is the presented list item. Opacity on the overlay
+   alone would leave a hovered hidden row painted and clickable, and
+   `pick` would return the row, refuting the axiom by construction. D22,
+   A123, the delta specs and tasks 2.7, 10.13 and 10.16 now name the row
+   widget, and A123 proves the pointer with a real press and hover.
+2. **GTK writes `hidden` itself.** `gtk_widget_map` writes it false after
+   the `map` emission, and a created row is bound before it is inserted, so
+   bind-time writes do not survive on created rows or after an unmap and
+   map. D22 re-applies it from the collapse's next pass, A123 records the
+   write, and task 10.13 tests a created row and an unmap–map cycle. A123's
+   read-back of a state it just set proved nothing; it now reads the
+   presented tree.
+3. **Membership by path prefix.** Overlapping workspace folders list one path
+   twice; D22's hiding, the R6.5 projection and `stop_subtree_work` decide
+   by tree position instead (task 10.13, with the two-folder fixture).
+4. **Keys after a held key.** Down then Return would have activated the
+   directory row; every key after a held key is held behind it (D22, task
+   10.14), and replayed navigation has a parity test against GTK's bindings,
+   Page Up and Page Down included.
+5. **D23's admission.** It quoted the skip-cache rate only; without D24 a
+   16,384-row chunk is about 9.4–11.3 ms on its own, and the input also
+   carries D22's hiding. The deciding Q5 round now admits a size only with
+   the input's other work added (task 10.12).
+6. **D24 covered `item_locations` only.** The counts, every reader, the
+   subtree's nested caches, the order against `capture_subtree` and D6, the
+   take-over and the per-chunk fallback are now invariants with tests (task
+   10.15), or D24 is void.
+7. **The frame count.** R3's `ceil(175 / unit) + 1` and the five measured
+   tail dispatches disagree by one; the 400:N predictions are marked as not
+   evidence, and the measured gate decides (above).
+8. **Q4's gate omitted Q3.** A larger destroy-only unit, which Q3 measures,
+   saves whole frames in the 0:N cases; the gate now credits it, so a case
+   Q3 rescues is not sent back to design.
+9. **Spec text D23 contradicted.** "Unbound rows leave between frames" and "A
+   huge directory" now name the input's chunk; task 8.1 declares the new
+   evidence counters, and task 8.3 adds the Orca checklist.
 
 ## Risks / Trade-offs
 
@@ -2545,6 +2721,15 @@ this revision changes. Task 10.7 runs on the reworked binary.
   cases. The visual and accessibility smokes, and D22's focus, pointer and
   assistive-technology scenarios, guard it. If A123 does not hold on a
   toolkit, the change returns to design.
+- **D22's cost under a real assistive technology** (R12). The verdict test
+  runs with `GTK_A11Y=test`, which emits nothing; with AT-SPI each `hidden`
+  change of about 207 rows emits a state change and a children change, a cost
+  the input dispatch then carries and no round measures. The accessibility
+  smoke has no collapse case today; task 10.13 adds one (a 4,096-entry
+  directory collapsed with the bus and a listener up, the tree asserted
+  after it) and records its input dispatch once (from the smoke-only
+  responsiveness probe's dispatch log, or a timer the case adds). If it is over `B_INTERACT_US` there, the hiding of rows
+  outside the viewport moves to the first frame's pass.
 - **Held navigation keys (D22) change when a key acts, not what it does.**
   A Down pressed during a collapse acts when the collapse ends, as on
   `main` it acts when the frozen collapse returns. A collapse that never

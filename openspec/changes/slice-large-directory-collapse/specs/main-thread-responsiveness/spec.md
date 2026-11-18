@@ -23,7 +23,7 @@ Collapsing a sidebar directory by a route LushText owns SHALL keep the input dis
 
 #### Scenario: A huge directory
 - **WHEN** the user collapses an expanded directory of 131,072 entries, with nothing after it and with 400 rows after it
-- **THEN** the children no row widget is bound to are removed in chunks of at most `COLLAPSE_UNBOUND_CHUNK_ROWS` within the list turn slice, the bound children in units, and every dispatch fits its budget
+- **THEN** the children no row widget is bound to are removed in chunks of at most `COLLAPSE_UNBOUND_CHUNK_ROWS`, the first in the input dispatch within `B_INTERACT_US` and the rest within the list turn slice, the bound children in units, and every dispatch fits its budget
 
 #### Scenario: A collapse nobody draws
 - **WHEN** a sliced collapse starts or continues while the sidebar is hidden, the section body is collapsed or the window is unmapped, or while the list stays mapped but its frame clock delivers no frame
@@ -57,6 +57,7 @@ Collapsing a sidebar directory by a route LushText owns SHALL keep the input dis
 #### Scenario: Unbound rows leave between frames
 - **WHEN** a sliced collapse removes rows no widget is bound to
 - **THEN** those chunks run between frames, not one per frame tick, each turn within the list turn slice plus one chunk, and the frame ticks take bound units only
+- **AND** the one exception is the single chunk the input dispatch removes, which counts toward the input dispatch's `B_INTERACT_US` with the intent and the hiding
 
 #### Scenario: The probe scan's publication is a named residual
 - **WHEN** a dispatch after the collapse publishes the scan that GTK's `is_expandable()` probe started for the collapsed directory

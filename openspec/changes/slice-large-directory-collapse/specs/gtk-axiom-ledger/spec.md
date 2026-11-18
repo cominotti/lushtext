@@ -27,8 +27,9 @@ The ledger SHALL record, each with a probe, a catalogue entry and a sample verif
 - **THEN** it states its node-teardown share of a collapse (about a tenth in the stage 1 profile) and points to the new row-widget axiom for the rest
 
 ### Requirement: Hiding a list row by opacity and targeting is a ledger axiom
-The ledger SHALL record, with a probe, a catalogue entry and a sample verified on GNOME 51 and the GNOME 50 floor, whether hiding a realized `GtkListView` row's child by opacity 0, `can-target` false and the accessible `hidden` state is paint-only.
+The ledger SHALL record, with a probe, a catalogue entry and a sample verified on GNOME 51 and the GNOME 50 floor, whether hiding a realized `GtkListView` row widget (the list view's child) by opacity 0, `can-target` false and the accessible `hidden` state is paint-only, and how GTK's own map writes treat that state.
 
 #### Scenario: Hiding a row is paint-only
-- **WHEN** the probe sets opacity 0, `can-target` false and the accessible `hidden` state on the children of a presented `GtkListView`'s realized rows over a `GtkTreeListModel`, on GNOME 51 and the GNOME 50 floor
-- **THEN** it records whether the list runs any measure, factory setup or teardown, whether the band's position and the list's allocation change, whether the hidden rows draw any pixel, which widget the pointer picks over them, and the accessible state read back
+- **WHEN** the probe sets opacity 0, `can-target` false and the accessible `hidden` state on the row widgets of a presented `GtkListView`'s realized rows over a `GtkTreeListModel`, on GNOME 51 and the GNOME 50 floor
+- **THEN** it records whether the list runs any measure, factory setup or teardown, whether the band's position and the list's allocation change, whether the hidden rows draw any pixel while selected, focused or under the pointer, which widget the pointer picks over them, what a real press and double press over them select or activate, and whether the presented accessible tree keeps them or their descendants
+- **AND** it records the `hidden` state of a row widget the list creates while the state is applied, read after its insertion, and of a hidden row after the list is unmapped and mapped again, and the time to hide and to clear the band's rows

@@ -190,10 +190,10 @@ stay drawn and shift each frame. The revision adds:
     node nothing references, so `get_item` hands out a new row object
     without the object data and `notify::expanded` handler of the one that
     died (design R4).
-  - A123: hiding a list row's child by opacity 0 and `can-target` false is
+  - A123: hiding a list row widget by opacity 0 and `can-target` false is
     paint-only: no measure, setup or teardown, the band and allocation
-    unchanged, no pixel drawn, the pointer picks the list, and the
-    accessible `hidden` state reads back (design R11, D22).
+    unchanged, no pixel drawn, the pointer picks the list, and how GTK's
+    own map writes treat the accessible `hidden` state (design R11, D22, R12).
 - **Records corrected.** A91's row stops claiming the collapse's cost and
   keeps the node-teardown share it measured. BL's exception text in
   `docs/next/long-line-documents.md` and the archived design is annotated with
