@@ -5470,3 +5470,134 @@ fn test_directory_collapse_and_small_expansion_dispatches_fit_the_budgets() {
         drop(tree.window);
     }
 }
+
+/// Widgets in a realized row's subtree, the row's overlay included.
+fn row_subtree_widgets(root: &gtk4::Widget) -> usize {
+    let mut count = 1;
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        count += row_subtree_widgets(&widget);
+        child = widget.next_sibling();
+    }
+    count
+}
+
+/// Whether any widget in the row's subtree is a `GtkButton`.
+fn row_has_button(root: &gtk4::Widget) -> bool {
+    find_descendant(root, glib::object::ObjectExt::is::<gtk4::Button>).is_some()
+}
+
+/// The most widgets a realized file row carries once its decorations are
+/// created on demand (design D17): the overlay, the expander and its indent
+/// and disclosure icons, the content box, the open indicator, the icon and the
+/// label. `main`'s rows carry 16 at depth one
+/// (`.claude/handoffs/slice-large-directory-collapse/rev5/failing-first-10-4.log`).
+const LIGHT_FILE_ROW_WIDGETS: usize = 9;
+
+/// Design D17 (task 10.4): a file row carries only what every row shows; the
+/// drag handle, the Focus Folder button and the three drop surfaces exist only
+/// on rows that use them. Fails on `main`: every row is created with all of
+/// them (16 widgets per depth-one file row).
+#[test]
+fn test_file_rows_carry_only_the_widgets_every_row_shows() {
+    let (tree, nested) = expanded_nested(64, 0);
+    let mut file_rows = 0;
+    let mut most_widgets = 0;
+    let mut nested_row = None;
+    for widget in realized_list_rows(&tree.section.imp().file_tree_view) {
+        let Some(overlay) = widget.first_child().and_downcast::<gtk4::Overlay>() else {
+            continue;
+        };
+        let Some(row) = overlay
+            .child()
+            .and_downcast::<gtk4::TreeExpander>()
+            .and_then(|expander| expander.list_row())
+        else {
+            continue;
+        };
+        let Some(item) = row.item().and_downcast::<FileTreeItem>() else {
+            continue;
+        };
+        if item.path().as_deref() == Some(nested.as_path()) {
+            nested_row = Some(overlay.clone());
+        }
+        if item.is_dir() || item.is_placeholder() {
+            continue;
+        }
+        file_rows += 1;
+        let overlay = overlay.upcast::<gtk4::Widget>();
+        let widgets = row_subtree_widgets(&overlay);
+        most_widgets = most_widgets.max(widgets);
+        assert!(
+            widgets <= LIGHT_FILE_ROW_WIDGETS,
+            "file row {} carries {widgets} widgets, over {LIGHT_FILE_ROW_WIDGETS}",
+            item.name()
+        );
+        assert!(
+            !row_has_button(&overlay),
+            "file row {} carries a button",
+            item.name()
+        );
+    }
+    assert!(file_rows > 0, "no realized file row");
+    println!("{file_rows} realized file rows, at most {most_widgets} widgets each");
+    // A non-root directory row still gets its Focus Folder button on demand.
+    let nested_row = nested_row.expect("the nested directory row is realized");
+    assert!(
+        row_has_button(nested_row.upcast_ref()),
+        "the non-root directory row lost its Focus Folder button"
+    );
+    drop(tree.window);
+}
+
+/// Design D17 (task 10.4): rows are created without the reorder shield, so a
+/// reorder drag gives one to every realized row when it starts, file rows
+/// included, before GTK can deliver drag hover to an expander. A guard test
+/// (it passes on `main`, whose rows are all created with a shield). Prints the
+/// drag start's GTK time: the shields are created in that dispatch, for the
+/// rows the slice bin's band realizes (about the viewport's rows, not A1's
+/// 200), so it is small (not a verdict; design implementation decisions).
+#[test]
+fn test_a_reorder_drag_gives_every_realized_row_a_shield() {
+    let (tree, _nested) = expanded_nested(1024, 0);
+    let shielded = |section: &LushtextWorkspaceSection| {
+        realized_list_rows(&section.imp().file_tree_view)
+            .into_iter()
+            .filter(|widget| {
+                find_descendant(widget, |candidate| {
+                    candidate.has_css_class("workspace-folder-dnd-shield") && candidate.can_target()
+                })
+                .is_some()
+            })
+            .count()
+    };
+    let realized = realized_list_rows(&tree.section.imp().file_tree_view).len();
+    assert!(
+        realized > 1,
+        "the viewport's rows are realized ({realized} rows)"
+    );
+    assert_eq!(
+        shielded(&tree.section),
+        0,
+        "no shield is targetable outside a drag"
+    );
+    let folder_id = lushtext_core::model::workspace::WorkspaceFolderId::new("drag-start");
+    let started = std::time::Instant::now();
+    let during = tree
+        .section
+        .with_active_workspace_folder_reorder_drag_for_test(&folder_id, || {
+            let elapsed = started.elapsed();
+            (elapsed, shielded(&tree.section))
+        });
+    println!(
+        "reorder drag start: {} us to shield {realized} realized rows",
+        during.0.as_micros()
+    );
+    assert_eq!(during.1, realized, "every realized row owns drag hover");
+    assert_eq!(
+        shielded(&tree.section),
+        0,
+        "the shields are inert after the drag"
+    );
+    drop(tree.window);
+}

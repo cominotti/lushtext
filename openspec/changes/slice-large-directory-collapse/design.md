@@ -1162,6 +1162,48 @@ Recorded at stage 3 (implementation), each with its evidence.
     its queued 10.7 round is marked NOT READY until the next stage puts the
     lighter rows in the round's binary, because 10.7's frame margin is
     10.4's.
+23. **D17 as built (task 10.4, 2026-11-18).** A realized depth-one file row
+    now carries 9 widgets, down from 16 (the overlay, the expander and its
+    three internal icons, the content box, the open indicator, the icon and
+    the label; failing-first `rev5/failing-first-10-4.log`, passing
+    `rev5/t104.log`). Where D17 said "on demand", the build decides when:
+    - *Top-level workspace-folder rows get the drag handle, the shield and
+      the insertion-line surface at bind*, whether or not the handle shows
+      (a one-folder workspace keeps it hidden). They are one row per folder,
+      and creating them at bind keeps the reorder, handle-visibility and
+      accessibility tests' contract on those rows unchanged.
+    - *Every other realized row gets only the shield, and only while a
+      reorder drag is active*: at the drag's start
+      (`sync_folder_reorder_shields_for_active_drag`) and when bound during
+      it. The shield must own drag hover on every row before
+      `GtkTreeExpander`'s drop controller can auto-expand it, so it cannot
+      wait for hover. The insertion line shows only on top-level rows, which
+      already have it. The drag start's GTK time, with the slice bin's band
+      realizing about the viewport's rows (18 in the 800 px test window, not
+      A1's 200), printed 2.3 and 6.3 ms for 18 rows in a debug build at a
+      load of 10 (`test_a_reorder_drag_gives_every_realized_row_a_shield`,
+      `rev5/t104.log`; not a verdict). An optimized figure is queued with the
+      go/no-go round.
+    - *The Focus Folder button and its hover controller are created at bind
+      of a focusable row* (a non-root, non-empty directory), not at the
+      first hover: a hover-time creation needs a motion controller on every
+      row, which is part of the cost D17 removes. A directory-dense listing
+      still pays the button on its directory rows.
+    - *A recycled row keeps what it was given*, hidden, inert and without
+      `can-focus`: removing a controller-bearing widget at unbind would cost
+      the churn D17 saves. So after one drag the realized rows carry shields
+      until GTK destroys them (a collapse or a scroll replaces them with
+      fresh, light rows).
+    - Every lookup reads a row's children by type or CSS class
+      (`row_icon_and_label`, `content_box_drag_handle`) and resolves the bound
+      row from the widget tree at event time (`expander.list_row()`), so no
+      closure captures the setup-time `GtkListItem`.
+    - Real pointer drag-and-drop stays covered by the simulate seams only, as
+      before: no widget test drives a live GTK drag, so "a shield created
+      mid-drag receives hover" rests on GTK picking the widget under the
+      pointer at each motion event (the shield is a sibling above the
+      expander, as before). The reviewer should treat live DnD as unproven
+      by this change's tests.
 
 ## Stage 4 verdict (2026-11-15): pass bar not met, back to implementation
 
