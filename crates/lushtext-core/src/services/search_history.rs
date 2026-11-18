@@ -7,6 +7,7 @@
 //! damaged history degrades to an empty list with diagnostics.
 
 use crate::model::content_search::SearchHistoryEntry;
+use crate::services::app_data_layout::{AppDataLayout, AppDataLocation};
 use crate::services::json_format::KIND_SEARCH_HISTORY;
 use crate::services::recovery_metadata::{
     RecoveryLoad, RecoveryLoadConfig, RecoveryMetadataClass, load_enveloped_json_or_default,
@@ -20,8 +21,10 @@ use std::path::Path;
 /// (`power-of-two-thresholds` D6).
 const MAX_HISTORY: usize = 32;
 
-/// Filename for the search history JSON file.
-const HISTORY_FILE: &str = "search-history.json";
+/// `AppDataLocation::SearchHistory` under the data home `data_dir`.
+fn search_history_path(data_dir: &std::path::Path) -> std::path::PathBuf {
+    AppDataLayout::new(data_dir).path(AppDataLocation::SearchHistory)
+}
 
 /// Load search history from disk. Returns an empty vec on missing or corrupt file.
 pub fn load(data_dir: &Path) -> Vec<SearchHistoryEntry> {
@@ -35,7 +38,7 @@ pub fn load(data_dir: &Path) -> Vec<SearchHistoryEntry> {
 /// Load recent search history with low-stakes recovery diagnostics.
 #[must_use]
 pub fn load_recovering(data_dir: &Path) -> RecoveryLoad<Vec<SearchHistoryEntry>> {
-    let path = data_dir.join(HISTORY_FILE);
+    let path = search_history_path(data_dir);
     load_enveloped_json_or_default(
         &RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::SearchHistory),
         KIND_SEARCH_HISTORY,
@@ -48,7 +51,7 @@ pub fn load_recovering(data_dir: &Path) -> RecoveryLoad<Vec<SearchHistoryEntry>>
 ///
 /// Returns an error if the history file cannot be serialized or written.
 pub fn save(data_dir: &Path, entries: &[SearchHistoryEntry]) -> anyhow::Result<()> {
-    let path = data_dir.join(HISTORY_FILE);
+    let path = search_history_path(data_dir);
     let config = RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::SearchHistory);
     let entries = entries.to_vec();
     let diagnostics = save_enveloped_json_path(&config, KIND_SEARCH_HISTORY, &entries)?;
@@ -166,7 +169,7 @@ mod tests {
     #[test]
     fn load_recovering_reports_unsupported_old_history() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        fixture::write_text(&dir.path().join(HISTORY_FILE), r#"[{"query":"old"}]"#);
+        fixture::write_text(&search_history_path(dir.path()), r#"[{"query":"old"}]"#);
 
         let loaded = load_recovering(dir.path());
 
@@ -186,7 +189,7 @@ mod tests {
             ContentSearchOptions::default(),
         ))];
         save(dir.path(), &entries).expect("save");
-        let path = dir.path().join(HISTORY_FILE);
+        let path = search_history_path(dir.path());
         let json = crate::services::filesystem::read::text(&path).expect("read history");
         assert!(json.contains("\"hidden\""));
         let mut document: serde_json::Value = serde_json::from_str(&json).expect("parse envelope");

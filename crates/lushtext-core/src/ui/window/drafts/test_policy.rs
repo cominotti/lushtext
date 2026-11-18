@@ -33,6 +33,7 @@ struct DraftTestPolicy {
     fail_next_body: AtomicBool,
     fail_next_manifest: AtomicBool,
     fail_next_delete: AtomicBool,
+    fail_next_registration: AtomicBool,
     next_body_disposal_probe: crate::ui::plain_disposal::DisposalProbeSlot,
 }
 
@@ -50,6 +51,7 @@ static POLICY: DraftTestPolicy = DraftTestPolicy {
     fail_next_body: AtomicBool::new(false),
     fail_next_manifest: AtomicBool::new(false),
     fail_next_delete: AtomicBool::new(false),
+    fail_next_registration: AtomicBool::new(false),
     next_body_disposal_probe: crate::ui::plain_disposal::DisposalProbeSlot::new(),
 };
 
@@ -93,11 +95,22 @@ pub fn set_draft_manifest_completion_delay_for_test(delay_ms: u64) {
         .store(delay_ms, Ordering::Release);
 }
 
-/// Inject one failure at each selected production-routed mutation stage.
-pub fn fail_next_draft_mutations_for_test(body: bool, manifest: bool, delete: bool) {
+/// Inject one failure at each selected production-routed mutation stage: the
+/// next body write, the next manifest commit, the next delete, and the next
+/// write-ahead registration commit (as a manifest write that did not reach
+/// the disk would leave it).
+pub fn fail_next_draft_mutations_for_test(
+    body: bool,
+    manifest: bool,
+    delete: bool,
+    registration: bool,
+) {
     POLICY.fail_next_body.store(body, Ordering::Release);
     POLICY.fail_next_manifest.store(manifest, Ordering::Release);
     POLICY.fail_next_delete.store(delete, Ordering::Release);
+    POLICY
+        .fail_next_registration
+        .store(registration, Ordering::Release);
 }
 
 /// Configure orphan-cleanup timer and worker delays for deterministic widget tests.
@@ -172,6 +185,10 @@ pub(super) fn take_manifest_failure() -> bool {
 
 pub(super) fn take_delete_failure() -> bool {
     POLICY.fail_next_delete.swap(false, Ordering::AcqRel)
+}
+
+pub(super) fn take_registration_failure() -> bool {
+    POLICY.fail_next_registration.swap(false, Ordering::AcqRel)
 }
 
 pub(super) fn attach_body_disposal_probe(

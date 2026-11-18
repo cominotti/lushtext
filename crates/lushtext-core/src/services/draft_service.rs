@@ -16,6 +16,7 @@ use crate::model::draft::{
 use crate::model::local_history::LocalHistorySnapshotOrigin;
 use crate::model::session::SessionData;
 use crate::model::sidecar_identity::stable_path_hash;
+use crate::services::app_data_layout::{AppDataLayout, AppDataLocation};
 use crate::services::json_format::KIND_DRAFT_MANIFEST;
 use crate::services::recovery_metadata::{
     RecoveryDiagnostic, RecoveryLoad, RecoveryLoadConfig, RecoveryLoadOutcome,
@@ -40,10 +41,11 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-/// Groups manifest and bodies in one app-owned directory for bounded cleanup scans.
-const DRAFTS_DIR: &str = "drafts";
-/// Envelope-backed manifest filename stored beside draft bodies.
-const MANIFEST_FILE: &str = "manifest.json";
+/// The envelope-backed manifest's file name beside the draft bodies
+/// (`AppDataLocation::DraftManifest`).
+fn manifest_file_name() -> &'static str {
+    AppDataLocation::DraftManifest.file_name()
+}
 /// Largest UTF-8 draft body that LushText can automatically write and restore.
 ///
 /// Sixty-four MiB keeps one recovery body bounded on ordinary desktop systems.
@@ -242,14 +244,15 @@ fn manifest_write_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-/// Returns the drafts directory: `{data_dir}/drafts/`.
+/// Returns the drafts directory, which groups the manifest and bodies in one
+/// app-owned directory for bounded cleanup scans: `{data_dir}/drafts/`.
 #[must_use]
 pub fn drafts_dir(data_dir: &Path) -> PathBuf {
-    data_dir.join(DRAFTS_DIR)
+    AppDataLayout::new(data_dir).path(AppDataLocation::DraftsDir)
 }
 
 fn manifest_path(data_dir: &Path) -> PathBuf {
-    drafts_dir(data_dir).join(MANIFEST_FILE)
+    AppDataLayout::new(data_dir).path(AppDataLocation::DraftManifest)
 }
 
 /// Returns the drafts set-aside area: `{data_dir}/drafts/set-aside/`.
@@ -1435,7 +1438,7 @@ fn recoverable_draft_inventory_with_candidate(
                     );
                     return false;
                 }
-                if entry.file_name == MANIFEST_FILE {
+                if entry.file_name == manifest_file_name() {
                     continue;
                 }
                 metrics.entries_scanned = metrics.entries_scanned.saturating_add(1);
@@ -2337,7 +2340,7 @@ pub fn inspect_orphan_cleanup_from(
         .collect::<HashSet<_>>();
 
     for entry in entries {
-        if entry.file_name == MANIFEST_FILE {
+        if entry.file_name == manifest_file_name() {
             continue;
         }
         let Some(draft_id) = draft_id_from_draft_file_name(&entry.file_name) else {
@@ -2890,8 +2893,7 @@ mod tests {
 
     #[test]
     fn draft_policy_constants_are_stable() {
-        assert_eq!(DRAFTS_DIR, "drafts");
-        assert_eq!(MANIFEST_FILE, "manifest.json");
+        assert_eq!(manifest_file_name(), "manifest.json");
         assert_eq!(MAX_AUTOMATIC_DRAFT_BYTES, 64 * 1024 * 1024);
         assert_eq!(MAX_EAGER_DRAFT_PRELOAD_BYTES, 64 * 1024 * 1024);
         assert_eq!(MAX_MANIFEST_REPAIR_DRAFT_SCAN, 2048);
@@ -4448,7 +4450,7 @@ mod tests {
             drafts: vec![stale.clone(), keep.clone()],
             cleanup_continuation: None,
         };
-        fixture::create_dir_all(&drafts_dir(dir.path()).join(MANIFEST_FILE));
+        fixture::create_dir_all(&drafts_dir(dir.path()).join(manifest_file_name()));
 
         let (authority, outcomes) = cleanup_stale_restore_entries(
             dir.path(),

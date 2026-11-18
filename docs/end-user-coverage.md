@@ -229,7 +229,18 @@ they are not default PR gates:
   inside the `draft-body-before-commit`, `durable-renamed-before-dirsync`, and
   `stale-preserved-before-retire` protocol windows, using a separate binary built
   with the smoke-only `crash-kill-points` feature (`LUSHTEXT_KILL_AT`), and requires
-  no lost work after each relaunch. Release, Meson, Flatpak, and Snap builds never
+  no lost work after each relaunch. Each launch has a role, recorded in
+  `logs/lushtext-<phase>.role`: a `seed` launch prepares state and a
+  `relaunch` must recover it, and both always run the ordinary `--binary`;
+  only the `victim`, the launch that is killed by `SIGKILL` or at a kill
+  point, runs the kill-point binary when one is supplied. That binary is the
+  ordinary one plus kill points, because the feature gates only
+  `services::kill_point::reach` (`make check-kill-point-gating`, in
+  `make check-policy`, fails on any other gating site, manifest line, or
+  command line that enables it). Before any scenario the lane checks that the
+  ordinary binary, and `target/release/lushtext` when it exists, holds none of
+  the kill-point markers, and records the result in
+  `assertions/no-kill-points.json`. Release, Meson, Flatpak, and Snap builds never
   enable that feature and contain no kill-point code. `LUSHTEXT_KILL_AT` takes
   `name[@label][#n]`: the window name, optionally the durable-write label it
   must be reached under, and optionally a one-based occurrence ordinal counted

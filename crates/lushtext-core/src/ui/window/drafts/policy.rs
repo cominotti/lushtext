@@ -24,6 +24,16 @@ use std::time::Duration;
 pub(super) const FIRST_DIRTY_AUTOSAVE_DEBOUNCE_MS: u64 = 750;
 /// Interval of the always-running autosave tick.
 pub(super) const AUTOSAVE_TICK_INTERVAL: Duration = Duration::from_secs(5);
+/// Longest wait, in periodic autosave ticks, between two attempts at a failed
+/// set-aside copy of an unrestored recovery body.
+///
+/// Twelve 5 s ticks is one minute. While the copy fails, autosave holds the
+/// id and does not write the user's newer edits to it, so a retry must follow
+/// the cause clearing (a disk freed, a directory made writable) within a
+/// minute; one small worker a minute is the cost.
+///
+/// Kind: out: time; one minute of `AUTOSAVE_TICK_INTERVAL` ticks.
+pub(super) const UNRESTORED_COPY_MAX_RETRY_TICKS: u64 = 12;
 /// Delay before startup releases preloaded bodies and begins orphan inspection.
 ///
 /// Two seconds lets restored editors consume their recovery snapshots before a
@@ -321,6 +331,21 @@ pub(super) fn orphan_cleanup_follow_up(
         delay,
         next_failure_streak,
     }
+}
+
+/// Periodic autosave ticks to wait after the `failures`-th failed set-aside
+/// copy of an unrestored recovery body before the next attempt.
+///
+/// Doubles from one tick, `2^(failures - 1)`, up to
+/// `UNRESTORED_COPY_MAX_RETRY_TICKS`; the exponent is guarded like
+/// `orphan_cleanup_follow_up`'s, so any count, `u32::MAX` included, is defined.
+/// Counted from the tick at which the first failure is recorded, attempts
+/// follow at ticks 1, 3, 7, 15, 27, then every 12 ticks. `failures` of 0 (no
+/// failure yet) asks for the next tick.
+#[must_use]
+pub(super) fn unrestored_copy_retry_delay_ticks(failures: u32) -> u64 {
+    let exponent = failures.saturating_sub(1).min(31);
+    (1u64 << exponent).min(UNRESTORED_COPY_MAX_RETRY_TICKS)
 }
 
 /// Build one grouped cleanup status message without exposing private recovery
@@ -733,6 +758,44 @@ mod tests {
                 next_failure_streak: 1,
             }
         );
+    }
+
+    #[test]
+    fn unrestored_copy_retries_double_from_one_tick() {
+        let delays: Vec<u64> = (1..=4).map(unrestored_copy_retry_delay_ticks).collect();
+        assert_eq!(delays, vec![1, 2, 4, 8]);
+        assert_eq!(
+            unrestored_copy_retry_delay_ticks(0),
+            1,
+            "no failure yet: the next tick"
+        );
+    }
+
+    #[test]
+    fn unrestored_copy_retries_cap_at_one_minute_of_ticks() {
+        assert_eq!(unrestored_copy_retry_delay_ticks(5), 12);
+        assert_eq!(unrestored_copy_retry_delay_ticks(32), 12);
+        assert_eq!(unrestored_copy_retry_delay_ticks(u32::MAX), 12);
+        // Pinned as a concrete count: a minute of 5 s ticks is the contract.
+        assert_eq!(UNRESTORED_COPY_MAX_RETRY_TICKS, 12);
+        assert_eq!(
+            AUTOSAVE_TICK_INTERVAL * 12,
+            Duration::from_secs(60),
+            "the cap is one minute"
+        );
+    }
+
+    #[test]
+    fn unrestored_copy_retries_follow_the_documented_schedule() {
+        // Each attempt fails and records the next due tick as now plus the
+        // delay for its failure count; the first failure is at tick 0.
+        let mut due = 0u64;
+        let mut attempts = Vec::new();
+        for failures in 1..=6u32 {
+            due += unrestored_copy_retry_delay_ticks(failures);
+            attempts.push(due);
+        }
+        assert_eq!(attempts, vec![1, 3, 7, 15, 27, 39]);
     }
 
     #[test]

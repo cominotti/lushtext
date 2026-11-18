@@ -9,6 +9,7 @@
 //! search, and the background task concurrency guard.
 
 pub mod action_catalog;
+pub mod app_data_layout;
 pub mod app_data_leftovers;
 pub mod bookmark_excerpt;
 pub mod bookmark_service;
@@ -33,6 +34,7 @@ pub mod migration_ledger;
 mod note_storage;
 pub mod notifications;
 pub mod palette;
+pub(crate) mod protocol_drive;
 pub mod read_fault;
 pub mod recent_documents;
 pub mod recovery_metadata;

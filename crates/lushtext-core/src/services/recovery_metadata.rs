@@ -17,6 +17,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use crate::services::app_data_layout::AppDataLocation;
 use crate::services::filesystem::{
     PathStatus, WriteLabel, metadata as fs_metadata, read as fs_read, write as fs_write,
 };
@@ -31,7 +32,10 @@ use crate::services::json_format::{self, JsonEnvelopeRef, JsonFormatError};
 /// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const DEFAULT_MAX_METADATA_BYTES: u64 = 16 * 1024 * 1024;
 /// App-data directory where damaged metadata is preserved for support triage.
-pub const QUARANTINE_DIR: &str = "recovery-quarantine";
+///
+/// Spelled by the app-data layout; kept as a name for callers outside
+/// `services` (UI and tests).
+pub const QUARANTINE_DIR: &str = AppDataLocation::RecoveryQuarantine.relative_str();
 /// Maximum attempts to find a free quarantine filename before failing safely.
 ///
 /// Hitting this would require repeated nanosecond timestamp/hash collisions or

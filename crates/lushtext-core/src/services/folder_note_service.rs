@@ -13,17 +13,13 @@ use std::path::{Path, PathBuf};
 use crate::model::folder_note::{FolderNoteDocument, FolderNoteIdentity};
 use crate::model::note::{RichNoteBody, RichNoteMergeDecision};
 use crate::model::workspace::{WorkspaceConfig, WorkspaceScope};
+use crate::services::app_data_layout::{AppDataLayout, AppDataLocation};
 use crate::services::filesystem::{
     DirectoryScanPolicy, metadata as fs_metadata, mutate as fs_mutate, tree as fs_tree,
 };
 use crate::services::recovery_metadata::{RecoveryDiagnostic, RecoveryMetadataClass};
 
 use super::note_storage;
-
-/// Directory name that stores new folder-note sidecars.
-const FOLDER_NOTES_DIR: &str = "folder-notes";
-/// Directory name used by old releases for folder-note sidecars.
-const LEGACY_FOLDER_NOTES_DIR: &str = "workspace-notes";
 
 /// Lightweight workspace-facing note row for unified note browsers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,11 +53,11 @@ pub struct FolderNoteLoad {
 /// Resolve the folder-note sidecar directory under the app data home.
 #[must_use]
 pub fn folder_notes_dir(data_dir: &Path) -> PathBuf {
-    data_dir.join(FOLDER_NOTES_DIR)
+    AppDataLayout::new(data_dir).path(AppDataLocation::FolderNotes)
 }
 
 fn legacy_folder_notes_dir(data_dir: &Path) -> PathBuf {
-    data_dir.join(LEGACY_FOLDER_NOTES_DIR)
+    AppDataLayout::new(data_dir).path(AppDataLocation::LegacyFolderNotes)
 }
 
 fn folder_note_sidecar_path(data_dir: &Path, identity: &FolderNoteIdentity) -> PathBuf {

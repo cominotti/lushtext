@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use crate::model::bookmark::{BookmarkDocument, BookmarkId, BookmarkRecord};
 use crate::model::sidecar_identity::DocumentSidecarIdentity;
+use crate::services::app_data_layout::{AppDataLayout, AppDataLocation};
 use crate::services::filesystem::{
     DirectoryScanPolicy, metadata as fs_metadata, mutate as fs_mutate, tree as fs_tree,
     write as fs_write,
@@ -23,9 +24,6 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::services::note_storage;
 use crate::services::recovery_metadata::{RecoveryDiagnostic, RecoveryMetadataClass};
-
-/// Directory name that stores per-file bookmark sidecars.
-const BOOKMARKS_DIR: &str = "bookmarks";
 
 /// Lightweight workspace-facing bookmark row for browse dialogs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,7 +60,7 @@ impl WorkspaceBookmark {
 /// Resolve the bookmark sidecar directory under the app data home.
 #[must_use]
 pub fn bookmarks_dir(data_dir: &Path) -> PathBuf {
-    data_dir.join(BOOKMARKS_DIR)
+    AppDataLayout::new(data_dir).path(AppDataLocation::Bookmarks)
 }
 
 /// Resolve the stable identity for a saved document path.

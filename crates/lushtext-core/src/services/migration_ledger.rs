@@ -14,6 +14,7 @@ use crate::model::migration_ledger::{
     MigrationEntry, MigrationKind, MigrationKindState, MigrationLedgerDocument,
 };
 use crate::model::sidecar_identity::now_epoch_secs;
+use crate::services::app_data_layout::{AppDataLayout, AppDataLocation};
 use crate::services::json_format::KIND_MIGRATION_LEDGER;
 use crate::services::recovery_metadata::{
     RecoveryDiagnostic, RecoveryLoad, RecoveryLoadConfig, RecoveryMetadataClass,
@@ -23,8 +24,6 @@ use crate::services::{
     bookmark_service, document_note_service, folder_note_service, local_history_service,
 };
 
-/// Persistent ledger filename under the app data directory.
-const MIGRATION_LEDGER_FILENAME: &str = "migration-ledger.json";
 /// Stop automatic startup retry after this many failures for one kind.
 ///
 /// Kind: retry budget; 3 rounded up to a power of two
@@ -112,7 +111,7 @@ pub struct MigrationReconcileReport {
 /// Path to the durable migration ledger file.
 #[must_use]
 pub fn ledger_path(data_dir: &Path) -> std::path::PathBuf {
-    data_dir.join(MIGRATION_LEDGER_FILENAME)
+    AppDataLayout::new(data_dir).path(AppDataLocation::MigrationLedger)
 }
 
 /// Load the migration ledger through recovery-aware metadata handling.
