@@ -97,7 +97,10 @@ group's heavy commands.
   - the "build on" section of `docs/next/formal-verification.md`, which
     names the single tap site and the five shells for the conformance change;
   - N8 in `docs/next/formal-verification-next.md` (group 1 done);
-  - the `AGENTS.md` module layout (`services/protocol_drive.rs`).
+  - the `AGENTS.md` module layout (`services/protocol_drive.rs`);
+  - `README.md`: evaluate it per `documentation.md`. Its architecture section
+    lists crates, not modules, so record "no change" unless that has
+    changed.
 
 ## 4. `WriteLabel` down to the temp name (design G4)
 
@@ -150,11 +153,16 @@ group's heavy commands.
   - the `AppDataLayout::new(root)` accessors.
 - [ ] 2.3 Switch the startup sweep in `app_data_leftovers.rs` to iterate the
   layout. Keep the family expansion, `MAX_LINEAGES_PER_PASS`,
-  `MAX_BACKUP_RUNS_PER_PASS`, and the budget. Confirm the existing sweep tests
-  pass unchanged, including the style-schemes, set-aside, bodies, and
-  backup-run cases.
+  `MAX_BACKUP_RUNS_PER_PASS`, and the budget. `ALL` must reproduce today's
+  directory visit order, because the shared budget is spent in that order:
+  add a test that pins the order, failing-first against a deliberately
+  reordered list. Add a test asserting that every file entry's parent is a
+  swept entry. Confirm the existing sweep tests pass unchanged, including the
+  style-schemes, set-aside, bodies, and backup-run cases.
 - [ ] 2.4 Switch the format-upgrade inventory to an exhaustive `match` over
-  `AppDataLocation` and delete its duplicated literals. Give each exempt
+  `AppDataLocation`, scanned in an explicit `INVENTORY_ORDER` that
+  reproduces today's scan order, and delete its duplicated literals. Add a
+  test that `INVENTORY_ORDER` holds exactly the non-exempt locations. Give each exempt
   entry `NotInventoried(reason)`:
   - `recent-documents.json` (no envelope; resolved in design G2);
   - `style-schemes/`;
@@ -181,16 +189,21 @@ group's heavy commands.
   - `docs/durable-writes.md` (sweep coverage comes from the layout);
   - the deferral inventory in `docs/next/formal-verification.md` (the legacy
     `workspace-notes/` entry now points at the layout exemption);
-  - N8 (group 2 done).
+  - N8 (group 2 done);
+  - `README.md` evaluated as in 1.8, and
+    `grep -rn 'leftover\|sweep' .agents/skills/*/references/` checked for a
+    hand-written sweep list that now needs to point at the layout.
 
 ## 6. Explicit smoke-binary roles (design G6)
 
 - [ ] 6.1 Add `scripts/check-kill-point-gating.sh` and wire it into
-  `make check-policy`. It asserts that `crash-kill-points` occurs only in:
-  - `services/kill_point.rs`;
-  - the two `Cargo.toml` feature lines;
-  - the Makefile build line;
-  - the smoke scripts and docs.
+  `make check-policy`. It keys on gating sites (design G6):
+  - `feature = "crash-kill-points"` in Rust only in
+    `services/kill_point.rs`;
+  - the feature declared only by the two `Cargo.toml` lines;
+  - `--features crash-kill-points` only in the Makefile's smoke build line.
+
+  Comments, scripts, and docs may mention it.
 
   Confirm it fails first: add a temporary second
   `cfg(feature = "crash-kill-points")` site, see the failure, then remove the
@@ -198,7 +211,7 @@ group's heavy commands.
 - [ ] 6.2 Add the role table to `scripts/crash-recovery-smoke-driver.py`.
   `seed` and `relaunch` are always `--binary`. `victim` is
   `--kill-point-binary` when supplied, and `--binary` otherwise.
-  `launch_app(role=…)` replaces `binary=`, and every one of its 12 calls
+  `launch_app(role=…)` replaces `binary=`, and every one of its 11 calls
   names a role. Each phase writes `logs/lushtext-<phase>.role` with its role
   and binary.
 - [ ] 6.3 Add the marker guard. It reads the ordinary binary's bytes, and
@@ -241,8 +254,8 @@ group's heavy commands.
 - [ ] 5.4 Add a unit test showing that `into_writable` refuses a token for a
   different id.
 - [ ] 5.5 Confirm that 5.1 passes, that `RegisteredDraft` gained no `Clone`,
-  and that `draft_service.rs`, `journal_core.rs`, and `model/draft.rs` are
-  unchanged. Kani: none. If any of them changed, run
+  and that `journal_core.rs` and `model/draft.rs` are unchanged. G2's
+  path-helper edits to `draft_service.rs` reach no harness. Kani: none. If any of them changed, run
   `setsid nohup scripts/heavy.sh --envelope 16G -- make kani KANI_SHARD=core-journal-and-write`
   and then `KANI_SHARD=core-second-writer`, once each, detached, on the final
   code, and record the times.
@@ -304,7 +317,9 @@ group's heavy commands.
   - phase 4 in `docs/next/formal-verification.md` (the retry now backs off,
     on timer ticks only);
   - the `AGENTS.md` "Draft persistence" decision;
-  - N8 (group 3 done).
+  - N8 (group 3 done);
+  - `grep -rn 'unrestored' .agents/skills/*/references/ docs/` for a stated
+    per-tick retry cadence that is now stale.
 
 ## 7. Close the change
 

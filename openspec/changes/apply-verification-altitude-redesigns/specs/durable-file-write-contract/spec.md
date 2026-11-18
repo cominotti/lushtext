@@ -16,17 +16,16 @@ to the core unchanged.
 - **WHEN** a durable move executes its copy action
 - **THEN** the copy's write protocol runs as a nested call of the same driver, completing before the move's outcome for that action is fed back
 
-### Requirement: Adopting the shared driver changes no core and no behaviour
-A shell that uses the shared driver SHALL keep only two things: its own
-resources, such as the temp file, writer, guard, and last error, and the
-mapping from the core's terminal action to its result. It SHALL keep no loop
-of its own, unless the adopting change records why. Adopting the driver MUST
-NOT change the Kani-checked cores, their harnesses, or the sequence of actions
-any shell executes.
+### Requirement: Proven-protocol shells hold no loop of their own
+A shell of a proven protocol core SHALL hold only its own resources, such as
+the temp file, writer, guard, and last error, and the mapping from the core's
+terminal action to its result. It SHALL NOT loop over the core's actions
+itself. The one exception is a shell whose module documentation records why
+it cannot use the shared driver.
 
-#### Scenario: Behaviour is unchanged by the driver
-- **WHEN** the durable-write, Replace All, and Undo fault-injection and crash tests run against the shells after they adopt the driver
-- **THEN** every result classification, leftover, kill-point window, and on-disk state is the same as before
+#### Scenario: Results follow the core's terminal action
+- **WHEN** a proven-protocol shell returns
+- **THEN** its result is the mapping of the terminal action the shared driver stopped at, carrying the last error its executor recorded
 
 ### Requirement: The app-data layout has one owner
 Every app-data file and directory SHALL be named once, in one GTK-free layout

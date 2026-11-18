@@ -62,7 +62,7 @@ stay **independently applicable**.
      point, `copy_durable` and `move_durable` included, take `WriteLabel`
      instead of `tmp_tag: &str`.
    - `kill_point::reach` keeps its `&str` narrowing key, because two of its
-     callers narrow by draft id rather than by write label.
+     seven callers narrow by draft id rather than by write label.
    - Internal API only.
 5. **Registered and unregistered draft candidates as distinct types.**
    - `DirtyDraftCandidate.registered: Option<RegisteredDraft>` becomes an
@@ -97,8 +97,9 @@ None.
 
 - `durable-file-write-contract`:
   - ADDED "Proven-protocol shells run through one shared driver" and
-    "Adopting the shared driver changes no core and no behaviour" (group 1).
-    Together they pin the single per-action site the conformance change taps.
+    "Proven-protocol shells hold no loop of their own" (group 1).
+    Together they pin the single per-action site where the conformance
+    change observes every action and injects crashes.
   - ADDED "The app-data layout has one owner" and "The leftover sweep and the
     upgrade inventory take their coverage from the layout owner" (group 2).
 - `draft-session-recovery` (group 3): ADDED "A failed set-aside copy of an
@@ -142,7 +143,7 @@ body is never written for an unregistered id". design.md justifies each.
   - `ui/window/drafts/{seams,autosave_execution}.rs`;
   - the `WFR-DRAFT-RECOVERY` row.
 
-  `services/draft_service.rs` is not edited.
+  `journal_core.rs` and `model/draft.rs` are not edited.
 - **Group 6:**
   - `scripts/crash-recovery-smoke-driver.py` and
     `scripts/run-crash-recovery-smoke.sh`;

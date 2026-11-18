@@ -136,8 +136,10 @@ and the set-aside copy. The attempts compete for the eight
   `atomic_replace_workspace_file_stream`) already take `WriteLabel` at the
   boundary.
 
-`kill_point::reach(window, label: &str)` is called at six sites:
-- three in Replace All, with `WriteLabel::REPLACE.as_str()`;
+`kill_point::reach(window, label: &str)` is called at seven sites:
+- four in Replace All (`apply.rs` three, `undo.rs` one), each with a
+  `WriteLabel` constant's `as_str()` (`REPLACE`, or `REPLACE_UNDO_BODY` for
+  `ReplaceBodyBeforeEntry`);
 - one in `durable_write`, with the tag;
 - **two in `draft_service.rs` (:2025, :2058), with a draft id**.
 
@@ -146,7 +148,7 @@ and the set-aside copy. The attempts compete for the eight
 
 **Group 5.** `DirtyDraftCandidate.registered: Option<RegisteredDraft>` is
 filled by `register_new_draft_ids_then`, which serves both asynchronous
-pipelines. The autosave body write (`autosave_execution.rs:704`) and the
+pipelines. The autosave body write (`autosave_execution.rs:702`) and the
 asynchronous close body write (`:445`) then do
 `registered.ok_or_else(|| "recovery metadata was not registered")`. That is a
 runtime check for something the stage order already guarantees.
@@ -265,10 +267,19 @@ would prove nothing new, and adding it to a scheduled shard would cost:
 `MAX_ACTIONS` is dropped with it.
 
 *What `verify-shell-conformance-against-proven-cores` inherits:*
-- **One per-action site for all five shells.** That change's D3 tap,
-  `tap::before(kind, &action)` and `tap::after(kind, &action, outcome)`, wraps
-  the single `execute(action)` call inside `drive`, gated as it describes.
-  This takes the place of a call site in each loop.
+- **One per-action site for all five shells.** `drive` is the one place
+  where every action and every outcome pass, for all five shells. That
+  change's D3 tap therefore lives once around the single `execute(action)`
+  call, gated as it describes, instead of at a call site in each loop. That
+  one site is enough to **observe** every action and outcome, and to
+  **inject a crash** (a panic before or after `execute`).
+- **What the site does not give.** A generic `drive` sees only `P::Action`
+  and `P::Outcome`. It cannot make a shell's `Fail` or `AlreadyExists`
+  faithful: the shell builds `last_error`, and the temp file's existence,
+  inside its `execute` arms. Typed fault injection therefore stays with the
+  conformance change, which designs it in its own revision. Its D3 already
+  has a fallible-call seam in `sys.rs`, or it can add a trait hook. Group 1
+  promises no more than observation and crash injection.
 - **The kind tag.** The conformance change adds it to the trait, for example
   an associated `const KIND`, with the tap. It is not added here, because
   nothing would use it yet.
@@ -301,15 +312,16 @@ In the second case the conformance change taps that loop directly.
 ### G2. `services/app_data_layout.rs`: an enum of locations, exhaustive consumers
 
 A GTK-free module defines:
-- `pub enum AppDataLocation`, with one variant per location: `Root`,
-  `Workspaces`, `Session`, `DraftsDir`, `DraftManifest`, `SetAside`,
-  `LocalHistoryDir`, `Bookmarks`, `DocumentNotes`, `FolderNotes`,
-  `LegacyWorkspaceNotes`, `RecoveryQuarantine`, `ReplaceJournalDir`,
-  `ReplaceJournalManifest`, `ReplaceCleanupMarker`, `ReplaceJournalBodies`,
-  `RetiredReplaceBackup`, `SavedSearches`, `SearchHistory`,
-  `RecentDocuments`, `MigrationLedger`, `StyleSchemes`, and
-  `FormatUpgradeBackups`;
-- `ALL`;
+- `pub enum AppDataLocation`, with one variant per location. The swept
+  directories and families come first, in **today's sweep order**:
+  `Root`, `DraftsDir`, `LocalHistoryDir`, `Bookmarks`, `DocumentNotes`,
+  `FolderNotes`, `RecoveryQuarantine`, `ReplaceJournalDir`,
+  `ReplaceJournalBodies`, `StyleSchemes`, `SetAside`, and
+  `FormatUpgradeBackups`. Then come `LegacyWorkspaceNotes` and the files:
+  `Workspaces`, `Session`, `DraftManifest`, `SavedSearches`, `SearchHistory`,
+  `RecentDocuments`, `MigrationLedger`, `ReplaceJournalManifest`,
+  `ReplaceCleanupMarker`, and `RetiredReplaceBackup`;
+- `ALL`, in that declaration order;
 - `relative(self) -> &'static Path`;
 - `kind(self)`, one of:
   - `File`;
@@ -321,10 +333,15 @@ A GTK-free module defines:
 `AppDataLayout::new(root)` resolves paths from a root.
 
 The consumers take it over as follows:
-- **The sweep** iterates `AppDataLocation::ALL`, keeping the directories
-  (`Root` included) and the families that `holds_durable_writes`, and expands
-  the two families as it does today. Its budget, `MAX_LINEAGES_PER_PASS`, and
-  `MAX_BACKUP_RUNS_PER_PASS` are unchanged.
+- **The sweep** iterates `AppDataLocation::ALL`, keeping the directory and
+  family entries that `holds_durable_writes`, and expands the two families
+  as it does today, after the flat directories. Its budget,
+  `MAX_LINEAGES_PER_PASS`, and `MAX_BACKUP_RUNS_PER_PASS` are unchanged.
+  - **Order is behaviour.** The sweep charges one shared budget in visit
+    order, so `ALL` reproduces today's directory order exactly, and a test
+    pins it.
+  - **File entries are never swept themselves.** Their temps land in their
+    parent directory, which a unit test asserts is a swept entry.
 - **The format-upgrade inventory** maps each location to its scan through an
   **exhaustive `match`**:
   - a fixed-JSON scan with a `FormatMetadataKind`;
@@ -334,8 +351,18 @@ The consumers take it over as follows:
   - `NotInventoried(reason)`.
 
   Adding a variant then fails to compile until both consumers decide it. The
-  layout module does not depend on `format_upgrade`, so no dependency cycle
-  forms.
+  scans run in an explicit `INVENTORY_ORDER` list that reproduces today's
+  order:
+  1. workspaces, session, and the draft manifest;
+  2. draft bodies;
+  3. saved searches and search history;
+  4. the four sidecar directories;
+  5. local history, the migration ledger, the replace journal with its
+     bodies, and the retired backup.
+
+  A unit test asserts that the list holds exactly the locations whose match
+  is not `NotInventoried`. The layout module does not depend on
+  `format_upgrade`, so no dependency cycle forms.
 - **Each service** replaces its constant and `join` with a layout accessor.
   The public helpers stay as one-line delegations, so the `data_dir()` call
   sites and the tests do not churn. The helpers are `drafts_dir`,
@@ -495,8 +522,10 @@ boundary lies between the registration call and the write, and `None` there
 is a real outcome (no token minted), recorded as a registration error. A
 typestate would buy nothing, so the flush stays as it is.
 
-`journal_core`, `RegisteredDraft`, and `draft_service.rs` are **not edited**.
-The group only moves the decision's result into the type. The review checks
+`journal_core`, `model/draft.rs`, and `RegisteredDraft`'s minting surface
+are **not edited**. The group only moves the decision's result into the type.
+G2 edits `draft_service.rs` (path helpers) for its own reasons, which reaches
+no harness. The review checks
 that `RegisteredDraft` gains no `Clone`.
 
 *Characterization first:* before the refactor, ensure tests exist, adding any
@@ -512,9 +541,9 @@ that are missing, and confirm they pass on the unchanged tree, for:
 `core-second-writer` "because the token surface is adjacent". Under
 verification-runs.md a shard runs only when a harness or a module it reads
 changes. The harnesses import only `journal_core` and `model::draft`, neither
-of which changes. If an implementation finds it must edit `draft_service.rs`,
-`journal_core.rs`, or `model/draft.rs`, it runs both scheduled shards once,
-detached, after the final code.
+of which changes. If an implementation finds it must edit `journal_core.rs`
+or `model/draft.rs`, it runs both scheduled shards once, detached, after the
+final code.
 
 ### G6. One role table in the smoke driver, kill-point victims, an automated marker guard
 
@@ -526,7 +555,8 @@ The driver resolves `ROLES` once from the arguments:
 - `relaunch` is always `--binary`. It covers the launch that must recover the
   user's work.
 
-`launch_app` takes `role=` instead of `binary=`. Every call names one:
+`launch_app` takes `role=` instead of `binary=`. Each of its 11 calls names
+one:
 - `before-crash` is `victim`;
 - `after-relaunch`, `relaunch-*`, and the Undo relaunch are `relaunch`;
 - `seed-*` is `seed`;
@@ -545,11 +575,16 @@ the markers found. The guard keeps its marker list in one place, which the
 conformance change extends.
 
 `scripts/check-kill-point-gating.sh` is added to `make check-policy`. It
-asserts that `crash-kill-points` occurs only in:
-- `kill_point.rs`;
-- the two `Cargo.toml` feature lines;
-- the Makefile build line;
-- the smoke scripts and docs.
+keys on the places that can gate code:
+- every `feature = "crash-kill-points"` in Rust sources must be in
+  `services/kill_point.rs`;
+- the feature may be declared only by the two `Cargo.toml` lines (the core
+  feature, and the binary's forward);
+- `--features crash-kill-points` may appear only in the Makefile's smoke build
+  line.
+
+Mentions in comments, scripts, and docs (three Makefile lines, both smoke
+scripts, and the check itself) are not gating sites, and are allowed.
 
 A second gated site would make the kill-point victim diverge from the ordinary
 binary.
