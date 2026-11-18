@@ -218,7 +218,7 @@ path moves that edit to G5.
   `\r` line's carriage return (reference comparison) and a targeted line
   split across chunks that keeps only its last piece (the chunked feed's
   outcome).
-- [ ] 3.3b Budgets: two `kani.yml` dispatches after the final code is pushed
+- [x] 3.3b Budgets: two `kani.yml` dispatches after the final code is pushed
   (`build.md`, "Shard gates and budgets"), replacing both shards' pending
   local figures, larger of the two. Gate `core-replace-protocol` on pull
   requests only if it fits the PR budget in the shard table. This is the
@@ -228,6 +228,11 @@ path moves that edit to G5.
   `timeout 540 gh run watch <id> --exit-status` calls, before it takes
   `MERGE-LOCK`, never while holding it. Without these figures the archive
   commit fails its hook (`PENDING DISPATCH (owed by stream-replace-all)`).
+  Done 2026-11-18 (stage 4): runs 44330495557 and 44338924357 on
+  `86bbcdb4` (the later commit `b20ecd4f` adds widget tests only, outside
+  every Kani compile): `core-replace-protocol` 2.8 min / 1.7 GiB, gated on
+  pull requests; `core-replace-stream` 4.8 min / 3.5 GiB, scheduled; eleven
+  other shards' exceeded figures raised (`docs/next/formal-verification.md`).
 - [x] 3.3c (group G1; stage-2 review, design D11) Close the bounded check's
   two gaps, which the retired engine harness `an_invalid_source_is_never_replaced`
   used to cover:

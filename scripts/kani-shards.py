@@ -180,7 +180,8 @@ CLOSE_PROTECTED_FINAL_RAISED_IN = "; raised by runs 42281883363, 42291228680 (ma
 # measured the nine harnesses at 1.83 min and 1.63 GiB, inside the record,
 # which stands (raise, never lower).
 LIST_BUDGET_MINUTES = 2.8
-LIST_BUDGET_PEAK_GIB = 1.7
+# Raised to 1.8 by stream-replace-all's dispatches (1.78 GiB in both).
+LIST_BUDGET_PEAK_GIB = 1.8
 LIST_BUDGET_MEASURED_IN = (
     "runs 42322273437, 42331071390 (pull_request, max of the two); with the B5 "
     "rows_within harnesses by run 42372071326 (1.83 min / 1.63 GiB, inside the figures)"
@@ -242,19 +243,23 @@ MINIMAP_FIT_MEASURED_IN = GEOMETRY_SPLIT_MEASURED_IN + (
 SETTLE_EVIDENCE_MEASURED_IN = (
     "; with the settle-evidence harnesses by runs 42169248534, 42172535348 (max of the two)"
 )
-# stream-replace-all local figures (`make kani KANI_MEASURE=...`, Kani 0.68.0,
-# this workstation), owed a dispatch before the change is archived.
-REPLACE_MEASURED_IN = "PENDING DISPATCH (owed by stream-replace-all): one local make kani run"
-# core-replace-protocol: the final `make kani KANI_MEASURE` run on the final
-# protocol inputs (stage 3, 2026-11-17, snapshot fe8c3205; 1.66 min, 1.66 GiB
-# peak at a 1-minute load of 9.4), rounded up.
-REPLACE_PROTOCOL_LOCAL_MINUTES = 2.0
-REPLACE_PROTOCOL_LOCAL_PEAK_GIB = 2.0
-# core-replace-stream after the stage-1 revision (design D11, "Kani memory"):
-# the two UTF-8 harnesses, one `make kani KANI_MEASURE` run on 2026-11-17
-# (3.72 min, 3.42 GiB peak; utf8 seams 135.9 s, byte scan 6.5 s), rounded up.
-REPLACE_STREAM_LOCAL_MINUTES = 4.0
-REPLACE_STREAM_LOCAL_PEAK_GIB = 4.0
+# stream-replace-all's two dispatched kani.yml runs on 86bbcdb4 (task 3.3b,
+# the larger of the two, rounded up to 0.1): core-replace-protocol 2.75 / 2.31
+# min at 1.70 GiB, core-replace-stream 3.79 / 4.71 min at 3.43 GiB. The
+# protocol shard fits the pull-request budget, so it is gated on pull requests
+# (design D11). Both runs re-measured every other shard; a figure they exceeded
+# is raised (`STREAM_REPLACE_RAISED_IN`), none is lowered. Per-run table:
+# docs/next/formal-verification.md, "Replace All protocol and stream".
+REPLACE_MEASURED_IN = "runs 44330495557, 44338924357 (max of the two)"
+STREAM_REPLACE_RAISED_IN = "; raised by runs 44330495557, 44338924357 (max of the two)"
+REPLACE_PROTOCOL_CI_MINUTES = 2.8
+REPLACE_PROTOCOL_CI_PEAK_GIB = 1.7
+REPLACE_STREAM_CI_MINUTES = 4.8
+REPLACE_STREAM_CI_PEAK_GIB = 3.5
+# The local `make kani KANI_MEASURE` runs (this workstation, 2026-11-17):
+# core-replace-protocol 1.66 min / 1.66 GiB on the final protocol inputs
+# (snapshot fe8c3205), core-replace-stream 3.72 min / 3.42 GiB after the
+# stage-1 revision (design D11, "Kani memory").
 # Per-harness verification seconds of that run (task 9.4).
 REPLACE_PROTOCOL_RUN_SECONDS = 13.1
 REPLACE_UNDO_SECONDS = 0.5
@@ -424,8 +429,8 @@ SHARDS: dict[str, Shard] = {
         ),
         gate="pull-request",
         ci_minutes=7.5,
-        ci_peak_gib=2.4,
-        measured_in=GEOMETRY_SPLIT_MEASURED_IN,
+        ci_peak_gib=2.6,
+        measured_in=GEOMETRY_SPLIT_MEASURED_IN + STREAM_REPLACE_RAISED_IN,
     ),
     # Split from core-geometry-policies (GEOMETRY_SPLIT_MEASURED_IN): the
     # minimum-height expansion and the whole-pixel native-slider containment,
@@ -439,8 +444,8 @@ SHARDS: dict[str, Shard] = {
         ),
         gate="pull-request",
         ci_minutes=12.9,
-        ci_peak_gib=2.4,
-        measured_in=MINIMAP_FIT_MEASURED_IN,
+        ci_peak_gib=2.5,
+        measured_in=MINIMAP_FIT_MEASURED_IN + STREAM_REPLACE_RAISED_IN,
     ),
     # bin-minimap-markers-per-row D8: the integer marker row binning (row
     # groups, the per-kind index walker, the run builder, its growth and merge),
@@ -465,8 +470,8 @@ SHARDS: dict[str, Shard] = {
         ),
         gate="scheduled",
         ci_minutes=17.2,
-        ci_peak_gib=1.8,
-        measured_in=CLOSE_PROTECTED_MEASURED_IN + CLOSE_PROTECTED_FINAL_RAISED_IN,
+        ci_peak_gib=2.0,
+        measured_in=CLOSE_PROTECTED_MEASURED_IN + CLOSE_PROTECTED_FINAL_RAISED_IN + STREAM_REPLACE_RAISED_IN,
     ),
     # bound-lists-by-budget-not-count: the list budget both workspace
     # workflows rely on (admission B1-B4, turn continuation T1-T2), so it
@@ -477,7 +482,7 @@ SHARDS: dict[str, Shard] = {
         gate="pull-request",
         ci_minutes=LIST_BUDGET_MINUTES,
         ci_peak_gib=LIST_BUDGET_PEAK_GIB,
-        measured_in=LIST_BUDGET_MEASURED_IN,
+        measured_in=LIST_BUDGET_MEASURED_IN + STREAM_REPLACE_RAISED_IN,
     ),
     "core-document-scale": Shard(
         "lushtext-core",
@@ -514,9 +519,9 @@ SHARDS: dict[str, Shard] = {
             "model::paragraph_profile_watch::kani_proofs::watch_delete_",
         ),
         gate="scheduled",
-        ci_minutes=14.7,
+        ci_minutes=15.1,
         ci_peak_gib=8.3,
-        measured_in=DOCUMENT_SCALE_MEASURED_IN,
+        measured_in=DOCUMENT_SCALE_MEASURED_IN + STREAM_REPLACE_RAISED_IN,
     ),
     # Split by the fit order: each inductive watch step takes 11-13 local
     # minutes and about 10 GiB (CaDiCaL), so together they measured 38 local
@@ -533,9 +538,9 @@ SHARDS: dict[str, Shard] = {
         "lushtext-core",
         ("model::paragraph_profile_watch::kani_proofs::watch_reads_",),
         gate="scheduled",
-        ci_minutes=18.4,
+        ci_minutes=19.5,
         ci_peak_gib=10.4,
-        measured_in=DOCUMENT_SCALE_MEASURED_IN,
+        measured_in=DOCUMENT_SCALE_MEASURED_IN + STREAM_REPLACE_RAISED_IN,
     ),
     "core-profile-watch-unsound": Shard(
         "lushtext-core",
@@ -549,9 +554,9 @@ SHARDS: dict[str, Shard] = {
         "lushtext-core",
         ("ui::window::geometry::kani_proofs::shell_loop_",),
         gate="scheduled",
-        ci_minutes=10.9,
+        ci_minutes=11.2,
         ci_peak_gib=2.6,
-        measured_in=CLOSED_LOOP_MEASURED_IN,
+        measured_in=CLOSED_LOOP_MEASURED_IN + STREAM_REPLACE_RAISED_IN,
     ),    # Split by design D12's rule (the whole group is over the 15-minute
     # pull-request margin): the density bound (H1, H1w, H1c, H1x) gates pull
     # requests, the fold shape, UTF-8, column and slicing harnesses are scheduled.
@@ -563,9 +568,9 @@ SHARDS: dict[str, Shard] = {
             "model::protected_fold::kani_proofs::production_thresholds_",
         ),
         gate="pull-request",
-        ci_minutes=12.4,
-        ci_peak_gib=1.7,
-        measured_in=CLOSE_PROTECTED_MEASURED_IN + CLOSE_PROTECTED_FINAL_RAISED_IN,
+        ci_minutes=12.9,
+        ci_peak_gib=1.8,
+        measured_in=CLOSE_PROTECTED_MEASURED_IN + CLOSE_PROTECTED_FINAL_RAISED_IN + STREAM_REPLACE_RAISED_IN,
     ),
     # The scheduled rest is split again: the fold-shape harnesses alone took
     # 12 of the 17.3 local minutes the combined group did.
@@ -614,8 +619,8 @@ SHARDS: dict[str, Shard] = {
         ("model::protected_fold::kani_proofs::folds_hide_",),
         gate="scheduled",
         ci_minutes=22.8,
-        ci_peak_gib=1.7,
-        measured_in=CLOSE_PROTECTED_MEASURED_IN,
+        ci_peak_gib=1.8,
+        measured_in=CLOSE_PROTECTED_MEASURED_IN + STREAM_REPLACE_RAISED_IN,
     ),
     "core-protected-fold-mapping": Shard(
         "lushtext-core",
@@ -626,8 +631,8 @@ SHARDS: dict[str, Shard] = {
         ),
         gate="scheduled",
         ci_minutes=11.7,
-        ci_peak_gib=1.7,
-        measured_in=CLOSE_PROTECTED_MEASURED_IN,
+        ci_peak_gib=1.8,
+        measured_in=CLOSE_PROTECTED_MEASURED_IN + STREAM_REPLACE_RAISED_IN,
     ),
     "core-protected-view": Shard(
         "lushtext-core",
@@ -638,9 +643,9 @@ SHARDS: dict[str, Shard] = {
             "ui::editor_page::protected_view::policy::kani_proofs::find_batch",
         ),
         gate="scheduled",
-        ci_minutes=3.6,
+        ci_minutes=3.7,
         ci_peak_gib=3.4,
-        measured_in=CLOSE_PROTECTED_MEASURED_IN,
+        measured_in=CLOSE_PROTECTED_MEASURED_IN + STREAM_REPLACE_RAISED_IN,
     ),
     "core-protected-view-navigation": Shard(
         "lushtext-core",
@@ -658,17 +663,17 @@ SHARDS: dict[str, Shard] = {
     "core-replace-protocol": Shard(
         "lushtext-core",
         ("services::content_search::replace::protocol::kani_proofs::",),
-        gate="scheduled",
-        ci_minutes=REPLACE_PROTOCOL_LOCAL_MINUTES,
-        ci_peak_gib=REPLACE_PROTOCOL_LOCAL_PEAK_GIB,
+        gate="pull-request",
+        ci_minutes=REPLACE_PROTOCOL_CI_MINUTES,
+        ci_peak_gib=REPLACE_PROTOCOL_CI_PEAK_GIB,
         measured_in=REPLACE_MEASURED_IN,
     ),
     "core-replace-stream": Shard(
         "lushtext-core",
         ("services::content_search::replace::stream::utf8::kani_proofs::",),
         gate="scheduled",
-        ci_minutes=REPLACE_STREAM_LOCAL_MINUTES,
-        ci_peak_gib=REPLACE_STREAM_LOCAL_PEAK_GIB,
+        ci_minutes=REPLACE_STREAM_CI_MINUTES,
+        ci_peak_gib=REPLACE_STREAM_CI_PEAK_GIB,
         measured_in=REPLACE_MEASURED_IN,
     ),
 }

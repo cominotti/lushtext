@@ -1055,8 +1055,8 @@ the widget suite on its platform first.
 - `.github/workflows/kani.yml` — the Kani lane in measurement mode, one shard
   per matrix job; pull requests and pushes to `main` run only the
   `pull-request` shards (`widgets-geometry`, `core-geometry-policies`,
-  `core-minimap-fit`, `core-list-budget`, `core-protected-fold`); schedule and
-  dispatch run every shard.
+  `core-minimap-fit`, `core-list-budget`, `core-protected-fold`,
+  `core-replace-protocol`); schedule and dispatch run every shard.
 - `.github/workflows/end-user-smoke.yml` — scheduled/manual smoke lanes plus a
   split benchmark-report matrix. Its containers run as root with no system
   D-Bus and no `/dev/fuse`: failed-load fixtures use the `smoke-read-faults`

@@ -2549,9 +2549,31 @@ table's length) and, at three rows, `i64` arithmetic in the run builder (now
 
 ### Replace All protocol and stream (`stream-replace-all`, 2026-11-17)
 
-**Status: in progress on the branch (PR #103), not merged.** Two scheduled
-shards, both owed a dispatch before the change is archived
-(`PENDING DISPATCH (owed by stream-replace-all)` in `scripts/kani-shards.py`):
+**Status: implemented on the branch (PR #103); runner budgets measured.**
+Two shards. Their budgets come from two dispatched `kani.yml` runs on
+`86bbcdb4` (task 3.3b, 2026-11-18), the larger of the two, rounded up to
+0.1:
+
+| Shard | Run 44330495557 | Run 44338924357 | Record | Gate |
+| --- | --- | --- | --- | --- |
+| `core-replace-protocol` | 2.75 min, 1.70 GiB | 2.31 min, 1.70 GiB | 2.8 min, 1.7 GiB | `pull-request` (fits the 15-minute gate, design D11) |
+| `core-replace-stream` | 3.79 min, 3.43 GiB | 4.71 min, 3.43 GiB | 4.8 min, 3.5 GiB | `scheduled` |
+
+Per harness on the runner: `an_apply_run_keeps_every_target_recoverable`
+18.5 / 17.0 s, `undo_writes_only_to_a_file_holding_the_replaced_bytes`
+0.72 / 0.64 s, `shrink_removes_the_entry_before_the_body` 0.07 / 0.06 s;
+`utf8_seams_do_not_depend_on_the_chunk_size` 120.0 / 156.3 s,
+`the_byte_scan_matches_core_from_utf8` 5.7 / 7.2 s. Both runs measured
+every shard; the eleven figures they exceeded were raised and none was
+lowered (`STREAM_REPLACE_RAISED_IN`): peaks of `core-geometry-policies`
+(2.6 GiB), `core-list-budget` (1.8), `core-minimap-fit` (2.5),
+`core-post-open-settle` (2.0), `core-protected-fold-mapping` and
+`core-protected-fold-shape` (1.8); minutes of `core-paragraph-profile`
+(15.1), `core-profile-watch-reads` (19.5), `core-protected-view` (3.7) and
+`core-shell-geometry` (11.2); and both figures of `core-protected-fold`
+(12.9 min, 1.8 GiB). Every figure stays inside the margins
+(`make check-kani-shards`). The measurement artifacts are in
+`.claude/handoffs/stream-replace-all/kani-dispatch/`.
 
 - `core-replace-protocol` (`replace/protocol/kani_proofs.rs`, 3 harnesses):
   the per-file apply protocol P0–P6 and the undo protocol U0–U3 of the

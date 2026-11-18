@@ -1343,3 +1343,15 @@ stage spawns no subagents).
   a key pressed while the Skipped Files list is still staged finishes the
   growth in that dispatch, and a scroll starts the growth before the
   512 ms delay. Each fails with its handler removed.
+- **R7. Runner budgets (task 3.3b).** Two sequential `kani.yml` dispatches
+  on `86bbcdb4` (the workflow's concurrency group cancels a second dispatch
+  of the same ref, so they ran one after the other): runs 44330495557 and
+  44338924357. `core-replace-protocol` 2.75 / 2.31 min at 1.70 GiB, recorded
+  2.8 min / 1.7 GiB and gated on pull requests, as D11 says when it fits the
+  15-minute gate; `core-replace-stream` 3.79 / 4.71 min at 3.43 GiB,
+  recorded 4.8 min / 3.5 GiB, scheduled. The runs were dispatched before the
+  widget-test commit `b20ecd4f`, which touches only
+  `crates/lushtext/tests/widget/` and so no Kani compile; the figures stand
+  on the final tree. Both runs measured every shard, and the eleven figures
+  they exceeded (by up to 1.1 min or 0.2 GiB) are raised, none lowered, as
+  `close-protected-install-proof-strength` did.

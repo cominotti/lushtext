@@ -5233,10 +5233,11 @@ What landed on the branch, and what is still owed, is the change's
   behind Show Skipped Files (a lazy list); a run reports progress and can be
   cancelled, which rolls back every rewritten file. Legacy inline journals
   still load and undo.
-- **Kani.** New shards `core-replace-protocol` (3 harnesses, verified
-  locally) and `core-replace-stream` (the stream's UTF-8 seams and byte
-  scan, 2 harnesses), both `scheduled`; their budgets in
-  `scripts/kani-shards.py` are `PENDING DISPATCH (owed by stream-replace-all)`.
+- **Kani.** New shards `core-replace-protocol` (3 harnesses) and
+  `core-replace-stream` (the stream's UTF-8 seams and byte scan, 2
+  harnesses). Their budgets come from two dispatched `kani.yml` runs
+  (44330495557, 44338924357; task 3.3b): 2.8 min / 1.7 GiB, gated on pull
+  requests, and 4.8 min / 3.5 GiB, scheduled.
   The stage-1 revision (2026-11-17) fitted no Kani form of the engine's line
   logic (one engine run over 2 symbolic bytes was past 8 GiB when stopped),
   so it is checked by a bounded exhaustive unit test instead; the record is in
