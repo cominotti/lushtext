@@ -360,11 +360,11 @@ the default 12G included. The "window after the probe" case also needs group
 
 ## 6. Final gates
 
-- [ ] 6.1 Run `scripts/heavy.sh --mem none -- make check-agent-helpers`,
+- [x] 6.1 Run `scripts/heavy.sh --mem none -- make check-agent-helpers`,
   `scripts/heavy.sh -- make check` and `openspec validate
   close-heavy-admission-window --strict` on the final tree. Then run one
   commit through `heavy.sh --mem none -- git commit` with the new scripts,
   which is the hook path that runs the wrapper's self-test under a real
   shared `LOCK`. Record the results in `evidence/gates.md`.
-- [ ] 6.2 Update `tasks.md`, push, and release the implementation slot
+- [x] 6.2 Update `tasks.md`, push, and release the implementation slot
   (`rm -rf "$H/IMPL-SLOTS/close-heavy-admission-window"`).
