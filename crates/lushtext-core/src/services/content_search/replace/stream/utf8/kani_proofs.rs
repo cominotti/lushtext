@@ -17,11 +17,12 @@
 //!   four bytes (one sequence of every length, and each way it can end).
 //!
 //! **Bound reduction (design D11, "Kani memory").** The engine's line logic
-//! is not proved here. Every harness that ran the engine, down to one run
-//! over 2 symbolic bytes with one fixed edit and no sinks, passed 8 GiB in
-//! CBMC's symbolic execution, against the shard table's 12 GiB runner margin.
-//! Its split independence is checked exhaustively over a bounded domain by
-//! the unit test
+//! is not proved here. Every harness form that ran the engine was stopped in
+//! CBMC's symbolic execution: the four-byte forms past the shard table's
+//! 12 GiB runner margin, and the concrete-shape ladder, down to one run over
+//! 2 symbolic bytes with one fixed edit and no sinks, past 8 GiB and still
+//! growing. Its split independence is checked exhaustively over a bounded
+//! domain by the unit test
 //! `the_engine_does_not_depend_on_its_chunk_size_over_a_bounded_domain`
 //! (`replace/tests.rs`) and sampled at scale by the property test
 //! `streaming_engine_matches_the_reference_at_every_chunk_size`.

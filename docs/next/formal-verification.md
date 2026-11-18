@@ -2569,11 +2569,12 @@ shards, both owed a dispatch before the change is archived
   `cfg(kani)` byte scan against `core::str::from_utf8` (4 bytes).
 
 **Reduced bound (fit order step 3), recorded here and in the harness doc.**
-The engine's line logic is not Kani-proved. Every harness that ran the
-engine passed the 12 GiB runner margin in CBMC's symbolic execution, down to
-one run over 2 symbolic bytes with one fixed edit and no sinks (8.47 GiB at
-3.4 min); the probes, from symbolic edit text through a concrete-shape ladder,
-are tabulated in the change's design D11, "Kani memory". The trace is
+The engine's line logic is not Kani-proved. Every harness form that ran the
+engine was stopped in CBMC's symbolic execution while still growing: the
+four-byte forms past the 12 GiB runner margin, and a concrete-shape ladder
+down to one run over 2 symbolic bytes with one fixed edit and no sinks past
+8 GiB (8.47 GiB at 3.4 min). The probes are tabulated in the change's design
+D11, "Kani memory". The trace is
 dominated by slice-index and `copy_from_slice` failure paths and `memcmp`, so
 the cost is the engine's slicing under CBMC, not the harness's domain. The
 line logic's split independence is instead checked exhaustively over a
@@ -2828,8 +2829,9 @@ Both wait for it because of `durable_write` overlap; the facts are:
   first, and Verus is reopened with V2 only if that fails.
 - `stream-replace-all`: the Replace All stream engine's line logic is checked
   by a bounded exhaustive unit test, not Kani (section "Replace All protocol
-  and stream" above): one engine run over 2 symbolic bytes already passed
-  the 12 GiB runner margin. The candidate follow-up is an altitude change, not
+  and stream" above): one engine run over 2 symbolic bytes was already past
+  8 GiB and still growing when stopped, and no engine form fitted the 12 GiB
+  runner margin. The candidate follow-up is an altitude change, not
   a bigger budget: split the line logic into a byte-step line cursor whose
   chunked loop is a fold over single steps, so split independence holds by
   construction and Kani proves the one-step machine. It is not queued; it

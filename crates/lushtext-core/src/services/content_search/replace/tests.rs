@@ -1229,8 +1229,8 @@ fn bounded_domain_edit_sets(path: &Path) -> Vec<Vec<Replacement>> {
 type PlannedEdits<'a> = (Option<(String, usize)>, Vec<StreamEdit<'a>>);
 
 /// The bounded exhaustive check that stands in for the engine's Kani harness
-/// (design D11, "Kani memory"; CBMC could not hold even one engine run over 2
-/// symbolic bytes within the shard margin). Domain: every source of at most
+/// (design D11, "Kani memory": even one engine run over 2 symbolic bytes was
+/// past 8 GiB and still growing in CBMC when stopped). Domain: every source of at most
 /// four characters over `a`, `b`, `\r`, `\n` and `é` (the byte classes the
 /// line logic distinguishes, and a two-byte character a seam can cut), no edit
 /// and every edit set of

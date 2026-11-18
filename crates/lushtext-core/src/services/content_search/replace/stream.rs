@@ -242,8 +242,9 @@ fn find_newline(bytes: &[u8]) -> Option<usize> {
 /// - Kani proves the UTF-8 seams ([`utf8`], shard `core-replace-stream`): fed
 ///   in chunks of 1 to 4 bytes, the carry rejects exactly the sources of at
 ///   most 8 arbitrary bytes that a one-shot validation rejects. The engine
-///   itself is out of CBMC's reach: one run over 2 symbolic bytes with one
-///   fixed edit and no sinks passed 8 GiB in symbolic execution.
+///   itself was out of CBMC's reach: one run over 2 symbolic bytes with one
+///   fixed edit and no sinks was past 8 GiB and still growing in symbolic
+///   execution when it was stopped.
 /// - The unit test
 ///   `the_engine_does_not_depend_on_its_chunk_size_over_a_bounded_domain`
 ///   checks every source, edit set, chunk size and output limit of a bounded

@@ -5,8 +5,12 @@
 //! [`Utf8Carry`] sees every chunk before the engine's line logic does, and
 //! either stops the file as not UTF-8 or lets the chunk through unchanged. An
 //! incomplete sequence at the end of a chunk (at most three bytes) is carried
-//! into the next one, so where the chunks are cut never changes the verdict.
-//! Kani proves that (`kani_proofs.rs`, shard `core-replace-stream`, design D11).
+//! into the next one, so where the chunks are cut does not change the verdict.
+//! Kani proves that for every source of at most 8 arbitrary bytes and every
+//! chunk size from 1 to 4 (`kani_proofs.rs`, shard `core-replace-stream`,
+//! design D11); the unit test
+//! `the_carry_rejects_exactly_what_a_one_shot_validation_rejects` checks every
+//! sequence of class-edge bytes up to 4 long at every chunk size.
 
 /// Incremental UTF-8 validation that carries an incomplete trailing sequence.
 #[derive(Debug, Default)]

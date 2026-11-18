@@ -644,8 +644,18 @@ contracts.
 - **Entries and bodies.** Startup recovery loads descriptors only. It stats
   each entry's body.
   - A missing body, or one whose size differs from `original.len`, makes its
-    entry malformed. As for any malformed entry today, the whole journal is
-    then preserved as evidence and offers no Undo (`journal_is_active`).
+    entry malformed. As for any malformed entry on `main`, the journal then
+    offers no Undo (`journal_is_active`): the malformed entry is copied to
+    the recovery quarantine as evidence, the loader writes the cleanup marker
+    (implementation decision 5, so the journal stays inactive across a crash
+    before cleanup), and startup cleanup removes the inactive journal, the
+    other entries' bodies included. Those bodies are the only copies of their
+    files' originals, so this costs the Undo of the whole run, never a file's
+    current bytes: every target keeps the replaced content the user
+    confirmed, as on `main`, whose cleanup deletes the inline originals the
+    same way. Offering Undo for the undamaged subset is rejected: it would
+    restore part of one confirmed run without saying which part is missing.
+    Task 3.5b pins this end to end.
   - An orphan body, one with no entry, is benign and is not a diagnostic.
     A crash between P2 and P4 leaves one, and so does a crash between an
     entry's removal and its body's. It must not cost Undo for the files
@@ -753,8 +763,11 @@ job returns before it waits for the guard.
   the whole feed's, a replaced file equals the reference builder
   (`build_replaced_text_reference`), the output stays within the limit, and
   the digests record exactly the bytes fed and written. It runs in 7.5 s in a
-  debug build, so it stays in the ordinary unit suite, and a mutant that
-  mishandles a lone `\r` line fails it (`failing-first.log`). The property
+  debug build, so it stays in the ordinary unit suite. Two logged mutants
+  fail it (`failing-first.log`): one that mishandles a lone `\r` line (at the
+  reference comparison) and a seam-only one, in which `collect` keeps only
+  the last piece of a targeted line split across chunks (at the chunked
+  feed's outcome). The property
   test `streaming_engine_matches_the_reference_at_every_chunk_size` samples
   larger inputs, chunk sizes 1 to 16, against the reference.
 
@@ -787,10 +800,11 @@ disqualified whatever it would have returned (handoff `runs.log` and
 | ladder: concrete source length and chunk per harness, N = 4, 3, 2 (9 harnesses, down to one engine run over 2 bytes with one fixed edit) | every one past 8 GiB in 3.7–4.0 min | stopped |
 | one engine run over 2 symbolic bytes, one fixed edit, **no sinks** (`io::sink`, no digests) | 8.47 GiB at 3.4 min | stopped |
 
-The last row settles it: the cost is the engine itself under CBMC (its trace
-is dominated by slice-index and `copy_from_slice` failure paths and
-`memcmp`), not the harness's domain, sinks or comparisons, so no smaller
-bound keeps a property worth stating. The decision, step 3 of the fit order:
+Every probe was stopped while still growing, so none shows where CBMC would
+have ended; what they show is that none fits the margin. The last row points
+at the engine itself under CBMC (its trace is dominated by slice-index and
+`copy_from_slice` failure paths and `memcmp`), not the harness's domain,
+sinks or comparisons, so no smaller bound keeps a property worth stating. The decision, step 3 of the fit order:
 keep the two UTF-8 harnesses (3.72 min and 3.42 GiB in one local shard run; the
 table records 4.0 min / 4.0 GiB pending dispatch), and move the line logic to
 the bounded exhaustive unit test above, which checks every point of a larger

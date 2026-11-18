@@ -23,7 +23,7 @@ Kani shard `core-replace-stream` SHALL prove that, fed in chunks of 1 to 4 bytes
 - **THEN** the proof shows the UTF-8 verdict is the one-shot verdict
 
 ### Requirement: The Replace All engine's line logic is checked exhaustively over a bounded domain
-Because CBMC cannot hold one engine run within the shard margin (design D11, "Kani memory"), a unit test SHALL check the engine at every point of a bounded domain. At each point the chunked feed's outcome SHALL equal the whole feed's, and a replaced file's output, count and digests SHALL equal the whole feed's and the reference builder's.
+Because no Kani form of the engine fitted the shard margin (each was stopped in symbolic execution past 8 GiB and still growing, design D11, "Kani memory"), a unit test SHALL check the engine at every point of a bounded domain. At each point the chunked feed's outcome SHALL equal the whole feed's, and a replaced file's output, count and digests SHALL equal the whole feed's and the reference builder's.
 
 #### Scenario: The bounded domain
 - **WHEN** the check runs
@@ -34,5 +34,5 @@ Because CBMC cannot hold one engine run within the shard margin (design D11, "Ka
 - **THEN** the bounded check covers it and the streamed result equals the reference
 
 #### Scenario: A mishandled seam is caught
-- **WHEN** a mutant of the engine changes how a line's `\r` is handled
-- **THEN** the bounded check fails
+- **WHEN** a mutant of the engine drops the earlier part of a targeted line split across chunks
+- **THEN** the bounded check fails on the chunked feed's outcome

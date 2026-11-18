@@ -55,15 +55,15 @@ touch none of those paths, and G5 is the one commit that does.
 - **G0 (done in stage 1):** merge of `origin/main` (`03df8bd8`), the Kani
   redesign and the bounded exhaustive engine test (3.3, 3.3a), and this
   re-plan.
-- **G1, service data safety:** 3.2a, 3.5a, 3.6, 4.3, 4.6, 4.9 (service tests),
-  4.10, 4.11, then 2.4's chunk constant once its rounds report.
+- **G1, service data safety:** 3.2a, 3.5a, 3.5b, 3.6, 4.3, 4.6, 4.9 (service
+  tests), 4.10, 4.11.
 - **G2, GTK axioms:** 1.3 (`crates/gtk-lush/axioms/`, the ledger in
   `docs/next/formal-verification.md` and the skill's ledger reference).
 - **G3, crash smoke:** 7.3's driver and lane (`scripts/crash-recovery-smoke-driver.py`);
   its `docs/end-user-coverage.md` line waits for G5.
 - **G4, measurement harnesses:** the branch-side M9 test and the 2.4/9.3
   timing binaries (services and benches only), so the queue entries can turn
-  `READY`.
+  `READY`; once part A reports, 2.4's chunk constant in its own commit.
 - **G5, the visual commit:** 4.9 (widget tests), 5.2, 5.4, 5.5a, 5.6, 6.2,
   6.3, 8.2 and every fingerprinted doc of 8.1/8.5. Run `make
   blueprint-generate`, `make check-blueprint`, `make lint-blueprint`, the
@@ -151,9 +151,14 @@ touch none of those paths, and G5 is the one commit that does.
   throughput at 256 KiB, 1 MiB and 4 MiB on a 512 MiB fixture, then take the
   smallest power of two within 5 % of the best. Record it, with its kind
   rustdoc. A timing verdict: G4 builds one release binary with a test-only
-  chunk-size override (never a shipped setting), turns part A of the queued entry
+  chunk-size override (never a shipped setting; the seam raises the
+  externally reachable `*_for_test` ceiling of
+  `docs/workflow-readability-matrix.md`, 174 since decision 12, with its
+  reason), turns part A of the queued entry
   "stream-replace-all: timing verdicts" to `READY <sha>`, and the
-  coordinator runs it; the constant lands in G1's last commit.
+  coordinator runs it. The constant lands in its own non-visual commit right
+  after part A reports and before G5; part B and the memory rounds of 4.8
+  and 9.2 run only on a tree that has it.
 - [x] 2.5 Failing-first unit tests for `NotUtf8` at a chunk seam, for a
   targeted line split across three chunks, and for a non-targeted 64 MiB line
   that is never buffered (allocation evidence through
@@ -180,14 +185,18 @@ touch none of those paths, and G5 is the one commit that does.
   `kani_proofs.rs` proves the UTF-8 seams (8 arbitrary bytes, chunks 1–4) and
   the byte scan against `core::str::from_utf8` (4 bytes); the unit test
   `the_byte_scan_matches_simdutf8` ties the byte scan to the production
-  validator. Every engine-level harness form passed the 12 GiB margin and is
-  recorded as a bound reduction. The shard ran once on the final harness
+  validator. Every engine-level harness form was stopped in symbolic
+  execution (the four-byte forms past the 12 GiB margin, the concrete-shape
+  ladder and the no-sink run past 8 GiB and still growing), recorded as a
+  bound reduction. The shard ran once on the final harness
   inputs (`runs.log`, `kani-stream-final.json`); its local figure is in the
   table as `PENDING DISPATCH (owed by stream-replace-all)`.
 - [x] 3.3a The bounded exhaustive check of the engine's line logic,
   `the_engine_does_not_depend_on_its_chunk_size_over_a_bounded_domain`
-  (`replace/tests.rs`, design D11), with a logged mutant it kills (a lone
-  `\r` line's carriage return).
+  (`replace/tests.rs`, design D11), with two logged mutants it kills: a lone
+  `\r` line's carriage return (reference comparison) and a targeted line
+  split across chunks that keeps only its last piece (the chunked feed's
+  outcome).
 - [ ] 3.3b Budgets: two `kani.yml` dispatches after the final code is pushed
   (`build.md`, "Shard gates and budgets"), replacing both shards' pending
   local figures, larger of the two. Gate `core-replace-protocol` on pull
@@ -226,6 +235,12 @@ touch none of those paths, and G5 is the one commit that does.
   `an_orphan_body_never_costs_undo` covers the loader's half; this task is
   the end-to-end service test through the `replace-body-before-entry` kill
   seam (or its test-only equivalent).
+- [ ] 3.5b Failing-first (design D9 as revised in stage 1): a journal of
+  three stream entries whose second body is truncated offers no Undo, copies
+  that entry to the recovery quarantine, writes the cleanup marker, and
+  startup cleanup then removes the journal with every body; the three target
+  files keep their replaced bytes. A relaunch between the load and the
+  cleanup still offers no Undo.
 - [ ] 3.6 Format upgrade: update `format_upgrade/{inventory,plan,diagnostics}.rs`
   for the new kind and the body files (`inventory.rs` and `plan.rs` are done;
   `diagnostics.rs` is not). Verify the newer-version diagnostics with
@@ -341,7 +356,9 @@ touch none of those paths, and G5 is the one commit that does.
   then whose body removal, fails through a per-target fault seam. The target
   keeps its original bytes, the journal stays active with that entry and its
   body (never an entry without its body), and the next Undo finds the target
-  already original (U1) and retires the entry and the body.
+  already original (U1) and retires the entry and the body. A new fault seam
+  raises the matrix's `*_for_test` ceiling with its reason, as decision 12
+  did.
 
 ## 5. Skip report and the Skipped Files dialog
 
