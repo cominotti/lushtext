@@ -58,8 +58,10 @@
 # ending the reservation even if a daemon stays behind; with a report file
 # (LUSHTEXT_ENVELOPE_REPORT) it writes `envelope: peak=<MiB> oom_kill=<n>
 # slice=<sub> placeholder=<P>` there. A sentinel scope keeps the sub-slice
-# alive until then. The next envelope admission sweeps the drop-in and queue
-# of an envelope whose placeholder was SIGKILLed. Inside a capped scope or an
+# alive until then; then the placeholder stops the sub-slice if nothing is
+# left in it. The next envelope admission sweeps the drop-in and queue of an
+# envelope whose placeholder was SIGKILLed, and stops every envelope
+# sub-slice whose placeholder is gone and that no process is left in. Inside a capped scope or an
 # envelope, `--envelope` runs its command in place.
 #
 # Admission order. A waiting admission holds a ticket in its slice's queue
@@ -505,11 +507,19 @@ envelope_placeholder_alive() {
     return 1
 }
 
+# True when the cgroup directory $1 holds no process in its whole sub-tree.
+cgroup_unpopulated() {
+    grep -qx 'populated 0' "$1/cgroup.events" 2>/dev/null
+}
+
 # Under the admission lock, before an envelope is admitted: revert the
 # runtime drop-in and remove the queue of every envelope sub-slice of this
 # heavy slice whose placeholder is gone (SIGKILLed; a placeholder that exits
-# normally reverts its own). Each sub-slice name is unique, so nothing else
-# would revert it before logout.
+# normally reverts its own), and stop every such sub-slice that no process is
+# left in (a daemon its command left behind, such as the sccache server,
+# keeps it until it exits; stopping it then would kill that daemon). Each
+# sub-slice name is unique, so nothing else would revert or stop it before
+# logout.
 envelope_sweep() {
     local stem=${HEAVY_SLICE%.slice} cgroup entry unit
     cgroup=$(systemctl --user show -p ControlGroup --value "$HEAVY_SLICE" 2>/dev/null || true)
@@ -522,6 +532,15 @@ envelope_sweep() {
         systemctl --user revert "$unit" >/dev/null 2>&1 || true
         rm -rf "${QUEUE_ROOT:?}/$unit"
         echo "with-memory-cap: swept envelope $unit: its placeholder (pid ${BASH_REMATCH[1]}) is gone" >&2
+    done
+    [ -n "$cgroup" ] || return 0
+    for entry in "/sys/fs/cgroup$cgroup/$stem"-env*t*.slice; do
+        [ -d "$entry" ] || continue
+        unit=${entry##*/}
+        [[ "$unit" =~ ^${stem}-env([0-9]+)t[0-9]+\.slice$ ]] || continue
+        envelope_placeholder_alive "$cgroup" "${BASH_REMATCH[1]}" && continue
+        cgroup_unpopulated "$entry" || continue
+        systemctl --user stop "$unit" >/dev/null 2>&1 || true
     done
 }
 
@@ -1040,6 +1059,12 @@ self_test_envelope_cases() {
     line=$(self_test_envelope_done "$report") || line=
     [[ "$line" =~ ^envelope:\ peak=[0-9]+\ oom_kill=0\  ]] \
         || self_test_fail "an envelope's normal run reported '$line', expected 'envelope: peak=<MiB> oom_kill=0 ...' (H6)"
+    # An envelope left empty is stopped by its placeholder, not left loaded
+    # until logout.
+    heavy_cg=$(systemctl --user show -p ControlGroup --value "$HEAVY_SLICE" 2>/dev/null || true)
+    if [ -n "${sub:-}" ] && [ -n "$heavy_cg" ] && [ -d "/sys/fs/cgroup$heavy_cg/$sub" ]; then
+        self_test_fail "the empty sub-slice $sub of a finished envelope is still loaded"
+    fi
 
     # A leftover daemon keeps no admission, and the sub-slice loses its limit.
     report=$rundir/daemon
@@ -1054,6 +1079,17 @@ self_test_envelope_cases() {
         [ "$status" -eq 0 ] || self_test_fail "a daemon left in a finished envelope kept its 2G admitted (status $status)"
         [ ! -e "$DROPIN_ROOT/$sub.d" ] || [ -z "$(ls -A "$DROPIN_ROOT/$sub.d")" ] \
             || self_test_fail "the envelope sub-slice $sub kept its runtime drop-in after its command ended: $(ls "$DROPIN_ROOT/$sub.d")"
+        # The daemon keeps its sub-slice (stopping it would kill the daemon);
+        # once the daemon has exited, the next envelope admission stops it.
+        local daemon
+        daemon=$(cat "$rundir/daemon.pid" 2>/dev/null || true)
+        { [ -n "$daemon" ] && kill -0 "$daemon" 2>/dev/null && [ -d "/sys/fs/cgroup$heavy_cg/$sub" ]; } \
+            || self_test_fail "the envelope sub-slice $sub or the daemon left in it did not survive the envelope's end"
+        [ -z "$daemon" ] || kill "$daemon" 2>/dev/null || true
+        [ -z "$daemon" ] || timeout 5 tail --pid="$daemon" -f /dev/null 2>/dev/null || true
+        timeout 10 "$me" --envelope 2G true 2>/dev/null || self_test_fail "an envelope after a daemon's exit failed"
+        [ ! -d "/sys/fs/cgroup$heavy_cg/$sub" ] \
+            || self_test_fail "the sub-slice $sub stayed loaded after its leftover daemon exited and another envelope was admitted"
     else
         self_test_fail "an envelope whose command left a daemon wrote no envelope line"
     fi
@@ -1636,6 +1672,14 @@ if [ "${1:-}" = "--envelope-placeholder" ]; then
     fi
     systemctl --user revert "$sub" >/dev/null 2>&1 || true
     rm -rf "${QUEUE_ROOT:?}/$sub"
+    # The sentinel has done its job; with it gone, an empty sub-slice is
+    # stopped now rather than left loaded until logout. One that a leftover
+    # daemon still occupies stays, and the next envelope admission's sweep
+    # stops it once the daemon has exited.
+    systemctl --user stop "lushtext-envsentinel-$$-$3.scope" >/dev/null 2>&1 || true
+    if [ -n "$sub_cg" ] && cgroup_unpopulated "/sys/fs/cgroup$sub_cg"; then
+        systemctl --user stop "$sub" >/dev/null 2>&1 || true
+    fi
     echo "envelope: peak=$peak oom_kill=$oom slice=$sub placeholder=$$" >&3
     exit 0
 fi

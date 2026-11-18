@@ -38,7 +38,9 @@
 # once and runs the command in a sub-slice of that size, where its capped
 # calls get scopes of their own admitted against the envelope. Under
 # `--mem none` such a call is refused (exit 2) instead of waiting under LOCK.
-# An OOM kill anywhere in the envelope prints `OOM-KILL:` and fails the run.
+# An OOM kill anywhere in the envelope prints `OOM-KILL:` and fails the run;
+# a clean run prints the envelope's peak (`heavy: envelope <sub-slice>: peak
+# <MiB> MiB, oom_kill 0`), which is what an envelope is sized by.
 # `--envelope` and `--mem` are mutually exclusive; the size is also the cap
 # the compiler parallelism is sized for.
 #
@@ -179,6 +181,9 @@ heavy_envelope_verdict() {
     if [ "$oom" -gt 0 ]; then
         echo "OOM-KILL: envelope $slice: the kernel killed $oom process(es) inside it (peak $peak MiB); the run fails, raise nothing, find what grew" >&2
         [ "$status" -ne 0 ] || status=1
+    else
+        # The peak is what an envelope is sized by.
+        echo "heavy: envelope $slice: peak $peak MiB, oom_kill 0" >&2
     fi
     return "$status"
 }
@@ -495,7 +500,7 @@ self_test() {
     # a run whose envelope never started says nothing.
     local verdict_err=$dir/verdict.err
     status=0; heavy_envelope_verdict 0 1 "envelope: peak=10 oom_kill=0 slice=s placeholder=1" 2>"$verdict_err" || status=$?
-    [ "$status" -eq 0 ] && [ ! -s "$verdict_err" ] || fail "a clean envelope report gave status $status ('$(cat "$verdict_err")')" || return
+    [ "$status" -eq 0 ] && [ "$(cat "$verdict_err")" = "heavy: envelope s: peak 10 MiB, oom_kill 0" ] || fail "a clean envelope report gave status $status ('$(cat "$verdict_err")')" || return
     status=0; heavy_envelope_verdict 3 1 "envelope: peak=10 oom_kill=0 slice=s placeholder=1" 2>"$verdict_err" || status=$?
     [ "$status" -eq 3 ] || fail "a clean envelope report changed status 3 to $status" || return
     status=0; heavy_envelope_verdict 0 1 "envelope: peak=10 oom_kill=2 slice=s placeholder=1" 2>"$verdict_err" || status=$?
