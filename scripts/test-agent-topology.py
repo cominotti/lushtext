@@ -180,5 +180,132 @@ class AgentTopologyTests(unittest.TestCase):
         )
 
 
+class ReviewLensTests(unittest.TestCase):
+    """The review fan-out flags of `review-lenses`, from the skills' declared triggers."""
+
+    POLICY = {
+        "performance": {
+            "package_metadata_namespace": "lushtext-agent",
+            "package_metadata_key": "performance-roots",
+            "fallback_suffixes": ["src/ui", "src/services", "src/model", "benches"],
+        },
+        "data_safety": {
+            "skill": "data-safety",
+            "path_suffixes": ["src/ui", "src/services", "src/model"],
+            "content_patterns": [
+                {"keyword": "spawn_blocking_then", "pattern": "spawn_blocking_then"},
+                {"keyword": "persistence", "pattern": "json_store|durable_write"},
+            ],
+        },
+    }
+
+    def setUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tempdir.name)
+        packages = []
+        for name, root, roots in (
+            ("lushtext-core", "crates/lushtext-core", ["src/ui", "src/services", "src/model"]),
+            ("gtk-lush-settle", "crates/gtk-lush/settle", ["src"]),
+            ("gtk-lush-tasks", "crates/gtk-lush/tasks", []),
+        ):
+            directory = self.root / root
+            directory.mkdir(parents=True)
+            (directory / "Cargo.toml").write_text("[package]\nname='fixture'\n", encoding="utf-8")
+            packages.append(
+                {
+                    "id": name,
+                    "name": name,
+                    "manifest_path": str(directory / "Cargo.toml"),
+                    "metadata": {"lushtext-agent": {"performance-roots": roots}},
+                    "targets": [],
+                }
+            )
+        metadata = {
+            "workspace_root": str(self.root),
+            "workspace_members": [package["id"] for package in packages],
+            "packages": packages,
+        }
+        self.topology = TOPOLOGY.WorkspaceTopology(metadata, self.POLICY, self.root)
+
+    def tearDown(self) -> None:
+        self.tempdir.cleanup()
+
+    def lenses(self, *changes: tuple[str, str], texts: dict[str, str] | None = None) -> dict[str, object]:
+        return TOPOLOGY.review_lenses(
+            self.topology,
+            self.POLICY,
+            [TOPOLOGY.ChangedPath(status, path) for status, path in changes],
+            texts or {},
+        )
+
+    def flags(self, result: dict[str, object]) -> tuple[bool, bool, bool]:
+        return result["data"], result["performance"], result["modules_moved"]
+
+    def test_draft_service_edit_is_data_and_performance(self) -> None:
+        result = self.lenses(("M", "crates/lushtext-core/src/services/draft_service.rs"))
+        self.assertEqual(self.flags(result), (True, True, False))
+
+    def test_docs_edit_needs_no_domain_lens(self) -> None:
+        result = self.lenses(("M", "docs/memorials/x.md"), ("A", "openspec/changes/x/design.md"))
+        self.assertEqual(self.flags(result), (False, False, False))
+
+    def test_gtk_lush_settle_edit_is_performance_only(self) -> None:
+        result = self.lenses(
+            ("M", "crates/gtk-lush/settle/src/lib.rs"),
+            texts={"crates/gtk-lush/settle/src/lib.rs": "fn debounce() {}"},
+        )
+        self.assertEqual(self.flags(result), (False, True, False))
+
+    def test_renamed_module_is_a_module_move(self) -> None:
+        result = self.lenses(
+            ("R", "crates/lushtext-core/src/model/old_name.rs"),
+            ("R", "crates/lushtext-core/src/model/new_name.rs"),
+        )
+        self.assertEqual(self.flags(result), (True, True, True))
+        result = self.lenses(("A", "crates/gtk-lush/settle/tests/new_test.rs"))
+        self.assertFalse(result["modules_moved"], "a test file outside src/ is not a module move")
+
+    def test_content_pattern_outside_the_suffixes_is_data(self) -> None:
+        path = "crates/gtk-lush/tasks/src/lib.rs"
+        result = self.lenses(("M", path), texts={path: "pub fn spawn_blocking_then<S>() {}"})
+        self.assertEqual(self.flags(result), (True, False, False))
+        self.assertEqual(result["data_content_hits"], {path: ["spawn_blocking_then"]})
+        result = self.lenses(("M", path), texts={path: "pub fn unrelated() {}"})
+        self.assertEqual(self.flags(result), (False, False, False))
+
+    def test_collect_changes_reads_renames_uncommitted_and_untracked(self) -> None:
+        env = dict(TOPOLOGY.scrubbed_git_env(), GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1")
+
+        def git(*args: str) -> None:
+            subprocess.run(
+                ["git", "-C", str(self.root), "-c", "core.hooksPath=/dev/null", "-c", "user.name=t",
+                 "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", *args],
+                check=True, capture_output=True, env=env,
+            )
+
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.root)], check=True, env=env)
+        source = self.root / "crates" / "gtk-lush" / "tasks" / "src"
+        source.mkdir(parents=True)
+        (source / "lib.rs").write_text("pub fn a() {}\npub fn b() {}\npub fn c() {}\n", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "base")
+        git("checkout", "-q", "-b", "change")
+        git("mv", "crates/gtk-lush/tasks/src/lib.rs", "crates/gtk-lush/tasks/src/core.rs")
+        git("commit", "-q", "-m", "rename")
+        (source / "core.rs").write_text(
+            "pub fn a() {}\npub fn b() {}\npub fn c() {}\npub fn spawn_blocking_then() {}\n", encoding="utf-8"
+        )
+        (source / "fresh.rs").write_text("pub fn json_store() {}\n", encoding="utf-8")
+        changes, texts = TOPOLOGY.collect_changes(self.root, "main")
+        by_path = {change.path: change.status for change in changes}
+        self.assertEqual(by_path.get("crates/gtk-lush/tasks/src/lib.rs"), "R")
+        self.assertEqual(by_path.get("crates/gtk-lush/tasks/src/core.rs"), "R")
+        self.assertEqual(by_path.get("crates/gtk-lush/tasks/src/fresh.rs"), "A")
+        self.assertIn("spawn_blocking_then", texts["crates/gtk-lush/tasks/src/core.rs"])
+        self.assertIn("json_store", texts["crates/gtk-lush/tasks/src/fresh.rs"])
+        result = TOPOLOGY.review_lenses(self.topology, self.POLICY, changes, texts)
+        self.assertEqual(self.flags(result), (True, False, True))
+
+
 if __name__ == "__main__":
     unittest.main()

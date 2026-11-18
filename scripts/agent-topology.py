@@ -326,6 +326,141 @@ def discover_release_workflows(repo_root: Path, policy: dict[str, object]) -> li
     return sorted(workflows, key=lambda workflow: workflow["role"])
 
 
+def scrubbed_git_env() -> dict[str, str]:
+    """The environment without the repository variables a git hook exports."""
+
+    env = dict(os.environ)
+    try:
+        names = subprocess.run(
+            ["git", "rev-parse", "--local-env-vars"], check=True, text=True, capture_output=True
+        ).stdout.split()
+    except (OSError, subprocess.CalledProcessError):
+        names = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR"]
+    for name in names:
+        env.pop(name, None)
+    return env
+
+
+def git_output(repo_root: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo_root), *args],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=scrubbed_git_env(),
+    ).stdout
+
+
+@dataclass(frozen=True)
+class ChangedPath:
+    """One path of a change: its git status letter (A, C, D, M, R, T) and name."""
+
+    status: str
+    path: str
+
+
+def collect_changes(repo_root: Path, base: str) -> tuple[list[ChangedPath], dict[str, str]]:
+    """The change's paths against `base` and the changed text of each Rust file.
+
+    Paths come from the committed diff `base...HEAD` (both sides of a rename
+    or copy), the uncommitted diff against HEAD, and untracked files git does
+    not ignore (status A). The text of a Rust file is its added and removed
+    lines against the merge base, or the whole file when it is untracked.
+    """
+
+    changes: dict[str, ChangedPath] = {}
+    for diff in (
+        git_output(repo_root, "diff", "--name-status", "--find-renames", f"{base}...HEAD"),
+        git_output(repo_root, "diff", "--name-status", "--find-renames", "HEAD"),
+    ):
+        for line in diff.splitlines():
+            fields = line.split("\t")
+            if len(fields) < 2 or not fields[0]:
+                continue
+            status = fields[0][0]
+            for path in fields[1:]:
+                changes.setdefault(normalized(path), ChangedPath(status, normalized(path)))
+    untracked = [
+        normalized(line)
+        for line in git_output(repo_root, "ls-files", "--others", "--exclude-standard").splitlines()
+        if line
+    ]
+    for path in untracked:
+        changes.setdefault(path, ChangedPath("A", path))
+    merge_base = git_output(repo_root, "merge-base", base, "HEAD").strip()
+    texts: dict[str, str] = {}
+    for change in changes.values():
+        if not change.path.endswith(".rs"):
+            continue
+        if change.path in untracked:
+            try:
+                texts[change.path] = (repo_root / change.path).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                texts[change.path] = ""
+            continue
+        diff = git_output(repo_root, "diff", merge_base, "--", change.path)
+        texts[change.path] = "\n".join(
+            line[1:]
+            for line in diff.splitlines()
+            if line[:1] in "+-" and not line.startswith(("+++", "---"))
+        )
+    return sorted(changes.values(), key=lambda change: change.path), texts
+
+
+def review_lenses(
+    topology: "WorkspaceTopology",
+    policy: dict[str, object],
+    changes: list[ChangedPath],
+    texts: dict[str, str],
+) -> dict[str, object]:
+    """Which review lenses a change needs, from the triggers the skills declare.
+
+    - `data`: a Rust path under one of `[data_safety].path_suffixes`, or a
+      changed Rust line matching one of its `content_patterns` (the machine
+      form of the data-safety skill's description);
+    - `performance`: a path in the gtk-perf-review scope (`performance-scope`);
+    - `modules_moved`: an added, deleted, renamed or copied `.rs` file under
+      a `src/` tree.
+    """
+
+    data_policy = policy.get("data_safety") or {}
+    suffixes = tuple(data_policy.get("path_suffixes", ()))
+    patterns = [
+        (entry["keyword"], re.compile(entry["pattern"]))
+        for entry in data_policy.get("content_patterns", ())
+    ]
+    data_paths: list[str] = []
+    data_hits: dict[str, list[str]] = {}
+    performance_paths: list[str] = []
+    moved: list[str] = []
+    for change in changes:
+        path = change.path
+        if topology.performance_path(path):
+            performance_paths.append(path)
+        if not path.endswith(".rs"):
+            continue
+        if change.status in {"A", "C", "D", "R"} and "src" in PurePosixPath(path).parts[:-1]:
+            moved.append(path)
+        if any(f"/{suffix}/" in f"/{path}" for suffix in suffixes):
+            data_paths.append(path)
+            continue
+        text = texts.get(path, "")
+        keywords = [keyword for keyword, pattern in patterns if pattern.search(text)]
+        if keywords:
+            data_paths.append(path)
+            data_hits[path] = keywords
+    return {
+        "data": bool(data_paths),
+        "performance": bool(performance_paths),
+        "modules_moved": bool(moved),
+        "paths": [change.path for change in changes],
+        "data_paths": data_paths,
+        "data_content_hits": data_hits,
+        "performance_paths": performance_paths,
+        "moved_modules": moved,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=DEFAULT_REPO_ROOT)
@@ -339,6 +474,8 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("metainfo-files")
     subparsers.add_parser("release-workflows")
     subparsers.add_parser("validate")
+    lenses = subparsers.add_parser("review-lenses")
+    lenses.add_argument("--base", required=True)
     return parser
 
 
@@ -382,6 +519,10 @@ def main(argv: list[str] | None = None) -> int:
         for path in input_paths(args.paths):
             for category in sorted(topology.release_categories(path)):
                 print(f"{category}\t{path}")
+    elif args.command == "review-lenses":
+        changes, texts = collect_changes(repo_root, args.base)
+        json.dump(review_lenses(topology, policy, changes, texts), sys.stdout, indent=2, sort_keys=True)
+        print()
     elif args.command == "testing-surfaces":
         json.dump(topology.testing_surfaces(), sys.stdout, indent=2, sort_keys=True)
         print()

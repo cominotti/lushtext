@@ -21,7 +21,7 @@ Every commit goes through `scripts/heavy.sh --mem none -- git commit -F <file>`,
 
 ## 2. Helpers with self-tests (one commit)
 
-- [ ] 2.1 `scripts/impl-slots.sh` (`acquire <change> [--timeout S]`, `release <change>`, `cap`), as in design D6.
+- [x] 2.1 `scripts/impl-slots.sh` (`acquire <change> [--timeout S]`, `release <change>`, `cap`), as in design D6.
   - Write `--self-test` first, against a stub, and record it failing. It uses fixture queues for:
     - no entries;
     - the last status `READY`;
@@ -36,35 +36,35 @@ Every commit goes through `scripts/heavy.sh --mem none -- git commit -F <file>`,
     - plus acquire, wait, timeout (exit 124) and release on a temporary slot directory.
 
   It honours `LUSHTEXT_AGENT_LOCK_DIR`-style overrides for the handoff directory, so the self-test touches no real queue or slot.
-- [ ] 2.1a `scripts/gate-trees.sh` (`record <worktree> --gate '<gate>' -- <command…>`, `lookup <worktree> --gate '<gate>'`), as in design D1. `record` reads `git status --porcelain` and `HEAD^{tree}` before and after, runs the command as its child, and appends a line only on exit 0 with a clean, unchanged tree. It honours the same handoff-directory override as 2.1.
+- [x] 2.1a `scripts/gate-trees.sh` (`record <worktree> --gate '<gate>' -- <command…>`, `lookup <worktree> --gate '<gate>'`), as in design D1. `record` reads `git status --porcelain` and `HEAD^{tree}` before and after, runs the command as its child, and appends a line only on exit 0 with a clean, unchanged tree. It honours the same handoff-directory override as 2.1.
   - Its `--self-test`, written first and seen failing against a stub, uses a temporary repository: a clean pass records; a dirty-before, dirty-after or tree-changing run records nothing; a failing command records nothing and returns its exit status; `lookup` finds only the same gate string on the same tree.
-- [ ] 2.1b `scripts/quiet-gate.py` (`outsiders`, `wait-outsiders`, `busy`, `run`, `--self-test`), as in design D7. Our own work is read from the parent slice of `scripts/with-memory-cap.sh --print-slice` (by `systemctl --user show -p ControlGroup`), the legacy slice, and the `cst-sccache-*.scope` siblings; no uid or home path is hardcoded.
+- [x] 2.1b `scripts/quiet-gate.py` (`outsiders`, `wait-outsiders`, `busy`, `run`, `--self-test`), as in design D7. Our own work is read from the parent slice of `scripts/with-memory-cap.sh --print-slice` (by `systemctl --user show -p ControlGroup`), the legacy slice, and the `cst-sccache-*.scope` siblings; no uid or home path is hardcoded.
   - Its `--self-test`, written first and seen failing against a stub, uses fixture `/proc/stat` and `cpu.stat` files and sub-second windows: busy CPUs from two stat reads; outsiders = root minus our slices; `wait-outsiders` succeeds below the bar and exits 124 above it; `run --mode gate` exits 76 without running the command on a busy pre-sample, 77 on a busy post sample after exit 0, and the command's status otherwise; `--mode calib` never gates; every reading is logged; an unreadable stat or `cpu.stat` exits 2 with no reading.
-- [ ] 2.2 `scripts/check-fast-lane.py [--base REF] [--paths FILE] [--self-test]`, as in design D5: an allowlist with the classes `eligible`, `declare` and `not eligible`, failing closed on any unlisted path, reading both sides of a rename, and promoting an `eligible` path that `Makefile`, `.githooks/`, `.github/` or `scripts/` names literally to `declare`.
+- [x] 2.2 `scripts/check-fast-lane.py [--base REF] [--paths FILE] [--self-test]`, as in design D5: an allowlist with the classes `eligible`, `declare` and `not eligible`, failing closed on any unlisted path, reading both sides of a rename, and promoting an `eligible` path that `Makefile`, `.githooks/`, `.github/` or `scripts/` names literally to `declare`.
   - Its self-test, written first and seen failing, covers:
     - eligible: a `docs/memorials/` and `openspec/changes/` path set;
     - `declare`: `.agents/rules/build.md`, `.agents/skills/x/SKILL.md`, `AGENTS.md`, `SOUL.md`, `Makefile`, and a `docs/` path a gate names;
     - not eligible: `crates/lushtext-core/src/app.rs`, `crates/lushtext-core/src/ui/AGENTS.md`, `crates/lushtext/tests/widget/x.rs`, `crates/gtk-lush/settle/src/lib.rs`, `resources/ui/x.blp`, `Cargo.lock`, `.cargo/mutants.toml`, `.gitignore`, `.agents/rules/parallel-agent-work.md`, `.agents/rules/verification-runs.md`, `scripts/flatpak-source-tree.sh`, `scripts/agent-topology.py`, `.agents/skills/skill-policy.toml`, `.claude/workflows/x.js`, a rename from `docs/x.md` to `scripts/x.sh`, an untracked new file, and a new top-level directory;
     - that every `kani_proofs*.rs` in `git ls-files` and every `ORACLES` key of `scripts/kani-shards.py` classes `not eligible`.
   - As evidence that it is fit for use, run it over the PR merges among the last 25 first-parent merges on `main` at stage 2 (`bc109b04` and back). Stage 2 counted 2 of 20 (#116 eligible, #98 `declare`) with the classifier saved at `.claude/handoffs/adopt-faster-change-flow/fast-lane-baseline.py`, and the run must reproduce that or explain the difference.
-- [ ] 2.3 `scripts/check-workflow-scripts.sh [--self-test]`, as in design D8: meta check, wrapper, `node --check`, phase titles, personal-data and credential patterns, copied 12-word rule sentences, and rule references.
+- [x] 2.3 `scripts/check-workflow-scripts.sh [--self-test]`, as in design D8: meta check, wrapper, `node --check`, phase titles, personal-data and credential patterns, copied 12-word rule sentences, and rule references.
   - **Rule references:** prompts cite sections as `<file>.md "<Section>"`, and the check fails when a cited heading does not exist in that file.
   - When `node` is missing, it fails with a message. With no `.claude/workflows/*.js` present it passes and says so (this commit lands before the script).
   - Copied rule text is any run of 12 consecutive words, normalized for case and punctuation, that also appears in `.agents/rules/*.md`.
   - The self-test, written first and seen failing, seeds each failure, including a top-level `await` and `return` that must parse.
-- [ ] 2.3a Review-lens routing (design D10):
+- [x] 2.3a Review-lens routing (design D10):
   - a `[data_safety]` table in `.agents/skills/skill-policy.toml`, holding path suffixes and content patterns, the machine form of the `data-safety` description;
   - `scripts/validate-agent-skills.py` fails when a pattern's keyword is missing from that description;
   - `scripts/agent-topology.py review-lenses --base <ref>` prints `{data, performance, modules_moved, paths}`. `performance` reuses `performance-scope`. `modules_moved` is an added, deleted or renamed `.rs` under a `src/` tree, read from `git diff --find-renames --name-status`.
 
   The tests in `scripts/test-agent-topology.py` and `test-validate-agent-skills.py` are written first and seen failing. They cover: a draft-service edit (data and performance), a `docs/` edit (neither), a `crates/gtk-lush/settle/` edit (performance only), a renamed module (`modules_moved`) and a content-pattern hit outside the path suffixes.
-- [ ] 2.4 Re-check that `openspec validate <change> --strict` passes for a change with no `design.md`, on the CLI version in use. Stage 1 found it valid on 2026-11-18 (design D5). Use a temporary copy of this change in a scratch directory. If it fails, change D5 to require a short `design.md` in the fast lane.
-- [ ] 2.5 `Makefile`:
+- [x] 2.4 Re-check that `openspec validate <change> --strict` passes for a change with no `design.md`, on the CLI version in use. Stage 1 found it valid on 2026-11-18 (design D5). Use a temporary copy of this change in a scratch directory. If it fails, change D5 to require a short `design.md` in the fast lane.
+- [x] 2.5 `Makefile`:
   - `check-workflow-scripts` (in `check-policy`; put the prerequisite on its own line if `check-policy`'s list has been split by then);
   - `check-agent-helpers` runs `impl-slots.sh --self-test`, `gate-trees.sh --self-test`, `check-fast-lane.py --self-test` and `quiet-gate.py --self-test`, and shellchecks the shell scripts.
 
   Run `scripts/heavy.sh -- make check-agent-helpers`, `scripts/heavy.sh -- make check-workflow-scripts` and `scripts/heavy.sh -- make check-agent-skills`. The last one is not in `check-policy` (only CI's `ci.yml` runs it), and 2.3a edits its inputs.
-- [ ] 2.6 Commit `chore(build): add the slot, gate-record, quiet-gate, fast-lane, review-lens and workflow-script helpers`, and push.
+- [x] 2.6 Commit `chore(build): add the slot, gate-record, quiet-gate, fast-lane, review-lens and workflow-script helpers`, and push.
 
 ## 3. Rules (one commit)
 

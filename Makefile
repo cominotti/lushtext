@@ -96,7 +96,7 @@
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: fmt build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke kani proof-strength proof-strength-list check-kani-shards check-settings-writes check-font-zoom-registration check-signal-connections check-thresholds formal-evaluation check-widget-shards check-temp-scope test-widget test-widget-headless test-widget-shard test-search-retirement-release test-workspace-row-states build-cache-prune check-build-cache-helpers check-rustc-frontend-threads check-precommit-scope pre-commit-docs automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke smoke-read-faults-build visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke responsiveness-build responsiveness-smoke check-responsiveness-lane check-agent-helpers mutants-smoke mutants-diff mutants-full mutants-list composition-hold-build \
+.PHONY: fmt build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke kani proof-strength proof-strength-list check-kani-shards check-settings-writes check-font-zoom-registration check-signal-connections check-thresholds formal-evaluation check-widget-shards check-temp-scope test-widget test-widget-headless test-widget-shard test-search-retirement-release test-workspace-row-states build-cache-prune check-build-cache-helpers check-rustc-frontend-threads check-precommit-scope pre-commit-docs automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke smoke-read-faults-build visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke responsiveness-build responsiveness-smoke check-responsiveness-lane check-agent-helpers check-workflow-scripts mutants-smoke mutants-diff mutants-full mutants-list composition-hold-build \
        check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-flatpak-ci-builds check-explicit-simd check-session-hygiene check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy check-cargo-public-api-install check-terminology check-kill-point-gating check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory gtk-axioms gtk-axiom-sample gtk-axioms-runtimes check-gtk-axioms automation-client-self-test check-policy lint-advisory sonar-local check check-agent-skills check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
        meson-build meson-test flatpak-deps flatpak flatpak-install cargo-sources update-deps-cooldown verify-flatpak-identity test-flatpak-identity-verifier test-flatpak-install-origin check-flatpak-source-tree test-dev-desktop-staging \
@@ -522,11 +522,14 @@ check-signal-connections:
 # a commit hook during a game or a host without CPUs 8-23 would: its
 # measurements must run on its own affinity instead, or every commit fails
 # for the host's CPU state. with-memory-cap.sh's runs on per-run private
-# slices and checks afterwards that none is left behind.
+# slices and checks afterwards that none is left behind. The change-flow
+# helpers (parallel-agent-work.md: implementation slots, gate records,
+# the drain-first quiet gate, fast-lane eligibility) self-test against
+# temporary handoff directories, fixture counters and fixture repositories.
 check-agent-helpers:
 	@echo "Checking the shared-machine agent helpers..."
 	@if command -v shellcheck >/dev/null 2>&1; then \
-		shellcheck -x scripts/agent-locks.sh scripts/cpu-lists.sh scripts/heavy.sh scripts/measure.sh scripts/wait-for.sh scripts/with-memory-cap.sh scripts/ci-image-widget-test.sh; \
+		shellcheck -x scripts/agent-locks.sh scripts/cpu-lists.sh scripts/heavy.sh scripts/measure.sh scripts/wait-for.sh scripts/with-memory-cap.sh scripts/ci-image-widget-test.sh scripts/impl-slots.sh scripts/gate-trees.sh; \
 	else \
 		echo "shellcheck not installed; skipping the lint half"; \
 	fi
@@ -535,6 +538,24 @@ check-agent-helpers:
 	LUSHTEXT_AGENT_LOCK_HELD=shared:$$$$ LUSHTEXT_MEMORY_CAP_KIB=1 LUSHTEXT_ADMISSION_NOWAIT=1 ./scripts/measure.sh --self-test
 	LUSHTEXT_AGENT_LOCK_HELD=exclusive:$$$$ ./scripts/wait-for.sh --self-test
 	./scripts/ci-image-widget-test.sh --self-test
+	./scripts/impl-slots.sh --self-test
+	./scripts/gate-trees.sh --self-test
+	PYTHONDONTWRITEBYTECODE=1 python3 -I ./scripts/quiet-gate.py --self-test
+	PYTHONDONTWRITEBYTECODE=1 python3 -I ./scripts/check-fast-lane.py --self-test
+
+# The versioned workflow scripts under .claude/workflows/ (parallel-agent-work.md,
+# "Running a change"): syntax through a wrapper that lets top-level await and
+# return parse, phase titles, no personal data or push credentials, no copied
+# rule text, and every cited rule section exists. Needs node.
+check-workflow-scripts:
+	@echo "Checking the versioned workflow scripts..."
+	@if command -v shellcheck >/dev/null 2>&1; then \
+		shellcheck -x scripts/check-workflow-scripts.sh; \
+	else \
+		echo "shellcheck not installed; skipping the lint half"; \
+	fi
+	./scripts/check-workflow-scripts.sh --self-test
+	./scripts/check-workflow-scripts.sh
 
 # The build-cache helpers of reduce-build-disk-writes: the cache root
 # (scripts/build-cache.sh, with its three text audits), the mutation slots'
@@ -1051,7 +1072,7 @@ gtk-lush-public-api-advisory:
 gtk-lush-api-advisory: gtk-lush-semver-advisory gtk-lush-public-api-advisory
 
 # Aggregate policy target for fast audits that sit beside rustfmt and Clippy.
-check-policy: check-filesystem-boundary check-temp-scope check-rustc-frontend-threads test-flatpak-install-origin check-flatpak-source-tree check-agent-helpers check-build-cache-helpers check-precommit-scope check-session-hygiene check-cargo-public-api-install check-settings-writes check-font-zoom-registration check-signal-connections check-thresholds check-responsiveness-lane check-kani-shards check-widget-shards check-gtk-axioms check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-flatpak-ci-builds check-explicit-simd check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test check-terminology check-kill-point-gating
+check-policy: check-filesystem-boundary check-temp-scope check-rustc-frontend-threads test-flatpak-install-origin check-flatpak-source-tree check-agent-helpers check-build-cache-helpers check-precommit-scope check-session-hygiene check-cargo-public-api-install check-settings-writes check-font-zoom-registration check-signal-connections check-thresholds check-responsiveness-lane check-kani-shards check-widget-shards check-gtk-axioms check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-flatpak-ci-builds check-explicit-simd check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test check-terminology check-kill-point-gating check-workflow-scripts
 
 # The crash-kill-points feature gates only services::kill_point::reach, so the
 # crash smoke's kill-point victim is the ordinary binary plus kill points.
@@ -1399,7 +1420,8 @@ help:
 	@echo "  gtk-axioms-runtimes LOCAL ONLY: sample checks inside installed GNOME SDKs (GTK_AXIOMS_ONLY=A28,A79 for a subset)"
 	@echo "  check-gtk-axioms Keep the axiom ledger, catalogue, probes, and samples in agreement"
 	@echo "  automation-client-self-test Validate the reusable D-Bus automation CLI helper"
-	@echo "  check-agent-helpers Self-test scripts/with-memory-cap.sh, heavy.sh, measure.sh and wait-for.sh (memory caps, slice placement, shared-machine lock protocol)"
+	@echo "  check-agent-helpers Self-test scripts/with-memory-cap.sh, heavy.sh, measure.sh and wait-for.sh (memory caps, slice placement, shared-machine lock protocol), and the change-flow helpers (impl-slots.sh, gate-trees.sh, quiet-gate.py, check-fast-lane.py)"
+	@echo "  check-workflow-scripts Check the versioned .claude/workflows/*.js scripts (syntax, phases, no personal data, no copied rule text, cited sections exist)"
 	@echo "  visual-smoke Real-session screenshot smoke under headless Mutter"
 	@echo "  visual-geometry-smoke Rust same-session visual invariant proof"
 	@echo "  visual-geometry-oracle-smoke Python oracle visual invariant diagnostics"
