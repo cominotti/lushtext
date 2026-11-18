@@ -5222,9 +5222,9 @@ What landed on the branch, and what is still owed, is the change's
   locally) and `core-replace-stream` (the stream's UTF-8 seams and byte
   scan, 2 harnesses), both `scheduled`; their budgets in
   `scripts/kani-shards.py` are `PENDING DISPATCH (owed by stream-replace-all)`.
-  The stage-1 revision (2026-11-17) found the engine's line logic out of
-  CBMC's reach (one engine run over 2 symbolic bytes passed 8 GiB), so it is
-  checked by a bounded exhaustive unit test instead; the record is in
+  The stage-1 revision (2026-11-17) fitted no Kani form of the engine's line
+  logic (one engine run over 2 symbolic bytes was past 8 GiB when stopped),
+  so it is checked by a bounded exhaustive unit test instead; the record is in
   `docs/next/formal-verification.md`, "Replace All protocol and stream".
 - **Owed before merge** (`tasks.md`, re-planned 2026-11-17 into non-visual
   groups G1–G4 and one visual commit G5): the service data-safety tests

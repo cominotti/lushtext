@@ -228,8 +228,9 @@ path moves that edit to G5.
   - **Invalid sources.** Add a second domain: every source of at most 3
     symbols over `a`, `b`, `\r`, `\n`, `é`, `0x80`, a lone `0xC3` and `0xFF`
     (as bytes), with the same edit sets, every chunk size and both limits.
-    No point is `Replaced` unless the source is valid UTF-8. An invalid
-    source ends `NotUtf8`, `StaleLine` or `OutputLimitExceeded` at every
+    Validity is computed per source, because some of these sequences are
+    valid (`0xC3 0x80` is U+00C0). No point is `Replaced` unless its source
+    is valid UTF-8. An invalid source ends `NotUtf8`, `StaleLine` or `OutputLimitExceeded` at every
     chunk size. With no edit and no limit it ends `NotUtf8` at every chunk
     size.
   - **A cut character in a targeted line.** Add a recorded line holding `é`
@@ -242,13 +243,19 @@ path moves that edit to G5.
     - an unterminated final line replaced across a seam;
     - a cut character inside a targeted line that is replaced;
     - an invalid source split by a seam.
-  - **Run time.** The whole check stays under about 15 s in a debug build.
-    If it does not, shrink the invalid-byte domain first, and record the
-    domain in design D11 and the test's doc comment.
+  - **Run time.** The whole check aims at about 15 s in a debug build; this
+    is an estimate, not a measurement. Adding `aé` takes the ranges per line
+    number from 13 to 23, so the two-edit sets roughly triple before the
+    second domain exists. Trim the edit tables first: for example, the
+    second domain can use the single-edit sets only, or a smaller line
+    table. Any domain change amends design D11, the test's doc comment and
+    the delta scenarios "The bounded domain" and "An invalid source is never
+    replaced" in the same commit. Record the measured time.
   - **Rustdoc.** `ReplaceStream`'s rustdoc names the domains its checks
-    cover, instead of the unconditional "at every chunk size"
-    (`testing.md`: a rustdoc promise never claims more than was proved or
-    checked).
+    cover, instead of the unconditional "at every chunk size", and says
+    that the engine forms tried did not fit the margin, instead of "out of
+    CBMC's reach" (`testing.md`: a rustdoc promise never claims more than
+    was proved or checked).
   - **Mutant.** Log a mutant in `failing-first.log` that fails the new
     domain: `finish_outcome` skips the `Utf8Carry::finish` check, so a
     source that ends inside a sequence is replaced.

@@ -2576,7 +2576,7 @@ down to one run over 2 symbolic bytes with one fixed edit and no sinks past
 8 GiB (8.47 GiB at 3.4 min). The probes are tabulated in the change's design
 D11, "Kani memory". Only the four-byte forms
 were measured past the margin. That the ladder and the no-sink run (stopped
-near 8.4–8.9 GiB) would not fit is an extrapolation from their growth. Step 2
+just past 8 GiB, at 8.0–8.5 GiB) would not fit is an extrapolation from their growth. Step 2
 of the fit order (another solver) did not apply, because every probe was
 still in symbolic execution. The trace is dominated by slice-index and
 `copy_from_slice` failure paths and `memcmp`: 18,630 inlined slice-index

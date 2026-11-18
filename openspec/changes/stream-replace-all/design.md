@@ -748,8 +748,10 @@ job returns before it waits for the guard.
   whole source rejects (`utf8_seams_do_not_depend_on_the_chunk_size`), and the
   `cfg(kani)` byte scan it runs on equals `core::str::from_utf8` on every input
   of at most 4 bytes (`the_byte_scan_matches_core_from_utf8`). `simdutf8`'s
-  runtime-detected SIMD is out of CBMC's reach, and so is
-  `core::str::from_utf8` at the seam harness's 8 bytes, so the harness
+  runtime-detected SIMD is out of CBMC's reach. Unwinding
+  `core::str::from_utf8` over 8 symbolic bytes dominated the trace of the
+  first one-harness run that ran out of memory (implementation decision 22,
+  an attribution from the trace, not an isolated probe). So the harness
   validates with the byte scan, which the unit test
   `the_byte_scan_matches_simdutf8` ties to the production validator on every
   sequence of class-edge bytes up to 5 long. The seam harness's whole-source
@@ -787,8 +789,9 @@ job returns before it waits for the guard.
     `the_engine_reports_a_stale_line_and_invalid_utf8_split_across_chunks`
     does. Task 3.3c adds a second domain, every source of at most 3 symbols
     over the five plus `0x80`, a lone `0xC3` and `0xFF`, with the same edit
-    sets, chunk sizes and limits: no point is `Replaced` unless the source is
-    valid UTF-8, an invalid source ends `NotUtf8`, `StaleLine` or
+    sets, chunk sizes and limits. Validity is computed per source, because
+    some of these sequences are valid (`0xC3 0x80` is U+00C0). No point is
+    `Replaced` unless its source is valid UTF-8, an invalid source ends `NotUtf8`, `StaleLine` or
     `OutputLimitExceeded` at every chunk size, and with no edit and no limit
     it ends `NotUtf8` at every chunk size;
   - no recorded line holds `é`, so a character cut by a seam is replaced
@@ -838,8 +841,8 @@ disqualified whatever it would have returned (handoff `runs.log` and
 
 Every probe was stopped while still growing, so none shows where CBMC would
 have ended. The four-byte forms were past the 12 GiB margin when stopped.
-The ladder and the no-sink run were stopped near 8.4–8.9 GiB, under the
-margin, so that they do not fit is an extrapolation from their growth, not a
+The ladder and the no-sink run were stopped just past 8 GiB (8.0–8.5 GiB),
+under the margin, so that they do not fit is an extrapolation from their growth, not a
 measurement. The last row points at the engine itself under CBMC, not the
 harness's domain, sinks or comparisons: its trace is dominated by
 slice-index and `copy_from_slice` failure paths and `memcmp`, with 18,630
