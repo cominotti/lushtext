@@ -69,3 +69,15 @@ leftover daemon occupies stays until the daemon exits, since stopping it
 would kill the daemon). Two self-test cases pin it, and a mutation that
 removes either stop fails them. Lane case 4.4 saw the sweep stop both
 sub-slices these runs left (`lane-mutants.md`).
+
+## Run 3, on the final tree
+
+Run 3 repeated the lane on `bea805bb`, with the sub-slice stop in place:
+start 2026-11-17T23:23:46-03:00 (load 7.64), end 23:33:16 (load 7.55),
+**exit 0**. 2546 non-widget tests passed (12 skipped); window 426/426,
+editor-page 413/413, surfaces 857/857, one attempt each; 0 FLAKY lines; no
+`heavy: warning`; `widget-memory:` peaks 386, 424 and 1,179 MiB, oom_kill 0;
+`heavy: envelope user-lushtext-heavy-env1807648t1794968626825297850.slice:
+peak 1209 MiB, oom_kill 0` (warm build). Three seconds after it ended,
+`systemctl --user list-units --all 'user-lushtext-heavy-env*'` listed
+nothing: the placeholder had stopped its sub-slice.
