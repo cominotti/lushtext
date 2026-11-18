@@ -74,5 +74,5 @@ spends one bounded budget in visit order.
 - **AND** the legacy folder-note sidecar directory is visited last, with what budget remains
 
 #### Scenario: A stale leftover in the legacy folder-note directory is swept
-- **WHEN** startup finds a stale provably-ours temp file in the legacy `workspace-notes` directory, left by a format-upgrade rewrite
+- **WHEN** startup finds a stale provably-ours temp file in the legacy folder-note sidecar directory (`AppDataLocation::LegacyFolderNotes`), left by a format-upgrade rewrite
 - **THEN** it is removed under the same rules as the other app-data directories, if the pass's budget reaches it
