@@ -40,6 +40,36 @@ What the revision changed:
 | 5 | keep | It is unchanged apart from a recorded scope note: the synchronous close flush is a third site, and it is deliberately left as is. The two Kani shard runs are dropped, because no module they read changes. |
 | 6 | keep, re-derived | The scenarios now use **three** roles: `kill_inside_later_launch_undo` and the draft scenarios start a `seed` launch before the victim. The kill-point scenarios grew from three to four call sites (#103). |
 
+### Spec review (stage 2, 2026-11-18)
+
+An independent review re-read every claim against 187c6299 and kept all six
+groups. It corrected these points in place:
+- **G1:** the "shared driver" requirement now carries the same documented
+  exception as "no loop of their own", which the fallback relies on. A source
+  check makes "no loop of their own" testable failing-first.
+- **G2:** the sweep's family order (format-upgrade runs, then local-history
+  lineages) is the reverse of their order in `ALL`, so it is now explicit and
+  pinned. The layout records a truthful `holds_durable_writes` plus a separate
+  sweep decision: `workspace-notes/` does hold durable writes, because a
+  format upgrade rewrites its sidecars in place. The inventory's decision for
+  each entry, including "covered by another entry's scan", lives in the
+  inventory's own match, so the layout does not depend on `format_upgrade`.
+  The characterization also pins the inventory's recorded relative paths,
+  which name the upgrade backups. The constant count recipe includes
+  `*_FILENAME`. The `recent_documents.rs:252` mutants anchor moves with the
+  edit.
+- **G3:** there is no `test_policy` copy-failure hook; the tests block the
+  set-aside directory with a regular file, as the existing test does. The due
+  tick is counted from the tick at which the failure is recorded, the
+  evidence exposes each retry's failure count, and the new cap gets its
+  thresholds row.
+- **G5:** the partition keeps `journal_core::may_write_after_registration` as
+  its gate.
+- **Kani guard:** the diff runs against the merge base, so a later `main`
+  cannot make it print a file this branch never touched.
+- **Smokes:** each commit that touches the UI prefixes needs the three smokes
+  current (testing.md), so groups 5 and 3 land together after one smoke run.
+
 ### Measured baseline at 187c6299
 
 Line counts are from `wc -l`, and counts from `grep` over
@@ -79,15 +109,16 @@ No harness file imports `durable_write`, `apply`, `undo`, `draft_service.rs`,
 or `ui::window`.
 
 **Group 2.** App-data names are spelled in three places:
-1. 25 name constants in 17 files, counted as the `const *_DIR` and `*_FILE`
-   strings minus `CURRENT_DIR` and the palette fixture's.
+1. 25 name constants in 17 files, counted as the `const *_DIR`, `*_FILE`,
+   and `*_FILENAME` strings minus `CURRENT_DIR` and the palette fixture's
+   `LINKED_FILE`.
    `LEGACY_FOLDER_NOTES_DIR` (`folder_note_service.rs`) and
    `LEGACY_FOLDER_NOTE_SIDECAR_DIR` (`format_upgrade/inventory.rs`) both spell
    `workspace-notes`.
 2. The startup sweep's hand list in `app_data_leftovers.rs`: the root, 11
-   directories, and two families (local-history lineages, and
-   format-upgrade runs with their `items/`). #103 added
-   `search_backup::bodies_dir`.
+   directories, and two families. It sweeps the flat list first, then the
+   format-upgrade runs with their `items/`, then the local-history lineages.
+   #103 added `search_backup::bodies_dir`.
 3. The format-upgrade inventory, which re-spells about a dozen literals:
    `"drafts/manifest.json"`, `"bookmarks"`, `"local-history"`,
    `"replace-backup-journal"`, `"replace-backup-journal/bodies"`, `"index.json"`,
@@ -103,6 +134,14 @@ This drift class has already happened once. The sweep missed
 `KIND_*` in `json_format.rs`. Its loader resets a corrupt file to an empty
 list. Root resolution is `json_store::data_dir()` (`LUSHTEXT_DATA_DIR` or
 XDG).
+
+The legacy `workspace-notes/` directory is inventoried (a fixed JSON directory
+scan), and `format_upgrade/apply.rs` rewrites an upgradeable item in place
+with `atomic_replace`, so durable-write temps can appear there. The sweep
+skips it, which is the recorded phase-0 deferral ("the startup leftover sweep
+skips the legacy folder-note sidecar directory"). Format-upgrade backups are
+named by `stable_path_hash(item.path.relative())` (`format_upgrade/backup.rs`),
+so the inventory's recorded relative paths are on-disk names too.
 
 **Group 3.** When the set-aside copy of an unrestored body fails,
 `journal.rs::attempt_unrestored_copy` keeps the restore hold, which is correct
@@ -124,8 +163,10 @@ and the set-aside copy. The attempts compete for the eight
 
 `DraftEvidence.unrestored_copy_retries` is a count.
 `test_a_failed_set_aside_copy_keeps_autosave_off_the_unshown_draft`
-(`widget/window.rs:8497`) drives retries through `autosave_tick_for_test` in
-`wait_until` loops.
+(`widget/window.rs:8497`) makes every copy fail by writing a regular file
+where the set-aside directory belongs. It drives retries through
+`autosave_tick_for_test` in `wait_until` loops. The drafts `test_policy.rs`
+has no copy-failure hook.
 
 **Group 4.** `WriteLabel` is a closed set of 11 labels, `KNOWN` included.
 - `filesystem/write.rs` converts it back with `label.as_str()` at four sites.
@@ -292,6 +333,13 @@ would prove nothing new, and adding it to a scheduled shard would cost:
 - **The marker guard from G6.** It extends the guard's marker list with the
   tap's markers, and does not add a second `strings` step.
 
+*No loop of their own, checked:* a source check covers the five shell files.
+In each, the core's `step` may be called only inside that core's
+`Protocol::advance` implementation, unless the module documentation records
+the fallback exception below. It is a `#[test]` over `include_str!` of the
+files, or a rule in an existing policy script, and it fails on the unchanged
+tree, where every shell steps its core in its own loop.
+
 *Fallback:* the Replace apply closure moves about 340 lines into one
 `FnMut`. Readability may suffer, or the borrow checker may force a worse
 shape, for example because `run` is mutably borrowed across `cancel` and
@@ -328,27 +376,47 @@ A GTK-free module defines:
   - `Directory`;
   - `LineageFamily { index: "index.json" }`, children one level down;
   - `RunFamily { items: "items" }`;
-- `holds_durable_writes(self) -> bool`.
+- `holds_durable_writes(self) -> bool`, which is truthful: it is `true` for
+  every directory that any durable write, a format-upgrade rewrite included,
+  can create a temp in;
+- `sweep(self)`, one of:
+  - `Swept`, for a directory or family entry the startup sweep visits;
+  - `ParentSwept`, for a file entry, whose temps land in its parent;
+  - `NotSwept(reason)`, either because the entry holds no durable writes or
+    as a recorded deferral.
 
 `AppDataLayout::new(root)` resolves paths from a root.
 
 The consumers take it over as follows:
-- **The sweep** iterates `AppDataLocation::ALL`, keeping the directory and
-  family entries that `holds_durable_writes`, and expands the two families
-  as it does today, after the flat directories. Its budget,
-  `MAX_LINEAGES_PER_PASS`, and `MAX_BACKUP_RUNS_PER_PASS` are unchanged.
+- **The sweep** iterates `AppDataLocation::ALL`, keeping the entries whose
+  `sweep` is `Swept`, and expands the two families after the flat
+  directories, as it does today. Its budget, `MAX_LINEAGES_PER_PASS`, and
+  `MAX_BACKUP_RUNS_PER_PASS` are unchanged.
   - **Order is behaviour.** The sweep charges one shared budget in visit
-    order, so `ALL` reproduces today's directory order exactly, and a test
-    pins it.
-  - **File entries are never swept themselves.** Their temps land in their
-    parent directory, which a unit test asserts is a swept entry.
-- **The format-upgrade inventory** maps each location to its scan through an
-  **exhaustive `match`**:
+    order. `ALL` reproduces today's flat directory order exactly. The family
+    order is **not** `ALL`'s: today the format-upgrade runs (`RunFamily`) are
+    expanded before the local-history lineages (`LineageFamily`), although
+    `LocalHistoryDir` comes first in `ALL`. The sweep therefore expands the
+    families in an explicit `FAMILY_SWEEP_ORDER`, runs then lineages. One
+    test pins the whole visit order: flat directories, runs with their
+    `items/`, then lineages.
+  - **File entries are never swept themselves.** Their `sweep` is
+    `ParentSwept`, and a unit test asserts that each one's parent is a
+    `Swept` entry.
+  - **Coverage is checked.** A unit test asserts that every entry that
+    `holds_durable_writes` is `Swept` or `ParentSwept`, or is `NotSwept` with
+    a reason. The only such deferral is `LegacyWorkspaceNotes`.
+- **The format-upgrade inventory** decides each location through an
+  **exhaustive `match`** in `format_upgrade/inventory.rs`, so the layout
+  does not depend on `format_upgrade`. The decision is one of:
   - a fixed-JSON scan with a `FormatMetadataKind`;
   - a bounded JSON-directory scan;
-  - the draft-body, local-history, or replace-journal special scans, the last
-    including the bodies directory;
-  - `NotInventoried(reason)`.
+  - the draft-body, local-history, or replace-journal special scans;
+  - `CoveredBy(location)`, for an entry another entry's scan reads: the
+    replace journal's manifest, cleanup marker, and bodies directory are
+    covered by the replace-journal scan;
+  - `NotInventoried(reason)`, including `Root` (the data home itself, whose
+    files are entries of their own).
 
   Adding a variant then fails to compile until both consumers decide it. The
   scans run in an explicit `INVENTORY_ORDER` list that reproduces today's
@@ -360,9 +428,11 @@ The consumers take it over as follows:
   5. local history, the migration ledger, the replace journal with its
      bodies, and the retired backup.
 
-  A unit test asserts that the list holds exactly the locations whose match
-  is not `NotInventoried`. The layout module does not depend on
-  `format_upgrade`, so no dependency cycle forms.
+  A unit test asserts that the list holds exactly the locations whose
+  decision is a scan of their own, and that every `CoveredBy` target is in
+  the list. The inventory keeps each scan's own relative paths: the replace
+  journal's entries and bodies are still recorded under
+  `replace-backup-journal/` exactly as today.
 - **Each service** replaces its constant and `join` with a layout accessor.
   The public helpers stay as one-line delegations, so the `data_dir()` call
   sites and the tests do not churn. The helpers are `drafts_dir`,
@@ -372,8 +442,15 @@ The consumers take it over as follows:
 
 *Characterization first:* a test written **before** the move records, for a
 fixed root, every path each existing helper, constant, and inventory literal
-resolves. After the move the same test runs against the layout and must be
-byte-identical.
+resolves. It also records, for a populated fixture data home (one file in
+every scanned location), the ordered `item.path.relative()` list `scan`
+returns, because the upgrade backups are named by those paths. After the
+move the same test runs against the layout and must be byte-identical.
+
+*Mutation anchor:* `.cargo/mutants.toml` pins
+`recent_documents.rs:252:.*load_recent_file` by line. Removing
+`RECENT_DOCUMENTS_FILE` moves it, so the group re-keys it against
+`make mutants-list` in the same change (testing.md, "Path-keyed gates").
 
 *Recorded exemptions* (`NotInventoried` reasons):
 - `recent-documents.json`: unversioned, with no envelope. The loader recovers
@@ -387,8 +464,11 @@ byte-identical.
   would be circular.
 
 The legacy `workspace-notes/` directory is inventoried but not swept, which
-is the existing phase-0 deferral. It records `holds_durable_writes = false`
-with that reason.
+is the existing phase-0 deferral. It records `holds_durable_writes = true`
+(a format upgrade rewrites its sidecars in place) and `sweep` =
+`NotSwept("phase-0 deferral: legacy folder-note sidecars kept for older
+releases")`. Sweeping it would close that deferral, but it changes what the
+sweep visits and spends, so it is left to the deferral's own trigger.
 
 *Alternatives considered:*
 - A `const` table of structs. Coverage would then depend on a runtime test
@@ -420,10 +500,14 @@ The design has three parts:
   retry entry becomes `(DraftEntry, failures, next_due_tick)`.
   `retry_unrestored_copies` attempts only the entries with
   `next_due_tick <= now`, and leaves the rest in the map untouched.
+  `next_due_tick` is computed when the failed attempt's completion records
+  the entry: the current `autosave_timer_ticks` plus the delay. An attempt
+  still in flight is not in the map, so a tick during it starts nothing.
 - **The schedule.** The first failure happens in `preserve_unrestored_draft`,
-  outside the timer. Its retry is due at the next timer tick. Later attempts
-  follow at cumulative ticks 1, 3, 7, 15, 27, 39, and so on, every 12 ticks
-  after the cap.
+  outside the timer. Its retry is due at the next timer tick. Counted from
+  the tick at which that first failure is recorded, and with each attempt
+  completing before the next tick, later attempts follow at ticks 1, 3, 7,
+  15, 27, 39, and so on, every 12 ticks after the cap.
 
 The hold is untouched. It is taken in `preserve_unrestored_draft` and released
 only on `Ok(Some(_))` or `Ok(None)`. The first failure still logs a warning
@@ -435,7 +519,16 @@ pass. The existing failed-copy test needs at most three ticks inside its 10 s
 `wait_until` loops, so it stays green unchanged.
 
 `DraftEvidence` keeps `unrestored_copy_retries` (the count) and gains
-`unrestored_copy_next_due_ticks` (sorted) and `autosave_timer_ticks`.
+`unrestored_copy_failures` and `unrestored_copy_next_due_ticks` (each sorted
+by draft id), and `autosave_timer_ticks`. The accessor computes them and
+drops the retry map's `Ref` before building the struct
+(workflow-convention.md, evidence surface invariants). A test observes an
+attempt as a change of that entry's failure count.
+
+*Threshold:* `UNRESTORED_COPY_MAX_RETRY_TICKS` is a time cap, one minute of
+5 s ticks. It gets a `docs/thresholds.md` row as `out: time`, like
+`FIRST_DIRTY_AUTOSAVE_DEBOUNCE_MS` in the same file, and its rustdoc
+`Kind:` line, so `make check-thresholds` passes.
 
 *Why a cap of 12, not 60:* while an id is held, autosave does not write the
 user's **newer** edits to that id. Its draft protection is suspended until the
@@ -512,7 +605,11 @@ G1 and G4 lands first does three things:
 `register_new_draft_ids_then` hands `then` a
 `(Vec<WritableDraftCandidate>, Vec<String>)`. Each token comes either from
 `RegisteredDraft::without_registration`, when the journal core says no
-registration is needed, or from a committed registration. Both
+registration is needed, or from a committed registration. The partition
+keeps `journal_core::may_write_after_registration(required, committed)` as
+its gate: a candidate becomes writable only when that gate admits it **and**
+it holds its token. Every other candidate is refused, keeping its id in the
+refused list, exactly as today. Both
 `drive_dirty_draft_pipeline` and `drive_close_draft_pipeline` take
 `Vec<WritableDraftCandidate>`, and both `ok_or_else` sites disappear.
 
@@ -651,8 +748,10 @@ characterization tests above.
 ## Kani, proof strength, axioms, timing
 
 - **Kani: none (no proven module touched).** Every group confirms with
-  `git diff --stat origin/main -- <the four oracle modules> '**/kani_proofs.rs'`
-  that the four oracle modules and the `kani_proofs.rs` files are unchanged.
+  `git diff --stat "$(git merge-base HEAD origin/main)" -- <paths>` that the
+  four oracle modules, `model/draft.rs` (which the draft harness reads), and
+  every `kani_proofs.rs` are unchanged. The merge base keeps a later `main`
+  from showing files this branch never touched.
   If one changes after all:
   - `write_protocol.rs` or `journal_core.rs` means
     `setsid nohup scripts/heavy.sh --envelope 16G -- make kani KANI_SHARD=core-journal-and-write`,
@@ -704,8 +803,13 @@ characterization tests above.
 ## Migration Plan
 
 Each group is one commit, or a small series, revertible alone. The order is
-1, 4, 2, 6, then 5 and 3. The last two touch the UI prefixes, so the three
-smokes run once on the final tree. There is no on-disk format, path, or
+1, 4, 2, 6, then 5 and 3. The last two touch the UI prefixes. A commit that
+touches those prefixes needs the three smokes current, because the proofs
+digest the files' contents (testing.md, "Files under the UI prefixes need the
+three smokes"). Groups 5 and 3 therefore land in one commit, made after the
+three smokes run on that tree. The commit message and the N8 record still
+describe them as two groups. If they must land separately, the three smokes
+run again before each commit. There is no on-disk format, path, or
 GSettings change, so rollback needs no data migration. N8 in
 `docs/next/formal-verification-next.md` is updated per group as it lands, and
 the change is archived once all six are applied, or the unapplied ones are

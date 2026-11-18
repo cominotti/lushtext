@@ -2,7 +2,11 @@ Each numbered group can be applied on its own. Apply them in the order
 0, 1, 4, 2, 6, 5, 3, 7:
 - groups 1 and 4 both edit `durable_write.rs`, so one follows the other;
 - groups 5 and 3 both edit `ui/window/drafts/`, so they follow each other,
-  and they come last because they touch the UI prefixes.
+  and they come last because they touch the UI prefixes. A commit that
+  touches those prefixes needs the three smokes current (testing.md), so
+  groups 5 and 3 are committed together, once, after task 7.3 (design,
+  "Migration Plan"). If they must land separately, run 7.3 before each of the
+  two commits.
 
 Every group ends with its own gates and doc sync. Every heavy command goes
 through `scripts/heavy.sh`, one command per call, in the forms written here.
@@ -19,8 +23,10 @@ group's heavy commands.
   `origin/main` moved past the branch point, merge it into the branch; never
   rebase.
 - [ ] 0.2 Record the Kani baseline:
-  `git diff --stat origin/main -- crates/lushtext-core/src/services/filesystem/write_protocol.rs crates/lushtext-core/src/services/content_search/replace/protocol.rs crates/lushtext-core/src/services/draft_service/journal_core.rs crates/lushtext-core/src/services/draft_service/set_aside_retention.rs crates/lushtext-core/src/model/draft.rs ':(glob)**/kani_proofs.rs'`
-  must print nothing. Re-run it at the end of every group. If it ever prints
+  `git diff --stat "$(git merge-base HEAD origin/main)" -- crates/lushtext-core/src/services/filesystem/write_protocol.rs crates/lushtext-core/src/services/content_search/replace/protocol.rs crates/lushtext-core/src/services/draft_service/journal_core.rs crates/lushtext-core/src/services/draft_service/set_aside_retention.rs crates/lushtext-core/src/model/draft.rs ':(glob)**/kani_proofs.rs'`
+  must print nothing. The merge base keeps a `main` that moved later from
+  showing files this branch never touched. Re-run it at the end of every
+  group. If it ever prints
   a file, run the shard that design "Kani, proof strength, axioms, timing"
   names for it, once, on the final code, and record the time.
 
@@ -72,12 +78,20 @@ group's heavy commands.
   Keep each of these exactly where it is:
   - `last_error` carriage;
   - temp removal;
-  - every `kill_point::reach` (the `DurableRenamedBeforeDirSync` window and
-    the four Replace windows);
+  - every `kill_point::reach`: the `DurableRenamedBeforeDirSync` window in
+    the `SyncDir` arm, and `ReplaceBodyBeforeEntry` in the apply loop's
+    `WriteBody` arm. The other three Replace windows (`apply.rs` 297 and 973,
+    `undo.rs` 396) lie outside the loops and must not move;
   - the guard drop after the loop.
 
   If the apply closure needs the design's fallback, take it and record why in
   the module doc.
+- [ ] 1.4a Add the "no loop of their own" source check (design G1): in each
+  of the five shell files, the core's `step` is called only inside its
+  `Protocol::advance` implementation, unless the module documentation
+  records the fallback exception. Write it as a `#[test]` over
+  `include_str!` of the files, or as a rule in an existing policy script.
+  Confirm it fails on the tree before 1.4, then passes after.
 - [ ] 1.5 Re-run 1.1's tests and the `drive` unit tests. Then run
   `scripts/heavy.sh -- make crash-recovery-smoke` where supported, and check
   that the durable-write and Replace kill-point scenarios pass.
@@ -90,7 +104,9 @@ group's heavy commands.
 
   Do it against the mutants that `scripts/heavy.sh -- make mutants-list`
   actually generates after 1.4: re-key each entry, or delete it with the
-  reason in the commit.
+  reason in the commit. The listing applies `exclude_re`, so check that an
+  entry still matches by listing with that entry removed and finding the
+  mutant it should hide.
 - [ ] 1.7 Confirm 0.2's diff is still empty. Kani: none.
 - [ ] 1.8 Sync the docs:
   - `docs/durable-writes.md` (the shells run through `drive`);
@@ -142,28 +158,39 @@ group's heavy commands.
   - the quarantine directory, and the format-upgrade backup directory with
     its `items/` child;
   - each of the 25 name constants, joined to the root;
-  - every literal the format-upgrade inventory scans.
+  - every literal the format-upgrade inventory scans;
+  - for a populated fixture data home (one file in every scanned location),
+    the ordered `item.path.relative()` list that `format_upgrade::scan`
+    returns, because the upgrade backups are named by those paths.
 - [ ] 2.2 Add the GTK-free `services/app_data_layout.rs` and register it in
   `services/mod.rs`. It holds:
   - `AppDataLocation`, with `Root` and `ReplaceJournalBodies`;
   - `ALL`;
   - per location: its relative path, kind (`LineageFamily` carries
-    `index.json`, and `RunFamily` carries `items`), and
-    `holds_durable_writes`;
+    `index.json`, and `RunFamily` carries `items`), a truthful
+    `holds_durable_writes`, and `sweep` (`Swept`, `ParentSwept` for files, or
+    `NotSwept(reason)`; `LegacyWorkspaceNotes` is the one deferral, design
+    G2);
   - the `AppDataLayout::new(root)` accessors.
 - [ ] 2.3 Switch the startup sweep in `app_data_leftovers.rs` to iterate the
   layout. Keep the family expansion, `MAX_LINEAGES_PER_PASS`,
   `MAX_BACKUP_RUNS_PER_PASS`, and the budget. `ALL` must reproduce today's
-  directory visit order, because the shared budget is spent in that order:
-  add a test that pins the order, failing-first against a deliberately
-  reordered list. Add a test asserting that every file entry's parent is a
+  directory visit order, because the shared budget is spent in that order.
+  The families are expanded in an explicit `FAMILY_SWEEP_ORDER`: the
+  format-upgrade runs with their `items/`, then the local-history lineages,
+  as today and unlike their order in `ALL`. Add a test that pins the whole
+  visit order (flat directories, runs, lineages), failing-first against a
+  deliberately reordered list and against families expanded in `ALL` order. Add a test asserting that every file entry's parent is a
   swept entry. Confirm the existing sweep tests pass unchanged, including the
   style-schemes, set-aside, bodies, and backup-run cases.
 - [ ] 2.4 Switch the format-upgrade inventory to an exhaustive `match` over
-  `AppDataLocation`, scanned in an explicit `INVENTORY_ORDER` that
-  reproduces today's scan order, and delete its duplicated literals. Add a
-  test that `INVENTORY_ORDER` holds exactly the non-exempt locations. Give each exempt
-  entry `NotInventoried(reason)`:
+  `AppDataLocation`, in `format_upgrade/inventory.rs`, scanned in an explicit
+  `INVENTORY_ORDER` that reproduces today's scan order, and delete its
+  duplicated literals. Mark the replace journal's manifest, cleanup marker,
+  and bodies directory `CoveredBy(ReplaceJournalDir)`. Add a test that
+  `INVENTORY_ORDER` holds exactly the locations with a scan of their own, and
+  that every `CoveredBy` target is in it. Give `Root` and each exempt entry
+  `NotInventoried(reason)`:
   - `recent-documents.json` (no envelope; resolved in design G2);
   - `style-schemes/`;
   - `recovery-quarantine/`;
@@ -173,10 +200,16 @@ group's heavy commands.
   Confirm the existing inventory and apply tests pass.
 - [ ] 2.5 Route each service's path helpers through the layout, keeping the
   public helper names as delegations, and delete the per-service name
-  constants. This removes both `workspace-notes` spellings.
+  constants. This removes both `workspace-notes` spellings. Re-key the
+  `recent_documents.rs:252:.*load_recent_file` `exclude_re` anchor in
+  `.cargo/mutants.toml` against `scripts/heavy.sh -- make mutants-list`, as
+  in 1.6, and check every other `exclude_re` that names a file this group
+  edits (testing.md, "Path-keyed gates").
 - [ ] 2.6 Run 2.1's characterization test against the layout and check it is
-  byte-identical. Add a unit test asserting that every location is either
-  swept or has `holds_durable_writes = false` with a reason.
+  byte-identical. Add a unit test asserting that every location that
+  `holds_durable_writes` is `Swept`, or `ParentSwept` with a `Swept` parent,
+  or `NotSwept` with a reason, and that `LegacyWorkspaceNotes` is the only
+  `NotSwept` entry that holds durable writes.
 - [ ] 2.7 Data-safety audit: run the `data-safety` skill over the diff. Then
   run `scripts/heavy.sh --envelope 16G -- make test` and
   `scripts/heavy.sh -- make crash-recovery-smoke`, where supported. Confirm
@@ -246,7 +279,10 @@ group's heavy commands.
   to `ui/window/drafts/seams.rs`. `into_writable` checks the id and gives back
   both values on a mismatch. Remove `registered` from `DirtyDraftCandidate`.
 - [ ] 5.3 Make `register_new_draft_ids_then` hand `then` its
-  `WritableDraftCandidate`s plus the refused ids. Change
+  `WritableDraftCandidate`s plus the refused ids. Keep
+  `journal_core::may_write_after_registration` as the partition's gate: a
+  candidate becomes writable only when the gate admits it and it holds its
+  token, and every other candidate's id is refused, as today. Change
   `drive_dirty_draft_pipeline` and `drive_close_draft_pipeline` to take only
   `WritableDraftCandidate`, and delete both `ok_or_else` "not registered"
   branches. Leave the synchronous close flush in `journal.rs` as it is (design
@@ -273,37 +309,64 @@ group's heavy commands.
 
 ## 3. Bounded backoff for unrestored-copy retries (design G3)
 
-- [ ] 3.1 Write a failing-first widget test using the drafts `test_policy`
-  copy-failure hook and `autosave_tick_for_test`. It shows that a persistent
-  copy failure currently retries on every tick. After the change, attempts
-  must happen at cumulative ticks 1, 3, 7, 15, and 27, while the id stays in
-  `restore_held_draft_ids` throughout. Add the widget module to its shard in
-  `scripts/widget-shards.py` if it is new.
+- [ ] 3.1 First add `unrestored_copy_failures` (each pending retry's failure
+  count, sorted by draft id) to `DraftEvidence`, which changes no behaviour,
+  so the test below fails on its cadence rather than on compilation. Then
+  write a failing-first widget test. It makes every copy fail as the
+  existing failed-copy test does, with a regular file where the set-aside
+  directory belongs: the drafts `test_policy.rs` has no copy-failure hook,
+  and none is added. It drives `autosave_tick_for_test`, and after each tick
+  it waits for any attempt to complete (the entry back in the evidence)
+  before the next one. It observes an attempt as a change of the entry's
+  failure count. On the unchanged tree every tick attempts a copy. After the
+  change, counted from the tick at which the first failure was recorded,
+  attempts must happen at ticks 1, 3, 7, 15, and 27 and at no other tick,
+  while the id stays in `restore_held_draft_ids` throughout. Add the widget
+  module to its shard in `scripts/widget-shards.py` if it is new.
 - [ ] 3.2 Write a failing-first widget test showing that an autosave pass
   started by the first-dirty debounce or by a pending rerun attempts no copy
-  and leaves the retry entry unchanged.
+  and leaves the retry entry's failure count (and, after the change, its next
+  due tick) unchanged. Use the same copy-failure fixture. If the test needs
+  `autosave_tick_for_test` to set up a pending rerun, first let the entry's
+  next due tick move past the ticks the test drives, so only the non-timer
+  passes could attempt a copy.
 - [ ] 3.3 Add the pure `unrestored_copy_retry_delay_ticks` and
   `UNRESTORED_COPY_MAX_RETRY_TICKS = 12` to `ui/window/drafts/policy.rs`.
   Unit-test the doubling, the cap, and saturation at `u32::MAX` failures.
+  Give the cap its rustdoc `Kind:` line and its `docs/thresholds.md` row as
+  `out: time` (one minute of 5 s ticks, design G3), and run
+  `scripts/heavy.sh -- make check-thresholds`.
 - [ ] 3.4 Make these changes:
   - add `autosave_timer_ticks` to the drafts state;
   - add `periodic_autosave_tick`, which counts the tick, retries the due
     entries, and then calls `autosave_tick`;
   - point the 5 s timer and `autosave_tick_for_test` at it;
   - remove `retry_unrestored_copies` from `autosave_tick`;
-  - extend each retry entry (`ui/window/imp.rs`) with `next_due_tick`.
+  - extend each retry entry (`ui/window/imp.rs`) with `next_due_tick`,
+    computed when the failed attempt's completion records the entry: the
+    current tick count plus the delay.
 
-  Leave the hold logic in `attempt_unrestored_copy` untouched.
+  Leave the hold logic in `attempt_unrestored_copy` untouched. Update the
+  rustdoc that states a per-tick retry: `drafts/mod.rs`, `journal.rs`
+  (`preserve_unrestored_draft`, `retry_unrestored_copies`), and the field
+  doc in `imp.rs`.
 - [ ] 3.5 Extend `DraftEvidence` with `unrestored_copy_next_due_ticks` and
-  `autosave_timer_ticks`. If either reaches an automation snapshot through the
-  Evidence Projection Map, update `docs/automation.md` and
-  `docs/automation-reference.md`, then run `make check-automation-docs`.
+  `autosave_timer_ticks`. Compute the retry fields and drop the map's `Ref`
+  before building the struct, and keep the draft evidence's driven proofs
+  green (workflow-convention.md, evidence surface invariants). If any new
+  field reaches an automation snapshot through the Evidence Projection Map,
+  update `docs/automation.md` and `docs/automation-reference.md`, then run
+  `make check-automation-docs`.
 - [ ] 3.6 Confirm three things:
   - 3.1 and 3.2 pass;
   - `test_a_failed_set_aside_copy_keeps_autosave_off_the_unshown_draft`
     stays green unchanged;
   - a new test, where a retry succeeds after backoff, finds the hold
     released and the outcome published once.
+
+  Run them with `scripts/heavy.sh --envelope 16G -- make test-widget-shard
+  WIDGET_SHARD=<the shard that owns window>`: the shard runner admits its own
+  capped scopes, so it needs the envelope.
 - [ ] 3.7 Data-safety audit. Confirm that:
   - no error path releases the hold;
   - Discard, close flush, and teardown behave as before while an id is held;
@@ -332,10 +395,12 @@ group's heavy commands.
   `exclude_re` entries match real mutants. If every slot is busy (exit 75),
   retry later, never in a loop inside one `heavy.sh`.
 - [ ] 7.3 Groups 3 and 5 touch `crates/lushtext-core/src/ui/` and
-  `crates/lushtext/tests/widget/`. On the final tree, run
-  `scripts/heavy.sh -- make visual-geometry-smoke`,
+  `crates/lushtext/tests/widget/`. On the tree that holds both groups, before
+  their commit, run `scripts/heavy.sh -- make visual-geometry-smoke`,
   `scripts/heavy.sh -- make accessibility-smoke`, and
-  `scripts/heavy.sh -- make visual-smoke`.
+  `scripts/heavy.sh -- make visual-smoke`. Then commit groups 5 and 3
+  together; the pre-commit `make check-policy` requires these proofs current
+  for the UI-prefix files in `git status`.
 - [ ] 7.4 Record in the handoff:
   - "Kani: none (no proven module touched)", with 0.2's empty diff;
   - "proof-strength: not owed";

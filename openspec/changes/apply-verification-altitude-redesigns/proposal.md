@@ -100,8 +100,9 @@ None.
     "Proven-protocol shells hold no loop of their own" (group 1).
     Together they pin the single per-action site where the conformance
     change observes every action and injects crashes.
-  - ADDED "The app-data layout has one owner" and "The leftover sweep and the
-    upgrade inventory take their coverage from the layout owner" (group 2).
+  - ADDED "The app-data layout has one owner", "The leftover sweep and the
+    upgrade inventory take their coverage from the layout owner", and "The
+    startup sweep spends its budget in a fixed order" (group 2).
 - `draft-session-recovery` (group 3): ADDED "A failed set-aside copy of an
   unrestored body keeps its hold" and "Unrestored-copy retries back off on
   the periodic autosave timer".
@@ -129,10 +130,13 @@ body is never written for an unregistered id". design.md justifies each.
     `document_note_service.rs`, `folder_note_service.rs`, `json_store.rs`,
     `recovery_metadata.rs`, `search_backup.rs`, `session_service.rs`,
     `workspace_manager.rs`, `saved_searches.rs`, `search_history.rs`,
-    `recent_documents.rs`, and `migration_ledger.rs`.
+    `recent_documents.rs`, and `migration_ledger.rs`;
+  - the `recent_documents.rs:252` `exclude_re` anchor in `.cargo/mutants.toml`,
+    which the edit moves.
 - **Group 3:**
-  - `ui/window/drafts/{policy,journal,autosave_execution,evidence}.rs` and
+  - `ui/window/drafts/{policy,journal,autosave_execution,evidence,mod}.rs` and
     `ui/window/imp.rs` (the retry map's entry type);
+  - the new cap's row in `docs/thresholds.md`;
   - the `WFR-DRAFT-RECOVERY` row;
   - a widget test in `crates/lushtext/tests/widget/window.rs`.
 - **Group 4:**
@@ -165,7 +169,7 @@ body is never written for an unregistered id". design.md justifies each.
 - **Smokes:**
   - `make crash-recovery-smoke` (groups 1, 2, 4, and 6);
   - the three UI-prefix smokes (visual-geometry, accessibility, visual) for
-    groups 3 and 5, whose files land in the final commits.
+    groups 3 and 5, run once before the one commit that lands both groups.
 - **Docs:**
   - `docs/next/formal-verification-next.md` (N8 status per group, and the
     change row);

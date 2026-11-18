@@ -16,11 +16,11 @@ be logged at debug level only.
 
 ### Requirement: Unrestored-copy retries back off on the periodic autosave timer
 Retries of a failed unrestored-body copy SHALL run only from the periodic
-autosave timer. An autosave pass started by the first-dirty debounce or by a
-pending rerun SHALL NOT retry. The retries SHALL be spaced by an
-exponentially growing number of timer ticks, capped at no more than one
-minute of ticks. The workflow evidence SHALL expose the pending retry count,
-each retry's next due tick, and the timer's tick count.
+autosave timer, never from a first-dirty or pending-rerun pass. They SHALL be
+spaced by a doubling number of timer ticks, counted from the tick at which
+the failure was recorded and capped at one minute of ticks. The workflow
+evidence SHALL expose the retry count, each retry's failure count and next
+due tick, and the timer's tick count.
 
 #### Scenario: A persistent copy failure does not retry every tick
 - **WHEN** the set-aside copy of an unrestored body fails on consecutive attempts
