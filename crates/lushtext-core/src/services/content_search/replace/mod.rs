@@ -749,6 +749,8 @@ impl UndoReplaceOutcome {
 mod admission;
 mod apply;
 mod protocol;
+#[cfg(test)]
+mod sr_measure;
 mod stream;
 #[cfg(test)]
 mod tests;

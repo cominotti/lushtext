@@ -18,8 +18,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use super::admission::{MainAdmissionLedger, MainCharge, ReplacePass, disk_admits};
 use super::protocol::{FileAction, FileEnd, FileOutcome, ReplaceFileProtocol, RunJournalState};
 use super::stream::{
-    REPLACE_STREAM_CHUNK_BYTES, ReplaceStream, ReplacementTextOutcome, Sha256Sink, StreamEdit,
-    StreamStop, plan_edits,
+    ReplaceStream, ReplacementTextOutcome, Sha256Sink, StreamEdit, StreamStop,
+    effective_stream_chunk_bytes, plan_edits,
 };
 use super::undo::rollback_applied_files;
 use super::{
@@ -558,85 +558,91 @@ fn process_file(
                 let file_limit = run.file_limit;
                 let mut verdict = ProducerVerdict::default();
                 let mut summary = None;
-                let pass_a = fs_write::atomic_replace_stream(
-                    &body_path,
-                    WriteLabel::REPLACE_UNDO_BODY,
-                    |body| {
-                        let mut stream = ReplaceStream::new(
-                            &edits,
-                            output_limit,
-                            std::io::sink(),
-                            Sha256Sink::default(),
-                            Sha256Sink::default(),
-                        );
-                        let streamed = stream_bounded(
-                            path,
-                            file_limit,
-                            REPLACE_STREAM_CHUNK_BYTES,
-                            || cancel.load(Ordering::Relaxed),
-                            |chunk| {
-                                body.write_all(chunk).map_err(StreamStop::Io)?;
-                                stream.feed(chunk)
-                            },
-                        );
-                        let stopped = match streamed {
-                            Ok(_) => None,
-                            Err(BoundedStreamError::Cancelled) => {
-                                verdict.cancelled = true;
-                                return Err(std::io::Error::other("cancelled"));
+                let pass_a = pass_timing::timed(pass_timing::Pass::A, || {
+                    fs_write::atomic_replace_stream(
+                        &body_path,
+                        WriteLabel::REPLACE_UNDO_BODY,
+                        |body| {
+                            let mut stream = ReplaceStream::new(
+                                &edits,
+                                output_limit,
+                                std::io::sink(),
+                                Sha256Sink::default(),
+                                Sha256Sink::default(),
+                            );
+                            let streamed = stream_bounded(
+                                path,
+                                file_limit,
+                                effective_stream_chunk_bytes(),
+                                || cancel.load(Ordering::Relaxed),
+                                |chunk| {
+                                    body.write_all(chunk).map_err(StreamStop::Io)?;
+                                    stream.feed(chunk)
+                                },
+                            );
+                            let stopped = match streamed {
+                                Ok(_) => None,
+                                Err(BoundedStreamError::Cancelled) => {
+                                    verdict.cancelled = true;
+                                    return Err(std::io::Error::other("cancelled"));
+                                }
+                                Err(BoundedStreamError::LimitExceeded { .. }) => {
+                                    return Err(verdict.fail(ReplaceSkipReason::LargerThanOpenTier));
+                                }
+                                Err(BoundedStreamError::Io(e)) => {
+                                    verdict.stop = Some(ReplaceSkipReason::Unreadable);
+                                    return Err(e);
+                                }
+                                Err(BoundedStreamError::Consumer(StreamStop::Io(e))) => {
+                                    return Err(e);
+                                }
+                                Err(BoundedStreamError::Consumer(StreamStop::Outcome(o))) => {
+                                    Some(o)
+                                }
+                            };
+                            let (done, _) = stream.finish().map_err(|stop| match stop {
+                                StreamStop::Io(e) => e,
+                                StreamStop::Outcome(_) => std::io::Error::other("stream stopped"),
+                            })?;
+                            match stopped.unwrap_or(done.outcome) {
+                                ReplacementTextOutcome::Replaced { .. } => {}
+                                ReplacementTextOutcome::OutputLimitExceeded
+                                    if pass == ReplacePass::First =>
+                                {
+                                    verdict.defer = true;
+                                    return Err(std::io::Error::other("deferred"));
+                                }
+                                ReplacementTextOutcome::OutputLimitExceeded => {
+                                    return Err(verdict.fail(ReplaceSkipReason::LargerThanOpenTier));
+                                }
+                                ReplacementTextOutcome::NotUtf8 => {
+                                    return Err(verdict.fail(ReplaceSkipReason::NotUtf8));
+                                }
+                                ReplacementTextOutcome::StaleLine { line_number } => {
+                                    verdict.line = Some(line_number);
+                                    return Err(verdict.fail(ReplaceSkipReason::ChangedSinceSearch));
+                                }
+                                ReplacementTextOutcome::Unchanged => {
+                                    verdict.unchanged = true;
+                                    return Err(std::io::Error::other("unchanged"));
+                                }
+                                ReplacementTextOutcome::InvalidPreview { .. } => {
+                                    return Err(verdict.fail(ReplaceSkipReason::InvalidPreview));
+                                }
+                                ReplacementTextOutcome::Cancelled => {
+                                    verdict.cancelled = true;
+                                    return Err(std::io::Error::other("cancelled"));
+                                }
                             }
-                            Err(BoundedStreamError::LimitExceeded { .. }) => {
-                                return Err(verdict.fail(ReplaceSkipReason::LargerThanOpenTier));
+                            let facts = facts.as_ref().expect("facts precede pass A");
+                            if done.source_len != facts.byte_size || !facts_unchanged(facts, path) {
+                                return Err(verdict.fail(ReplaceSkipReason::ChangedDuringReplace));
                             }
-                            Err(BoundedStreamError::Io(e)) => {
-                                verdict.stop = Some(ReplaceSkipReason::Unreadable);
-                                return Err(e);
-                            }
-                            Err(BoundedStreamError::Consumer(StreamStop::Io(e))) => return Err(e),
-                            Err(BoundedStreamError::Consumer(StreamStop::Outcome(o))) => Some(o),
-                        };
-                        let (done, _) = stream.finish().map_err(|stop| match stop {
-                            StreamStop::Io(e) => e,
-                            StreamStop::Outcome(_) => std::io::Error::other("stream stopped"),
-                        })?;
-                        match stopped.unwrap_or(done.outcome) {
-                            ReplacementTextOutcome::Replaced { .. } => {}
-                            ReplacementTextOutcome::OutputLimitExceeded
-                                if pass == ReplacePass::First =>
-                            {
-                                verdict.defer = true;
-                                return Err(std::io::Error::other("deferred"));
-                            }
-                            ReplacementTextOutcome::OutputLimitExceeded => {
-                                return Err(verdict.fail(ReplaceSkipReason::LargerThanOpenTier));
-                            }
-                            ReplacementTextOutcome::NotUtf8 => {
-                                return Err(verdict.fail(ReplaceSkipReason::NotUtf8));
-                            }
-                            ReplacementTextOutcome::StaleLine { line_number } => {
-                                verdict.line = Some(line_number);
-                                return Err(verdict.fail(ReplaceSkipReason::ChangedSinceSearch));
-                            }
-                            ReplacementTextOutcome::Unchanged => {
-                                verdict.unchanged = true;
-                                return Err(std::io::Error::other("unchanged"));
-                            }
-                            ReplacementTextOutcome::InvalidPreview { .. } => {
-                                return Err(verdict.fail(ReplaceSkipReason::InvalidPreview));
-                            }
-                            ReplacementTextOutcome::Cancelled => {
-                                verdict.cancelled = true;
-                                return Err(std::io::Error::other("cancelled"));
-                            }
-                        }
-                        let facts = facts.as_ref().expect("facts precede pass A");
-                        if done.source_len != facts.byte_size || !facts_unchanged(facts, path) {
-                            return Err(verdict.fail(ReplaceSkipReason::ChangedDuringReplace));
-                        }
-                        summary = Some(done);
-                        Ok(())
-                    },
-                );
+                            summary = Some(done);
+                            Ok(())
+                        },
+                    )
+                });
                 match pass_a {
                     Ok(()) => {
                         let done = summary.expect("a successful pass A has a summary");
@@ -756,17 +762,19 @@ fn process_file(
                 let digest_out = replaced.expect("pass A recorded the output");
                 let facts_before = facts.as_ref().expect("facts precede pass B");
                 let mut verdict = ProducerVerdict::default();
-                let result = write_target_from_body(
-                    path,
-                    &body_path,
-                    &edits,
-                    digest_in,
-                    digest_out,
-                    facts_before,
-                    cancel,
-                    run.request.progress,
-                    &mut verdict,
-                );
+                let result = pass_timing::timed(pass_timing::Pass::B, || {
+                    write_target_from_body(
+                        path,
+                        &body_path,
+                        &edits,
+                        digest_in,
+                        digest_out,
+                        facts_before,
+                        cancel,
+                        run.request.progress,
+                        &mut verdict,
+                    )
+                });
                 match result {
                     Ok(()) => FileOutcome::Done,
                     Err(fs_write::DurableWriteError::AfterRename(e)) => {
@@ -920,7 +928,7 @@ fn write_target_from_body(
         let streamed = stream_bounded(
             body_path,
             original.len,
-            REPLACE_STREAM_CHUNK_BYTES,
+            effective_stream_chunk_bytes(),
             || cancel.load(Ordering::Relaxed),
             |chunk| {
                 if let Some(progress) = progress {
@@ -979,7 +987,7 @@ pub(super) fn digest_file(
     let len = stream_bounded(
         path,
         limit,
-        REPLACE_STREAM_CHUNK_BYTES,
+        effective_stream_chunk_bytes(),
         || false,
         |chunk| {
             super::stream::DigestSink::update(&mut sink, chunk);
@@ -990,4 +998,50 @@ pub(super) fn digest_file(
         len,
         sha256: sink.finish(),
     })
+}
+
+/// Wall time of each pass, summed per thread, for the M9 measurement
+/// (`replace::sr_measure`, stream-replace-all tasks 2.4 and 9.3). Test builds
+/// only; shipped builds run the work and time nothing.
+pub(super) mod pass_timing {
+    /// One of the two passes.
+    #[derive(Clone, Copy)]
+    pub(in super::super) enum Pass {
+        /// The body write, its streamed engine and its syncs.
+        A,
+        /// The target write from the body, and its syncs.
+        B,
+    }
+
+    #[cfg(test)]
+    thread_local! {
+        static NANOS: std::cell::Cell<[u128; 2]> = const { std::cell::Cell::new([0, 0]) };
+    }
+
+    /// Run `work`, adding its wall time to `pass` in test builds.
+    #[cfg(test)]
+    pub(in super::super) fn timed<T>(pass: Pass, work: impl FnOnce() -> T) -> T {
+        let start = std::time::Instant::now();
+        let value = work();
+        let elapsed = start.elapsed().as_nanos();
+        NANOS.with(|cell| {
+            let mut nanos = cell.get();
+            nanos[pass as usize] += elapsed;
+            cell.set(nanos);
+        });
+        value
+    }
+
+    /// Run `work`.
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(in super::super) fn timed<T>(_pass: Pass, work: impl FnOnce() -> T) -> T {
+        work()
+    }
+
+    /// The passes' summed nanoseconds on this thread since the last call.
+    #[cfg(test)]
+    pub(in super::super) fn take() -> [u128; 2] {
+        NANOS.with(|cell| cell.replace([0, 0]))
+    }
 }

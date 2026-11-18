@@ -335,7 +335,10 @@ where
             }
             WriteAction::SyncTemp => {
                 let (_, file) = temp.as_ref().expect("the protocol syncs its temp");
-                outcome_of(sync_temp_after_metadata(file), &mut last_error)
+                outcome_of(
+                    sync_timing::timed(|| sync_temp_after_metadata(file)),
+                    &mut last_error,
+                )
             }
             WriteAction::Rename => {
                 let (tmp_path, _) = temp.as_ref().expect("the protocol renames its temp");
@@ -349,7 +352,10 @@ where
                     crate::services::kill_point::KillWindow::DurableRenamedBeforeDirSync,
                     tmp_tag,
                 );
-                outcome_of(sync_parent_dir(path), &mut last_error)
+                outcome_of(
+                    sync_timing::timed(|| sync_parent_dir(path)),
+                    &mut last_error,
+                )
             }
             WriteAction::RemoveTemp => {
                 if let Some((tmp_path, file)) = temp.take() {
@@ -1645,5 +1651,38 @@ mod tests {
             return Err(std::io::Error::from(std::io::ErrorKind::NotFound));
         }
         Ok(PathBuf::from(path))
+    }
+}
+
+/// Wall time of the temp-file and directory syncs, summed per thread, for the
+/// Replace All M9 measurement (stream-replace-all task 9.3). Test builds only;
+/// shipped builds run the sync and time nothing.
+pub(crate) mod sync_timing {
+    #[cfg(test)]
+    thread_local! {
+        static NANOS: std::cell::Cell<u128> = const { std::cell::Cell::new(0) };
+    }
+
+    /// Run `sync`, adding its wall time in test builds.
+    #[cfg(test)]
+    pub(crate) fn timed<T>(sync: impl FnOnce() -> T) -> T {
+        let start = std::time::Instant::now();
+        let value = sync();
+        let elapsed = start.elapsed().as_nanos();
+        NANOS.with(|cell| cell.set(cell.get() + elapsed));
+        value
+    }
+
+    /// Run `sync`.
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn timed<T>(sync: impl FnOnce() -> T) -> T {
+        sync()
+    }
+
+    /// The syncs' summed nanoseconds on this thread since the last call.
+    #[cfg(test)]
+    pub(crate) fn take() -> u128 {
+        NANOS.with(|cell| cell.replace(0))
     }
 }

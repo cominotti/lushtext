@@ -36,6 +36,25 @@ use crate::model::content_search::{MAX_REPLACE_PREVIEW_ROWS, Replacement};
 /// of the file's size (design D2; chosen by stream-replace-all task 2.4).
 pub const REPLACE_STREAM_CHUNK_BYTES: usize = 1024 * 1024;
 
+#[cfg(test)]
+thread_local! {
+    /// The M9 measurement's chunk size on this thread (task 2.4).
+    pub(super) static TEST_STREAM_CHUNK_BYTES: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The chunk size in force: [`REPLACE_STREAM_CHUNK_BYTES`], unless the M9
+/// measurement (`replace::sr_measure`, test builds only) overrode it on this
+/// thread to compare chunk sizes.
+#[must_use]
+pub(crate) fn effective_stream_chunk_bytes() -> usize {
+    #[cfg(test)]
+    if let Some(bytes) = TEST_STREAM_CHUNK_BYTES.with(std::cell::Cell::get) {
+        return bytes;
+    }
+    REPLACE_STREAM_CHUNK_BYTES
+}
+
 /// Incremental digest of one byte stream.
 pub(crate) trait DigestSink {
     /// Absorb the next bytes of the stream.

@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use super::admission::disk_admits;
 use super::apply::digest_file;
 use super::protocol::{CurrentContent, ReplaceUndoProtocol, UndoAction, UndoEnd, UndoOutcome};
-use super::stream::{DigestSink, REPLACE_STREAM_CHUNK_BYTES, Sha256Sink};
+use super::stream::{DigestSink, Sha256Sink, effective_stream_chunk_bytes};
 use super::{
     ContentDigest, ReplaceUndoBackup, ReplaceUndoEntry, UndoOriginal, UndoReplaceOutcome,
     effective_main_replace_undo_bytes, effective_max_replace_file_bytes,
@@ -344,7 +344,7 @@ fn write_restore(
         let mut sink = Sha256Sink::default();
         let len = match (&entry.original_source, &legacy) {
             (_, Some(original)) => {
-                for chunk in original.chunks(REPLACE_STREAM_CHUNK_BYTES) {
+                for chunk in original.chunks(effective_stream_chunk_bytes()) {
                     target.write_all(chunk)?;
                     sink.update(chunk);
                     bytes(chunk.len());
@@ -354,7 +354,7 @@ fn write_restore(
             (UndoOriginal::Body(body), None) => stream_bounded(
                 body,
                 entry.original.len,
-                REPLACE_STREAM_CHUNK_BYTES,
+                effective_stream_chunk_bytes(),
                 || false,
                 |chunk| {
                     target.write_all(chunk)?;

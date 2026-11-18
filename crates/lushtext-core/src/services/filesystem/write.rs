@@ -13,6 +13,9 @@ use crate::services::durable_write;
 use super::{sys, types::WriteLabel};
 
 pub(crate) use durable_write::parent_or_current;
+/// The syncs' wall time in test builds, for the Replace All M9 measurement.
+#[cfg(test)]
+pub(crate) use durable_write::sync_timing;
 pub(crate) use durable_write::temp_name_launch_nonce;
 #[cfg(test)]
 pub(crate) use durable_write::unique_temp_path;
