@@ -23,7 +23,7 @@ Mirror the A122 commit (`3a086b0e`): a ledger row, `CHANGELOG.md`, an
 `examples/aNNN_…` sample, `catalogue.rs`, `fixtures.rs`, `probes/aNNN.rs` and
 `probes/mod.rs`, following `build.md`, "GTK Axioms and Toolkit Updates".
 
-- [ ] 1.1 Add A132. Its fixture is a presented 40-tab `AdwTabBar`; probe it in
+- [x] 1.1 Add A132. Its fixture is a presented 40-tab `AdwTabBar`; probe it in
   `probes/a132.rs`, with the sample `examples/a132_…`. Its control checks the
   template shape. It must check:
   - an external hadjustment write moves a tab's bounds by the delta and holds
@@ -36,7 +36,7 @@ Mirror the A122 commit (`3a086b0e`): a ledger row, `CHANGELOG.md`, an
   write in the frame where a selection-driven box animation finishes is reverted
   by that frame's allocation (the accepted race, design D3).
   Verify with `make gtk-axiom-sample AXIOM=A132 CHECK=1`.
-- [ ] 1.2 Add A133 the same way. It must cover:
+- [x] 1.2 Add A133 the same way. It must cover:
   - `notify::is-overflowing` across the threshold, recording whether each
     notify ran inside allocation;
   - unpinned overflow holding with a 3-button end widget attached;
@@ -44,12 +44,12 @@ Mirror the A122 commit (`3a086b0e`): a ledger row, `CHANGELOG.md`, an
   - selecting the last page bringing it inside the page.
 
   Verify with `make gtk-axiom-sample AXIOM=A133 CHECK=1`.
-- [ ] 1.3 Run both samples with `--check` inside `org.gnome.Sdk//50` and `//51`
+- [x] 1.3 Run both samples with `--check` inside `org.gnome.Sdk//50` and `//51`
   (`scripts/run-gtk-axioms.sh runtimes --only A132,A133`), and record the values
   in the two ledger rows and `crates/gtk-lush/axioms/CHANGELOG.md`. Verify with
   `make check-gtk-axioms` and
   `scripts/heavy.sh --envelope 16G -- make gtk-axioms`.
-- [ ] 1.4 **Gate.** If A132, or a gating item of A133 (overflow notify, held overflow
+- [x] 1.4 **Gate.** If A132, or a gating item of A133 (overflow notify, held overflow
   with the end widget, unchanged height), fails on either toolkit, record the
   failure in the ledger rows, commit and push the probe work as it stands, and stop
   here. Report the probe results to the maintainer and do not start group 2: the scroll buttons

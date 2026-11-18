@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- A132 and A133 probes and samples (`tab-strip-overflow-navigation`), over
+  one shared fixture, `probes::tab_strip` (`TabStripFixture`, the
+  `TabStripHost` that allocates an `AdwTabBar` a chosen width and its
+  natural height, `find_tab_scroller`, `tab_widgets`, `run_for`,
+  `wait_frames`). A132: the unpinned tab scroller is the template's first
+  `GtkScrolledWindow` without CSS class `pinned`; an outside write of its
+  hadjustment moves the tabs by the delta and holds while the tab box is
+  idle, a write during the box's animation pauses it, `page-increment` is
+  0.9 × `page-size`, and the right-to-left lower end shows the last tab; a
+  write in the frame the box's animation finishes is recorded as
+  `race_outcome` (`held` or `reverted`; it reverted on 4.22.2 and
+  4.24.1). A133: `is-overflowing` notifies both ways, inside allocation; the
+  unpinned tabs keep overflowing with a three-button end widget; the bar's
+  height is unchanged with and without it; selecting an out-of-view page
+  scrolls its tab into the page. Fixtures `fixtures::a132` (`TABS`,
+  `fixture`, `write_scroll_value`, `describe_adjustment`,
+  `find_tab_scroller`, `overflows`) and `fixtures::a133` (`OverflowNotify`,
+  `end_group`, `fixture`, `record_notifies`). Checked on the host (GTK
+  4.24.1 / Adw 1.10.0) and inside `org.gnome.Sdk//50` (4.22.2 / 1.9.0) and
+  `//51`.
 - A127, A128 and A129 probes and samples (`stream-replace-all`): a regex
   `GtkSourceSearchContext::replace_all` expands GRegex references (`\N`,
   `\g<N>`, `\g<name>`, `\g<1>0` as group 1 then `0`) and leaves `$1`

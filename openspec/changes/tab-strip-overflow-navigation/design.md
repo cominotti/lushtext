@@ -425,6 +425,23 @@ child-visible. That reattaches and lays out its document, which
 - Both get `crates/gtk-lush/axioms` probes and samples (catalogue,
   `probes/mod.rs`, `fixtures.rs` and `CHANGELOG.md`, as A122 did in
   `3a086b0e`), checked on `org.gnome.Sdk//50` and `//51`.
+- **Probe results (task 1.3, 2026-11-18).** Both hold on the host (GTK 4.24.1 /
+  Adw 1.10.0) and inside `org.gnome.Sdk//50` (4.22.2 / 1.9.0) and `//51`.
+  Three findings the implementation relies on:
+  - **Right-to-left is the interface direction, not a widget direction.** The
+    box reads its own `gtk_widget_get_direction`, and a direction set on the
+    `AdwTabBar` alone did not reach it (the lower end still showed the first
+    tab). The probe therefore sets the default direction, as an RTL locale
+    does. The implementation reads the bar's effective direction
+    (`widget.direction()`) at each step and observes `direction-changed` on
+    the bar, which a default-direction change reaches.
+  - **The one-frame race reproduces.** `race_outcome` was `reverted` inside
+    both SDKs and on one of two host runs (`held` on the other, where the
+    write's tick ran before the animation's). It stays the accepted race of D3,
+    listed in the A132 row as a known toolkit interaction.
+  - **Every `is-overflowing` notify ran inside allocation** on both toolkits,
+    which confirms D2's deferral. Each page attach also scrolls the strip to
+    the new tab, which is one of D3's guarded events.
 - **Existing axioms relied on:**
   - A1: the popover list is a real scroller under the realized-row cap;
   - A108 and A110: row text and retirement;

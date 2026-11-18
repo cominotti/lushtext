@@ -40,6 +40,8 @@ pub(crate) mod a127;
 pub(crate) mod a128;
 pub(crate) mod a129;
 pub(crate) mod a13;
+pub(crate) mod a132;
+pub(crate) mod a133;
 pub(crate) mod a14;
 pub(crate) mod a15;
 pub(crate) mod a16;
@@ -125,6 +127,7 @@ pub(crate) mod post_open;
 pub(crate) mod remote_input;
 pub(crate) mod row_lists;
 pub(crate) mod session_names;
+pub(crate) mod tab_strip;
 pub use remote_input::{
     REMOTE_INPUT_AXIOMS, SANDBOX_ENV, in_sdk_sandbox, remote_desktop_skip_line,
 };
@@ -248,6 +251,8 @@ pub use a122::probe_a122;
 pub use a127::probe_a127;
 pub use a128::probe_a128;
 pub use a129::probe_a129;
+pub use a132::probe_a132;
+pub use a133::probe_a133;
 
 /// Settle after an adjustment or height change, before reading it back.
 pub(crate) const LAYOUT_SETTLE: Duration = Duration::from_millis(200);
