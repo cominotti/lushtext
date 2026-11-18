@@ -47,6 +47,7 @@ mod search_progress_execution;
 mod session_restore;
 mod set_aside_review;
 mod startup_data;
+mod tab_overflow;
 mod tab_strip;
 mod transient_dismissal;
 mod workspace_scope;
@@ -114,6 +115,12 @@ pub use focus_mode::policy::{FocusModeEntry, FocusModeRestore};
 pub use geometry::evidence::{
     ShellGeometryEvidence, WindowConstructionEvidence, shell_geometry_evidence,
 };
+#[cfg(feature = "test-utils")]
+pub use tab_overflow::evidence::{TabOverflowEvidence, tab_overflow_evidence};
+pub use tab_overflow::find_tab_scroller;
+pub use tab_overflow::policy::StripScrollExtent;
+#[cfg(feature = "test-utils")]
+pub use tab_overflow::test_policy::{TabOverflowTestTiming, set_tab_overflow_test_timing};
 
 #[cfg(feature = "test-utils")]
 pub use local_history::LocalHistoryEvidence;

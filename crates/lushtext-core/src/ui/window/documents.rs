@@ -1189,6 +1189,7 @@ impl LushtextWindow {
         self.update_content_stack();
         self.refresh_command_palette_sources();
         self.refresh_selected_tab_model_projections();
+        self.schedule_tab_overflow_reconcile();
     }
 
     /// Publish projections and policies derived from the selected tab once.

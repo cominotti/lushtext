@@ -1320,6 +1320,14 @@ fn evaluate_allowed_region_relationships(
                 header_open_precedes_new_tab(after_snapshot),
             );
         }
+        model::TAB_STRIP_OVERFLOW_SCENARIO => {
+            push_tab_strip_overflow_relationships(
+                &mut rows,
+                &mut status,
+                before_snapshot,
+                after_snapshot,
+            );
+        }
         model::WORKSPACE_TREE_REVEAL_SCENARIO => {
             push_workspace_tree_reveal_relationships(
                 &mut rows,
@@ -1710,6 +1718,68 @@ fn header_open_precedes_new_tab(snapshot: &Value) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// The overflowing strip: its controls are drawn before and after the step,
+/// the strip keeps its rectangle (so its height), Forward was enabled before the
+/// step, and Back is enabled after it.
+fn push_tab_strip_overflow_relationships(
+    rows: &mut Vec<Value>,
+    status: &mut &'static str,
+    before: &Value,
+    after: &Value,
+) {
+    for (name, surface) in [
+        (
+            "tab-strip-controls-before",
+            ("tab-strip-overflow-controls", before),
+        ),
+        (
+            "tab-strip-controls-after",
+            ("tab-strip-overflow-controls", after),
+        ),
+    ] {
+        push_relationship(
+            rows,
+            status,
+            name,
+            surface_box(surface.1, surface.0).map(|_| ()),
+        );
+    }
+    push_relationship(
+        rows,
+        status,
+        "tab-strip-height-constant",
+        match (
+            surface_box(before, "tab-bar"),
+            surface_box(after, "tab-bar"),
+        ) {
+            (Ok(was), Ok(now)) if was == now => Ok(()),
+            (Ok(was), Ok(now)) => Err(format!("tab bar moved from {was:?} to {now:?}")),
+            (Err(error), _) | (_, Err(error)) => Err(error),
+        },
+    );
+    let flag = |snapshot: &Value, name: &str| {
+        snapshot
+            .pointer(&format!("/window/tab_strip/{name}"))
+            .and_then(Value::as_bool)
+    };
+    push_relationship(
+        rows,
+        status,
+        "tab-strip-step-enablement",
+        match (
+            flag(before, "scroll_forward_enabled"),
+            flag(after, "scroll_back_enabled"),
+            flag(after, "overflowing"),
+        ) {
+            (Some(true), Some(true), Some(true)) => Ok(()),
+            other => Err(format!(
+                "expected Forward enabled before the step and Back enabled after it, on an \
+                 overflowing strip; read {other:?}"
+            )),
+        },
+    );
 }
 
 fn open_popover_content_relationship(case: &Value, snapshot: &Value) -> Result<(), String> {
@@ -2344,6 +2414,9 @@ fn write_fixture(case: &model::ExpandedCaseOverview, case_dir: &Path) -> Result<
     let text = match case.scenario_type() {
         Some("minimap-sidebar") => minimap_fixture_text(case),
         Some("open-popover") => "Open popover visual geometry fixture\n".to_string(),
+        Some(model::TAB_STRIP_OVERFLOW_SCENARIO) => {
+            "Tab strip overflow visual geometry fixture\n".to_string()
+        }
         Some("replace-preview") => replace_preview_fixture_text(),
         Some(model::WORKSPACE_TREE_REVEAL_SCENARIO) => {
             "Workspace tree reveal visual geometry fixture\n".to_string()

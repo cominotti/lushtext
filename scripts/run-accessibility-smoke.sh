@@ -25,6 +25,7 @@ ACCESSIBILITY_CASES=(
     preview-mode-transition
     editor
     focus-mode
+    tab-strip-overflow
     minimap-transition
     editor-search
     editor-save-completion
@@ -341,6 +342,7 @@ MATRIX_ROWS_BY_CASE = {
     "preview-mode-transition": ["A11Y-EDITOR-FOCUS-PREVIEW", "A11Y-MARKDOWN-CONSTRAINED"],
     "editor": ["A11Y-EDITOR-REPRESENTATIVE"],
     "focus-mode": ["A11Y-EDITOR-FOCUS-PREVIEW"],
+    "tab-strip-overflow": ["A11Y-TAB-STRIP-OVERFLOW"],
     "minimap-transition": ["A11Y-EDITOR-MINIMAP"],
     "editor-search": ["A11Y-EDITOR-SEARCH"],
     "editor-save-completion": ["A11Y-EDITOR-BUSY"],
@@ -1497,6 +1499,55 @@ run_accessibility_capture "focus-mode" \
     --step wait-atspi-text:"Editor for accessibility-smoke.txt"
 assert_anchor "focus-mode" "focus mode" "text" "Editor for accessibility-smoke.txt"
 record_focus_anchor "focus-mode" "Editor for accessibility-smoke.txt"
+fi
+
+if case_selected "tab-strip-overflow"; then
+# Forty new tabs overflow the strip at the smoke's window size, so the
+# trailing Scroll Tabs Back and Forward buttons join the tab list's parent.
+run_accessibility_capture "tab-strip-overflow" \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step wait-predicate:visual-geometry-settled
+assert_anchor "tab-strip-overflow" "tab strip" "button" "Scroll Tabs Back"
+assert_anchor "tab-strip-overflow" "tab strip" "button" "Scroll Tabs Forward"
 fi
 
 if case_selected "minimap-transition"; then

@@ -117,6 +117,16 @@ impl LushtextWindow {
                     }
                 })
                 .build(),
+            gio::ActionEntry::builder("scroll-tabs-back")
+                .activate(|window: &Self, _, _| {
+                    window.scroll_tab_strip(super::tab_overflow::policy::ScrollDirection::Back);
+                })
+                .build(),
+            gio::ActionEntry::builder("scroll-tabs-forward")
+                .activate(|window: &Self, _, _| {
+                    window.scroll_tab_strip(super::tab_overflow::policy::ScrollDirection::Forward);
+                })
+                .build(),
             gio::ActionEntry::builder("select-tab")
                 .parameter_type(Some(glib::VariantTy::UINT32))
                 .activate(|window: &Self, _, parameter| {

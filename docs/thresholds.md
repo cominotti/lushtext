@@ -101,6 +101,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/cargo-gtk-proof/src/live.rs` | `DEFAULT_ANIMATION_MAX_SAMPLE_SKEW_MS` | 80 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
 | `crates/cargo-gtk-proof/src/live.rs` | `REVEAL_WAIT_TIMEOUT_MS` | 30,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
 | `crates/cargo-gtk-proof/src/live.rs` | `FIRST_FRAME_COMPOSE_SLACK_MS` | 15,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/cargo-gtk-proof/src/live.rs` | `TAB_STRIP_OVERFLOW_TABS` | 40 | out: tool | proof tool fixture data: tabs the `tab-strip-overflow` visual-geometry case restores (`tab-strip-overflow-navigation`) |
 
 ### `crates/cargo-gtk-proof/src/model.rs`
 
@@ -234,8 +235,8 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/model/content_search.rs` | `MAX_REPLACE_PREVIEW_BYTES` | 67,108,864 | presentation cap | up from 67,108,864: past it Replace Preview omits rows (D12) |
 | `crates/lushtext-core/src/model/content_search.rs` | `MAX_REPLACE_DIAGNOSTIC_ENTRIES` | 32 | presentation cap | up from 32: diagnostics a user reads after Replace All (D12) |
 | `crates/lushtext-core/src/model/content_search.rs` | `MAX_REPLACE_DIAGNOSTIC_BYTES` | 32,768 | presentation cap | up from 32,768: diagnostic text a user reads (D12) |
-| `crates/lushtext-core/src/model/content_search.rs` | `MAX_REPLACE_SKIP_LIST_BYTES` | 4,194,304 | presentation cap | up from 4,194,304: new; path bytes the skip list keeps, which lists every file of a 16,384-file run at typical path lengths and counts the rest (`stream-replace-all` D7) |
 | `crates/lushtext-core/src/model/content_search.rs` | `BEYOND_BUDGET_REPORT_INTERVAL_MS` | 250 | out: time | cadence of the running found count (`bound-lists-by-budget-not-count` D4) |
+| `crates/lushtext-core/src/model/content_search.rs` | `MAX_REPLACE_SKIP_LIST_BYTES` | 4,194,304 | presentation cap | up from 4,194,304: new; path bytes the skip list keeps, which lists every file of a 16,384-file run at typical path lengths and counts the rest (`stream-replace-all` D7) |
 
 ### `crates/lushtext-core/src/model/cursor_step.rs`
 
@@ -482,12 +483,12 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/services/content_search/replace/mod.rs` | `REPLACE_DISK_RESERVE_BYTES` | 1,073,741,824 | policy tier | free space kept on the journal's and the target's filesystem beyond `main`'s admission; at least `MAIN_REPLACE_UNDO_BYTES + MAIN_MAX_REPLACE_FILE_BYTES` by a compile-time assertion (`stream-replace-all` D4) |
 | `crates/lushtext-core/src/services/content_search/replace/mod.rs` | `MAX_REPLACE_UNDO_RETAINED_BYTES` | 67,108,864 | cap | power of two |
 
-
 ### `crates/lushtext-core/src/services/content_search/replace/stream.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
 | `crates/lushtext-core/src/services/content_search/replace/stream.rs` | `REPLACE_STREAM_CHUNK_BYTES` | 262,144 | cap | power of two; two buffers retained per file at most; the smallest size within 5 % of the best measured throughput (`stream-replace-all` D2, task 2.4) |
+
 ### `crates/lushtext-core/src/services/draft_service.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
@@ -1088,13 +1089,13 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/ui/search_panel/retirement.rs` | `SEARCH_RETIREMENT_ROWS_PER_SLICE` | 256 | cap | 256: a full turn stays within B_settle (D8, task 5.4) |
 | `crates/lushtext-core/src/ui/search_panel/retirement.rs` | `MAX_SEARCH_RETIREMENT_GENERATIONS` | 2 | cap | power of two |
 
-
 ### `crates/lushtext-core/src/ui/search_panel/skipped_files.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
 | `crates/lushtext-core/src/ui/search_panel/skipped_files.rs` | `SKIPPED_FILES_WIDTH_SP` | 560 | out: geometry | UI geometry in sp or px (D1) |
 | `crates/lushtext-core/src/ui/search_panel/skipped_files.rs` | `SKIPPED_FILES_HEIGHT_SP` | 520 | out: geometry | UI geometry in sp or px (D1) |
+
 ### `crates/lushtext-core/src/ui/settings_writes.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
@@ -1309,6 +1310,20 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
 | `crates/lushtext-core/src/ui/window/startup_data.rs` | `MAX_PENDING_ACTIVATION_OPENS` | 64 | presentation cap | up from 64: files a CLI open admits (D12) |
+
+### `crates/lushtext-core/src/ui/window/tab_overflow/policy.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-core/src/ui/window/tab_overflow/policy.rs` | `TAB_SCROLL_ANIMATION_MS` | 200 | out: time | one scroll step's animation length, Libadwaita's own tab-strip scroll (`SCROLL_ANIMATION_DURATION`, `tab-strip-overflow-navigation` D3) |
+| `crates/lushtext-core/src/ui/window/tab_overflow/policy.rs` | `TAB_SCROLL_REPEAT_DELAY_MS` | 400 | out: time | press-and-hold delay before a scroll button repeats (D3) |
+| `crates/lushtext-core/src/ui/window/tab_overflow/policy.rs` | `TAB_SCROLL_REPEAT_INTERVAL_MS` | 200 | out: time | repeat cadence of a held scroll button, one animation per step (D3) |
+
+### `crates/lushtext-core/src/ui/window/tab_overflow/scroll_execution.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-core/src/ui/window/tab_overflow/scroll_execution.rs` | `TAB_SCROLLER_LOOKUP_DEPTH` | 3 | external fact | the depth of Libadwaita's `AdwTabBar` template (bar → revealer → box → scrolled window), ledger A132 |
 
 ### `crates/lushtext-core/src/ui/window/zoom.rs`
 

@@ -117,6 +117,9 @@ lane:
 | Do the accelerated text scans (load file-health count, save trim / normalization / CRLF check, minimap `inspect_str`) equal their scalar references for every slicing and policy, and does the AVX2 file-health kernel equal its `memchr3` fallback on every byte string? | property, `properties::text_scans` (incl. the block-seam kernel/fallback comparison); fuzz `editor_bytes` (corpus replay in PR CI); unit, `services::editor_io::text_scans`, and the exhaustive lane test `text_scans::health_avx2::tests::kernel_equals_memchr_for_every_triple_at_every_seam` (every byte triple at every seam shape; skipped with a printed reason without AVX2); allocation, `text_scan_allocations` |
 | Is the minimap's byte-length skip sound for every running count, length and threshold pair? | Kani, shard `core-geometry-policies` (`skipped_line_crosses_no_threshold*`) |
 | Does a clean save trim allocate nothing? | integration, `tests/text_scan_allocations.rs` (counting allocator) |
+| Do the Scroll Tabs Back and Forward buttons appear only while the unpinned tabs overflow, keep the strip's height, enable by edge, step without changing the selection, repeat on a hold, and yield to the strip's own selection, attach, reorder, transfer, wheel and press? | widget, `tab_overflow_navigation`; `make gtk-axioms` (A132, A133) |
+| Are the two buttons drawn at the strip's trailing end, and does a step leave the header, editor and status bar pixel-identical? | `make visual-geometry-smoke`, scenario `tab-strip-overflow` |
+| Do assistive technologies find Scroll Tabs Back and Scroll Tabs Forward on an overflowing strip? | `make accessibility-smoke`, case `tab-strip-overflow` (`A11Y-TAB-STRIP-OVERFLOW`) |
 
 ## Scheduled Or Manual Expectations
 

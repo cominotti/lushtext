@@ -13,14 +13,14 @@ use crate::model::automation::{
     AUTOMATION_WORKFLOW_CONTENT_SEARCH, AUTOMATION_WORKFLOW_FILE_LOAD,
     AUTOMATION_WORKFLOW_MINIMAP_REFRESH, AUTOMATION_WORKFLOW_REPLACE_PREVIEW,
     AUTOMATION_WORKFLOW_SAVE, AUTOMATION_WORKFLOW_SEARCH, AUTOMATION_WORKFLOW_SESSION_RESTORE,
-    AUTOMATION_WORKFLOW_WORKSPACE_PATH_REVEAL, AUTOMATION_WORKFLOW_WORKSPACE_REFRESH,
-    AutomationCommandPaletteSnapshot, AutomationContentSearchSnapshot,
-    AutomationLocalHistorySnapshot, AutomationNativeMinimapDiagnosticSnapshot,
-    AutomationNotesSnapshot, AutomationNotificationSnapshot, AutomationReadinessPredicate,
-    AutomationReadinessResult, AutomationReadinessStatus, AutomationSearchSnapshot,
-    AutomationSnapshot, AutomationSurfaceSnapshot, AutomationTabSnapshot,
-    AutomationVisualAdjustmentSnapshot, AutomationVisualGeometrySnapshot,
-    AutomationVisualPixelAnchorSnapshot, AutomationVisualRect,
+    AUTOMATION_WORKFLOW_TAB_OVERFLOW, AUTOMATION_WORKFLOW_WORKSPACE_PATH_REVEAL,
+    AUTOMATION_WORKFLOW_WORKSPACE_REFRESH, AutomationCommandPaletteSnapshot,
+    AutomationContentSearchSnapshot, AutomationLocalHistorySnapshot,
+    AutomationNativeMinimapDiagnosticSnapshot, AutomationNotesSnapshot,
+    AutomationNotificationSnapshot, AutomationReadinessPredicate, AutomationReadinessResult,
+    AutomationReadinessStatus, AutomationSearchSnapshot, AutomationSnapshot,
+    AutomationSurfaceSnapshot, AutomationTabSnapshot, AutomationVisualAdjustmentSnapshot,
+    AutomationVisualGeometrySnapshot, AutomationVisualPixelAnchorSnapshot, AutomationVisualRect,
     AutomationVisualScrollAnchorSnapshot, AutomationVisualSize, AutomationVisualSurfaceSnapshot,
     AutomationWindowSnapshot, AutomationWorkflowEventsSnapshot, AutomationWorkflowObservation,
     AutomationWorkspaceSnapshot, READINESS_BLOCKER_APP_STARTUP, READINESS_BLOCKER_CLOSE_SAFETY,
@@ -29,10 +29,10 @@ use crate::model::automation::{
     READINESS_BLOCKER_EDITOR_SEARCH, READINESS_BLOCKER_FILE_LOAD, READINESS_BLOCKER_LINE_INSPECTOR,
     READINESS_BLOCKER_MINIMAP_REFRESH, READINESS_BLOCKER_PREVIEW_ANIMATION,
     READINESS_BLOCKER_REPLACE_PREVIEW, READINESS_BLOCKER_SAVE, READINESS_BLOCKER_SESSION_RESTORE,
-    READINESS_BLOCKER_WINDOW_COMPOSITION, READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION,
-    READINESS_BLOCKER_WORKSPACE_PATH_REVEAL, READINESS_BLOCKER_WORKSPACE_PERSIST,
-    READINESS_BLOCKER_WORKSPACE_SEARCH, READINESS_BLOCKER_WORKSPACE_SIDEBAR_ANIMATION,
-    READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
+    READINESS_BLOCKER_TAB_OVERFLOW, READINESS_BLOCKER_WINDOW_COMPOSITION,
+    READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION, READINESS_BLOCKER_WORKSPACE_PATH_REVEAL,
+    READINESS_BLOCKER_WORKSPACE_PERSIST, READINESS_BLOCKER_WORKSPACE_SEARCH,
+    READINESS_BLOCKER_WORKSPACE_SIDEBAR_ANIMATION, READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
 };
 use crate::model::content_search::ReplaceSkipReason;
 use crate::model::palette::{PaletteCategory, SearchMode};
@@ -586,6 +586,7 @@ fn inactive_workflow_observations() -> Vec<AutomationWorkflowObservation> {
         AUTOMATION_WORKFLOW_SESSION_RESTORE,
         AUTOMATION_WORKFLOW_MINIMAP_REFRESH,
         AUTOMATION_WORKFLOW_WORKSPACE_PATH_REVEAL,
+        AUTOMATION_WORKFLOW_TAB_OVERFLOW,
     ]
     .into_iter()
     .map(|workflow_id| AutomationWorkflowObservation::new(workflow_id, false, None))
@@ -634,6 +635,7 @@ fn window_workflow_observations(window: &LushtextWindow) -> Vec<AutomationWorkfl
         AutomationReadinessPredicate::WorkspaceRefreshComplete,
     );
     let path_reveal_active = imp.sidebar.workspace_path_reveal_pending();
+    let tab_overflow_active = window.tab_overflow_blocks_readiness();
     vec![
         AutomationWorkflowObservation::new(
             AUTOMATION_WORKFLOW_FILE_LOAD,
@@ -683,6 +685,11 @@ fn window_workflow_observations(window: &LushtextWindow) -> Vec<AutomationWorkfl
             AUTOMATION_WORKFLOW_WORKSPACE_PATH_REVEAL,
             path_reveal_active,
             path_reveal_active.then_some(READINESS_BLOCKER_WORKSPACE_PATH_REVEAL),
+        ),
+        AutomationWorkflowObservation::new(
+            AUTOMATION_WORKFLOW_TAB_OVERFLOW,
+            tab_overflow_active,
+            tab_overflow_active.then_some(READINESS_BLOCKER_TAB_OVERFLOW),
         ),
     ]
 }
@@ -828,6 +835,14 @@ fn window_readiness_blocker(
     ) {
         return Some(blocker);
     }
+    // The workflow's one production state, which its evidence surface views.
+    if let Some(blocker) = included_blocker(
+        predicate,
+        window.tab_overflow_blocks_readiness(),
+        READINESS_BLOCKER_TAB_OVERFLOW,
+    ) {
+        return Some(blocker);
+    }
     for index in 0..imp.tab_view.n_pages() {
         let page = imp.tab_view.nth_page(index);
         let Ok(editor) = page.child().downcast::<LushtextEditorPage>() else {
@@ -933,6 +948,7 @@ fn window_snapshot(window: &LushtextWindow) -> AutomationWindowSnapshot {
         active_tab_index,
         tabs,
         surfaces: surface_snapshot(window),
+        tab_strip: tab_strip_snapshot(window, tab_count),
         search: search_snapshot(window),
         workspace: workspace_snapshot(window),
         command_palette: command_palette_snapshot(window),
@@ -942,6 +958,20 @@ fn window_snapshot(window: &LushtextWindow) -> AutomationWindowSnapshot {
         notifications: notification_snapshot(window),
         visual_geometry: visual_geometry_snapshot(window),
         window_construction: window_construction_snapshot(window),
+    }
+}
+
+/// Project the tab strip's overflow state from the workflow's production state.
+fn tab_strip_snapshot(
+    window: &LushtextWindow,
+    tab_count: u32,
+) -> crate::model::automation::AutomationTabStripSnapshot {
+    let facts = window.tab_strip_overflow_facts();
+    crate::model::automation::AutomationTabStripSnapshot {
+        overflowing: facts.overflowing,
+        scroll_back_enabled: facts.scroll_back_enabled,
+        scroll_forward_enabled: facts.scroll_forward_enabled,
+        tab_count,
     }
 }
 
@@ -1301,6 +1331,7 @@ fn visual_geometry_snapshot(window: &LushtextWindow) -> AutomationVisualGeometry
     );
     push_widget_surface(&mut surfaces, "tab-strip", &*imp.tab_bar, root);
     push_widget_surface(&mut surfaces, "status-bar", &*imp.status_bar, root);
+    push_widget_surface(&mut surfaces, "tab-bar", &*imp.tab_bar, root);
     push_widget_surface(&mut surfaces, "workspace-sidebar", &*imp.sidebar, root);
     // The rail host the workspace split view allocates the staged sidebar
     // into, and the content area whose right edge is the properties pane edge:
@@ -1350,6 +1381,7 @@ fn visual_geometry_snapshot(window: &LushtextWindow) -> AutomationVisualGeometry
         root,
     );
     push_open_popover_surfaces(window, &mut surfaces, root);
+    push_tab_overflow_surfaces(window, &mut surfaces, &mut pixel_anchors, root);
 
     if let Some(editor) = active_editor(window) {
         if let Some(viewport) = editor.editor_viewport_widget() {
@@ -1638,6 +1670,43 @@ fn push_open_popover_surfaces(
         &imp.open_popover.empty_state_widget(),
         root,
     );
+}
+
+/// The strip's trailing control group and its two scroll buttons, with a pixel
+/// anchor on each rendered button; absent with `controls-hidden` while the
+/// scroll buttons do not show.
+fn push_tab_overflow_surfaces(
+    window: &LushtextWindow,
+    surfaces: &mut Vec<AutomationVisualSurfaceSnapshot>,
+    pixel_anchors: &mut Vec<AutomationVisualPixelAnchorSnapshot>,
+    root: &gtk4::Widget,
+) {
+    const BUTTONS: [(&str, &str); 2] = [
+        ("tab-strip-scroll-back", "tab-strip-scroll-back-ink"),
+        ("tab-strip-scroll-forward", "tab-strip-scroll-forward-ink"),
+    ];
+    let Some(controls) = window.visible_tab_overflow_controls() else {
+        surfaces.push(absent_visual_surface(
+            "tab-strip-overflow-controls",
+            "controls-hidden",
+        ));
+        for (surface, anchor) in BUTTONS {
+            surfaces.push(absent_visual_surface(surface, "controls-hidden"));
+            pixel_anchors.push(absent_pixel_anchor(anchor, surface, "controls-hidden"));
+        }
+        return;
+    };
+    push_widget_surface(surfaces, "tab-strip-overflow-controls", &controls.0, root);
+    for ((surface, anchor), button) in BUTTONS.into_iter().zip([&controls.1, &controls.2]) {
+        let rendered = widget_visual_surface(surface, button, root);
+        pixel_anchors.push(pixel_anchor(
+            anchor,
+            surface,
+            rendered.rect,
+            "button-not-drawn",
+        ));
+        surfaces.push(rendered);
+    }
 }
 
 fn open_popover_visible(window: &LushtextWindow) -> bool {

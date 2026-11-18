@@ -33,6 +33,7 @@ palette, or a direct shortcut. The complete in-app list lives under
 | Save / Save As | `Ctrl+S` / `Ctrl+Shift+S` |
 | Close tab | `Ctrl+W` |
 | Switch tabs | `Ctrl+Page Up` / `Ctrl+Page Down`, `Alt+1`…`Alt+9`; `Ctrl+Home` / `Ctrl+End` (with `Shift`, select to) stay with the document's start and end, never the first or last tab, with any number of tabs open |
+| Scroll an overflowing tab strip | `Tab` to **Scroll Tabs Back** / **Scroll Tabs Forward** at the strip's trailing end, then `Space` or `Enter` (one step each; holding a pointer press repeats); shown only while the tabs overflow |
 | Print | `Ctrl+P` |
 | In-tab find / replace | `Ctrl+F` / `Ctrl+H` |
 | Inspect Line (view-only documents with very long lines) | `Ctrl+Alt+I`; `Page Down`/`Page Up` move the window, `Alt+Down`/`Alt+Up` go to the next or previous folded line; Tab reaches Previous Window, Next Window, Previous Folded Line, Next Folded Line, Line, Column, Go, Copy Window and Copy Whole Line; `Escape` closes |

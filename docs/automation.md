@@ -586,6 +586,16 @@ widget-scoped, diagnostic-only, or known gaps. Stable setup actions include:
   unlabelled neighbour rows appear as `workspace-*` visual-geometry surfaces.
   A reveal never changes the scope, the sidebar's visibility, persistence, or any
   tab, and a failed reveal collapses whatever it expanded.
+- `win.scroll-tabs-back` and `win.scroll-tabs-forward` move an overflowing tab
+  strip by about one visible width toward the first or last tab without
+  selecting, focusing or reordering a tab. Each is enabled only while the
+  unpinned tabs overflow and the strip can still move that way, which
+  `window.tab_strip.overflowing`, `scroll_back_enabled` and
+  `scroll_forward_enabled` report. Wait on `visual-geometry-settled`: the
+  `tab-overflow` blocker holds until the step has landed and both enabled
+  states are current. While the buttons show, the trailing control group and
+  both buttons are the `tab-strip-overflow-controls`, `tab-strip-scroll-back`
+  and `tab-strip-scroll-forward` visual-geometry surfaces.
 
 Use target-state actions for scenario setup whenever possible. They are easier
 to reason about than parity toggles because repeated calls converge on the same

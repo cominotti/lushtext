@@ -448,6 +448,48 @@ child-visible. That reattaches and lays out its document, which
   - A81–A83: the hidden-tab contract behind D7.
   - A37 is cited only as an analogy in D2.
 
+### D11. Implementation decisions (scroll half, tasks 2.1–2.8)
+
+Recorded during implementation, each with its reason:
+
+- **No unpinned tab, no overflow.** With every tab pinned the unpinned tab box
+  is not reallocated and its adjustment keeps the range of the tabs it held, so
+  the reconcile reads `unpinned_overflows` only while
+  `n_pages > n_pinned_pages`. Without it, pinning every tab of an overflowing
+  strip would leave the scroll buttons shown over an empty box.
+- **A new action surface, `tab-strip-control`.** No existing
+  `ActionSurface` named a button in the tab strip's end group
+  (`header-button` is the header bar), so `ActionSurface::TabStripControl`
+  joins the catalog vocabulary; the All Tabs half reuses it.
+- **A `tab-bar` visual surface.** The visual-geometry case checks the strip's
+  rectangle (so its height) before and after a step; no surface named the bar.
+- **The visual-geometry case steps Forward** in a restored session of 41 tabs
+  rather than crossing the overflow point in one session: no single action
+  crosses it at a fixed size. The session's first tab is the case's activation
+  file, so the first tab is selected and the strip is not at its end; the
+  relationship requires Forward enabled before the step and Back enabled after
+  it. The start position itself is not fixed: the restore selects the first tab
+  and then attaches the rest, and each attach scrolls the strip to its new tab
+  (A132), so a restored strip can show neither its first nor its last tab, with
+  the selected first tab out of view. That is main's behaviour, recorded as an
+  open item for the restore workflow, not changed here.
+- **Widget tests turn `gtk-enable-animations` off** so the tab box's own
+  appear, close and scroll animations complete at once, and wait for one painted
+  frame before writing the adjustment: a box scroll that completed at once stays
+  `FINISHED` until the box's next allocation, and a write before it is reverted
+  (the A132 race, here deterministic). In the running app the next frame
+  follows at once, so this does not change the accepted-race analysis of D3.
+- **A selection change moves focus into the strip.** With keyboard focus inside
+  the bar (on a scroll button), `AdwTabBox`'s `select_page` focuses the newly
+  selected tab (`adw_tab_bar_tabs_have_visible_focus`), before the reconcile
+  runs. That is toolkit behaviour and keeps focus in the strip; the hand-off
+  rule of D3 applies when a focused button disables or hides with the selection
+  unchanged.
+- **The keyboard step refused during a tab drag is not widget-tested.**
+  `is-transferring-page` is read-only and set only by a real drag, so the
+  refusal is covered by the guard in `step_tab_strip` and the live check (task
+  4.3); the cancellation it triggers is widget-tested by emitting its notify.
+
 ## Risks / Trade-offs
 
 - **[A future Libadwaita changes the template or the adjustment handling]** →

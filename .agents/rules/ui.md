@@ -29,6 +29,9 @@ LushtextWindow (AdwApplicationWindow)
 ├── AdwHeaderBar
 │   └── GtkToggleButton [document_properties_toggle_button] — toggle properties (action: win.toggle-properties)
 ├── AdwTabBar → bound to AdwTabView
+│   └── [end-action-widget] GtkBox .tab-overflow-controls (attached only while something in it shows; ui/window/tab_overflow/)
+│       ├── GtkButton Scroll Tabs Back (win.scroll-tabs-back; shown while the unpinned tabs overflow)
+│       └── GtkButton Scroll Tabs Forward (win.scroll-tabs-forward)
 ├── GtkOverlay [window_overlay]
 │   ├── GtkLushClipBin [window_content_clipper] (min-height 0, clips flexible center content)
 │   │   └── AdwOverlaySplitView [workspace_split_view]

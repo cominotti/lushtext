@@ -40,6 +40,9 @@ pub const AUTOMATION_WORKFLOW_SESSION_RESTORE: &str = "session-restore";
 pub const AUTOMATION_WORKFLOW_MINIMAP_REFRESH: &str = "minimap-refresh";
 /// Stable workflow ID for a workspace path reveal (`win.reveal-workspace-path`).
 pub const AUTOMATION_WORKFLOW_WORKSPACE_PATH_REVEAL: &str = "workspace-path-reveal";
+/// Stable workflow ID for a tab-strip scroll step, hold, controls reconcile,
+/// or All Tabs list publish (`tab-strip-overflow-navigation`).
+pub const AUTOMATION_WORKFLOW_TAB_OVERFLOW: &str = "tab-overflow";
 
 /// One live workflow observation supplied by the UI automation adapter.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -270,6 +273,10 @@ pub const READINESS_BLOCKER_WORKSPACE_SEARCH: &str = "workspace-search";
 /// Stable serialized blocker ID for a workspace path reveal still expanding,
 /// scanning, or settling.
 pub const READINESS_BLOCKER_WORKSPACE_PATH_REVEAL: &str = "workspace-path-reveal";
+/// Stable serialized blocker ID for a tab-strip scroll step or hold, a pending
+/// reconcile of the strip's overflow controls, or All Tabs rows still being
+/// published or retired (`tab-strip-overflow-navigation`).
+pub const READINESS_BLOCKER_TAB_OVERFLOW: &str = "tab-overflow";
 /// Stable serialized blocker ID for the active window's staged composition:
 /// from its construction until the frame after its last scheduled stage
 /// painted (`first-frame-window-shell`).
@@ -299,6 +306,7 @@ const IDLE_BLOCKERS: &[&str] = &[
     READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION,
     READINESS_BLOCKER_WORKSPACE_SIDEBAR_ANIMATION,
     READINESS_BLOCKER_WORKSPACE_PATH_REVEAL,
+    READINESS_BLOCKER_TAB_OVERFLOW,
     READINESS_BLOCKER_FILE_LOAD,
     READINESS_BLOCKER_MINIMAP_REFRESH,
     READINESS_BLOCKER_SAVE,
@@ -393,6 +401,7 @@ const VISUAL_GEOMETRY_SETTLED_BLOCKERS: &[&str] = &[
     READINESS_BLOCKER_WORKSPACE_PERSIST,
     READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION,
     READINESS_BLOCKER_WORKSPACE_PATH_REVEAL,
+    READINESS_BLOCKER_TAB_OVERFLOW,
     READINESS_BLOCKER_COMMAND_PALETTE_INDEX,
     READINESS_BLOCKER_COMMAND_PALETTE_SEARCH,
     READINESS_BLOCKER_WORKSPACE_SEARCH,
@@ -419,6 +428,7 @@ const ACCESSIBILITY_SETTLED_BLOCKERS: &[&str] = &[
     READINESS_BLOCKER_WORKSPACE_PERSIST,
     READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION,
     READINESS_BLOCKER_WORKSPACE_PATH_REVEAL,
+    READINESS_BLOCKER_TAB_OVERFLOW,
     READINESS_BLOCKER_COMMAND_PALETTE_INDEX,
     READINESS_BLOCKER_COMMAND_PALETTE_SEARCH,
     READINESS_BLOCKER_WORKSPACE_SEARCH,
@@ -788,6 +798,8 @@ pub struct AutomationWindowSnapshot {
     pub tabs: Vec<AutomationTabSnapshot>,
     /// Shell and secondary-surface state.
     pub surfaces: AutomationSurfaceSnapshot,
+    /// The tab strip's overflow state.
+    pub tab_strip: AutomationTabStripSnapshot,
     /// In-document and workspace-search state.
     pub search: AutomationSearchSnapshot,
     /// Workspace configuration and current scope state.
@@ -806,6 +818,20 @@ pub struct AutomationWindowSnapshot {
     pub visual_geometry: AutomationVisualGeometrySnapshot,
     /// What constructing this window cost, and what the settings writer did.
     pub window_construction: AutomationWindowConstructionSnapshot,
+}
+
+/// The tab strip's overflow state: flags and a count only, never a title or a
+/// path (`tab-strip-overflow-navigation`).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct AutomationTabStripSnapshot {
+    /// Whether the unpinned tabs are wider than the strip shows.
+    pub overflowing: bool,
+    /// Whether `win.scroll-tabs-back` is enabled.
+    pub scroll_back_enabled: bool,
+    /// Whether `win.scroll-tabs-forward` is enabled.
+    pub scroll_forward_enabled: bool,
+    /// Number of open tabs.
+    pub tab_count: u32,
 }
 
 /// Bounded window-construction evidence: span durations in microseconds and

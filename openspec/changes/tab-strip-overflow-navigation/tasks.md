@@ -59,7 +59,7 @@ Mirror the A122 commit (`3a086b0e`): a ledger row, `CHANGELOG.md`, an
 
 ## 2. Scroll buttons (spec: "Scroll controls appear…", "Scroll buttons move…", the automation requirement's scroll half)
 
-- [ ] 2.1 Create the role home `ui/window/tab_overflow/`, with a facade `mod.rs`
+- [x] 2.1 Create the role home `ui/window/tab_overflow/`, with a facade `mod.rs`
   that narrates the stages and inversions, and `policy.rs` carrying the
   whole-pixel `forbid` pair. Write failing-first unit tests in `policy.rs`
   that fail to compile until 2.2:
@@ -69,11 +69,11 @@ Mirror the A122 commit (`3a086b0e`): a ledger row, `CHANGELOG.md`, an
   - `next_scroll_target`: clamping at both ends and a zero-width page;
   - `all_tabs_button_visible`, `group_attached`,
     `scroll_controls_available` and `focus_after_disable`.
-- [ ] 2.2 Implement the D4 policy functions. Add the whole-pixel table row in
+- [x] 2.2 Implement the D4 policy functions. Add the whole-pixel table row in
   `workflow-convention.md` and the entry in `WHOLE_PIXEL_POLICY_MODULES`
   (`scripts/check-workflow-boundaries.py`). Verify with
   `make check-workflow-boundaries` and the unit tests through `heavy.sh`.
-- [ ] 2.3 Write failing-first widget tests in a new
+- [x] 2.3 Write failing-first widget tests in a new
   `crates/lushtext/tests/widget/tab_overflow_navigation.rs`, assigned to a shard
   in `scripts/widget-shards.py`. Animations complete at once through
   `tab_overflow/test_policy.rs`. A hold is started and ended by emitting its
@@ -116,21 +116,21 @@ Mirror the A122 commit (`3a086b0e`): a ledger row, `CHANGELOG.md`, an
     scroller;
   - the `tab-context-actions` constrained-geometry scenario still holds at the
     640 px minimum with the controls shown.
-- [ ] 2.4 Implement `tab_overflow/watch.rs` (observers, `SettleBurst`
+- [x] 2.4 Implement `tab_overflow/watch.rs` (observers, `SettleBurst`
   reconcile, projection deferral hooked into `refresh_tab_model_projections`),
   `tab_overflow/scroll_execution.rs` (lookup, animation, cancellation by the
   strip's own input, capture-phase hold gesture, repeat `SourceId`),
   `tab_overflow/controls.rs`, and the two scroll actions in
   `ui/window/actions.rs`. Accessible names go through `ui::accessibility`.
   Verify that the 2.3 tests pass.
-- [ ] 2.5 Add `tab_overflow/evidence.rs` with the scroll fields (D4) and its three
+- [x] 2.5 Add `tab_overflow/evidence.rs` with the scroll fields (D4) and its three
   driven proofs:
   - side-effect freedom across a step, a hold and a guard cancellation;
   - disposal honesty;
   - no materialization.
 
   Verify with the widget tests.
-- [ ] 2.6 Automation (the scroll half of the `dbus-automation-spine` delta):
+- [x] 2.6 Automation (the scroll half of the `dbus-automation-spine` delta):
   - the snapshot fields `window.tab_strip.{overflowing,scroll_back_enabled,scroll_forward_enabled,tab_count}`;
   - the readiness blocker `tab-overflow` (animation, repeat, reconcile),
     included in `visual-geometry-settled`, `accessibility-settled` and
@@ -143,7 +143,7 @@ Mirror the A122 commit (`3a086b0e`): a ledger row, `CHANGELOG.md`, an
   Teach `scripts/lushtext-automation.py` the new blocker if it lists blockers.
   Verify with `make check-automation-docs` and, if the client changed,
   `make automation-client-self-test`.
-- [ ] 2.7 Update the docs this group owes:
+- [x] 2.7 Update the docs this group owes:
   - `docs/thresholds.md` rows with `Kind:` lines for `TAB_SCROLL_ANIMATION_MS`,
     `TAB_SCROLL_REPEAT_DELAY_MS` and `TAB_SCROLL_REPEAT_INTERVAL_MS`
     (`out: time`), plus any accessible-name bound (presentation cap);
@@ -157,7 +157,7 @@ Mirror the A122 commit (`3a086b0e`): a ledger row, `CHANGELOG.md`, an
 
   Verify with `make check-thresholds`, `make check-workflow-boundaries` and
   `make check-agent-docs`.
-- [ ] 2.8 Add the visual-geometry case `tab-strip-overflow`. It crosses the overflow
+- [x] 2.8 Add the visual-geometry case `tab-strip-overflow`. It crosses the overflow
   point, keeps the strip height constant, protects the editor region, and anchors
   pixels on the rendered Back and Forward buttons. Add an accessibility-smoke check
   for both names and `docs/end-user-coverage.md` entries. Run `make fmt`,
