@@ -7,6 +7,7 @@
 //! or unsupported files are preserved before replacement.
 
 use crate::model::content_search::SavedSearch;
+use crate::services::app_data_layout::{AppDataLayout, AppDataLocation};
 use crate::services::json_format::KIND_SAVED_SEARCHES;
 use crate::services::recovery_metadata::{
     RecoveryLoad, RecoveryLoadConfig, RecoveryMetadataClass, load_enveloped_json_or_default,
@@ -14,8 +15,10 @@ use crate::services::recovery_metadata::{
 };
 use std::path::Path;
 
-/// Filename for the saved searches JSON file.
-const SAVED_SEARCHES_FILE: &str = "saved-searches.json";
+/// `AppDataLocation::SavedSearches` under the data home `data_dir`.
+fn saved_searches_path(data_dir: &std::path::Path) -> std::path::PathBuf {
+    AppDataLayout::new(data_dir).path(AppDataLocation::SavedSearches)
+}
 
 /// Load saved searches from disk. Returns an empty vec on missing or corrupt file.
 pub fn load(data_dir: &Path) -> Vec<SavedSearch> {
@@ -29,7 +32,7 @@ pub fn load(data_dir: &Path) -> Vec<SavedSearch> {
 /// Load saved searches with preservation diagnostics for user-managed state.
 #[must_use]
 pub fn load_recovering(data_dir: &Path) -> RecoveryLoad<Vec<SavedSearch>> {
-    let path = data_dir.join(SAVED_SEARCHES_FILE);
+    let path = saved_searches_path(data_dir);
     load_enveloped_json_or_default(
         &RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::SavedSearches),
         KIND_SAVED_SEARCHES,
@@ -42,7 +45,7 @@ pub fn load_recovering(data_dir: &Path) -> RecoveryLoad<Vec<SavedSearch>> {
 ///
 /// Returns an error if the saved-search file cannot be serialized or written.
 pub fn save(data_dir: &Path, entries: &[SavedSearch]) -> anyhow::Result<()> {
-    let path = data_dir.join(SAVED_SEARCHES_FILE);
+    let path = saved_searches_path(data_dir);
     let config = RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::SavedSearches);
     let entries = entries.to_vec();
     let diagnostics = save_enveloped_json_path(&config, KIND_SAVED_SEARCHES, &entries)?;
@@ -157,7 +160,7 @@ mod tests {
     #[test]
     fn load_recovering_preserves_unsupported_old_saved_searches() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        fixture::write_text(&dir.path().join(SAVED_SEARCHES_FILE), r#"[{"name":"old"}]"#);
+        fixture::write_text(&saved_searches_path(dir.path()), r#"[{"name":"old"}]"#);
 
         let loaded = load_recovering(dir.path());
 
@@ -178,7 +181,7 @@ mod tests {
         let dir = TempDir::new().expect("expected operation to succeed");
         let entries = vec![make_saved("Legacy", "needle")];
         save(dir.path(), &entries).expect("save");
-        let path = dir.path().join(SAVED_SEARCHES_FILE);
+        let path = saved_searches_path(dir.path());
         let json = crate::services::filesystem::read::text(&path).expect("read saved searches");
         assert!(
             json.contains("\"hidden\""),

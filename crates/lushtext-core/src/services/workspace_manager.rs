@@ -9,6 +9,7 @@
 use crate::model::workspace::{
     WorkspaceFolderId, WorkspaceFolderMoveDirection, WorkspaceId, WorkspacesFile,
 };
+use crate::services::app_data_layout::{AppDataLayout, AppDataLocation};
 use crate::services::filesystem::metadata as fs_metadata;
 use crate::services::json_format::KIND_WORKSPACE_STATE;
 use crate::services::recovery_metadata::{
@@ -22,8 +23,10 @@ use std::path::{Path, PathBuf};
 #[cfg(feature = "test-utils")]
 use std::sync::{Mutex, OnceLock};
 
-/// Fixed filename for workspace state.
-const WORKSPACES_FILE: &str = "workspaces.json";
+/// `AppDataLocation::Workspaces` under the data home `data_dir`.
+fn workspaces_path(data_dir: &std::path::Path) -> std::path::PathBuf {
+    AppDataLayout::new(data_dir).path(AppDataLocation::Workspaces)
+}
 
 #[cfg(feature = "test-utils")]
 #[derive(Clone, Copy, Debug, Default)]
@@ -62,7 +65,7 @@ impl Drop for WorkspaceSaveFaultGuard {
 /// Fail the next workspace save for one isolated data directory.
 #[cfg(feature = "test-utils")]
 pub fn fail_next_save_for_data_dir_for_test(data_dir: &Path) -> WorkspaceSaveFaultGuard {
-    let path = data_dir.join(WORKSPACES_FILE);
+    let path = workspaces_path(data_dir);
     workspace_save_faults_for_test()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -78,7 +81,7 @@ pub fn delay_next_save_for_data_dir_for_test(
     data_dir: &Path,
     delay_ms: u64,
 ) -> WorkspaceSaveFaultGuard {
-    let path = data_dir.join(WORKSPACES_FILE);
+    let path = workspaces_path(data_dir);
     workspace_save_faults_for_test()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -327,7 +330,7 @@ pub fn load(data_dir: &Path) -> Result<WorkspacesFile> {
 /// Load workspaces through recovery-aware v1 envelope handling.
 #[must_use]
 pub fn load_recovering(data_dir: &Path) -> RecoveryLoad<WorkspacesFile> {
-    let path = data_dir.join(WORKSPACES_FILE);
+    let path = workspaces_path(data_dir);
     let mut load: RecoveryLoad<WorkspacesFile> = load_enveloped_json_or_default(
         &RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::WorkspaceState),
         KIND_WORKSPACE_STATE,
@@ -349,7 +352,7 @@ fn trace_recovery_diagnostics(load: &RecoveryLoad<WorkspacesFile>) {
 ///
 /// Returns an error if the workspace file cannot be serialized or written.
 pub fn save(data_dir: &Path, file: &WorkspacesFile) -> Result<()> {
-    let path = data_dir.join(WORKSPACES_FILE);
+    let path = workspaces_path(data_dir);
     #[cfg(feature = "test-utils")]
     if let Some(fault) = workspace_save_faults_for_test()
         .lock()
@@ -421,7 +424,7 @@ mod tests {
         file.set_current_scope(WorkspaceScope::workspace(workspace_id.clone()));
 
         save(dir.path(), &file).expect("expected operation to succeed");
-        let saved_json = fixture::read_text(&dir.path().join(WORKSPACES_FILE));
+        let saved_json = fixture::read_text(&workspaces_path(dir.path()));
         assert!(
             saved_json.contains("\"folders\""),
             "workspace state should save the new folder-set payload"
@@ -491,7 +494,7 @@ mod tests {
     fn test_load_v1_legacy_single_folder_payload_is_preserved_and_reset() {
         let dir = TempDir::new().expect("expected operation to succeed");
         fixture::write_text(
-            &dir.path().join(WORKSPACES_FILE),
+            &workspaces_path(dir.path()),
             &serde_json::to_string_pretty(&JsonEnvelopeRef::new(
                 KIND_WORKSPACE_STATE,
                 &serde_json::json!({
@@ -530,7 +533,7 @@ mod tests {
         let workspace_id = file.add_empty_workspace("empty");
 
         save(dir.path(), &file).expect("save empty workspace");
-        let saved_json = fixture::read_text(&dir.path().join(WORKSPACES_FILE));
+        let saved_json = fixture::read_text(&workspaces_path(dir.path()));
         assert!(saved_json.contains("\"folders\": []"));
         assert!(!saved_json.contains("\"root\""));
 
@@ -1210,7 +1213,7 @@ mod tests {
     fn test_load_preserves_wrong_kind_workspace_envelope() {
         let dir = TempDir::new().expect("expected operation to succeed");
         fixture::write_text(
-            &dir.path().join(WORKSPACES_FILE),
+            &workspaces_path(dir.path()),
             &serde_json::to_string_pretty(&JsonEnvelopeRef::new(
                 KIND_SESSION,
                 &serde_json::json!({ "tabs": [] }),
@@ -1237,7 +1240,7 @@ mod tests {
     fn test_load_preserves_future_workspace_envelope_version() {
         let dir = TempDir::new().expect("expected operation to succeed");
         fixture::write_text(
-            &dir.path().join(WORKSPACES_FILE),
+            &workspaces_path(dir.path()),
             &serde_json::json!({
                 "kind": KIND_WORKSPACE_STATE,
                 "version": 2,
@@ -1267,7 +1270,7 @@ mod tests {
     #[test]
     fn test_load_preserves_malformed_workspace_json() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        fixture::write_text(&dir.path().join(WORKSPACES_FILE), "{ not valid json");
+        fixture::write_text(&workspaces_path(dir.path()), "{ not valid json");
 
         let loaded = load_recovering(dir.path());
 
@@ -1310,7 +1313,7 @@ mod tests {
     #[test]
     fn save_quarantines_unsupported_workspace_before_replacement() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        fixture::write_text(&dir.path().join(WORKSPACES_FILE), r#"{"workspaces":[]}"#);
+        fixture::write_text(&workspaces_path(dir.path()), r#"{"workspaces":[]}"#);
 
         save(dir.path(), &WorkspacesFile::default()).expect("save v1 workspace");
 

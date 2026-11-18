@@ -62,6 +62,8 @@
 //!    **before** any body is written, so no crash point leaves a body that no
 //!    entry describes — the leftover that used to wedge every later commit. A
 //!    candidate whose registration failed is not written; it stays dirty.
+//!    Only a candidate holding its body-write token, a `WritableDraftCandidate`
+//!    (`seams.rs`), goes on to the next stage.
 //! 4. **Snapshot and write one at a time.** The next candidate is admitted from
 //!    inside the previous one's completion, which is what bounds the lane to one
 //!    complete body however many tabs are dirty.
@@ -94,8 +96,9 @@
 //!     A body never applied for any other reason — edited over first, oversized,
 //!     unreadable, a cancelled install, or its file could not be checked — gets
 //!     a preserved copy (`journal_core::unapplied_restore_disposition`) first;
-//!     while that copy fails, autosave keeps holding the id and each tick
-//!     retries it (`retry_unrestored_copies`).
+//!     while that copy fails, autosave keeps holding the id and the periodic
+//!     5 s tick retries it with exponential backoff capped at a minute
+//!     (`retry_unrestored_copies`, `policy::unrestored_copy_retry_delay_ticks`).
 //!
 //! ## Stage order C: orphan cleanup
 //!
@@ -123,11 +126,14 @@
 //! unrestored-body preservation worker), and one with the application-wide
 //! journal lane (the cross-window wakeup):
 //!
-//! - **A1/A2, two timers.** The first-dirty `SupersedingTimer` and the 5 s
-//!   repeating tick both resume in `autosave_execution`'s `autosave_tick`.
+//! - **A1/A2, two timers.** The first-dirty `SupersedingTimer` resumes in
+//!   `autosave_execution`'s `autosave_tick`; the 5 s repeating tick resumes in
+//!   `periodic_autosave_tick`, which counts the tick and retries the due
+//!   unrestored copies before that same pass.
 //! - **A3½, registration worker (autosave and close)**, resuming in
 //!   `register_new_draft_ids_then`'s completion, which partitions candidates by
-//!   `journal_core::may_write_after_registration`.
+//!   `journal_core::may_write_after_registration` into writable candidates and
+//!   refused ids.
 //! - **A4, chunked snapshot**, resuming in the capture's `finish_snapshot`
 //!   closure, which re-validates with `policy::captured_snapshot_is_current`.
 //! - **A4, body worker**, resuming in a completion that admits the next candidate.
@@ -306,6 +312,14 @@ pub(super) fn fail_next_draft_manifest_for_test() -> anyhow::Result<()> {
     #[cfg(feature = "test-utils")]
     if test_policy::take_manifest_failure() {
         anyhow::bail!("injected draft manifest failure");
+    }
+    Ok(())
+}
+
+pub(super) fn injected_draft_registration_failure_for_test() -> anyhow::Result<()> {
+    #[cfg(feature = "test-utils")]
+    if test_policy::take_registration_failure() {
+        anyhow::bail!("injected draft registration failure");
     }
     Ok(())
 }

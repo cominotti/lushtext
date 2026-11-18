@@ -15,6 +15,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::model::recent_document::{RecentDocumentEntry, RecentDocumentFile, RecentDocumentRow};
+use crate::services::app_data_layout::AppDataLocation;
 use crate::services::filesystem::metadata as fs_metadata;
 use crate::services::filesystem::read as fs_read;
 use crate::services::filesystem::types::PathStatus;
@@ -22,7 +23,10 @@ use crate::services::fuzzy::FuzzyQuery;
 use crate::services::json_store;
 
 /// Recent-document storage filename under the app data directory.
-pub const RECENT_DOCUMENTS_FILE: &str = "recent-documents.json";
+///
+/// Spelled by the app-data layout; kept as a name for callers outside
+/// `services` (UI and tests).
+pub const RECENT_DOCUMENTS_FILE: &str = AppDataLocation::RecentDocuments.relative_str();
 /// Keep the full history bounded while still far exceeding the Open popover view.
 ///
 /// Kind: retention tier; 200 rounded up to a power of two
