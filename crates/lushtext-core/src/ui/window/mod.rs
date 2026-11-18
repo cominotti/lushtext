@@ -41,6 +41,7 @@ mod preview;
 mod print;
 mod recent_documents_journal;
 mod recent_open;
+mod replace_in_editor;
 mod search;
 mod search_progress_execution;
 mod session_restore;

@@ -32,7 +32,7 @@ that freezes it is **paragraph length**, not file size.
 | SC | `spawn-completion-priority` (2026-11-02; queued from C2's `eviction/reselect` finding) | `gtk-lush-tasks` delivers `spawn_blocking_then` completions from one source at `GDK_PRIORITY_REDRAW + 4`, one per dispatch, above GtkTextView's validation idle (axiom A80), aging after eight completions or 16 ms (review); `ViewportSliceBin`'s pending-request evidence covers the re-slice (review, pre-existing); LushText's load and save admission drains and permit releases at the same priority; the `save/during-validation` lane case | No completion dispatch over B_settle and no input or frame delayed against `main`, interleaved; a save during a validation backlog lands promptly. `eviction/reselect` is **mostly unchanged** by design: its cause is EV, below |
 | EV | `defer-background-tab-layout` (queued 2026-11-02, coordinator decision; **next after C3**, it touches C3's install files) | The real cause of `eviction/reselect`'s 6–11 s batches, attributed in SC (perf on `main` cdfff201: 69.5 % of the application's CPU in `incremental_validate_callback`): (1) the transient load permit (`8 × 8 MiB + 1 MiB` = 65 MiB of the 256 MiB budget, so three loads at a time) is held through an installation that C6 paces below the validation idle, so the next document is not even read until every validating view has laid out its whole buffer; (2) **background tabs validate fully**: restoring many large files spends the CPU laying out tabs nobody is looking at (A80: a view on a hidden `GtkStack` page validates its whole buffer) | The selected document of a restore of ten 8 MiB documents is usable within the open budget, background documents do not delay it, and no background tab lays out its whole buffer before it is shown (or the cost is recorded against a toolkit floor). **Implemented 2026-11-03, review fixes 2026-11-04** (PR #80, not merged): a hidden tab's view shows an empty placeholder buffer (A82, A83) except while an assistive technology listens or past 2^18 lines, background installs wait one priority step below the visible tab's (aging after 256 ms), the load permit keeps the decoded body plus the residency not yet installed after the read, a dense document's reattach is revealed in paced ranges; `eviction/reselect` completes (main: 20 s cap) with every background document laid out never and installed within ~0.5 s of the visible one; see "EV" below |
 | DL | `bound-dense-long-line-editing` (queued 2026-11-05, coordinator, from CF's review; proposal not written) | Bound open, click, restyle and typing on **editable dense documents of long lines** (the full tier's dense/10000 and dense/50000: 160 lines of 10,000 or 50,000 characters). Identical on `main` `1d483b24` and CF: open 110–530 ms, click 53–262 ms, zoom step about 100 / 470–485 ms, font change 70 / 320–330 ms, typing about 1.2 s per burst, the lane failing `misdirected_typing` and `withheld_typing_frames` in 12 / 18 phases; the cost is GtkTextView validating 2000 px batches of such lines (A31), each dispatch laying out up to about a million characters | The full-tier lane passes its typing gates on these cases, and every dispatch is within the budgets or recorded against a toolkit floor (C5's per-keystroke exception covers one paragraph's re-layout, not a batch of them) |
-| PT | `power-of-two-thresholds` (queued 2026-11-01, maintainer decision; after C2, C6 and C5 merge; implemented 2026-11-05, merged (PR #84, `main` `d59a1256`) and archived 2026-11-06 (`openspec/changes/archive/2026-11-06-power-of-two-thresholds/`); `bound-lists-by-budget-not-count` merged (PR #87, `main` `1af354a1`) and archived 2026-11-07 (`openspec/changes/archive/2026-11-07-bound-lists-by-budget-not-count/`); `bound-notes-browser-by-budget` merged (PR #88, `main` `4860fa2d`) and archived 2026-11-07 (`openspec/changes/archive/2026-11-07-bound-notes-browser-by-budget/`); `drill-down-palette-categories` merged (PR #89, `main` `4b567cdf`) and archived 2026-11-07 (`openspec/changes/archive/2026-11-07-drill-down-palette-categories/`); `bin-minimap-markers-per-row` merged (PR #90, `main` `9b8f9102`) and archived 2026-11-09 (`openspec/changes/archive/2026-11-09-bin-minimap-markers-per-row/`; see "BM"); `adopt-gnome-51` implemented 2026-11-10, lane verdict 2026-11-11, merged (PR #91, `main` `14649be0`) and archived 2026-11-11 (`openspec/changes/archive/2026-11-11-adopt-gnome-51/`; see "AG" below); `retest-upstream-fixes-on-nightly` implemented 2026-11-11, merged (PR #92, `main` `25ab565e`) and archived 2026-11-12 (`openspec/changes/archive/2026-11-12-retest-upstream-fixes-on-nightly/`; see "RN" below); `lighten-notes-browser-rows` implemented 2026-11-13, merged (PR #94, `main` `b129f378`) and archived 2026-11-14 (`openspec/changes/archive/2026-11-14-lighten-notes-browser-rows/`); `scale-file-index` implemented 2026-11-15, merged (PR #106, `main` `edc97eb1`) and archived 2026-11-15 (`openspec/changes/archive/2026-11-15-scale-file-index/`; queue item 3 below); `stream-replace-all` **next** (queue item 2 below)) | Convert every existing threshold to the rule in `.agents/rules/rust.md` ("Thresholds are powers of two, rounded the conservative way"): inventory every byte, character, paragraph, row and count constant; classify each as cap, coverage window, policy tier, or external fact; round caps down and coverage windows up (e.g. `R_batch` 224 → 256); re-derive the constants Kani ties together and rerun the affected shards; user-visible tiers become 8 MiB / 64 MiB / 512 MiB in IEC units (512 MiB only after measuring the exclusive-load memory peak); external facts stay exact. No measurement campaign: rounding the conservative way keeps every guarantee. The exceptions are slice sizes (`V_SLICE`, the direct-install threshold), whose rounding changes total time and is re-measured, and any value whose rounding costs a visible loss (`V_BATCH`, the per-language syntax gates), which may stay exact as recorded exceptions. **Coupled pair (C2b review):** `N_INSPECT` (500, the Line Inspector's window width) is tied to `L_PROTECT` (500, the head a fold keeps) by a Kani bound (`core-protected-view`: a window never exceeds the basis `L_PROTECT` was measured on); convert both together, to the same power of two, and rerun that shard. **Proposal written 2026-11-05** (branch `power-of-two-thresholds`, `openspec/changes/power-of-two-thresholds/`): about 95 in-scope constants classified; tiers 8 MiB / 64 MiB (512 MiB after task 3's memory peak); caps down, coverage windows (`R_BATCH` 256), retention tiers and retry budgets up (nothing stored is pruned); exceptions with corpus evidence (`L_SYNTAX`, the per-language gates and `S_SYNTAX_OTHER`: rounding down unhighlights 0.1–22 % of real files; `L_PROTECT_EDIT`, `V_BATCH`, the 100,000-file index, the 64 MP image cap); `L_PROTECT`/`N_INSPECT` 512 if a `dense/512` lane case holds, else 256; `V_SLICE`, the direct-install threshold and the 250-per-turn search caps re-measured; a `make check-thresholds` inventory gate. **Implemented 2026-11-05** (branch `power-of-two-thresholds`, PR pending, not merged): see "PT" below. Measured: the open tier is 512 MiB (memory peak within 1.074 × main's at 500 MB), `L_PROTECT`/`N_INSPECT` 512, `V_SLICE` 16,384, the direct-install threshold 512 KiB, the search per-turn caps 256; task 4.5's corpus count kept `L_MINIMAP`, `L_INVISIBLES`, `L_SEARCH_HIGHLIGHT`, `MAX_MARKDOWN_EVENTS` and the table-cell caps as recorded exceptions. **Amended 2026-11-05 (maintainer, PR #84 not merged):** the first version rounded every cap down and lost what `main` showed (palette 50 → 32, notes 500 → 256, Replace All 10 → 8 MiB, the 10,000 caps → 8,192, minimap markers 2,000 → 1,024, the minimap and per-edit history tier 10 MB → 8 MiB). New kind **presentation cap** (design D12): a cap on what the user sees or gets rounds **up** from its pre-PT value when its bound holds by measurement, else keeps that value as an exception; internal caps keep rounding down. **Implemented 2026-11-05 (stage 3, PR #84):** palette 64, notes 512, Replace All 16 MiB, the 10,000 caps 16,384 (the sidebar directory cap kept at 10,000 by measurement), markers 2,048, save-only history 16 MiB (the minimap tier kept at 10,000,000 bytes by measurement), `N_HEAD` and CSS back to 10,000 and 37 KiB, `N_DENSE` 256, Markdown 65,536 events and 1,024 cells, `L_SEARCH_HIGHLIGHT` 16,384 (`L_MINIMAP` kept at 22,000 by measurement, `L_INVISIBLES` at 50,000 by Protected View's invariant), the index 131,072, images 2^26 pixels; displayed sizes in IEC units (D14). Queued after PT merges, in order (D13): `bound-lists-by-budget-not-count`, `stream-replace-all`, `scale-file-index`, slicing the 59–60 ms largest-file open dispatch, then `avx2-health-scan-kernel` and DL. See "PT" below, "Amendment". | Every threshold is a power of two or a recorded exception with its measurement; the affected Kani shards and the lane pass. |
+| PT | `power-of-two-thresholds` (queued 2026-11-01, maintainer decision; after C2, C6 and C5 merge; implemented 2026-11-05, merged (PR #84, `main` `d59a1256`) and archived 2026-11-06 (`openspec/changes/archive/2026-11-06-power-of-two-thresholds/`); `bound-lists-by-budget-not-count` merged (PR #87, `main` `1af354a1`) and archived 2026-11-07 (`openspec/changes/archive/2026-11-07-bound-lists-by-budget-not-count/`); `bound-notes-browser-by-budget` merged (PR #88, `main` `4860fa2d`) and archived 2026-11-07 (`openspec/changes/archive/2026-11-07-bound-notes-browser-by-budget/`); `drill-down-palette-categories` merged (PR #89, `main` `4b567cdf`) and archived 2026-11-07 (`openspec/changes/archive/2026-11-07-drill-down-palette-categories/`); `bin-minimap-markers-per-row` merged (PR #90, `main` `9b8f9102`) and archived 2026-11-09 (`openspec/changes/archive/2026-11-09-bin-minimap-markers-per-row/`; see "BM"); `adopt-gnome-51` implemented 2026-11-10, lane verdict 2026-11-11, merged (PR #91, `main` `14649be0`) and archived 2026-11-11 (`openspec/changes/archive/2026-11-11-adopt-gnome-51/`; see "AG" below); `retest-upstream-fixes-on-nightly` implemented 2026-11-11, merged (PR #92, `main` `25ab565e`) and archived 2026-11-12 (`openspec/changes/archive/2026-11-12-retest-upstream-fixes-on-nightly/`; see "RN" below); `lighten-notes-browser-rows` implemented 2026-11-13, merged (PR #94, `main` `b129f378`) and archived 2026-11-14 (`openspec/changes/archive/2026-11-14-lighten-notes-browser-rows/`); `scale-file-index` implemented 2026-11-15, merged (PR #106, `main` `edc97eb1`) and archived 2026-11-15 (`openspec/changes/archive/2026-11-15-scale-file-index/`; queue item 3 below); `stream-replace-all` implemented 2026-11-15–18, merged (PR #103, `main` `ea30711f`) and archived 2026-11-18 (`openspec/changes/archive/2026-11-18-stream-replace-all/`; see "SR" below)) | Convert every existing threshold to the rule in `.agents/rules/rust.md` ("Thresholds are powers of two, rounded the conservative way"): inventory every byte, character, paragraph, row and count constant; classify each as cap, coverage window, policy tier, or external fact; round caps down and coverage windows up (e.g. `R_batch` 224 → 256); re-derive the constants Kani ties together and rerun the affected shards; user-visible tiers become 8 MiB / 64 MiB / 512 MiB in IEC units (512 MiB only after measuring the exclusive-load memory peak); external facts stay exact. No measurement campaign: rounding the conservative way keeps every guarantee. The exceptions are slice sizes (`V_SLICE`, the direct-install threshold), whose rounding changes total time and is re-measured, and any value whose rounding costs a visible loss (`V_BATCH`, the per-language syntax gates), which may stay exact as recorded exceptions. **Coupled pair (C2b review):** `N_INSPECT` (500, the Line Inspector's window width) is tied to `L_PROTECT` (500, the head a fold keeps) by a Kani bound (`core-protected-view`: a window never exceeds the basis `L_PROTECT` was measured on); convert both together, to the same power of two, and rerun that shard. **Proposal written 2026-11-05** (branch `power-of-two-thresholds`, `openspec/changes/power-of-two-thresholds/`): about 95 in-scope constants classified; tiers 8 MiB / 64 MiB (512 MiB after task 3's memory peak); caps down, coverage windows (`R_BATCH` 256), retention tiers and retry budgets up (nothing stored is pruned); exceptions with corpus evidence (`L_SYNTAX`, the per-language gates and `S_SYNTAX_OTHER`: rounding down unhighlights 0.1–22 % of real files; `L_PROTECT_EDIT`, `V_BATCH`, the 100,000-file index, the 64 MP image cap); `L_PROTECT`/`N_INSPECT` 512 if a `dense/512` lane case holds, else 256; `V_SLICE`, the direct-install threshold and the 250-per-turn search caps re-measured; a `make check-thresholds` inventory gate. **Implemented 2026-11-05** (branch `power-of-two-thresholds`, PR pending, not merged): see "PT" below. Measured: the open tier is 512 MiB (memory peak within 1.074 × main's at 500 MB), `L_PROTECT`/`N_INSPECT` 512, `V_SLICE` 16,384, the direct-install threshold 512 KiB, the search per-turn caps 256; task 4.5's corpus count kept `L_MINIMAP`, `L_INVISIBLES`, `L_SEARCH_HIGHLIGHT`, `MAX_MARKDOWN_EVENTS` and the table-cell caps as recorded exceptions. **Amended 2026-11-05 (maintainer, PR #84 not merged):** the first version rounded every cap down and lost what `main` showed (palette 50 → 32, notes 500 → 256, Replace All 10 → 8 MiB, the 10,000 caps → 8,192, minimap markers 2,000 → 1,024, the minimap and per-edit history tier 10 MB → 8 MiB). New kind **presentation cap** (design D12): a cap on what the user sees or gets rounds **up** from its pre-PT value when its bound holds by measurement, else keeps that value as an exception; internal caps keep rounding down. **Implemented 2026-11-05 (stage 3, PR #84):** palette 64, notes 512, Replace All 16 MiB, the 10,000 caps 16,384 (the sidebar directory cap kept at 10,000 by measurement), markers 2,048, save-only history 16 MiB (the minimap tier kept at 10,000,000 bytes by measurement), `N_HEAD` and CSS back to 10,000 and 37 KiB, `N_DENSE` 256, Markdown 65,536 events and 1,024 cells, `L_SEARCH_HIGHLIGHT` 16,384 (`L_MINIMAP` kept at 22,000 by measurement, `L_INVISIBLES` at 50,000 by Protected View's invariant), the index 131,072, images 2^26 pixels; displayed sizes in IEC units (D14). Queued after PT merges, in order (D13): `bound-lists-by-budget-not-count`, `stream-replace-all`, `scale-file-index`, slicing the 59–60 ms largest-file open dispatch, then `avx2-health-scan-kernel` and DL. See "PT" below, "Amendment". | Every threshold is a power of two or a recorded exception with its measurement; the affected Kani shards and the lane pass. |
 
 C1–C4 are drafted; none may be **implemented** before this record holds the
 values they use (`responsiveness-measurement` spec).
@@ -4348,6 +4348,24 @@ separate change, in this order:
 2. `stream-replace-all`: chunked replace with an on-disk undo journal, so the
    per-file limit reaches the open tier with constant memory; skipped files
    listed with their reason and an "Open and replace in editor" action.
+   **Proposal written 2026-11-14** (branch `stream-replace-all`,
+   `openspec/changes/archive/2026-11-18-stream-replace-all/`; merged (PR #103,
+   `main` `ea30711f`) and archived 2026-11-18): judged viable as described,
+   because the cap cannot be raised without it. PT's M9 shows `main` growing
+   about 2.1 times the file size (33.9 MiB at 16 MiB). Without streaming, a
+   512 MiB file would need about 1.1 GiB of worker memory and a disposal
+   reservation above 1 GiB, which GTK would hold for the whole undo window.
+   The design:
+   - each file streams in two passes, the target into a raw undo body, then
+     the body into the target, with no change to the write-protocol core;
+   - undo compares SHA-256 digests;
+   - undo data is admitted against free disk space with a 1 GiB reserve,
+     waived for exactly the files `main` would have replaced;
+   - a typed skip report, a Skipped Files dialog and an editor action that
+     prefills the in-tab replace bar;
+   - progress, Cancel, and a close that waits for the run;
+   - three new kill windows, and Kani shards `core-replace-protocol` and
+     `core-replace-stream`.
 3. `scale-file-index`: an interned path arena and a byte budget instead of
    the 131,072-file count, targeting at least 1,000,000 files, with a
    Criterion benchmark and a measurement on a real monorepo.
@@ -5198,3 +5216,116 @@ the same time, so each count was attributed per process (`runtime-proof.md`
 `keystroke/3500/*`, `dense/2000`, `plain` and `at`) found no budget shift:
 four verdict rounds, plus two `dense/2000` attribution pairs that cleared the
 one flagged stage, a single-rep 22 ms dispatch (design, "Measurement").
+
+## SR `stream-replace-all` (implementation record, 2026-11-15; re-planned 2026-11-17; merged and archived 2026-11-18)
+
+Queue item 2. Status: **merged (PR #103, `main` `ea30711f`) and archived
+2026-11-18** (`openspec/changes/archive/2026-11-18-stream-replace-all/`).
+Every task is done; the change's `tasks.md` and design record what landed,
+and this section the posture and the evidence.
+
+- **Built.** Replace All streams each file (`services/content_search/replace/stream.rs`,
+  256 KiB chunks, task 2.4's verdict below) in two passes: pass A writes the original bytes as a raw undo
+  body and both digests, the descriptor entry is journalled, pass B streams the
+  replaced bytes through `atomic_replace_workspace_file_stream`. The per-file
+  order is the I/O-free `replace/protocol.rs` machine (P0–P6, undo U0–U3). The
+  per-file limit is the open tier (512 MiB); `replace/admission.rs` replays
+  `main`'s admission so no file `main` replaced is displaced, with a 1 GiB disk
+  reserve beyond it. Skipped and partly replaced files are reported by reason
+  behind Show Skipped Files (a lazy list); a run reports progress and can be
+  cancelled, which rolls back every rewritten file. Legacy inline journals
+  still load and undo.
+- **Kani.** New shards `core-replace-protocol` (3 harnesses) and
+  `core-replace-stream` (the stream's UTF-8 seams and byte scan, 2
+  harnesses). Their budgets come from two dispatched `kani.yml` runs
+  (44330495557, 44338924357; task 3.3b): 2.8 min / 1.7 GiB, gated on pull
+  requests, and 4.8 min / 3.5 GiB, scheduled.
+  The stage-1 revision (2026-11-17) fitted no Kani form of the engine's line
+  logic (one engine run over 2 symbolic bytes was past 8 GiB when stopped),
+  so it is checked by a bounded exhaustive unit test instead; the record is in
+  `docs/next/formal-verification.md`, "Replace All protocol and stream".
+- **Landed by the stage-3 continuation (2026-11-17/18).** G1: the service
+  data-safety tests, the 46-mutant campaign over the protocol and the
+  apply/undo paths (all killed) and the `core-replace-protocol` shard's
+  final local run. G2: GTK axioms A127 (GRegex replacement syntax), A128
+  (`at-word-boundaries` against the ASCII whole-word rule) and A129 (GRegex
+  constructs), each with a probe and a sample. G3: the crash smoke drives
+  the four Replace All kill windows on the third of five files and a
+  later-launch Undo kill; it found and fixed a pre-existing `main` bug (a
+  search panel restored visible from GSettings left its actions disabled, so
+  Undo after a relaunch did nothing). G4: the branch-side M9 measurement
+  test and pass/fsync timers. G5: **Open and Replace in Editor**
+  (`win.replace-in-editor`: a Skipped Files row opens the file at its first
+  skipped line with the in-tab bar prefilled from the run's request, the
+  regex template translated per A127 and property-tested against a GRegex
+  model), the application-wide undo journal (a run in one window refuses an
+  apply or Undo in another and retires every window's Undo), the cancel
+  button and app-quit tests, an accessibility smoke case
+  (`workspace-search-replace-skipped`) and two responsiveness lane cases
+  (`replace-all/skips-16384`: completion terminal and Skipped Files dialog;
+  `replace-all/run-512mib`: progress and typing during the run).
+- **Memory verdict (tasks 4.8 and 9.2, M9 through `heavy.sh`, VmHWM growth
+  in MiB, interleaved `main` `562fff58` → branch `369fab84` → `main` →
+  branch, 2026-11-18): met.** 16 MiB: `main` 33.0 / 33.2, branch 3.1 / 3.3
+  (bar: below `main`'s 33.9). 512 MiB, branch only (`main` refuses the
+  file): 3.3 / 3.3 (bars: at most 16 MiB growth × 1.05 + 1 MiB = 4.5, and
+  below 8). Six 10 MiB files: `main` 51.0 / 50.4 with 3 replaced and 3
+  skipped, branch 2.6 / 2.1 with all 6 replaced; six 16 MiB files: `main`
+  33.3 / 33.3 with 1 replaced and 5 skipped, branch 2.3 / 2.2 with all 6
+  replaced. `main`'s repetitions 2 and 3 (task 1.1) are within 1 % of PT's
+  figures; on the GTK side `main` retains 62,915,133 bytes of undo after six
+  10 MiB files (task 1.2), the branch descriptors only. Those rounds ran on
+  the 1 MiB chunk.
+- **Memory verdict on the 256 KiB chunk (rerun, tasks 4.8 and 9.2, same
+  method, interleaved `main` `562fff58` → branch `e05d2abd` → `main` →
+  branch, 2026-11-18; every branch record reports `chunk_bytes` 262144):
+  met.** 16 MiB: `main` 33.3 / 33.1, branch 1.9 / 2.0 (bar: below `main`'s
+  33.9). 512 MiB, branch only: 1.7 / 1.6 (bars: at most 1.9 × 1.05 + 1 MiB =
+  3.0, and below 8). Six 10 MiB files: `main` 50.7 / 50.8 with 3 replaced
+  and 3 skipped, branch 1.7 / 1.7 with all 6 replaced; six 16 MiB files:
+  `main` 33.4 / 33.3 with 1 replaced and 5 skipped, branch 1.7 / 1.6 with all
+  6 replaced. Every branch figure is 0.4–1.7 MiB below its 1 MiB-chunk
+  round.
+- **Chunk-size verdict (task 2.4, part A of the queued entry, coordinator
+  2026-11-18, `scripts/measure.sh`, 12 interleaved rounds on one 512 MiB file
+  at a 1-minute load of 2.45–3.84): 256 KiB.** Median throughput 256 KiB
+  606 MiB/s (95.9 % of the best), 1 MiB 632 MiB/s (best), 4 MiB 580 MiB/s
+  (91.8 %); the pre-registered rule takes the smallest power of two within
+  5 % of the best, so `REPLACE_STREAM_CHUNK_BYTES` went from 1 MiB to
+  262,144 in its own non-visual commit.
+- **Wall-time verdict (task 9.3, part B, coordinator 2026-11-18): met.**
+  16 MiB: branch median 86.5 ms against `main`'s 96.5 ms (bar 2 × main +
+  50 ms); 2,000 small files: ratio of medians 1.446 (bar 1.6; the branch's
+  fsyncs are 67.5–68.2 s of its 70 s); 512 MiB recorded at 1,270 / 923 ms.
+- **Responsiveness (task 9.1, part C): judged again.** The eight rounds of
+  2026-11-18 derived no verdict: the lane's pass status judged no bar, and
+  the watchdog read 16.5–20.2 ms on every Skipped Files opening. That
+  dispatch realized GTK's whole band of about 205 rows from the full
+  16,384-row model (counted, failing-first); the dialog's first publish is
+  now staged. The lane now judges (a) the completion, (b) the dialog's
+  opening, first frame and growth frames, (c) each heartbeat, (d) each
+  typing dispatch and (p) replace-prepare from probe spans, failing closed
+  (design, "Stage-3 round: judging task 9.1"). Part C is queued `READY`
+  again; its open decisions (the dispatch after a settings flush, one
+  unattributed 42 ms replace-prepare dispatch, the dialog's Cairo animation
+  paint, no lane case for Cancel or save-while-rewriting) are in that
+  design section. The two `kani.yml` dispatches for the new shards' budgets
+  (3.3b) belong to the merge stage.
+- **Responsiveness verdict (task 9.1, part C, coordinator 2026-11-18,
+  `scripts/measure.sh`, eight rounds on `d4821940` interleaved skips/run
+  r1–r4, every kept round at a 1-minute load below 4): met.** (a) 125–140 µs
+  and (b) 12.9–13.3 ms against `B_SETTLE_US`; (c) 74–98 µs and (d) 5–6 keys
+  with no late iteration against `B_INTERACT_US`; (p) at most 12.6 ms. The
+  stage-4 review (design, "Stage-4 review") made the lane fail closed on a
+  log that cannot prove the watchdog watched a window and summed every layout
+  of a frame; the regenerated reading of the saved rounds is still `met` in
+  all eight. The dispatch after a settings flush (`main`'s
+  `ui/settings_writes.rs`, up to 21.7 ms during the run) and the lane cases
+  for Cancel and saving during a run are their own ledger changes
+  (`settings-flush-follow-up`, `replace-all-cancel-save-lane-cases`); the
+  delta's Cancel and save clauses merge unmeasured.
+- **Prepared AppStream release note.** "Replace All rewrites files up to
+  512 MiB without holding them in memory, reports its progress, can be
+  cancelled, lists the files it skipped with the reason, and offers to
+  finish each of them in the editor with the replacement ready."
+

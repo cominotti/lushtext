@@ -48,6 +48,7 @@ which `make check-automation-docs` keeps in sync with the scripts.
 - `scripts/atspi-set-text.py`
   - Uses system Python AT-SPI bindings to set text on visible editable widgets, scoped by application, role, and optional accessible-name regex.
   - Preferred over `ydotool type` for entries such as LushText's in-tab search field because it does not require keyboard focus to move.
+  - `--kill-pid PID` SIGKILLs that process the moment the text is set, before the helper's own AT-SPI teardown. The crash-recovery smoke uses it for an edit that must die before any autosave: killing after the helper exits leaves the teardown's time (hundreds of milliseconds under load) for the 750 ms first-dirty debounce or the 5 s tick to accept it.
 
 ## Isolated Captures
 

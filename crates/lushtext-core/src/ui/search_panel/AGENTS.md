@@ -35,6 +35,37 @@ This folder owns the workspace-wide content search panel adapter.
   and the affected/restored intersection of paths that were open at worker
   submission. Undo ingestion stays bounded inside the read so growth races
   preserve retryable backup state without an unsafe write.
+- The GTK side of Replace All owns **descriptors only**: the undo journal's
+  original bytes live in raw body files on disk, so the undo owner that crosses
+  to GTK is paths and digests, never file content. A run in flight is a
+  `ReplaceRunControl` (cancel flag plus `ReplaceProgress` atomics) the window's
+  progress poll reads; Cancel only sets the flag, and the worker rolls back
+  before its completion runs, so the transaction stays claimed (and
+  `search-complete` pending) through the rollback.
+- The skip report is plain data (`ReplaceSkipReport`); `skipped_files.rs` is a
+  called presentation surface over a lazy `GListModel` + `GtkSectionModel` that
+  builds a row object only when GTK asks for it. Its first publish is staged
+  (`list_budget::staged_first_rows`, then `ui::list_growth::RowGrowth` once the
+  dialog's open animation is over or the list scrolls; a key finishes it):
+  handed every row at once, GTK realized its whole band (about 205 rows, A1)
+  inside the opening dispatch. Its pure decisions stay in `policy.rs` and its
+  observable state in `evidence.rs`.
+- **Open and Replace in Editor** (`win.replace-in-editor`) prefills the in-tab
+  bar from the run's **request** (`policy::ReplaceRunIntent`: the accepted
+  preview ticket's query spec plus its replacement text, captured on preview
+  acceptance and copied at `begin_replace_run`), never from the panel's live
+  fields, which the user may have edited since. A regex template reaches
+  GtkSourceView only through `policy::rust_replacement_to_gtksourceview`
+  (ledger A127); a reference to a missing group leaves the field empty with
+  its reason. The action writes nothing. Its availability is
+  `policy::replace_in_editor_availability`; a row whose file cannot open has
+  no action.
+- **The undo journal is one per application** (design D3a): `journal.rs`
+  keeps a thread-local registry of every panel. A transaction (a run, its
+  rollback, an Undo) in one window refuses an apply or Undo in another with a
+  status message, never queues it; a run's start retires every window's Undo
+  and each window that lost one says so once. Never scope either back to one
+  panel.
 - Preserve match-navigation and progress-callback contracts with the window shell.
 
 ## Editing Rules

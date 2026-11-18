@@ -215,6 +215,7 @@ mod tests {
         assert_eq!(WriteLabel::JSON.as_str(), "json");
         assert_eq!(WriteLabel::DRAFT.as_str(), "draft");
         assert_eq!(WriteLabel::REPLACE.as_str(), "replace");
+        assert_eq!(WriteLabel::REPLACE_UNDO_BODY.as_str(), "replace-undo-body");
         assert_eq!(
             WriteLabel::RECOVERY_QUARANTINE.as_str(),
             "recovery-quarantine"
@@ -223,7 +224,7 @@ mod tests {
             WriteLabel::LOCAL_HISTORY_COPY.as_str(),
             "local-history-copy"
         );
-        assert_eq!(WriteLabel::KNOWN.len(), 10);
+        assert_eq!(WriteLabel::KNOWN.len(), 11);
         assert!(
             WriteLabel::KNOWN
                 .iter()

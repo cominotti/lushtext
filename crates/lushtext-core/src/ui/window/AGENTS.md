@@ -5,7 +5,7 @@ This folder owns the top-level application shell adapter.
 ## Responsibilities
 
 - Keep `mod.rs` as the small public facade for `LushtextWindow`.
-- Keep workflow-specific logic in sibling modules and per-workflow role homes: `actions`, `attention_refresh`, `composition/`, `construction`, `dialogs`, `documents`, `drafts/`, `editor_focus/`, `editor_memory_eviction/`, `encoding/`, `focus_mode/`, `geometry/`, `local_history/`, `notes/`, `notifications/`, `palette_shell`, `preview`, `print/`, `recent_documents_journal`, `recent_open`, `search`, `search_progress_execution`, `session_restore/`, `set_aside_review`, `startup_data`, `tab_strip/`, `transient_dismissal/`, `workspace_scope`, and `zoom`.
+- Keep workflow-specific logic in sibling modules and per-workflow role homes: `actions`, `attention_refresh`, `composition/`, `construction`, `dialogs`, `documents`, `drafts/`, `editor_focus/`, `editor_memory_eviction/`, `encoding/`, `focus_mode/`, `geometry/`, `local_history/`, `notes/`, `notifications/`, `palette_shell`, `preview`, `print/`, `recent_documents_journal`, `recent_open`, `replace_in_editor`, `search`, `search_progress_execution`, `session_restore/`, `set_aside_review`, `startup_data`, `tab_strip/`, `transient_dismissal/`, `workspace_scope`, and `zoom`.
 - Keep `imp.rs` focused on template children, state, and setup glue rather than long workflow implementations.
 
 ## Local Contracts

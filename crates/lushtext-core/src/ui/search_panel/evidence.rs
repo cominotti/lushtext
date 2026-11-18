@@ -37,6 +37,7 @@ use gtk4::prelude::*;
 use crate::model::content_search::SearchQuerySpec;
 
 use super::LushtextSearchPanel;
+use super::skipped_files::SkippedFilesModel;
 
 /// One consistent read of the workspace search and Replace All preview workflow.
 ///
@@ -160,6 +161,27 @@ pub struct SearchPanelEvidence {
     pub replace_transaction_generation: Option<u32>,
     /// Counts published by the most recent durable Replace All apply.
     pub last_apply_counts: Option<super::policy::ReplaceApplyCounts>,
+    /// Whether a durable Replace All run is in flight (design D8).
+    pub replace_in_flight: bool,
+    /// Whether that run was asked to stop and roll back.
+    pub replace_cancel_requested: bool,
+    /// The run's progress: files finished, files in the run, target bytes
+    /// written, and whether it is rolling back; `None` with no run.
+    pub replace_progress: Option<ReplaceProgressEvidence>,
+    /// Files the last run skipped, per reason in `ReplaceSkipReason::ALL`
+    /// order (design D7); all zero when nothing was skipped.
+    pub replace_skip_counts: [usize; 11],
+    /// Files the last run replaced only partly.
+    pub replace_skip_partly_replaced: usize,
+    /// Files the skip list does not name because of its byte bound.
+    pub replace_skip_not_listed: usize,
+    /// Whether Show Skipped Files is offered.
+    pub skipped_files_offered: bool,
+    /// Row objects the open Skipped Files dialog's lazy model has built.
+    pub skipped_files_item_requests: Option<u64>,
+    /// Rows the open Skipped Files dialog lists: its staged first rows while
+    /// its first publish grows, then every listed file (the final length).
+    pub skipped_files_listed: Option<u32>,
 
     // --- undo journal ---
     /// Whether a Replace All undo backup is available.
@@ -194,6 +216,19 @@ pub struct SearchPanelEvidence {
     pub navigation_match_count: u32,
     /// Current flat navigation index, if a match has been selected.
     pub current_navigation_match_index: Option<u32>,
+}
+
+/// Progress of the Replace All run in flight, from its worker's atomics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReplaceProgressEvidence {
+    /// Files finished, whatever their outcome.
+    pub files_done: usize,
+    /// Files in the run.
+    pub files_total: usize,
+    /// Target bytes written so far.
+    pub bytes_written: u64,
+    /// Whether the run is restoring the files it wrote.
+    pub rolling_back: bool,
 }
 
 #[cfg(feature = "test-utils")]
@@ -236,6 +271,24 @@ impl LushtextSearchPanel {
                     .unwrap_or(0),
             )
         };
+        let replace_progress = self.replace_run_progress().map(|progress| {
+            let (files_done, files_total, bytes_written, phase) = progress.snapshot();
+            ReplaceProgressEvidence {
+                files_done,
+                files_total,
+                bytes_written,
+                rolling_back: phase == crate::services::content_search::ReplacePhase::RollingBack,
+            }
+        });
+        let skip_report = self.last_skip_report();
+        let replace_skip_counts = skip_report.as_ref().map_or([0; 11], |report| {
+            crate::model::content_search::ReplaceSkipReason::ALL.map(|reason| report.count(reason))
+        });
+        let skipped_files_model = self.skipped_files_model();
+        let skipped_files_item_requests = skipped_files_model
+            .as_ref()
+            .map(SkippedFilesModel::item_requests);
+        let skipped_files_listed = skipped_files_model.as_ref().map(SkippedFilesModel::listed);
         // The identity clone is a separate short borrow for the same reason.
         #[cfg(feature = "test-utils")]
         let undo_backup = preview.undo_backup.borrow().clone();
@@ -301,6 +354,17 @@ impl LushtextSearchPanel {
             replace_transaction_pending: self.replace_transaction_claimed(),
             replace_transaction_generation: preview.replace_transaction_generation.get(),
             last_apply_counts: preview.last_apply_counts.get(),
+            replace_in_flight: self.replace_run_in_flight(),
+            replace_cancel_requested: self.replace_cancel_requested(),
+            replace_progress,
+            replace_skip_counts,
+            replace_skip_partly_replaced: skip_report
+                .as_ref()
+                .map_or(0, |report| report.partly_replaced()),
+            replace_skip_not_listed: skip_report.as_ref().map_or(0, |report| report.not_listed()),
+            skipped_files_offered: skip_report.is_some(),
+            skipped_files_item_requests,
+            skipped_files_listed,
 
             has_undo_backup,
             undo_backup_generation: preview

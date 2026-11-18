@@ -229,7 +229,7 @@ REPETITIONS = {"quick": 1, "full": 3}
 # The minimap marker cases (`bin-minimap-markers-per-row`): pairs of a marked
 # long line and a short line.
 MINIMAP_MARKER_PAIRS = (2_048, 131_072)
-GROUPS = ("baseline", "paragraph", "dense", "total-size", "delimiters", "session", "eviction", "save", "reload", "install", "invisibles", "markdown", "editorconfig", "recovery", "keystroke", "protected", "highlight", "reanalysis", "restyle-populated", "minimap-markers")
+GROUPS = ("baseline", "paragraph", "dense", "total-size", "delimiters", "session", "eviction", "save", "reload", "install", "invisibles", "markdown", "editorconfig", "recovery", "keystroke", "protected", "highlight", "reanalysis", "restyle-populated", "minimap-markers", "replace-all")
 VARIANTS = ("plain", "at", "probe-im", "ibus")
 BISECT_STEPS = 4
 
@@ -286,7 +286,45 @@ PHASE_KINDS = {
     "place-short": "navigation",
     "key-short": "interaction",
     "verify": "navigation",
+    # stream-replace-all task 9.1: Replace All's GTK side. Preparing the run
+    # (search, preview) is navigation; the completion terminal and opening
+    # the Skipped Files dialog are settles (B_settle); the dispatches during a
+    # 512 MiB run, its progress heartbeat and typing in another tab, are
+    # interactions (B_interact).
+    "replace-prepare": "navigation",
+    "replace-completion": "settle",
+    "skipped-dialog": "settle",
+    "replace-run": "interaction",
 }
+# stream-replace-all task 9.1: the skip-heavy run lists REPLACE_ALL_SKIPS files
+# whose only match is on a line the preview cannot show (LineTooLong), plus
+# one file it replaces; the long run rewrites one file of
+# REPLACE_ALL_RUN_BYTES, the largest Replace All accepts.
+REPLACE_ALL_SKIPS = 16_384
+REPLACE_ALL_LONG_LINE = 10 * 1024
+REPLACE_ALL_RUN_BYTES = 512 * 1024 * 1024
+REPLACE_ALL_QUERY = "replace-needle"
+REPLACE_ALL_REPLACEMENT = "replace-thread"
+# The spans the measurement build records for the judged quantities of task
+# 9.1 (crates/lushtext-core/src/ui/responsiveness_probe.rs): (a) the
+# completion terminal, (b) the Skipped Files opening dispatch, its first frame
+# and the frames of its staged first publish, (c) each progress-poll dispatch.
+REPLACE_COMPLETION_SPAN = "replace_completion"
+REPLACE_PROGRESS_HEARTBEAT_SPAN = "replace_progress_heartbeat"
+SKIPPED_FILES_OPEN_SPAN = "skipped_files_open"
+SKIPPED_FILES_FIRST_FRAME_SPAN = "skipped_files_first_frame"
+SKIPPED_FILES_GROWTH_SPAN = "skipped_files_growth"
+SKIPPED_FILES_GROWTH_STEP_SPAN = "skipped_files_growth_step"
+SETTINGS_FLUSH_SPAN = "settings_flush"
+# The replace-all cases run the watchdog at a 1 ms tick, so a dispatch's
+# bounds [L - eps, L + T] are tight enough to decide B_interact, and record
+# every frame's layout and paint phases (the dialog opens hundreds of frames
+# after the window's first).
+REPLACE_ALL_TICK_US = 1_000
+REPLACE_ALL_FRAME_PHASES = 16_384
+# Recorded, not judged: the dispatch that follows a settings flush within
+# this window (owner ui/settings_writes.rs; open decision of task 9.1).
+SETTINGS_FLUSH_FOLLOW_UP_US = 10_000
 # The C6 cases (design D8): a ~200 kB Markdown document with the side-by-side
 # preview, an EditorConfig tab width other than the setting's on the dense 710
 # document, three 16 kB documents restored from the session, and two 64 kB
@@ -1995,6 +2033,7 @@ def build_cases(tier: str) -> list[Case]:
                 )
             )
     cases.extend(protected_cases())
+    cases.extend(replace_all_cases())
     for length in grid["invisibles"]:
         for mode in ("off", "all"):
             cases.append(paragraph_case(length, "txt", True, False, group="invisibles", invisibles=mode))
@@ -2004,6 +2043,75 @@ def build_cases(tier: str) -> list[Case]:
             for wrap in (True, False):
                 cases.append(keystroke_case(length, flavor, ext, wrap))
     return cases
+
+
+def replace_all_cases() -> list[Case]:
+    """stream-replace-all task 9.1, in both tiers: a run that skips
+    REPLACE_ALL_SKIPS files (its completion terminal, then the Skipped Files
+    dialog) and a run over one 512 MiB file (its progress heartbeat, and
+    typing in another tab while it runs). Their fixtures are written by
+    `replace_all_flow` into a workspace on the disk scope."""
+    return [
+        Case(
+            f"replace-all/skips-{REPLACE_ALL_SKIPS}",
+            "replace-all",
+            None,
+            settings={"word-wrap": True, "show-minimap": False},
+            flow="replace-all",
+            length=REPLACE_ALL_SKIPS,
+            attrs={"scenario": "skips", "tick_us": REPLACE_ALL_TICK_US, "frame_phases": REPLACE_ALL_FRAME_PHASES},
+        ),
+        Case(
+            "replace-all/run-512mib",
+            "replace-all",
+            None,
+            settings={"word-wrap": True, "show-minimap": False},
+            flow="replace-all",
+            length=REPLACE_ALL_RUN_BYTES,
+            attrs={"scenario": "run", "tick_us": REPLACE_ALL_TICK_US, "frame_phases": REPLACE_ALL_FRAME_PHASES},
+        ),
+    ]
+
+
+def seed_replace_all_workspace(data_dir: Path, folder: Path, scenario: str, run_bytes: int = REPLACE_ALL_RUN_BYTES) -> None:
+    """Write the Replace All fixture into `folder` and the `workspaces.json`
+    that restores it: `skips` writes REPLACE_ALL_SKIPS long-line files, any
+    other scenario one `run_bytes` file. Synthetic text only, never a user
+    file."""
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "a-replaced.txt").write_text(f"{REPLACE_ALL_QUERY} short\n", encoding="utf-8")
+    if scenario == "skips":
+        tail = "x" * REPLACE_ALL_LONG_LINE
+        for index in range(REPLACE_ALL_SKIPS):
+            (folder / f"long-{index:05}.txt").write_text(f"{tail}{REPLACE_ALL_QUERY}\n", encoding="utf-8")
+    else:
+        line = ("a" * 127) + "\n"
+        head = f"{REPLACE_ALL_QUERY}\n"
+        with (folder / "b-large.txt").open("w", encoding="utf-8") as out:
+            out.write(head)
+            remaining = run_bytes - len(head)
+            block = line * 8192
+            while remaining >= len(block):
+                out.write(block)
+                remaining -= len(block)
+            out.write(line * (remaining // len(line)))
+            out.write("a" * (remaining % len(line)))
+    data_dir.mkdir(parents=True, exist_ok=True)
+    workspaces = {
+        "kind": "dev.cominotti.lushtext.workspace-state",
+        "version": 1,
+        "data": {
+            "current_scope": {"kind": "all"},
+            "workspaces": [
+                {
+                    "id": "responsiveness-replace-all",
+                    "name": "Replace All",
+                    "folders": [{"id": "responsiveness-replace-all-folder", "path": str(folder)}],
+                }
+            ],
+        },
+    }
+    (data_dir / "workspaces.json").write_text(json.dumps(workspaces, indent=2) + "\n", encoding="utf-8")
 
 
 def protected_cases() -> list[Case]:
@@ -3356,8 +3464,8 @@ class Runner:
         state_env = self.fresh_state(rep_dir, case.settings, backend, on_disk, populated, legacy_layout)
         log_path = rep_dir / "probe.jsonl"
         post_open = bool(case.attrs.get("post_open")) and self.post_open_enabled
-        frame_phases = POST_OPEN_FRAME_PHASES if post_open else None
-        env = self.app_env(variant, state_env, log_path, frame_phases=frame_phases)
+        frame_phases = POST_OPEN_FRAME_PHASES if post_open else case.attrs.get("frame_phases")
+        env = self.app_env(variant, state_env, log_path, tick_us=case.attrs.get("tick_us"), frame_phases=frame_phases)
         phases: list[dict] = []
         launches: list[Launch] = []
         listener = AtspiListener(rep_dir / "atspi.jsonl") if variant == "at" else None
@@ -3459,6 +3567,8 @@ class Runner:
                     ok = self.open_phase(phases, relaunch, cap, predicate="session-restore-complete") and self.standard_interactions(phases, tabs=len(files), recover=recover, ctx=ctx)
             elif case.flow == "save":
                 ok = self.save_during_validation_flow(rep_dir, env, files, phases, launches, cap, state_env)
+            elif case.flow == "replace-all":
+                ok = self.replace_all_flow(rep_dir, env, case, phases, launches, cap, state_env)
             elif case.flow == "recovery":
                 ok = self.recovery_flow(rep_dir, env, files, phases, launches, cap, attach, state_env, ctx, recover)
             elif case.flow == "seeded-recovery":
@@ -3663,6 +3773,140 @@ class Runner:
             return False, "save-never-landed"
 
         return self.run_phase(phases, "save", cap, body, extra)
+
+    def wait_content_search(self, predicate: Callable[[dict], bool], deadline: float) -> tuple[bool, str]:
+        """Poll the snapshot's `content_search` until `predicate` holds; a
+        timeout names the last state's counts (no content)."""
+        state: Any = None
+        while time.monotonic() < deadline:
+            state = find_key(self.snapshot(), "content_search")
+            if isinstance(state, dict) and predicate(state):
+                return True, "ok"
+            time.sleep(0.05)
+        keys = ("file_count", "searching", "replace_preview_mode", "replace_preview_pending", "replace_preview_count", "replace_in_flight", "skipped_files_offered")
+        last = {key: state.get(key) for key in keys} if isinstance(state, dict) else state
+        return False, f"content-search-timeout {json.dumps(last, sort_keys=True)}"
+
+    def replace_all_flow(self, rep_dir: Path, env: dict[str, str], case: Case, phases: list[dict], launches: list[Launch], cap: float, state_env: dict[str, str]) -> bool:
+        """`replace-all/*` (stream-replace-all task 9.1).
+
+        The fixture is a workspace on the disk scope (a Replace All fsyncs
+        every file it writes). An unmeasured `replace-prepare` phase shows
+        the panel, searches and builds the preview through the panel's
+        actions. Then:
+
+        - `skips`: `replace-completion` confirms and lasts until the run's
+          terminal has published its skip report (B_settle); `skipped-dialog`
+          opens Show Skipped Files over REPLACE_ALL_SKIPS rows (B_settle).
+        - `run`: `replace-run` confirms and lasts until the 512 MiB run ends;
+          its progress heartbeat runs throughout, and, with RemoteDesktop
+          input, keys are typed into the scratch tab while it runs
+          (B_interact).
+        Only files of the case's own workspace are ever written."""
+        from gi.repository import GLib
+
+        scenario = case.attrs.get("scenario")
+        self.disk_scope.mkdir(parents=True, exist_ok=True)
+        folder = Path(tempfile.mkdtemp(prefix="replace-all-", dir=self.disk_scope))
+        try:
+            seed_replace_all_workspace(Path(state_env["LUSHTEXT_DATA_DIR"]), folder, scenario)
+            scratch = Path(state_env["STATE_ROOT"]) / "scratch" / "typing.txt"
+            scratch.parent.mkdir(parents=True, exist_ok=True)
+            scratch.write_text("typing target\n", encoding="utf-8")
+            launch = self.launch(rep_dir, env, [scratch], "main")
+            launches.append(launch)
+            # The open phase lasts until the scratch tab exists and has
+            # settled, so the window's opening work (C4, C6) never lands in
+            # replace-prepare (`document-settled` holds at once with no tab).
+            def scratch_tab_shown(deadline: float) -> None:
+                while time.monotonic() < deadline:
+                    try:
+                        if (self.snapshot().get("window") or {}).get("tabs"):
+                            return
+                    except Exception:  # noqa: BLE001 - retried until the deadline
+                        pass
+                    time.sleep(0.02)
+
+            if not self.open_phase(phases, launch, cap, predicate="document-settled", after_bus=scratch_tab_shown):
+                return False
+            # The short file, plus the large file's first line in the run.
+            expected_previews = 1 if scenario == "skips" else 2
+            expected_files = 1 + (REPLACE_ALL_SKIPS if scenario == "skips" else 1)
+            # A failed body's own status, kept beside the phase's (a timeout
+            # is reported as `exceeded_cap` and would hide it).
+            diag: dict[str, Any] = {}
+
+            def recorded(body: Callable[[list[dict], float], tuple[bool, str]]) -> Callable[[list[dict], float], tuple[bool, str]]:
+                def wrapped(inj, deadline):
+                    ok, status = body(inj, deadline)
+                    if not ok:
+                        diag["failure"] = status
+                    return ok, status
+
+                return wrapped
+
+            def prepare(_inj, deadline):
+                if not self.action("win", "set-search-panel-visible", [GLib.Variant("b", True)], deadline):
+                    return False, "panel-action-failed"
+                if not self.action("win", "set-search-panel-query", [self._string(REPLACE_ALL_QUERY)], deadline):
+                    return False, "query-action-failed"
+                # The query is debounced, so `search-complete` can hold before
+                # the search starts: wait for every file's results instead.
+                ok, status = self.wait_content_search(lambda state: state.get("file_count") == expected_files and not state.get("searching"), deadline)
+                if not ok:
+                    return ok, f"search-{status}"
+                if not self.action("win", "set-search-panel-replace-query", [self._string(REPLACE_ALL_REPLACEMENT)], deadline):
+                    return False, "replace-query-action-failed"
+                if not self.action("win", "preview-search-panel-replacements", None, deadline):
+                    return False, "preview-action-failed"
+                return self.wait_content_search(
+                    lambda state: state.get("replace_preview_mode") and not state.get("replace_preview_pending") and state.get("replace_preview_count") == expected_previews,
+                    deadline,
+                )
+
+            if not self.run_phase(phases, "replace-prepare", self.install_cap_s, recorded(prepare), diag):
+                return False
+
+            def finished(state: dict) -> bool:
+                return not state.get("replace_in_flight") and not state.get("replace_preview_pending") and bool(state.get("skipped_files_offered") or state.get("has_undo_backup"))
+
+            if scenario == "skips":
+
+                def completion(_inj, deadline):
+                    if not self.action("win", "confirm-search-panel-replacements", None, deadline):
+                        return False, "confirm-action-failed"
+                    return self.wait_content_search(lambda state: finished(state) and bool(state.get("skipped_files_offered")), deadline)
+
+                if not self.run_phase(phases, "replace-completion", self.install_cap_s, recorded(completion), diag):
+                    return False
+
+                def dialog(_inj, deadline):
+                    if not self.action("win", "show-search-panel-skipped-files", None, deadline):
+                        return False, "dialog-action-failed"
+                    time.sleep(1.0)
+                    return self.wait_ready("app-startup", deadline)
+
+                return self.run_phase(phases, "skipped-dialog", cap, recorded(dialog), diag)
+
+            def run(inj, deadline):
+                if self.rd.available:
+                    focused, status = self.editor_click(inj, measured=False)
+                    if not focused:
+                        return False, f"focus-{status}"
+                if not self.action("win", "confirm-search-panel-replacements", None, deadline):
+                    return False, "confirm-action-failed"
+                while time.monotonic() < deadline:
+                    state = find_key(self.snapshot(), "content_search")
+                    if isinstance(state, dict) and finished(state):
+                        return True, "ok"
+                    if self.rd.available:
+                        self.rd.tap(ord("t"), inj)
+                    time.sleep(0.2)
+                return False, "run-timeout"
+
+            return self.run_phase(phases, "replace-run", self.install_cap_s, recorded(run), diag)
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
 
     def recovery_flow(self, rep_dir: Path, env: dict[str, str], files: list[Path], phases: list[dict], launches: list[Launch], cap: float, attach: Callable, state_env: dict[str, str], ctx: dict | None, recover: Callable[[], bool]) -> bool:
         """`recovery/small-drafts`: file-backed drafts recovered at startup.
@@ -5068,6 +5312,7 @@ def write_report(artifact_dir: Path, axiom_path: Path | None, toolkit_floors: li
     ]
     save_runs = save_during_validation_rows(rows)
     task_completions = task_completion_verdict(rows, budgets["B_SETTLE_US"])
+    replace_all = replace_all_verdict(artifact_dir, rows, budgets, calibration.get("slack_us"))
     c3 = {"measured": install}
     if install:
         over = [
@@ -5112,6 +5357,7 @@ def write_report(artifact_dir: Path, axiom_path: Path | None, toolkit_floors: li
         "install_c3": c3,
         "save_during_validation": save_runs,
         "task_completions": task_completions,
+        "replace_all": replace_all,
         "cases": summarise_cases(rows),
         "missing_artifacts": missing,
         "frameless_cases": frameless,
@@ -5162,6 +5408,13 @@ def write_report(artifact_dir: Path, axiom_path: Path | None, toolkit_floors: li
         "construction_enforced": construction_enforced,
         "c6_verdict": c6.get("verdict") if c6 else None,
         "task_completion_verdict": task_completions.get("verdict"),
+        "replace_all_verdict": replace_all.get("verdict") if replace_all else None,
+        "replace_all": [
+            {"case": rep["case"], "rep": rep["rep"], "verdict": rep["verdict"], "quantities": {q["name"]: {"worst_us": q["worst_us"], "bar_us": q["budget_us"], "count": q["count"], "verdict": q["verdict"]} for q in rep.get("quantities", [])}}
+            for rep in replace_all["reps"]
+        ]
+        if replace_all
+        else [],
     }
     # The C6 verdict is a record for docs/next/long-line-documents.md, not a
     # gate, unless RESPONSIVENESS_C6_ENFORCE=1 asks for one.
@@ -5569,6 +5822,307 @@ def render_task_completions(verdict: dict[str, Any] | None, b_settle_us: int) ->
     return lines
 
 
+# -- stream-replace-all task 9.1: Replace All against the budgets -----------
+#
+# The delta main-thread-responsiveness judges (a) the completion terminal and
+# (b) the Skipped Files opening dispatch and first frame against B_SETTLE_US,
+# (c) every progress heartbeat and (d) every typing dispatch during the
+# 512 MiB run against B_INTERACT_US. The base requirement "Workspace list
+# dispatches fit the settle budget" judges (p): every dispatch that delivers
+# the search results or installs the Replace Preview rows, B_SETTLE_US.
+# Quantities come from the probe log, never from the lane's pass status.
+# Fail closed: a quantity without its records is "not measured", never
+# "within".
+
+
+def dispatch_verdict(duration_us: int | None, dispatch_us: int | None, tick_us: int, slack_us: int, budget_us: int, covered: bool = True) -> str:
+    """One span's verdict: its exact duration, and the worst watchdog lateness
+    of an iteration overlapping it (the whole dispatch around it, A69). No
+    overlapping late record means the iteration stayed below the watchdog's
+    late threshold, within any budget here, but only when the watchdog
+    provably watched that window (`covered`, `watchdog_coverage`): an absent
+    record is otherwise no evidence."""
+    if duration_us is None:
+        return "not measured"
+    if duration_us > budget_us:
+        return "over"
+    if dispatch_us is None:
+        return "within" if covered else "not measured"
+    return classify(dispatch_us, tick_us, slack_us, budget_us)
+
+
+# Main-thread and watchdog record kinds whose timestamps show the probe log
+# continued past a judged window (a SIGKILLed app stops writing them).
+CONTINUITY_KINDS = ("late", "second", "span", "frame", "mark", "input")
+
+
+def record_time_us(record: dict) -> int | None:
+    value = record.get("t_us", record.get("end_us"))
+    return int(value) if value is not None else None
+
+
+def watchdog_coverage(parsed: dict, start_us: int, end_us: int) -> str | None:
+    """Why the absence of a late record in [start, end] is no evidence, or
+    None when it is (fail closed, stream-replace-all task 9.1): the probe
+    started, dropped no record, its watchdog was ticking (a `second` record
+    with ticks closing within a second before the window or anywhere after its
+    start), and the log continued at least one tick past the window's end, so
+    an iteration still running there would have left a record."""
+    if not parsed.get("started"):
+        return "no start record"
+    if parsed.get("dropped", 0):
+        return f"{parsed['dropped']} probe records dropped"
+    tick = int(parsed.get("tick_us", 2000))
+    if not any(int(r.get("ticks", 0)) > 0 and int(r["t_us"]) >= start_us - 1_000_000 for r in parsed["records"].get("second", [])):
+        return "no watchdog ticks recorded around the window"
+    last = max((t for kind in CONTINUITY_KINDS for r in parsed["records"].get(kind, []) if (t := record_time_us(r)) is not None), default=None)
+    if last is None or last < end_us + tick:
+        return "the probe log ends inside the window"
+    return None
+
+
+def combine_verdicts(verdicts: list[str]) -> str:
+    """Over if any is over; then indeterminate; then not measured (an empty
+    list too); within only when every quantity is within."""
+    if not verdicts:
+        return "not measured"
+    for verdict in ("over", "indeterminate", "not measured"):
+        if verdict in verdicts:
+            return verdict
+    return "within"
+
+
+def worst_overlap(parsed: dict, start_us: int, end_us: int) -> int | None:
+    return max((int(r["lateness_us"]) for r in overlapping_lates(parsed, start_us, end_us)), default=None)
+
+
+def judged_spans(parsed: dict, name: str, start_us: int, end_us: int, tick_us: int, slack_us: int, budget_us: int) -> list[dict[str, Any]]:
+    """Every span `name` that starts in [start, end], with its duration, the
+    dispatch around it and its verdict against `budget_us`."""
+    out = []
+    for record in parsed["records"]["span"]:
+        if record.get("name") != name:
+            continue
+        span_start, span_end = int(record["start_us"]), int(record["end_us"])
+        if not start_us <= span_start <= end_us:
+            continue
+        dispatch = worst_overlap(parsed, span_start, span_end)
+        gap = watchdog_coverage(parsed, span_start, span_end) if dispatch is None else None
+        out.append(
+            {
+                "start_us": span_start,
+                "duration_us": span_end - span_start,
+                "dispatch_us": dispatch,
+                "verdict": dispatch_verdict(span_end - span_start, dispatch, tick_us, slack_us, budget_us, gap is None),
+                **({"gap": gap} if gap else {}),
+            }
+        )
+    return out
+
+
+def frame_spans(parsed: dict) -> list[tuple[int, int, int]]:
+    """Each recorded frame as (start, end, layout_us): from the start of its
+    first `frame_layout` to the end of its `frame_paint`, with the sum of every
+    layout of the frame. A `frame_paint` starts where its frame's last
+    `frame_layout` ended (one stamp); a frame may lay out more than once (a
+    growth frame: the step's layout, then a short second one), and every layout
+    after the previous frame's paint belongs to it."""
+    spans = parsed["records"]["span"]
+    layouts = sorted((int(r["start_us"]), int(r["end_us"])) for r in spans if r.get("name") == "frame_layout")
+    paints = sorted((int(r["start_us"]), int(r["end_us"])) for r in spans if r.get("name") == "frame_paint")
+    ends = {end for _, end in layouts}
+    frames = []
+    previous_paint_end = None
+    for paint_start, paint_end in paints:
+        if paint_start not in ends:
+            previous_paint_end = paint_end
+            continue
+        own = [(a, b) for a, b in layouts if b <= paint_start and (previous_paint_end is None or a >= previous_paint_end)]
+        frames.append((min(a for a, _ in own), paint_end, sum(b - a for a, b in own)))
+        previous_paint_end = paint_end
+    return frames
+
+
+def quantity(name: str, bar: str, budget_us: int, items: list[dict[str, Any]], note: str = "") -> dict[str, Any]:
+    verdicts = [item["verdict"] for item in items]
+    values = [max(v for v in (item.get("duration_us"), item.get("dispatch_us")) if v is not None) for item in items if item.get("duration_us") is not None or item.get("dispatch_us") is not None]
+    gaps = sorted({item["gap"] for item in items if item.get("gap")})
+    if gaps:
+        note = "; ".join(filter(None, [note, "not measured: " + ", ".join(gaps)]))
+    elif items and not note and all(item.get("dispatch_us") is None and item.get("duration_us") is None for item in items):
+        note = "every dispatch below the watchdog's late threshold"
+    return {
+        "name": name,
+        "bar": bar,
+        "budget_us": budget_us,
+        "count": len(items),
+        "worst_us": max(values, default=None),
+        "verdict": combine_verdicts(verdicts),
+        "note": note,
+        "items": items,
+    }
+
+
+def replace_all_judgement(parsed: dict, phases: list[dict], scenario: str | None, budgets: dict, slack_us: int | None) -> dict[str, Any]:
+    """The judged quantities of one replace-all repetition (task 9.1)."""
+    tick = int(parsed.get("tick_us", 2000))
+    slack = int(slack_us) if slack_us is not None else tick
+    settle, interact = budgets["B_SETTLE_US"], budgets["B_INTERACT_US"]
+    by_name = {p["name"]: p for p in phases if p.get("start_us") is not None and p.get("end_us") is not None}
+    out: dict[str, Any] = {"scenario": scenario, "tick_us": tick, "slack_us": slack, "quantities": [], "recorded": []}
+
+    def phase_window(name: str) -> tuple[int, int] | None:
+        phase = by_name.get(name)
+        return (int(phase["start_us"]), int(phase["end_us"])) if phase else None
+
+    def lateness_item(window: tuple[int, int], budget_us: int, **fields: Any) -> dict[str, Any]:
+        """An item judged by the watchdog alone: its worst overlapping late
+        record, or, without one, within only when the watchdog covered it."""
+        worst = worst_overlap(parsed, *window)
+        if worst is not None:
+            return {**fields, "duration_us": None, "dispatch_us": worst, "verdict": classify(worst, tick, slack, budget_us)}
+        gap = watchdog_coverage(parsed, *window)
+        return {**fields, "duration_us": None, "dispatch_us": None, "verdict": "within" if gap is None else "not measured", **({"gap": gap} if gap else {})}
+
+    prepare = phase_window("replace-prepare")
+    if prepare:
+        out["quantities"].append(
+            quantity(
+                "p", "every dispatch delivering the search results or the Replace Preview rows (base requirement 'Workspace list dispatches fit the settle budget')", settle,
+                [lateness_item(prepare, settle, start_us=prepare[0])],
+                "the phase's worst watchdog lateness, after the scratch tab settled",
+            )
+        )
+    if scenario == "skips":
+        completion = phase_window("replace-completion")
+        items = judged_spans(parsed, REPLACE_COMPLETION_SPAN, *completion, tick, slack, settle) if completion else []
+        out["quantities"].append(quantity("a", "the completion terminal's dispatch", settle, items))
+        dialog = phase_window("skipped-dialog")
+        items = []
+        if dialog:
+            opening = judged_spans(parsed, SKIPPED_FILES_OPEN_SPAN, *dialog, tick, slack, settle)
+            first = judged_spans(parsed, SKIPPED_FILES_FIRST_FRAME_SPAN, *dialog, tick, slack, settle)
+            growth = [r for r in parsed["records"]["span"] if r.get("name") == SKIPPED_FILES_GROWTH_SPAN and dialog[0] <= int(r["start_us"]) <= dialog[1]]
+            for item in opening:
+                item["what"] = "opening dispatch"
+            for item in first:
+                item["what"] = "first frame"
+            items = opening + first
+            if not opening:
+                items.append({"what": "opening dispatch", "duration_us": None, "dispatch_us": None, "verdict": "not measured"})
+            if not first:
+                items.append({"what": "first frame", "duration_us": None, "dispatch_us": None, "verdict": "not measured"})
+            # The frames of the staged first publish: the frame that lays
+            # out each growth step's rows (the step runs in its update phase,
+            # before its layout). A publish that never grew (fewer rows than
+            # the staged first rows) owes no growth frame.
+            steps = [r for r in parsed["records"]["span"] if r.get("name") == SKIPPED_FILES_GROWTH_STEP_SPAN and dialog[0] <= int(r["start_us"]) <= dialog[1]]
+            frames = frame_spans(parsed)
+            if steps and not frames:
+                items.append({"what": "growth frames", "duration_us": None, "dispatch_us": None, "verdict": "not measured"})
+            elif not growth:
+                items.append({"what": "growth frames", "duration_us": None, "dispatch_us": None, "verdict": "not measured"})
+            for step in steps:
+                # The first frame that ends after the step: matched on the
+                # frame's end, so a frame whose first layout began before the
+                # step ended is still the one that lays out its rows.
+                frame = next((f for f in frames if f[1] >= int(step["end_us"])), None)
+                if frame is None:
+                    items.append({"what": "growth frame", "start_us": int(step["start_us"]), "duration_us": None, "dispatch_us": None, "verdict": "not measured"})
+                    continue
+                start, stop, _ = frame
+                dispatch = worst_overlap(parsed, start, stop)
+                gap = watchdog_coverage(parsed, start, stop) if dispatch is None else None
+                items.append({"what": "growth frame", "start_us": start, "duration_us": stop - start, "dispatch_us": dispatch, "verdict": dispatch_verdict(stop - start, dispatch, tick, slack, settle, gap is None), **({"gap": gap} if gap else {})})
+        out["quantities"].append(quantity("b", "the Skipped Files opening dispatch, its first frame and the frame of each growth step of its staged first publish", settle, items))
+        # Recorded, not judged: the dialog's other frames (its open
+        # animation), with their paint share.
+        if dialog:
+            frames = [f for f in frame_spans(parsed) if dialog[0] <= f[0] <= dialog[1]]
+            if frames:
+                worst = max(frames, key=lambda f: f[1] - f[0])
+                out["recorded"].append({"what": "worst dialog frame (layout + paint)", "phase": "skipped-dialog", "value_us": worst[1] - worst[0], "detail": f"layout {worst[2]} us of it; {len(frames)} frames"})
+    elif scenario == "run":
+        run = phase_window("replace-run")
+        beats = judged_spans(parsed, REPLACE_PROGRESS_HEARTBEAT_SPAN, *run, tick, slack, interact) if run else []
+        out["quantities"].append(quantity("c", "every progress heartbeat during the 512 MiB run", interact, beats))
+        keys = []
+        if run:
+            for record in parsed["records"]["input"]:
+                if record.get("event") != "key-press" or not run[0] <= int(record["t_us"]) <= run[1]:
+                    continue
+                # The iteration that handled the key ran past it; a tick due
+                # within one tick of the key fires late by what is left of it.
+                keys.append(lateness_item((int(record["t_us"]), int(record["t_us"]) + tick), interact, start_us=int(record["t_us"]), target=record.get("target")))
+        # Every key the lane typed must have reached the scratch editor: a
+        # key lost on the way leaves no record to judge, so a short count is
+        # not measured, never within.
+        delivery = (by_name.get("replace-run") or {}).get("delivery") or {}
+        typed = delivery.get("typed")
+        lost = None
+        if keys and not (delivery.get("verified") and typed == len(keys) and delivery.get("undelivered") == 0 and delivery.get("to_editor") == typed):
+            lost = f"{len(keys)} key records against delivery {delivery or 'unrecorded'}"
+            for item in keys:
+                item["verdict"] = "not measured"
+                item["gap"] = lost
+        out["quantities"].append(quantity("d", "every typing dispatch during the 512 MiB run", interact, keys, "" if keys else "no key reached the app (RemoteDesktop unavailable?)"))
+    # Recorded, not judged: the dispatch right after each settings flush.
+    for record in parsed["records"]["span"]:
+        if record.get("name") != SETTINGS_FLUSH_SPAN:
+            continue
+        end = int(record["end_us"])
+        follow = [int(r["lateness_us"]) for r in parsed["records"]["late"] if end - 500 <= int(r.get("ready_us", r["t_us"] - r["lateness_us"])) <= end + SETTINGS_FLUSH_FOLLOW_UP_US]
+        phase = next((name for name, p in by_name.items() if int(p["start_us"]) <= end <= int(p["end_us"])), None)
+        out["recorded"].append({"what": "dispatch after a settings flush (ui/settings_writes.rs)", "phase": phase, "value_us": max(follow, default=None), "detail": f"flush {end - int(record['start_us'])} us"})
+    out["verdict"] = combine_verdicts([q["verdict"] for q in out["quantities"]])
+    return out
+
+
+def replace_all_verdict(artifact_dir: Path, rows: list[dict], budgets: dict, slack_us: int | None) -> dict[str, Any] | None:
+    """Every replace-all repetition's judgement, read from its probe log, and
+    the run's verdict: met only when every quantity of every repetition is
+    within its bar."""
+    measured = [r for r in rows if r.get("group") == "replace-all"]
+    if not measured:
+        return None
+    reps = []
+    for row in measured:
+        log = artifact_dir / "cases" / row["case"] / row["variant"] / f"rep{row.get('rep', 0)}" / "probe.jsonl"
+        if not log.exists():
+            reps.append({"case": row["case"], "variant": row["variant"], "rep": row.get("rep", 0), "verdict": "not measured", "reason": "no probe log", "quantities": [], "recorded": []})
+            continue
+        with log.open(encoding="utf-8", errors="replace") as lines:
+            parsed = parse_probe_log(lines)
+        judged = replace_all_judgement(parsed, row.get("phases", []), (row.get("attrs") or {}).get("scenario"), budgets, slack_us)
+        reps.append({"case": row["case"], "variant": row["variant"], "rep": row.get("rep", 0), "outcome": row.get("outcome"), **judged})
+    overall = combine_verdicts([r["verdict"] for r in reps])
+    return {"reps": reps, "verdict": {"within": "met", "over": "not met"}.get(overall, f"not derived ({overall})")}
+
+
+def render_replace_all(verdict: dict[str, Any] | None) -> list[str]:
+    if not verdict:
+        return []
+    lines = [
+        "",
+        "## Replace All against the budgets (stream-replace-all task 9.1)",
+        "",
+        f"Verdict: **{verdict['verdict']}**. (a) completion and (b) Skipped Files against B_SETTLE_US, (c) heartbeats and (d) typing during the 512 MiB run against B_INTERACT_US (delta main-thread-responsiveness); (p) replace-prepare against B_SETTLE_US (base requirement 'Workspace list dispatches fit the settle budget'). A value is the larger of the span's duration and the watchdog lateness of the iteration around it; a quantity with no records is not measured.",
+        "",
+        "| Case | Rep | Tick (us) | Quantity | Count | Worst (us) | Bar (us) | Verdict | Note |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for rep in verdict["reps"]:
+        for q in rep.get("quantities", []):
+            lines.append(f"| {rep['case']} | {rep['rep']} | {rep.get('tick_us')} | ({q['name']}) {q['bar']} | {q['count']} | {q['worst_us']} | {q['budget_us']} | {q['verdict']} | {q['note']} |")
+        if not rep.get("quantities"):
+            lines.append(f"| {rep['case']} | {rep['rep']} | - | - | 0 | - | - | {rep['verdict']} | {rep.get('reason', '')} |")
+    recorded = [(rep, r) for rep in verdict["reps"] for r in rep.get("recorded", [])]
+    if recorded:
+        lines += ["", "Recorded, not judged:", "", "| Case | Rep | What | Phase | Value (us) | Detail |", "| --- | --- | --- | --- | --- | --- |"]
+        for rep, r in recorded:
+            lines.append(f"| {rep['case']} | {rep['rep']} | {r['what']} | {r['phase']} | {r['value_us']} | {r['detail']} |")
+    return lines
+
 def render_save_during_validation(runs: list[dict[str, Any]]) -> list[str]:
     if not runs:
         return []
@@ -5690,6 +6244,7 @@ def render_markdown(report: dict) -> str:
             lines.append(f"| {case['case']} | {case['variant']} | {name}{verified} | {keys['keys']} | {keys['worst_median_us']} / {keys['worst_p90_us']} | {keys['summed_median_us']} |")
     lines += render_save_during_validation(report.get("save_during_validation") or [])
     lines += render_task_completions(report.get("task_completions"), report["budgets"]["B_SETTLE_US"])
+    lines += render_replace_all(report.get("replace_all"))
     lines += ["", "## Cases", "", "| Case | Variant | Outcomes | Phase | Stall median / max (us) | Frame p95 gap | Input-to-frame max (us / frames) | IM calls / max bytes | AT events / max payload |", "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     for case in report["cases"]:
         flags = (" noisy" if case.get("noisy") else "") + (f" storage:{case.get('storage')}" if case.get("storage") not in (None, "unchecked", "clean") else "")
@@ -6296,6 +6851,121 @@ def self_test() -> int:
         if not condition:
             failures.append(label)
 
+    # stream-replace-all task 9.1: both Replace All cases in both tiers,
+    # fixture-free (the flow writes the workspace), with their phase kinds.
+    for tier in ("quick", "full"):
+        replace = {c.id: c for c in build_cases(tier) if c.group == "replace-all"}
+        expect(set(replace) == {f"replace-all/skips-{REPLACE_ALL_SKIPS}", "replace-all/run-512mib"}, f"{tier}: the two replace-all cases")
+        expect(all(c.flow == "replace-all" and c.fixture is None for c in replace.values()), f"{tier}: replace-all cases use their own flow")
+        expect(all(c.attrs.get("tick_us") == REPLACE_ALL_TICK_US and c.attrs.get("frame_phases") == REPLACE_ALL_FRAME_PHASES for c in replace.values()), f"{tier}: replace-all cases run at the 1 ms tick and record every frame's phases")
+    expect(PHASE_KINDS["replace-completion"] == "settle" and PHASE_KINDS["skipped-dialog"] == "settle", "replace-all terminals are settles")
+    expect(PHASE_KINDS["replace-run"] == "interaction" and PHASE_KINDS["replace-prepare"] == "navigation", "the run is an interaction, preparing it is not measured")
+    with tempfile.TemporaryDirectory() as replace_tmp:
+        replace_root = Path(replace_tmp)
+        seed_replace_all_workspace(replace_root / "data", replace_root / "ws", "run", run_bytes=1024 * 1024 + 77)
+        large = replace_root / "ws/b-large.txt"
+        expect(large.stat().st_size == 1024 * 1024 + 77, "the run fixture is exactly the size asked for")
+        expect(large.open("rb").readline() == f"{REPLACE_ALL_QUERY}\n".encode(), "the run fixture's one match is on its first line")
+        state = json.loads((replace_root / "data/workspaces.json").read_text(encoding="utf-8"))
+        expect(state["data"]["workspaces"][0]["folders"][0]["path"] == str(replace_root / "ws"), "the replace-all workspace restores its folder")
+    # stream-replace-all task 9.1: the judged quantities fail closed and read
+    # spans plus the dispatch around them.
+    ra_budgets = {"B_SETTLE_US": 16_000, "B_INTERACT_US": 8_000}
+    expect(dispatch_verdict(None, None, 1_000, 500, 16_000) == "not measured", "a missing span is not measured")
+    expect(dispatch_verdict(17_000, None, 1_000, 500, 16_000) == "over", "a span over its bar is over")
+    expect(dispatch_verdict(5_000, None, 1_000, 500, 16_000) == "within", "a span with no late iteration around it is within")
+    expect(dispatch_verdict(5_000, 15_500, 1_000, 500, 16_000) == "indeterminate", "L + T over the bar and L - eps under it is indeterminate")
+    expect(combine_verdicts([]) == "not measured" and combine_verdicts(["within", "not measured"]) == "not measured", "no records never reads within")
+    expect(combine_verdicts(["within", "indeterminate", "over"]) == "over", "any over decides")
+    ra_skips_phases = [
+        {"name": "replace-prepare", "start_us": 0, "end_us": 100_000},
+        {"name": "replace-completion", "start_us": 100_000, "end_us": 200_000},
+        {"name": "skipped-dialog", "start_us": 200_000, "end_us": 400_000},
+    ]
+    # A watchdog that ticked through the whole log (`watchdog_coverage`).
+    ra_alive = [{"t_us": t, "ticks": 990} for t in range(1_000_000, 4_000_001, 1_000_000)]
+    ra_skips = {
+        "tick_us": 1_000,
+        "started": True,
+        "dropped": 0,
+        "records": {
+            "late": [{"t_us": 205_000, "ready_us": 201_000, "lateness_us": 4_000}],
+            "second": ra_alive,
+            "input": [],
+            "span": [
+                {"name": REPLACE_COMPLETION_SPAN, "start_us": 150_000, "end_us": 152_000},
+                {"name": SKIPPED_FILES_OPEN_SPAN, "start_us": 201_000, "end_us": 204_000},
+                {"name": SKIPPED_FILES_FIRST_FRAME_SPAN, "start_us": 210_000, "end_us": 215_000},
+                {"name": SKIPPED_FILES_GROWTH_SPAN, "start_us": 201_000, "end_us": 230_000},
+                {"name": SKIPPED_FILES_GROWTH_STEP_SPAN, "start_us": 239_000, "end_us": 239_100},
+                {"name": "frame_layout", "start_us": 210_000, "end_us": 213_000},
+                {"name": "frame_paint", "start_us": 213_000, "end_us": 215_000},
+                # A growth frame lays out twice: the step's rows, then a short
+                # second layout that the paint follows.
+                {"name": "frame_layout", "start_us": 240_000, "end_us": 246_000},
+                {"name": "frame_layout", "start_us": 246_500, "end_us": 247_000},
+                {"name": "frame_paint", "start_us": 247_000, "end_us": 258_000},
+                {"name": "frame_layout", "start_us": 260_000, "end_us": 261_000},
+                {"name": "frame_paint", "start_us": 261_000, "end_us": 262_000},
+            ],
+        },
+    }
+    expect(frame_spans(ra_skips) == [(210_000, 215_000, 3_000), (240_000, 258_000, 6_500), (260_000, 262_000, 1_000)], "a frame runs from its first layout to its paint and sums every layout of it")
+    judged = replace_all_judgement(ra_skips, ra_skips_phases, "skips", ra_budgets, 500)
+    by_q = {q["name"]: q for q in judged["quantities"]}
+    expect(by_q["a"]["verdict"] == "within" and by_q["a"]["count"] == 1, "(a) reads the completion span")
+    expect(by_q["b"]["verdict"] == "over" and by_q["b"]["worst_us"] == 18_000, "(b) judges the whole frame that lays out a growth step (18 ms, both layouts) against B_settle")
+    expect(sum(1 for i in by_q["b"]["items"] if i.get("what") == "growth frame") == 1, "(b) takes the frame of each growth step, not the animation's other frames")
+    expect(judged["recorded"][0]["value_us"] == 18_000 and judged["recorded"][0]["detail"].startswith("layout 6500 us"), "the worst dialog frame records every layout of it")
+    # A step that ends inside its frame's first layout still matches that frame.
+    inside = {**ra_skips, "records": {**ra_skips["records"], "span": [dict(r, end_us=241_000) if r["name"] == SKIPPED_FILES_GROWTH_STEP_SPAN else r for r in ra_skips["records"]["span"]]}}
+    inside_b = {q["name"]: q for q in replace_all_judgement(inside, ra_skips_phases, "skips", ra_budgets, 500)["quantities"]}["b"]
+    expect(inside_b["worst_us"] == 18_000, "a growth step is matched to the frame that ends after it")
+    judged_missing = replace_all_judgement({"tick_us": 1_000, "started": True, "dropped": 0, "records": {"late": [], "second": ra_alive, "input": [], "span": []}}, ra_skips_phases, "skips", ra_budgets, 500)
+    expect(judged_missing["verdict"] == "not measured", "a skips run without spans is not measured")
+    # Fail closed: without proof the watchdog watched a window, no late
+    # record there is no evidence of a short dispatch.
+    for label, broken in (
+        ("dropped records", {**ra_skips, "dropped": 3}),
+        ("no start record", {**ra_skips, "started": False}),
+        ("no watchdog ticks", {**ra_skips, "records": {**ra_skips["records"], "second": []}}),
+    ):
+        verdicts = {q["name"]: q["verdict"] for q in replace_all_judgement(broken, ra_skips_phases, "skips", ra_budgets, 500)["quantities"]}
+        expect(verdicts["p"] == "not measured" and verdicts["a"] == "not measured", f"{label}: an absent late record is not measured, never within")
+    truncated = {**ra_skips, "records": {**ra_skips["records"], "late": [], "second": [{"t_us": 100_000, "ticks": 990}], "span": [r for r in ra_skips["records"]["span"] if r["start_us"] < 153_000]}}
+    expect({q["name"]: q["verdict"] for q in replace_all_judgement(truncated, ra_skips_phases, "skips", ra_budgets, 500)["quantities"]}["a"] == "not measured", "a log that ends inside the window is not measured")
+    ra_delivered = {"typed": 2, "undelivered": 0, "to_editor": 2, "verified": True}
+    ra_run_phases = [{"name": "replace-prepare", "start_us": 0, "end_us": 100_000}, {"name": "replace-run", "start_us": 100_000, "end_us": 2_000_000, "delivery": ra_delivered}]
+    ra_run = {
+        "tick_us": 1_000,
+        "started": True,
+        "dropped": 0,
+        "records": {
+            "late": [{"t_us": 610_000, "ready_us": 600_500, "lateness_us": 9_500}],
+            "second": ra_alive,
+            "input": [{"event": "key-press", "t_us": 600_000, "target": "editor"}, {"event": "key-press", "t_us": 900_000, "target": "editor"}],
+            "span": [{"name": REPLACE_PROGRESS_HEARTBEAT_SPAN, "start_us": 700_000, "end_us": 700_300}],
+        },
+    }
+    judged_run = {q["name"]: q for q in replace_all_judgement(ra_run, ra_run_phases, "run", ra_budgets, 500)["quantities"]}
+    expect(judged_run["c"]["verdict"] == "within" and judged_run["c"]["count"] == 1, "(c) reads each heartbeat span")
+    expect(judged_run["d"]["verdict"] == "over" and judged_run["d"]["worst_us"] == 9_500, "(d) takes the iteration that ran past a key")
+    quiet_run = {**ra_run, "records": {**ra_run["records"], "late": []}}
+    expect({q["name"]: q["verdict"] for q in replace_all_judgement(quiet_run, ra_run_phases, "run", ra_budgets, 500)["quantities"]} == {"p": "within", "c": "within", "d": "within"}, "keys with no late iteration around them are within while the watchdog ticked")
+    for label, delivery in (
+        ("a key the lane typed never arrived", {**ra_delivered, "typed": 3, "to_editor": 3}),
+        ("a key went elsewhere", {**ra_delivered, "to_editor": 1}),
+        ("delivery unverified", {**ra_delivered, "verified": False}),
+        ("no delivery record", None),
+    ):
+        phases = [ra_run_phases[0], {**ra_run_phases[1], "delivery": delivery}]
+        lost = {q["name"]: q for q in replace_all_judgement(quiet_run, phases, "run", ra_budgets, 500)["quantities"]}["d"]
+        expect(lost["verdict"] == "not measured" and "delivery" in lost["note"], f"(d) is not measured when {label}")
+    blind_run = {**quiet_run, "dropped": 1}
+    blind = {q["name"]: q for q in replace_all_judgement(blind_run, ra_run_phases, "run", ra_budgets, 500)["quantities"]}
+    expect(blind["d"]["verdict"] == "not measured" and "dropped" in blind["d"]["note"], "(d) with dropped probe records is not measured, and says why")
+    no_beats = replace_all_judgement({"tick_us": 1_000, "started": True, "dropped": 0, "records": {"late": [], "second": ra_alive, "input": [], "span": []}}, ra_run_phases, "run", ra_budgets, 500)
+    expect({q["name"]: q["verdict"] for q in no_beats["quantities"]} == {"p": "within", "c": "not measured", "d": "not measured"}, "a run with no heartbeat or no key is not measured")
     # `save/during-validation` runs in both tiers, and its run rows reach the
     # report table (spawn-completion-priority D5).
     for tier in ("quick", "full"):

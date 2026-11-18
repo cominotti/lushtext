@@ -226,6 +226,13 @@ impl LushtextSearchBar {
             .unwrap_or(false)
     }
 
+    /// Stage 2 — prefill the query, options and replacement from a workspace
+    /// Replace All run (`win.replace-in-editor`, stream-replace-all design D7).
+    /// Nothing is replaced: the user reviews and applies in the bar.
+    pub fn prefill_replace(&self, prefill: &policy::EditorReplacePrefill) {
+        execution::prefill_replace(self, prefill);
+    }
+
     /// Stage 5 — replace the current match and advance to the next one.
     pub fn replace_current(&self) {
         execution::replace_selected_match(self);

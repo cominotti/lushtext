@@ -916,3 +916,22 @@ pub mod a122 {
     };
     pub use crate::probes::text::TextViewFixture;
 }
+
+/// The regex search and replacements the A127 probe runs, for its sample.
+pub mod a127 {
+    pub use crate::probes::a127::{DOCUMENT, EXPANSIONS, PATTERN, regex_search, replace_all_with};
+}
+
+/// The word-boundary searches the A128 probe compares, for its sample.
+pub mod a128 {
+    pub use crate::probes::a128::{
+        ASCII_DOCUMENT, NEEDLE, UNICODE_DOCUMENT, UNICODE_NEEDLE, ascii_whole_word_offsets,
+        unicode_whole_word_offsets, word_boundary_offsets,
+    };
+}
+
+/// The passed-through regex constructs the A129 probe compiles, for its
+/// sample.
+pub mod a129 {
+    pub use crate::probes::a129::{CONSTRUCTS, DOCUMENT, first_match};
+}

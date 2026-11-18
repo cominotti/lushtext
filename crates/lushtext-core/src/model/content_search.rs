@@ -476,6 +476,10 @@ pub struct ReplacePreviewOutcome {
     pub charged_bytes: usize,
     /// First resource limit that prevented admission, if any.
     pub limiting_reason: Option<ReplacePreviewLimit>,
+    /// Every file with a match that cannot be confirmed, in first-seen order,
+    /// with its reason class, count and first line, for the Replace All skip
+    /// report (design D7). One per file; paths only, never text.
+    pub ineligible_files: Vec<ReplacePreviewIneligibleFile>,
 }
 
 impl ReplacePreviewOutcome {
@@ -507,10 +511,45 @@ impl ReplacePreviewOutcome {
         self,
         checked_match_ids: &HashSet<SearchMatchId>,
     ) -> Vec<Replacement> {
-        self.replacements
-            .into_iter()
-            .filter(|replacement| checked_match_ids.contains(&replacement.match_id))
-            .collect()
+        self.into_checked_run(checked_match_ids).replacements
+    }
+
+    /// The checked rows, with every file the preview could not confirm, as one
+    /// Replace All request (design D7).
+    #[must_use]
+    pub fn into_checked_run(self, checked_match_ids: &HashSet<SearchMatchId>) -> CheckedReplaceRun {
+        CheckedReplaceRun {
+            replacements: self
+                .replacements
+                .into_iter()
+                .filter(|replacement| checked_match_ids.contains(&replacement.match_id))
+                .collect(),
+            ineligible: self.ineligible_files,
+        }
+    }
+}
+
+/// What one confirmed Replace All applies: the checked preview rows, and the
+/// files whose matches the preview could not confirm, which the run reports.
+#[derive(Debug, Clone, Default)]
+pub struct CheckedReplaceRun {
+    /// Checked rows of the current preview generation.
+    pub replacements: Vec<Replacement>,
+    /// Files with unconfirmable matches, folded into the skip report.
+    pub ineligible: Vec<ReplacePreviewIneligibleFile>,
+}
+
+impl CheckedReplaceRun {
+    /// Whether nothing would be replaced.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.replacements.is_empty()
+    }
+
+    /// Number of checked rows.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.replacements.len()
     }
 }
 
@@ -703,6 +742,253 @@ pub struct ReplaceResult {
     pub affected_open_paths: Vec<PathBuf>,
 }
 
+/// Charged path bytes the Replace All skip list keeps (design D7).
+///
+/// Kind: presentation cap; a power of two. One run touches at most
+/// `MAX_REPLACE_PREVIEW_ROWS` files, and at a typical 100-byte path every one
+/// of them is listed; only a path-heavy worst case is cut, and the report then
+/// says how many it did not list.
+pub const MAX_REPLACE_SKIP_LIST_BYTES: usize = 4 * 1024 * 1024;
+
+/// Why Replace All did not replace one file (design D7).
+///
+/// The variants are in the precedence order a file with two reasons is
+/// reported by: [`Self::UnsavedChanges`] first (decided before any worker
+/// runs), then the preview's reasons for a file none of whose matches was
+/// eligible, then the worker's in the order it checks them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ReplaceSkipReason {
+    /// The file is open with unsaved changes or an active save.
+    UnsavedChanges,
+    /// Its matches are on lines longer than the search excerpt.
+    LineTooLong,
+    /// Its preview rows violated an invariant of preview generation.
+    InvalidPreview,
+    /// It could not be read, locked or examined.
+    Unreadable,
+    /// It, or its replacement output, is larger than the largest file LushText opens.
+    LargerThanOpenTier,
+    /// It is not valid UTF-8.
+    NotUtf8,
+    /// A matched line changed after the search.
+    ChangedSinceSearch,
+    /// Its undo body or output would not fit the free disk space.
+    NotEnoughDiskSpace,
+    /// Its undo journal entry could not be written.
+    UndoJournalFailed,
+    /// Another program changed it while Replace All was rewriting it.
+    ChangedDuringReplace,
+    /// Writing its new bytes failed; the file keeps its previous bytes.
+    WriteFailed,
+}
+
+impl ReplaceSkipReason {
+    /// Every reason, in precedence order.
+    pub const ALL: [Self; 11] = [
+        Self::UnsavedChanges,
+        Self::LineTooLong,
+        Self::InvalidPreview,
+        Self::Unreadable,
+        Self::LargerThanOpenTier,
+        Self::NotUtf8,
+        Self::ChangedSinceSearch,
+        Self::NotEnoughDiskSpace,
+        Self::UndoJournalFailed,
+        Self::ChangedDuringReplace,
+        Self::WriteFailed,
+    ];
+
+    /// Dense index into [`Self::ALL`].
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+
+    /// Stable machine name used by automation snapshots.
+    #[must_use]
+    pub const fn automation_name(self) -> &'static str {
+        match self {
+            Self::UnsavedChanges => "unsaved-changes",
+            Self::LineTooLong => "line-too-long",
+            Self::InvalidPreview => "invalid-preview",
+            Self::Unreadable => "unreadable",
+            Self::LargerThanOpenTier => "larger-than-open-tier",
+            Self::NotUtf8 => "not-utf8",
+            Self::ChangedSinceSearch => "changed-since-search",
+            Self::NotEnoughDiskSpace => "not-enough-disk-space",
+            Self::UndoJournalFailed => "undo-journal-failed",
+            Self::ChangedDuringReplace => "changed-during-replace",
+            Self::WriteFailed => "write-failed",
+        }
+    }
+}
+
+/// One file the skip list names. Paths and reason classes only, never text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplaceSkippedFile {
+    /// The file.
+    pub path: PathBuf,
+    /// Why it was not (fully) replaced.
+    pub reason: ReplaceSkipReason,
+    /// First skipped line, one-based, when one is known.
+    pub first_line: Option<u64>,
+    /// For a partly replaced file, the matches on long lines left unreplaced;
+    /// `None` for a file that was not replaced at all.
+    pub matches_left: Option<usize>,
+}
+
+/// Per-file skip facts that preview generation decided, folded into the report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplacePreviewIneligibleFile {
+    /// The file.
+    pub path: PathBuf,
+    /// `LineTooLong` or `InvalidPreview`.
+    pub reason: ReplaceSkipReason,
+    /// Ineligible matches in the file.
+    pub matches: usize,
+    /// First ineligible line, one-based.
+    pub first_line: u64,
+}
+
+/// Every skipped and partly replaced file of one Replace All run (design D7).
+///
+/// Counts are exact; the list is bounded by [`MAX_REPLACE_SKIP_LIST_BYTES`] of
+/// charged path bytes, and [`Self::not_listed`] counts what it cut.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReplaceSkipReport {
+    counts: [usize; 11],
+    partly_replaced: usize,
+    files: Vec<ReplaceSkippedFile>,
+    charged_bytes: usize,
+    not_listed: usize,
+}
+
+impl ReplaceSkipReport {
+    /// Conservative charge of one listed file: its row plus its path bytes.
+    #[must_use]
+    pub fn charge_of(path: &Path) -> usize {
+        std::mem::size_of::<ReplaceSkippedFile>().saturating_add(path.as_os_str().len())
+    }
+
+    /// Record one file that was not replaced.
+    pub fn record_skipped(
+        &mut self,
+        path: &Path,
+        reason: ReplaceSkipReason,
+        first_line: Option<u64>,
+    ) {
+        self.counts[reason.index()] = self.counts[reason.index()].saturating_add(1);
+        self.list(ReplaceSkippedFile {
+            path: path.to_path_buf(),
+            reason,
+            first_line,
+            matches_left: None,
+        });
+    }
+
+    /// The report of a run that never started because every file it targets
+    /// is open with unsaved changes or an active save: one `UnsavedChanges`
+    /// row per distinct file, at the first line its replacements target.
+    #[must_use]
+    pub fn unsaved_only(replacements: &[Replacement]) -> Self {
+        let mut first_lines: std::collections::BTreeMap<&Path, u64> =
+            std::collections::BTreeMap::new();
+        for replacement in replacements {
+            first_lines
+                .entry(replacement.path.as_path())
+                .and_modify(|line| *line = (*line).min(replacement.line_number))
+                .or_insert(replacement.line_number);
+        }
+        let mut report = Self::default();
+        for (path, line) in first_lines {
+            report.record_skipped(path, ReplaceSkipReason::UnsavedChanges, Some(line));
+        }
+        report.finish();
+        report
+    }
+
+    /// Record one replaced file whose matches on long lines were not replaced.
+    pub fn record_partly_replaced(
+        &mut self,
+        path: &Path,
+        reason: ReplaceSkipReason,
+        first_line: u64,
+        matches_left: usize,
+    ) {
+        self.partly_replaced = self.partly_replaced.saturating_add(1);
+        self.list(ReplaceSkippedFile {
+            path: path.to_path_buf(),
+            reason,
+            first_line: Some(first_line),
+            matches_left: Some(matches_left),
+        });
+    }
+
+    fn list(&mut self, file: ReplaceSkippedFile) {
+        let charge = Self::charge_of(&file.path);
+        if self.charged_bytes.saturating_add(charge) > MAX_REPLACE_SKIP_LIST_BYTES {
+            self.not_listed = self.not_listed.saturating_add(1);
+            return;
+        }
+        self.charged_bytes += charge;
+        self.files.push(file);
+    }
+
+    /// Sort the list for presentation: by reason, then by path.
+    pub fn finish(&mut self) {
+        self.files
+            .sort_by(|a, b| a.reason.cmp(&b.reason).then_with(|| a.path.cmp(&b.path)));
+    }
+
+    /// Exact number of files skipped for `reason` (partly replaced files excluded).
+    #[must_use]
+    pub fn count(&self, reason: ReplaceSkipReason) -> usize {
+        self.counts[reason.index()]
+    }
+
+    /// Exact number of files not replaced, over every reason.
+    #[must_use]
+    pub fn skipped_total(&self) -> usize {
+        self.counts.iter().copied().fold(0, usize::saturating_add)
+    }
+
+    /// Exact number of replaced files with matches left on long lines.
+    #[must_use]
+    pub const fn partly_replaced(&self) -> usize {
+        self.partly_replaced
+    }
+
+    /// The listed files, in [`Self::finish`] order once finished.
+    #[must_use]
+    pub fn files(&self) -> &[ReplaceSkippedFile] {
+        &self.files
+    }
+
+    /// Listed and unlisted files together.
+    #[must_use]
+    pub fn total(&self) -> usize {
+        self.skipped_total().saturating_add(self.partly_replaced)
+    }
+
+    /// Files the list does not name because of its byte bound.
+    #[must_use]
+    pub const fn not_listed(&self) -> usize {
+        self.not_listed
+    }
+
+    /// Charged bytes the list retains, at most [`MAX_REPLACE_SKIP_LIST_BYTES`].
+    #[must_use]
+    pub const fn charged_bytes(&self) -> usize {
+        self.charged_bytes
+    }
+
+    /// Whether the run skipped or partly replaced anything.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.total() == 0
+    }
+}
+
 /// Generate replacement previews from search matches.
 ///
 /// Pure function — no I/O, no GTK. For each `SearchMatch`, produces a `Replacement`
@@ -770,6 +1056,35 @@ pub fn generate_replacement_preview_with_budget_and_cancel(
     )
 }
 
+/// Count one unconfirmable match and fold it into its file's skip entry.
+fn record_ineligible<'m>(
+    outcome: &mut ReplacePreviewOutcome,
+    index: &mut std::collections::HashMap<&'m Path, usize>,
+    search_match: &'m SearchMatch,
+    reason: ReplacePreviewSkipReason,
+) {
+    outcome.skipped.increment(reason);
+    let skip_reason = match reason {
+        ReplacePreviewSkipReason::TruncatedSource => ReplaceSkipReason::LineTooLong,
+        ReplacePreviewSkipReason::RegexRangeMismatch => ReplaceSkipReason::InvalidPreview,
+    };
+    let path: &Path = &search_match.path;
+    if let Some(&slot) = index.get(path) {
+        let file = &mut outcome.ineligible_files[slot];
+        file.matches = file.matches.saturating_add(1);
+        file.first_line = file.first_line.min(search_match.line_number);
+        file.reason = file.reason.min(skip_reason);
+    } else {
+        index.insert(path, outcome.ineligible_files.len());
+        outcome.ineligible_files.push(ReplacePreviewIneligibleFile {
+            path: search_match.path.to_path_buf(),
+            reason: skip_reason,
+            matches: 1,
+            first_line: search_match.line_number,
+        });
+    }
+}
+
 fn generate_replacement_preview_impl(
     matches: &[SearchMatch],
     query: &str,
@@ -797,7 +1112,10 @@ fn generate_replacement_preview_impl(
         skipped: ReplacePreviewSkipCounts::default(),
         charged_bytes: 0,
         limiting_reason: None,
+        ineligible_files: Vec::new(),
     };
+    let mut ineligible_index: std::collections::HashMap<&Path, usize> =
+        std::collections::HashMap::new();
     let mut budget_exhausted = false;
     let mut literal_charged = false;
 
@@ -806,9 +1124,12 @@ fn generate_replacement_preview_impl(
             break;
         }
         if m.line_truncated {
-            outcome
-                .skipped
-                .increment(ReplacePreviewSkipReason::TruncatedSource);
+            record_ineligible(
+                &mut outcome,
+                &mut ineligible_index,
+                m,
+                ReplacePreviewSkipReason::TruncatedSource,
+            );
             continue;
         }
         let original_line = m.line_content.clone();
@@ -820,9 +1141,12 @@ fn generate_replacement_preview_impl(
                 .as_ref()
                 .is_some_and(|regex| regex.captures(&original_line[start..end]).is_none())
             {
-                outcome
-                    .skipped
-                    .increment(ReplacePreviewSkipReason::RegexRangeMismatch);
+                record_ineligible(
+                    &mut outcome,
+                    &mut ineligible_index,
+                    m,
+                    ReplacePreviewSkipReason::RegexRangeMismatch,
+                );
             } else {
                 outcome.omitted_eligible = outcome.omitted_eligible.saturating_add(1);
             }
@@ -870,9 +1194,12 @@ fn generate_replacement_preview_impl(
             } else {
                 // Regex didn't match the extracted range — skip this match rather
                 // than inserting unexpanded backreference syntax ($1/$2) literally.
-                outcome
-                    .skipped
-                    .increment(ReplacePreviewSkipReason::RegexRangeMismatch);
+                record_ineligible(
+                    &mut outcome,
+                    &mut ineligible_index,
+                    m,
+                    ReplacePreviewSkipReason::RegexRangeMismatch,
+                );
                 continue;
             }
         } else {

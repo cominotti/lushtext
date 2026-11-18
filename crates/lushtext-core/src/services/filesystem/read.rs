@@ -25,6 +25,46 @@ pub enum BoundedFileReadError {
     Io(#[from] std::io::Error),
 }
 
+/// Failures from [`stream_bounded`].
+#[derive(Debug, thiserror::Error)]
+pub enum BoundedStreamError<E> {
+    /// The caller cancelled between chunks.
+    #[error("bounded file stream cancelled")]
+    Cancelled,
+    /// The file holds at least one byte past the accepted limit.
+    #[error("file exceeds the supported {byte_limit}-byte limit")]
+    LimitExceeded { byte_limit: u64 },
+    /// Opening or reading the file failed.
+    #[error(transparent)]
+    Io(std::io::Error),
+    /// The consumer refused a chunk.
+    #[error("bounded file stream consumer stopped")]
+    Consumer(E),
+}
+
+/// Stream a file to `consume` in chunks, never past `byte_limit`.
+///
+/// Memory stays one chunk of `chunk_bytes` whatever the file's size. A file
+/// that grows past the limit while it is read fails with `LimitExceeded`
+/// after at most the limit was streamed. Returns the bytes streamed.
+///
+/// # Errors
+///
+/// Returns a typed cancellation, oversize, I/O or consumer failure.
+pub fn stream_bounded<F, C, E>(
+    path: &Path,
+    byte_limit: u64,
+    chunk_bytes: usize,
+    cancelled: F,
+    consume: C,
+) -> Result<u64, BoundedStreamError<E>>
+where
+    F: FnMut() -> bool,
+    C: FnMut(&[u8]) -> Result<(), E>,
+{
+    sys::stream_bounded(path, byte_limit, chunk_bytes, cancelled, consume)
+}
+
 /// Read all bytes from a file.
 ///
 /// # Errors

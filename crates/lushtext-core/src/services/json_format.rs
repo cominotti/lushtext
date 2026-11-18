@@ -41,6 +41,10 @@ pub const KIND_MIGRATION_LEDGER: &str = "dev.cominotti.lushtext.migration-ledger
 pub const KIND_REPLACE_UNDO_MANIFEST: &str = "dev.cominotti.lushtext.replace-all-undo-manifest";
 /// Stable document kind for one Replace All undo journal entry.
 pub const KIND_REPLACE_UNDO_ENTRY: &str = "dev.cominotti.lushtext.replace-all-undo-entry";
+/// Stable document kind for one streamed Replace All undo journal entry: a
+/// descriptor whose original bytes live in a raw body file (design D3).
+pub const KIND_REPLACE_UNDO_STREAM_ENTRY: &str =
+    "dev.cominotti.lushtext.replace-all-undo-stream-entry";
 /// Stable document kind for the inactive Replace All cleanup marker.
 pub const KIND_REPLACE_UNDO_CLEANUP_MARKER: &str =
     "dev.cominotti.lushtext.replace-all-undo-cleanup-marker";

@@ -13,6 +13,9 @@ use crate::services::durable_write;
 use super::{sys, types::WriteLabel};
 
 pub(crate) use durable_write::parent_or_current;
+/// The syncs' wall time in test builds, for the Replace All M9 measurement.
+#[cfg(test)]
+pub(crate) use durable_write::sync_timing;
 pub(crate) use durable_write::temp_name_launch_nonce;
 #[cfg(test)]
 pub(crate) use durable_write::unique_temp_path;
@@ -85,6 +88,38 @@ where
     F: FnOnce(&mut dyn Write) -> std::io::Result<()>,
 {
     durable_write::atomic_write_stream_classified(path, label.as_str(), write_content)
+}
+
+/// Stream a durable replacement of a user-workspace file, then sweep its own
+/// crash leftovers.
+///
+/// The streaming counterpart of [`atomic_replace_workspace_file`]: `path` must
+/// already be the resolved target identity ([`resolve_target_identity`]), so a
+/// symlink keeps writing its target, and the sweep runs only after the write
+/// succeeded. A producer error is a `BeforeRename` failure: nothing is renamed
+/// and the temp file is removed.
+///
+/// # Errors
+///
+/// Returns the classified durable write error of [`atomic_replace_stream`].
+pub fn atomic_replace_workspace_file_stream<F>(
+    path: &Path,
+    label: WriteLabel,
+    write_content: F,
+) -> Result<(), DurableWriteError>
+where
+    F: FnOnce(&mut dyn Write) -> std::io::Result<()>,
+{
+    atomic_replace_stream(path, label, write_content)?;
+    let report = super::leftovers::sweep_target_leftovers(path);
+    if report.removed > 0 {
+        tracing::debug!(
+            "Removed {} stale durable-write leftover(s) beside {}",
+            report.removed,
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 /// Create a directory tree and sync newly-created directory entries.
