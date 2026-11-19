@@ -129,12 +129,12 @@ Every commit goes through `scripts/heavy.sh --mem none -- git commit -F <file>`,
 
 ## 5. Final gates and PR
 
-- [ ] 5.1 Run these on the final tree through `scripts/gate-trees.sh record` (design D1):
+- [x] 5.1 Run these on the final tree through `scripts/gate-trees.sh record` (design D1):
   - `scripts/heavy.sh -- make check-policy`;
   - `scripts/heavy.sh -- make check-agent-skills` and `scripts/heavy.sh -- make check-agent-docs` (neither is in `check-policy`);
   - `openspec validate adopt-faster-change-flow --strict`;
   - `openspec validate --all` (errors gate).
-- [ ] 5.2 Open the PR. Its body lists:
+- [x] 5.2 Open the PR. Its body lists:
   - the local evidence;
   - the "Quality floor" table;
   - that in-flight runs keep their session scripts until their next stage boundary;
