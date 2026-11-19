@@ -33,10 +33,10 @@ Start: only after every edit, spec and queued change of the programme coordinato
   - recycle a directory row and assert the old expanded handler no longer fires;
   - recreate a `TreeListRow` for the same item and assert one watch;
   - keep two rows alive for one item and assert one handler each;
-  - collapse, by a reorder drag, a folder row that has no expansion handler, then expand it as a user would and assert its watch restarts.
+  - collapse a folder row by a reorder drag, then expand it as a user would and assert its watch restarts.
   
-  Verify on `main`. The drag-collapse test is expected to fail there; say which others already pass.
-- [ ] 3.2 Build `WorkspaceTreeRow` (design D2), move the accessibility hook into it, and replace the two markers with weak references (design D3). Re-key `row_factory.rs` in both visual-policy implementations with parity assertions. Verify with the sidebar shards, `workspace_tree_virtualization`, `make check-visual-proof-policy`'s self-tests and `make visual-geometry-smoke`, including the `workspace-tree-reveal` scenario.
+  Verify on `main` and say which tests already pass there (the drag-collapse test is expected to). If two live rows for one item cannot be built through public GTK paths, record why and cover the map's identity check with a unit test instead.
+- [ ] 3.2 Build `WorkspaceTreeRow` (design D2), move the accessibility hook into it, and replace the two markers with the identity-checked map and the scoped guard (design D3). Re-key `row_factory.rs` in both visual-policy implementations with parity assertions. Verify with the sidebar shards, `workspace_tree_virtualization`, `make check-visual-proof-policy`'s self-tests and `make visual-geometry-smoke`, including the `workspace-tree-reveal` scenario.
 - [ ] 3.3 Run the gate order and the three smokes. Commit through `heavy.sh`, signed, and push.
 
 ## 4. Open dialog
@@ -48,7 +48,7 @@ Start: only after every edit, spec and queued change of the programme coordinato
 ## 5. Audit and documentation
 
 - [ ] 5.1 Add the object-data rule (design D5) to `scripts/check-signal-connections.py` with its self-test. Verify that `make check-signal-connections` passes with zero sites and fails on each planted case.
-- [ ] 5.2 Update the `gtk-lush-signals` retained-site audit, `.agents/rules/widget-wiring.md` ("Signal And Binding Lifetimes", "Large Lists", "Realized List Rows"), `.agents/rules/ui.md` ("Realized List Rows", "File Tree"), `ui/sidebar/AGENTS.md` and the workflow matrix rows whose files moved. Verify with `make check-agent-docs` and `make check-workflow-boundaries`.
+- [ ] 5.2 Update the `gtk-lush-signals` retained-site audit, `.agents/rules/widget-wiring.md` ("Signal And Binding Lifetimes", including binding groups if chosen; "Large Lists"; "Realized List Rows"), `.agents/rules/ui.md` ("Realized List Rows", "File Tree"), `ui/sidebar/AGENTS.md` and the workflow matrix rows whose files moved. Verify with `make check-agent-docs` and `make check-workflow-boundaries`.
 - [ ] 5.3 Commit through `heavy.sh`, signed, and push.
 
 ## Workflow follow-up

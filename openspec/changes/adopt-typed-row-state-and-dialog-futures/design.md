@@ -27,7 +27,8 @@ See `proposal.md`, "Why". Constraints:
 
 ### D2. The row form comes from the spike
 
-- **Bindings in a row widget.** A row that rebinds the same property bindings to each item may own them through one `glib::BindingGroup` (available under the workspace's `glib` feature `v2_88`), built once at construction and retargeted with `set_source` at bind and unbind, instead of a `BindingBag` rebuilt per bind. The spike's rebind case decides which is used; the retained-site audit lists each binding-group row.
+- **Bindings in a row widget.** No spec names `BindingBag`; `.agents/rules/widget-wiring.md` ("Signal And Binding Lifetimes") prescribes it for row-local bindings and is updated in task 5.2 if a binding group is chosen.
+- **Binding groups.** A row that rebinds the same property bindings to each item may own them through one `glib::BindingGroup` (available under the workspace's `glib` feature `v2_88`), built once at construction and retargeted with `set_source` at bind and unbind, instead of a `BindingBag` rebuilt per bind. The spike's rebind case decides which is used; the retained-site audit lists each binding-group row.
 - **Template or Rust subclass** (the spike chose one). Each factory gets a row widget (`SearchResultRow`, `PaletteRow`, `OpenRecentRow`, `SkippedFileRow`, `NotesBrowserRow`, `WorkspaceTreeRow`).
   - **Shape.** Typed children and `bind(&item)` / `unbind()` methods. The factory's `setup` creates the row, `bind` and `unbind` call it.
   - **Bags.** Row-owned `BindingBag` and `SignalBag` live in the row's `imp` and are cleared in `unbind`.
@@ -54,8 +55,8 @@ See `proposal.md`, "Why". Constraints:
     - a `WeakRef` field on `FileTreeItem`: it answers "the last row watched for this item", not "this row has a handler", and installs twice when two rows are alive;
     - a strong `HashSet`: it retains collapsed rows;
     - a bare address set: it is fooled by pointer reuse.
-- **Reorder marker.** `SUPPRESS_EXPANDED_WATCH_KEY` suppresses one watch restart when a drag collapses a folder. Today the caller marks the row and calls `set_expanded(false)` (`reorder_execution.rs:788-789`). The marker is consumed only by the row's watch handler, so a row without one keeps the marker armed, and its next real expansion is suppressed. That latent bug exists on `main` too.
-  - **Replacement.** A scoped guard: `SuppressExpandedWatch::for_row(&section, &row)` stores that row's `WeakRef` in a section slot, and its `Drop` clears the slot. The caller holds it only around `row.set_expanded(false)`, so the slot can never outlive the collapse it was set for, whether or not a handler consumed it.
+- **Reorder marker.** `SUPPRESS_EXPANDED_WATCH_KEY` suppresses one watch restart when a drag collapses a folder. Today the caller marks the row and calls `set_expanded(false)` (`reorder_execution.rs:788-789`). The marker is consumed only by the row's watch handler. On `main` every row of the watched model gets that handler when the model is mounted and at each splice (`watch.rs:117`, `:154`), so the marker is consumed today. A row reached outside that path would keep it armed and suppress its next real expansion, so the guarantee rests on install order.
+  - **Replacement.** A scoped guard, which makes the guarantee structural: `SuppressExpandedWatch::for_row(&section, &row)` stores that row's `WeakRef` in a section slot, and its `Drop` clears the slot. The caller holds it only around `row.set_expanded(false)`, so the slot can never outlive the collapse it was set for, whether or not a handler consumed it.
   - **Identity.** The handler suppresses only when the slot holds its own row. The `expanded=false` that child rows emit during teardown is therefore not suppressed, unlike with a section-wide boolean.
 
 ### D4. `open_future` inside `spawn_future_local`, behind a characterization test

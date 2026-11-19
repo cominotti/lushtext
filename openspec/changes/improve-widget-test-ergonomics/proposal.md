@@ -2,13 +2,14 @@
 
 ## Why
 
-The refactor-1 audit (disposition in `docs/next/refactor-1-disposition.md`) left the suite's ergonomics for humans largely open. Three items cost every contributor, human or agent, and none needs a policy decision. Measured on `origin/main` `761866ff`; task 0.1 re-measures:
+The refactor-1 audit (disposition in `docs/next/refactor-1-disposition.md`) left the suite's ergonomics for humans largely open. Three items cost every contributor, human or agent, and none needs a policy decision. Measured on `origin/main` `6f0b638f`; task 0.1 re-measures:
 
 - **`crates/lushtext/tests/widget/window.rs` is 22,325 lines,** with 407 tests across unrelated themes: notes browser 24, local history 17, Focus Mode 10, drafts, session restore, menus, close safety, split views, print and more. Finding, reviewing or moving a test means scrolling a file no editor handles comfortably.
 - **The harness compiles rewritten copies, not the sources** (`crates/lushtext/build.rs`).
   - `harness = false` compiles `#[test]` items out.
   - So `transform_test_source` copies every widget file into `OUT_DIR/widget_mod_<module>.rs`, dropping each `#[test]` line and turning `fn test_` into `pub fn test_`, and the registry includes those copies.
-  - As a result, compiler errors, panics, backtraces and go-to-definition point at the generated copies, not at the files a contributor edits.
+  - As a result, compiler errors, panic locations and backtraces name the generated copies, not the files a contributor edits.
+  - `cargo fmt` does not reach these files either way (they are not modules of a crate root it can see), which is why `make fmt` lists them explicitly; this change does not alter that.
 - **There is no contributor quickstart.** The README's "Contributor Map" is a module tour. The rules (`AGENTS.md`, `.agents/rules/`) are written for agents and run to thousands of lines. A first-time contributor has no one page that says how to build, run, test and commit.
 
 ## What Changes
@@ -17,7 +18,7 @@ The refactor-1 audit (disposition in `docs/next/refactor-1-disposition.md`) left
   - A test is declared `pub(crate) fn test_<name>()` at the top level of a widget file, with no `#[test]` line.
   - `build.rs` only generates the registry, by that one rule, and includes each file by its real path, with no copy and no rewrite.
   - `scripts/widget-shards.py`'s discovery uses the same rule, so the shard check still mirrors the registry.
-  - The helpers named `test_*` that are not tests (`test_window()` and its variants, 4 in `window.rs`) are renamed.
+  - Helpers named `test_*` that are not tests (`test_window()` and its variants in `window.rs`) stay private, so the rule never registers them.
 - **`window.rs` is split by theme** into sibling modules `window_<theme>.rs` (for example `window_notes`, `window_local_history`, `window_drafts`, `window_session`, `window_shell`), with shared helpers in `window_support.rs`.
   - A test's name becomes `window_<theme>::test_<name>`.
   - Every live reference to an old name moves in the same change, with the full mapping in `evidence/renames.md`: the shard table, the smoke and portal scripts, `builder-diagnostics-coverage.json`, the docs, the skills, the axiom ledger and test comments.
@@ -40,7 +41,7 @@ The refactor-1 audit (disposition in `docs/next/refactor-1-disposition.md`) left
 ## User-visible impact
 
 None for LushText users. For contributors:
-- widget-test diagnostics and editor navigation point at the real files;
+- widget-test diagnostics and backtraces name the real files (editor navigation is checked in task 1.2 and claimed only if it holds);
 - the window tests are findable by theme;
 - a first contributor has one page to start from.
 
@@ -63,8 +64,8 @@ None.
   - every file under `crates/lushtext/tests/widget/` (dropping `#[test]`, adding `pub(crate)`);
   - `window.rs` split into new sibling files;
   - `scripts/widget-shards.py` (discovery rule, table, self-test).
-- **References:** the 12 live files that name a `window::test_` today (task 0.1 lists them).
+- **References:** the 12 live files that name a `window::test_` today, and the 3 documents that name the path `tests/widget/window.rs` (`docs/accessibility-matrix.md`, `docs/next/file-peek.md`, `docs/workflow-readability-matrix.md`); task 0.1 lists both. Rule frontmatter scopes use `crates/lushtext/tests/widget/**` and are unaffected; `scripts/test-validate-agent-skills.py` names the path only as an injected fixture.
 - **Docs:**
   - `CONTRIBUTING.md` (new) and `README.md`;
   - `.agents/rules/testing.md`, the `gtk-testing` skill references and `crates/lushtext/AGENTS.md`, where they describe the registry.
-- **Order:** the Start line in `tasks.md`. The split moves every window test, so this change runs while no other change in the ledger has `crates/lushtext/tests/widget/window.rs` open. It is recommended first of the refactor-1 set, so the later changes write their tests into the split files.
+- **Order:** the Start line in `tasks.md`. The split moves every window test, so this change runs while no other change in the ledger has `crates/lushtext/tests/widget/window.rs` open. It is recommended first of the refactor-1 set, before `close-audited-gate-gaps`, so the later changes write their tests into the split files.

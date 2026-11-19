@@ -6,7 +6,7 @@ An external code-quality audit of LushText ("refactor-1", 2026-11-18, kept outsi
 - the change that takes the item, or the reason it is declined;
 - the evidence behind each decision, so that none depends on the audit text, a session scratchpad or a conversation.
 
-The six changes it names live under `openspec/changes/`. None starts before the programme coordinator's queued work has finished and the maintainer places it in `PARALLEL-LEDGER.md` (maintainer, 2026-11-19). Each starts by re-measuring the figures below, and its task 5.1 or 0.1 updates this record.
+The seven changes it names live under `openspec/changes/`. None starts before the programme coordinator's queued work has finished and the maintainer places it in `PARALLEL-LEDGER.md` (maintainer, 2026-11-19). Each starts by re-measuring the figures below, and its task 5.1 or 0.1 updates this record.
 
 ## Corrections to the audit's figures
 
@@ -26,7 +26,7 @@ The six changes it names live under `openspec/changes/`. None starts before the 
 
 | Item | Change |
 | --- | --- |
-| `tests/widget/window.rs` is 21,939 lines; `build.rs` copies every widget test file into `OUT_DIR` and rewrites it, so editors, backtraces and `cargo fmt` see generated copies | `improve-widget-test-ergonomics` |
+| `tests/widget/window.rs` is about 22,000 lines (21,939 on 761866ff, 22,325 on 6f0b638f); `build.rs` copies every widget test file into `OUT_DIR` and rewrites it, so compiler diagnostics and backtraces name generated copies | `improve-widget-test-ergonomics` |
 | No contributor quickstart | `improve-widget-test-ergonomics` |
 | CI format check misses `crates/lushtext/tests/widget/*.rs` (`ci.yml:67` runs `cargo fmt --all`) | `close-audited-gate-gaps` |
 | 23 policy audits only in the hook | `close-audited-gate-gaps` (`check-policy-ci` plus covered-elsewhere and local-only lists, checked by a script) |

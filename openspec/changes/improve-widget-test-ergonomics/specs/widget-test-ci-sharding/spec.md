@@ -15,5 +15,6 @@ The widget registry SHALL include each widget test file from its own path, witho
 - **AND** a test no shard owns fails `make check-widget-shards`
 
 #### Scenario: A helper cannot pass for a test
-- **WHEN** a helper named `test_<name>` takes parameters or returns a value
+- **WHEN** a function declared `pub(crate) fn test_<name>` takes parameters or returns a value
 - **THEN** the build fails, because the registry only accepts `fn()`
+- **AND** a private helper named `test_<name>` is not registered

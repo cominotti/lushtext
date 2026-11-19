@@ -87,4 +87,4 @@ None.
   - `docs/next/refactor-1-disposition.md`, `docs/benchmarks/c2-head-sweep.md`, `docs/next/long-line-documents.md`;
   - `.agents/rules/{rust,build,ui,widget-wiring}.md`, `AGENTS.md`, `README.md` if it lists CI gates.
 - **Order:** see the Start line in `tasks.md`. `services/durable_write.rs` is also edited by `verify-shell-conformance-against-proven-cores`, which must have merged first.
-- **Shared with the other refactor-1 changes:** `crates/cargo-gtk-proof/Cargo.toml` (with `type-cargo-gtk-proof-errors`), `ui/window/imp.rs` (with `adopt-glib-clone-weak-captures`), and `check-policy` / `check-policy-ci` (`adopt-glib-clone-weak-captures` adds an audit to them). This change lands first.
+- **Shared with the other refactor-1 changes:** `crates/cargo-gtk-proof/Cargo.toml` (with `type-cargo-gtk-proof-errors`), `ui/window/imp.rs` (with `adopt-glib-clone-weak-captures`), and `check-policy` / `check-policy-ci` (`adopt-glib-clone-weak-captures` adds an audit to them). This change lands before the other five. `improve-widget-test-ergonomics` is recommended before it, because this change adds window widget tests that the split would otherwise move.

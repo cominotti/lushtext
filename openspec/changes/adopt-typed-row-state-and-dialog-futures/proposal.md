@@ -22,7 +22,7 @@ The maintainer decided on 2026-11-19 to adopt typed rows fully, without weighing
 - **Typed rows, in the form the spike chose.** Every factory row becomes a row widget whose children are typed fields: a `CompositeTemplate` row, or a Rust-built subclass. Row-owned bindings and signal bags live in the row's `imp` and are cleared in its unbind.
   - If the spike keeps the factory form, the bags move instead to a typed registry on the factory's owner, filled at bind and emptied at unbind.
 - **No untyped object data.**
-  - The two `GtkTreeListRow` markers become a `WeakRef<TreeListRow>` of the instrumented row on the `FileTreeItem`, compared by identity, and a single `WeakRef` for the one-shot reorder marker on the section.
+  - The expansion-watch marker becomes a section map of `WeakRef<TreeListRow>` checked by object identity, and the one-shot reorder marker becomes a scoped guard held only around the drag's collapse (design D3).
   - A policy audit then forbids `set_data`, `steal_data`, `data` and their `qdata` forms anywhere in `crates/lushtext-core/src`.
 - **The Open dialog becomes an `async` block** with `FileDialog::open_future` inside `glib::spawn_future_local`, behind a characterization test.
 

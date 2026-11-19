@@ -19,7 +19,7 @@ See `proposal.md`. The parts involved:
 - **The rule.** A test is a top-level `pub(crate) fn test_<name>()`, and that is the whole registration rule.
   - `build.rs` generates `#[path = "<real file>"] mod <stem>;` and the push list, and writes no copy.
   - `widget-shards.py` uses the same line rule, with its self-test cases updated.
-- **Why it is safe.** The registry pushes `fn()` pointers. A helper named `test_*` with parameters or a return value fails to compile at its registration line, which is loud. A zero-argument, unit-returning helper with that prefix would register as a test, so helpers stop using the prefix: `test_window` becomes `new_test_window`, and so on.
+- **Why it is safe.** The registry pushes `fn()` pointers, so a `pub(crate) fn test_*` with parameters or a return value fails to compile at its registration line. Private helpers named `test_*` (`test_window()` and its variants) are never registered. The one silent case is a zero-argument, unit-returning helper made `pub(crate)` with that prefix; task 1.2 greps for it.
 - **Rejected:**
   - a `#[widget_test]` proc macro with `linkme` or `inventory`: a new crate and dependency, and rustfmt still sees the same functions;
   - keeping `#[test]` as a marker under `#[cfg_attr]`: unidiomatic, and still a textual rule;
@@ -40,6 +40,7 @@ See `proposal.md`. The parts involved:
 
 - **Find them.** Task 0.1 lists every tracked file outside `openspec/changes/archive/` and `build/` that names `window::test_`; there are 12 on `origin/main`.
 - **Rename them.** Each name is rewritten from the mapping in `evidence/renames.md`.
+- **Paths too.** The documents that name the file path `tests/widget/window.rs` are rewritten to the new file. Rule frontmatter scopes (`crates/lushtext/tests/widget/**`) and the agent-skill validator's injected fixture path are unaffected, and task 0.1 re-greps `scripts/`, the `Makefile`, `.github/`, `.agents/`, `.cargo/` and `sonar-project.properties` for any path-keyed reference.
 - **Prove it.** After the move, a grep for `window::test_` outside the archive returns nothing, and every `window_<theme>::test_` named in a script or document exists in `--list`.
 - **No permanent gate.** This is a one-time check, recorded in the task, not a new gate.
 

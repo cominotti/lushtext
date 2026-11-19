@@ -25,8 +25,8 @@ LushText production code SHALL NOT read or attach Rust values on GObjects throug
 - **THEN** each has exactly one expansion handler
 
 #### Scenario: A drag collapse cannot leave a suppression armed
-- **WHEN** a reorder drag collapses a folder row that has no expansion handler
-- **THEN** no suppression remains after the collapse returns
+- **WHEN** a reorder drag collapses a folder row
+- **THEN** no suppression remains after the collapse returns, whether or not a handler consumed it
 - **AND** the row's next user expansion restarts its watch
 - **AND** child rows torn down by the collapse are not suppressed
 
