@@ -123,6 +123,15 @@ exclude_globs = [
     # docs/mutation-testing.md, "Harness code is excluded, measured from the tool".
     "crates/**/kani_proofs.rs",
     "crates/**/kani_proofs/**",
+    # The verification environment models the Kani harnesses and the shell
+    # conformance tests share (`verify-shell-conformance-against-proven-cores`
+    # D1): the write disk model and the draft journal model. They are
+    # verification code, compiled only under `cfg(kani)`, `cfg(test)` and
+    # `test-utils`; a mutant inside one weakens the oracle, not a shipped
+    # behaviour, and proof strength measures the harnesses that use them.
+    # Path-keyed: re-key these entries if the modules move.
+    "crates/lushtext-core/src/services/filesystem/write_protocol/disk_model.rs",
+    "crates/lushtext-core/src/services/draft_service/journal_model.rs",
 ]
 
 exclude_re = [

@@ -1142,6 +1142,14 @@ NOT_ORACLE_MODULES: dict[str, str] = {
         "the journal harnesses import only the DraftManifestCompleteness enum from it; "
         "no harness checks its behaviour"
     ),
+    "crates/lushtext-core/src/services/draft_service/journal_model.rs": (
+        "the journal harnesses' environment model, shared with the draft-service "
+        "conformance driver; verification code, not a checked core"
+    ),
+    "crates/lushtext-core/src/services/filesystem/write_protocol/disk_model.rs": (
+        "the write harnesses' disk model, shared with the write-shell conformance "
+        "driver; verification code, not a checked core"
+    ),
 }
 
 HARNESS_START_RE = re.compile(r"^Checking harness (\S+?)\.\.\.$")

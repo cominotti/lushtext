@@ -102,6 +102,8 @@ mod cleanup_types;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod fixture;
 pub mod journal_core;
+#[cfg(any(kani, test))]
+pub(crate) mod journal_model;
 #[cfg(kani)]
 mod kani_proofs;
 pub mod set_aside;

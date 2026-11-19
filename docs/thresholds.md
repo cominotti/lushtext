@@ -502,6 +502,14 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/services/draft_service.rs` | `MANIFEST_REPAIR_AUXILIARY_ENTRY_ALLOWANCE` | 1 | coverage window | power of two, rounded up |
 | `crates/lushtext-core/src/services/draft_service.rs` | `MAX_ORPHAN_CLEANUP_DRAFT_SCAN` | 2,048 | cap | power of two |
 
+### `crates/lushtext-core/src/services/draft_service/journal_model.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-core/src/services/draft_service/journal_model.rs` | `MAX_IDS` | 3 | out: tool | verification model scope (Kani harnesses and the conformance driver; never shipped) |
+| `crates/lushtext-core/src/services/draft_service/journal_model.rs` | `MAX_EDITS` | 3 | out: tool | verification model scope (Kani harnesses and the conformance driver; never shipped) |
+| `crates/lushtext-core/src/services/draft_service/journal_model.rs` | `CONTENTS` | 7 | out: tool | verification model scope (Kani harnesses and the conformance driver; never shipped) |
+
 ### `crates/lushtext-core/src/services/draft_service/set_aside.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
