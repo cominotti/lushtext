@@ -44,7 +44,7 @@ The decisions become normative rules in `.agents/rules/`, and the programme's wo
   - Holding nothing, wait until CPU use outside our own slices is below 3.5 CPUs over 30 s; then `measure.sh --lock-timeout 2400`; inside the lock, run only after a 30 s sample below 4 busy CPUs, and keep the round only if the run and a 30 s sample after it are also below 4.
   - The bar stays 4; the metric changes from the 1-minute load to busy CPUs, which admits some rounds the old rule refused. The maintainer decided that loosening.
   - A tested helper, `scripts/quiet-gate.py`, implements the three steps and fails closed.
-  - Level 2, a calibration under outside load, is the coordinator's queue entry. Level 3 (a pass under load counts for absolute budgets) waits for it and is not written into any rule.
+  - Level 2, a calibration under outside load, was closed **not established** by the maintainer on 2026-11-19 (evidence in `MEASURE-QUEUE.md`): quiet-against-quiet noise reached 1.79x on the worst frame and 1.95x on the worst step, against a -5 % direction band, and 2 tries gave 0 contended rounds because the drain removes the load before the round. Level 3 is off; no rule counts a round measured under load as a pass.
 - **Stages after implementation** (coordinator notes of 2026-11-18 18:50-19:25, maintainer-approved):
   1. `/simplify`, invoked with an absolute worktree path;
   2. findings-only review lenses in parallel: `code-review high <target>` never with `--fix`, plus one domain lens per flag: the `data-safety` audit when the change touches data, the `gtk-perf-review` leaf checklists when it touches performance, and `rust-hex-arch` when modules move inside such a fan-out;
@@ -76,7 +76,7 @@ The decisions become normative rules in `.agents/rules/`, and the programme's wo
   - the data-safety review and the independent code reviewer stay on every change.
 - Interventions 1, 2 and 4, and instrumentation (intervention 7), are not implemented here.
 - Decision 5 (host desktop apps): nothing. Decision 7: recorded only; smoke-gate-coherence implements it.
-- Level 3 of the quiet-window decision is not implemented.
+- Level 3 of the quiet-window decision is off (maintainer, 2026-11-19), not deferred.
 - In-flight workflow runs keep the session scripts they started with. The new rules apply at each run's next stage boundary.
 
 ## User-visible impact

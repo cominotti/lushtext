@@ -158,3 +158,13 @@ Interventions 1, 2 and 4 are engineering changes owned by
   per-reference-CPU criterion instead. It could not work: the reference set
   8-23 is the toolbox's whole affinity, and the sample showed about 50 % busy
   on each reference CPU.
+
+- **2026-11-19, 00:58.** The maintainer closed level 2 as **not
+  established** and turned level 3 **off** for good; level 1, drain first,
+  stays as written. The calibration's own record (`MEASURE-QUEUE.md`,
+  "Calibration: G0 rounds under outside load") shows why: quiet rounds
+  against quiet rounds already differed by up to 1.79x on the worst frame and
+  1.95x on the worst step, far outside the -5 % direction band the reading
+  was registered with, and its two tries produced no contended round at all,
+  because the drain removed the outside load before the round ran. The rules
+  keep no dormant level-3 text.

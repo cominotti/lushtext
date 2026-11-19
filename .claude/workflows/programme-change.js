@@ -45,7 +45,8 @@ export const meta = {
 //   merge           boolean, review-only: continue into the merge stage (default: stop before it)
 //   fast_lane       review-only: 'eligible' when the change took the fast lane (continue carries it in args.spec)
 //   guard_ack       string or array: '<token>' values a guard stop printed, accepting that one main-checkout change on resume
-//   accept_empty_review  the reviewed HEAD an empty-review stop printed: accept that one empty code-review
+//   accept_empty_review  the token an empty-review stop printed (<HEAD>:<digest of the review>): accept that one empty code-review
+//   lens_round      integer, default 1: a resume with the next round reruns the scope reading and the lenses alone
 // guard_ack and accept_empty_review are read by this script only and never reach a prompt.
 // The rules every prompt points to live in .agents/rules/; nothing here restates them.
 
@@ -69,11 +70,15 @@ function refProblem(what, ref) {
   return null
 }
 // The worktree sits directly in .claude/worktrees/ and carries the change's
-// name; args.worktree_override waives the name check alone.
+// name; args.worktree_override waives the name check alone. The whole path is
+// anchored to safe characters, because it goes into shell lines unquoted.
+const WORKTREE_RE = /^((?:\/[A-Za-z0-9._-]+)+)\/\.claude\/worktrees\/([^/]+)\/?$/
 function worktreeProblem(path) {
-  const m = String(path || '').match(/\/\.claude\/worktrees\/([^/]+)\/?$/)
-  if (!m || !NAME_RE.test(m[1])) return `the worktree is not a change worktree under .claude/worktrees/: ${path}`
-  if (m[1] !== A.change && A.worktree_override !== true) {
+  const m = String(path || '').match(WORKTREE_RE)
+  if (!m || !NAME_RE.test(m[2]) || m[1].split('/').some(seg => seg === '.' || seg === '..')) {
+    return `the worktree is not a change worktree under .claude/worktrees/: ${path}`
+  }
+  if (m[2] !== A.change && A.worktree_override !== true) {
     return `the worktree ${path} is not named after the change ${A.change}; pass args.worktree_override to accept it`
   }
   return null
@@ -100,6 +105,10 @@ function argProblem() {
     const p = worktreeProblem(A.spec.worktree); if (p) return p
   }
   if (A.mode === 'continue' && A.skip_impl && !A.impl) return 'skip_impl needs args.impl'
+  if (A.mode === 'continue' && A.skip_impl && !normalizePr(A.pr) && !(A.impl && normalizePr(A.impl.pr_number))) {
+    return 'continue with skip_impl needs the pull request, in args.pr or args.impl.pr_number'
+  }
+  if (A.lens_round !== undefined && !(Number.isInteger(A.lens_round) && A.lens_round >= 1)) return `args.lens_round is a positive integer, not ${JSON.stringify(A.lens_round)}`
   if (A.impl && hasValue(A.impl.pr_number) && normalizePr(A.impl.pr_number) === null) return `args.impl.pr_number is not a PR: ${JSON.stringify(A.impl.pr_number)}`
   if (A.impl && normalizePr(A.pr) && normalizePr(A.impl.pr_number) && normalizePr(A.pr) !== normalizePr(A.impl.pr_number)) {
     return `args.pr #${normalizePr(A.pr)} and the carried implementation's PR #${normalizePr(A.impl.pr_number)} differ`
@@ -167,6 +176,18 @@ const CHANGE = A.change
 const ARG_PR = normalizePr(A.pr)
 const LOCAL = A.local ? `Host details from the coordinator (args.local), which override nothing in the rules: ${A.local}` : 'No host details were passed (args.local); if a push or gh command needs one, stop and say so.'
 const REVIEW_AGENT = A.review_agent_type ? { agentType: A.review_agent_type } : {}
+// The implementation slot is named after the worktree's directory, which only
+// args.worktree_override lets differ from the change ("Implementation slots
+// and ordering"); fixed before the first guard so every prompt stays stable.
+const SLOT = String(A.worktree || (A.spec && A.spec.worktree) || '').replace(/\/$/, '').split('/').pop() || CHANGE
+const LENS_ROUND = A.lens_round || 1
+// A short deterministic digest (two FNV-1a passes) that ties a guard reading
+// to its stage's prompt, and an accepted empty review to its text.
+function digest(text) {
+  const fnv = (str, h) => { for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0 } return h.toString(16).padStart(8, '0') }
+  const t = String(text)
+  return fnv(t, 2166136261) + fnv(t, 0x811c9dc5 ^ 0x5bd1e995)
+}
 
 function common(stage) {
   return `
@@ -181,7 +202,7 @@ ${LOCAL}`
 }
 
 const IMPL_RULES = `
-Follow, by section: parallel-agent-work.md "Implementation slots and ordering" (scripts/impl-slots.sh acquire and release; release on every exit path), "Measurements" (drain first with scripts/quiet-gate.py; queue what cannot run, with the right Status), "Durability"; verification-runs.md "Kani" (which shards, and dispatching shard-budget runs once the final code is pushed, never watching them), "Proof strength", "GTK axioms", "Timing campaigns" (the verdict class); testing.md "Proof Obligations of a Change"; documentation.md "Mandatory Updates on Code Changes".
+Follow, by section: parallel-agent-work.md "Implementation slots and ordering" (scripts/impl-slots.sh acquire ${SLOT} and release ${SLOT}; release on every exit path), "Measurements" (drain first with scripts/quiet-gate.py; queue what cannot run, with the right Status), "Durability"; verification-runs.md "Kani" (which shards, and dispatching shard-budget runs once the final code is pushed, never watching them), "Proof strength", "GTK axioms", "Timing campaigns" (the verdict class); testing.md "Proof Obligations of a Change"; documentation.md "Mandatory Updates on Code Changes".
 Commit and push per task group, non-visual groups first; files under the UI prefixes change in as few commits as possible, and the three smokes run once, right before that commit. Run only the tests a change affects while iterating, and the full gates once at the end; do not rerun a gate whose inputs did not change.
 Leave the worktree clean and pushed when you return: the stages after you refuse uncommitted work.
 Do not merge and do not wait for CI.`
@@ -202,9 +223,10 @@ const GUARD_SCHEMA = {
   },
   required: ['status_sha256', 'porcelain', 'head', 'branch', 'own_slot', 'own_merge_lock'],
 }
-async function guardRead(label) {
-  const reading = await agent(`Read-only guard reading. Run exactly these commands, in one Bash call, and nothing else:
-M="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"; S="$(git -C "$M" status --porcelain)"; echo "--SHA256--"; printf '%s' "$S" | sha256sum | cut -d' ' -f1; echo "--PORCELAIN--"; printf '%s\\n' "$S"; echo "--HEAD--"; git -C "$M" rev-parse HEAD; echo "--BRANCH--"; git -C "$M" branch --show-current; echo "--OWN-SLOT--"; if [ -d "$M/.claude/handoffs/IMPL-SLOTS/${CHANGE}" ]; then echo yes; else echo no; fi; echo "--OWN-MERGE-LOCK--"; if [ "$(head -n1 "$M/.claude/handoffs/MERGE-LOCK/owner.txt" 2>/dev/null)" = "${CHANGE}" ]; then echo yes; else echo no; fi
+async function guardRead(label, key) {
+  const tie = key === undefined ? '' : `This reading comes before the stage whose prompt digest is ${digest(key)}; the digest only ties the reading to that stage.\n`
+  const reading = await agent(`${tie}Read-only guard reading. Run exactly these commands, in one Bash call, and nothing else:
+M="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"; S="$(git -C "$M" status --porcelain)"; echo "--SHA256--"; printf '%s' "$S" | sha256sum | cut -d' ' -f1; echo "--PORCELAIN--"; printf '%s\\n' "$S"; echo "--HEAD--"; git -C "$M" rev-parse HEAD; echo "--BRANCH--"; git -C "$M" branch --show-current; echo "--OWN-SLOT--"; if [ -d "$M/.claude/handoffs/IMPL-SLOTS/${SLOT}" ]; then echo yes; else echo no; fi; echo "--OWN-MERGE-LOCK--"; if [ "$(head -n1 "$M/.claude/handoffs/MERGE-LOCK/owner.txt" 2>/dev/null)" = "${CHANGE}" ]; then echo yes; else echo no; fi
 Return each value as printed: the hash, the porcelain lines (an empty string when none), the HEAD hash, the branch name, and the two yes/no answers as booleans. Change nothing.`,
     { label: `guard:${label}`, phase: 'guard', effort: 'low', schema: GUARD_SCHEMA })
   return reading && /^[0-9a-f]{64}$/.test(reading.status_sha256 || '') ? reading : null
@@ -223,9 +245,17 @@ function ackToken(label, r) {
   return `${label}:${r.status_sha256}:${r.head}:${r.branch}:${r.own_slot ? 'slot' : 'no-slot'}:${r.own_merge_lock ? 'lock' : 'no-lock'}`
 }
 const ACKS = [].concat(A.guard_ack || [])
-// Runs fn between two guard readings; returns {result} or {stopped}.
-async function guarded(label, fn) {
-  const before = await guardRead(`${label}:before`)
+// Runs a stage between two guard readings; returns {result} or {stopped}.
+// The stage's prompt (its key) enters the before reading's prompt, so a resume
+// that changes the stage takes that reading live, never from the cache
+// (probes C5, C6), and the after reading follows a live stage. job(prompt,
+// opts) is one stage agent; a group of agents passes a function and the key
+// of their prompts.
+const job = (prompt, opts) => ({ prompt: `${prompt}\n${JSON.stringify(opts)}`, run: () => agent(prompt, opts) })
+async function guarded(label, stage, groupKey) {
+  const fn = typeof stage === 'function' ? stage : stage.run
+  const key = typeof stage === 'function' ? groupKey : stage.prompt
+  const before = await guardRead(`${label}:before`, key)
   if (!before) return { stopped: `guard reading before ${label} failed; nothing ran` }
   const result = await fn()
   const after = await guardRead(`${label}:after`)
@@ -247,7 +277,7 @@ const out = { mode: A.mode, change: CHANGE }
 // Optional: archive a change merged earlier (openspec-archive-change).
 if (A.prev_change) {
   phase('Archive previous')
-  const g = await guarded('archive-previous', () => agent(`Archive the OpenSpec change ${A.prev_change}, merged to origin/main as PR #${normalizePr(A.prev_pr)} (tip ${A.prev_tip}), with the openspec-archive-change skill, in a fresh worktree from origin/main at <main>/.claude/worktrees/${A.prev_change}-archive.
+  const g = await guarded('archive-previous', job(`Archive the OpenSpec change ${A.prev_change}, merged to origin/main as PR #${normalizePr(A.prev_pr)} (tip ${A.prev_tip}), with the openspec-archive-change skill, in a fresh worktree from origin/main at <main>/.claude/worktrees/${A.prev_change}-archive.
 Beyond the skill: record the merge and the archive in ${A.programme_record || 'the programme record the change names'}; run openspec validate --all and make check-policy; commit and push that one commit to main as parallel-agent-work.md "Merging" step 4 describes; then clean up as "Durability" describes. ${A.archive_extra || ''}
 ${common('archive-previous')}
 Return the archive path, the commit, and which worktrees and branches you removed.`, { label: `archive:${A.prev_change}`, phase: 'Archive previous', effort: 'low' }))
@@ -261,7 +291,7 @@ Return the archive path, the commit, and which worktrees and branches you remove
 let spike = null
 if (A.mode === 'revise' && (A.revision || 0) >= 3) {
   phase('Revision decision')
-  const g = await guarded('revision-decision', () => agent(`An independent decision on the existing OpenSpec change ${CHANGE} (PR #${ARG_PR}, worktree ${A.worktree}): it has had at least two design revisions and is blocked again. You wrote none of its design or code. Read its design.md (the "Design revisions" list and the latest stage-4 verdict), the gates, the evidence and the attributions so far, and decide continue, re-scope or shelve, as parallel-agent-work.md "Design revisions" describes. Edit nothing in the repository. Write your decision with its reasons to $H/${CHANGE}/decision-${A.revision}.md; the coordinator records it in the ledger and tells the maintainer.
+  const g = await guarded('revision-decision', job(`An independent decision on the existing OpenSpec change ${CHANGE} (PR #${ARG_PR}, worktree ${A.worktree}): it has had at least two design revisions and is blocked again. You wrote none of its design or code. Read its design.md (the "Design revisions" list and the latest stage-4 verdict), the gates, the evidence and the attributions so far, and decide continue, re-scope or shelve, as parallel-agent-work.md "Design revisions" describes. Edit nothing in the repository. Write your decision with its reasons to $H/${CHANGE}/decision-${A.revision}.md; the coordinator records it in the ledger and tells the maintainer.
 ${common('revision-decision')}`, {
     label: `decision:${CHANGE}`, phase: 'Revision decision',
     schema: { type: 'object', properties: {
@@ -274,7 +304,7 @@ ${common('revision-decision')}`, {
   if (g.result.decision === 'shelve') {
     return { ...out, stopped: 'shelved by the independent decision; mark it SHELVED in the ledger and the programme record (coordinator)' }
   }
-  const gs = await guarded('spike', () => agent(`Attribution spike for the OpenSpec change ${CHANGE} before design revision ${A.revision} (decision: ${g.result.decision}; reasons: ${g.result.reasons}). One agent, and you edit no OpenSpec artifact. Find where the time or the failure goes, with figures, and write it to $H/${CHANGE}/spike-${A.revision}.md. Rounds that need timing follow parallel-agent-work.md "Measurements", or are queued. Worktree: ${A.worktree}.
+  const gs = await guarded('spike', job(`Attribution spike for the OpenSpec change ${CHANGE} before design revision ${A.revision} (decision: ${g.result.decision}; reasons: ${g.result.reasons}). One agent, and you edit no OpenSpec artifact. Find where the time or the failure goes, with figures, and write it to $H/${CHANGE}/spike-${A.revision}.md. Rounds that need timing follow parallel-agent-work.md "Measurements", or are queued. Worktree: ${A.worktree}.
 ${common('spike')}
 Return the spike file path and a summary of its figures.`, { label: `spike:${CHANGE}`, phase: 'Revision decision' }))
   if (gs.stopped) return { ...out, ...gs }
@@ -328,7 +358,7 @@ Keep this stage bounded: read what the design needs, and measure only when a dec
 Beyond the skill: design.md (or, in the fast lane, proposal.md "Decisions") records the measured baseline and, for a change on a timed path, its verdict class (verification-runs.md "Timing campaigns"); tasks.md covers failing-first tests, axioms and samples for toolkit behaviour relied on, the Kani shards (verification-runs.md "Kani"), lane cases and docs. A change that edits parallel-agent-work.md or verification-runs.md carries the floor table ("Running a change"). openspec validate ${CHANGE} --strict. One commit; push the branch; no pull request yet.`
   const fastPrompt = fast ? `
 FAST LANE (parallel-agent-work.md "Fast lane"): before writing, list every path the change will touch and run scripts/check-fast-lane.py --paths on that list from the worktree. If any path is not eligible, or a timing verdict is planned, return fast_lane "not-eligible" (the run then takes the full spec review). Otherwise write proposal.md with a "Decisions" section, a "Gate effect: none" section for every declare path, and your own spec-review checklist under "Self-review"; return fast_lane "eligible".` : ''
-  const g = await guarded('spec', () => agent(`Stage 1 (spec) of the LushText programme change ${CHANGE}.
+  const g = await guarded('spec', job(`Stage 1 (spec) of the LushText programme change ${CHANGE}.
 ${specPrompt}${fastPrompt}
 ${common('spec')}`, { label: `spec:${CHANGE}`, phase: 'Spec', schema: SPEC_SCHEMA }))
   if (g.stopped) return { ...out, ...g }
@@ -346,7 +376,7 @@ ${common('spec')}`, { label: `spec:${CHANGE}`, phase: 'Spec', schema: SPEC_SCHEM
     log('fast lane: no separate spec-review stage')
   } else {
     phase('Spec review')
-    const gr = await guarded('spec-review', () => agent(`Stage 2 (spec review) of the OpenSpec change ${spec.change_name}, worktree ${spec.worktree}, branch ${spec.branch}. Another agent wrote it${A.mode === 'revise' ? ' (a design revision)' : ''}; review it independently against the code, the rules in .agents/rules/, the Kani shards and the GTK behaviour it relies on. The author's evidence: ${spec.evidence}
+    const gr = await guarded('spec-review', job(`Stage 2 (spec review) of the OpenSpec change ${spec.change_name}, worktree ${spec.worktree}, branch ${spec.branch}. Another agent wrote it${A.mode === 'revise' ? ' (a design revision)' : ''}; review it independently against the code, the rules in .agents/rules/, the Kani shards and the GTK behaviour it relies on. The author's evidence: ${spec.evidence}
 Check that the baseline is measured or reproducible, the approach sound and complete, the requirements testable failing-first, budgets and exceptions explicit, the verdict class stated for a timed path, the tasks complete and ordered so UI-prefix edits land together, no MODIFIED scenario renamed, and, for an edit of the change-delivery rules, the floor table (parallel-agent-work.md "Running a change"). openspec validate --strict must pass. Fix every confirmed issue in the artifacts in one commit and push. If the change is fundamentally unsound, return unsound with the reason rather than rewriting it into another change.
 ${common('spec-review')}`, { label: `spec-review:${CHANGE}`, phase: 'Spec review', schema: REVIEW_SCHEMA }))
     if (gr.stopped) return { ...out, ...gr }
@@ -398,7 +428,7 @@ if (A.mode === 'review-only') {
     const prNote = knownPr
       ? `PR #${knownPr} exists: push to its branch and update its body; do not open another.`
       : 'Open the pull request once the final code is pushed; its body lists the local evidence and ends with the Claude Code generated-with line.'
-    const g = await guarded(`implementation-${round}`, () => agent(`Stage 3 (implementation${rounds > 1 ? `, round ${round} of ${rounds}` : ''}) of the OpenSpec change ${spec.change_name}, worktree ${spec.worktree}, branch ${spec.branch}. The spec was reviewed independently; findings: ${review.findings}
+    const g = await guarded(`implementation-${round}`, job(`Stage 3 (implementation${rounds > 1 ? `, round ${round} of ${rounds}` : ''}) of the OpenSpec change ${spec.change_name}, worktree ${spec.worktree}, branch ${spec.branch}. The spec was reviewed independently; findings: ${review.findings}
 ${prev ? `Previous round's report (continue from it; the worktree may hold its uncommitted work, which you keep): ${prev}` : ''}
 Implement every unchecked tasks.md box with the openspec-apply-change skill: failing-first tests, axioms and samples, measurements, docs. The local gates are the merge evidence: make check, the rustdoc gate when doc comments changed, make test with no FLAKY line, the Kani shards the policy requires, make gtk-axioms when toolkit behaviour is relied on, the affected smokes and lane cases. Record each gate you run on the final tree with scripts/gate-trees.sh record --change ${CHANGE} (parallel-agent-work.md "Merging").
 ${FAST ? 'Fast lane: before the PR, run scripts/check-fast-lane.py --base origin/main in the worktree and report it as fast_lane_recheck; a not-eligible path means stop implementing and report it.' : ''}
@@ -433,7 +463,7 @@ const BRANCH = spec.branch
 // Prepare: the review stages start from a clean, pushed worktree on the PR's
 // head, with origin/main merged and the branch tracking origin/<branch>.
 phase('Prepare')
-const gprep = await guarded('prepare', () => agent(`Prepare stage for the change ${spec.change_name}, PR #${PR}, worktree ${WT}, branch ${BRANCH}. You edit no file and resolve nothing. In this order:
+const gprep = await guarded('prepare', job(`Prepare stage for the change ${spec.change_name}, PR #${PR}, worktree ${WT}, branch ${BRANCH}. You edit no file and resolve nothing. In this order:
 1. ${WT} must appear in git -C <main> worktree list --porcelain, on branch ${BRANCH}, and git -C ${WT} status --porcelain must print nothing (untracked files included). Otherwise return blocked with what you saw: uncommitted work belongs to an implementation round, not to the review stages.
 2. git -C ${WT} fetch --prune origin. gh pr view ${PR} --json headRefName,state must show head ${BRANCH} and state OPEN; otherwise return blocked.
 3. When origin/${BRANCH} holds commits HEAD lacks, git -C ${WT} merge --no-edit origin/${BRANCH}. When origin/main is not an ancestor of HEAD, git -C ${WT} merge --no-edit origin/main. On any conflict: git -C ${WT} merge --abort, and return blocked naming the conflicted files (resolving them is implementation work, which the review stages must see).
@@ -451,7 +481,7 @@ if (gprep.result.status !== 'ready') {
 }
 
 phase('Simplify')
-const gsim = await guarded('simplify', () => agent(`Stage /simplify of the change ${spec.change_name}, worktree ${WT}. First check that git -C ${WT} status --porcelain prints nothing; if it does, return blocked and change nothing.
+const gsim = await guarded('simplify', job(`Stage /simplify of the change ${spec.change_name}, worktree ${WT}. First check that git -C ${WT} status --porcelain prints nothing; if it does, return blocked and change nothing.
 Invoke the simplify skill with exactly this argument: ${WT}
 Its scope is the branch's work in that worktree, and you name the base yourself rather than trusting the recipe's default: the committed work is git -C ${WT} diff origin/main...HEAD, and your own edits are git -C ${WT} diff HEAD. Run every command of its recipe with git -C ${WT} or absolute paths. Quality only. Run the tests of what you touched, and leave your edits uncommitted. Then save them, new files included: git -C ${WT} add --intent-to-add -- . && git -C ${WT} diff HEAD --binary > $H/${CHANGE}/simplify.patch. Say in your result that the skill ran single-pass.
 ${common('simplify')}`, { label: `simplify:${CHANGE}`, phase: 'Simplify', ...REVIEW_AGENT,
@@ -469,9 +499,9 @@ if (gsim.result.status !== 'ran') return { ...out, stopped: `simplify: blocked (
 // output, parsed here), and what the code-review lens must cover.
 phase('Review lenses')
 const HEX40 = /^[0-9a-f]{40}$/
-const gscope = await guarded('review-scope', () => agent(`Read-only scope reading. Run exactly these commands, in one Bash call, and nothing else:
+const gscope = await guarded('review-scope', job(`Read-only scope reading. Run exactly these commands, in one Bash call, and nothing else:
 H1="$(git -C ${WT} rev-parse HEAD)"; H2="$(gh pr view ${PR} --json headRefOid --jq .headRefOid)"; H3="$(git -C ${WT} rev-parse '@{upstream}')"; echo "--HEAD-- $H1"; if [ -n "$H1" ] && [ "$H1" = "$H2" ] && [ "$H1" = "$H3" ]; then echo "--SAME-- yes"; else echo "--SAME-- no ($H2 $H3)"; fi; echo "--COMMITTED-- $(git -C ${WT} diff --name-only origin/main...HEAD | wc -l)"; echo "--UNCOMMITTED-- $(git -C ${WT} status --porcelain --untracked-files=all | wc -l)"; F="$(${WT}/scripts/agent-topology.py review-lenses --base origin/main --flags-only)"; echo "--LENSES-EXIT $?--"; echo "--LENSES-- $F"
-Return: head, the hash after --HEAD--; same_head, true when --SAME-- printed yes; committed_count and uncommitted_count, the numbers after --COMMITTED-- and --UNCOMMITTED--; lenses_exit, the number in --LENSES-EXIT; lenses_stdout, the text after --LENSES--, verbatim. Change nothing.`,
+Return: head, the hash after --HEAD--; same_head, true when --SAME-- printed yes; committed_count and uncommitted_count, the numbers after --COMMITTED-- and --UNCOMMITTED--; lenses_exit, the number in --LENSES-EXIT; lenses_stdout, the text after --LENSES--, verbatim. Change nothing.${LENS_ROUND > 1 ? ` (Lens round ${LENS_ROUND}.)` : ''}`,
   { label: `scope:${CHANGE}`, phase: 'Review lenses', effort: 'low',
     schema: { type: 'object', properties: {
       head: { type: 'string' }, same_head: { type: 'boolean' },
@@ -517,14 +547,14 @@ ${CR_CALLS === 2 ? `Call 2: invoke it again with exactly this argument: high ${W
 The branch tracks origin/${BRANCH} at HEAD, so this call reviews only the uncommitted /simplify edits ($H/${CHANGE}/simplify.patch).` : 'There are no uncommitted edits, so there is no second call.'}
 Never add --fix and never pass a bare level.
 For each call: the findings come back as text in the Skill result; when the result carries none (only "Skill execution completed"), read the fork's transcript, <session transcript dir>/subagents/agent-<agentId>.jsonl with the agentId of the Skill result, where the findings are the input of its last StructuredOutput call.
-The fork may run repository scripts. Before call 1, note whether $H/IMPL-SLOTS/${CHANGE} exists; if it exists after the calls and did not before, run ${WT}/scripts/impl-slots.sh release ${CHANGE}. Never touch MERGE-LOCK or another change's slot. In the findings file, list under "Fork side effects:" every repository script the fork ran, or "none seen".
+The fork may run repository scripts. Before call 1, note whether $H/IMPL-SLOTS/${SLOT} exists; if it exists after the calls and did not before, run ${WT}/scripts/impl-slots.sh release ${SLOT}. Never touch MERGE-LOCK or another change's slot. In the findings file, list under "Fork side effects:" every repository script the fork ran, or "none seen".
 Write the findings to $H/${CHANGE}/review-findings-code-review.md. Your final text is the findings verbatim, then these lines, each alone on its line, in this order, with every <...> filled in:
 - for each call, in call order, exactly one of these two lines, as written: skill_findings_source: result-text, or skill_findings_source: fork-transcript;
 - CODE-REVIEW-SCOPE: pr #${PR} files=<n> lines=<n>
-${CR_CALLS === 2 ? '- CODE-REVIEW-SCOPE: worktree base=<the base the fork said it diffed against, one word> files=<n> lines=<n>\n' : ''}- findings_count: <n>
+${CR_CALLS === 2 ? '- CODE-REVIEW-SCOPE: worktree base=<the base the fork said it diffed against, one word> files=<n> lines=<n>\n- findings_count: pr=<n> worktree=<n>' : '- findings_count: pr=<n>'}
 - last, exactly one of these three lines, as written: CODE-REVIEW-STATUS: ok, or CODE-REVIEW-STATUS: empty, or CODE-REVIEW-STATUS: failed.
-Write the lines themselves without the leading dash. The scope numbers are the files and changed lines each fork said it reviewed; when it did not say, count them from the base it named (gh pr diff ${PR} for call 1, git -C ${WT} diff <base> for call 2). findings_count is the number of findings of all calls together.
-The status is ok when there are findings, empty when every call returned no findings over the scope it stated, and failed, with the reason on the line before it, when you could read neither source of a call.
+Write the lines themselves without the leading dash. The scope numbers are the files and changed lines each fork said it reviewed; when it did not say, count them from the base it named (gh pr diff ${PR} for call 1, git -C ${WT} diff <base> for call 2). findings_count gives each call's own number of findings: pr= for call 1${CR_CALLS === 2 ? ', worktree= for call 2' : ''}.
+The status is ok when call 1 has findings, empty when call 1 returned no findings over the scope it stated (whatever call 2 returned), and failed, with the reason on the line before it, when you could read neither source of a call.
 ${common(`lens-code-review-${attempt}`)}`
 }
 // The base a worktree-path review must name: the branch's own tip (probe C4),
@@ -552,16 +582,24 @@ function readCodeReview(text, want) {
   if (wtScopes.length !== (want.calls === 2 ? 1 : 0)) return { status: 'failed', reason: `${wtScopes.length} worktree scope lines for ${want.calls} calls` }
   if (wtScopes.length && !worktreeBaseOk(wtScopes[0][1], want)) return { status: 'failed', reason: `the worktree review diffed against ${wtScopes[0][1]}, not HEAD or origin/${want.branch}, so it was not the uncommitted edits alone` }
   if (wtScopes.length && Number(wtScopes[0][2]) !== want.uncommitted) return { status: 'failed', reason: `the worktree review (base ${wtScopes[0][1]}) covered ${wtScopes[0][2]} files, not the ${want.uncommitted} uncommitted ones` }
-  const counts = lines.map(l => /^findings_count: (\d+)$/.exec(l)).filter(Boolean)
-  if (counts.length !== 1) return { status: 'failed', reason: 'no single findings_count line' }
-  const count = Number(counts[0][1])
-  const body = lines.filter(l => !/^(skill_findings_source:|CODE-REVIEW-SCOPE:|CODE-REVIEW-STATUS:|findings_count:)/.test(l) && !/^(`{3}\w*|[\[\]{},]*)$/.test(l))
-  if (status[1] === 'ok') {
-    return count > 0 && body.length > 0 ? { status: 'ok' } : { status: 'failed', reason: 'CODE-REVIEW-STATUS: ok over no findings' }
+  // One count per call (Fable F1): the review of the committed work is judged
+  // on its own count, so findings on /simplify's edits cannot hide a hollow one.
+  const countRe = want.calls === 2 ? /^findings_count: pr=(\d+) worktree=(\d+)$/ : /^findings_count: pr=(\d+)$/
+  const counts = lines.map(l => countRe.exec(l)).filter(Boolean)
+  if (counts.length !== 1 || lines.filter(l => /^findings_count:/.test(l)).length !== 1) {
+    return { status: 'failed', reason: `no single findings_count line of the form "pr=<n>${want.calls === 2 ? ' worktree=<n>' : ''}"` }
   }
-  if (count !== 0) return { status: 'failed', reason: `CODE-REVIEW-STATUS: empty with findings_count ${count}` }
+  const prCount = Number(counts[0][1])
+  const wtCount = want.calls === 2 ? Number(counts[0][2]) : 0
+  const body = lines.filter(l => !/^(skill_findings_source:|CODE-REVIEW-SCOPE:|CODE-REVIEW-STATUS:|findings_count:)/.test(l) && !/^(`{3}\w*|[\[\]{},]*)$/.test(l))
+  if (prCount > 0) {
+    if (status[1] !== 'ok') return { status: 'failed', reason: `CODE-REVIEW-STATUS: ${status[1]} with ${prCount} findings on the PR` }
+    return body.length > 0 ? { status: 'ok' } : { status: 'failed', reason: 'CODE-REVIEW-STATUS: ok over no findings' }
+  }
+  // The PR call found nothing: an empty review, whatever the status line says,
+  // when every call quoted a non-empty scope.
   const scoped = [...prScopes, ...wtScopes].every(m => Number(m[2]) > 0 && Number(m[3]) > 0)
-  return scoped ? { status: 'empty', reason: `no findings over ${prScopes[0][2]} PR files${wtScopes.length ? ` and ${wtScopes[0][2]} uncommitted files` : ''}` }
+  return scoped ? { status: 'empty', reason: `no findings over ${prScopes[0][2]} PR files${wtScopes.length ? `, and ${wtCount} on ${wtScopes[0][2]} uncommitted files` : ''}` }
     : { status: 'failed', reason: 'an empty review must quote a non-empty scope for every call' }
 }
 const CR_WANT = { pr: PR, committed: committedCount, uncommitted: uncommittedCount, calls: CR_CALLS, branch: BRANCH, head: LENS_HEAD }
@@ -589,19 +627,24 @@ function domainPrompt(lens) {
     : lens === 'rust-hex-arch'
       ? 'Run the rust-hex-arch skill as a review of the modules this change adds, moves or splits.'
       : `Run the ${lens} leaf checklist by name (gtk-perf-review assigns it; you cannot delegate), over the paths in the gtk-perf-review scope.`
-  return `Findings-only lens "${lens}" for the change ${spec.change_name}, PR #${PR}, worktree ${WT}. ${how}
+  return `Findings-only lens "${lens}"${LENS_ROUND > 1 ? ` (lens round ${LENS_ROUND})` : ''} for the change ${spec.change_name}, PR #${PR}, worktree ${WT}. ${how}
 The diff is git -C ${WT} diff origin/main...HEAD plus the uncommitted edits (git -C ${WT} diff HEAD); list the paths with git -C ${WT} diff --name-only origin/main...HEAD and git -C ${WT} status --porcelain --untracked-files=all. Read files with absolute paths under ${WT}. Edit nothing. Write the findings to $H/${CHANGE}/review-findings-${lens}.md.
 Return status "ran" only when the skill loaded and you applied its checklist, with examined listing the files you read and the checklist sections you applied; when the skill did not load or you could not apply it, return status "failed" with the reason in skill_ran. A lens that did not run is never zero findings.
 ${common(`lens-${lens}`)}`
 }
+// Each lens round has two code-review attempts; a later round (args.lens_round)
+// changes every lens prompt, so a resume reruns the lenses and nothing before
+// the scope reading.
+const ATTEMPT = 2 * (LENS_ROUND - 1) + 1
+const LENS_KEY = [codeReviewPrompt(ATTEMPT), ...lenses.filter(l => l !== 'code-review').map(domainPrompt)].join('\n')
 const glens = await guarded('review-lenses', async () => {
   const results = await parallel(lenses.map(lens => async () => {
     if (lens === 'code-review') {
-      let text = await agent(codeReviewPrompt(1), { label: `lens:code-review:${CHANGE}`, phase: 'Review lenses', ...REVIEW_AGENT })
+      let text = await agent(codeReviewPrompt(ATTEMPT), { label: `lens:code-review:${CHANGE}`, phase: 'Review lenses', ...REVIEW_AGENT })
       let read = readCodeReview(text, CR_WANT)
       if (read.status === 'failed') {
         log(`code-review lens failed (${read.reason}); rerunning once`)
-        text = await agent(codeReviewPrompt(2), { label: `lens:code-review-2:${CHANGE}`, phase: 'Review lenses', ...REVIEW_AGENT })
+        text = await agent(codeReviewPrompt(ATTEMPT + 1), { label: `lens:code-review-2:${CHANGE}`, phase: 'Review lenses', ...REVIEW_AGENT })
         read = readCodeReview(text, CR_WANT)
       }
       return { lens, ok: read.status === 'ok', status: read.status, reason: read.reason, text }
@@ -610,23 +653,26 @@ const glens = await guarded('review-lenses', async () => {
     return { lens, ok: domainLensRan(r), status: domainLensRan(r) ? 'ok' : 'failed', result: r }
   }))
   return results
-})
+}, LENS_KEY)
 if (glens.stopped) return { ...out, ...glens }
 const lensResults = (glens.result || []).filter(Boolean)
 out.lens_results = lensResults
 const emptyReview = lensResults.find(r => r.lens === 'code-review' && r.status === 'empty')
 if (emptyReview) {
-  if (A.accept_empty_review === LENS_HEAD) {
+  // Bound to the reviewed HEAD and to the review's own text (Fable F10): a
+  // resume replays that text, and any other review of the same HEAD differs.
+  const acceptToken = `${LENS_HEAD}:${digest(emptyReview.text)}`
+  if (A.accept_empty_review === acceptToken) {
     log(`code-review empty review accepted by the coordinator: ${emptyReview.reason}`)
     emptyReview.ok = true
   } else {
-    return { ...out, stopped: `code-review returned an empty review of ${LENS_HEAD} (${emptyReview.reason}). An empty review is never passed silently: read $H/${CHANGE}/review-findings-code-review.md, and resume this run with args.accept_empty_review: "${LENS_HEAD}" only if that scope is right. ${LEFTOVERS}` }
+    return { ...out, stopped: `code-review returned an empty review of ${LENS_HEAD} (${emptyReview.reason}). An empty review is never passed silently: read $H/${CHANGE}/review-findings-code-review.md, and resume this run with args.accept_empty_review: "${acceptToken}" only if that scope is right. ${LEFTOVERS}` }
   }
 }
 const failedLenses = lenses.filter(lens => !lensResults.some(r => r.lens === lens && r.ok))
 if (failedLenses.length) {
   const reasons = lensResults.filter(r => !r.ok).map(r => `${r.lens}: ${r.reason || (r.result ? r.result.skill_ran : 'agent died')}`).join('; ')
-  return { ...out, stopped: `review lens failed: ${failedLenses.join(', ')} (${reasons}); a failed lens is not zero findings. ${LEFTOVERS}` }
+  return { ...out, stopped: `review lens failed: ${failedLenses.join(', ')} (${reasons}); a failed lens is not zero findings. When the worktree is unchanged, resume this run with args.lens_round: ${LENS_ROUND + 1} to take the scope reading and the lenses again. ${LEFTOVERS}` }
 }
 
 phase('Apply and gates')
@@ -644,7 +690,7 @@ const APPLY_SCHEMA = {
   required: ['verdict', 'applied', 'rejected', 'gates', 'head', 'tree', 'summary'],
 }
 const lensDigest = lensResults.map(r => `--- ${r.lens} ---\n${r.text || JSON.stringify(r.result)}`).join('\n')
-const gapply = await guarded('apply', () => agent(`Apply stage for the change ${spec.change_name}, PR #${PR}, worktree ${WT}. You wrote none of its code and none of the /simplify edits. You are the last agent that edits code before the merge.
+const gapply = await guarded('apply', job(`Apply stage for the change ${spec.change_name}, PR #${PR}, worktree ${WT}. You wrote none of its code and none of the /simplify edits. You are the last agent that edits code before the merge.
 The lenses reviewed HEAD ${LENS_HEAD} with /simplify's uncommitted edits ($H/${CHANGE}/simplify.patch), under the lens flags data=${flags.data}, performance=${flags.performance}, modules_moved=${flags.modules_moved}. First run ${WT}/scripts/agent-topology.py review-lenses --base origin/main yourself and read its exit status: return blocked when it fails or any of those three flags differs.
 The lens findings (also in $H/${CHANGE}/review-findings-*.md):
 ${lensDigest}
@@ -662,7 +708,7 @@ const APPLY_LEFTOVERS = `check git -C ${WT} status --porcelain: unless the apply
 if (!applied) return { ...out, stopped: `apply agent failed: ${APPLY_LEFTOVERS}` }
 if (applied.verdict === 'fast-lane-violation') {
   phase('Spec review')
-  const gr = await guarded('spec-review-after-violation', () => agent(`The change ${spec.change_name} (worktree ${WT}, PR #${PR}) left the fast lane: ${applied.summary}. Review its spec artifacts independently, as a full spec review (parallel-agent-work.md "Fast lane"), against the code and the rules; fix confirmed issues in one commit and push. The worktree may still hold /simplify's uncommitted edits ($H/${CHANGE}/simplify.patch) and the apply stage's: stage and commit only the spec artifacts you change, by name, and leave every other edit as it is. Return unsound if it is.
+  const gr = await guarded('spec-review-after-violation', job(`The change ${spec.change_name} (worktree ${WT}, PR #${PR}) left the fast lane: ${applied.summary}. Review its spec artifacts independently, as a full spec review (parallel-agent-work.md "Fast lane"), against the code and the rules; fix confirmed issues in one commit and push. The worktree may still hold /simplify's uncommitted edits ($H/${CHANGE}/simplify.patch) and the apply stage's: stage and commit only the spec artifacts you change, by name, and leave every other edit as it is. Return unsound if it is.
 ${common('spec-review-after-violation')}`, { label: `spec-review:${CHANGE}`, phase: 'Spec review', schema: REVIEW_SCHEMA }))
   if (gr.stopped) return { ...out, ...gr }
   out.review_after_violation = gr.result
@@ -677,7 +723,7 @@ const HEXISH = /^[0-9a-f]{7,40}$/
 if (!HEXISH.test(applied.head || '') || !HEXISH.test(applied.tree || '')) {
   return { ...out, stopped: `the apply stage returned no commit and tree hashes (head ${JSON.stringify(applied.head)}, tree ${JSON.stringify(applied.tree)}); check the worktree and its gate-trees.log by hand` }
 }
-const gverify = await guarded('apply-verify', () => agent(`Read-only reading. Run exactly these commands, in one Bash call, and nothing else:
+const gverify = await guarded('apply-verify', job(`Read-only reading. Run exactly these commands, in one Bash call, and nothing else:
 W=${WT}; H="$(git -C "$W" rev-parse HEAD)"; T="$(git -C "$W" rev-parse 'HEAD^{tree}')"; echo "--HEAD-- $H"; echo "--TREE-- $T"; echo "--CLEAN-- $([ -z "$(git -C "$W" status --porcelain)" ] && echo yes || echo no)"; echo "--HEAD-MATCH-- $([ "$(git -C "$W" rev-parse --verify --quiet '${applied.head}^{commit}')" = "$H" ] && echo yes || echo no)"; echo "--TREE-MATCH-- $([ "$(git -C "$W" rev-parse --verify --quiet '${applied.tree}^{tree}')" = "$T" ] && echo yes || echo no)"; echo "--PUSHED-- $([ "$(gh pr view ${PR} --json headRefOid --jq .headRefOid)" = "$H" ] && echo yes || echo no)"; echo "--ANCESTOR-- $(git -C "$W" merge-base --is-ancestor ${LENS_HEAD} HEAD && echo yes || echo no)"; "$W/scripts/gate-trees.sh" lookup "$W" --change ${CHANGE} --gate 'make check'; echo "--GATED-EXIT $?--"
 Return head and tree, the hashes printed; clean, head_match, tree_match, pushed and lens_head_is_ancestor, true when the line printed yes; gated_exit, the number in --GATED-EXIT. Change nothing.`,
   { label: `verify:${CHANGE}`, phase: 'Apply and gates', effort: 'low',
@@ -710,13 +756,13 @@ phase('Merge and archive')
 const MERGE_VERDICTS = ['merged', 'merged-archive-owed', 'ready', 'measurement-pending', 'merge-lock-stale', 'blocked']
 const mergeNote = A.no_merge
   ? `DO NOT MERGE (coordinator: ${A.no_merge}). Do the review and the checks above, take no lock, then return the verdict ready, or blocked, with "${A.no_merge}" in the reason.`
-  : `Merging: take MERGE-LOCK; make the origin/main merge of "Merging" step 2. If it conflicts, git -C ${WT} merge --abort, release MERGE-LOCK and return blocked: you resolve nothing. After a clean merge, review its diff against ${verified.head} as part of the range and return the final range and tree. Reuse gate records only for the identical tree (scripts/gate-trees.sh lookup --change ${CHANGE}); check that origin/main is an ancestor of HEAD before gh pr merge; read the Kani budget runs, never watch them, and follow the archive-owed path when they have not finished (parallel-agent-work.md "Merging"; verification-runs.md "Kani"). Archive with the openspec-archive-change skill and record it in ${A.programme_record || 'the programme record the change names'}. If another change has held MERGE-LOCK for more than 3 h, take nothing, break nothing, and return merge-lock-stale. After the origin/main merge, rerun the smokes only as "Durability" says. Release MERGE-LOCK on every exit path, then clean up as "Durability" describes.`
+  : `Merging: take MERGE-LOCK; make the origin/main merge of "Merging" step 2. If it conflicts, git -C ${WT} merge --abort, release MERGE-LOCK and return blocked: you resolve nothing. After a clean merge, review its diff against ${verified.head} as part of the range. When that merge made no commit, the apply stage's records cover the tree and you rerun nothing; when it made one, the tree is new: run on it every gate "Merging" step 2 lists for that case (make test in full, and the smokes on any UI-prefix overlap of either side), each through scripts/gate-trees.sh record --change ${CHANGE}. Reuse a record only for the identical tree (scripts/gate-trees.sh lookup --change ${CHANGE}); check that origin/main is an ancestor of HEAD before gh pr merge, and return the HEAD^{tree} it merged as final_tree and GitHub's merge commit as merge_commit; read the Kani budget runs, never watch them, and follow the archive-owed path when they have not finished (parallel-agent-work.md "Merging"; verification-runs.md "Kani"). Archive with the openspec-archive-change skill and record it in ${A.programme_record || 'the programme record the change names'}. If another change has held MERGE-LOCK for more than 3 h, take nothing, break nothing, and return merge-lock-stale. Release MERGE-LOCK on every exit path, then clean up as "Durability" describes.`
 // The final review writes no code: under no_merge it commits nothing, and
 // otherwise only the conflict-free origin/main merge and the archive commit.
 const MERGE_COMMITS = A.no_merge
   ? 'You edit no file and make no commit.'
-  : 'You edit no code, and you make two commits only: the origin/main merge below, when it applies without conflicts, and the archive commit on main, which touches only the archived change and the programme record.'
-const gmerge = await guarded('merge', () => agent(`Final review, merge and archive stage for the change ${spec.change_name}, PR #${PR}, worktree ${WT}, branch ${BRANCH}. ${MERGE_COMMITS}
+  : 'You edit no code, and you make two commits only: the origin/main merge below, when it applies without conflicts, and the archive commit on main that "Merging" step 4 describes, with what the archive skill syncs into openspec/specs/ and the Kani figures "Merging" puts in it.'
+const gmerge = await guarded('merge', job(`Final review, merge and archive stage for the change ${spec.change_name}, PR #${PR}, worktree ${WT}, branch ${BRANCH}. ${MERGE_COMMITS}
 Implementation report: ${impl.report}
 Measurements it queued: ${impl.measurements_queued || 'none'}. Kani budget runs dispatched: ${impl.kani_dispatch || 'none'}${applied.kani_dispatch ? `, and by the apply stage: ${applied.kani_dispatch}` : ''}.
 Apply stage: ${applied.summary}; gates: ${applied.gates}
@@ -740,11 +786,62 @@ out.merge = merged
 if (!merged) return { ...out, stopped: 'merge agent died: check MERGE-LOCK, the PR state and the archive by hand' }
 if (!MERGE_VERDICTS.includes(merged.verdict)) return { ...out, stopped: `merge stage returned an unknown verdict ${JSON.stringify(merged.verdict)}; check MERGE-LOCK, the PR state and the archive by hand` }
 if (A.no_merge && /^merged/.test(merged.verdict)) return { ...out, stopped: `the merge stage reports ${merged.verdict} although args.no_merge was set; check the PR and main by hand` }
-if (merged.verdict === 'blocked') return { ...out, stopped: `final review blocked: ${merged.reason}. Nothing was merged; fix it in an implementation round (mode continue), then rerun review-only.` }
-// Both merged verdicts name the merge; only "merged" also names the archive.
-const OWED_COMMITS = { merged: ['merge_commit', 'archive_commit'], 'merged-archive-owed': ['merge_commit'] }[merged.verdict] || []
-if (OWED_COMMITS.some(k => !merged[k])) {
-  return { ...out, stopped: `the merge stage reports ${merged.verdict} without a merge commit${merged.verdict === 'merged' ? ' and an archive commit' : ''} (${JSON.stringify({ merge: merged.merge_commit, archive: merged.archive_commit })}); check by hand` }
+if (merged.verdict === 'blocked') {
+  // A block can come after gh pr merge (the archive refused, say): say what is
+  // known, never that nothing was merged.
+  const where = merged.merge_commit
+    ? `The stage reports the merge commit ${merged.merge_commit}, so main already has the change: check MERGE-LOCK, the archive and gh pr view ${PR} by hand before anything else.`
+    : `The stage reports no merge commit: check gh pr view ${PR} and MERGE-LOCK, then fix it in an implementation round (mode continue) and rerun review-only.`
+  return { ...out, stopped: `final review blocked: ${merged.reason}. ${where}` }
+}
+// Both merged verdicts name the merge and the tree it merged; only "merged"
+// also names the archive.
+const OWED_FIELDS = { merged: ['merge_commit', 'final_tree', 'archive_commit'], 'merged-archive-owed': ['merge_commit', 'final_tree'] }[merged.verdict] || []
+if (OWED_FIELDS.some(k => !merged[k])) {
+  const FIELD_NAMES = { merge_commit: 'a merge commit', final_tree: 'its final tree (final_tree)', archive_commit: 'an archive commit' }
+  return { ...out, stopped: `the merge stage reports ${merged.verdict} without ${OWED_FIELDS.filter(k => !merged[k]).map(k => FIELD_NAMES[k]).join(' and ')} (${JSON.stringify({ merge: merged.merge_commit, tree: merged.final_tree, archive: merged.archive_commit })}); check main, MERGE-LOCK and the archive by hand` }
+}
+if (/^merged/.test(merged.verdict)) {
+  // The tree that reached main, checked against the gate records in the shell
+  // (Fable F6): it is the merge commit's tree, on origin/main, and every gate
+  // owed on it has a pass on record. After a non-empty origin/main merge that
+  // is every gate; after a no-op one the tree is the apply tree.
+  const MERGED_AFTER = `The change is merged (merge commit ${merged.merge_commit}), so main already has it: the coordinator checks main and the gate records by hand, and a tree without its gates on record is fixed by a follow-up change.`
+  if (!HEX40.test(merged.merge_commit) || !HEX40.test(merged.final_tree)) {
+    return { ...out, stopped: `the merge stage returned a merge commit or final tree that is not a full hash (${JSON.stringify({ merge: merged.merge_commit, tree: merged.final_tree })}). ${MERGED_AFTER}` }
+  }
+  // Whether the smokes are owed is the canonical classifiers' answer (testing.md
+  // "Proof Obligations of a Change"), read from origin/main, never a copy of
+  // their path lists.
+  const UI_CHECK = `python3 -I -c 'import importlib.util as u, sys; sys.path.insert(0, sys.argv[1]); import accessibility_source_fingerprint as a; s = u.spec_from_file_location("v", sys.argv[1] + "/check-visual-proof-policy.py"); v = u.module_from_spec(s); s.loader.exec_module(v); print("yes" if any(a.is_relevant(p) or v.is_visual_sensitive(p) for p in sys.stdin.read().split()) else "no")' "$D"`
+  const POST_GATES = ['make check', 'make test', 'make visual-geometry-smoke', 'make accessibility-smoke', 'make visual-smoke']
+  const gpost = await guarded('post-merge', job(`Read-only reading after the merge. Run exactly these commands, in one Bash call, and nothing else:
+M="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"; MC='${merged.merge_commit}'; AH='${verified.head}'; git -C "$M" fetch --prune --quiet origin; D="$(mktemp -d)"; OK=yes; for f in gate-trees.sh accessibility_source_fingerprint.py check-visual-proof-policy.py; do git -C "$M" show "origin/main:scripts/$f" >"$D/$f" || OK=no; done; chmod +x "$D/gate-trees.sh"; T="$(git -C "$M" rev-parse --verify --quiet "$MC^{tree}")"; echo "--MERGE-TREE-- $T"; echo "--ON-MAIN-- $(git -C "$M" merge-base --is-ancestor "$MC" origin/main && echo yes || echo no)"; echo "--MERGED-IN-- $([ "$(git -C "$M" rev-parse --verify --quiet "$MC^2")" = "$AH" ] && echo no || echo yes)"; echo "--UI-- $({ git -C "$M" diff --name-only "$MC^1" "$MC^2"; git -C "$M" diff --name-only "$AH" "$MC^2"; } | ${UI_CHECK} || echo failed)"; for g in ${POST_GATES.map(g => `'${g}'`).join(' ')}; do if [ "$OK" = yes ] && [ -n "$T" ]; then "$D/gate-trees.sh" lookup "$M" --tree "$T" --change ${CHANGE} --gate "$g" >/dev/null 2>&1; echo "--GATE-- $? $g"; else echo "--GATE-- 99 $g"; fi; done; rm -rf "$D"
+Return: merge_tree, the hash after --MERGE-TREE--; on_main and merged_in, true when the line printed yes; ui_line, the text after --UI--, verbatim; gates_stdout, every --GATE-- line verbatim, one per line. Change nothing.`,
+    { label: `postmerge:${CHANGE}`, phase: 'Merge and archive', effort: 'low',
+      schema: { type: 'object', properties: {
+        merge_tree: { type: 'string' }, on_main: { type: 'boolean' }, merged_in: { type: 'boolean' }, ui_line: { type: 'string' },
+        gates_stdout: { type: 'string' } },
+        required: ['merge_tree', 'on_main', 'merged_in', 'ui_line', 'gates_stdout'] } }))
+  if (gpost.stopped) return { ...out, ...gpost }
+  const post = gpost.result
+  out.post_merge = post
+  if (!post) return { ...out, stopped: `post-merge reading failed. ${MERGED_AFTER}` }
+  const exits = {}
+  for (const line of String(post.gates_stdout || '').split('\n')) {
+    const m = /^--GATE-- (\d+) (.+)$/.exec(line.trim())
+    if (m) exits[m[2]] = Number(m[1])
+  }
+  // Anything but a plain "no" from the classifiers owes the smokes: a failed
+  // classifier is not "no UI file".
+  const uiTouched = String(post.ui_line || '').trim() !== 'no'
+  const owed = ['make check', 'make test', ...(post.merged_in && uiTouched ? POST_GATES.slice(2) : [])]
+  const postProblems = []
+  if (post.merge_tree !== merged.final_tree) postProblems.push(`the merge commit's tree ${post.merge_tree} is not the final tree ${merged.final_tree}`)
+  if (post.on_main !== true) postProblems.push('the merge commit is not on origin/main')
+  if (post.merged_in !== true && merged.final_tree !== verified.tree) postProblems.push(`no commits were merged in, yet the final tree ${merged.final_tree} is not the apply tree ${verified.tree}`)
+  for (const g of owed) if (exits[g] !== 0) postProblems.push(`no clean pass of ${g} on record for ${merged.final_tree} (lookup exit ${exits[g] === undefined ? 'missing' : exits[g]})`)
+  if (postProblems.length) return { ...out, stopped: `post-merge check: ${postProblems.join('; ')}. ${MERGED_AFTER}` }
 }
 out.verdict = merged.verdict
 return out

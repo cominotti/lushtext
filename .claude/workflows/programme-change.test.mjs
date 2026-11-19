@@ -35,16 +35,19 @@ const FLAGS = { data: false, performance: false, modules_moved: false }
 const LH = '1'.repeat(40)
 const H2 = '2'.repeat(40)
 const T2 = '3'.repeat(40)
+// GitHub's merge commit of the PR.
+const MC = '4'.repeat(40)
 const prOf = prompt => Number((/PR #(\d+)/.exec(prompt) || [])[1])
 
 // The code-review lens's structured tail.
-function crText({ pr, files = 2, lines = 40, wt = null, count = 1, status = 'ok', sources = 1, body = '- a.rs:3 off by one' }) {
+// count is the PR call's findings, wtCount the worktree call's (Fable F1).
+function crText({ pr, files = 2, lines = 40, wt = null, count = 1, wtCount = 0, status = 'ok', sources = 1, body = '- a.rs:3 off by one' }) {
   const tail = [
     body,
     ...Array.from({ length: sources }, () => 'skill_findings_source: result-text'),
     `CODE-REVIEW-SCOPE: pr #${pr} files=${files} lines=${lines}`,
     ...(wt ? [`CODE-REVIEW-SCOPE: worktree base=${wt.base || 'HEAD'} files=${wt.files} lines=${wt.lines || 12}`] : []),
-    `findings_count: ${count}`,
+    `findings_count: pr=${count}${wt ? ` worktree=${wtCount}` : ''}`,
     `CODE-REVIEW-STATUS: ${status}`,
   ]
   return tail.join('\n')
@@ -70,7 +73,16 @@ const DEFAULTS = {
   lens: () => ({ status: 'ran', skill_ran: 'stub', examined: ['crates/x.rs: checklist 1-5'], findings: [], findings_file: 'f.md' }),
   apply: () => ({ verdict: 'ready', applied: 'apply-applied', rejected: 'apply-rejected', gates: 'apply-gates', head: H2, tree: T2, summary: 'apply-summary' }),
   verify: () => ({ head: H2, tree: T2, clean: true, head_match: true, tree_match: true, pushed: true, lens_head_is_ancestor: true, gated_exit: 0 }),
-  merge: () => ({ verdict: 'merged', reason: 'merged', merge_commit: 'm1', archive_commit: 'a1', notes: 'n' }),
+  merge: () => ({ verdict: 'merged', reason: 'merged', merge_commit: MC, archive_commit: 'a1', final_tree: T2, notes: 'n' }),
+  postmerge: () => postmergeReading(),
+}
+// The post-merge reading (Fable F6): the merge commit's tree, whether it is on
+// main, whether the origin/main merge brought commits in, UI-prefix overlap,
+// and one lookup exit per gate, printed by the shell.
+function postmergeReading({ tree = T2, onMain = true, mergedIn = false, ui = false, exits = {} } = {}) {
+  const gates = ['make check', 'make test', 'make visual-geometry-smoke', 'make accessibility-smoke', 'make visual-smoke']
+  return { merge_tree: tree, on_main: onMain, merged_in: mergedIn, ui_line: ui === true ? 'yes' : ui === false ? 'no' : ui,
+    gates_stdout: gates.map(g => `--GATE-- ${g in exits ? exits[g] : (g.endsWith('smoke') ? 1 : 0)} ${g}`).join('\n') }
 }
 
 function kindOf(label) {
@@ -83,22 +95,39 @@ function kindOf(label) {
 }
 
 let activeSource = SOURCE
-async function run(args, overrides = {}, source = activeSource) {
+// replay: the calls of an earlier run, [{key, result}]; the longest unchanged
+// prefix of (prompt, opts) is answered from it and every call after the first
+// changed one runs live, as the Workflow runtime resumes (probes C5, C6).
+async function run(args, overrides = {}, source = activeSource, replay = null) {
   const calls = []
   const prompts = {}
+  const record = []
+  const live = []
+  let diverged = replay === null
   const agent = async (prompt, opts = {}) => {
     const label = opts.label || ''
     calls.push(label)
     prompts[label] = prompt
+    const key = JSON.stringify([prompt, opts])
+    const at = record.length
+    record.push({ key, result: undefined })
+    if (!diverged && at < replay.length && replay[at].key === key) {
+      record[at].result = replay[at].result
+      return replay[at].result
+    }
+    diverged = true
+    live.push(label)
     const kind = kindOf(label)
     const fn = overrides[label] || overrides[kind] || DEFAULTS[kind]
     if (!fn) throw new Error(`no stub for agent label ${label}`)
-    return fn(label, prompt, opts)
+    const result = await fn(label, prompt, opts)
+    record[at].result = result
+    return result
   }
   const parallel = async thunks => Promise.all(thunks.map(t => t().catch(() => null)))
   const body = new AsyncFunction('args', 'agent', 'parallel', 'pipeline', 'phase', 'log', 'budget', 'workflow', source)
   const result = await body(args, agent, parallel, undefined, () => {}, () => {}, { total: null, spent: () => 0, remaining: () => Infinity }, undefined)
-  return { result, calls, prompts, work: calls.filter(l => !l.startsWith('guard:')) }
+  return { result, calls, prompts, record, live, work: calls.filter(l => !l.startsWith('guard:')) }
 }
 
 function check(cond, message) {
@@ -200,7 +229,7 @@ const CASES = {
   async 'new mode finalizes through the merge stage'() {
     const r = await run({ ...BASE, mode: 'new' })
     check(r.result.merge && r.result.verdict === 'merged' && !r.result.stopped, JSON.stringify(r.result))
-    const order = ['spec:', 'spec-review:', 'implement-1:', 'prepare:', 'simplify:', 'scope:', 'lens:code-review:', 'apply:', 'verify:', 'merge:']
+    const order = ['spec:', 'spec-review:', 'implement-1:', 'prepare:', 'simplify:', 'scope:', 'lens:code-review:', 'apply:', 'verify:', 'merge:', 'postmerge:']
     let at = -1
     for (const prefix of order) {
       const next = r.work.findIndex((l, i) => i > at && l.startsWith(prefix))
@@ -215,7 +244,7 @@ const CASES = {
     check(!r.work.some(l => /^(spec|implement|merge)/.test(l)), JSON.stringify(r.work))
     check(has(r.result.verdict, 'stopped before merge') && r.result.apply_range === `${LH}..${H2}`, JSON.stringify(r.result))
     const m = await run({ ...RO, merge: true })
-    check(m.work.at(-1).startsWith('merge:') && m.result.merge, JSON.stringify(m.work))
+    check(m.work.at(-2).startsWith('merge:') && m.work.at(-1).startsWith('postmerge:') && m.result.merge, JSON.stringify(m.work))
   },
   // Fable review M1: the committed work is reviewed through the PR.
   async 'M1: the code-review lens reviews the PR, and the worktree only for uncommitted edits'() {
@@ -335,7 +364,7 @@ const CASES = {
   async 'R2: a merged-archive-owed verdict without a merge commit stops the run'() {
     const r = await run({ ...BASE, mode: 'new' }, { merge: () => ({ verdict: 'merged-archive-owed', reason: 'kani pending', notes: '' }) })
     check(has(r.result.stopped, 'without a merge commit'), JSON.stringify(r.result))
-    const ok = await run({ ...BASE, mode: 'new' }, { merge: () => ({ verdict: 'merged-archive-owed', reason: 'kani pending', merge_commit: 'm1', notes: '' }) })
+    const ok = await run({ ...BASE, mode: 'new' }, { merge: () => ({ verdict: 'merged-archive-owed', reason: 'kani pending', merge_commit: MC, final_tree: T2, notes: '' }) })
     check(ok.result.verdict === 'merged-archive-owed' && !ok.result.stopped, JSON.stringify(ok.result))
   },
   // R3: a stop after /simplify that can leave its edits uncommitted says so,
@@ -356,24 +385,27 @@ const CASES = {
     const empty = (_l, p) => crText({ pr: prOf(p), count: 0, status: 'empty', body: 'No issues found.' })
     const r = await run(RO, { 'lens:code-review': empty })
     check(has(r.result.stopped, 'empty review') && !r.work.some(l => l.startsWith('lens:code-review-2:')) && !r.work.some(l => l.startsWith('apply:')), JSON.stringify(r.result))
-    check(has(r.result.stopped, `args.accept_empty_review: "${LH}"`), r.result.stopped)
-    const a = await run({ ...RO, accept_empty_review: LH }, { 'lens:code-review': empty })
+    const token = (/args\.accept_empty_review: "([^"]+)"/.exec(r.result.stopped || '') || [])[1]
+    check(typeof token === 'string' && token.startsWith(`${LH}:`), `the stop prints no token bound to the HEAD and the review: ${r.result.stopped}`)
+    const a = await run({ ...RO, accept_empty_review: token }, { 'lens:code-review': empty })
     check(!a.result.stopped && a.work.some(l => l.startsWith('apply:')), JSON.stringify(a.result))
-    // A bare true, or the HEAD of another review, accepts nothing.
-    for (const value of [true, '9'.repeat(40)]) {
-      const b = await run({ ...RO, accept_empty_review: value }, { 'lens:code-review': empty })
+    // A bare true, the HEAD alone, or the token of another review accepts nothing (Fable F10).
+    const other = (_l, p) => crText({ pr: prOf(p), count: 0, status: 'empty', body: 'Nothing to report.' })
+    for (const [value, lens] of [[true, empty], ['9'.repeat(40), empty], [LH, empty], [token, other]]) {
+      const b = await run({ ...RO, accept_empty_review: value }, { 'lens:code-review': lens })
       check(has(b.result.stopped, 'empty review'), `${JSON.stringify(value)} accepted an empty review`)
     }
     const noScope = (_l, p) => crText({ pr: prOf(p), files: 2, lines: 0, count: 0, status: 'empty' })
-    const z = await run({ ...RO, accept_empty_review: LH }, {
+    const z = await run({ ...RO, accept_empty_review: token }, {
       'lens:code-review': noScope, 'lens:code-review-2': noScope,
     })
     check(has(z.result.stopped, 'review lens failed: code-review'), `an empty review over no scope must fail: ${JSON.stringify(z.result)}`)
   },
   async 'guard_ack and accept_empty_review never reach a prompt'() {
-    const r = await run({ ...RO, merge: true, accept_empty_review: LH, guard_ack: 'simplify:x' })
+    const r = await run({ ...RO, merge: true, accept_empty_review: `${LH}:0123abcd0123abcd`, guard_ack: 'simplify:x' })
     for (const [label, prompt] of Object.entries(r.prompts)) {
-      check(!has(prompt, 'accept_empty_review') && !has(prompt, 'guard_ack') && !has(prompt, 'simplify:x'), `${label} carries a script-only argument`)
+      check(!has(prompt, 'accept_empty_review') && !has(prompt, 'guard_ack') && !has(prompt, 'simplify:x') && !has(prompt, '0123abcd0123abcd'), `${label} carries a script-only argument`)
+      check(!has(prompt, 'gate-trees.sh void'), `${label} hands a stage agent the coordinator's void`)
     }
   },
   async 'a bare (none) from code-review is a failed lens after one rerun'() {
@@ -386,10 +418,13 @@ const CASES = {
     check(!r.result.stopped && r.work.some(l => l.startsWith('lens:code-review-2:')) && r.work.some(l => l.startsWith('apply:')), JSON.stringify(r.result))
   },
   async 'empty-looking reviews marked ok still fail the lens'() {
+    // A zero PR count is an empty review for the coordinator (F1); findings
+    // counted over an empty body are a failed lens. Neither reaches apply.
     for (const [body, count] of [['[\n]', 0], ['```json\n[\n]\n```', 0], ['## Summary\nNo findings.', 0], ['(none)', 0], ['', 0], ['', 1], ['[\n]', 1]]) {
       const text = (_l, p) => crText({ pr: prOf(p), body, count })
       const r = await run(RO, { 'lens:code-review': text, 'lens:code-review-2': text })
-      check(has(r.result.stopped, 'review lens failed: code-review'), `${JSON.stringify(body)}/${count}: ${JSON.stringify(r.result)}`)
+      const want = count === 0 ? 'empty review' : 'review lens failed: code-review'
+      check(has(r.result.stopped, want) && !r.work.some(l => l.startsWith('apply:')), `${JSON.stringify(body)}/${count}: ${JSON.stringify(r.result)}`)
     }
   },
   async 'a status line that is not last, or a source line missing, fails'() {
@@ -553,7 +588,7 @@ const CASES = {
   },
   async 'every stage prompt carries the foreground rule'() {
     const prompts = []
-    const readOnly = ['scope:', 'verify:']
+    const readOnly = ['scope:', 'verify:', 'postmerge:']
     await run({ ...BASE, mode: 'new' }, Object.fromEntries(Object.keys(DEFAULTS).filter(k => k !== 'guard').map(k => [k, (l, p, o) => { prompts.push([l, p]); return DEFAULTS[k](l, p, o) }])))
     check(prompts.length > 0, 'no stage prompt was captured')
     for (const [label, prompt] of prompts) {
@@ -604,13 +639,151 @@ const CASES = {
     const prompt = d.prompts['decision:demo']
     check(!has(prompt, 'PARALLEL-LEDGER') && has(prompt, 'decision-3.md'), prompt)
   },
-  async 'continue with skip_impl and no PR anywhere stops before prepare'() {
+  async 'continue with skip_impl and no PR anywhere stops before any agent'() {
     const r = await run({ ...BASE, mode: 'continue', skip_impl: true, spec: CARRIED_SPEC, impl: { tasks_complete: true, report: 'r', gates: '' } })
-    check(has(r.result.stopped, 'no pull request') && !r.work.some(l => l.startsWith('prepare:')), JSON.stringify(r.result))
+    check(has(r.result.stopped, 'pull request') && r.calls.length === 0, JSON.stringify(r.result))
+    // Fable F8: not even the archive of a previous change runs first.
+    const p = await run({ ...BASE, mode: 'continue', skip_impl: true, spec: CARRIED_SPEC, impl: { tasks_complete: true, report: 'r', gates: '' },
+      prev_change: 'older', prev_pr: 3, prev_tip: 'abc' })
+    check(has(p.result.stopped, 'pull request') && p.calls.length === 0, `the archive ran before the PR check: ${JSON.stringify(p.calls)}`)
   },
   async 'an empty pr argument means no PR'() {
     const r = await run({ ...BASE, mode: 'new', pr: null })
     check(r.result.merge && !r.result.stopped, JSON.stringify(r.result))
+  },
+  // Fable fix check (2026-11-19).
+  async 'F1: a PR call with no findings is an empty review even when the worktree call has some'() {
+    const scope = scopeWith(FLAGS, { uncommitted_count: 1 })
+    const hollow = (_l, p) => crText({ pr: prOf(p), sources: 2, wt: { files: 1 }, count: 0, wtCount: 2, status: 'ok', body: '- b.rs:9 leak\n- c.rs:4 unused' })
+    const r = await run(RO, { scope, 'lens:code-review': hollow })
+    check(has(r.result.stopped, 'empty review') && !r.work.some(l => l.startsWith('apply:')), `a hollow PR review passed: ${JSON.stringify(r.result)}`)
+    check(!r.work.some(l => l.startsWith('lens:code-review-2:')), 'an empty PR review burned the rerun instead of stopping for the coordinator')
+    const token = (/args\.accept_empty_review: "([^"]+)"/.exec(r.result.stopped || '') || [])[1]
+    const a = await run({ ...RO, accept_empty_review: token }, { scope, 'lens:code-review': hollow })
+    check(!a.result.stopped && a.work.some(l => l.startsWith('apply:')), `the accepted hollow review did not pass: ${JSON.stringify(a.result)}`)
+    // Findings on the PR and none on the small /simplify edits is a normal review.
+    const ok = await run(RO, { scope, 'lens:code-review': (_l, p) => crText({ pr: prOf(p), sources: 2, wt: { files: 1 }, count: 2, wtCount: 0 }) })
+    check(!ok.result.stopped, `a review with PR findings and no worktree findings stopped: ${ok.result.stopped}`)
+    // An empty status over PR findings contradicts itself, and the old single count is refused.
+    for (const text of [
+      (_l, p) => crText({ pr: prOf(p), count: 1, status: 'empty' }),
+      (_l, p) => crText({ pr: prOf(p) }).replace('findings_count: pr=1', 'findings_count: 1'),
+      (_l, p) => crText({ pr: prOf(p), sources: 2, wt: { files: 1 }, count: 1 }).replace(' worktree=0', ''),
+    ]) {
+      const f = await run(RO, { scope: text.length && /worktree/.test(text(null, 'PR #7')) ? scope : scopeWith(), 'lens:code-review': text, 'lens:code-review-2': text })
+      check(has(f.result.stopped, 'review lens failed: code-review'), `${text(null, 'PR #7')}: ${JSON.stringify(f.result)}`)
+    }
+    const p = r.prompts['lens:code-review:demo']
+    check(has(p, 'findings_count: pr=<n> worktree=<n>'), `the lens prompt does not ask for a count per call: ${p}`)
+  },
+  async 'F2: no prompt carries a pass under load'() {
+    const r = await run({ ...BASE, mode: 'new' })
+    for (const [label, prompt] of Object.entries(r.prompts)) {
+      check(!/level 3|under load counts|calibration/i.test(prompt), `${label} mentions level 3 or the calibration`)
+    }
+  },
+  async 'F3: the archive commit may carry the spec sync and the Kani figures, and a blocked merge stage does not claim nothing was merged'() {
+    const r = await run({ ...BASE, mode: 'new' })
+    const p = r.prompts['merge:demo']
+    check(!has(p, 'touches only the archived change and the programme record') && has(p, '"Merging" step 4'), p.slice(0, 600))
+    const after = await run({ ...BASE, mode: 'new' }, { merge: () => ({ verdict: 'blocked', reason: 'archive refused', merge_commit: MC, notes: '' }) })
+    check(has(after.result.stopped, 'final review blocked') && !has(after.result.stopped, 'Nothing was merged') && has(after.result.stopped, MC), after.result.stopped)
+    const before = await run({ ...BASE, mode: 'new' }, { merge: () => ({ verdict: 'blocked', reason: 'off by one', notes: '' }) })
+    check(!has(before.result.stopped, 'Nothing was merged') && has(before.result.stopped, 'gh pr view 11'), before.result.stopped)
+  },
+  async 'F4: a resumed run takes a live guard reading before its first live stage'() {
+    const first = await run({ ...RO, merge: true, review_extra: 'verdict v1' })
+    check(first.result.verdict === 'merged', JSON.stringify(first.result))
+    const second = await run({ ...RO, merge: true, review_extra: 'verdict v2' }, {}, activeSource, first.record)
+    check(second.live[0] === 'guard:merge:before', `the first live call is ${second.live[0]}, not a fresh guard reading before the merge stage: ${JSON.stringify(second.live)}`)
+    check(second.live.includes('merge:demo') && second.live.includes('guard:merge:after'), JSON.stringify(second.live))
+    const firstLive = second.calls.indexOf('guard:merge:before')
+    check(firstLive > 0 && second.calls.slice(0, firstLive).every(l => !second.live.includes(l)), 'an earlier stage reran')
+    // An unchanged resume replays every call, guard readings included.
+    const same = await run({ ...RO, merge: true, review_extra: 'verdict v1' }, {}, activeSource, first.record)
+    check(same.live.length === 0, `an unchanged resume ran ${JSON.stringify(same.live)} live`)
+  },
+  async 'F4: every guard reading before a stage names that stage\'s prompt'() {
+    const a = await run({ ...RO, merge: true, review_extra: 'x1' })
+    const b = await run({ ...RO, merge: true, review_extra: 'x2' })
+    for (const label of Object.keys(a.prompts)) {
+      if (label === 'guard:merge:before' || label === 'merge:demo') {
+        check(a.prompts[label] !== b.prompts[label], `${label} did not change with the merge prompt`)
+      } else {
+        check(a.prompts[label] === b.prompts[label], `${label} changed although its stage did not`)
+      }
+    }
+  },
+  async 'F5: args.lens_round reruns the lenses alone on a resume'() {
+    const bad = (_l, p) => crText({ pr: prOf(p), files: 99 })
+    const first = await run(RO, { 'lens:code-review': bad, 'lens:code-review-2': bad })
+    check(has(first.result.stopped, 'review lens failed') && has(first.result.stopped, 'args.lens_round: 2'), first.result.stopped)
+    const second = await run({ ...RO, lens_round: 2 }, {}, activeSource, first.record)
+    check(!second.result.stopped && second.live.includes('lens:code-review:demo'), JSON.stringify(second.result))
+    check(!second.live.some(l => /^(prepare|simplify):/.test(l) || /^guard:(prepare|simplify):/.test(l)), `prepare or simplify reran: ${JSON.stringify(second.live)}`)
+    check(second.live.includes('guard:review-scope:before') && second.live.includes('scope:demo'), `the scope reading was not taken again: ${JSON.stringify(second.live)}`)
+    check(has(second.prompts['lens:code-review:demo'], 'attempt 3'), second.prompts['lens:code-review:demo'])
+    for (const value of [0, -1, 1.5, '2']) {
+      const r = await run({ ...RO, lens_round: value })
+      check(has(r.result.stopped, 'lens_round') && r.calls.length === 0, `${JSON.stringify(value)}: ${JSON.stringify(r.result)}`)
+    }
+  },
+  async 'F6: a merged verdict is checked against the gate records of the tree on main'() {
+    const ok = await run({ ...BASE, mode: 'new' })
+    check(ok.result.verdict === 'merged' && ok.work.at(-1) === 'postmerge:demo', JSON.stringify(ok.work))
+    const p = ok.prompts['postmerge:demo']
+    check(has(p, `MC='${MC}'`) && has(p, '--tree') && has(p, "'make test'") && has(p, '--change demo'), p)
+    for (const [why, merge, postmerge] of [
+      ['no final tree', () => ({ ...DEFAULTS.merge(), final_tree: undefined }), null],
+      ['a final tree that is not a hash', () => ({ ...DEFAULTS.merge(), final_tree: 'abc' }), null],
+      ['the merge commit is not a hash', () => ({ ...DEFAULTS.merge(), merge_commit: "x'; rm -rf /" }), null],
+      ['another tree on main', null, () => postmergeReading({ tree: '5'.repeat(40) })],
+      ['not on main', null, () => postmergeReading({ onMain: false })],
+      ['make test not on record', null, () => postmergeReading({ exits: { 'make test': 1 } })],
+      ['a no-op merge whose tree is not the apply tree', () => ({ ...DEFAULTS.merge(), final_tree: '6'.repeat(40) }), () => postmergeReading({ tree: '6'.repeat(40) })],
+      ['smokes owed after a merge that brought UI files', null, () => postmergeReading({ mergedIn: true, ui: true, exits: { 'make visual-smoke': 1, 'make accessibility-smoke': 0, 'make visual-geometry-smoke': 0 } })],
+      ['a dead reading', null, () => null],
+    ]) {
+      const o = {}
+      if (merge) o.merge = merge
+      if (postmerge) o.postmerge = postmerge
+      const r = await run({ ...BASE, mode: 'new' }, o)
+      check(typeof r.result.stopped === 'string' && !has(r.result.stopped, 'Nothing was merged'), `${why}: ${JSON.stringify(r.result)}`)
+    }
+    const owed = await run({ ...BASE, mode: 'new' }, { merge: () => ({ verdict: 'merged-archive-owed', reason: 'kani', merge_commit: MC, notes: '' }) })
+    check(has(owed.result.stopped, 'final_tree'), `merged-archive-owed without final_tree passed: ${JSON.stringify(owed.result)}`)
+    const merged = await run({ ...BASE, mode: 'new' }, { postmerge: () => postmergeReading({ mergedIn: true, ui: true, exits: { 'make visual-smoke': 0, 'make accessibility-smoke': 0, 'make visual-geometry-smoke': 0 } }) })
+    check(merged.result.verdict === 'merged' && !merged.result.stopped, JSON.stringify(merged.result))
+    const quiet = await run({ ...BASE, mode: 'new' }, { postmerge: () => postmergeReading({ mergedIn: true, ui: false }) })
+    check(!quiet.result.stopped, `smokes were owed with no UI overlap: ${quiet.result.stopped}`)
+    // A classifier that failed is not "no UI file", and a missing helper is no pass.
+    const failedUi = await run({ ...BASE, mode: 'new' }, { postmerge: () => postmergeReading({ mergedIn: true, ui: 'failed' }) })
+    check(has(failedUi.result.stopped, 'make visual-smoke'), `a failed UI classifier owed no smokes: ${JSON.stringify(failedUi.result)}`)
+    const noHelper = await run({ ...BASE, mode: 'new' }, { postmerge: () => postmergeReading({ exits: { 'make check': 99, 'make test': 99 } }) })
+    check(has(noHelper.result.stopped, 'lookup exit 99'), JSON.stringify(noHelper.result))
+    check(has(p, '|| OK=no') && has(p, '--GATE-- 99'), 'the reading does not fail closed on a helper missing from origin/main')
+    const nm = await run({ ...BASE, mode: 'new', no_merge: 'pending' }, { merge: () => ({ verdict: 'ready', reason: 'pending', notes: '' }) })
+    check(!nm.work.includes('postmerge:demo'), 'a run that did not merge read the post-merge records')
+  },
+  async 'Merging step 2: a non-empty origin/main merge reruns every gate on the post-merge tree'() {
+    const r = await run({ ...BASE, mode: 'new' })
+    const p = r.prompts['merge:demo']
+    check(has(p, 'run on it every gate "Merging" step 2 lists') && has(p, 'make test in full') && has(p, 'UI-prefix overlap of either side') && has(p, 'rerun nothing') && !has(p, 'only as "Durability" says'), p)
+    check(has(p, 'final_tree'), 'the merge prompt does not ask for the final tree')
+  },
+  async 'F9: a worktree path is anchored and holds only safe characters'() {
+    for (const worktree of ['/re po/.claude/worktrees/demo', '/repo/$(id)/.claude/worktrees/demo', '/repo/../x/.claude/worktrees/demo', 'repo/.claude/worktrees/demo', "/repo/'x'/.claude/worktrees/demo", '/.claude/worktrees/demo']) {
+      const r = await run({ ...RO, worktree })
+      check(has(r.result.stopped, 'change worktree') && r.calls.length === 0, `${worktree}: ${JSON.stringify(r.result)}`)
+    }
+    const s = await run({ ...BASE, mode: 'new' }, { spec: () => ({ ...DEFAULTS.spec(), worktree: '/repo;x/.claude/worktrees/demo' }) })
+    check(has(s.result.stopped, 'change worktree'), JSON.stringify(s.result))
+  },
+  async 'a worktree_override run reads and releases the slot named after the worktree'() {
+    const o = await run({ ...RO, worktree: '/repo/.claude/worktrees/demo-2', worktree_override: true })
+    check(has(o.prompts['guard:prepare:before'], 'IMPL-SLOTS/demo-2"') && has(o.prompts['lens:code-review:demo'], 'IMPL-SLOTS/demo-2') && has(o.prompts['lens:code-review:demo'], 'impl-slots.sh release demo-2'), o.prompts['lens:code-review:demo'])
+    const n = await run(RO)
+    check(has(n.prompts['guard:prepare:before'], 'IMPL-SLOTS/demo"'), n.prompts['guard:prepare:before'])
   },
   async 'the scope stage names its target instead of changing directory'() {
     const r = await run(RO)

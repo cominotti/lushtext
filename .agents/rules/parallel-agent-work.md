@@ -98,7 +98,8 @@ Change worktrees live in `.claude/worktrees/<change>`.
   coordinator placeholders included, and evicts nothing held above the cap.
   It exits 2 for a name with no worktree `.claude/worktrees/<name>`, so a
   stage whose worktree is named otherwise (`args.worktree_override`)
-  acquires under the worktree's directory name.
+  acquires under the worktree's directory name, and the script's guard and
+  lens prompts read and release the slot under that name.
   `scripts/impl-slots.sh cap` prints the cap and the ready units behind it.
   - Before the stage ends, whatever the outcome, it runs
     `scripts/impl-slots.sh release "${C:?}"`.
@@ -160,9 +161,7 @@ Change worktrees live in `.claude/worktrees/<change>`.
     detached (`setsid nohup … &`) and waits for its PID with
     `scripts/wait-for.sh --pid <pid> --timeout 540` in repeated foreground
     calls.
-  - A round measured under outside load is never counted as a pass. The
-    maintainer's calibration under outside load is a queue entry of its own;
-    changing this needs a maintainer decision and a rule edit.
+  - A round measured under outside load is never counted as a pass.
 - If `wait-outsiders` exits 124, `measure.sh` exits 75, or a round exits 76
   or 77 and the window stays busy, append the remaining rounds to
   `MEASURE-QUEUE.md` under `flock "$H/MEASURE-QUEUE.md"`, then carry on. The
@@ -187,7 +186,10 @@ Change worktrees live in `.claude/worktrees/<change>`.
     naming the recorded verdict, which changes only the final review's
     prompt, so the earlier stages replay from the cache and the final
     review runs again; a `review-only` run that stopped before the merge is
-    resumed with `args.merge` instead;
+    resumed with `args.merge` instead. A resume replays only the calls
+    before the first changed one (probes C5 and C6 in the change's
+    `probes.md`); when it replays nothing, the merge-only run is a new
+    `review-only` run with `args.merge`;
   - if it does not, it sends the change back.
 
 ## Merging
@@ -229,23 +231,36 @@ Change worktrees live in `.claude/worktrees/<change>`.
      repeated. Then write `owner.txt`, one item per line, the change name
      first: change, PR number, run id, `date -Is`.
   2. Holding it:
-     - `git fetch --prune origin`, then `git merge origin/main`, always;
-     - with a clean status, rerun `make check` and the tests covering files
-       changed on either side, through `heavy.sh`, **except** a gate that
-       `scripts/gate-trees.sh lookup <wt> --gate '<gate>'` finds already
-       passed on this exact `HEAD^{tree}` (a full `make test` record covers
-       any subset of tests: pass `--gate 'make test'` as well). Name the
-       reused lines. A merge that changed the tree, even by a docs-only
-       commit, finds no record and reruns. Record each gate you run with
-       `scripts/gate-trees.sh record <wt> --gate '<gate>' -- scripts/heavy.sh … -- make <gate>`;
-       only that helper writes `gate-trees.log`, and it records nothing for
-       a dirty or changing worktree. It records a failing run too (a run
-       that was interrupted or could not start, exit 75, 78, 124, 126, 127
-       or a signal, records nothing), and a tree with a recorded failure of
-       a named gate is never reused, since a pass and a fail on one tree is
-       a flake. Only the coordinator removes a fail line, and only one whose
-       log shows the gate never ran (a wrapper's usage refusal); it notes the
-       removal in the change's handoff;
+     - `git fetch --prune origin`, then `git merge origin/main`, always.
+     - **A merge that made no commit reruns nothing.** The tree is the one
+       the gates already ran on: name the line `scripts/gate-trees.sh lookup
+       <wt> --gate '<gate>'` finds for each gate on this exact `HEAD^{tree}`
+       (a full `make test` record covers any subset of tests: pass
+       `--gate 'make test'` as well).
+     - **A merge that made a commit reruns every gate on the post-merge
+       tree** (maintainer, 2026-11-19), through `heavy.sh`: `make check`,
+       the full `make test`, and the three smokes when the branch or the
+       merged-in commits touch the UI prefixes (`testing.md`, "Proof
+       Obligations of a Change"). A docs-only merge commit is no exception.
+     - Record each gate you run with
+       `scripts/gate-trees.sh record <wt> --gate '<gate>' -- scripts/heavy.sh … -- make <gate>`.
+       Only that helper writes `gate-trees.log`, and it never deletes a line.
+       It records nothing for a dirty or changing worktree, or for a gate
+       that never ran (exit 75, 78, 126 or 127). It records a failing run as
+       a fail, and a run that timed out (124) or was killed by a signal as
+       `result=interrupted`: lookup reuses neither, and names an interrupted
+       line on stderr, so a hang or an OOM kill that passed on a retry
+       leaves a trace for the flake rule. A tree with a recorded failure of a
+       named gate is never reused, since a pass and a fail on one tree is a
+       flake.
+     - **Voiding a fail, append-only.** When a fail line's log shows that
+       the gate never ran (a wrapper's usage refusal exits 2, as a failing
+       `make` does), the coordinator, and no stage agent, appends a void:
+       `scripts/gate-trees.sh void <checkout> --change <change> --line
+       <the fail line's timestamp> --gate '<gate>' --log <that log> --reason
+       '<why>'`. It names exactly one fail line, the fail line stays, and
+       lookup then ignores that line alone. The coordinator notes the void
+       in the change's handoff.
      - `git push origin HEAD`, to the branch of the same name (never
        `HEAD:main`).
   3. `git fetch --prune origin`, then `git merge-base --is-ancestor origin/main HEAD`.
@@ -279,8 +294,9 @@ Change worktrees live in `.claude/worktrees/<change>`.
 - A commit that touches the UI prefixes still needs the three smokes current
   (`testing.md`), so put those files in as few task-group commits as
   possible, ideally the last.
-- After the `origin/main` merge under `MERGE-LOCK`, rerun a visual lane only
-  if the merged-in changes touch the same UI-prefix files.
+- After an `origin/main` merge under `MERGE-LOCK` that made a commit, the
+  three smokes rerun when the branch or the merged-in commits touch the UI
+  prefixes ("Merging" step 2); a merge that made no commit reruns nothing.
 - After the merge:
   1. `git fetch --prune origin`.
   2. Check that `git -C <wt> status --porcelain` is empty and that
@@ -457,19 +473,27 @@ script, and inside a workflow both skills below run their single-pass forms.
      fork's last `StructuredOutput` call), and ends with one
      `skill_findings_source:` line per call, one `CODE-REVIEW-SCOPE:` line
      per call (the PR, or the base the fork named, with file and line
-     counts), a `findings_count:` line and a last `CODE-REVIEW-STATUS:` line
-     (`ok`, `empty` or `failed`). The prompt does not carry the expected
+     counts), one `findings_count: pr=<n> worktree=<n>` line with each
+     call's own count (`pr=<n>` alone for one call) and a last
+     `CODE-REVIEW-STATUS:` line (`ok`, `empty` or `failed`). The prompt does not carry the expected
      counts; the script checks each count against the scope reading, and the
      worktree call's base against `HEAD` and `origin/<branch>` (a call that
      diffed against `main` reviewed the whole branch, probe P4). A missing
      line, a scope that does not match, or `ok` over no findings is a failed
-     lens: one rerun, then the run stops.
-   - **An empty review stops the run.** `CODE-REVIEW-STATUS: empty` is
-     allowed only with a non-zero quoted scope for every call; the script
-     then stops with its own message, and only the coordinator, after
-     reading the findings file, resumes it with `args.accept_empty_review`
-     set to the reviewed `HEAD` that message prints, which accepts that one
-     review.
+     lens: one rerun, then the run stops. When the worktree has not
+     changed since, the coordinator resumes the run with `args.lens_round`
+     one higher: every lens prompt and the scope reading change with it, so
+     they run again and nothing before them does.
+   - **An empty review stops the run.** The script judges the PR call on
+     its own count: a PR call with no findings is an empty review, whatever
+     the worktree call found, because findings on `/simplify`'s small edits
+     say nothing about the committed work. An empty review needs a non-zero
+     quoted scope for every call (else the lens failed); the script then
+     stops with its own message, and only the coordinator, after reading
+     the findings file, resumes it with `args.accept_empty_review` set to
+     the token that message prints. The token is the reviewed `HEAD` plus a
+     digest of that review's text, so it accepts that one review on the
+     resume, which replays it, and no other review of the same `HEAD`.
    - **The fork may run repository scripts** (probe C4 ran
      `impl-slots.sh acquire`). The lens agent runs none itself, releases
      this change's slot if the review created it, and lists what the fork
@@ -495,10 +519,13 @@ script, and inside a workflow both skills below run their single-pass forms.
      that is not a lowercase name (a main-branch alias such as `main`,
      `HEAD` or `@`, a ref path, a revision expression or a commit hash), a
      worktree that is not one directory under `.claude/worktrees/` named
-     after the change (`args.worktree_override` relaxes the name only), a
+     after the change (`args.worktree_override` relaxes the name only) or
+     whose absolute path holds anything but letters, digits, `.`, `_`, `-`
+     and `/` (it goes into shell lines), a
      PR value that is not a number, `#number` or pull URL, a stage or
-     carried PR that differs from `args.pr`, and a carried implementation
-     report that is not complete. A stage after implementation never runs
+     carried PR that differs from `args.pr`, a carried implementation
+     report that is not complete, and a `continue` run with `skip_impl` but
+     no pull request. A stage after implementation never runs
      without a pull request.
 3. **One apply agent**, which wrote none of the code, first re-runs the
    selector and stops when its flags differ from the ones the lenses ran
@@ -529,7 +556,24 @@ script, and inside a workflow both skills below run their single-pass forms.
    also checks what the skills do not: every `tasks.md` box, the verdicts,
    that the data-safety audit ran when it was owed, and the docs. Then it
    follows "Merging". Its verdict is one of a fixed set, and a missing or
-   unknown verdict stops the run as unfinished.
+   unknown verdict stops the run as unfinished. Its archive commit is the
+   one "Merging" step 4 describes, with the spec sync of the archive skill
+   and any Kani figures the change owes. A `blocked` verdict after `gh pr
+   merge` keeps the merge commit it reports, and the script's stop says so.
+5. **The post-merge check.** Both merged verdicts name GitHub's merge commit
+   and the tree it merged. A read-only agent then checks, in the shell, that
+   the merge commit is on `origin/main` and has that tree, and runs
+   `scripts/gate-trees.sh lookup --tree` against it with the helper and the
+   UI-prefix classifiers (`scripts/accessibility_source_fingerprint.py`,
+   `scripts/check-visual-proof-policy.py`) read from `origin/main`: `make
+   check` and `make test` always, and the three smokes when the
+   `origin/main` merge brought commits in and a file of the branch or of
+   those commits is visual-sensitive or accessibility-relevant. After a
+   merge that made no commit, the tree must be the apply tree. A helper
+   missing from `origin/main`, a failed classifier or a missing record is a
+   failure, never a pass. The change is already on `main` then, so the stop
+   is a report: the coordinator checks the records by hand and fixes a gap
+   by a follow-up change.
 
 ## Workflow agents
 
@@ -544,6 +588,12 @@ script, and inside a workflow both skills below run their single-pass forms.
   holding it is. The comparison
   is before against after; the coordinator does not move the main checkout
   while a run is in flight, and if it must, the run stops at the next guard.
+- **Every reading before a stage names that stage.** It carries a digest of
+  the stage's prompt, so a resume that changes a stage (through
+  `args.review_extra` or `args.lens_round`) takes the reading before it
+  live: a resume replays only the calls before the first changed one
+  (probes C5 and C6), so a reading in that prefix is from the first run,
+  and the reading after a live stage is live too.
 - **Resuming after a guard stop.** The stop message prints a token bound to
   the stage and to every field of the after reading. When the difference is
   not the run's doing, the coordinator resumes the same run, same mode and

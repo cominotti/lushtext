@@ -1,7 +1,7 @@
 Scope:
 - **Tests:** none for product behaviour, because no behaviour changes. The new helpers are tested by `--self-test` cases, written first and seen failing against a stub that exits 0, then made to pass.
 - **Kani:** none (no proven module touched).
-- **Timing:** none (no timed path touched). The calibration is the coordinator's non-verdict queue entry (design D7, stage-3 revision).
+- **Timing:** none (no timed path touched). The calibration was the coordinator's non-verdict queue entry (design D7, stage-3 revision); the maintainer closed it not established on 2026-11-19, and level 3 is off.
 - **GTK axioms:** none.
 - **Smokes:** none (no UI-prefix path).
 
@@ -11,13 +11,13 @@ Every commit goes through `scripts/heavy.sh --mem none -- git commit -F <file>`,
 
 - [x] 1.1 Write `docs/memorials/2026-11-18-change-flow-time.md`:
   - the analysis's verdict, the time breakdown with its method and limits, the before/after table, the Kani share, the ranked interventions and the weakest assumptions (sections 1-4 and 8 of the analysis);
-  - the maintainer's decisions of 2026-11-18, dated: 1, 2, 3, 4 and 6 accepted, 5 rejected, 7 approved later with conditions (smoke-gate-coherence); the 19:39 decision on the quiet-window criterion (levels 1, 2 and the conditional level 3);
+  - the maintainer's decisions of 2026-11-18, dated: 1, 2, 3, 4 and 6 accepted, 5 rejected, 7 approved later with conditions (smoke-gate-coherence); the 19:39 decision on the quiet-window criterion (levels 1, 2 and 3; level 2 closed not established and level 3 off on 2026-11-19, appended as a dated line);
   - which engineering changes own interventions 1, 2 and 4.
 
   No normative text: every rule it explains links back to its rule section.
 - [x] 1.2 Add its row to the table in `docs/memorials/README.md`: "the change-flow rules (no-op merge reuse, Kani dispatch timing, non-inferiority merges, design-loop limit, fast lane, slot cap, drain-first quiet criterion) and their measured baseline".
 - [x] 1.3 Append to `.claude/handoffs/PARALLEL-LEDGER.md` (gitignored, append-only) the lines of design D9 (a), (b) and (c). Grep first, and write only the lines that are not already there.
-- [x] 1.4 Confirm that `.claude/handoffs/MEASURE-QUEUE.md` holds the coordinator's "Calibration: G0 rounds under outside load" entry (`Kind: CALIBRATION`, `Status: PENDING`) and append nothing (design D7, stage-3 revision: it replaces stage 1's handoff probe, round runner and calibration entry).
+- [x] 1.4 Confirm that `.claude/handoffs/MEASURE-QUEUE.md` holds the coordinator's "Calibration: G0 rounds under outside load" entry (`Kind: CALIBRATION`, `Status: PENDING`) and append nothing (design D7, stage-3 revision: it replaces stage 1's handoff probe, round runner and calibration entry). The entry is CLOSED since 2026-11-19 (level 2 not established).
 
 ## 2. Helpers with self-tests (one commit)
 
@@ -82,7 +82,7 @@ Every commit goes through `scripts/heavy.sh --mem none -- git commit -F <file>`,
   - **New "Stages after implementation"** section (design D10): order, single-pass behaviour of both skills inside workflows, absolute-path `/simplify`, findings-only `code-review` without a schema, failed-lens rule, fan-out criterion by reference to the skills' triggers, the apply agent, and one smoke trio.
   - **New "Workflow agents"** section (design D11): the script-enforced main-checkout guard read by guard agents, and what the coordinator does when the main checkout must move during a run; `git -C`/absolute paths; per-agent `TMPDIR`; `timeout` on every harness; the brief file re-read; the outward-writes list (including deleting the change branch and twin ref), with everything else going to `host-asks.md`; and a citation of the maintainer's observed-behaviour note as evidence only.
   - **"Measurements":**
-    - the drain-first criterion of design D7 replaces the 1-minute-load check: `quiet-gate.py wait-outsiders`, `measure.sh --lock-timeout 2400`, `quiet-gate.py run`, the kept-round rule, and the detached run plus `wait-for.sh` for a stage agent; level 3 is not written;
+    - the drain-first criterion of design D7 replaces the 1-minute-load check: `quiet-gate.py wait-outsiders`, `measure.sh --lock-timeout 2400`, `quiet-gate.py run`, the kept-round rule, and the detached run plus `wait-for.sh` for a stage agent; level 3 is not written (off since 2026-11-19);
     - non-inferiority changes as in D3;
     - the entry rule of D6: runnable rounds a change waits on, on a final tree, are queued as `Status: READY <sha>`, ones not runnable yet as `PENDING (NOT READY: <reason>)`, and non-blocking attribution and calibration entries as `PENDING`.
   - **"Merging":**
@@ -159,3 +159,15 @@ Scope: M1-M5, S1-S14 and N1-N8 of `fable-review.md`, the maintainer's rules (a) 
 - [x] 6.6 Gates on the final tree: `make check`, `make check-agent-skills`, `make check-agent-docs`, `make check-workflow-scripts` (in `check-policy`), the helpers' self-tests (`make check-agent-helpers`, in `check-policy`) and `openspec validate --strict`. `make test` is not owed: no Rust or test input changed (the coordinator's merge-only run runs it).
 - [x] 6.7 Commit and push per task group; update the body of PR #118.
 - [x] 6.8 Stage-4 review of the fix round (design "Stage-4 review of the fix round"): R1 the final review may make the archive commit, R2 every merged verdict names its merge commit, R3 the apply-stage stops name the uncommitted `/simplify` edits, R4 unstartable runs record nothing in `gate-trees.sh`, R5 the merge-only run defined; cases written first; gates rerun on the final tree.
+
+## 7. Fable fix check round (coordinator note 2026-11-19 01:10)
+
+Scope: F1-F11 of `fable-fix-check.md`, the `worktree_override` slot name, and the maintainer's decisions of 2026-11-19 01:08 (R4 append-only void record; "Merging" step 2 reruns every gate after a non-empty `origin/main` merge) and 00:58 (level 2 closed not established, level 3 off). Dispositions are in design "Fable fix check round". This round's stage 4 does not merge: it ends "ready, Fable fix check 2 pending", and `make test` is still owed on the final tree before the merge.
+
+- [x] 7.1 Failing-first cases against `8a2bce8b`: the new harness cases (F1, F3, F4, F5, F6, F8, F9, F10, step 2, slot name) in `failfirst-fixround2-harness.log`; the new `gate-trees.sh` self-test and direct probes of `void`, `lookup --tree` and exit 124 in `failfirst-fixround2-gate-trees.log`; seven hand mutants of the fixes, all caught, in `mutants-fixround2-harness.log`.
+- [x] 7.2 `scripts/gate-trees.sh`: `result=interrupted` for exit 124 and 128+ (F7), named on stderr by lookup and never reused; the coordinator's append-only `void` (R4) naming exactly one fail line with its evidence log and reason; `lookup --tree <hash> --change` for a merged change (F6); nanosecond line timestamps; unknown results refuse; header and self-test.
+- [x] 7.3 Template: one findings count per call and the PR call judged alone (F1); the archive commit of "Merging" step 4 and the blocked-after-merge stop (F3); a prompt digest in every guard reading before a stage (F4); `args.lens_round` (F5); `final_tree` required and the post-merge reading with `gate-trees.sh lookup --tree` and the canonical UI classifiers read from `origin/main`, failing closed (F6, decision step 2); the merge prompt's every-gate rerun after a non-empty merge (step 2); `continue`+`skip_impl` needs a PR before any agent (F8); anchored worktree paths (F9); the empty-review token bound to the review's text (F10); the slot under the worktree's directory name.
+- [x] 7.4 Harness: the cases of 7.1 pass with the fixes, a replay of a first run the way the runtime resumes (probes C5, C6), and the guard mutant still caught.
+- [x] 7.5 Rules and records: `parallel-agent-work.md` "Implementation slots and ordering", "Measurements" (level 3 text removed; merge-only resume and its fallback), "Merging" step 2 (no-op merge, every gate after a non-empty merge, append-only records, interrupted lines, the coordinator's void), "Durability", "Stages after implementation" 2, 4 and the new 5, "Workflow agents"; the delta spec; design D7 and "Fable fix check round" with its floor rows; the proposal, the memorial (an appended dated line), `AGENTS.md` and `README.md`.
+- [ ] 7.6 Gates on the final tree, each through `scripts/gate-trees.sh record`: `make check` (with `make check-workflow-scripts` and `make check-agent-helpers` inside it), `make check-agent-docs`, `make check-agent-skills`, and `openspec validate adopt-faster-change-flow --strict`. `make test` is not owed by this round (no Rust or test input changed); the coordinator's merge-only run runs it.
+- [ ] 7.7 Commit and push per task group; update the body of PR #118.

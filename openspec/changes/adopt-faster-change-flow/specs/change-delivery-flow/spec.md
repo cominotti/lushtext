@@ -1,15 +1,15 @@
 ## ADDED Requirements
 
 ### Requirement: Merge-lock gates reuse evidence only for an identical tree
-Under `MERGE-LOCK`, a gate the merge step owes SHALL be skipped only when `scripts/gate-trees.sh` finds a pass for that gate on the post-merge `HEAD^{tree}`, recorded while the worktree was clean. Every other case SHALL run the gate. Before `gh pr merge`, the agent SHALL re-fetch and require `origin/main` to be an ancestor of `HEAD`.
+Under `MERGE-LOCK`, a gate SHALL be skipped only when `scripts/gate-trees.sh` finds a pass for it on the post-merge `HEAD^{tree}`, recorded on a clean worktree. An `origin/main` merge that made a commit SHALL rerun every gate on the new tree, the smokes included when either side touches the UI prefixes. Before `gh pr merge`, the agent SHALL re-fetch and require `origin/main` to be an ancestor of `HEAD`.
 
 #### Scenario: A no-op merge reuses the recorded runs
 - **WHEN** `git merge origin/main` reports "Already up to date" and `gate-trees.log` has passing `make check` and `make test` lines with `tree=` equal to `HEAD^{tree}`, written on a clean worktree
 - **THEN** neither gate is rerun, and the stage names the reused lines
 
-#### Scenario: A merge that changes the tree reruns the gates
+#### Scenario: A merge that changes the tree reruns every gate
 - **WHEN** the merge brings in any commit that changes `HEAD^{tree}`, even a docs-only one
-- **THEN** `make check` and the tests covering both sides run as before
+- **THEN** `make check` and the full `make test` run on the post-merge tree, and so do the three smokes when the branch or the merged-in commits touch a UI-prefix file, each recorded through `gate-trees.sh record`
 
 #### Scenario: A fixed tree without a full record runs the gate
 - **WHEN** stage 4 committed a fix and reran only the affected tests, so no full `make test` line names the current tree
@@ -23,13 +23,32 @@ Under `MERGE-LOCK`, a gate the merge step owes SHALL be skipped only when `scrip
 - **WHEN** `gate-trees.log` holds a pass and a fail of `make test` for the current `HEAD^{tree}`, both recorded on a clean worktree
 - **THEN** `gate-trees.sh lookup` for that tree exits 1, naming the fail, and the merge step runs the gate
 
-#### Scenario: An interrupted run is not a result
-- **WHEN** the recorded command exits 75, 78, 124, 126, 127, or 128 and above (busy, off its CPUs, timed out, could not start, killed)
+#### Scenario: A gate that never ran is not a result
+- **WHEN** the recorded command exits 75, 78, 126 or 127 (busy, off its CPUs, not executable, not found)
 - **THEN** `gate-trees.sh record` writes no line and returns that status
+
+#### Scenario: A hang or a kill leaves a trace
+- **WHEN** the recorded command times out (124) or is killed by a signal (128 and above) on a clean, unchanged tree
+- **THEN** `gate-trees.sh record` appends a `result=interrupted` line and returns that status, and a later `lookup` for that tree neither reuses nor refuses on it but names it on stderr
 
 #### Scenario: Main moves before the PR merge
 - **WHEN** `origin/main` gains a commit after the merge step and before `gh pr merge`
 - **THEN** the ancestor check fails and the agent repeats the merge step instead of merging
+
+### Requirement: Gate records are append-only and checked after the merge
+`gate-trees.log` SHALL be append-only. A fail SHALL be set aside only by a void line the coordinator appends, naming that one fail line and the log that shows the gate never ran. After a merged verdict, the tree that reached `main` SHALL be checked against the records.
+
+#### Scenario: The coordinator voids a fail that never ran
+- **WHEN** a `make test` fail line's log shows a wrapper's usage refusal, and the coordinator runs `gate-trees.sh void` naming that line's timestamp and gate, that log and a reason
+- **THEN** a `result=void` line is appended, the fail line stays in the log, and `lookup` ignores that fail line only, so a later fail of the same gate on that tree still refuses the reuse
+
+#### Scenario: A void that does not name exactly one fail line is refused
+- **WHEN** `gate-trees.sh void` names a timestamp and gate that match no fail line, two fail lines, a pass line or a fail already voided, or gives a missing or empty log or no reason
+- **THEN** it exits 2 and writes no line
+
+#### Scenario: The tree on main is checked against the records
+- **WHEN** the merge stage returns a merged verdict
+- **THEN** it also returns the merged tree, and a read-only agent checks that GitHub's merge commit is on `origin/main` with that tree and that `gate-trees.sh lookup --tree` finds passes of `make check`, `make test` and, after a merge that brought UI-prefix commits, the three smokes; a missing helper, a failed classifier or a missing record stops the run with a report that the change is already on `main`
 
 ### Requirement: Kani budget runs are dispatched when implementation ends
 A change that adds or changes a Kani shard SHALL dispatch its budget runs once its final stage-3 code is pushed, without watching them. Stage 4 SHALL read finished runs: a failure or a margin break blocks the merge, and an unfinished run does not. The figures SHALL be recorded before the archive. No agent SHALL wait for a run while holding `MERGE-LOCK`.
@@ -184,9 +203,9 @@ A timing verdict round SHALL first wait, holding no lock, for outside CPU use be
 - **WHEN** `/proc/stat` or a slice's `cpu.stat` cannot be read
 - **THEN** the helper exits 2 and prints no reading, so no round is admitted on a missing measurement
 
-#### Scenario: The calibration is the coordinator's entry
-- **WHEN** this change is implemented
-- **THEN** `MEASURE-QUEUE.md` holds the coordinator's `Kind: CALIBRATION` entry with `Status: PENDING` and this change appends none, and no rule text admits a pass measured under load
+#### Scenario: A pass under load is not a pass
+- **WHEN** a round exits 0 within its budget but the busy CPUs over the run or the 30 s after it are 4 or more
+- **THEN** `quiet-gate.py run` exits 77, the round is not kept, and no rule counts it as a pass for an absolute budget or any other verdict
 
 ### Requirement: Programme workflow scripts are versioned, sanitized and checked
 The programme's workflow script SHALL live in `.claude/workflows/`, take host details from `args`, and point to rule sections instead of copying them. `make check-workflow-scripts` SHALL syntax-check each script through a wrapper, check its phases, fail on personal data, push credentials or copied rule sentences, and run the stub-agent harness `<name>.test.mjs` beside each script, failing when it is missing or fails.
@@ -228,7 +247,7 @@ The workflow script SHALL start a change at its prepare stage on an existing pul
 - **THEN** the prepare agent aborts any merge, edits nothing and returns blocked, and no review stage runs
 
 #### Scenario: Arguments are checked before the first agent
-- **WHEN** a `revise` run has no `pr` or `worktree`, a `continue` run carries a spec outside a change worktree, an archive of a previous change lacks its PR or tip, a carried implementation is not complete, or a stage or carried PR differs from `args.pr`
+- **WHEN** a `revise` run has no `pr` or `worktree`, a `continue` run carries a spec outside a change worktree or skips implementation with no pull request, an archive of a previous change lacks its PR or tip, a carried implementation is not complete, `args.lens_round` is not a positive integer, or a stage or carried PR differs from `args.pr`
 - **THEN** the script stops before any agent runs, or, for a stage's PR, before the next stage
 
 ### Requirement: Implementation is followed by simplify, parallel findings-only lenses and one independent apply agent
@@ -271,8 +290,16 @@ After implementation, `/simplify` SHALL run on a clean worktree with an absolute
 - **THEN** the script reruns it once and then stops instead of treating it as zero findings
 
 #### Scenario: An empty review over a quoted scope needs the coordinator
-- **WHEN** the `code-review` lens ends with `CODE-REVIEW-STATUS: empty`, `findings_count: 0` and a non-zero scope for every call
-- **THEN** the script stops with its own message naming the reviewed `HEAD`, and continues past the lens only when the run is resumed with `args.accept_empty_review` set to that `HEAD`
+- **WHEN** the `code-review` lens ends with `findings_count: pr=0` and a non-zero scope for every call
+- **THEN** the script stops with its own message printing a token of the reviewed `HEAD` and a digest of the review's text, and continues past the lens only when the run is resumed with `args.accept_empty_review` set to that token; the `HEAD` alone, or the token of another review of it, accepts nothing
+
+#### Scenario: Findings on the simplify edits do not hide a hollow PR review
+- **WHEN** the lens reports `findings_count: pr=0 worktree=2` and `CODE-REVIEW-STATUS: ok`
+- **THEN** the script treats it as an empty review and stops for the coordinator, without spending the rerun
+
+#### Scenario: A failed lens is rerun alone on a resume
+- **WHEN** the coordinator resumes a run whose lens failed twice with `args.lens_round` one higher, the worktree unchanged
+- **THEN** the scope reading and every lens run again, and prepare and `/simplify` replay from the first run
 
 #### Scenario: A domain lens that did not run fails
 - **WHEN** a domain lens returns without `status: ran`, or with an empty `examined` list
@@ -299,8 +326,16 @@ After implementation, `/simplify` SHALL run on a clean worktree with an absolute
 - **THEN** a read-only agent confirms them in the shell, with the push, the clean worktree and a `make check` record of `gate-trees.sh` for that tree, the script passes the range from the lens `HEAD` to that `HEAD` and the tree to the final review, which checks `HEAD^{tree}` before "Merging" step 2 and re-checks every rejected correctness finding
 
 #### Scenario: A dead merge agent is not a finished run
-- **WHEN** the merge agent returns nothing, a verdict outside its fixed set, `merged` without a merge and archive commit, `merged-archive-owed` without a merge commit, or `merged` while `no_merge` was set
+- **WHEN** the merge agent returns nothing, a verdict outside its fixed set, `merged` without a merge commit, a final tree and an archive commit, `merged-archive-owed` without a merge commit and a final tree, or `merged` while `no_merge` was set
 - **THEN** the script stops with a message to check `MERGE-LOCK`, the PR and the archive by hand
+
+#### Scenario: A block after the merge says the change is on main
+- **WHEN** the merge stage returns `blocked` with a merge commit (the archive failed after `gh pr merge`)
+- **THEN** the stop names that merge commit and does not say that nothing was merged
+
+#### Scenario: The archive commit carries what the archive owes
+- **WHEN** the merge stage archives a merged change
+- **THEN** its prompt allows the archive commit of "Merging" step 4, the archive skill's spec sync and the Kani figures included, and no other commit besides the conflict-free `origin/main` merge
 
 #### Scenario: One trio for both passes
 - **WHEN** `/simplify` and the apply agent both edit files under `crates/lushtext-core/src/ui/`
@@ -313,6 +348,10 @@ Guard agents SHALL read the main checkout (status hash, `HEAD`, branch) and this
 - **WHEN** the guard agent's after-stage status, `HEAD` or branch of the main checkout differs from its before-stage reading
 - **THEN** the script stops the run and reports the difference
 
+#### Scenario: A resumed stage gets a live guard reading
+- **WHEN** a resume changes only the merge stage's prompt, through `args.review_extra`
+- **THEN** the guard reading before the merge stage is the first call that runs live, because it carries a digest of that stage's prompt, and every earlier call replays
+
 #### Scenario: A guard stop is acknowledged on resume
 - **WHEN** the coordinator resumes a stopped run with `args.guard_ack` holding the token the stop printed
 - **THEN** that stage's reading passes, while a token for another stage or another reading still stops the run, and neither the token nor `args.accept_empty_review` appears in any prompt
@@ -321,12 +360,16 @@ Guard agents SHALL read the main checkout (status hash, `HEAD`, branch) and this
 - **WHEN** this change holds its implementation slot or `MERGE-LOCK` after the lens group and did not before
 - **THEN** the script stops the run, while giving one up during a stage is no difference, and `scripts/impl-slots.sh acquire` gives no slot to a name without a change worktree
 
+#### Scenario: A worktree under the override names the slot
+- **WHEN** a run takes `args.worktree_override` for a worktree whose directory is not the change name
+- **THEN** the guard readings and the lens prompt read and release `IMPL-SLOTS/<that directory name>`, the name `impl-slots.sh acquire` used
+
 #### Scenario: A main-branch alias is refused
 - **WHEN** the change, the branch argument, the spec stage's branch or a spec carried into a resumed run names `main`, `HEAD` or `@`, a branch that starts with `heads/`, `refs/`, `origin/`, `remotes/` or `tags/`, a revision expression such as `main~0` or `main^{}`, a commit hash, or anything else that is not a lowercase name
 - **THEN** the script stops before the next agent runs
 
 #### Scenario: A worktree outside the change worktrees is refused
-- **WHEN** a worktree argument, the spec stage's worktree or a spec carried into a resumed run is not one directory under `.claude/worktrees/`, including `.claude/worktrees/..` and `.claude/worktrees/.`, or its directory is not named after the change and `args.worktree_override` is not set
+- **WHEN** a worktree argument, the spec stage's worktree or a spec carried into a resumed run is not one directory under `.claude/worktrees/`, including `.claude/worktrees/..` and `.claude/worktrees/.`, holds a character other than letters, digits, `.`, `_`, `-` and `/` or a `.` or `..` segment anywhere in its absolute path, or its directory is not named after the change and `args.worktree_override` is not set
 - **THEN** the script stops before the next agent runs
 
 #### Scenario: Only the listed outward writes appear in stage prompts
