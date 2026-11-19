@@ -135,10 +135,17 @@ pub fn move_in(data_dir: &Path, draft_id: &str, stamp_secs: u64) -> Result<PathB
 ///
 /// A `Copy` of a body too large to read under the automatic-draft bound moves
 /// it instead: the body still leaves nothing behind unpreserved, and the
-/// journal's later deletion of the original becomes a no-op. When the
-/// transfer's own durability step fails after the body is already in place
-/// (its classified error is `AfterRename`), the body counts as placed (with a
-/// warning) rather than as lost, and no further name is tried.
+/// journal's later deletion of the original becomes a no-op.
+///
+/// When the transfer's own durability step fails after the body is already in
+/// place (its classified error is `AfterRename`), a **move** counts as placed
+/// (with a warning) and no further name is tried: a rename takes effect at
+/// most once, so a crash that reverts it returns the body to `drafts/`, never
+/// loses it. A **copy** does not count: a crash may revert it while the
+/// journal, told it was kept, has already unlinked the original, so the error
+/// is returned and the caller keeps the body. A retry finds the same bytes
+/// under that name and keeps them only once the set-aside directory syncs
+/// (`verify-shell-conformance-against-proven-cores` D6).
 fn place(data_dir: &Path, draft_id: &str, stamp_secs: u64, transfer: Transfer) -> Result<PathBuf> {
     let source = draft_body_path(data_dir, draft_id);
     let dir = dir(data_dir);
@@ -171,7 +178,14 @@ fn place(data_dir: &Path, draft_id: &str, stamp_secs: u64, transfer: Transfer) -
         };
         match set_aside_name_step(slot) {
             SetAsideNameStep::Place => {}
-            SetAsideNameStep::AlreadyKept => return Ok(target),
+            SetAsideNameStep::AlreadyKept => {
+                // An earlier copy under this name may be unconfirmed: it is
+                // kept only once its directory entry is durable.
+                fs_write::sync_parent_dir(&target).with_context(|| {
+                    format!("failed to confirm the set-aside copy {}", target.display())
+                })?;
+                return Ok(target);
+            }
             SetAsideNameStep::NextName => continue,
         }
         // Both transfers report a classified result, so a body is placed
@@ -189,6 +203,13 @@ fn place(data_dir: &Path, draft_id: &str, stamp_secs: u64, transfer: Transfer) -
             }
             Err(DurableWriteError::BeforeRename(error))
                 if copy_bytes.is_none() && error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(DurableWriteError::AfterRename(error)) if copy_bytes.is_some() => {
+                return Err(anyhow::anyhow!(
+                    "the set-aside copy {} of draft {} is not yet durable: {error}",
+                    target.display(),
+                    source.display(),
+                ));
+            }
             Err(DurableWriteError::AfterRename(error)) => {
                 tracing::warn!(
                     "Set aside draft {} as {}, but its durability is unconfirmed: {error}",
@@ -550,6 +571,45 @@ mod tests {
         assert_eq!(placed, candidate_path(&area, "a8-draft", 42, 0));
         fixture::assert_text(&placed, "unsaved edits");
         assert!(!fixture::exists(&source), "the body was moved");
+    }
+
+    /// `verify-shell-conformance-against-proven-cores` D6: a copy whose
+    /// set-aside directory sync fails is live but unconfirmed, and a crash
+    /// may revert it while its source is already durably unlinked by the
+    /// journal's deletion. So it is not kept: the caller keeps the body. A
+    /// retry finds the same bytes under the first name and keeps it only
+    /// once the area is synced.
+    #[test]
+    fn a_copy_whose_directory_sync_fails_is_not_kept_until_a_retry_syncs_it() {
+        let data = tempfile::tempdir().expect("tempdir");
+        let area = dir(data.path());
+        fixture::create_dir_all(&area);
+        let source = draft_body_path(data.path(), "d6-draft");
+        fixture::write_text(&source, "unsaved edits");
+        crate::services::filesystem::write::fail_next_parent_sync_for_test(
+            std::io::ErrorKind::Other,
+        );
+
+        let unconfirmed = keep_copy(data.path(), "d6-draft", 7);
+        assert!(
+            unconfirmed.is_err(),
+            "an unconfirmed copy must not count as kept: {unconfirmed:?}"
+        );
+        fixture::assert_text(&source, "unsaved edits");
+
+        crate::services::filesystem::write::fail_next_parent_sync_for_test(
+            std::io::ErrorKind::Other,
+        );
+        assert!(
+            keep_copy(data.path(), "d6-draft", 7).is_err(),
+            "the same bytes are kept only once the area is synced"
+        );
+
+        let kept = keep_copy(data.path(), "d6-draft", 7).expect("the retry syncs and keeps it");
+        assert_eq!(kept, candidate_path(&area, "d6-draft", 7, 0));
+        fixture::assert_text(&kept, "unsaved edits");
+        fixture::assert_text(&source, "unsaved edits");
+        assert_eq!(fixture::entry_names(&area).len(), 1, "no second copy");
     }
 
     /// No loss against `main` (`power-of-two-thresholds` D12): `main` scanned

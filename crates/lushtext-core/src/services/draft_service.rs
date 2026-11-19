@@ -3713,6 +3713,40 @@ mod tests {
         );
     }
 
+    /// `verify-shell-conformance-against-proven-cores` D6: a stale body whose
+    /// set-aside copy could not be made durable is not preserved, so the
+    /// deletion that would follow stops and the body stays in the journal.
+    #[test]
+    fn stale_body_is_not_preserved_by_a_set_aside_copy_whose_sync_failed() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("notes.md");
+        fixture::write_text(&path, "disk");
+        let draft_id = draft_id_for_path(&path);
+        super::fixture::write_body(dir.path(), &draft_id, "stale edits").expect("write body");
+        // Create the area first, so its own creation takes no injected sync.
+        fixture::create_dir_all(&set_aside_dir(dir.path()));
+        crate::services::filesystem::write::fail_next_parent_sync_for_test(
+            std::io::ErrorKind::Other,
+        );
+
+        let outcome = preserve_stale_draft_body(dir.path(), &file_entry(&draft_id, &path, Some(1)));
+
+        assert!(
+            outcome.is_err(),
+            "an unconfirmed copy preserves nothing: {outcome:?}"
+        );
+        assert_eq!(
+            read_draft(dir.path(), &draft_id).expect("read body"),
+            Some("stale edits".to_string())
+        );
+        // The retry confirms the copy it finds and preserves the body.
+        assert!(
+            preserve_stale_draft_body(dir.path(), &file_entry(&draft_id, &path, Some(1)))
+                .expect("the retry preserves")
+                .is_some()
+        );
+    }
+
     #[test]
     fn cancelled_manifest_repair_returns_partial_non_authority() {
         let dir = TempDir::new().expect("cancelled repair tempdir");
