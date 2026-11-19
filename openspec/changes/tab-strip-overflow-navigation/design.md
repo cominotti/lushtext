@@ -735,7 +735,17 @@ Recorded during implementation, each with its reason:
   smokes made theirs in it unchecked, so the session helper refused all
   three lanes. Each now falls back to `/tmp` by the same rule (the
   `cargo-gtk-proof` host tests failed first under the stage `TMPDIR`, 2 of
-  9), committed with this group's UI files so the smokes run once.
+  9), committed with this group's UI files so the smokes run once. The
+  first recorded gate run then failed twice more for the same reasons:
+  `gtk-lush-proof-harness`'s `a_caller_runtime_dir_too_long_for_the_sockets_is_refused`
+  made its "short" directory inside the deep `TMPDIR` (its fixture now sits
+  under `/tmp`), and `scripts/gate-trees.sh` exported `LC_ALL=C` to the gated
+  command, so Mutter refused the accessibility smoke's
+  `protected-view-inspector` capture, whose steps carry an en dash
+  ("Failed to configure: Invalid byte sequence in conversion input"); the
+  gated command now runs in the caller's locale (self-test case added). The
+  same smoke had passed outside `gate-trees.sh` on the same content an hour
+  earlier, which is how the cause was found rather than taken for a flake.
 - **The run-mutants stub failure of `6ee67e14` is reproduced.** The stub
   extracted from `6ee67e14^`, run twice at once 2,000 times, interleaved its
   records 181 times ("ARGS mutants --shard 1/2ARGS"); the fixed stub, 0 of
