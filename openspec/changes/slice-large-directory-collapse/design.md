@@ -3688,6 +3688,106 @@ row-dependent, other) and decides hold or propagate.
   settled scroll position, because Page Up and Page Down move by the band the
   slice bin shows.
 
+#### Gates G1, G1b, G1c, G2 and G4 read (task 11.3, 2026-11-19)
+
+The coordinator ran the eleven rounds of `MEASURE-QUEUE.md`, "D25 gates G1,
+G1b, G1c, G2 and G4", on `rev6/bin/widget-attr-d25` under the amended
+quiet criterion (level 1, drain first): each round exited 0 with
+`run_busy` and `post_busy` below 4 (`rev/attr2/gate.log`). They were read
+here as pre-registered above, on every repetition of every case. The readers
+and their output are in the handoff's `rev8/g1/` (`read_g1.py`,
+`read_g1_reps.py`, `read_g24.py`; `summary.txt`, `reps.txt`, `g2-g4.txt`).
+
+**How the reading splits the bound dispatches.** A `Bound` dispatch in the
+`collapse-steps` line is one of two things:
+- a step of at most `SLC_STEP_ROWS` rows. These are the rows the rung
+  changes, and only these discriminate G1, G1b and G1c;
+- a destroy-only removal of more rows, which brings no row into the band.
+  Its size is the subtree's rows less the steps before it, up to
+  `COLLAPSE_DESTROY_ONLY_ROWS` (64). This is G4's unit, read separately
+  below.
+
+**G1 (32 rows): steps miss.**
+- Frames: every worst frame is at most 8.2 ms (the 400:* cases 5.6–8.2 ms,
+  the 0:* cases and the header at most 2.4 ms).
+- Inputs: at most 3.9 ms.
+- Steps: the 32-row steps reach **9.7 ms** (400:256), 8.6–8.9 ms in four of
+  the five 400:64 repetitions, and 6.2 ms at 400:131,072 and 0:256. Every slow
+  400:* step created 32 row widgets.
+
+**G1b (16 rows): steps miss.**
+- Frames: at most 8.3 ms.
+- 16-row steps: **7.7 ms** (400:64, one repetition) and 7.2 and 6.5 ms
+  (400:256, two repetitions). Each created 16 row widgets.
+- *The tail scales with the rows,* so S3 is not read. At 400:64, one 16-row
+  step in five is over 4 ms, against four 32-row steps in five at
+  8.6–8.9 ms.
+
+**G1c (8 rows): every step passes.**
+- Frames: at most **10.8 ms** (400:4,096).
+- 8-row steps: at most **5.7 ms** (400:64 5.2 and 5.7 ms, 400:256
+  5.0–5.6 ms). Each created 8 row widgets.
+- No step is over 8 ms, so D2's toolkit-floor clause is not needed for the
+  step.
+
+**Completion against bar − M.** The credits applied are D24's from Q2 only.
+Q3's credit is the gain of destroy-only unit 128, and G4 below keeps 64, so
+that credit is not earned and is not applied. This corrects the readers' first
+pass, which applied it.
+- G1c passes in every case:
+  - 0:16,385: 83.8 − 8.0 = 75.8 against 83.3 ms;
+  - 400:16,385: 131.2 − 9.3 = 121.9 against 122.6 ms;
+  - 400:131,072: 206.3 − 74.6 = 131.7 against 197.9 ms;
+  - 0:131,072: 168.8 − 63.9 = 104.9 against 140.6 ms;
+  - header: at most 72.9 against 131.6 ms.
+- Where a `SLC_SKIP_CACHE` round measured the case directly, it agrees:
+  - 0:131,072: 89.9–105.2 ms (G2, chunks 8,192 and 4,096);
+  - 400:16,385: 106.5–113.8 ms.
+- G1b misses at 0:16,385: 97.3 and 91.5 ms, less 8.0, against 83.3 ms.
+  These completions are noise against G1 and G1c, not the rung, but they are
+  recorded.
+
+**The rung: S2, steps of 8 rows (task 11.4).** Frames pass at every rung,
+and G1c is the smallest-change rung whose steps pass. So
+`COLLAPSE_STEP_ROWS` = 8 and `DIRECT_COLLAPSE_ROWS` drops to 8.
+
+**G2: `COLLAPSE_UNBOUND_CHUNK_ROWS` stays 8,192.**
+- 16,384 misses: its between-frames turn at 0:131,072 is 5.9–6.5 ms, over
+  6 ms in four of five repetitions.
+- 8,192 passes: Chunk and Between turns at most 5,253 µs at 0:131,072 and
+  5,990 µs at 400:16,385.
+- D23 holds, because 8,192 rows cover 400:4,096's unbound rows.
+
+**G4: `COLLAPSE_DESTROY_ONLY_ROWS` stays 64.**
+- 256 misses: its 139-row destroy-only dispatch is 5.4–7.5 ms.
+- 128 misses: 6.9 ms at 0:256, 6.0 at 0:4,096, 6.5 at 0:131,072.
+- 64 is read from G1's round: its one 64-row dispatch (0:256) is 4.5 ms.
+
+**Misses the ladder leaves, recorded as data under C1.** None is over a hard
+bar in these rounds.
+- *The destroy-only surplus at 0:64 under S2.* With steps of 8, the
+  subtree's 56 remaining rows go in one destroy-only dispatch: **4.9–7.8 ms**
+  in four of five repetitions of G1c, and 48 rows 6.5–7.8 ms in G1b. That is
+  over the 6 ms margin and under `B_INTERACT_US`, and no row widget is
+  created. At 32 rows, G1 took the same subtree in two 32-row steps of at
+  most 4.1 ms. The surplus is new with S1/S2, and it is the smallest margin
+  the final campaign (task 7.2) reads against 8 ms. The lever, if the
+  campaign misses there: cap the destroy-only unit at the step size while
+  the interval is untouched (G4 measured only 64 to 256).
+- *The folder-header input in G1c: 7.9 and 7.0 ms* in two of five
+  repetitions, against at most 4.0 ms in G1 and G1b. The input dispatch does
+  not depend on the step size, and the ladder has no rung for it. It is under
+  `B_INTERACT_US`.
+- *G2's kinds in the G1 rounds, with the path-cache splice still in the
+  chunk:* the Chunk dispatch reaches **10.7 ms** at 0:131,072 and the Between
+  turn 9.2–9.7 ms at 16,385. That is over `B_INTERACT_US`. Only the
+  `SLC_SKIP_CACHE` rounds, D24's stand-in, bring them to at most 6.5 ms. So
+  0:131,072 and 400:16,385 pass only on that stand-in until D24 is built.
+  **Gate G5 (task 10.15) is open,** and the constants round (task 10.7) and
+  the final campaign cannot pass those cases without it.
+- `INPUT_TO_FRAME_US` is not readable from this binary (above). T1 stays
+  unread, owed to task 7.1's print.
+
 ### R14. Review of R13 (2026-11-18)
 
 Reviewed against the round logs (`rev/attr2/slc-r13-*.log`,
