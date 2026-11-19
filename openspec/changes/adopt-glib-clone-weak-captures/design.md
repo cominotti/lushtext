@@ -30,13 +30,13 @@ If any check loses sight inside the macro, the sweep stops and the audit learns 
 
 ### D3. The ratchet
 
-- **The audit.** A `scripts/check-weak-captures.py` (or a mode of `check-signal-connections.py`) counts `.upgrade()` calls whose receiver is a bare local name (`<ident>.upgrade()`, not preceded by `.`), in `ui/` with comments and strings stripped, and compares the count with a ceiling recorded in the script.
+- **The audit.** A `scripts/check-weak-captures.py` (or a mode of `check-signal-connections.py`) counts, per file of `ui/` with comments and strings stripped, the `.upgrade()` calls whose receiver is a bare local name (`<ident>.upgrade()`, not preceded by `.`). It compares each file's count with the count recorded for it in the script.
   - On `origin/main` that form is 621 of the 705 `.upgrade()` calls. The other 84 upgrade through a path (`self.field`, `imp.x.y`, a call's result) and are not counted, so a new `WeakRef` field never trips the audit.
-  - D2's listed exceptions are the bare-local upgrades that legitimately stay manual.
-- **What fails.** It fails above the ceiling and when the count is below it, so the ceiling is lowered in the same change.
-- **`--self-test`** plants an extra site and a stale ceiling.
-- **After the sweep, a per-file list.** An exact global ceiling makes every later change that removes a site edit the same script line, which the shared-files rule then serializes. So the sweep ends with the ceiling as a list of D2's exceptions per file, zero everywhere else, and a change that removes an exception edits only that file's entry.
-- **Adding an exception.** A new legitimate bare-local upgrade (the collection class above) raises its file's entry in the same change, with the reason written beside the entry, and review accepts or refuses it. A new closure capture never qualifies: it uses `clone!`.
+- **What fails.** A file above its recorded count fails, and so does a file below it, so a change that removes sites lowers its file's entry in the same change. A file with no entry has a count of zero.
+- **Why per file.** A single global ceiling would make every change that removes a site edit the same script line, which the shared-files rule then serializes. Per-file entries make a change edit only the files it touches.
+- **During the sweep.** The record starts as each file's count on the post-probe tree, and the sweep lowers each directory's entries as it converts them. At the end the entries equal D2's exceptions, each with its reason: that is the state the spec describes and the archive keeps.
+- **Adding an exception.** A new legitimate bare-local upgrade (the collection class in D2) raises its file's entry in the same change, with the reason written beside the entry, and review accepts or refuses it. A new closure capture never qualifies: it uses `clone!`.
+- **`--self-test`** plants an extra site, a stale (too high) entry and a file with no entry.
 
 ## Risks / Trade-offs
 

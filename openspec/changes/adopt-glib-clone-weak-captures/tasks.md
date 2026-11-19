@@ -16,12 +16,12 @@ Start: only after every edit, spec and queued change of the programme coordinato
 
 ## 2. Ratchet and rule
 
-- [ ] 2.1 Add the audit (design D3) at the post-probe count, with its self-test, and wire it into `check-policy` (and `check-policy-ci` if `close-audited-gate-gaps` has merged). Change `.agents/rules/rust.md` ("Modern Rust Idioms") to prescribe `clone!`, and replace the example at `rust.md:459-464` with one that clones an `Rc<dyn Fn>` out of its cell before invoking it. Verify with `make check-policy` and `make check-agent-docs`. Commit and push.
+- [ ] 2.1 Add the audit (design D3) with per-file counts from the post-probe tree, with its self-test, and wire it into `check-policy` (and `check-policy-ci` if `close-audited-gate-gaps` has merged). Change `.agents/rules/rust.md` ("Modern Rust Idioms") to prescribe `clone!`, and replace the example at `rust.md:459-464` with one that clones an `Rc<dyn Fn>` out of its cell before invoking it. Verify with `make check-policy` and `make check-agent-docs`. Commit and push.
 
 ## 3. Sweep
 
 - [ ] 3.1 Write the `Propagation` and `ControlFlow` fallback tests for one site each. Verify that they pass on the manual form.
-- [ ] 3.2 Convert `ui/` by directory (window, editor_page, sidebar, search_panel, the rest) under design D2. After each directory, lower the ceiling, run the shard set for that directory and `make check-clippy`, and commit; batch the three smokes per two or three directories. Verify that the ceiling ends at the count of D2's listed exceptions.
+- [ ] 3.2 Convert `ui/` by directory (window, editor_page, sidebar, search_panel, the rest) under design D2. After each directory, lower its files' entries, run the shard set for that directory and `make check-clippy`, and commit; batch the three smokes per two or three directories. Verify that the entries end at D2's listed exceptions, each with its reason.
 
 ## Workflow follow-up
 

@@ -19,7 +19,7 @@ Start: only after every edit, spec and queued change of the programme coordinato
 ## 1. Registry without rewriting
 
 - [ ] 1.1 Record the full widget `--list` on `main` in `evidence/list-before.txt`.
-- [ ] 1.2 Convert every widget test file to `pub(crate) fn test_<name>()` with no `#[test]` line, and change `build.rs` and `widget-shards.py`'s discovery to design D1's rule and support-file convention, with self-test cases for a `_support` file and for a test file. Verify that:
+- [ ] 1.2 Convert every widget test file to `pub(crate) fn test_<name>()` with no `#[test]` line, and change `build.rs` and `widget-shards.py`'s discovery to design D1's rule and support-file convention, with self-test cases for a `_support` file, for a test file, and for a misdeclared `fn test_*` and `pub fn test_*` (both must fail). Rename the private `test_*` helpers in test files. Verify that:
   - `--list` equals `evidence/list-before.txt`;
   - `make check-widget-shards` passes;
   - a grep finds no zero-argument, unit-returning `pub(crate) fn test_*` helper outside support files that is not meant as a test;

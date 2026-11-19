@@ -18,7 +18,11 @@ The widget registry SHALL include each widget file from its own path, without co
 - **WHEN** `common.rs` or a `*_support.rs` file declares `pub(crate) fn test_<name>()` helpers
 - **THEN** the file is compiled as a module and none of its functions is registered or discovered
 
+#### Scenario: A misdeclared test fails instead of vanishing
+- **WHEN** a test file outside the support files declares a top-level `fn test_<name>` or `pub fn test_<name>`
+- **THEN** the widget build and `make check-widget-shards` fail and name it
+
 #### Scenario: A helper cannot pass for a test
 - **WHEN** a function declared `pub(crate) fn test_<name>` takes parameters or returns a value
 - **THEN** the build fails, because the registry only accepts `fn()`
-- **AND** a private helper named `test_<name>` is not registered
+- **AND** a helper in a support file is never registered
