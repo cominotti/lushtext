@@ -611,7 +611,8 @@ widget-scoped, diagnostic-only, or known gaps. Stable setup actions include:
   `active_transient_surface` is `all-tabs-popover` while it is the topmost
   open transient surface after the command palette, workspace search and the
   Open popover. The `tab-overflow` blocker also holds while the popover is
-  still publishing (its staged first rows) or retiring rows after it closed.
+  still publishing (its staged first rows) or retiring rows after it closed,
+  and until a close's focus restore has run.
   Its visual-geometry surfaces are `tab-strip-all-tabs` (the button, with the
   pixel anchor `tab-strip-all-tabs-ink`), `all-tabs-popover`,
   `all-tabs-popover-search` and `all-tabs-popover-list` (pixel anchor

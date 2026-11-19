@@ -72,8 +72,10 @@ This folder owns the top-level application shell adapter.
   the end group hides or detaches. A restore's terminal, and a pick of the
   already selected tab, bring the selected tab into view only by
   re-announcing the unchanged selection to the strip
-  (`reveal_selected_tab`, ledger A133), which the window's own
-  selected-page handler ignores. Whether the strip shows the whole selected
+  (`reveal_selected_tab`, ledger A133). **Every `selected-page` observer
+  under `ui/window/` checks `tab_overflow_reveals_selection()` first** and
+  treats the re-announcement as no selection change (the window's own
+  handler, the overflow watch and the All Tabs re-snapshot do). Whether the strip shows the whole selected
   tab is read, never inferred from the edge flags, by
   `selected_tab_in_view` (`window.tab_strip.selected_tab_in_view`).
 - Keep the recent-documents journal in `recent_documents_journal.rs` (the

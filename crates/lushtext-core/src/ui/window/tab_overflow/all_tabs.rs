@@ -12,7 +12,6 @@
 //! `ui/window/editor_focus/`. The decisions (ranking, highlight, copy) are
 //! `policy.rs`'s; the stages are narrated in `mod.rs`.
 
-use std::path::Path;
 use std::time::Duration;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -20,26 +19,20 @@ use gtk4::prelude::*;
 
 use super::super::LushtextWindow;
 use super::all_tabs_popover::AllTabsRow;
+use super::policy::all_tabs_folder_label;
 use super::watch::release_page_watch;
 use crate::ui::editor_page::LushtextEditorPage;
 
-/// `win.toggle-all-tabs`.
-pub(super) const TOGGLE_ALL_TABS_ACTION: &str = "toggle-all-tabs";
-/// `win.set-all-tabs-visible`.
-pub(super) const SET_ALL_TABS_VISIBLE_ACTION: &str = "set-all-tabs-visible";
-/// `win.set-all-tabs-query`.
-pub(super) const SET_ALL_TABS_QUERY_ACTION: &str = "set-all-tabs-query";
-
-/// `path`'s folder as a row subtitle, with the home folder shortened to `~`.
-fn display_folder(path: &Path) -> Option<String> {
-    let folder = path.parent()?;
-    let home = glib::home_dir();
-    Some(match folder.strip_prefix(&home) {
-        Ok(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
-        Ok(rest) => format!("~/{}", rest.display()),
-        Err(_) => folder.display().to_string(),
-    })
-}
+/// `win.toggle-all-tabs`; `actions.rs` registers it under this name.
+pub(in crate::ui::window) const TOGGLE_ALL_TABS_ACTION: &str = "toggle-all-tabs";
+/// `win.set-all-tabs-visible`; `actions.rs` registers it under this name.
+pub(in crate::ui::window) const SET_ALL_TABS_VISIBLE_ACTION: &str = "set-all-tabs-visible";
+/// `win.set-all-tabs-query`; `actions.rs` registers it under this name.
+pub(in crate::ui::window) const SET_ALL_TABS_QUERY_ACTION: &str = "set-all-tabs-query";
+/// The accelerator of `win.toggle-all-tabs`: `actions.rs` binds it, and the
+/// open popover closes on it (the shortcuts dialog's Blueprint and the
+/// button's ARIA key shortcut spell it out).
+pub(in crate::ui::window) const TOGGLE_ALL_TABS_ACCEL: &str = "<Control><Shift>o";
 
 impl LushtextWindow {
     /// Wire the popover, its button and the live re-snapshot. Runs once, from
@@ -99,14 +92,15 @@ impl LushtextWindow {
         });
         let window_weak = self.downgrade();
         tab_view.connect_selected_page_notify(move |_| {
-            if let Some(window) = window_weak.upgrade() {
+            if let Some(window) = window_weak.upgrade()
+                && !window.tab_overflow_reveals_selection()
+            {
                 window.schedule_all_tabs_resnapshot();
             }
         });
         for index in 0..tab_view.n_pages() {
             self.watch_all_tabs_page(&tab_view.nth_page(index));
         }
-        self.set_all_tabs_query_enabled(false);
     }
 
     fn watch_all_tabs_page(&self, page: &libadwaita::TabPage) {
@@ -168,18 +162,21 @@ impl LushtextWindow {
     pub(super) fn all_tabs_snapshot(&self) -> Vec<AllTabsRow> {
         let tab_view = &self.imp().tab_view;
         let selected = tab_view.selected_page();
+        let home = glib::home_dir();
         (0..tab_view.n_pages())
             .map(|index| {
                 let page = tab_view.nth_page(index);
                 let editor = page.child().downcast::<LushtextEditorPage>().ok();
                 let path = editor.as_ref().and_then(LushtextEditorPage::file_path);
+                let folder = path.as_deref().and_then(std::path::Path::parent);
                 let title = editor
                     .as_ref()
                     .map_or_else(|| page.title().to_string(), LushtextEditorPage::title);
                 AllTabsRow {
                     page: page.downgrade(),
                     title,
-                    folder: path.as_deref().and_then(display_folder),
+                    folder: folder.map(|folder| all_tabs_folder_label(folder, &home)),
+                    folder_path: folder.map(|folder| folder.display().to_string()),
                     modified: editor.as_ref().is_some_and(LushtextEditorPage::is_modified),
                     pinned: page.is_pinned(),
                     current: selected.as_ref() == Some(&page),
@@ -189,13 +186,17 @@ impl LushtextWindow {
     }
 
     /// The menu button's create-popup function: save the focus to restore,
-    /// then hand the popover a fresh snapshot.
+    /// then hand the popover a fresh snapshot. A reopen before the last
+    /// close's restore ran cancels that restore and keeps its saved focus,
+    /// which is still the focus from before the popover first opened.
     fn prepare_all_tabs_popup(&self) {
-        let focus = gtk4::prelude::GtkWindowExt::focus(self);
-        self.imp()
-            .tab_overflow
-            .saved_focus
-            .replace(focus.map(|widget| widget.downgrade()));
+        if !self.cancel_all_tabs_focus_restore() {
+            let focus = gtk4::prelude::GtkWindowExt::focus(self);
+            self.imp()
+                .tab_overflow
+                .saved_focus
+                .replace(focus.map(|widget| widget.downgrade()));
+        }
         if let Some(controls) = self.imp().tab_overflow.controls.borrow().clone() {
             controls.popover.prepare_to_show(self.all_tabs_snapshot());
         }
@@ -206,16 +207,29 @@ impl LushtextWindow {
     /// again): give the focus back to the widget that had it, else the
     /// selected editor, else nobody. After the menu button's own close
     /// handling, which would focus the button. Until the restore runs, the
-    /// reconcile's focus hand-off stands down (`focus_restore_pending`).
+    /// reconcile's focus hand-off stands down (`focus_restore_pending`), and
+    /// a reopen or disposal cancels it (`cancel_all_tabs_focus_restore`).
     fn restore_focus_after_all_tabs(&self) {
-        let saved = self.imp().tab_overflow.saved_focus.take();
-        self.imp().tab_overflow.focus_restore_pending.set(true);
+        if self.imp().disposing.get() {
+            return;
+        }
+        let state = &self.imp().tab_overflow;
+        let generation = state.focus_restore_generation.get().wrapping_add(1);
+        state.focus_restore_generation.set(generation);
+        state.focus_restore_pending.set(true);
         let window_weak = self.downgrade();
         glib::idle_add_local_once(move || {
             let Some(window) = window_weak.upgrade() else {
                 return;
             };
-            window.imp().tab_overflow.focus_restore_pending.set(false);
+            let state = &window.imp().tab_overflow;
+            if state.focus_restore_generation.get() != generation
+                || !state.focus_restore_pending.replace(false)
+                || window.imp().disposing.get()
+            {
+                return;
+            }
+            let saved = state.saved_focus.take();
             let target = saved
                 .as_ref()
                 .and_then(glib::WeakRef::upgrade)
@@ -262,6 +276,16 @@ impl LushtextWindow {
             tab_view.set_selected_page(&page);
         }
         self.focus_selected_editor_after_action();
+    }
+
+    /// Cancel a focus restore whose idle has not run yet (a reopen,
+    /// disposal). Returns whether one was pending.
+    pub(super) fn cancel_all_tabs_focus_restore(&self) -> bool {
+        let state = &self.imp().tab_overflow;
+        state
+            .focus_restore_generation
+            .set(state.focus_restore_generation.get().wrapping_add(1));
+        state.focus_restore_pending.replace(false)
     }
 
     /// Whether the All Tabs popover shows.

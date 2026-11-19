@@ -38,9 +38,12 @@ pub struct AllTabsRow {
     pub page: glib::WeakRef<libadwaita::TabPage>,
     /// The tab's title.
     pub title: String,
-    /// The folder of the tab's file, for the subtitle and the filter; `None`
-    /// for an untitled document.
+    /// The folder of the tab's file as the subtitle shows it (the home
+    /// folder shortened to `~`), for the subtitle and the filter; `None` for
+    /// an untitled document.
     pub folder: Option<String>,
+    /// The same folder as an absolute path, which the filter matches too.
+    pub folder_path: Option<String>,
     /// Whether the document has unsaved changes.
     pub modified: bool,
     /// Whether the tab is pinned.
@@ -68,7 +71,7 @@ mod item_imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for AllTabsItem {
-        const NAME: &'static str = "LushtextAllTabsItem";
+        const NAME: &str = "LushtextAllTabsItem";
         type Type = super::AllTabsItem;
     }
 
@@ -134,7 +137,7 @@ mod model_imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for AllTabsRowModel {
-        const NAME: &'static str = "LushtextAllTabsRowModel";
+        const NAME: &str = "LushtextAllTabsRowModel";
         type Type = super::AllTabsRowModel;
         type Interfaces = (gio::ListModel,);
     }
@@ -222,17 +225,7 @@ impl AllTabsRowModel {
         if old_len > new_len {
             // Remove the tail while the model still lists the old rows cut to
             // the new length, then swap them.
-            {
-                let cut: Rc<[AllTabsRow]> = self
-                    .imp()
-                    .rows
-                    .borrow()
-                    .iter()
-                    .take(usize::try_from(new_len).unwrap_or(usize::MAX))
-                    .cloned()
-                    .collect();
-                self.imp().rows.replace(cut);
-            }
+            self.truncate_rows(new_len);
             self.items_changed(new_len, old_len - new_len, 0);
             self.imp().rows.replace(Rc::from(rows));
         } else {
@@ -352,16 +345,21 @@ impl AllTabsRowModel {
     /// End a growth where it stands: only the listed rows remain.
     fn freeze_growth(&self) {
         if let Some(listed) = self.imp().listed.take() {
-            let cut: Rc<[AllTabsRow]> = self
-                .imp()
-                .rows
-                .borrow()
-                .iter()
-                .take(usize::try_from(listed).unwrap_or(usize::MAX))
-                .cloned()
-                .collect();
-            self.imp().rows.replace(cut);
+            self.truncate_rows(listed);
         }
+    }
+
+    /// Keep only the first `len` rows the publish holds.
+    fn truncate_rows(&self, len: u32) {
+        let cut: Rc<[AllTabsRow]> = self
+            .imp()
+            .rows
+            .borrow()
+            .iter()
+            .take(usize::try_from(len).unwrap_or(usize::MAX))
+            .cloned()
+            .collect();
+        self.imp().rows.replace(cut);
     }
 
     /// Stop listing `count` rows from `start`, as one removal (a

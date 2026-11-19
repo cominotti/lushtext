@@ -11,11 +11,14 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{CompositeTemplate, gdk, glib};
 
+use super::super::TOGGLE_ALL_TABS_ACCEL;
 use super::super::policy::{
-    ALL_TABS_ANNOUNCE_DELAY_MS, ALL_TABS_LIST_LABEL, ALL_TABS_NO_MATCH_TITLE,
-    ALL_TABS_SEARCH_LABEL, AllTabsCandidate, all_tabs_highlight, all_tabs_list_value_text,
-    all_tabs_match_announcement, all_tabs_row_name, rank_all_tabs,
+    ALL_TABS_ANNOUNCE_DELAY_MS, ALL_TABS_CURRENT_TOOLTIP, ALL_TABS_LIST_DESCRIPTION,
+    ALL_TABS_LIST_LABEL, ALL_TABS_NO_MATCH_TITLE, ALL_TABS_PINNED_TOOLTIP,
+    ALL_TABS_SEARCH_DESCRIPTION, ALL_TABS_SEARCH_LABEL, AllTabsCandidate, all_tabs_highlight,
+    all_tabs_list_value_text, all_tabs_match_announcement, all_tabs_row_name, rank_all_tabs,
 };
+#[cfg(feature = "test-utils")]
 use super::AllTabsPopoverFacts;
 use super::item::{AllTabsItem, AllTabsRow, AllTabsRowModel};
 use crate::ui::accessibility::{self, AnnouncementLane, AnnouncementThrottler, RowAccessibility};
@@ -78,7 +81,7 @@ pub struct LushtextAllTabsPopover {
 
 #[glib::object_subclass]
 impl ObjectSubclass for LushtextAllTabsPopover {
-    const NAME: &'static str = "LushtextAllTabsPopover";
+    const NAME: &str = "LushtextAllTabsPopover";
     type Type = super::LushtextAllTabsPopover;
     type ParentType = gtk4::Popover;
 
@@ -148,13 +151,13 @@ impl LushtextAllTabsPopover {
         accessibility::set_labelled_description(
             &*self.search_entry,
             ALL_TABS_SEARCH_LABEL,
-            "Filter the open tabs by name or folder",
+            ALL_TABS_SEARCH_DESCRIPTION,
         );
         accessibility::set_role(&*self.list_view, gtk4::AccessibleRole::List);
         accessibility::set_labelled_description(
             &*self.list_view,
             ALL_TABS_LIST_LABEL,
-            "Every open tab of this window, in tab strip order",
+            ALL_TABS_LIST_DESCRIPTION,
         );
         accessibility::set_role(&*self.empty_state, gtk4::AccessibleRole::Status);
         accessibility::set_label(&*self.empty_state, ALL_TABS_NO_MATCH_TITLE);
@@ -208,13 +211,15 @@ impl LushtextAllTabsPopover {
         let toggle_keys = gtk4::EventControllerKey::new();
         toggle_keys.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let popover_weak = self.obj().downgrade();
+        // The accelerator `win.toggle-all-tabs` is bound to, parsed once.
+        let shortcut = gtk4::accelerator_parse(TOGGLE_ALL_TABS_ACCEL);
         toggle_keys.connect_key_pressed(move |_, keyval, _, state| {
             let Some(popover) = popover_weak.upgrade() else {
                 return glib::Propagation::Proceed;
             };
-            let shortcut = gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK;
-            if matches!(keyval, gdk::Key::o | gdk::Key::O)
-                && state & gtk4::accelerator_get_default_mod_mask() == shortcut
+            if let Some((key, modifiers)) = shortcut
+                && keyval.to_lower() == key.to_lower()
+                && state & gtk4::accelerator_get_default_mod_mask() == modifiers
             {
                 popover.popdown();
                 return glib::Propagation::Stop;
@@ -268,6 +273,7 @@ impl LushtextAllTabsPopover {
                 .map(|row| AllTabsCandidate {
                     title: &row.title,
                     folder: row.folder.as_deref(),
+                    folder_path: row.folder_path.as_deref(),
                 })
                 .collect();
             let listed = rank_all_tabs(&query, &candidates);
@@ -440,6 +446,26 @@ impl LushtextAllTabsPopover {
         self.retirement.replace(Some(retirement));
     }
 
+    /// Whether the popover is still publishing or retiring rows: what the
+    /// readiness blocker reads, from the same two facts `facts()` reports.
+    pub(super) fn publishing(&self) -> bool {
+        self.growth_pending() || self.retirement_pending()
+    }
+
+    /// Whether a staged first publish still grows.
+    pub(super) fn growth_pending(&self) -> bool {
+        self.model.growing_rows() > 0
+    }
+
+    /// Whether realized rows are still being retired.
+    pub(super) fn retirement_pending(&self) -> bool {
+        self.retirement
+            .borrow()
+            .as_ref()
+            .is_some_and(RowRetirement::is_retiring)
+    }
+
+    #[cfg(feature = "test-utils")]
     pub(super) fn facts(&self) -> AllTabsPopoverFacts {
         let empty_state_visible = self
             .stack
@@ -456,12 +482,8 @@ impl LushtextAllTabsPopover {
             listed_rows: self.model.len(),
             query_len,
             highlighted_position: self.highlighted_position(),
-            growth_pending: self.model.growing_rows() > 0,
-            retirement_pending: self
-                .retirement
-                .borrow()
-                .as_ref()
-                .is_some_and(RowRetirement::is_retiring),
+            growth_pending: self.growth_pending(),
+            retirement_pending: self.retirement_pending(),
             empty_state_visible,
             announcements: self.announcements.get(),
             announcement_pending: self.announcement.pending(),
@@ -565,11 +587,11 @@ fn build_row() -> gtk4::Box {
     text.append(&subtitle);
     row.append(&text);
     let pinned = gtk4::Image::from_icon_name("view-pin-symbolic");
-    pinned.set_tooltip_text(Some("Pinned"));
+    pinned.set_tooltip_text(Some(ALL_TABS_PINNED_TOOLTIP));
     accessibility::set_role(&pinned, gtk4::AccessibleRole::Presentation);
     row.append(&pinned);
     let current = gtk4::Image::from_icon_name("object-select-symbolic");
-    current.set_tooltip_text(Some("Current tab"));
+    current.set_tooltip_text(Some(ALL_TABS_CURRENT_TOOLTIP));
     accessibility::set_role(&current, gtk4::AccessibleRole::Presentation);
     row.append(&current);
     row

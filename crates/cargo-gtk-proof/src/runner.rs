@@ -1497,7 +1497,11 @@ fn push_workspace_tree_reveal_relationships(
             rows,
             status,
             "section-header-unchanged",
-            section_header_unchanged(before_snapshot, after_snapshot),
+            surface_unmoved(
+                before_snapshot,
+                after_snapshot,
+                REVEALED_SECTION_HEADER_SURFACE,
+            ),
         );
     }
 }
@@ -1633,14 +1637,16 @@ fn outer_scroll_unchanged(before: &Value, after: &Value) -> Result<(), String> {
     }
 }
 
-fn section_header_unchanged(before: &Value, after: &Value) -> Result<(), String> {
-    let before_rect = surface_box(before, REVEALED_SECTION_HEADER_SURFACE)?;
-    let after_rect = surface_box(after, REVEALED_SECTION_HEADER_SURFACE)?;
+/// Whether the visible surface `name` has the same rectangle in both
+/// snapshots.
+fn surface_unmoved(before: &Value, after: &Value, name: &str) -> Result<(), String> {
+    let before_rect = surface_box(before, name)?;
+    let after_rect = surface_box(after, name)?;
     if before_rect == after_rect {
         Ok(())
     } else {
         Err(format!(
-            "{REVEALED_SECTION_HEADER_SURFACE} moved from {before_rect:?} to {after_rect:?}"
+            "{name} moved from {before_rect:?} to {after_rect:?}"
         ))
     }
 }
@@ -1738,35 +1744,22 @@ fn push_tab_strip_overflow_relationships(
     before: &Value,
     after: &Value,
 ) {
-    for (name, surface) in [
-        (
-            "tab-strip-controls-before",
-            ("tab-strip-overflow-controls", before),
-        ),
-        (
-            "tab-strip-controls-after",
-            ("tab-strip-overflow-controls", after),
-        ),
+    for (name, snapshot) in [
+        ("tab-strip-controls-before", before),
+        ("tab-strip-controls-after", after),
     ] {
         push_relationship(
             rows,
             status,
             name,
-            surface_box(surface.1, surface.0).map(|_| ()),
+            surface_box(snapshot, "tab-strip-overflow-controls").map(|_| ()),
         );
     }
     push_relationship(
         rows,
         status,
         "tab-strip-height-constant",
-        match (
-            surface_box(before, "tab-strip"),
-            surface_box(after, "tab-strip"),
-        ) {
-            (Ok(was), Ok(now)) if was == now => Ok(()),
-            (Ok(was), Ok(now)) => Err(format!("tab bar moved from {was:?} to {now:?}")),
-            (Err(error), _) | (_, Err(error)) => Err(error),
-        },
+        surface_unmoved(before, after, "tab-strip"),
     );
     let flag = |snapshot: &Value, name: &str| {
         snapshot
@@ -1797,14 +1790,7 @@ fn push_tab_strip_overflow_relationships(
         rows,
         status,
         "tab-strip-controls-unmoved",
-        match (
-            surface_box(before, "tab-strip-scroll-back"),
-            surface_box(after, "tab-strip-scroll-back"),
-        ) {
-            (Ok(was), Ok(now)) if was == now => Ok(()),
-            (Ok(was), Ok(now)) => Err(format!("Scroll Tabs Back moved from {was:?} to {now:?}")),
-            (Err(error), _) | (_, Err(error)) => Err(error),
-        },
+        surface_unmoved(before, after, "tab-strip-scroll-back"),
     );
 }
 
@@ -1851,11 +1837,7 @@ fn push_all_tabs_popover_relationships(
             rows,
             status,
             &format!("{name}-unmoved"),
-            match (surface_box(before, name), surface_box(after, name)) {
-                (Ok(was), Ok(now)) if was == now => Ok(()),
-                (Ok(was), Ok(now)) => Err(format!("{name} moved from {was:?} to {now:?}")),
-                (Err(error), _) | (_, Err(error)) => Err(error),
-            },
+            surface_unmoved(before, after, name),
         );
     }
     push_relationship(

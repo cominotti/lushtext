@@ -1508,47 +1508,12 @@ fi
 if case_selected "tab-strip-overflow"; then
 # Forty new tabs overflow the strip at the smoke's window size, so the
 # trailing Scroll Tabs Back and Forward buttons join the tab list's parent.
+overflow_steps=()
+for _ in $(seq 1 40); do
+    overflow_steps+=(--step window-action:new-tab)
+done
 run_accessibility_capture "tab-strip-overflow" \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
-    --step window-action:new-tab \
+    "${overflow_steps[@]}" \
     --step wait-predicate:visual-geometry-settled
 assert_anchor "tab-strip-overflow" "tab strip" "button" "Scroll Tabs Back"
 assert_anchor "tab-strip-overflow" "tab strip" "button" "Scroll Tabs Forward"

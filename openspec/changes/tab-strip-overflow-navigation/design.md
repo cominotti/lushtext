@@ -763,6 +763,70 @@ Recorded during implementation, each with its reason:
   2,000 (`stub-race-repro/` in the handoff directory). The cause is the one
   the commit names: several `printf` writes per record under `O_APPEND`.
 
+### D15. Apply stage of the programme template's review (2026-11-19)
+
+The review lenses' findings, as the independent apply agent decided them
+(the full list with each rejection is
+`review-findings-applied.md` in the handoff directory):
+
+- **The overflow actions are published once they exist.** The install
+  stage's reconcile runs from `constructed`, before `setup_actions`
+  registers the actions, so `win.scroll-tabs-back`, `win.scroll-tabs-forward`,
+  `win.toggle-all-tabs` and `win.set-all-tabs-visible` started enabled until
+  a later reconcile happened to run. `setup_actions` now calls
+  `sync_tab_overflow_actions` right after registering them. Failing-first:
+  `test_the_overflow_actions_start_disabled_before_the_first_dispatch`.
+- **A wheel over our own trailing group cancels nothing.** The tab box's
+  wheel handler is on the box (F1), so a wheel over the group moves no
+  strip; the capture-phase scroll observer now ignores it, as the press
+  observer already did, through a motion controller on the group. Failing-
+  first: `test_a_wheel_over_the_end_group_cancels_nothing_and_keeps_the_reveal`.
+- **A popover reopened before the last close's focus restore keeps the
+  focus.** The restore idle was untracked: a close and a reopen in one
+  dispatch (two `win.set-all-tabs-visible` calls, or the shortcut twice)
+  let it pull the focus back to the editor under the open popover. A
+  generation now cancels it on reopen and at disposal, the reopen keeps the
+  focus saved before the first open, and the pending restore holds the
+  `tab-overflow` blocker. Failing-first:
+  `test_a_reopen_before_the_focus_restore_keeps_the_focus_in_the_popover`.
+- **The All Tabs filter matches the absolute folder too.** The spec says
+  "title or path"; the row shows the home folder as `~`, and the filter
+  matched only that label. `AllTabsCandidate::folder_path` carries the
+  absolute folder, matched by the same substring rule (unit test
+  `filtering_by_folder_matches_the_absolute_path_behind_the_home_label`;
+  the `all_tabs_filter_1024` bench builds both).
+- **A reveal on a strip that fits ends without announcing.** The pure step
+  `policy::reveal_frame` (moved out of `scroll_execution.rs` with its two
+  constants, unit-tested) ends on the first still frame that also keeps the
+  strip's width when neither the unpinned nor the pinned tabs overflow (a
+  pinned selection in an overflowing pinned scroller is still announced), so
+  a restore of a session that fits holds `tab-overflow` for a frame or two,
+  not 256 ms. Failing-
+  first: `test_a_reveal_on_a_strip_that_fits_announces_nothing`.
+- **A reveal holds readiness for at most `SELECTION_REVEAL_READINESS_US`
+  (8 s).** The reveal runs on the frame clock, so a window whose compositor
+  sends no frames (minimized, occluded) held `tab-overflow` until it painted
+  again. Ending the reveal on a timer would instead leave the selected tab
+  out of view when such a window returns, so the reveal keeps running and
+  only its hold on readiness is bounded (`policy::reveal_holds_readiness`,
+  unit-tested; the harness cannot stop a frame clock, so no widget test fails
+  first). `SELECTION_REVEAL_MAX_FRAMES` is relabelled a coverage window: a
+  smaller value would leave the selected tab out of view.
+- **The reconcile publishes one pure plan.** `policy::plan_overflow_controls`
+  replaces the identity `scroll_controls_available` and the inline `&&`s, so
+  "no scroller, no buttons" and "no scroll action enabled while its button is
+  hidden" are unit-tested invariants. A detached group also clears the
+  pointer-over-group flag of the wheel observer, whether or not GTK delivered
+  its `leave`.
+- **Smaller ones:** the folder label is the pure
+  `policy::all_tabs_folder_label`, with the home folder read once per
+  snapshot; the action names and `TOGGLE_ALL_TABS_ACCEL` are the constants
+  `actions.rs` registers and binds, and the popover closes on the parsed
+  accelerator; the popover's remaining copy moved to `policy.rs`; one
+  `pause_step` and one `publishing` read; the All Tabs re-snapshot ignores
+  the reveal's re-announcement, and `ui/window/AGENTS.md` makes that a rule
+  for every `selected-page` observer.
+
 ## Timing
 
 Timing: none (no timed path touched). The `all_tabs_filter_1024` bench case is

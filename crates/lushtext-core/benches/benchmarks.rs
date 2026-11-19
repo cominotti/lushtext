@@ -831,13 +831,20 @@ fn bench_all_tabs_filter(c: &mut Criterion) {
     let folders: Vec<String> = (0..1_024)
         .map(|index| format!("~/workspace/projet-équipe/section-{}/nested", index % 32))
         .collect();
+    // The absolute folders behind the shown `~` labels, which the filter
+    // matches too.
+    let folder_paths: Vec<String> = folders
+        .iter()
+        .map(|folder| folder.replacen('~', "/var/home/user", 1))
+        .collect();
     let candidates: Vec<lushtext_core::ui::window::AllTabsCandidate<'_>> = titles
         .iter()
-        .zip(&folders)
+        .zip(folders.iter().zip(&folder_paths))
         .map(
-            |(title, folder)| lushtext_core::ui::window::AllTabsCandidate {
+            |(title, (folder, folder_path))| lushtext_core::ui::window::AllTabsCandidate {
                 title,
                 folder: Some(folder),
+                folder_path: Some(folder_path),
             },
         )
         .collect();

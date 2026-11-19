@@ -1334,14 +1334,15 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/ui/window/tab_overflow/policy.rs` | `TAB_SCROLL_REPEAT_INTERVAL_MS` | 200 | out: time | repeat cadence of a held scroll button, one animation per step (D3) |
 | `crates/lushtext-core/src/ui/window/tab_overflow/policy.rs` | `ALL_TABS_ANNOUNCE_DELAY_MS` | 500 | out: time | how long the All Tabs query rests before its match count is announced, the debounced-results lane's cooldown (D6) |
 | `crates/lushtext-core/src/ui/window/tab_overflow/policy.rs` | `ALL_TABS_ROW_NAME_MAX_CHARS` | 512 | presentation cap | up from 512: characters of an All Tabs row's accessible name, at or above the longest the app builds (a 255-byte file name and its states; unit-tested) (D6) |
+| `crates/lushtext-core/src/ui/window/tab_overflow/policy.rs` | `SELECTION_REVEAL_MAX_FRAMES` | 256 | coverage window | rounded up: frames the selection reveal may observe before it ends wherever the strip is, so it must span the allocation wait, the attach scrolls and the scroll window, about 45 frames at 120 Hz and 90 at 240 Hz; a smaller value leaves the selected tab out of view (`tab-strip-overflow-navigation` D12, D15) |
+| `crates/lushtext-core/src/ui/window/tab_overflow/policy.rs` | `SELECTION_REVEAL_SCROLL_WINDOW_US` | 256000 | out: time | how long the selection reveal waits after its one announcement before a still frame may end it: the strip's own 200 ms scroll animation keeps one whole pixel for several frames in its eased tail (`tab-strip-overflow-navigation` D12) |
+| `crates/lushtext-core/src/ui/window/tab_overflow/policy.rs` | `SELECTION_REVEAL_READINESS_US` | 8000000 | out: time | how long a running selection reveal holds the `tab-overflow` readiness blocker, above its 256 frames at 60 Hz (about 4.3 s), so a window that paints no frame cannot hold readiness indefinitely (`tab-strip-overflow-navigation` D15) |
 
 ### `crates/lushtext-core/src/ui/window/tab_overflow/scroll_execution.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
 | `crates/lushtext-core/src/ui/window/tab_overflow/scroll_execution.rs` | `TAB_SCROLLER_LOOKUP_DEPTH` | 3 | external fact | the depth of Libadwaita's `AdwTabBar` template (bar → revealer → box → scrolled window), ledger A132 |
-| `crates/lushtext-core/src/ui/window/tab_overflow/scroll_execution.rs` | `SELECTION_REVEAL_SCROLL_WINDOW_US` | 256000 | out: time | how long the selection reveal waits after its one announcement before a still frame may end it: the strip's own 200 ms scroll animation keeps one whole pixel for several frames in its eased tail (`tab-strip-overflow-navigation` D12) |
-| `crates/lushtext-core/src/ui/window/tab_overflow/scroll_execution.rs` | `SELECTION_REVEAL_MAX_FRAMES` | 256 | cap | frames the selection reveal may observe before it ends wherever the strip is; the allocation wait, the attach scrolls and the scroll window take about 45 at 120 Hz and 90 at 240 Hz (`tab-strip-overflow-navigation` D12) |
 
 ### `crates/lushtext-core/src/ui/window/zoom.rs`
 

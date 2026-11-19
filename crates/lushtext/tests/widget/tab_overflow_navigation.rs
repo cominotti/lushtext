@@ -1812,3 +1812,160 @@ fn test_moving_the_highlight_names_its_tab_in_the_lists_value_text() {
         "with nothing highlighted only the match count remains"
     );
 }
+
+/// The overflow actions exist only after the install stage's reconcile, so
+/// they are published again once registered: none is enabled while its
+/// control is hidden, even before the window's first dispatch.
+#[test]
+fn test_the_overflow_actions_start_disabled_before_the_first_dispatch() {
+    // No main-loop iteration between construction and the reads.
+    let window = crate::common::test_window();
+    for name in [
+        "scroll-tabs-back",
+        "scroll-tabs-forward",
+        "toggle-all-tabs",
+        "set-all-tabs-visible",
+        "set-all-tabs-query",
+    ] {
+        let action = window
+            .lookup_action(name)
+            .unwrap_or_else(|| panic!("{name} is registered"));
+        assert!(
+            !action.is_enabled(),
+            "{name} is disabled while its control is hidden"
+        );
+    }
+}
+
+/// The end group's motion controller, when it has one.
+fn group_motion(group: &gtk4::Box) -> Option<gtk4::EventControllerMotion> {
+    let controllers = group.observe_controllers();
+    (0..controllers.n_items()).find_map(|index| {
+        controllers
+            .item(index)
+            .and_downcast::<gtk4::EventControllerMotion>()
+    })
+}
+
+/// A wheel over our own trailing group moves no strip (the tab box's wheel
+/// handler is on the box), so it cancels no hold and ends no reveal.
+#[test]
+fn test_a_wheel_over_the_end_group_cancels_nothing_and_keeps_the_reveal() {
+    let window = overflowing_window();
+    let group = evidence(&window).group.expect("the end group");
+    let motion = group_motion(&group);
+    let enter = || {
+        if let Some(motion) = &motion {
+            motion.emit_by_name::<()>("enter", &[&4.0f64, &4.0f64]);
+        }
+    };
+    let leave = || {
+        if let Some(motion) = &motion {
+            motion.emit_by_name::<()>("leave", &[]);
+        }
+    };
+    let wheel = || {
+        let _ = bar_scroll_observer(&window).emit_by_name::<bool>("scroll", &[&0.0f64, &1.0f64]);
+    };
+
+    timing(LONG_REPEAT_DELAY_MS, 10);
+    let (_, forward) = buttons(&window);
+    press(&hold_gesture(&forward));
+    enter();
+    wheel();
+    let now = evidence(&window);
+    assert!(now.repeat_active, "a wheel over the group cancels no hold");
+    assert_eq!(now.guard_cancellations, 0);
+    leave();
+    wheel();
+    let now = evidence(&window);
+    assert!(!now.repeat_active, "a wheel on the strip cancels the hold");
+    assert_eq!(now.guard_cancellations, 1);
+    release(&hold_gesture(&forward));
+    timing(0, 0);
+    settled(&window);
+
+    open_all_tabs(&window);
+    let (_, popover) = all_tabs(&window);
+    // The empty query highlights the selected tab; Enter picks it.
+    popover.search_entry().emit_by_name::<()>("activate", &[]);
+    assert!(evidence(&window).selection_reveal_pending);
+    enter();
+    wheel();
+    assert!(
+        evidence(&window).selection_reveal_pending,
+        "a wheel over the group keeps the reveal"
+    );
+    leave();
+    settled(&window);
+}
+
+/// A close and a reopen in one dispatch, before the close's focus restore has
+/// run: the reopened popover keeps the focus, and its own close gives back
+/// the focus from before the first open.
+#[test]
+fn test_a_reopen_before_the_focus_restore_keeps_the_focus_in_the_popover() {
+    let window = window_at(1000);
+    open_tabs(&window, 3);
+    let editor = crate::common::active_editor(&window);
+    crate::common::flush_after_delay(Duration::from_millis(300));
+    assert!(editor.source_view().grab_focus());
+    flush_events();
+    open_all_tabs(&window);
+    let (_, popover) = all_tabs(&window);
+    for visible in [false, true] {
+        gio::prelude::ActionGroupExt::activate_action(
+            &window,
+            "set-all-tabs-visible",
+            Some(&visible.to_variant()),
+        );
+    }
+    flush_events();
+    popover_settled(&window);
+    assert!(evidence(&window).popover_visible, "reopened");
+    assert!(
+        focus_is(&window, &popover.search_entry()),
+        "the reopened popover keeps the focus"
+    );
+    popover
+        .search_entry()
+        .emit_by_name::<()>("stop-search", &[]);
+    assert!(
+        wait_until_or_false(SETTLE, || !evidence(&window).popover_visible),
+        "closed"
+    );
+    assert!(
+        wait_until_or_false(SETTLE, || focus_is(&window, editor.source_view())),
+        "the focus from before the first open comes back"
+    );
+}
+
+/// A reveal on a strip whose unpinned tabs fit ends without re-announcing
+/// the selection: the strip cannot hide the selected tab.
+#[test]
+fn test_a_reveal_on_a_strip_that_fits_announces_nothing() {
+    let window = window_at(1000);
+    open_tabs(&window, 3);
+    assert!(!evidence(&window).controls_visible, "three tabs fit");
+    open_all_tabs(&window);
+    let (_, popover) = all_tabs(&window);
+    let tab_view = window.imp().tab_view.get();
+    let notifications = std::rc::Rc::new(std::cell::Cell::new(0u32));
+    let handler = tab_view.connect_selected_page_notify({
+        let notifications = std::rc::Rc::clone(&notifications);
+        move |_| notifications.set(notifications.get() + 1)
+    });
+    // The empty query highlights the selected tab; Enter picks it.
+    popover.search_entry().emit_by_name::<()>("activate", &[]);
+    assert!(
+        evidence(&window).selection_reveal_pending,
+        "picking the selected tab starts the reveal"
+    );
+    settled(&window);
+    tab_view.disconnect(handler);
+    assert_eq!(
+        notifications.get(),
+        0,
+        "nothing overflows, so the reveal re-announces nothing"
+    );
+}

@@ -6,9 +6,10 @@
 //! Owns the lookup of the unpinned tab scroller and of a page's tab in it
 //! (with the read of whether the selected tab is in view), the 200 ms step
 //! animation, the hold-to-repeat source, the selection reveal, and the
-//! cancellation of the step and the hold by the strip's own input (design D3). The pure decisions (may it move, where does a step
-//! land) come from `policy.rs`; this module only rounds the adjustment once
-//! into whole pixels and writes the result back.
+//! cancellation of the step and the hold by the strip's own input (design
+//! D3). The pure decisions (may it move, where does a step land) come from
+//! `policy.rs`; this module only rounds the adjustment once into whole pixels
+//! and writes the result back.
 //!
 //! **Cancelling is `adw_animation_pause`, never `reset` or `skip`:** both of
 //! those write a value into the adjustment, and that outside `value-changed`
@@ -22,8 +23,9 @@ use libadwaita::prelude::*;
 
 use super::super::LushtextWindow;
 use super::policy::{
-    ScrollDirection, StripScrollExtent, TAB_SCROLL_ANIMATION_MS, TAB_SCROLL_REPEAT_DELAY_MS,
-    TAB_SCROLL_REPEAT_INTERVAL_MS, can_scroll, next_scroll_target, tab_in_view,
+    RevealProgress, RevealStep, ScrollDirection, StripScrollExtent, TAB_SCROLL_ANIMATION_MS,
+    TAB_SCROLL_REPEAT_DELAY_MS, TAB_SCROLL_REPEAT_INTERVAL_MS, can_scroll, next_scroll_target,
+    reveal_frame, reveal_holds_readiness, tab_in_view, unpinned_overflows,
 };
 
 /// The deepest descendant level of an `AdwTabBar` the lookup walks: bar →
@@ -31,31 +33,6 @@ use super::policy::{
 ///
 /// Kind: external fact; the depth of Libadwaita's tab-bar template (ledger A132).
 const TAB_SCROLLER_LOOKUP_DEPTH: usize = 3;
-/// How many frames a selection reveal may run: the wait for the strip's
-/// allocation, the attach scrolls landing, and the
-/// [`SELECTION_REVEAL_SCROLL_WINDOW_US`] after the announcement take about 45
-/// frames at 120 Hz and 90 at 240 Hz; after the cap the reveal ends wherever
-/// the strip is.
-///
-/// Kind: cap; a bound on frames observed, rounded down to a power of two.
-pub(super) const SELECTION_REVEAL_MAX_FRAMES: u32 = 256;
-/// How long the selection reveal waits after re-announcing the selection
-/// before it may end: the strip scrolls to the tab with its own 200 ms
-/// animation (`SCROLL_ANIMATION_DURATION`, `adw-tab-box.c`), whose eased
-/// tail keeps the strip on one whole pixel for several frames, so a still
-/// frame inside the window is not the end of the scroll.
-///
-/// Kind: out: time; spans the strip's 200 ms scroll with a margin.
-pub(super) const SELECTION_REVEAL_SCROLL_WINDOW_US: i64 = 256_000;
-
-/// Where a selection reveal stands between two frames.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct RevealProgress {
-    /// The strip's value at the previous allocated frame, in whole pixels.
-    value_px: Option<i32>,
-    /// The frame time of the announcement, once it was made.
-    announced_at_us: Option<i64>,
-}
 
 /// One running selection reveal; dropping it removes its tick callback.
 pub(crate) struct SelectionReveal {
@@ -63,6 +40,18 @@ pub(crate) struct SelectionReveal {
     tick: Option<gtk4::TickCallbackId>,
     /// Set by the callback when it returned `Break` (GTK removed it then).
     ended: std::rc::Rc<std::cell::Cell<bool>>,
+    /// When the reveal started, in `glib::monotonic_time` microseconds.
+    started_at_us: i64,
+}
+
+impl SelectionReveal {
+    /// Whether the reveal still holds the readiness blocker at `now_us`
+    /// (`policy::reveal_holds_readiness`): it runs on the frame clock, and a
+    /// window that paints no frame would otherwise hold readiness
+    /// indefinitely. The reveal itself goes on when frames resume.
+    pub(super) fn blocks_readiness(&self, now_us: i64) -> bool {
+        reveal_holds_readiness(self.started_at_us, now_us)
+    }
 }
 
 impl std::fmt::Debug for SelectionReveal {
@@ -280,11 +269,7 @@ impl LushtextWindow {
     fn animate_tab_strip_to(&self, adjustment: &gtk4::Adjustment, target: f64) {
         let state = &self.imp().tab_overflow;
         // A playing step stops where it is; the new one starts from there.
-        if let Some(previous) = state.animation.take()
-            && previous.state() == libadwaita::AnimationState::Playing
-        {
-            previous.pause();
-        }
+        let _was_playing = state.pause_step();
         if immediate_steps() {
             state.animation_target.set(None);
             adjustment.set_value(target);
@@ -328,7 +313,7 @@ impl LushtextWindow {
     /// after the hold delay until release, the edge, a cancellation, or the
     /// button hiding.
     pub(super) fn begin_tab_scroll_hold(&self, direction: ScrollDirection) {
-        self.end_tab_scroll_hold();
+        let _was_repeating = self.end_tab_scroll_hold();
         if self.step_tab_strip(direction) {
             self.arm_tab_scroll_repeat(direction, repeat_delay());
         }
@@ -349,36 +334,38 @@ impl LushtextWindow {
     }
 
     /// Stage: the hold ended (release, gesture cancel, or the button hiding).
-    /// The step in flight finishes; no further step starts.
-    pub(super) fn end_tab_scroll_hold(&self) {
-        if let Some(source) = self.imp().tab_overflow.repeat.take() {
-            source.remove();
-        }
+    /// The step in flight finishes; no further step starts. Returns whether
+    /// a repeat was pending.
+    pub(super) fn end_tab_scroll_hold(&self) -> bool {
+        self.imp()
+            .tab_overflow
+            .repeat
+            .take()
+            .map(glib::SourceId::remove)
+            .is_some()
     }
 
     /// Inversion terminal: the strip's own input started, or is about to
     /// start, a scroll of its own. Pause our step and drop the repeat, so the
     /// strip's scroll wins (design D3). Counts only when something was active.
     pub(super) fn cancel_tab_scroll_for_strip_input(&self) {
-        let state = &self.imp().tab_overflow;
-        let mut cancelled = false;
-        if let Some(animation) = state.animation.take() {
-            if animation.state() == libadwaita::AnimationState::Playing {
-                animation.pause();
-                cancelled = true;
-            }
-            state.animation_target.set(None);
-        }
-        if let Some(source) = state.repeat.take() {
-            source.remove();
-            cancelled = true;
-        }
-        if cancelled {
+        if self.stop_tab_scroll() {
+            let state = &self.imp().tab_overflow;
             state
                 .guard_cancellations
                 .set(state.guard_cancellations.get().saturating_add(1));
             self.schedule_tab_overflow_reconcile();
         }
+    }
+
+    /// Pause our step where it stands and drop the repeat (a cancellation,
+    /// disposal). Returns whether either was active.
+    pub(super) fn stop_tab_scroll(&self) -> bool {
+        let state = &self.imp().tab_overflow;
+        state.animation_target.set(None);
+        let stepping = state.pause_step();
+        let repeating = self.end_tab_scroll_hold();
+        stepping || repeating
     }
 
     /// Stage: bring the selected tab into view through the strip's own
@@ -394,12 +381,14 @@ impl LushtextWindow {
     /// (the box then skips the scroll, its tabs having no width), and an
     /// attach scroll queued in the same dispatch lands only at the next
     /// allocation. So the reveal resumes from a tick callback on the bar:
-    /// once per frame, after the strip has been allocated, it re-announces the
-    /// unchanged selection each time the strip comes to rest, and ends once
-    /// the strip stays still after an announcement, at most
-    /// [`SELECTION_REVEAL_MAX_FRAMES`] frames. While the strip is hidden the
-    /// reveal is owed to the bar's next `map` instead, which does not block
-    /// readiness.
+    /// once per frame, after the strip has been allocated, it follows
+    /// `policy::reveal_frame`: one re-announcement of the unchanged selection
+    /// once the strip comes to rest, the end once it stays still after it (or
+    /// at once when neither tab scroller overflows), at most
+    /// `SELECTION_REVEAL_MAX_FRAMES` frames. It holds the readiness blocker
+    /// for at most `SELECTION_REVEAL_READINESS_US`. While the strip is hidden
+    /// the reveal is owed to the bar's next `map` instead, which does not
+    /// block readiness.
     pub(in crate::ui::window) fn reveal_selected_tab(&self) {
         self.end_selection_reveal();
         let imp = self.imp();
@@ -444,19 +433,13 @@ impl LushtextWindow {
                 bar: bar.downgrade(),
                 tick: Some(tick),
                 ended,
+                started_at_us: glib::monotonic_time(),
             }));
     }
 
-    /// One frame of the reveal: `Break` once it is done.
-    ///
-    /// The selection is re-announced once, on the first frame that finds the
-    /// strip where the previous frame left it, so a scroll already under way
-    /// (an attach scroll landing at this allocation, the strip's own
-    /// animation) finishes first. Announcing again would restart the strip's
-    /// animation from wherever its eased tail stands, so the reveal never
-    /// does; it ends on the first still frame once
-    /// [`SELECTION_REVEAL_SCROLL_WINDOW_US`] has passed since the
-    /// announcement, when the scroll it started has finished.
+    /// One frame of the reveal: `Break` once it is done. The decision is
+    /// `policy::reveal_frame`'s; this adapter reads the strip, announces, and
+    /// ends with no scroller or no selected page.
     fn selection_reveal_frame(
         &self,
         progress: &std::cell::Cell<RevealProgress>,
@@ -473,43 +456,33 @@ impl LushtextWindow {
         else {
             return glib::ControlFlow::Break;
         };
-        if frames > SELECTION_REVEAL_MAX_FRAMES || imp.tab_view.selected_page().is_none() {
+        if imp.tab_view.selected_page().is_none() {
             return glib::ControlFlow::Break;
         }
-        let extent = current_extent(&adjustment);
-        // Not allocated yet: the box would skip the scroll.
-        if extent.page_px <= 0 {
-            return glib::ControlFlow::Continue;
-        }
-        let previous = progress.get();
-        let still = previous.value_px == Some(extent.value_px);
-        progress.set(RevealProgress {
-            value_px: Some(extent.value_px),
-            ..previous
-        });
-        match previous.announced_at_us {
-            // The strip is still moving (or this is its first allocated
-            // frame): let that scroll land first.
-            None if !still => glib::ControlFlow::Continue,
-            None => {
+        let pinned_overflows = imp
+            .tab_overflow
+            .pinned
+            .borrow()
+            .as_ref()
+            .is_some_and(|scroller| unpinned_overflows(current_extent(&scroller.hadjustment())));
+        let (step, next) = reveal_frame(
+            progress.get(),
+            current_extent(&adjustment),
+            pinned_overflows,
+            frames,
+            frame_time_us,
+        );
+        progress.set(next);
+        match step {
+            RevealStep::Wait => glib::ControlFlow::Continue,
+            RevealStep::Announce => {
                 let state = &imp.tab_overflow;
                 state.revealing_selection.set(true);
                 imp.tab_view.notify("selected-page");
                 state.revealing_selection.set(false);
-                progress.set(RevealProgress {
-                    value_px: Some(extent.value_px),
-                    announced_at_us: Some(frame_time_us),
-                });
                 glib::ControlFlow::Continue
             }
-            Some(announced_at_us)
-                if still
-                    && frame_time_us.saturating_sub(announced_at_us)
-                        >= SELECTION_REVEAL_SCROLL_WINDOW_US =>
-            {
-                glib::ControlFlow::Break
-            }
-            Some(_) => glib::ControlFlow::Continue,
+            RevealStep::End => glib::ControlFlow::Break,
         }
     }
 

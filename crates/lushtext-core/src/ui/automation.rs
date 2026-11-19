@@ -19,8 +19,9 @@ use crate::model::automation::{
     AutomationNativeMinimapDiagnosticSnapshot, AutomationNotesSnapshot,
     AutomationNotificationSnapshot, AutomationReadinessPredicate, AutomationReadinessResult,
     AutomationReadinessStatus, AutomationSearchSnapshot, AutomationSnapshot,
-    AutomationSurfaceSnapshot, AutomationTabSnapshot, AutomationVisualAdjustmentSnapshot,
-    AutomationVisualGeometrySnapshot, AutomationVisualPixelAnchorSnapshot, AutomationVisualRect,
+    AutomationSurfaceSnapshot, AutomationTabSnapshot, AutomationTabStripSnapshot,
+    AutomationVisualAdjustmentSnapshot, AutomationVisualGeometrySnapshot,
+    AutomationVisualPixelAnchorSnapshot, AutomationVisualRect,
     AutomationVisualScrollAnchorSnapshot, AutomationVisualSize, AutomationVisualSurfaceSnapshot,
     AutomationWindowSnapshot, AutomationWorkflowEventsSnapshot, AutomationWorkflowObservation,
     AutomationWorkspaceSnapshot, READINESS_BLOCKER_APP_STARTUP, READINESS_BLOCKER_CLOSE_SAFETY,
@@ -962,12 +963,9 @@ fn window_snapshot(window: &LushtextWindow) -> AutomationWindowSnapshot {
 }
 
 /// Project the tab strip's overflow state from the workflow's production state.
-fn tab_strip_snapshot(
-    window: &LushtextWindow,
-    tab_count: u32,
-) -> crate::model::automation::AutomationTabStripSnapshot {
+fn tab_strip_snapshot(window: &LushtextWindow, tab_count: u32) -> AutomationTabStripSnapshot {
     let facts = window.tab_strip_overflow_facts();
-    crate::model::automation::AutomationTabStripSnapshot {
+    AutomationTabStripSnapshot {
         overflowing: facts.overflowing,
         scroll_back_enabled: facts.scroll_back_enabled,
         scroll_forward_enabled: facts.scroll_forward_enabled,

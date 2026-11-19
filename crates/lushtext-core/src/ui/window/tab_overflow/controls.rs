@@ -18,10 +18,12 @@ use super::policy::{
 };
 use crate::ui::accessibility;
 
-/// The window action each scroll button activates.
-pub(super) const SCROLL_BACK_ACTION: &str = "scroll-tabs-back";
-/// The window action each scroll button activates.
-pub(super) const SCROLL_FORWARD_ACTION: &str = "scroll-tabs-forward";
+/// The window action each scroll button activates; `actions.rs` registers it
+/// under this name.
+pub(in crate::ui::window) const SCROLL_BACK_ACTION: &str = "scroll-tabs-back";
+/// The window action each scroll button activates; `actions.rs` registers it
+/// under this name.
+pub(in crate::ui::window) const SCROLL_FORWARD_ACTION: &str = "scroll-tabs-forward";
 
 /// The end group and its controls, built once per window.
 #[derive(Clone, Debug)]
@@ -153,6 +155,7 @@ fn all_tabs_button() -> (gtk4::MenuButton, gtk4::Label, LushtextAllTabsPopover) 
     button.set_tooltip_text(Some(&name));
     accessibility::set_label(&button, &name);
     accessibility::set_has_popup(&button, true);
+    // The ARIA form of `TOGGLE_ALL_TABS_ACCEL`.
     accessibility::set_key_shortcuts(&button, "Control+Shift+O");
     (button, count, popover)
 }

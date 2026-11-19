@@ -300,6 +300,29 @@ Mirror the A122 commit (`3a086b0e`): a ledger row, `CHANGELOG.md`, an
   `OOM-KILL:` or `SESSION-HYGIENE:` line), the rustdoc gate, and the three
   smokes; commit and push.
 
+## 6. Review apply (programme template, 2026-11-19)
+
+- [x] 6.1 Publish the overflow actions once `setup_actions` has registered
+  them. Verify `test_the_overflow_actions_start_disabled_before_the_first_dispatch`
+  fails first and then passes.
+- [x] 6.2 Ignore a wheel over the trailing group in the strip observer. Verify
+  `test_a_wheel_over_the_end_group_cancels_nothing_and_keeps_the_reveal`
+  fails first and then passes.
+- [x] 6.3 Cancel a pending focus restore on reopen and disposal, and hold
+  readiness while it waits. Verify
+  `test_a_reopen_before_the_focus_restore_keeps_the_focus_in_the_popover`
+  fails first and then passes.
+- [x] 6.4 Match the absolute folder in the All Tabs filter. Verify the policy
+  unit test and the bench build.
+- [x] 6.5 Move the reveal's per-frame step into `policy.rs`, end it without
+  announcing on a strip that fits, and bound its hold on readiness. Verify
+  `test_a_reveal_on_a_strip_that_fits_announces_nothing` fails first and then
+  passes, and the policy unit tests pass.
+- [x] 6.6 Plan the controls in one pure function; the smaller cleanups of D15;
+  `docs/thresholds.md`, the automation docs, `ui/window/AGENTS.md` and the
+  workflow matrix row. Verify the `tab_overflow` unit tests and the
+  `tab_overflow_navigation` widget module pass.
+
 ## Workflow follow-up
 
 - Review the change and archive it after merge (`openspec-archive-change`).

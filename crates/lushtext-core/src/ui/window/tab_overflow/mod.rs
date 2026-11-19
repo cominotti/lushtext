@@ -74,9 +74,15 @@ pub mod evidence;
 #[cfg(feature = "test-utils")]
 pub mod test_policy;
 
+pub(in crate::ui::window) use all_tabs::{
+    SET_ALL_TABS_QUERY_ACTION, SET_ALL_TABS_VISIBLE_ACTION, TOGGLE_ALL_TABS_ACCEL,
+    TOGGLE_ALL_TABS_ACTION,
+};
+pub(in crate::ui::window) use controls::{SCROLL_BACK_ACTION, SCROLL_FORWARD_ACTION};
 pub use scroll_execution::find_tab_scroller;
 pub(crate) use watch::TabOverflowState;
 
+use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::WidgetExt;
 
 use super::LushtextWindow;
@@ -132,7 +138,7 @@ impl LushtextWindow {
 
     /// The strip's overflow flags the automation snapshot reports.
     pub(crate) fn tab_strip_overflow_facts(&self) -> TabStripOverflowFacts {
-        let state = &glib::subclass::prelude::ObjectSubclassIsExt::imp(self).tab_overflow;
+        let state = &self.imp().tab_overflow;
         TabStripOverflowFacts {
             overflowing: state.unpinned_overflowing.get(),
             scroll_back_enabled: state.can_scroll_back.get(),
@@ -143,7 +149,7 @@ impl LushtextWindow {
 
     /// The strip's controls as they show, for the visual-geometry surfaces.
     pub(crate) fn visible_tab_overflow_controls(&self) -> VisibleTabOverflowControls {
-        let state = &glib::subclass::prelude::ObjectSubclassIsExt::imp(self).tab_overflow;
+        let state = &self.imp().tab_overflow;
         let controls = state.controls.borrow().clone();
         let Some(controls) = controls.filter(|_| state.group_attached.get()) else {
             return VisibleTabOverflowControls::default();
@@ -167,8 +173,6 @@ impl LushtextWindow {
 
     /// Whether the readiness blocker `tab-overflow` holds.
     pub(crate) fn tab_overflow_blocks_readiness(&self) -> bool {
-        glib::subclass::prelude::ObjectSubclassIsExt::imp(self)
-            .tab_overflow
-            .blocks_readiness()
+        self.imp().tab_overflow.blocks_readiness()
     }
 }

@@ -184,11 +184,181 @@ pub const fn group_attached(controls_visible: bool, all_tabs_visible: bool) -> b
     controls_visible || all_tabs_visible
 }
 
-/// Whether the scroll buttons can exist at all: only once the unpinned tab
-/// scroller was found (design D3, fail closed).
+/// What the reconcile reads before it plans the controls.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct OverflowControlsInputs {
+    /// Whether the lookup found the unpinned tab scroller. Without it the
+    /// scroll buttons never show (design D3, fail closed).
+    pub scroller_found: bool,
+    /// Whether the scroll buttons show now (the hysteresis of
+    /// [`controls_visible`]).
+    pub buttons_visible: bool,
+    /// What the reconcile read from the bar.
+    pub facts: OverflowFacts,
+    /// The unpinned adjustment, when the scroller was found.
+    pub extent: Option<StripScrollExtent>,
+    /// Whether the strip lays out right to left.
+    pub rtl: bool,
+    /// How many tabs are open.
+    pub tab_count: u32,
+}
+
+/// What the reconcile publishes: every control's state at once, so no
+/// action is enabled while its control is hidden.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct OverflowControlsPlan {
+    /// Whether Back and Forward show.
+    pub buttons_visible: bool,
+    /// Whether `win.scroll-tabs-back` is enabled: only while the buttons show.
+    pub can_scroll_back: bool,
+    /// Whether `win.scroll-tabs-forward` is enabled: only while the buttons
+    /// show.
+    pub can_scroll_forward: bool,
+    /// Whether the All Tabs button shows (and its actions are enabled).
+    pub all_tabs_visible: bool,
+    /// Whether the end group is attached to the bar.
+    pub group_attached: bool,
+}
+
+/// The controls' plan for one reconcile: the scroll buttons show only with
+/// the scroller found and by [`controls_visible`], a scroll action is enabled
+/// only while its button shows and can move, All Tabs follows
+/// [`all_tabs_button_visible`], and the group is attached while anything in
+/// it shows.
 #[must_use]
-pub const fn scroll_controls_available(scroller_found: bool) -> bool {
-    scroller_found
+pub const fn plan_overflow_controls(inputs: OverflowControlsInputs) -> OverflowControlsPlan {
+    let buttons_visible =
+        inputs.scroller_found && controls_visible(inputs.buttons_visible, inputs.facts);
+    let (can_scroll_back, can_scroll_forward) = match inputs.extent {
+        Some(extent) if buttons_visible => (
+            can_scroll_back(extent, inputs.rtl),
+            can_scroll_forward(extent, inputs.rtl),
+        ),
+        _ => (false, false),
+    };
+    let all_tabs_visible = all_tabs_button_visible(inputs.tab_count, inputs.facts.strip_shown);
+    OverflowControlsPlan {
+        buttons_visible,
+        can_scroll_back,
+        can_scroll_forward,
+        all_tabs_visible,
+        group_attached: group_attached(buttons_visible, all_tabs_visible),
+    }
+}
+
+/// How many frames a selection reveal may observe: the wait for the strip's
+/// allocation, the attach scrolls landing, and the
+/// [`SELECTION_REVEAL_SCROLL_WINDOW_US`] after the announcement take about 45
+/// frames at 120 Hz and 90 at 240 Hz; after the cap the reveal ends wherever
+/// the strip is, so a cap below that need leaves the selected tab out of view.
+///
+/// Kind: coverage window; spans the measured 90 frames, rounded up to a power
+/// of two with a margin.
+pub const SELECTION_REVEAL_MAX_FRAMES: u32 = 256;
+/// How long the selection reveal waits after re-announcing the selection
+/// before it may end: the strip scrolls to the tab with its own 200 ms
+/// animation (`SCROLL_ANIMATION_DURATION`, `adw-tab-box.c`), whose eased
+/// tail keeps the strip on one whole pixel for several frames, so a still
+/// frame inside the window is not the end of the scroll.
+///
+/// Kind: out: time; spans the strip's 200 ms scroll with a margin.
+pub const SELECTION_REVEAL_SCROLL_WINDOW_US: i64 = 256_000;
+/// How long a running selection reveal holds the `tab-overflow` readiness
+/// blocker. The reveal itself keeps running on the frame clock, but a window
+/// whose compositor sends no frames (minimized, occluded) would otherwise
+/// hold readiness until it paints again. Its 256 frames take about 4.3 s at
+/// 60 Hz; an ordinary reveal ends well inside 1 s.
+///
+/// Kind: out: time; a readiness bound above the frame cap at 60 Hz.
+pub const SELECTION_REVEAL_READINESS_US: i64 = 8_000_000;
+
+/// Whether a selection reveal that started at `started_at_us` still holds the
+/// `tab-overflow` readiness blocker at `now_us` (both monotonic): for less
+/// than [`SELECTION_REVEAL_READINESS_US`].
+#[must_use]
+pub const fn reveal_holds_readiness(started_at_us: i64, now_us: i64) -> bool {
+    now_us.saturating_sub(started_at_us) < SELECTION_REVEAL_READINESS_US
+}
+
+/// Where a selection reveal stands between two frames.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RevealProgress {
+    /// The strip's value at the previous allocated frame, in whole pixels.
+    pub value_px: Option<i32>,
+    /// The strip's total width at the previous allocated frame.
+    pub upper_px: Option<i32>,
+    /// The frame time of the announcement, once it was made.
+    pub announced_at_us: Option<i64>,
+}
+
+/// What one frame of the selection reveal does.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RevealStep {
+    /// Keep watching the next frame.
+    Wait,
+    /// Re-announce the unchanged selection, so the strip scrolls to it.
+    Announce,
+    /// The reveal is done.
+    End,
+}
+
+/// One frame of the selection reveal, from where the previous frames left
+/// it, the unpinned strip's `extent` now, whether the pinned tabs overflow
+/// their own scroller, the 1-based `frame` count and the frame's time.
+///
+/// Not allocated yet (no page width): wait, since the box would skip the
+/// scroll. The selection is re-announced once, on the first frame that finds
+/// the strip where the previous frame left it, so a scroll already under way
+/// (an attach scroll landing at this allocation, the strip's own animation)
+/// finishes first. When that still frame also keeps the strip's width and
+/// neither the unpinned nor the pinned tabs overflow, no scroller can hide
+/// the selected tab and the reveal ends without announcing. Announcing again would restart the strip's
+/// animation from wherever its eased tail stands, so the reveal never does;
+/// it ends on the first still frame once [`SELECTION_REVEAL_SCROLL_WINDOW_US`]
+/// has passed since the announcement, and after
+/// [`SELECTION_REVEAL_MAX_FRAMES`] frames in any case.
+#[must_use]
+pub const fn reveal_frame(
+    progress: RevealProgress,
+    extent: StripScrollExtent,
+    pinned_overflows: bool,
+    frame: u32,
+    frame_time_us: i64,
+) -> (RevealStep, RevealProgress) {
+    if frame > SELECTION_REVEAL_MAX_FRAMES {
+        return (RevealStep::End, progress);
+    }
+    if extent.page_px <= 0 {
+        return (RevealStep::Wait, progress);
+    }
+    let still = matches!(progress.value_px, Some(value) if value == extent.value_px);
+    let width_kept = matches!(progress.upper_px, Some(upper) if upper == extent.upper_px);
+    let next = RevealProgress {
+        value_px: Some(extent.value_px),
+        upper_px: Some(extent.upper_px),
+        announced_at_us: progress.announced_at_us,
+    };
+    match progress.announced_at_us {
+        None if !still => (RevealStep::Wait, next),
+        None if width_kept && !unpinned_overflows(extent) && !pinned_overflows => {
+            (RevealStep::End, next)
+        }
+        None => (
+            RevealStep::Announce,
+            RevealProgress {
+                announced_at_us: Some(frame_time_us),
+                ..next
+            },
+        ),
+        Some(announced_at_us)
+            if still
+                && frame_time_us.saturating_sub(announced_at_us)
+                    >= SELECTION_REVEAL_SCROLL_WINDOW_US =>
+        {
+            (RevealStep::End, next)
+        }
+        Some(_) => (RevealStep::Wait, next),
+    }
 }
 
 /// Whether a tab drawn from `start_px` for `width_px`, both relative to the
@@ -210,6 +380,14 @@ pub const ALL_TABS_NO_MATCH_TITLE: &str = "No Open Tab Matches";
 pub const ALL_TABS_SEARCH_LABEL: &str = "Search open tabs";
 /// The accessible name of the popover's list.
 pub const ALL_TABS_LIST_LABEL: &str = "Open tabs";
+/// The accessible description of the popover's search entry.
+pub const ALL_TABS_SEARCH_DESCRIPTION: &str = "Filter the open tabs by name or folder";
+/// The accessible description of the popover's list.
+pub const ALL_TABS_LIST_DESCRIPTION: &str = "Every open tab of this window, in tab strip order";
+/// The tooltip of a row's pinned icon.
+pub const ALL_TABS_PINNED_TOOLTIP: &str = "Pinned";
+/// The tooltip of the current tab's row marker.
+pub const ALL_TABS_CURRENT_TOOLTIP: &str = "Current tab";
 
 /// How long the All Tabs query must rest before its match count is
 /// announced.
@@ -278,13 +456,28 @@ pub fn all_tabs_row_name(title: &str, modified: bool, pinned: bool, current: boo
     name.chars().take(ALL_TABS_ROW_NAME_MAX_CHARS).collect()
 }
 
+/// A tab's folder as its All Tabs row shows it: under the home folder `home`
+/// shortened to `~` (or `~/rest`), otherwise the absolute folder.
+#[must_use]
+pub fn all_tabs_folder_label(folder: &std::path::Path, home: &std::path::Path) -> String {
+    match folder.strip_prefix(home) {
+        Ok(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => folder.display().to_string(),
+    }
+}
+
 /// What the All Tabs filter reads of one open tab.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AllTabsCandidate<'a> {
     /// The tab's title.
     pub title: &'a str,
-    /// The folder of the tab's file, `None` for an untitled document.
+    /// The folder of the tab's file as its row shows it
+    /// (`all_tabs_folder_label`), `None` for an untitled document.
     pub folder: Option<&'a str>,
+    /// The same folder as an absolute path, which the filter matches too: the
+    /// shown `~` form hides the home folder's own path.
+    pub folder_path: Option<&'a str>,
 }
 
 /// How one candidate matched, best first.
@@ -294,7 +487,7 @@ enum AllTabsMatch {
     TitlePrefix,
     /// The title contains the query.
     TitleSubstring,
-    /// The folder contains the query.
+    /// The folder, as shown or as an absolute path, contains the query.
     FolderSubstring,
     /// The title matches the query fuzzily, by descending score.
     TitleFuzzy(std::cmp::Reverse<u32>),
@@ -305,7 +498,7 @@ enum AllTabsMatch {
 ///
 /// An empty query keeps strip order. Otherwise the title is matched first
 /// (prefix, then substring, then the shared fuzzy matcher), and the folder
-/// only by substring, case-insensitively: a short query matches nearly every
+/// (as shown, or as an absolute path) only by substring, case-insensitively: a short query matches nearly every
 /// absolute path fuzzily, which would list every tab. Ties keep strip order.
 #[must_use]
 pub fn rank_all_tabs(query: &str, candidates: &[AllTabsCandidate<'_>]) -> Vec<u32> {
@@ -323,9 +516,10 @@ pub fn rank_all_tabs(query: &str, candidates: &[AllTabsCandidate<'_>]) -> Vec<u3
                 AllTabsMatch::TitlePrefix
             } else if title.contains(&folded) {
                 AllTabsMatch::TitleSubstring
-            } else if candidate
-                .folder
-                .is_some_and(|folder| folder.to_lowercase().contains(&folded))
+            } else if [candidate.folder, candidate.folder_path]
+                .into_iter()
+                .flatten()
+                .any(|folder| folder.to_lowercase().contains(&folded))
             {
                 AllTabsMatch::FolderSubstring
             } else {
@@ -662,10 +856,207 @@ mod tests {
         assert!(!facts.available(AllTabs));
     }
 
+    const fn plan_inputs(
+        scroller_found: bool,
+        buttons_visible: bool,
+        facts: OverflowFacts,
+        extent: Option<StripScrollExtent>,
+        tab_count: u32,
+    ) -> OverflowControlsInputs {
+        OverflowControlsInputs {
+            scroller_found,
+            buttons_visible,
+            facts,
+            extent,
+            rtl: false,
+            tab_count,
+        }
+    }
+
+    const fn shown(unpinned_overflows: bool) -> OverflowFacts {
+        OverflowFacts {
+            strip_shown: true,
+            unpinned_overflows,
+            bar_overflowing: unpinned_overflows,
+            pinned_overflows: false,
+        }
+    }
+
     #[test]
-    fn scroll_controls_need_the_scroller() {
-        assert!(scroll_controls_available(true));
-        assert!(!scroll_controls_available(false));
+    fn no_scroller_means_no_scroll_buttons_and_no_scroll_action() {
+        let plan = plan_overflow_controls(plan_inputs(
+            false,
+            true,
+            shown(true),
+            Some(extent(300, 1000, 4000)),
+            40,
+        ));
+        assert!(!plan.buttons_visible);
+        assert!(!plan.can_scroll_back);
+        assert!(!plan.can_scroll_forward);
+        assert!(plan.all_tabs_visible);
+        assert!(plan.group_attached);
+    }
+
+    #[test]
+    fn a_scroll_action_is_enabled_only_while_its_button_shows() {
+        // The strip hid (Focus Mode) with the adjustment still mid-range.
+        let hidden = OverflowFacts {
+            strip_shown: false,
+            ..shown(true)
+        };
+        let plan = plan_overflow_controls(plan_inputs(
+            true,
+            true,
+            hidden,
+            Some(extent(300, 1000, 4000)),
+            40,
+        ));
+        assert_eq!(plan, OverflowControlsPlan::default());
+        // Shown and overflowing mid-range: both ways move.
+        let plan = plan_overflow_controls(plan_inputs(
+            true,
+            false,
+            shown(true),
+            Some(extent(300, 1000, 4000)),
+            40,
+        ));
+        assert!(plan.buttons_visible && plan.can_scroll_back && plan.can_scroll_forward);
+        // At the start edge only Forward moves.
+        let plan = plan_overflow_controls(plan_inputs(
+            true,
+            true,
+            shown(true),
+            Some(extent(0, 1000, 4000)),
+            40,
+        ));
+        assert!(!plan.can_scroll_back && plan.can_scroll_forward);
+    }
+
+    #[test]
+    fn the_plan_attaches_the_group_for_all_tabs_alone() {
+        let plan = plan_overflow_controls(plan_inputs(
+            true,
+            false,
+            shown(false),
+            Some(extent(0, 1000, 800)),
+            2,
+        ));
+        assert!(!plan.buttons_visible);
+        assert!(plan.all_tabs_visible);
+        assert!(plan.group_attached);
+        let plan = plan_overflow_controls(plan_inputs(
+            true,
+            false,
+            shown(false),
+            Some(extent(0, 1000, 400)),
+            1,
+        ));
+        assert_eq!(plan, OverflowControlsPlan::default());
+    }
+
+    /// Runs the reveal over `frames` (value, page, upper, frame time) with
+    /// pinned tabs that fit, and returns each frame's step.
+    fn reveal_steps(frames: &[(i32, i32, i32, i64)]) -> Vec<RevealStep> {
+        reveal_steps_pinned(frames, false)
+    }
+
+    fn reveal_steps_pinned(frames: &[(i32, i32, i32, i64)], pinned: bool) -> Vec<RevealStep> {
+        let mut progress = RevealProgress::default();
+        frames
+            .iter()
+            .zip(1u32..)
+            .map(|(&(value, page, upper, time), frame)| {
+                let (step, next) =
+                    reveal_frame(progress, extent(value, page, upper), pinned, frame, time);
+                progress = next;
+                step
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_reveal_waits_for_allocation_and_a_still_frame_then_announces_once() {
+        use RevealStep::{Announce, End, Wait};
+        let steps = reveal_steps(&[
+            (0, 0, 0, 0),             // not allocated
+            (4000, 1000, 5000, 10),   // first allocated frame
+            (3000, 1000, 5000, 20),   // an attach scroll still lands
+            (3000, 1000, 5000, 30),   // still: announce
+            (1000, 1000, 5000, 40),   // the strip's own scroll
+            (0, 1000, 5000, 50),      // its eased tail
+            (0, 1000, 5000, 60),      // still, but inside the window
+            (0, 1000, 5000, 256_030), // still, the window passed
+        ]);
+        assert_eq!(steps, [Wait, Wait, Wait, Announce, Wait, Wait, Wait, End]);
+    }
+
+    #[test]
+    fn the_reveal_ends_without_announcing_when_nothing_overflows() {
+        use RevealStep::{End, Wait};
+        assert_eq!(
+            reveal_steps(&[(0, 1000, 800, 10), (0, 1000, 800, 20)]),
+            [Wait, End]
+        );
+        // Overflowing pinned tabs can still hide a pinned selection.
+        assert_eq!(
+            reveal_steps_pinned(&[(0, 1000, 800, 10), (0, 1000, 800, 20)], true),
+            [Wait, RevealStep::Announce]
+        );
+        // A strip whose tabs still widen keeps watching.
+        assert_eq!(
+            reveal_steps(&[(0, 1000, 600, 10), (0, 1000, 800, 20), (0, 1000, 800, 30)]),
+            [Wait, RevealStep::Announce, Wait]
+        );
+    }
+
+    #[test]
+    fn the_reveal_ends_at_the_frame_cap() {
+        let progress = RevealProgress {
+            value_px: Some(10),
+            upper_px: Some(5000),
+            announced_at_us: None,
+        };
+        let (step, _) = reveal_frame(
+            progress,
+            extent(20, 1000, 5000),
+            false,
+            SELECTION_REVEAL_MAX_FRAMES + 1,
+            0,
+        );
+        assert_eq!(step, RevealStep::End);
+        let (step, _) = reveal_frame(
+            progress,
+            extent(20, 1000, 5000),
+            false,
+            SELECTION_REVEAL_MAX_FRAMES,
+            0,
+        );
+        assert_eq!(step, RevealStep::Wait);
+    }
+
+    #[test]
+    fn a_reveal_holds_readiness_for_a_bounded_time_only() {
+        assert!(reveal_holds_readiness(1_000, 1_000));
+        assert!(reveal_holds_readiness(
+            1_000,
+            1_000 + SELECTION_REVEAL_READINESS_US - 1
+        ));
+        assert!(!reveal_holds_readiness(
+            1_000,
+            1_000 + SELECTION_REVEAL_READINESS_US
+        ));
+        assert!(!reveal_holds_readiness(i64::MIN, i64::MAX));
+    }
+
+    #[test]
+    fn the_folder_label_shortens_the_home_folder_only() {
+        let home = std::path::Path::new("/home/me");
+        let label = |folder: &str| all_tabs_folder_label(std::path::Path::new(folder), home);
+        assert_eq!(label("/home/me"), "~");
+        assert_eq!(label("/home/me/proj/src"), "~/proj/src");
+        assert_eq!(label("/home/meX/proj"), "/home/meX/proj");
+        assert_eq!(label("/srv/data"), "/srv/data");
     }
 
     #[test]
@@ -698,8 +1089,28 @@ mod tests {
             .map(|(title, folder)| AllTabsCandidate {
                 title,
                 folder: *folder,
+                folder_path: None,
             })
             .collect()
+    }
+
+    #[test]
+    fn filtering_by_folder_matches_the_absolute_path_behind_the_home_label() {
+        let rows = [
+            AllTabsCandidate {
+                title: "mod.rs",
+                folder: Some("~/proj/src"),
+                folder_path: Some("/var/home/me/proj/src"),
+            },
+            AllTabsCandidate {
+                title: "lib.rs",
+                folder: Some("/srv/other"),
+                folder_path: Some("/srv/other"),
+            },
+        ];
+        assert_eq!(rank_all_tabs("/var/home/me/proj", &rows), vec![0]);
+        assert_eq!(rank_all_tabs("home/me", &rows), vec![0]);
+        assert_eq!(rank_all_tabs("~/proj", &rows), vec![0], "the shown label");
     }
 
     #[test]

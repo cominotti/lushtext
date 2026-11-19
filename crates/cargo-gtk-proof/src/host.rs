@@ -46,11 +46,12 @@ impl HostProbeReport {
 /// When the artifact directory is too deep for a Unix socket path, the runtime
 /// directory falls back to a short `lt-proof-<pid>-<hash>` directory in the
 /// system temp dir, or in [`SHORT_RUNTIME_BASE`] when the temp dir is too deep
-/// as well (an agent stage's `TMPDIR`). That directory is outside the artifact tree, so the layout
-/// owns it: dropping the layout removes it on every return path, including the
-/// `?` early returns between preparation and the explicit post-session
-/// [`RuntimeLayout::cleanup_runtime_dir`]. A process killed outright leaves it
-/// behind, which the next preparation's sweep reclaims once the PID is gone.
+/// as well (an agent stage's `TMPDIR`). That directory is outside the artifact
+/// tree, so the layout owns it: dropping the layout removes it on every return
+/// path, including the `?` early returns between preparation and the explicit
+/// post-session [`RuntimeLayout::cleanup_runtime_dir`]. A process killed
+/// outright leaves it behind, which the next preparation's sweep reclaims once
+/// the PID is gone.
 #[derive(Debug)]
 pub(crate) struct RuntimeLayout {
     root: PathBuf,

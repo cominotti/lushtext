@@ -18,10 +18,11 @@
 //!
 //! **No materialization.** The strip's tabs live in an `AdwTabBox` that holds
 //! every page eagerly; this surface reads the scroller's adjustment, the
-//! selected tab's existing widget and bounds, and the workflow's own cells. The All Tabs popover's list is a lazy model whose
-//! `item()` creates a row object: the surface reads its lengths, its
-//! selection's position and the popover's own cells, never an item, so no
-//! read brings a row object into being.
+//! selected tab's existing widget and bounds, and the workflow's own cells.
+//! The All Tabs popover's list is a lazy model whose `item()` creates a row
+//! object: the surface reads its lengths, its selection's position and the
+//! popover's own cells, never an item, so no read brings a row object into
+//! being.
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;

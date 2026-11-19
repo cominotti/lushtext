@@ -81,6 +81,8 @@ def short_runtime_parent(prefix: str) -> str:
     # `tempfile.mkdtemp` appends eight random characters to the prefix.
     probe = os.path.join(base, prefix + "X" * 8, "runtime", SESSION_DEEPEST_SOCKET)
     return base if len(os.fsencode(probe)) <= DBUS_SOCKET_PATH_MAX else SHORT_RUNTIME_BASE
+
+
 APP_ID = os.environ.get("LUSHTEXT_DEBUG_APP_ID", "dev.cominotti.lushtext")
 APP_OBJECT_PATH = os.environ.get(
     "LUSHTEXT_DEBUG_APP_OBJECT_PATH", f"/{APP_ID.replace('.', '/')}"

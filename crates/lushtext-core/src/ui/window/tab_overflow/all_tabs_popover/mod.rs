@@ -29,8 +29,9 @@ glib::wrapper! {
                     gtk4::ConstraintTarget, gtk4::Native, gtk4::ShortcutManager;
 }
 
-/// What the workflow's evidence and readiness read of the popover, without
-/// creating a row object.
+/// What the workflow's evidence reads of the popover, without creating a row
+/// object (`test-utils`; readiness reads `publishing`).
+#[cfg(feature = "test-utils")]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct AllTabsPopoverFacts {
     /// Rows the current query lists, listed or still growing.
@@ -95,15 +96,15 @@ impl LushtextAllTabsPopover {
         self.imp().activated.get()
     }
 
-    /// The facts the evidence surface and readiness read.
+    /// The facts the evidence surface reads.
+    #[cfg(feature = "test-utils")]
     pub(crate) fn facts(&self) -> AllTabsPopoverFacts {
         self.imp().facts()
     }
 
     /// Whether the popover is still publishing or retiring rows.
     pub(crate) fn publishing(&self) -> bool {
-        let facts = self.facts();
-        facts.growth_pending || facts.retirement_pending
+        self.imp().publishing()
     }
 
     /// The search entry, for visual geometry and tests.
