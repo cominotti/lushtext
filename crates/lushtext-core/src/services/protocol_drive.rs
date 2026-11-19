@@ -19,14 +19,22 @@
 //! is exactly the loop those harnesses run.
 //!
 //! [`drive`] is also the single site every action and every outcome of every
-//! shell passes through, which is where a conformance tap observes a run.
+//! shell passes through, which is where the conformance tap
+//! (`filesystem::backend_tap`) observes a run, runs before-action hooks and
+//! simulates crashes. In shipping builds its calls compile to nothing.
+
+use std::fmt::Debug;
+
+use crate::services::filesystem::backend_tap::{self as tap, ProtocolKind};
 
 /// A Kani-checked core as its shell drives it.
 pub(crate) trait Protocol {
+    /// Which core this is, as the conformance tap tags its runs.
+    const KIND: ProtocolKind;
     /// The next operation the core asks for.
-    type Action: Copy;
+    type Action: Copy + Debug + 'static;
     /// What executing one action produced, fed back unchanged.
-    type Outcome;
+    type Outcome: Copy + Debug + 'static;
     /// How the run ended, read off the terminal action.
     type End;
 
@@ -42,18 +50,23 @@ pub(crate) trait Protocol {
 ///
 /// The terminal action is never executed: its end is returned. `execute` may
 /// itself drive another protocol (a durable move's copy runs a whole durable
-/// write), which nests on the same thread.
+/// write), which nests on the same thread. Each action passes through the
+/// conformance tap before and after `execute`.
 pub(crate) fn drive<P: Protocol>(
     protocol: &mut P,
     first: P::Action,
     mut execute: impl FnMut(P::Action) -> P::Outcome,
 ) -> P::End {
+    let _run = tap::RunGuard::start(P::KIND);
     let mut action = first;
     loop {
         if let Some(end) = P::end(action) {
             return end;
         }
-        action = protocol.advance(execute(action));
+        tap::before(P::KIND, &action);
+        let outcome = execute(action);
+        tap::after(P::KIND, &action, &outcome);
+        action = protocol.advance(outcome);
     }
 }
 
@@ -84,6 +97,7 @@ mod tests {
     const TERMINAL: u32 = 1 << 31;
 
     impl Protocol for Counting {
+        const KIND: ProtocolKind = ProtocolKind::Write;
         type Action = u32;
         type Outcome = i64;
         type End = u32;

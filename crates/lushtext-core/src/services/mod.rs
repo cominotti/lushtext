@@ -13,6 +13,8 @@ pub mod app_data_layout;
 pub mod app_data_leftovers;
 pub mod bookmark_excerpt;
 pub mod bookmark_service;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod conformance;
 pub mod content_search;
 pub mod document_note_service;
 pub mod draft_service;

@@ -291,7 +291,7 @@ impl RenameProtocol {
     }
 }
 
-#[cfg(any(kani, test))]
+#[cfg(any(kani, test, feature = "test-utils"))]
 pub(crate) mod disk_model;
 #[cfg(kani)]
 mod kani_proofs;
