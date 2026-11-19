@@ -37,3 +37,22 @@ change.
   change's runners creates a `tmp.*` name any more (no `mktemp` capture
   remains in them, and the capture and helper cases assert that a private
   base gains no entry), and nothing was touched.
+
+## Review reruns on the final tree `8ccd0fd2` (2026-11-19)
+
+The review's two fixes (design R2, R3) touch `heavy.sh` and the stage that
+every runner starts, so both real lanes ran again on `8ccd0fd2`. Logs are in the
+handoff directory, `review/`. These are wall-time runs, not verdicts.
+
+- `scripts/heavy.sh --envelope 16G -- make test` (load 2.37 before, 6.95
+  after): 2628 non-widget tests passed; window 432/432, editor-page 413/413
+  and surfaces 879/879 all ok with 1 attempt each; no `FLAKY`,
+  `TEMP-LEAK`, `OOM-KILL`, `SESSION-HYGIENE` or "binary file matches" line;
+  envelope peak 1294 MiB, `oom_kill 0`.
+- `scripts/heavy.sh --envelope 16G -- make gtk-axioms` (load 7.03 before,
+  2.58 after): the probe binary passed and 109 sample checks held; 109 kept
+  lines, 61,588 of the 1,048,576-byte cap; envelope peak 1077 MiB,
+  `oom_kill 0`.
+- The pre-commit hook ran the full gate (rustfmt, all-feature Clippy,
+  `make check-policy` with every runner and helper self-test) on `f108fd4b`
+  and `8ccd0fd2`.
