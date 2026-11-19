@@ -72,7 +72,7 @@ const DEFAULTS = {
   'lens:code-review-2': (_l, prompt) => crText({ pr: prOf(prompt), body: '- b.rs:9 leak' }),
   lens: () => ({ status: 'ran', skill_ran: 'stub', examined: ['crates/x.rs: checklist 1-5'], findings: [], findings_file: 'f.md' }),
   apply: () => ({ verdict: 'ready', applied: 'apply-applied', rejected: 'apply-rejected', gates: 'apply-gates', head: H2, tree: T2, summary: 'apply-summary' }),
-  verify: () => ({ head: H2, tree: T2, clean: true, head_match: true, tree_match: true, pushed: true, lens_head_is_ancestor: true, gated_exit: 0 }),
+  verify: () => ({ head: H2, tree: T2, clean: true, head_match: true, tree_match: true, pushed: true, lens_head_is_ancestor: true, gated_exit: 0, test_exit: 0, smokes: 'none', smoke_gates: ['make visual-geometry-smoke', 'make accessibility-smoke', 'make visual-smoke'].map(g => `--SMOKE-GATE-- 1 ${g}`).join('\n') }),
   merge: () => ({ verdict: 'merged', reason: 'merged', merge_commit: MC, archive_commit: 'a1', final_tree: T2, notes: 'n' }),
   postmerge: () => postmergeReading(),
 }
@@ -498,6 +498,11 @@ const CASES = {
       () => ({ ...DEFAULTS.verify(), clean: false }),
       () => ({ ...DEFAULTS.verify(), lens_head_is_ancestor: false }),
       () => ({ ...DEFAULTS.verify(), gated_exit: 1 }),
+      () => ({ ...DEFAULTS.verify(), test_exit: 1 }),
+      () => ({ ...DEFAULTS.verify(), test_exit: undefined }),
+      () => ({ ...DEFAULTS.verify(), smokes: 'records' }),
+      () => ({ ...DEFAULTS.verify(), smokes: 'failed' }),
+      () => ({ ...DEFAULTS.verify(), smokes: '' }),
       () => ({ ...DEFAULTS.verify(), head: 'h2' }),
       () => null,
     ]) {
@@ -733,9 +738,10 @@ const CASES = {
     check(ok.result.verdict === 'merged' && ok.work.at(-1) === 'postmerge:demo', JSON.stringify(ok.work))
     const p = ok.prompts['postmerge:demo']
     check(has(p, `'${MC}^{commit}'`) && has(p, `'${T2}^{tree}'`) && has(p, '--tree') && has(p, "'make test'") && has(p, '--change demo'), p)
-    // One smoke predicate everywhere: the UI prefixes of testing.md, from the
-    // canonical classifier's RELEVANT_PREFIXES, not the wider visual-proof set.
-    check(has(p, 'a.RELEVANT_PREFIXES') && !has(p, 'is_visual_sensitive') && !has(p, 'is_relevant('), p)
+    // One smoke predicate everywhere (probe C7 #4): the canonical classifier's
+    // is_relevant, the UI prefixes and its exact paths, never a copy of one half
+    // of it and never the wider visual-proof set.
+    check(has(p, 'a.is_relevant(p)') && !has(p, 'RELEVANT_PREFIXES') && !has(p, 'is_visual_sensitive'), p)
     // An abbreviated hash from gh is resolved in the shell, not refused.
     const short = await run({ ...BASE, mode: 'new' }, { merge: () => ({ ...DEFAULTS.merge(), merge_commit: MC.slice(0, 12), final_tree: T2.slice(0, 12) }) })
     check(!short.result.stopped && has(short.prompts['postmerge:demo'], `'${MC.slice(0, 12)}^{commit}'`), JSON.stringify(short.result.stopped))
@@ -782,11 +788,59 @@ const CASES = {
   async 'Merging step 2: a non-empty origin/main merge reruns every gate on the post-merge tree'() {
     const r = await run({ ...BASE, mode: 'new' })
     const p = r.prompts['merge:demo']
-    check(has(p, 'run on it every gate "Merging" step 2 lists') && has(p, 'make test in full') && has(p, 'rerun nothing') && !has(p, 'only as "Durability" says'), p)
-    // The smokes are owed when either side touches a UI prefix (the union the
-    // post-merge check applies), never only where both sides touch one file.
-    check(has(p, 'the three smokes when a file of the branch or of the merged-in commits is under a UI prefix') && !/overlap/i.test(p), `the merge prompt words the smoke condition as an overlap: ${p}`)
+    check(has(p, 'run on it every gate "Merging" step 2 lists') && has(p, 'make test in full') && !has(p, 'only as "Durability" says'), p)
+    // The smokes are owed when either side touches a smoke-relevant file (the
+    // union the post-merge check applies), never only where both sides touch one.
+    check(has(p, 'the three smokes when a file of the branch or of the merged-in commits is smoke-relevant') && !/overlap/i.test(p), `the merge prompt words the smoke condition as an overlap: ${p}`)
     check(has(p, 'final_tree'), 'the merge prompt does not ask for the final tree')
+  },
+  // Fable fix check 2, H1: a no-op merge reruns nothing only for a gate on
+  // record, and a missing make test record stops the run before the merge stage.
+  async 'H1: make test is looked up on the apply tree before the merge stage'() {
+    const r = await run({ ...BASE, mode: 'new' })
+    const v = r.prompts['verify:demo']
+    // Its own lookup call: several --gate values on one call count any one as a pass.
+    check(has(v, `--gate 'make check'; echo "--GATED-EXIT $?--"`) && has(v, `--gate 'make test'; echo "--TEST-EXIT $?--"`), v)
+    for (const test_exit of [1, 99, undefined]) {
+      const s = await run({ ...BASE, mode: 'new' }, { verify: () => ({ ...DEFAULTS.verify(), test_exit }) })
+      check(has(s.result.stopped, 'no clean make test pass') && !s.work.some(l => l.startsWith('merge:')), `${test_exit}: ${JSON.stringify(s.result)}`)
+    }
+    // The merge prompt's no-op sentence is conditional on a record, and no gate
+    // reaches gh pr merge without one.
+    const m = r.prompts['merge:demo']
+    check(!has(m, 'rerun nothing') && has(m, 'look up make check and make test on HEAD^{tree}') && has(m, 'each in its own call') && has(m, 'run now, through scripts/gate-trees.sh record, each one without a pass on record') && has(m, 'otherwise return blocked'), m)
+    // The apply stage runs the full make test after its commit, through record.
+    const a = r.prompts['apply:demo']
+    check(has(a, 'make check and the full make test') && a.indexOf('Commit /simplify') >= 0 && a.indexOf('make check and the full make test') > a.indexOf('Commit /simplify'), a)
+    // A review-only run without merge stops on the same reading.
+    const ro = await run({ ...RO }, { verify: () => ({ ...DEFAULTS.verify(), test_exit: 1 }) })
+    check(has(ro.result.stopped, 'no clean make test pass'), JSON.stringify(ro.result))
+  },
+  // Probe C7 #2: merge commits run no pre-commit hook, so a merge that brings
+  // smoke-relevant files in after the branch's last hook-checked commit
+  // carrying one leaves a tree no smoke proved; then the smokes are owed as
+  // records on the apply tree, before the merge and after a no-op one.
+  async 'C7 #2: smoke records are owed on the apply tree when a merge brought smoke-relevant files in'() {
+    const r = await run({ ...BASE, mode: 'new' })
+    for (const label of ['verify:demo', 'apply:demo']) {
+      const p = r.prompts[label]
+      check(has(p, 'a.is_relevant(p)') && has(p, '"--merges"') && has(p, '"--no-merges"') && has(p, 'origin/main...HEAD'), `${label}: ${p}`)
+    }
+    check(has(r.prompts['verify:demo'], '--SMOKES--') && has(r.prompts['verify:demo'], '--SMOKE-GATE--'), r.prompts['verify:demo'])
+    check(has(r.prompts['apply:demo'], 'prints records'), r.prompts['apply:demo'])
+    const recorded = ['make visual-geometry-smoke', 'make accessibility-smoke', 'make visual-smoke'].map(g => `--SMOKE-GATE-- 0 ${g}`).join('\n')
+    const ok = await run({ ...BASE, mode: 'new' }, { verify: () => ({ ...DEFAULTS.verify(), smokes: 'records', smoke_gates: recorded }), postmerge: () => postmergeReading({ exits: { 'make visual-smoke': 0, 'make accessibility-smoke': 0, 'make visual-geometry-smoke': 0 } }) })
+    check(ok.result.verdict === 'merged' && !ok.result.stopped, JSON.stringify(ok.result))
+    const missing = await run({ ...BASE, mode: 'new' }, { verify: () => ({ ...DEFAULTS.verify(), smokes: 'records', smoke_gates: recorded.replace('--SMOKE-GATE-- 0 make visual-smoke', '--SMOKE-GATE-- 1 make visual-smoke') }) })
+    check(has(missing.result.stopped, 'make visual-smoke') && !missing.work.some(l => l.startsWith('merge:')), JSON.stringify(missing.result))
+    // After a no-op merge the post-merge check owes the same records.
+    const post = await run({ ...BASE, mode: 'new' }, { verify: () => ({ ...DEFAULTS.verify(), smokes: 'records', smoke_gates: recorded }), postmerge: () => postmergeReading({ mergedIn: false }) })
+    check(has(post.result.stopped, 'make visual-smoke'), `a no-op merge of a tree that owed smoke records owed none after the merge: ${JSON.stringify(post.result)}`)
+    // Proven by the hook, or no smoke-relevant file: no records owed.
+    for (const smokes of ['hook', 'none']) {
+      const q = await run({ ...BASE, mode: 'new' }, { verify: () => ({ ...DEFAULTS.verify(), smokes }) })
+      check(q.result.verdict === 'merged' && !q.result.stopped, `${smokes}: ${JSON.stringify(q.result)}`)
+    }
   },
   async 'F9: a worktree path is anchored and holds only safe characters'() {
     for (const worktree of ['/re po/.claude/worktrees/demo', '/repo/$(id)/.claude/worktrees/demo', '/repo/../x/.claude/worktrees/demo', 'repo/.claude/worktrees/demo', "/repo/'x'/.claude/worktrees/demo", '/.claude/worktrees/demo']) {

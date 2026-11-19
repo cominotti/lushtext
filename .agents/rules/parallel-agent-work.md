@@ -232,16 +232,30 @@ Change worktrees live in `.claude/worktrees/<change>`.
      first: change, PR number, run id, `date -Is`.
   2. Holding it:
      - `git fetch --prune origin`, then `git merge origin/main`, always.
-     - **A merge that made no commit reruns nothing.** The tree is the one
-       the gates already ran on: name the line `scripts/gate-trees.sh lookup
-       <wt> --gate '<gate>'` finds for each gate on this exact `HEAD^{tree}`
-       (a full `make test` record covers any subset of tests: pass
-       `--gate 'make test'` as well).
+     - **A merge that made no commit reruns only a gate with no pass on
+       record.** The tree is the one the gates ran on: for `make check` and
+       for `make test`, each in a lookup of its own (one call with several
+       `--gate` values passes on any one of them), name the line
+       `scripts/gate-trees.sh lookup <wt> --gate '<gate>'` finds on this
+       exact `HEAD^{tree}`, and run the gate when it finds none (a full
+       `make test` record covers any subset of tests: pass
+       `--gate 'make test'` as well). The smokes are not looked up here.
+       The pre-commit hook (`make check-policy`:
+       `check-accessibility-policy --strict-current-tree` and
+       `check-visual-proof-policy`) refuses every commit that carries a
+       smoke-relevant file unless the smoke summaries match its content,
+       and `git merge` runs no pre-commit hook. So when a merge in the
+       branch brought smoke-relevant files in and no later commit carried
+       one, the apply stage records the three smokes on its tree, and the
+       script requires those records before the merge stage ("Stages after
+       implementation" 3).
      - **A merge that made a commit reruns every gate on the post-merge
        tree** (maintainer, 2026-11-19), through `heavy.sh`: `make check`,
        the full `make test`, and the three smokes when the branch or the
-       merged-in commits touch the UI prefixes (`testing.md`, "Proof
-       Obligations of a Change"). A docs-only merge commit is no exception.
+       merged-in commits touch a smoke-relevant file, one under the UI
+       prefixes (`testing.md`, "Proof Obligations of a Change") or on the
+       exact list of `scripts/accessibility_source_fingerprint.py`, as its
+       `is_relevant` decides. A docs-only merge commit is no exception.
      - Record each gate you run with
        `scripts/gate-trees.sh record <wt> --gate '<gate>' -- scripts/heavy.sh … -- make <gate>`.
        Only that helper writes `gate-trees.log`, and it never deletes a line.
@@ -297,8 +311,9 @@ Change worktrees live in `.claude/worktrees/<change>`.
   (`testing.md`), so put those files in as few task-group commits as
   possible, ideally the last.
 - After an `origin/main` merge under `MERGE-LOCK` that made a commit, the
-  three smokes rerun when the branch or the merged-in commits touch the UI
-  prefixes ("Merging" step 2); a merge that made no commit reruns nothing.
+  three smokes rerun when the branch or the merged-in commits touch a
+  smoke-relevant file ("Merging" step 2); a merge that made no commit reruns
+  only a gate that has no pass on record there.
 - After the merge:
   1. `git fetch --prune origin`.
   2. Check that `git -C <wt> status --porcelain` is empty and that
@@ -534,15 +549,21 @@ script, and inside a workflow both skills below run their single-pass forms.
    under. It dedupes the findings, checks each against the code, applies the
    confirmed ones in the worktree and records the rejected ones with reasons,
    marking those a lens raised as correctness bugs. It runs the three smokes
-   once when UI-prefix files changed, commits `/simplify`'s edits and its own
-   together locally **before** any long gate, runs the full gates once on the
-   result, each through `scripts/gate-trees.sh record`, re-dispatches a Kani
+   once when its commit carries a smoke-relevant file, commits `/simplify`'s
+   edits and its own together locally **before** any long gate, runs the full
+   gates once on the result (`make check` and the full `make test` among
+   them), each through `scripts/gate-trees.sh record`, records the three
+   smokes on the committed tree when a merge in the branch brought
+   smoke-relevant files in after the last commit that carried one (no hook
+   saw that content), re-dispatches a Kani
    budget run its edits make stale (`verification-runs.md`, "Kani"), and
    pushes at the end. It is the last agent that edits code. A read-only
    agent then checks, in the shell, that the worktree is clean, that `HEAD`
    and `HEAD^{tree}` are the ones the apply agent returned and are pushed,
-   and that `scripts/gate-trees.sh lookup` finds a `make check` pass for
-   that tree; the script stops on any difference.
+   that `scripts/gate-trees.sh lookup` finds a `make check` pass and, in a
+   lookup of its own, a `make test` pass for that tree, and the three smoke
+   passes when that merge case holds or its check fails; the script stops on
+   any difference, before the merge stage.
 4. **The final review, merge and archive agent edits nothing.** It reviews
    exactly the apply range the script passes (the lens `HEAD` to the apply
    `HEAD`, merge commits included), checks that `HEAD^{tree}` is the gated
@@ -566,11 +587,12 @@ script, and inside a workflow both skills below run their single-pass forms.
    and the tree it merged. A read-only agent then checks, in the shell, that
    the merge commit is on `origin/main` and has that tree, and runs
    `scripts/gate-trees.sh lookup --tree` against it, with the helper and
-   the UI-prefix list (`RELEVANT_PREFIXES` of
-   `scripts/accessibility_source_fingerprint.py`, the prefixes of
-   `testing.md`) read from `origin/main`: `make check` and `make test`
-   always, and the three smokes when the `origin/main` merge brought commits
-   in and a file of the branch or of those commits is under a UI prefix.
+   the smoke-relevance test (`is_relevant` of
+   `scripts/accessibility_source_fingerprint.py`) read from `origin/main`:
+   `make check` and `make test` always, and the three smokes when the
+   `origin/main` merge brought commits in and a file of the branch or of
+   those commits is smoke-relevant, or, after a merge that made no commit,
+   when the apply tree owed them as records.
    Every stage that records gates is given the one set of gate strings
    this check looks up (each the bare make target), and the merge stage
    returns full hashes, which the reading resolves again in the shell. After a merge that made no commit,

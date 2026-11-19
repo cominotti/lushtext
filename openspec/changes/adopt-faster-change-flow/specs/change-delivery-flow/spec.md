@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Merge-lock gates reuse evidence only for an identical tree
-Under `MERGE-LOCK`, a gate SHALL be skipped only when `scripts/gate-trees.sh` finds a pass for it on the post-merge `HEAD^{tree}`, recorded on a clean worktree. An `origin/main` merge that made a commit SHALL rerun every gate on the new tree, the smokes included when either side touches the UI prefixes. Before `gh pr merge`, the agent SHALL re-fetch and require `origin/main` to be an ancestor of `HEAD`.
+Under `MERGE-LOCK`, a gate SHALL be skipped only when `scripts/gate-trees.sh` finds a pass for it on the post-merge `HEAD^{tree}`, recorded on a clean worktree. An `origin/main` merge that made a commit SHALL rerun every gate on the new tree, the smokes included when either side touches a smoke-relevant file. Before `gh pr merge`, the agent SHALL re-fetch and require `origin/main` to be an ancestor of `HEAD`.
 
 #### Scenario: A no-op merge reuses the recorded runs
 - **WHEN** `git merge origin/main` reports "Already up to date" and `gate-trees.log` has passing `make check` and `make test` lines with `tree=` equal to `HEAD^{tree}`, written on a clean worktree
@@ -9,7 +9,7 @@ Under `MERGE-LOCK`, a gate SHALL be skipped only when `scripts/gate-trees.sh` fi
 
 #### Scenario: A merge that changes the tree reruns every gate
 - **WHEN** the merge brings in any commit that changes `HEAD^{tree}`, even a docs-only one
-- **THEN** `make check` and the full `make test` run on the post-merge tree, and so do the three smokes when the branch or the merged-in commits touch a UI-prefix file, each recorded through `gate-trees.sh record`
+- **THEN** `make check` and the full `make test` run on the post-merge tree, and so do the three smokes when the branch or the merged-in commits touch a smoke-relevant file, each recorded through `gate-trees.sh record`
 
 #### Scenario: A fixed tree without a full record runs the gate
 - **WHEN** stage 4 committed a fix and reran only the affected tests, so no full `make test` line names the current tree
@@ -35,6 +35,17 @@ Under `MERGE-LOCK`, a gate SHALL be skipped only when `scripts/gate-trees.sh` fi
 - **WHEN** `origin/main` gains a commit after the merge step and before `gh pr merge`
 - **THEN** the ancestor check fails and the agent repeats the merge step instead of merging
 
+### Requirement: The apply tree's records are checked before the merge stage
+Before the merge stage starts, the script SHALL look up `make check` and `make test` on the apply tree, each in its own lookup. It SHALL also look up the three smokes when a merge in the branch brought a smoke-relevant file (`is_relevant` of `scripts/accessibility_source_fingerprint.py`) in that no later non-merge commit carried, since only merge commits skip the pre-commit hook's smoke checks. A no-op merge SHALL rerun only a gate without a pass.
+
+#### Scenario: An apply tree without a make test record stops before the merge stage
+- **WHEN** the apply stage's tree has a `make check` pass on record and no `make test` pass, and `origin/main` has not moved
+- **THEN** the script's apply verification stops the run before the merge stage starts, and no merge prompt tells the agent to rerun nothing without a lookup
+
+#### Scenario: A merge that brought smoke-relevant files in owes smoke records
+- **WHEN** a merge in the branch brought a smoke-relevant file in, and no later non-merge commit of the branch carried one
+- **THEN** the apply stage records the three smokes on its committed tree, the script stops before the merge stage when a record is missing or the check fails, and after a merge that made no commit the post-merge check owes the same three records
+
 ### Requirement: Gate records are append-only and checked after the merge
 `gate-trees.log` SHALL be append-only. A fail SHALL be set aside only by a void line the coordinator appends, naming that one fail line and the log that shows the gate never ran. After a merged verdict, the tree that reached `main` SHALL be checked against the records.
 
@@ -48,7 +59,7 @@ Under `MERGE-LOCK`, a gate SHALL be skipped only when `scripts/gate-trees.sh` fi
 
 #### Scenario: The tree on main is checked against the records
 - **WHEN** the merge stage returns a merged verdict
-- **THEN** it also returns the merged tree, and a read-only agent checks that GitHub's merge commit is on `origin/main` with that tree and that `gate-trees.sh lookup --tree` finds passes of `make check`, `make test` and, after a merge that brought commits in when the branch or those commits touch a UI prefix, the three smokes; a missing helper, a failed prefix check or a missing record stops the run with a report that the change is already on `main`
+- **THEN** it also returns the merged tree, and a read-only agent checks that GitHub's merge commit is on `origin/main` with that tree and that `gate-trees.sh lookup --tree` finds passes of `make check`, `make test` and the three smokes, after a merge that brought commits in when the branch or those commits touch a smoke-relevant file, or after a merge that made no commit when the apply tree owed them as records; a missing helper, a failed prefix check or a missing record stops the run with a report that the change is already on `main`
 
 ### Requirement: Kani budget runs are dispatched when implementation ends
 A change that adds or changes a Kani shard SHALL dispatch its budget runs once its final stage-3 code is pushed, without watching them. Stage 4 SHALL read finished runs: a failure or a margin break blocks the merge, and an unfinished run does not. The figures SHALL be recorded before the archive. No agent SHALL wait for a run while holding `MERGE-LOCK`.
