@@ -81,11 +81,12 @@ EOF
 # Line-buffered filters keep per-test progress visible in the job log, so a
 # cancelled run (for example a GitHub Actions job timeout) still shows how far
 # the suite got. `grep` exits 1 when every line was benign noise, which must not
-# be mistaken for a harness failure.
+# be mistaken for a harness failure. `-a`: a NUL byte must not turn the rest of
+# the job log into one "binary file matches" line.
 emit_sanitized_widget_stream() {
     local noise_filter=(cat)
     if [[ -n "${BENIGN_WIDGET_NOISE_REGEX}" ]]; then
-        noise_filter=(grep --line-buffered -Ev "$BENIGN_WIDGET_NOISE_REGEX")
+        noise_filter=(grep --line-buffered -aEv "$BENIGN_WIDGET_NOISE_REGEX")
     fi
     { "${noise_filter[@]}" || true; } \
         | awk 'NF { print; fflush(); blank = 0; next } !blank { print; fflush(); blank = 1 }'
@@ -128,6 +129,15 @@ self_test_warning_classification() {
     if printf '%s\n' "(process:42): Gtk-CRITICAL **: 14:07:27.435: Unable to register the application: GDBus.Error:org.freedesktop.DBus.Error.NameHasNoOwner: Could not activate remote peer 'org.a11y.atspi.Registry': unit failed" \
         | check_widget_lines >/dev/null 2>&1; then
         echo "Error: widget warning self-test accepted the AT-SPI registry critical." >&2
+        return 1
+    fi
+
+    # A NUL byte must not cut the live job log: without --text GNU grep prints
+    # only "binary file matches" for the whole stream.
+    local live
+    live="$(printf 'before\nnoise \0 bytes\nafter the NUL\n' | emit_sanitized_widget_stream 2>&1 | tr -d '\0')"
+    if [[ "$live" != $'before\nnoise  bytes\nafter the NUL' ]]; then
+        echo "Error: widget warning self-test: a NUL byte cut the live stream to '$live'." >&2
         return 1
     fi
 

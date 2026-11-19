@@ -92,3 +92,11 @@ and passes once every stage grep reads the stream as text (`-a`): one
 unexpected line, two kept. The stage self-test passes in the CI widget image
 and on bare fedora:44 and fedora:45, the base images of the
 `gtk-axioms-floor` and `gtk-axioms` jobs, which ship GNU awk 5.3.2 and 5.4.1.
+
+The live job-log filter (`emit_sanitized_widget_stream`, main's
+`grep --line-buffered -Ev`) had the same flaw: `--self-test -- <cmd>` with a
+harness printing `line one`, a NUL line and a line after it showed only
+`grep: (standard input): binary file matches`, even the line before the NUL
+(pipeline status 0, the verdict unaffected). The new classification check
+failed first (`a NUL byte cut the live stream to 'grep: (standard input):
+binary file matches'`) and passes with `-a`.
