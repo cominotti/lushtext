@@ -434,7 +434,7 @@ run_all() {
     local skipped
     skipped="$(grep -cE "$SLOW_SKIP_REGEX" "$(bls_kept_path)" || true)"
     bls_release
-    echo "GTK axioms: probe binary passed; ${#SAMPLE_BINARIES[@]} sample checks held ($skipped slow skipped by design)."
+    echo "GTK axioms: probe binary passed; ${#SAMPLE_BINARIES[@]} sample checks held ($skipped slow skipped by design; $BLS_KEPT_COUNT kept lines, $BLS_KEPT_BYTES of the $BLS_KEEP_CAP-byte cap)."
 }
 
 run_sample() {
@@ -529,6 +529,7 @@ run_runtimes() {
         fi
         # This SDK's kept lines stay open until its summary has read them.
         runtime_summary "$ref" "$(bls_kept_path)" "${examples[@]}"
+        echo "  kept: $BLS_KEPT_COUNT lines, $BLS_KEPT_BYTES of the $BLS_KEEP_CAP-byte cap"
         bls_release
         # The loop expands inside the SDK's shell, so it is single-quoted.
         # shellcheck disable=SC2016

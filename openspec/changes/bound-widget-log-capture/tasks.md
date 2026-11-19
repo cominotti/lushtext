@@ -56,9 +56,9 @@ Before the first heavy command: take an implementation slot (`parallel-agent-wor
 
 ## 4. Proof on real lanes
 
-- [ ] 4.1 Run `scripts/heavy.sh --envelope 16G -- make test` on the final tree. It must be green, with no `TEMP-LEAK:`, `FLAKY`, `OOM-KILL:` or `SESSION-HYGIENE:` line, and the same warning verdicts as main. Record `/proc/loadavg` before and after.
-- [ ] 4.2 Run `scripts/heavy.sh --envelope 16G -- make gtk-axioms`. It must be green. Record the kept-output size against the 1 MiB cap in `evidence/axiom-kept-size.md`. If it exceeds a quarter of the cap, revisit the cap in design D6 before merging.
-- [ ] 4.3 Rerun task 1.2's branch measurement, and confirm `ls -d /tmp/tmp.* | wc -l` did not grow across 4.1 and 4.2. Count by name only; touch nothing.
+- [x] 4.1 Run `scripts/heavy.sh --envelope 16G -- make test` on the final tree. It must be green, with no `TEMP-LEAK:`, `FLAKY`, `OOM-KILL:` or `SESSION-HYGIENE:` line, and the same warning verdicts as main. Record `/proc/loadavg` before and after.
+- [x] 4.2 Run `scripts/heavy.sh --envelope 16G -- make gtk-axioms`. It must be green. Record the kept-output size against the 1 MiB cap in `evidence/axiom-kept-size.md`. If it exceeds a quarter of the cap, revisit the cap in design D6 before merging.
+- [x] 4.3 Rerun task 1.2's branch measurement, and confirm `ls -d /tmp/tmp.* | wc -l` did not grow across 4.1 and 4.2. Count by name only; touch nothing.
 
 ## 5. Documentation
 
