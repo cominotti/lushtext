@@ -782,7 +782,10 @@ const CASES = {
   async 'Merging step 2: a non-empty origin/main merge reruns every gate on the post-merge tree'() {
     const r = await run({ ...BASE, mode: 'new' })
     const p = r.prompts['merge:demo']
-    check(has(p, 'run on it every gate "Merging" step 2 lists') && has(p, 'make test in full') && has(p, 'UI-prefix overlap of either side') && has(p, 'rerun nothing') && !has(p, 'only as "Durability" says'), p)
+    check(has(p, 'run on it every gate "Merging" step 2 lists') && has(p, 'make test in full') && has(p, 'rerun nothing') && !has(p, 'only as "Durability" says'), p)
+    // The smokes are owed when either side touches a UI prefix (the union the
+    // post-merge check applies), never only where both sides touch one file.
+    check(has(p, 'the three smokes when a file of the branch or of the merged-in commits is under a UI prefix') && !/overlap/i.test(p), `the merge prompt words the smoke condition as an overlap: ${p}`)
     check(has(p, 'final_tree'), 'the merge prompt does not ask for the final tree')
   },
   async 'F9: a worktree path is anchored and holds only safe characters'() {

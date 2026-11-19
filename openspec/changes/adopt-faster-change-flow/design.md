@@ -587,3 +587,19 @@ Floor rows for this round's rule edits:
 
 This round's stage 4 does not merge: it ends "ready, Fable fix check 2 pending". `make test` is still owed on the final tree before the merge (the coordinator's merge-only run).
 
+
+### Stage-4 review of the Fable fix check round (2026-11-19)
+
+An independent stage-4 agent reviewed 06aa14be, 1620ca17 and ae3cf648 against F1-F11, the two maintainer decisions of 01:08 and the slot name. It re-ran the 71-case harness against 8a2bce8b (42 cases fail there, among them every F-item case) and the gate-trees self-test, probed `void` on a log that ends with an unrelated void line, ran the post-merge `UI_CHECK` one-liner against `origin/main`'s classifier (it prints `yes` or `no`, never `failed`), and confirmed the level-2 figures (1.79x, 1.95x, 0 contended rounds in 2 tries) in `MEASURE-QUEUE.md`.
+
+| Finding | Severity | Disposition |
+|---|---|---|
+| The merge prompt said "the smokes on any UI-prefix overlap of either side", while the rule, the delta spec and the post-merge check owe the smokes when either side touches a UI prefix. An agent reading "overlap" as an intersection skips the smokes, and the post-merge check then stops with the change already on `main`. | Should fix | Fixed. The prompt names `make check`, the full `make test` and the three smokes "when a file of the branch or of the merged-in commits is under a UI prefix". The harness case fails first on the old wording (`failfirst-stage4r2-smoke-wording.log`). |
+| The apply-stage verification looks up only `make check`, so after a no-op `origin/main` merge a missing `make test` record is found only by the post-merge check, after `gh pr merge`. | Follow-up | Not a hole in the floor: F6 and decision (2) accepted a post-merge check that reports, and the apply stage is told to run every final gate. Decision: a ledger follow-up adds a separate `make test` lookup to the apply verification (a separate call, since several `--gate` values are an OR). |
+| No smoke lane has yet been recorded through `gate-trees.sh`: in the normal flow the smokes run on a dirty tree, before the commit, so `record` writes nothing. After a non-empty `origin/main` merge they run on a clean tree, where `build/smoke/` is gitignored, so a record is expected but not yet observed. | Owed before first use | Added to the probes owed before the template's first real use. If a smoke lane leaves the porcelain non-empty, the post-merge check stops closed. |
+| `digest('')` would print a negative second half. | Nit | No change: no caller passes an empty text. |
+| In `new` mode the slot name falls back to the change name, so a spec stage that returns a worktree under `args.worktree_override` reads the slot under the change name. | Nit | No change: `new` mode creates `.claude/worktrees/<change>`, and the override is meant for resumed runs, which carry the worktree in the arguments. |
+| `void --log` stores the path as given. | Nit | No change: only the coordinator writes a void, and the rule asks for that log's path. |
+| `openspec validate --all --strict` fails 86 of the 136 main specs on `main`, all with the "requirement text is very long" warning, which `--strict` makes an error. Without `--strict`, all 136 pass, and this change's own delta passes `--strict`. | Follow-up for the maintainer | Not caused by this change and no obstacle to verifying it: the archive procedure runs `openspec validate --all`. Shortening those requirements is a separate spec-editing change in the ledger. |
+
+The stage takes no `MERGE-LOCK` and merges nothing. Its verdict is "ready, Fable fix check 2 pending".
