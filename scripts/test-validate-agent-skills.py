@@ -52,11 +52,19 @@ class ValidatorFixture:
         implicit: dict[str, bool],
         umbrella: str,
         leaves: tuple[str, ...] = (),
+        data_safety_skill: str = "routing-root",
+        data_safety_suffixes: tuple[str, ...] = ("src/ui",),
+        data_safety_keywords: tuple[str, ...] = ("file I/O",),
     ) -> None:
         implicit_rows = "\n".join(
             f'{name} = {str(value).lower()}' for name, value in implicit.items()
         )
         leaf_rows = ", ".join(f'"{name}"' for name in leaves)
+        suffix_rows = ", ".join(f'"{suffix}"' for suffix in data_safety_suffixes)
+        pattern_rows = ", ".join(
+            f'{{ keyword = "{keyword}", pattern = "fixture_{index}" }}'
+            for index, keyword in enumerate(data_safety_keywords)
+        )
         (self.root / "skill-policy.toml").write_text(
             "schema_version = 1\n"
             'excluded_prefixes = ["openspec-", "speckit-"]\n\n'
@@ -68,6 +76,10 @@ class ValidatorFixture:
             'package_metadata_namespace = "lushtext-agent"\n'
             'package_metadata_key = "performance-roots"\n'
             'fallback_suffixes = ["src/ui", "src/services", "src/model", "benches"]\n\n'
+            "[data_safety]\n"
+            f'skill = "{data_safety_skill}"\n'
+            f"path_suffixes = [{suffix_rows}]\n"
+            f"content_patterns = [{pattern_rows}]\n\n"
             "[filesystem_contract]\n"
             "paths = []\n\n"
             "[release]\n"
@@ -85,6 +97,10 @@ class AgentSkillValidatorTests(unittest.TestCase):
         self.fixture = ValidatorFixture(self.root)
         self.fixture.add_skill(
             "routing-root",
+            frontmatter=(
+                "name: routing-root\n"
+                'description: "Route deterministic fixture work on ui/ code and file I/O."'
+            ),
             openai=(
                 "interface:\n"
                 '  display_name: "Routing Root"\n'
@@ -288,6 +304,38 @@ class AgentSkillValidatorTests(unittest.TestCase):
         self.assertTrue(
             any("registered skill is missing: renamed-away" in error for error in errors)
         )
+
+
+    def test_data_safety_triggers_must_stay_inside_the_skill_description(self) -> None:
+        self.assertEqual(self.errors(), [])
+        self.fixture.write_policy(
+            implicit={"routing-root": True},
+            umbrella="routing-root",
+            data_safety_suffixes=("src/ui", "src/model"),
+            data_safety_keywords=("file I/O", "persistence"),
+        )
+        errors = self.errors()
+        self.assertTrue(
+            any("data_safety path suffix 'src/model' is not named" in error for error in errors), errors
+        )
+        self.assertTrue(
+            any("data_safety keyword 'persistence' is not in" in error for error in errors), errors
+        )
+        self.assertFalse(any("'src/ui'" in error or "'file I/O'" in error for error in errors), errors)
+
+    def test_data_safety_skill_must_exist_and_patterns_must_compile(self) -> None:
+        self.fixture.write_policy(
+            implicit={"routing-root": True}, umbrella="routing-root", data_safety_skill="gone-away"
+        )
+        errors = self.errors()
+        self.assertTrue(any("registered skill is missing: gone-away" in error for error in errors), errors)
+        policy = self.root / "skill-policy.toml"
+        policy.write_text(
+            policy.read_text(encoding="utf-8").replace('pattern = "fixture_0"', 'pattern = "("'),
+            encoding="utf-8",
+        )
+        errors = VALIDATOR.validate_skills(self.root)
+        self.assertTrue(any("is not a regex" in error for error in errors), errors)
 
 
 class RuleFrontmatterTests(unittest.TestCase):

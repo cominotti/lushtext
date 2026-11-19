@@ -558,6 +558,13 @@ scopes, such as `make test`, `make mutants-*`, `make kani` and
 `scripts/measure.sh -- <command>`, and waits through `scripts/wait-for.sh`; they
 implement the lock protocol in `.agents/rules/verification-runs.md`
 ("Shared-machine agent work"), and `make check-agent-helpers` self-tests them.
+Programme changes run one agent per stage through the versioned workflow
+`.claude/workflows/programme-change.js`, with tested helpers for
+implementation slots (`scripts/impl-slots.sh`), append-only tree-keyed gate
+records (`scripts/gate-trees.sh`), the drain-first quiet gate of timing verdicts
+(`scripts/quiet-gate.py`) and fast-lane eligibility
+(`scripts/check-fast-lane.py`); `make check-workflow-scripts` checks the
+workflow scripts and runs their stub-agent harnesses. The rules are in `.agents/rules/parallel-agent-work.md`.
 
 ### UI Templates
 
