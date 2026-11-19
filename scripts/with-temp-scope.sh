@@ -15,6 +15,11 @@
 # stale LushText test roots: exact known prefixes followed by a PID, real
 # directories owned by the current user, whose PID no longer exists and which
 # have been idle for an hour. Entries of a live run are never touched.
+#
+# A session runtime directory (--session-runtime) lives inside the scope when
+# its deepest socket path fits; under a deep TMPDIR (an agent stage's
+# `$H/<change>/tmp/<stage>`) it is a short owned `lt-rt-<pid>-XXXXXX`
+# directory under /tmp instead, released and removed the same way.
 
 set -euo pipefail
 
@@ -23,6 +28,7 @@ LEGACY_PIDLESS_MIN_AGE_MINUTES=1440
 # Prefixes followed by `<pid>` or `<pid>-<suffix>` in names our tooling creates.
 PID_PREFIXES=(
     lt-scope-
+    lt-rt-
     lushtext-test-
     lt-proof-
     gtk-lush-proof-run-
@@ -44,8 +50,11 @@ Run COMMAND with TMPDIR set to a private scope directory, then fail if the
 command left any entry in it. The scope is always removed.
 
 --session-runtime also exports XDG_RUNTIME_DIR as a short, mode-0700
-directory inside the scope for a private dbus-run-session/Mutter session, and
-removes it once no process still uses it (see release_session_runtime_dir).
+directory for a private dbus-run-session/Mutter session, and removes it once
+no process still uses it (see release_session_runtime_dir). It lives inside
+the scope when the session's deepest socket path fits there, and otherwise in
+a short owned directory under /tmp (WITH_TEMP_SCOPE_RUNTIME_BASE overrides
+that base; the self-test uses it). It refuses only when neither fits.
 EOF
 }
 
@@ -92,6 +101,10 @@ SESSION_RUNTIME_NAME=".session-runtime"
 # 107); Mutter's `wayland-0` beside it is shorter.
 SESSION_DEEPEST_SOCKET="gtk-lush-session/system-bus"
 SESSION_SOCKET_PATH_LIMIT=99
+# Where the runtime directory goes when the scope is too deep for it.
+SESSION_RUNTIME_FALLBACK_BASE="${WITH_TEMP_SCOPE_RUNTIME_BASE:-/tmp}"
+SESSION_RUNTIME_FALLBACK_BASE="${SESSION_RUNTIME_FALLBACK_BASE%/}"
+SESSION_RUNTIME_FALLBACK_PREFIX="lt-rt-"
 SESSION_RELEASE_POLLS=200   # x 0.05 s = 10 s
 SESSION_RELEASE_POLL_SECONDS=0.05
 
@@ -179,12 +192,28 @@ run_scoped() {
     if [[ "$session_runtime" == true ]]; then
         local runtime_dir="$scope/$SESSION_RUNTIME_NAME"
         local socket="$runtime_dir/$SESSION_DEEPEST_SOCKET"
-        if (( ${#socket} > SESSION_SOCKET_PATH_LIMIT )); then
-            echo "Error: the session's system bus socket path would be ${#socket} bytes (limit $SESSION_SOCKET_PATH_LIMIT): $socket" >&2
-            echo "The temporary directory '$base' (TMPDIR) is too deep; point TMPDIR at a shorter one." >&2
-            return 2
+        if (( ${#socket} <= SESSION_SOCKET_PATH_LIMIT )); then
+            mkdir -m 700 -- "$runtime_dir"
+        else
+            # The scope is too deep for the session's sockets: give the
+            # session a short owned directory instead, with a PID-bearing name
+            # the sweep reclaims after a SIGKILL. `XXXXXX` stands for the six
+            # characters mktemp puts there.
+            local fallback="$SESSION_RUNTIME_FALLBACK_BASE/${SESSION_RUNTIME_FALLBACK_PREFIX}$$-XXXXXX"
+            local fallback_socket="$fallback/$SESSION_DEEPEST_SOCKET"
+            if (( ${#fallback_socket} > SESSION_SOCKET_PATH_LIMIT )); then
+                echo "Error: the session's system bus socket path would be ${#socket} bytes in the scope and ${#fallback_socket} under '$SESSION_RUNTIME_FALLBACK_BASE' (limit $SESSION_SOCKET_PATH_LIMIT): $socket" >&2
+                echo "The temporary directory '$base' (TMPDIR) is too deep; point TMPDIR at a shorter one." >&2
+                return 2
+            fi
+            sweep_stale_entries "$SESSION_RUNTIME_FALLBACK_BASE"
+            runtime_dir="$(mktemp -d "$fallback")"
+            chmod 700 -- "$runtime_dir"
+            # Removed with the scope on an exit the shell observes; the
+            # release below has already waited for the session by then.
+            # shellcheck disable=SC2064 # expand both paths now, not at exit
+            trap "rm -rf -- '$scope' '$runtime_dir'" EXIT
         fi
-        mkdir -m 700 -- "$runtime_dir"
         TMPDIR="$scope" XDG_RUNTIME_DIR="$runtime_dir" "$@" || status=$?
         if ! release_session_runtime_dir "$runtime_dir"; then
             (( status != 0 )) || status=1
@@ -223,14 +252,49 @@ self_test() {
         echo "Error: a session runtime directory was not provided or not released." >&2
         failed=1
     fi
-    local deep
+    # A scope too deep for the session's sockets (an agent stage's TMPDIR):
+    # the runtime directory moves to a short owned directory under the
+    # fallback base, whose socket path fits, and is released the same way.
+    local deep fallback_base recorded
     deep="$base/$(printf 'd%.0s' {1..80})"
     mkdir -p "$deep"
-    if TMPDIR="$deep" "$0" --session-runtime deep -- true 2>/dev/null; then
+    # A private fallback base under the real (short) one, so the check holds
+    # under any TMPDIR the self-test itself runs in.
+    fallback_base="$(mktemp -d "$SESSION_RUNTIME_FALLBACK_BASE/lt-st-$$-XXXXXX")"
+    # shellcheck disable=SC2064
+    trap "rm -rf -- '$base' '$fallback_base'" RETURN
+    recorded="$base/deep-runtime"
+    if ! TMPDIR="$deep" WITH_TEMP_SCOPE_RUNTIME_BASE="$fallback_base" "$0" --session-runtime deep -- \
+        sh -c 'test -d "$XDG_RUNTIME_DIR" && mkdir "$XDG_RUNTIME_DIR/doc" && printf "%s\n" "$XDG_RUNTIME_DIR" >"$0"' \
+        "$recorded" 2>/dev/null; then
+        echo "Error: a scope too deep for the session's sockets got no short runtime directory." >&2
+        failed=1
+    else
+        local runtime
+        runtime="$(cat "$recorded")"
+        if [[ "$runtime" != "$fallback_base/${SESSION_RUNTIME_FALLBACK_PREFIX}"* ]]; then
+            echo "Error: the deep scope's runtime directory '$runtime' is not under the fallback base." >&2
+            failed=1
+        fi
+        if (( ${#runtime} + 1 + ${#SESSION_DEEPEST_SOCKET} > SESSION_SOCKET_PATH_LIMIT )); then
+            echo "Error: the deep scope's runtime directory '$runtime' is still too deep." >&2
+            failed=1
+        fi
+        if [[ -e "$runtime" ]]; then
+            echo "Error: the deep scope's runtime directory '$runtime' survived its run." >&2
+            failed=1
+        fi
+    fi
+    # When even the fallback base is too deep, the scope is refused.
+    if TMPDIR="$deep" WITH_TEMP_SCOPE_RUNTIME_BASE="$deep" "$0" --session-runtime deeper -- true 2>/dev/null; then
         echo "Error: a session runtime with an overlong socket path was accepted." >&2
         failed=1
     fi
-    rm -rf -- "$deep"
+    if [[ -n "$(find "$deep" "$fallback_base" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+        echo "Error: a deep scope or its runtime directory survived its run." >&2
+        failed=1
+    fi
+    rm -rf -- "$deep" "$fallback_base" "$recorded"
     # Ctrl-C mid-session: the scope still waits for the session's services
     # (here a detached process that recreates a runtime subdirectory a moment
     # later, as xdg-document-portal's doc/ mount did) before removing itself,

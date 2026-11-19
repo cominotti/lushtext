@@ -51,8 +51,11 @@ directory ([why](../../docs/memorials/2026-10-20-test-data-incidents.md)).
   (`gtk-lush-session/system-bus`) is the deepest, and `dbus-daemon` binds at
   most 99 bytes (`DBUS_SOCKET_PATH_MAX`, below the kernel's 107). The helper
   puts an owned runtime directory that would not fit under `/tmp` and refuses
-  an inherited one; `with-temp-scope.sh --session-runtime` refuses such a
-  scope; and the Python drivers' `smoke_runtime_dir.create_runtime_root`
+  an inherited one; `with-temp-scope.sh --session-runtime` puts the runtime
+  directory of a scope that deep (an agent stage's `$H/<change>/tmp/<stage>`
+  `TMPDIR`) in a short owned `lt-rt-<pid>-…` directory under `/tmp`,
+  released the same way, and refuses only when that would not fit either; and
+  the Python drivers' `smoke_runtime_dir.create_runtime_root`
   falls back to `/tmp` when the scope's `TMPDIR` is too deep, which a
   seven-digit PID can make it.
 - **PID-bearing names and a conservative sweep.** Names carry the owning PID
