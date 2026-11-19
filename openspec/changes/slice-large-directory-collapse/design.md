@@ -3621,6 +3621,73 @@ call carries `#[expect(deprecated, reason)]` (`rust.md`, "Lint Suppression").
 The pure half in `ui/sidebar/policy.rs` classifies a key (navigation,
 row-dependent, other) and decides hold or propagate.
 
+**Implementation decisions (task 10.14, 2026-11-18).**
+
+- *The hold covers the section's whole tree, not only the collapsing
+  directory row and its hidden rows.* Up from the row after the subtree, or
+  a page key from anywhere above it, would otherwise land on a hidden row. So
+  a navigation key pressed on any row of the section's list while a collapse
+  of that section is pending is held. The spec scenario carries it as an AND
+  line, with a failing-first test
+  (`test_up_from_the_row_after_the_subtree_waits_for_the_collapse`).
+- *Where it lives.* `workspace_section/collapse_execution/held_keys.rs`, a
+  child of the collapse's `execution` role (it owns the hold, the replay
+  wait and the delivery check), entered from the existing capture-phase key
+  route on the slice bin before its disclosure-key handling. The policy is
+  `classify_held_key` plus `held_key_action` in `ui/sidebar/policy.rs`
+  (enums, no keysym constants, so `docs/thresholds.md` is unchanged).
+- *Order.* Held events carry an order number. A put-back event that comes
+  back through the route is checked again (A126: it is the same event): it
+  is held again, at its own place, only while another collapse is pending
+  or a key pressed before it is still held, so a later real press never
+  overtakes it.
+- *The replay wait.* When the section's last collapse ends, by any end
+  (`finish_collapse` and `cancel_all_collapses` arm it), a one-shot
+  `after-paint` handler on the list's frame clock puts the keys back once a
+  frame has laid out the final tree, and disconnects itself; a
+  `COLLAPSE_FRAME_STARVATION_MS` timeout replays without a frame, and an
+  unmapped list replays from an idle. A `G_PRIORITY_LOW` delivery check
+  added with the put clears the keys GDK delivered and re-arms if a replayed
+  key started another collapse and was held again. Readiness
+  (`collapse_blocks_readiness`, hence `workspace.collapse_pending` and
+  `workspace-refresh-complete`) stays blocked while keys wait, and the
+  evidence reports the waiting count and the held, replayed and dropped
+  totals.
+- *Focus.* A key is held only while the window's focus is on a row of the
+  list and not in an editable (the inline rename entry keeps its keys). If
+  the focus has left the list when the keys would be put back, they are
+  dropped and counted, never delivered to the widget that now has it.
+  Dispose drops them and removes every source.
+
+**What the tests found about the harness (2026-11-18).**
+
+- The headless compositor deactivates the window when a RemoteDesktop input
+  session ends; GTK then clears the list's `focus-child` chain while the
+  window's focus widget, which keys go to, stays. The tests read the focus
+  from the window, and aim real presses only after an activation (which
+  scrolls the list back to its focus row) can no longer move the target.
+- **Mapping a popover on the inactive window segfaults mutter 51**
+  (`meta_wayland_xdg_popup_apply_state`, `g_hash_table_iter_next`; coredumps
+  of 2026-11-18 20:43–21:16). Discriminated: a fresh real `space` on an
+  active window peeks without a crash; the same press stopped and put back
+  after the input session ended crashes it, and so does
+  `toggle_peek_for_selection()` called with no key at all on the inactive
+  window. So the trigger is the inactive window, not `put_event`. On a real
+  seat the window the user types into is active; whether a popover opened
+  on a window the user has just left reaches the same mutter path is not
+  tested here, and is recorded for an upstream mutter report (maintainer's
+  decision). The Space case therefore stops the replayed `space` with a
+  capture probe in front of the peek controller and checks which row it
+  reaches, instead of letting the peek popover open; the peek route itself
+  is covered by the peek tests.
+- `test_replayed_navigation_matches_gtk` takes its reference by putting the
+  very press the window saw back from the same start, scroll position and
+  final tree with no collapse pending, rather than a second real press: the
+  compositor's input sessions did not deliver a second press reliably (a
+  Ctrl chord's key went missing). It asserts that the replay acted from a
+  settled scroll position, because Page Up and Page Down move by the band the
+  slice bin shows.
+
 ### R14. Review of R13 (2026-11-18)
 
 Reviewed against the round logs (`rev/attr2/slc-r13-*.log`,

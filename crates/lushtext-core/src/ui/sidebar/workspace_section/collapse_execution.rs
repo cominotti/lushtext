@@ -107,6 +107,8 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
 
+mod held_keys;
+
 use super::super::file_tree_item::FileTreeItem;
 use super::LushtextWorkspaceSection;
 use crate::model::list_budget::turn_continues;
@@ -270,6 +272,9 @@ pub(super) struct CollapseRuntimeState {
     hidden_syncs: Cell<u64>,
     /// Of those, the passes the re-apply source ran.
     hidden_reapply_runs: Cell<u64>,
+    /// The navigation and row keys held while a collapse runs (design D22,
+    /// task 10.14).
+    held_keys: held_keys::HeldKeys,
 }
 
 /// Step dispatches the evidence keeps per collapse run: more than the
@@ -352,6 +357,15 @@ pub struct CollapseTotals {
     pub hidden_syncs: u64,
     /// Of those, the passes the re-apply source ran.
     pub hidden_reapply_runs: u64,
+    /// Keys waiting now behind a collapse: held, or put back and not yet
+    /// delivered again (design D22, task 10.14).
+    pub held_keys_waiting: u32,
+    /// Keys held, ever.
+    pub keys_held_total: u64,
+    /// Keys put back on GDK's queue, ever.
+    pub keys_replayed_total: u64,
+    /// Held keys dropped because the focus had left the list, ever.
+    pub keys_dropped_total: u64,
 }
 
 thread_local! {
@@ -586,15 +600,18 @@ impl LushtextWorkspaceSection {
         }
     }
 
-    /// Whether a collapse still runs (`workspace-refresh-complete`, design D7).
+    /// Whether a collapse still runs, or keys held behind one still wait
+    /// (`workspace-refresh-complete`, design D7, D22).
     pub(crate) fn collapse_blocks_readiness(&self) -> bool {
-        !self.imp().collapse_runtime.queue.borrow().is_empty()
+        let runtime = &self.imp().collapse_runtime;
+        !runtime.queue.borrow().is_empty() || runtime.held_keys.any_waiting()
     }
 
     /// The collapse queue and totals, for the evidence surface. Reads only
     /// `Cell`/`RefCell` state.
     pub(crate) fn collapse_evidence(&self) -> CollapseTotals {
         let runtime = &self.imp().collapse_runtime;
+        let keys = runtime.held_keys.totals();
         let collapses = runtime
             .queue
             .borrow()
@@ -631,6 +648,10 @@ impl LushtextWorkspaceSection {
             .unwrap_or(u32::MAX),
             hidden_syncs: runtime.hidden_syncs.get(),
             hidden_reapply_runs: runtime.hidden_reapply_runs.get(),
+            held_keys_waiting: keys.waiting,
+            keys_held_total: keys.held_total,
+            keys_replayed_total: keys.replayed_total,
+            keys_dropped_total: keys.dropped_total,
         }
     }
 
@@ -655,6 +676,8 @@ impl LushtextWorkspaceSection {
         }
         self.stop_collapse_sources();
         self.clear_hidden_rows();
+        // A model reset ends the collapse: held keys act on the new rows.
+        self.arm_held_key_replay();
     }
 
     /// Start or stop the step sources for the list's mapped state.
@@ -1554,6 +1577,11 @@ impl LushtextWorkspaceSection {
         self.reproject_realized_rows();
         // D22: by any end, no row of the subtree stays hidden.
         self.sync_hidden_rows();
+        // D22: keys held while the section collapsed act once its last
+        // collapse has ended and a frame has laid out the final tree.
+        if runtime.queue.borrow().is_empty() {
+            self.arm_held_key_replay();
+        }
     }
 
     /// End every collapse whose subtree holds `path` because `path` is being
@@ -1916,16 +1944,22 @@ impl LushtextWorkspaceSection {
             let Some(section) = section_weak.upgrade() else {
                 return glib::Propagation::Proceed;
             };
-            let Some(event) = controller
-                .current_event()
-                .and_then(|event| event.downcast::<gtk4::gdk::KeyEvent>().ok())
-            else {
+            let Some(event) = controller.current_event() else {
                 return glib::Propagation::Proceed;
             };
-            let Some(expander) = section.focused_expander() else {
+            let Some(key) = event.downcast_ref::<gtk4::gdk::KeyEvent>() else {
                 return glib::Propagation::Proceed;
             };
-            let Some(intent) = disclosure_intent(&event, &expander) else {
+            let expander = section.focused_expander();
+            let intent = expander
+                .as_ref()
+                .and_then(|expander| disclosure_intent(key, expander));
+            // Design D22: while a collapse runs, navigation keys (and row
+            // keys behind them) wait for its end.
+            if section.hold_key(&event, key, intent.is_some()) {
+                return glib::Propagation::Stop;
+            }
+            let (Some(expander), Some(intent)) = (expander, intent) else {
                 return glib::Propagation::Proceed;
             };
             if section.take_disclosure_key(&expander, intent) {

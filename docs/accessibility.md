@@ -160,7 +160,18 @@ Expected screen-reader behavior includes:
   removal, a reload) shows the rows again. Which rows are inside is decided by
   the tree, not by path, so the same directory listed again under an
   overlapping workspace folder is neither hidden nor stopped from loading
-  (`accessibility-smoke` case `workspace-tree-large-collapse`). Activating the directory row (`Enter`, or a double click),
+  (`accessibility-smoke` case `workspace-tree-large-collapse`). The arrow
+  keys, `Page Up`, `Page Down`, `Home` and `End` (with or without `Shift` or
+  `Ctrl`) pressed on a row of the tree while a directory of that workspace
+  collapses wait for the collapse, so the focus is never drawn on a hidden
+  row; once it has ended and the next frame has laid out the final tree, they
+  act in the order pressed, exactly as GTK's own bindings act on that tree
+  (`Down` from the directory row lands on the row after it). `Enter`,
+  `space`, `Menu` and `Shift+F10` pressed behind such a key wait behind it and
+  act on the row it reaches. `Escape`, `Tab` and window shortcuts act at
+  once, and keys typed in an inline rename are never held. If the focus has
+  left the tree by the time the collapse ends, the waiting keys are dropped,
+  never sent to the widget that now has the focus. Activating the directory row (`Enter`, or a double click),
   clicking its arrow, and the tree's collapse keys with focus on the row's
   expander, which `Tab` reaches from the row (`minus`, `slash`, their keypad
   forms, `Shift+Left` and `Ctrl+Shift+Left`, reversed in right-to-left text,

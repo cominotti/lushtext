@@ -20,7 +20,7 @@
 //! | `scan_admission` | `admission` | the per-child-store directory-scan flight |
 //! | `scan_execution` | `execution` | the child scan worker, reconciliation, and child-store materialization |
 //! | `refresh_execution` | `execution` | targeted in-place and full refresh coalescing |
-//! | `collapse_execution` | `execution` | the directory collapse and expansion entry points and the sliced collapse |
+//! | `collapse_execution` | `execution` | the directory collapse and expansion entry points and the sliced collapse; its child `held_keys` holds the navigation keys pressed during a collapse and puts them back when it ends |
 //! | `folder_execution` | `execution` | top-level folder rows, the empty probe, focused-folder drilldown |
 //! | `file_execution` | `execution` | file create, inline rename, delete |
 //! | `peek_execution` | `execution` | `Space` file peek |

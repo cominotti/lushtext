@@ -4280,6 +4280,53 @@ struct DispatchTimeline {
     /// Scan terminals published from the start until the completing frame,
     /// counted once there rather than attributed per dispatch.
     terminals_before_shown: Option<u64>,
+    /// Microseconds from the timeline's start to the end of the first frame
+    /// dispatch from which every later frame's picture, until the timeline
+    /// ended, equals the last one (task 10.16): when the user last saw the
+    /// rows move.
+    picture_final_us: Option<u64>,
+}
+
+/// The rows the viewport draws after a frame (task 10.16): each realized
+/// row widget of the list with opacity above 0 (D22 hides by opacity) that
+/// intersects the sidebar's viewport, as its path and rendered top. It
+/// reads the list view's realized children only, never the evidence, so its
+/// cost is bounded by the realized band, not the listing.
+fn drawn_rows(list: &gtk4::ListView) -> Vec<(Option<PathBuf>, i32)> {
+    let Some(viewport) = list.ancestor(gtk4::ScrolledWindow::static_type()) else {
+        return Vec::new();
+    };
+    let height = viewport.height();
+    let mut rows = Vec::new();
+    let mut child = list.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        if widget.opacity() <= 0.0 || !widget.is_mapped() {
+            continue;
+        }
+        let Some(bounds) = widget.compute_bounds(&viewport) else {
+            continue;
+        };
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a widget coordinate in the viewport, whole pixels"
+        )]
+        let (top, bottom) = (
+            bounds.y().round() as i32,
+            (bounds.y() + bounds.height()).round() as i32,
+        );
+        if bottom <= 0 || top >= height {
+            continue;
+        }
+        let path = find_descendant(&widget, glib::object::ObjectExt::is::<gtk4::TreeExpander>)
+            .and_downcast::<gtk4::TreeExpander>()
+            .and_then(|expander| expander.item())
+            .and_downcast::<FileTreeItem>()
+            .and_then(|item| item.path());
+        rows.push((path, top));
+    }
+    rows.sort_by_key(|(_, top)| *top);
+    rows
 }
 
 /// One main-loop dispatch of a [`DispatchTimeline`].
@@ -4421,6 +4468,8 @@ fn dispatch_timeline_with(
         .workspace_section_evidence()
         .scan_pressure
         .terminal_publications;
+    let list = section.imp().file_tree_view.clone();
+    let mut last_picture: Option<Vec<(Option<PathBuf>, i32)>> = None;
     while started.elapsed() < budget {
         let track_terminals = shown_probe.is_none() || timeline.shown_us.is_some();
         if done_at.is_none() && done() {
@@ -4480,6 +4529,13 @@ fn dispatch_timeline_with(
                         .terminal_publications
                         .saturating_sub(terminals_at_start),
                 );
+            }
+            if layout.is_some() {
+                let picture = drawn_rows(&list);
+                if last_picture.as_ref() != Some(&picture) {
+                    timeline.picture_final_us = Some(micros(started.elapsed()));
+                    last_picture = Some(picture);
+                }
             }
             timeline.dispatches.push(TimedDispatch {
                 start_us: micros(start.saturating_duration_since(started)),
@@ -5370,7 +5426,7 @@ fn print_case(
     let allowance_us = subtree_rows.saturating_sub(16 * 1024) / 2;
     let input_over_interact = input_us > B_INTERACT_US;
     println!(
-        "collapse-verdict {{\"case\":\"{case}\",\"siblings\":{siblings},\"entries\":{entries},\"subtree_rows\":{subtree_rows},\"r9_allowance_us\":{allowance_us},\"input_us\":{input_us},\"input_over_interact\":{input_over_interact},\"worst_frame_us\":{},\"worst_frame_layout_us\":{},\"worst_frame_paint_us\":{},\"worst_other_us\":{},\"done_us\":{},\"shown_us\":{},\"mono_start_us\":{},\"terminals_before_shown\":{},\"step_us_max\":{step_us_max},\"dispatches\":{},\"over_interact\":{},\"over_settle\":{}}}",
+        "collapse-verdict {{\"case\":\"{case}\",\"siblings\":{siblings},\"entries\":{entries},\"subtree_rows\":{subtree_rows},\"r9_allowance_us\":{allowance_us},\"input_us\":{input_us},\"input_over_interact\":{input_over_interact},\"worst_frame_us\":{},\"worst_frame_layout_us\":{},\"worst_frame_paint_us\":{},\"worst_other_us\":{},\"done_us\":{},\"shown_us\":{},\"picture_final_us\":{},\"mono_start_us\":{},\"terminals_before_shown\":{},\"step_us_max\":{step_us_max},\"dispatches\":{},\"over_interact\":{},\"over_settle\":{}}}",
         timeline.worst(true),
         timeline.worst_layout(),
         timeline.worst_paint(),
@@ -5380,6 +5436,9 @@ fn print_case(
             .map_or_else(|| "null".to_owned(), |us| us.to_string()),
         timeline
             .shown_us
+            .map_or_else(|| "null".to_owned(), |us| us.to_string()),
+        timeline
+            .picture_final_us
             .map_or_else(|| "null".to_owned(), |us| us.to_string()),
         timeline.mono_start_us,
         timeline
@@ -6465,4 +6524,707 @@ fn test_overlapping_folders_hide_only_the_collapsing_occurrence() {
     assert_eq!(children(&outer), u32::try_from(count).unwrap_or(u32::MAX));
     drop(window);
     drop(sidebar);
+}
+
+// ---------------------------------------------------------------------------
+// Design D22, task 10.14: navigation keys during a collapse.
+// ---------------------------------------------------------------------------
+
+/// X keysyms the held-key tests type.
+mod keysym {
+    pub const UP: u32 = 0xff52;
+    pub const DOWN: u32 = 0xff54;
+    pub const PAGE_UP: u32 = 0xff55;
+    pub const PAGE_DOWN: u32 = 0xff56;
+    pub const HOME: u32 = 0xff50;
+    pub const END: u32 = 0xff57;
+    pub const RETURN: u32 = 0xff0d;
+    pub const SPACE: u32 = 0x20;
+    pub const ESCAPE: u32 = 0xff1b;
+    pub const TAB: u32 = 0xff09;
+    pub const SHIFT_L: u32 = 0xffe1;
+    pub const CONTROL_L: u32 = 0xffe3;
+}
+
+/// Frames painted while a collapse was pending with the list's focus on a
+/// hidden row, counted at each frame's `before-paint` (design D22: no
+/// painted frame shows the focus on a hidden row).
+struct HiddenFocusWatch {
+    clock: gtk4::gdk::FrameClock,
+    handler: Option<glib::SignalHandlerId>,
+    frames: std::rc::Rc<std::cell::Cell<u32>>,
+}
+
+impl HiddenFocusWatch {
+    fn start(window: &LushtextWindow, section: &LushtextWorkspaceSection) -> Self {
+        let clock = section
+            .imp()
+            .file_tree_view
+            .frame_clock()
+            .expect("the list has a frame clock");
+        let frames = std::rc::Rc::new(std::cell::Cell::new(0));
+        let count = std::rc::Rc::clone(&frames);
+        let window = window.downgrade();
+        let list = section
+            .imp()
+            .file_tree_view
+            .upcast_ref::<gtk4::Widget>()
+            .downgrade();
+        let handler = clock.connect_before_paint(move |_| {
+            let (Some(window), Some(list)) = (window.upgrade(), list.upgrade()) else {
+                return;
+            };
+            let mut widget = gtk4::prelude::GtkWindowExt::focus(&window);
+            while let Some(current) = widget {
+                let parent = current.parent();
+                if parent.as_ref() == Some(&list) {
+                    if row_widget_hidden(&current) {
+                        count.set(count.get() + 1);
+                    }
+                    return;
+                }
+                widget = parent;
+            }
+        });
+        Self {
+            clock,
+            handler: Some(handler),
+            frames,
+        }
+    }
+
+    fn frames(&self) -> u32 {
+        self.frames.get()
+    }
+}
+
+impl Drop for HiddenFocusWatch {
+    fn drop(&mut self) {
+        if let Some(handler) = self.handler.take() {
+            self.clock.disconnect(handler);
+        }
+    }
+}
+
+/// The position of the row holding the window's focus, if the focus is on a
+/// row of `section`'s list. Read from the window, not the list's
+/// `focus-child`: GTK clears the focus-child chain while the window is
+/// inactive, and the headless compositor deactivates it between real-input
+/// sessions, while the window's focus widget, which keys go to, stays.
+fn window_focused_row(window: &LushtextWindow, section: &LushtextWorkspaceSection) -> Option<u32> {
+    let list = section
+        .imp()
+        .file_tree_view
+        .upcast_ref::<gtk4::Widget>()
+        .clone();
+    let mut widget = gtk4::prelude::GtkWindowExt::focus(window);
+    while let Some(current) = widget {
+        let parent = current.parent();
+        if parent.as_ref() == Some(&list) {
+            return find_descendant(&current, glib::object::ObjectExt::is::<gtk4::TreeExpander>)
+                .and_downcast::<gtk4::TreeExpander>()
+                .and_then(|expander| expander.list_row())
+                .map(|row| row.position())
+                .filter(|position| *position != gtk4::INVALID_LIST_POSITION);
+        }
+        widget = parent;
+    }
+    None
+}
+
+/// Wait up to `budget` for `done`, failing with `what`, the collapse state
+/// and where the focus is.
+fn wait_or_report(tree: &LargeTree, budget: Duration, what: &str, done: impl FnMut() -> bool) {
+    assert!(
+        wait_until_or_false(budget, done),
+        "not met: {what}: {}; {}",
+        collapse_state(&tree.section),
+        focus_report(tree)
+    );
+}
+
+/// Where the window's focus is, for a failure message.
+fn focus_report(tree: &LargeTree) -> String {
+    let focus = gtk4::prelude::GtkWindowExt::focus(&tree.window);
+    let mut chain = Vec::new();
+    let mut widget = focus;
+    while let Some(current) = widget {
+        chain.push(current.type_().name().to_owned());
+        if chain.len() > 6 {
+            break;
+        }
+        widget = current.parent();
+    }
+    let list = &tree.section.imp().file_tree_view;
+    let evidence = tree.section.workspace_section_evidence();
+    format!(
+        "held keys waiting {} held {} replayed {} dropped {}; window active {} focus chain \
+         {chain:?}; list focus_child {:?}, list has_focus {}, focused row {:?}",
+        evidence.collapse_held_keys,
+        evidence.collapse_keys_held_total,
+        evidence.collapse_keys_replayed_total,
+        evidence.collapse_keys_dropped_total,
+        tree.window.is_active(),
+        list.focus_child()
+            .map(|child| child.type_().name().to_owned()),
+        list.has_focus(),
+        window_focused_row(&tree.window, &tree.section)
+    )
+}
+
+/// Make the window active with a real press on `path`'s row, bringing it
+/// into view first, which focuses and selects it, so real key input reaches
+/// the list. (A programmatic focus move is not enough: the headless
+/// compositor deactivates the window between real-input sessions, and
+/// `scroll_to`'s focus flag then leaves the focus where it was.) The press
+/// activates the window, which gives the focus back to its focus row, and
+/// GTK scrolls the list to that row before the press lands: keep the focus
+/// row near `path` before the list grows ([`expand_with_focus_on`]).
+fn press_row_for_real(tree: &LargeTree, path: &Path) {
+    // Past GTK's 400 ms double-click time: a press soon after another on the
+    // same row would activate it.
+    flush_after_delay(Duration::from_millis(500));
+    if !tree.window.is_active()
+        && let Some(focused) = window_focused_row(&tree.window, &tree.section)
+    {
+        // Activating the window gives the focus back to its focus row, and
+        // GTK then scrolls the list to that row: a press aimed elsewhere
+        // would land on whatever the scroll brings under it. Activate the
+        // window with a press on the focus row itself, shown first, so the
+        // activation scrolls nothing.
+        press_shown_row(tree, focused);
+        flush_after_delay(Duration::from_millis(500));
+    }
+    let index = tree_index_for_path(&tree.section, path).expect("row index");
+    press_shown_row(tree, index);
+    wait_or_report(
+        tree,
+        Duration::from_secs(5),
+        "the pressed row has the focus",
+        || window_focused_row(&tree.window, &tree.section) == Some(index),
+    );
+    flush_after_delay(Duration::from_millis(100));
+}
+
+/// Scroll row `index` into view and press it with real input.
+fn press_shown_row(tree: &LargeTree, index: u32) {
+    let row = || {
+        tree.section
+            .imp()
+            .tree_model
+            .borrow()
+            .as_ref()
+            .and_then(|model| model.item(index))
+            .and_downcast::<gtk4::TreeListRow>()
+    };
+    let expander = || {
+        let row = row()?;
+        let mut child = tree.section.imp().file_tree_view.first_child();
+        while let Some(widget) = child {
+            child = widget.next_sibling();
+            if let Some(expander) =
+                find_descendant(&widget, glib::object::ObjectExt::is::<gtk4::TreeExpander>)
+                    .and_downcast::<gtk4::TreeExpander>()
+                && expander.list_row().as_ref() == Some(&row)
+            {
+                return Some(expander);
+            }
+        }
+        None
+    };
+    tree.section
+        .imp()
+        .file_tree_view
+        .scroll_to(index, gtk4::ListScrollFlags::NONE, None);
+    wait_or_report(tree, Duration::from_secs(10), "the row is shown", || {
+        expander().is_some_and(|expander| {
+            expander.is_mapped() && inside_outer_viewport(&tree.sidebar, expander.upcast_ref())
+        }) && !tree.section.imp().file_tree_slice.outer_request_pending()
+    });
+    flush_after_delay(Duration::from_millis(200));
+    let label = expander()
+        .and_then(|expander| expander.child())
+        .expect("the row content");
+    crate::common::activate_with_real_press(&tree.window, &label);
+}
+
+/// Expand `directory` again with the focus on its row first, so the focus
+/// row stays near the top of the list ([`press_row_for_real`]).
+fn expand_with_focus_on(tree: &LargeTree, directory: &Path, count: usize) {
+    press_row_for_real(tree, directory);
+    expand_and_load(tree, directory, count);
+}
+
+/// Put the focus on `path`'s row without selecting it: a real press on the
+/// root row, then Ctrl+Down, which moves GTK's focus and not its selection.
+/// `path` must be the root's first child.
+fn focus_row_unselected(tree: &LargeTree, path: &Path) {
+    use keysym::{CONTROL_L, DOWN};
+    press_row_for_real(tree, &tree.root);
+    crate::common::type_with_real_keyboard(&[&[CONTROL_L, DOWN]]);
+    let index = tree_index_for_path(&tree.section, path).expect("row index");
+    wait_or_report(
+        tree,
+        Duration::from_secs(5),
+        "Ctrl+Down moved the focus",
+        || window_focused_row(&tree.window, &tree.section) == Some(index),
+    );
+    flush_after_delay(Duration::from_millis(100));
+}
+
+/// Start a held sliced collapse of `directory`, type `chords` while it is
+/// held, and check that the keys waited and the focus did not move; then let
+/// the collapse run and wait until it has ended and every held key has been
+/// put back and delivered.
+fn type_during_a_held_collapse(
+    tree: &LargeTree,
+    directory: &Path,
+    chords: &[&[u32]],
+    held: u32,
+    watch: &HiddenFocusWatch,
+) {
+    held_collapse_then(tree, directory, chords, held, watch, || {});
+}
+
+/// [`type_during_a_held_collapse`], running `while_held` once the keys are
+/// held and before the collapse resumes.
+fn held_collapse_then(
+    tree: &LargeTree,
+    directory: &Path,
+    chords: &[&[u32]],
+    held: u32,
+    watch: &HiddenFocusWatch,
+    while_held: impl FnOnce(),
+) {
+    let focused = window_focused_row(&tree.window, &tree.section);
+    let pacing = Pacing::set(CollapsePacing::Hold);
+    activate_tree_row(&tree.section, directory);
+    assert_eq!(
+        tree.section.workspace_section_evidence().collapses.len(),
+        1,
+        "the collapse is sliced and held: {}",
+        collapse_state(&tree.section)
+    );
+    for chord in chords {
+        crate::common::type_with_real_keyboard(&[chord]);
+    }
+    wait_or_report(tree, Duration::from_secs(5), "the keys are held", || {
+        tree.section.workspace_section_evidence().collapse_held_keys == held
+    });
+    flush_after_delay(Duration::from_millis(100));
+    let evidence = tree.section.workspace_section_evidence();
+    assert_eq!(
+        evidence.collapse_held_keys,
+        held,
+        "the keys wait for the collapse: {}",
+        collapse_state(&tree.section)
+    );
+    assert_eq!(
+        window_focused_row(&tree.window, &tree.section),
+        focused,
+        "the focus has not moved while the collapse runs: {}",
+        focus_report(tree)
+    );
+    assert_eq!(
+        watch.frames(),
+        0,
+        "no frame painted the focus on a hidden row"
+    );
+    while_held();
+    drop(pacing);
+    wait_or_report(
+        tree,
+        Duration::from_secs(60),
+        "the collapse ends and the keys are delivered",
+        || {
+            collapse_settled(&tree.section, directory)
+                && tree.section.workspace_section_evidence().collapse_held_keys == 0
+        },
+    );
+    flush_after_delay(Duration::from_millis(300));
+    assert_eq!(
+        tree.section.workspace_section_evidence().collapse_held_keys,
+        0,
+        "every held key was delivered: {}",
+        collapse_state(&tree.section)
+    );
+}
+
+/// Design D22 (task 10.14): in a 400:4,096 sliced collapse, Down pressed
+/// right after the input waits for the collapse, no painted frame shows the
+/// focus on a hidden row, and once it ends the focus is on the row after the
+/// directory, where `main` leaves it; Down, Down and End land where they
+/// would on `main`. Fails without the hold: Down moves the focus onto the
+/// first hidden child.
+#[test]
+fn test_navigation_keys_wait_for_the_collapse() {
+    use keysym::{DOWN, END};
+    let count = 4096;
+    let (tree, nested) = expanded_nested(count, 400);
+    press_row_for_real(&tree, &nested);
+    let directory = tree_index_for_path(&tree.section, &nested).expect("row index");
+    let watch = HiddenFocusWatch::start(&tree.window, &tree.section);
+    type_during_a_held_collapse(&tree, &nested, &[&[DOWN]], 1, &watch);
+    assert_eq!(
+        watch.frames(),
+        0,
+        "no frame painted the focus on a hidden row"
+    );
+    wait_or_report(&tree, Duration::from_secs(5), "wait 5", || {
+        window_focused_row(&tree.window, &tree.section) == Some(directory + 1)
+    });
+    assert_eq!(
+        window_focused_row(&tree.window, &tree.section),
+        Some(directory + 1)
+    );
+    assert_eq!(selection(&tree.section).selected(), directory + 1);
+    let evidence = tree.section.workspace_section_evidence();
+    assert_eq!(evidence.collapse_keys_replayed_total, 1);
+    assert_eq!(evidence.collapse_keys_dropped_total, 0);
+
+    expand_with_focus_on(&tree, &nested, count);
+    press_row_for_real(&tree, &nested);
+    type_during_a_held_collapse(&tree, &nested, &[&[DOWN], &[DOWN], &[END]], 3, &watch);
+    assert_eq!(
+        watch.frames(),
+        0,
+        "no frame painted the focus on a hidden row"
+    );
+    let last = tree
+        .section
+        .imp()
+        .tree_model
+        .borrow()
+        .as_ref()
+        .map(gtk4::TreeListModel::n_items)
+        .expect("the model")
+        - 1;
+    wait_or_report(&tree, Duration::from_secs(5), "wait 6", || {
+        window_focused_row(&tree.window, &tree.section) == Some(last)
+    });
+    assert_eq!(window_focused_row(&tree.window, &tree.section), Some(last));
+    assert_eq!(selection(&tree.section).selected(), last);
+    drop(watch);
+    drop(tree.window);
+}
+
+/// Design D22 (task 10.14, the hold wider than the directory row): Up from
+/// the row after a collapsing subtree would land on its last hidden row, so
+/// it waits too, and lands on the directory row once the collapse ends.
+/// Fails without the hold.
+#[test]
+fn test_up_from_the_row_after_the_subtree_waits_for_the_collapse() {
+    use keysym::UP;
+    let count = 256;
+    let (tree, nested) = expanded_nested(count, 400);
+    press_row_for_real(&tree, &nested);
+    let after = tree.root.join("top.txt");
+    press_row_for_real(&tree, &after);
+    let directory = tree_index_for_path(&tree.section, &nested).expect("row index");
+    let watch = HiddenFocusWatch::start(&tree.window, &tree.section);
+    type_during_a_held_collapse(&tree, &nested, &[&[UP]], 1, &watch);
+    assert_eq!(
+        watch.frames(),
+        0,
+        "no frame painted the focus on a hidden row"
+    );
+    wait_or_report(&tree, Duration::from_secs(5), "wait 7", || {
+        window_focused_row(&tree.window, &tree.section) == Some(directory)
+    });
+    assert_eq!(
+        window_focused_row(&tree.window, &tree.section),
+        Some(directory)
+    );
+    drop(watch);
+    drop(tree.window);
+}
+
+/// Design D22, R12 (task 10.14): a key whose effect depends on the focused
+/// row waits behind a held key and acts on the row the held key reaches:
+/// Down then Space reaches the list's peek route on the row after the
+/// directory; Down then Return
+/// activates that row and does not expand the directory again. Escape and
+/// Tab are not held: they act at once, as on any frame, and the held Down
+/// then acts from where Tab left the focus.
+#[test]
+fn test_keys_after_a_held_key_wait_behind_it() {
+    use keysym::{DOWN, ESCAPE, RETURN, SPACE, TAB};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let count = 256;
+    let (tree, nested) = expanded_nested(count, 400);
+    let directory = tree_index_for_path(&tree.section, &nested).expect("row index");
+    press_row_for_real(&tree, &nested);
+    let watch = HiddenFocusWatch::start(&tree.window, &tree.section);
+
+    // Down, then Space. The peek popover is not let open: mapping it on the
+    // presented window stops the headless compositor (mutter 51 segfaults
+    // in `meta_wayland_xdg_popup_apply_state`). A capture controller beside
+    // the key route, before the list's peek controller, records where the
+    // Space put back lands and stops it there; the peek route itself is
+    // covered by the peek tests.
+    let space_rows: Rc<RefCell<Vec<Option<u32>>>> = Rc::default();
+    let space_probe = gtk4::EventControllerKey::new();
+    space_probe.set_propagation_phase(gtk4::PropagationPhase::Capture);
+    {
+        let rows = Rc::clone(&space_rows);
+        let window = tree.window.downgrade();
+        let section = tree.section.downgrade();
+        space_probe.connect_key_pressed(move |_, keyval, _, _| {
+            let (Some(window), Some(section)) = (window.upgrade(), section.upgrade()) else {
+                return glib::Propagation::Proceed;
+            };
+            if keyval != gtk4::gdk::Key::space
+                || !section.workspace_section_evidence().collapses.is_empty()
+            {
+                return glib::Propagation::Proceed;
+            }
+            rows.borrow_mut()
+                .push(window_focused_row(&window, &section));
+            glib::Propagation::Stop
+        });
+    }
+    tree.section
+        .imp()
+        .file_tree_slice
+        .add_controller(space_probe.clone());
+    held_collapse_then(&tree, &nested, &[&[DOWN], &[SPACE]], 2, &watch, || {
+        assert!(space_rows.borrow().is_empty(), "Space waits behind Down");
+    });
+    tree.section
+        .imp()
+        .file_tree_slice
+        .remove_controller(&space_probe);
+    assert_eq!(
+        space_rows.borrow().as_slice(),
+        &[Some(directory + 1)],
+        "Space acts on the row after the directory, which Down reached"
+    );
+    assert!(!tree.section.peek_visible());
+
+    drop(watch);
+    drop(tree.window);
+
+    // Down, then Escape and Tab: neither waits. A fresh window, so no state
+    // of the case before carries over.
+    let (tree, nested) = expanded_nested(count, 400);
+    press_row_for_real(&tree, &nested);
+    let watch = HiddenFocusWatch::start(&tree.window, &tree.section);
+    let pacing = Pacing::set(CollapsePacing::Hold);
+    activate_tree_row(&tree.section, &nested);
+    crate::common::type_with_real_keyboard(&[&[DOWN], &[ESCAPE], &[TAB]]);
+    flush_after_delay(Duration::from_millis(300));
+    assert_eq!(
+        tree.section.workspace_section_evidence().collapse_held_keys,
+        1,
+        "only Down waits: {}",
+        focus_report(&tree)
+    );
+    let on_the_expander = gtk4::prelude::GtkWindowExt::focus(&tree.window)
+        .and_downcast::<gtk4::TreeExpander>()
+        .is_some_and(|expander| expander.list_row() == row_for_path(&tree.section, &nested));
+    assert!(
+        on_the_expander,
+        "Tab acted at once: the focus is on the directory row's expander: {}",
+        focus_report(&tree)
+    );
+    drop(pacing);
+    wait_or_report(&tree, Duration::from_secs(60), "the collapse ends", || {
+        collapse_settled(&tree.section, &nested)
+            && tree.section.workspace_section_evidence().collapse_held_keys == 0
+    });
+    wait_or_report(
+        &tree,
+        Duration::from_secs(5),
+        "Down acts after the collapse",
+        || window_focused_row(&tree.window, &tree.section) == Some(directory + 1),
+    );
+
+    drop(watch);
+    drop(tree.window);
+
+    // Down, then Return, in a fresh window (it opens the file in an editor).
+    let (tree, nested) = expanded_nested(count, 400);
+    let after = tree.root.join("top.txt");
+    press_row_for_real(&tree, &nested);
+    let watch = HiddenFocusWatch::start(&tree.window, &tree.section);
+    let activated: Rc<RefCell<Vec<PathBuf>>> = Rc::default();
+    // Connected once the collapse is held: a second `activate` handler
+    // connected before the activation would toggle the directory back.
+    held_collapse_then(&tree, &nested, &[&[DOWN], &[RETURN]], 2, &watch, || {
+        let recorder = Rc::clone(&activated);
+        tree.section
+            .connect_file_activated(move |path| recorder.borrow_mut().push(path.to_path_buf()));
+        assert!(activated.borrow().is_empty(), "nothing is activated yet");
+    });
+    wait_or_report(&tree, Duration::from_secs(5), "Return activates", || {
+        !activated.borrow().is_empty()
+    });
+    assert_eq!(
+        activated.borrow().as_slice(),
+        std::slice::from_ref(&after),
+        "Return activates the row after the directory"
+    );
+    assert!(
+        row_for_path(&tree.section, &nested).is_some_and(|row| !row.is_expanded()),
+        "the directory is not expanded again"
+    );
+    assert_eq!(
+        watch.frames(),
+        0,
+        "no frame painted the focus on a hidden row"
+    );
+    drop(watch);
+    drop(tree.window);
+}
+
+/// The focused row's path and the selected row's path.
+fn focus_and_selection(
+    window: &LushtextWindow,
+    section: &LushtextWorkspaceSection,
+) -> (Option<PathBuf>, Option<PathBuf>) {
+    let path_at = |position: u32| {
+        section
+            .imp()
+            .tree_model
+            .borrow()
+            .as_ref()
+            .and_then(|model| model.item(position))
+            .and_downcast::<gtk4::TreeListRow>()
+            .and_then(|row| row.item())
+            .and_downcast::<FileTreeItem>()
+            .and_then(|item| item.path())
+    };
+    let focused = window_focused_row(window, section).and_then(path_at);
+    let selected = selection(section).selected();
+    let selected = (selected != gtk4::INVALID_LIST_POSITION)
+        .then(|| path_at(selected))
+        .flatten();
+    (focused, selected)
+}
+
+/// A press the window saw: its keyval, the event, the sidebar's scroll
+/// position then, and whether that position was settled.
+type SeenPress = (u32, gtk4::gdk::Event, f64, bool);
+
+/// Design D22, R12 (task 10.14): each held navigation key, with and
+/// without Shift and Ctrl, leaves the focus and the selection where GTK's
+/// own binding leaves them for the same key event delivered on the same
+/// final tree with no collapse, Page Up and Page Down at the test window's
+/// height; and a Down on a focused directory row that is not selected
+/// selects it, as GTK's binding does. The reference is the very press the
+/// window saw, put back from the same start once the tree is final (ledger
+/// A126: a press put back is routed as a fresh one), because a second real
+/// press through the headless compositor's input sessions is not delivered
+/// reliably. The keypad forms are not typed (the compositor's virtual
+/// keymap has none): GTK binds none of them on a list or a window, so they
+/// move nothing either way.
+#[test]
+fn test_replayed_navigation_matches_gtk() {
+    use glib::translate::IntoGlib;
+    use keysym::{CONTROL_L, DOWN, END, HOME, PAGE_DOWN, PAGE_UP, SHIFT_L, UP};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let count = 256;
+    let (tree, nested) = expanded_nested(count, 400);
+    let watch = HiddenFocusWatch::start(&tree.window, &tree.section);
+    // The presses the window sees, before any route takes them.
+    // The presses the window sees, before any route takes them, with the
+    // sidebar's scroll position at each: the replayed press is seen twice,
+    // and its second sighting carries the position it acts from.
+    let outer = tree.sidebar.imp().outer_scrolled_window.vadjustment();
+    let seen: Rc<RefCell<Vec<SeenPress>>> = Rc::default();
+    let recorder = gtk4::EventControllerKey::new();
+    recorder.set_propagation_phase(gtk4::PropagationPhase::Capture);
+    {
+        let seen = Rc::clone(&seen);
+        let outer = outer.clone();
+        let slice = tree.section.imp().file_tree_slice.clone();
+        recorder.connect_key_pressed(move |controller, keyval, _, _| {
+            if let Some(event) = controller.current_event() {
+                // A settled position: no scroll request the slice bin has
+                // not applied yet.
+                let settled = !slice.outer_request_pending();
+                seen.borrow_mut()
+                    .push((keyval.into_glib(), event, outer.value(), settled));
+            }
+            glib::Propagation::Proceed
+        });
+    }
+    tree.window.add_controller(recorder.clone());
+    let mut cases: Vec<(Vec<u32>, bool)> = Vec::new();
+    for key in [UP, DOWN, PAGE_UP, PAGE_DOWN, HOME, END] {
+        for modifiers in [&[][..], &[SHIFT_L], &[CONTROL_L], &[CONTROL_L, SHIFT_L]] {
+            let mut chord = modifiers.to_vec();
+            chord.push(key);
+            cases.push((chord, true));
+        }
+    }
+    cases.push((vec![DOWN], false));
+    cases.push((vec![SHIFT_L, DOWN], false));
+    let start = |tree: &LargeTree, selected: bool| {
+        if selected {
+            press_row_for_real(tree, &nested);
+        } else {
+            focus_row_unselected(tree, &nested);
+        }
+    };
+    for (index, (chord, selected)) in cases.iter().enumerate() {
+        if index > 0 {
+            expand_with_focus_on(&tree, &nested, count);
+        }
+        start(&tree, *selected);
+        seen.borrow_mut().clear();
+        type_during_a_held_collapse(&tree, &nested, &[chord.as_slice()], 1, &watch);
+        let replayed = focus_and_selection(&tree.window, &tree.section);
+        let key = *chord.last().expect("a key");
+        let (press, scrolled, settled) = seen
+            .borrow()
+            .iter()
+            .rfind(|(keyval, _, _, _)| *keyval == key)
+            .map(|(_, event, value, settled)| (event.clone(), *value, *settled))
+            .expect("the window saw the press");
+        assert!(
+            settled,
+            "chord {chord:x?}: the replay acted from a settled scroll position"
+        );
+        // GTK's own binding, on the final tree, for the same press, from the
+        // same scroll position (Page Up and Page Down move by the band the
+        // slice bin shows, which follows it).
+        start(&tree, *selected);
+        outer.set_value(scrolled);
+        wait_or_report(
+            &tree,
+            Duration::from_secs(5),
+            "the scroll position is restored",
+            || {
+                (outer.value() - scrolled).abs() < 0.5
+                    && !tree.section.imp().file_tree_slice.outer_request_pending()
+            },
+        );
+        flush_after_delay(Duration::from_millis(200));
+        #[expect(
+            deprecated,
+            reason = "ledger A126: gdk_display_put_event, deprecated with no replacement, \
+                      delivers the recorded press through GTK's own route"
+        )]
+        WidgetExt::display(&tree.window).put_event(&press);
+        flush_after_delay(Duration::from_millis(300));
+        let reference = focus_and_selection(&tree.window, &tree.section);
+        assert_eq!(
+            replayed,
+            reference,
+            "chord {chord:x?} (directory selected: {selected}): the replay lands where GTK's \
+             binding lands: {}",
+            focus_report(&tree)
+        );
+    }
+    assert_eq!(
+        watch.frames(),
+        0,
+        "no frame painted the focus on a hidden row"
+    );
+    tree.window.remove_controller(&recorder);
+    drop(watch);
+    drop(tree.window);
 }

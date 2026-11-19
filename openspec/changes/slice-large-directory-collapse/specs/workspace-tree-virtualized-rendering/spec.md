@@ -96,9 +96,11 @@ From the input dispatch of a sliced collapse until it ends, every realized row i
 - **THEN** nothing is selected, activated, expanded, collapsed or peeked, and no hover background is drawn
 
 #### Scenario: Navigation keys during a collapse
-- **WHEN** the focus is on the collapsing directory row or on a hidden row and the user presses Up, Down, Page Up, Page Down, Home or End, or a keypad form, with or without Shift or Ctrl
-- **THEN** the key is held, no painted frame shows the focus on a hidden row, and when the collapse ends the held keys act in the order pressed from the directory row, as they would on `main` after its frozen collapse returned
+- **WHEN** a collapse of the section is pending, the focus is on a row of the section's tree, and the user presses Up, Down, Page Up, Page Down, Home or End, or a keypad form, with or without Shift or Ctrl
+- **THEN** the key is held, no painted frame shows the focus on a hidden row, and when the collapse ends, by any end, and a frame has laid out the final tree, the held keys act in the order pressed from the focused row, as they would on `main` after its frozen collapse returned
 - **AND** a Down pressed during the collapse of a directory with rows after it leaves the focus on the row after the directory
+- **AND** an Up pressed on the row after the collapsing subtree waits too, and leaves the focus on the directory row
+- **AND** if the focus has left the tree when the collapse ends, the held keys are dropped, never delivered to the widget that now has the focus
 - **AND** each held key lands where GTK's own binding for it lands on the final tree, Page Up and Page Down included
 
 #### Scenario: A key after a held key

@@ -189,8 +189,9 @@ pub struct WorkspaceTreeEvidence {
     pub limited_directory_count: usize,
     /// Expanded directories still loading their rows in batches.
     pub loading_directory_count: usize,
-    /// Whether a sliced directory collapse still runs in any section
-    /// (`slice-large-directory-collapse` D11).
+    /// Whether a sliced directory collapse still runs in any section, or
+    /// keys held behind one still wait (`slice-large-directory-collapse`
+    /// D11, D22).
     pub collapse_pending: bool,
     /// Reveals that ended `superseded` (by a newer reveal or by disposal).
     pub reveal_superseded_count: u64,
@@ -599,6 +600,15 @@ pub struct WorkspaceSectionEvidence {
     pub collapse_hidden_syncs: u64,
     /// Of those, the passes its one-shot re-apply source ran.
     pub collapse_hidden_reapply_runs: u64,
+    /// Keys waiting behind a collapse now: held, or put back and not yet
+    /// delivered again (design D22, task 10.14).
+    pub collapse_held_keys: u32,
+    /// Keys held behind a collapse, ever.
+    pub collapse_keys_held_total: u64,
+    /// Held keys put back on GDK's queue, ever.
+    pub collapse_keys_replayed_total: u64,
+    /// Held keys dropped because the focus had left the list, ever.
+    pub collapse_keys_dropped_total: u64,
     /// The directory of the latest child-scan terminal publication, and
     /// whether its store was the shown (retained) one (D12, task 1.4).
     pub last_scan_terminal: Option<(std::path::PathBuf, bool)>,
@@ -678,6 +688,10 @@ impl LushtextWorkspaceSection {
             hidden_rows: collapse_hidden_rows,
             hidden_syncs: collapse_hidden_syncs,
             hidden_reapply_runs: collapse_hidden_reapply_runs,
+            held_keys_waiting: collapse_held_keys,
+            keys_held_total: collapse_keys_held_total,
+            keys_replayed_total: collapse_keys_replayed_total,
+            keys_dropped_total: collapse_keys_dropped_total,
         } = self.collapse_evidence();
 
         let last_scan_terminal = refresh.last_scan_terminal.borrow().clone();
@@ -738,6 +752,10 @@ impl LushtextWorkspaceSection {
             collapse_hidden_rows,
             collapse_hidden_syncs,
             collapse_hidden_reapply_runs,
+            collapse_held_keys,
+            collapse_keys_held_total,
+            collapse_keys_replayed_total,
+            collapse_keys_dropped_total,
             last_scan_terminal,
         }
     }

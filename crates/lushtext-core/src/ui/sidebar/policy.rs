@@ -1488,6 +1488,141 @@ pub fn next_collapse_step(facts: &CollapseFacts<'_>) -> CollapseStep {
     }
 }
 
+/// A key the sidebar's collapse key route tells apart (design D22, task
+/// 10.14), named by what GTK binds it to; the adapter maps keyvals onto it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SidebarKey {
+    /// `Up`, a `GtkListBase` cursor binding.
+    Up,
+    /// `Down`.
+    Down,
+    /// `Page_Up`.
+    PageUp,
+    /// `Page_Down`.
+    PageDown,
+    /// `Home`.
+    Home,
+    /// `End`.
+    End,
+    /// A keypad navigation key (`KP_Up`, `KP_Down`, `KP_Page_Up`,
+    /// `KP_Page_Down`, `KP_Home`, `KP_End`). GTK binds none of them on a list
+    /// or a window (ledger A126), so they move nothing; they are held with the
+    /// others so that the order of every key is kept.
+    KeypadNavigation,
+    /// `Return`, `ISO_Enter` or `KP_Enter`: the row's `activate-keybinding`.
+    Enter,
+    /// `space` or `KP_Space`: the row's `listitem.select` and the sidebar's
+    /// peek.
+    Space,
+    /// `Menu`: the sidebar's context menu.
+    Menu,
+    /// `F10`: the context menu with Shift.
+    F10,
+}
+
+/// The modifiers the key route reads (`Lock` and the keypad's `NumLock`
+/// state are ignored, as GTK's own matching ignores them).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SidebarKeyModifiers {
+    /// Shift.
+    pub shift: bool,
+    /// Control.
+    pub control: bool,
+    /// Alt, Super, Hyper or Meta: an accelerator, never a list key.
+    pub other: bool,
+}
+
+/// What a key pressed while a collapse runs is to the key route.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HeldKeyClass {
+    /// A list-navigation key: it moves the focus, so it could land on a
+    /// hidden row.
+    Navigation,
+    /// A key whose effect depends on the focused row: activation, peek, the
+    /// context menu, an expander's disclosure bindings.
+    RowDependent,
+    /// Anything else: Escape, Tab, letters, window accelerators.
+    Other,
+}
+
+/// Classify a key for the collapse key route (design D22). `disclosure` says
+/// that the key matches one of the focused expander's class key bindings,
+/// which act on that row.
+#[must_use]
+pub const fn classify_held_key(
+    key: Option<SidebarKey>,
+    modifiers: SidebarKeyModifiers,
+    disclosure: bool,
+) -> HeldKeyClass {
+    if modifiers.other {
+        return HeldKeyClass::Other;
+    }
+    if disclosure {
+        return HeldKeyClass::RowDependent;
+    }
+    match key {
+        Some(
+            SidebarKey::Up
+            | SidebarKey::Down
+            | SidebarKey::PageUp
+            | SidebarKey::PageDown
+            | SidebarKey::Home
+            | SidebarKey::End
+            | SidebarKey::KeypadNavigation,
+        ) => HeldKeyClass::Navigation,
+        Some(SidebarKey::Enter | SidebarKey::Space | SidebarKey::Menu) => {
+            HeldKeyClass::RowDependent
+        }
+        Some(SidebarKey::F10) if modifiers.shift => HeldKeyClass::RowDependent,
+        Some(SidebarKey::F10) | None => HeldKeyClass::Other,
+    }
+}
+
+/// What the key route knows when a key arrives (design D22).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct HeldKeyState {
+    /// A collapse of this section is pending.
+    pub collapse_pending: bool,
+    /// Keys pressed before this one still wait: held, or put back and not
+    /// yet delivered again. For a key that is itself being delivered again,
+    /// only held keys pressed before it count.
+    pub earlier_keys_waiting: bool,
+    /// The focus is on a row of the section's list (the row widget or a
+    /// widget inside it), not in an editable such as the inline rename entry.
+    pub focus_on_row: bool,
+}
+
+/// Whether the key route holds a key or lets it through.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HeldKeyAction {
+    /// Keep the key; it is put back once the collapse has ended.
+    Hold,
+    /// Let GTK route the key now.
+    Propagate,
+}
+
+/// Decide a key's fate (design D22): a navigation key waits while a collapse
+/// is pending or earlier keys wait, so the focus never lands on a hidden row
+/// and the keys keep their order; a row-dependent key waits only behind an
+/// earlier key, so it acts on the row the keys before it reach; every other
+/// key, and every key typed outside a row, acts at once.
+#[must_use]
+pub const fn held_key_action(class: HeldKeyClass, state: HeldKeyState) -> HeldKeyAction {
+    if !state.focus_on_row {
+        return HeldKeyAction::Propagate;
+    }
+    let hold = match class {
+        HeldKeyClass::Navigation => state.collapse_pending || state.earlier_keys_waiting,
+        HeldKeyClass::RowDependent => state.earlier_keys_waiting,
+        HeldKeyClass::Other => false,
+    };
+    if hold {
+        HeldKeyAction::Hold
+    } else {
+        HeldKeyAction::Propagate
+    }
+}
+
 /// `next_collapse_step` (`slice-large-directory-collapse` task 3.1): the
 /// reference cases, and a property test driving the policy against a model of
 /// GTK's realized band (ledger A118) until the directory collapses.
@@ -2058,6 +2193,167 @@ mod collapse_tests {
                     unbound_steps <= unbound_cap,
                     "unbound steps {unbound_steps} over {unbound_cap}"
                 );
+            }
+        }
+    }
+}
+
+/// The collapse key route's pure half (design D22, task 10.14).
+#[cfg(test)]
+mod held_key_tests {
+    use super::{
+        HeldKeyAction, HeldKeyClass, HeldKeyState, SidebarKey, SidebarKeyModifiers,
+        classify_held_key, held_key_action,
+    };
+
+    const NONE: SidebarKeyModifiers = SidebarKeyModifiers {
+        shift: false,
+        control: false,
+        other: false,
+    };
+    const NAVIGATION: [SidebarKey; 7] = [
+        SidebarKey::Up,
+        SidebarKey::Down,
+        SidebarKey::PageUp,
+        SidebarKey::PageDown,
+        SidebarKey::Home,
+        SidebarKey::End,
+        SidebarKey::KeypadNavigation,
+    ];
+
+    fn modifiers(shift: bool, control: bool) -> SidebarKeyModifiers {
+        SidebarKeyModifiers {
+            shift,
+            control,
+            other: false,
+        }
+    }
+
+    #[test]
+    fn navigation_keys_with_or_without_shift_or_control_are_navigation() {
+        for key in NAVIGATION {
+            for (shift, control) in [(false, false), (true, false), (false, true), (true, true)] {
+                assert_eq!(
+                    classify_held_key(Some(key), modifiers(shift, control), false),
+                    HeldKeyClass::Navigation,
+                    "{key:?} shift={shift} control={control}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn row_keys_are_row_dependent() {
+        for key in [SidebarKey::Enter, SidebarKey::Space, SidebarKey::Menu] {
+            assert_eq!(
+                classify_held_key(Some(key), NONE, false),
+                HeldKeyClass::RowDependent,
+                "{key:?}"
+            );
+        }
+        assert_eq!(
+            classify_held_key(Some(SidebarKey::Space), modifiers(false, true), false),
+            HeldKeyClass::RowDependent,
+            "Ctrl+Space selects the focused row"
+        );
+        assert_eq!(
+            classify_held_key(Some(SidebarKey::F10), modifiers(true, false), false),
+            HeldKeyClass::RowDependent,
+            "Shift+F10 opens the focused row's menu"
+        );
+        assert_eq!(
+            classify_held_key(Some(SidebarKey::F10), NONE, false),
+            HeldKeyClass::Other,
+            "F10 alone is the window's menu key"
+        );
+        assert_eq!(
+            classify_held_key(None, NONE, true),
+            HeldKeyClass::RowDependent,
+            "an expander's disclosure binding acts on its row"
+        );
+    }
+
+    #[test]
+    fn accelerators_and_unknown_keys_are_other() {
+        let alt = SidebarKeyModifiers {
+            shift: false,
+            control: false,
+            other: true,
+        };
+        assert_eq!(
+            classify_held_key(Some(SidebarKey::Down), alt, false),
+            HeldKeyClass::Other
+        );
+        assert_eq!(
+            classify_held_key(None, NONE, true),
+            HeldKeyClass::RowDependent
+        );
+        assert_eq!(classify_held_key(None, alt, true), HeldKeyClass::Other);
+        assert_eq!(classify_held_key(None, NONE, false), HeldKeyClass::Other);
+    }
+
+    fn state(pending: bool, waiting: bool, on_row: bool) -> HeldKeyState {
+        HeldKeyState {
+            collapse_pending: pending,
+            earlier_keys_waiting: waiting,
+            focus_on_row: on_row,
+        }
+    }
+
+    #[test]
+    fn navigation_waits_for_a_pending_collapse_or_earlier_keys() {
+        let class = HeldKeyClass::Navigation;
+        assert_eq!(
+            held_key_action(class, state(true, false, true)),
+            HeldKeyAction::Hold
+        );
+        assert_eq!(
+            held_key_action(class, state(false, true, true)),
+            HeldKeyAction::Hold
+        );
+        assert_eq!(
+            held_key_action(class, state(true, true, true)),
+            HeldKeyAction::Hold
+        );
+        assert_eq!(
+            held_key_action(class, state(false, false, true)),
+            HeldKeyAction::Propagate
+        );
+    }
+
+    #[test]
+    fn a_row_key_waits_only_behind_an_earlier_key() {
+        let class = HeldKeyClass::RowDependent;
+        assert_eq!(
+            held_key_action(class, state(true, false, true)),
+            HeldKeyAction::Propagate,
+            "with nothing held, Return acts on the collapsing directory at once"
+        );
+        assert_eq!(
+            held_key_action(class, state(true, true, true)),
+            HeldKeyAction::Hold
+        );
+        assert_eq!(
+            held_key_action(class, state(false, true, true)),
+            HeldKeyAction::Hold
+        );
+    }
+
+    #[test]
+    fn other_keys_and_keys_outside_a_row_act_at_once() {
+        for pending in [false, true] {
+            for waiting in [false, true] {
+                assert_eq!(
+                    held_key_action(HeldKeyClass::Other, state(pending, waiting, true)),
+                    HeldKeyAction::Propagate
+                );
+                for class in [HeldKeyClass::Navigation, HeldKeyClass::RowDependent] {
+                    assert_eq!(
+                        held_key_action(class, state(pending, waiting, false)),
+                        HeldKeyAction::Propagate,
+                        "the rename entry and other editables keep their keys"
+                    );
+                }
             }
         }
     }

@@ -557,6 +557,7 @@ impl ObjectImpl for LushtextWorkspaceSection {
         self.obj().unregister_folder_reorder_section();
         self.obj().stop_workspace_watch();
         self.obj().cancel_all_collapses();
+        self.obj().drop_held_keys();
         super::scan_execution::clear_all_dir_state(&self.obj());
         // A disposed section drains nothing later: release what is retiring.
         if let Some(source) = self.child_store_retirement_source.take() {
