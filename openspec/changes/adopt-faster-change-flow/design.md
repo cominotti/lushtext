@@ -513,6 +513,9 @@ Floor rows for this round's rule edits:
 | The final review edits nothing; exact range and tree; rejected correctness findings re-checked | "Stages after implementation" 4 | Strengthens "an independent code reviewer": no agent reviews its own fix, and conflict resolution goes through the review stages. |
 | Guard by status hash, slot and lock; `args.guard_ack` | "Workflow agents" | The comparison covers more (slot, lock); an acknowledgement accepts one named reading and is given only by the coordinator. |
 | `Makefile` not eligible for the fast lane | "Fast lane" | Strengthens: fewer changes skip the spec review. |
-| A recorded fail voids gate reuse on that tree | "Merging" step 2 | Strengthens: a flake can no longer hide behind a later pass. |
+| A recorded fail voids gate reuse on that tree; an interrupted run (exit 75, 78, 124 or a signal) records nothing | "Merging" step 2 | Strengthens: a flake can no longer hide behind a later pass. An interrupted run was never a result, so leaving it out loosens nothing. |
+| Apply read-back in the shell, with a `gate-trees.sh` `make check` record for the tree | "Stages after implementation" 3 | Strengthens "every gate on every tree": the tree the final review gets is the gated one by record, not by the apply agent's word. |
+| Slot acquire exits 2 for a name without a change worktree; a Markdown `Status:` line counts; slots under `args.worktree_override` use the worktree's name | "Implementation slots and ordering" | Fewer stray slots, and the cap fails open less often. No gate changes. |
+| `revise` and `review-only` need the PR and worktree; every argument is checked before the first agent | "Running a change" | Fails closed earlier: no agent runs on a half-specified change, and no archive push happens before a bad argument is seen. |
 
 This round's stage 4 reviews and fixes as usual but does not merge: it ends "ready, Fable fix check pending", and the coordinator runs a narrow second Fable pass on the fix diff, then a merge-only run with `make test` on the final tree.
