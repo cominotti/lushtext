@@ -2753,10 +2753,80 @@ Both wait for it because of `durable_write` overlap; the facts are:
   its body, so the orphan-body cleanup now removes a body only when its entry
   file is confirmed missing (design, "Review (stage 4, 2026-11-18)").
 
+### Phase 6 — Shell conformance against the proven cores (`verify-shell-conformance-against-proven-cores`, in progress)
+
+**Posture (2026-11-18, stage 3 of the change).** The write half is done; the
+draft-service lockstep driver (design D5, tasks 4.x) and the journal fault
+widening (D6/D7, tasks 5.x) are not started and stay owed by this change, in
+that order (4.3 must pass on before-effect faults before 5.1 widens the
+model).
+
+- **Shared environment models (D1).** The Kani environments moved out of the
+  harness files into `services/filesystem/write_protocol/disk_model.rs`
+  (`Disk`, `MoveDisk`, `RenameNamespace`) and
+  `services/draft_service/journal_model.rs` (the journal model, with its
+  in-model choices behind a `Choices` trait; `KaniChoices` is exactly the
+  former `kani::any()` / `kani::assume`). The harnesses changed only at their
+  choice call sites. Both modules are verification code: excluded from the
+  mutation scope, listed in `NOT_ORACLE_MODULES`, compiled under `cfg(kani)`,
+  `cfg(test)` and (the disk model) `test-utils`.
+- **The conformance tap (D3).** `services/filesystem/backend_tap.rs` is a
+  per-invocation, thread-local seam with two sites: the action site in
+  `protocol_drive::drive` (every action and fed-back outcome of the six
+  shells, with nested runs, before-action hooks and crashes by
+  `resume_unwind`) and the call site in `sys.rs` (every fallible backend
+  primitive; a test pins the list). The six durable-write hooks are now
+  one-entry plans; their setters kept their names and semantics. Outside
+  `test` and `test-utils` every entry point is an inline no-op.
+- **Write-shell conformance (D4).** `services/conformance/write_shell.rs`
+  runs a real durable-write primitive under the tap and replays the trace
+  through the cores and the shared disk model, checking after every action
+  the fed outcome against the calls' results, the pinned per-action call
+  table, the destination against `visible()`, the temp against `linked`, temp
+  mode non-widening and stray entries; after a crash, the live crash view and
+  that every leftover is a temp a later launch sweeps. The deterministic
+  enumeration covers 322 cases (8 primitives x 2 destination states x every
+  action's calls x Fail / AlreadyExists / CrossDevice, crash before and after
+  every action, a failed temp removal on every failure path, 1..8 taken temp
+  names) in about 0.05 s; `tests/properties/shell_conformance_write.rs` adds
+  modes, payload sizes and two injections per run. **Findings: none** (the
+  write shell matched its core and model on every case). The enumeration was
+  shown to fail on a scratch, never-committed shell mutant (a `RemoveTemp`
+  that removes nothing fails the pinned call table on its first case).
+- **Finding, shell (D6, expected by the design):** `set_aside::place`
+  counted a set-aside **copy** whose directory sync failed as placed, so a
+  stale body could be reported preserved, then unlinked durably, and a crash
+  could revert the unsynced copy. Fixed failing-first: a copy's
+  `AfterRename` is now an error (the caller keeps the body), and a retry that
+  finds the same bytes syncs the directory before it counts them kept; moves
+  keep counting as placed (a reverted rename returns the body to `drafts/`).
+  The Kani exhibit of task 7.4 is owed with the D6 widening.
+- **Proof strength after the model move (interim, task 9.3 still owed on
+  the final code).** `write_protocol.rs` at `cd1a0f7c`: 34 mutants, 6 / 6
+  unviable, 28 killed by both arms (0 Kani-only, 0 tests-only), 0 Kani
+  survivors. The Kani kill count equals the `3c9fe91e` record (28), and the
+  10 former Kani-only kills are now also killed by the tests arm through the
+  conformance tests. `journal_core.rs` at `73ff720f`, with the Kani arm
+  sharded `0/2` and `1/2`: 51 mutants, 18 / 18 unviable, 1 Kani-only,
+  32 both, 33 either, 0 Kani survivors. This is identical to the `71fc2e3a`
+  record. The shared environment models weakened neither proof.
+- **Replace survivors (D8).** Mutants 649, 689 and 691 of
+  `replace/apply.rs::process_file` have tests through the tap's
+  before-action hook at `ReplaceFile`/`WriteBody`
+  (`a_same_size_change_before_the_body_write_is_caught_by_pass_a`,
+  `a_cancel_before_a_body_write_that_fails_early_cancels_the_run`).
+- **Kani.** The four touched shards (`core-journal-and-write`,
+  `core-journal-liveness`, `core-second-writer`, `core-multi-window`) re-run
+  locally on the moved models; their records are `PENDING DISPATCH` until
+  the change's `kani.yml` runs.
+
 ## 4. Deferral inventory
 
-- **Three `replace/apply.rs::process_file` mutation survivors, for
-  `verify-shell-conformance-against-proven-cores`** (recorded 2026-11-18 by
+- ~~**Three `replace/apply.rs::process_file` mutation survivors, for
+  `verify-shell-conformance-against-proven-cores`**~~ **Tests added
+  2026-11-18** by that change (Phase 6): two tests through the conformance
+  tap's before-action hook, one per mechanism below; the mutation-run
+  evidence is recorded in `docs/mutation-testing.md`. Original entry: (recorded 2026-11-18 by
   the `apply-verification-altitude-redesigns` review). Pre-existing on
   `main`, surfaced by that change's re-indentation, none equivalent, so none
   is excluded: 649 (`||` to `&&` in the pass-A facts check, a same-size

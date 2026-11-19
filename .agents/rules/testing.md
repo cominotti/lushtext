@@ -138,7 +138,11 @@ a helper a test must remember to call first
   to make operations fail: CI containers may run as root. Use feature-gated,
   per-invocation fault seams with no global mutable state; a seam visible
   across threads is keyed by the exact operation target and returns cleanup
-  ownership from registration.
+  ownership from registration. The durable-write seam is the conformance tap
+  (`services/filesystem/backend_tap.rs`): per-invocation and thread-local.
+  Its crashes unwind with `resume_unwind`, so use one only where no lock or
+  I/O-doing `Drop` is on the unwind path (the draft service's manifest lock
+  `expect`s on poison, so draft-level crashes fall between service calls).
 - The smoke-only Cargo features `smoke-read-faults`, `smoke-list-budgets`,
   `crash-kill-points` and `responsiveness-probes` are never enabled in release,
   Meson, Flatpak, or Snap builds. There, code gated on them compiles as empty

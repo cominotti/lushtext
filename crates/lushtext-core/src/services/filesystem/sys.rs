@@ -12,8 +12,12 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
+use super::backend_tap::{self as tap, Call};
 use super::types::FileKind;
 use super::{FileIdentity, read::BoundedFileReadError};
+
+/// What a descriptor-only primitive reports to the tap as its path.
+const DESCRIPTOR: &str = "<descriptor>";
 
 pub(in crate::services) type File = fs::File;
 pub(in crate::services) type Metadata = fs::Metadata;
@@ -35,11 +39,11 @@ pub(in crate::services) struct RawDirectoryEntry {
 }
 
 pub(in crate::services) fn read(path: &Path) -> io::Result<Vec<u8>> {
-    fs::read(path)
+    tap::call(Call::Read, path, || fs::read(path))
 }
 
 pub(in crate::services) fn read_to_string(path: &Path) -> io::Result<String> {
-    fs::read_to_string(path)
+    tap::call(Call::Read, path, || fs::read_to_string(path))
 }
 
 /// Open `path` for appending, creating it owner-only (`0o600`) when absent.
@@ -64,15 +68,15 @@ pub(in crate::services) fn create_new_empty_file(path: &Path) -> io::Result<()> 
 }
 
 pub(in crate::services) fn metadata(path: &Path) -> io::Result<fs::Metadata> {
-    fs::metadata(path)
+    tap::call(Call::Metadata, path, || fs::metadata(path))
 }
 
 pub(in crate::services) fn symlink_metadata(path: &Path) -> io::Result<fs::Metadata> {
-    fs::symlink_metadata(path)
+    tap::call(Call::SymlinkMetadata, path, || fs::symlink_metadata(path))
 }
 
 pub(in crate::services) fn canonicalize(path: &Path) -> io::Result<PathBuf> {
-    fs::canonicalize(path)
+    tap::call(Call::Canonicalize, path, || fs::canonicalize(path))
 }
 
 pub(in crate::services) fn path_exists(path: &Path) -> bool {
@@ -104,12 +108,14 @@ fn kind_from_rustix_file_type(file_type: rustix::fs::FileType) -> FileKind {
 
 #[cfg(unix)]
 pub(in crate::services) fn create_dir(path: &Path) -> io::Result<()> {
-    rustix::fs::mkdirat(
-        rustix::fs::CWD,
-        path,
-        rustix::fs::Mode::from_raw_mode(0o777),
-    )
-    .map_err(io::Error::from)
+    tap::call(Call::CreateDir, path, || {
+        rustix::fs::mkdirat(
+            rustix::fs::CWD,
+            path,
+            rustix::fs::Mode::from_raw_mode(0o777),
+        )
+        .map_err(io::Error::from)
+    })
 }
 
 #[cfg(not(unix))]
@@ -118,13 +124,15 @@ pub(in crate::services) fn create_dir(path: &Path) -> io::Result<()> {
 }
 
 pub(in crate::services) fn create_dir_all(path: &Path) -> io::Result<()> {
-    fs::create_dir_all(path)
+    tap::call(Call::CreateDirAll, path, || fs::create_dir_all(path))
 }
 
 #[cfg(unix)]
 pub(in crate::services) fn remove_file(path: &Path) -> io::Result<()> {
-    rustix::fs::unlinkat(rustix::fs::CWD, path, rustix::fs::AtFlags::empty())
-        .map_err(io::Error::from)
+    tap::call(Call::RemoveFile, path, || {
+        rustix::fs::unlinkat(rustix::fs::CWD, path, rustix::fs::AtFlags::empty())
+            .map_err(io::Error::from)
+    })
 }
 
 #[cfg(not(unix))]
@@ -134,8 +142,10 @@ pub(in crate::services) fn remove_file(path: &Path) -> io::Result<()> {
 
 #[cfg(unix)]
 pub(in crate::services) fn remove_dir(path: &Path) -> io::Result<()> {
-    rustix::fs::unlinkat(rustix::fs::CWD, path, rustix::fs::AtFlags::REMOVEDIR)
-        .map_err(io::Error::from)
+    tap::call(Call::RemoveDir, path, || {
+        rustix::fs::unlinkat(rustix::fs::CWD, path, rustix::fs::AtFlags::REMOVEDIR)
+            .map_err(io::Error::from)
+    })
 }
 
 #[cfg(not(unix))]
@@ -144,12 +154,14 @@ pub(in crate::services) fn remove_dir(path: &Path) -> io::Result<()> {
 }
 
 pub(in crate::services) fn remove_dir_all(path: &Path) -> io::Result<()> {
-    fs::remove_dir_all(path)
+    tap::call(Call::RemoveDirAll, path, || fs::remove_dir_all(path))
 }
 
 #[cfg(unix)]
 pub(in crate::services) fn rename(from: &Path, to: &Path) -> io::Result<()> {
-    rustix::fs::renameat(rustix::fs::CWD, from, rustix::fs::CWD, to).map_err(io::Error::from)
+    tap::call(Call::Rename, to, || {
+        rustix::fs::renameat(rustix::fs::CWD, from, rustix::fs::CWD, to).map_err(io::Error::from)
+    })
 }
 
 #[cfg(not(unix))]
@@ -166,12 +178,12 @@ pub(in crate::services) fn is_cross_device(error: &io::Error) -> bool {
 }
 
 /// The error a kernel returns for a rename across filesystems, for fault injection.
-#[cfg(all(test, unix))]
+#[cfg(all(any(test, feature = "test-utils"), unix))]
 pub(in crate::services) fn cross_device_error_for_test() -> io::Error {
     io::Error::from(rustix::io::Errno::XDEV)
 }
 
-#[cfg(all(test, not(unix)))]
+#[cfg(all(any(test, feature = "test-utils"), not(unix)))]
 pub(in crate::services) fn cross_device_error_for_test() -> io::Error {
     io::Error::from(io::ErrorKind::CrossesDevices)
 }
@@ -200,19 +212,23 @@ pub(in crate::services) fn cross_device_error_for_test() -> io::Error {
 /// as `DurableWriteError::AfterRename`, so callers branch on the class first.
 #[cfg(unix)]
 pub(in crate::services) fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
-    match rustix::fs::renameat_with(
-        rustix::fs::CWD,
-        from,
-        rustix::fs::CWD,
+    tap::call(
+        Call::RenameNoReplace,
         to,
-        rustix::fs::RenameFlags::NOREPLACE,
-    ) {
-        Ok(()) => Ok(()),
-        Err(rustix::io::Errno::INVAL | rustix::io::Errno::NOSYS | rustix::io::Errno::OPNOTSUPP) => {
-            Err(io::Error::from(io::ErrorKind::Unsupported))
-        }
-        Err(error) => Err(io::Error::from(error)),
-    }
+        || match rustix::fs::renameat_with(
+            rustix::fs::CWD,
+            from,
+            rustix::fs::CWD,
+            to,
+            rustix::fs::RenameFlags::NOREPLACE,
+        ) {
+            Ok(()) => Ok(()),
+            Err(
+                rustix::io::Errno::INVAL | rustix::io::Errno::NOSYS | rustix::io::Errno::OPNOTSUPP,
+            ) => Err(io::Error::from(io::ErrorKind::Unsupported)),
+            Err(error) => Err(io::Error::from(error)),
+        },
+    )
 }
 
 #[cfg(not(unix))]
@@ -230,7 +246,7 @@ pub(in crate::services) fn rename_no_replace(_from: &Path, _to: &Path) -> io::Re
 const READ_CHUNK_BYTES: usize = 64 * 1024;
 
 pub(in crate::services) fn read_prefix(path: &Path, byte_limit: usize) -> io::Result<Vec<u8>> {
-    let mut file = fs::File::open(path)?;
+    let mut file = open_for_read(path)?;
     let mut limited = Read::by_ref(&mut file).take(u64::try_from(byte_limit).unwrap_or(u64::MAX));
     let mut bytes = Vec::new();
     limited.read_to_end(&mut bytes)?;
@@ -245,7 +261,7 @@ pub(in crate::services) fn read_prefix_cancellable<F>(
 where
     F: FnMut() -> bool,
 {
-    let mut file = fs::File::open(path).map_err(BoundedFileReadError::Io)?;
+    let mut file = open_for_read(path).map_err(BoundedFileReadError::Io)?;
     let mut bytes = Vec::new();
     let mut chunk = vec![0u8; READ_CHUNK_BYTES].into_boxed_slice();
 
@@ -281,7 +297,7 @@ where
     let initial_capacity =
         usize::try_from(capacity_hint.min(byte_limit).min(usize_max)).unwrap_or(usize::MAX);
     let mut bytes = Vec::with_capacity(initial_capacity);
-    let mut file = fs::File::open(path).map_err(BoundedFileReadError::Io)?;
+    let mut file = open_for_read(path).map_err(BoundedFileReadError::Io)?;
     let mut chunk = vec![0u8; READ_CHUNK_BYTES].into_boxed_slice();
 
     loop {
@@ -326,7 +342,7 @@ where
     C: FnMut(&[u8]) -> Result<(), E>,
 {
     use super::read::BoundedStreamError;
-    let mut file = fs::File::open(path).map_err(BoundedStreamError::Io)?;
+    let mut file = open_for_read(path).map_err(BoundedStreamError::Io)?;
     let mut chunk = vec![0u8; chunk_bytes.max(1)].into_boxed_slice();
     let mut streamed = 0u64;
     loop {
@@ -354,6 +370,11 @@ where
     }
 }
 
+/// Open `path` for one of the bounded or prefix readers.
+fn open_for_read(path: &Path) -> io::Result<fs::File> {
+    tap::call(Call::OpenForRead, path, || fs::File::open(path))
+}
+
 fn read_retrying(file: &mut fs::File, buffer: &mut [u8]) -> io::Result<usize> {
     loop {
         match file.read(buffer) {
@@ -367,7 +388,9 @@ fn read_retrying(file: &mut fs::File, buffer: &mut [u8]) -> io::Result<usize> {
 /// `path` (`f_bavail * f_frsize`).
 #[cfg(unix)]
 pub(in crate::services) fn free_space(path: &Path) -> io::Result<u64> {
-    let stat = rustix::fs::statvfs(path).map_err(io::Error::from)?;
+    let stat = tap::call(Call::FreeSpace, path, || {
+        rustix::fs::statvfs(path).map_err(io::Error::from)
+    })?;
     Ok(stat.f_bavail.saturating_mul(stat.f_frsize))
 }
 
@@ -401,6 +424,20 @@ pub(super) fn directory_traversal_open_flags() -> rustix::fs::OFlags {
     rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC
 }
 
+/// Open `path` as a directory for a traversal.
+#[cfg(unix)]
+fn open_directory(path: &Path) -> io::Result<rustix::fd::OwnedFd> {
+    tap::call(Call::OpenDirectory, path, || {
+        rustix::fs::openat(
+            rustix::fs::CWD,
+            path,
+            directory_traversal_open_flags(),
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(io::Error::from)
+    })
+}
+
 #[cfg(unix)]
 /// Visit raw Unix directory entries without materializing platform-specific
 /// traversal details above the filesystem boundary.
@@ -413,13 +450,7 @@ where
 {
     use std::os::unix::ffi::OsStringExt;
 
-    let fd = rustix::fs::openat(
-        rustix::fs::CWD,
-        path,
-        directory_traversal_open_flags(),
-        rustix::fs::Mode::empty(),
-    )
-    .map_err(io::Error::from)?;
+    let fd = open_directory(path)?;
     let mut dir = rustix::fs::Dir::new(fd).map_err(io::Error::from)?;
 
     while let Some(entry) = dir.read() {
@@ -503,13 +534,7 @@ where
 {
     use std::os::unix::ffi::OsStrExt;
 
-    let fd = rustix::fs::openat(
-        rustix::fs::CWD,
-        path,
-        directory_traversal_open_flags(),
-        rustix::fs::Mode::empty(),
-    )
-    .map_err(io::Error::from)?;
+    let fd = open_directory(path)?;
     let mut dir = rustix::fs::Dir::new(fd).map_err(io::Error::from)?;
     while let Some(entry) = dir.read() {
         let entry = entry.map_err(io::Error::from)?;
@@ -539,16 +564,20 @@ where
 
 #[cfg(unix)]
 pub(in crate::services) fn mode(path: &Path) -> io::Result<u32> {
-    rustix::fs::stat(path)
-        .map(|stat| stat.st_mode)
-        .map_err(io::Error::from)
+    tap::call(Call::Stat, path, || {
+        rustix::fs::stat(path)
+            .map(|stat| stat.st_mode)
+            .map_err(io::Error::from)
+    })
 }
 
 #[cfg(unix)]
 pub(in crate::services) fn inode(path: &Path) -> io::Result<u64> {
-    rustix::fs::stat(path)
-        .map(|stat| stat.st_ino)
-        .map_err(io::Error::from)
+    tap::call(Call::Stat, path, || {
+        rustix::fs::stat(path)
+            .map(|stat| stat.st_ino)
+            .map_err(io::Error::from)
+    })
 }
 
 /// Inode of the entry itself, **without** following a final symlink.
@@ -556,9 +585,11 @@ pub(in crate::services) fn inode(path: &Path) -> io::Result<u64> {
 /// `stat` follows links, so a dangling symlink has no readable identity at all. A
 /// delete confirmed on such a row is a delete of the *link*, which does have one.
 pub(in crate::services) fn link_inode(path: &Path) -> io::Result<u64> {
-    rustix::fs::lstat(path)
-        .map(|stat| stat.st_ino)
-        .map_err(io::Error::from)
+    tap::call(Call::Stat, path, || {
+        rustix::fs::lstat(path)
+            .map(|stat| stat.st_ino)
+            .map_err(io::Error::from)
+    })
 }
 
 #[cfg(not(unix))]
@@ -584,7 +615,9 @@ pub(in crate::services) fn inode(_path: &Path) -> io::Result<u64> {
 
 #[cfg(unix)]
 pub(in crate::services) fn descriptor_file_len(path: &Path) -> io::Result<u64> {
-    let stat = rustix::fs::stat(path).map_err(io::Error::from)?;
+    let stat = tap::call(Call::Stat, path, || {
+        rustix::fs::stat(path).map_err(io::Error::from)
+    })?;
     u64::try_from(stat.st_size).map_err(|_| io::Error::other("negative file size"))
 }
 
@@ -595,14 +628,16 @@ pub(in crate::services) fn descriptor_file_len(path: &Path) -> io::Result<u64> {
 
 #[cfg(unix)]
 pub(in crate::services) fn sync_dir_descriptor(path: &Path) -> io::Result<()> {
-    let fd = rustix::fs::openat(
-        rustix::fs::CWD,
-        path,
-        directory_traversal_open_flags(),
-        rustix::fs::Mode::empty(),
-    )
-    .map_err(io::Error::from)?;
-    rustix::fs::fsync(&fd).map_err(io::Error::from)
+    tap::call(Call::SyncDir, path, || {
+        let fd = rustix::fs::openat(
+            rustix::fs::CWD,
+            path,
+            directory_traversal_open_flags(),
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(io::Error::from)?;
+        rustix::fs::fsync(&fd).map_err(io::Error::from)
+    })
 }
 
 #[cfg(not(unix))]
@@ -616,17 +651,19 @@ pub(in crate::services) fn sync_dir_descriptor(_path: &Path) -> io::Result<()> {
 /// Durable writes use this instead of `File::create` so temp files never follow
 /// or overwrite an existing path while preserving the target's intended mode.
 pub(in crate::services) fn create_temp_file(path: &Path, mode: Option<u32>) -> io::Result<File> {
-    let fd = rustix::fs::openat(
-        rustix::fs::CWD,
-        path,
-        rustix::fs::OFlags::WRONLY
-            | rustix::fs::OFlags::CREATE
-            | rustix::fs::OFlags::EXCL
-            | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::from_raw_mode(mode.unwrap_or(0o666)),
-    )
-    .map_err(io::Error::from)?;
-    Ok(File::from(fd))
+    tap::call(Call::CreateTemp, path, || {
+        let fd = rustix::fs::openat(
+            rustix::fs::CWD,
+            path,
+            rustix::fs::OFlags::WRONLY
+                | rustix::fs::OFlags::CREATE
+                | rustix::fs::OFlags::EXCL
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::from_raw_mode(mode.unwrap_or(0o666)),
+        )
+        .map_err(io::Error::from)?;
+        Ok(File::from(fd))
+    })
 }
 
 #[cfg(not(unix))]
@@ -640,7 +677,9 @@ pub(in crate::services) fn create_temp_file(path: &Path, _mode: Option<u32>) -> 
 
 #[cfg(unix)]
 pub(in crate::services) fn sync_file(file: &File) -> io::Result<()> {
-    rustix::fs::fsync(file).map_err(io::Error::from)
+    tap::call(Call::SyncFile, Path::new(DESCRIPTOR), || {
+        rustix::fs::fsync(file).map_err(io::Error::from)
+    })
 }
 
 #[cfg(not(unix))]
@@ -650,7 +689,9 @@ pub(in crate::services) fn sync_file(file: &File) -> io::Result<()> {
 
 #[cfg(unix)]
 pub(in crate::services) fn required_metadata(path: &Path) -> io::Result<UnixMetadata> {
-    let stat = rustix::fs::stat(path).map_err(io::Error::from)?;
+    let stat = tap::call(Call::RequiredMetadata, path, || {
+        rustix::fs::stat(path).map_err(io::Error::from)
+    })?;
     Ok(UnixMetadata {
         mode: stat.st_mode,
         uid: stat.st_uid,
@@ -660,7 +701,9 @@ pub(in crate::services) fn required_metadata(path: &Path) -> io::Result<UnixMeta
 
 #[cfg(unix)]
 pub(in crate::services) fn apply_mode(file: &File, mode: u32) -> io::Result<()> {
-    rustix::fs::fchmod(file, rustix::fs::Mode::from_raw_mode(mode)).map_err(io::Error::from)
+    tap::call(Call::ApplyMode, Path::new(DESCRIPTOR), || {
+        rustix::fs::fchmod(file, rustix::fs::Mode::from_raw_mode(mode)).map_err(io::Error::from)
+    })
 }
 
 #[cfg(unix)]

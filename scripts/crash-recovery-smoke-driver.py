@@ -60,6 +60,10 @@ LAUNCH_ROLES = ("seed", "victim", "relaunch")
 KILL_POINT_MARKERS = (
     b"LUSHTEXT_KILL_AT",
     b"LUSHTEXT_KILL_AT: aborting inside",
+    # The conformance tap (services/filesystem/backend_tap) is test-only too:
+    # its crash payload and its injected-failure message must never ship.
+    b"lushtext conformance tap crash",
+    b"injected backend failure",
 )
 
 

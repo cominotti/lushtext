@@ -89,6 +89,14 @@ exclude_globs = [
     "crates/lushtext-core/src/services/filesystem/fixture.rs",
     # Its draft-body sibling is fixture code for the same reason (1 mutant).
     "crates/lushtext-core/src/services/draft_service/fixture.rs",
+    # The conformance tap and drivers (`verify-shell-conformance-against-proven-cores`)
+    # are test seams and test drivers, compiled only under `cfg(test)` and
+    # `test-utils`: the active tap's state machine (109 mutants), the drivers
+    # (133), and the shipping build's inert no-op entry points (2), which the
+    # mutation lane's `test-utils` build never compiles.
+    "crates/lushtext-core/src/services/filesystem/backend_tap.rs",
+    "crates/lushtext-core/src/services/filesystem/backend_tap/**",
+    "crates/lushtext-core/src/services/conformance/**",
     # The scalar scans the accelerated `editor_io::text_scans` replaced, kept
     # verbatim as the oracle the property tests and the `editor_bytes` fuzz
     # target compare against (`simd-line-scans`, design D1). An oracle is not
@@ -123,6 +131,15 @@ exclude_globs = [
     # docs/mutation-testing.md, "Harness code is excluded, measured from the tool".
     "crates/**/kani_proofs.rs",
     "crates/**/kani_proofs/**",
+    # The verification environment models the Kani harnesses and the shell
+    # conformance tests share (`verify-shell-conformance-against-proven-cores`
+    # D1): the write disk model and the draft journal model. They are
+    # verification code, compiled only under `cfg(kani)`, `cfg(test)` and
+    # `test-utils`; a mutant inside one weakens the oracle, not a shipped
+    # behaviour, and proof strength measures the harnesses that use them.
+    # Path-keyed: re-key these entries if the modules move.
+    "crates/lushtext-core/src/services/filesystem/write_protocol/disk_model.rs",
+    "crates/lushtext-core/src/services/draft_service/journal_model.rs",
 ]
 
 exclude_re = [
@@ -186,30 +203,35 @@ exclude_re = [
     "crates/lushtext-core/src/model/document_scale\\.rs:229:.*replace markdown_chunked_cap -> Option<u64> with Some\\([01]\\)",
     # Equivalent on LushText's Linux mutation target: this non-Unix metadata
     # shim is cfg-disabled, while the active Unix metadata probe remains in scope.
-    "crates/lushtext-core/src/services/durable_write\\.rs:808:.*MetadataPlan::probe -> std::io::Result<Self>",
-    "crates/lushtext-core/src/services/durable_write\\.rs:819:.*MetadataPlan::create_mode -> Option<u32> with Some\\(0\\)",
-    "crates/lushtext-core/src/services/durable_write\\.rs:819:.*MetadataPlan::create_mode -> Option<u32> with Some\\(1\\)",
+    "crates/lushtext-core/src/services/durable_write\\.rs:805:.*MetadataPlan::probe -> std::io::Result<Self>",
+    "crates/lushtext-core/src/services/durable_write\\.rs:816:.*MetadataPlan::create_mode -> Option<u32> with Some\\(0\\)",
+    "crates/lushtext-core/src/services/durable_write\\.rs:816:.*MetadataPlan::create_mode -> Option<u32> with Some\\(1\\)",
     # Equivalent on LushText's Linux mutation target: these non-Unix raw
     # filesystem fallbacks are cfg-disabled, while the active Unix backend
     # helpers remain mutation-scoped.
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:69:.*kind_from_std_metadata -> FileKind",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:102:.*create_dir -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:117:.*remove_file -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:128:.*remove_dir -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:142:.*rename -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:223:.*visit_directory_entries",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:228:.*visit_directory_entries",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:246:.*symlink",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:265:.*set_permissions_mode",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:287:.*mode",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:295:.*inode",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:309:.*descriptor_file_len",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:326:.*sync_dir_descriptor",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:346:.*create_temp_file",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:356:.*sync_file",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:409:.*copy_xattrs_best_effort",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:419:.*set_xattr",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:432:.*get_xattr",
+    # Line-anchored on the `cfg(not(unix))` (or non-Linux) twin of each helper;
+    # re-keyed by `verify-shell-conformance-against-proven-cores`, whose tap
+    # wraps every backend primitive (several anchors were already stale on
+    # `main`). The non-Unix `sync_dir_descriptor` and non-Linux
+    # `copy_xattrs_best_effort` generate no mutant any more, so their entries
+    # were retired.
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:88:.*kind_from_std_metadata -> FileKind",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:123:.*create_dir -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:140:.*remove_file -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:153:.*remove_dir -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:169:.*rename -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:505:.*visit_directory_entries",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:513:.*visit_directory_entries",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:850:.*symlink",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:869:.*set_permissions_mode",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:597:.*mode",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:605:.*link_inode",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:610:.*inode",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:626:.*descriptor_file_len",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:672:.*create_temp_file",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:687:.*sync_file",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:887:.*set_xattr",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:900:.*get_xattr",
     # Equivalent for Unix directory traversal flags: `RDONLY` is the empty
     # access-mode bitset and `DIRECTORY`/`CLOEXEC` are disjoint, so XOR produces
     # the same final flags here. The flag-contract test still catches removal.
@@ -220,12 +242,12 @@ exclude_re = [
     # Durability-only wrappers: deleting the fsync calls has no stable unit-test
     # effect without crash/power-loss simulation; callers remain covered through
     # their bytes, permissions, and namespace behavior.
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:314:.*sync_dir_descriptor -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:351:.*sync_file -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:631:.*sync_dir_descriptor -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:680:.*sync_file -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
     # Ownership preservation is best-effort because ordinary users cannot
     # reliably create different-owner fixtures; mode, xattr, and ACL metadata
     # remain tested through observable durable-write behavior.
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:376:.*best_effort_chown",
+    "crates/lushtext-core/src/services/filesystem/sys\\.rs:711:.*best_effort_chown",
     # Durability-only wrapper: deleting the parent-directory fsync has no stable
     # observable unit-test effect, while callers are covered through their bytes
     # and namespace behavior.

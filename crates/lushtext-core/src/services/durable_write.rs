@@ -29,6 +29,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 
+#[cfg(test)]
+use crate::services::filesystem::backend_tap::{Address, Injected, Injection};
+
+use crate::services::filesystem::backend_tap::{self as tap, ProtocolKind};
 use crate::services::filesystem::write_protocol::{
     MoveAction, MoveProtocol, RenameAction, RenameClass, RenameProtocol, StepOutcome, WriteAction,
     WriteClass, WriteProtocol,
@@ -39,6 +43,7 @@ use crate::services::protocol_drive::{Protocol, drive};
 /// The durable write as [`drive`] runs it: an action's outcome is one
 /// [`StepOutcome`], and the end is the write's [`WriteClass`].
 impl Protocol for WriteProtocol {
+    const KIND: ProtocolKind = ProtocolKind::Write;
     type Action = WriteAction;
     type Outcome = StepOutcome;
     type End = WriteClass;
@@ -60,6 +65,7 @@ impl Protocol for WriteProtocol {
 /// The durable move by copy as [`drive`] runs it: an outcome is whether the
 /// action succeeded, and the end is whether the move completed.
 impl Protocol for MoveProtocol {
+    const KIND: ProtocolKind = ProtocolKind::Move;
     type Action = MoveAction;
     type Outcome = bool;
     type End = bool;
@@ -81,6 +87,7 @@ impl Protocol for MoveProtocol {
 /// The durable rename as [`drive`] runs it: an outcome is whether the action
 /// succeeded, and the end is the rename's [`RenameClass`].
 impl Protocol for RenameProtocol {
+    const KIND: ProtocolKind = ProtocolKind::Rename;
     type Action = RenameAction;
     type Outcome = bool;
     type End = RenameClass;
@@ -384,7 +391,7 @@ where
                         let mut writer = std::io::BufWriter::new(file);
                         write_content(&mut writer).and_then(|()| writer.flush())
                     }
-                    .and_then(|()| observe_temp_after_content_for_test(tmp_path)),
+                    .and_then(|()| tap::content_written(tmp_path)),
                     &mut last_error,
                 )
             }
@@ -595,10 +602,6 @@ fn write_target_locks() -> &'static TargetWriteLocks {
 /// rename that did not happen from one that did but is not yet durable uses
 /// [`rename_durable_no_replace`], whose error is classified.
 pub fn rename_durable(from: &Path, to: &Path) -> std::io::Result<()> {
-    #[cfg(test)]
-    if FAIL_NEXT_RENAME_CROSS_DEVICE.with(|fail| fail.replace(false)) {
-        return Err(sys::cross_device_error_for_test());
-    }
     run_rename_protocol(from, to, sys::rename).map_err(DurableWriteError::into_io_error)
 }
 
@@ -630,12 +633,6 @@ pub(in crate::services) fn rename_durable_classified(
 /// `Unsupported` too (an `EOPNOTSUPP` directory `fsync`), which is why callers
 /// branch on the class before the kind.
 pub fn rename_durable_no_replace(from: &Path, to: &Path) -> Result<(), DurableWriteError> {
-    #[cfg(test)]
-    if NEXT_NO_REPLACE_UNSUPPORTED.with(|unsupported| unsupported.replace(false)) {
-        return run_rename_protocol(from, to, |_, _| {
-            Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
-        });
-    }
     run_rename_protocol(from, to, sys::rename_no_replace)
 }
 
@@ -824,72 +821,58 @@ impl MetadataPlan {
     }
 }
 
-#[cfg(test)]
-fn observe_temp_after_content_for_test(path: &Path) -> std::io::Result<()> {
-    if let Some(observer) = TEMP_AFTER_CONTENT_OBSERVER
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .expect("temp observer lock poisoned")
-        .as_ref()
-    {
-        observer(path);
-    }
-    Ok(())
-}
-
-#[cfg(not(test))]
-fn observe_temp_after_content_for_test(_path: &Path) -> std::io::Result<()> {
-    Ok(())
-}
-
 /// Sync the temp file after metadata has been applied but before rename.
 ///
 /// A failure here is still before the destination swap, so callers must see it
 /// as recoverable without the previous bytes being replaced.
 fn sync_temp_after_metadata(file: &sys::File) -> std::io::Result<()> {
-    #[cfg(test)]
-    if FAIL_FINAL_TEMP_SYNC_AFTER_METADATA.with(|fail| fail.replace(false)) {
-        return Err(std::io::Error::other(
-            "injected final temp sync failure after metadata",
-        ));
-    }
     sys::sync_file(file)
 }
 
+/// Make the next final temp sync of a durable write on this test thread
+/// fail, after the metadata was applied and before the rename.
 #[cfg(test)]
-type TempObserver = Box<dyn Fn(&Path) + Send + Sync + 'static>;
-
-/// Test-only hook that observes a temp file before metadata and final sync.
-#[cfg(test)]
-static TEMP_AFTER_CONTENT_OBSERVER: OnceLock<Mutex<Option<TempObserver>>> = OnceLock::new();
-
-#[cfg(test)]
-thread_local! {
-    /// Test hook for failures that happen after metadata is applied but before rename.
-    static FAIL_FINAL_TEMP_SYNC_AFTER_METADATA: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Test hook for the post-rename parent-directory sync failure path: how
-    /// many parent-directory syncs still succeed first, and the error kind the
-    /// one after them fails with, if any.
-    static FAIL_NEXT_PARENT_SYNC: std::cell::Cell<Option<(u32, std::io::ErrorKind)>> = const { std::cell::Cell::new(None) };
-    /// Test hook for a move whose source removal fails after the copy is durable.
-    static FAIL_NEXT_SOURCE_REMOVAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Test hook for a rename refused because source and target are on different filesystems.
-    static FAIL_NEXT_RENAME_CROSS_DEVICE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Test hook for a platform without `RENAME_NOREPLACE`.
-    static NEXT_NO_REPLACE_UNSUPPORTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+fn fail_final_temp_sync_for_test() {
+    tap::arm(Injection {
+        at: Address::NextInAction {
+            kind: ProtocolKind::Write,
+            action: "SyncTemp",
+            call: tap::Call::SyncFile,
+        },
+        error: Injected::Kind(
+            std::io::ErrorKind::Other,
+            "injected final temp sync failure after metadata",
+        ),
+    });
 }
 
 /// Make the next no-replace rename on this test thread report that the
 /// platform lacks `RENAME_NOREPLACE`, before it touches the filesystem.
 #[cfg(test)]
 pub(in crate::services) fn next_no_replace_unsupported_for_test() {
-    NEXT_NO_REPLACE_UNSUPPORTED.with(|unsupported| unsupported.set(true));
+    tap::arm(Injection {
+        at: Address::NextInAction {
+            kind: ProtocolKind::Rename,
+            action: "Rename",
+            call: tap::Call::RenameNoReplace,
+        },
+        error: Injected::Kind(std::io::ErrorKind::Unsupported, "unsupported"),
+    });
 }
 
-/// Make the next durable rename on this test thread fail with `EXDEV`, before it runs.
+/// Make the next durable rename on this test thread fail with `EXDEV`. The
+/// rename call itself fails, inside the rename protocol, as a real `EXDEV`
+/// does.
 #[cfg(test)]
 pub(in crate::services) fn fail_next_rename_cross_device_for_test() {
-    FAIL_NEXT_RENAME_CROSS_DEVICE.with(|fail| fail.set(true));
+    tap::arm(Injection {
+        at: Address::NextInAction {
+            kind: ProtocolKind::Rename,
+            action: "Rename",
+            call: tap::Call::Rename,
+        },
+        error: Injected::CrossDevice,
+    });
 }
 
 /// Make the next parent-directory sync on this test thread fail after rename,
@@ -904,25 +887,32 @@ pub(crate) fn fail_next_parent_sync_for_test(kind: std::io::ErrorKind) {
 }
 
 /// Let `succeeding` parent-directory syncs on this test thread succeed, then
-/// fail the next one with an error of `kind`.
+/// fail the next one with an error of `kind`. Only [`sync_parent_dir`] calls
+/// count, not every directory sync.
 #[cfg(test)]
 fn fail_parent_sync_after_for_test(succeeding: u32, kind: std::io::ErrorKind) {
-    FAIL_NEXT_PARENT_SYNC.with(|fail| fail.set(Some((succeeding, kind))));
+    tap::arm(Injection {
+        at: Address::ParentSync { succeeding },
+        error: Injected::Kind(kind, "injected parent directory sync failure"),
+    });
 }
 
 /// Make the next move on this test thread fail to remove its source, after
 /// the destination is durable.
 #[cfg(test)]
 fn fail_next_source_removal_for_test() {
-    FAIL_NEXT_SOURCE_REMOVAL.with(|fail| fail.set(true));
+    tap::arm(Injection {
+        at: Address::NextInAction {
+            kind: ProtocolKind::Move,
+            action: "RemoveSource",
+            call: tap::Call::RemoveFile,
+        },
+        error: Injected::Kind(std::io::ErrorKind::Other, "injected source removal failure"),
+    });
 }
 
-/// Remove a moved file's source (tests can fail it).
+/// Remove a moved file's source.
 fn remove_move_source(from: &Path) -> std::io::Result<()> {
-    #[cfg(test)]
-    if FAIL_NEXT_SOURCE_REMOVAL.with(|fail| fail.replace(false)) {
-        return Err(std::io::Error::other("injected source removal failure"));
-    }
     sys::remove_file(from)
 }
 
@@ -957,18 +947,7 @@ pub fn create_dir_all_durable(path: &Path) -> std::io::Result<()> {
 ///
 /// Returns an error if the parent directory cannot be opened or synced.
 pub fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
-    #[cfg(test)]
-    if let Some((succeeding, kind)) = FAIL_NEXT_PARENT_SYNC.with(|fail| fail.replace(None)) {
-        if succeeding > 0 {
-            FAIL_NEXT_PARENT_SYNC.with(|fail| fail.set(Some((succeeding - 1, kind))));
-        } else {
-            return Err(std::io::Error::new(
-                kind,
-                "injected parent directory sync failure",
-            ));
-        }
-    }
-
+    tap::parent_sync()?;
     sync_dir(parent_or_current(path))
 }
 
@@ -1248,11 +1227,11 @@ mod tests {
         fail_parent_sync_after_for_test(1, std::io::ErrorKind::Other);
         rename_durable_classified(&from, &to).expect("the one sync succeeds");
         assert!(matches!(
-            FAIL_NEXT_PARENT_SYNC.with(std::cell::Cell::get),
+            tap::armed_parent_sync(),
             Some((0, std::io::ErrorKind::Other))
         ));
         assert!(sync_parent_dir(&to).is_err(), "the next sync fails");
-        assert!(FAIL_NEXT_PARENT_SYNC.with(std::cell::Cell::get).is_none());
+        assert!(tap::armed_parent_sync().is_none());
     }
 
     /// A cross-directory rename whose destination-directory sync fails has
@@ -1281,7 +1260,7 @@ mod tests {
             "injected parent directory sync failure"
         );
         assert!(
-            FAIL_NEXT_PARENT_SYNC.with(std::cell::Cell::get).is_none(),
+            tap::armed_parent_sync().is_none(),
             "exactly two directory syncs ran"
         );
         assert!(!fixture::exists(&from));
@@ -1589,10 +1568,7 @@ mod tests {
         let observed_mode = Arc::new(StdMutex::new(None));
         let observed_mode_for_hook = observed_mode.clone();
         let observed_parent = dir.path().to_path_buf();
-        *TEMP_AFTER_CONTENT_OBSERVER
-            .get_or_init(|| Mutex::new(None))
-            .lock()
-            .expect("observer lock") = Some(Box::new(move |tmp_path| {
+        let observer = tap::install(tap::TapPlan::record().on_content_written(move |tmp_path| {
             if tmp_path.parent() != Some(observed_parent.as_path()) {
                 return;
             }
@@ -1601,10 +1577,7 @@ mod tests {
         }));
 
         atomic_write_bytes(&private, WriteLabel::SAVE, b"new").expect("overwrite");
-        *TEMP_AFTER_CONTENT_OBSERVER
-            .get_or_init(|| Mutex::new(None))
-            .lock()
-            .expect("observer lock") = None;
+        drop(observer);
 
         assert_eq!(
             *observed_mode.lock().expect("mode lock"),
@@ -1676,7 +1649,7 @@ mod tests {
         fixture::write_bytes(&path, b"old");
         fixture::set_mode(&path, 0o600);
 
-        FAIL_FINAL_TEMP_SYNC_AFTER_METADATA.with(|fail| fail.set(true));
+        fail_final_temp_sync_for_test();
         let error = atomic_write_bytes_classified(&path, WriteLabel::SAVE, b"new")
             .expect_err("injected final sync failure should fail");
 

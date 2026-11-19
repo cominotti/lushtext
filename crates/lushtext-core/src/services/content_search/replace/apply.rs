@@ -36,6 +36,7 @@ use crate::model::content_search::{
     ReplaceSkipReason, ReplaceSkipReport, Replacement,
 };
 use crate::model::size_units::iec_size;
+use crate::services::filesystem::backend_tap::ProtocolKind;
 use crate::services::filesystem::leftovers::LaunchId;
 use crate::services::filesystem::read::{BoundedStreamError, stream_bounded};
 use crate::services::filesystem::types::FileFacts;
@@ -434,6 +435,7 @@ impl ProducerVerdict {
 
 /// One file's Replace All protocol as [`drive`] runs it.
 impl Protocol for ReplaceFileProtocol {
+    const KIND: ProtocolKind = ProtocolKind::ReplaceFile;
     type Action = FileAction;
     type Outcome = FileOutcome;
     type End = FileEnd;
