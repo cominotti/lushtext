@@ -1079,13 +1079,25 @@ pub fn classify_missing_reveal_component(
 // and applies the one removal `next_collapse_step` picks.
 // ---------------------------------------------------------------------------
 
-/// Flattened rows at or below which a directory, or a drained descendant,
-/// collapses through GTK's direct `set_expanded(false)` in one call
-/// (design D3). It is at most [`SIDEBAR_REALIZED_ROWS_PER_FRAME`], so the
-/// final collapse never replaces more row widgets than one step.
+/// Rows bound to a row widget that one collapse step removes when the
+/// removal brings rows into the band, and so the most row widgets one
+/// step-source dispatch replaces (design D25, R13's rung S2). A frame
+/// interval removes up to [`SIDEBAR_REALIZED_ROWS_PER_FRAME`] such rows in
+/// steps of at most this many, each its own dispatch between two frames.
+/// Gate G1c chose it: 8-row steps took at most 5.7 ms against the 6 ms
+/// selection margin, where 16 rows took 7.7 ms and 32 rows 9.7 ms.
 ///
 /// Kind: cap; a power of two, rounded down.
-pub const DIRECT_COLLAPSE_ROWS: u32 = 32;
+pub const COLLAPSE_STEP_ROWS: u32 = 8;
+
+/// Flattened rows at or below which a directory, or a drained descendant,
+/// collapses through GTK's direct `set_expanded(false)` in one call
+/// (design D3). It is the step size, so the final collapse never replaces
+/// more row widgets than one step (design R13's S2).
+///
+/// Kind: derived; [`COLLAPSE_STEP_ROWS`], so the terminal collapse is one
+/// step.
+pub const DIRECT_COLLAPSE_ROWS: u32 = COLLAPSE_STEP_ROWS;
 
 /// Rows bound to a row widget that one collapse step removes, and so the most
 /// row widgets one frame creates and styles in their place (design D3; ledger
@@ -1120,7 +1132,8 @@ pub const COLLAPSE_UNBOUND_CHUNK_ROWS: u32 = 8_192;
 /// Kind: out: time; a power of two, rounded up.
 pub const COLLAPSE_FRAME_STARVATION_MS: u64 = 128;
 
-const _: () = assert!(DIRECT_COLLAPSE_ROWS <= SIDEBAR_REALIZED_ROWS_PER_FRAME);
+const _: () = assert!(DIRECT_COLLAPSE_ROWS <= COLLAPSE_STEP_ROWS);
+const _: () = assert!(COLLAPSE_STEP_ROWS <= SIDEBAR_REALIZED_ROWS_PER_FRAME);
 const _: () = assert!(SIDEBAR_REALIZED_ROWS_PER_FRAME <= COLLAPSE_DESTROY_ONLY_ROWS);
 
 /// One expanded store of a collapsing subtree, as GTK lists it now.
@@ -1299,8 +1312,9 @@ pub const fn bound_step_rows(
 }
 
 /// ATTRIBUTION PATCH (not committed; design R13, task 11.3): the bound rows
-/// one step-source dispatch may remove, from `SLC_STEP_ROWS`, default the
-/// unit, clamped to at least 1 and at most the unit. Removed by task 10.11.
+/// one step-source dispatch may remove, from `SLC_STEP_ROWS`, default
+/// [`COLLAPSE_STEP_ROWS`] (task 11.4), clamped to at least 1 and at most the
+/// unit. Removed by task 10.11.
 #[must_use]
 pub fn slc_attribution_step_rows() -> u32 {
     // Kani proves the production policy: no environment is read under it
@@ -1308,7 +1322,7 @@ pub fn slc_attribution_step_rows() -> u32 {
     // unwind).
     #[cfg(kani)]
     {
-        SIDEBAR_REALIZED_ROWS_PER_FRAME
+        COLLAPSE_STEP_ROWS
     }
     #[cfg(not(kani))]
     {
@@ -1317,7 +1331,7 @@ pub fn slc_attribution_step_rows() -> u32 {
             std::env::var("SLC_STEP_ROWS")
                 .ok()
                 .and_then(|value| value.parse().ok())
-                .unwrap_or_else(slc_attribution_unit_rows)
+                .unwrap_or(COLLAPSE_STEP_ROWS)
                 .clamp(1, slc_attribution_unit_rows().max(1))
         })
     }
@@ -1336,7 +1350,7 @@ pub fn slc_attribution_step_rows() -> u32 {
 ///      [`for_each_unheld_range`]
 ///      → [`CollapseStep::RemoveUnbound`];
 ///    - else, every row of it held, its head rows down to
-///      [`DIRECT_COLLAPSE_ROWS`] left, [`SIDEBAR_REALIZED_ROWS_PER_FRAME`] at
+///      [`DIRECT_COLLAPSE_ROWS`] left, [`COLLAPSE_STEP_ROWS`] at
 ///      most, or [`COLLAPSE_DESTROY_ONLY_ROWS`] when the removal can only
 ///      destroy row widgets ([`collapse_removal_is_destroy_only`], design
 ///      D18) → [`CollapseStep::RemoveBound`].
@@ -1479,7 +1493,7 @@ pub fn next_collapse_step(facts: &CollapseFacts<'_>) -> CollapseStep {
     let unit = if collapse_removal_is_destroy_only(facts) {
         slc_attribution_destroy_only_rows()
     } else {
-        slc_attribution_unit_rows()
+        slc_attribution_unit_rows().min(slc_attribution_step_rows())
     };
     CollapseStep::RemoveBound {
         store: chosen,
@@ -1685,7 +1699,7 @@ mod collapse_tests {
         let unit = CollapseStep::RemoveBound {
             store: 0,
             start: 0,
-            count: SIDEBAR_REALIZED_ROWS_PER_FRAME,
+            count: super::COLLAPSE_STEP_ROWS,
         };
         assert_eq!(step_with(&held, &band, 10, 0), destroy_only);
         assert_eq!(
@@ -1699,11 +1713,11 @@ mod collapse_tests {
         );
         // Never below the direct rows.
         assert_eq!(
-            step_with(&flat(80), &(10..91).collect::<Vec<_>>(), 0, 0),
+            step_with(&flat(60), &(10..71).collect::<Vec<_>>(), 0, 0),
             CollapseStep::RemoveBound {
                 store: 0,
                 start: 0,
-                count: 80 - DIRECT_COLLAPSE_ROWS,
+                count: 60 - DIRECT_COLLAPSE_ROWS,
             }
         );
     }
@@ -1811,9 +1825,62 @@ mod collapse_tests {
         );
     }
 
+    /// Design R13's rung S2 (gate G1c, task 11.4): a bound step that brings
+    /// rows into the band removes at most 8 rows, and the directory collapses
+    /// directly only once at most one such step is left.
+    #[test]
+    fn a_bound_step_takes_eight_rows_and_the_terminal_collapse_one_step() {
+        let band: Vec<u32> = (10..91).collect();
+        assert_eq!(
+            step(&flat(80), &band),
+            CollapseStep::RemoveBound {
+                store: 0,
+                start: 0,
+                count: super::COLLAPSE_STEP_ROWS,
+            }
+        );
+        assert_eq!(super::COLLAPSE_STEP_ROWS, 8);
+        assert_eq!(step(&flat(8), &[]), CollapseStep::CollapseRow);
+        assert_ne!(step(&flat(9), &[]), CollapseStep::CollapseRow);
+    }
+
+    /// Design R13's rung S2: driven through one frame interval of the
+    /// production budget, the steps `bound_step_rows` admits are each at most
+    /// 8 bound rows, and together at most the interval's budget.
+    #[test]
+    fn one_interval_removes_its_budget_in_steps_of_at_most_eight_rows() {
+        use super::{bound_step_rows, slc_attribution_step_rows, slc_attribution_unit_rows};
+        let budget = slc_attribution_unit_rows();
+        let step_rows = slc_attribution_step_rows();
+        for count in [1, 7, 8, 9, 31, 32, 33, 64, 1_000] {
+            let mut left = budget;
+            let mut charged = 0;
+            while let Some((charge, taken)) = bound_step_rows(
+                CollapseStep::RemoveBound {
+                    store: 0,
+                    start: 0,
+                    count,
+                },
+                0,
+                false,
+                left,
+                budget,
+                step_rows,
+            ) {
+                assert!(
+                    taken <= super::COLLAPSE_STEP_ROWS,
+                    "{taken} rows in one step of a {count}-row unit"
+                );
+                charged += charge;
+                left -= charge;
+            }
+            assert!(charged <= SIDEBAR_REALIZED_ROWS_PER_FRAME);
+        }
+    }
+
     #[test]
     fn the_constants_are_the_measured_values() {
-        assert_eq!(DIRECT_COLLAPSE_ROWS, 32);
+        assert_eq!(DIRECT_COLLAPSE_ROWS, 8);
         assert_eq!(SIDEBAR_REALIZED_ROWS_PER_FRAME, 32);
         assert_eq!(COLLAPSE_UNBOUND_CHUNK_ROWS, 8_192);
         assert_eq!(super::COLLAPSE_FRAME_STARVATION_MS, 128);
@@ -1821,10 +1888,16 @@ mod collapse_tests {
 
     #[test]
     fn a_small_subtree_collapses_directly() {
-        assert_eq!(step(&flat(32), &[]), CollapseStep::CollapseRow);
+        assert_eq!(
+            step(&flat(DIRECT_COLLAPSE_ROWS), &[]),
+            CollapseStep::CollapseRow
+        );
         assert_eq!(step(&flat(0), &[10, 11]), CollapseStep::CollapseRow);
         assert_eq!(step(&[], &[]), CollapseStep::CollapseRow);
-        assert_ne!(step(&flat(33), &[]), CollapseStep::CollapseRow);
+        assert_ne!(
+            step(&flat(DIRECT_COLLAPSE_ROWS + 1), &[]),
+            CollapseStep::CollapseRow
+        );
     }
 
     #[test]
@@ -1910,20 +1983,23 @@ mod collapse_tests {
             CollapseStep::RemoveBound {
                 store: 0,
                 start: 0,
-                count: 32,
+                count: super::COLLAPSE_STEP_ROWS,
             }
         );
-        // Fewer than a unit above the direct rows: only the surplus.
+        // Fewer than a step above the direct rows: only the surplus.
         assert_eq!(
-            step(&flat(40), &band),
+            step(&flat(DIRECT_COLLAPSE_ROWS + 3), &band),
             CollapseStep::RemoveBound {
                 store: 0,
                 start: 0,
-                count: 8,
+                count: 3,
             }
         );
         // Exactly the direct rows left: the directory collapses.
-        assert_eq!(step(&flat(32), &band), CollapseStep::CollapseRow);
+        assert_eq!(
+            step(&flat(DIRECT_COLLAPSE_ROWS), &band),
+            CollapseStep::CollapseRow
+        );
     }
 
     #[test]
@@ -1955,12 +2031,12 @@ mod collapse_tests {
         );
         let drained = [
             CollapseStore {
-                span: 132,
+                span: 100 + DIRECT_COLLAPSE_ROWS,
                 ..stores[0]
             },
             CollapseStore {
-                length: 32,
-                span: 32,
+                length: DIRECT_COLLAPSE_ROWS,
+                span: DIRECT_COLLAPSE_ROWS,
                 ..stores[1]
             },
         ];
@@ -1974,13 +2050,13 @@ mod collapse_tests {
                 depth: 0,
                 first_row: 11,
                 length: 100,
-                span: 110,
+                span: 100 + DIRECT_COLLAPSE_ROWS - 2,
             },
             CollapseStore {
                 depth: 1,
                 first_row: 12,
-                length: 10,
-                span: 10,
+                length: DIRECT_COLLAPSE_ROWS - 2,
+                span: DIRECT_COLLAPSE_ROWS - 2,
             },
         ];
         assert_eq!(step(&stores, &[]), CollapseStep::CollapseDescendant(1));
@@ -2106,7 +2182,7 @@ mod collapse_tests {
             let initial_subtree = length + child_rows;
             let stores_count = 1 + u32::from(child.is_some());
             let unit_cap = stores_count
-                * ((band + 1).div_ceil(SIDEBAR_REALIZED_ROWS_PER_FRAME) + 2);
+                * ((band + 1).div_ceil(super::COLLAPSE_STEP_ROWS) + 2);
             let unbound_cap = stores_count
                 * (3 + initial_subtree.div_ceil(COLLAPSE_UNBOUND_CHUNK_ROWS));
             let (mut unit_steps, mut unbound_steps) = (0u32, 0u32);
@@ -2155,7 +2231,7 @@ mod collapse_tests {
                             let cap = if destroy_only {
                                 super::COLLAPSE_DESTROY_ONLY_ROWS
                             } else {
-                                SIDEBAR_REALIZED_ROWS_PER_FRAME
+                                super::COLLAPSE_STEP_ROWS
                             };
                             prop_assert!(count <= cap);
                             prop_assert!(facts.length - count >= DIRECT_COLLAPSE_ROWS);

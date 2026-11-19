@@ -5373,6 +5373,65 @@ fn test_the_folder_header_collapses_every_root() {
     drop(sidebar);
 }
 
+/// Design R13's rung S2 (task 11.4): one input collapses small directories
+/// directly only up to one step of rows, `COLLAPSE_STEP_ROWS`, and paces the
+/// rest. Four roots of eight entries each: the folder header collapses the
+/// first in the input dispatch and the other three in later steps, so the
+/// input never replaces more row widgets than one step. Fails while the
+/// input's budget is the frame interval's (all four collapse in the input).
+#[test]
+fn test_the_folder_header_collapses_directly_at_most_one_step_of_rows() {
+    use lushtext_core::ui::sidebar::policy::COLLAPSE_STEP_ROWS;
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("four roots tempdir");
+    let roots: Vec<PathBuf> = (0..4)
+        .map(|index| dir.path().join(format!("root-{index}")))
+        .collect();
+    for root in &roots {
+        seed_files(root, COLLAPSE_STEP_ROWS as usize);
+    }
+    save_workspaces(vec![WorkspaceConfig::with_folders(
+        WorkspaceId::new("four-roots"),
+        "four-roots",
+        roots.iter().cloned().map(WorkspaceFolder::new).collect(),
+    )]);
+    let (window, sidebar) = present_sidebar_window(800);
+    let section = mapped_sections(&sidebar, 1).remove(0);
+    section.expand_folders();
+    wait_until(Duration::from_secs(60), || {
+        roots.iter().all(|root| {
+            listing(&section, root).directory_retained_entries == COLLAPSE_STEP_ROWS as usize
+                && row_for_path(&section, root).is_some_and(|row| row.is_expanded())
+        }) && !section
+            .workspace_section_evidence()
+            .refresh_blocks_readiness
+    });
+    section.collapse_folders();
+    let collapsed_in_input = roots
+        .iter()
+        .filter(|root| row_for_path(&section, root).is_some_and(|row| !row.is_expanded()))
+        .count();
+    assert_eq!(
+        collapsed_in_input,
+        1,
+        "the input collapsed {collapsed_in_input} roots of {COLLAPSE_STEP_ROWS} rows directly: {}",
+        collapse_state(&section)
+    );
+    wait_until(Duration::from_secs(60), || {
+        roots.iter().all(|root| collapse_settled(&section, root))
+    });
+    for root in &roots {
+        assert!(
+            row_for_path(&section, root).is_some_and(|row| !row.is_expanded()),
+            "{} ends collapsed: {}",
+            root.display(),
+            collapse_state(&section)
+        );
+    }
+    drop(window);
+    drop(sidebar);
+}
+
 /// Design D18: with 400 rows listed before the collapsing directory and the
 /// view at its tail, a bound removal with nothing after the band still takes
 /// one unit, because the view, clamped at its end, refills from above.

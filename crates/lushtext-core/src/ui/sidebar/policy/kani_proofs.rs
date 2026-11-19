@@ -35,9 +35,9 @@
 //! through `collapse_band`, which the property tests cover.
 
 use super::{
-    COLLAPSE_DESTROY_ONLY_ROWS, COLLAPSE_UNBOUND_CHUNK_ROWS, CollapseFacts, CollapseStep,
-    CollapseStore, DIRECT_COLLAPSE_ROWS, SIDEBAR_REALIZED_ROWS_PER_FRAME,
-    collapse_removal_is_destroy_only, next_collapse_step,
+    COLLAPSE_DESTROY_ONLY_ROWS, COLLAPSE_STEP_ROWS, COLLAPSE_UNBOUND_CHUNK_ROWS, CollapseFacts,
+    CollapseStep, CollapseStore, DIRECT_COLLAPSE_ROWS, collapse_removal_is_destroy_only,
+    next_collapse_step,
 };
 
 /// Rows of a small band's contiguous held run.
@@ -138,7 +138,7 @@ fn bound_cap(facts: &CollapseFacts<'_>) -> u32 {
     if collapse_removal_is_destroy_only(facts) {
         COLLAPSE_DESTROY_ONLY_ROWS
     } else {
-        SIDEBAR_REALIZED_ROWS_PER_FRAME
+        COLLAPSE_STEP_ROWS
     }
 }
 

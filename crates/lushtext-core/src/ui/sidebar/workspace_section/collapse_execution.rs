@@ -19,8 +19,10 @@
 //! for the rows that enter the realized band (ledger A118): about 40 ms with
 //! 400 rows after a 256-entry directory, plus as much again to style the new
 //! rows in the next frame. A directory whose subtree lists more than
-//! `DIRECT_COLLAPSE_ROWS` rows is therefore drained first, one step per frame,
-//! and collapsed directly once at most that many rows are left.
+//! `DIRECT_COLLAPSE_ROWS` rows is therefore drained first, in steps of at most
+//! `COLLAPSE_STEP_ROWS` bound rows between frames and at most
+//! `SIDEBAR_REALIZED_ROWS_PER_FRAME` per frame interval, and collapsed
+//! directly once at most that many rows are left.
 //!
 //! # Stage order
 //!
@@ -31,7 +33,8 @@
 //!    and selection and focus inside the subtree move to the directory row.
 //!    Every realized row of the subtree is hidden (design D22, below).
 //!    A subtree of at most `DIRECT_COLLAPSE_ROWS` rows collapses directly
-//!    here instead, until the input has removed one unit of rows that way.
+//!    here instead, until the input has removed one step of rows
+//!    (`COLLAPSE_STEP_ROWS`) that way.
 //! 2. **Steps**: each step reads the subtree's expanded stores and GTK's held
 //!    positions, asks the pure `policy::next_collapse_step` for one removal,
 //!    and applies it: unbound chunks while `turn_continues` holds, and bound
@@ -496,9 +499,12 @@ impl LushtextWorkspaceSection {
                 continue;
             };
             self.move_selection_and_focus_to(row, span);
+            // At most one step of rows collapses directly in the input
+            // dispatch, the bound a step-source dispatch keeps (design R13's
+            // S2); the rest are paced.
             if span <= crate::ui::sidebar::policy::slc_attribution_direct_rows()
                 && direct_rows.saturating_add(span)
-                    <= crate::ui::sidebar::policy::slc_attribution_unit_rows()
+                    <= crate::ui::sidebar::policy::slc_attribution_step_rows()
             {
                 direct_rows += span;
                 self.collapse_now(row);

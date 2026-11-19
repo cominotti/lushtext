@@ -8,6 +8,7 @@ Collapsing a sidebar directory by a route LushText owns SHALL keep the input dis
 - **THEN** it runs on the optimized widget build with the sidebar presented, at host load below 4, interleaved with `main`
 - **AND** no step runs inside the frame clock's dispatch: every bound unit, and the first unbound chunk after the input, runs in a step-source dispatch of its own, and that whole dispatch is read against `B_INTERACT_US`; the other unbound chunks run in between-frames turns, each read against `B_INTERACT_US`; the frame that styles, measures and allocates the rows a step brought into the band runs no step and is read against `B_SETTLE_US`
 - **AND** at most one unit of bound rows is removed per frame interval (between two frames of the list's frame clock) across all the window's sections
+- **AND** a unit runs as steps of at most `COLLAPSE_STEP_ROWS` bound rows, each in a step-source dispatch of its own, except a removal that brings no row into the band, which may take up to `COLLAPSE_DESTROY_ONLY_ROWS` rows in one dispatch
 
 #### Scenario: A toolkit floor
 - **WHEN** a step cannot fit `B_INTERACT_US` at the smallest measured unit because of the toolkit's per-widget cost
@@ -37,7 +38,7 @@ Collapsing a sidebar directory by a route LushText owns SHALL keep the input dis
 #### Scenario: A small directory
 - **WHEN** the directory's subtree holds at most `DIRECT_COLLAPSE_ROWS` flattened rows
 - **THEN** it collapses in the input dispatch, as on `main`, within `B_INTERACT_US`
-- **AND** when one input collapses several such directories (the folder header), the input dispatch collapses them directly only until `SIDEBAR_REALIZED_ROWS_PER_FRAME` rows are removed in total, and the rest are paced like a sliced collapse
+- **AND** when one input collapses several such directories (the folder header), the input dispatch collapses them directly only until `COLLAPSE_STEP_ROWS` rows are removed in total, and the rest are paced like a sliced collapse
 
 #### Scenario: The collapse shows in the first frame
 - **WHEN** a sliced collapse starts

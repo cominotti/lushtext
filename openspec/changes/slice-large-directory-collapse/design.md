@@ -3788,6 +3788,18 @@ bar in these rounds.
 - `INPUT_TO_FRAME_US` is not readable from this binary (above). T1 stays
   unread, owed to task 7.1's print.
 
+**S2 as built (task 11.4).**
+- `COLLAPSE_STEP_ROWS` = 8, and `DIRECT_COLLAPSE_ROWS` is derived from it.
+- `next_collapse_step` caps a bound removal that brings rows in at one
+  step. A destroy-only removal keeps `COLLAPSE_DESTROY_ONLY_ROWS`.
+  `bound_step_rows` still spends at most `SIDEBAR_REALIZED_ROWS_PER_FRAME`
+  per interval, which is now four steps.
+- The input dispatch's direct collapses are capped at one step of rows in
+  all, where they were capped at one interval's. The ladder's text did not
+  name this; it was decided for the input's budget. Several small
+  directories under one folder header would otherwise make a 32-row input
+  dispatch, the size of the 32-row steps G1 measured at up to 9.7 ms.
+
 ### R14. Review of R13 (2026-11-18)
 
 Reviewed against the round logs (`rev/attr2/slc-r13-*.log`,
