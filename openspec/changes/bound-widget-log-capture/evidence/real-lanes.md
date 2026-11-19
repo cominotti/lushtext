@@ -1,8 +1,12 @@
 # Proof on real lanes (tasks 4.1 and 4.3)
 
-## 4.1 `scripts/heavy.sh --envelope 16G -- make test`, final tree
+## 4.1 `scripts/heavy.sh --envelope 16G -- make test`
 
-2026-11-19 01:19–01:31, tree at `4b92aed6` (every runner change in place).
+2026-11-19 01:19–01:31, tree at `4b92aed6` (every runner change committed).
+Later commits change only the axiom runner's summary line (`d65b413f`) and
+add `-a` to the stage's greps with a NUL-byte self-test case; neither is on
+the widget path's classification of text output, so this run was not
+repeated for them.
 Load (one-minute) before 10.56, after 10.26: a lane run on a shared
 machine, not a verdict.
 
@@ -19,8 +23,8 @@ machine, not a verdict.
   ```
 
 - No `TEMP-LEAK:`, `FLAKY`, `OOM-KILL:` or `SESSION-HYGIENE:` line; every
-  shard's warning scan passed (the same verdict as main, which passes the
-  same suite).
+  shard's warning scan passed. Main was not rerun for comparison here; the
+  classification equivalence is the self-tests' (same regexes, same cases).
 
 ## 4.3 Branch flood rerun and `/tmp/tmp.*` names
 

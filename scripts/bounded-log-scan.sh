@@ -13,12 +13,13 @@
 #   bls_release
 #
 # What the stage holds is bounded whatever the command prints:
-#   - `grep -E "$WARN_ERE" | grep -Ev "$BENIGN_ERE"`, the runner's own two
-#     invocations and regexes in the caller's locale, feed one `LC_ALL=C awk`
+#   - `grep -aE "$WARN_ERE" | grep -aEv "$BENIGN_ERE"`, the runner's own two
+#     regexes in the caller's locale, read as text (`-a`: a NUL byte would make
+#     GNU grep print only "binary file matches"), feed one `LC_ALL=C awk`
 #     sink: an exact count of unexpected lines and at most BLS_REPORT_CAP
 #     (64 KiB) of them for the report, cut at a line boundary (a single longer
 #     line is cut at the cap);
-#   - with a keep ERE, `grep -E "$KEEP_ERE"` on the raw stream feeds a second
+#   - with a keep ERE, `grep -aE "$KEEP_ERE"` on the raw stream feeds a second
 #     sink: at most BLS_KEEP_CAP (1 MiB) of kept lines and their exact count,
 #     with overflow recorded. An empty warn ERE is keep-only mode.
 # Every sink reads to EOF, so the command never sees a broken pipe or stalls,
@@ -96,10 +97,10 @@ bls__keep_branch() {
         | bls__sink "$BLS_KEEP_CAP" 1>&"$BLS__W_KEPT" 2>&"$BLS__W_KEPT_SUMMARY"
 }
 
-# The warning branch: the runner's two grep invocations, verbatim.
+# The warning branch: the runner's two grep invocations, read as text.
 bls__warn_branch() {
-    { grep -E -- "$BLS_WARN" || true; } \
-        | if [[ -n "$BLS__BENIGN" ]]; then { grep -Ev -- "$BLS__BENIGN" || true; }; else cat; fi \
+    { grep -aE -- "$BLS_WARN" || true; } \
+        | if [[ -n "$BLS__BENIGN" ]]; then { grep -aEv -- "$BLS__BENIGN" || true; }; else cat; fi \
         | bls__sink "$BLS_REPORT_CAP" 1>&"$BLS__W_REPORT" 2>&"$BLS__W_SUMMARY"
 }
 
@@ -139,8 +140,8 @@ bls_start() {
     BLS_WARN="$1"
     BLS__BENIGN="$2"
     BLS_KEEP="${3:-}"
-    BLS__KEEP_FLAGS=(-E)
-    [[ "${4:-}" != --keep-ignore-case ]] || BLS__KEEP_FLAGS=(-Ei)
+    BLS__KEEP_FLAGS=(-aE)
+    [[ "${4:-}" != --keep-ignore-case ]] || BLS__KEEP_FLAGS=(-aEi)
     BLS_COMPLETE=0 BLS_INCOMPLETE='' BLS_COUNT=0 BLS_REPORT='' BLS_REPORT_LINES=0
     BLS_KEPT_COUNT=0 BLS_KEPT_BYTES=0 BLS_KEPT_OVERFLOW=0
     dir="$(mktemp -d "${TMPDIR:-/tmp}/lt-scan-$BASHPID-XXXXXX")"
@@ -336,6 +337,20 @@ bls__case_classification() {
     return 0
 }
 
+# A NUL byte makes GNU grep treat its input as binary: without --text it
+# prints nothing but "binary file matches", which hid every warning on main
+# and would hide every kept line. Both branches read it as text.
+bls__case_binary() {
+    bls_start "$BLS__WARN_ERE" "$BLS__BENIGN_ERE" '^\{"axiom"'
+    bls_isolated printf '{"axiom":"A1"}\nnoise \0 bytes\n{"axiom":"A2"}\nx CRITICAL y\n' 2>&1 \
+        | tee -p "/dev/fd/$BLS_IN" >/dev/null
+    bls_finish
+    [[ "$BLS_COMPLETE" == 1 && "$BLS_COUNT" == 1 && "$BLS_REPORT" == 'x CRITICAL y' && "$BLS_KEPT_COUNT" == 2 ]] \
+        || bls__fail "binary: a NUL byte changed the scan: complete=$BLS_COMPLETE count=$BLS_COUNT kept=$BLS_KEPT_COUNT report='$BLS_REPORT'"
+    bls_release
+    return 0
+}
+
 bls__case_flood() {
     local status err
     bls_start "$BLS__WARN_ERE" "$BLS__BENIGN_ERE"
@@ -513,7 +528,7 @@ bls_isolated bash -c 'source "$1"; : >"$2.started"; for _ in $(seq 20); do bls__
     | tee -p "/dev/fd/$BLS_IN" >/dev/null
 bls_finish
 RUNNER
-    (BLS__FAILED=0; bls__case_classification; bls__case_drain_and_wait; exit "$BLS__FAILED") & pids+=($!)
+    (BLS__FAILED=0; bls__case_classification; bls__case_binary; bls__case_drain_and_wait; exit "$BLS__FAILED") & pids+=($!)
     (BLS__FAILED=0; bls__case_flood; exit "$BLS__FAILED") & pids+=($!)
     (BLS__FAILED=0; bls__case_dead_stage "$ctl"; bls__case_linger "$ctl"; exit "$BLS__FAILED") & pids+=($!)
     (BLS__FAILED=0; bls__case_abnormal_exit "$ctl" KILL; exit "$BLS__FAILED") & pids+=($!)
@@ -523,7 +538,7 @@ RUNNER
     done
     elapsed=$(( ($(date +%s%N) - start) / 1000000 ))
     (( failed == 0 )) || return 1
-    echo "bounded-log-scan self-test passed in ${elapsed} ms (classification, 2^20-line floods bounded and counted, drain with exit status, slow stage awaited, dead stage fails closed, lingering daemon, kill -9 and SIGTERM leave nothing)."
+    echo "bounded-log-scan self-test passed in ${elapsed} ms (classification, NUL bytes read as text, 2^20-line floods bounded and counted, drain with exit status, slow stage awaited, dead stage fails closed, lingering daemon, kill -9 and SIGTERM leave nothing)."
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

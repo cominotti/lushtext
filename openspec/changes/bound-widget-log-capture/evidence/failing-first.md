@@ -72,3 +72,23 @@ The new cases were added to the self-tests first and run on the unchanged
 
   On main the pid file was a plain `with-memory-cap-envelope.XXXXXX` file
   and `envelope_pid_dir` did not exist.
+
+## NUL bytes (found in the final review, 2026-11-19)
+
+With GNU grep 3.12 (the host's `/usr/bin/grep` and the CI widget image), a
+stream of `{"axiom":"A1"}`, `noise \0 bytes`, `{"axiom":"A2"}`,
+`x CRITICAL y`:
+
+- main's widget scan (`grep -E … file | grep -Ev …`): **0** warning lines,
+  only `grep: …: binary file matches` on stderr, so one NUL anywhere hid every
+  warning (pre-existing, fail-open);
+- main's axiom count (`grep -cE` on the file): 3, correct;
+- the stage before the fix: unexpected 0, kept **0** (a regression for the
+  axiom counts and the mutants phrase).
+
+The new `bls__case_binary` self-test case failed first on the stage
+(`binary: a NUL byte changed the scan: complete=1 count=0 kept=0 report=''`)
+and passes once every stage grep reads the stream as text (`-a`): one
+unexpected line, two kept. The stage self-test passes in the CI widget image
+and on bare fedora:44 and fedora:45, the base images of the
+`gtk-axioms-floor` and `gtk-axioms` jobs, which ship GNU awk 5.3.2 and 5.4.1.

@@ -29,10 +29,14 @@ Run 1 (1.2 s, pipeline status 137):
 - scope `memory.peak` 256,147,456 B (the cap);
 - the capture grew to 249,036,800 B in the base; OOM killed the live
   stream's `awk` and then the runner (`Killed env … "$@"`);
-- the capture was gone afterwards: the orphaned `( … )` subshell survived,
-  its `$(grep …)` slurp was killed, so `unexpected` came back **empty**, the
-  warning check passed, and the subshell removed the file. An OOM during the
-  scan therefore also hid the warnings.
+- the capture was gone afterwards. **Observed:** pipeline status 137, the
+  OOM killer's `Killed` lines for the stream's `awk` and for `env … "$@"`,
+  and no capture left in the base. **Inferred, not observed** (no trace of
+  the subshell was recorded): the orphaned `( … )` subshell survived, its
+  `$(grep …)` slurp was killed, so `unexpected` came back empty, the warning
+  check passed and the subshell removed the file, which would mean an OOM
+  during the scan also hid the warnings. Run 2 shows the other outcome, a
+  leftover.
 
 Run 2 (same command, pipeline status 137):
 
@@ -43,7 +47,7 @@ Run 2 (same command, pipeline status 137):
   charged to the scope as tmpfs pages), left in the base after the run;
 - the leftover and the base were then removed by the task.
 
-## Branch (the bounded stage), 2026-11-18 about 22:05
+## Branch (the bounded stage), 2026-11-18 about 22:05 and 2026-11-19 01:49
 
 Same command and flood (128 chunks, 2^23 lines, about 713 MB), stdout kept
 (filtered to the report lines) so the runner's own `report_memory_scope` line
@@ -62,3 +66,8 @@ widget-memory: peak 12 MiB, oom_kill 0
 - the exact count, 8,388,608, and a 64 KiB excerpt;
 - the private base held no entry during the run (an observer polled it every
   20 ms in a first branch run) and none afterwards.
+
+Rerun at `4b92aed6` (2026-11-19 01:49, every runner change committed; the
+later commits change only the axiom summary line and grep's `-a`):
+`widget-memory: peak 13 MiB, oom_kill 0`, the exact count 8,388,608, the
+slice's `oom_kill` unchanged at 32, the base empty, 11.2 s.

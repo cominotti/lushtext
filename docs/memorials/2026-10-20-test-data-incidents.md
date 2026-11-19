@@ -48,10 +48,14 @@ into one shell variable. A test that flooded a `Gtk-CRITICAL`
   recorded; mutter being among them is inferred from the later tests'
   `GTK4 init failed` cascade.
 - The scan's `$(grep …)` slurp then copied about 36 M lines into bash memory,
-  and the subshell that held the capture's name was killed. A scratch
-  reproduction of an OOM in that scan showed the other outcome too: the slurp
-  killed, `unexpected` empty, the check passing and the file removed, so the
-  warnings were hidden as well.
+  and the subshell that held the capture's name was killed. In a scratch
+  reproduction of an OOM in that scan the capture was also gone afterwards,
+  with no warning reported; that the slurp was killed, `unexpected` came back
+  empty and the check passed and removed the file is inferred from that
+  outcome, not traced, and it would mean the warnings were hidden as well.
+- On main, one NUL byte anywhere in the output made GNU grep print only
+  "binary file matches", so that scan reported no warning at all; the
+  bounded stage reads the stream as text (`grep -a`).
 - Nobody could clean up: the path was added to `OWNED_TEMP_PATHS` inside
   `run_headless`'s `( … )` subshell, and bash resets traps in a subshell, so
   the parent's `EXIT` trap never saw it. Even a plain SIGTERM to that subshell

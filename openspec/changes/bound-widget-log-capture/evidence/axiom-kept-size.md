@@ -1,6 +1,7 @@
 # GTK axiom kept-output size (task 4.2, design D6)
 
-`scripts/heavy.sh --envelope 16G -- make gtk-axioms` on the final tree
+`scripts/heavy.sh --envelope 16G -- make gtk-axioms` at `4b92aed6` plus the
+then-uncommitted summary-line edit committed as `d65b413f`
 (2026-11-19 01:33–01:45, shipped toolkit GTK 4.24.1 / Libadwaita 1.10.0,
 local default `GTK_LUSH_AXIOMS_INCLUDE_SLOW=1`):
 

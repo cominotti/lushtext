@@ -45,7 +45,9 @@ verification matches CI.
 **Bounded warning scans.** The widget runner, the GTK axiom runner and the
 mutation runner scan the output of the command they run in a stage beside the
 live stream (`scripts/bounded-log-scan.sh`), never in a whole-output file. The
-stage applies the runner's own `grep -E` / `grep -Ev` regexes, keeps an exact
+stage applies the runner's own `grep -E` / `grep -Ev` regexes, reading the
+stream as text (`grep -a`: a NUL byte would otherwise make GNU grep report only
+"binary file matches" and hide every match after it), keeps an exact
 count of unexpected lines and at most 64 KiB of them for the report, keeps at
 most 1 MiB of the lines a runner parses later (the axiom runner's result,
 slow-skip and observation lines; the mutation runner's no-mutants phrase, by
