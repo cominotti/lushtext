@@ -829,6 +829,9 @@ const CASES = {
       // smoke-relevant and visual-sensitive, so the hook demands all three
       // smokes; an exact path such as docs/accessibility.md demands two.
       check(has(p, 'ui = lambda ps: any(p.startswith(a.RELEVANT_PREFIXES) for p in ps)') && has(p, 'not any(ui(g("diff-tree"'), `${label}: a later commit with only exact-path files clears the merge: ${p}`)
+      // Only the branch's own commits clear it: a main commit that a later
+      // merge brought in ran its hook on main's tree, not the branch's.
+      check(has(p, 'g("rev-list", "--first-parent", "--no-merges", m + "..HEAD", "^origin/main")'), `${label}: a commit a later merge brought in clears the merge: ${p}`)
     }
     // The apply stage runs the check even when it made no commit.
     check(has(r.prompts['apply:demo'], 'or, when you made none, before your final gates'), r.prompts['apply:demo'])

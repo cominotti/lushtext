@@ -248,7 +248,8 @@ Change worktrees live in `.claude/worktrees/<change>`.
        matches the commit's diff (`check-visual-proof-policy`); a file
        under the UI prefixes is both. `git merge` runs no pre-commit hook.
        So when a merge in the branch brought smoke-relevant files in and no
-       later commit carried a file under the UI prefixes, the apply stage
+       later commit of the branch's own line (first parent, not on
+       `origin/main`) carried a file under the UI prefixes, the apply stage
        records the three smokes on its tree, and the script requires those
        records before the merge stage ("Stages after implementation" 3).
      - **A merge that made a commit reruns every gate on the post-merge
@@ -556,8 +557,9 @@ script, and inside a workflow both skills below run their single-pass forms.
    gates once on the result (`make check` and the full `make test` among
    them), each through `scripts/gate-trees.sh record`, records the three
    smokes on the committed tree when a merge in the branch brought
-   smoke-relevant files in and no later commit carried a file under the UI
-   prefixes (no hook saw that content with all three smokes), re-dispatches a Kani
+   smoke-relevant files in and no later commit of the branch's own line
+   carried a file under the UI prefixes (no hook saw that content with all
+   three smokes), re-dispatches a Kani
    budget run its edits make stale (`verification-runs.md`, "Kani"), and
    pushes at the end. It is the last agent that edits code. A read-only
    agent then checks, in the shell, that the worktree is clean, that `HEAD`
