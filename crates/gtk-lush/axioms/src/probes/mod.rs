@@ -42,6 +42,7 @@ pub(crate) mod a129;
 pub(crate) mod a13;
 pub(crate) mod a132;
 pub(crate) mod a133;
+pub(crate) mod a134;
 pub(crate) mod a14;
 pub(crate) mod a15;
 pub(crate) mod a16;
@@ -253,6 +254,10 @@ pub use a128::probe_a128;
 pub use a129::probe_a129;
 pub use a132::probe_a132;
 pub use a133::probe_a133;
+pub use a134::{
+    DISCARDED_FRAME_WARNING, PopoverFramesFixture, PopoverFramesOutcome, TraceCounts, parse_trace,
+    popover_frames_in_child, probe_a134,
+};
 
 /// Settle after an adjustment or height change, before reading it back.
 pub(crate) const LAYOUT_SETTLE: Duration = Duration::from_millis(200);

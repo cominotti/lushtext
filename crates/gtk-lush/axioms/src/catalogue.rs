@@ -2005,6 +2005,27 @@ const CATALOGUE: &[Axiom] = &[
         version_bound: None,
         probe: Some(probes::probe_a133),
     },
+    Axiom {
+        id: AxiomId::new(134),
+        name: "a134_a_discarded_popover_frame_warns_when_its_toplevel_presents",
+        statement: "a GtkPopover's popup surface shares its toplevel's frame clock but keeps its \
+                    own presentation feedbacks: GTK >= 4.24 marks the shared frame discarded \
+                    when the compositor discards the popover's feedback (Mutter does on an \
+                    xdg_popup.reposition over an unpainted buffer), and the toplevel's \
+                    presented for the same frame then prints, once per process, \
+                    `gdk_frame_timings_presented() called on discarded frame.`; GTK < 4.24 \
+                    prints nothing (GTK main d2595c6b removed the transition)",
+        dependent_designs: &[
+            "the widget runner's classification of that one exact line \
+             (scripts/run-widget-tests.sh, BENIGN_WIDGET_NOISE_REGEX), removed once the \
+             shipped toolkit carries d2595c6b",
+            "the sidebar file peek, which re-anchors its popover on a worker completion and \
+             on every selection change (ui/sidebar/workspace_section/peek_execution.rs)",
+        ],
+        slow: false,
+        version_bound: Some(crate::version::VersionBound::gtk(4, 24, 0)),
+        probe: Some(probes::probe_a134),
+    },
 ];
 
 #[cfg(test)]
