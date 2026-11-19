@@ -240,15 +240,17 @@ Change worktrees live in `.claude/worktrees/<change>`.
        exact `HEAD^{tree}`, and run the gate when it finds none (a full
        `make test` record covers any subset of tests: pass
        `--gate 'make test'` as well). The smokes are not looked up here.
-       The pre-commit hook (`make check-policy`:
-       `check-accessibility-policy --strict-current-tree` and
-       `check-visual-proof-policy`) refuses every commit that carries a
-       smoke-relevant file unless the smoke summaries match its content,
-       and `git merge` runs no pre-commit hook. So when a merge in the
-       branch brought smoke-relevant files in and no later commit carried
-       one, the apply stage records the three smokes on its tree, and the
-       script requires those records before the merge stage ("Stages after
-       implementation" 3).
+       The pre-commit hook (`make check-policy`) refuses a commit that
+       carries a smoke-relevant file unless the accessibility and visual
+       summaries match the fingerprint of the whole smoke-relevant set
+       (`check-accessibility-policy --strict-current-tree`), and one that
+       carries a visual-sensitive file unless a visual-geometry summary
+       matches the commit's diff (`check-visual-proof-policy`); a file
+       under the UI prefixes is both. `git merge` runs no pre-commit hook.
+       So when a merge in the branch brought smoke-relevant files in and no
+       later commit carried a file under the UI prefixes, the apply stage
+       records the three smokes on its tree, and the script requires those
+       records before the merge stage ("Stages after implementation" 3).
      - **A merge that made a commit reruns every gate on the post-merge
        tree** (maintainer, 2026-11-19), through `heavy.sh`: `make check`,
        the full `make test`, and the three smokes when the branch or the
@@ -554,8 +556,8 @@ script, and inside a workflow both skills below run their single-pass forms.
    gates once on the result (`make check` and the full `make test` among
    them), each through `scripts/gate-trees.sh record`, records the three
    smokes on the committed tree when a merge in the branch brought
-   smoke-relevant files in after the last commit that carried one (no hook
-   saw that content), re-dispatches a Kani
+   smoke-relevant files in and no later commit carried a file under the UI
+   prefixes (no hook saw that content with all three smokes), re-dispatches a Kani
    budget run its edits make stale (`verification-runs.md`, "Kani"), and
    pushes at the end. It is the last agent that edits code. A read-only
    agent then checks, in the shell, that the worktree is clean, that `HEAD`

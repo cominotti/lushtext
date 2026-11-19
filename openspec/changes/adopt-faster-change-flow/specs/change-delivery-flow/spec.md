@@ -36,14 +36,14 @@ Under `MERGE-LOCK`, a gate SHALL be skipped only when `scripts/gate-trees.sh` fi
 - **THEN** the ancestor check fails and the agent repeats the merge step instead of merging
 
 ### Requirement: The apply tree's records are checked before the merge stage
-Before the merge stage starts, the script SHALL look up `make check` and `make test` on the apply tree, each in its own lookup. It SHALL also look up the three smokes when a merge in the branch brought a smoke-relevant file (`is_relevant` of `scripts/accessibility_source_fingerprint.py`) in that no later non-merge commit carried, since only merge commits skip the pre-commit hook's smoke checks. A no-op merge SHALL rerun only a gate without a pass.
+Before the merge stage starts, the script SHALL look up `make check` and `make test` on the apply tree, each in its own lookup. It SHALL also look up the three smokes when a merge in the branch brought a smoke-relevant file (`is_relevant` of `scripts/accessibility_source_fingerprint.py`) in and no later non-merge commit carried a file under the UI prefixes, since merge commits skip the pre-commit hook's smoke checks. A no-op merge SHALL rerun only a gate without a pass.
 
 #### Scenario: An apply tree without a make test record stops before the merge stage
 - **WHEN** the apply stage's tree has a `make check` pass on record and no `make test` pass, and `origin/main` has not moved
 - **THEN** the script's apply verification stops the run before the merge stage starts, and no merge prompt tells the agent to rerun nothing without a lookup
 
 #### Scenario: A merge that brought smoke-relevant files in owes smoke records
-- **WHEN** a merge in the branch brought a smoke-relevant file in, and no later non-merge commit of the branch carried one
+- **WHEN** a merge in the branch brought a smoke-relevant file in, and no later non-merge commit of the branch carried a file under the UI prefixes (a later commit of `docs/accessibility.md` alone does not count: the hook then demands no visual-geometry proof)
 - **THEN** the apply stage records the three smokes on its committed tree, the script stops before the merge stage when a record is missing or the check fails, and after a merge that made no commit the post-merge check owes the same three records
 
 ### Requirement: Gate records are append-only and checked after the merge

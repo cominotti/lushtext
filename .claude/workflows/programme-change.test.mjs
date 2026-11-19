@@ -825,7 +825,13 @@ const CASES = {
     for (const label of ['verify:demo', 'apply:demo']) {
       const p = r.prompts[label]
       check(has(p, 'a.is_relevant(p)') && has(p, '"--merges"') && has(p, '"--no-merges"') && has(p, 'origin/main...HEAD'), `${label}: ${p}`)
+      // Only a later commit under the UI prefixes clears a merge: a file there is
+      // smoke-relevant and visual-sensitive, so the hook demands all three
+      // smokes; an exact path such as docs/accessibility.md demands two.
+      check(has(p, 'ui = lambda ps: any(p.startswith(a.RELEVANT_PREFIXES) for p in ps)') && has(p, 'not any(ui(g("diff-tree"'), `${label}: a later commit with only exact-path files clears the merge: ${p}`)
     }
+    // The apply stage runs the check even when it made no commit.
+    check(has(r.prompts['apply:demo'], 'or, when you made none, before your final gates'), r.prompts['apply:demo'])
     check(has(r.prompts['verify:demo'], '--SMOKES--') && has(r.prompts['verify:demo'], '--SMOKE-GATE--'), r.prompts['verify:demo'])
     check(has(r.prompts['apply:demo'], 'prints records'), r.prompts['apply:demo'])
     const recorded = ['make visual-geometry-smoke', 'make accessibility-smoke', 'make visual-smoke'].map(g => `--SMOKE-GATE-- 0 ${g}`).join('\n')
