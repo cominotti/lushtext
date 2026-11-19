@@ -48,7 +48,7 @@ Under `MERGE-LOCK`, a gate SHALL be skipped only when `scripts/gate-trees.sh` fi
 
 #### Scenario: The tree on main is checked against the records
 - **WHEN** the merge stage returns a merged verdict
-- **THEN** it also returns the merged tree, and a read-only agent checks that GitHub's merge commit is on `origin/main` with that tree and that `gate-trees.sh lookup --tree` finds passes of `make check`, `make test` and, after a merge that brought UI-prefix commits, the three smokes; a missing helper, a failed classifier or a missing record stops the run with a report that the change is already on `main`
+- **THEN** it also returns the merged tree, and a read-only agent checks that GitHub's merge commit is on `origin/main` with that tree and that `gate-trees.sh lookup --tree` finds passes of `make check`, `make test` and, after a merge that brought commits in when the branch or those commits touch a UI prefix, the three smokes; a missing helper, a failed prefix check or a missing record stops the run with a report that the change is already on `main`
 
 ### Requirement: Kani budget runs are dispatched when implementation ends
 A change that adds or changes a Kani shard SHALL dispatch its budget runs once its final stage-3 code is pushed, without watching them. Stage 4 SHALL read finished runs: a failure or a margin break blocks the merge, and an unfinished run does not. The figures SHALL be recorded before the archive. No agent SHALL wait for a run while holding `MERGE-LOCK`.

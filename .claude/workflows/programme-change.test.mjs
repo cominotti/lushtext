@@ -79,9 +79,9 @@ const DEFAULTS = {
 // The post-merge reading (Fable F6): the merge commit's tree, whether it is on
 // main, whether the origin/main merge brought commits in, UI-prefix overlap,
 // and one lookup exit per gate, printed by the shell.
-function postmergeReading({ tree = T2, onMain = true, mergedIn = false, ui = false, exits = {} } = {}) {
+function postmergeReading({ tree = T2, treeMatch = true, applyTree = true, onMain = true, mergedIn = false, ui = false, exits = {} } = {}) {
   const gates = ['make check', 'make test', 'make visual-geometry-smoke', 'make accessibility-smoke', 'make visual-smoke']
-  return { merge_tree: tree, on_main: onMain, merged_in: mergedIn, ui_line: ui === true ? 'yes' : ui === false ? 'no' : ui,
+  return { merge_tree: tree, tree_match: treeMatch, apply_tree: applyTree, on_main: onMain, merged_in: mergedIn, ui_line: ui === true ? 'yes' : ui === false ? 'no' : ui,
     gates_stdout: gates.map(g => `--GATE-- ${g in exits ? exits[g] : (g.endsWith('smoke') ? 1 : 0)} ${g}`).join('\n') }
 }
 
@@ -732,15 +732,21 @@ const CASES = {
     const ok = await run({ ...BASE, mode: 'new' })
     check(ok.result.verdict === 'merged' && ok.work.at(-1) === 'postmerge:demo', JSON.stringify(ok.work))
     const p = ok.prompts['postmerge:demo']
-    check(has(p, `MC='${MC}'`) && has(p, '--tree') && has(p, "'make test'") && has(p, '--change demo'), p)
+    check(has(p, `'${MC}^{commit}'`) && has(p, `'${T2}^{tree}'`) && has(p, '--tree') && has(p, "'make test'") && has(p, '--change demo'), p)
+    // One smoke predicate everywhere: the UI prefixes of testing.md, from the
+    // canonical classifier's RELEVANT_PREFIXES, not the wider visual-proof set.
+    check(has(p, 'a.RELEVANT_PREFIXES') && !has(p, 'is_visual_sensitive') && !has(p, 'is_relevant('), p)
+    // An abbreviated hash from gh is resolved in the shell, not refused.
+    const short = await run({ ...BASE, mode: 'new' }, { merge: () => ({ ...DEFAULTS.merge(), merge_commit: MC.slice(0, 12), final_tree: T2.slice(0, 12) }) })
+    check(!short.result.stopped && has(short.prompts['postmerge:demo'], `'${MC.slice(0, 12)}^{commit}'`), JSON.stringify(short.result.stopped))
     for (const [why, merge, postmerge] of [
       ['no final tree', () => ({ ...DEFAULTS.merge(), final_tree: undefined }), null],
       ['a final tree that is not a hash', () => ({ ...DEFAULTS.merge(), final_tree: 'abc' }), null],
       ['the merge commit is not a hash', () => ({ ...DEFAULTS.merge(), merge_commit: "x'; rm -rf /" }), null],
-      ['another tree on main', null, () => postmergeReading({ tree: '5'.repeat(40) })],
+      ['another tree on main', null, () => postmergeReading({ tree: '5'.repeat(40), treeMatch: false })],
       ['not on main', null, () => postmergeReading({ onMain: false })],
       ['make test not on record', null, () => postmergeReading({ exits: { 'make test': 1 } })],
-      ['a no-op merge whose tree is not the apply tree', () => ({ ...DEFAULTS.merge(), final_tree: '6'.repeat(40) }), () => postmergeReading({ tree: '6'.repeat(40) })],
+      ['a no-op merge whose tree is not the apply tree', () => ({ ...DEFAULTS.merge(), final_tree: '6'.repeat(40) }), () => postmergeReading({ tree: '6'.repeat(40), applyTree: false })],
       ['smokes owed after a merge that brought UI files', null, () => postmergeReading({ mergedIn: true, ui: true, exits: { 'make visual-smoke': 1, 'make accessibility-smoke': 0, 'make visual-geometry-smoke': 0 } })],
       ['a dead reading', null, () => null],
     ]) {
@@ -764,6 +770,14 @@ const CASES = {
     check(has(p, '|| OK=no') && has(p, '--GATE-- 99'), 'the reading does not fail closed on a helper missing from origin/main')
     const nm = await run({ ...BASE, mode: 'new', no_merge: 'pending' }, { merge: () => ({ verdict: 'ready', reason: 'pending', notes: '' }) })
     check(!nm.work.includes('postmerge:demo'), 'a run that did not merge read the post-merge records')
+  },
+  async 'every stage that records gates names the gate strings the post-merge check looks up'() {
+    const r = await run({ ...BASE, mode: 'new' })
+    for (const label of ['implement-1:demo', 'apply:demo', 'merge:demo']) {
+      for (const g of ['make check', 'make test', 'make visual-geometry-smoke', 'make accessibility-smoke', 'make visual-smoke']) {
+        check(has(r.prompts[label], `'${g}'`), `${label} does not name the gate string '${g}'`)
+      }
+    }
   },
   async 'Merging step 2: a non-empty origin/main merge reruns every gate on the post-merge tree'() {
     const r = await run({ ...BASE, mode: 'new' })

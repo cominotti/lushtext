@@ -181,6 +181,9 @@ const REVIEW_AGENT = A.review_agent_type ? { agentType: A.review_agent_type } : 
 // and ordering"); fixed before the first guard so every prompt stays stable.
 const SLOT = String(A.worktree || (A.spec && A.spec.worktree) || '').replace(/\/$/, '').split('/').pop() || CHANGE
 const LENS_ROUND = A.lens_round || 1
+// The gate strings every stage records and the post-merge check looks up.
+const GATE_NAMES = ['make check', 'make test', 'make visual-geometry-smoke', 'make accessibility-smoke', 'make visual-smoke']
+const GATE_STRINGS = `the gate strings are ${GATE_NAMES.map(g => `'${g}'`).join(', ')}`
 // A short deterministic digest (two FNV-1a passes) that ties a guard reading
 // to its stage's prompt, and an accepted empty review to its text.
 function digest(text) {
@@ -430,7 +433,7 @@ if (A.mode === 'review-only') {
       : 'Open the pull request once the final code is pushed; its body lists the local evidence and ends with the Claude Code generated-with line.'
     const g = await guarded(`implementation-${round}`, job(`Stage 3 (implementation${rounds > 1 ? `, round ${round} of ${rounds}` : ''}) of the OpenSpec change ${spec.change_name}, worktree ${spec.worktree}, branch ${spec.branch}. The spec was reviewed independently; findings: ${review.findings}
 ${prev ? `Previous round's report (continue from it; the worktree may hold its uncommitted work, which you keep): ${prev}` : ''}
-Implement every unchecked tasks.md box with the openspec-apply-change skill: failing-first tests, axioms and samples, measurements, docs. The local gates are the merge evidence: make check, the rustdoc gate when doc comments changed, make test with no FLAKY line, the Kani shards the policy requires, make gtk-axioms when toolkit behaviour is relied on, the affected smokes and lane cases. Record each gate you run on the final tree with scripts/gate-trees.sh record --change ${CHANGE} (parallel-agent-work.md "Merging").
+Implement every unchecked tasks.md box with the openspec-apply-change skill: failing-first tests, axioms and samples, measurements, docs. The local gates are the merge evidence: make check, the rustdoc gate when doc comments changed, make test with no FLAKY line, the Kani shards the policy requires, make gtk-axioms when toolkit behaviour is relied on, the affected smokes and lane cases. Record each gate you run on the final tree with scripts/gate-trees.sh record --change ${CHANGE} (parallel-agent-work.md "Merging"; ${GATE_STRINGS}).
 ${FAST ? 'Fast lane: before the PR, run scripts/check-fast-lane.py --base origin/main in the worktree and report it as fast_lane_recheck; a not-eligible path means stop implementing and report it.' : ''}
 ${prNote}
 ${IMPL_RULES}
@@ -694,7 +697,7 @@ const gapply = await guarded('apply', job(`Apply stage for the change ${spec.cha
 The lenses reviewed HEAD ${LENS_HEAD} with /simplify's uncommitted edits ($H/${CHANGE}/simplify.patch), under the lens flags data=${flags.data}, performance=${flags.performance}, modules_moved=${flags.modules_moved}. First run ${WT}/scripts/agent-topology.py review-lenses --base origin/main yourself and read its exit status: return blocked when it fails or any of those three flags differs.
 The lens findings (also in $H/${CHANGE}/review-findings-*.md):
 ${lensDigest}
-Dedupe them, check each against the code, apply the confirmed ones in the worktree (failing-first where behaviour changes), and record each rejected one with its reason in $H/${CHANGE}/review-findings-applied.md, marking the ones a lens raised as correctness bugs. When files under the UI prefixes changed, run the three smokes once, right before the commit. Commit /simplify's edits and yours together, locally, before any long gate, so a stopped gate leaves nothing uncommitted. Then run every final gate one time on that tree, recording each with scripts/gate-trees.sh record --change ${CHANGE} (parallel-agent-work.md "Merging"; make check as --gate 'make check'); push at the end, and update the PR body.
+Dedupe them, check each against the code, apply the confirmed ones in the worktree (failing-first where behaviour changes), and record each rejected one with its reason in $H/${CHANGE}/review-findings-applied.md, marking the ones a lens raised as correctness bugs. When files under the UI prefixes changed, run the three smokes once, right before the commit. Commit /simplify's edits and yours together, locally, before any long gate, so a stopped gate leaves nothing uncommitted. Then run every final gate one time on that tree, recording each with scripts/gate-trees.sh record --change ${CHANGE} (parallel-agent-work.md "Merging"; ${GATE_STRINGS}); push at the end, and update the PR body.
 When /simplify's edits or yours touch the harness inputs of a Kani shard (verification-runs.md "Kani"), run that shard as the rule says, and dispatch its budget run again once the push is done when implementation dispatched one (it dispatched: ${impl.kani_dispatch || 'none'}); report the run ids in kani_dispatch.
 ${FAST ? `Fast lane: you are also the independent reviewer of the spec artifacts (parallel-agent-work.md "Fast lane"). Re-run scripts/check-fast-lane.py --base origin/main and verify every "Gate effect: none" declaration against the diff, line by line. Return fast-lane-violation for a not-eligible path or a false or missing declaration.` : ''}
 Return head (the full hash of HEAD after the push) and tree (the full hash of the HEAD^{tree} every final gate ran on), and blocked when a must-fix stays open.
@@ -756,7 +759,7 @@ phase('Merge and archive')
 const MERGE_VERDICTS = ['merged', 'merged-archive-owed', 'ready', 'measurement-pending', 'merge-lock-stale', 'blocked']
 const mergeNote = A.no_merge
   ? `DO NOT MERGE (coordinator: ${A.no_merge}). Do the review and the checks above, take no lock, then return the verdict ready, or blocked, with "${A.no_merge}" in the reason.`
-  : `Merging: take MERGE-LOCK; make the origin/main merge of "Merging" step 2. If it conflicts, git -C ${WT} merge --abort, release MERGE-LOCK and return blocked: you resolve nothing. After a clean merge, review its diff against ${verified.head} as part of the range. When that merge made no commit, the apply stage's records cover the tree and you rerun nothing; when it made one, the tree is new: run on it every gate "Merging" step 2 lists for that case (make test in full, and the smokes on any UI-prefix overlap of either side), each through scripts/gate-trees.sh record --change ${CHANGE}. Reuse a record only for the identical tree (scripts/gate-trees.sh lookup --change ${CHANGE}); check that origin/main is an ancestor of HEAD before gh pr merge, and return the HEAD^{tree} it merged as final_tree and GitHub's merge commit as merge_commit; read the Kani budget runs, never watch them, and follow the archive-owed path when they have not finished (parallel-agent-work.md "Merging"; verification-runs.md "Kani"). Archive with the openspec-archive-change skill and record it in ${A.programme_record || 'the programme record the change names'}. If another change has held MERGE-LOCK for more than 3 h, take nothing, break nothing, and return merge-lock-stale. Release MERGE-LOCK on every exit path, then clean up as "Durability" describes.`
+  : `Merging: take MERGE-LOCK; make the origin/main merge of "Merging" step 2. If it conflicts, git -C ${WT} merge --abort, release MERGE-LOCK and return blocked: you resolve nothing. After a clean merge, review its diff against ${verified.head} as part of the range. When that merge made no commit, the apply stage's records cover the tree and you rerun nothing; when it made one, the tree is new: run on it every gate "Merging" step 2 lists for that case (make test in full, and the smokes on any UI-prefix overlap of either side), each through scripts/gate-trees.sh record --change ${CHANGE} (${GATE_STRINGS}). Reuse a record only for the identical tree (scripts/gate-trees.sh lookup --change ${CHANGE}); check that origin/main is an ancestor of HEAD before gh pr merge, and return the full 40-hex HEAD^{tree} it merged as final_tree and the full hash of GitHub's merge commit as merge_commit; read the Kani budget runs, never watch them, and follow the archive-owed path when they have not finished (parallel-agent-work.md "Merging"; verification-runs.md "Kani"). Archive with the openspec-archive-change skill and record it in ${A.programme_record || 'the programme record the change names'}. If another change has held MERGE-LOCK for more than 3 h, take nothing, break nothing, and return merge-lock-stale. Release MERGE-LOCK on every exit path, then clean up as "Durability" describes.`
 // The final review writes no code: under no_merge it commits nothing, and
 // otherwise only the conflict-free origin/main merge and the archive commit.
 const MERGE_COMMITS = A.no_merge
@@ -776,8 +779,8 @@ ${A.review_extra || ''}
 ${common('merge')}`, { label: `merge:${CHANGE}`, phase: 'Merge and archive',
   schema: { type: 'object', properties: {
     verdict: { type: 'string', enum: MERGE_VERDICTS }, reason: { type: 'string' },
-    merge_commit: { type: 'string' }, archive_commit: { type: 'string' },
-    final_range: { type: 'string' }, final_tree: { type: 'string' },
+    merge_commit: { type: 'string', description: "the full 40-hex hash of GitHub's merge commit" }, archive_commit: { type: 'string' },
+    final_range: { type: 'string' }, final_tree: { type: 'string', description: 'the full 40-hex HEAD^{tree} that gh pr merge merged' },
     gates: { type: 'string' }, notes: { type: 'string' } },
     required: ['verdict', 'reason', 'notes'] } }))
 if (gmerge.stopped) return { ...out, ...gmerge }
@@ -807,22 +810,22 @@ if (/^merged/.test(merged.verdict)) {
   // owed on it has a pass on record. After a non-empty origin/main merge that
   // is every gate; after a no-op one the tree is the apply tree.
   const MERGED_AFTER = `The change is merged (merge commit ${merged.merge_commit}), so main already has it: the coordinator checks main and the gate records by hand, and a tree without its gates on record is fixed by a follow-up change.`
-  if (!HEX40.test(merged.merge_commit) || !HEX40.test(merged.final_tree)) {
-    return { ...out, stopped: `the merge stage returned a merge commit or final tree that is not a full hash (${JSON.stringify({ merge: merged.merge_commit, tree: merged.final_tree })}). ${MERGED_AFTER}` }
+  if (!HEXISH.test(merged.merge_commit) || !HEXISH.test(merged.final_tree)) {
+    return { ...out, stopped: `the merge stage returned a merge commit or final tree that is not a hash (${JSON.stringify({ merge: merged.merge_commit, tree: merged.final_tree })}). ${MERGED_AFTER}` }
   }
-  // Whether the smokes are owed is the canonical classifiers' answer (testing.md
-  // "Proof Obligations of a Change"), read from origin/main, never a copy of
-  // their path lists.
-  const UI_CHECK = `python3 -I -c 'import importlib.util as u, sys; sys.path.insert(0, sys.argv[1]); import accessibility_source_fingerprint as a; s = u.spec_from_file_location("v", sys.argv[1] + "/check-visual-proof-policy.py"); v = u.module_from_spec(s); s.loader.exec_module(v); print("yes" if any(a.is_relevant(p) or v.is_visual_sensitive(p) for p in sys.stdin.read().split()) else "no")' "$D"`
-  const POST_GATES = ['make check', 'make test', 'make visual-geometry-smoke', 'make accessibility-smoke', 'make visual-smoke']
+  // Whether the smokes are owed is the UI-prefix test of testing.md "Proof
+  // Obligations of a Change", taken from the canonical classifier on
+  // origin/main (its RELEVANT_PREFIXES), never a copy of the list.
+  const UI_CHECK = `python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import accessibility_source_fingerprint as a; print("yes" if any(p.startswith(a.RELEVANT_PREFIXES) for p in sys.stdin.read().split()) else "no")' "$D"`
   const gpost = await guarded('post-merge', job(`Read-only reading after the merge. Run exactly these commands, in one Bash call, and nothing else:
-M="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"; MC='${merged.merge_commit}'; AH='${verified.head}'; git -C "$M" fetch --prune --quiet origin; D="$(mktemp -d)"; OK=yes; for f in gate-trees.sh accessibility_source_fingerprint.py check-visual-proof-policy.py; do git -C "$M" show "origin/main:scripts/$f" >"$D/$f" || OK=no; done; chmod +x "$D/gate-trees.sh"; T="$(git -C "$M" rev-parse --verify --quiet "$MC^{tree}")"; echo "--MERGE-TREE-- $T"; echo "--ON-MAIN-- $(git -C "$M" merge-base --is-ancestor "$MC" origin/main && echo yes || echo no)"; echo "--MERGED-IN-- $([ "$(git -C "$M" rev-parse --verify --quiet "$MC^2")" = "$AH" ] && echo no || echo yes)"; echo "--UI-- $({ git -C "$M" diff --name-only "$MC^1" "$MC^2"; git -C "$M" diff --name-only "$AH" "$MC^2"; } | ${UI_CHECK} || echo failed)"; for g in ${POST_GATES.map(g => `'${g}'`).join(' ')}; do if [ "$OK" = yes ] && [ -n "$T" ]; then "$D/gate-trees.sh" lookup "$M" --tree "$T" --change ${CHANGE} --gate "$g" >/dev/null 2>&1; echo "--GATE-- $? $g"; else echo "--GATE-- 99 $g"; fi; done; rm -rf "$D"
-Return: merge_tree, the hash after --MERGE-TREE--; on_main and merged_in, true when the line printed yes; ui_line, the text after --UI--, verbatim; gates_stdout, every --GATE-- line verbatim, one per line. Change nothing.`,
+M="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"; git -C "$M" fetch --prune --quiet origin; MC="$(git -C "$M" rev-parse --verify --quiet '${merged.merge_commit}^{commit}')"; FT="$(git -C "$M" rev-parse --verify --quiet '${merged.final_tree}^{tree}')"; AH='${verified.head}'; D="$(mktemp -d)"; OK=yes; for f in gate-trees.sh accessibility_source_fingerprint.py; do git -C "$M" show "origin/main:scripts/$f" >"$D/$f" || OK=no; done; chmod +x "$D/gate-trees.sh"; T="$(git -C "$M" rev-parse --verify --quiet "$MC^{tree}")"; echo "--MERGE-TREE-- $T"; echo "--TREE-MATCH-- $([ -n "$T" ] && [ "$T" = "$FT" ] && echo yes || echo no)"; echo "--APPLY-TREE-- $([ -n "$T" ] && [ "$T" = '${verified.tree}' ] && echo yes || echo no)"; echo "--ON-MAIN-- $([ -n "$MC" ] && git -C "$M" merge-base --is-ancestor "$MC" origin/main && echo yes || echo no)"; echo "--MERGED-IN-- $([ -n "$MC" ] && [ "$(git -C "$M" rev-parse --verify --quiet "$MC^2")" = "$AH" ] && echo no || echo yes)"; echo "--UI-- $({ git -C "$M" diff --name-only "$MC^1" "$MC^2"; git -C "$M" diff --name-only "$AH" "$MC^2"; } | ${UI_CHECK} || echo failed)"; for g in ${GATE_NAMES.map(g => `'${g}'`).join(' ')}; do if [ "$OK" = yes ] && [ -n "$T" ]; then "$D/gate-trees.sh" lookup "$M" --tree "$T" --change ${CHANGE} --gate "$g" >/dev/null 2>&1; echo "--GATE-- $? $g"; else echo "--GATE-- 99 $g"; fi; done; rm -rf "$D"
+Return: merge_tree, the hash after --MERGE-TREE--; tree_match, apply_tree, on_main and merged_in, true when the line printed yes; ui_line, the text after --UI--, verbatim; gates_stdout, every --GATE-- line verbatim, one per line. Change nothing.`,
     { label: `postmerge:${CHANGE}`, phase: 'Merge and archive', effort: 'low',
       schema: { type: 'object', properties: {
-        merge_tree: { type: 'string' }, on_main: { type: 'boolean' }, merged_in: { type: 'boolean' }, ui_line: { type: 'string' },
+        merge_tree: { type: 'string' }, tree_match: { type: 'boolean' }, apply_tree: { type: 'boolean' },
+        on_main: { type: 'boolean' }, merged_in: { type: 'boolean' }, ui_line: { type: 'string' },
         gates_stdout: { type: 'string' } },
-        required: ['merge_tree', 'on_main', 'merged_in', 'ui_line', 'gates_stdout'] } }))
+        required: ['merge_tree', 'tree_match', 'apply_tree', 'on_main', 'merged_in', 'ui_line', 'gates_stdout'] } }))
   if (gpost.stopped) return { ...out, ...gpost }
   const post = gpost.result
   out.post_merge = post
@@ -832,15 +835,15 @@ Return: merge_tree, the hash after --MERGE-TREE--; on_main and merged_in, true w
     const m = /^--GATE-- (\d+) (.+)$/.exec(line.trim())
     if (m) exits[m[2]] = Number(m[1])
   }
-  // Anything but a plain "no" from the classifiers owes the smokes: a failed
+  // Anything but a plain "no" from the classifier owes the smokes: a failed
   // classifier is not "no UI file".
   const uiTouched = String(post.ui_line || '').trim() !== 'no'
-  const owed = ['make check', 'make test', ...(post.merged_in && uiTouched ? POST_GATES.slice(2) : [])]
+  const owed = ['make check', 'make test', ...(post.merged_in === true && uiTouched ? GATE_NAMES.slice(2) : [])]
   const postProblems = []
-  if (post.merge_tree !== merged.final_tree) postProblems.push(`the merge commit's tree ${post.merge_tree} is not the final tree ${merged.final_tree}`)
+  if (post.tree_match !== true) postProblems.push(`the merge commit's tree ${post.merge_tree} is not the final tree ${merged.final_tree}`)
   if (post.on_main !== true) postProblems.push('the merge commit is not on origin/main')
-  if (post.merged_in !== true && merged.final_tree !== verified.tree) postProblems.push(`no commits were merged in, yet the final tree ${merged.final_tree} is not the apply tree ${verified.tree}`)
-  for (const g of owed) if (exits[g] !== 0) postProblems.push(`no clean pass of ${g} on record for ${merged.final_tree} (lookup exit ${exits[g] === undefined ? 'missing' : exits[g]})`)
+  if (post.merged_in !== true && post.apply_tree !== true) postProblems.push(`no commits were merged in, yet the merged tree ${post.merge_tree} is not the apply tree ${verified.tree}`)
+  for (const g of owed) if (exits[g] !== 0) postProblems.push(`no clean pass of ${g} on record for ${post.merge_tree} (lookup exit ${exits[g] === undefined ? 'missing' : exits[g]})`)
   if (postProblems.length) return { ...out, stopped: `post-merge check: ${postProblems.join('; ')}. ${MERGED_AFTER}` }
 }
 out.verdict = merged.verdict

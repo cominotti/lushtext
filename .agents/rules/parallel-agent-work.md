@@ -260,7 +260,9 @@ Change worktrees live in `.claude/worktrees/<change>`.
        <the fail line's timestamp> --gate '<gate>' --log <that log> --reason
        '<why>'`. It names exactly one fail line, the fail line stays, and
        lookup then ignores that line alone. The coordinator notes the void
-       in the change's handoff.
+       in the change's handoff. A worktree branched before the void
+       subcommand existed reads a void or interrupted line as a fail until
+       it merges `main`, which the prepare stage does.
      - `git push origin HEAD`, to the branch of the same name (never
        `HEAD:main`).
   3. `git fetch --prune origin`, then `git merge-base --is-ancestor origin/main HEAD`.
@@ -563,13 +565,16 @@ script, and inside a workflow both skills below run their single-pass forms.
 5. **The post-merge check.** Both merged verdicts name GitHub's merge commit
    and the tree it merged. A read-only agent then checks, in the shell, that
    the merge commit is on `origin/main` and has that tree, and runs
-   `scripts/gate-trees.sh lookup --tree` against it with the helper and the
-   UI-prefix classifiers (`scripts/accessibility_source_fingerprint.py`,
-   `scripts/check-visual-proof-policy.py`) read from `origin/main`: `make
-   check` and `make test` always, and the three smokes when the
-   `origin/main` merge brought commits in and a file of the branch or of
-   those commits is visual-sensitive or accessibility-relevant. After a
-   merge that made no commit, the tree must be the apply tree. A helper
+   `scripts/gate-trees.sh lookup --tree` against it, with the helper and
+   the UI-prefix list (`RELEVANT_PREFIXES` of
+   `scripts/accessibility_source_fingerprint.py`, the prefixes of
+   `testing.md`) read from `origin/main`: `make check` and `make test`
+   always, and the three smokes when the `origin/main` merge brought commits
+   in and a file of the branch or of those commits is under a UI prefix.
+   Every stage that records gates is given the one set of gate strings
+   this check looks up (each the bare make target), and the merge stage
+   returns full hashes, which the reading resolves again in the shell. After a merge that made no commit,
+   the tree must be the apply tree. A helper
    missing from `origin/main`, a failed classifier or a missing record is a
    failure, never a pass. The change is already on `main` then, so the stop
    is a report: the coordinator checks the records by hand and fixes a gap
