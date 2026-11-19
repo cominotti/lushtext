@@ -26,6 +26,7 @@ use crate::model::local_history::{
 };
 use crate::model::sidecar_identity::{DocumentSidecarIdentity, stable_bytes_hash};
 use crate::model::size_units::iec_size;
+use crate::services::app_data_layout::{AppDataLayout, AppDataLocation, lineage_index_file_name};
 use crate::services::recovery_metadata::{
     RecoveryDiagnostic, RecoveryLoad, RecoveryLoadOutcome, RecoveryMetadataClass,
 };
@@ -38,10 +39,6 @@ use crate::services::{
     note_storage,
 };
 
-/// Directory name that stores one local-history lineage per saved document.
-const LOCAL_HISTORY_DIR: &str = "local-history";
-/// Metadata filename stored inside each lineage directory.
-const INDEX_FILENAME: &str = "index.json";
 /// Snapshot files stay plain UTF-8 text so restore and debugging remain simple.
 const SNAPSHOT_EXTENSION: &str = "txt";
 
@@ -408,7 +405,7 @@ pub fn unavailable_message() -> String {
 /// Resolve the local-history base directory under the app data home.
 #[must_use]
 pub fn local_history_dir(data_dir: &Path) -> PathBuf {
-    data_dir.join(LOCAL_HISTORY_DIR)
+    AppDataLayout::new(data_dir).path(AppDataLocation::LocalHistoryDir)
 }
 
 /// Resolve the stable identity for a saved document path.
@@ -817,7 +814,7 @@ fn reconcile_lineages_locked(
         }
 
         report.scanned_lineages += 1;
-        let index_path = entry.path.join(INDEX_FILENAME);
+        let index_path = entry.path.join(lineage_index_file_name());
         let load = load_history_index(data_dir, &index_path);
         note_storage::trace_recovery_diagnostics(&load.diagnostics);
         report.diagnostics.extend(load.diagnostics);
@@ -857,7 +854,7 @@ fn reconcile_lineages_locked(
         }
 
         let source_dir = loaded.dir.clone();
-        let index_path = source_dir.join(INDEX_FILENAME);
+        let index_path = source_dir.join(lineage_index_file_name());
         let identity = loaded.document.identity.clone();
         match migrate_loaded_document(data_dir, &mut loaded, identity) {
             Ok(()) => report.reconciled_lineages += 1,
@@ -904,7 +901,7 @@ fn load_document_for_identity_recovering(
     identity: DocumentSidecarIdentity,
 ) -> Result<RecoveryLoad<LocalHistoryDocument>> {
     let dir = document_dir(data_dir, &identity);
-    let index_path = dir.join(INDEX_FILENAME);
+    let index_path = dir.join(lineage_index_file_name());
     let load = load_history_index(data_dir, &index_path);
     note_storage::trace_recovery_diagnostics(&load.diagnostics);
     let mut diagnostics = load.diagnostics;
@@ -998,7 +995,7 @@ fn repair_history_index_from_snapshots(
         .with_context(|| format!("failed to read {}", document_dir.display()))?
     {
         if entry.kind != FileKind::File
-            || entry.path.file_name().and_then(OsStr::to_str) == Some(INDEX_FILENAME)
+            || entry.path.file_name().and_then(OsStr::to_str) == Some(lineage_index_file_name())
         {
             continue;
         }
@@ -1168,7 +1165,7 @@ fn save_document_index(document_dir: &Path, document: &LocalHistoryDocument) -> 
         .context("local-history index path is not under app data directory")?;
     note_storage::save_json_file_recovering(
         data_dir,
-        &document_dir.join(INDEX_FILENAME),
+        &document_dir.join(lineage_index_file_name()),
         RecoveryMetadataClass::LocalHistoryIndex,
         document,
     )
@@ -1268,7 +1265,7 @@ fn load_all_documents_from_base(
             continue;
         }
 
-        let load = load_history_index(data_dir, &path.join(INDEX_FILENAME));
+        let load = load_history_index(data_dir, &path.join(lineage_index_file_name()));
         note_storage::trace_recovery_diagnostics(&load.diagnostics);
         let Some(mut document) = load.value else {
             continue;
@@ -1314,7 +1311,7 @@ fn migrate_loaded_document(
         return Ok(());
     }
 
-    let target_index = target_dir.join(INDEX_FILENAME);
+    let target_index = target_dir.join(lineage_index_file_name());
     let target_load = load_history_index(data_dir, &target_index);
     note_storage::trace_recovery_diagnostics(&target_load.diagnostics);
     let mut target_document = match target_load.value {
@@ -1603,8 +1600,7 @@ mod tests {
 
     #[test]
     fn local_history_policy_constants_are_stable() {
-        assert_eq!(LOCAL_HISTORY_DIR, "local-history");
-        assert_eq!(INDEX_FILENAME, "index.json");
+        assert_eq!(lineage_index_file_name(), "index.json");
         assert_eq!(SNAPSHOT_EXTENSION, "txt");
         assert_eq!(PER_DOCUMENT_SNAPSHOT_CAP, 64);
         assert_eq!(GLOBAL_SNAPSHOT_CAP, 256);
@@ -1886,7 +1882,7 @@ mod tests {
             .expect("capture snapshot"),
         );
         let doc_dir = history_dir_for_path(dir.path(), &path);
-        let index_path = doc_dir.join(INDEX_FILENAME);
+        let index_path = doc_dir.join(lineage_index_file_name());
         let snapshot_file = snapshot_path(&doc_dir, &meta.snapshot_id);
         fixture::create_dir_all(&doc_dir.join("nested-non-snapshot"));
         fixture::write_text(&index_path, "not local-history json");
@@ -1931,7 +1927,7 @@ mod tests {
         let path = seed_file(&dir, "workspace/file.txt", "one\n");
         let identity = resolve_document_identity(&path).expect("identity");
         let doc_dir = document_dir(dir.path(), &identity);
-        let index_path = doc_dir.join(INDEX_FILENAME);
+        let index_path = doc_dir.join(lineage_index_file_name());
         fixture::create_dir_all(&doc_dir);
         let half_budget = MAX_INDEX_REPAIR_SNAPSHOT_BYTES / 2;
 
@@ -2007,7 +2003,7 @@ mod tests {
             .expect("capture snapshot"),
         );
         let doc_dir = history_dir_for_path(dir.path(), &path);
-        let index_path = doc_dir.join(INDEX_FILENAME);
+        let index_path = doc_dir.join(lineage_index_file_name());
         let snapshot_file = snapshot_path(&doc_dir, &meta.snapshot_id);
         fixture::create_sparse_file(&snapshot_file, HISTORY_UNAVAILABLE_BYTES + 1);
         fixture::write_text(&index_path, "not local-history json");
@@ -2048,7 +2044,7 @@ mod tests {
             .expect("capture snapshot"),
         );
         let doc_dir = history_dir_for_path(dir.path(), &path);
-        let index_path = doc_dir.join(INDEX_FILENAME);
+        let index_path = doc_dir.join(lineage_index_file_name());
         let snapshot_file = snapshot_path(&doc_dir, &meta.snapshot_id);
         let ambiguous_snapshot = doc_dir.join("snapshot-without-time.txt");
         fixture::rename(&snapshot_file, &ambiguous_snapshot);

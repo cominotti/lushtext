@@ -205,6 +205,10 @@ pub struct FocusModeState {
 pub struct DraftState {
     /// Source ID for the global autosave timer. Removed on dispose.
     pub autosave_source_id: RefCell<Option<glib::SourceId>>,
+    /// Periodic autosave ticks run so far: the clock unrestored-copy retries
+    /// are scheduled on. Only the 5 s timer (`periodic_autosave_tick`)
+    /// advances it; first-dirty and rerun passes do not. Never persisted.
+    pub(super) autosave_timer_ticks: Cell<u64>,
     /// Superseding one-shot for the first dirty draft after a clean cycle.
     pub first_dirty_autosave_timer: SupersedingTimer,
     /// Whether the first-dirty timer currently has a callback armed.
@@ -265,9 +269,12 @@ pub struct DraftState {
     /// overwrite the recovery body before restore could apply or preserve it.
     pub(super) restore_pending_ids: RefCell<HashMap<String, usize>>,
     /// Unrestored recovery bodies whose set-aside copy failed. Their restore
-    /// hold is kept — the body exists nowhere else — and each autosave tick
-    /// retries the copy; the value counts the failed attempts.
-    pub(super) unrestored_copy_retries: RefCell<HashMap<String, (DraftEntry, u32)>>,
+    /// hold is kept — the body exists nowhere else — and the periodic
+    /// autosave tick retries the copy with exponential backoff; the value
+    /// holds the entry, the failed attempts, and the `autosave_timer_ticks`
+    /// value at which the next attempt is due. An attempt in flight is not in
+    /// the map. Never persisted.
+    pub(super) unrestored_copy_retries: RefCell<HashMap<String, (DraftEntry, u32, u64)>>,
     /// Cancellation token for the current autosave buffer copy, if any.
     pub(crate) autosave_snapshot: RefCell<Option<BufferSnapshotHandle>>,
     /// Cancellation token for the current close-time buffer copy, if any.

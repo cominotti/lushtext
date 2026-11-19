@@ -2,21 +2,29 @@
 
 //! Startup sweep of durable-write crash leftovers in LushText's own app data.
 //!
-//! Every app-data directory LushText durably writes into is named here, once,
-//! and swept non-recursively under one shared per-pass budget. Two families are
-//! nested: local-history lineages, listed one level below the local-history
-//! root, and format-upgrade backup runs, each swept with its `items/` child.
-//! Both listings are charged to the same budget. The removal decision itself lives in
-//! `services::filesystem::leftovers`; this module only knows *where* to look.
+//! *Where* to look comes from the app-data layout
+//! (`services::app_data_layout`), which names every location once: this
+//! module visits each location the layout marks swept, non-recursively and
+//! under one shared per-pass budget, in a fixed order (the budget is spent in
+//! visit order):
+//!
+//! 1. every `Swept` location, in `AppDataLocation::ALL` order;
+//! 2. the two families, in `FAMILY_SWEEP_ORDER`: each format-upgrade backup
+//!    run with its `items/` child, then each local-history lineage, one level
+//!    below their roots;
+//! 3. the `SweptLast` location, the legacy folder-note directory, with
+//!    whatever budget remains.
+//!
+//! Both family listings are charged to the same budget. The removal decision
+//! itself lives in `services::filesystem::leftovers`.
 
 use std::path::Path;
 
+use crate::services::app_data_layout::{
+    AppDataKind, AppDataLayout, AppDataLocation, FAMILY_SWEEP_ORDER, SweepCoverage,
+};
 use crate::services::filesystem::leftovers::{
     LeftoverScope, LeftoverSweepBudget, LeftoverSweepReport, child_directories, sweep_directory,
-};
-use crate::services::{
-    bookmark_service, document_note_service, draft_service, folder_note_service, format_upgrade,
-    json_store, local_history_service, recovery_metadata, search_backup,
 };
 
 /// Local-history lineage directories swept per startup pass.
@@ -34,9 +42,9 @@ const MAX_BACKUP_RUNS_PER_PASS: usize = 256;
 
 /// Sweep stale durable-write leftovers from every app-data directory under `data_dir`.
 ///
-/// Never recurses beyond the named directories and one level of local-history
-/// lineages, and never propagates failure: an unreadable directory or a
-/// leftover that cannot be removed is counted and left for a later launch.
+/// Never recurses beyond the named directories and one level of each family,
+/// and never propagates failure: an unreadable directory or a leftover that
+/// cannot be removed is counted and left for a later launch.
 ///
 /// **Threading:** Performs blocking filesystem calls. Call from a background
 /// thread.
@@ -44,52 +52,62 @@ const MAX_BACKUP_RUNS_PER_PASS: usize = 256;
 pub fn sweep_startup_leftovers(data_dir: &Path) -> LeftoverSweepReport {
     let mut budget = LeftoverSweepBudget::startup();
     let mut report = LeftoverSweepReport::default();
-    let history_root = local_history_service::local_history_dir(data_dir);
-    let format_backups = data_dir.join(format_upgrade::FORMAT_UPGRADE_BACKUP_DIR);
-
-    for dir in [
-        data_dir.to_path_buf(),
-        draft_service::drafts_dir(data_dir),
-        history_root.clone(),
-        bookmark_service::bookmarks_dir(data_dir),
-        document_note_service::document_notes_dir(data_dir),
-        folder_note_service::folder_notes_dir(data_dir),
-        data_dir.join(recovery_metadata::QUARANTINE_DIR),
-        search_backup::journal_dir(data_dir),
-        search_backup::bodies_dir(data_dir),
-        json_store::style_schemes_dir(data_dir),
-        draft_service::set_aside_dir(data_dir),
-        format_backups.clone(),
-    ] {
-        sweep_directory(&dir, LeftoverScope::AppData, &mut budget, &mut report);
-    }
-
-    // Each format-upgrade run writes its manifest in the run directory and its
-    // backups in `items/` below it (hashed leaf names, never deeper).
-    for run in child_directories(
-        &format_backups,
-        MAX_BACKUP_RUNS_PER_PASS,
+    visit_in_sweep_order(
+        data_dir,
         &mut budget,
         &mut report,
-    ) {
-        sweep_directory(&run, LeftoverScope::AppData, &mut budget, &mut report);
-        sweep_directory(
-            &run.join(format_upgrade::FORMAT_UPGRADE_BACKUP_ITEMS_DIR),
-            LeftoverScope::AppData,
-            &mut budget,
-            &mut report,
-        );
-    }
-
-    for lineage in child_directories(
-        &history_root,
-        MAX_LINEAGES_PER_PASS,
-        &mut budget,
-        &mut report,
-    ) {
-        sweep_directory(&lineage, LeftoverScope::AppData, &mut budget, &mut report);
-    }
+        &mut |dir, budget, report| {
+            sweep_directory(dir, LeftoverScope::AppData, budget, report);
+        },
+    );
     report
+}
+
+/// One directory visit of the sweep, charged to the shared budget.
+type SweepVisit<'a> = dyn FnMut(&Path, &mut LeftoverSweepBudget, &mut LeftoverSweepReport) + 'a;
+
+/// Visit every swept app-data directory in the sweep's fixed order.
+fn visit_in_sweep_order(
+    data_dir: &Path,
+    budget: &mut LeftoverSweepBudget,
+    report: &mut LeftoverSweepReport,
+    visit: &mut SweepVisit<'_>,
+) {
+    let layout = AppDataLayout::new(data_dir);
+    for location in AppDataLocation::ALL {
+        match location.sweep() {
+            SweepCoverage::Swept => visit(&layout.path(location), budget, report),
+            SweepCoverage::SweptLast | SweepCoverage::ParentSwept => {}
+        }
+    }
+
+    for family in FAMILY_SWEEP_ORDER {
+        let root = layout.path(family);
+        match family.kind() {
+            // Each format-upgrade run writes its manifest in the run directory
+            // and its backups in `items/` below it (hashed leaf names, never
+            // deeper).
+            AppDataKind::RunFamily { items } => {
+                for run in child_directories(&root, MAX_BACKUP_RUNS_PER_PASS, budget, report) {
+                    visit(&run, budget, report);
+                    visit(&run.join(items), budget, report);
+                }
+            }
+            AppDataKind::LineageFamily { .. } => {
+                for lineage in child_directories(&root, MAX_LINEAGES_PER_PASS, budget, report) {
+                    visit(&lineage, budget, report);
+                }
+            }
+            AppDataKind::File | AppDataKind::Directory => {}
+        }
+    }
+
+    for location in AppDataLocation::ALL {
+        match location.sweep() {
+            SweepCoverage::SweptLast => visit(&layout.path(location), budget, report),
+            SweepCoverage::Swept | SweepCoverage::ParentSwept => {}
+        }
+    }
 }
 
 #[cfg(test)]
@@ -101,6 +119,7 @@ mod tests {
 
     use super::*;
     use crate::services::filesystem::{fixture, metadata};
+    use crate::services::{bookmark_service, draft_service, local_history_service, search_backup};
 
     fn stale_leftover(dir: &Path, name: &str) -> PathBuf {
         fixture::create_dir_all(dir);
@@ -237,6 +256,77 @@ mod tests {
             assert!(!metadata::exists(path), "{} must be swept", path.display());
         }
         assert_eq!(report.removed, 2);
+    }
+
+    /// A format upgrade rewrites a legacy folder-note sidecar in place, so a
+    /// killed upgrade can leave a durable-write temp in `workspace-notes/`.
+    /// The sweep reaches it, last, through the same stale-only predicate.
+    #[test]
+    fn startup_sweep_reaches_the_legacy_folder_note_directory() {
+        let data = TempDir::new().expect("temp dir");
+        let foreign_pid = std::process::id().wrapping_add(1);
+        let legacy = data.path().join("workspace-notes");
+        let stale = stale_leftover(
+            &legacy,
+            &format!(".abcdef.json.format-upgrade-convert.{foreign_pid}.1.tmp"),
+        );
+        let fresh = legacy.join(format!(
+            ".fedcba.json.format-upgrade-convert.{foreign_pid}.2.tmp"
+        ));
+        fixture::write_text(&fresh, "in flight");
+        let sidecar = legacy.join("abcdef.json");
+        fixture::write_text(&sidecar, "{}");
+
+        let report = sweep_startup_leftovers(data.path());
+
+        assert!(!metadata::exists(&stale), "the stale temp is swept");
+        assert!(metadata::exists(&fresh), "a fresh temp is kept");
+        fixture::assert_text(&sidecar, "{}");
+        assert_eq!(report.removed, 1);
+    }
+
+    /// The whole visit order, which is how the shared budget is spent: the
+    /// flat directories in `ALL` order, each format-upgrade run with its
+    /// `items/`, each local-history lineage, then the legacy directory.
+    #[test]
+    fn the_sweep_visits_app_data_in_its_fixed_order() {
+        let data = TempDir::new().expect("temp dir");
+        fixture::create_dir_all(&data.path().join("format-upgrade-backups/run-a/items"));
+        fixture::create_dir_all(&data.path().join("local-history/lineage-a"));
+        let mut visited = Vec::new();
+        let mut budget = LeftoverSweepBudget::startup();
+        let mut report = LeftoverSweepReport::default();
+
+        visit_in_sweep_order(data.path(), &mut budget, &mut report, &mut |dir, _, _| {
+            visited.push(
+                dir.strip_prefix(data.path())
+                    .expect("inside the data home")
+                    .display()
+                    .to_string(),
+            );
+        });
+
+        assert_eq!(
+            visited,
+            [
+                "",
+                "drafts",
+                "local-history",
+                "bookmarks",
+                "document-notes",
+                "folder-notes",
+                "recovery-quarantine",
+                "replace-backup-journal",
+                "replace-backup-journal/bodies",
+                "style-schemes",
+                "drafts/set-aside",
+                "format-upgrade-backups",
+                "format-upgrade-backups/run-a",
+                "format-upgrade-backups/run-a/items",
+                "local-history/lineage-a",
+                "workspace-notes",
+            ]
+        );
     }
 
     #[test]

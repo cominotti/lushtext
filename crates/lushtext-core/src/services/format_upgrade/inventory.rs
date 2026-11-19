@@ -9,6 +9,7 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
+use crate::services::app_data_layout::{AppDataLayout, AppDataLocation};
 use crate::services::filesystem::{
     DirectoryScanPolicy, FileKind, PathStatus, metadata as fs_metadata, read as fs_read,
     tree as fs_tree,
@@ -20,7 +21,82 @@ use crate::services::format_upgrade::diagnostics::{
 use crate::services::format_upgrade::legacy::ConverterRegistry;
 use crate::{model::workspace::WorkspacesFile, services::json_format};
 
-const LEGACY_FOLDER_NOTE_SIDECAR_DIR: &str = "workspace-notes";
+/// How the inventory covers one app-data location.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InventoryDecision {
+    /// One fixed JSON file of this kind.
+    FixedJson(FormatMetadataKind),
+    /// A bounded directory of JSON sidecars of this kind.
+    JsonDirectory(FormatMetadataKind),
+    /// The draft bodies beside the manifest.
+    DraftBodies,
+    /// Each lineage's index.
+    LocalHistory,
+    /// The Replace All undo journal: manifest, marker, entries and bodies.
+    ReplaceJournal,
+    /// Read by that location's scan.
+    CoveredBy(AppDataLocation),
+    /// Not app-owned versioned metadata, for this reason.
+    NotInventoried(&'static str),
+}
+
+/// The inventory's decision for every app-data location. Exhaustive: a new
+/// location does not compile until it is scanned, covered or exempted here.
+const fn inventory_decision(location: AppDataLocation) -> InventoryDecision {
+    use AppDataLocation as L;
+    use FormatMetadataKind as K;
+    use InventoryDecision as D;
+    match location {
+        L::Workspaces => D::FixedJson(K::WorkspaceState),
+        L::Session => D::FixedJson(K::Session),
+        L::DraftManifest => D::FixedJson(K::DraftManifest),
+        L::DraftsDir => D::DraftBodies,
+        L::SavedSearches => D::FixedJson(K::SavedSearches),
+        L::SearchHistory => D::FixedJson(K::SearchHistory),
+        L::Bookmarks => D::JsonDirectory(K::BookmarkSidecar),
+        L::DocumentNotes => D::JsonDirectory(K::DocumentNoteSidecar),
+        L::FolderNotes => D::JsonDirectory(K::FolderNoteSidecar),
+        L::LegacyFolderNotes => D::JsonDirectory(K::LegacyFolderNoteSidecar),
+        L::LocalHistoryDir => D::LocalHistory,
+        L::MigrationLedger => D::FixedJson(K::MigrationLedger),
+        L::ReplaceJournalDir => D::ReplaceJournal,
+        L::ReplaceJournalManifest | L::ReplaceCleanupMarker | L::ReplaceJournalBodies => {
+            D::CoveredBy(L::ReplaceJournalDir)
+        }
+        L::RetiredReplaceBackup => D::FixedJson(K::RetiredReplaceUndoBackup),
+        L::Root => D::NotInventoried("the data home itself; its files are locations of their own"),
+        L::RecentDocuments => D::NotInventoried(
+            "unversioned, with no envelope; its loader recovers a corrupt file as an empty list",
+        ),
+        L::StyleSchemes => {
+            D::NotInventoried("user-installable GtkSourceView XML, not LushText JSON")
+        }
+        L::RecoveryQuarantine => D::NotInventoried("byte copies of broken files, kept as evidence"),
+        L::SetAside => D::NotInventoried("raw preserved draft bodies with no metadata"),
+        L::FormatUpgradeBackups => {
+            D::NotInventoried("the upgrade's own backups; inventorying them would be circular")
+        }
+    }
+}
+
+/// The order the inventory scans its locations in, which is the order its
+/// diagnostics are reported in.
+const INVENTORY_ORDER: [AppDataLocation; 14] = [
+    AppDataLocation::Workspaces,
+    AppDataLocation::Session,
+    AppDataLocation::DraftManifest,
+    AppDataLocation::DraftsDir,
+    AppDataLocation::SavedSearches,
+    AppDataLocation::SearchHistory,
+    AppDataLocation::Bookmarks,
+    AppDataLocation::DocumentNotes,
+    AppDataLocation::FolderNotes,
+    AppDataLocation::LegacyFolderNotes,
+    AppDataLocation::LocalHistoryDir,
+    AppDataLocation::MigrationLedger,
+    AppDataLocation::ReplaceJournalDir,
+    AppDataLocation::RetiredReplaceBackup,
+];
 
 /// Complete app-owned metadata inventory for one data directory.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -200,7 +276,7 @@ impl<'a> InventoryBuilder<'a> {
     }
 
     fn scan_draft_bodies(&mut self) {
-        let relative_dir = "drafts";
+        let relative_dir = AppDataLocation::DraftsDir.relative_str();
         let dir = self.data_dir.join(relative_dir);
         match fs_metadata::path_status(&dir) {
             Ok(PathStatus::Missing) => {}
@@ -230,7 +306,7 @@ impl<'a> InventoryBuilder<'a> {
     }
 
     fn scan_local_history(&mut self) {
-        let relative_dir = "local-history";
+        let relative_dir = AppDataLocation::LocalHistoryDir.relative_str();
         let dir = self.data_dir.join(relative_dir);
         match fs_metadata::path_status(&dir) {
             Ok(PathStatus::Missing) => {
@@ -248,7 +324,7 @@ impl<'a> InventoryBuilder<'a> {
                 );
                 for entry in entries {
                     if entry.kind == FileKind::Directory {
-                        let index = entry.path.join("index.json");
+                        let index = AppDataLayout::lineage_index(&entry.path);
                         let relative = FormatItemPath::from_data_path(self.data_dir, &index);
                         let (classification, file_facts) = classify_path(
                             &index,
@@ -275,13 +351,13 @@ impl<'a> InventoryBuilder<'a> {
     }
 
     fn scan_replace_journal(&mut self) {
-        let relative_dir = "replace-backup-journal";
+        let relative_dir = AppDataLocation::ReplaceJournalDir.relative_str();
         self.scan_fixed_json(
-            format!("{relative_dir}/manifest.json"),
+            AppDataLocation::ReplaceJournalManifest.relative(),
             FormatMetadataKind::ReplaceUndoManifest,
         );
         self.scan_fixed_json(
-            format!("{relative_dir}/cleanup-in-progress.json"),
+            AppDataLocation::ReplaceCleanupMarker.relative(),
             FormatMetadataKind::ReplaceUndoCleanupMarker,
         );
 
@@ -294,7 +370,9 @@ impl<'a> InventoryBuilder<'a> {
             self.scan_bounded_directory(&dir, relative_dir, self.bounds.max_replace_journal_entries)
         {
             let file_name = entry.path.file_name().and_then(OsStr::to_str);
-            if file_name == Some("manifest.json") || file_name == Some("cleanup-in-progress.json") {
+            if file_name == Some(AppDataLocation::ReplaceJournalManifest.file_name())
+                || file_name == Some(AppDataLocation::ReplaceCleanupMarker.file_name())
+            {
                 continue;
             }
             if entry.kind == FileKind::File && has_extension(&entry.path, "json") {
@@ -335,7 +413,7 @@ impl<'a> InventoryBuilder<'a> {
 
     /// Inventory the raw bodies, bounded like the entries (design D3).
     fn scan_replace_undo_bodies(&mut self) {
-        let relative_dir = "replace-backup-journal/bodies";
+        let relative_dir = AppDataLocation::ReplaceJournalBodies.relative_str();
         let dir = self.data_dir.join(relative_dir);
         if !matches!(fs_metadata::path_status(&dir), Ok(PathStatus::Directory)) {
             return;
@@ -418,39 +496,22 @@ pub(crate) fn scan_with_registry(
 ) -> FormatInventory {
     let mut builder = InventoryBuilder::new(data_dir, bounds, registry);
 
-    builder.scan_fixed_json("workspaces.json", FormatMetadataKind::WorkspaceState);
-    builder.scan_fixed_json("session.json", FormatMetadataKind::Session);
-    builder.scan_fixed_json("drafts/manifest.json", FormatMetadataKind::DraftManifest);
-    builder.scan_draft_bodies();
-    builder.scan_fixed_json("saved-searches.json", FormatMetadataKind::SavedSearches);
-    builder.scan_fixed_json("search-history.json", FormatMetadataKind::SearchHistory);
-    builder.scan_json_directory(
-        "bookmarks",
-        FormatMetadataKind::BookmarkSidecar,
-        bounds.max_sidecar_entries,
-    );
-    builder.scan_json_directory(
-        "document-notes",
-        FormatMetadataKind::DocumentNoteSidecar,
-        bounds.max_sidecar_entries,
-    );
-    builder.scan_json_directory(
-        "folder-notes",
-        FormatMetadataKind::FolderNoteSidecar,
-        bounds.max_sidecar_entries,
-    );
-    builder.scan_json_directory(
-        LEGACY_FOLDER_NOTE_SIDECAR_DIR,
-        FormatMetadataKind::LegacyFolderNoteSidecar,
-        bounds.max_sidecar_entries,
-    );
-    builder.scan_local_history();
-    builder.scan_fixed_json("migration-ledger.json", FormatMetadataKind::MigrationLedger);
-    builder.scan_replace_journal();
-    builder.scan_fixed_json(
-        "replace-backup.json",
-        FormatMetadataKind::RetiredReplaceUndoBackup,
-    );
+    for location in INVENTORY_ORDER {
+        match inventory_decision(location) {
+            InventoryDecision::FixedJson(kind) => {
+                builder.scan_fixed_json(location.relative(), kind);
+            }
+            InventoryDecision::JsonDirectory(kind) => builder.scan_json_directory(
+                location.relative_str(),
+                kind,
+                bounds.max_sidecar_entries,
+            ),
+            InventoryDecision::DraftBodies => builder.scan_draft_bodies(),
+            InventoryDecision::LocalHistory => builder.scan_local_history(),
+            InventoryDecision::ReplaceJournal => builder.scan_replace_journal(),
+            InventoryDecision::CoveredBy(_) | InventoryDecision::NotInventoried(_) => {}
+        }
+    }
 
     builder.into_inventory()
 }
@@ -648,6 +709,37 @@ mod tests {
 
     fn write_json(path: &Path, value: &serde_json::Value) {
         fixture::write_text(path, &serde_json::to_string_pretty(&value).expect("json"));
+    }
+
+    #[test]
+    fn the_inventory_order_holds_exactly_the_locations_with_a_scan_of_their_own() {
+        let scanned: Vec<AppDataLocation> = AppDataLocation::ALL
+            .into_iter()
+            .filter(|&location| {
+                !matches!(
+                    inventory_decision(location),
+                    InventoryDecision::CoveredBy(_) | InventoryDecision::NotInventoried(_)
+                )
+            })
+            .collect();
+        let mut ordered = INVENTORY_ORDER.to_vec();
+        ordered.sort_by_key(|location| {
+            AppDataLocation::ALL
+                .iter()
+                .position(|candidate| candidate == location)
+        });
+        assert_eq!(ordered, scanned);
+        let mut unique = INVENTORY_ORDER.to_vec();
+        unique.dedup();
+        assert_eq!(unique.len(), INVENTORY_ORDER.len());
+        for location in AppDataLocation::ALL {
+            if let InventoryDecision::CoveredBy(target) = inventory_decision(location) {
+                assert!(
+                    INVENTORY_ORDER.contains(&target),
+                    "{location:?} -> {target:?}"
+                );
+            }
+        }
     }
 
     #[test]

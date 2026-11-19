@@ -35,7 +35,7 @@ use crate::ui::window::LushtextWindow;
 /// Field groups follow the workflow's three stage orders: the journal's record
 /// and its serialization gate, the autosave lane, the restore lane, and orphan
 /// cleanup.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DraftEvidence {
     // --- the journal's record ---
     /// Entries in the in-memory manifest.
@@ -70,8 +70,18 @@ pub struct DraftEvidence {
     /// Draft ids autosave is holding off because their restore is pending.
     pub restore_held_draft_ids: usize,
     /// Unrestored recovery bodies whose set-aside copy failed and is retried
-    /// on each autosave tick; their ids stay in `restore_held_draft_ids`.
+    /// by the periodic autosave tick with backoff; their ids stay in
+    /// `restore_held_draft_ids`.
     pub unrestored_copy_retries: usize,
+    /// Each pending retry's failed attempts so far, sorted by draft id. An
+    /// attempt in flight is not listed; a test observes an attempt as a change
+    /// of its entry's count.
+    pub unrestored_copy_failures: Vec<(String, u32)>,
+    /// Each pending retry's due tick (an `autosave_timer_ticks` value), sorted
+    /// by draft id.
+    pub unrestored_copy_next_due_ticks: Vec<(String, u64)>,
+    /// Periodic autosave timer ticks run so far, the clock of those due ticks.
+    pub autosave_timer_ticks: u64,
 
     // --- autosave ---
     /// Whether an autosave batch is currently snapshotting or writing.
@@ -146,7 +156,20 @@ impl LushtextWindow {
         let close_discard_count = drafts.close_discard_ids.borrow().len();
         let stale_preservations_pending = drafts.stale_preservations.borrow().len();
         let restore_held_draft_ids = drafts.restore_pending_ids.borrow().len();
-        let unrestored_copy_retries = drafts.unrestored_copy_retries.borrow().len();
+        let (unrestored_copy_retries, unrestored_copy_failures, unrestored_copy_next_due_ticks) = {
+            let retries = drafts.unrestored_copy_retries.borrow();
+            let mut failures: Vec<(String, u32)> = retries
+                .iter()
+                .map(|(draft_id, (_, failures, _))| (draft_id.clone(), *failures))
+                .collect();
+            failures.sort_unstable();
+            let mut next_due: Vec<(String, u64)> = retries
+                .iter()
+                .map(|(draft_id, (_, _, next_due_tick))| (draft_id.clone(), *next_due_tick))
+                .collect();
+            next_due.sort_unstable();
+            (retries.len(), failures, next_due)
+        };
         let (preloaded_entries, preloaded_reservation_weight) = {
             let preloaded = drafts.preloaded.borrow();
             (preloaded.len(), preloaded.reservation_weight())
@@ -171,6 +194,9 @@ impl LushtextWindow {
             stale_preservations_pending,
             restore_held_draft_ids,
             unrestored_copy_retries,
+            unrestored_copy_failures,
+            unrestored_copy_next_due_ticks,
+            autosave_timer_ticks: drafts.autosave_timer_ticks.get(),
             autosave_inflight,
             autosave_pending: drafts.autosave_pending.get(),
             first_dirty_timer_pending: drafts.first_dirty_autosave_pending.get(),

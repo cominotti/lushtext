@@ -466,7 +466,7 @@ mod tests {
     fn parses_the_exact_builder_pattern_from_the_right() {
         let built = crate::services::filesystem::write::unique_temp_path(
             Path::new("/workspace/notes.v2.md"),
-            WriteLabel::SAVE.as_str(),
+            WriteLabel::SAVE,
         );
         let name = built.file_name().and_then(OsStr::to_str).expect("utf-8");
 
@@ -541,7 +541,7 @@ mod tests {
     fn builder_names_carry_this_launch() {
         let built = crate::services::filesystem::write::unique_temp_path(
             Path::new("/workspace/notes.md"),
-            WriteLabel::SAVE.as_str(),
+            WriteLabel::SAVE,
         );
         let name = built.file_name().and_then(OsStr::to_str).expect("utf-8");
         let parsed = parse_durable_temp_name(name).expect("builder output parses");
@@ -657,7 +657,7 @@ mod tests {
         // This launch's own temp, named by the real builder (pid + nonce).
         let own = crate::services::filesystem::write::unique_temp_path(
             &dir.path().join("manifest.json"),
-            WriteLabel::JSON.as_str(),
+            WriteLabel::JSON,
         );
         let manifest = dir.path().join("manifest.json");
         for path in [&leftover, &fresh, &own, &manifest] {

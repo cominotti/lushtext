@@ -49,7 +49,7 @@ change adopts it.
 | 5 | `measure-proof-strength-with-mutation` (**implemented 2026-10-10**) | N9. The harness-file mutant exclusion is owned by change 1. **Done**; the per-module table, triage, and lane decision are in the programme record, "Proof strength (N9)" | 1 |
 | 6 | `bound-draft-set-aside-retention` | Fix first: the E1 set-aside naming defect (a body counts as kept only under a byte-identical copy; Kani K9). Then N10 set-aside retention: no automatic deletion, a soft bound that asks for review, and the 256-entry listing bug fixed | — |
 | 7 | `add-sidebar-visual-proof-scenario` (**implemented 2026-10-10**) | N10 sidebar proof: the `reveal-workspace-path` action and the rendered-row pixel check. **Done**: `win.reveal-workspace-path`, the `workspace-path-revealed` readiness predicate, `ViewportSliceBin::outer_request_pending()`, and the `workspace-tree-reveal` scenario type with the `workspace-tree-rendered-row-anchors` invariant (programme record, §4) | — |
-| 8 | `apply-verification-altitude-redesigns` | N8, as six groups that can be applied one at a time | 1, 6 |
+| 8 | `apply-verification-altitude-redesigns` (**merged 2026-11-18, PR #117, `main` `8d4f5d7b`; archived 2026-11-18** as `openspec/changes/archive/2026-11-18-apply-verification-altitude-redesigns/`) | N8, as six groups that can be applied one at a time. **Done**: all six groups applied (the `Protocol` driver, one app-data layout owner, the unrestored-copy backoff, `WriteLabel` down to the temp name, the writable draft-candidate type, explicit smoke-binary roles); status per group under N8 | 1, 6 |
 | 9 | `verify-shell-conformance-against-proven-cores` | N11: the imperative shells checked against the Kani-proven cores used as oracles | 1, 3 |
 | — | `evaluate-verus-for-unbounded-proofs` (**implemented 2026-11-15**; merged as `11769e02` (PR #107) and archived 2026-11-15) | The Verus deductive verifier on claims Kani holds only for bounded scopes, after the two Kani-first attempts. Evaluation only. **Done**: [`formal-verification-verus.md`](./formal-verification-verus.md) recommended keeping Kani alone, which the maintainer accepted on 2026-11-15, closing the evaluation without V2 and without a Kani follow-up; V1 reproduced its known answers, the Kani inductive step was not proved within budget, and V2 was not completed | — |
 | — | `evaluate-quint-and-tlaplus-empirically` (**implemented 2026-09-24**) | An empirical Quint vs TLA+ comparison, with open exploration. Evaluation only. **Done**: [`formal-verification-quint-vs-tlaplus.md`](./formal-verification-quint-vs-tlaplus.md) decided Kani only for maintained properties, TLA+ with TLC for the disposable N6 sketch, and no Quint; its E1 run found a set-aside defect, fixed first in change 6 | — |
@@ -170,6 +170,10 @@ harness becomes a proof. Until then there is nothing to do, which is correct.
 
 ### N8. The remaining altitude proposals from the two `/simplify` passes
 
+**Done** by `apply-verification-altitude-redesigns` (2026-11-18; merged as PR
+#117, `main` `8d4f5d7b`, and archived the same day); every group is listed
+below with its status.
+
 Each is a redesign that this change left out on purpose:
 
 - a common `Protocol` trait for the write, move and rename loops;
@@ -180,6 +184,37 @@ Each is a redesign that this change left out on purpose:
 - reusing the kill-point binary across smoke roles.
 
 Take them up when a change touches that area anyway, not as a campaign.
+
+`apply-verification-altitude-redesigns` (row 8) took all six, as groups
+applied one at a time; none is left deferred:
+
+- group 1, the `Protocol` trait: **done** (2026-11-18).
+  `services/protocol_drive.rs` holds the trait and the one `drive` loop; the
+  write, move and rename shells and the Replace All apply, undo and
+  journal-shrink shells run through it, and a source check fails a shell that
+  steps its core in a loop of its own.
+- group 4, `WriteLabel` down to the temp name: **done** (2026-11-18). The
+  durable write, copy, move and `temp_name::format` take `WriteLabel`, so a
+  temp tag is always a known label; `kill_point::reach` keeps a string key,
+  because the draft windows narrow on a draft id.
+- group 2, one owner for the app-data layout: **done** (2026-11-18).
+  `services/app_data_layout.rs` names every location once; the sweep and the
+  format-upgrade inventory decide each in an exhaustive `match`, and the
+  legacy folder-note sidecar directory is swept, last.
+- group 3, bounded backoff for unrestored-copy retries: **done**
+  (2026-11-18). Only the 5 s timer retries a failed set-aside copy, at ticks
+  1, 3, 7, 15, 27 after the first failure and then every 12 (one minute);
+  the hold is unchanged.
+- group 5, registered and unregistered draft candidates as distinct types:
+  **done** (2026-11-18). The pipelines take only `WritableDraftCandidate`,
+  made by `DirtyDraftCandidate::into_writable`, so the token reaches the
+  asynchronous body writes by type and the two run-time "not registered"
+  branches are gone.
+- group 6, explicit smoke-binary roles: **done** (2026-11-18). The crash
+  smoke's launches are `seed`, `victim` or `relaunch`, and only the victim
+  runs the kill-point binary; `make check-kill-point-gating` keeps the feature
+  gating only `kill_point::reach`, and the lane fails when the ordinary or
+  release binary carries a kill-point marker.
 
 ### N9. Use proofs as mutation killers
 

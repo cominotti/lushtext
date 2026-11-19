@@ -2,6 +2,7 @@
 
 //! Generic JSON file persistence: load/save any serde type to a JSON file.
 
+use crate::services::app_data_layout::{AppDataLayout, AppDataLocation};
 use crate::services::filesystem::{WriteLabel, read, write};
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -66,11 +67,8 @@ fn data_dir_from(
 /// `{data_dir}/style-schemes/`.
 #[must_use]
 pub fn style_schemes_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
-    data_dir.join(STYLE_SCHEMES_DIR)
+    AppDataLayout::new(data_dir).path(AppDataLocation::StyleSchemes)
 }
-
-/// Name of the derived style-scheme directory under the app data home.
-const STYLE_SCHEMES_DIR: &str = "style-schemes";
 
 /// Load a JSON file from `data_dir/filename`. Returns `None` if the file doesn't exist.
 ///
