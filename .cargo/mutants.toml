@@ -185,6 +185,14 @@ exclude_re = [
     # `lowest` cut at column 66 and the other two mutants of this `<` still
     # mutate and are killed.
     "crates/lushtext-core/src/ui/sidebar/policy\\.rs:.*:67: replace < with <= in next_collapse_step",
+    # Equivalent (`slice-large-directory-collapse` task 7.6, 2026-11-19):
+    # `bound_step_rows` clamps a bound step with `if take > step_rows { take =
+    # step_rows }` and `if take > rows_left { take = rows_left }`. Turning
+    # either `>` into `>=` adds only the case where `take` already equals the
+    # bound, and the assignment then writes the same value: every result is
+    # unchanged. Scoped by column to these two clamps (column 21); the other
+    # mutants of the function still mutate and are killed.
+    "crates/lushtext-core/src/ui/sidebar/policy\\.rs:.*:21: replace > with >= in bound_step_rows",
     # Never compiled by the mutation lane: `markdown_chunked_cap`'s
     # `cfg(not(feature = "test-utils"))` arm. Unlike the cfg-disabled stubs
     # around it, this is the arm that ships (a `const fn` returning `None`),
