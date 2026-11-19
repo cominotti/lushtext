@@ -746,6 +746,17 @@ Recorded during implementation, each with its reason:
   gated command now runs in the caller's locale (self-test case added). The
   same smoke had passed outside `gate-trees.sh` on the same content an hour
   earlier, which is how the cause was found rather than taken for a flake.
+  The second recorded run's `make test` then failed six widget tests
+  deterministically (`notes_browser`'s 131,072-row list refuses a temporary
+  root over its 112-byte folder, the Open popover's path tooltips, the
+  skipped-files dialog and the sidebar's 131,072-entry directory, which
+  charge path bytes against their budgets) and one passed on retry; all
+  seven passed with `TMPDIR` unset and failed again with the stage
+  `TMPDIR` (`ab-*.log` in the handoff directory), and the stall recording
+  showed storage was not a bottleneck. So `with-temp-scope.sh` now makes
+  its whole scope under `/tmp` when `TMPDIR` is too deep for a session in
+  it, where the lanes were proved, and the runtime-directory fallback of
+  `7c6d37fa` is gone; the seven pass under the stage `TMPDIR` with it.
 - **The run-mutants stub failure of `6ee67e14` is reproduced.** The stub
   extracted from `6ee67e14^`, run twice at once 2,000 times, interleaved its
   records 181 times ("ARGS mutants --shard 1/2ARGS"); the fixed stub, 0 of
