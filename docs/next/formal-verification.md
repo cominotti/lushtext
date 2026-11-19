@@ -2801,6 +2801,15 @@ model).
   finds the same bytes syncs the directory before it counts them kept; moves
   keep counting as placed (a reverted rename returns the body to `drafts/`).
   The Kani exhibit of task 7.4 is owed with the D6 widening.
+- **Proof strength after the model move (interim, task 9.3 still owed on
+  the final code).** `write_protocol.rs` at `cd1a0f7c`: 34 mutants, 6 / 6
+  unviable, 28 killed by both arms (0 Kani-only, 0 tests-only), 0 Kani
+  survivors. The Kani kill count equals the `3c9fe91e` record (28), and the
+  10 former Kani-only kills are now also killed by the tests arm through the
+  conformance tests. `journal_core.rs` at `73ff720f`, with the Kani arm
+  sharded `0/2` and `1/2`: 51 mutants, 18 / 18 unviable, 1 Kani-only,
+  32 both, 33 either, 0 Kani survivors. This is identical to the `71fc2e3a`
+  record. The shared environment models weakened neither proof.
 - **Replace survivors (D8).** Mutants 649, 689 and 691 of
   `replace/apply.rs::process_file` have tests through the tap's
   before-action hook at `ReplaceFile`/`WriteBody`
