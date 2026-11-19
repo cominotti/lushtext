@@ -87,8 +87,8 @@ Change worktrees live in `.claude/worktrees/<change>`.
 - **At most five implementation stages run at once, and at most three while
   `MEASURE-QUEUE.md` holds a ready unit.** A unit is a `## ` entry, or each
   `### ` part of an entry that has parts. It is ready when its **last**
-  `- Status:` line starts with `READY`: entries keep their history of Status
-  lines. Fewer stages then run beside the rounds a change waits on, so the
+  `Status:` line, with or without the list dash, starts with `READY`:
+  entries keep their history of Status lines. Fewer stages then run beside the rounds a change waits on, so the
   quiet window comes sooner.
 - Before its first heavy command, a stage acquires its slot with
   `scripts/impl-slots.sh acquire "${C:?}"` (`C` is the change name), which

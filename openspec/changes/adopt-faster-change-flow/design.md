@@ -416,7 +416,7 @@ The coordinator's notes of 19:25 and 19:47 arrived after the stage-2 review (its
 
 An independent review of `origin/main..HEAD` (55e27161): the script, its harness, the helpers, the rules and the evidence. It checked the six gate records against `HEAD^{tree}` (f14a43bf), read each fail-first log, ran five hand mutants of the script through the harness (all caught), ran `scripts/check-fast-lane.py --base origin/main` (not eligible, as a change to the delivery rules must be) and grepped the rules, runbooks and scripts for the retired load criterion (none left). It also checked every row of the stage-3 revision, which no spec review had seen, against the "Quality floor" table. Each row holds. The two loosenings are D7's metric, decided by the maintainer, and the merge stage's stopping rule, recorded below.
 
-Findings, all fixed failing-first in the harness (`failfirst-stage4-harness.log` in the handoff directory: the eight new cases failed before the fix):
+Findings, all fixed failing-first. In the handoff directory, `failfirst-stage4-harness.log` shows the eight harness cases failing before the fix (seven new, one extended), then the resumed-fast-lane case. `failfirst-stage4-impl-slots.log` and `failfirst-stage4-quiet-gate.log` hold the helpers' new self-test cases:
 
 | Severity | Finding | Fix |
 |---|---|---|
@@ -427,6 +427,9 @@ Findings, all fixed failing-first in the harness (`failfirst-stage4-harness.log`
 | should-fix (rules) | The revision decision agent appended to `PARALLEL-LEDGER.md`, which "Design revisions" leaves to the coordinator | It writes `$H/<change>/decision-<n>.md` |
 | should-fix (correctness) | `continue` with `skip_impl` and no PR in the arguments or the carried report ran every later stage with `PR #null` | The run stops before `/simplify` when there is no PR; an argument `pr: null` counts as absent |
 | should-fix (rules) | Coordinator note 21:35 arrived after stage 3 and was in neither the rules nor the script: `git fetch --prune`, merging `origin/<branch>` when GitHub added a commit, and reading a helper's exit status rather than its empty output | "Running a change", "Merging" steps 2-3, "Durability" and every stage prompt. The note's fourth lesson, ordering checks that compare two `indexOf` results, is already met: the harness's order check uses `findIndex` from the previous match, and a missing stage fails it |
+| should-fix (review coverage) | `FAST` needed `args.mode === 'fast-lane'`, so a fast-lane change resumed with `continue` or `review-only`, after a guard stop or a failed lens, lost the apply agent's review of its spec, and it had skipped the separate spec review | `FAST` follows the spec's `fast_lane` answer, carried in `args.spec` (continue) or `args.fast_lane` (review-only). Outside the fast-lane mode a stage answer is normalized to `not-applicable`, and the violation stop says to resume with `not-eligible` |
+| should-fix (fail open) | `impl-slots.sh` counted only `- Status:` lines, while "Measurements" writes the line as `Status: READY <sha>`, so a dashless ready line left the cap at 5 | A `Status:` line counts with or without the dash. The rule says so |
+| nit (fail open) | `quiet-gate.py`'s `busy_between` read counters that had not advanced as 0 busy CPUs, a quiet reading, against its own "a missing reading never admits a round" | It raises `ReadingError` (exit 2) |
 | nit | The flags stage ran `cd <worktree> && scripts/…`, against the script's own rule of naming the target | `<worktree>/scripts/agent-topology.py`, whose repository root comes from its own path |
 
 Floor rows for this review's rule edits:
@@ -437,6 +440,7 @@ Floor rows for this review's rule edits:
 | Merge `origin/<branch>` before pushing | "Running a change" (rejected push) | Adds a merge and drops nothing. A GitHub-side commit changes the tree, so the gate records no longer match it and the gates rerun. |
 | A helper's undocumented exit status means blocked | "Running a change" | Fails closed. |
 | Refusals widened (`@`, dot segments, carried specs, no PR) | "Stages after implementation" | Strengthens the main-branch protection. |
+| A dashless `Status:` line counts for the slot cap | "Implementation slots and ordering" | Fewer concurrent stages in more cases; no gate changes. |
 
 Decisions on the open questions of the stage-3 report (user experience first):
 

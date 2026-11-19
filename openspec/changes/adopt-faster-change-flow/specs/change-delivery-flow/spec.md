@@ -126,6 +126,10 @@ A change MAY use the fast lane only when `scripts/check-fast-lane.py` classes ev
 - **WHEN** a run in the fast-lane mode gets `not-eligible` from its spec stage
 - **THEN** it takes the full spec review, and the implementation and apply prompts carry no fast-lane instruction
 
+#### Scenario: A resumed fast-lane change keeps its spec review at apply
+- **WHEN** a fast-lane change whose spec stage found it eligible resumes in `continue` or `review-only` mode
+- **THEN** the apply agent still re-runs the check and reviews the spec artifacts
+
 #### Scenario: Gate implementations are not fast
 - **WHEN** a change edits `scripts/flatpak-source-tree.sh`, `scripts/agent-topology.py`, `.agents/skills/skill-policy.toml` or `crates/gtk-lush/proof-harness/`
 - **THEN** the checker reports it not eligible

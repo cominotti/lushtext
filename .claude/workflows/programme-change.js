@@ -39,6 +39,7 @@ export const meta = {
 //   prev_change, prev_pr, prev_tip, archive_extra  archive a merged change first
 //   review_extra    extra instructions for the merge stage
 //   merge           boolean, review-only: continue into the merge stage (default: stop before it)
+//   fast_lane       review-only: 'eligible' when the change took the fast lane (continue carries it in args.spec)
 // The rules every prompt points to live in .agents/rules/; nothing here restates them.
 
 const A = args || {}
@@ -246,7 +247,7 @@ function specProblem(s) {
 let spec = null
 let review = null
 if (A.mode === 'review-only') {
-  spec = { change_name: CHANGE, worktree: A.worktree, branch: A.branch || CHANGE }
+  spec = { change_name: CHANGE, worktree: A.worktree, branch: A.branch || CHANGE, fast_lane: A.fast_lane }
   review = { findings: A.review_findings || '(review-only: the spec was reviewed earlier)' }
 } else if (A.mode === 'continue') {
   spec = A.spec
@@ -272,7 +273,8 @@ ${common('spec')}`, { label: `spec:${CHANGE}`, phase: 'Spec', schema: SPEC_SCHEM
   spec = g.result
   out.spec = spec
   if (!spec || spec.decision !== 'viable') return { ...out, stopped: 'spec stage: not viable, or the agent failed' }
-  spec = { ...spec, worktree: spec.worktree || A.worktree, branch: spec.branch || A.branch || CHANGE, change_name: spec.change_name || CHANGE }
+  spec = { ...spec, worktree: spec.worktree || A.worktree, branch: spec.branch || A.branch || CHANGE, change_name: spec.change_name || CHANGE,
+    fast_lane: fast ? spec.fast_lane : 'not-applicable' }
   const stageSpecProblem = specProblem(spec)
   if (stageSpecProblem) return { ...out, stopped: stageSpecProblem }
 
@@ -295,8 +297,9 @@ ${common('spec-review')}`, { label: `spec-review:${CHANGE}`, phase: 'Spec review
 // Every mode's spec, from a stage or carried in args, passes the same checks.
 const carriedSpecProblem = specProblem(spec)
 if (carriedSpecProblem) return { ...out, stopped: carriedSpecProblem }
-// The fast-lane instructions apply only once the spec stage found the change eligible.
-const FAST = A.mode === 'fast-lane' && spec.fast_lane === 'eligible'
+// The fast-lane instructions apply only once the spec stage found the change
+// eligible, and stay with it when a resumed run carries that answer.
+const FAST = spec.fast_lane === 'eligible'
 
 // ---------------------------------------------------------------------------
 // Implementation (openspec-apply-change), in rounds for continue mode.
@@ -483,7 +486,7 @@ if (applied.verdict === 'fast-lane-violation') {
 ${common('spec-review-after-violation')}`, { label: `spec-review:${CHANGE}`, phase: 'Spec review', schema: REVIEW_SCHEMA }))
   if (gr.stopped) return { ...out, ...gr }
   out.review_after_violation = gr.result
-  return { ...out, stopped: 'fast-lane violation: full spec review done; resume with mode continue and skip_impl after reading it' }
+  return { ...out, stopped: 'fast-lane violation: full spec review done; resume with mode continue and skip_impl after reading it, with spec.fast_lane set to not-eligible' }
 }
 if (applied.verdict !== 'ready') return { ...out, stopped: `apply stage: ${applied.verdict}` }
 

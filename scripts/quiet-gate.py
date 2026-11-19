@@ -172,7 +172,9 @@ def busy_between(before: tuple[int, int, int], after: tuple[int, int, int]) -> f
     total = after[0] - before[0]
     idle = after[1] - before[1]
     if total <= 0:
-        return 0.0
+        # No time passed on the counters: that is no reading, and a missing
+        # reading never admits a round.
+        raise ReadingError("the /proc/stat counters did not advance")
     return max(0.0, after[2] * (1.0 - idle / total))
 
 
@@ -297,6 +299,12 @@ def self_test() -> int:
 
     check(abs(busy_cpus(FakeHost(stat_pair(2.0), {}, []), 0) - 2.0) < 1e-6, "busy CPUs from two stat reads")
     check(busy_cpus(FakeHost(stat_pair(0.0), {}, []), 0) == 0.0, "an idle host reads 0 busy CPUs")
+    # Counters that did not advance are no reading, never a quiet one.
+    try:
+        busy_cpus(FakeHost([(10_000, 5_000, 8), (10_000, 5_000, 8)], {}, []), 0)
+        check(False, "stat counters that did not advance must not read as 0 busy CPUs")
+    except ReadingError:
+        pass
 
     # Outside use: root minus our slices; a scope that appears mid-window counts from zero.
     usage = {"": [0, 1_000_000], "ours": [100, 400_100], "sccache": [None, 100_000]}

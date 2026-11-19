@@ -13,7 +13,7 @@
 # unit is a `## ` entry, or each `### ` part of an entry that has parts (the
 # text of such an entry before its first part is a unit of its own when it
 # carries a Status line, so a status there is never ignored). A unit is ready
-# when its LAST `- Status:` line starts with READY: queue entries keep their
+# when its LAST `Status:` line (with or without the list dash) starts with READY: queue entries keep their
 # history of Status lines, and only the last one says where the rounds stand.
 #
 # acquire retries every LUSHTEXT_IMPL_SLOTS_RETRY seconds (default 30) for at
@@ -58,10 +58,10 @@ ready_units() {
         }
         /^## / { flush(); entry = substr($0, 4); unit = entry; next }
         /^### / { flush(); unit = entry " / " substr($0, 5); next }
-        /^[[:space:]]*-[[:space:]]+Status:/ {
+        /^[[:space:]]*(-[[:space:]]+)?Status:/ {
             if (unit == "") next
             s = $0
-            sub(/^[[:space:]]*-[[:space:]]+Status:[[:space:]]*/, "", s)
+            sub(/^[[:space:]]*(-[[:space:]]+)?Status:[[:space:]]*/, "", s)
             last = s
             next
         }
@@ -184,6 +184,10 @@ self_test() {
     printf '## a\n- note: run after the `Status:` line below reads READY\n- Status: PENDING\n' >"$q"
     expect_cap 5 "Status mentioned in prose"
     printf '  - Status: READY stray\n## a\n- Status: DONE\n' >"$q"; expect_cap 5 "status before any entry"
+    # "Measurements" writes the line as `Status: READY <sha>`; a line without
+    # the list dash is still a status line, or the cap would fail open.
+    printf '## a\nStatus: READY 1a2b\n' >"$q"; expect_cap 3 "a Status line without the list dash"
+    printf '## a\n- Status: READY 1a2b\nStatus: DONE\n' >"$q"; expect_cap 5 "a dashless DONE after READY"
 
     # The live queue's heading and Status structure on 2026-11-18 (stage 3):
     # the D25 entry and its amendment are two ready units of one campaign, so

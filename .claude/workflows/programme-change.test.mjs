@@ -315,6 +315,19 @@ const CASES = {
     const e = await run({ ...BASE, mode: 'fast-lane' }, { spec: () => ({ ...DEFAULTS.spec(), fast_lane: 'eligible' }) })
     check(has(e.prompts['implement-1:demo'], 'check-fast-lane') && has(e.prompts['apply:demo'], 'check-fast-lane'), 'an eligible fast-lane change lost its re-checks')
   },
+  async 'a resumed fast-lane change keeps the apply-stage spec review'() {
+    const c = await run({ ...BASE, mode: 'continue', pr: 9, spec: { change_name: 'demo', worktree: ARG_WT, branch: 'demo', fast_lane: 'eligible' } })
+    check(has(c.prompts['apply:demo'], 'check-fast-lane'), 'continue lost the fast-lane review of the spec')
+    const r = await run({ ...BASE, mode: 'review-only', pr: 7, worktree: ARG_WT, fast_lane: 'eligible' })
+    check(has(r.prompts['apply:demo'], 'check-fast-lane'), 'review-only lost the fast-lane review of the spec')
+    const n = await run({ ...BASE, mode: 'review-only', pr: 7, worktree: ARG_WT })
+    check(!has(n.prompts['apply:demo'], 'check-fast-lane'), 'a normal review-only run got fast-lane instructions')
+    const v = await run({ ...BASE, mode: 'fast-lane' }, {
+      spec: () => ({ ...DEFAULTS.spec(), fast_lane: 'eligible' }),
+      apply: () => ({ verdict: 'fast-lane-violation', applied: '', rejected: '', gates: '', summary: 'src path' }),
+    })
+    check(has(v.result.stopped, 'not-eligible'), `the violation stop must say how to resume outside the lane: ${v.result.stopped}`)
+  },
   async 'a not-viable spec and a revision decision write only to the handoff'() {
     const r = await run({ ...BASE, mode: 'new' })
     check(!has(r.prompts['spec:demo'], 'commit to main') && has(r.prompts['spec:demo'], 'not-viable.md'), r.prompts['spec:demo'])
