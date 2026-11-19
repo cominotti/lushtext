@@ -13,12 +13,16 @@
 # unit is a `## ` entry, or each `### ` part of an entry that has parts (the
 # text of such an entry before its first part is a unit of its own when it
 # carries a Status line, so a status there is never ignored). A unit is ready
-# when its LAST `Status:` line (with or without the list dash) starts with READY: queue entries keep their
-# history of Status lines, and only the last one says where the rounds stand.
+# when its LAST `Status:` line (with or without the list dash, and with any
+# Markdown `**` around the label or the value) starts with READY: queue
+# entries keep their history of Status lines, and only the last one says
+# where the rounds stand.
 #
 # acquire retries every LUSHTEXT_IMPL_SLOTS_RETRY seconds (default 30) for at
 # most --timeout seconds (default 540, inside one 600 s tool call), and exits
-# 0 once the slot exists, 124 at the timeout. It counts every directory under
+# 0 once the slot exists, 124 at the timeout, 2 when <change> has no worktree
+# <main>/.claude/worktrees/<change> (a reviewer that runs the helper with a
+# made-up name takes nothing). It counts every directory under
 # IMPL-SLOTS/ (coordinator placeholders too), and never evicts a slot held
 # above the cap. The slot is created under IMPL-SLOTS/.lock; the queue is read
 # without the queue's own lock (a torn read miscounts one attempt at most),
@@ -58,9 +62,10 @@ ready_units() {
         }
         /^## / { flush(); entry = substr($0, 4); unit = entry; next }
         /^### / { flush(); unit = entry " / " substr($0, 5); next }
-        /^[[:space:]]*(-[[:space:]]+)?Status:/ {
+        /^[[:space:]]*(-[[:space:]]+)?(\*\*)?Status:/ {
             if (unit == "") next
             s = $0
+            gsub(/\*/, "", s)
             sub(/^[[:space:]]*(-[[:space:]]+)?Status:[[:space:]]*/, "", s)
             last = s
             next
@@ -107,6 +112,10 @@ cmd_acquire() {
     done
     local h retry start cap
     h=$(handoff_dir)
+    if [ ! -d "$(dirname "$h")/worktrees/$change" ]; then
+        echo "impl-slots: no change worktree $(dirname "$h")/worktrees/$change; a slot belongs to a change with a worktree" >&2
+        exit 2
+    fi
     retry=${LUSHTEXT_IMPL_SLOTS_RETRY:-30}
     start=$(date +%s)
     while :; do
@@ -188,6 +197,11 @@ self_test() {
     # the list dash is still a status line, or the cap would fail open.
     printf '## a\nStatus: READY 1a2b\n' >"$q"; expect_cap 3 "a Status line without the list dash"
     printf '## a\n- Status: READY 1a2b\nStatus: DONE\n' >"$q"; expect_cap 5 "a dashless DONE after READY"
+    # Markdown emphasis around the label or the value is still a status line.
+    printf '## a\n- **Status:** READY 1a2b\n' >"$q"; expect_cap 3 "a bold Status label"
+    printf '## a\n- Status: **READY** 1a2b\n' >"$q"; expect_cap 3 "a bold READY value"
+    printf '## a\n**Status: READY 1a2b**\n' >"$q"; expect_cap 3 "a bold Status line"
+    printf '## a\n- **Status:** READY 1a2b\n- **Status:** DONE\n' >"$q"; expect_cap 5 "bold READY then bold DONE"
 
     # The live queue's heading and Status structure on 2026-11-18 (stage 3):
     # the D25 entry and its amendment are two ready units of one campaign, so
@@ -239,6 +253,12 @@ EOF
     : >"$q"
     export LUSHTEXT_IMPL_SLOTS_RETRY=0.2
     local s="$LUSHTEXT_HANDOFF_DIR/IMPL-SLOTS" i rc
+    # Only a change with a worktree takes a slot: a reviewer that runs the
+    # helper with a made-up name (a code-review fork did) takes nothing.
+    for i in 1 2 3 4 5 6 7; do mkdir -p "$tmp/worktrees/c$i"; done
+    rc=0; ( cmd_acquire ghost --timeout 1 ) >/dev/null 2>&1 || rc=$?
+    [ "$rc" = 2 ] || self_test_fail "acquire for a change with no worktree exited $rc, expected 2"
+    [ ! -d "$s/ghost" ] || self_test_fail "a change with no worktree got a slot"
     for i in 1 2 3 4 5; do
         cmd_acquire "c$i" --timeout 1 >/dev/null 2>&1 || self_test_fail "acquire c$i under cap 5"
     done

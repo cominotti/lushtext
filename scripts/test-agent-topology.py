@@ -311,6 +311,47 @@ class ReviewLensTests(LensFixture):
         result = TOPOLOGY.review_lenses(self.topology, self.POLICY, changes, texts)
         self.assertEqual(self.flags(result), (True, False, True))
 
+    def test_a_policy_without_the_data_safety_table_fails(self) -> None:
+        # A branch that predates the [data_safety] table must not read as
+        # "no data lens owed" (Fable review M2): the selector refuses instead.
+        change = [TOPOLOGY.ChangedPath("M", "crates/lushtext-core/src/services/draft_service.rs")]
+        for policy in (
+            {key: value for key, value in self.POLICY.items() if key != "data_safety"},
+            {**self.POLICY, "data_safety": {"skill": "data-safety", "content_patterns": []}},
+            {**self.POLICY, "data_safety": {"skill": "data-safety", "path_suffixes": []}},
+        ):
+            with self.assertRaises(ValueError):
+                TOPOLOGY.review_lenses(self.topology, policy, change, {})
+
+    def test_the_cli_exits_non_zero_without_the_data_safety_table(self) -> None:
+        policy_file = self.root / "policy.toml"
+        policy_file.write_text(
+            "[performance]\npackage_metadata_namespace = 'lushtext-agent'\n"
+            "package_metadata_key = 'performance-roots'\nfallback_suffixes = []\n"
+            "[release]\nworkflow_role_marker = 'agent-release-role'\nrequired_workflow_roles = []\n",
+            encoding="utf-8",
+        )
+        metadata_file = self.root / "metadata.json"
+        metadata_file.write_text(
+            json.dumps({"workspace_root": str(self.root), "workspace_members": [], "packages": []}),
+            encoding="utf-8",
+        )
+        env = dict(TOPOLOGY.scrubbed_git_env(), GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1")
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.root)], check=True, env=env)
+        subprocess.run(
+            ["git", "-C", str(self.root), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+             "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "-q",
+             "--allow-empty", "-m", "base"],
+            check=True, capture_output=True, env=env,
+        )
+        run = subprocess.run(
+            [sys.executable, str(SCRIPT), "--repo-root", str(self.root), "--metadata-json",
+             str(metadata_file), "--policy", str(policy_file), "review-lenses", "--base", "main"],
+            capture_output=True, text=True, env=env,
+        )
+        self.assertNotEqual(run.returncode, 0, run.stdout)
+        self.assertIn("data_safety", run.stderr)
+
 
 
 class LensTriggerDriftTests(LensFixture):

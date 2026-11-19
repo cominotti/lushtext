@@ -10,14 +10,14 @@ Every path gets one class from an allowlist that fails closed:
 
 - eligible: under docs/ or openspec/, or a *.md file at the repository root
   other than the guidance files below;
-- declare: agent guidance and the Makefile: .agents/rules/** except the two
-  change-delivery rules, .agents/skills/**/*.md, .agents/skills/*/agents/*.yaml,
-  AGENTS.md, SOUL.md, CLAUDE.md, .claude/CLAUDE.md and Makefile. An eligible
+- declare: agent guidance: .agents/rules/** except the two change-delivery
+  rules, .agents/skills/**/*.md, .agents/skills/*/agents/*.yaml, AGENTS.md,
+  SOUL.md, CLAUDE.md and .claude/CLAUDE.md. An eligible
   path that a gate names literally (its path string appears in the Makefile,
   .githooks/, .github/ or scripts/) is promoted to declare;
 - not eligible: every other path, including any new directory, all of crates/,
-  scripts/, .github/, .claude/workflows/, the skill policy file, the Cargo
-  files, and the change-delivery rules parallel-agent-work.md and
+  scripts/, .github/, .claude/workflows/, the Makefile (it wires every gate),
+  the skill policy file, the Cargo files, and the change-delivery rules parallel-agent-work.md and
   verification-runs.md.
 
 With --base, the paths are `git diff --name-status --find-renames REF...HEAD`
@@ -46,7 +46,7 @@ CHANGE_DELIVERY_RULES = {
     ".agents/rules/verification-runs.md",
 }
 ROOT_GUIDANCE = {"AGENTS.md", "SOUL.md", "CLAUDE.md"}
-DECLARE_FILES = {*ROOT_GUIDANCE, ".claude/CLAUDE.md", "Makefile"}
+DECLARE_FILES = {*ROOT_GUIDANCE, ".claude/CLAUDE.md"}
 GATE_SOURCES = ("Makefile", ".githooks", ".github", "scripts")
 SELF = "scripts/check-fast-lane.py"
 
@@ -180,8 +180,10 @@ def self_test() -> int:
         expect(path, ELIGIBLE)
     for path in (".agents/rules/build.md", ".agents/skills/x/SKILL.md",
                  ".agents/skills/x/references/y.md", ".agents/skills/x/agents/openai.yaml",
-                 "AGENTS.md", "SOUL.md", ".claude/CLAUDE.md", "Makefile"):
+                 "AGENTS.md", "SOUL.md", ".claude/CLAUDE.md"):
         expect(path, DECLARE)
+    # The Makefile wires every gate (check, check-policy, the shard lists), so
+    # it is a gate implementation, not guidance (Fable review S7).
     # Paths a gate names literally: check-automation-docs.py reads the first,
     # check-filesystem-boundary.sh scans the root README.md.
     expect("docs/automation-reference.md", DECLARE)
@@ -194,7 +196,7 @@ def self_test() -> int:
                  "scripts/flatpak-source-tree.sh", "scripts/agent-topology.py",
                  ".agents/skills/skill-policy.toml", ".agents/skills/x/scripts/run.py",
                  ".claude/workflows/x.js", ".github/workflows/ci.yml", ".githooks/pre-commit",
-                 "build-aux/cargo.sh", "newtop/file.md", "docs", "../docs/x.md", "/docs/x.md",
+                 "build-aux/cargo.sh", "Makefile", "newtop/file.md", "docs", "../docs/x.md", "/docs/x.md",
                  "crates/lushtext/README.md"):
         expect(path, NOT_ELIGIBLE)
 

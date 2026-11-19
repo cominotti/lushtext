@@ -336,7 +336,8 @@ def scrubbed_git_env() -> dict[str, str]:
             ["git", "rev-parse", "--local-env-vars"], check=True, text=True, capture_output=True
         ).stdout.split()
     except (OSError, subprocess.CalledProcessError):
-        names = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR"]
+        names = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR",
+                 "GIT_PREFIX"]
     for name in names:
         env.pop(name, None)
     return env
@@ -515,13 +516,22 @@ def review_lenses(
     - `performance`: a path in the gtk-perf-review scope (`performance-scope`);
     - `modules_moved`: an added, deleted, renamed or copied `.rs` file under
       a `src/` tree.
+
+    Raises ValueError when the policy has no `[data_safety]` table or the
+    table has no path suffixes or no content patterns: a branch whose policy
+    predates the table would otherwise read as "no data lens owed".
     """
 
-    data_policy = policy.get("data_safety") or {}
-    suffixes = tuple(data_policy.get("path_suffixes", ()))
+    data_policy = policy.get("data_safety")
+    if not isinstance(data_policy, dict):
+        raise ValueError("the skill policy has no [data_safety] table; merge origin/main first")
+    for key in ("path_suffixes", "content_patterns"):
+        if not data_policy.get(key):
+            raise ValueError(f"the skill policy's [data_safety] table has no {key}")
+    suffixes = tuple(data_policy["path_suffixes"])
     patterns = [
         (entry["keyword"], re.compile(entry["pattern"]))
-        for entry in data_policy.get("content_patterns", ())
+        for entry in data_policy["content_patterns"]
     ]
     data_paths: list[str] = []
     data_hits: dict[str, list[str]] = {}
@@ -630,7 +640,12 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{category}\t{path}")
     elif args.command == "review-lenses":
         changes, texts = collect_changes(repo_root, args.base)
-        json.dump(review_lenses(topology, policy, changes, texts), sys.stdout, indent=2, sort_keys=True)
+        try:
+            lenses = review_lenses(topology, policy, changes, texts)
+        except ValueError as error:
+            print(f"review-lenses: {error}", file=sys.stderr)
+            return 2
+        json.dump(lenses, sys.stdout, indent=2, sort_keys=True)
         print()
     elif args.command == "testing-surfaces":
         json.dump(topology.testing_surfaces(), sys.stdout, indent=2, sort_keys=True)

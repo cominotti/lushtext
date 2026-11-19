@@ -90,7 +90,9 @@ class Host:
                     raise ReadingError(f"malformed cpu line in {self.proc_stat}") from error
                 if len(values) < 5:
                     raise ReadingError(f"short cpu line in {self.proc_stat}")
-                total, idle = sum(values), values[3] + values[4]
+                # user, nice, system, idle, iowait, irq, softirq, steal; guest and
+                # guest_nice are already inside user and nice.
+                total, idle = sum(values[:8]), values[3] + values[4]
             elif fields[0].startswith("cpu") and fields[0][3:].isdigit():
                 cpus += 1
         if total is None or idle is None or cpus == 0:
@@ -305,6 +307,25 @@ def self_test() -> int:
         check(False, "stat counters that did not advance must not read as 0 busy CPUs")
     except ReadingError:
         pass
+
+    # The total is the first eight fields: user already includes guest and
+    # nice includes guest_nice, so summing all ten counts a VM's time twice
+    # (Fable review N3).
+    with tempfile.TemporaryDirectory() as tmp:
+        stat_file = os.path.join(tmp, "stat")
+        Path(stat_file).write_text(
+            "cpu  100 10 50 800 20 5 5 10 60 4\ncpu0 100 10 50 800 20 5 5 10 60 4\n", encoding="ascii")
+        saved = os.environ.get("LUSHTEXT_QUIET_PROC_STAT")
+        os.environ["LUSHTEXT_QUIET_PROC_STAT"] = stat_file
+        try:
+            total, idle, cpus = Host().stat()
+            check((total, idle, cpus) == (1000, 820, 1),
+                  f"the stat total must exclude guest and guest_nice: got {(total, idle, cpus)}")
+        finally:
+            if saved is None:
+                os.environ.pop("LUSHTEXT_QUIET_PROC_STAT", None)
+            else:
+                os.environ["LUSHTEXT_QUIET_PROC_STAT"] = saved
 
     # Outside use: root minus our slices; a scope that appears mid-window counts from zero.
     usage = {"": [0, 1_000_000], "ours": [100, 400_100], "sccache": [None, 100_000]}

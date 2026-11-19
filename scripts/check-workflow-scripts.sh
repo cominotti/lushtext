@@ -15,8 +15,9 @@
 # session paths, SSH key names, `ssh -i`, GIT_SSH_COMMAND, `gh auth`, commit
 # trailers, e-mail addresses). Prompts point to rule sections instead of
 # copying them: any run of 12 consecutive words (case and punctuation
-# ignored) that also appears in a rule file fails, and a citation written
-# `<rule>.md "<Section>"` must name a heading that exists in that rule file.
+# ignored) that also appears in a rule file fails, and every title of a
+# citation written `<rule>.md "<Section>", "<Section>" (note), and "<Section>"`
+# must name a heading that exists in that rule file.
 # Every script has a stub-agent harness beside it, `<name>.test.mjs`, run as
 # `node <name>.test.mjs <name>.js`; a missing or failing harness fails.
 #
@@ -136,10 +137,23 @@ for rule in rule_files:
     headings[rule.name] = {re.sub(r"^#+\s*", "", line).strip()
                            for line in rule.read_text(encoding="utf-8").splitlines()
                            if line.startswith("#")}
+# A citation is a rule file name followed by a list of quoted titles:
+# `name.md "A", "B" (a note), and "C"`. Every title of the list is checked;
+# the list ends at the first text that is not a separator, a parenthetical or
+# a quoted title.
+TITLE = r'\\?"([^"\\]+)\\?"'
+CITATION = re.compile(
+    r"([A-Za-z0-9_-]+\.md),?\s+(" + TITLE + r"(?:\s*\([^()]*\))?"
+    r"(?:\s*,\s*(?:and\s+)?" + TITLE + r"(?:\s*\([^()]*\))?)*)")
 for number, line in enumerate(lines, 1):
-    for name, section in re.findall(r"([A-Za-z0-9_-]+\.md),? \\?\"([^\"\\]+)\\?\"", line):
-        if name in headings and section not in headings[name]:
-            fail(number, f"cites {name} \"{section}\", which is not a heading of .agents/rules/{name}")
+    for match in CITATION.finditer(line):
+        name = match.group(1)
+        if name not in headings:
+            continue
+        titles = re.sub(r"\([^()]*\)", "", match.group(2))
+        for section in re.findall(TITLE, titles):
+            if section not in headings[name]:
+                fail(number, f"cites {name} \"{section}\", which is not a heading of .agents/rules/{name}")
 
 for error in errors:
     print(error, file=sys.stderr)
@@ -250,6 +264,17 @@ EOF
     { good; echo 'log(`A subagent or workflow stage waits in the foreground and repeats a bounded call until the CONDITION is true, never ending its turn`)'; } >"$wf/a.js"
     expect_fail "a copy with one word changed" "sample.md"
     good | sed 's/sample.md "Waiting"/sample.md "Sleeping"/' >"$wf/a.js"; expect_fail "a missing section" "not a heading"
+    # Every title of a citation list is checked, not only the first (Fable S11),
+    # across a parenthetical and an "and"; a quoted string after the list ends
+    # is not a citation.
+    good | sed 's/sample.md "Waiting"/sample.md "Waiting", "Sleeping"/' >"$wf/a.js"
+    expect_fail "a missing second section" '"Sleeping"'
+    good | sed 's/sample.md "Waiting"/sample.md "Waiting" (wait here), and "Napping"/' >"$wf/a.js"
+    expect_fail "a missing section after a parenthetical" '"Napping"'
+    good | sed 's/sample.md "Waiting"/sample.md "Sample Rule", "Waiting"/' >"$wf/a.js"
+    check_dir "$wf" "$rules" >/dev/null 2>&1 || self_test_fail "a list of existing sections failed"
+    good | sed 's/sample.md "Waiting" and stop./sample.md "Waiting". Return "ready, not a section"./' >"$wf/a.js"
+    check_dir "$wf" "$rules" >/dev/null 2>&1 || self_test_fail "a quoted string after the citation list was read as a section"
     good >"$wf/a.js"
     local rc=0
     LUSHTEXT_NODE=/nonexistent/node check_dir "$wf" "$rules" >/dev/null 2>"$tmp/err" || rc=$?

@@ -10,19 +10,21 @@
 # `record` reads the worktree's `git status --porcelain` and `HEAD^{tree}`, runs
 # the command as its child (normally `scripts/heavy.sh ... -- make <target>`),
 # reads both again, and appends one line to <handoffs>/<change>/gate-trees.log
-# only when the command exited 0, the status was empty before and after, and
-# the tree did not change in between:
+# when the status was empty before and after and the tree did not change in
+# between: result=pass when the command exited 0, result=fail otherwise.
 #
-#   <date -Is>\ttree=<hash>\tresult=pass\tlog=<PATH or ->\tgate=<gate>
+#   <date -Is>\ttree=<hash>\tresult=<pass|fail>\tlog=<PATH or ->\tgate=<gate>
 #
 # It always returns the command's exit status. A dirty or changing worktree
-# records nothing and says why on stderr.
+# records nothing and says why on stderr. Every field is one line without tabs.
 #
-# `lookup` prints the newest line whose tree is the worktree's current
+# `lookup` prints the newest pass line whose tree is the worktree's current
 # `HEAD^{tree}` and whose gate string equals one of the --gate values exactly
 # (exit 0), or exits 1. It refuses (exit 1) while the worktree is dirty, since
-# then no tree hash describes what is on disk. Pass several --gate values when
-# a broader gate covers the one owed, for example
+# then no tree hash describes what is on disk, and when any named gate has a
+# fail line on that tree: a gate that passed and failed on one tree is a
+# flake, a blocker (preexisting-blockers.md), and reuse would hide it. Pass
+# several --gate values when a broader gate covers the one owed, for example
 # `--gate 'make test-widget-shard WIDGET_SHARD=x' --gate 'make test'`.
 #
 # <gate> is the make target with its variables, without the heavy.sh wrapper.
@@ -68,6 +70,9 @@ change_of() {
 }
 
 tree_of() { git -C "$1" rev-parse 'HEAD^{tree}'; }
+one_line() {
+    case "$2" in *$'\t'*|*$'\n'*) die "$1 must be one line without tabs" ;; esac
+}
 status_of() { git -C "$1" status --porcelain; }
 
 cmd_record() {
@@ -86,7 +91,9 @@ cmd_record() {
     done
     [ -n "$gate" ] || die "record needs --gate"
     [ $# -gt 0 ] || die "record needs a command after --"
-    case "$gate" in *$'\t'*|*$'\n'*) die "--gate must be one line without tabs" ;; esac
+    one_line --gate "$gate"
+    one_line --change "$change"
+    one_line --log-ref "$log_ref"
     local h logfile status_before tree_before status_after tree_after rc=0
     h=$(handoff_dir "$wt")
     change=$(change_of "$wt" "$change")
@@ -96,9 +103,9 @@ cmd_record() {
     "$@" || rc=$?
     status_after=$(status_of "$wt") || die "git status failed in $wt"
     tree_after=$(tree_of "$wt") || die "cannot read HEAD^{tree} in $wt"
-    if [ "$rc" -ne 0 ]; then
-        echo "gate-trees: '$gate' exited $rc; nothing recorded" >&2
-    elif [ -n "$status_before" ]; then
+    local result=pass
+    [ "$rc" -eq 0 ] || result=fail
+    if [ -n "$status_before" ]; then
         echo "gate-trees: the worktree was dirty before '$gate'; nothing recorded" >&2
     elif [ -n "$status_after" ]; then
         echo "gate-trees: the worktree was dirty after '$gate'; nothing recorded" >&2
@@ -106,9 +113,9 @@ cmd_record() {
         echo "gate-trees: HEAD^{tree} changed during '$gate'; nothing recorded" >&2
     else
         mkdir -p "$(dirname "$logfile")"
-        printf '%s\ttree=%s\tresult=pass\tlog=%s\tgate=%s\n' \
-            "$(date -Is)" "$tree_after" "$log_ref" "$gate" >>"$logfile"
-        echo "gate-trees: recorded '$gate' on tree $tree_after"
+        printf '%s\ttree=%s\tresult=%s\tlog=%s\tgate=%s\n' \
+            "$(date -Is)" "$tree_after" "$result" "$log_ref" "$gate" >>"$logfile"
+        echo "gate-trees: recorded '$gate' as $result (exit $rc) on tree $tree_after"
     fi
     return "$rc"
 }
@@ -125,6 +132,7 @@ cmd_lookup() {
             *) die "unknown lookup option $1" ;;
         esac
     done
+    one_line --change "$change"
     [ "${#gates[@]}" -gt 0 ] || die "lookup needs --gate"
     local h logfile tree status
     h=$(handoff_dir "$wt")
@@ -137,15 +145,21 @@ cmd_lookup() {
     fi
     tree=$(tree_of "$wt") || die "cannot read HEAD^{tree} in $wt"
     [ -f "$logfile" ] || return 1
-    local line found='' g
+    local line found='' failed='' g
     while IFS= read -r line; do
-        case "$line" in *$'\t'"tree=$tree"$'\t'"result=pass"$'\t'*) ;; *) continue ;; esac
+        case "$line" in *$'\t'"tree=$tree"$'\t'*) ;; *) continue ;; esac
         for g in "${gates[@]}"; do
-            if [ "${line##*$'\t'gate=}" = "$g" ]; then
-                found=$line
-            fi
+            [ "${line##*$'\t'gate=}" = "$g" ] || continue
+            case "$line" in
+                *$'\t'"result=pass"$'\t'*) found=$line ;;
+                *) failed=$line ;;
+            esac
         done
     done <"$logfile"
+    if [ -n "$failed" ]; then
+        echo "gate-trees: a failed run is recorded on this tree, so no record is reused (a pass and a fail on one tree is a flake): $failed" >&2
+        return 1
+    fi
     [ -n "$found" ] || return 1
     printf '%s\n' "$found"
 }
@@ -179,19 +193,33 @@ self_test() {
     cmd_lookup "$wt" --gate 'make test-widget-shard WIDGET_SHARD=x' --gate 'make check' >/dev/null \
         || self_test_fail "lookup with a covering gate missed"
 
+    # A failing run on a clean, unchanged tree is recorded as a fail, and a
+    # fail of any named gate on that tree voids the reuse: a gate that passed
+    # and failed on one tree is a flake (preexisting-blockers.md).
     rc=0; cmd_record "$wt" --gate 'make test' -- sh -c 'exit 3' >/dev/null 2>&1 || rc=$?
     [ "$rc" = 3 ] || self_test_fail "a failing command returned $rc, expected 3"
-    [ "$(count)" -eq 1 ] || self_test_fail "a failing command recorded a line"
+    [ "$(count)" -eq 2 ] || self_test_fail "a failing run on a clean tree recorded $(count) lines, expected 2"
+    case "$(tail -n1 "$log")" in *"result=fail"*"gate=make test") ;; *) self_test_fail "the fail line reads '$(tail -n1 "$log")'" ;; esac
+    rc=0; cmd_lookup "$wt" --gate 'make test' >/dev/null 2>&1 || rc=$?
+    [ "$rc" = 1 ] || self_test_fail "lookup answered for a gate with only a fail record"
+    cmd_lookup "$wt" --gate 'make check' >/dev/null || self_test_fail "a fail of another gate voided 'make check'"
+    rc=0; cmd_lookup "$wt" --gate 'make check' --gate 'make test' >/dev/null 2>&1 || rc=$?
+    [ "$rc" = 1 ] || self_test_fail "a fail of one named gate did not void the covering lookup"
+    cmd_record "$wt" --gate 'make test' -- true >/dev/null 2>&1 || self_test_fail "a pass after a fail returned non-zero"
+    [ "$(count)" -eq 3 ] || self_test_fail "a pass after a fail recorded $(count) lines, expected 3"
+    rc=0; cmd_lookup "$wt" --gate 'make test' >/dev/null 2>&1 || rc=$?
+    [ "$rc" = 1 ] || self_test_fail "a pass after a fail on the same tree hid the flake"
 
     : >"$wt/dirty"
     cmd_record "$wt" --gate 'make test' -- true >/dev/null 2>&1 || self_test_fail "dirty-before pass returned non-zero"
-    [ "$(count)" -eq 1 ] || self_test_fail "a dirty-before run recorded a line"
+    rc=0; cmd_record "$wt" --gate 'make test' -- false >/dev/null 2>&1 || rc=$?
+    [ "$(count)" -eq 3 ] || self_test_fail "a dirty-before run recorded a line"
     rc=0; cmd_lookup "$wt" --gate 'make check' >/dev/null 2>&1 || rc=$?
     [ "$rc" = 1 ] || self_test_fail "lookup answered for a dirty worktree"
     rm -f "$wt/dirty"
 
     cmd_record "$wt" --gate 'make test' -- touch "$wt/made" >/dev/null 2>&1 || self_test_fail "dirty-after pass returned non-zero"
-    [ "$(count)" -eq 1 ] || self_test_fail "a dirty-after run recorded a line"
+    [ "$(count)" -eq 3 ] || self_test_fail "a dirty-after run recorded a line"
     rm -f "$wt/made"
 
     # shellcheck disable=SC2016 # the inner sh expands its own $1
@@ -200,7 +228,7 @@ self_test() {
         git -C "$1" -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@example.invalid \
             -c commit.gpgsign=false commit -q -m change' sh "$wt" >/dev/null 2>&1 \
         || self_test_fail "tree-changing pass returned non-zero"
-    [ "$(count)" -eq 1 ] || self_test_fail "a tree-changing run recorded a line"
+    [ "$(count)" -eq 3 ] || self_test_fail "a tree-changing run recorded a line"
     rc=0; cmd_lookup "$wt" --gate 'make check' >/dev/null 2>&1 || rc=$?
     [ "$rc" = 1 ] || self_test_fail "lookup matched a record of another tree"
 
@@ -208,12 +236,23 @@ self_test() {
     out=$(cmd_lookup "$wt" --gate 'make test') || self_test_fail "lookup missed the new tree's record"
     case "$out" in *"log=/x/test.log"*) ;; *) self_test_fail "log reference not recorded: '$out'" ;; esac
 
+    # Every field of a record is one line without tabs.
+    rc=0; ( cmd_record "$wt" --log-ref $'/x/a\tb' --gate 'make test' -- true ) >/dev/null 2>&1 || rc=$?
+    [ "$rc" = 2 ] || self_test_fail "record accepted --log-ref with a tab (exit $rc)"
+    rc=0; ( cmd_record "$wt" --log-ref $'/x/a\nb' --gate 'make test' -- true ) >/dev/null 2>&1 || rc=$?
+    [ "$rc" = 2 ] || self_test_fail "record accepted --log-ref with a newline (exit $rc)"
+    rc=0; ( cmd_record "$wt" --change $'a\nb' --gate 'make test' -- true ) >/dev/null 2>&1 || rc=$?
+    [ "$rc" = 2 ] || self_test_fail "record accepted --change with a newline (exit $rc)"
+    rc=0; ( cmd_lookup "$wt" --gate 'make test' --change $'a\tb' ) >/dev/null 2>&1 || rc=$?
+    [ "$rc" = 2 ] || self_test_fail "lookup accepted --change with a tab (exit $rc)"
+    [ "$(count)" -eq 4 ] || self_test_fail "a refused record wrote a line"
+
     # A decoy repository's GIT_DIR, as a commit hook exports it, must not redirect the helper.
     local decoy="$tmp/decoy"
     git init -q "$decoy"
     out=$(GIT_DIR="$decoy/.git" GIT_WORK_TREE="$decoy" GIT_INDEX_FILE="$decoy/.git/index" \
         "$0" lookup "$wt" --gate 'make test') || self_test_fail "lookup under a decoy GIT_DIR missed"
-    echo "gate-trees self-test: ok (clean pass recorded; failing, dirty-before, dirty-after and tree-changing runs record nothing; exact gate match, covering gates, dirty lookup refused; decoy GIT_DIR ignored)"
+    echo "gate-trees self-test: ok (clean pass recorded; a clean fail recorded and voiding reuse of that gate on that tree; dirty-before, dirty-after and tree-changing runs record nothing; tabs and newlines refused in every field; exact gate match, covering gates, dirty lookup refused; decoy GIT_DIR ignored)"
 }
 
 case "${1:-}" in
