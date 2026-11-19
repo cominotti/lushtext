@@ -20,7 +20,7 @@ GTK closures in `crates/lushtext-core/src/ui/` capture objects weakly by hand, a
   - Clippy still reports a planted `.unwrap()` inside the macro body;
   - every text-parsing `check-*` audit still passes and still fails on its planted case.
 - **The rewrite.** Every weak capture of a GObject in a closure uses `glib::clone!` with `#[weak]` or `#[weak(rename_to = …)]`. A closure that returns a value uses `#[upgrade_or …]` with the value its manual fallthrough returns today.
-- **The rule changes with it.** `rust.md` prescribes `clone!` for weak captures. A policy audit holds the count of manual weak-capture upgrades (`.upgrade()` on a bare local name, 621 on `origin/main`) at or below a recorded ceiling that only decreases, down to the listed exceptions (design D2). A `WeakRef` stored in a struct field is not counted, so adding one never trips the audit.
+- **The rule changes with it.** `rust.md` prescribes `clone!` for weak captures. A policy audit holds the count of manual weak-capture upgrades (`.upgrade()` on a bare local name, 621 on `origin/main`) at a recorded ceiling that the sweep lowers to a per-file list of exceptions, each with its reason; a weak reference taken from a collection, iterator or parameter is the one class that may add an exception (design D2, D3). A `WeakRef` stored in a struct field is not counted, so adding one never trips the audit.
 - **The `rust.md` example is corrected.** "Modern Rust Idioms" (`rust.md:459-464`) shows the preferred `if let` chain by invoking a callback while its `RefCell` is still borrowed. A reentrant callback would then panic with `BorrowMutError`. The example becomes `clone!` plus cloning an `Rc<dyn Fn>` out of the cell before the call.
 
 ## Non-goals

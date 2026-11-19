@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: GTK-thread weak captures use one checked form
-LushText UI code SHALL capture GObjects weakly in GTK-thread closures through `glib::clone!`. A closure that returns a value MUST state its upgrade-failure value explicitly, equal to the value its manual form returned. A policy audit SHALL hold the number of `.upgrade()` calls on a bare local name in `crates/lushtext-core/src/ui` at or below a recorded ceiling that only decreases; upgrades of weak references stored in fields are not counted.
+LushText UI code SHALL capture GObjects weakly in GTK-thread closures through `glib::clone!`. A closure that returns a value MUST state its upgrade-failure value explicitly, equal to the value its manual form returned. A policy audit SHALL hold `.upgrade()` calls on a bare local name in `crates/lushtext-core/src/ui` to recorded per-file exceptions, each with its reason, so any other such call fails; upgrades of fields are not counted.
 
 #### Scenario: Manual weak capture above the ceiling fails
 - **WHEN** a change adds a manual weak capture (a local `downgrade` moved into a closure and upgraded there) in `crates/lushtext-core/src/ui` while the count is at its ceiling
@@ -12,6 +12,11 @@ LushText UI code SHALL capture GObjects weakly in GTK-thread closures through `g
 #### Scenario: A weak reference in a field does not count
 - **WHEN** a change adds a struct field holding a `WeakRef` and upgrades it through `self`
 - **THEN** the audit's count does not change
+
+#### Scenario: A recorded exception admits a collection upgrade
+- **WHEN** a change adds an upgrade of a weak reference taken from a collection and raises its file's exception with a reason
+- **THEN** the audit passes
+- **AND** the same change without the recorded exception fails
 
 #### Scenario: Lowering the count lowers the ceiling
 - **WHEN** a change removes manual sites

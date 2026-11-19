@@ -26,6 +26,7 @@ If any check loses sight inside the macro, the sweep stops and the audit learns 
 - **Chains.** An `if let … && …` chain keeps its other conditions inside the body.
 - **`Propagation` and `ControlFlow`.** Each site's fallthrough value is read and copied. A test covers one site of each type.
 - **Untouched.** Closures that capture a `WeakRef` stored elsewhere (struct fields, registries) or upgrade conditionally in the middle of the body stay manual, and the ceiling counts them. They are listed in the handoff with the reason.
+- **Weak references from a collection, an iterator or a parameter.** `.and_then(|weak| weak.upgrade())` in `find_dir_row` (`ui/sidebar/workspace_section/scan_execution.rs:2150`) is a bare-local upgrade that is not a capture, and `adopt-typed-row-state-and-dialog-futures` adds another (`watched_rows`). These never become `clone!`; they are counted and recorded as exceptions. Writing `WeakRef::upgrade(weak)` to escape the count is not an accepted form.
 
 ### D3. The ratchet
 
@@ -35,6 +36,7 @@ If any check loses sight inside the macro, the sweep stops and the audit learns 
 - **What fails.** It fails above the ceiling and when the count is below it, so the ceiling is lowered in the same change.
 - **`--self-test`** plants an extra site and a stale ceiling.
 - **After the sweep, a per-file list.** An exact global ceiling makes every later change that removes a site edit the same script line, which the shared-files rule then serializes. So the sweep ends with the ceiling as a list of D2's exceptions per file, zero everywhere else, and a change that removes an exception edits only that file's entry.
+- **Adding an exception.** A new legitimate bare-local upgrade (the collection class above) raises its file's entry in the same change, with the reason written beside the entry, and review accepts or refuses it. A new closure capture never qualifies: it uses `clone!`.
 
 ## Risks / Trade-offs
 

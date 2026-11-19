@@ -19,7 +19,9 @@ See `proposal.md`. The parts involved:
 - **The rule.** A test is a top-level `pub(crate) fn test_<name>()`, and that is the whole registration rule.
   - `build.rs` generates `#[path = "<real file>"] mod <stem>;` and the push list, and writes no copy.
   - `widget-shards.py` uses the same line rule, with its self-test cases updated.
-- **Why it is safe.** The registry pushes `fn()` pointers, so a `pub(crate) fn test_*` with parameters or a return value fails to compile at its registration line. Private helpers named `test_*` (`test_window()` and its variants) are never registered. The one silent case is a zero-argument, unit-returning helper made `pub(crate)` with that prefix; task 1.2 greps for it.
+- **Support files.** A file whose stem is `common` or ends in `_support` is declared as `mod <stem>;` and never scanned, in `build.rs` and in `discover` (which today both skip `common` by name). One convention replaces the two by-name skips, and the self-test gains a `_support` case.
+- **Why it is safe.** The registry pushes `fn()` pointers, so a `pub(crate) fn test_*` with parameters or a return value fails to compile at its registration line. Shared helpers named `test_*` live in support files, which are never scanned, and private ones in a test file are never registered. The one silent case is a zero-argument, unit-returning `pub(crate) fn test_*` helper in a test file; task 1.2 greps for it.
+- **Rebuild trigger unchanged.** `build.rs` keeps `cargo:rerun-if-changed` on the widget directory: since Cargo 1.50 a directory path makes Cargo scan every file in it for modifications (Cargo book, "Build Scripts", "Change Detection"), so edits to an existing file already rerun the script, and per-file lines would add nothing.
 - **Rejected:**
   - a `#[widget_test]` proc macro with `linkme` or `inventory`: a new crate and dependency, and rustfmt still sees the same functions;
   - keeping `#[test]` as a marker under `#[cfg_attr]`: unidiomatic, and still a textual rule;
@@ -28,7 +30,7 @@ See `proposal.md`. The parts involved:
 ### D2. Splitting `window.rs`
 
 - **Inventory first.** Task 1.1 groups the 407 tests by the workflow they drive, using the workflow matrix rows' vocabulary (notes, local history, drafts, session restore, Focus Mode, menus and help, close safety, split views and geometry, print, preview, status and notifications, documents and tabs). It records the grouping in `evidence/renames.md` before anything moves.
-- **The files.** One `window_<theme>.rs` per group. Shared fixtures and helpers move to `window_support.rs`, which holds no tests and is reached as `crate::window_support`, the way `common.rs` is.
+- **The files.** One `window_<theme>.rs` per group. Shared fixtures and helpers move to `window_support.rs`, a support file (D1) that holds no tests and is reached as `crate::window_support`, the way `common.rs` is. Its helpers become `pub(crate)` so the theme files can call them.
 - **No file runs past about 4,000 lines.** This is a target for the split, not a gate.
 - **Mechanical move.** Function bodies do not change, only their file and `use` lines. Task 1.3 diffs the sorted, whitespace-normalized function bodies before and after to prove it.
 - **Shards.** The `window` shard's `modules` list becomes the new stems, and every explicit `window::test_` name in the table is renamed. Membership is unchanged, so each shard's measured `ci_minutes` still describes the same tests. That claim is checked by the shard check's own counts.

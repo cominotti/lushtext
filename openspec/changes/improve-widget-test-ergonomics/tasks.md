@@ -10,7 +10,7 @@ Start: only after every edit, spec and queued change of the programme coordinato
 - [ ] 0.1 On the then-current `origin/main`:
   - re-count `window.rs`'s lines and tests;
   - list every live file naming `window::test_` or the path `tests/widget/window.rs` (design D3);
-  - list the `test_*` helpers that are not tests, and confirm none is `pub(crate)`;
+  - list the `test_*` helpers that are not tests, and where each will live (a support file, or private in a test file);
   - read whether `is_relevant` classes `crates/lushtext/tests/widget/` as smoke-relevant.
   
   Update the artifacts in place. Verify with `openspec validate improve-widget-test-ergonomics --strict`.
@@ -19,9 +19,10 @@ Start: only after every edit, spec and queued change of the programme coordinato
 ## 1. Registry without rewriting
 
 - [ ] 1.1 Record the full widget `--list` on `main` in `evidence/list-before.txt`.
-- [ ] 1.2 Convert every widget file to `pub(crate) fn test_<name>()` with no `#[test]` line, and change `build.rs` and `widget-shards.py`'s discovery to design D1's rule, updating the self-test. Verify that:
+- [ ] 1.2 Convert every widget test file to `pub(crate) fn test_<name>()` with no `#[test]` line, and change `build.rs` and `widget-shards.py`'s discovery to design D1's rule and support-file convention, with self-test cases for a `_support` file and for a test file. Verify that:
   - `--list` equals `evidence/list-before.txt`;
   - `make check-widget-shards` passes;
+  - a grep finds no zero-argument, unit-returning `pub(crate) fn test_*` helper outside support files that is not meant as a test;
   - a planted compile error and a planted panic report the real file path;
   - whether rust-analyzer's go-to-definition reaches the real file (record the result; the README and quickstart claim it only if it does).
 - [ ] 1.3 Run the gate order, and the full `make test`. Commit through `heavy.sh`, signed, and push.
