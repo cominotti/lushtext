@@ -47,11 +47,27 @@ Then:
 - **Review:** a reviewer reruns a shard only when its own fixes touched that
   shard's harness inputs.
 - **Shard budgets:** a new or changed shard records its budget from two CI
-  runs (`build.md`, "Shard gates and budgets"). For a pull-request shard the
-  PR's own Kani run is one of them. Dispatch `kani.yml`, which runs every
-  shard, only for a scheduled shard's figure, once the change's final code is
-  pushed. A pending record names its owning change, so the archive cannot
-  forget it.
+  runs (`build.md`, "Shard gates and budgets"). **Stage 3 dispatches them as
+  soon as its final code is pushed and the pull request is open, and never
+  watches them**; it records the run ids in `$H/<change>/kani-dispatch.md`
+  and the PR body.
+  - A pull-request shard: one dispatch on the branch; the PR's own Kani run
+    is the second figure.
+  - A scheduled shard: two dispatches that can run at once. `kani.yml`
+    cancels an in-progress run of its concurrency group (the PR number or
+    the ref), so push the same commit to a twin ref `<branch>-kani-2` and
+    dispatch once on each. If the twin push is refused, dispatch once; stage
+    4 dispatches the second run when it reads the first as finished.
+  - Stage 4 reads the finished runs (`gh run view`) and never waits for one
+    while holding `MERGE-LOCK`; what it does with each result, and where the
+    figures are written, is in `parallel-agent-work.md`, "Merging".
+  - Dispatch again on the final tree when a stage-4 fix or the `origin/main`
+    merge touches the harness inputs (found as in the first bullets of this
+    section) of a shard whose figure is pending; otherwise the stage-3 runs
+    stand.
+  - A pending record names its owning change, so the archive cannot forget
+    it: `make check-kani-shards` refuses the archive commit while the figure
+    is pending.
 
 ## Proof strength
 
@@ -77,8 +93,34 @@ memory budget, and run it detached.
 - Every timing verdict goes through `scripts/measure.sh`, which takes the
   measurement lock and records the load and top processes before and after
   (the lock protocol below).
-- Under load, queue the campaign instead of starting it
-  (`parallel-agent-work.md`, "Measurements").
+- A verdict round drains first and is judged on busy CPUs, not on the
+  1-minute load (`parallel-agent-work.md`, "Measurements", and
+  `scripts/quiet-gate.py`). When the window stays busy, queue the campaign
+  instead of starting it.
+- **A change on a timed path states its verdict class in `design.md` before
+  any verdict round**, with a reason, and the spec review confirms it. After
+  the first verdict round only the maintainer changes it, so a missed bar
+  cannot be relabelled.
+  - `Verdict class: improvement-gated`: the change's purpose is the
+    improvement, or its mechanism trades metrics so branch and `main` are not
+    ordered (completion time against worst frame, for example). Its verdict
+    runs before the merge, as below.
+  - `Verdict class: non-inferiority`: the change's value does not depend on
+    an improvement claim (a correctness, safety or structure change on a
+    timed path). It pre-registers the primary metric of each touched lane
+    case, a numeric noise band per metric (from an earlier `main`-versus-
+    `main` spread, or stated with its reason), and the touched cases. It
+    passes when every touched case's branch median is at most `main`'s plus
+    the band, and no case that `main` meets within `B_INTERACT_US` or
+    `B_SETTLE_US` goes over it on the branch. It runs and blocks the merge
+    like any verdict; queued, it means "ready, measurement pending".
+  - A non-inferiority change's improvement verdict is owed by a follow-up
+    named in the ledger, `NEW CHANGE PROPOSED: <change>-improvement-verdict`.
+    Until it passes, no README, `AGENTS.md`, changelog, programme record or
+    pull-request body claims the improvement, and the change's requirements
+    do not assert it. If the follow-up fails, an independent agent decides
+    whether to keep the non-inferior code or revert it, and the maintainer is
+    told.
 - An optimisation change measures the cases it affects: four rounds
   interleaved `main` → branch → `main` → branch. An environment change
   (toolkit or runtime) measures the full quick tier the same way.
@@ -206,7 +248,9 @@ every worktree (resolved from `git rev-parse --git-common-dir`;
   on the intersection. Its records carry `cpus=`, `reference=` and `source=`.
   It gives up after `--lock-timeout` seconds (default 1800), printing every
   holder and exiting 75. It records the load and the top five CPU processes before and
-  after, and runs the command with `LUSHTEXT_ADMISSION_NOWAIT=1`. Build the
+  after, and runs the command with `LUSHTEXT_ADMISSION_NOWAIT=1`. A verdict
+  round's command is `scripts/quiet-gate.py run …`, which takes the quiet
+  readings inside the lock (`parallel-agent-work.md`, "Measurements"). Build the
   measured binary first, with `heavy.sh`: `measure.sh` refuses to run inside
   heavy work (exit 2). Test-suite wall-time comparisons are not verdicts: run
   them through `heavy.sh` and record the load.

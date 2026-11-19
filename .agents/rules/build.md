@@ -579,7 +579,9 @@ are in [`testing.md`](./testing.md). This section covers the lane.
   pending record (`PENDING DISPATCH` or `provisional`) whose owner is not an
   active directory under `openspec/changes/`, so the commit that archives a
   change still owing a figure fails its hook. Record a budget from a
-  dispatched run, the larger of two; when a shard breaks a margin, fit it by
+  dispatched run, the larger of two (when to dispatch, and who reads the
+  runs: [`verification-runs.md`](./verification-runs.md), "Kani"); when a
+  shard breaks a margin, fit it by
   the order in [`docs/runbooks/kani-shards.md`](../../docs/runbooks/kani-shards.md)
   (split, then solver, then a recorded bound reduction). Never raise
   `timeout-minutes` instead. The Kani install is cached on `KANI_VERSION`.
