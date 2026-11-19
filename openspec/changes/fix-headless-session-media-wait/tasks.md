@@ -204,18 +204,18 @@
   constitution exception, so nothing to record. Run
   `make gtk-lush-api-advisory` and confirm that the only public-API
   difference is the additive `observe::wireplumber_policy_ready`.
-- [ ] 5.5 `docs/next/long-line-documents.md`, QH section: a follow-up
+- [x] 5.5 `docs/next/long-line-documents.md`, QH section: a follow-up
   paragraph with the cause, the fix and the lane wall times before and after
   (task 6), from `evidence/`.
 
 ## 6. Lane proof on the final tree (D8)
 
-- [ ] 6.1 Seeded defect (D7.2, uncommitted), **before** the green runs: a
+- [x] 6.1 Seeded defect (D7.2, uncommitted), **before** the green runs: a
   temporary change inside a protected region of one visual-geometry scenario
   must make `make visual-geometry-smoke` fail its invariant. A wrong
   accessible name on one anchor must make `make accessibility-smoke` fail.
   Revert both, and log them in `failing-first.log`.
-- [ ] 6.2 After G1 is final, run each media lane 10 consecutive times,
+- [x] 6.2 After G1 is final, run each media lane 10 consecutive times,
   green, one `heavy.sh` call per run:
   - `make visual-geometry-smoke`;
   - `make accessibility-smoke`;
@@ -227,21 +227,24 @@
   (D8), and record them the same way. A failure, `FLAKY`, `OOM-KILL:`, `SESSION-HYGIENE:` or
   `SKIP:` line is a blocker: investigate it, fix the cause, and restart that
   lane's count.
-- [ ] 6.3 Compare the means with the baseline (visual-geometry 24.2,
+- [x] 6.3 Compare the means with the baseline (visual-geometry 24.2,
   accessibility 13.0, visual 9.8 min). If the visual lane stays clearly above
   about 3 min at a comparable load, write a `NEW CHANGE PROPOSED` line for
   the remainder in `.claude/handoffs/PARALLEL-LEDGER.md` and say so in
   `evidence/lanes.md`.
-- [ ] 6.4 Before the G2 commit and the merge, the last run of each lane
+- [x] 6.4 Before the G2 commit and the merge, the last run of each lane
   under `build/smoke/` is a green one, on the final helper (seeded runs
   live under the handoff directory, task 3.2).
 
 ## 7. Final gates
 
-- [ ] 7.1 `make fmt`, `make check` (through `heavy.sh`) and the default-feature
+- [x] 7.1 `make fmt`, `make check` (through `heavy.sh`) and the default-feature
   `cargo check -p lushtext --bins --locked`.
 - [x] 7.2 The rustdoc gate (`testing.md`), because `observe.rs` gains public
   rustdoc.
-- [ ] 7.3 `openspec validate fix-headless-session-media-wait --strict`.
-- [ ] 7.4 Push per task group. The merge goes through the MERGE-LOCK
-  procedure (`parallel-agent-work.md`), on local evidence.
+- [x] 7.3 `openspec validate fix-headless-session-media-wait --strict`.
+- [x] 7.4 Push per task group. The merge goes through the MERGE-LOCK
+  procedure (`parallel-agent-work.md`), on local evidence. (Stage 3 pushed
+  G1, the D9 fix and G2. The merge belongs to the coordinator's merge-only
+  run, held by the maintainer's 2026-11-18 decision until the new workflow
+  template is ready.)
