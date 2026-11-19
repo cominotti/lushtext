@@ -565,6 +565,13 @@ def review_lenses(
     }
 
 
+def flags_line(lenses: dict[str, object]) -> str:
+    """The three lens flags as one compact JSON line (`review-lenses --flags-only`)."""
+
+    return json.dumps({key: lenses[key] for key in ("data", "modules_moved", "performance")},
+                      sort_keys=True, separators=(",", ":"))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=DEFAULT_REPO_ROOT)
@@ -580,6 +587,8 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("validate")
     lenses = subparsers.add_parser("review-lenses")
     lenses.add_argument("--base", required=True)
+    lenses.add_argument("--flags-only", action="store_true",
+                        help="print only the data, performance and modules_moved flags, on one line")
     return parser
 
 
@@ -645,8 +654,11 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as error:
             print(f"review-lenses: {error}", file=sys.stderr)
             return 2
-        json.dump(lenses, sys.stdout, indent=2, sort_keys=True)
-        print()
+        if args.flags_only:
+            print(flags_line(lenses))
+        else:
+            json.dump(lenses, sys.stdout, indent=2, sort_keys=True)
+            print()
     elif args.command == "testing-surfaces":
         json.dump(topology.testing_surfaces(), sys.stdout, indent=2, sort_keys=True)
         print()

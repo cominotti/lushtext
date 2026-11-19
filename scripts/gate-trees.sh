@@ -11,7 +11,9 @@
 # the command as its child (normally `scripts/heavy.sh ... -- make <target>`),
 # reads both again, and appends one line to <handoffs>/<change>/gate-trees.log
 # when the status was empty before and after and the tree did not change in
-# between: result=pass when the command exited 0, result=fail otherwise.
+# between: result=pass when the command exited 0, result=fail otherwise,
+# except that an interrupted run (exit 75, 78, 124, or 128 and above) records
+# nothing.
 #
 #   <date -Is>\ttree=<hash>\tresult=<pass|fail>\tlog=<PATH or ->\tgate=<gate>
 #
@@ -70,6 +72,13 @@ change_of() {
 }
 
 tree_of() { git -C "$1" rev-parse 'HEAD^{tree}'; }
+# Exit statuses that say the run did not finish, not that the gate failed:
+# heavy.sh's busy (75) and CPU-placement (78) refusals, a timeout (124) and a
+# signal (128 and above).
+interrupted() {
+    case "$1" in 75|78|124) return 0 ;; esac
+    [ "$1" -ge 128 ]
+}
 one_line() {
     case "$2" in *$'\t'*|*$'\n'*) die "$1 must be one line without tabs" ;; esac
 }
@@ -105,7 +114,9 @@ cmd_record() {
     tree_after=$(tree_of "$wt") || die "cannot read HEAD^{tree} in $wt"
     local result=pass
     [ "$rc" -eq 0 ] || result=fail
-    if [ -n "$status_before" ]; then
+    if interrupted "$rc"; then
+        echo "gate-trees: '$gate' was interrupted (exit $rc); nothing recorded" >&2
+    elif [ -n "$status_before" ]; then
         echo "gate-trees: the worktree was dirty before '$gate'; nothing recorded" >&2
     elif [ -n "$status_after" ]; then
         echo "gate-trees: the worktree was dirty after '$gate'; nothing recorded" >&2
@@ -205,6 +216,15 @@ self_test() {
     cmd_lookup "$wt" --gate 'make check' >/dev/null || self_test_fail "a fail of another gate voided 'make check'"
     rc=0; cmd_lookup "$wt" --gate 'make check' --gate 'make test' >/dev/null 2>&1 || rc=$?
     [ "$rc" = 1 ] || self_test_fail "a fail of one named gate did not void the covering lookup"
+    # An interrupted run is not a result: busy (75), off its CPUs (78), timed
+    # out (124) or killed by a signal (128+) records nothing.
+    local code
+    for code in 75 78 124 137 143; do
+        rc=0; cmd_record "$wt" --gate 'make check' -- sh -c "exit $code" >/dev/null 2>&1 || rc=$?
+        [ "$rc" = "$code" ] || self_test_fail "an interrupted run returned $rc, expected $code"
+        [ "$(count)" -eq 2 ] || self_test_fail "an interrupted run (exit $code) recorded a line"
+    done
+    cmd_lookup "$wt" --gate 'make check' >/dev/null || self_test_fail "an interrupted run voided 'make check'"
     cmd_record "$wt" --gate 'make test' -- true >/dev/null 2>&1 || self_test_fail "a pass after a fail returned non-zero"
     [ "$(count)" -eq 3 ] || self_test_fail "a pass after a fail recorded $(count) lines, expected 3"
     rc=0; cmd_lookup "$wt" --gate 'make test' >/dev/null 2>&1 || rc=$?
@@ -252,7 +272,7 @@ self_test() {
     git init -q "$decoy"
     out=$(GIT_DIR="$decoy/.git" GIT_WORK_TREE="$decoy" GIT_INDEX_FILE="$decoy/.git/index" \
         "$0" lookup "$wt" --gate 'make test') || self_test_fail "lookup under a decoy GIT_DIR missed"
-    echo "gate-trees self-test: ok (clean pass recorded; a clean fail recorded and voiding reuse of that gate on that tree; dirty-before, dirty-after and tree-changing runs record nothing; tabs and newlines refused in every field; exact gate match, covering gates, dirty lookup refused; decoy GIT_DIR ignored)"
+    echo "gate-trees self-test: ok (clean pass recorded; a clean fail recorded and voiding reuse of that gate on that tree; dirty-before, dirty-after and tree-changing runs record nothing; interrupted runs record nothing; tabs and newlines refused in every field; exact gate match, covering gates, dirty lookup refused; decoy GIT_DIR ignored)"
 }
 
 case "${1:-}" in

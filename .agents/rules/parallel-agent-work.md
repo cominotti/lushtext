@@ -87,7 +87,8 @@ Change worktrees live in `.claude/worktrees/<change>`.
 - **At most five implementation stages run at once, and at most three while
   `MEASURE-QUEUE.md` holds a ready unit.** A unit is a `## ` entry, or each
   `### ` part of an entry that has parts. It is ready when its **last**
-  `Status:` line, with or without the list dash, starts with `READY`:
+  `Status:` line, with or without the list dash or Markdown `**`, starts
+  with `READY`:
   entries keep their history of Status lines. Fewer stages then run beside the rounds a change waits on, so the
   quiet window comes sooner.
 - Before its first heavy command, a stage acquires its slot with
@@ -95,6 +96,9 @@ Change worktrees live in `.claude/worktrees/<change>`.
   waits in the foreground for at most 540 s per call and exits 124 when it
   timed out: repeat the call ("Waiting"). It counts every slot directory,
   coordinator placeholders included, and evicts nothing held above the cap.
+  It exits 2 for a name with no worktree `.claude/worktrees/<name>`, so a
+  stage whose worktree is named otherwise (`args.worktree_override`)
+  acquires under the worktree's directory name.
   `scripts/impl-slots.sh cap` prints the cap and the ready units behind it.
   - Before the stage ends, whatever the outcome, it runs
     `scripts/impl-slots.sh release "${C:?}"`.
@@ -230,8 +234,9 @@ Change worktrees live in `.claude/worktrees/<change>`.
        commit, finds no record and reruns. Record each gate you run with
        `scripts/gate-trees.sh record <wt> --gate '<gate>' -- scripts/heavy.sh … -- make <gate>`;
        only that helper writes `gate-trees.log`, and it records nothing for
-       a dirty or changing worktree. It records a failing run too, and a
-       tree with a recorded failure of a named gate is never reused, since
+       a dirty or changing worktree. It records a failing run too (an
+       interrupted one, exit 75, 78, 124 or a signal, records nothing), and
+       a tree with a recorded failure of a named gate is never reused, since
        a pass and a fail on one tree is a flake;
      - `git push origin HEAD`, to the branch of the same name (never
        `HEAD:main`).
@@ -408,7 +413,10 @@ script, and inside a workflow both skills below run their single-pass forms.
    branch lacks, pushes, and sets the branch to track `origin/<branch>`. A
    conflict aborts the merge and stops the run: resolving it is
    implementation work, which the review stages must see. Every mode runs
-   it, `review-only` included.
+   it, `review-only` included. A run that stops between `/simplify` and the
+   apply commit leaves `/simplify`'s edits uncommitted, so it is resumed,
+   or an implementation round (`continue`) commits or drops them before a
+   new `review-only` run.
 1. **`/simplify`**, in its own agent, quality only. It starts from a clean
    worktree and is invoked with the change worktree's absolute path as its
    argument, never bare: the agent's working directory is the main checkout
@@ -419,13 +427,14 @@ script, and inside a workflow both skills below run their single-pass forms.
    as `$H/<change>/simplify.patch`.
 2. **Review lenses, in parallel and findings only.** Each writes
    `$H/<change>/review-findings-<lens>.md` and returns its findings.
-   - Before them, a read-only agent records the scope: `HEAD`, the pull
-     request's head and the upstream (all three must be equal), the
-     committed files (`git diff --name-only origin/main...HEAD`), the
-     uncommitted ones, and the exit status and raw output of
-     `scripts/agent-topology.py review-lenses --base origin/main`, which the
-     script parses itself. A non-zero exit stops the run: a selector that
-     failed is never "no domain lens".
+   - Before them, a read-only agent records the scope, with every
+     comparison and count made in the shell rather than copied by the
+     agent: `HEAD`, and whether it equals the pull request's head and the
+     upstream; the counts of committed files (`git diff --name-only
+     origin/main...HEAD`) and uncommitted ones; and the exit status and the
+     one-line output of `scripts/agent-topology.py review-lenses --base
+     origin/main --flags-only`, which the script parses itself. A non-zero
+     exit stops the run: a selector that failed is never "no domain lens".
    - **`code-review high <PR>`** reviews the committed work, and, when
      `/simplify` left edits, a second call **`code-review high <absolute
      worktree path>`** reviews only those. The path form diffs against the
@@ -441,13 +450,18 @@ script, and inside a workflow both skills below run their single-pass forms.
      `skill_findings_source:` line per call, one `CODE-REVIEW-SCOPE:` line
      per call (the PR, or the base the fork named, with file and line
      counts), a `findings_count:` line and a last `CODE-REVIEW-STATUS:` line
-     (`ok`, `empty` or `failed`). The script checks each count against the
-     scope reading. A missing line, a scope that does not match, or `ok`
-     over no findings is a failed lens: one rerun, then the run stops.
+     (`ok`, `empty` or `failed`). The prompt does not carry the expected
+     counts; the script checks each count against the scope reading, and the
+     worktree call's base against `HEAD` and `origin/<branch>` (a call that
+     diffed against `main` reviewed the whole branch, probe P4). A missing
+     line, a scope that does not match, or `ok` over no findings is a failed
+     lens: one rerun, then the run stops.
    - **An empty review stops the run.** `CODE-REVIEW-STATUS: empty` is
      allowed only with a non-zero quoted scope for every call; the script
      then stops with its own message, and only the coordinator, after
-     reading the findings file, resumes it with `args.accept_empty_review`.
+     reading the findings file, resumes it with `args.accept_empty_review`
+     set to the reviewed `HEAD` that message prints, which accepts that one
+     review.
    - **The fork may run repository scripts** (probe C4 ran
      `impl-slots.sh acquire`). The lens agent runs none itself, releases
      this change's slot if the review created it, and lists what the fork
@@ -488,8 +502,10 @@ script, and inside a workflow both skills below run their single-pass forms.
    result, each through `scripts/gate-trees.sh record`, re-dispatches a Kani
    budget run its edits make stale (`verification-runs.md`, "Kani"), and
    pushes at the end. It is the last agent that edits code. A read-only
-   agent then confirms its `HEAD`, its gated tree and the push, and the
-   script stops on any difference.
+   agent then checks, in the shell, that the worktree is clean, that `HEAD`
+   and `HEAD^{tree}` are the ones the apply agent returned and are pushed,
+   and that `scripts/gate-trees.sh lookup` finds a `make check` pass for
+   that tree; the script stops on any difference.
 4. **The final review, merge and archive agent edits nothing.** It reviews
    exactly the apply range the script passes (the lens `HEAD` to the apply
    `HEAD`, merge commits included), checks that `HEAD^{tree}` is the gated
@@ -515,7 +531,9 @@ script, and inside a workflow both skills below run their single-pass forms.
   untracked files included), `HEAD` and branch, and whether this change
   holds an implementation slot or `MERGE-LOCK`, and the script stops the run
   on any difference (porcelain alone misses a commit or a branch switch; the
-  slot and lock readings catch a review fork that took one). The comparison
+  slot and lock readings catch a review fork that took one). Giving a slot
+  or the lock up during a stage is not a difference; taking one and still
+  holding it is. The comparison
   is before against after; the coordinator does not move the main checkout
   while a run is in flight, and if it must, the run stops at the next guard.
 - **Resuming after a guard stop.** The stop message prints a token bound to

@@ -30,7 +30,11 @@ const READING = { status_sha256: SHA, porcelain: '', head: 'abc123', branch: 'ma
 // Both worktrees are named after the change; they differ in the checkout above them.
 const SPEC_WT = '/repo-spec/.claude/worktrees/demo'
 const ARG_WT = '/repo/.claude/worktrees/demo'
-const FLAGS = { data: false, performance: false, modules_moved: false, paths: ['docs/x.md'] }
+const FLAGS = { data: false, performance: false, modules_moved: false }
+// Full hashes: the lens HEAD, and the apply stage's HEAD and gated tree.
+const LH = '1'.repeat(40)
+const H2 = '2'.repeat(40)
+const T2 = '3'.repeat(40)
 const prOf = prompt => Number((/PR #(\d+)/.exec(prompt) || [])[1])
 
 // The code-review lens's structured tail.
@@ -39,15 +43,15 @@ function crText({ pr, files = 2, lines = 40, wt = null, count = 1, status = 'ok'
     body,
     ...Array.from({ length: sources }, () => 'skill_findings_source: result-text'),
     `CODE-REVIEW-SCOPE: pr #${pr} files=${files} lines=${lines}`,
-    ...(wt ? [`CODE-REVIEW-SCOPE: worktree base=${wt.base || 'origin/demo'} files=${wt.files} lines=${wt.lines || 12}`] : []),
+    ...(wt ? [`CODE-REVIEW-SCOPE: worktree base=${wt.base || 'HEAD'} files=${wt.files} lines=${wt.lines || 12}`] : []),
     `findings_count: ${count}`,
     `CODE-REVIEW-STATUS: ${status}`,
   ]
   return tail.join('\n')
 }
 function scopeWith(flags = FLAGS, extra = {}) {
-  return () => ({ lenses_exit: 0, lenses_stdout: JSON.stringify(flags, null, 2), head: 'h1', pr_head: 'h1', upstream_head: 'h1',
-    committed_files: ['a.rs', 'b.rs'], uncommitted_files: [], ...extra })
+  return () => ({ head: LH, same_head: true, committed_count: 2, uncommitted_count: 0,
+    lenses_exit: 0, lenses_stdout: JSON.stringify(flags), ...extra })
 }
 
 const DEFAULTS = {
@@ -64,8 +68,8 @@ const DEFAULTS = {
   'lens:code-review': (_l, prompt) => crText({ pr: prOf(prompt) }),
   'lens:code-review-2': (_l, prompt) => crText({ pr: prOf(prompt), body: '- b.rs:9 leak' }),
   lens: () => ({ status: 'ran', skill_ran: 'stub', examined: ['crates/x.rs: checklist 1-5'], findings: [], findings_file: 'f.md' }),
-  apply: () => ({ verdict: 'ready', applied: 'apply-applied', rejected: 'apply-rejected', gates: 'apply-gates', head: 'h2', tree: 't2', summary: 'apply-summary' }),
-  verify: () => ({ status: '', head: 'h2', tree: 't2', pr_head: 'h2', lens_head_is_ancestor: true }),
+  apply: () => ({ verdict: 'ready', applied: 'apply-applied', rejected: 'apply-rejected', gates: 'apply-gates', head: H2, tree: T2, summary: 'apply-summary' }),
+  verify: () => ({ head: H2, tree: T2, clean: true, head_match: true, tree_match: true, pushed: true, lens_head_is_ancestor: true, gated_exit: 0 }),
   merge: () => ({ verdict: 'merged', reason: 'merged', merge_commit: 'm1', archive_commit: 'a1', notes: 'n' }),
 }
 
@@ -209,7 +213,7 @@ const CASES = {
     const r = await run(RO)
     check(r.work[0].startsWith('prepare:') && r.work[1].startsWith('simplify:'), JSON.stringify(r.work))
     check(!r.work.some(l => /^(spec|implement|merge)/.test(l)), JSON.stringify(r.work))
-    check(has(r.result.verdict, 'stopped before merge') && r.result.apply_range === 'h1..h2', JSON.stringify(r.result))
+    check(has(r.result.verdict, 'stopped before merge') && r.result.apply_range === `${LH}..${H2}`, JSON.stringify(r.result))
     const m = await run({ ...RO, merge: true })
     check(m.work.at(-1).startsWith('merge:') && m.result.merge, JSON.stringify(m.work))
   },
@@ -219,7 +223,7 @@ const CASES = {
     const p = r.prompts['lens:code-review:demo']
     check(has(p, 'argument: high 7') && !has(p, `argument: high ${ARG_WT}`), `committed work only: ${p}`)
     const u = await run(RO, {
-      scope: scopeWith(FLAGS, { uncommitted_files: ['a.rs'] }),
+      scope: scopeWith(FLAGS, { uncommitted_count: 1 }),
       'lens:code-review': (_l, prompt) => crText({ pr: prOf(prompt), sources: 2, wt: { files: 1 } }),
     })
     const q = u.prompts['lens:code-review:demo']
@@ -229,24 +233,36 @@ const CASES = {
     for (const [scope, text] of [
       [scopeWith(), (_l, p) => crText({ pr: prOf(p), files: 25 })],
       [scopeWith(), (_l, p) => crText({ pr: 8 })],
-      [scopeWith(FLAGS, { uncommitted_files: ['a.rs'] }), (_l, p) => crText({ pr: prOf(p), sources: 2, wt: { base: 'main', files: 175 } })],
-      [scopeWith(FLAGS, { uncommitted_files: ['a.rs'] }), (_l, p) => crText({ pr: prOf(p) })],
+      [scopeWith(FLAGS, { uncommitted_count: 1 }), (_l, p) => crText({ pr: prOf(p), sources: 2, wt: { base: 'main', files: 175 } })],
+      // A matching count over the wrong base is still the wrong review (probe P4).
+      [scopeWith(FLAGS, { uncommitted_count: 1 }), (_l, p) => crText({ pr: prOf(p), sources: 2, wt: { base: 'main', files: 1 } })],
+      [scopeWith(FLAGS, { uncommitted_count: 1 }), (_l, p) => crText({ pr: prOf(p), sources: 2, wt: { base: 'origin/main', files: 1 } })],
+      [scopeWith(FLAGS, { uncommitted_count: 1 }), (_l, p) => crText({ pr: prOf(p) })],
     ]) {
       const r = await run(RO, { scope, 'lens:code-review': text, 'lens:code-review-2': text })
       check(has(r.result.stopped, 'review lens failed: code-review') && !r.work.some(l => l.startsWith('apply:')), JSON.stringify(r.result))
     }
   },
   async 'M1: the lenses do not run unless HEAD is the PR head and the upstream'() {
-    for (const extra of [{ pr_head: 'other' }, { upstream_head: 'other' }, { committed_files: [] }]) {
+    for (const extra of [{ same_head: false }, { head: 'h1' }, { committed_count: 0 }, { uncommitted_count: -1 }]) {
       const r = await run(RO, { scope: scopeWith(FLAGS, extra) })
       check(typeof r.result.stopped === 'string' && !r.work.some(l => l.startsWith('lens:')), `${JSON.stringify(extra)}: ${JSON.stringify(r.result)}`)
     }
+  },
+  async 'M1: the lens prompt does not hand the agent the counts it must report'() {
+    const r = await run(RO, { scope: scopeWith(FLAGS, { committed_count: 37, uncommitted_count: 5 }),
+      'lens:code-review': (_l, p) => crText({ pr: prOf(p), files: 37, sources: 2, wt: { base: `origin/demo`, files: 5 } }) })
+    const p = r.prompts['lens:code-review:demo']
+    check(!/\b37\b/.test(p) && !/\b5 (uncommitted|files)/.test(p) && !r.result.stopped, `${JSON.stringify(r.result.stopped)}: ${p}`)
+    const sha = await run(RO, { scope: scopeWith(FLAGS, { uncommitted_count: 1 }),
+      'lens:code-review': (_l, p) => crText({ pr: prOf(p), sources: 2, wt: { base: `\`${LH.slice(0, 8)}\`.`, files: 1 } }) })
+    check(!sha.result.stopped, `a base named as the HEAD hash failed: ${sha.result.stopped}`)
   },
   // Fable review M2: the selector's exit status, and the prepare stage.
   async 'M2: a failing review-lenses helper stops the run'() {
     const r = await run(RO, { scope: scopeWith(FLAGS, { lenses_exit: 2, lenses_stdout: 'usage: agent-topology.py: invalid choice: review-lenses' }) })
     check(has(r.result.stopped, 'review-lenses exited 2') && !r.work.some(l => l.startsWith('lens:')), JSON.stringify(r.result))
-    const m = await run(RO, { scope: scopeWith(FLAGS, { lenses_stdout: '{"data": "yes"}' }) })
+    const m = await run(RO, { scope: scopeWith(FLAGS, { lenses_stdout: '{"data":"yes"}' }) })
     check(has(m.result.stopped, 'malformed') && !m.work.some(l => l.startsWith('lens:')), JSON.stringify(m.result))
     const t = await run(RO, { scope: scopeWith(FLAGS, { lenses_stdout: 'data: true' }) })
     check(has(t.result.stopped, 'malformed'), JSON.stringify(t.result))
@@ -265,7 +281,7 @@ const CASES = {
     const r = await run({ ...BASE, mode: 'new' })
     const p = r.prompts['merge:demo']
     check(!has(p, 'Fix such a defect') && has(p, 'fix nothing') && has(p, 'You edit no file'), 'the merge stage may still write a fix')
-    check(has(p, 'log -p h1..h2') && has(p, 'HEAD^{tree} is t2'), 'the merge prompt lacks the exact range and tree')
+    check(has(p, `log -p ${LH}..${H2}`) && has(p, `HEAD^{tree} is ${T2}`), 'the merge prompt lacks the exact range and tree')
     check(has(p, 'review-findings-applied.md') && has(p, 'wrongly rejected correctness finding'), 'rejected correctness findings are not re-checked')
     check(has(p, 'merge --abort') && has(p, 'you resolve nothing'), 'a conflicted origin/main merge is not blocked')
     const b = await run({ ...BASE, mode: 'new' }, { merge: () => ({ verdict: 'blocked', reason: 'off by one in the apply commit', notes: '' }) })
@@ -280,7 +296,7 @@ const CASES = {
       null,
     ]) {
       const out = await run(RO, {
-        scope: scopeWith({ ...FLAGS, data: true, paths: ['crates/x.rs'] }),
+        scope: scopeWith({ ...FLAGS, data: true }),
         'lens:data-safety:demo': () => r,
       })
       check(has(out.result.stopped, 'review lens failed: data-safety') && !out.work.some(l => l.startsWith('apply:')), `${JSON.stringify(r)}: ${JSON.stringify(out.result)}`)
@@ -307,16 +323,22 @@ const CASES = {
     const empty = (_l, p) => crText({ pr: prOf(p), count: 0, status: 'empty', body: 'No issues found.' })
     const r = await run(RO, { 'lens:code-review': empty })
     check(has(r.result.stopped, 'empty review') && !r.work.some(l => l.startsWith('lens:code-review-2:')) && !r.work.some(l => l.startsWith('apply:')), JSON.stringify(r.result))
-    const a = await run({ ...RO, accept_empty_review: true }, { 'lens:code-review': empty })
+    check(has(r.result.stopped, `args.accept_empty_review: "${LH}"`), r.result.stopped)
+    const a = await run({ ...RO, accept_empty_review: LH }, { 'lens:code-review': empty })
     check(!a.result.stopped && a.work.some(l => l.startsWith('apply:')), JSON.stringify(a.result))
+    // A bare true, or the HEAD of another review, accepts nothing.
+    for (const value of [true, '9'.repeat(40)]) {
+      const b = await run({ ...RO, accept_empty_review: value }, { 'lens:code-review': empty })
+      check(has(b.result.stopped, 'empty review'), `${JSON.stringify(value)} accepted an empty review`)
+    }
     const noScope = (_l, p) => crText({ pr: prOf(p), files: 2, lines: 0, count: 0, status: 'empty' })
-    const z = await run({ ...RO, accept_empty_review: true }, {
-      scope: scopeWith(FLAGS, { committed_files: ['a.rs', 'b.rs'] }), 'lens:code-review': noScope, 'lens:code-review-2': noScope,
+    const z = await run({ ...RO, accept_empty_review: LH }, {
+      'lens:code-review': noScope, 'lens:code-review-2': noScope,
     })
     check(has(z.result.stopped, 'review lens failed: code-review'), `an empty review over no scope must fail: ${JSON.stringify(z.result)}`)
   },
   async 'guard_ack and accept_empty_review never reach a prompt'() {
-    const r = await run({ ...RO, merge: true, accept_empty_review: true, guard_ack: 'simplify:x' })
+    const r = await run({ ...RO, merge: true, accept_empty_review: LH, guard_ack: 'simplify:x' })
     for (const [label, prompt] of Object.entries(r.prompts)) {
       check(!has(prompt, 'accept_empty_review') && !has(prompt, 'guard_ack') && !has(prompt, 'simplify:x'), `${label} carries a script-only argument`)
     }
@@ -355,7 +377,7 @@ const CASES = {
     check(has(r.result.stopped, 'review lens failed') && has(r.result.stopped, 'no transcript'), JSON.stringify(r.result))
   },
   async 'lens selection follows the flags'() {
-    const r = await run(RO, { scope: scopeWith({ data: true, performance: true, modules_moved: true, paths: [] }) })
+    const r = await run(RO, { scope: scopeWith({ data: true, performance: true, modules_moved: true }) })
     const want = ['code-review', 'data-safety', 'gtk-responsiveness', 'gtk-perf-scale', 'gtk-perf-rust-optimize', 'rust-hex-arch']
     check(JSON.stringify(r.result.lenses) === JSON.stringify(want), JSON.stringify(r.result.lenses))
     for (const lens of want) check(r.work.some(l => l.startsWith(`lens:${lens}:`)), `no agent for ${lens}`)
@@ -374,6 +396,11 @@ const CASES = {
     check(has(bad.result.stopped, 'guard reading after simplify failed'), JSON.stringify(bad.result))
     const slot = await run(RO, { 'guard:review-lenses:after': () => ({ ...READING, own_slot: true }) })
     check(has(slot.result.stopped, 'MAIN CHECKOUT CHANGED during review-lenses') && !slot.work.some(l => l.startsWith('apply:')), JSON.stringify(slot.result))
+    const lock = await run({ ...RO, merge: true }, { 'guard:merge:after': () => ({ ...READING, own_merge_lock: true }) })
+    check(has(lock.result.stopped, 'MAIN CHECKOUT CHANGED during merge'), 'a merge lock left held passed')
+    // Giving a slot or the lock up during a stage is benign.
+    const released = await run(RO, { 'guard:simplify:before': () => ({ ...READING, own_slot: true }) })
+    check(!released.result.stopped, `a released slot stopped the run: ${released.result.stopped}`)
     const g = await run(RO)
     check(has(g.prompts['guard:review-lenses:before'], 'IMPL-SLOTS/demo') && has(g.prompts['guard:review-lenses:before'], 'MERGE-LOCK/owner.txt'), 'the guard does not read the slot and the merge lock')
   },
@@ -397,16 +424,25 @@ const CASES = {
   // Fable review S5: the apply stage's claims are read back before the merge.
   async 'S5: an apply stage whose tree, HEAD or push does not match stops before the merge'() {
     for (const verify of [
-      () => ({ ...DEFAULTS.verify(), tree: 'other' }),
-      () => ({ ...DEFAULTS.verify(), head: 'h3' }),
-      () => ({ ...DEFAULTS.verify(), pr_head: 'h1' }),
-      () => ({ ...DEFAULTS.verify(), status: ' M a.rs' }),
+      () => ({ ...DEFAULTS.verify(), tree_match: false }),
+      () => ({ ...DEFAULTS.verify(), head_match: false }),
+      () => ({ ...DEFAULTS.verify(), pushed: false }),
+      () => ({ ...DEFAULTS.verify(), clean: false }),
       () => ({ ...DEFAULTS.verify(), lens_head_is_ancestor: false }),
+      () => ({ ...DEFAULTS.verify(), gated_exit: 1 }),
+      () => ({ ...DEFAULTS.verify(), head: 'h2' }),
       () => null,
     ]) {
       const r = await run({ ...BASE, mode: 'new' }, { verify })
       check(typeof r.result.stopped === 'string' && !r.work.some(l => l.startsWith('merge:')), JSON.stringify(r.result))
     }
+    // The comparison runs in the shell against the apply stage's own hashes, so
+    // an abbreviated hash is not a mismatch; a value that is no hash never
+    // reaches the command.
+    const short = await run({ ...BASE, mode: 'new' }, { apply: () => ({ ...DEFAULTS.apply(), head: H2.slice(0, 12) }) })
+    check(!short.result.stopped && has(short.prompts['verify:demo'], `'${H2.slice(0, 12)}^{commit}'`), JSON.stringify(short.result.stopped))
+    const junk = await run({ ...BASE, mode: 'new' }, { apply: () => ({ ...DEFAULTS.apply(), tree: "x'; rm -rf /" }) })
+    check(has(junk.result.stopped, 'no commit and tree hashes') && !junk.work.some(l => l.startsWith('verify:')), JSON.stringify(junk.result))
   },
   async 'S1: revise needs the existing PR and worktree'() {
     for (const extra of [{}, { pr: 7 }, { worktree: ARG_WT }]) {

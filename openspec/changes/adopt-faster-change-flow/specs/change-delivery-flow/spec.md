@@ -23,6 +23,10 @@ Under `MERGE-LOCK`, a gate the merge step owes SHALL be skipped only when `scrip
 - **WHEN** `gate-trees.log` holds a pass and a fail of `make test` for the current `HEAD^{tree}`, both recorded on a clean worktree
 - **THEN** `gate-trees.sh lookup` for that tree exits 1, naming the fail, and the merge step runs the gate
 
+#### Scenario: An interrupted run is not a result
+- **WHEN** the recorded command exits 75, 78, 124, or 128 and above (busy, off its CPUs, timed out, killed)
+- **THEN** `gate-trees.sh record` writes no line and returns that status
+
 #### Scenario: Main moves before the PR merge
 - **WHEN** `origin/main` gains a commit after the merge step and before `gh pr merge`
 - **THEN** the ancestor check fails and the agent repeats the merge step instead of merging
@@ -251,7 +255,7 @@ After implementation, `/simplify` SHALL run on a clean worktree with an absolute
 - **THEN** the lens also runs `high <absolute worktree path>`, which on that branch reviews only the uncommitted edits, and both outputs form the one lens
 
 #### Scenario: A review whose scope does not match fails the lens
-- **WHEN** a call's `CODE-REVIEW-SCOPE` line names another PR, or a file count other than the committed files or the uncommitted ones of the scope reading
+- **WHEN** a call's `CODE-REVIEW-SCOPE` line names another PR, a file count other than the committed files or the uncommitted ones of the scope reading, or, for the worktree call, a base other than `HEAD` or `origin/<branch>`
 - **THEN** the script treats the lens as failed, reruns it once, and then stops
 
 #### Scenario: A failing selector stops the run
@@ -268,7 +272,7 @@ After implementation, `/simplify` SHALL run on a clean worktree with an absolute
 
 #### Scenario: An empty review over a quoted scope needs the coordinator
 - **WHEN** the `code-review` lens ends with `CODE-REVIEW-STATUS: empty`, `findings_count: 0` and a non-zero scope for every call
-- **THEN** the script stops with its own message, and continues past the lens only when the run is resumed with `args.accept_empty_review`
+- **THEN** the script stops with its own message naming the reviewed `HEAD`, and continues past the lens only when the run is resumed with `args.accept_empty_review` set to that `HEAD`
 
 #### Scenario: A domain lens that did not run fails
 - **WHEN** a domain lens returns without `status: ran`, or with an empty `examined` list
@@ -292,7 +296,7 @@ After implementation, `/simplify` SHALL run on a clean worktree with an absolute
 
 #### Scenario: The final review covers exactly the gated apply range
 - **WHEN** the apply stage returns its `HEAD` and gated tree
-- **THEN** a read-only agent confirms them, the push and the clean worktree, the script passes the range from the lens `HEAD` to that `HEAD` and the tree to the final review, which checks `HEAD^{tree}` before "Merging" step 2 and re-checks every rejected correctness finding
+- **THEN** a read-only agent confirms them in the shell, with the push, the clean worktree and a `make check` record of `gate-trees.sh` for that tree, the script passes the range from the lens `HEAD` to that `HEAD` and the tree to the final review, which checks `HEAD^{tree}` before "Merging" step 2 and re-checks every rejected correctness finding
 
 #### Scenario: A dead merge agent is not a finished run
 - **WHEN** the merge agent returns nothing, a verdict outside its fixed set, `merged` without a merge and archive commit, or `merged` while `no_merge` was set
@@ -314,8 +318,8 @@ Guard agents SHALL read the main checkout (status hash, `HEAD`, branch) and this
 - **THEN** that stage's reading passes, while a token for another stage or another reading still stops the run, and neither the token nor `args.accept_empty_review` appears in any prompt
 
 #### Scenario: A review fork takes a slot
-- **WHEN** this change's implementation slot or `MERGE-LOCK` ownership differs before and after the lens group
-- **THEN** the script stops the run, and `scripts/impl-slots.sh acquire` gives no slot to a name without a change worktree
+- **WHEN** this change holds its implementation slot or `MERGE-LOCK` after the lens group and did not before
+- **THEN** the script stops the run, while giving one up during a stage is no difference, and `scripts/impl-slots.sh acquire` gives no slot to a name without a change worktree
 
 #### Scenario: A main-branch alias is refused
 - **WHEN** the change, the branch argument, the spec stage's branch or a spec carried into a resumed run names `main`, `HEAD` or `@`, a branch that starts with `heads/`, `refs/`, `origin/`, `remotes/` or `tags/`, a revision expression such as `main~0` or `main^{}`, a commit hash, or anything else that is not a lowercase name

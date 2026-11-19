@@ -45,7 +45,7 @@ export const meta = {
 //   merge           boolean, review-only: continue into the merge stage (default: stop before it)
 //   fast_lane       review-only: 'eligible' when the change took the fast lane (continue carries it in args.spec)
 //   guard_ack       string or array: '<token>' values a guard stop printed, accepting that one main-checkout change on resume
-//   accept_empty_review  boolean: accept a code-review lens that reported an empty review over a non-empty scope
+//   accept_empty_review  the reviewed HEAD an empty-review stop printed: accept that one empty code-review
 // guard_ack and accept_empty_review are read by this script only and never reach a prompt.
 // The rules every prompt points to live in .agents/rules/; nothing here restates them.
 
@@ -209,9 +209,12 @@ Return each value as printed: the hash, the porcelain lines (an empty string whe
     { label: `guard:${label}`, phase: 'guard', effort: 'low', schema: GUARD_SCHEMA })
   return reading && /^[0-9a-f]{64}$/.test(reading.status_sha256 || '') ? reading : null
 }
+// A slot or merge lock this change gave up during a stage is benign; one it
+// took and still holds (a review fork's acquire, a stage that died holding
+// it) is a difference.
 function sameReading(a, b) {
   return a && b && a.status_sha256 === b.status_sha256 && a.head === b.head && a.branch === b.branch &&
-    a.own_slot === b.own_slot && a.own_merge_lock === b.own_merge_lock
+    !(b.own_slot && !a.own_slot) && !(b.own_merge_lock && !a.own_merge_lock)
 }
 // The acknowledgement a coordinator passes back (args.guard_ack) to accept one
 // stage's main-checkout change on resume: keyed on the stage label and the
@@ -465,34 +468,36 @@ if (gsim.result.status !== 'ran') return { ...out, stopped: `simplify: blocked (
 // The scope reading: the lens flags from the helper (its exit status and raw
 // output, parsed here), and what the code-review lens must cover.
 phase('Review lenses')
+const HEX40 = /^[0-9a-f]{40}$/
 const gscope = await guarded('review-scope', () => agent(`Read-only scope reading. Run exactly these commands, in one Bash call, and nothing else:
-echo "--HEAD--"; git -C ${WT} rev-parse HEAD; echo "--PR-HEAD--"; gh pr view ${PR} --json headRefOid --jq .headRefOid; echo "--UPSTREAM--"; git -C ${WT} rev-parse '@{upstream}'; echo "--COMMITTED--"; git -C ${WT} diff --name-only origin/main...HEAD; echo "--UNCOMMITTED--"; git -C ${WT} status --porcelain --untracked-files=all; echo "--LENSES--"; ${WT}/scripts/agent-topology.py review-lenses --base origin/main; echo "--LENSES-EXIT $?--"
-Return: lenses_exit, the number printed in --LENSES-EXIT; lenses_stdout, everything printed between --LENSES-- and that line, verbatim; head, pr_head and upstream_head, the three hashes; committed_files, one entry per line after --COMMITTED--; uncommitted_files, the path of each line after --UNCOMMITTED-- (for a rename, the path after the arrow). Change nothing.`,
+H1="$(git -C ${WT} rev-parse HEAD)"; H2="$(gh pr view ${PR} --json headRefOid --jq .headRefOid)"; H3="$(git -C ${WT} rev-parse '@{upstream}')"; echo "--HEAD-- $H1"; if [ -n "$H1" ] && [ "$H1" = "$H2" ] && [ "$H1" = "$H3" ]; then echo "--SAME-- yes"; else echo "--SAME-- no ($H2 $H3)"; fi; echo "--COMMITTED-- $(git -C ${WT} diff --name-only origin/main...HEAD | wc -l)"; echo "--UNCOMMITTED-- $(git -C ${WT} status --porcelain --untracked-files=all | wc -l)"; F="$(${WT}/scripts/agent-topology.py review-lenses --base origin/main --flags-only)"; echo "--LENSES-EXIT $?--"; echo "--LENSES-- $F"
+Return: head, the hash after --HEAD--; same_head, true when --SAME-- printed yes; committed_count and uncommitted_count, the numbers after --COMMITTED-- and --UNCOMMITTED--; lenses_exit, the number in --LENSES-EXIT; lenses_stdout, the text after --LENSES--, verbatim. Change nothing.`,
   { label: `scope:${CHANGE}`, phase: 'Review lenses', effort: 'low',
     schema: { type: 'object', properties: {
-      lenses_exit: { type: 'integer' }, lenses_stdout: { type: 'string' },
-      head: { type: 'string' }, pr_head: { type: 'string' }, upstream_head: { type: 'string' },
-      committed_files: { type: 'array', items: { type: 'string' } },
-      uncommitted_files: { type: 'array', items: { type: 'string' } } },
-      required: ['lenses_exit', 'lenses_stdout', 'head', 'pr_head', 'upstream_head', 'committed_files', 'uncommitted_files'] } }))
+      head: { type: 'string' }, same_head: { type: 'boolean' },
+      committed_count: { type: 'integer' }, uncommitted_count: { type: 'integer' },
+      lenses_exit: { type: 'integer' }, lenses_stdout: { type: 'string' } },
+      required: ['head', 'same_head', 'committed_count', 'uncommitted_count', 'lenses_exit', 'lenses_stdout'] } }))
 if (gscope.stopped) return { ...out, ...gscope }
 const scope = gscope.result
-if (!scope) return { ...out, stopped: 'scope reading failed; no lens ran' }
+// Every stop from here to the apply commit leaves /simplify's edits uncommitted.
+const LEFTOVERS = `The worktree still holds /simplify's uncommitted edits ($H/${CHANGE}/simplify.patch): a review-only run's prepare stage refuses them, so an implementation round (mode continue) commits or drops them first.`
+if (!scope) return { ...out, stopped: `scope reading failed; no lens ran. ${LEFTOVERS}` }
 if (scope.lenses_exit !== 0) {
-  return { ...out, stopped: `review-lenses exited ${scope.lenses_exit}: ${String(scope.lenses_stdout).slice(0, 400)}. A failed selector is not "no domain lens": merge origin/main into the branch if its helper or skill policy predates the review lenses, then rerun.` }
+  return { ...out, stopped: `review-lenses exited ${scope.lenses_exit}: ${String(scope.lenses_stdout).slice(0, 400)}. A failed selector is not "no domain lens": merge origin/main into the branch if its helper or skill policy predates the review lenses, then rerun. ${LEFTOVERS}` }
 }
 let flags = null
 try { flags = JSON.parse(scope.lenses_stdout) } catch (e) { flags = null }
 const FLAG_KEYS = ['data', 'performance', 'modules_moved']
 if (!flags || FLAG_KEYS.some(k => typeof flags[k] !== 'boolean')) {
-  return { ...out, stopped: `review-lenses flags malformed or missing: ${String(scope.lenses_stdout).slice(0, 400)}` }
+  return { ...out, stopped: `review-lenses flags malformed or missing: ${String(scope.lenses_stdout).slice(0, 400)}. ${LEFTOVERS}` }
 }
-if (!scope.head || scope.head !== scope.pr_head || scope.head !== scope.upstream_head) {
-  return { ...out, stopped: `the worktree HEAD ${scope.head} is not the PR head ${scope.pr_head} and its upstream ${scope.upstream_head}: the code-review lens would not review the committed work; rerun from Prepare` }
+if (scope.same_head !== true || !HEX40.test(scope.head || '')) {
+  return { ...out, stopped: `the worktree HEAD ${scope.head} is not both the PR head and its upstream: the code-review lens would not review the committed work; rerun from prepare. ${LEFTOVERS}` }
 }
-const committedFiles = Array.isArray(scope.committed_files) ? scope.committed_files.filter(Boolean) : []
-const uncommittedFiles = Array.isArray(scope.uncommitted_files) ? scope.uncommitted_files.filter(Boolean) : []
-if (committedFiles.length === 0) return { ...out, stopped: 'the branch has no commits ahead of origin/main; nothing to review' }
+const committedCount = Number.isInteger(scope.committed_count) ? scope.committed_count : -1
+const uncommittedCount = Number.isInteger(scope.uncommitted_count) ? scope.uncommitted_count : -1
+if (committedCount <= 0 || uncommittedCount < 0) return { ...out, stopped: `scope counts unusable (committed ${scope.committed_count}, uncommitted ${scope.uncommitted_count}): the branch needs commits ahead of origin/main. ${LEFTOVERS}` }
 const LENS_HEAD = scope.head
 const lenses = selectLenses(flags)
 out.lenses = lenses
@@ -503,13 +508,13 @@ log(`review lenses: ${lenses.join(', ')}`)
 // and high <worktree> on a branch tracking origin/<branch> at HEAD covers only
 // the uncommitted /simplify edits (probe C4); a scope line per call lets the
 // script check what each fork reviewed.
-const CR_CALLS = uncommittedFiles.length > 0 ? 2 : 1
+const CR_CALLS = uncommittedCount > 0 ? 2 : 1
 function codeReviewPrompt(attempt) {
   return `Findings-only lens "code-review" (attempt ${attempt}) for the change ${spec.change_name}, PR #${PR}, worktree ${WT}, branch ${BRANCH} at ${LENS_HEAD}. Edit nothing, and run no repository script yourself.
 Call 1: invoke the code-review skill with exactly this argument: high ${PR}
-It reviews the pull request's committed work (${committedFiles.length} files against origin/main).
+It reviews the pull request's committed work.
 ${CR_CALLS === 2 ? `Call 2: invoke it again with exactly this argument: high ${WT}
-The branch tracks origin/${BRANCH} at HEAD, so this call reviews only the ${uncommittedFiles.length} uncommitted /simplify files ($H/${CHANGE}/simplify.patch).` : 'There are no uncommitted edits, so there is no second call.'}
+The branch tracks origin/${BRANCH} at HEAD, so this call reviews only the uncommitted /simplify edits ($H/${CHANGE}/simplify.patch).` : 'There are no uncommitted edits, so there is no second call.'}
 Never add --fix and never pass a bare level.
 For each call: the findings come back as text in the Skill result; when the result carries none (only "Skill execution completed"), read the fork's transcript, <session transcript dir>/subagents/agent-<agentId>.jsonl with the agentId of the Skill result, where the findings are the input of its last StructuredOutput call.
 The fork may run repository scripts. Before call 1, note whether $H/IMPL-SLOTS/${CHANGE} exists; if it exists after the calls and did not before, run ${WT}/scripts/impl-slots.sh release ${CHANGE}. Never touch MERGE-LOCK or another change's slot. In the findings file, list under "Fork side effects:" every repository script the fork ran, or "none seen".
@@ -521,6 +526,13 @@ CODE-REVIEW-STATUS: ok
 The scope numbers are the files and changed lines each fork said it reviewed; when it did not say, count them from the base it named (gh pr diff ${PR} for call 1, git -C ${WT} diff <base> for call 2). findings_count is the number of findings of all calls together.
 The last line is CODE-REVIEW-STATUS: ok when there are findings, CODE-REVIEW-STATUS: empty when every call returned no findings over the scope it stated, and CODE-REVIEW-STATUS: failed, with the reason on the line before it, when you could read neither source of a call.
 ${common(`lens-code-review-${attempt}`)}`
+}
+// The base a worktree-path review must name: the branch's own tip (probe C4),
+// never main, whose range is the whole branch or more (probe P4).
+function worktreeBaseOk(base, want) {
+  const b = String(base).replace(/[`'".,;]+$/g, '').replace(/^[`'"]+/, '')
+  return ['HEAD', '@{upstream}', '@{u}', `origin/${want.branch}`].includes(b) ||
+    (/^[0-9a-f]{7,40}$/.test(b) && want.head.startsWith(b))
 }
 // Reads the lens's structured tail. Returns {status: ok | empty | failed, reason}.
 function readCodeReview(text, want) {
@@ -538,6 +550,7 @@ function readCodeReview(text, want) {
   if (Number(prScopes[0][1]) !== want.pr) return { status: 'failed', reason: `the review covered PR #${prScopes[0][1]}, not #${want.pr}` }
   if (Number(prScopes[0][2]) !== want.committed) return { status: 'failed', reason: `the PR review covered ${prScopes[0][2]} files, not the ${want.committed} committed ones` }
   if (wtScopes.length !== (want.calls === 2 ? 1 : 0)) return { status: 'failed', reason: `${wtScopes.length} worktree scope lines for ${want.calls} calls` }
+  if (wtScopes.length && !worktreeBaseOk(wtScopes[0][1], want)) return { status: 'failed', reason: `the worktree review diffed against ${wtScopes[0][1]}, not HEAD or origin/${want.branch}, so it was not the uncommitted edits alone` }
   if (wtScopes.length && Number(wtScopes[0][2]) !== want.uncommitted) return { status: 'failed', reason: `the worktree review (base ${wtScopes[0][1]}) covered ${wtScopes[0][2]} files, not the ${want.uncommitted} uncommitted ones` }
   const counts = lines.map(l => /^findings_count: (\d+)$/.exec(l)).filter(Boolean)
   if (counts.length !== 1) return { status: 'failed', reason: 'no single findings_count line' }
@@ -551,7 +564,7 @@ function readCodeReview(text, want) {
   return scoped ? { status: 'empty', reason: `no findings over ${prScopes[0][2]} PR files${wtScopes.length ? ` and ${wtScopes[0][2]} uncommitted files` : ''}` }
     : { status: 'failed', reason: 'an empty review must quote a non-empty scope for every call' }
 }
-const CR_WANT = { pr: PR, committed: committedFiles.length, uncommitted: uncommittedFiles.length, calls: CR_CALLS }
+const CR_WANT = { pr: PR, committed: committedCount, uncommitted: uncommittedCount, calls: CR_CALLS, branch: BRANCH, head: LENS_HEAD }
 
 const FINDINGS_SCHEMA = {
   type: 'object',
@@ -577,7 +590,7 @@ function domainPrompt(lens) {
       ? 'Run the rust-hex-arch skill as a review of the modules this change adds, moves or splits.'
       : `Run the ${lens} leaf checklist by name (gtk-perf-review assigns it; you cannot delegate), over the paths in the gtk-perf-review scope.`
   return `Findings-only lens "${lens}" for the change ${spec.change_name}, PR #${PR}, worktree ${WT}. ${how}
-The diff is git -C ${WT} diff origin/main...HEAD plus the uncommitted edits (git -C ${WT} diff HEAD). Paths: ${JSON.stringify(flags.paths || [])}. Read files with absolute paths under ${WT}. Edit nothing. Write the findings to $H/${CHANGE}/review-findings-${lens}.md.
+The diff is git -C ${WT} diff origin/main...HEAD plus the uncommitted edits (git -C ${WT} diff HEAD); list the paths with git -C ${WT} diff --name-only origin/main...HEAD and git -C ${WT} status --porcelain --untracked-files=all. Read files with absolute paths under ${WT}. Edit nothing. Write the findings to $H/${CHANGE}/review-findings-${lens}.md.
 Return status "ran" only when the skill loaded and you applied its checklist, with examined listing the files you read and the checklist sections you applied; when the skill did not load or you could not apply it, return status "failed" with the reason in skill_ran. A lens that did not run is never zero findings.
 ${common(`lens-${lens}`)}`
 }
@@ -603,17 +616,17 @@ const lensResults = (glens.result || []).filter(Boolean)
 out.lens_results = lensResults
 const emptyReview = lensResults.find(r => r.lens === 'code-review' && r.status === 'empty')
 if (emptyReview) {
-  if (A.accept_empty_review === true) {
+  if (A.accept_empty_review === LENS_HEAD) {
     log(`code-review empty review accepted by the coordinator: ${emptyReview.reason}`)
     emptyReview.ok = true
   } else {
-    return { ...out, stopped: `code-review returned an empty review (${emptyReview.reason}). An empty review is never passed silently: read $H/${CHANGE}/review-findings-code-review.md, and resume this run with args.accept_empty_review: true only if that scope is right.` }
+    return { ...out, stopped: `code-review returned an empty review of ${LENS_HEAD} (${emptyReview.reason}). An empty review is never passed silently: read $H/${CHANGE}/review-findings-code-review.md, and resume this run with args.accept_empty_review: "${LENS_HEAD}" only if that scope is right. ${LEFTOVERS}` }
   }
 }
 const failedLenses = lenses.filter(lens => !lensResults.some(r => r.lens === lens && r.ok))
 if (failedLenses.length) {
   const reasons = lensResults.filter(r => !r.ok).map(r => `${r.lens}: ${r.reason || (r.result ? r.result.skill_ran : 'agent died')}`).join('; ')
-  return { ...out, stopped: `review lens failed: ${failedLenses.join(', ')} (${reasons}); a failed lens is not zero findings` }
+  return { ...out, stopped: `review lens failed: ${failedLenses.join(', ')} (${reasons}); a failed lens is not zero findings. ${LEFTOVERS}` }
 }
 
 phase('Apply and gates')
@@ -623,8 +636,8 @@ const APPLY_SCHEMA = {
     verdict: { type: 'string', enum: ['ready', 'blocked', 'fast-lane-violation'] },
     applied: { type: 'string' }, rejected: { type: 'string', description: 'each rejected finding with its reason' },
     gates: { type: 'string', description: 'each gate, its gate-trees.log line or reuse' },
-    head: { type: 'string', description: 'HEAD after the push' },
-    tree: { type: 'string', description: 'HEAD^{tree} the final gates ran on' },
+    head: { type: 'string', description: 'the full 40-hex HEAD after the push' },
+    tree: { type: 'string', description: 'the full 40-hex HEAD^{tree} the final gates ran on' },
     kani_dispatch: { type: 'string', description: 'shard-budget runs dispatched again, or empty' },
     summary: { type: 'string' },
   },
@@ -635,15 +648,15 @@ const gapply = await guarded('apply', () => agent(`Apply stage for the change ${
 The lenses reviewed HEAD ${LENS_HEAD} with /simplify's uncommitted edits ($H/${CHANGE}/simplify.patch), under the lens flags data=${flags.data}, performance=${flags.performance}, modules_moved=${flags.modules_moved}. First run ${WT}/scripts/agent-topology.py review-lenses --base origin/main yourself and read its exit status: return blocked when it fails or any of those three flags differs.
 The lens findings (also in $H/${CHANGE}/review-findings-*.md):
 ${lensDigest}
-Dedupe them, check each against the code, apply the confirmed ones in the worktree (failing-first where behaviour changes), and record each rejected one with its reason in $H/${CHANGE}/review-findings-applied.md, marking the ones a lens raised as correctness bugs. When files under the UI prefixes changed, run the three smokes once, right before the commit. Commit /simplify's edits and yours together, locally, before any long gate, so a stopped gate leaves nothing uncommitted. Then run every final gate one time on that tree, recording each with scripts/gate-trees.sh record (parallel-agent-work.md "Merging"); push at the end, and update the PR body.
+Dedupe them, check each against the code, apply the confirmed ones in the worktree (failing-first where behaviour changes), and record each rejected one with its reason in $H/${CHANGE}/review-findings-applied.md, marking the ones a lens raised as correctness bugs. When files under the UI prefixes changed, run the three smokes once, right before the commit. Commit /simplify's edits and yours together, locally, before any long gate, so a stopped gate leaves nothing uncommitted. Then run every final gate one time on that tree, recording each with scripts/gate-trees.sh record --change ${CHANGE} (parallel-agent-work.md "Merging"; make check as --gate 'make check'); push at the end, and update the PR body.
 When /simplify's edits or yours touch the harness inputs of a Kani shard (verification-runs.md "Kani"), run that shard as the rule says, and dispatch its budget run again once the push is done when implementation dispatched one (it dispatched: ${impl.kani_dispatch || 'none'}); report the run ids in kani_dispatch.
 ${FAST ? `Fast lane: you are also the independent reviewer of the spec artifacts (parallel-agent-work.md "Fast lane"). Re-run scripts/check-fast-lane.py --base origin/main and verify every "Gate effect: none" declaration against the diff, line by line. Return fast-lane-violation for a not-eligible path or a false or missing declaration.` : ''}
-Return head (HEAD after the push) and tree (the HEAD^{tree} every final gate ran on), and blocked when a must-fix stays open.
+Return head (the full hash of HEAD after the push) and tree (the full hash of the HEAD^{tree} every final gate ran on), and blocked when a must-fix stays open.
 ${common('apply')}`, { label: `apply:${CHANGE}`, phase: 'Apply and gates', ...REVIEW_AGENT, schema: APPLY_SCHEMA }))
 if (gapply.stopped) return { ...out, ...gapply }
 const applied = gapply.result
 out.apply = applied
-if (!applied) return { ...out, stopped: 'apply agent failed' }
+if (!applied) return { ...out, stopped: `apply agent failed: check whether it committed /simplify's edits before rerunning. ${LEFTOVERS}` }
 if (applied.verdict === 'fast-lane-violation') {
   phase('Spec review')
   const gr = await guarded('spec-review-after-violation', () => agent(`The change ${spec.change_name} (worktree ${WT}, PR #${PR}) left the fast lane: ${applied.summary}. Review its spec artifacts independently, as a full spec review (parallel-agent-work.md "Fast lane"), against the code and the rules; fix confirmed issues in one commit and push. Return unsound if it is.
@@ -654,26 +667,34 @@ ${common('spec-review-after-violation')}`, { label: `spec-review:${CHANGE}`, pha
 }
 if (applied.verdict !== 'ready') return { ...out, stopped: `apply stage: ${applied.verdict} (${applied.summary})` }
 
-// What the apply stage says it produced, read back independently: the merge
-// stage reviews exactly this range and checks this tree.
+// What the apply stage says it produced, read back independently and compared
+// in the shell, not across two agents' copies: the merge stage reviews exactly
+// this range and checks this tree.
+const HEXISH = /^[0-9a-f]{7,40}$/
+if (!HEXISH.test(applied.head || '') || !HEXISH.test(applied.tree || '')) {
+  return { ...out, stopped: `the apply stage returned no commit and tree hashes (head ${JSON.stringify(applied.head)}, tree ${JSON.stringify(applied.tree)}); check the worktree and its gate-trees.log by hand` }
+}
 const gverify = await guarded('apply-verify', () => agent(`Read-only reading. Run exactly these commands, in one Bash call, and nothing else:
-echo "--STATUS--"; git -C ${WT} status --porcelain; echo "--HEAD--"; git -C ${WT} rev-parse HEAD; echo "--TREE--"; git -C ${WT} rev-parse 'HEAD^{tree}'; echo "--PR-HEAD--"; gh pr view ${PR} --json headRefOid --jq .headRefOid; echo "--ANCESTOR--"; git -C ${WT} merge-base --is-ancestor ${LENS_HEAD} HEAD && echo yes || echo no
-Return status (the lines after --STATUS--, empty string if none), head, tree, pr_head, and lens_head_is_ancestor (true when --ANCESTOR-- printed yes). Change nothing.`,
+W=${WT}; H="$(git -C "$W" rev-parse HEAD)"; T="$(git -C "$W" rev-parse 'HEAD^{tree}')"; echo "--HEAD-- $H"; echo "--TREE-- $T"; echo "--CLEAN-- $([ -z "$(git -C "$W" status --porcelain)" ] && echo yes || echo no)"; echo "--HEAD-MATCH-- $([ "$(git -C "$W" rev-parse --verify --quiet '${applied.head}^{commit}')" = "$H" ] && echo yes || echo no)"; echo "--TREE-MATCH-- $([ "$(git -C "$W" rev-parse --verify --quiet '${applied.tree}^{tree}')" = "$T" ] && echo yes || echo no)"; echo "--PUSHED-- $([ "$(gh pr view ${PR} --json headRefOid --jq .headRefOid)" = "$H" ] && echo yes || echo no)"; echo "--ANCESTOR-- $(git -C "$W" merge-base --is-ancestor ${LENS_HEAD} HEAD && echo yes || echo no)"; "$W/scripts/gate-trees.sh" lookup "$W" --change ${CHANGE} --gate 'make check'; echo "--GATED-EXIT $?--"
+Return head and tree, the hashes printed; clean, head_match, tree_match, pushed and lens_head_is_ancestor, true when the line printed yes; gated_exit, the number in --GATED-EXIT. Change nothing.`,
   { label: `verify:${CHANGE}`, phase: 'Apply and gates', effort: 'low',
     schema: { type: 'object', properties: {
-      status: { type: 'string' }, head: { type: 'string' }, tree: { type: 'string' }, pr_head: { type: 'string' },
-      lens_head_is_ancestor: { type: 'boolean' } },
-      required: ['status', 'head', 'tree', 'pr_head', 'lens_head_is_ancestor'] } }))
+      head: { type: 'string' }, tree: { type: 'string' }, clean: { type: 'boolean' }, head_match: { type: 'boolean' },
+      tree_match: { type: 'boolean' }, pushed: { type: 'boolean' }, lens_head_is_ancestor: { type: 'boolean' },
+      gated_exit: { type: 'integer' } },
+      required: ['head', 'tree', 'clean', 'head_match', 'tree_match', 'pushed', 'lens_head_is_ancestor', 'gated_exit'] } }))
 if (gverify.stopped) return { ...out, ...gverify }
 const verified = gverify.result
 out.apply_verify = verified
 if (!verified) return { ...out, stopped: 'apply verification reading failed' }
 const verifyProblems = []
-if (String(verified.status).trim()) verifyProblems.push('the worktree is not clean')
-if (verified.head !== applied.head) verifyProblems.push(`HEAD ${verified.head} is not the apply stage's ${applied.head}`)
-if (verified.tree !== applied.tree) verifyProblems.push(`HEAD^{tree} ${verified.tree} is not the gated tree ${applied.tree}`)
-if (verified.pr_head !== verified.head) verifyProblems.push(`the PR head ${verified.pr_head} is not HEAD (not pushed)`)
+if (verified.clean !== true) verifyProblems.push('the worktree is not clean')
+if (verified.head_match !== true) verifyProblems.push(`HEAD is not the apply stage's ${applied.head}`)
+if (verified.tree_match !== true) verifyProblems.push(`HEAD^{tree} is not the gated tree ${applied.tree}`)
+if (verified.pushed !== true) verifyProblems.push('the PR head is not HEAD (not pushed)')
 if (verified.lens_head_is_ancestor !== true) verifyProblems.push(`the reviewed HEAD ${LENS_HEAD} is not an ancestor of HEAD`)
+if (verified.gated_exit !== 0) verifyProblems.push(`gate-trees.sh has no clean make check pass for this tree (lookup exit ${verified.gated_exit})`)
+if (!HEX40.test(verified.head || '') || !HEX40.test(verified.tree || '')) verifyProblems.push('the reading has no full HEAD and tree hashes')
 if (verifyProblems.length) return { ...out, stopped: `apply stage output does not match the worktree: ${verifyProblems.join('; ')}` }
 const APPLY_RANGE = `${LENS_HEAD}..${verified.head}`
 

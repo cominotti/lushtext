@@ -491,6 +491,17 @@ Each must-fix has a case written first and seen failing against `d2f1b58b`: the 
 | Note 23:20: a fork runs repository scripts | Fixed: the lens agent runs none itself and releases this change's slot if the review created it; `impl-slots.sh acquire` refuses a name without a change worktree; the guard compares this change's slot and `MERGE-LOCK` ownership. A fork's `gate-trees.sh record` writes nothing while `/simplify`'s edits keep the worktree dirty, and S12 voids reuse after any recorded fail. |
 | Fable note on "Merging" step 2 (narrower than the floor's wording) | Not changed here: step 2 reruns `make check` and the tests covering both sides, which predates this change and is the floor's accepted form ("every gate on every distinct tree" is met by the record-or-rerun rule of D1). Listed for the maintainer. |
 
+A review of the first fix commit (`24dee3a0`) hardened four of these further, in the same round:
+
+- **M1:** the lens prompt no longer carries the counts the lens must report (it could echo them), and the worktree call's quoted base must be `HEAD`, `@{upstream}`, `origin/<branch>` or a prefix of the lens `HEAD`: a matching count over `main` is still the P4 over-scope.
+- **M2, S6 again:** the scope reading no longer has an agent copy the selector's JSON and two file lists. The shell prints the counts (`wc -l`), whether `HEAD`, the PR head and the upstream are equal, and the one-line output of the new `review-lenses --flags-only` (test in `scripts/test-agent-topology.py`).
+- **S5:** the apply read-back compares in the shell (`rev-parse --verify '<hash>^{commit}'`, `'<hash>^{tree}'`), so an abbreviated hash is not a false stop, refuses a value that is not a hash before it reaches a command, and requires a `gate-trees.sh lookup` pass of `make check` for the tree, so "gated tree" is a record, not a claim.
+- **S12:** an interrupted run (exit 75, 78, 124, or a signal) records nothing; it is not a flake.
+- **S6:** a slot or lock given up during a stage is no difference; only one taken and still held is.
+- **Rule (b):** `args.accept_empty_review` is the reviewed `HEAD` the stop prints, so it accepts that one review and not a later one.
+- **Recovery:** every stop between `/simplify` and the apply commit says that the worktree holds `/simplify`'s edits, which a `continue` round commits or drops before a new `review-only` run (prepare refuses them).
+- **`args.worktree_override`:** `impl-slots.sh` keys slots on the worktree's directory name, so a stage under the override acquires under that name ("Implementation slots and ordering").
+
 Floor rows for this round's rule edits:
 
 | Rule edit | Existing rule it touches | Why the floor holds |

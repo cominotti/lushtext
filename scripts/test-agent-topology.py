@@ -352,6 +352,14 @@ class ReviewLensTests(LensFixture):
         self.assertNotEqual(run.returncode, 0, run.stdout)
         self.assertIn("data_safety", run.stderr)
 
+    def test_flags_only_prints_one_line_with_the_three_flags(self) -> None:
+        # The workflow's scope reading copies this line; it must be short.
+        line = TOPOLOGY.flags_line(
+            self.lenses(("M", "crates/lushtext-core/src/services/draft_service.rs"))
+        )
+        self.assertNotIn("\n", line)
+        self.assertEqual(json.loads(line), {"data": True, "modules_moved": False, "performance": True})
+
 
 
 class LensTriggerDriftTests(LensFixture):
