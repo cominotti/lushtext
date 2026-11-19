@@ -43,7 +43,7 @@
 
 ## 1. Failing-first tests (no behaviour change yet)
 
-- [ ] 1.1 Fixtures in `crates/gtk-lush/proof-harness/src/session/observe.rs`
+- [x] 1.1 Fixtures in `crates/gtk-lush/proof-harness/src/session/observe.rs`
   tests, cut down from real saved dumps:
   - (a) a WirePlumber `policy` client whose `session.services` lists
     `policy.linking.standard` last;
@@ -57,7 +57,7 @@
   that the current predicate (`contains("\"metadata.name\": \"default\"")`)
   is false on (a) and (b), which documents the defect. Declare the function
   as a stub returning `false`, so the tests compile and fail.
-- [ ] 1.2 A unit test of the wait helper (design D3) with a fake dump source
+- [x] 1.2 A unit test of the wait helper (design D3) with a fake dump source
   and a deadline of a few milliseconds:
   - it returns `Ok` when the source becomes ready on its third call;
   - it returns `Err` carrying the last dump when the source never becomes
@@ -65,16 +65,16 @@
   - it stops polling at the deadline.
 
   It fails against a stub.
-- [ ] 1.3 Run the new tests (`heavy.sh -- cargo test -p
+- [x] 1.3 Run the new tests (`heavy.sh -- cargo test -p
   gtk-lush-proof-harness --lib session::`) and log the failures.
 
 ## 2. The readiness wait
 
-- [ ] 2.1 Implement `session::observe::wireplumber_policy_ready` (D2): scan
+- [x] 2.1 Implement `session::observe::wireplumber_policy_ready` (D2): scan
   by key, parse the bracketed list, trim each member, compare whole members.
   Write rustdoc that names WirePlumber's `session-services.lua` ordering as
   the reason and says that `pw-dump` omits metadata objects without entries.
-- [ ] 2.2 Implement the wait helper. Replace the ignored wait in
+- [x] 2.2 Implement the wait helper. Replace the ignored wait in
   `run_inner_body` (D3):
   - on success, start the command;
   - on a miss, write `pw-dump-not-ready.json` to the log directory, print
@@ -82,21 +82,21 @@
 
   Keep `READY_TIMEOUT` at 10 s (D5). Rewrite the comment so it states the
   real signal and why the wait exists.
-- [ ] 2.3 Tests 1.1-1.2 pass. Run `heavy.sh -- cargo test -p
+- [x] 2.3 Tests 1.1-1.2 pass. Run `heavy.sh -- cargo test -p
   gtk-lush-proof-harness` (all of it) and
   `heavy.sh -- cargo clippy -p gtk-lush-proof-harness --all-targets --all-features -- -D warnings`.
-- [ ] 2.4 Real sessions, by hand. Time 3 alternating quiet/off pairs of
+- [x] 2.4 Real sessions, by hand. Time 3 alternating quiet/off pairs of
   `scripts/headless-session session --profile screencast [--media off] -- true`
   (baseline §1: 11.0-11.4 s vs 0.8-1.1 s). Record the times and the load.
   Expected: quiet within about 1 s of off.
-- [ ] 2.5 `--expect-dirty` (D6): run it by hand three times, each in a
+- [x] 2.5 `--expect-dirty` (D6): run it by hand three times, each in a
   throwaway private runtime. Each run must report all four classes
   (`rtkit`, `bluez`, `hardware-device`, `module-rt`) and exit 0 with the
   mode's "the bare configuration was caught" line. If any run misses a
   class, apply D6's fallback (in `--expect-dirty` only, keep the bare
   daemons up for the rest of `READY_TIMEOUT` after readiness), add it to
   the CHANGELOG entry (5.1), and repeat the three runs. Record the results.
-- [ ] 2.6 First-try link proof (D8): rerun the spec stage's untracked
+- [x] 2.6 First-try link proof (D8): rerun the spec stage's untracked
   `capture-probe.py` 10 times on the final helper, without the experiment
   patch, as `gtk-lush-session run --profile screencast --monitor 640x480
   --log-dir <dir> -- python3 capture-probe.py` (`evidence/baseline.md` §4).
@@ -107,7 +107,7 @@
 
 ## 3. Seeded real-session failure (D7.1, uncommitted)
 
-- [ ] 3.1 Temporarily add
+- [x] 3.1 Temporarily add
   `wireplumber.profiles = { policy = { policy.standard = disabled } }` to
   `crates/gtk-lush/proof-harness/src/session/wireplumber-quiet.conf` and
   rebuild the helper. Then confirm that
@@ -128,7 +128,7 @@
   If WirePlumber refuses the override, use
   `support.session-services = disabled` instead and record which seed was
   used.
-- [ ] 3.2 With the seed still in place, run one case of each media lane
+- [x] 3.2 With the seed still in place, run one case of each media lane
   through its runner, with the flags its make recipe passes plus a case
   filter, and **always** with an artifact directory of its own under
   `.claude/handoffs/fix-headless-session-media-wait/seeded/` (the make
@@ -149,12 +149,12 @@
   Each through `heavy.sh`, under the recipe's `scripts/with-temp-scope.sh`
   wrapper. Each must fail: no `SKIP:`, a nonzero exit, and the D3 line in
   the case's session log (for visual-geometry, no `session-retry.json`).
-- [ ] 3.3 Revert the seed (`git diff` empty for the fragment) and rebuild.
+- [x] 3.3 Revert the seed (`git diff` empty for the fragment) and rebuild.
   Log 3.1-3.2 in `failing-first.log`.
 
 ## 4. The WirePlumber miss is never a skip (D4)
 
-- [ ] 4.1 Grep the D3 line against the host-support skip patterns of every
+- [x] 4.1 Grep the D3 line against the host-support skip patterns of every
   media lane's runner and capture script. At spec stage that meant
   `scripts/run-visual-smoke.sh` and `scripts/run-command-palette-notes-smoke.sh`
   (patterns); `crates/cargo-gtk-proof/src/live.rs`, the runner of
@@ -164,10 +164,11 @@
   `scripts/visual-geometry-smoke.py` (the Python oracle) and
   `.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py`,
   which have pre-session checks only and pass the session's status on. It
-  must match none, in each of the D3 line's three `<where>` forms.
-- [ ] 4.2 `make check-session-hygiene` and `make check-agent-docs` pass
+  must match none, in each of the D3 line's four `<where>` forms (the
+  fourth, a failed save, was added at implementation: design D3).
+- [x] 4.2 `make check-session-hygiene` and `make check-agent-docs` pass
   (each through `heavy.sh`).
-- [ ] 4.3 Confirm the `NEW CHANGE PROPOSED: media-skip-classification` line
+- [x] 4.3 Confirm the `NEW CHANGE PROPOSED: media-skip-classification` line
   (written at spec stage) is still in `.claude/handoffs/PARALLEL-LEDGER.md`.
   It covers the deferred `PipeWire did not become ready` skip class and the
   two uncalled `wait_for_pipewire` helpers. Do not widen this change with
@@ -175,20 +176,20 @@
 
 ## 5. Documentation (`.agents/rules/documentation.md`)
 
-- [ ] 5.1 `crates/gtk-lush/proof-harness/CHANGELOG.md`, Unreleased:
+- [x] 5.1 `crates/gtk-lush/proof-harness/CHANGELOG.md`, Unreleased:
   - quiet-media readiness now waits for `session.services ∋
     policy.linking.standard`;
   - the old predicate could never hold, which cost 10 s per media session
     since the helper's first lanes;
   - a miss fails the session with exit 101 and `pw-dump-not-ready.json`;
   - the new `observe::wireplumber_policy_ready`.
-- [ ] 5.2 `crates/gtk-lush/proof-harness/README.md`, the quiet-media
+- [x] 5.2 `crates/gtk-lush/proof-harness/README.md`, the quiet-media
   paragraph: the readiness signal, and the failure on a miss.
-- [ ] 5.3 `.agents/rules/build.md`, "PipeWire and WirePlumber updates": on a
+- [x] 5.3 `.agents/rules/build.md`, "PipeWire and WirePlumber updates": on a
   WirePlumber update, also re-check that `session-services.lua` still runs
   last and still lists `policy.linking.standard`. A changed name surfaces as
   the D3 failure in the first screencast session.
-- [ ] 5.4 `docs/next/gtk-lush.md`, the proof-harness paragraph: one sentence
+- [x] 5.4 `docs/next/gtk-lush.md`, the proof-harness paragraph: one sentence
   on the readiness signal. Review `crates/gtk-lush/GOVERNANCE.md`: no
   constitution exception, so nothing to record. Run
   `make gtk-lush-api-advisory` and confirm that the only public-API
@@ -229,7 +230,7 @@
 
 - [ ] 7.1 `make fmt`, `make check` (through `heavy.sh`) and the default-feature
   `cargo check -p lushtext --bins --locked`.
-- [ ] 7.2 The rustdoc gate (`testing.md`), because `observe.rs` gains public
+- [x] 7.2 The rustdoc gate (`testing.md`), because `observe.rs` gains public
   rustdoc.
 - [ ] 7.3 `openspec validate fix-headless-session-media-wait --strict`.
 - [ ] 7.4 Push per task group. The merge goes through the MERGE-LOCK

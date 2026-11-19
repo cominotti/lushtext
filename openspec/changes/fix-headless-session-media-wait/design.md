@@ -114,7 +114,11 @@ helper:
   when none did; or, without `--log-dir`,
   `rerun with --log-dir to keep the last pw-dump`. Without `--log-dir` the
   log directory is the helper's own and `run_inner` removes it at teardown,
-  so the dump is not kept there. Every lane passes `--log-dir`;
+  so the dump is not kept there. Every lane passes `--log-dir`. A fourth
+  form, `the last pw-dump could not be saved to <path>`, covers a failed
+  write to the caller's log directory (added at implementation, so the
+  line never claims a dump that is not there; its wording avoids the visual
+  runner's `not writable` skip phrase);
 - returns `TEST_FAILURE_EXIT_CODE` (101) without starting the command.
 
 `run_inner` already tears down the media daemons, the monitors and the

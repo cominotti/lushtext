@@ -18,7 +18,7 @@ With media on, the helper SHALL start the session's command only once WirePlumbe
 - **THEN** readiness is decided by the same signal, and the mode reaches the runtime guard's verdict with all four classes (`rtkit`, `bluez`, `hardware-device`, `module-rt`) reported
 
 ### Requirement: A media readiness miss fails the session
-If quiet media are not ready within `READY_TIMEOUT`, the helper SHALL NOT start the command. It SHALL save the last successful dump, if any, to the log directory as `pw-dump-not-ready.json`, print one bounded line naming WirePlumber, `session.services` and `policy.linking.standard` that says where the dump was kept, that no `pw-dump` succeeded, or that `--log-dir` keeps it, and exit with `TEST_FAILURE_EXIT_CODE`.
+If quiet media are not ready within `READY_TIMEOUT`, the helper SHALL NOT start the command. It SHALL save the last successful dump, if any, to the log directory as `pw-dump-not-ready.json`, print one bounded line naming WirePlumber, `session.services` and `policy.linking.standard` that says where the dump was kept, that it could not be saved there, that no `pw-dump` succeeded, or that `--log-dir` keeps it, and exit with `TEST_FAILURE_EXIT_CODE`.
 
 #### Scenario: WirePlumber never loads its linking policy
 - **WHEN** WirePlumber's `policy` profile is configured without `policy.standard`, or `session.services` is never set, in a session given `--log-dir`

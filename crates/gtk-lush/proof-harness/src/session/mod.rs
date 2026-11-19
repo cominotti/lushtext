@@ -113,7 +113,13 @@ const DBUS_SOCKET_PATH_MAX: usize = 99;
 /// make the session's socket paths too long (a nested session inside a test
 /// child whose `TMPDIR` is several levels deep).
 const SHORT_RUNTIME_BASE: &str = "/tmp";
+/// Deadline of each readiness wait: the system bus socket, PipeWire, and
+/// WirePlumber's linking policy. A healthy session is ready far sooner, so
+/// reaching it means the service is broken, and the session fails.
 const READY_TIMEOUT: Duration = Duration::from_secs(10);
+/// Name of the last `pw-dump` a WirePlumber readiness miss saves to the
+/// caller's log directory.
+const NOT_READY_DUMP_FILE: &str = "pw-dump-not-ready.json";
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const STOP_TIMEOUT: Duration = Duration::from_secs(3);
 /// Quiet time after the command exits, so in-flight bus messages are recorded.
@@ -1209,11 +1215,28 @@ fn run_inner_body(
                 return ExitCode::from(UNSUPPORTED_HOST_EXIT_CODE);
             }
         }
-        // WirePlumber publishes the session-manager metadata once its policy
-        // runs; wait for it so a capture links on its first try.
-        let _ = wait_until(|| {
-            pw_dump().is_some_and(|dump| dump.contains("\"metadata.name\": \"default\""))
-        });
+        // A capture's `pipewiresrc path=<node>` is linked by WirePlumber's
+        // linking hooks, so the command starts only once they have loaded:
+        // `session.services` lists `policy.linking.standard`, which
+        // WirePlumber sets after every other component of its profile. A
+        // miss means WirePlumber never loaded its policy; the session fails
+        // before the command rather than letting a capture fail later.
+        if let Err(miss) = wait_for_wireplumber_policy(READY_TIMEOUT, POLL_INTERVAL, pw_dump) {
+            let path = log_dir.join(NOT_READY_DUMP_FILE);
+            let dump = match (&miss.last_dump, &plan.log_dir) {
+                (None, _) => MissDump::None,
+                (Some(_), None) => MissDump::NoLogDir,
+                (Some(text), Some(_)) => {
+                    if std::fs::write(&path, text).is_ok() {
+                        MissDump::Saved(&path)
+                    } else {
+                        MissDump::WriteFailed(&path)
+                    }
+                }
+            };
+            eprintln!("{}", wireplumber_miss_line(READY_TIMEOUT, dump));
+            return ExitCode::from(TEST_FAILURE_EXIT_CODE);
+        }
     }
 
     // 3. The command.
@@ -1422,6 +1445,68 @@ fn wait_until(mut ready: impl FnMut() -> bool) -> bool {
         std::thread::sleep(POLL_INTERVAL);
     }
     ready()
+}
+
+/// WirePlumber did not list its linking policy before the deadline.
+#[derive(Debug, PartialEq, Eq)]
+struct PolicyNotReady {
+    /// The last dump that succeeded, if any.
+    last_dump: Option<String>,
+}
+
+/// Polls `dump` every `poll` until a dump shows WirePlumber's linking policy
+/// loaded ([`observe::wireplumber_policy_ready`]) or `deadline` has passed;
+/// a passed deadline still reads once. A miss carries the last dump that
+/// succeeded.
+fn wait_for_wireplumber_policy(
+    deadline: Duration,
+    poll: Duration,
+    mut dump: impl FnMut() -> Option<String>,
+) -> Result<(), PolicyNotReady> {
+    let deadline = Instant::now() + deadline;
+    let mut last_dump = None;
+    loop {
+        if let Some(text) = dump() {
+            if observe::wireplumber_policy_ready(&text) {
+                return Ok(());
+            }
+            last_dump = Some(text);
+        }
+        if Instant::now() >= deadline {
+            return Err(PolicyNotReady { last_dump });
+        }
+        std::thread::sleep(poll);
+    }
+}
+
+/// Where a readiness miss left its last dump, for the miss line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MissDump<'a> {
+    /// Saved to the caller's log directory.
+    Saved(&'a Path),
+    /// No `pw-dump` succeeded.
+    None,
+    /// The log directory is the helper's own and is removed at teardown.
+    NoLogDir,
+    /// Writing it to the caller's log directory failed.
+    WriteFailed(&'a Path),
+}
+
+/// The one bounded line a readiness miss prints. Its wording must match no
+/// smoke runner's host-support skip phrase: a miss is a failure, never a skip.
+fn wireplumber_miss_line(timeout: Duration, dump: MissDump<'_>) -> String {
+    let location = match dump {
+        MissDump::Saved(path) => format!("last pw-dump in {}", path.display()),
+        MissDump::None => "no pw-dump succeeded".to_string(),
+        MissDump::NoLogDir => "rerun with --log-dir to keep the last pw-dump".to_string(),
+        MissDump::WriteFailed(path) => {
+            format!("the last pw-dump could not be saved to {}", path.display())
+        }
+    };
+    format!(
+        "gtk-lush-session: WirePlumber did not load its linking policy within {} s (session.services never listed policy.linking.standard; {location})",
+        timeout.as_secs()
+    )
 }
 
 fn pipewire_ready() -> bool {
@@ -2124,6 +2209,85 @@ mod tests {
             Some(tool)
         );
         assert!(find_in_path(MUTTER_COMMAND, tempdir.path().as_os_str()).is_none());
+    }
+
+    #[test]
+    fn the_wireplumber_wait_starts_the_command_at_the_first_ready_dump() {
+        let ready = "\"session.services\": \"[policy.default-nodes, policy.linking.standard]\"";
+        let mut calls = 0;
+        let outcome =
+            wait_for_wireplumber_policy(Duration::from_secs(5), Duration::from_millis(1), || {
+                calls += 1;
+                match calls {
+                    1 => None,
+                    2 => Some("[]".to_string()),
+                    _ => Some(ready.to_string()),
+                }
+            });
+        assert_eq!(outcome, Ok(()));
+        assert_eq!(calls, 3, "ready on the third call, and no call after it");
+    }
+
+    #[test]
+    fn the_wireplumber_wait_misses_at_its_deadline_with_the_last_dump() {
+        let deadline = Duration::from_millis(20);
+        let started = Instant::now();
+        let mut calls = 0u32;
+        let outcome = wait_for_wireplumber_policy(deadline, Duration::from_millis(1), || {
+            calls += 1;
+            // A failed dump after a successful one keeps the successful one.
+            (!calls.is_multiple_of(3)).then(|| format!("dump {calls}"))
+        });
+        let elapsed = started.elapsed();
+        let Err(miss) = outcome else {
+            panic!("a source that is never ready misses");
+        };
+        let last = miss.last_dump.expect("a dump succeeded");
+        assert!(last.starts_with("dump "), "{last}");
+        let index: u32 = last["dump ".len()..].parse().expect("dump index");
+        assert!(index + 1 >= calls && index <= calls, "{index} of {calls}");
+        assert!(
+            elapsed >= deadline,
+            "it polled until the deadline: {elapsed:?}"
+        );
+        assert!(
+            elapsed < deadline + Duration::from_secs(5),
+            "it stopped at the deadline: {elapsed:?}"
+        );
+        let mut after = 0;
+        let never = wait_for_wireplumber_policy(Duration::ZERO, Duration::from_millis(1), || {
+            after += 1;
+            None
+        });
+        assert_eq!(never, Err(PolicyNotReady { last_dump: None }));
+        assert_eq!(after, 1, "a passed deadline still reads once");
+    }
+
+    #[test]
+    fn a_wireplumber_miss_prints_one_line_saying_where_the_dump_is() {
+        let path = Path::new("/run/logs/pw-dump-not-ready.json");
+        let prefix = "gtk-lush-session: WirePlumber did not load its linking policy within 10 s (session.services never listed policy.linking.standard; ";
+        let timeout = Duration::from_secs(10);
+        for (dump, location) in [
+            (
+                MissDump::Saved(path),
+                "last pw-dump in /run/logs/pw-dump-not-ready.json",
+            ),
+            (MissDump::None, "no pw-dump succeeded"),
+            (
+                MissDump::NoLogDir,
+                "rerun with --log-dir to keep the last pw-dump",
+            ),
+            (
+                MissDump::WriteFailed(path),
+                "the last pw-dump could not be saved to /run/logs/pw-dump-not-ready.json",
+            ),
+        ] {
+            assert_eq!(
+                wireplumber_miss_line(timeout, dump),
+                format!("{prefix}{location})")
+            );
+        }
     }
 
     #[test]
