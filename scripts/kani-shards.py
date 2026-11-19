@@ -251,6 +251,16 @@ SETTLE_EVIDENCE_MEASURED_IN = (
 # is raised (`STREAM_REPLACE_RAISED_IN`), none is lowered. Per-run table:
 # docs/next/formal-verification.md, "Replace All protocol and stream".
 REPLACE_MEASURED_IN = "runs 44330495557, 44338924357 (max of the two)"
+# verify-shell-conformance-against-proven-cores moved the journal and write
+# environment models out of the harness files (design D1). Local run on the
+# moved models, the four shards at once beside other agents' smokes
+# (2026-11-18): journal-and-write 14/14 (peak 4.4 GiB), liveness 2/2 (5.4 GiB),
+# second-writer 7/7 (4.0 GiB), multi-window 1/1 (4.2 GiB); the CI figures
+# come from the change's two kani.yml dispatches.
+SHELL_CONFORMANCE_PENDING = (
+    "; PENDING DISPATCH (owed by verify-shell-conformance-against-proven-cores): "
+    "local run 2026-11-18, every harness's verdict unchanged"
+)
 STREAM_REPLACE_RAISED_IN = "; raised by runs 44330495557, 44338924357 (max of the two)"
 REPLACE_PROTOCOL_CI_MINUTES = 2.8
 REPLACE_PROTOCOL_CI_PEAK_GIB = 1.7
@@ -367,7 +377,7 @@ SHARDS: dict[str, Shard] = {
         gate="scheduled",
         ci_minutes=12.0,
         ci_peak_gib=2.6,
-        measured_in=MULTI_WINDOW_MEASURED_IN + PROOF_STRENGTH_RAISED_IN,
+        measured_in=MULTI_WINDOW_MEASURED_IN + PROOF_STRENGTH_RAISED_IN + SHELL_CONFORMANCE_PENDING,
     ),
     # verify-multi-window-draft-journal added the journal lane to the model,
     # which made the two L1 harnesses too slow to share the journal shard.
@@ -377,7 +387,7 @@ SHARDS: dict[str, Shard] = {
         gate="scheduled",
         ci_minutes=15.2,
         ci_peak_gib=4.8,
-        measured_in=MULTI_WINDOW_MEASURED_IN + PROOF_STRENGTH_RAISED_IN,
+        measured_in=MULTI_WINDOW_MEASURED_IN + PROOF_STRENGTH_RAISED_IN + SHELL_CONFORMANCE_PENDING,
     ),
     # probe-long-line-toolkit-costs added the responsiveness-budget arithmetic
     # here: seconds of CBMC, too small for a shard of its own.
@@ -391,7 +401,7 @@ SHARDS: dict[str, Shard] = {
         gate="scheduled",
         ci_minutes=7.4,
         ci_peak_gib=2.7,
-        measured_in=MULTI_WINDOW_MEASURED_IN + RESPONSIVENESS_BUDGET_REMEASURED_IN + CLOSE_PROTECTED_RAISED_IN + CLOSE_PROTECTED_FINAL_RAISED_IN,
+        measured_in=MULTI_WINDOW_MEASURED_IN + RESPONSIVENESS_BUDGET_REMEASURED_IN + CLOSE_PROTECTED_RAISED_IN + CLOSE_PROTECTED_FINAL_RAISED_IN + SHELL_CONFORMANCE_PENDING,
     ),
     # verify-multi-window-draft-journal: two windows of one process over the
     # journal machine, too large to share a job with the single-window harness.
@@ -401,7 +411,7 @@ SHARDS: dict[str, Shard] = {
         gate="scheduled",
         ci_minutes=8.9,
         ci_peak_gib=2.7,
-        measured_in=MULTI_WINDOW_MEASURED_IN + PROOF_STRENGTH_RAISED_IN + CLOSE_PROTECTED_FINAL_RAISED_IN,
+        measured_in=MULTI_WINDOW_MEASURED_IN + PROOF_STRENGTH_RAISED_IN + CLOSE_PROTECTED_FINAL_RAISED_IN + SHELL_CONFORMANCE_PENDING,
     ),
     "core-memory-policy": Shard(
         "lushtext-core",

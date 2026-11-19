@@ -598,15 +598,15 @@ point:
 | Edit | none (a buffer change; mints a content id) |
 | Register | `register_draft_entries`, keeping the returned `RegisteredDraft` |
 | WriteBody | `write_draft(&registered, text_of(content))` |
-| Commit | `update_manifest` with the pass's commit |
+| Commit | `update_manifest`, whose closure upserts the pass's accepted entries |
 | Save | a durable write of the backing file (the mtime advances) |
 | Discard | none (the deletion is queued; model-owned) |
-| DeletionStep | `resolve_draft_restore` / `preserve_stale_draft_body` / `delete_draft_file` / `remove_manifest_entry`, per the core's `DeletionStep` |
-| Inspect / ExecCleanup | `inspect_orphan_cleanup_from` / `execute_orphan_cleanup` |
-| RestoreApply | `resolve_file_draft_restore`, plus the disposition's preservation call |
+| DeletionStep | `preserve_stale_draft_body` / `delete_draft_file` / `remove_manifest_entry`, per the core's `DeletionStep` |
+| Inspect / ExecCleanup | `inspect_orphan_cleanup_against_persisted` / `execute_orphan_cleanup` (one worker in production; the model's Inspect is read-only, so the driver holds the plan between the two) |
+| RestoreApply | `resolve_draft_restore` (which delegates to `resolve_file_draft_restore` for a file-backed entry), plus the disposition's preservation call |
 | ExternalMtime | `fixture::set_modified` on the backing file, at least +1 s (manifest mtimes are whole seconds) |
 | Crash | drop every driver-held value (tokens, plans, restore state, authority) |
-| Startup | `load_restore_state_cancellable`, then adopt its authority and restore list |
+| Startup | `load_restore_state_cancellable`, then adopt its authority and restore list; when trusted it already preserves and retires stale entries, which the model queues as a deletion at `Preserve` |
 
 Task 4.1 checks the table against the real call sites in
 `ui/window/drafts/` and `ui/window/session_restore/`. Where they differ, the

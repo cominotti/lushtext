@@ -17,6 +17,14 @@ The property-test target currently covers:
 - Encoding, line-ending, and sidecar hash helpers
 - EditorConfig save-time formatting idempotence
 - Session and draft JSON round trips
+- Shell conformance of the durable-write primitives
+  (`shell_conformance_write.rs`, `verify-shell-conformance-against-proven-cores`):
+  generated modes, payload sizes (up to 8 KiB) and up to two injected backend
+  faults per run, chosen enabled-indexed among the actions a fault-free run of
+  the same case makes. Each case runs the real primitive under the conformance
+  tap and replays it through the proven core and its shared Kani disk model;
+  the exhaustive single-fault and crash enumeration of the same driver runs in
+  the unit tests (`services::conformance::write_shell`)
 
 Keep GTK widget construction, compositor behavior, D-Bus or portal state,
 filesystem watcher timing, file chooser flows, and live sessions out of this

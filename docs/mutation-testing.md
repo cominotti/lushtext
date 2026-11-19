@@ -640,6 +640,34 @@ two fixture modules, `services/filesystem/fixture.rs` and
 172 mutants (6,001 to 5,829): 171 in harness code and 1 in the draft-body
 fixture. See Scope for the current harness figures.
 
+`verify-shell-conformance-against-proven-cores` added the same treatment for
+its verification code: the shared environment models
+(`write_protocol/disk_model.rs`, `draft_service/journal_model.rs`), the
+conformance tap (`services/filesystem/backend_tap.rs` and `backend_tap/**`:
+109 mutants in the active tap, 2 in the shipping build's inert entry points,
+which the lane's `test-utils` build never compiles) and the drivers
+(`services/conformance/**`, 133). The same change re-keyed the line-anchored
+`sys.rs` and `durable_write.rs` exclusions, several of which were already
+stale on `main`, to the `cfg(not(unix))` twins (and the documented
+durability-only and best-effort wrappers) they always meant, and retired two
+whose fallbacks generate no mutant any more: `make mutants-list` lost exactly
+those 26 `sys.rs` mutants (and gained the 2 of the new tapped openers) and the
+non-Unix `MetadataPlan` ones in `durable_write.rs`.
+
+**The three `replace/apply.rs::process_file` survivors** that
+`apply-verification-altitude-redesigns` recorded (its line anchors 649, 689
+and 691) needed code between two actions of one file's protocol, which only
+the conformance tap's before-action hook reaches. Two tests in
+`content_search/replace/tests.rs` kill them:
+`a_same_size_change_before_the_body_write_is_caught_by_pass_a` (`||` to `&&`
+in pass A's facts check) and
+`a_cancel_before_a_body_write_that_fails_early_cancels_the_run` (`||` to `&&`
+and the deleted `!` in the cancelled test). Focused run on 2026-11-19,
+`scripts/heavy.sh --envelope 36G -- env
+MUTANTS_SMOKE_FILE=crates/lushtext-core/src/services/content_search/replace/apply.rs
+'MUTANTS_RE=apply\.rs:(651:59|691:25|693:32):' make mutants-smoke` (the
+mutants' current anchors): 3 mutants, 3 caught, 0 missed.
+
 Do not silence a survivor just because the current test suite misses it. The
 preferred ratchet is tests first, small deterministic extraction second, narrow
 documented exclusion last.
