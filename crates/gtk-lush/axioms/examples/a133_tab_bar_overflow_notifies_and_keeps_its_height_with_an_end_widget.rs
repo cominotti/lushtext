@@ -3,6 +3,8 @@
 //! Sample for A133: a tab strip that starts with two tabs. Add tabs until it
 //! overflows and watch `is-overflowing`; attach the three-button end widget
 //! and see the unpinned tabs keep overflowing and the bar keep its height.
+//! "Re-announce selection" notifies the unchanged `selected-page`: scroll the
+//! strip away from the selected tab first and watch it scroll back.
 
 mod support;
 
@@ -37,6 +39,10 @@ fn build(ui: &support::SampleUi) {
                 group.replace(Some(widget));
             }
         }
+    });
+    ui.add_control("Re-announce selection", {
+        let strip = Rc::clone(&strip);
+        move || strip.tab_view.notify("selected-page")
     });
     ui.set_readout(move || {
         let unpinned = strip

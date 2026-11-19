@@ -8,11 +8,17 @@
 //! attaching or removing that widget leaves the bar's height unchanged.
 //! Selecting a page whose tab is out of view scrolls the strip until the tab
 //! is inside the page (`select_page` → `scroll_to_tab`, `adw-tab-box.c`).
+//! Re-announcing an **unchanged** `selected-page` after the strip was scrolled
+//! away from the selected tab scrolls it back the same way: the bar's
+//! `notify::selected-page` handler calls `select_page` whatever the value.
 //!
 //! LushText's overflow controls (`tab-strip-overflow-navigation` D1, D2)
 //! sit in the end action widget, appear once the unpinned adjustment
 //! overflows, and must not change the strip's height; the All Tabs popover
-//! selects a page and relies on the strip bringing it into view.
+//! selects a page and relies on the strip bringing it into view; the reveal
+//! after a session restore, after Focus Mode and after an All Tabs pick of
+//! the selected tab (D12) re-announces the unchanged selection and relies on
+//! the same scroll.
 //!
 //! **Recorded, not a pass condition:** whether each notify ran inside the
 //! bar's allocation (`notify_inside_allocation`). LushText defers its
@@ -237,6 +243,30 @@ pub fn probe_a133() -> Observation {
         recorder.axiom(
             TabStripFixture::tab_inside(&unpinned, &last),
             "selecting an out-of-view page scrolls the strip until its tab is inside the page",
+        )?;
+
+        // Scroll away from the still-selected last page, then re-announce the
+        // unchanged selection: the strip scrolls back to it.
+        adjustment.set_value(0.0);
+        settle_frames(&fixture);
+        recorder.measure("before_renotify", describe_adjustment(&adjustment));
+        recorder.control(
+            fixture.tab_view.selected_page().as_ref() == Some(&last)
+                && !TabStripFixture::tab_overlaps(&unpinned, &last),
+            "control: the selected last tab is out of view again",
+        )?;
+        fixture.tab_view.notify("selected-page");
+        settle_frames(&fixture);
+        recorder.measure("after_renotify", describe_adjustment(&adjustment));
+        recorder.measure(
+            "last_tab_span_after_renotify",
+            format!("{:?}", TabStripFixture::tab_span(&unpinned, &last)),
+        );
+        recorder.axiom(
+            fixture.tab_view.selected_page().as_ref() == Some(&last)
+                && TabStripFixture::tab_inside(&unpinned, &last),
+            "re-announcing the unchanged selected-page scrolls the strip until the selected \
+             tab is inside the page",
         )
     })
 }

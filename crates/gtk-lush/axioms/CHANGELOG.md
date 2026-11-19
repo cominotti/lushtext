@@ -16,7 +16,9 @@
   4.24.1). A133: `is-overflowing` notifies both ways, inside allocation; the
   unpinned tabs keep overflowing with a three-button end widget; the bar's
   height is unchanged with and without it; selecting an out-of-view page
-  scrolls its tab into the page. Fixtures `fixtures::a132` (`TABS`,
+  scrolls its tab into the page, and so does re-announcing the unchanged
+  `selected-page` after the strip scrolled away from it (added in the
+  review round; holds on 4.22.2 / 1.9.0 and 4.24.1 / 1.10.0). Fixtures `fixtures::a132` (`TABS`,
   `fixture`, `write_scroll_value`, `describe_adjustment`,
   `find_tab_scroller`, `overflows`) and `fixtures::a133` (`OverflowNotify`,
   `end_group`, `fixture`, `record_notifies`). Checked on the host (GTK
