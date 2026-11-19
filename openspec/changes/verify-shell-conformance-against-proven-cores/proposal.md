@@ -89,8 +89,8 @@ kills the three mutation survivors it owes them.
   failed. A later crash may revert it, and a later sync of its directory
   confirms it. Three other effects are unconfirmed in the same way:
   - the unsynced unlinks of a body deletion and of orphan cleanup;
-  - a set-aside placement whose sync failed, which the shell counts as
-    placed;
+  - a set-aside move whose sync failed, which the shell counts as placed (a
+    set-aside copy whose sync failed is an error since stage 3: design D6);
   - a manifest commit, whose whole entry array reverts together.
 
   S1–S4 and L1 are re-checked over the widened domain.

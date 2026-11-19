@@ -34,11 +34,7 @@ model preserved.
 When the system copies a draft body into the set-aside location, the copy
 SHALL count as kept only once the set-aside directory has been synced after
 the copy landed. A copy whose directory sync fails SHALL be reported as not
-kept, so the caller keeps the journal body and its entry, and a later retry
-that finds the same bytes under that name SHALL count them as kept only after
-syncing the set-aside directory. A body moved (not copied) into the set-aside
-location MAY count as placed when only its directory sync failed, because a
-reverted rename returns the body to the journal directory and never loses it.
+kept, so the caller keeps the journal body and its entry.
 
 #### Scenario: A copy whose directory sync fails preserves nothing
 - **WHEN** a stale draft body is copied into the set-aside location and the set-aside directory sync fails
@@ -47,3 +43,7 @@ reverted rename returns the body to the journal directory and never loses it.
 #### Scenario: A retry confirms the copy it finds
 - **WHEN** a later preservation finds a byte-identical copy under the same set-aside name
 - **THEN** it syncs the set-aside directory first, and reports the body kept only when that sync succeeds, without writing a second copy
+
+#### Scenario: A moved body still counts as placed
+- **WHEN** a draft body is moved (not copied) into the set-aside location and only the directory sync fails
+- **THEN** the body counts as placed, because a reverted rename returns it to the journal directory and never loses it

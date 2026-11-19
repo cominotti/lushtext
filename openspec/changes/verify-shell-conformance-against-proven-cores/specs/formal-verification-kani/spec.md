@@ -74,7 +74,7 @@ any fault-admitting prefix in it.
 
 #### Scenario: Every effect whose sync can fail is in the domain
 - **WHEN** the widened model is reviewed against the service
-- **THEN** the body write and every manifest commit (registration, autosave commit, entry removal, orphan cleanup, startup reconciliation) admit `AfterEffect`, every unsynced unlink (a body deletion, an orphan delete) is unconfirmed, and a set-aside placement the service counts as placed after a failed directory sync is unconfirmed
+- **THEN** the body write and every manifest commit (registration, autosave commit, entry removal, orphan cleanup, startup reconciliation) admit `AfterEffect`, every unsynced unlink (a body deletion, an orphan delete) is unconfirmed, a set-aside move the service counts as placed after a failed directory sync is unconfirmed, and a set-aside copy whose directory sync failed is a failed step whose live copy is unconfirmed
 - **AND** a manifest commit reverts as a whole file, and a reverted set-aside move returns the body to its source
 
 #### Scenario: A restriction is stated, never silent

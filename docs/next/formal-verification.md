@@ -2790,7 +2790,9 @@ model).
   every action, a failed temp removal on every failure path, 1..8 taken temp
   names) in about 0.05 s; `tests/properties/shell_conformance_write.rs` adds
   modes, payload sizes and two injections per run. **Findings: none** (the
-  write shell matched its core and model on every case).
+  write shell matched its core and model on every case). The enumeration was
+  shown to fail on a scratch, never-committed shell mutant (a `RemoveTemp`
+  that removes nothing fails the pinned call table on its first case).
 - **Finding, shell (D6, expected by the design):** `set_aside::place`
   counted a set-aside **copy** whose directory sync failed as placed, so a
   stale body could be reported preserved, then unlinked durably, and a crash

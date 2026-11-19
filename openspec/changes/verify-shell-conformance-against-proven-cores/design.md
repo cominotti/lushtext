@@ -130,9 +130,10 @@ Two concrete gaps:
    `atomic_replace`) and a manifest commit can end `AfterRename`: the bytes are
    visible, the directory sync failed, and the call returns an error, so the
    window treats the step as failed. The service already treats this outcome
-   specially in one place: `set_aside::keep_copy` counts an `AfterRename`
+   specially in one place: `set_aside::place` counted an `AfterRename`
    placement as placed (`set_aside.rs`, "`AfterRename` means it is in the
-   set-aside area"). The model has no such outcome.
+   set-aside area"); since stage 3 only a move does, and a copy is an error
+   (D6). The model has no such outcome.
 2. **Step atomicity.** The model's actions are atomic. Some service calls make
    several durable writes: a preservation makes a set-aside copy plus a
    local-history snapshot, and a registration may preserve and then commit.
@@ -694,7 +695,8 @@ exists to remove. The complete table:
 | Manifest commit (Register, Commit, RemoveEntry, ExecCleanup, Startup) | error (`AfterRename`) | `AfterEffect`: live, unconfirmed, step failed |
 | Body write (WriteBody) | error (`AfterRename`) | `AfterEffect` |
 | Body unlink (`DeletionStep(DeleteBody)`, `delete_draft_file`) and orphan delete (ExecCleanup, `execute_orphan_cleanup`) | success: `remove_file_if_exists` syncs no directory | always unconfirmed, with any fault value |
-| Set-aside placement (`keep_copy` in Register's preservation, `DeletionStep(Preserve)` and RestoreApply's `PreserveCopy`; `move_in` in Startup's set-aside move), through `set_aside::place` | success: an `AfterRename` placement "counts as placed" | `None` fault, effect unconfirmed |
+| Set-aside **move** (`move_in` in Startup's set-aside move), through `set_aside::place` | success: an `AfterRename` move "counts as placed" | `None` fault, effect unconfirmed; a revert returns the body to `drafts/` |
+| Set-aside **copy** (`keep_copy` in Register's preservation, `DeletionStep(Preserve)` and RestoreApply's `PreserveCopy`) | since stage 3 (2026-11-18): **error** (an `AfterRename` copy is not kept; a retry syncs the directory before it counts a byte-identical copy as kept) | `AfterEffect`: the copy is live but unconfirmed and the step failed (no preservation, the deletion stops) |
 
 - **Unconfirmed is not persisted.** An after-rename failure means that the
   directory sync failed, so a crash may revert the rename. The model keeps:
@@ -752,11 +754,15 @@ whole table, without exclusion.
 environment finding, handled as the formal-verification spec requires. Its
 reachability from real errors is recorded, as K4 and K8 did. The set-aside
 copy row is expected to be exercised. A Preserve whose set-aside sync fails
-is counted as placed. The body is then unlinked, and the entry removed by a
-manifest commit that makes the unlink durable. A crash then may lose the
-only copy. If Kani confirms this, it is a core or shell finding with a real
-error path (a failed directory `fsync` of `drafts/set-aside/`), fixed
-failing-first under the divergence discipline. It is not a budget exclusion.
+was counted as placed. The body was then unlinked, and the entry removed by a
+manifest commit that makes the unlink durable. A crash then could lose the
+only copy. **Found and fixed in stage 3 (2026-11-18), as a shell finding**
+with a real error path (a failed directory `fsync` of `drafts/set-aside/`):
+`set_aside::place` now returns an error for an `AfterRename` copy, failing
+first in `set_aside::tests::a_copy_whose_directory_sync_fails_is_not_kept_until_a_retry_syncs_it`.
+The widened model encodes the fixed rule (the copy row above); a
+`should_panic` harness over a model `Scope` constant that restores the old
+rule pins the counterexample (task 7.4's exhibit, owed with task 5.1).
 
 ### D7. Step atomicity: `At(k)`
 
