@@ -230,7 +230,9 @@ Change worktrees live in `.claude/worktrees/<change>`.
        commit, finds no record and reruns. Record each gate you run with
        `scripts/gate-trees.sh record <wt> --gate '<gate>' -- scripts/heavy.sh … -- make <gate>`;
        only that helper writes `gate-trees.log`, and it records nothing for
-       a dirty or changing worktree;
+       a dirty or changing worktree. It records a failing run too, and a
+       tree with a recorded failure of a named gate is never reused, since
+       a pass and a fail on one tree is a flake;
      - `git push origin HEAD`, to the branch of the same name (never
        `HEAD:main`).
   3. `git fetch --prune origin`, then `git merge-base --is-ancestor origin/main HEAD`.
@@ -278,8 +280,9 @@ Change worktrees live in `.claude/worktrees/<change>`.
 ## Running a change
 
 - **One workflow run per change, one agent per stage.** The stages, in order:
-  spec, spec review, implementation, `/simplify`, review lenses, apply and
-  gates, merge and archive ("Stages after implementation"). Each stage is
+  spec, spec review, implementation, prepare, `/simplify`, review lenses,
+  apply and gates, final review with merge and archive ("Stages after
+  implementation"). Each stage is
   bound to a skill and the prompt adds only what the skill does not cover:
   - spec: `openspec-propose` for a new change, `openspec-update-change` for
     one whose `openspec/changes/<name>/` is already on `main`;
@@ -295,8 +298,10 @@ Change worktrees live in `.claude/worktrees/<change>`.
   started after the script reached `main`; a session that was already
   running when it was added may not find it by name. `args.mode` is `new`,
   `fast-lane`, `revise`, `continue` or `review-only` (an existing pull
-  request from `/simplify` on, stopping before the merge unless `args.merge`);
-  `args.dry_run` prints the stages a mode would run. The script's header
+  request from the prepare stage on, stopping before the merge unless
+  `args.merge`); `revise` and `review-only` need `args.pr` and
+  `args.worktree`, and every argument is checked before the first agent
+  runs. `args.dry_run` prints the stages a mode would run. The script's header
   lists the other arguments. Host details (the push command, the gh account) go in
   `args.local`, free text the coordinator keeps outside the repository;
   nothing host-specific is written into the script. Its prompts cite rule
@@ -351,9 +356,10 @@ Change worktrees live in `.claude/worktrees/<change>`.
   - `eligible`: `docs/`, `openspec/`, and Markdown files at the repository
     root; a path a gate names literally becomes `declare`.
   - `declare`: agent guidance (rules, skill text, `AGENTS.md`, `SOUL.md`,
-    `CLAUDE.md`) and the `Makefile`.
+    `CLAUDE.md`).
   - Everything else is not eligible: shipped code, proofs, tests, gate
-    implementations, packaging, CI, the workflow scripts, any new directory,
+    implementations (the `Makefile` among them, since it wires every gate),
+    packaging, CI, the workflow scripts, any new directory,
     and the two change-delivery rules, this file and `verification-runs.md`,
     whose edits always get a spec review ("Running a change").
 - **Every `declare` path needs a "Gate effect: none" section** in
@@ -394,76 +400,131 @@ Change worktrees live in `.claude/worktrees/<change>`.
 Workflow agents have no `Agent` tool, so every parallel review comes from the
 script, and inside a workflow both skills below run their single-pass forms.
 
-1. **`/simplify`**, in its own agent, quality only. It is invoked with the
-   change worktree's absolute path as its argument, never bare: the agent's
-   working directory is the main checkout and cannot move. It runs the tests
-   of what it touched, leaves its edits uncommitted, and saves them as
-   `$H/<change>/simplify.patch`.
+0. **Prepare**, in its own agent, which edits nothing. The worktree must be
+   one listed by the main checkout's `git worktree list`, on the change's
+   branch, with an empty `git status --porcelain`: uncommitted work belongs
+   to an implementation round, never to the review stages. It fetches,
+   merges `origin/<branch>` and `origin/main` when they hold commits the
+   branch lacks, pushes, and sets the branch to track `origin/<branch>`. A
+   conflict aborts the merge and stops the run: resolving it is
+   implementation work, which the review stages must see. Every mode runs
+   it, `review-only` included.
+1. **`/simplify`**, in its own agent, quality only. It starts from a clean
+   worktree and is invoked with the change worktree's absolute path as its
+   argument, never bare: the agent's working directory is the main checkout
+   and cannot move. Its prompt names the base itself (`origin/main...HEAD`
+   for the committed work, `HEAD` for its own edits), because the recipe's
+   default range is empty on a pushed branch. It runs the tests of what it
+   touched, leaves its edits uncommitted, and saves them, new files included,
+   as `$H/<change>/simplify.patch`.
 2. **Review lenses, in parallel and findings only.** Each writes
    `$H/<change>/review-findings-<lens>.md` and returns its findings.
-   - **`code-review high <absolute worktree path>`**, which reviews the
-     branch's commits ahead of `origin/main` together with the uncommitted
-     `/simplify` edits. Never pass `--fix` (a forked review edits the main
-     checkout) and never a bare level (it reviews the main checkout's last
-     commit). Its agent has **no schema** (with one, the fork's output was
-     lost). It takes the findings from the Skill result's text or, when that
-     carries none, from the fork transcript (`subagents/agent-<agentId>.jsonl`
-     of the session, the input of the fork's last `StructuredOutput` call),
-     and prints `skill_findings_source: result-text` or
-     `skill_findings_source: fork-transcript` with them. A lens output with
-     neither line, or a bare "(none)", is a failed lens: rerun it once, then
-     stop the run.
+   - Before them, a read-only agent records the scope: `HEAD`, the pull
+     request's head and the upstream (all three must be equal), the
+     committed files (`git diff --name-only origin/main...HEAD`), the
+     uncommitted ones, and the exit status and raw output of
+     `scripts/agent-topology.py review-lenses --base origin/main`, which the
+     script parses itself. A non-zero exit stops the run: a selector that
+     failed is never "no domain lens".
+   - **`code-review high <PR>`** reviews the committed work, and, when
+     `/simplify` left edits, a second call **`code-review high <absolute
+     worktree path>`** reviews only those. The path form diffs against the
+     branch's upstream, so on a branch tracking `origin/<branch>` at `HEAD`
+     it sees exactly the uncommitted edits and none of the commits (probe
+     C4); the PR form sees the PR's files (probes C2 and C3). Never pass
+     `--fix` (a forked review edits the main checkout) and never a bare
+     level (it reviews the main checkout's last commit). The lens agent has
+     **no schema**, takes the findings from the Skill result's text or, when
+     that carries none, from the fork transcript
+     (`subagents/agent-<agentId>.jsonl` of the session, the input of the
+     fork's last `StructuredOutput` call), and ends with one
+     `skill_findings_source:` line per call, one `CODE-REVIEW-SCOPE:` line
+     per call (the PR, or the base the fork named, with file and line
+     counts), a `findings_count:` line and a last `CODE-REVIEW-STATUS:` line
+     (`ok`, `empty` or `failed`). The script checks each count against the
+     scope reading. A missing line, a scope that does not match, or `ok`
+     over no findings is a failed lens: one rerun, then the run stops.
+   - **An empty review stops the run.** `CODE-REVIEW-STATUS: empty` is
+     allowed only with a non-zero quoted scope for every call; the script
+     then stops with its own message, and only the coordinator, after
+     reading the findings file, resumes it with `args.accept_empty_review`.
+   - **The fork may run repository scripts** (probe C4 ran
+     `impl-slots.sh acquire`). The lens agent runs none itself, releases
+     this change's slot if the review created it, and lists what the fork
+     ran in its findings file; `impl-slots.sh` gives no slot to a name
+     without a change worktree, and the guard (below) compares this
+     change's slot and `MERGE-LOCK` ownership around the lens group.
    - **Domain lenses, only when the change touches data or performance**, as
-     the skills' own triggers declare. `scripts/agent-topology.py
-     review-lenses --base origin/main` prints the flags: `data` (the
+     the skills' own triggers declare. The selector's flags: `data` (the
      `[data_safety]` table of `.agents/skills/skill-policy.toml`, the
      machine form of the `data-safety` description) adds the `data-safety`
      full audit; `performance` (`performance-scope`) adds the three
      gtk-perf-review leaf checklists by name, since a workflow agent cannot
      delegate; `modules_moved`, inside such a fan-out, adds `rust-hex-arch`.
-     With neither flag, `code-review` runs alone.
+     With neither flag, `code-review` runs alone. A domain lens returns
+     `status: ran` with a non-empty `examined` list (files read, checklist
+     sections applied), or it is a failed lens.
      `scripts/agent-topology.py validate` (in `make check-agent-skills`)
      checks the selector against the skills' trigger text in both
      directions: every path and keyword the `data-safety` description names
      is selected and every selected one is named, and the same for the areas
      of the `gtk-perf-review` description against the performance scope.
-   - The script refuses a main-branch alias (`main`, `HEAD`, `@`, `heads/…`,
-     `refs/…`, `origin/…`, `remotes/…`, `tags/…`) as the change's branch, a
-     worktree that is not one directory under `.claude/worktrees/` (`.` and
-     `..` included), whether a stage returned them or a resumed run carried
-     them in its arguments, and a PR value that is not a number, `#number`
-     or pull URL. A stage after implementation never runs without a pull
-     request. The `code-review` lens ends with
-     `CODE-REVIEW-STATUS: ok` or `failed` after its `skill_findings_source`
-     line; the status line is the check, and an empty or summary-only body
-     marked `ok` still fails, since a `code-review high` pass always returns
-     findings.
-3. **One apply agent**, which wrote none of the code, dedupes the findings,
-   checks each against the code, applies the confirmed ones in the worktree
-   and records the rejected ones with reasons. It runs the three smokes once
-   when UI-prefix files changed, commits `/simplify`'s edits and its own
+   - The script refuses, before its first agent, any change or branch name
+     that is not a lowercase name (a main-branch alias such as `main`,
+     `HEAD` or `@`, a ref path, a revision expression or a commit hash), a
+     worktree that is not one directory under `.claude/worktrees/` named
+     after the change (`args.worktree_override` relaxes the name only), a
+     PR value that is not a number, `#number` or pull URL, a stage or
+     carried PR that differs from `args.pr`, and a carried implementation
+     report that is not complete. A stage after implementation never runs
+     without a pull request.
+3. **One apply agent**, which wrote none of the code, first re-runs the
+   selector and stops when its flags differ from the ones the lenses ran
+   under. It dedupes the findings, checks each against the code, applies the
+   confirmed ones in the worktree and records the rejected ones with reasons,
+   marking those a lens raised as correctness bugs. It runs the three smokes
+   once when UI-prefix files changed, commits `/simplify`'s edits and its own
    together locally **before** any long gate, runs the full gates once on the
-   result, each through `scripts/gate-trees.sh record`, and pushes at the
-   end. It is the last agent that edits code.
-4. **The merge and archive agent** reviews the apply commit only, since
-   the lenses reviewed the rest. "No findings" is not the merge test, because
-   every review pass returns unverified findings: it merges unless that
-   review confirms a defect the apply commit introduced, or one in the
-   main-checkout guard, the main-branch protection or the push path; such a
-   defect gets one more fix commit, and only that commit is reviewed again.
-   It also checks what the skills do not: every `tasks.md` box, the
-   verdicts, that the data-safety audit ran when it was owed, and the docs.
-   Then it follows "Merging".
+   result, each through `scripts/gate-trees.sh record`, re-dispatches a Kani
+   budget run its edits make stale (`verification-runs.md`, "Kani"), and
+   pushes at the end. It is the last agent that edits code. A read-only
+   agent then confirms its `HEAD`, its gated tree and the push, and the
+   script stops on any difference.
+4. **The final review, merge and archive agent edits nothing.** It reviews
+   exactly the apply range the script passes (the lens `HEAD` to the apply
+   `HEAD`, merge commits included), checks that `HEAD^{tree}` is the gated
+   tree before "Merging" step 2, and re-checks every correctness finding the
+   apply agent rejected. "No findings" is not the merge test, because every
+   review pass returns unverified findings: it blocks only on a confirmed
+   defect of the apply range, a wrongly rejected correctness finding, or one
+   in the main-checkout guard, the main-branch protection or the push path,
+   and then it returns `blocked` and fixes nothing; the coordinator sends the
+   change back through an implementation round and the review stages. An
+   `origin/main` merge under `MERGE-LOCK` that conflicts is aborted, the lock
+   released and the run blocked; a clean one joins the reviewed range. It
+   also checks what the skills do not: every `tasks.md` box, the verdicts,
+   that the data-safety audit ran when it was owed, and the docs. Then it
+   follows "Merging". Its verdict is one of a fixed set, and a missing or
+   unknown verdict stops the run as unfinished.
 
 ## Workflow agents
 
 - **The script guards the main checkout around every stage.** Before and
   after each stage, and around each parallel lens group, a guard agent reads
-  the main checkout's `git status --porcelain`, `HEAD` and branch, and the
-  script stops the run on any difference (porcelain alone misses a commit or
-  a branch switch). The comparison is before against after; the coordinator
-  does not move the main checkout while a run is in flight, and if it must,
-  the run stops at the next guard and the coordinator resumes it.
+  the main checkout's `git status --porcelain` (as a sha256 of the output,
+  untracked files included), `HEAD` and branch, and whether this change
+  holds an implementation slot or `MERGE-LOCK`, and the script stops the run
+  on any difference (porcelain alone misses a commit or a branch switch; the
+  slot and lock readings catch a review fork that took one). The comparison
+  is before against after; the coordinator does not move the main checkout
+  while a run is in flight, and if it must, the run stops at the next guard.
+- **Resuming after a guard stop.** The stop message prints a token bound to
+  the stage and to every field of the after reading. When the difference is
+  not the run's doing, the coordinator resumes the same run, same mode and
+  arguments, with that token in `args.guard_ack`; the cached stages are
+  reused, and the token accepts that one stage's reading and nothing else.
+  `args.guard_ack` and `args.accept_empty_review` are read by the script
+  only and never reach a prompt.
 - Every command names its target: `git -C <worktree>` or absolute paths,
   because `cd` does not persist between a workflow agent's calls.
 - Each agent sets `TMPDIR=$H/<change>/tmp/<stage>` (`testing.md`, "Temporary

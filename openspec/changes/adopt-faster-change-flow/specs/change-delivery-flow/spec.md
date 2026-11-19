@@ -19,6 +19,10 @@ Under `MERGE-LOCK`, a gate the merge step owes SHALL be skipped only when `scrip
 - **WHEN** `gate-trees.sh record` runs a gate that passes while `git status --porcelain` is not empty before or after it
 - **THEN** no line is written to `gate-trees.log`, and `gate-trees.sh lookup` for that tree exits 1
 
+#### Scenario: A gate that passed and failed on one tree is not reused
+- **WHEN** `gate-trees.log` holds a pass and a fail of `make test` for the current `HEAD^{tree}`, both recorded on a clean worktree
+- **THEN** `gate-trees.sh lookup` for that tree exits 1, naming the fail, and the merge step runs the gate
+
 #### Scenario: Main moves before the PR merge
 - **WHEN** `origin/main` gains a commit after the merge step and before `gh pr merge`
 - **THEN** the ancestor check fails and the agent repeats the merge step instead of merging
@@ -131,7 +135,7 @@ A change MAY use the fast lane only when `scripts/check-fast-lane.py` classes ev
 - **THEN** the apply agent still re-runs the check and reviews the spec artifacts
 
 #### Scenario: Gate implementations are not fast
-- **WHEN** a change edits `scripts/flatpak-source-tree.sh`, `scripts/agent-topology.py`, `.agents/skills/skill-policy.toml` or `crates/gtk-lush/proof-harness/`
+- **WHEN** a change edits `scripts/flatpak-source-tree.sh`, `scripts/agent-topology.py`, `.agents/skills/skill-policy.toml`, the `Makefile` or `crates/gtk-lush/proof-harness/`
 - **THEN** the checker reports it not eligible
 
 ### Requirement: Implementation slots shrink while ready rounds are queued
@@ -209,14 +213,22 @@ The programme's workflow script SHALL live in `.claude/workflows/`, take host de
 
 
 ### Requirement: The programme workflow can start a change at its review stage
-The workflow script SHALL start a change at `/simplify` on an existing pull request and worktree (`mode: 'review-only'`) and stop before the merge stage unless the caller asks it to merge.
+The workflow script SHALL start a change at its prepare stage on an existing pull request and worktree (`mode: 'review-only'`) and stop before the merge stage unless the caller asks it to merge. Every mode SHALL run the prepare stage before `/simplify`.
 
-#### Scenario: A review-only run starts at simplify
+#### Scenario: A review-only run starts at prepare
 - **WHEN** the script runs with `mode: 'review-only'`, an existing pull request and its worktree
-- **THEN** no spec or implementation agent runs, the first stage is `/simplify`, and the run stops before the merge stage unless `merge` is set
+- **THEN** no spec or implementation agent runs, the first stage is the prepare stage, then `/simplify`, and the run stops before the merge stage unless `merge` is set
+
+#### Scenario: Prepare refuses uncommitted work and conflicts
+- **WHEN** the change worktree has uncommitted or untracked entries, is not in the main checkout's `git worktree list`, or merging `origin/main` conflicts
+- **THEN** the prepare agent aborts any merge, edits nothing and returns blocked, and no review stage runs
+
+#### Scenario: Arguments are checked before the first agent
+- **WHEN** a `revise` run has no `pr` or `worktree`, a `continue` run carries a spec outside a change worktree, an archive of a previous change lacks its PR or tip, a carried implementation is not complete, or a stage or carried PR differs from `args.pr`
+- **THEN** the script stops before any agent runs, or, for a stage's PR, before the next stage
 
 ### Requirement: Implementation is followed by simplify, parallel findings-only lenses and one independent apply agent
-After implementation, `/simplify` SHALL run with an absolute worktree path. Findings-only lenses SHALL then run in parallel: `code-review high`, never `--fix`, covering the branch's commits and `/simplify`'s edits, plus one domain lens per `review-lenses` flag (data, performance; architecture only inside a fan-out). One agent that wrote no code SHALL verify, apply, run one smoke trio and the gates once.
+After implementation, `/simplify` SHALL run on a clean worktree with an absolute worktree path. Findings-only lenses SHALL then run in parallel: `code-review high`, never `--fix`, over the PR's commits and `/simplify`'s edits, plus one domain lens per `review-lenses` flag. One agent that wrote no code SHALL apply the findings, run one smoke trio and the gates once, and the final review SHALL edit nothing.
 
 #### Scenario: A docs-and-tooling change gets one lens
 - **WHEN** `review-lenses` reports neither data nor performance for the PR's paths
@@ -230,9 +242,21 @@ After implementation, `/simplify` SHALL run with an absolute worktree path. Find
 - **WHEN** the diff edits only `crates/gtk-lush/settle/src/` and `review-lenses` reports performance but not data
 - **THEN** the `code-review` and the three perf-leaf lenses run, and the `data-safety` lens does not
 
+#### Scenario: The code-review lens reviews the committed work through the PR
+- **WHEN** the branch is pushed and tracks `origin/<branch>`, so a worktree-path target would diff against that upstream and see no commits
+- **THEN** the lens runs `high <PR>` for the committed work, after the scope reading confirmed that `HEAD`, the PR head and the upstream are equal
+
 #### Scenario: The code-review lens sees the simplify edits
-- **WHEN** the probes show that a branch target misses uncommitted work
-- **THEN** the lens also runs `high <absolute worktree path>` over `simplify.patch`, and both outputs form the one lens
+- **WHEN** `/simplify` left uncommitted edits
+- **THEN** the lens also runs `high <absolute worktree path>`, which on that branch reviews only the uncommitted edits, and both outputs form the one lens
+
+#### Scenario: A review whose scope does not match fails the lens
+- **WHEN** a call's `CODE-REVIEW-SCOPE` line names another PR, or a file count other than the committed files or the uncommitted ones of the scope reading
+- **THEN** the script treats the lens as failed, reruns it once, and then stops
+
+#### Scenario: A failing selector stops the run
+- **WHEN** `scripts/agent-topology.py review-lenses` exits non-zero (an old helper, or a skill policy without its `[data_safety]` table) or prints output that is not its JSON
+- **THEN** the script stops before any lens runs, instead of running `code-review` alone
 
 #### Scenario: The code-review lens reads the fork's findings
 - **WHEN** the Skill call returns only "Skill execution completed" and an `agentId`
@@ -241,6 +265,14 @@ After implementation, `/simplify` SHALL run with an absolute worktree path. Find
 #### Scenario: An empty code-review result is a failure
 - **WHEN** the `code-review` lens returns "(none)" with no explanation
 - **THEN** the script reruns it once and then stops instead of treating it as zero findings
+
+#### Scenario: An empty review over a quoted scope needs the coordinator
+- **WHEN** the `code-review` lens ends with `CODE-REVIEW-STATUS: empty`, `findings_count: 0` and a non-zero scope for every call
+- **THEN** the script stops with its own message, and continues past the lens only when the run is resumed with `args.accept_empty_review`
+
+#### Scenario: A domain lens that did not run fails
+- **WHEN** a domain lens returns without `status: ran`, or with an empty `examined` list
+- **THEN** the script treats it as a failed lens and stops before the apply stage
 
 #### Scenario: A lens marked ok over an empty body fails
 - **WHEN** the `code-review` lens ends with `CODE-REVIEW-STATUS: ok` but its findings are empty, only brackets, or only a "No findings" summary
@@ -251,26 +283,46 @@ After implementation, `/simplify` SHALL run with an absolute worktree path. Find
 - **THEN** `scripts/agent-topology.py validate` fails naming the item and the direction
 
 #### Scenario: The merge test is not zero findings
-- **WHEN** the merge agent reviews the apply commit and finds only unconfirmed or pre-existing issues
-- **THEN** it merges, and it blocks only on a confirmed defect the apply commit introduced or one in the guard, the main-branch protection or the push path
+- **WHEN** the final review of the apply range finds only unconfirmed or pre-existing issues
+- **THEN** it merges, and it blocks only on a confirmed defect the apply range introduced, a wrongly rejected correctness finding, or one in the guard, the main-branch protection or the push path
+
+#### Scenario: The final review edits nothing
+- **WHEN** the final review confirms a defect, or the `origin/main` merge under `MERGE-LOCK` conflicts
+- **THEN** it aborts the merge, releases the lock, returns `blocked` with the reason and writes no commit, and the script stops
+
+#### Scenario: The final review covers exactly the gated apply range
+- **WHEN** the apply stage returns its `HEAD` and gated tree
+- **THEN** a read-only agent confirms them, the push and the clean worktree, the script passes the range from the lens `HEAD` to that `HEAD` and the tree to the final review, which checks `HEAD^{tree}` before "Merging" step 2 and re-checks every rejected correctness finding
+
+#### Scenario: A dead merge agent is not a finished run
+- **WHEN** the merge agent returns nothing, a verdict outside its fixed set, `merged` without a merge and archive commit, or `merged` while `no_merge` was set
+- **THEN** the script stops with a message to check `MERGE-LOCK`, the PR and the archive by hand
 
 #### Scenario: One trio for both passes
 - **WHEN** `/simplify` and the apply agent both edit files under `crates/lushtext-core/src/ui/`
 - **THEN** the three smokes run once, before the single commit that holds both sets of edits
 
 ### Requirement: Workflow agents keep the main checkout untouched and make only listed outward writes
-The workflow script SHALL compare the main checkout's `git status --porcelain`, `HEAD` and branch, read by guard agents before and after every stage, and stop on any difference. Outward writes SHALL be limited to pushing and deleting the change branch and its twin Kani ref, the PR, the merge under `MERGE-LOCK`, the archive push and `kani.yml` dispatches. Every other external change SHALL go to `host-asks.md`.
+Guard agents SHALL read the main checkout (status hash, `HEAD`, branch) and this change's slot and `MERGE-LOCK` ownership before and after every stage, and the script SHALL stop on any difference that `args.guard_ack` does not acknowledge. Outward writes SHALL be limited to the change branch and its twin Kani ref, the PR, the merge under `MERGE-LOCK`, the archive push and `kani.yml` dispatches; anything else goes to `host-asks.md`.
 
 #### Scenario: A stage edits the main checkout
 - **WHEN** the guard agent's after-stage status, `HEAD` or branch of the main checkout differs from its before-stage reading
 - **THEN** the script stops the run and reports the difference
 
+#### Scenario: A guard stop is acknowledged on resume
+- **WHEN** the coordinator resumes a stopped run with `args.guard_ack` holding the token the stop printed
+- **THEN** that stage's reading passes, while a token for another stage or another reading still stops the run, and neither the token nor `args.accept_empty_review` appears in any prompt
+
+#### Scenario: A review fork takes a slot
+- **WHEN** this change's implementation slot or `MERGE-LOCK` ownership differs before and after the lens group
+- **THEN** the script stops the run, and `scripts/impl-slots.sh acquire` gives no slot to a name without a change worktree
+
 #### Scenario: A main-branch alias is refused
-- **WHEN** the change, the branch argument, the spec stage's branch or a spec carried into a resumed run names `main`, `HEAD` or `@`, or a branch that starts with `heads/`, `refs/`, `origin/`, `remotes/` or `tags/`
+- **WHEN** the change, the branch argument, the spec stage's branch or a spec carried into a resumed run names `main`, `HEAD` or `@`, a branch that starts with `heads/`, `refs/`, `origin/`, `remotes/` or `tags/`, a revision expression such as `main~0` or `main^{}`, a commit hash, or anything else that is not a lowercase name
 - **THEN** the script stops before the next agent runs
 
 #### Scenario: A worktree outside the change worktrees is refused
-- **WHEN** a worktree argument, the spec stage's worktree or a spec carried into a resumed run is not one directory under `.claude/worktrees/`, including `.claude/worktrees/..` and `.claude/worktrees/.`
+- **WHEN** a worktree argument, the spec stage's worktree or a spec carried into a resumed run is not one directory under `.claude/worktrees/`, including `.claude/worktrees/..` and `.claude/worktrees/.`, or its directory is not named after the change and `args.worktree_override` is not set
 - **THEN** the script stops before the next agent runs
 
 #### Scenario: Only the listed outward writes appear in stage prompts

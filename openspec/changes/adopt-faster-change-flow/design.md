@@ -138,7 +138,7 @@ Yes, with five refinements, each justified below:
 
 - **Eligibility: an allowlist, fail-closed** (stage-2 correction). `scripts/check-fast-lane.py --base <ref>` classifies each path: the planned file list at stage 1, and `git diff --name-status --find-renames <base>...HEAD` (both sides of a rename) plus untracked files at stage 4. Every path gets one class:
   - **`eligible`**: under `docs/` or `openspec/`, or a root-level `*.md` file not listed below;
-  - **`declare`**: agent guidance and the one build file the rules make most changes touch: `.agents/rules/**` except the two change-delivery rule files below, `.agents/skills/**/*.md`, `.agents/skills/*/agents/*.yaml`, the root `AGENTS.md`, `SOUL.md`, `.claude/CLAUDE.md` and `Makefile`. An `eligible` path that a gate names literally (the path string appears in `Makefile`, `.githooks/`, `.github/` or `scripts/`, for example `docs/automation-reference.md`) is promoted to `declare`;
+  - **`declare`**: agent guidance: `.agents/rules/**` except the two change-delivery rule files below, `.agents/skills/**/*.md`, `.agents/skills/*/agents/*.yaml`, the root `AGENTS.md`, `SOUL.md` and `.claude/CLAUDE.md`. (The `Makefile` was `declare` until the fix round, which made it not eligible because it wires every gate: Fable S7.) An `eligible` path that a gate names literally (the path string appears in `Makefile`, `.githooks/`, `.github/` or `scripts/`, for example `docs/automation-reference.md`) is promoted to `declare`;
   - **`not eligible`**: every other path. That includes all of `crates/` (shipped app and GTK Lush runtime crates, proven modules, widget and axiom tests, proof tools), `resources/`, `data/`, `po/`, `scripts/`, `.githooks/`, `.github/`, `.claude/workflows/`, `.agents/skills/skill-policy.toml` and any other non-guidance file under `.agents/skills/`, `Cargo.toml`, `Cargo.lock`, `workspace-hack/`, `.cargo/`, `.config/`, `build-aux/`, `build/`, `meson*`, `snap/`, `fuzz/`, `formal/`, `fixtures/`, `samples/`, `.gitignore`, the lint and deny configurations, and the change-delivery rules `.agents/rules/parallel-agent-work.md` and `.agents/rules/verification-runs.md`. Those two are `not eligible` because "Process rule changes keep the quality floor" requires a spec review for any change to them (stage-2 correction); neither recent fast-lane PR touches them, so the yield is unchanged.
 
   A new top-level directory is `not eligible` until a change adds it to one of the first two lists, so a new crate or gate can never be fast by omission. Proven modules need no table of their own: every `kani_proofs*.rs` and every `ORACLES` module is under `crates/` (checked at stage 2 with `git ls-files`), and the self-test asserts that this still holds. The design also must not plan a timing verdict.
@@ -281,13 +281,12 @@ Stage-3 revision. Stage 1 and stage 2 wrote "calibrate, do not change": keep the
   - It is invoked only with an absolute change-worktree path as its argument, never bare. Reason: a workflow agent's cwd is the main checkout and cannot move. `cd` does not persist, and `EnterWorktree` refuses. The coordinator's probe 3 showed an absolute worktree path keeps the edits inside the worktree.
   - It runs the tests of what it touched and leaves its edits uncommitted, so that one smoke trio covers it and the apply stage. It also saves them as `$H/<change>/simplify.patch`.
 - **Review lenses, in parallel, findings only.** Each writes `$H/<change>/review-findings-<lens>.md` and returns its findings.
-  - **(a) `code-review`.** The lens runs `high <target>` and must review **both** the branch's commits ahead of `origin/main` and `/simplify`'s uncommitted edits (stage-2 correction: a branch target alone misses the uncommitted edits, and a path target may miss the commits). The target form comes from the probes of D11 (task 4.0):
-    - if one form covers both, the lens uses it;
-    - otherwise, the fallback named now: the lens runs `high <local branch>` for the commits and a second `high <absolute worktree path>` call for the uncommitted edits, with `simplify.patch` handed to the second call as its scope. Both outputs count as the one `code-review` lens, and either one failing (below) fails the lens.
+  - **(a) `code-review`.** The lens must review **both** the branch's commits ahead of `origin/main` and `/simplify`'s uncommitted edits (stage-2 correction: a branch target alone misses the uncommitted edits, and a path target may miss the commits). **Fix round (probe C4, Fable M1):** a path target diffs against the branch's upstream, so on a pushed change branch tracking `origin/<branch>` it reviews only the uncommitted edits; the stage-3 conclusion that one path call covers both (P2b) held only because the scratch branch tracked `origin/main`. The lens therefore runs two calls: `high <PR>` for the committed work (probes C2 and C3) and, when `/simplify` left edits, `high <absolute worktree path>` for those. The prepare stage makes the branch track `origin/<branch>` at `HEAD`, a scope reading confirms `HEAD` = PR head = upstream, and each call's quoted scope is checked against the committed and uncommitted file counts. Committing `/simplify`'s edits before the lenses would also make `high <PR>` cover everything, but a UI-prefix commit owes a smoke trio, so it stays rejected (below).
     - It never gets `--fix`: with `--fix` a forked review edited the main checkout in probe 2.
     - **Where the findings are** (stage-3 revision, notes 19:47 and 19:52). Observed return paths differ: a caller without a schema got the findings as text in the Skill result; a caller with a schema got only "Skill execution completed"; another got only `{status: "forked", agentId, "Skill execution completed"}`, with the findings as the input of the fork's last `StructuredOutput` call in `subagents/agent-<agentId>.jsonl` of the session's transcript directory. The lens has no schema, takes the findings from the result text, and reads the fork transcript whenever the result carries none. It prints `skill_findings_source: result-text` or `skill_findings_source: fork-transcript` with them; a lens output with neither is a failed lens.
     - Its agent has no schema, because with a schema the fork's output was lost. Its text is passed on verbatim.
     - A "(none)" with no explanation is a failed lens, not zero findings. The script reruns it once, then stops.
+    - **Empty reviews (maintainer rule (b), fix round).** `CODE-REVIEW-STATUS: empty` is a distinct status, allowed only with `findings_count: 0` and a non-zero quoted scope (files and lines) for every call. The script stops with its own message and goes on only when the coordinator resumes the run with `args.accept_empty_review`. `findings_count:` replaces the phrase list as the backstop for `ok` (N1).
   - **(b) Domain lenses, only in a fan-out:**
     - the `data-safety` full audit;
     - the `gtk-perf-review` leaf checklists, called by name, because a workflow agent cannot delegate: `gtk-responsiveness`, `gtk-perf-scale` and `gtk-perf-rust-optimize`, in the umbrella's fixed domain order;
@@ -310,7 +309,7 @@ Stage-3 revision. Stage 1 and stage 2 wrote "calibrate, do not change": keep the
   - It runs the three smokes once, when UI-prefix files changed, and commits `/simplify`'s and its own edits together.
   - It runs the full gates once on the result and records the tree in `gate-trees.log` (D1).
   - In `fast-lane` mode it is also the independent reviewer of the spec artifacts, and it re-runs `check-fast-lane.py` on the real diff and checks any "Gate effect: none" declaration (D5).
-- **Merge and archive agent.** It checks what the skills do not: tasks, verdicts, that the data-safety audit ran when it was owed, and docs. Then it runs "Merging" (D1, D2) and `openspec-archive-change`.
+- **Merge and archive agent.** It checks what the skills do not: tasks, verdicts, that the data-safety audit ran when it was owed, and docs. Then it runs "Merging" (D1, D2) and `openspec-archive-change`. **Fix round (maintainer rule (a), Fable M3, S5, M5):** it edits nothing. It reviews exactly the apply range the script passes (lens `HEAD` to the apply `HEAD`, read back by a read-only agent with the gated tree and the push), checks `HEAD^{tree}` before "Merging" step 2, and re-checks every correctness finding the apply stage rejected. A confirmed defect, or a conflicting `origin/main` merge, returns `blocked`; its verdict is one of a fixed set, and a dead agent or an unknown verdict stops the run.
 - **Rejected:**
   - `code-review --fix` from a workflow agent. It edits the main checkout.
   - Agents that spawn reviewers. A workflow agent has no Agent tool. Several reviewers come from the script instead.
@@ -321,6 +320,7 @@ Stage-3 revision. Stage 1 and stage 2 wrote "calibrate, do not change": keep the
 - **Main-checkout guard, enforced by the script around every stage:**
   - The readings come from **guard-read agents**, not from the stage agent (stage-2 correction). The `code-review` lens must have no schema, so it cannot return structured readings, and a stage agent that broke the checkout would be reporting on itself. Before and after every stage, and once before and once after each parallel lens group, the script runs a small agent (lowest effort, a schema of `{porcelain, head, branch}`) that only runs `git -C <main checkout> status --porcelain`, `rev-parse HEAD` and `branch --show-current`.
   - The script compares the two readings and stops on any difference. `status` alone misses commits, which is why `HEAD` and branch are compared too.
+  - **Fix round (Fable S6, note 23:20).** The status is compared as a sha256 printed by the guard command, not as LLM-copied text, and untracked files stay in it. The reading also says whether this change holds its implementation slot or `MERGE-LOCK`, which catches a review fork that ran the slot helper. A stop prints a token bound to the stage and every field of the after reading; resuming the same run with that token in `args.guard_ack` accepts that one reading, so the cached stages are reused instead of rerunning `/simplify`, the lenses and the gates.
   - The comparison is before against after, never against `origin/main`: the main checkout may lag `origin/main` (at stage 2 it was at `bc109b04`, behind `187c6299`). The coordinator does not move the main checkout while a run is in flight. If it must, the run stops at the next guard, which is the fail-closed outcome. The coordinator checks the difference, records it in the ledger and resumes the run with `continue`.
   - Every Bash command uses `git -C <worktree>` or absolute paths.
 - **Per-agent hygiene:**
@@ -445,7 +445,63 @@ Floor rows for this review's rule edits:
 Decisions on the open questions of the stage-3 report (user experience first):
 
 1. **The stage-3 revision without a spec review.** This review checked each of its rows against the floor table, as that section asked, and found none that lowers the floor. The coordinator's Fable review of the template (task 5.3) reviews it a second time. No further spec-review stage is owed.
-2. **The merge stage's stopping rule** (review only the apply commit; "no findings" is not the merge test). It is kept. The lenses already review every commit before the apply commit, and the apply agent is an independent reviewer that wrote none of the code. So the floor item "an independent code reviewer" holds, and the rule only stops an unbounded review-fix loop. It comes from coordinator note 20:38, not from a maintainer decision, so it is listed for the maintainer.
-3. **An empty `code-review` result counts as a failed lens.** It is kept. A false stop costs one coordinator resume: a `review-only` run on the same pull request reruns the lenses. A false pass merges a change no lens read. Hollow passes have been observed: a forked review's output was lost behind a schema, and bracket-only or summary-only bodies slipped past invowk's filter. In this review's probes, `code-review high` returned findings every time, so the stop should be rare. This reading comes from coordinator notes 19:25 and 20:38, so it is also listed for the maintainer.
+2. **The merge stage's stopping rule** (review only the apply commit; "no findings" is not the merge test). It is kept. The lenses already review every commit before the apply commit, and the apply agent is an independent reviewer that wrote none of the code. So the floor item "an independent code reviewer" holds, and the rule only stops an unbounded review-fix loop. It comes from coordinator note 20:38, not from a maintainer decision, so it is listed for the maintainer. **Confirmed by the maintainer on 2026-11-18 with conditions** ("Fable review fix round", rule (a)): the reviewer edits nothing, gets the exact range and tree, and re-checks rejected correctness findings.
+3. **An empty `code-review` result counts as a failed lens.** It is kept. A false stop costs one coordinator resume: a `review-only` run on the same pull request reruns the lenses. A false pass merges a change no lens read. Hollow passes have been observed: a forked review's output was lost behind a schema, and bracket-only or summary-only bodies slipped past invowk's filter. In this review's probes, `code-review high` returned findings every time, so the stop should be rare. This reading comes from coordinator notes 19:25 and 20:38, so it is also listed for the maintainer. **Confirmed by the maintainer on 2026-11-18 with a way through** ("Fable review fix round", rule (b)): `CODE-REVIEW-STATUS: empty` and `args.accept_empty_review`.
 4. **The probes the coordinator owes** (`host-asks.md`: the cwd under `isolation: 'worktree'`, `code-review` on an open PR, and `code-review` without a caller schema) stay owed. The template is not used before they are recorded, as task 4.4 says.
 5. **No merge in this stage** (task 5.3). The verdict is "ready, Fable template review pending".
+
+## Fable review fix round (2026-11-18)
+
+The coordinator ran probes C1-C4 and an independent Fable review of PR #118 at `d2f1b58b` (handoff `fable-review.md`, `probes.md`). Its verdict was "merge after the listed fixes". The maintainer confirmed both open questions above with Fable's conditions (coordinator note 23:20):
+
+- **(a)** The final review covers only the apply range: the reviewer edits nothing, the script passes the exact range and tree (merge commits included), and every rejected lens correctness finding is re-checked.
+- **(b)** An empty `code-review` is not a pass: a distinct `CODE-REVIEW-STATUS: empty` with a quoted non-zero scope stops the run, and only `args.accept_empty_review` lets it through.
+
+Each must-fix has a case written first and seen failing against `d2f1b58b`: the template cases on the old harness interface (`failfirst-fix-round-harness.log`) and the helper cases (`failfirst-fix-round-helpers.log`).
+
+| Item | Disposition |
+|---|---|
+| M1 code-review reviews only `/simplify`'s edits on a pushed branch | Fixed. `high <PR>` for the committed work and `high <worktree>` for the uncommitted edits; prepare sets the upstream, the scope reading requires `HEAD` = PR head = upstream, and each call's quoted scope is checked against the file counts (D10 (a)). |
+| M2 `review-only` fails on the waiting branches | Fixed. A prepare stage in every mode (clean, listed worktree; merges `origin/<branch>` and `origin/main`, aborts on conflict; pushes; sets the upstream). The scope agent returns the selector's exit status and raw output, which the script parses; `review-lenses` exits 2 without a `[data_safety]` table. |
+| M3 the merge agent edits code and reviews its own fix | Fixed. The final review edits nothing; a confirmed defect or a conflicting `origin/main` merge returns `blocked`, and the coordinator sends the change back through an implementation round. |
+| M4 a domain lens that did not run, or a mistranscribed flag, passes | Fixed. `status: ran` and a non-empty `examined` list are required; the flags come from the script's own parse of the helper's JSON, and the apply agent re-runs the selector and blocks on a difference. |
+| M5 a dead merge agent returns no `stopped` | Fixed. A dead agent, an unknown verdict, `merged` without merge and archive commits, and `merged` under `no_merge` all stop the run. |
+| S1 `revise` needs no PR or worktree | Fixed: both required. |
+| S2 `continue` validates late | Fixed: every argument check runs before the first agent; `prev_change` needs `prev_pr` and `prev_tip`; a carried spec gets `change_name` and `branch` defaults. |
+| S3 round 2 told to open a PR | Fixed: the prompt uses the PR an earlier round reported. |
+| S4 a stage PR beats `args.pr` | Fixed: a mismatch stops the run. |
+| S5 apply tree not tied to the gated tree | Fixed: the apply stage returns `head` and `tree`, a read-only agent confirms them, the push and a clean worktree, and the final review checks the tree before "Merging" step 2. |
+| S6 brittle guard, expensive stop | Fixed: sha256 comparison, per-stage `args.guard_ack` token, corrected stop message; untracked files stay in (maintainer). |
+| S7 `Makefile` is `declare` | Fixed: not eligible. The 25-merge baseline is unchanged (2 of 20): #98 does not touch the `Makefile`. |
+| S8 worktree not tied to the change | Fixed: the directory must be named after the change unless `args.worktree_override`; prepare checks `git worktree list`. |
+| S9 `/simplify` base in prose | Fixed: literal commands for both diffs, and a clean worktree at start (else `blocked`). |
+| S10 Kani re-dispatch not in the apply prompt | Fixed: one sentence, with the stage-3 run ids passed in. |
+| S11 only the first cited section checked | Fixed: every title of a citation list, across parentheticals. |
+| S12 `gate-trees.sh` records passes only | Fixed: fails are recorded on a clean tree, and lookup refuses a tree with a recorded fail of any named gate (stricter than Fable's "newest line": a pass after a fail on one tree is a flake). |
+| S13 `no_merge` keeps the merge paragraph | Fixed: omitted. |
+| S14 `review-only` ignores an incomplete carried report | Fixed: stops before any agent. |
+| N1 phrase-list backstop | Fixed: `findings_count:`. |
+| N2 tabs in `--log-ref`, `--change` | Fixed. |
+| N3 guest time double-counted | Fixed: first eight fields. |
+| N4 Markdown `Status:` | Fixed. |
+| N5 `isMainRef` denylist | Fixed: an allowlist of lowercase names that also refuses hex hashes and `main`/`master`/`head` in any case. |
+| N6 duplicated helpers in `agent-topology.py` | Partly fixed: `GIT_PREFIX` added to the fallback. Not deduplicated: the two scripts are standalone CLIs with their own test suites, and importing a hyphenated script by path would couple them for twelve lines. |
+| N7 header comment | Fixed. |
+| N8 `simplify.patch` omits new files | Fixed: `git add --intent-to-add` before the diff. |
+| Note 23:20: a fork runs repository scripts | Fixed: the lens agent runs none itself and releases this change's slot if the review created it; `impl-slots.sh acquire` refuses a name without a change worktree; the guard compares this change's slot and `MERGE-LOCK` ownership. A fork's `gate-trees.sh record` writes nothing while `/simplify`'s edits keep the worktree dirty, and S12 voids reuse after any recorded fail. |
+| Fable note on "Merging" step 2 (narrower than the floor's wording) | Not changed here: step 2 reruns `make check` and the tests covering both sides, which predates this change and is the floor's accepted form ("every gate on every distinct tree" is met by the record-or-rerun rule of D1). Listed for the maintainer. |
+
+Floor rows for this round's rule edits:
+
+| Rule edit | Existing rule it touches | Why the floor holds |
+|---|---|---|
+| Prepare stage; uncommitted work refused | "Stages after implementation" | Adds a check and a merge that resolves nothing; a conflict stops the run. |
+| `code-review high <PR>` plus `high <worktree>`, scope checked | "Stages after implementation" 2 | Strengthens: the bug-hunting lens now provably covers the committed work (C4), and a scope mismatch fails the lens. |
+| Empty review stops; `args.accept_empty_review` | "Stages after implementation" 2 | A human look replaces a silent pass; an empty review was a failure before and still never passes on its own. |
+| Domain lenses need `status: ran` and `examined` | "Stages after implementation" 2 | Strengthens: a lens that did not run is a failure. |
+| The final review edits nothing; exact range and tree; rejected correctness findings re-checked | "Stages after implementation" 4 | Strengthens "an independent code reviewer": no agent reviews its own fix, and conflict resolution goes through the review stages. |
+| Guard by status hash, slot and lock; `args.guard_ack` | "Workflow agents" | The comparison covers more (slot, lock); an acknowledgement accepts one named reading and is given only by the coordinator. |
+| `Makefile` not eligible for the fast lane | "Fast lane" | Strengthens: fewer changes skip the spec review. |
+| A recorded fail voids gate reuse on that tree | "Merging" step 2 | Strengthens: a flake can no longer hide behind a later pass. |
+
+This round's stage 4 reviews and fixes as usual but does not merge: it ends "ready, Fable fix check pending", and the coordinator runs a narrow second Fable pass on the fix diff, then a merge-only run with `make test` on the final tree.
