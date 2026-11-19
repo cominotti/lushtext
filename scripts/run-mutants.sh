@@ -518,9 +518,11 @@ self_test() {
 #!/usr/bin/env bash
 out=""; prev=""
 for a in "$@"; do [[ "$prev" == --output ]] && out="$a"; prev="$a"; done
-{ printf 'ARGS'; printf ' %q' "$@"; printf '\n'
-  printf 'ENV jobs=%s inc=%s wrapper=%s target=%s pwd=%s\n' "${CARGO_MUTANTS_JOBS-unset}" "${CARGO_INCREMENTAL-unset}" "${RUSTC_WORKSPACE_WRAPPER-unset}" "${CARGO_TARGET_DIR-unset}" "$PWD"
-} >>"${STUB_LOG}"
+# Two slots run this stub at once: build the record first and append it in
+# one write, so their lines cannot interleave ("ARGSARGS ...").
+record="ARGS$(printf ' %q' "$@")"
+record+=$'\n'"$(printf 'ENV jobs=%s inc=%s wrapper=%s target=%s pwd=%s' "${CARGO_MUTANTS_JOBS-unset}" "${CARGO_INCREMENTAL-unset}" "${RUSTC_WORKSPACE_WRAPPER-unset}" "${CARGO_TARGET_DIR-unset}" "$PWD")"
+printf '%s\n' "$record" >>"${STUB_LOG}"
 if [[ -n "$out" ]]; then
     mkdir -p "$out/mutants.out/log"
     printf '{"outcomes": [], "total_mutants": 0, "missed": 0, "caught": 0, "timeout": 0, "unviable": 0, "success": 0, "cargo_mutants_version": "27.0.0"}\n' >"$out/mutants.out/outcomes.json"
