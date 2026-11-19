@@ -276,6 +276,39 @@ The before and after figures go into the QH record
 That record is where the lanes' session cost is tracked; no separate
 lane-cost record exists.
 
+### D9. A pre-existing blocker found by the lane proof: the exported helper path
+
+Added at implementation (task 2.7). Visual run 4 of task 6.2 failed one case
+with `UNSUPPORTED-HOST: GTK_LUSH_SESSION_BIN=…/target/debug/gtk-lush-session (deleted) is not executable`.
+The inner stage exports `std::env::current_exe()` as `GTK_LUSH_SESSION_BIN`
+for code that starts a nested session (every screenshot capture's
+`compositor` stage goes through it). Linux names `/proc/self/exe`
+`<path> (deleted)` once that file is removed, and `cargo build`, which the
+shim runs before every session, re-uplifts the binary (remove, then link) on
+every run. So any two lanes in one worktree race. The parallel lane streams
+hit it once in about 470 nested sessions; a re-uplift loop every 2 ms makes it
+20 of 20.
+
+`own_executable()` had already fixed the same race for the inner stage's own
+exec, and kept the exported path on purpose (a consumer in another pid
+namespace cannot use `/proc/<pid>/exe`). The fix keeps that choice:
+
+- `exported_session_bin` drops the ` (deleted)` suffix whenever the path as
+  named does not exist, without requiring the rebuilt file to be linked at
+  that instant. The export then names the file at the original path, the same
+  helper rebuilt;
+- `scripts/headless-session` retries its `GTK_LUSH_SESSION_BIN` branch
+  (10 x 0.1 s), as its build branch already did for "Text file busy", because
+  cargo's remove-then-link leaves the path briefly absent (1 of 40 under the
+  loop with the first half alone, 0 of 100 with both).
+
+`preexisting-blockers.md` makes it part of this change. It invalidates no
+earlier proof except the helper-dependent reruns D8 names: tasks 2.3 and 2.6
+and the whole of 6.2 are rerun on the fixed helper. Tasks 2.4, 2.5, 3.x, 4.1
+and 6.1 do not depend on the exported path (2.4 and 2.5 run no nested
+session; 3.x fails before the command; 4.1 is a text check; 6.1's failures
+are invariant failures).
+
 ## Scope boundaries
 
 - **Kani: none** (no proven module touched).
@@ -286,7 +319,7 @@ lane-cost record exists.
   re-check owed on every WirePlumber update, beside the module lists.
 - **No timing verdict.** Lane wall time is not a budgeted path.
 - **No application code, UI file, smoke runner or rule outside build.md
-  changes**, so neither the UI-prefix nor the fingerprinted-script proof
+  changes** (D9 adds one non-fingerprinted script change, the shim's retry), so neither the UI-prefix nor the fingerprinted-script proof
   obligations apply. The lanes run anyway, as D8.
 
 ## Risks

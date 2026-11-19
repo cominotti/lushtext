@@ -318,6 +318,30 @@ fn own_executable() -> std::io::Result<PathBuf> {
     }
 }
 
+/// The path exported as [`SESSION_BIN_ENV`]: the file this binary was started
+/// from, `current` being `std::env::current_exe()`.
+///
+/// `current_exe()` reads `/proc/self/exe`, which Linux names
+/// `<path> (deleted)` once that file was removed. `cargo build` re-uplifts
+/// `target/debug/gtk-lush-session` on every run (it removes the file, then
+/// links the new one), and `scripts/headless-session` builds before each
+/// session, so with several lanes in one worktree the inner stage exported a
+/// name no file had, and a nested `scripts/headless-session` inside the
+/// session failed as an unsupported host. The suffix is dropped whenever the
+/// path as named does not exist, even if the rebuilt file is not linked yet at
+/// this instant: the export names the file at the original path, which is the
+/// same helper, rebuilt.
+fn exported_session_bin(current: PathBuf, exists: impl Fn(&Path) -> bool) -> PathBuf {
+    use std::os::unix::ffi::OsStrExt as _;
+    if exists(&current) {
+        return current;
+    }
+    match current.as_os_str().as_bytes().strip_suffix(b" (deleted)") {
+        Some(original) => PathBuf::from(std::ffi::OsStr::from_bytes(original)),
+        None => current,
+    }
+}
+
 fn is_executable_file(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     path.is_file()
@@ -1267,7 +1291,7 @@ fn run_inner_body(
     if plan.export_bin
         && let Ok(exe) = std::env::current_exe()
     {
-        command.env(SESSION_BIN_ENV, exe);
+        command.env(SESSION_BIN_ENV, exported_session_bin(exe, Path::exists));
     }
     let status = match command.status() {
         Ok(status) => status,
@@ -2288,6 +2312,32 @@ mod tests {
                 format!("{prefix}{location})")
             );
         }
+    }
+
+    #[test]
+    fn the_exported_session_bin_names_the_file_after_a_rebuild_replaced_it() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let rebuilt = Path::new("/w/target/debug/gtk-lush-session");
+        let replaced = PathBuf::from("/w/target/debug/gtk-lush-session (deleted)");
+        // `/proc/self/exe` after a rebuild: the suffix goes, whether or not
+        // the new file is in place at this instant (cargo removes, then links).
+        assert_eq!(exported_session_bin(replaced.clone(), |_| false), rebuilt);
+        assert_eq!(
+            exported_session_bin(replaced, |path| path == rebuilt),
+            rebuilt
+        );
+        // A path that exists as named is kept, even with that suffix.
+        let named = PathBuf::from("/w/odd (deleted)");
+        assert_eq!(exported_session_bin(named.clone(), |_| true), named);
+        // A missing path without the suffix is kept.
+        let plain = PathBuf::from("/w/gone");
+        assert_eq!(exported_session_bin(plain.clone(), |_| false), plain);
+        // Non-UTF-8 names are stripped by bytes.
+        let raw = PathBuf::from(std::ffi::OsStr::from_bytes(b"/w/\xff-bin (deleted)"));
+        assert_eq!(
+            exported_session_bin(raw, |_| false),
+            PathBuf::from(std::ffi::OsStr::from_bytes(b"/w/\xff-bin"))
+        );
     }
 
     #[test]

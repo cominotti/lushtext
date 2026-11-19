@@ -105,6 +105,16 @@
   640 x 480 PNG, and keep a clean guard verdict. Record the figures and the
   load in `evidence/lanes.md`. Rerun it after any later helper change.
 
+- [x] 2.7 Pre-existing blocker found in 6.2 (design D9): the exported
+  `GTK_LUSH_SESSION_BIN` named `… (deleted)` after a concurrent rebuild.
+  Failing first: a session-level reproducer (a private helper copy re-uplifted
+  cargo-style in a loop, sessions running a nested `headless-session
+  check-tools` through the export; 20 of 20 failed) and a unit test of
+  `exported_session_bin` against a stub. Fix: strip the suffix when the path
+  as named does not exist, and retry the shim's `GTK_LUSH_SESSION_BIN`
+  branch; the reproducer then passed 100 of 100. CHANGELOG entry (5.1).
+  Rerun 2.3 and 2.6 on the fixed helper, and restart 6.2.
+
 ## 3. Seeded real-session failure (D7.1, uncommitted)
 
 - [x] 3.1 Temporarily add

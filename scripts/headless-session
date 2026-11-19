@@ -28,9 +28,18 @@ repo=$(cd "$here/.." && pwd)
 unsupported=77
 
 if [[ -n "${GTK_LUSH_SESSION_BIN:-}" ]]; then
-    if [[ -x "$GTK_LUSH_SESSION_BIN" ]]; then
-        exec "$GTK_LUSH_SESSION_BIN" "$@"
-    fi
+    # Inside a session the helper exports its own target/debug path, which a
+    # rebuild in the same worktree replaces at any moment: cargo removes the
+    # file, then links the new one, and exec fails with "Text file busy"
+    # while it is written. Retry briefly, as the build branch below does.
+    shopt -s execfail
+    set +e
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        if [[ -x "$GTK_LUSH_SESSION_BIN" ]]; then
+            exec "$GTK_LUSH_SESSION_BIN" "$@"
+        fi
+        sleep 0.1
+    done
     echo "UNSUPPORTED-HOST: GTK_LUSH_SESSION_BIN=$GTK_LUSH_SESSION_BIN is not executable" >&2
     exit "$unsupported"
 fi

@@ -24,6 +24,15 @@
 - New `session::observe::wireplumber_policy_ready(pw_dump)`: the pure
   readiness predicate, a whole-member match in the bracketed
   `session.services` list, independent of member order.
+- **Fix:** the `GTK_LUSH_SESSION_BIN` the helper exports inside a session
+  no longer carries Linux's ` (deleted)` suffix. It came from
+  `current_exe()` (`/proc/self/exe`) once a concurrent `cargo build` had
+  re-uplifted `target/debug/gtk-lush-session`, so with several lanes in one
+  worktree a nested `scripts/headless-session` inside the session failed as
+  an unsupported host (1 of about 470 nested sessions; 20 of 20 under a
+  re-uplift loop). The suffix is dropped whenever the path as named does not
+  exist, and LushText's shim retries that branch briefly, as its build branch
+  already did (0 of 100 under the same loop).
 - **Breaking (behaviour):** a per-test child of `run_registered_tests()` exits
   with `TEST_FAILURE_EXIT_CODE` before GTK initializes unless
   `session::SESSION_ACTIVE_ENV` is set, which only the session helper's inner
