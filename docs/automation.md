@@ -595,7 +595,13 @@ widget-scoped, diagnostic-only, or known gaps. Stable setup actions include:
   `tab-overflow` blocker holds until the step has landed and both enabled
   states are current. While the buttons show, the trailing control group and
   both buttons are the `tab-strip-overflow-controls`, `tab-strip-scroll-back`
-  and `tab-strip-scroll-forward` visual-geometry surfaces.
+  and `tab-strip-scroll-forward` visual-geometry surfaces, beside the
+  existing `tab-strip` surface (the whole bar).
+  `window.tab_strip.selected_tab_in_view` reports whether the strip shows the
+  whole selected tab (null while the strip is hidden or a pinned tab is
+  selected): a restored session, including one restored behind Focus Mode
+  once the strip shows again, leaves it `true` after
+  `visual-geometry-settled`.
 - `win.toggle-all-tabs` (`Ctrl+Shift+O`) opens the tab strip's All Tabs
   popover, a searchable list of every open tab, or closes it; it is enabled
   only while the All Tabs button shows (two or more tabs on a shown strip).

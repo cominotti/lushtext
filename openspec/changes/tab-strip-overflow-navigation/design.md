@@ -686,6 +686,62 @@ Recorded during implementation, each with its reason:
   nothing); `SignalBag` for the per-page and per-row handlers (it releases
   only all at once, so the keyed map is still needed).
 
+### D14. Implementation round of 2026-11-19 (programme-change `continue`)
+
+- **A133 pins the unchanged-selection re-announce D12 relies on.** The probe
+  scrolled the strip to a *different* page only. It now also sets the strip
+  back to its start with the last page still selected, notifies
+  `selected-page`, and asserts the tab is inside the page again. It holds on
+  the host (GTK 4.24.1 / Adw 1.10.0) and inside `org.gnome.Sdk//50` (4.22.2 /
+  1.9.0, the floor) and `//51` (value 0 → 3337, the tab at 467 + 126 of 598).
+  The earlier ledger row already recorded an `Sdk//50` run of the rest of the
+  probe; the new assertion had none until now.
+- **`selected_tab_in_view` makes the restore shapes observable.** The edge
+  flags prove only the first and last shapes; a middle tab leaves both
+  enabled wherever the strip is. The pure `policy::tab_in_view` decides, in
+  whole pixels, whether the selected tab's bounds in the unpinned scroller lie
+  inside its width; `selected_tab_in_view` reads them through the same
+  `AdwTab` walk as the A132/A133 probes and fails closed (`None`) while the
+  strip is hidden, for a pinned or absent selection and when the tab cannot be
+  found. The evidence surface and `window.tab_strip.selected_tab_in_view`
+  read it, so the widget tests, the automation snapshot and the live check
+  share one reading. Decision: a bool, never a position or a title (the
+  snapshot's privacy boundary).
+- **The live check covers the middle and last shapes and Focus Mode.** Runs
+  `middle` (tab 20 of 40) and `last` (tab 39 of 40) assert
+  `selected_tab_in_view` and the edge flags after `visual-geometry-settled`;
+  run `focus` enters Focus Mode as soon as the automation object answers (18
+  of 40 tabs restored at that point, so the rest restored behind the hidden
+  strip), reads `null`, leaves Focus Mode and reads `true`. The drag step had
+  silently stopped running after ebf932ae removed the duplicate `tab-bar`
+  surface; it now keys on `tab-strip` and fails loudly when absent. All 26
+  steps pass (`live-check-r1.out` in the handoff directory).
+- **The delta specs name what the code exposes.** A requirement for the
+  restore reveal (first, middle, last, behind Focus Mode); the automation
+  delta lists every visual surface and pixel anchor of the change beside the
+  existing `tab-strip`, and the new snapshot field.
+- **Two policy self-tests failed under an agent stage's `TMPDIR`**
+  (`$H/<change>/tmp/<stage>`, 117 bytes): `with-temp-scope.sh
+  --session-runtime` refused the scope (socket path 191 > 99), which would
+  also have refused every widget shard and axiom sample, and
+  `next-rustc-wrapper.py`'s fixtures inherited the real `~/.cargo` config
+  from an ancestor directory. Fixed in `7c6d37fa` (`preexisting-blockers.md`):
+  a short owned `/tmp/lt-rt-<pid>-…` runtime directory when the scope is too
+  deep, and fixtures under a base with no `.cargo` config above it. The merge
+  commit before it ran its hook with `TMPDIR` unset, the one recorded
+  exception. The first smoke run then found the same limit in three more
+  runtime-directory creators: `cargo-gtk-proof`'s live runner fell back to
+  the (deep) system temp dir, and the Mutter capture helper and two Python
+  smokes made theirs in it unchecked, so the session helper refused all
+  three lanes. Each now falls back to `/tmp` by the same rule (the
+  `cargo-gtk-proof` host tests failed first under the stage `TMPDIR`, 2 of
+  9), committed with this group's UI files so the smokes run once.
+- **The run-mutants stub failure of `6ee67e14` is reproduced.** The stub
+  extracted from `6ee67e14^`, run twice at once 2,000 times, interleaved its
+  records 181 times ("ARGS mutants --shard 1/2ARGS"); the fixed stub, 0 of
+  2,000 (`stub-race-repro/` in the handoff directory). The cause is the one
+  the commit names: several `printf` writes per record under `O_APPEND`.
+
 ## Timing
 
 Timing: none (no timed path touched). The `all_tabs_filter_1024` bench case is

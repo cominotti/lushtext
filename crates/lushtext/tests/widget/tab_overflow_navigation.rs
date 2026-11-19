@@ -186,6 +186,12 @@ fn assert_selected_tab_in_view(window: &LushtextWindow, shape: &str) {
         tab_view.page_position(&selected),
         evidence(window).extent
     );
+    // The evidence (and the automation snapshot it feeds) reads the same.
+    assert_eq!(
+        evidence(window).selected_tab_in_view,
+        Some(true),
+        "{shape}: the evidence reports the selected tab in view"
+    );
 }
 
 /// The number of new tabs at which the strip first overflows at `width`.
@@ -734,6 +740,13 @@ fn test_a_restore_leaves_the_selected_tab_in_view() {
     let dir = tempfile::tempdir().expect("session tempdir");
     restore_and_settle(&window, restored_session(dir.path(), 40, 0));
     assert_selected_tab_in_view(&window, "first of forty");
+    // Scrolled to its end, the strip no longer shows the selected first tab.
+    scroll_to(&window, f64::from(max_value(&window)));
+    assert_eq!(
+        evidence(&window).selected_tab_in_view,
+        Some(false),
+        "the evidence reports the selected tab out of view at the strip's end"
+    );
 
     // Shape 2: a tab in the middle of the strip.
     let window = window_at(1000);
@@ -1708,6 +1721,11 @@ fn test_a_restore_behind_focus_mode_shows_the_selected_tab_when_the_strip_return
         assert!(
             !window.imp().tab_bar.is_mapped(),
             "Focus Mode hides the strip during the restore"
+        );
+        assert_eq!(
+            evidence(&window).selected_tab_in_view,
+            None,
+            "a hidden strip shows no tab, in view or not"
         );
         activate_action(&window, "toggle-focus-mode");
         flush_events();

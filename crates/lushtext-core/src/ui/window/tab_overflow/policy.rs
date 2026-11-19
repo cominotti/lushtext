@@ -191,6 +191,15 @@ pub const fn scroll_controls_available(scroller_found: bool) -> bool {
     scroller_found
 }
 
+/// Whether a tab drawn from `start_px` for `width_px`, both relative to the
+/// unpinned scroller and rounded once by the adapter, lies wholly inside the
+/// scroller's `page_px`-wide view: the strip shows the whole tab. A tab or a
+/// view with no width (not allocated yet) is never in view.
+#[must_use]
+pub const fn tab_in_view(start_px: i32, width_px: i32, page_px: i32) -> bool {
+    width_px > 0 && page_px > 0 && start_px >= 0 && start_px.saturating_add(width_px) <= page_px
+}
+
 /// The All Tabs button's tooltip, before its count.
 pub const ALL_TABS_LABEL: &str = "All Tabs";
 /// The subtitle of an All Tabs row whose document has no file.
@@ -453,6 +462,21 @@ mod tests {
             page_px,
             upper_px,
         }
+    }
+
+    #[test]
+    fn a_tab_is_in_view_only_when_the_whole_tab_is_inside_the_page() {
+        assert!(tab_in_view(0, 126, 598));
+        assert!(tab_in_view(472, 126, 598));
+        assert!(!tab_in_view(473, 126, 598), "one pixel past the end");
+        assert!(!tab_in_view(-1, 126, 598), "one pixel before the start");
+        assert!(!tab_in_view(-3_000, 126, 598));
+        assert!(!tab_in_view(0, 0, 598), "an unallocated tab");
+        assert!(!tab_in_view(0, 126, 0), "an unallocated view");
+        assert!(
+            !tab_in_view(i32::MAX, 126, 598),
+            "no overflow at the range end"
+        );
     }
 
     #[test]

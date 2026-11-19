@@ -6,8 +6,10 @@
 //! three cannot drift.
 //!
 //! * **Reading must not mutate.** Every field is a `Cell` read, a slot's
-//!   presence, an action's enabled state or an adjustment read. No field
-//!   schedules a reconcile, starts or stops a step, or moves the strip.
+//!   presence, an action's enabled state, an adjustment read or, for
+//!   `selected_tab_in_view`, a walk of the tab box and one `compute_bounds`.
+//!   No field schedules a reconcile, starts or stops a step, or moves the
+//!   strip.
 //! * **No field may be read from inside a mutable borrow.** Each `Ref` taken
 //!   here is dropped before the struct literal is built, so the accessor is
 //!   callable between any two stages, including from a cancellation observer.
@@ -15,8 +17,8 @@
 //!   children, reached through `try_get()`.
 //!
 //! **No materialization.** The strip's tabs live in an `AdwTabBox` that holds
-//! every page eagerly; this surface reads only the scroller's adjustment and
-//! the workflow's own cells. The All Tabs popover's list is a lazy model whose
+//! every page eagerly; this surface reads the scroller's adjustment, the
+//! selected tab's existing widget and bounds, and the workflow's own cells. The All Tabs popover's list is a lazy model whose
 //! `item()` creates a row object: the surface reads its lengths, its
 //! selection's position and the popover's own cells, never an item, so no
 //! read brings a row object into being.
@@ -64,6 +66,10 @@ pub struct TabOverflowEvidence {
     pub guard_cancellations: u32,
     /// Whether the reveal of the selected tab after a restore still runs.
     pub selection_reveal_pending: bool,
+    /// Whether the strip shows the whole selected tab; `None` while the strip
+    /// is hidden, the selected page is pinned or absent, or its tab has no
+    /// bounds (`LushtextWindow::selected_tab_in_view`).
+    pub selected_tab_in_view: Option<bool>,
     /// The unpinned adjustment in whole pixels, when the scroller exists.
     pub extent: Option<StripScrollExtent>,
     /// Whether the bar lays out right to left.
@@ -147,6 +153,7 @@ pub fn tab_overflow_evidence(window: &LushtextWindow) -> TabOverflowEvidence {
         reconcile_waits_for_terminal: state.waiting_for_terminal.get(),
         guard_cancellations: state.guard_cancellations.get(),
         selection_reveal_pending: state.selection_reveal.borrow().is_some(),
+        selected_tab_in_view: window.selected_tab_in_view(),
         extent: unpinned.map(|scroller| current_extent(&scroller.hadjustment())),
         rtl: bar.as_ref().is_some_and(is_rtl),
         bar_overflowing: bar.as_ref().is_some_and(libadwaita::TabBar::is_overflowing),

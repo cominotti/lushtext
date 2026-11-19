@@ -830,6 +830,10 @@ pub struct AutomationTabStripSnapshot {
     pub scroll_back_enabled: bool,
     /// Whether `win.scroll-tabs-forward` is enabled.
     pub scroll_forward_enabled: bool,
+    /// Whether the strip shows the whole selected tab; `None` while the strip
+    /// is hidden, no tab or a pinned tab is selected, or the tab has no
+    /// bounds yet.
+    pub selected_tab_in_view: Option<bool>,
     /// Number of open tabs.
     pub tab_count: u32,
 }

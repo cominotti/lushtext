@@ -269,6 +269,37 @@ Mirror the A122 commit (`3a086b0e`): a ledger row, `CHANGELOG.md`, an
 - [x] 4.4 Run `openspec validate tab-strip-overflow-navigation --strict` and verify
   it is valid. If anything changed since 3.8, commit and push.
 
+## 5. Implementation round of 2026-11-19 (design D14)
+
+- [x] 5.1 Merge `origin/main` (#118 and its archive) and fix what fails under
+  a stage `TMPDIR`: the two policy self-tests (`with-temp-scope.sh`,
+  `next-rustc-wrapper.py`) and the session runtime directories of
+  `cargo-gtk-proof`'s live runner, the Mutter capture helper and the Python
+  smokes. Verify `make check-policy` passes under the stage `TMPDIR` and
+  `/tmp`, and a widget run, an axiom sample and the three smokes start
+  under it.
+- [x] 5.2 Add the unchanged-selection re-announce to A133 (probe, sample
+  control, ledger, CHANGELOG). Verify the sample `--check` holds on the host
+  and inside `org.gnome.Sdk//50` and `//51`.
+- [x] 5.3 Add `policy::tab_in_view`, `selected_tab_in_view` and its evidence
+  and snapshot field, with unit and widget assertions. Verify the
+  `tab_overflow` unit tests and the `tab_overflow_navigation` widget module
+  pass.
+- [x] 5.4 Extend the live check with the middle and last restore shapes and
+  the return from Focus Mode, and key its drag step on `tab-strip`. Verify all
+  steps pass.
+- [x] 5.5 Add the restore requirement to the change's spec delta and list
+  every exposed surface in the automation delta; update
+  `docs/automation*.md`, `docs/end-user-coverage.md`, the workflow matrix row
+  and `ui/window/AGENTS.md`. Verify `make check-automation-docs` and
+  `openspec validate tab-strip-overflow-navigation --strict`.
+- [x] 5.6 Reproduce the run-mutants stub failure fixed by `6ee67e14`, or
+  record why it cannot be. Verify the fixed stub does not reproduce it.
+- [x] 5.7 Run the final gates once on the final tree, each recorded through
+  `scripts/gate-trees.sh record`: `make check`, `make test` (no `FLAKY`,
+  `OOM-KILL:` or `SESSION-HYGIENE:` line), the rustdoc gate, and the three
+  smokes; commit and push.
+
 ## Workflow follow-up
 
 - Review the change and archive it after merge (`openspec-archive-change`).

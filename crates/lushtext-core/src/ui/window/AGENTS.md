@@ -73,7 +73,9 @@ This folder owns the top-level application shell adapter.
   already selected tab, bring the selected tab into view only by
   re-announcing the unchanged selection to the strip
   (`reveal_selected_tab`, ledger A133), which the window's own
-  selected-page handler ignores.
+  selected-page handler ignores. Whether the strip shows the whole selected
+  tab is read, never inferred from the edge flags, by
+  `selected_tab_in_view` (`window.tab_strip.selected_tab_in_view`).
 - Keep the recent-documents journal in `recent_documents_journal.rs` (the
   `journal` coordination role of `WFR-RECENT-DOCUMENTS`, whose canonical role
   home is `ui/open_popover/`). `recent_open.rs` is that row's window-side

@@ -971,6 +971,7 @@ fn tab_strip_snapshot(
         overflowing: facts.overflowing,
         scroll_back_enabled: facts.scroll_back_enabled,
         scroll_forward_enabled: facts.scroll_forward_enabled,
+        selected_tab_in_view: facts.selected_tab_in_view,
         tab_count,
     }
 }

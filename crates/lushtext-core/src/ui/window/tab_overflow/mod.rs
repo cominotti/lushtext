@@ -104,6 +104,8 @@ pub(crate) struct TabStripOverflowFacts {
     pub(crate) scroll_back_enabled: bool,
     /// Whether Forward may move.
     pub(crate) scroll_forward_enabled: bool,
+    /// Whether the strip shows the whole selected tab, when that applies.
+    pub(crate) selected_tab_in_view: Option<bool>,
 }
 
 impl LushtextWindow {
@@ -135,6 +137,7 @@ impl LushtextWindow {
             overflowing: state.unpinned_overflowing.get(),
             scroll_back_enabled: state.can_scroll_back.get(),
             scroll_forward_enabled: state.can_scroll_forward.get(),
+            selected_tab_in_view: self.selected_tab_in_view(),
         }
     }
 

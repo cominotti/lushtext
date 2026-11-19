@@ -3,9 +3,10 @@
 //! Role: coordination (`execution`, stage-qualified: the scroll stage order)
 //! of `WFR-TAB-OVERFLOW-NAVIGATION`.
 //!
-//! Owns the lookup of the unpinned tab scroller, the 200 ms step animation,
-//! the hold-to-repeat source, and the cancellation of both by the strip's own
-//! input (design D3). The pure decisions (may it move, where does a step
+//! Owns the lookup of the unpinned tab scroller and of a page's tab in it
+//! (with the read of whether the selected tab is in view), the 200 ms step
+//! animation, the hold-to-repeat source, the selection reveal, and the
+//! cancellation of the step and the hold by the strip's own input (design D3). The pure decisions (may it move, where does a step
 //! land) come from `policy.rs`; this module only rounds the adjustment once
 //! into whole pixels and writes the result back.
 //!
@@ -22,7 +23,7 @@ use libadwaita::prelude::*;
 use super::super::LushtextWindow;
 use super::policy::{
     ScrollDirection, StripScrollExtent, TAB_SCROLL_ANIMATION_MS, TAB_SCROLL_REPEAT_DELAY_MS,
-    TAB_SCROLL_REPEAT_INTERVAL_MS, can_scroll, next_scroll_target,
+    TAB_SCROLL_REPEAT_INTERVAL_MS, can_scroll, next_scroll_target, tab_in_view,
 };
 
 /// The deepest descendant level of an `AdwTabBar` the lookup walks: bar →
@@ -111,6 +112,66 @@ pub fn find_tab_scroller(root: &gtk4::Widget, pinned: bool) -> Option<gtk4::Scro
         level = next;
     }
     None
+}
+
+/// The private type `AdwTabBox` draws each page's tab with (`adw-tab.c`),
+/// matched by name because it is not exported.
+///
+/// Kind: external fact; a Libadwaita type name (ledger A132).
+const TAB_WIDGET_TYPE: &str = "AdwTab";
+
+/// The tab `scroller`'s tab box draws for `page`: an `AdwTab` whose `page` is
+/// `page`, among the children of the box's children (the A132 and A133
+/// probes' walk). `None` when the box has another shape (fail closed).
+fn find_page_tab(
+    scroller: &gtk4::ScrolledWindow,
+    page: &libadwaita::TabPage,
+) -> Option<gtk4::Widget> {
+    let tab_box = scroller.child()?;
+    let mut container = tab_box.first_child();
+    while let Some(current) = container {
+        let mut child = current.first_child();
+        while let Some(candidate) = child {
+            if candidate.type_().name() == TAB_WIDGET_TYPE
+                && candidate.find_property("page").is_some()
+                && candidate
+                    .property::<Option<libadwaita::TabPage>>("page")
+                    .is_some_and(|shown| &shown == page)
+            {
+                return Some(candidate);
+            }
+            child = candidate.next_sibling();
+        }
+        container = current.next_sibling();
+    }
+    None
+}
+
+impl LushtextWindow {
+    /// Whether the strip shows the whole selected tab (`policy::tab_in_view`
+    /// over the tab's bounds in the unpinned scroller). `None` while the
+    /// strip is hidden, with no selected page or a pinned one (the pinned
+    /// tabs do not scroll with the strip), and when the scroller or the tab
+    /// cannot be found or has no bounds yet. A read: it moves nothing.
+    pub(crate) fn selected_tab_in_view(&self) -> Option<bool> {
+        let imp = self.imp();
+        let bar = imp.tab_bar.try_get()?;
+        if !bar.is_mapped() {
+            return None;
+        }
+        let page = imp.tab_view.selected_page()?;
+        if page.is_pinned() {
+            return None;
+        }
+        let scroller = imp.tab_overflow.unpinned.borrow().clone()?;
+        let tab = find_page_tab(&scroller, &page)?;
+        let bounds = tab.compute_bounds(&scroller)?;
+        Some(tab_in_view(
+            whole_px(f64::from(bounds.x())),
+            whole_px(f64::from(bounds.width())),
+            scroller.width(),
+        ))
+    }
 }
 
 /// `value` rounded to the nearest whole pixel, saturating at the `i32` range.

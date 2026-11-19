@@ -44,6 +44,25 @@ The system SHALL show Scroll Tabs Back and Scroll Tabs Forward buttons at the tr
 - **WHEN** the interface direction is right-to-left and the strip overflows
 - **THEN** the buttons sit at the strip's trailing (left) end and Back points toward the first tab
 
+### Requirement: A restored session leaves the selected tab in view
+After a session restore whose tabs overflow the strip, the strip SHALL show the whole selected tab, wherever that tab sits in the strip, without changing which tab is selected. When Focus Mode hides the strip during the restore, the strip MUST show the whole selected tab once it is shown again. Bringing the tab into view MUST NOT block automation readiness while the strip is hidden, and a wheel or press on the strip MUST end it.
+
+#### Scenario: First tab selected
+- **WHEN** LushText restores forty tabs whose first tab was selected
+- **THEN** the strip shows the whole first tab, at its start, with Scroll Tabs Back disabled
+
+#### Scenario: Middle tab selected
+- **WHEN** LushText restores forty tabs whose twenty-first tab was selected
+- **THEN** the strip shows the whole selected tab, and both scroll buttons are enabled
+
+#### Scenario: Last tab selected
+- **WHEN** LushText restores forty tabs whose last tab was selected
+- **THEN** the strip shows the whole last tab, at its end, with Scroll Tabs Forward disabled
+
+#### Scenario: Restore behind Focus Mode
+- **WHEN** Focus Mode is active while LushText restores forty tabs, and the user then leaves Focus Mode
+- **THEN** the strip shows the whole selected tab once it is shown again
+
 ### Requirement: Scroll buttons move the strip without changing the selected tab
 Activating a scroll button SHALL scroll the unpinned tabs by about one visible strip width toward the first tab (Back) or the last tab (Forward), without selecting, focusing or reordering any tab. Each button MUST be disabled at its edge. Holding a button pressed MUST keep scrolling until release or the edge.
 
