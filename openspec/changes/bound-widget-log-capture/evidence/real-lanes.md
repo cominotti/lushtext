@@ -2,29 +2,26 @@
 
 ## 4.1 `scripts/heavy.sh --envelope 16G -- make test`
 
-2026-11-19 01:19–01:31, tree at `4b92aed6` (every runner change committed).
-Later commits change only the axiom runner's summary line (`d65b413f`) and
-add `-a` to the stage's greps with a NUL-byte self-test case; neither is on
-the widget path's classification of text output, so this run was not
-repeated for them.
-Load (one-minute) before 10.56, after 10.26: a lane run on a shared
-machine, not a verdict.
+Three runs. The scan's `grep -a` (`a9ef5b13`, `96dcae3e`) is on the widget
+verdict path: it changes nothing for text output but sees past a NUL byte,
+so only the runs at `96dcae3e` and later are the final tree's. None of the
+logs of the three runs contains "binary file matches", so the earlier run
+was not blind on any stream.
 
-- Non-widget: `2628 tests run: 2628 passed (2 slow), 13 skipped`.
-- Widget shards (1724 widget tests), each through `run-widget-tests.sh` and
-  so through the bounded stage:
+| Tree | When | Load before / after | Non-widget | Widget shards (window, editor-page, surfaces) | FLAKY | Envelope |
+| --- | --- | --- | --- | --- | --- | --- |
+| `4b92aed6` | 2026-11-19 01:19–01:31 | 10.56 / 10.26 | 2628 passed | 432, 413, 879 ok, 1 attempt each | 0 | peak 6833 MiB, oom_kill 0 |
+| `96dcae3e` | 02:00–02:21 | 5.69 / 7.78 | 2628 passed | 432, 413, 879 ok, 1 attempt each | **1**: `search_panel::test_an_apply_while_another_window_runs_is_refused` passed on retry | peak 1380 MiB, oom_kill 0 |
+| `4aa2dae4` (code = `96dcae3e`) | 02:44–03:01 | 5.50 / 3.01 | 2628 passed | 432, 413, 879 ok, 1 attempt each | 0 | peak 1663 MiB, oom_kill 0 |
 
-  ```
-  Shard        Status  Attempts  Selected/expected  Minutes  Peak MiB  Failed  FLAKY
-  window       ok      1         432/432            6.5      436       -       -
-  editor-page  ok      1         413/413            4.7      391       -       -
-  surfaces     ok      1         879/879            9.6      1225      -       -
-  heavy: envelope …: peak 6833 MiB, oom_kill 0
-  ```
+No `TEMP-LEAK:`, `OOM-KILL:` or `SESSION-HYGIENE:` line in any run. Main
+was not rerun beside them; the classification equivalence is the
+self-tests' (same regexes, same cases, plus the NUL cases).
 
-- No `TEMP-LEAK:`, `FLAKY`, `OOM-KILL:` or `SESSION-HYGIENE:` line; every
-  shard's warning scan passed. Main was not rerun for comparison here; the
-  classification equivalence is the self-tests' (same regexes, same cases).
+The FLAKY is analysed in `replace-confirm-flake.md`: a Replace All confirm
+refused for good by transient pressure in the process-wide disposal lane
+(reproduced deterministically by a probe), in a test this change does not
+touch, left for its own change.
 
 ## 4.3 Branch flood rerun and `/tmp/tmp.*` names
 

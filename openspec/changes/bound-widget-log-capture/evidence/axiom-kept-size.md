@@ -17,3 +17,15 @@ heavy: envelope …: peak 3882 MiB, oom_kill 0
   run, and the probe binary's own run passed its scan.
 - No whole-output log was written (the runner has no `mktemp` left).
 - Load before 10.56, after 7.01 (one-minute), a lane run, not a verdict.
+
+Rerun on the final tree, `4aa2dae4` (2026-11-19 03:01–03:07, load 3.25
+before, 1.27 after), after the scan's greps took `-a`:
+
+```
+GTK axioms: probe binary passed; 109 sample checks held (0 slow skipped by design; 109 kept lines, 61650 of the 1048576-byte cap).
+heavy: envelope …: peak 1077 MiB, oom_kill 0
+```
+
+The same 109 lines and the same 5.9 % of the cap; the only warning lines in
+the stream were the benign mutter `org.freedesktop.locale1` message the
+runner already classifies.
