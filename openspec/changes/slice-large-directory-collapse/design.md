@@ -3741,7 +3741,7 @@ pass, which applied it.
   - 0:131,072: 168.8 − 63.9 = 104.9 against 140.6 ms;
   - header: at most 72.9 against 131.6 ms.
 - Where a `SLC_SKIP_CACHE` round measured the case directly, it agrees:
-  - 0:131,072: 89.9–105.2 ms (G2, chunks 8,192 and 4,096);
+  - 0:131,072: 91.4–105.2 ms (G2, chunks 8,192 and 4,096);
   - 400:16,385: 106.5–113.8 ms.
 - G1b misses at 0:16,385: 97.3 and 91.5 ms, less 8.0, against 83.3 ms.
   These completions are noise against G1 and G1c, not the rung, but they are
@@ -3753,7 +3753,7 @@ and G1c is the smallest-change rung whose steps pass. So
 
 **G2: `COLLAPSE_UNBOUND_CHUNK_ROWS` stays 8,192.**
 - 16,384 misses: its between-frames turn at 0:131,072 is 5.9–6.5 ms, over
-  6 ms in four of five repetitions.
+  6 ms in three of five repetitions (6,055, 6,291 and 6,508 µs).
 - 8,192 passes: Chunk and Between turns at most 5,253 µs at 0:131,072 and
   5,990 µs at 400:16,385.
 - D23 holds, because 8,192 rows cover 400:4,096's unbound rows.
@@ -3787,6 +3787,15 @@ bar in these rounds.
   the final campaign cannot pass those cases without it.
 - `INPUT_TO_FRAME_US` is not readable from this binary (above). T1 stays
   unread, owed to task 7.1's print.
+- *G1c's 5.7 ms excludes D22.* G1's binary had no hidden-row re-apply
+  (task 11.3, decision 5). D22 now walks the band at the end of each bound
+  step: about 0.33 ms by G3, up to four times an interval under S2. So the
+  production 8-row step is unmeasured and sits at about the 6 ms margin. The
+  rung stands, and the constants round (task 10.7) measures it.
+- *Picture final at 0:N (task 10.16's quick run).* At 0:64 and 0:256,
+  `picture_final_us` equals completion, against R11's first-frame bar. The
+  cause is open: D22 leaving a row drawn, or rows that move when the
+  terminal collapse shrinks the list. Task 10.7's reading attributes it.
 
 **S2 as built (task 11.4).**
 - `COLLAPSE_STEP_ROWS` = 8, and `DIRECT_COLLAPSE_ROWS` is derived from it.
