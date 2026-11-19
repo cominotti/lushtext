@@ -372,8 +372,10 @@ function codeReviewPrompt(attempt) {
 Invoke the code-review skill with exactly this argument: high ${WT}
 That target covers the branch's commits ahead of origin/main and the uncommitted /simplify edits ($H/${CHANGE}/simplify.patch). Never add --fix and never pass a bare level. Edit nothing.
 The findings come back as text in the Skill result. When the result carries none (only "Skill execution completed"), read the fork's transcript: <session transcript dir>/subagents/agent-<agentId>.jsonl, where agentId is in the Skill result; the findings are the input of its last StructuredOutput call.
-Write the findings to $H/${CHANGE}/review-findings-code-review.md. Your final text is the findings verbatim, then two lines:
-skill_findings_source: result-text   (or: skill_findings_source: fork-transcript)
+Write the findings to $H/${CHANGE}/review-findings-code-review.md. Your final text is the findings verbatim, then two lines. The first is exactly one of these two, as written, alone on its line:
+skill_findings_source: result-text
+skill_findings_source: fork-transcript
+The last line is exactly:
 CODE-REVIEW-STATUS: ok
 A code-review high pass always returns findings, so an empty list is a failed read, not a clean review: report it as failed. If you could read neither, end instead with "CODE-REVIEW-STATUS: failed" and the reason on the line before it.
 ${common(`lens-code-review-${attempt}`)}`

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -359,7 +360,6 @@ class ChangedPath:
     path: str
 
 
-DESCRIPTION_RE = re.compile(r"^description:\s*(?P<q>[\"']?)(?P<text>.*?)(?P=q)\s*$", re.MULTILINE)
 DESCRIPTION_PATH_RE = re.compile(r"(?<![\w$/.-])([a-z_]+)/(?![\w/])")
 DATA_KEYWORD_CLAUSE_RE = re.compile(r"\btouching (?P<items>[^;]+);")
 PERF_AREA_CLAUSE_RE = re.compile(r"\bRust changes in (?P<items>.+?) crates\b")
@@ -367,14 +367,20 @@ LIST_SPLIT_RE = re.compile(r"\s*,\s*|\s*\bor\b\s*|\s*\band\b\s*|\bthe GTK Lush\b
 
 
 def read_skill_description(skills_root: Path, skill: str) -> str:
-    """The frontmatter `description` of `.agents/skills/<skill>/SKILL.md`, or ''."""
+    """The frontmatter `description` of `.agents/skills/<skill>/SKILL.md`, or ''.
 
-    try:
-        text = (skills_root / skill / "SKILL.md").read_text(encoding="utf-8")
-    except OSError:
+    It reuses `scripts/validate-agent-skills.py`'s `skill_description`, the
+    one frontmatter reader, so both checks read the same text.
+    """
+
+    spec = importlib.util.spec_from_file_location(
+        "lushtext_validate_agent_skills", Path(__file__).with_name("validate-agent-skills.py")
+    )
+    if spec is None or spec.loader is None:
         return ""
-    match = DESCRIPTION_RE.search(text)
-    return match.group("text") if match else ""
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.skill_description(skills_root / skill) or ""
 
 
 def _list_items(text: str) -> set[str]:

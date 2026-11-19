@@ -180,8 +180,8 @@ class AgentTopologyTests(unittest.TestCase):
         )
 
 
-class ReviewLensTests(unittest.TestCase):
-    """The review fan-out flags of `review-lenses`, from the skills' declared triggers."""
+class LensFixture(unittest.TestCase):
+    """A small workspace and policy shared by the review-lens tests; it has no tests of its own."""
 
     POLICY = {
         "performance": {
@@ -229,6 +229,11 @@ class ReviewLensTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.tempdir.cleanup()
+
+
+
+class ReviewLensTests(LensFixture):
+    """The review fan-out flags of `review-lenses`, from the skills' declared triggers."""
 
     def lenses(self, *changes: tuple[str, str], texts: dict[str, str] | None = None) -> dict[str, object]:
         return TOPOLOGY.review_lenses(
@@ -308,7 +313,7 @@ class ReviewLensTests(unittest.TestCase):
 
 
 
-class LensTriggerDriftTests(ReviewLensTests):
+class LensTriggerDriftTests(LensFixture):
     """The lens selector and the skills' trigger text agree in both directions."""
 
     DATA = (
