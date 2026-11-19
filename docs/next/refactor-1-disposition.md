@@ -89,6 +89,7 @@ The configuration "nine excluded plus the `cargo-gtk-proof` dependency" was not 
 - **A flat PNG buffer in `cargo-gtk-proof`.** No measurement shows a cost.
 - **Rewording the family crates' internal references (21 lines).** It edits Kani inputs read by scheduled shards, for no measured gain.
 - **Unifying `Debounce` and `SupersedingTimer` internals.** There is no observable gain.
+- **Removing `FreshnessToken` / `Fresh<T>` from `gtk-lush-tasks`.** The audit noted that `lushtext-core` never uses them; that is true (zero uses). They are public family API consumed by the adoption lab (`gtk-lush-adoption-lab/src/tasks_page.rs`) and the crate's examples, so removing them is a governed family change (`crates/gtk-lush/GOVERNANCE.md`), not a cleanup, and no change proposes it.
 - **Tier Compacto** (a lighter workflow convention for small workflows).
   - Only one of 22 migrated workflows (`ui/window/print/`) would qualify.
   - The convention's amendment rule would re-migrate every workflow.
