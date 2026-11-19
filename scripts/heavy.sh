@@ -524,6 +524,12 @@ self_test() {
     [ "$status" -eq 0 ] && [[ "$listing" =~ ^lt-heavy-$pid-[A-Za-z0-9]{6}$ ]] \
         || fail "the admission report entry was '$listing' (status $status), expected one lt-heavy-$pid-XXXXXX directory" || return
     [ -z "$(ls -A "$report_base")" ] || fail "heavy.sh left $(ls -A "$report_base") behind" || return
+    # A TMPDIR where the report cannot be made stops heavy.sh at that mktemp,
+    # before the command, and never falls back to a report at `/report`.
+    local report_err
+    report_err=$(TMPDIR=$dir/no-such-base "$me" --mem none -- sh -c 'echo ran' 2>&1) && status=0 || status=$?
+    [ "$status" -ne 0 ] && [[ "$report_err" != *ran* && "$report_err" != */report* ]] \
+        || fail "an unusable TMPDIR gave status $status and: $report_err" || return
 
     # The parallelism policy, pure.
     local case_ want got
@@ -726,11 +732,13 @@ self_test() {
 
 # The admission report's directory: `lt-heavy-<pid>-XXXXXX` in TMPDIR, which
 # with-temp-scope.sh's stale sweep reclaims once this PID is gone (a SIGKILL
-# runs no trap). The report itself is created empty inside it.
+# runs no trap). The report itself is created empty inside it. It runs in a
+# command substitution, where bash clears errexit, so each step's failure is
+# returned explicitly: the caller's assignment then stops heavy.sh.
 heavy_report_dir() {
     local dir
-    dir=$(mktemp -d "${TMPDIR:-/tmp}/lt-heavy-$$-XXXXXX")
-    : >"$dir/report"
+    dir=$(mktemp -d "${TMPDIR:-/tmp}/lt-heavy-$$-XXXXXX") || return
+    : >"$dir/report" || return
     printf '%s\n' "$dir"
 }
 

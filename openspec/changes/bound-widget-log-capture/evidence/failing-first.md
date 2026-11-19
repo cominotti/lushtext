@@ -100,3 +100,21 @@ harness printing `line one`, a NUL line and a line after it showed only
 (pipeline status 0, the verdict unaffected). The new classification check
 failed first (`a NUL byte cut the live stream to 'grep: (standard input):
 binary file matches'`) and passes with `-a`.
+
+## Review: heavy.sh with an unusable TMPDIR (2026-11-19)
+
+`heavy_report_dir` runs in a command substitution, where bash clears
+errexit, so a failed `mktemp -d` left `report_dir` empty and the report path
+`/report`. On main the plain `report=$(mktemp …)` assignment stopped heavy.sh
+at once. The new `heavy.sh --self-test` case (`TMPDIR=<missing base>
+heavy.sh --mem none -- sh -c 'echo ran'`: nonzero, command not run, no
+`/report` in the output) failed first on the branch:
+
+```
+heavy self-test: an unusable TMPDIR gave status 1 and: mktemp: failed to create directory via template ‘…/no-such-base/lt-heavy-452475-XXXXXX’: No such file or directory
+…/scripts/heavy.sh: line 739: /report: Permission denied
+…/scripts/heavy.sh: line 848: /report: Permission denied
+```
+
+and passes once each step of `heavy_report_dir` returns its failure
+(`heavy self-test: ok …`). The command never ran in either tree.
