@@ -39,20 +39,20 @@ Before the first heavy command: take an implementation slot (`parallel-agent-wor
 
 ## 3. The other runners (design D5, D6)
 
-- [ ] 3.1 `run-gtk-axioms.sh`: `run_logged` uses the stage with `WARNING_REGEX`/`BENIGN_NOISE_REGEX`, and for sample runs the keep ERE for `SAMPLE_RESULT_REGEX`, `^skipped \(` and `^\{"axiom"`. `count_sample_results`, the slow-skip count and `runtime_summary` read the kept lines (each reopening `/dev/fd/<n>`). In the runtimes loop, each SDK's kept descriptors stay open until its `runtime_summary` has run, then close. Remove both `LOG_DIR="$(mktemp -d)"` sites and the self-test's plain `mktemp` file, and run the existing `--self-test` cases through the stage. Add cases for 1 MiB kept overflow failing closed and for kept counts equal to a full log's on the self-test samples.
-- [ ] 3.2 `run-mutants.sh`: in `run_cargo_mutants` and the slot runner, replace `log_file`/`log` plus `tee` with the stage in keep-only mode (the existing phrase ERE, `--keep-ignore-case`). Add a self-test case: the phrase is detected, it is absent from a clean stream, and no file is left in a private base.
-- [ ] 3.3 `heavy.sh` and `with-memory-cap.sh` (design D5):
+- [x] 3.1 `run-gtk-axioms.sh`: `run_logged` uses the stage with `WARNING_REGEX`/`BENIGN_NOISE_REGEX`, and for sample runs the keep ERE for `SAMPLE_RESULT_REGEX`, `^skipped \(` and `^\{"axiom"`. `count_sample_results`, the slow-skip count and `runtime_summary` read the kept lines (each reopening `/dev/fd/<n>`). In the runtimes loop, each SDK's kept descriptors stay open until its `runtime_summary` has run, then close. Remove both `LOG_DIR="$(mktemp -d)"` sites and the self-test's plain `mktemp` file, and run the existing `--self-test` cases through the stage. Add cases for 1 MiB kept overflow failing closed and for kept counts equal to a full log's on the self-test samples.
+- [x] 3.2 `run-mutants.sh`: in `run_cargo_mutants` and the slot runner, replace `log_file`/`log` plus `tee` with the stage in keep-only mode (the existing phrase ERE, `--keep-ignore-case`). Add a self-test case: the phrase is detected, it is absent from a clean stream, and no file is left in a private base.
+- [x] 3.3 `heavy.sh` and `with-memory-cap.sh` (design D5):
   - the report goes to `lt-heavy-<pid>-XXXXXX/report` and the envelope pid file to `lt-envelope-<pid>-XXXXXX/pid`, each removed by the existing traps;
   - the with-memory-cap self-test markers and envelope-test directories move under one self-test root removed by its trap.
   - all of the with-memory-cap self-test's scratch (markers, report and once-report files, the admission-lock file, lock and envelope-test directories, the leftover probe) moves under that root.
   Add one self-test case each, asserting the name carries the PID and the entry is removed on exit. Run each new case on the unchanged script first and record its failure in `evidence/failing-first.md`. Run `make check-agent-helpers`, then run `TMPDIR=<private base> make check-agent-helpers` once and record in `evidence/helper-leftovers.md` that the base is empty afterwards (the "Helper self-tests leave nothing" scenario).
-- [ ] 3.4 `with-temp-scope.sh`: add `lt-scan-`, `lt-heavy-` and `lt-envelope-` to `PID_PREFIXES`. Self-test cases: a dead-PID directory aged two hours is swept for each prefix (failing first on the unchanged sweep), a live-PID one is kept, and a plain `tmp.XXXXXXXXXX` entry aged two days is kept (a guard, which passes on main too).
-- [ ] 3.5 The bounded no-trap temp files (design D5):
+- [x] 3.4 `with-temp-scope.sh`: add `lt-scan-`, `lt-heavy-` and `lt-envelope-` to `PID_PREFIXES`. Self-test cases: a dead-PID directory aged two hours is swept for each prefix (failing first on the unchanged sweep), a live-PID one is kept, and a plain `tmp.XXXXXXXXXX` entry aged two days is kept (a guard, which passes on main too).
+- [x] 3.5 The bounded no-trap temp files (design D5):
   - `run-snap-smoke.sh`: `LOG` goes under the trapped `WORK_DIR`;
   - `ci-image-widget-test.sh`: `setup_log` is removed by its existing `cleanup` trap as well as on the normal paths;
   - `blueprint-templates.sh`: both `output_file`s are removed by an `EXIT`/`INT`/`TERM` trap that does not replace the `tmp_dir` trap.
   These lanes need snap, Docker or blueprint-compiler, so run `shellcheck -x` on the three scripts plus `make check-blueprint` and `./scripts/ci-image-widget-test.sh --self-test`. Record that the snap lane is checked by review only.
-- [ ] 3.6 Run `make check-gtk-axioms`, `make check-agent-helpers`, `make check-temp-scope` and `make check-policy` through `scripts/heavy.sh`. Commit and push.
+- [x] 3.6 Run `make check-gtk-axioms`, `make check-agent-helpers`, `make check-temp-scope` and `make check-policy` through `scripts/heavy.sh`. Commit and push.
 
 ## 4. Proof on real lanes
 

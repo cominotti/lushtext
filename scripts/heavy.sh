@@ -511,6 +511,20 @@ self_test() {
     status=0; "$me" true 2>/dev/null || status=$?
     [ "$status" -eq 2 ] || fail "a command without '--' was accepted (status $status)" || return
 
+    # The admission report lives in an `lt-heavy-<pid>-` directory, which
+    # with-temp-scope.sh's stale sweep reclaims after a SIGKILL, and is gone
+    # once heavy.sh exits. The command lists the base while heavy.sh runs.
+    local report_base=$dir/report-base listing
+    mkdir -p "$report_base"
+    # shellcheck disable=SC2016 # expanded by the inner shell
+    TMPDIR=$report_base "$me" --mem none -- sh -c 'ls -A "$0" >"$1"' "$report_base" "$dir/report-listing" &
+    pid=$!
+    status=0; wait "$pid" || status=$?
+    listing=$(cat "$dir/report-listing" 2>/dev/null || true)
+    [ "$status" -eq 0 ] && [[ "$listing" =~ ^lt-heavy-$pid-[A-Za-z0-9]{6}$ ]] \
+        || fail "the admission report entry was '$listing' (status $status), expected one lt-heavy-$pid-XXXXXX directory" || return
+    [ -z "$(ls -A "$report_base")" ] || fail "heavy.sh left $(ls -A "$report_base") behind" || return
+
     # The parallelism policy, pure.
     local case_ want got
     for case_ in "16 1 none:16 8" "24 1 12G:16 8" "12 1 16G:12 8" "5 1 none:5 8" "4 1 none:4 1" \
@@ -710,6 +724,16 @@ self_test() {
     echo "heavy self-test: ok (exit status and SIGTERM propagate; parallelism $alone alone and 4 1 contended, kept when nested; LOCK held shared by the helper, not the command; a pending measurement blocks new starts; nested calls run in place; stale markers do not; a leftover daemon does not hold LOCK; measure.sh self-test passes inside heavy.sh; capped scope: $scope; admission: $admission)"
 }
 
+# The admission report's directory: `lt-heavy-<pid>-XXXXXX` in TMPDIR, which
+# with-temp-scope.sh's stale sweep reclaims once this PID is gone (a SIGKILL
+# runs no trap). The report itself is created empty inside it.
+heavy_report_dir() {
+    local dir
+    dir=$(mktemp -d "${TMPDIR:-/tmp}/lt-heavy-$$-XXXXXX")
+    : >"$dir/report"
+    printf '%s\n' "$dir"
+}
+
 if [ "${1:-}" = "--self-test" ]; then
     self_test
     exit
@@ -767,9 +791,10 @@ if mode=$(agent_lock_inherited); then
     # variable: that exemption belongs to the admission this script makes
     # after taking LOCK itself, so under an outer `--mem none` the envelope
     # is refused (exit 2) like any admission under a shared LOCK.
-    report=$(mktemp "${TMPDIR:-/tmp}/heavy-report.XXXXXX")
+    report_dir=$(heavy_report_dir)
+    report=$report_dir/report
     # shellcheck disable=SC2064 # expand now
-    trap "rm -f '$report'" EXIT
+    trap "rm -rf '$report_dir'" EXIT
     agent_trap_signals
     agent_run_child env LUSHTEXT_ENVELOPE_REPORT="$report" "${child[@]}"
     status=0
@@ -780,13 +805,14 @@ fi
 # One place in the admission order for the whole invocation, kept across the
 # retries below (so it keeps its age) and removed on exit. A measurement's
 # admissions take none: they ignore the order.
-report=$(mktemp "${TMPDIR:-/tmp}/heavy-report.XXXXXX")
+report_dir=$(heavy_report_dir)
+report=$report_dir/report
 ticket=
 if [ "${LUSHTEXT_ADMISSION_NOWAIT:-}" != 1 ]; then
     ticket=$("$here/with-memory-cap.sh" --ticket "$cap" "$$")
 fi
 # shellcheck disable=SC2064 # expand now
-trap "rm -f '$report' ${ticket:+'$ticket'}" EXIT
+trap "rm -rf '$report_dir' ${ticket:+'$ticket'}" EXIT
 
 announced=0
 # The caller's RUSTC_WRAPPER, put back before every pass: once a pass has

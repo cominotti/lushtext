@@ -32,6 +32,13 @@ MUTANTS_SLOT_MAX_GIB="${MUTANTS_SLOT_MAX_GIB:-24}"
 MUTANTS_SLOT_INCREMENTAL="${MUTANTS_SLOT_INCREMENTAL-}"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The phrase scan beside the live stream, in keep-only mode: its exact kept
+# count says whether cargo-mutants printed the no-mutants phrase, and nothing
+# is written to a named file (bls_start, bls_finish).
+# shellcheck source=scripts/bounded-log-scan.sh
+source "${here}/bounded-log-scan.sh"
+# cargo-mutants' ways of saying that it generated nothing to test.
+NO_MUTANTS_REGEX='no relevant mutants|no mutants were generated|found 0 mutants|(^|[^0-9])0 mutants (to test|tested)'
 
 # Cap per-job parallelism so concurrent jobs do not oversubscribe the host.
 # cargo-mutants runs MUTANTS_JOBS build/test pipelines at once; each one launches
@@ -176,23 +183,27 @@ mutants_args() {
     printf '%s\n' "${args[@]}"
 }
 
+# Whether the last phrase scan finished and saw the no-mutants phrase.
+no_mutants_seen() {
+    (( BLS_COMPLETE == 1 && BLS_KEPT_COUNT > 0 ))
+}
+
 run_cargo_mutants() {
     local args=("$@")
-    local log_file
-    log_file="$(mktemp)"
+    local status
 
+    bls_start '' '' "${NO_MUTANTS_REGEX}" --keep-ignore-case
     set +e
-    cargo mutants "${args[@]}" 2>&1 | tee "${log_file}"
-    local status="${PIPESTATUS[0]}"
+    bls_isolated cargo mutants "${args[@]}" 2>&1 | tee -p "/dev/fd/${BLS_IN}"
+    status="${PIPESTATUS[0]}"
     set -e
+    bls_finish
+    bls_release
 
-    if (( status != 0 )) && grep -Eiq 'no relevant mutants|no mutants were generated|found 0 mutants|(^|[^0-9])0 mutants (to test|tested)' "${log_file}"; then
+    if (( status != 0 )) && no_mutants_seen; then
         echo "No relevant mutants were generated; treating this mutation lane as passing."
-        rm -f "${log_file}"
         return 0
     fi
-
-    rm -f "${log_file}"
     return "${status}"
 }
 
@@ -340,7 +351,7 @@ slot_runner_var() {
 run_slot() {
     local slot=$1 out=$2 shard=$3 runner_var=$4 wrapper=$5
     shift 5
-    local name status log started="${SECONDS}"
+    local name status started="${SECONDS}"
     name="$(basename "${slot}")"
     close_slot_fds
     cd "${slot}/src"
@@ -355,19 +366,20 @@ run_slot() {
     if [[ -n "${shard}" ]]; then
         args+=(--shard "${shard}")
     fi
-    log="$(mktemp)"
+    bls_start '' '' "${NO_MUTANTS_REGEX}" --keep-ignore-case
     set +e
-    cargo mutants "${args[@]}" 2>&1 | tee "${log}" | sed -u "s/^/[${name}] /"
+    bls_isolated cargo mutants "${args[@]}" 2>&1 | tee -p "/dev/fd/${BLS_IN}" | sed -u "s/^/[${name}] /"
     status="${PIPESTATUS[0]}"
     set -e
-    if (( status != 0 )) && grep -Eiq 'no relevant mutants|no mutants were generated|found 0 mutants|(^|[^0-9])0 mutants (to test|tested)' "${log}"; then
+    bls_finish
+    bls_release
+    if (( status != 0 )) && no_mutants_seen; then
         echo "[${name}] No relevant mutants in this slot's share; counting it as passing."
         status=0
     fi
     if (( status == 4 )); then
         echo "[${name}] the unmutated baseline failed, so no mutant was tested; it ran under the per-test address-space limit LUSHTEXT_TEST_ADDRESS_SPACE=${LUSHTEXT_TEST_ADDRESS_SPACE:-none} (scripts/test-address-space-runner.sh): check its log for an allocation failure before raising the limit" >&2
     fi
-    rm -f "${log}"
     echo "[${name}] slot wall time $(( SECONDS - started )) s (shard ${shard:-all})"
     return "${status}"
 }
@@ -636,6 +648,29 @@ STUB
 ARGS mutants --workspace --test-workspace=true --test-tool nextest --no-shuffle --timeout 300 --baseline=skip --in-place --shard 1/4
 ARGS mutants --workspace --test-workspace=true --test-tool nextest --no-shuffle --timeout 300 --list" ]] \
         || self_test_fail "the CI/list arguments changed: ${out}"
+
+    # The no-mutants phrase, in the mirror slot and in the CI path: seen, the
+    # lane passes; absent, the exit status stays; either way nothing is left
+    # in a private TMPDIR (the scan names no file).
+    cat >"${dir}/bin/cargo" <<'STUB'
+#!/usr/bin/env bash
+[[ -z "${STUB_PHRASE:-}" ]] || printf 'INFO noise\n%s\nINFO done\n' "${STUB_PHRASE}"
+exit "${STUB_STATUS:-0}"
+STUB
+    mkdir -p "${dir}/scan-base"
+    if ! STUB_STATUS=4 STUB_PHRASE='Found 0 mutants to test' TMPDIR="${dir}/scan-base" MUTANTS_MIRROR=1 MUTANTS_LOCAL_JOBS=1 "${me}" smoke >"${dir}/out" 2>&1 \
+        || ! grep -q 'No relevant mutants in this slot' "${dir}/out"; then
+        self_test_fail "a slot's no-mutants phrase was not detected: $(cat "${dir}/out")"
+    fi
+    status=0; STUB_STATUS=4 TMPDIR="${dir}/scan-base" MUTANTS_MIRROR=1 MUTANTS_LOCAL_JOBS=1 "${me}" smoke >"${dir}/out" 2>&1 || status=$?
+    (( status == 4 )) || self_test_fail "a slot without the phrase gave status ${status}, not 4: $(cat "${dir}/out")"
+    if ! STUB_STATUS=2 STUB_PHRASE='No relevant mutants were found' TMPDIR="${dir}/scan-base" CI=true MUTANTS_MIRROR=1 MUTANTS_SHARD=1/4 "${me}" ci-full >"${dir}/out" 2>&1 \
+        || ! grep -q 'treating this mutation lane as passing' "${dir}/out"; then
+        self_test_fail "the CI path's no-mutants phrase was not detected: $(cat "${dir}/out")"
+    fi
+    status=0; STUB_STATUS=2 STUB_PHRASE='10 mutants tested' TMPDIR="${dir}/scan-base" CI=true MUTANTS_MIRROR=1 MUTANTS_SHARD=1/4 "${me}" ci-full >"${dir}/out" 2>&1 || status=$?
+    (( status == 2 )) || self_test_fail "the CI path without the phrase gave status ${status}, not 2: $(cat "${dir}/out")"
+    [[ -z "$(find "${dir}/scan-base" -mindepth 1 -print -quit)" ]] || self_test_fail "the phrase scan left $(find "${dir}/scan-base" -mindepth 1 | head -n 3)"
 
     echo "run-mutants self-test: ok"
 }
