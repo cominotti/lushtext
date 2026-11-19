@@ -84,10 +84,16 @@ kills the three mutation survivors it owes them.
   - Reach floors and a two-mutant calibration keep the property from passing
     vacuously.
 - **Widen the journal fault domain.** `Fault { None, BeforeEffect,
-  AfterEffect }`. `AfterEffect` makes the effect live but unconfirmed: a later
-  crash may revert it, and a later directory sync confirms it. The unsynced
-  body unlink of a deletion is unconfirmed in the same way. S1–S4 and L1 are
-  re-checked over it.
+  AfterEffect }`. `AfterEffect` covers every manifest commit and the body
+  write: the effect is live but unconfirmed, and the step is reported
+  failed. A later crash may revert it, and a later sync of its directory
+  confirms it. Three other effects are unconfirmed in the same way:
+  - the unsynced unlinks of a body deletion and of orphan cleanup;
+  - a set-aside placement whose sync failed, which the shell counts as
+    placed;
+  - a manifest commit, whose whole entry array reverts together.
+
+  S1–S4 and L1 are re-checked over the widened domain.
 - **Step atomicity.** An `At(k)` fault fails one call inside a multi-write
   step. The result must match a model outcome. Preservation is compared as a
   superset, because an extra preserved copy is safe.
@@ -150,20 +156,25 @@ _None._
   action, automation field or UI file changes. No UI prefix is touched, so
   the three smokes are not owed.
 - **Verification lanes:**
-  - `make test` gains the exhaustive write-shell enumeration and the reach
-    test;
-  - `make test-prop` gains two properties, within recorded budgets;
+  - `make test` gains the exhaustive write-shell enumeration and its call
+    table;
+  - `make test-prop` gains two properties and the model-only reach test,
+    within recorded budgets;
   - the scheduled Kani shards `core-journal-and-write`,
     `core-journal-liveness`, `core-second-writer` and `core-multi-window` each
     run once, detached, on the final code;
   - their budgets become `PENDING DISPATCH (owed by this change)` until two
     `kani.yml` dispatches at the end of implementation;
-  - proof strength is owed for `journal_core`, with its Kani arm sharded;
+  - proof strength is owed for `journal_core`, with its Kani arm sharded,
+    and for `write_protocol`, whose transfer harnesses' environments are
+    rewritten;
   - no GTK axiom, and no timing verdict: no hot path changes, and the
     uninstalled tap costs one thread-local check per action in `test-utils`
     builds only.
 - **Dependencies:** none added. `cargo deny`, cargo-hakari and
-  `cargo-sources.json` are unchanged, and that is verified.
+  `cargo-sources.json` are unchanged, and that is verified. `proptest` and
+  `tempfile` stay dev-dependencies, so the in-crate drivers use neither, and
+  the strategies live in the property target.
 - **Configuration:**
   - `.cargo/mutants.toml` excludes the model, tap and conformance modules;
   - `scripts/kani-shards.py` lists the two model modules in

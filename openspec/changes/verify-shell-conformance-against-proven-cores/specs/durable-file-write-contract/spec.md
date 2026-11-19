@@ -23,15 +23,19 @@ other threads. Shipping builds SHALL compile it to nothing.
 ### Requirement: Durable-write faults are injected at the backend call
 Typed faults SHALL be injected by making one fallible backend call return an
 error, addressed within a protocol run, by a run's destination, or by call
-order across the whole armed scope. The shell
-SHALL build its outcome and recorded error through its ordinary error path,
-so an injected failure, name collision, cross-device rename, or unsupported
-no-replace rename is handled exactly as a real one. The existing single-point
-durable-write test hooks SHALL be expressed through this injection.
+order across the armed scope. The shell SHALL build its outcome and recorded
+error through its ordinary error path, so an injected fault is handled
+exactly as a real one. The existing durable-write test hooks SHALL be
+expressed through this injection, with their setters and callers
+unchanged.
 
 #### Scenario: An injected collision is a real collision
 - **WHEN** the temp-file creation call is made to fail with `AlreadyExists`
 - **THEN** the shell feeds `AlreadyExists` back to the core and tries the next temp name, as it does for a real collision
+
+#### Scenario: Existing hook callers are unchanged
+- **WHEN** an existing test arms a durable-write fault through its `*_for_test` setter, in any module
+- **THEN** the same backend call fails as before, and the test passes without any edit to its source
 
 #### Scenario: An injected cross-device rename takes the real path
 - **WHEN** the rename call of a durable rename is made to fail with a cross-device error

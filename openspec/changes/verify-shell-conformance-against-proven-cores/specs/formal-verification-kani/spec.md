@@ -49,7 +49,7 @@ The modules SHALL be excluded from the mutation scope.
 #### Scenario: One model, two drivers
 - **WHEN** the Kani lane and the conformance tests run after the move
 - **THEN** both execute the same environment-model source, differing only in where its choices come from
-- **AND** every journal and write-protocol harness whose property is unchanged reports the same verdict at the same bound as before the move
+- **AND** every journal and write-protocol harness whose property is unchanged reports the same verdict at the same bound as before the move, every `kani::cover!` reports satisfied, and proof strength kills at least the previously recorded number of `write_protocol` and `journal_core` mutants
 
 #### Scenario: A shipping build compiles no model
 - **WHEN** the release binary is built with default features
@@ -57,21 +57,26 @@ The modules SHALL be excluded from the mutation scope.
 
 ### Requirement: The journal model distinguishes a fault before an effect from one after it
 The journal model's fault SHALL be `None`, `BeforeEffect`, or `AfterEffect`.
-`AfterEffect` SHALL leave a rename step's effect live but unconfirmed while
-the window treats the step as failed. An unsynced body removal SHALL also be
-unconfirmed. A crash SHALL be free to keep or revert any unconfirmed effect.
-A later successful durable write into the same directory SHALL confirm it.
-S1–S4 SHALL be checked over this domain, and L1 SHALL be re-checked with its
-fault-admitting prefix widened to it.
+`AfterEffect` SHALL leave a body write's or manifest commit's effect live but
+unconfirmed while the window treats the step as failed. Unsynced unlinks and
+unsynced set-aside placements SHALL also be unconfirmed. A crash SHALL be
+free to keep or revert any unconfirmed effect, and a later sync of its
+directory SHALL confirm it. S1–S4 SHALL hold over this domain, and L1 after
+any fault-admitting prefix in it.
 
 #### Scenario: An after-rename failure is in the proved domain
-- **WHEN** a registration, body write, manifest commit, or entry removal fails after its rename landed
+- **WHEN** a body write or any manifest commit fails after its rename landed
 - **THEN** the model represents that step as live, unconfirmed, and reported failed, S1–S4 are checked over that outcome, and L1 holds after any prefix that contains it
 
 #### Scenario: A crash may revert an unconfirmed effect
-- **WHEN** a crash follows an after-effect fault, or an unsynced body removal, before any later durable write into the same directory
+- **WHEN** a crash follows an after-effect fault, an unsynced unlink, or a set-aside placement whose directory sync failed, before any later successful sync of the same directory
 - **THEN** the model explores both the kept and the reverted effect
 
+#### Scenario: Every effect whose sync can fail is in the domain
+- **WHEN** the widened model is reviewed against the service
+- **THEN** the body write and every manifest commit (registration, autosave commit, entry removal, orphan cleanup, startup reconciliation) admit `AfterEffect`, every unsynced unlink (a body deletion, an orphan delete) is unconfirmed, and a set-aside placement the service counts as placed after a failed directory sync is unconfirmed
+- **AND** a manifest commit reverts as a whole file, and a reverted set-aside move returns the body to its source
+
 #### Scenario: A restriction is stated, never silent
-- **WHEN** a harness cannot carry the after-effect fault within its shard budget after the shard-fitting order
+- **WHEN** a harness cannot carry part of the widened domain within its shard budget after the shard-fitting order, or the model under-approximates the crash outcomes, as when several unconfirmed manifest commits revert together
 - **THEN** the restriction is stated in that harness, in this specification's delta, and in the programme record as a named residual

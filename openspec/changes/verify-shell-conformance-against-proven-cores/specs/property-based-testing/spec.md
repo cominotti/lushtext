@@ -14,7 +14,7 @@ state-machine testing dependency SHALL be added.
 - **THEN** proptest shrinks the operation script by removing and simplifying operations, every candidate remains a valid script, and the minimized script is written to the property regression file and promoted to a deterministic test before the fix
 
 #### Scenario: Generated scripts reach the protocol
-- **WHEN** the reach test runs the drafts property's strategy at its default case count with a fixed seed
+- **WHEN** the reach test interprets the drafts property's strategy over the journal model, at its default case count with a fixed seed
 - **THEN** the counts of body writes, commits, deletion steps, restores, cleanups, and startups each meet their recorded floor
 
 #### Scenario: The pull-request lane stays within budget
