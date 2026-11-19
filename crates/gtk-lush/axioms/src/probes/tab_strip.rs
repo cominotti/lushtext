@@ -47,7 +47,7 @@ pub struct TabStripFixture {
 }
 
 impl TabStripFixture {
-    /// A bar over `tabs` pages, allocated [`STRIP_WIDTH`] wide.
+    /// A bar over `tabs` pages, allocated `STRIP_WIDTH` wide.
     #[must_use]
     pub fn new(tabs: usize) -> Self {
         let tab_view = libadwaita::TabView::new();
@@ -148,7 +148,7 @@ impl TabStripFixture {
     }
 }
 
-/// The first `GtkScrolledWindow` under `root`, at most [`LOOKUP_DEPTH`]
+/// The first `GtkScrolledWindow` under `root`, at most `LOOKUP_DEPTH`
 /// levels down, that carries the CSS class `pinned` when `pinned`, or does
 /// not carry it otherwise.
 #[must_use]

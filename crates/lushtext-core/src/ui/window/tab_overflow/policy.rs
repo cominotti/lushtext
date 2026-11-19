@@ -166,13 +166,6 @@ pub const fn next_scroll_target(
 
 /// Whether the All Tabs button shows: two or more tabs on a shown strip.
 #[must_use]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the All Tabs half of the change (task 3.3) consumes it"
-    )
-)]
 pub const fn all_tabs_button_visible(tab_count: u32, strip_shown: bool) -> bool {
     strip_shown && tab_count >= 2
 }
@@ -190,6 +183,149 @@ pub const fn group_attached(controls_visible: bool, all_tabs_visible: bool) -> b
 #[must_use]
 pub const fn scroll_controls_available(scroller_found: bool) -> bool {
     scroller_found
+}
+
+/// The All Tabs button's tooltip, before its count.
+pub const ALL_TABS_LABEL: &str = "All Tabs";
+/// The subtitle of an All Tabs row whose document has no file.
+pub const ALL_TABS_UNTITLED_SUBTITLE: &str = "Not saved to a file";
+/// The All Tabs popover's state when no open tab matches the query.
+pub const ALL_TABS_NO_MATCH_TITLE: &str = "No Open Tab Matches";
+/// The accessible name of the popover's search entry.
+pub const ALL_TABS_SEARCH_LABEL: &str = "Search open tabs";
+/// The accessible name of the popover's list.
+pub const ALL_TABS_LIST_LABEL: &str = "Open tabs";
+
+/// How long the All Tabs query must rest before its match count is
+/// announced.
+///
+/// Kind: out: time; a settle delay, the debounced-results lane's cooldown.
+pub const ALL_TABS_ANNOUNCE_DELAY_MS: u32 = 500;
+
+/// The longest accessible row name of the All Tabs list, in characters: a
+/// tab's title, which a file name keeps far below it, plus its state words.
+///
+/// Kind: presentation cap; characters announced, a power of two at or above
+/// the longest name the app builds (a 255-byte file name and its state).
+pub const ALL_TABS_ROW_NAME_MAX_CHARS: usize = 512;
+
+/// The All Tabs button's accessible name and tooltip: "All Tabs, 12 open".
+#[must_use]
+pub fn all_tabs_button_name(tab_count: u32) -> String {
+    format!("{ALL_TABS_LABEL}, {tab_count} open")
+}
+
+/// The match count announced once a query settles.
+#[must_use]
+pub fn all_tabs_match_announcement(matches: u32, total: u32, query_empty: bool) -> String {
+    if query_empty {
+        return match total {
+            1 => "1 open tab".to_owned(),
+            _ => format!("{total} open tabs"),
+        };
+    }
+    match matches {
+        0 => "No open tab matches".to_owned(),
+        1 => format!("1 of {total} open tabs matches"),
+        _ => format!("{matches} of {total} open tabs match"),
+    }
+}
+
+/// One row's accessible name: its title and the states a sighted user reads
+/// from its icons, cut to [`ALL_TABS_ROW_NAME_MAX_CHARS`] characters.
+#[must_use]
+pub fn all_tabs_row_name(title: &str, modified: bool, pinned: bool, current: bool) -> String {
+    let mut name: String = title
+        .chars()
+        .take(ALL_TABS_ROW_NAME_MAX_CHARS / 2)
+        .collect();
+    for (holds, word) in [
+        (current, ", current tab"),
+        (pinned, ", pinned"),
+        (modified, ", unsaved changes"),
+    ] {
+        if holds {
+            name.push_str(word);
+        }
+    }
+    name.chars().take(ALL_TABS_ROW_NAME_MAX_CHARS).collect()
+}
+
+/// What the All Tabs filter reads of one open tab.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AllTabsCandidate<'a> {
+    /// The tab's title.
+    pub title: &'a str,
+    /// The folder of the tab's file, `None` for an untitled document.
+    pub folder: Option<&'a str>,
+}
+
+/// How one candidate matched, best first.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum AllTabsMatch {
+    /// The title starts with the query.
+    TitlePrefix,
+    /// The title contains the query.
+    TitleSubstring,
+    /// The folder contains the query.
+    FolderSubstring,
+    /// The title matches the query fuzzily, by descending score.
+    TitleFuzzy(std::cmp::Reverse<u32>),
+}
+
+/// The rows the All Tabs list shows for `query`, as indexes into
+/// `candidates` (strip order).
+///
+/// An empty query keeps strip order. Otherwise the title is matched first
+/// (prefix, then substring, then the shared fuzzy matcher), and the folder
+/// only by substring, case-insensitively: a short query matches nearly every
+/// absolute path fuzzily, which would list every tab. Ties keep strip order.
+#[must_use]
+pub fn rank_all_tabs(query: &str, candidates: &[AllTabsCandidate<'_>]) -> Vec<u32> {
+    let indexes = (0..candidates.len()).filter_map(|index| u32::try_from(index).ok());
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return indexes.collect();
+    }
+    let folded = trimmed.to_lowercase();
+    let mut fuzzy = crate::services::fuzzy::FuzzyQuery::new(trimmed);
+    let mut ranked: Vec<(AllTabsMatch, u32)> = indexes
+        .filter_map(|index| {
+            let candidate = candidates.get(usize::try_from(index).ok()?)?;
+            let title = candidate.title.to_lowercase();
+            let matched = if title.starts_with(&folded) {
+                AllTabsMatch::TitlePrefix
+            } else if title.contains(&folded) {
+                AllTabsMatch::TitleSubstring
+            } else if candidate
+                .folder
+                .is_some_and(|folder| folder.to_lowercase().contains(&folded))
+            {
+                AllTabsMatch::FolderSubstring
+            } else {
+                AllTabsMatch::TitleFuzzy(std::cmp::Reverse(fuzzy.score(candidate.title)?))
+            };
+            Some((matched, index))
+        })
+        .collect();
+    ranked.sort_unstable();
+    ranked.into_iter().map(|(_, index)| index).collect()
+}
+
+/// Which row the All Tabs list highlights: the selected tab's row for an
+/// empty query, the best match otherwise, none when nothing is listed.
+#[must_use]
+pub fn all_tabs_highlight(query_empty: bool, listed: &[u32], selected: Option<u32>) -> Option<u32> {
+    if listed.is_empty() {
+        return None;
+    }
+    if query_empty
+        && let Some(selected) = selected
+        && let Some(position) = listed.iter().position(|index| *index == selected)
+    {
+        return u32::try_from(position).ok();
+    }
+    Some(0)
 }
 
 /// One control of the end group.
@@ -491,6 +627,100 @@ mod tests {
             focus_after_disable(AllTabs, ControlFocusFacts::new(true, true, false)),
             FocusHandoff::Control(Back)
         );
+    }
+
+    fn candidates<'a>(rows: &[(&'a str, Option<&'a str>)]) -> Vec<AllTabsCandidate<'a>> {
+        rows.iter()
+            .map(|(title, folder)| AllTabsCandidate {
+                title,
+                folder: *folder,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_empty_query_keeps_strip_order_and_highlights_the_selected_tab() {
+        let rows = candidates(&[("a.txt", None), ("b.txt", None), ("c.txt", None)]);
+        let listed = rank_all_tabs("  ", &rows);
+        assert_eq!(listed, vec![0, 1, 2]);
+        assert_eq!(all_tabs_highlight(true, &listed, Some(2)), Some(2));
+        assert_eq!(all_tabs_highlight(true, &listed, None), Some(0));
+        assert_eq!(all_tabs_highlight(true, &[], Some(0)), None);
+    }
+
+    #[test]
+    fn filtering_by_name_lists_the_matches_best_first() {
+        let rows = candidates(&[
+            ("main.rs", Some("/home/u/src")),
+            ("notes.md", Some("/home/u")),
+            ("README.md", Some("/home/u")),
+        ]);
+        let listed = rank_all_tabs("md", &rows);
+        assert_eq!(listed, vec![1, 2], "main.rs does not match md");
+        assert_eq!(all_tabs_highlight(false, &listed, Some(0)), Some(0));
+        assert_eq!(
+            rank_all_tabs("READ", &rows),
+            vec![2],
+            "case-insensitive prefix"
+        );
+    }
+
+    #[test]
+    fn filtering_by_folder_lists_that_folders_file_first() {
+        let rows = candidates(&[
+            ("mod.rs", Some("/home/u/lushtext/src/search")),
+            ("mod.rs", Some("/home/u/lushtext/src/palette")),
+        ]);
+        assert_eq!(rank_all_tabs("palette", &rows), vec![1]);
+        let untitled = candidates(&[("Untitled Document 1", None)]);
+        assert!(rank_all_tabs("palette", &untitled).is_empty());
+    }
+
+    #[test]
+    fn a_title_match_ranks_above_a_folder_match_and_fuzzy_comes_last() {
+        let rows = candidates(&[
+            ("fuzzy-target.txt", Some("/x")),
+            ("other.txt", Some("/x/target")),
+            ("target.txt", Some("/x")),
+        ]);
+        assert_eq!(rank_all_tabs("target", &rows), vec![2, 0, 1]);
+        let fuzzy_only = candidates(&[("palette_shell.rs", Some("/x"))]);
+        assert_eq!(rank_all_tabs("pshl", &fuzzy_only), vec![0]);
+    }
+
+    #[test]
+    fn the_all_tabs_copy() {
+        assert_eq!(all_tabs_button_name(12), "All Tabs, 12 open");
+        assert_eq!(
+            all_tabs_match_announcement(0, 4, false),
+            "No open tab matches"
+        );
+        assert_eq!(
+            all_tabs_match_announcement(1, 4, false),
+            "1 of 4 open tabs matches"
+        );
+        assert_eq!(
+            all_tabs_match_announcement(3, 4, false),
+            "3 of 4 open tabs match"
+        );
+        assert_eq!(all_tabs_match_announcement(4, 4, true), "4 open tabs");
+        assert_eq!(ALL_TABS_UNTITLED_SUBTITLE, "Not saved to a file");
+    }
+
+    #[test]
+    fn a_row_name_carries_its_states_and_stays_bounded() {
+        assert_eq!(
+            all_tabs_row_name("notes.md", true, true, true),
+            "notes.md, current tab, pinned, unsaved changes"
+        );
+        assert_eq!(all_tabs_row_name("a", false, false, false), "a");
+        let long = "x".repeat(4_096);
+        let name = all_tabs_row_name(&long, true, true, true);
+        assert!(name.chars().count() <= ALL_TABS_ROW_NAME_MAX_CHARS);
+        assert!(name.ends_with("unsaved changes"));
+        // The longest name the app builds: a 255-byte file name and every state.
+        let longest = all_tabs_row_name(&"y".repeat(255), true, true, true);
+        assert!(longest.chars().count() <= ALL_TABS_ROW_NAME_MAX_CHARS);
     }
 
     #[test]

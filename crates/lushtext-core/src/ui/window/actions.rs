@@ -127,6 +127,29 @@ impl LushtextWindow {
                     window.scroll_tab_strip(super::tab_overflow::policy::ScrollDirection::Forward);
                 })
                 .build(),
+            gio::ActionEntry::builder("toggle-all-tabs")
+                .activate(|window: &Self, _, _| window.toggle_all_tabs_popover())
+                .build(),
+            gio::ActionEntry::builder("set-all-tabs-visible")
+                .parameter_type(Some(glib::VariantTy::BOOLEAN))
+                .activate(|window: &Self, _, parameter| {
+                    if let Some(visible) =
+                        boolean_action_parameter("set-all-tabs-visible", parameter)
+                    {
+                        window.set_all_tabs_popover_visible(visible);
+                    }
+                })
+                .build(),
+            gio::ActionEntry::builder("set-all-tabs-query")
+                .parameter_type(Some(glib::VariantTy::STRING))
+                .activate(|window: &Self, _, parameter| {
+                    let Some(query) = parameter.and_then(glib::Variant::get::<String>) else {
+                        tracing::error!("set-all-tabs-query: expected string parameter");
+                        return;
+                    };
+                    window.set_all_tabs_popover_query(&query);
+                })
+                .build(),
             gio::ActionEntry::builder("select-tab")
                 .parameter_type(Some(glib::VariantTy::UINT32))
                 .activate(|window: &Self, _, parameter| {
@@ -377,6 +400,7 @@ impl LushtextWindow {
                 .build(),
         ]);
         self.set_open_popover_actions_enabled(false);
+        self.set_all_tabs_query_enabled(false);
         self.set_notes_browser_actions_enabled(false);
         self.set_command_palette_actions_enabled(false);
         self.set_search_panel_actions_enabled(false);
@@ -805,6 +829,7 @@ impl LushtextWindow {
             ("win.toggle-command-palette", "<Control><Shift>p"),
             ("win.toggle-minimap", "<Control><Shift>m"),
             ("win.toggle-search-panel", "<Control><Shift>f"),
+            ("win.toggle-all-tabs", "<Control><Shift>o"),
             ("win.search-next-match", "F4"),
             ("win.search-prev-match", "<Shift>F4"),
             ("win.inspect-line", "<Control><Alt>i"),

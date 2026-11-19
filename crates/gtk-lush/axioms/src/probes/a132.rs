@@ -49,7 +49,7 @@ const ANIMATION_SETTLE: Duration = Duration::from_millis(600);
 /// Tolerance, in pixels, for a value or a position read back.
 const PIXEL: f64 = 1.0;
 
-/// The A132 fixture: [`TABS`] tabs in a [`STRIP_WIDTH`]-wide bar.
+/// The A132 fixture: `TABS` tabs in a `STRIP_WIDTH`-wide bar.
 #[must_use]
 pub fn fixture() -> TabStripFixture {
     TabStripFixture::new(TABS)

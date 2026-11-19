@@ -25,13 +25,20 @@ use gtk_lush_settle::SettleBurst;
 use gtk4::prelude::*;
 
 use super::super::LushtextWindow;
+use super::all_tabs::{SET_ALL_TABS_VISIBLE_ACTION, TOGGLE_ALL_TABS_ACTION};
 use super::controls::{self, OverflowControls, SCROLL_BACK_ACTION, SCROLL_FORWARD_ACTION};
 use super::policy::{
-    ControlFocusFacts, OverflowControl, OverflowFacts, can_scroll_back, can_scroll_forward,
-    controls_visible, focus_after_disable, group_attached, scroll_controls_available,
-    unpinned_overflows,
+    ControlFocusFacts, OverflowControl, OverflowFacts, all_tabs_button_visible, can_scroll_back,
+    can_scroll_forward, controls_visible, focus_after_disable, group_attached,
+    scroll_controls_available, unpinned_overflows,
 };
 use super::scroll_execution::{extent_at, find_tab_scroller, is_rtl};
+
+/// A tab page and its title and pinned handlers.
+pub(super) type PageWatch = (
+    glib::WeakRef<libadwaita::TabPage>,
+    [glib::SignalHandlerId; 2],
+);
 
 /// The workflow's one production state, held by the window. The readiness
 /// blocker, the automation snapshot and the evidence surface all read it.
@@ -70,15 +77,38 @@ pub(crate) struct TabOverflowState {
     pub(super) repeat: RefCell<Option<glib::SourceId>>,
     /// Steps and holds the strip's own input cancelled.
     pub(super) guard_cancellations: Cell<u32>,
+    /// The reveal of the selected tab after a session restore, while it runs.
+    pub(super) selection_reveal: RefCell<Option<super::scroll_execution::SelectionReveal>>,
+    /// Whether the reveal is re-announcing the unchanged selection right now.
+    pub(super) revealing_selection: Cell<bool>,
+    /// Whether the All Tabs button shows, as last published.
+    pub(super) all_tabs_visible: Cell<bool>,
+    /// The count the All Tabs button shows, as last published.
+    pub(super) all_tabs_count: Cell<u32>,
+    /// How many times the All Tabs count changed.
+    pub(super) all_tabs_count_publications: Cell<u32>,
+    /// The focus to give back when the popover closes without an activation.
+    pub(super) saved_focus: RefCell<Option<glib::WeakRef<gtk4::Widget>>>,
+    /// The re-snapshot of an open popover after a tab change.
+    pub(super) resnapshot: gtk_lush_settle::Debounce,
+    /// Each tab page's title and pinned handlers, by page address.
+    pub(super) page_watches: RefCell<std::collections::HashMap<usize, PageWatch>>,
 }
 
 impl TabOverflowState {
-    /// Whether the readiness blocker `tab-overflow` holds: a step, a hold or
-    /// a reconcile is pending.
+    /// Whether the readiness blocker `tab-overflow` holds: a step, a hold, a
+    /// reconcile or a selection reveal is pending, or the All Tabs popover is
+    /// still publishing or retiring rows.
     pub(crate) fn blocks_readiness(&self) -> bool {
         self.reconcile.pending()
             || self.waiting_for_terminal.get()
             || self.repeat.borrow().is_some()
+            || self.selection_reveal.borrow().is_some()
+            || self
+                .controls
+                .borrow()
+                .as_ref()
+                .is_some_and(|controls| controls.popover.publishing())
             || self.animation.borrow().as_ref().is_some_and(|animation| {
                 libadwaita::prelude::AnimationExt::state(animation)
                     == libadwaita::AnimationState::Playing
@@ -154,6 +184,7 @@ impl LushtextWindow {
         });
         self.watch_strip_input(&bar);
         self.watch_tab_model();
+        self.install_all_tabs();
         self.reconcile_tab_overflow();
     }
 
@@ -213,6 +244,10 @@ impl LushtextWindow {
         let window_weak = self.downgrade();
         tab_view.connect_selected_page_notify(move |_| {
             if let Some(window) = window_weak.upgrade() {
+                if !window.tab_overflow_reveals_selection() {
+                    // A selection of the user's own: the strip scrolls to it.
+                    window.end_selection_reveal();
+                }
                 window.cancel_tab_scroll_for_strip_input();
             }
         });
@@ -220,12 +255,15 @@ impl LushtextWindow {
         tab_view.connect_page_attached(move |_, _, _| {
             if let Some(window) = window_weak.upgrade() {
                 window.cancel_tab_scroll_for_strip_input();
+                // The All Tabs count follows the tab set.
+                window.schedule_tab_overflow_reconcile();
             }
         });
         let window_weak = self.downgrade();
         tab_view.connect_page_detached(move |_, _, _| {
             if let Some(window) = window_weak.upgrade() {
                 window.cancel_tab_scroll_for_strip_input();
+                window.schedule_tab_overflow_reconcile();
             }
         });
         let window_weak = self.downgrade();
@@ -247,7 +285,7 @@ impl LushtextWindow {
     /// allocation that notified).
     pub(crate) fn schedule_tab_overflow_reconcile(&self) {
         let state = &self.imp().tab_overflow;
-        if !state.installed.get() {
+        if !state.installed.get() || self.imp().disposing.get() {
             return;
         }
         let _handle = state
@@ -260,6 +298,16 @@ impl LushtextWindow {
                 }
                 handle.finish_if_current();
             });
+    }
+
+    /// Inversion terminal without a publish: the projection batch a reconcile
+    /// waited for was released without its terminal publish (a restore
+    /// cancelled by a superseding empty session), so the reconcile resumes
+    /// here instead of at `refresh_tab_model_projections`.
+    pub(crate) fn resume_tab_overflow_after_unpublished_batch(&self) {
+        if self.imp().tab_overflow.waiting_for_terminal.get() {
+            self.schedule_tab_overflow_reconcile();
+        }
     }
 
     /// Stage 2: decide and publish the controls from the strip's state.
@@ -295,8 +343,8 @@ impl LushtextWindow {
         let was_visible = state.controls_visible.get();
         let visible =
             scroll_controls_available(unpinned.is_some()) && controls_visible(was_visible, facts);
-        // The All Tabs button joins the group with the popover half.
-        let all_tabs_visible = false;
+        let tab_count = u32::try_from(tab_view.n_pages()).unwrap_or(0);
+        let all_tabs_visible = all_tabs_button_visible(tab_count, facts.strip_shown);
         let rtl = is_rtl(&bar);
         let back = visible && extent.is_some_and(|extent| can_scroll_back(extent, rtl));
         let forward = visible && extent.is_some_and(|extent| can_scroll_forward(extent, rtl));
@@ -314,10 +362,29 @@ impl LushtextWindow {
                 self.end_tab_scroll_hold();
             }
         }
-        self.set_tab_scroll_action_enabled(SCROLL_BACK_ACTION, back);
-        self.set_tab_scroll_action_enabled(SCROLL_FORWARD_ACTION, forward);
+        self.set_tab_overflow_action_enabled(SCROLL_BACK_ACTION, back);
+        self.set_tab_overflow_action_enabled(SCROLL_FORWARD_ACTION, forward);
         state.can_scroll_back.set(back);
         state.can_scroll_forward.set(forward);
+
+        if all_tabs_visible {
+            controls.show_all_tabs_count(tab_count);
+            if state.all_tabs_count.replace(tab_count) != tab_count {
+                state
+                    .all_tabs_count_publications
+                    .set(state.all_tabs_count_publications.get().saturating_add(1));
+            }
+        } else if controls.popover.is_visible() {
+            // The group is about to hide or detach: close the popover first,
+            // with its focus restore (design D1).
+            controls.popover.popdown();
+        }
+        if all_tabs_visible != state.all_tabs_visible.get() {
+            controls.all_tabs.set_visible(all_tabs_visible);
+            state.all_tabs_visible.set(all_tabs_visible);
+        }
+        self.set_tab_overflow_action_enabled(TOGGLE_ALL_TABS_ACTION, all_tabs_visible);
+        self.set_tab_overflow_action_enabled(SET_ALL_TABS_VISIBLE_ACTION, all_tabs_visible);
 
         let attached = group_attached(visible, all_tabs_visible);
         if attached != state.group_attached.get() {
@@ -347,7 +414,7 @@ impl LushtextWindow {
         }
     }
 
-    fn set_tab_scroll_action_enabled(&self, name: &str, enabled: bool) {
+    pub(super) fn set_tab_overflow_action_enabled(&self, name: &str, enabled: bool) {
         if let Some(action) = self.lookup_action(name)
             && let Some(simple) = action.downcast_ref::<gtk4::gio::SimpleAction>()
             && simple.is_enabled() != enabled
@@ -358,6 +425,7 @@ impl LushtextWindow {
 
     /// Teardown: drop every pending source and the animation.
     pub(crate) fn dispose_tab_overflow(&self) {
+        self.end_selection_reveal();
         let state = &self.imp().tab_overflow;
         if let Some(source) = state.repeat.take() {
             source.remove();
@@ -368,5 +436,20 @@ impl LushtextWindow {
         state.animation_target.set(None);
         state.waiting_for_terminal.set(false);
         let _ = state.reconcile.clear();
+        let _ = state.resnapshot.invalidate();
+        state.saved_focus.replace(None);
+        let watches: Vec<_> = state.page_watches.borrow_mut().drain().collect();
+        for (_, (page, handlers)) in watches {
+            if let Some(page) = page.upgrade() {
+                for handler in handlers {
+                    page.disconnect(handler);
+                }
+            }
+        }
+        if let Some(controls) = state.controls.borrow().clone()
+            && controls.popover.is_visible()
+        {
+            controls.popover.popdown();
+        }
     }
 }

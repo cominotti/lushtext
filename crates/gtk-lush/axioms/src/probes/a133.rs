@@ -53,7 +53,7 @@ pub struct OverflowNotify {
     pub tabs: u32,
 }
 
-/// The A133 fixture: [`START_TABS`] tabs in a [`STRIP_WIDTH`]-wide bar.
+/// The A133 fixture: `START_TABS` tabs in a `STRIP_WIDTH`-wide bar.
 #[must_use]
 pub fn fixture() -> TabStripFixture {
     TabStripFixture::new(START_TABS)

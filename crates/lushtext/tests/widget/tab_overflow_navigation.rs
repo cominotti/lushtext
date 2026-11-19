@@ -19,12 +19,14 @@ use crate::common::{
 };
 use glib::object::ObjectExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use glib::translate::IntoGlib;
+use gtk4::gio;
 use gtk4::prelude::*;
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::services::filesystem::fixture;
 use lushtext_core::ui::window::{
-    LushtextWindow, TabOverflowEvidence, TabOverflowTestTiming, find_tab_scroller,
-    set_tab_overflow_test_timing, tab_overflow_evidence,
+    LushtextAllTabsPopover, LushtextWindow, TabOverflowEvidence, TabOverflowTestTiming,
+    find_tab_scroller, set_tab_overflow_test_timing, tab_overflow_evidence,
 };
 use std::time::Duration;
 
@@ -68,7 +70,7 @@ fn settled(window: &LushtextWindow) {
     assert!(
         wait_until_or_false(SETTLE, || {
             let now = evidence(window);
-            !now.reconcile_pending && !now.animation_active
+            !now.reconcile_pending && !now.animation_active && !now.selection_reveal_pending
         }),
         "the tab-overflow reconcile never settled"
     );
@@ -102,6 +104,102 @@ fn overflowing_window() -> LushtextWindow {
     // Each page attach scrolled the strip to its new tab (ledger A132).
     scroll_to(&window, 0.0);
     window
+}
+
+fn restored_session(dir: &std::path::Path, count: usize, active: usize) -> SessionData {
+    let tabs = (0..count)
+        .map(|index| {
+            let path = dir.join(format!("restored-{index:02}.txt"));
+            fixture::write_text(&path, "restored\n");
+            SessionTab {
+                path: Some(path),
+                draft_id: None,
+                cursor_line: 0,
+                cursor_col: 0,
+                scroll_line: 0,
+                pinned: false,
+            }
+        })
+        .collect();
+    SessionData {
+        tabs,
+        active_tab_index: Some(active),
+    }
+}
+
+/// Every `AdwTab` of the unpinned tab box with the page it shows (the same
+/// walk as the A132/A133 probes' `tab_widgets`).
+fn tab_widgets(window: &LushtextWindow) -> Vec<(libadwaita::TabPage, gtk4::Widget)> {
+    let mut tabs = Vec::new();
+    let Some(tab_box) = unpinned(window).child() else {
+        return tabs;
+    };
+    let mut container = tab_box.first_child();
+    while let Some(current) = container {
+        let mut child = current.first_child();
+        while let Some(candidate) = child {
+            if candidate.type_().name() == "AdwTab"
+                && candidate.find_property("page").is_some()
+                && let Some(page) = candidate.property::<Option<libadwaita::TabPage>>("page")
+            {
+                tabs.push((page, candidate.clone()));
+            }
+            child = candidate.next_sibling();
+        }
+        container = current.next_sibling();
+    }
+    tabs
+}
+
+/// Whether `page`'s whole tab lies inside the unpinned scroller, to a pixel
+/// (the probes' `tab_inside`).
+fn tab_inside(window: &LushtextWindow, page: &libadwaita::TabPage) -> bool {
+    let scroller = unpinned(window);
+    tab_widgets(window)
+        .into_iter()
+        .find(|(shown, _)| shown == page)
+        .and_then(|(_, tab)| tab.compute_bounds(&scroller))
+        .is_some_and(|bounds| {
+            f64::from(bounds.x()) >= -1.0
+                && f64::from(bounds.x() + bounds.width()) <= f64::from(scroller.width()) + 1.0
+        })
+}
+
+fn restore_and_settle(window: &LushtextWindow, session: SessionData) {
+    let count = i32::try_from(session.tabs.len()).expect("tab count");
+    window.restore_session_for_test(session);
+    assert!(
+        wait_until_or_false(Duration::from_secs(20), || {
+            window.imp().tab_view.n_pages() == count && !window.session_restore_evidence().restoring
+        }),
+        "the restore reached its terminal"
+    );
+    settled(window);
+}
+
+fn assert_selected_tab_in_view(window: &LushtextWindow, shape: &str) {
+    let tab_view = window.imp().tab_view.get();
+    let selected = tab_view.selected_page().expect("a selected tab");
+    assert!(
+        tab_inside(window, &selected),
+        "{shape}: the selected tab (position {}) is out of view at strip value {:?}",
+        tab_view.page_position(&selected),
+        evidence(window).extent
+    );
+}
+
+/// The number of new tabs at which the strip first overflows at `width`.
+fn first_overflowing_count(width: i32) -> usize {
+    let probe = window_at(width);
+    let mut count = 0;
+    while !evidence(&probe).controls_visible {
+        assert!(count < 64, "the strip overflows before 64 tabs");
+        open_tabs(&probe, 1);
+        count += 1;
+    }
+    probe.close();
+    flush_events();
+    count
 }
 
 fn buttons(window: &LushtextWindow) -> (gtk4::Button, gtk4::Button) {
@@ -174,10 +272,13 @@ fn test_no_scroll_buttons_while_the_tabs_fit() {
     assert!(now.scroller_found);
     assert!(!now.controls_visible);
     assert!(
-        !now.group_attached,
-        "nothing to show leaves the group detached"
+        now.group_attached && now.all_tabs_button_visible,
+        "three tabs that fit attach the group for the All Tabs button alone"
     );
+    assert_eq!(now.all_tabs_count, 3);
     assert_eq!(now.scroll_actions_enabled, [false, false]);
+    let (back, forward) = buttons(&window);
+    assert!(!back.property::<bool>("visible") && !forward.property::<bool>("visible"));
 }
 
 #[test]
@@ -219,7 +320,10 @@ fn test_closing_tabs_until_they_fit_hides_the_buttons_and_the_band_keeps_the_sta
         settled(&window);
     }
     let hidden = evidence(&window);
-    assert!(!hidden.group_attached);
+    assert!(
+        hidden.group_attached && hidden.all_tabs_button_visible,
+        "the All Tabs button stays"
+    );
     // A fixed width and tab set: repeated reconciles never flip the state.
     for _ in 0..5 {
         unpinned(&window)
@@ -322,7 +426,8 @@ fn test_a_focused_button_that_disables_hands_focus_on() {
         "focus moves to Back when Forward disables at the end"
     );
 
-    // With both disabled (the tabs fit), focus goes to the selected editor.
+    // With both hidden (the tabs fit), focus goes to the All Tabs button, and
+    // from there to the selected editor once it hides with one tab left.
     // The first tab stays selected, so no close moves the selection: a
     // selection change with focus inside the bar focuses the new tab instead
     // (`select_page`, `adw-tab-box.c`).
@@ -338,6 +443,16 @@ fn test_a_focused_button_that_disables_hands_focus_on() {
         tab_view.close_page(&tab_view.nth_page(tab_view.n_pages() - 1));
         flush_events();
     }
+    settled(&window);
+    let (all_tabs, _) = evidence(&window).all_tabs.expect("the All Tabs button");
+    assert!(
+        gtk4::prelude::GtkWindowExt::focus(&window)
+            .is_some_and(|focus| focus == *all_tabs.upcast_ref::<gtk4::Widget>()
+                || focus.is_ancestor(&all_tabs)),
+        "focus hands off to All Tabs when both scroll buttons are gone"
+    );
+    tab_view.close_page(&tab_view.nth_page(1));
+    flush_events();
     settled(&window);
     let editor = crate::common::active_editor(&window);
     assert!(
@@ -498,7 +613,34 @@ fn test_scroll_buttons_never_take_focus_on_click_and_hold_in_the_capture_phase()
     for button in [&back, &forward] {
         assert!(!button.gets_focus_on_click());
         assert_eq!(hold_gesture(button).button(), gtk4::gdk::BUTTON_PRIMARY);
+        // GtkButton's own click gesture is off, so no pointer release can
+        // emit `clicked` and add a step.
+        let controllers = button.observe_controllers();
+        let own_clicks: Vec<_> = (0..controllers.n_items())
+            .filter_map(|index| controllers.item(index).and_downcast::<gtk4::GestureClick>())
+            .filter(|gesture| gesture.propagation_phase() != gtk4::PropagationPhase::Capture)
+            .collect();
+        assert!(
+            !own_clicks.is_empty(),
+            "GtkButton's own click gesture exists"
+        );
+        assert!(
+            own_clicks
+                .iter()
+                .all(|gesture| gesture.propagation_phase() == gtk4::PropagationPhase::None),
+            "GtkButton's own click gesture is disabled"
+        );
     }
+    // Keyboard activation (Space or Enter) still runs the action: one step.
+    let before = scroll_value(&window);
+    assert!(forward.activate(), "Forward activates");
+    // GtkButton emits `clicked` once its activate timeout ends.
+    crate::common::flush_after_delay(Duration::from_millis(400));
+    settled(&window);
+    assert!(
+        scroll_value(&window) > before,
+        "keyboard activation steps once"
+    );
     assert!(crate::common::accessible_label_is(
         &back,
         "Scroll Tabs Back"
@@ -585,6 +727,71 @@ fn test_a_restored_session_publishes_the_controls_once_at_its_terminal() {
 }
 
 #[test]
+fn test_a_restore_leaves_the_selected_tab_in_view() {
+    // Shape 1: the first of forty tabs, which every later attach scrolls away
+    // from (ledger A132).
+    let window = window_at(1000);
+    let dir = tempfile::tempdir().expect("session tempdir");
+    restore_and_settle(&window, restored_session(dir.path(), 40, 0));
+    assert_selected_tab_in_view(&window, "first of forty");
+
+    // Shape 2: a tab in the middle of the strip.
+    let window = window_at(1000);
+    let dir = tempfile::tempdir().expect("session tempdir");
+    restore_and_settle(&window, restored_session(dir.path(), 40, 20));
+    assert_selected_tab_in_view(&window, "middle of forty");
+
+    // Shape 3: only the last tab overflows, so the selected first tab was
+    // still on screen when the restore's last attach scrolled away from it.
+    let count = first_overflowing_count(1000);
+    let window = window_at(1000);
+    let dir = tempfile::tempdir().expect("session tempdir");
+    restore_and_settle(&window, restored_session(dir.path(), count, 0));
+    assert!(evidence(&window).controls_visible, "{count} tabs overflow");
+    assert_selected_tab_in_view(&window, "first of the first overflowing count");
+}
+
+#[test]
+fn test_a_restore_cancelled_without_publishing_still_reconciles_the_controls() {
+    let window = window_at(1000);
+    let dir = tempfile::tempdir().expect("session tempdir");
+    window.restore_session_for_test(restored_session(dir.path(), 40, 0));
+    // A strip event while the restore's projection batch is open: the
+    // reconcile defers to the batch's terminal.
+    unpinned(&window)
+        .hadjustment()
+        .emit_by_name::<()>("changed", &[]);
+    // One main-loop iteration at a time: the zero-delay reconcile runs before
+    // the restore's idle turns can reach the terminal.
+    let context = glib::MainContext::default();
+    let mut waits = false;
+    for _ in 0..1_000 {
+        context.iteration(false);
+        if evidence(&window).reconcile_waits_for_terminal {
+            waits = true;
+            break;
+        }
+    }
+    assert!(waits, "the reconcile waits for the restore's terminal");
+    assert!(window.session_restore_evidence().restoring);
+    // A superseding empty session cancels the batch without publishing.
+    window.restore_session_for_test(SessionData {
+        tabs: Vec::new(),
+        active_tab_index: None,
+    });
+    assert!(
+        wait_until_or_false(SETTLE, || !evidence(&window).reconcile_pending),
+        "the cancelled batch leaves the tab-overflow reconcile pending"
+    );
+    let now = evidence(&window);
+    assert_eq!(
+        now.controls_visible,
+        window.imp().tab_view.n_pages() > 20,
+        "the controls follow the strip once the batch is released"
+    );
+}
+
+#[test]
 fn test_right_to_left_maps_back_to_the_upper_end() {
     ensure_gtk_init();
     let default_direction = gtk4::Widget::default_direction();
@@ -649,6 +856,726 @@ fn test_the_minimum_window_keeps_the_tab_strip_usable_with_the_controls_shown() 
     );
 }
 
+// --- All Tabs (tasks 3.1-3.4) -------------------------------------------
+
+fn all_tabs(window: &LushtextWindow) -> (gtk4::MenuButton, LushtextAllTabsPopover) {
+    evidence(window)
+        .all_tabs
+        .expect("the All Tabs button and popover are built")
+}
+
+fn popover_settled(window: &LushtextWindow) {
+    assert!(
+        wait_until_or_false(SETTLE, || {
+            let now = evidence(window);
+            !now.row_growth_pending && !now.reconcile_pending
+        }),
+        "the All Tabs popover settled"
+    );
+    if let Some((_, popover)) = evidence(window).all_tabs
+        && popover.is_visible()
+    {
+        // The rows a publish listed are realized in the popover's next frame.
+        crate::common::wait_for_painted_frame(&popover);
+    }
+    flush_events();
+}
+
+fn open_all_tabs(window: &LushtextWindow) {
+    activate_action(window, "toggle-all-tabs");
+    assert!(
+        wait_until_or_false(SETTLE, || evidence(window).popover_visible),
+        "Ctrl+Shift+O's action opens the popover"
+    );
+    popover_settled(window);
+}
+
+/// One realized row: (title, subtitle, modified, pinned, current).
+type PopoverRow = (String, String, bool, bool, bool);
+
+/// The realized rows, top to bottom.
+fn popover_rows(window: &LushtextWindow) -> Vec<PopoverRow> {
+    let (_, popover) = all_tabs(window);
+    let mut rows: Vec<(f32, PopoverRow)> = crate::common::realized_list_rows(&popover.list_view())
+        .into_iter()
+        .filter_map(|row| {
+            let content = row.first_child()?;
+            let marker = content.first_child()?;
+            let text = marker.next_sibling()?;
+            let pinned = text.next_sibling()?;
+            let current = pinned.next_sibling()?;
+            let labels = crate::common::labels_in(&text);
+            let y = row
+                .compute_bounds(&popover.list_view())
+                .map_or(0.0, |bounds| bounds.y());
+            Some((
+                y,
+                (
+                    labels.first().cloned().unwrap_or_default(),
+                    labels.get(1).cloned().unwrap_or_default(),
+                    marker.opacity() > 0.5,
+                    pinned.property::<bool>("visible"),
+                    current.property::<bool>("visible"),
+                ),
+            ))
+        })
+        .collect();
+    rows.sort_by(|left, right| left.0.total_cmp(&right.0));
+    rows.into_iter().map(|(_, row)| row).collect()
+}
+
+fn titles(window: &LushtextWindow) -> Vec<String> {
+    popover_rows(window).into_iter().map(|row| row.0).collect()
+}
+
+fn set_query(window: &LushtextWindow, query: &str) {
+    let parameter = query.to_variant();
+    gio::prelude::ActionGroupExt::activate_action(window, "set-all-tabs-query", Some(&parameter));
+    flush_events();
+    popover_settled(window);
+}
+
+fn open_files(window: &LushtextWindow, dir: &std::path::Path, names: &[&str]) {
+    for name in names {
+        let path = dir.join(name);
+        if let Some(parent) = path.parent() {
+            fixture::create_dir_all(parent);
+        }
+        fixture::write_text(&path, "contents\n");
+        window.open_document(&path);
+    }
+    let count = i32::try_from(names.len()).expect("count");
+    assert!(wait_until_or_false(SETTLE, || {
+        let tab_view = window.imp().tab_view.get();
+        tab_view.n_pages() >= count
+            && (0..tab_view.n_pages()).all(|index| {
+                tab_view
+                    .nth_page(index)
+                    .child()
+                    .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+                    .is_ok_and(|editor| {
+                        editor.load_state()
+                            != lushtext_core::ui::editor_page::EditorLoadState::Loading
+                    })
+            })
+    }));
+    settled(window);
+}
+
+fn focus_is(window: &LushtextWindow, widget: &impl IsA<gtk4::Widget>) -> bool {
+    gtk4::prelude::GtkWindowExt::focus(window).is_some_and(|focus| {
+        focus == *widget.upcast_ref::<gtk4::Widget>() || focus.is_ancestor(widget)
+    })
+}
+
+#[test]
+fn test_all_tabs_button_hides_with_one_tab_and_shows_the_count_from_two() {
+    let window = window_at(1000);
+    open_tabs(&window, 1);
+    let one = evidence(&window);
+    assert!(!one.all_tabs_button_visible);
+    assert!(
+        !one.group_attached,
+        "one tab leaves no end action widget, so no empty space"
+    );
+    assert_eq!(one.all_tabs_actions_enabled, [false, false, false]);
+    open_tabs(&window, 1);
+    let two = evidence(&window);
+    assert!(two.all_tabs_button_visible && two.group_attached);
+    assert_eq!(two.all_tabs_count, 2);
+    assert_eq!(two.all_tabs_actions_enabled, [true, true, false]);
+    let (button, _) = all_tabs(&window);
+    assert!(button.property::<bool>("visible"));
+    assert!(crate::common::accessible_label_is(
+        &button,
+        "All Tabs, 2 open"
+    ));
+    assert_eq!(button.tooltip_text().as_deref(), Some("All Tabs, 2 open"));
+    assert!(!button.gets_focus_on_click());
+}
+
+#[test]
+fn test_all_tabs_count_follows_open_and_close_and_a_restore_publishes_it_once() {
+    let window = window_at(1000);
+    open_tabs(&window, 3);
+    assert_eq!(evidence(&window).all_tabs_count, 3);
+    let tab_view = window.imp().tab_view.get();
+    tab_view.close_page(&tab_view.nth_page(0));
+    flush_events();
+    settled(&window);
+    assert_eq!(evidence(&window).all_tabs_count, 2);
+
+    let restored = window_at(1000);
+    let dir = tempfile::tempdir().expect("session tempdir");
+    let before = evidence(&restored).all_tabs_count_publications;
+    restore_and_settle(&restored, restored_session(dir.path(), 40, 0));
+    let now = evidence(&restored);
+    assert_eq!(now.all_tabs_count, 40);
+    assert_eq!(
+        now.all_tabs_count_publications,
+        before + 1,
+        "the count updates once, at the restore's terminal"
+    );
+}
+
+#[test]
+fn test_all_tabs_count_is_never_clipped_and_the_strip_keeps_a_usable_width() {
+    for (tabs, digits) in [(2usize, 1usize), (12, 2), (128, 3)] {
+        let window = window_at(640);
+        open_tabs(&window, tabs);
+        // A window can start with the previous window's saved tabs.
+        let tab_view = window.imp().tab_view.get();
+        while usize::try_from(tab_view.n_pages()).expect("count") > tabs {
+            tab_view.close_page(&tab_view.nth_page(0));
+            flush_events();
+        }
+        settled(&window);
+        let (button, _) = all_tabs(&window);
+        let label = button
+            .child()
+            .and_downcast::<gtk4::Label>()
+            .expect("the count label");
+        assert_eq!(label.text().chars().count(), digits);
+        assert_eq!(label.text().as_str(), tabs.to_string());
+        let (_, natural, _, _) = label.measure(gtk4::Orientation::Horizontal, -1);
+        assert!(
+            label.width() >= natural,
+            "{tabs} tabs: the count is allocated its whole width"
+        );
+        assert!(
+            unpinned(&window).width() >= 100,
+            "{tabs} tabs: the strip keeps a usable width at the 640 px minimum"
+        );
+        window.close();
+        flush_events();
+    }
+    // Large text: the desktop's text scaling enlarges the count, which still
+    // fits.
+    let settings = gtk4::Settings::default().expect("default GTK settings");
+    let dpi = settings.gtk_xft_dpi();
+    settings.set_gtk_xft_dpi(dpi.max(96 * 1024) * 3 / 2);
+    let window = window_at(640);
+    open_tabs(&window, 128);
+    let (button, _) = all_tabs(&window);
+    let label = button
+        .child()
+        .and_downcast::<gtk4::Label>()
+        .expect("the count label");
+    let (_, natural, _, _) = label.measure(gtk4::Orientation::Horizontal, -1);
+    assert!(label.width() >= natural, "large text: 128 shows in full");
+    assert!(unpinned(&window).width() >= 100);
+    settings.set_gtk_xft_dpi(dpi);
+}
+
+#[test]
+fn test_all_tabs_popover_lists_pinned_modified_and_untitled_rows_in_strip_order() {
+    let window = window_at(1000);
+    let dir = tempfile::tempdir().expect("tempdir");
+    open_files(&window, dir.path(), &["pinned.txt", "modified.txt"]);
+    activate_action(&window, "new-tab");
+    settled(&window);
+    let tab_view = window.imp().tab_view.get();
+    let modified = tab_view
+        .nth_page(1)
+        .child()
+        .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+        .expect("an editor");
+    let buffer = modified.buffer();
+    buffer.insert(&mut buffer.end_iter(), "changed");
+    tab_view.set_page_pinned(&tab_view.nth_page(0), true);
+    tab_view.set_selected_page(&tab_view.nth_page(1));
+    settled(&window);
+    open_all_tabs(&window);
+    let rows = popover_rows(&window);
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].0, "pinned.txt");
+    assert!(rows[0].3, "the pinned row shows its pin");
+    assert_eq!(rows[1].0, "modified.txt");
+    assert!(rows[1].2, "the modified row shows its unsaved-changes dot");
+    assert!(rows[1].4, "the selected tab's row is marked current");
+    assert_eq!(rows[2].1, "Not saved to a file");
+    assert!(!rows[0].2 && !rows[2].2);
+    assert_eq!(
+        evidence(&window).popover_highlighted_position,
+        Some(1),
+        "the current row is the highlighted one"
+    );
+}
+
+#[test]
+fn test_all_tabs_row_text_measures_like_a_label_in_situ() {
+    let window = window_at(1000);
+    let dir = tempfile::tempdir().expect("tempdir");
+    open_files(&window, dir.path(), &["measured.txt", "other.txt"]);
+    open_all_tabs(&window);
+    let (_, popover) = all_tabs(&window);
+    let row = crate::common::realized_list_rows(&popover.list_view())
+        .into_iter()
+        .next()
+        .expect("a realized row");
+    let text_box = row
+        .first_child()
+        .and_then(|content| content.first_child())
+        .and_then(|marker| marker.next_sibling())
+        .and_downcast::<gtk4::Box>()
+        .expect("the row's text box");
+    let mut child = text_box.first_child();
+    let mut compared = 0;
+    while let Some(widget) = child {
+        let row_text = widget
+            .clone()
+            .downcast::<lushtext_core::ui::row_text::LushtextRowText>()
+            .expect("row text");
+        let label = gtk4::Label::new(Some(&row_text.text()));
+        for class in row_text.css_classes() {
+            label.add_css_class(&class);
+        }
+        label.set_ellipsize(row_text.ellipsize());
+        text_box.append(&label);
+        flush_events();
+        let (_, text_height, _, _) = row_text.measure(gtk4::Orientation::Vertical, -1);
+        let (_, label_height, _, _) = label.measure(gtk4::Orientation::Vertical, -1);
+        assert_eq!(
+            text_height,
+            label_height,
+            "{:?}: row text measures like a label inside the popover row",
+            row_text.css_classes()
+        );
+        text_box.remove(&label);
+        compared += 1;
+        child = widget.next_sibling();
+    }
+    assert_eq!(compared, 2, "the title and the subtitle were compared");
+}
+
+#[test]
+fn test_all_tabs_filters_by_name_and_folder_and_restores_strip_order() {
+    let window = window_at(1000);
+    let dir = tempfile::tempdir().expect("tempdir");
+    open_files(
+        &window,
+        dir.path(),
+        &[
+            "notes.md",
+            "main.rs",
+            "README.md",
+            "search/mod.rs",
+            "palette/mod.rs",
+        ],
+    );
+    let tab_view = window.imp().tab_view.get();
+    tab_view.set_selected_page(&tab_view.nth_page(2));
+    settled(&window);
+    open_all_tabs(&window);
+    set_query(&window, "md");
+    let listed = titles(&window);
+    assert_eq!(&listed[..2], ["notes.md", "README.md"]);
+    let folder_has_md = dir
+        .path()
+        .display()
+        .to_string()
+        .to_lowercase()
+        .contains("md");
+    if !folder_has_md {
+        assert!(
+            !listed.contains(&"main.rs".to_owned()),
+            "main.rs does not match md"
+        );
+    }
+    assert_eq!(evidence(&window).popover_highlighted_position, Some(0));
+
+    set_query(&window, "palette");
+    let rows = popover_rows(&window);
+    assert_eq!(rows[0].0, "mod.rs");
+    assert!(
+        rows[0].1.ends_with("palette"),
+        "the palette folder's mod.rs first"
+    );
+    assert_eq!(evidence(&window).popover_highlighted_position, Some(0));
+
+    set_query(&window, "zzzz-no-such-tab");
+    let none = evidence(&window);
+    assert!(none.popover_empty_state_visible, "the no-match state shows");
+    assert_eq!(none.popover_rows, 0);
+    assert_eq!(none.popover_highlighted_position, None);
+
+    set_query(&window, "");
+    let cleared = evidence(&window);
+    assert!(!cleared.popover_empty_state_visible);
+    assert_eq!(cleared.popover_rows, 5);
+    assert_eq!(
+        titles(&window),
+        ["notes.md", "main.rs", "README.md", "mod.rs", "mod.rs"],
+        "a cleared query lists strip order"
+    );
+    assert_eq!(cleared.popover_highlighted_position, Some(2));
+}
+
+#[test]
+fn test_enter_selects_an_out_of_view_tab_with_its_editor_focused() {
+    let window = overflowing_window();
+    let tab_view = window.imp().tab_view.get();
+    // The last tab is the selected one, scrolled out of view.
+    let target = tab_view.nth_page(39);
+    assert_eq!(tab_view.selected_page().as_ref(), Some(&target));
+    assert!(
+        !tab_inside(&window, &target),
+        "the last tab starts out of view"
+    );
+    open_all_tabs(&window);
+    let (_, popover) = all_tabs(&window);
+    for _ in 0..39 {
+        popover_key(&popover, gtk4::gdk::Key::Down);
+    }
+    popover_settled(&window);
+    assert_eq!(evidence(&window).popover_highlighted_position, Some(39));
+    popover.search_entry().emit_by_name::<()>("activate", &[]);
+    flush_events();
+    settled(&window);
+    assert!(
+        !evidence(&window).popover_visible,
+        "activation closes the popover"
+    );
+    assert_eq!(tab_view.selected_page().as_ref(), Some(&target));
+    assert!(
+        tab_inside(&window, &target),
+        "the selected tab is visible in the strip: extent {:?}",
+        evidence(&window).extent
+    );
+    let editor = crate::common::active_editor(&window);
+    assert!(
+        wait_until_or_false(SETTLE, || focus_is(&window, editor.source_view())),
+        "typing goes into the selected document"
+    );
+
+    // A tab that is neither selected nor in view.
+    scroll_to(&window, 0.0);
+    let other = tab_view.nth_page(30);
+    assert!(!tab_inside(&window, &other));
+    open_all_tabs(&window);
+    let (_, popover) = all_tabs(&window);
+    for _ in 0..9 {
+        popover_key(&popover, gtk4::gdk::Key::Up);
+    }
+    assert_eq!(evidence(&window).popover_highlighted_position, Some(30));
+    popover.search_entry().emit_by_name::<()>("activate", &[]);
+    flush_events();
+    settled(&window);
+    assert_eq!(tab_view.selected_page().as_ref(), Some(&other));
+    assert!(
+        tab_inside(&window, &other),
+        "the picked tab is visible in the strip"
+    );
+}
+
+/// Emit `key` on the search entry's highlight-key controller, as a press
+/// in the entry would.
+fn popover_key(popover: &LushtextAllTabsPopover, key: gtk4::gdk::Key) {
+    let controllers = popover.search_entry().observe_controllers();
+    let keys = (0..controllers.n_items())
+        .filter_map(|index| {
+            controllers
+                .item(index)
+                .and_downcast::<gtk4::EventControllerKey>()
+        })
+        .find(|controller| controller.name().as_deref() == Some("all-tabs-highlight-keys"))
+        .expect("the search entry's highlight-key controller");
+    let _ = keys.emit_by_name::<bool>(
+        "key-pressed",
+        &[&key.into_glib(), &0u32, &gtk4::gdk::ModifierType::empty()],
+    );
+    flush_events();
+}
+
+#[test]
+fn test_escape_and_the_shortcut_again_keep_the_selection_and_restore_focus() {
+    let window = window_at(1000);
+    open_tabs(&window, 3);
+    let tab_view = window.imp().tab_view.get();
+    let selected = tab_view.selected_page();
+    let editor = crate::common::active_editor(&window);
+    for close in ["escape", "shortcut", "click"] {
+        crate::common::flush_after_delay(Duration::from_millis(300));
+        assert!(editor.source_view().grab_focus());
+        flush_events();
+        if close == "click" {
+            let (button, _) = all_tabs(&window);
+            button.popup();
+            flush_events();
+            popover_settled(&window);
+        } else {
+            open_all_tabs(&window);
+        }
+        let (_, popover) = all_tabs(&window);
+        assert!(evidence(&window).popover_visible, "{close}: open");
+        match close {
+            "escape" => popover
+                .search_entry()
+                .emit_by_name::<()>("stop-search", &[]),
+            _ => activate_action(&window, "toggle-all-tabs"),
+        }
+        flush_events();
+        assert!(
+            wait_until_or_false(SETTLE, || !evidence(&window).popover_visible),
+            "{close}: closed"
+        );
+        assert_eq!(
+            tab_view.selected_page(),
+            selected,
+            "{close}: selection kept"
+        );
+        assert!(
+            wait_until_or_false(SETTLE, || focus_is(&window, editor.source_view())),
+            "{close}: the focus saved before opening comes back"
+        );
+    }
+}
+
+#[test]
+fn test_a_tab_closed_while_open_leaves_the_list_and_a_stale_activation_only_closes() {
+    let window = window_at(1000);
+    open_tabs(&window, 4);
+    open_all_tabs(&window);
+    let tab_view = window.imp().tab_view.get();
+    let closing = tab_view.nth_page(3);
+    let (_, popover) = all_tabs(&window);
+    // Highlight the row of the tab about to close.
+    for _ in 0..3 {
+        popover_key(&popover, gtk4::gdk::Key::Down);
+    }
+    tab_view.close_page(&closing);
+    flush_events();
+    popover_settled(&window);
+    assert_eq!(
+        evidence(&window).popover_rows,
+        3,
+        "the closed tab's row is gone"
+    );
+    let selected = tab_view.selected_page();
+    assert!(evidence(&window).popover_visible);
+    // A row activated after its tab closed, before the re-snapshot ran:
+    // only the popover closes. The activation runs as the tab detaches, so
+    // the popover still lists the closed tab's row.
+    popover_key(&popover, gtk4::gdk::Key::Up);
+    let highlighted = evidence(&window)
+        .popover_highlighted_position
+        .expect("a highlighted row");
+    let stale = tab_view.nth_page(i32::try_from(highlighted).expect("position"));
+    assert_ne!(Some(&stale), selected.as_ref());
+    let entry = popover.search_entry();
+    let handler = tab_view.connect_page_detached({
+        let stale = stale.clone();
+        move |_, page, _| {
+            if *page == stale {
+                entry.emit_by_name::<()>("activate", &[]);
+            }
+        }
+    });
+    tab_view.close_page(&stale);
+    flush_events();
+    tab_view.disconnect(handler);
+    assert!(wait_until_or_false(SETTLE, || !evidence(&window).popover_visible));
+    assert_eq!(tab_view.selected_page(), selected, "no selection changed");
+}
+
+#[test]
+fn test_256_tabs_at_the_minimum_size_scroll_only_the_list() {
+    let window = window_at(640);
+    open_tabs(&window, 256);
+    open_all_tabs(&window);
+    let now = evidence(&window);
+    assert_eq!(now.popover_rows, 256);
+    assert_eq!(now.popover_listed_rows, 256, "the staged publish finished");
+    let (_, popover) = all_tabs(&window);
+    let entry = popover.search_entry();
+    assert!(
+        entry.is_mapped() && entry.height() > 0,
+        "the search entry stays visible"
+    );
+    let list = popover.list_scroller().vadjustment();
+    assert!(list.upper() > list.page_size(), "only the row list scrolls");
+    assert!(
+        popover.height() <= window.height(),
+        "the popover fits the window's height"
+    );
+    // Every tab is reachable by searching.
+    set_query(&window, "untitled");
+    assert_eq!(evidence(&window).popover_rows, 256);
+}
+
+#[test]
+fn test_ctrl_shift_o_with_one_tab_changes_no_text_and_opens_nothing() {
+    let window = window_at(1000);
+    open_tabs(&window, 1);
+    let editor = crate::common::active_editor(&window);
+    assert!(editor.source_view().grab_focus());
+    let text = crate::common::editor_text(&editor);
+    assert!(!evidence(&window).all_tabs_actions_enabled[0]);
+    activate_action(&window, "toggle-all-tabs");
+    assert!(!evidence(&window).popover_visible);
+    assert_eq!(crate::common::editor_text(&editor), text);
+    // No default text-view or source-view binding claims Ctrl+Shift+O.
+    let controllers = editor.source_view().observe_controllers();
+    for index in 0..controllers.n_items() {
+        let Some(shortcuts) = controllers
+            .item(index)
+            .and_downcast::<gtk4::ShortcutController>()
+        else {
+            continue;
+        };
+        for position in 0..shortcuts.n_items() {
+            let Some(shortcut) = shortcuts.item(position).and_downcast::<gtk4::Shortcut>() else {
+                continue;
+            };
+            let trigger = shortcut
+                .trigger()
+                .map(|trigger| trigger.to_str().to_string());
+            assert!(
+                !trigger.as_deref().is_some_and(|text| {
+                    let text = text.to_lowercase();
+                    text.contains("<shift><control>o") || text.contains("<control><shift>o")
+                }),
+                "{trigger:?} claims Ctrl+Shift+O in the editor"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_one_announcement_per_settled_query() {
+    let window = window_at(1000);
+    open_tabs(&window, 6);
+    open_all_tabs(&window);
+    let before = evidence(&window).popover_announcements;
+    let (_, popover) = all_tabs(&window);
+    for query in ["u", "un", "unt", "unti"] {
+        popover.search_entry().set_text(query);
+        flush_events();
+    }
+    assert!(
+        wait_until_or_false(SETTLE, || !evidence(&window).popover_announcement_pending),
+        "the announcement settles"
+    );
+    assert_eq!(evidence(&window).popover_announcements, before + 1);
+}
+
+#[test]
+fn test_the_group_detaches_with_the_popover_closed_first() {
+    // A tab closed down to one while the popover is open.
+    let window = window_at(1000);
+    open_tabs(&window, 2);
+    open_all_tabs(&window);
+    let tab_view = window.imp().tab_view.get();
+    tab_view.close_page(&tab_view.nth_page(1));
+    flush_events();
+    settled(&window);
+    let now = evidence(&window);
+    assert!(!now.popover_visible && !now.group_attached);
+    // Focus Mode entered while it is open.
+    let window = window_at(1000);
+    open_tabs(&window, 3);
+    open_all_tabs(&window);
+    activate_action(&window, "toggle-focus-mode");
+    flush_events();
+    settled(&window);
+    let now = evidence(&window);
+    assert!(!now.popover_visible && !now.group_attached && !now.all_tabs_button_visible);
+    activate_action(&window, "toggle-focus-mode");
+    flush_events();
+    settled(&window);
+}
+
+#[test]
+fn test_the_popover_retires_its_rows_after_it_closes() {
+    let window = window_at(1000);
+    open_tabs(&window, 64);
+    open_all_tabs(&window);
+    assert!(evidence(&window).popover_listed_rows > 0);
+    let hide = false.to_variant();
+    gio::prelude::ActionGroupExt::activate_action(&window, "set-all-tabs-visible", Some(&hide));
+    flush_events();
+    assert!(!evidence(&window).popover_visible);
+    assert!(
+        wait_until_or_false(SETTLE, || {
+            let now = evidence(&window);
+            !now.row_retirement_pending && now.popover_listed_rows == 0
+        }),
+        "the closed popover's rows are retired"
+    );
+    // Opening again publishes a fresh, staged list.
+    open_all_tabs(&window);
+    assert_eq!(evidence(&window).popover_listed_rows, 64);
+}
+
+#[test]
+fn test_set_all_tabs_visible_and_query_drive_the_popover() {
+    let window = window_at(1000);
+    open_tabs(&window, 3);
+    assert!(
+        !evidence(&window).all_tabs_actions_enabled[2],
+        "no query without the popover"
+    );
+    let show = true.to_variant();
+    gio::prelude::ActionGroupExt::activate_action(&window, "set-all-tabs-visible", Some(&show));
+    flush_events();
+    popover_settled(&window);
+    let open = evidence(&window);
+    assert!(open.popover_visible);
+    assert_eq!(open.all_tabs_actions_enabled, [true, true, true]);
+    set_query(&window, "untitled");
+    assert_eq!(evidence(&window).popover_query_len, 8);
+    let hide = false.to_variant();
+    gio::prelude::ActionGroupExt::activate_action(&window, "set-all-tabs-visible", Some(&hide));
+    flush_events();
+    let closed = evidence(&window);
+    assert!(!closed.popover_visible);
+    assert!(!closed.all_tabs_actions_enabled[2]);
+}
+
+/// Proof 1 of 3 for the popover half — **reentrancy**: the surface reads
+/// stably across popup, filter, growth, close and retirement.
+#[test]
+fn test_all_tabs_evidence_reads_stay_side_effect_free_across_popup_filter_and_close() {
+    let window = window_at(1000);
+    open_tabs(&window, 64);
+    let closed = evidence(&window);
+    assert_eq!(closed, evidence(&window));
+    activate_action(&window, "toggle-all-tabs");
+    let growing = evidence(&window);
+    assert!(growing.popover_visible);
+    assert_eq!(growing, evidence(&window));
+    popover_settled(&window);
+    set_query(&window, "zzzz-no-such-tab");
+    let filtered = evidence(&window);
+    assert!(filtered.popover_rows < 64, "the filter changed the state");
+    assert_eq!(filtered, evidence(&window));
+    activate_action(&window, "toggle-all-tabs");
+    let retiring = evidence(&window);
+    assert!(!retiring.popover_visible);
+    assert_eq!(retiring, evidence(&window));
+}
+
+/// Proof 3 of 3 for the popover half — **no materialization**: reading the
+/// surface never asks the lazy model for a row object.
+#[test]
+fn test_all_tabs_evidence_reads_create_no_row_object() {
+    let window = window_at(1000);
+    open_tabs(&window, 256);
+    open_all_tabs(&window);
+    let before = evidence(&window);
+    assert!(before.popover_row_objects > 0, "GTK realized some rows");
+    assert!(
+        before.popover_row_objects < 256,
+        "only the realized band has row objects"
+    );
+    for _ in 0..5 {
+        assert_eq!(
+            evidence(&window).popover_row_objects,
+            before.popover_row_objects
+        );
+    }
+}
+
 /// Proof 1 of 3 — **reentrancy**: the surface reads stably after each
 /// operation that mutates the state it reads (a reconcile, a step, a hold and
 /// its guard cancellation), and reading changes nothing.
@@ -680,6 +1607,9 @@ fn test_tab_overflow_evidence_reads_stay_side_effect_free_across_step_hold_and_c
 #[test]
 fn test_tab_overflow_evidence_answers_honestly_after_the_window_is_disposed() {
     let window = overflowing_window();
+    // Disposed with the popover open: it is closed first, never disposed
+    // while still parented.
+    open_all_tabs(&window);
     window.close();
     flush_events();
     // SAFETY: this test window is disposed exactly once, and everything after
@@ -688,6 +1618,7 @@ fn test_tab_overflow_evidence_answers_honestly_after_the_window_is_disposed() {
     let disposed = evidence(&window);
     assert!(!disposed.repeat_active && !disposed.animation_active && !disposed.reconcile_pending);
     assert_eq!(disposed.bar_height, 0);
+    assert!(!disposed.popover_visible && !disposed.row_growth_pending);
     assert_eq!(evidence(&window), disposed);
 }
 

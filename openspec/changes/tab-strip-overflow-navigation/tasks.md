@@ -168,7 +168,7 @@ Mirror the A122 commit (`3a086b0e`): a ledger row, `CHANGELOG.md`, an
 
 ## 3. All Tabs button and popover (spec: the All Tabs, search, choose, follow and accessibility requirements, and the automation requirement's popover half)
 
-- [ ] 3.1 Write failing-first widget tests in `tab_overflow_navigation.rs`. Each
+- [x] 3.1 Write failing-first widget tests in `tab_overflow_navigation.rs`. Each
   must fail on main (no button, no action):
   - the button is hidden with one tab, leaving no empty space, and shown with the
     count from two tabs;
@@ -194,11 +194,11 @@ Mirror the A122 commit (`3a086b0e`): a ledger row, `CHANGELOG.md`, an
   - the group detaches with the popover closed first, when a tab closes down to
     one or Focus Mode starts while the popover is open;
   - focus hands off to All Tabs when both scroll buttons are disabled.
-- [ ] 3.2 Write `resources/ui/all-tabs-popover.blp` and run
+- [x] 3.2 Write `resources/ui/all-tabs-popover.blp` and run
   `make blueprint-generate`. Implement `tab_overflow/all_tabs_popover/{mod,imp,item}.rs`
   (D6): `LushtextRowText` rows, `RowAccessibility`, `RowGrowth`,
   `RowRetirement` and `FuzzyQuery`. Verify with `make check-blueprint`.
-- [ ] 3.3 Implement `tab_overflow/all_tabs.rs`:
+- [x] 3.3 Implement `tab_overflow/all_tabs.rs`:
   - the snapshot (no document text);
   - the `Debounce` re-snapshot;
   - focus saved in `set_create_popup_func` and restored;
@@ -209,9 +209,9 @@ Mirror the A122 commit (`3a086b0e`): a ledger row, `CHANGELOG.md`, an
 
   The copy and the accessible name live in `policy.rs`, with unit tests. Verify
   that the 3.1 tests pass.
-- [ ] 3.4 Extend `TabOverflowEvidence` with the popover fields, and its proofs to
+- [x] 3.4 Extend `TabOverflowEvidence` with the popover fields, and its proofs to
   popup, filter, close, growth and retirement. Verify with the widget tests.
-- [ ] 3.5 Automation (the popover half of the `dbus-automation-spine` delta):
+- [x] 3.5 Automation (the popover half of the `dbus-automation-spine` delta):
   - `surfaces.all_tabs_popover_visible`;
   - `active_transient_surface` = `all-tabs-popover`, and the generic
     `active-transient` visual surface (`push_active_transient_surface`);
@@ -222,9 +222,9 @@ Mirror the A122 commit (`3a086b0e`): a ledger row, `CHANGELOG.md`, an
 
   Document them. Verify with `make check-automation-docs` and, if the client
   changed, `make automation-client-self-test`.
-- [ ] 3.6 Add `all_tabs_filter_1024` to `crates/lushtext-core/benches/benchmarks.rs`.
+- [x] 3.6 Add `all_tabs_filter_1024` to `crates/lushtext-core/benches/benchmarks.rs`.
   Run it once through `heavy.sh` and record the figure in `design.md` D6.
-- [ ] 3.7 Update the docs this group owes:
+- [x] 3.7 Update the docs this group owes:
   - the matrix row, declaring the popover files with re-derived cells;
   - README features and shortcut table, and `resources/ui/shortcuts.blp`
     (`make blueprint-generate`);
@@ -237,7 +237,7 @@ Mirror the A122 commit (`3a086b0e`): a ledger row, `CHANGELOG.md`, an
 
   Verify with `make check-agent-docs`, `make check-thresholds` and
   `make check-blueprint`.
-- [ ] 3.8 Extend the accessibility smoke (button name, popover, rows) and the
+- [x] 3.8 Extend the accessibility smoke (button name, popover, rows) and the
   visual-geometry case (popover open at the minimum size, driven by
   `win.set-all-tabs-visible` and `win.set-all-tabs-query`). Run the gate order
   (`testing.md`), then the three smokes, and commit at once (`feat(ui): All Tabs
@@ -245,12 +245,12 @@ Mirror the A122 commit (`3a086b0e`): a ledger row, `CHANGELOG.md`, an
 
 ## 4. Integration
 
-- [ ] 4.1 Run `scripts/heavy.sh --envelope 16G -- make test`. Verify there is no
+- [x] 4.1 Run `scripts/heavy.sh --envelope 16G -- make test`. Verify there is no
   `FLAKY`, `OOM-KILL:` or `SESSION-HYGIENE:` line, and that
   `make check-widget-shards` passes.
-- [ ] 4.2 Run the rustdoc lint gate (`testing.md`, "Rustdoc lint gate") for the
+- [x] 4.2 Run the rustdoc lint gate (`testing.md`, "Rustdoc lint gate") for the
   new module docs. Verify it exits 0.
-- [ ] 4.3 Do a live check with an isolated-XDG launch and 40 tabs restored:
+- [x] 4.3 Do a live check with an isolated-XDG launch and 40 tabs restored:
   - cross the overflow point by resizing;
   - hold Forward, and select a tab during the hold;
   - open the popover by click and by `Ctrl+Shift+O`;
@@ -258,7 +258,15 @@ Mirror the A122 commit (`3a086b0e`): a ledger row, `CHANGELOG.md`, an
 
   Verify stderr has no `Gtk-CRITICAL`, `Gtk-WARNING`, `GLib-GObject-WARNING` or
   `Trying to …` lines.
-- [ ] 4.4 Run `openspec validate tab-strip-overflow-navigation --strict` and verify
+
+  Done headless, never on the live desktop: `live_check.py` (in the change's
+  handoff directory) launched the debug binary with isolated XDG directories
+  under `scripts/headless-session run --profile plain` (1920 × 1080), drove it
+  with the automation client and real pointer and key input through Mutter's
+  RemoteDesktop, and also covered the keyboard step during a tab drag (open
+  item 2 of group 2). It found the release-after-selection step that D12
+  records; all eighteen steps pass on the final tree.
+- [x] 4.4 Run `openspec validate tab-strip-overflow-navigation --strict` and verify
   it is valid. If anything changed since 3.8, commit and push.
 
 ## Workflow follow-up

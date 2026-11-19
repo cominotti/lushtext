@@ -967,6 +967,12 @@ fn append_snapshot_predicate_wait(
     )
 }
 
+/// The All Tabs popover case's target-state action.
+const ALL_TABS_VISIBLE_ACTION: &str = "set-all-tabs-visible";
+/// The query the All Tabs popover case types: every fixture tab matches it
+/// (`tab-NN.txt`), so the filtered list still scrolls at the minimum size.
+const ALL_TABS_POPOVER_QUERY: &str = "tab-";
+
 fn activate_primary_case_action(
     client: &automation::AutomationClient,
     case: &Value,
@@ -975,6 +981,29 @@ fn activate_primary_case_action(
     if scenario_type(case)? == model::WORKSPACE_TREE_REVEAL_SCENARIO {
         let plan = workspace_tree_reveal_plan(case, case_dir)?;
         return activate_reveal(client, &plan.target);
+    }
+    if scenario_type(case)? == model::ALL_TABS_POPOVER_SCENARIO {
+        // Open through the target-state action, then type a query through
+        // the popover's own search entry once it shows.
+        let open = client.activate_window_action(
+            ALL_TABS_VISIBLE_ACTION,
+            automation::ActionParameter::Bool(true),
+        )?;
+        wait_for_snapshot_predicate(
+            client,
+            case_dir,
+            "All Tabs popover visible",
+            Duration::from_secs(10),
+            |snapshot| {
+                snapshot.pointer("/window/surfaces/all_tabs_popover_visible")
+                    == Some(&Value::Bool(true))
+            },
+        )?;
+        client.activate_window_action(
+            "set-all-tabs-query",
+            automation::ActionParameter::String(ALL_TABS_POPOVER_QUERY),
+        )?;
+        return Ok(open);
     }
     client.activate_window_action(
         primary_action_name(case)?,
@@ -2067,6 +2096,7 @@ fn primary_action_name(case: &Value) -> Result<&'static str, String> {
         "command-palette-overlay" => Ok("toggle-command-palette"),
         "open-popover" => Ok("open-recent"),
         model::TAB_STRIP_OVERFLOW_SCENARIO => Ok("scroll-tabs-forward"),
+        model::ALL_TABS_POPOVER_SCENARIO => Ok(ALL_TABS_VISIBLE_ACTION),
         "replace-preview" => Ok("preview-search-panel-replacements"),
         model::WORKSPACE_TREE_REVEAL_SCENARIO => Ok(REVEAL_WORKSPACE_PATH_ACTION),
         other => Err(format!(
@@ -2445,7 +2475,10 @@ fn prepare_tab_strip_overflow_session(
     case_dir: &Path,
     data_dir: &Path,
 ) -> Result<(), String> {
-    if scenario_type(case)? != model::TAB_STRIP_OVERFLOW_SCENARIO {
+    if !matches!(
+        scenario_type(case)?,
+        model::TAB_STRIP_OVERFLOW_SCENARIO | model::ALL_TABS_POPOVER_SCENARIO
+    ) {
         return Ok(());
     }
     let root = case_dir.join("tab-strip-overflow");

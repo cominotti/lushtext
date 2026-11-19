@@ -120,6 +120,10 @@ lane:
 | Do the Scroll Tabs Back and Forward buttons appear only while the unpinned tabs overflow, keep the strip's height, enable by edge, step without changing the selection, repeat on a hold, and yield to the strip's own selection, attach, reorder, transfer, wheel and press? | widget, `tab_overflow_navigation`; `make gtk-axioms` (A132, A133) |
 | Are the two buttons drawn at the strip's trailing end, and does a step leave the header, editor and status bar pixel-identical? | `make visual-geometry-smoke`, scenario `tab-strip-overflow` |
 | Do assistive technologies find Scroll Tabs Back and Scroll Tabs Forward on an overflowing strip? | `make accessibility-smoke`, case `tab-strip-overflow` (`A11Y-TAB-STRIP-OVERFLOW`) |
+| Does the All Tabs button show the open-tab count from two tabs, and does its popover list every tab in strip order (pinned, modified, untitled), filter by name and folder, highlight the best match, select a picked tab into view with its editor focused, follow tabs closing while open, and restore focus on Escape or the shortcut? | widget, `tab_overflow_navigation` |
+| Is the All Tabs popover drawn inside the window at the 640 px minimum with only its list scrolling, without moving the header, the strip or its button? | `make visual-geometry-smoke`, scenario `all-tabs-popover` |
+| Do assistive technologies find the All Tabs button, the popover's entry, list and rows, and does a real `Ctrl+Shift+O` open the popover and, pressed again, give the keyboard back to the editor? | `make accessibility-smoke`, cases `tab-strip-overflow`, `all-tabs-popover`, `all-tabs-dismiss` (`A11Y-TAB-STRIP-OVERFLOW`) |
+| Does a restored session leave its selected tab in view in the strip? | widget, `tab_overflow_navigation` (three restore shapes); `make visual-geometry-smoke`, scenario `tab-strip-overflow` (the step starts with Back disabled) |
 
 ## Scheduled Or Manual Expectations
 

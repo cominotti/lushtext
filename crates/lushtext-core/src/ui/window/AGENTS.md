@@ -66,7 +66,14 @@ This folder owns the top-level application shell adapter.
   writes the unpinned scroller's adjustment (A132) and is cancelled with
   `adw_animation_pause`, never `reset` or `skip`, on every strip event that
   starts a scroll of the strip's own. The lookup fails closed: no scroller, no
-  scroll buttons, nothing logged.
+  scroll buttons, nothing logged. The All Tabs popover lists a snapshot that
+  holds no document text, publishes staged and retires its rows after it
+  closes (`ui::list_growth`, `ui::list_retirement`), and is closed before
+  the end group hides or detaches. A restore's terminal, and a pick of the
+  already selected tab, bring the selected tab into view only by
+  re-announcing the unchanged selection to the strip
+  (`reveal_selected_tab`, ledger A133), which the window's own
+  selected-page handler ignores.
 - Keep the recent-documents journal in `recent_documents_journal.rs` (the
   `journal` coordination role of `WFR-RECENT-DOCUMENTS`, whose canonical role
   home is `ui/open_popover/`). `recent_open.rs` is that row's window-side

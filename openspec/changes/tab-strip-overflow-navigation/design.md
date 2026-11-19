@@ -309,7 +309,11 @@ retirement.
   - a non-empty query ranks by score and highlights the first row.
 
   The cost is O(tabs) short-string scores per keystroke. The
-  `all_tabs_filter_1024` bench case records a figure (Timing below).
+  `all_tabs_filter_1024` bench case records a figure (Timing below):
+  **at most 233 µs per query over 1,024 tabs** (prefix 233 µs, fuzzy 220 µs,
+  substring 167 µs, folder 165 µs, no match 151 µs, empty 0.5 µs; one
+  `heavy.sh` run on 2026-11-18, load 3.28 → 7.55, a regression figure, not a
+  verdict), far inside `B_interact` (8 ms).
 - **Lists:**
   - the first publish into the empty list is staged with
     `ui::list_growth::RowGrowth`;
@@ -468,11 +472,9 @@ Recorded during implementation, each with its reason:
   crosses it at a fixed size. The session's first tab is the case's activation
   file, so the first tab is selected and the strip is not at its end; the
   relationship requires Forward enabled before the step and Back enabled after
-  it. The start position itself is not fixed: the restore selects the first tab
-  and then attaches the rest, and each attach scrolls the strip to its new tab
-  (A132), so a restored strip can show neither its first nor its last tab, with
-  the selected first tab out of view. That is main's behaviour, recorded as an
-  open item for the restore workflow, not changed here.
+  it. Group 3 fixed the start position (D12, "The restore leaves the selected
+  tab in view"), so the case now also requires Back disabled before the step:
+  a step that did nothing would fail it.
 - **Widget tests turn `gtk-enable-animations` off** so the tab box's own
   appear, close and scroll animations complete at once, and wait for one painted
   frame before writing the adjustment: a box scroll that completed at once stays
@@ -489,6 +491,120 @@ Recorded during implementation, each with its reason:
   `is-transferring-page` is read-only and set only by a real drag, so the
   refusal is covered by the guard in `step_tab_strip` and the live check (task
   4.3); the cancellation it triggers is widget-tested by emitting its notify.
+  This stays accepted in group 3: `adw_tab_view_transfer_page` (1.10.0)
+  detaches and attaches without ever setting the property, so no test path
+  exists short of a real drag.
+
+### D12. Implementation decisions (All Tabs half and the open items, tasks 3.1–3.8)
+
+- **The restore leaves the selected tab in view (open item 4 of group 2).**
+  Each page a restore attaches after its selection scrolls the strip to that
+  page's tab (A132), so a restored strip could show neither end with its
+  selected tab out of view; `main` behaved the same, and
+  `preexisting-blockers.md` has no exception. The fix uses the toolkit's own
+  selection scrolling (A133): the restore terminal calls
+  `reveal_selected_tab`, which re-announces the unchanged selection
+  (`notify::selected-page` on the tab view), and `AdwTabBar` runs
+  `select_page` → `scroll_to_tab`, which moves the strip only while the tab
+  is outside the page. A one-shot notify at the terminal was tried first and
+  failed its test: at the terminal the strip had never been allocated (its
+  adjustment read 0 × 0), so `select_page` skipped the scroll (tab width
+  -1), and the attach scrolls queued in the same dispatch still landed at the
+  next allocation. The reveal therefore resumes from a tick callback on the
+  bar, once per frame after the strip is allocated. It re-announces the
+  selection **once**, on the first frame that finds the strip where the
+  previous frame left it (so an attach scroll landing at that allocation
+  finishes first), and ends on the first still frame once
+  `SELECTION_REVEAL_SCROLL_WINDOW_US` (256 ms) has passed since the
+  announcement, at most `SELECTION_REVEAL_MAX_FRAMES` (256) frames. The
+  first version ended on the first repeated value and re-announced on every
+  one; the full visual-geometry run then failed `tab-strip-overflow` in one
+  case of four, and a traced rerun (`reveal-oscillation-before-fix.stderr` in
+  the handoff directory) showed why: with animations on, the strip's own
+  200 ms eased scroll stays on one whole pixel for two frames in its tail,
+  each re-announcement restarted it from there, and the strip oscillated
+  between 1 and 2 px until the frame cap, so readiness reported a strip one
+  pixel from its start (Back enabled) that later settled at 0. After the fix
+  the traced case lands at 0 and the filtered case passed 6 of 6 runs, then
+  every full run; it holds the `tab-overflow`
+  blocker meanwhile, ends at a step, a selection of the user's own, or
+  disposal, and the window's own selected-page handler ignores the
+  re-announcement (nothing changed, so no projection runs twice and no
+  selection generation advances). Failing-first: three restore shapes in
+  `test_a_restore_leaves_the_selected_tab_in_view` (the first of forty, the
+  middle of forty, and a session that overflows only with its last tab),
+  failing at strip value 4247 of 4320 before the fix
+  (`failing-first-g3-items34.log`). The same reveal serves an All Tabs pick
+  of the tab that is already selected, which no selection change would
+  scroll to.
+- **A projection batch released without a publish resumes the reconcile
+  (open item 3).** A restore cancelled by a superseding empty session
+  releases its batch through `cancel_tab_projection_refresh_batch`; at depth 0
+  that now calls `resume_tab_overflow_after_unpublished_batch`, which
+  schedules the reconcile when one was waiting for the terminal. Disposal
+  schedules nothing (`schedule_tab_overflow_reconcile` returns while the
+  window is disposing). Failing-first:
+  `test_a_restore_cancelled_without_publishing_still_reconciles_the_controls`
+  (`failing-first-g3-item3.log`).
+- **The folder matches by substring only.** The filter ranks the title by
+  prefix, then substring, then the shared fuzzy matcher, and the folder only
+  by a case-insensitive substring: a short query fuzzily matches nearly every
+  absolute path (`md` matches `/home/…/main.rs` through any `m…d`), which
+  would list every tab and contradict the spec's "Filter by name" scenario.
+  Ties keep strip order.
+- **Live updates come from the tab pages themselves.** While the popover is
+  open, page attach, detach and reorder, the selection, and each page's
+  `notify::title` and `notify::pinned` re-take the snapshot through one
+  zero-delay `Debounce`. A rename, a Save As and the modified dot all change
+  the page title (`project_modified_indicator`), so no editor signal is
+  needed. The handlers are kept per page and disconnected on detach and
+  dispose.
+- **The popover closes itself on `Ctrl+Shift+O`.** A capture-phase key
+  controller on the popover handles the shortcut while it is open, so the
+  toggle does not depend on the window's managed shortcut reaching a
+  popover's surface; the window action covers the closed state.
+- **Focus comes back after the menu button's own close handling.** The
+  restore runs from an idle after `closed`, so a menu button that focuses
+  itself on close cannot win; a stale activation restores the same way.
+- **The match-count announcement is a `SettleBurst` of
+  `ALL_TABS_ANNOUNCE_DELAY_MS` (500 ms)** on the debounced-results lane. It
+  is not part of the `tab-overflow` blocker: it changes no geometry and no
+  accessible tree, and holding readiness for it would slow every popover
+  wait by half a second.
+- **Large text in the count test** is `gtk-xft-dpi` raised by half (the
+  desktop's text-scaling factor reaches GTK as that DPI), and the count is
+  asserted to get its whole natural width at 1, 2 and 3 digits.
+- **The scroll buttons' own click gesture is off (found by the live check).**
+  The live check (task 4.3, `live_check.py` in the change's handoff
+  directory) held Forward with a real pointer, selected the first tab during
+  the hold, and released: the strip scrolled to the selected tab while held,
+  then stepped forward again on the release. A claim of the hold gesture only
+  denies GtkButton's own bubble-phase click gesture while the claim stands,
+  and after the selection the release reached it and emitted `clicked`. The
+  button's own click gesture is now disabled at the source, the way the file
+  tree disables `GtkTreeExpander`'s (`widget-wiring.md`), so a pointer only
+  ever reaches the hold gesture, which also sets the pressed look
+  (`StateFlags::ACTIVE`); Space and Enter still emit `clicked` through the
+  keybinding. A widget test pins the disabled gesture and the one keyboard
+  step (a real press-and-hold cannot be synthesized there); the live check
+  passes all eighteen of its steps after the fix.
+- **The popover list's pixel anchor is checked against its own surface.**
+  The popover is closed in the before capture, so a before/after anchor
+  cannot be detected there (the first full run failed all four
+  `all-tabs-popover` cases with "surface all-tabs-popover-list is not
+  visible"). The anchor uses the runner's after-only mode
+  (`reference_surface`, as `workspace-tree-reveal` does): the first ink row
+  must sit exactly 6 px below the list's reported top (the highlighted row's
+  own inset, measured identical at both sizes and both schemes), so the
+  rows are proved drawn where the snapshot says they are.
+- **Visual geometry.** A new scenario, `all-tabs-popover`, opens the popover
+  with `win.set-all-tabs-visible` and filters it with `win.set-all-tabs-query`
+  on the restored 41-tab session at 1260 × 900 and the 640 × 600 minimum;
+  it requires the popover closed before and open after as the active
+  transient surface, the strip and the All Tabs button unmoved, and the
+  search entry and the list inside the window's height, with pixel anchors
+  on the button and the rows. The `tab-strip-overflow` case gains the All
+  Tabs button's anchor and the Back-disabled-before requirement (open item 1).
 
 ## Risks / Trade-offs
 

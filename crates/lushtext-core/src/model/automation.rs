@@ -940,6 +940,8 @@ pub struct AutomationSurfaceSnapshot {
     pub search_panel_visible: bool,
     /// Header Open popover state.
     pub open_popover_visible: bool,
+    /// Whether the tab strip's All Tabs popover is open.
+    pub all_tabs_popover_visible: bool,
     /// Whether the active editor's Line Inspector is open (Protected View).
     pub line_inspector_visible: bool,
     /// Side-by-side Markdown preview pane state.
@@ -1551,6 +1553,7 @@ mod tests {
             command_palette_visible: false,
             search_panel_visible: true,
             open_popover_visible: false,
+            all_tabs_popover_visible: false,
             line_inspector_visible: false,
             preview_pane_visible: false,
             preview_mode: false,

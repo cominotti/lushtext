@@ -596,6 +596,21 @@ widget-scoped, diagnostic-only, or known gaps. Stable setup actions include:
   states are current. While the buttons show, the trailing control group and
   both buttons are the `tab-strip-overflow-controls`, `tab-strip-scroll-back`
   and `tab-strip-scroll-forward` visual-geometry surfaces.
+- `win.toggle-all-tabs` (`Ctrl+Shift+O`) opens the tab strip's All Tabs
+  popover, a searchable list of every open tab, or closes it; it is enabled
+  only while the All Tabs button shows (two or more tabs on a shown strip).
+  For setup prefer the target-state `win.set-all-tabs-visible` (bool), and
+  type a query with `win.set-all-tabs-query` (string) while the popover is
+  open. `surfaces.all_tabs_popover_visible` reports it, and
+  `active_transient_surface` is `all-tabs-popover` while it is the topmost
+  open transient surface after the command palette, workspace search and the
+  Open popover. The `tab-overflow` blocker also holds while the popover is
+  still publishing (its staged first rows) or retiring rows after it closed.
+  Its visual-geometry surfaces are `tab-strip-all-tabs` (the button, with the
+  pixel anchor `tab-strip-all-tabs-ink`), `all-tabs-popover`,
+  `all-tabs-popover-search` and `all-tabs-popover-list` (pixel anchor
+  `all-tabs-popover-list-ink`), absent with `controls-hidden` and
+  `popover-closed`. The snapshot never carries a tab title or path.
 
 Use target-state actions for scenario setup whenever possible. They are easier
 to reason about than parity toggles because repeated calls converge on the same

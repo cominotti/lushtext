@@ -1311,6 +1311,19 @@ marking new ones `UNCLASSIFIED`; review the diff).
 |---|---|---|---|---|
 | `crates/lushtext-core/src/ui/window/startup_data.rs` | `MAX_PENDING_ACTIVATION_OPENS` | 64 | presentation cap | up from 64: files a CLI open admits (D12) |
 
+### `crates/lushtext-core/src/ui/window/tab_overflow/all_tabs_popover/imp.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-core/src/ui/window/tab_overflow/all_tabs_popover/imp.rs` | `ROW_SPACING_SP` | 6 | out: geometry | UI geometry in sp: space between an All Tabs row's dot, text and state icons (`tab-strip-overflow-navigation` D6) |
+| `crates/lushtext-core/src/ui/window/tab_overflow/all_tabs_popover/imp.rs` | `ROW_MARGIN_VERTICAL_SP` | 3 | out: geometry | UI geometry in sp: an All Tabs row's vertical inset (D6) |
+
+### `crates/lushtext-core/src/ui/window/tab_overflow/all_tabs_popover/item.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-core/src/ui/window/tab_overflow/all_tabs_popover/item.rs` | `LIVE_ROW_PRUNE_AT` | 1,024 | cap | map entries of handed-out row objects before dead ones are pruned; GTK holds about 205 rows (A1) plus the selection (`tab-strip-overflow-navigation` D6) |
+
 ### `crates/lushtext-core/src/ui/window/tab_overflow/policy.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
@@ -1318,12 +1331,16 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/ui/window/tab_overflow/policy.rs` | `TAB_SCROLL_ANIMATION_MS` | 200 | out: time | one scroll step's animation length, Libadwaita's own tab-strip scroll (`SCROLL_ANIMATION_DURATION`, `tab-strip-overflow-navigation` D3) |
 | `crates/lushtext-core/src/ui/window/tab_overflow/policy.rs` | `TAB_SCROLL_REPEAT_DELAY_MS` | 400 | out: time | press-and-hold delay before a scroll button repeats (D3) |
 | `crates/lushtext-core/src/ui/window/tab_overflow/policy.rs` | `TAB_SCROLL_REPEAT_INTERVAL_MS` | 200 | out: time | repeat cadence of a held scroll button, one animation per step (D3) |
+| `crates/lushtext-core/src/ui/window/tab_overflow/policy.rs` | `ALL_TABS_ANNOUNCE_DELAY_MS` | 500 | out: time | how long the All Tabs query rests before its match count is announced, the debounced-results lane's cooldown (D6) |
+| `crates/lushtext-core/src/ui/window/tab_overflow/policy.rs` | `ALL_TABS_ROW_NAME_MAX_CHARS` | 512 | presentation cap | up from 512: characters of an All Tabs row's accessible name, at or above the longest the app builds (a 255-byte file name and its states; unit-tested) (D6) |
 
 ### `crates/lushtext-core/src/ui/window/tab_overflow/scroll_execution.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
 | `crates/lushtext-core/src/ui/window/tab_overflow/scroll_execution.rs` | `TAB_SCROLLER_LOOKUP_DEPTH` | 3 | external fact | the depth of Libadwaita's `AdwTabBar` template (bar → revealer → box → scrolled window), ledger A132 |
+| `crates/lushtext-core/src/ui/window/tab_overflow/scroll_execution.rs` | `SELECTION_REVEAL_SCROLL_WINDOW_US` | 256000 | out: time | how long the selection reveal waits after its one announcement before a still frame may end it: the strip's own 200 ms scroll animation keeps one whole pixel for several frames in its eased tail (`tab-strip-overflow-navigation` D12) |
+| `crates/lushtext-core/src/ui/window/tab_overflow/scroll_execution.rs` | `SELECTION_REVEAL_MAX_FRAMES` | 256 | cap | frames the selection reveal may observe before it ends wherever the strip is; the allocation wait, the attach scrolls and the scroll window take about 45 at 120 Hz and 90 at 240 Hz (`tab-strip-overflow-navigation` D12) |
 
 ### `crates/lushtext-core/src/ui/window/zoom.rs`
 

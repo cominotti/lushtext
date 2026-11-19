@@ -92,7 +92,7 @@ src/
 └── ui/                         # GTK4/Libadwaita driving adapters
     ├── window/                 # window shell; see ui/window/AGENTS.md for its role homes
     │   ├── composition/, construction.rs  # staged window composition; construction spans (cross-cutting)
-    │   ├── geometry/, focus_mode/, tab_strip/, tab_overflow/, transient_dismissal/  # shell geometry; Focus Mode; tab pin/reorder/close; overflowing-strip scroll buttons; Escape and click-away
+    │   ├── geometry/, focus_mode/, tab_strip/, tab_overflow/, transient_dismissal/  # shell geometry; Focus Mode; tab pin/reorder/close; overflowing-strip scroll buttons and the All Tabs list; Escape and click-away
     │   ├── drafts/, session_restore/, local_history/, notes/  # draft autosave and recovery; session restore; local history; notes and bookmarks
     │   ├── notifications/, encoding/, print/, editor_memory_eviction/  # result reporting; encoding and file health; print; memory eviction
     │   ├── recent_documents_journal.rs, recent_open.rs, palette_shell.rs, search.rs, search_progress_execution.rs, replace_in_editor.rs, preview.rs  # recents journal; Open popover side; palette shell; search panel shell; search progress; Open and Replace in Editor; preview shell

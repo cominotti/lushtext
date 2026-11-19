@@ -31,7 +31,9 @@ LushtextWindow (AdwApplicationWindow)
 ├── AdwTabBar → bound to AdwTabView
 │   └── [end-action-widget] GtkBox .tab-overflow-controls (attached only while something in it shows; ui/window/tab_overflow/)
 │       ├── GtkButton Scroll Tabs Back (win.scroll-tabs-back; shown while the unpinned tabs overflow)
-│       └── GtkButton Scroll Tabs Forward (win.scroll-tabs-forward)
+│       ├── GtkButton Scroll Tabs Forward (win.scroll-tabs-forward)
+│       └── GtkMenuButton All Tabs (win.toggle-all-tabs, Ctrl+Shift+O; the open-tab count; shown with two or more tabs)
+│           └── LushtextAllTabsPopover (SearchEntry + GtkListView of LushtextRowText rows; tab_overflow/all_tabs_popover/)
 ├── GtkOverlay [window_overlay]
 │   ├── GtkLushClipBin [window_content_clipper] (min-height 0, clips flexible center content)
 │   │   └── AdwOverlaySplitView [workspace_split_view]

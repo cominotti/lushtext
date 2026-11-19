@@ -1113,6 +1113,11 @@ impl ObjectImpl for LushtextWindow {
         self.tab_view
             .connect_notify_local(Some("selected-page"), move |_, _| {
                 if let Some(window) = window_weak.upgrade() {
+                    // The tab-overflow reveal re-announces an unchanged
+                    // selection so the strip scrolls to it: nothing to project.
+                    if window.tab_overflow_reveals_selection() {
+                        return;
+                    }
                     let session = &window.imp().session;
                     if !session.applying_restore_selection.get() {
                         session

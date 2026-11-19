@@ -3,7 +3,7 @@
   "scenario_id": "tab-strip-overflow",
   "scenario_type": "tab-strip-overflow",
   "invariant_id": "tab-strip-overflow-controls-rendered",
-  "description": "On a restored session whose unpinned tabs overflow the strip, the trailing Scroll Tabs Back and Forward buttons are drawn, and one Forward step from the strip's start scrolls the tabs without moving the strip, the header, the editor or the status bar.",
+  "description": "On a restored session whose unpinned tabs overflow the strip, the restore leaves the selected first tab in view (the strip at its start), the trailing Scroll Tabs Back, Scroll Tabs Forward and All Tabs buttons are drawn, and one Forward step scrolls the tabs without moving the strip, its controls, the header, the editor or the status bar.",
   "matrix": {
     "sizes": [
       {
@@ -60,13 +60,19 @@
       "crop_surface": "tab-strip-scroll-forward",
       "detector": "non-background-row",
       "min_pixels": 3
+    },
+    {
+      "name": "tab-strip-all-tabs-ink",
+      "crop_surface": "tab-strip-all-tabs",
+      "detector": "non-background-row",
+      "min_pixels": 3
     }
   ],
   "relative_pixel_anchors": [],
   "allowed_changing_regions": [
     {
       "surface": "tab-bar",
-      "relationship": "Only the unpinned tabs move: the strip keeps its rectangle, the trailing controls stay drawn, and Scroll Tabs Back becomes enabled once Forward steps away from the start"
+      "relationship": "Only the unpinned tabs move: the strip keeps its rectangle, the trailing controls stay drawn where they were, Scroll Tabs Back is disabled before the step (the restored strip shows its selected first tab) and enabled after it"
     }
   ],
   "readiness_predicates": [

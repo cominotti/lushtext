@@ -26,6 +26,19 @@
 //!    a selection, page attach or detach, reorder, transfer, direction
 //!    change, wheel or press on the strip pauses our step and drops the
 //!    repeat, so the strip's own scroll wins.
+//! 5. **Reveal the selection** (`scroll_execution.rs`): the session
+//!    restore's terminal, and an All Tabs pick of the already selected tab,
+//!    ask the strip to bring the selected tab into view through its own
+//!    selection scrolling (ledger A133).
+//!    **Inversion:** it resumes from a tick callback on the bar, once per
+//!    frame after the strip is allocated, until the strip rests.
+//! 6. **List → filter → select** (`all_tabs.rs`, `all_tabs_popover/`): the
+//!    All Tabs button opens a popover over a snapshot of the open tabs; a
+//!    query ranks them (`policy::rank_all_tabs`); an activated row selects
+//!    its tab and focuses its editor, and a close without one gives the
+//!    focus back. **Inversion:** control leaves the popover through its
+//!    row-activation callback and resumes in `select_tab_from_all_tabs`;
+//!    an open popover's re-snapshot resumes from a zero-delay `Debounce`.
 //!
 //! # Role home
 //!
@@ -42,9 +55,13 @@
 //! | `evidence.rs` | evidence surface (`test-utils`) |
 //! | `test_policy.rs` | test-only timing (`test-utils`) |
 //! | `controls.rs` | **called presentation surface**: the end group, buttons and focus moves |
+//! | `all_tabs.rs` | **called presentation surface**: the popover's snapshot, popup wiring, focus save and restore, and `select_tab_from_all_tabs` |
+//! | `all_tabs_popover/` | **called presentation surfaces**: the popover widget, its row model and row object |
 
+pub mod all_tabs_popover;
 pub mod policy;
 
+mod all_tabs;
 mod controls;
 mod scroll_execution;
 mod watch;
@@ -57,8 +74,23 @@ pub mod test_policy;
 pub use scroll_execution::find_tab_scroller;
 pub(crate) use watch::TabOverflowState;
 
+use gtk4::prelude::WidgetExt;
+
 use super::LushtextWindow;
 use policy::ScrollDirection;
+
+/// The strip's controls that show, for the visual-geometry surfaces.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct VisibleTabOverflowControls {
+    /// The end group, while it is attached.
+    pub(crate) group: Option<gtk4::Box>,
+    /// Back and Forward, while they show.
+    pub(crate) scroll_buttons: Option<(gtk4::Button, gtk4::Button)>,
+    /// The All Tabs button, while it shows.
+    pub(crate) all_tabs: Option<gtk4::MenuButton>,
+    /// The All Tabs popover, while it shows.
+    pub(crate) popover: Option<all_tabs_popover::LushtextAllTabsPopover>,
+}
 
 /// The strip's overflow flags, read from the workflow's production state.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -78,6 +110,21 @@ impl LushtextWindow {
         let _ = self.step_tab_strip(direction);
     }
 
+    /// Entry point of `win.toggle-all-tabs` (`Ctrl+Shift+O`).
+    pub(super) fn toggle_all_tabs_popover(&self) {
+        self.toggle_all_tabs();
+    }
+
+    /// Entry point of `win.set-all-tabs-visible`.
+    pub(super) fn set_all_tabs_popover_visible(&self, visible: bool) {
+        self.set_all_tabs_visible(visible);
+    }
+
+    /// Entry point of `win.set-all-tabs-query`.
+    pub(super) fn set_all_tabs_popover_query(&self, query: &str) {
+        self.set_all_tabs_query(query);
+    }
+
     /// The strip's overflow flags the automation snapshot reports.
     pub(crate) fn tab_strip_overflow_facts(&self) -> TabStripOverflowFacts {
         let state = &glib::subclass::prelude::ObjectSubclassIsExt::imp(self).tab_overflow;
@@ -88,22 +135,28 @@ impl LushtextWindow {
         }
     }
 
-    /// The end group and the Back and Forward buttons while the scroll
-    /// buttons show, for the visual-geometry surfaces.
-    pub(crate) fn visible_tab_overflow_controls(
-        &self,
-    ) -> Option<(gtk4::Box, gtk4::Button, gtk4::Button)> {
+    /// The strip's controls as they show, for the visual-geometry surfaces.
+    pub(crate) fn visible_tab_overflow_controls(&self) -> VisibleTabOverflowControls {
         let state = &glib::subclass::prelude::ObjectSubclassIsExt::imp(self).tab_overflow;
-        if !state.controls_visible.get() {
-            return None;
+        let controls = state.controls.borrow().clone();
+        let Some(controls) = controls.filter(|_| state.group_attached.get()) else {
+            return VisibleTabOverflowControls::default();
+        };
+        VisibleTabOverflowControls {
+            scroll_buttons: state
+                .controls_visible
+                .get()
+                .then(|| (controls.back.clone(), controls.forward.clone())),
+            all_tabs: state
+                .all_tabs_visible
+                .get()
+                .then(|| controls.all_tabs.clone()),
+            popover: controls
+                .popover
+                .is_visible()
+                .then(|| controls.popover.clone()),
+            group: Some(controls.group),
         }
-        state.controls.borrow().as_ref().map(|controls| {
-            (
-                controls.group.clone(),
-                controls.back.clone(),
-                controls.forward.clone(),
-            )
-        })
     }
 
     /// Whether the readiness blocker `tab-overflow` holds.

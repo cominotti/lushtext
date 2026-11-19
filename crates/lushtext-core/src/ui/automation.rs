@@ -1621,6 +1621,8 @@ fn push_active_transient_surface(
         push_widget_surface(surfaces, "active-transient", &*imp.search_panel, root);
     } else if open_popover_visible(window) {
         push_widget_surface(surfaces, "active-transient", &*imp.open_popover, root);
+    } else if let Some(popover) = window.visible_tab_overflow_controls().popover {
+        push_widget_surface(surfaces, "active-transient", &popover, root);
     } else {
         surfaces.push(absent_visual_surface("active-transient", "none-active"));
     }
@@ -1672,40 +1674,93 @@ fn push_open_popover_surfaces(
     );
 }
 
-/// The strip's trailing control group and its two scroll buttons, with a pixel
-/// anchor on each rendered button; absent with `controls-hidden` while the
-/// scroll buttons do not show.
+/// The strip's trailing control group, its two scroll buttons and the All
+/// Tabs button, with a pixel anchor on each rendered button, and the All Tabs
+/// popover: the group is absent with `controls-hidden` while it is detached
+/// (nothing to show), each button while it does not show, and the popover
+/// with `popover-closed` while it is closed.
 fn push_tab_overflow_surfaces(
     window: &LushtextWindow,
     surfaces: &mut Vec<AutomationVisualSurfaceSnapshot>,
     pixel_anchors: &mut Vec<AutomationVisualPixelAnchorSnapshot>,
     root: &gtk4::Widget,
 ) {
-    const BUTTONS: [(&str, &str); 2] = [
+    const SCROLL_BUTTONS: [(&str, &str); 2] = [
         ("tab-strip-scroll-back", "tab-strip-scroll-back-ink"),
         ("tab-strip-scroll-forward", "tab-strip-scroll-forward-ink"),
     ];
-    let Some(controls) = window.visible_tab_overflow_controls() else {
-        surfaces.push(absent_visual_surface(
+    const ALL_TABS: (&str, &str) = ("tab-strip-all-tabs", "tab-strip-all-tabs-ink");
+    const POPOVER: [&str; 3] = [
+        "all-tabs-popover",
+        "all-tabs-popover-search",
+        "all-tabs-popover-list",
+    ];
+    const POPOVER_LIST_INK: &str = "all-tabs-popover-list-ink";
+    let controls = window.visible_tab_overflow_controls();
+    match controls.group.as_ref() {
+        Some(group) => push_widget_surface(surfaces, "tab-strip-overflow-controls", group, root),
+        None => surfaces.push(absent_visual_surface(
             "tab-strip-overflow-controls",
             "controls-hidden",
-        ));
-        for (surface, anchor) in BUTTONS {
-            surfaces.push(absent_visual_surface(surface, "controls-hidden"));
-            pixel_anchors.push(absent_pixel_anchor(anchor, surface, "controls-hidden"));
+        )),
+    }
+    match controls.scroll_buttons.as_ref() {
+        Some((back, forward)) => {
+            for ((surface, anchor), button) in SCROLL_BUTTONS.into_iter().zip([back, forward]) {
+                let rendered = widget_visual_surface(surface, button, root);
+                pixel_anchors.push(pixel_anchor(
+                    anchor,
+                    surface,
+                    rendered.rect,
+                    "button-not-drawn",
+                ));
+                surfaces.push(rendered);
+            }
         }
-        return;
-    };
-    push_widget_surface(surfaces, "tab-strip-overflow-controls", &controls.0, root);
-    for ((surface, anchor), button) in BUTTONS.into_iter().zip([&controls.1, &controls.2]) {
-        let rendered = widget_visual_surface(surface, button, root);
+        None => {
+            for (surface, anchor) in SCROLL_BUTTONS {
+                surfaces.push(absent_visual_surface(surface, "controls-hidden"));
+                pixel_anchors.push(absent_pixel_anchor(anchor, surface, "controls-hidden"));
+            }
+        }
+    }
+    if let Some(button) = controls.all_tabs.as_ref() {
+        let rendered = widget_visual_surface(ALL_TABS.0, button, root);
         pixel_anchors.push(pixel_anchor(
-            anchor,
-            surface,
+            ALL_TABS.1,
+            ALL_TABS.0,
             rendered.rect,
             "button-not-drawn",
         ));
         surfaces.push(rendered);
+    } else {
+        surfaces.push(absent_visual_surface(ALL_TABS.0, "controls-hidden"));
+        pixel_anchors.push(absent_pixel_anchor(
+            ALL_TABS.1,
+            ALL_TABS.0,
+            "controls-hidden",
+        ));
+    }
+    if let Some(popover) = controls.popover.as_ref() {
+        push_widget_surface(surfaces, POPOVER[0], popover, root);
+        push_widget_surface(surfaces, POPOVER[1], &popover.search_entry(), root);
+        let list = widget_visual_surface(POPOVER[2], &popover.list_scroller(), root);
+        pixel_anchors.push(pixel_anchor(
+            POPOVER_LIST_INK,
+            POPOVER[2],
+            list.rect,
+            "list-not-drawn",
+        ));
+        surfaces.push(list);
+    } else {
+        for name in POPOVER {
+            surfaces.push(absent_visual_surface(name, "popover-closed"));
+        }
+        pixel_anchors.push(absent_pixel_anchor(
+            POPOVER_LIST_INK,
+            POPOVER[2],
+            "popover-closed",
+        ));
     }
 }
 
@@ -2299,6 +2354,7 @@ fn surface_snapshot(window: &LushtextWindow) -> AutomationSurfaceSnapshot {
         command_palette_visible: imp.palette_revealer.reveals_child(),
         search_panel_visible: imp.search_panel_revealer.reveals_child(),
         open_popover_visible: open_popover_visible(window),
+        all_tabs_popover_visible: window.all_tabs_popover_visible(),
         line_inspector_visible: window
             .active_editor()
             .is_some_and(|editor| editor.line_inspector_visible()),
@@ -2313,6 +2369,7 @@ fn surface_snapshot(window: &LushtextWindow) -> AutomationSurfaceSnapshot {
             imp.palette_revealer.reveals_child(),
             imp.search_panel_revealer.reveals_child(),
             open_popover_visible(window),
+            window.all_tabs_popover_visible(),
             active_editor_search,
         ),
         accessibility_ready,
@@ -2415,6 +2472,7 @@ fn active_transient_surface_name(
     command_palette_visible: bool,
     search_panel_visible: bool,
     open_popover_visible: bool,
+    all_tabs_popover_visible: bool,
     editor_search_visible: bool,
 ) -> Option<String> {
     if command_palette_visible {
@@ -2423,6 +2481,8 @@ fn active_transient_surface_name(
         Some("workspace-search".to_string())
     } else if open_popover_visible {
         Some("open-popover".to_string())
+    } else if all_tabs_popover_visible {
+        Some("all-tabs-popover".to_string())
     } else if editor_search_visible {
         Some("editor-search".to_string())
     } else {
