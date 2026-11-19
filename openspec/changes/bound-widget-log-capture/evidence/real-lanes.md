@@ -18,10 +18,11 @@ No `TEMP-LEAK:`, `OOM-KILL:` or `SESSION-HYGIENE:` line in any run. Main
 was not rerun beside them; the classification equivalence is the
 self-tests' (same regexes, same cases, plus the NUL cases).
 
-The FLAKY is analysed in `replace-confirm-flake.md`: a Replace All confirm
-refused for good by transient pressure in the process-wide disposal lane
-(reproduced deterministically by a probe), in a test this change does not
-touch, left for its own change.
+The FLAKY is analysed in `replace-confirm-flake.md`, for a test this change
+does not touch. A probe showed that a Replace All confirm is refused for good
+when the process-wide disposal lane is full at that instant. That the failed
+attempt took that path is inferred, not shown. The fix is left for its own
+change.
 
 ## 4.3 Branch flood rerun and `/tmp/tmp.*` names
 
