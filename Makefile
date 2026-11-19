@@ -461,11 +461,19 @@ check-kani-shards:
 
 # Every widget test belongs to exactly one CI shard of scripts/widget-shards.py,
 # each shard measured within its budget; static discovery, no build needed.
-# The temporary-file scope every test lane runs under: leak detection, scope
-# removal, session runtime release, and the stale-root sweep.
+# The temporary-file scope every test lane runs under (leak detection, scope
+# removal, session runtime release, the stale-root sweep) and the bounded
+# warning scan beside the runners' live stream (bound-widget-log-capture).
+# run-widget-tests.sh --self-test runs both self-tests once each, plus the
+# widget runner's classification, memory-report and capture cases.
 check-temp-scope:
-	@echo "Checking the temporary-file scope..."
-	$(TEMP_SCOPE) --self-test
+	@echo "Checking the temporary-file scope and the bounded warning scan..."
+	@if command -v shellcheck >/dev/null 2>&1; then \
+		shellcheck -x scripts/bounded-log-scan.sh scripts/run-widget-tests.sh; \
+	else \
+		echo "shellcheck not installed; skipping the lint half"; \
+	fi
+	./scripts/run-widget-tests.sh --self-test
 
 # Only the gtk-lush-proof-harness session helper starts a private headless
 # session (quiet-headless-session-services): no other tracked shell, Makefile,

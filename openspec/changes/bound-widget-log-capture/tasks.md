@@ -4,16 +4,16 @@ Before the first heavy command: take an implementation slot (`parallel-agent-wor
 
 ## 1. Failing-first cases against main's runner
 
-- [ ] 1.1 Add a test-only entry point to `scripts/run-widget-tests.sh` (a `--self-test` sub-case, not a user flag). It runs `run_headless`, and so `run_with_widget_log` inside the same `( … )` subshell the real run uses, over a given fake command; the harness command becomes a variable only this entry point overrides. Cases (b) and (c) launch the runner as a separate process so it can be killed. Add three cases, all with `TMPDIR` set to a private base that the case removes:
+- [x] 1.1 Add a test-only entry point to `scripts/run-widget-tests.sh` (a `--self-test` sub-case, not a user flag). It runs `run_headless`, and so `run_with_widget_log` inside the same `( … )` subshell the real run uses, over a given fake command; the harness command becomes a variable only this entry point overrides. Cases (b) and (c) launch the runner as a separate process so it can be killed. Add three cases, all with `TMPDIR` set to a private base that the case removes:
   - (a) a flood of 2^20 `Gtk-CRITICAL` lines, asserting no capture over 64 KiB exists while the flood runs;
   - (b) `kill -9` of the runner mid-flood, asserting the base gains no entry;
   - (c) SIGTERM to the `run_headless` subshell mid-run, asserting the base gains no entry.
   Run them on the unchanged runner and record in `openspec/changes/bound-widget-log-capture/evidence/failing-first.md` that each fails: (a) on the `tmp.*` capture's size, (b) and (c) on the `tmp.*` leftover. Keep the commit with the cases failing and the fix in the same task group, so no red commit lands.
-- [ ] 1.2 Record the memory evidence (design D8) in `evidence/flood-memory.md`. Run a synthetic flood larger than the cap (start from about 2^23 lines) through `run_with_widget_log` as `scripts/heavy.sh --mem <cap> -- <entry point>`, starting from 256M, so heavy.sh's own scope is the cap. Record the chosen cap and line count. The entry point reads `memory.peak` and `memory.events` through the runner's `report_memory_scope`. Set `TMPDIR` to a private directory under `/tmp` that the task removes. On main, record the `oom_kill` count and the leftover's size before removing it. Rerun the same command after group 2 and record the peak and `oom_kill 0`. Never leave main's leftover in shared `/tmp`.
+- [x] 1.2 Record the memory evidence (design D8) in `evidence/flood-memory.md`. Run a synthetic flood larger than the cap (start from about 2^23 lines) through `run_with_widget_log` as `scripts/heavy.sh --mem <cap> -- <entry point>`, starting from 256M, so heavy.sh's own scope is the cap. Record the chosen cap and line count. The entry point reads `memory.peak` and `memory.events` through the runner's `report_memory_scope`. Set `TMPDIR` to a private directory under `/tmp` that the task removes. On main, record the `oom_kill` count and the leftover's size before removing it. Rerun the same command after group 2 and record the peak and `oom_kill 0`. Never leave main's leftover in shared `/tmp`.
 
 ## 2. The bounded scan stage (design D1–D3, D7)
 
-- [ ] 2.1 Write `scripts/bounded-log-scan.sh`: `bls_start`, `bls_finish`, `bls_unexpected_count`, `bls_unexpected_report`, `bls_kept_path`, and `--self-test`. It must provide:
+- [x] 2.1 Write `scripts/bounded-log-scan.sh`: `bls_start`, `bls_finish`, `bls_unexpected_count`, `bls_unexpected_report`, `bls_kept_path`, and `--self-test`. It must provide:
   - the verbatim `grep -E`/`grep -Ev` classification;
   - an `LC_ALL=C awk` sink with the 64 KiB report cap and an exact count, draining to EOF;
   - the optional keep branch, capped at 1 MiB, with overflow recorded;
@@ -24,7 +24,7 @@ Before the first heavy command: take an implementation slot (`parallel-agent-wor
   - `tee -p` into the stage, so a dead stage leaves the command and the live stream running;
   - every stage descriptor closed for the command under test, and the read descriptors closed by `bls_finish`.
   The file carries an SPDX header and a usage comment.
-- [ ] 2.2 Write its self-test with every D7 case:
+- [x] 2.2 Write its self-test with every D7 case:
   - classification samples;
   - the flood bound at 2^20 lines (unexpected and benign);
   - the drain with the exit status propagated;
@@ -33,9 +33,9 @@ Before the first heavy command: take an implementation slot (`parallel-agent-wor
   - a `setsid` daemon with detached stdio, verdict under 1 s;
   - `kill -9` and SIGTERM of a runner mid-flood, asserting the private base gains no entry during and after the orphan and each output stays within its cap (`stat -L /proc/<pid>/fd/<n>`), then killing the orphan group.
   Measure its wall time (budget under 5 s), and the wall time of `run-widget-tests.sh --self-test` (2.7 s on main), and record both in `evidence/self-test-time.md`.
-- [ ] 2.3 Switch `run-widget-tests.sh` to the stage (design D4). `run_headless` calls `run_with_widget_log` in the top-level shell, and the exports move into the `( … )` subshell function it runs. Remove `log_file`, `OWNED_TEMP_PATHS+=` inside the subshell, and the `$(grep …)` slurp. `check_for_unexpected_widget_warnings` reads the stage's count and report. `self_test_warning_classification` runs its cases through the stage and calls `bounded-log-scan.sh --self-test`, keeping its `with-temp-scope.sh --self-test` call. Cases 1.1 (a)–(c) must now pass.
-- [ ] 2.4 `Makefile` (design D7): in the `check-temp-scope` recipe, replace `$(TEMP_SCOPE) --self-test` with `./scripts/run-widget-tests.sh --self-test`, which runs it and `bounded-log-scan.sh --self-test` once each. Add a guarded `shellcheck -x scripts/bounded-log-scan.sh scripts/run-widget-tests.sh` (the same `command -v shellcheck` form as the other recipes) and update the recipe's comment. Touch no other recipe; the `check-agent-helpers` shellcheck line belongs to `adopt-faster-change-flow`'s hunks. Fix any finding shellcheck reports in `run-widget-tests.sh`.
-- [ ] 2.5 Run `./scripts/run-widget-tests.sh --self-test`, `./scripts/bounded-log-scan.sh --self-test` and `make check-temp-scope`. Commit through `scripts/heavy.sh --mem none -- git commit -F <file>` and push.
+- [x] 2.3 Switch `run-widget-tests.sh` to the stage (design D4). `run_headless` calls `run_with_widget_log` in the top-level shell, and the exports move into the `( … )` subshell function it runs. Remove `log_file`, `OWNED_TEMP_PATHS+=` inside the subshell, and the `$(grep …)` slurp. `check_for_unexpected_widget_warnings` reads the stage's count and report. `self_test_warning_classification` runs its cases through the stage and calls `bounded-log-scan.sh --self-test`, keeping its `with-temp-scope.sh --self-test` call. Cases 1.1 (a)–(c) must now pass.
+- [x] 2.4 `Makefile` (design D7): in the `check-temp-scope` recipe, replace `$(TEMP_SCOPE) --self-test` with `./scripts/run-widget-tests.sh --self-test`, which runs it and `bounded-log-scan.sh --self-test` once each. Add a guarded `shellcheck -x scripts/bounded-log-scan.sh scripts/run-widget-tests.sh` (the same `command -v shellcheck` form as the other recipes) and update the recipe's comment. Touch no other recipe; the `check-agent-helpers` shellcheck line belongs to `adopt-faster-change-flow`'s hunks. Fix any finding shellcheck reports in `run-widget-tests.sh`.
+- [x] 2.5 Run `./scripts/run-widget-tests.sh --self-test`, `./scripts/bounded-log-scan.sh --self-test` and `make check-temp-scope`. Commit through `scripts/heavy.sh --mem none -- git commit -F <file>` and push.
 
 ## 3. The other runners (design D5, D6)
 
