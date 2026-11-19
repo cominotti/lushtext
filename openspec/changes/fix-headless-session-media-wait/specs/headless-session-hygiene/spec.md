@@ -35,9 +35,14 @@ A smoke lane SHALL report a case whose session failed because WirePlumber did no
 - **AND** the lane prints no `SKIP:` line for that case
 
 ### Requirement: The exported helper path survives a rebuild
-Inside a session, the `GTK_LUSH_SESSION_BIN` the helper exports SHALL name the helper's file path without the ` (deleted)` suffix that Linux gives a replaced executable, and `scripts/headless-session` SHALL retry briefly before it reports that path as not executable.
+Inside a session, the `GTK_LUSH_SESSION_BIN` the helper exports SHALL name the helper's file path without the ` (deleted)` suffix that Linux gives a replaced executable, `scripts/headless-session` SHALL retry briefly before it reports that path as not executable, and the GTK axiom probes that spawn that path for a nested control run (A115, A116) SHALL retry the spawn the same way while the path is missing or busy.
 
 #### Scenario: A rebuild replaces the helper while a session runs
 - **WHEN** `target/debug/gtk-lush-session` is removed and linked again while a session runs, and code inside the session starts a nested `scripts/headless-session` stage
 - **THEN** the exported path names `target/debug/gtk-lush-session`
 - **AND** the nested stage starts instead of exiting as an unsupported host
+
+#### Scenario: A rebuild relinks the helper while an axiom probe starts its control
+- **WHEN** the A115 or A116 probe spawns `GTK_LUSH_SESSION_BIN` for its nested control run while a `cargo build` has removed the helper and not yet linked it again
+- **THEN** the probe retries the spawn briefly and its control run starts once the helper is linked
+- **AND** any spawn error other than a missing or busy executable is reported at once
