@@ -2,7 +2,7 @@
 
 ## Why
 
-The external audit `docs/next/refactor-1/report.md` is untracked and in Portuguese. This change writes an English disposition record for it under `docs/next/`. The audit found that the local gate and CI disagree, that one shell subscription leaks, and that a durable-write error drops its cause. The figures below were measured on `origin/main` `761866ff` on 2026-11-18. The change starts only after the programme's queued work has finished, so task 0.1 re-measures every one of them first.
+The refactor-1 code-quality audit (its disposition, with every measured fact and decision, is `docs/next/refactor-1-disposition.md`) found that the local gate and CI disagree, that one shell subscription leaks, and that a durable-write error drops its cause. The figures below were measured on `origin/main` `761866ff` on 2026-11-18. The change starts only after the programme's queued work has finished, so task 0.1 re-measures every one of them first.
 
 - **Widget tests are not format-checked in CI.** `.github/workflows/ci.yml` runs `cargo fmt --all -- --check`, which never reaches the 42 files of `crates/lushtext/tests/widget/`; their modules come from a registry `build.rs` generates. `make check-fmt` (`Makefile:844-848`) does reach them.
 - **Most policy audits never run in CI.**
@@ -13,7 +13,7 @@ The external audit `docs/next/refactor-1/report.md` is untracked and in Portugue
   - `generate --diff` exits 0, `verify` exits 0, and `manage-deps --dry-run` exits 1;
   - ten crates lack the dependency, contrary to `.agents/rules/rust.md:12`.
   
-  The Fable investigation of 2026-11-19 (`docs/next/refactor-1-disposition.md` will carry its findings) found two cases:
+  The investigation of 2026-11-19 (findings in `docs/next/refactor-1-disposition.md`, "workspace-hack") found two cases:
   - **The eight GTK Lush family crates are rightly excluded, but the exclusion is not recorded.** None ever had the dependency, and adding it breaks `make gtk-lush-stock-fixtures` under `--locked`, taking the stock consumer from 84 to 143 packages.
   - **`cargo-gtk-proof` lacks it by omission.**
   
@@ -25,7 +25,7 @@ The external audit `docs/next/refactor-1/report.md` is untracked and in Portugue
   - `sidebar/imp.rs:211` tracks the same pair in a `SignalBag`.
   - `check-settings-writes.py` allows `connect_changed` by design, so no gate sees it.
 - **`DurableWriteError` has no cause chain.** It implements `std::error::Error` without `source()`, and its `Display` repeats the inner I/O error, so neither the phase (before or after the rename) nor the cause survives into a chain.
-  - No site formats the error itself: callers match on the variants or call `into_io_error`. Changing its `Display` is therefore unobservable today.
+  - It is rendered: `search_backup.rs:1805` returns it through `?` into an `anyhow::Result`, and `draft_service.rs:2082` wraps it with `.with_context`. A new `Display` therefore changes message text (design D6).
 - **The print test hook can leak.** `ui/window/print/test_policy.rs:27-37` restores the previous runner after `f()` without a `Drop` guard.
 - **Two production comments cite evidence in the gitignored `.claude/handoffs/`:** `model/protected_fold.rs:74` and `services/content_search/replace/sr_measure.rs:8`.
 
@@ -47,7 +47,7 @@ The external audit `docs/next/refactor-1/report.md` is untracked and in Portugue
 - **Typed durable-write errors.** `DurableWriteError` gets a `Display` per phase and `source()` returning the I/O error.
 - **Panic-safe print hook.** `with_print_runner_for_test` restores the previous runner through a `Drop` guard.
 - **Committed evidence.** The C2 sweep table and `main`'s side of the M9 measurement are committed, and the two comments cite them.
-- **Disposition record.** `docs/next/refactor-1-disposition.md` (English) records, for each audit item, the change that takes it or the reason it is declined.
+- **Disposition record.** `docs/next/refactor-1-disposition.md` records, for each audit item, the change that takes it or the reason it is declined. It is committed with this plan; task 5.1 updates it with the re-measured figures.
 
 ## Non-goals
 
@@ -57,7 +57,7 @@ The external audit `docs/next/refactor-1/report.md` is untracked and in Portugue
 
 ## User-visible impact
 
-None in the application. Contributors see CI fail on the same policy findings the local hook already rejects. Nothing is lost compared with `main`.
+In the application, an error message that renders a durable-write failure's full chain gains the failed phase next to the I/O cause (design D6). Otherwise none. Contributors see CI fail on the same policy findings the local hook already rejects. Nothing is lost compared with `main`.
 
 ## Capabilities
 
@@ -87,3 +87,4 @@ None.
   - `docs/next/refactor-1-disposition.md`, `docs/benchmarks/c2-head-sweep.md`, `docs/next/long-line-documents.md`;
   - `.agents/rules/{rust,build,ui,widget-wiring}.md`, `AGENTS.md`, `README.md` if it lists CI gates.
 - **Order:** see the Start line in `tasks.md`. `services/durable_write.rs` is also edited by `verify-shell-conformance-against-proven-cores`, which must have merged first.
+- **Shared with the other refactor-1 changes:** `crates/cargo-gtk-proof/Cargo.toml` (with `type-cargo-gtk-proof-errors`), `ui/window/imp.rs` (with `adopt-glib-clone-weak-captures`), and `check-policy` / `check-policy-ci` (`adopt-glib-clone-weak-captures` adds an audit to them). This change lands first.

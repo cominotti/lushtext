@@ -8,6 +8,7 @@ Start: only after every edit, spec and queued change of the programme coordinato
 ## 0. Re-measure
 
 - [ ] 0.1 Re-read `settle/src/lib.rs` and the `SettleBurst` call sites on the then-current `origin/main`, and update `proposal.md`. Verify with `openspec validate fix-settle-burst-sources-and-weak-refs --strict`.
+- [ ] 0.2 Have a Fable subagent cross-review the re-measured artifacts (read-only, against `openspec/config.yaml`'s rules and the then-current `origin/main`), and apply its findings.
 
 ## 1. One pending source
 

@@ -48,16 +48,16 @@ See `proposal.md`, "Why", for the measured gaps. Three facts shape the approach:
 
 ### D3. `workspace-hack`: record the family's exclusion, add the missing dependency, check all three in CI
 
-The Fable investigation of 2026-11-19 (copies under the session scratchpad, findings in the disposition record) answered the open question.
+The investigation of 2026-11-19, recorded with its figures in `docs/next/refactor-1-disposition.md` ("workspace-hack"), answered the open question.
 
 - **The family's exclusion is right but unrecorded.** None of the eight family crates ever had the dependency (`git log -S workspace-hack` on each manifest is empty). The rule `rust.md:12` (`4714ac79`, 2026-04-01) predates the family by two months.
 - **Why the family stays out.** With the dependency:
   - `make gtk-lush-stock-fixtures` fails under `--locked`;
   - the stock consumer goes from 84 to 143 packages, against `GOVERNANCE.md:3-5`.
-- **The adoption lab is excluded too,** because `docs/gtk-lush-adoption/matrix.toml:77` cites its graph ("adds one dependency").
+- **The adoption lab is excluded by choice** (maintainer, 2026-11-19). `docs/gtk-lush-adoption/matrix.toml:77` describes it as a second consumer that "adds one dependency". The cost is that `scripts/run-gtk-axioms.sh:382` builds it alone, with its own feature resolution.
 - **`cargo-gtk-proof` lacks the dependency by omission.** It is `publish = false`, GPL, and built alone by the hook's `check-visual-proof-policy`, so it gains it.
 - **Recording:** `[final-excludes] workspace-members = [<8 family crates>, "gtk-lush-adoption-lab"]` in `.config/hakari.toml`, with a comment naming the reason.
-  - `final-excludes` keeps them in the unification: the generated `workspace-hack/Cargo.toml` was measured unchanged with all ten excluded.
+  - `final-excludes` keeps them in the unification. The generated `workspace-hack/Cargo.toml` was measured unchanged with eight excluded and with all ten. The chosen nine plus the `cargo-gtk-proof` dependency is verified by task 1b.1.
   - `traversal-excludes` would drop them from the unification and change the generated crate. It was rejected.
 - **CI.** `CARGO_HAKARI_VERSION: "0.9.37"`. The step runs `cargo hakari generate --diff`, `verify` and `manage-deps --dry-run`, all expected to exit 0 after the edit.
   - It runs only when a diff against the base touches `**/Cargo.toml`, `Cargo.lock`, `.config/hakari.toml` or `rust-toolchain.toml`.
@@ -95,7 +95,14 @@ The Fable investigation of 2026-11-19 (copies under the session scratchpad, find
   - `#[error("durable write failed before the destination was replaced")] BeforeRename(#[source] io::Error)`;
   - `#[error("new bytes are in place but the parent-directory sync failed, so durability is unconfirmed")] AfterRename(#[source] io::Error)`.
 - **Existing API stays.** `io_error()` and `into_io_error()` stay, so the 18 flattening call sites are untouched.
-- **No visible text changes.** No site formats the error itself (callers match on the variants: `editor_io.rs:1838`, `set_aside.rs:193`), so the user-visible save messages, which come from `EditorSaveError`, do not change.
+- **Where it is rendered.** Editor saves and set-aside copies match on the variants (`editor_io.rs:1838`, `set_aside.rs:193`), so their messages, which come from `EditorSaveError`, do not change. Other callers render it:
+  - `search_backup.rs:1805` returns it through `?` into an `anyhow::Result`;
+  - `draft_service.rs:2082` and `local_history_service.rs:1345` wrap it with `.with_context`.
+  
+  With today's `Display`, those messages end in the I/O text. With a phase `Display` and `source()`:
+  - a `{:#}` or `{:?}` rendering shows the phase and then the I/O cause;
+  - a plain `{}` rendering of an error whose root is the `DurableWriteError` would show only the phase.
+- **Inventory and pin first.** Task 4.0 lists every path from these functions to a renderer (`tracing` fields, notifications, `{}`, `{:#}`) and pins each message with a test. A path that renders with `{}` and would lose the I/O text switches to the chain form (`{:#}`), so the cause stays visible.
 - **Rejected:** `#[error(transparent)]`. Its `source()` is the I/O error's own source (`None` for an OS error), so it adds nothing.
 
 ### D7. The print test hook restores through a guard

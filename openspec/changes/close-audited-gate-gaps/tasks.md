@@ -15,6 +15,7 @@ Start: only after every edit, spec and queued change of the programme coordinato
   - whether `durable_write.rs` is now a Kani harness input.
   
   Record the result in the change's handoff and update the artifacts in place. Verify with `openspec validate close-audited-gate-gaps --strict`.
+- [ ] 0.2 Have a Fable subagent cross-review the re-measured artifacts (read-only, against `openspec/config.yaml`'s rules and the then-current `origin/main`), and apply its findings. The 2026-11-18 cross-review covered an earlier version of this change.
 
 ## 1. CI and local gate alignment
 
@@ -24,7 +25,7 @@ Start: only after every edit, spec and queued change of the programme coordinato
 - [ ] 1.4 In `ci.yml`'s `Lint` job:
   - replace `cargo fmt --all -- --check` with `make check-fmt`;
   - add a `make check-policy-ci` step;
-  - add the guarded hakari step with all three commands (design D3, `CARGO_HAKARI_VERSION`);
+  - add the guarded hakari step with `generate --diff` and `verify` (design D3, `CARGO_HAKARI_VERSION`); `manage-deps --dry-run` joins it in 1b.1, once the exclusions exist;
   - remove the individual `make check-*` steps the aggregate now covers.
   
   Verify with `make check-workflow-timeouts` and with `actionlint` if installed.
@@ -37,13 +38,14 @@ Start: only after every edit, spec and queued change of the programme coordinato
 - [ ] 1.7 Prove the new gates red on a separate scratch draft PR, closed afterwards and never merged:
   - an unformatted widget-test file fails `Lint` at `make check-fmt`;
   - a hand edit that leaves `workspace-hack/Cargo.toml` different from `cargo hakari generate`'s output fails the hakari step;
+  - after 1b, a new empty workspace crate without the dependency fails `manage-deps --dry-run`;
   - a planted `make check-signal-connections` violation fails `check-policy-ci`.
   
   Record the run ids.
 
 ## 1b. workspace-hack
 
-- [ ] 1b.1 Add the `[final-excludes]` block (design D3) to `.config/hakari.toml`, then run `cargo hakari manage-deps` (which adds the dependency to `cargo-gtk-proof`) and `cargo hakari generate`. Verify that `generate --diff`, `verify` and `manage-deps --dry-run` exit 0, that `workspace-hack/Cargo.toml` is unchanged, and that `make gtk-lush-stock-fixtures` and `cargo deny check advisories bans sources licenses` pass. Run `make cargo-sources` and confirm `build-aux/cargo-sources.json` is byte-identical.
+- [ ] 1b.1 Add the `[final-excludes]` block (design D3) to `.config/hakari.toml`, add `cargo hakari manage-deps --dry-run` to the CI step, then run `cargo hakari manage-deps` (which adds the dependency to `cargo-gtk-proof`) and `cargo hakari generate`. Verify that `generate --diff`, `verify` and `manage-deps --dry-run` exit 0, that `workspace-hack/Cargo.toml` is unchanged, and that `make gtk-lush-stock-fixtures` and `cargo deny check advisories bans sources licenses` pass. Run `make cargo-sources` and confirm `build-aux/cargo-sources.json` is byte-identical.
 - [ ] 1b.2 Extend `scripts/check-gtk-lush-policy.py` with the two rules in design D3 and their `--self-test` cases. Verify with `make check-gtk-lush-policy` and `make gtk-lush-adoption-matrix`.
 - [ ] 1b.3 Fix `.agents/rules/rust.md:12` and `.agents/rules/build.md` ("Adding Dependencies": a new crate runs `cargo hakari manage-deps`; a new family crate joins `final-excludes`), and say in `crates/gtk-lush/GOVERNANCE.md` that the family counts for unification without depending on `workspace-hack`. Verify with `make check-agent-docs`. Commit through `heavy.sh`, signed, and push.
 
@@ -66,12 +68,13 @@ Start: only after every edit, spec and queued change of the programme coordinato
 
 ## 4. Durable-write error chain
 
+- [ ] 4.0 Inventory every path from the functions that return `DurableWriteError` to a renderer (design D6) into the change's handoff. Pin each rendered message with a test on `main`.
 - [ ] 4.1 Add a unit test in `services/durable_write.rs` that forces a before-rename and an after-rename failure through the existing fault seams and asserts each error's message names its phase and its `source()` is the I/O error. Verify that it fails on `main` (no `source()`).
-- [ ] 4.2 Implement design D6. Verify with 4.1, the `durable-file-write-contract` tests, `cargo nextest run -p lushtext-core` and `make check-clippy`. Commit through `heavy.sh`, signed, and push.
+- [ ] 4.2 Implement design D6, switching any `{}` renderer that would lose the I/O text to the chain form. Verify with 4.0's pinned messages (updated only where design D6 says they change), 4.1, the `durable-file-write-contract` tests, `cargo nextest run -p lushtext-core` and `make check-clippy`. Commit through `heavy.sh`, signed, and push.
 
 ## 5. Disposition record
 
-- [ ] 5.1 Write `docs/next/refactor-1-disposition.md` (design D8), covering every audit item and the six changes that take items. Link it from `docs/next/`'s index if one exists. Verify with `make check-terminology` and `make check-agent-docs`. Commit through `heavy.sh`, signed, and push.
+- [ ] 5.1 Update `docs/next/refactor-1-disposition.md` (design D8) with the re-measured figures and each change's state. Verify with `make check-terminology` and `make check-agent-docs`. Commit through `heavy.sh`, signed, and push.
 
 ## Workflow follow-up
 

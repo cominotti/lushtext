@@ -40,3 +40,4 @@ None.
 - **Code:** `crates/cargo-gtk-proof/src/**` and its `Cargo.toml` (`thiserror` and `anyhow` are workspace dependencies; `cargo hakari generate` afterwards).
 - **Proof:** `crates/cargo-gtk-proof/src/` is a visual-sensitive prefix (`policy.rs:21`), so every commit owes a current `make visual-geometry-smoke` summary.
 - **Order:** the Start line in `tasks.md`.
+- **Shared with the other refactor-1 changes:** `crates/cargo-gtk-proof/Cargo.toml` (`close-audited-gate-gaps` adds `workspace-hack`) and `src/policy.rs` (`adopt-typed-row-state-and-dialog-futures` re-keys a path in it). The later change in the ledger starts after the earlier merges.

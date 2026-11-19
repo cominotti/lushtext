@@ -8,6 +8,7 @@ Start: only after every edit, spec and queued change of the programme coordinato
 ## 0. Re-measure
 
 - [ ] 0.1 Re-derive the site classification in `proposal.md` on the then-current `origin/main`. Record it, with the file list, in the change's handoff. Verify with `openspec validate adopt-glib-clone-weak-captures --strict`.
+- [ ] 0.2 Have a Fable subagent cross-review the re-measured artifacts (read-only, against `openspec/config.yaml`'s rules and the then-current `origin/main`), and apply its findings.
 
 ## 1. Probe
 

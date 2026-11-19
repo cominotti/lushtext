@@ -2,7 +2,7 @@
 
 ## Why
 
-The audit (`docs/next/refactor-1/report.md` §3.3; disposition in `docs/next/refactor-1-disposition.md`) found three places where LushText's GTK code holds state in shapes modern gtk-rs code avoids. Measured on `origin/main` `761866ff`; task 0.1 re-measures:
+The refactor-1 audit (disposition in `docs/next/refactor-1-disposition.md`) found three places where LushText's GTK code holds state in shapes modern gtk-rs code avoids. Measured on `origin/main` `761866ff`; task 0.1 re-measures:
 
 - **List row models are tagged unions.**
   - `PaletteItem` stores a `kind: Cell<u8>` discriminant (five values) beside eight parallel fields.
@@ -60,3 +60,4 @@ None.
   - `scripts/check-signal-connections.py`.
 - **Path-keyed gates.** `ui/sidebar/workspace_section/row_factory.rs` is a literal key of the visual-proof policy in both implementations (`scripts/check-visual-proof-policy.py`, `crates/cargo-gtk-proof/src/policy.rs:86`). Moving its code re-keys both, with parity tests (`testing.md`, "Path-keyed gates").
 - **Order:** the Start line in `tasks.md`, after `spike-list-row-construction` records its decision.
+- **Shared with the other refactor-1 changes:** `crates/cargo-gtk-proof/src/policy.rs` (this change re-keys `row_factory.rs`; `type-cargo-gtk-proof-errors` converts its errors), and `scripts/check-signal-connections.py` (this change adds the object-data rule; `adopt-glib-clone-weak-captures` may add its audit there). The later change in the ledger starts after the earlier merges.

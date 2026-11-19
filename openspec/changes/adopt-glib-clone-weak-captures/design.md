@@ -29,7 +29,7 @@ If any check loses sight inside the macro, the sweep stops and the audit learns 
 
 ### D3. The ratchet
 
-- **The audit.** A `scripts/check-weak-captures.py` (or a mode of `check-signal-connections.py`) counts `.downgrade()`/`.upgrade()` capture pairs in `ui/` and compares the count with a ceiling recorded in the script.
+- **The audit.** A `scripts/check-weak-captures.py` (or a mode of `check-signal-connections.py`) counts `.downgrade()` calls in `ui/` (comments and strings stripped) and compares the count with a ceiling recorded in the script. A `.downgrade()` that stores a `WeakRef` in a field rather than capturing it counts too; those are D2's listed exceptions.
 - **What fails.** It fails above the ceiling and when the count is below it, so the ceiling is lowered in the same change.
 - **`--self-test`** plants an extra site and a stale ceiling.
 
@@ -41,5 +41,6 @@ If any check loses sight inside the macro, the sweep stops and the audit learns 
 ## Verification scope
 
 - **Kani:** none (no proven module touched).
-- **Timing:** none (no timed path touched; the macro expands to the same calls).
+- **Timing:** none (no timed path touched).
+- **Not the same calls.** In glib-macros 0.22.9 the default upgrade-failure path emits `g_debug!("Failed to upgrade `x`")` (`clone.rs:277-297`); the manual form logs nothing. D1's probe checks that the widget harness's and the smoke lanes' log scans ignore debug-level messages. If one does not, the scan or the mapping (`#[upgrade_or_else]` with no log) is decided before the sweep.
 - **Axioms:** none.

@@ -19,7 +19,7 @@ The spike SHALL measure three ways of building one realized list row with the sa
 - **THEN** they come from `scripts/measure.sh` runs on the reference CPU set under the load gate, with the protocol and pass bar written before the run
 
 ### Requirement: The spike records one adoption decision
-The spike SHALL record which construction form LushText's list factories adopt. The decision MUST follow the pass bar written before measuring: an arm passes when its 32-row creation fits the dispatch budget alongside the rest of the first publish and its 205-row creation and retext frame are not worse than the current factory by more than the recorded margin.
+The spike SHALL record which construction form LushText's list factories adopt. The decision MUST follow the pass bar written before measuring: an arm passes when, in every measured case, its median is within the recorded margin of the current factory's median from the same interleaved run.
 
 #### Scenario: Template arm passes
 - **WHEN** the composite-template arm meets the bar

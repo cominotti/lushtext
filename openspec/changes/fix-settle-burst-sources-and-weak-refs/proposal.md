@@ -7,7 +7,7 @@ Two small defects in the GTK Lush family, measured on `origin/main` `761866ff` (
 - **`SettleBurst::schedule` leaves every superseded GLib source installed** (`crates/gtk-lush/settle/src/lib.rs:281-299`).
   - Each call adds a `timeout_add_local_once` holding a weak reference to its target, and the source stays until its deadline even though a newer schedule made it stale.
   - `Debounce` had the same shape until 131,072 schedules in one dispatch passed GLib's per-object weak-reference limit (`Too many GWeakRef registered`, `CHANGELOG.md`). It now removes the superseded source at once and is pinned by `debounce_keeps_one_pending_source_across_a_burst` (`lib.rs:475`).
-  - `SettleBurst` is used by the minimap reflow settle (`ui/editor_page/minimap/reflow_execution.rs:71`) and the workspace-sidebar transition settle (`ui/window/geometry/mod.rs:215`), both scheduled from allocation-driven notifications.
+  - `SettleBurst` is scheduled by the minimap reflow settle (`ui/editor_page/minimap/reflow_execution.rs:71`), once per editor reflow, and by the workspace-sidebar transition settle (`ui/window/geometry/mod.rs:215`), once per sidebar toggle. Task 0.1 measures how often each fires in a burst.
 - **Two crates take a refcount just to take a weak reference.** `gtk-lush-signals/src/lib.rs:73` and `gtk-lush-viewport/src/lib.rs:271` call `source.clone().upcast()` before `downgrade()`, where `upcast_ref::<Object>()` borrows, as `gtk-lush-widgets/src/render_hold.rs:73` already does.
 
 ## What Changes
@@ -22,7 +22,7 @@ Two small defects in the GTK Lush family, measured on `origin/main` `761866ff` (
 
 ## User-visible impact
 
-None. Allocation-driven settles stop accumulating stale GLib sources. Nothing is lost compared with `main`.
+None. Repeated settles stop accumulating stale GLib sources. Nothing is lost compared with `main`.
 
 ## Capabilities
 

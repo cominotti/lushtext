@@ -13,6 +13,7 @@ Start: only after every edit, spec and queued change of the programme coordinato
   - re-read `workspace_section/` after `stop-expander-bind-time-child-scans` and `slice-large-directory-collapse` merged.
   
   Update the artifacts in place. Verify with `openspec validate adopt-typed-row-state-and-dialog-futures --strict`.
+- [ ] 0.2 Have a Fable subagent cross-review the re-measured artifacts (read-only, against `openspec/config.yaml`'s rules and the then-current `origin/main`), and apply its findings.
 
 ## 1. Typed entries
 

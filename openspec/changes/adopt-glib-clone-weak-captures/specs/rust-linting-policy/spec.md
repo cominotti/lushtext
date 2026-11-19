@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: GTK-thread weak captures use one checked form
-LushText UI code SHALL capture GObjects weakly in GTK-thread closures through `glib::clone!`. A closure that returns a value MUST state its upgrade-failure value explicitly, equal to the value its manual form returned. A policy audit SHALL hold the number of manual weak-capture sites in `crates/lushtext-core/src/ui` at or below a recorded ceiling that only decreases.
+LushText UI code SHALL capture GObjects weakly in GTK-thread closures through `glib::clone!`. A closure that returns a value MUST state its upgrade-failure value explicitly, equal to the value its manual form returned. A policy audit SHALL hold the number of `.downgrade()` calls in `crates/lushtext-core/src/ui` at or below a recorded ceiling that only decreases.
 
 #### Scenario: Manual weak capture above the ceiling fails
 - **WHEN** a change adds a manual `downgrade`/`upgrade` capture in `crates/lushtext-core/src/ui` while the count is at its ceiling

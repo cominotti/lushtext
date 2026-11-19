@@ -20,7 +20,7 @@ GTK closures in `crates/lushtext-core/src/ui/` capture objects weakly by hand, a
   - Clippy still reports a planted `.unwrap()` inside the macro body;
   - every text-parsing `check-*` audit still passes and still fails on its planted case.
 - **The rewrite.** Every weak capture of a GObject in a closure uses `glib::clone!` with `#[weak]` or `#[weak(rename_to = …)]`. A closure that returns a value uses `#[upgrade_or …]` with the value its manual fallthrough returns today.
-- **The rule changes with it.** `rust.md` prescribes `clone!` for weak captures. A policy audit holds the count of manual weak-capture sites at or below a recorded ceiling that only decreases, to zero.
+- **The rule changes with it.** `rust.md` prescribes `clone!` for weak captures. A policy audit holds the count of manual weak captures (`.downgrade()` calls in `ui/`) at or below a recorded ceiling that only decreases, down to the listed exceptions (design D2).
 
 ## Non-goals
 
@@ -47,3 +47,4 @@ None.
 - **Code:** about 130 files under `ui/`, `scripts/` (the audit), `.agents/rules/rust.md`.
 - **Proof:** every commit is under `ui/`, so each owes the three smokes.
 - **Order:** the Start line in `tasks.md`, after `adopt-typed-row-state-and-dialog-futures` merges.
+- **Shared with the other refactor-1 changes:** `ui/window/imp.rs` (with `close-audited-gate-gaps`), `scripts/check-signal-connections.py` (with `adopt-typed-row-state-and-dialog-futures`), and `check-policy` / `check-policy-ci` (`close-audited-gate-gaps` builds them). This change lands last.
