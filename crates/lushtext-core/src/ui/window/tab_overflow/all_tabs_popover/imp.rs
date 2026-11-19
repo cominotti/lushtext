@@ -59,8 +59,6 @@ pub struct LushtextAllTabsPopover {
 
     /// The window's snapshot of open tabs, in strip order.
     source: RefCell<Vec<AllTabsRow>>,
-    /// The listed rows' indexes into `source`.
-    listed: RefCell<Vec<u32>>,
     model: AllTabsRowModel,
     selection: RefCell<Option<gtk4::SingleSelection>>,
     growth: RefCell<Option<RowGrowth>>,
@@ -281,7 +279,6 @@ impl LushtextAllTabsPopover {
         let highlight = kept_page
             .and_then(|page| self.model.position_of(&page))
             .or_else(|| all_tabs_highlight(query.trim().is_empty(), &listed, selected));
-        self.listed.replace(listed);
         self.highlight(highlight);
         if empty {
             self.stack.set_visible_child(&*self.empty_state);
@@ -290,10 +287,15 @@ impl LushtextAllTabsPopover {
         }
         accessibility::set_hidden(&*self.list_scroller, empty);
         accessibility::set_hidden(&*self.empty_state, !empty);
+        accessibility::set_value_text(&*self.list_view, &self.match_count_text());
+    }
+
+    /// The match count for the current query: the list's value text and the
+    /// settled announcement.
+    fn match_count_text(&self) -> String {
+        let query = self.search_entry.text();
         let total = u32::try_from(self.source.borrow().len()).unwrap_or(u32::MAX);
-        let value =
-            all_tabs_match_announcement(self.model.full_len(), total, query.trim().is_empty());
-        accessibility::set_value_text(&*self.list_view, &value);
+        all_tabs_match_announcement(self.model.full_len(), total, query.trim().is_empty())
     }
 
     /// Announce the match count once the query settles, never per keystroke.
@@ -303,13 +305,7 @@ impl LushtextAllTabsPopover {
             Duration::from_millis(u64::from(ALL_TABS_ANNOUNCE_DELAY_MS)),
             |popover, handle| {
                 let imp = popover.imp();
-                let query = imp.search_entry.text();
-                let total = u32::try_from(imp.source.borrow().len()).unwrap_or(u32::MAX);
-                let message = all_tabs_match_announcement(
-                    imp.model.full_len(),
-                    total,
-                    query.trim().is_empty(),
-                );
+                let message = imp.match_count_text();
                 if imp.announcer.announce_if_allowed(
                     &*imp.search_entry,
                     AnnouncementLane::DebouncedResults,
@@ -579,15 +575,15 @@ fn project_row(list_item: &gtk4::ListItem, item: &AllTabsItem) {
         .marker
         .set_opacity(if row.modified { 1.0 } else { 0.0 });
     widgets.title.set_text(&row.title);
-    widgets.subtitle.set_text(&row.subtitle);
-    widgets.subtitle.set_tooltip_text(Some(&row.subtitle));
+    widgets.subtitle.set_text(row.subtitle());
+    widgets.subtitle.set_tooltip_text(Some(row.subtitle()));
     widgets.pinned.set_visible(row.pinned);
     widgets.current.set_visible(row.current);
     let name = all_tabs_row_name(&row.title, row.modified, row.pinned, row.current);
     accessibility::apply_list_item_row_accessibility(
         list_item,
         RowAccessibility::new(&name)
-            .description(&row.subtitle)
+            .description(row.subtitle())
             .selected(list_item.is_selected()),
     );
 }

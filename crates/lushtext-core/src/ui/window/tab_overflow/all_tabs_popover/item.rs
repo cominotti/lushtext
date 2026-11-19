@@ -28,6 +28,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
+use super::super::policy::ALL_TABS_UNTITLED_SUBTITLE;
 use crate::ui::signal_connect;
 
 /// One open tab as the All Tabs list shows it: no document text.
@@ -37,9 +38,8 @@ pub struct AllTabsRow {
     pub page: glib::WeakRef<libadwaita::TabPage>,
     /// The tab's title.
     pub title: String,
-    /// The folder of the tab's file, or the untitled label.
-    pub subtitle: String,
-    /// The folder alone, for the filter; `None` for an untitled document.
+    /// The folder of the tab's file, for the subtitle and the filter; `None`
+    /// for an untitled document.
     pub folder: Option<String>,
     /// Whether the document has unsaved changes.
     pub modified: bool,
@@ -47,6 +47,14 @@ pub struct AllTabsRow {
     pub pinned: bool,
     /// Whether the tab is the selected one.
     pub current: bool,
+}
+
+impl AllTabsRow {
+    /// The row's subtitle: the folder, or the untitled label.
+    #[must_use]
+    pub fn subtitle(&self) -> &str {
+        self.folder.as_deref().unwrap_or(ALL_TABS_UNTITLED_SUBTITLE)
+    }
 }
 
 mod item_imp {

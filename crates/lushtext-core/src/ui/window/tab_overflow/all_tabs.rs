@@ -20,7 +20,7 @@ use gtk4::prelude::*;
 
 use super::super::LushtextWindow;
 use super::all_tabs_popover::AllTabsRow;
-use super::policy::ALL_TABS_UNTITLED_SUBTITLE;
+use super::watch::release_page_watch;
 use crate::ui::editor_page::LushtextEditorPage;
 
 /// `win.toggle-all-tabs`.
@@ -128,12 +128,8 @@ impl LushtextWindow {
             .page_watches
             .borrow_mut()
             .insert(page.as_ptr() as usize, (page.downgrade(), [title, pinned]));
-        if let Some((page, handlers)) = previous
-            && let Some(page) = page.upgrade()
-        {
-            for handler in handlers {
-                page.disconnect(handler);
-            }
+        if let Some(previous) = previous {
+            release_page_watch(previous);
         }
     }
 
@@ -144,10 +140,8 @@ impl LushtextWindow {
             .page_watches
             .borrow_mut()
             .remove(&(page.as_ptr() as usize));
-        if let Some((_, handlers)) = watch {
-            for handler in handlers {
-                page.disconnect(handler);
-            }
+        if let Some(watch) = watch {
+            release_page_watch(watch);
         }
     }
 
@@ -179,17 +173,13 @@ impl LushtextWindow {
                 let page = tab_view.nth_page(index);
                 let editor = page.child().downcast::<LushtextEditorPage>().ok();
                 let path = editor.as_ref().and_then(LushtextEditorPage::file_path);
-                let folder = path.as_deref().and_then(display_folder);
                 let title = editor
                     .as_ref()
                     .map_or_else(|| page.title().to_string(), LushtextEditorPage::title);
                 AllTabsRow {
                     page: page.downgrade(),
                     title,
-                    subtitle: folder
-                        .clone()
-                        .unwrap_or_else(|| ALL_TABS_UNTITLED_SUBTITLE.to_owned()),
-                    folder,
+                    folder: path.as_deref().and_then(display_folder),
                     modified: editor.as_ref().is_some_and(LushtextEditorPage::is_modified),
                     pinned: page.is_pinned(),
                     current: selected.as_ref() == Some(&page),

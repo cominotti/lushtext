@@ -28,11 +28,11 @@ use super::super::LushtextWindow;
 use super::all_tabs::{SET_ALL_TABS_VISIBLE_ACTION, TOGGLE_ALL_TABS_ACTION};
 use super::controls::{self, OverflowControls, SCROLL_BACK_ACTION, SCROLL_FORWARD_ACTION};
 use super::policy::{
-    ControlFocusFacts, OverflowControl, OverflowFacts, all_tabs_button_visible, can_scroll_back,
-    can_scroll_forward, controls_visible, focus_after_disable, group_attached,
-    scroll_controls_available, unpinned_overflows,
+    ControlFocusFacts, OverflowFacts, all_tabs_button_visible, can_scroll_back, can_scroll_forward,
+    controls_visible, focus_after_disable, group_attached, scroll_controls_available,
+    unpinned_overflows,
 };
-use super::scroll_execution::{extent_at, find_tab_scroller, is_rtl};
+use super::scroll_execution::{current_extent, find_tab_scroller, is_rtl};
 
 /// A tab page and its title and pinned handlers.
 pub(super) type PageWatch = (
@@ -95,7 +95,24 @@ pub(crate) struct TabOverflowState {
     pub(super) page_watches: RefCell<std::collections::HashMap<usize, PageWatch>>,
 }
 
+/// Disconnect a page's title and pinned handlers, if the page is still alive.
+pub(super) fn release_page_watch((page, handlers): PageWatch) {
+    if let Some(page) = page.upgrade() {
+        for handler in handlers {
+            page.disconnect(handler);
+        }
+    }
+}
+
 impl TabOverflowState {
+    /// Whether our step animation is playing.
+    pub(super) fn animation_playing(&self) -> bool {
+        self.animation.borrow().as_ref().is_some_and(|animation| {
+            libadwaita::prelude::AnimationExt::state(animation)
+                == libadwaita::AnimationState::Playing
+        })
+    }
+
     /// Whether the readiness blocker `tab-overflow` holds: a step, a hold, a
     /// reconcile or a selection reveal is pending, or the All Tabs popover is
     /// still publishing or retiring rows.
@@ -109,10 +126,7 @@ impl TabOverflowState {
                 .borrow()
                 .as_ref()
                 .is_some_and(|controls| controls.popover.publishing())
-            || self.animation.borrow().as_ref().is_some_and(|animation| {
-                libadwaita::prelude::AnimationExt::state(animation)
-                    == libadwaita::AnimationState::Playing
-            })
+            || self.animation_playing()
     }
 }
 
@@ -322,14 +336,13 @@ impl LushtextWindow {
             return;
         };
         let unpinned = state.unpinned.borrow().clone();
-        let extent = unpinned.as_ref().map(|scroller| {
-            let adjustment = scroller.hadjustment();
-            extent_at(&adjustment, adjustment.value())
-        });
-        let pinned_overflows = state.pinned.borrow().as_ref().is_some_and(|scroller| {
-            let adjustment = scroller.hadjustment();
-            unpinned_overflows(extent_at(&adjustment, adjustment.value()))
-        });
+        let extent = unpinned
+            .as_ref()
+            .map(|scroller| current_extent(&scroller.hadjustment()));
+        let pinned_overflows =
+            state.pinned.borrow().as_ref().is_some_and(|scroller| {
+                unpinned_overflows(current_extent(&scroller.hadjustment()))
+            });
         // An empty unpinned box is not reallocated, so its adjustment can keep
         // the range of the tabs it held: no unpinned tab, no overflow.
         let unpinned_tabs = tab_view.n_pages() > tab_view.n_pinned_pages();
@@ -396,21 +409,12 @@ impl LushtextWindow {
             state.group_attached.set(attached);
         }
 
-        if let Some(control) = focused {
-            let still_available = match control {
-                OverflowControl::Back => back,
-                OverflowControl::Forward => forward,
-                OverflowControl::AllTabs => all_tabs_visible,
-            };
-            if !still_available {
-                let handoff = focus_after_disable(
-                    control,
-                    ControlFocusFacts::new(back, forward, all_tabs_visible),
-                );
-                if !controls.focus_control(handoff) {
-                    self.focus_selected_editor_after_action();
-                }
-            }
+        let focus_facts = ControlFocusFacts::new(back, forward, all_tabs_visible);
+        if let Some(control) = focused
+            && !focus_facts.available(control)
+            && !controls.focus_control(focus_after_disable(control, focus_facts))
+        {
+            self.focus_selected_editor_after_action();
         }
     }
 
@@ -439,12 +443,8 @@ impl LushtextWindow {
         let _ = state.resnapshot.invalidate();
         state.saved_focus.replace(None);
         let watches: Vec<_> = state.page_watches.borrow_mut().drain().collect();
-        for (_, (page, handlers)) in watches {
-            if let Some(page) = page.upgrade() {
-                for handler in handlers {
-                    page.disconnect(handler);
-                }
-            }
+        for (_, watch) in watches {
+            release_page_watch(watch);
         }
         if let Some(controls) = state.controls.borrow().clone()
             && controls.popover.is_visible()

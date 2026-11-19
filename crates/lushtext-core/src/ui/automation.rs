@@ -1690,12 +1690,8 @@ fn push_tab_overflow_surfaces(
         ("tab-strip-scroll-forward", "tab-strip-scroll-forward-ink"),
     ];
     const ALL_TABS: (&str, &str) = ("tab-strip-all-tabs", "tab-strip-all-tabs-ink");
-    const POPOVER: [&str; 3] = [
-        "all-tabs-popover",
-        "all-tabs-popover-search",
-        "all-tabs-popover-list",
-    ];
-    const POPOVER_LIST_INK: &str = "all-tabs-popover-list-ink";
+    const POPOVER: [&str; 2] = ["all-tabs-popover", "all-tabs-popover-search"];
+    const POPOVER_LIST: (&str, &str) = ("all-tabs-popover-list", "all-tabs-popover-list-ink");
     let controls = window.visible_tab_overflow_controls();
     match controls.group.as_ref() {
         Some(group) => push_widget_surface(surfaces, "tab-strip-overflow-controls", group, root),
@@ -1704,63 +1700,80 @@ fn push_tab_overflow_surfaces(
             "controls-hidden",
         )),
     }
-    match controls.scroll_buttons.as_ref() {
-        Some((back, forward)) => {
-            for ((surface, anchor), button) in SCROLL_BUTTONS.into_iter().zip([back, forward]) {
-                let rendered = widget_visual_surface(surface, button, root);
-                pixel_anchors.push(pixel_anchor(
-                    anchor,
-                    surface,
-                    rendered.rect,
-                    "button-not-drawn",
-                ));
-                surfaces.push(rendered);
-            }
-        }
-        None => {
-            for (surface, anchor) in SCROLL_BUTTONS {
-                surfaces.push(absent_visual_surface(surface, "controls-hidden"));
-                pixel_anchors.push(absent_pixel_anchor(anchor, surface, "controls-hidden"));
-            }
-        }
-    }
-    if let Some(button) = controls.all_tabs.as_ref() {
-        let rendered = widget_visual_surface(ALL_TABS.0, button, root);
-        pixel_anchors.push(pixel_anchor(
-            ALL_TABS.1,
-            ALL_TABS.0,
-            rendered.rect,
+    let (back, forward) = controls
+        .scroll_buttons
+        .as_ref()
+        .map(|(back, forward)| {
+            (
+                back.upcast_ref::<gtk4::Widget>(),
+                forward.upcast_ref::<gtk4::Widget>(),
+            )
+        })
+        .unzip();
+    for (names, button) in SCROLL_BUTTONS.into_iter().zip([back, forward]) {
+        let state = button.ok_or("controls-hidden");
+        push_anchored_surface(
+            surfaces,
+            pixel_anchors,
+            names,
+            state,
             "button-not-drawn",
-        ));
-        surfaces.push(rendered);
-    } else {
-        surfaces.push(absent_visual_surface(ALL_TABS.0, "controls-hidden"));
-        pixel_anchors.push(absent_pixel_anchor(
-            ALL_TABS.1,
-            ALL_TABS.0,
-            "controls-hidden",
-        ));
+            root,
+        );
     }
-    if let Some(popover) = controls.popover.as_ref() {
+    let all_tabs = controls
+        .all_tabs
+        .as_ref()
+        .map(glib::object::Cast::upcast_ref::<gtk4::Widget>)
+        .ok_or("controls-hidden");
+    push_anchored_surface(
+        surfaces,
+        pixel_anchors,
+        ALL_TABS,
+        all_tabs,
+        "button-not-drawn",
+        root,
+    );
+    let list = if let Some(popover) = controls.popover.as_ref() {
         push_widget_surface(surfaces, POPOVER[0], popover, root);
         push_widget_surface(surfaces, POPOVER[1], &popover.search_entry(), root);
-        let list = widget_visual_surface(POPOVER[2], &popover.list_scroller(), root);
-        pixel_anchors.push(pixel_anchor(
-            POPOVER_LIST_INK,
-            POPOVER[2],
-            list.rect,
-            "list-not-drawn",
-        ));
-        surfaces.push(list);
+        Ok(popover.list_scroller().upcast::<gtk4::Widget>())
     } else {
         for name in POPOVER {
             surfaces.push(absent_visual_surface(name, "popover-closed"));
         }
-        pixel_anchors.push(absent_pixel_anchor(
-            POPOVER_LIST_INK,
-            POPOVER[2],
-            "popover-closed",
-        ));
+        Err("popover-closed")
+    };
+    push_anchored_surface(
+        surfaces,
+        pixel_anchors,
+        POPOVER_LIST,
+        list.as_ref().map_err(|reason| *reason),
+        "list-not-drawn",
+        root,
+    );
+}
+
+/// One surface and the pixel anchor on its ink: rendered from `widget`, or
+/// both absent with the `Err` reason.
+fn push_anchored_surface(
+    surfaces: &mut Vec<AutomationVisualSurfaceSnapshot>,
+    pixel_anchors: &mut Vec<AutomationVisualPixelAnchorSnapshot>,
+    (surface, anchor): (&str, &str),
+    widget: Result<&gtk4::Widget, &'static str>,
+    not_drawn: &'static str,
+    root: &gtk4::Widget,
+) {
+    match widget {
+        Ok(widget) => {
+            let rendered = widget_visual_surface(surface, widget, root);
+            pixel_anchors.push(pixel_anchor(anchor, surface, rendered.rect, not_drawn));
+            surfaces.push(rendered);
+        }
+        Err(absent) => {
+            surfaces.push(absent_visual_surface(surface, absent));
+            pixel_anchors.push(absent_pixel_anchor(anchor, surface, absent));
+        }
     }
 }
 

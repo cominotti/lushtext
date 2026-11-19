@@ -126,16 +126,22 @@ const fn can_move(extent: StripScrollExtent, up: bool) -> bool {
     }
 }
 
+/// Whether a step toward `direction` can still move the strip.
+#[must_use]
+pub const fn can_scroll(extent: StripScrollExtent, direction: ScrollDirection, rtl: bool) -> bool {
+    can_move(extent, moves_up(direction, rtl))
+}
+
 /// Whether Scroll Tabs Back can still move the strip.
 #[must_use]
 pub const fn can_scroll_back(extent: StripScrollExtent, rtl: bool) -> bool {
-    can_move(extent, moves_up(ScrollDirection::Back, rtl))
+    can_scroll(extent, ScrollDirection::Back, rtl)
 }
 
 /// Whether Scroll Tabs Forward can still move the strip.
 #[must_use]
 pub const fn can_scroll_forward(extent: StripScrollExtent, rtl: bool) -> bool {
-    can_move(extent, moves_up(ScrollDirection::Forward, rtl))
+    can_scroll(extent, ScrollDirection::Forward, rtl)
 }
 
 /// Where one step from `extent.value_px` lands: `increment_px` (the
@@ -282,16 +288,15 @@ enum AllTabsMatch {
 /// absolute path fuzzily, which would list every tab. Ties keep strip order.
 #[must_use]
 pub fn rank_all_tabs(query: &str, candidates: &[AllTabsCandidate<'_>]) -> Vec<u32> {
-    let indexes = (0..candidates.len()).filter_map(|index| u32::try_from(index).ok());
+    let indexed = candidates.iter().zip(0u32..);
     let trimmed = query.trim();
     if trimmed.is_empty() {
-        return indexes.collect();
+        return indexed.map(|(_, index)| index).collect();
     }
     let folded = trimmed.to_lowercase();
     let mut fuzzy = crate::services::fuzzy::FuzzyQuery::new(trimmed);
-    let mut ranked: Vec<(AllTabsMatch, u32)> = indexes
-        .filter_map(|index| {
-            let candidate = candidates.get(usize::try_from(index).ok()?)?;
+    let mut ranked: Vec<(AllTabsMatch, u32)> = indexed
+        .filter_map(|(candidate, index)| {
             let title = candidate.title.to_lowercase();
             let matched = if title.starts_with(&folded) {
                 AllTabsMatch::TitlePrefix
@@ -362,6 +367,16 @@ impl ControlFocusFacts {
             back_available,
             forward_available,
             all_tabs_available,
+        }
+    }
+
+    /// Whether `control` can still hold focus.
+    #[must_use]
+    pub const fn available(self, control: OverflowControl) -> bool {
+        match control {
+            OverflowControl::Back => self.back_available,
+            OverflowControl::Forward => self.forward_available,
+            OverflowControl::AllTabs => self.all_tabs_available,
         }
     }
 }
@@ -596,6 +611,19 @@ mod tests {
         assert!(group_attached(true, false));
         assert!(group_attached(false, true));
         assert!(group_attached(true, true));
+    }
+
+    #[test]
+    fn a_control_is_available_by_its_own_flag() {
+        use OverflowControl::{AllTabs, Back, Forward};
+        let facts = ControlFocusFacts::new(true, false, true);
+        assert!(facts.available(Back));
+        assert!(!facts.available(Forward));
+        assert!(facts.available(AllTabs));
+        let facts = ControlFocusFacts::new(false, true, false);
+        assert!(!facts.available(Back));
+        assert!(facts.available(Forward));
+        assert!(!facts.available(AllTabs));
     }
 
     #[test]

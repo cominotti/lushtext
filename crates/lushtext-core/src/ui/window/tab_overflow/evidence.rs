@@ -31,7 +31,7 @@ use super::all_tabs::{
 use super::all_tabs_popover::LushtextAllTabsPopover;
 use super::controls::{SCROLL_BACK_ACTION, SCROLL_FORWARD_ACTION};
 use super::policy::StripScrollExtent;
-use super::scroll_execution::{extent_at, is_rtl};
+use super::scroll_execution::{current_extent, is_rtl};
 
 /// Everything a test may observe about the tab strip's overflow controls.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -118,9 +118,7 @@ pub fn tab_overflow_evidence(window: &LushtextWindow) -> TabOverflowEvidence {
     let state = &imp.tab_overflow;
     let unpinned = state.unpinned.borrow().clone();
     let controls = state.controls.borrow().clone();
-    let animation_active = state.animation.borrow().as_ref().is_some_and(|animation| {
-        libadwaita::prelude::AnimationExt::state(animation) == libadwaita::AnimationState::Playing
-    });
+    let animation_active = state.animation_playing();
     let repeat_active = state.repeat.borrow().is_some();
     let bar = imp.tab_bar.try_get();
     let popover = controls.as_ref().map(|controls| controls.popover.facts());
@@ -149,10 +147,7 @@ pub fn tab_overflow_evidence(window: &LushtextWindow) -> TabOverflowEvidence {
         reconcile_waits_for_terminal: state.waiting_for_terminal.get(),
         guard_cancellations: state.guard_cancellations.get(),
         selection_reveal_pending: state.selection_reveal.borrow().is_some(),
-        extent: unpinned.map(|scroller| {
-            let adjustment = scroller.hadjustment();
-            extent_at(&adjustment, adjustment.value())
-        }),
+        extent: unpinned.map(|scroller| current_extent(&scroller.hadjustment())),
         rtl: bar.as_ref().is_some_and(is_rtl),
         bar_overflowing: bar.as_ref().is_some_and(libadwaita::TabBar::is_overflowing),
         bar_height: bar.as_ref().map_or(0, WidgetExt::height),

@@ -47,19 +47,18 @@ impl OverflowControls {
         window: &impl IsA<gtk4::Window>,
     ) -> Option<OverflowControl> {
         let focus = gtk4::prelude::GtkWindowExt::focus(window.as_ref())?;
-        if focus.is_ancestor(&self.back) || focus == *self.back.upcast_ref::<gtk4::Widget>() {
-            Some(OverflowControl::Back)
-        } else if focus.is_ancestor(&self.forward)
-            || focus == *self.forward.upcast_ref::<gtk4::Widget>()
-        {
-            Some(OverflowControl::Forward)
-        } else if focus.is_ancestor(&self.all_tabs)
-            || focus == *self.all_tabs.upcast_ref::<gtk4::Widget>()
-        {
-            Some(OverflowControl::AllTabs)
-        } else {
-            None
-        }
+        [
+            (
+                self.back.upcast_ref::<gtk4::Widget>(),
+                OverflowControl::Back,
+            ),
+            (self.forward.upcast_ref(), OverflowControl::Forward),
+            (self.all_tabs.upcast_ref(), OverflowControl::AllTabs),
+        ]
+        .into_iter()
+        .find_map(|(widget, control)| {
+            (focus == *widget || focus.is_ancestor(widget)).then_some(control)
+        })
     }
 
     /// Show `count` on the All Tabs button, its tooltip and accessible name.

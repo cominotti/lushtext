@@ -22,7 +22,7 @@ use libadwaita::prelude::*;
 use super::super::LushtextWindow;
 use super::policy::{
     ScrollDirection, StripScrollExtent, TAB_SCROLL_ANIMATION_MS, TAB_SCROLL_REPEAT_DELAY_MS,
-    TAB_SCROLL_REPEAT_INTERVAL_MS, can_scroll_back, can_scroll_forward, next_scroll_target,
+    TAB_SCROLL_REPEAT_INTERVAL_MS, can_scroll, next_scroll_target,
 };
 
 /// The deepest descendant level of an `AdwTabBar` the lookup walks: bar →
@@ -137,6 +137,11 @@ pub(super) fn extent_at(adjustment: &gtk4::Adjustment, value: f64) -> StripScrol
     }
 }
 
+/// `adjustment` rounded once into whole pixels at its current value.
+pub(super) fn current_extent(adjustment: &gtk4::Adjustment) -> StripScrollExtent {
+    extent_at(adjustment, adjustment.value())
+}
+
 /// Whether `widget` lays out right to left.
 pub(super) fn is_rtl(widget: &impl IsA<gtk4::Widget>) -> bool {
     widget.direction() == gtk4::TextDirection::Rtl
@@ -193,11 +198,7 @@ impl LushtextWindow {
             .filter(|_| self.tab_scroll_animation_playing())
             .unwrap_or_else(|| adjustment.value());
         let extent = extent_at(&adjustment, from);
-        let movable = match direction {
-            ScrollDirection::Back => can_scroll_back(extent, rtl),
-            ScrollDirection::Forward => can_scroll_forward(extent, rtl),
-        };
-        if !movable {
+        if !can_scroll(extent, direction, rtl) {
             return false;
         }
         let target = next_scroll_target(
@@ -212,12 +213,7 @@ impl LushtextWindow {
 
     /// Whether our step animation is playing.
     pub(super) fn tab_scroll_animation_playing(&self) -> bool {
-        self.imp()
-            .tab_overflow
-            .animation
-            .borrow()
-            .as_ref()
-            .is_some_and(|animation| animation.state() == libadwaita::AnimationState::Playing)
+        self.imp().tab_overflow.animation_playing()
     }
 
     fn animate_tab_strip_to(&self, adjustment: &gtk4::Adjustment, target: f64) {
@@ -413,7 +409,7 @@ impl LushtextWindow {
         if frames > SELECTION_REVEAL_MAX_FRAMES || imp.tab_view.selected_page().is_none() {
             return glib::ControlFlow::Break;
         }
-        let extent = extent_at(&adjustment, adjustment.value());
+        let extent = current_extent(&adjustment);
         // Not allocated yet: the box would skip the scroll.
         if extent.page_px <= 0 {
             return glib::ControlFlow::Continue;
