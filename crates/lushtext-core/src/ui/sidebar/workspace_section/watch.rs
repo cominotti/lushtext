@@ -60,6 +60,9 @@ impl LushtextWorkspaceSection {
         if super::scan_execution::child_scan_blocks_readiness(self) {
             return true;
         }
+        if self.collapse_blocks_readiness() {
+            return true;
+        }
 
         #[cfg(feature = "test-utils")]
         if self.imp().watch_runtime.test_disabled.get() {
@@ -158,7 +161,10 @@ impl LushtextWorkspaceSection {
         }
     }
 
-    fn install_expanded_watch_hook(&self, row: &gtk4::TreeListRow) {
+    /// Install the expansion hook on `row` once. Called at model install, at
+    /// splices and at factory bind, so every row object a widget shows has
+    /// it (ledger A114, design R4).
+    pub(super) fn install_expanded_watch_hook(&self, row: &gtk4::TreeListRow) {
         // SAFETY: the private marker stores only `true` on this row. The row
         // owns its signal handler, whose closure captures the section weakly.
         if unsafe { row.data::<bool>(WATCH_EXPANDED_HOOK_KEY) }.is_some() {

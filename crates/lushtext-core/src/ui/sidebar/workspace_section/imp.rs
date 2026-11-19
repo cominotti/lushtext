@@ -20,7 +20,9 @@ pub(super) use super::context_menus::FileContextTarget;
 use super::folder_execution::{
     ActiveFolderEmptyProbe, FolderEmptyProbeKey, PendingFolderEmptyProbe,
 };
-use super::scan_execution::{ActiveChildScan, PendingChildScan, RetiringListing};
+use super::scan_execution::{
+    ActiveChildScan, ChildCacheAdoption, PendingChildScan, RetiringListing,
+};
 use super::watch_targets::MaterializedWatchTargets;
 use crate::model::workspace::{
     FolderTreeEntry, WorkspaceFolderId, WorkspaceFolderMoveDirection, WorkspaceId,
@@ -58,13 +60,30 @@ type WorkspaceCallback = Box<dyn Fn(&WorkspaceId)>;
 /// Cached position of a file tree item for O(1) model removal.
 /// Stores the parent directory (or `None` for configured top-level rows) and
 /// the index within the parent's `ListStore`.
-#[derive(Debug, Clone, Eq, PartialEq)]
+///
+/// Two locations are equal when they name the same position: the cache epoch
+/// is bookkeeping, not part of the position.
+#[derive(Debug, Clone)]
 pub struct ItemLocation {
     /// Parent directory store containing the item; `None` means top-level folder row.
     pub parent_dir: Option<PathBuf>,
     /// Current index within that parent `ListStore` for direct removal.
     pub index: usize,
+    /// The section's cache epoch when this location was cached. A sliced
+    /// collapse detaches its directories' path caches whole at its intent
+    /// (`slice-large-directory-collapse` D24): every location under a
+    /// detached parent cached at or before the detach's epoch is stale, and
+    /// no reader sees it, until the listing retirement removes it.
+    pub epoch: u64,
 }
+
+impl PartialEq for ItemLocation {
+    fn eq(&self, other: &Self) -> bool {
+        self.parent_dir == other.parent_dir && self.index == other.index
+    }
+}
+
+impl Eq for ItemLocation {}
 
 /// Runtime widget references for the section-owned peek popover.
 #[derive(Default)]
@@ -144,6 +163,23 @@ pub struct RefreshRuntimeState {
     /// Cache resets because a new live store took over a directory, each
     /// costing the previous store's rows once.
     pub cache_owner_resets: Cell<u64>,
+    /// Path-cache rows that sliced collapse steps removed one by one: zero
+    /// whenever the collapse detached the caches at its intent
+    /// (`slice-large-directory-collapse` D24).
+    pub cache_collapse_rows_removed: Cell<u64>,
+    /// Directory path caches a sliced collapse detached at its intent.
+    pub cache_detached_parents: Cell<u64>,
+    /// Stale entries of detached caches the listing retirement removed.
+    pub cache_detached_rows_retired: Cell<u64>,
+    /// Calls of the walk that restores a unique path's location after its
+    /// duplicate left (`restore_unique_item_location`).
+    pub cache_unique_restores: Cell<u64>,
+    /// Rows the adoptions of re-expanded directories cached, ever.
+    pub cache_adopted_rows: Cell<u64>,
+    /// Most rows one adoption turn cached.
+    pub cache_adopted_rows_turn_high_water: Cell<usize>,
+    /// Whole-mirror re-caches of a directory in one call, ever.
+    pub cache_mirror_recaches: Cell<u64>,
     /// Largest cache operation count one applied batch performed.
     pub cache_batch_operations_high_water: Cell<usize>,
     /// Largest number of row batches one GTK turn applied.
@@ -166,6 +202,12 @@ pub struct RefreshRuntimeState {
     pub scan_stale_completions: Cell<u64>,
     /// Current latest-only scans that published terminal reconciliation state.
     pub scan_terminal_publications: Cell<u64>,
+    /// The directory of the latest scan terminal publication, and whether
+    /// its store was the one the directory's shown row lists (the section's
+    /// retained store) rather than a store no row shows, such as the one an
+    /// `is_expandable()` probe creates (`slice-large-directory-collapse`
+    /// D12, task 1.4).
+    pub last_scan_terminal: RefCell<Option<(PathBuf, bool)>>,
     /// Largest active emptiness-probe count for any one configured folder.
     pub empty_probe_active_per_folder_high_water: Cell<usize>,
     /// Largest pending emptiness-probe count for any one configured folder.
@@ -380,6 +422,18 @@ pub struct LushtextWorkspaceSection {
     pub visible_path_counts: RefCell<HashMap<PathBuf, usize>>,
     /// O(1) path → (parent, index) lookup for fast model removal.
     pub item_locations: RefCell<HashMap<PathBuf, ItemLocation>>,
+    /// The cache epoch new locations carry (`ItemLocation::epoch`).
+    pub(super) child_cache_epoch: Cell<u64>,
+    /// Directories whose path caches a sliced collapse detached, each with
+    /// the last epoch its stale locations carry; an entry goes when the
+    /// listing retirement has removed that detach's entries
+    /// (`slice-large-directory-collapse` D24).
+    pub(in crate::ui::sidebar) detached_child_caches: RefCell<HashMap<PathBuf, u64>>,
+    /// Re-expanded directories whose remaining rows are being cached again
+    /// in slices after their caches were detached (D24).
+    pub(in crate::ui::sidebar) child_cache_adoptions: RefCell<HashMap<PathBuf, ChildCacheAdoption>>,
+    /// The idle source running `child_cache_adoptions`, while one is armed.
+    pub(super) child_cache_adoption_source: RefCell<Option<glib::SourceId>>,
     /// Widgets backing the section-owned file peek popover.
     pub peek_widgets: PeekWidgets,
     /// Active peek target, generation, and focus-return contract.
@@ -388,6 +442,9 @@ pub struct LushtextWorkspaceSection {
     pub refresh_runtime: RefreshRuntimeState,
     /// Materialized-scope watcher plus GTK-side poll source for automatic refresh.
     pub watch_runtime: WatchRuntimeState,
+    /// The sliced directory collapse queue and its step sources
+    /// (`collapse_execution`).
+    pub(super) collapse_runtime: super::collapse_execution::CollapseRuntimeState,
 
     /// Rename callback installed by the sidebar after construction.
     pub rename_callback: RefCell<Option<RenameCallback>>,
@@ -447,11 +504,26 @@ impl ObjectImpl for LushtextWorkspaceSection {
         self.parent_constructed();
         self.file_tree_view.add_css_class("workspace-file-tree");
         super::row_factory::setup(self);
+        // A collapse paces from frames while the list is mapped and from the
+        // low-priority fallback while it is not (`collapse_execution`).
+        let section = self.obj().downgrade();
+        self.file_tree_view.connect_map(move |_| {
+            if let Some(section) = section.upgrade() {
+                section.arm_collapse_source();
+            }
+        });
+        let section = self.obj().downgrade();
+        self.file_tree_view.connect_unmap(move |_| {
+            if let Some(section) = section.upgrade() {
+                section.arm_collapse_source();
+            }
+        });
         self.obj().register_folder_reorder_section();
         super::context_menus::setup_file_context_menu(self);
         super::context_menus::setup_header_context_menu(self);
         super::context_menus::setup_header_double_click(self);
         self.obj().setup_peek();
+        self.obj().setup_disclosure_key_route();
 
         accessibility::set_role(&*self.header_box, gtk4::AccessibleRole::Group);
         accessibility::set_labelled_description(
@@ -532,6 +604,8 @@ impl ObjectImpl for LushtextWorkspaceSection {
     fn dispose(&self) {
         self.obj().unregister_folder_reorder_section();
         self.obj().stop_workspace_watch();
+        self.obj().cancel_all_collapses();
+        self.obj().drop_held_keys();
         super::scan_execution::clear_all_dir_state(&self.obj());
         // A disposed section drains nothing later: release what is retiring.
         if let Some(source) = self.child_store_retirement_source.take() {

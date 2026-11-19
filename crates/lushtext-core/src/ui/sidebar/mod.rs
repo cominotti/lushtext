@@ -26,7 +26,7 @@
 //! | `width_preset.rs` | **not this workflow's**: `WFR-SHELL-GEOMETRY` owns it |
 //! | `file_tree_item.rs` | outside this workflow — no coordination tier |
 //!
-//! # The thirteen stage orders, and where control resumes
+//! # The fourteen stage orders, and where control resumes
 //!
 //! Every one of these is deferred somewhere, so "where control resumes" is the part a
 //! reader cannot guess. `⇢` marks a stage boundary control does **not** cross
@@ -47,6 +47,7 @@
 //! | `Space` peek | key (captured on the list view, gated against focused controls that own their keys) ⇢ read worker ⇢ popover | in the peek worker, rejected if the request token or path changed |
 //! | focused-folder drilldown | activate → reseed rows ⇢ scan ⇢ restore expansion | in the scan for the new root; leaving restores the original folder seeds |
 //! | workspace path reveal | resolve → expand the next ancestor ⇢ await its admitted scan → repeat → select and `scroll_to` ⇢ await the slice bin's settle → terminal | in `reveal_execution`'s one poll source, at **two** resumption points: once the section's child scans settle (only then are `not-found` and `beyond-entry-cap` decided, from the listing the scan produced), and on the first frame the row is mapped inside the viewport with no forwarded request pending in the bin. A newer reveal or disposal ends it `superseded`; the outer scroller is moved only by the bin |
+//! | directory collapse | input → show collapsed, prune intent, cancel the subtree's scans, move selection and focus ⇢ remove rows deepest store first, unbound chunks then bound units ⇢ … → GTK's direct collapse of the row | in `workspace_section/collapse_execution`, at **two** resumption points: the list's tick callback while it is mapped, and a `G_PRIORITY_LOW` fallback while it is unmapped or its frame clock starved. Re-expansion cancels it and refills the listing; an ancestor's collapse takes it over. A subtree of at most 32 rows collapses directly in the input |
 //!
 //! # The inversion most easily read wrong
 //!
@@ -108,6 +109,7 @@ use seams::SidebarFileRowStateSnapshot;
 
 #[cfg(feature = "test-utils")]
 pub use test_policy::{
+    CollapsePacingForTest, set_sidebar_collapse_pacing_for_test,
     set_sidebar_directory_retained_bytes_for_test, set_workspace_load_worker_delay_for_test,
     set_workspace_placeholder_cleanup_delay_for_test, set_workspace_rename_worker_delay_for_test,
 };

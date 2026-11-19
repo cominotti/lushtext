@@ -1175,6 +1175,9 @@ pub struct AutomationWorkspaceSnapshot {
     pub limited_directory_count: u32,
     /// Expanded directories still loading their entries in batches.
     pub loading_directory_count: u32,
+    /// Whether a directory collapse is still removing rows in paced steps
+    /// (`workspace-refresh-complete` waits for it).
+    pub collapse_pending: bool,
 }
 
 /// Command palette state that avoids exposing result row bodies.

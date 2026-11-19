@@ -908,6 +908,36 @@ pub mod a113 {
     pub use crate::probes::text::TextViewFixture;
 }
 
+/// The two-directory tree whose far row object the A114 probe drops, for its
+/// sample.
+pub mod a114 {
+    pub use crate::probes::a114::{
+        FIRST_CHILDREN, RowObjectFixture, SECOND_CHILDREN, row_object_fixture,
+    };
+}
+
+/// The tree list the A118 probe removes rows from, for its sample.
+pub mod a118 {
+    pub use crate::probes::a118::{
+        AFTER_ROWS, HEAD_REMOVALS, LARGE_CHILDREN, SMALL_CHILDREN, TreeFixture, tree_fixture,
+    };
+}
+
+/// The disclosure fixture and release claim the A119 probe drives, for its
+/// sample.
+pub mod a119 {
+    pub use crate::probes::a119::{
+        CLASS_ACTIONS, DisclosureFixture, KEY_BINDINGS, click_gestures, disclosure_fixture,
+        expander_icon,
+    };
+}
+
+/// The collapsing-arrow rule the A120 probe renders, for its sample.
+pub mod a120 {
+    pub use crate::probes::a118::tree_fixture;
+    pub use crate::probes::a120::{COLLAPSING_CLASS, COLLAPSING_CSS};
+}
+
 /// The text view whose `extend-selection` the A122 probe emits, for its
 /// sample.
 pub mod a122 {
@@ -920,6 +950,33 @@ pub mod a122 {
 /// The regex search and replacements the A127 probe runs, for its sample.
 pub mod a127 {
     pub use crate::probes::a127::{DOCUMENT, EXPANSIONS, PATTERN, regex_search, replace_all_with};
+}
+
+/// The tree list whose subtree rows the A123 probe hides by opacity,
+/// `can-target` and accessible `hidden`, for its sample.
+pub mod a123 {
+    pub use crate::probes::a123::{
+        BandReading, HideFixture, clear_row, hide_fixture, hide_row, read_band, reset_counts,
+    };
+}
+
+/// The tree list the A124 probe removes bound rows from out of an idle, for
+/// its sample.
+pub mod a124 {
+    pub use crate::probes::a118::{AFTER_ROWS, SMALL_CHILDREN, tree_fixture};
+    pub use crate::probes::a124::{IdleRemoval, REMOVED_ROWS, idle_removal};
+}
+
+/// The ticking widget whose frame clock the A125 probe arms sources around,
+/// for its sample.
+pub mod a125 {
+    pub use crate::probes::a125::{ClockFixture, Event, clock_fixture, read_case};
+}
+
+/// The list whose key presses the A126 probe holds and puts back on the
+/// display's queue, for its sample.
+pub mod a126 {
+    pub use crate::probes::a126::{HoldFixture, Mark, hold_fixture};
 }
 
 /// The word-boundary searches the A128 probe compares, for its sample.

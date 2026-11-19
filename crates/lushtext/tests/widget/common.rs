@@ -273,6 +273,34 @@ pub fn accessible_hidden(accessible: &impl IsA<gtk4::Accessible>) -> bool {
     false
 }
 
+/// Whether `accessible`'s `expanded` state is set to `expected`
+/// (`slice-large-directory-collapse` D6), through the same GTK test check as
+/// [`accessible_hidden`].
+pub fn accessible_expanded_is(accessible: &impl IsA<gtk4::Accessible>, expected: bool) -> bool {
+    use glib::translate::ToGlibPtr;
+    let value = if expected {
+        glib::ffi::GTRUE
+    } else {
+        glib::ffi::GFALSE
+    };
+    // SAFETY: as for `accessible_hidden`: for the boolean `expanded` state the
+    // variadic check reads exactly one `gboolean`, which is what is passed; the
+    // returned mismatch string, when not NULL, is caller-owned and freed once.
+    let mismatch = unsafe {
+        gtk4::ffi::gtk_test_accessible_check_state(
+            accessible.as_ref().to_glib_none().0,
+            gtk4::ffi::GTK_ACCESSIBLE_STATE_EXPANDED,
+            value,
+        )
+    };
+    if mismatch.is_null() {
+        return true;
+    }
+    // SAFETY: see above.
+    unsafe { glib::ffi::g_free(mismatch.cast()) };
+    false
+}
+
 /// Realized row widgets of a `GtkListView`: the visible, non-zero-height
 /// children GTK currently keeps for the model. This is the rendered surface,
 /// not the model, which is the distinction virtualization bugs hide behind.
@@ -842,6 +870,13 @@ pub struct CapturedLog {
 }
 
 static LOG_CAPTURED: std::sync::Mutex<Option<Vec<CapturedLog>>> = std::sync::Mutex::new(None);
+
+/// The warnings and criticals one [`LogCapture`] keeps before it aborts the
+/// process as a flood: far above what any test logs on purpose, far below
+/// the tens of millions of lines a spinning toolkit loop writes before the
+/// memory cap kills the headless compositor (`slice-large-directory-collapse`
+/// task 9.12).
+const LOG_CAPTURE_FLOOD_LIMIT: usize = 4_096;
 static LOG_WRITER: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 
 /// The GLib warnings and criticals logged while a capture is alive.
@@ -879,6 +914,21 @@ impl LogCapture {
                             domain: field("GLIB_DOMAIN"),
                             message: field("MESSAGE"),
                         });
+                        if messages.len() >= LOG_CAPTURE_FLOOD_LIMIT {
+                            // A toolkit loop that logs on every turn (GTK's
+                            // focus-crossing walk spinning on
+                            // `gtk_widget_get_parent (NULL)`) never returns
+                            // to the test, so no assertion can report it:
+                            // end the process with one line instead of
+                            // tens of millions.
+                            eprintln!(
+                                "LogCapture: {} warnings and criticals while one capture was alive, \
+                                 the last {:?}; aborting the flood",
+                                messages.len(),
+                                field("MESSAGE"),
+                            );
+                            std::process::abort();
+                        }
                     }
                 }
                 glib::log_writer_default(level, fields)
@@ -938,54 +988,35 @@ pub fn short_lines(fill: char, chars: usize) -> String {
 /// When the compositor offers no RemoteDesktop session, or the press does
 /// not activate the window within five seconds.
 pub fn activate_with_real_press(window: &impl IsA<gtk4::Window>, target: &impl IsA<gtk4::Widget>) {
+    press_with_real_pointer(window, target, 1);
+}
+
+/// Press the primary button `presses` times in quick succession at
+/// `target`'s centre, as [`activate_with_real_press`] does once (two presses
+/// are a double click: each pair is 120 ms apart, under GTK's 400 ms
+/// double-click time).
+///
+/// # Panics
+///
+/// As [`activate_with_real_press`].
+pub fn press_with_real_pointer(
+    window: &impl IsA<gtk4::Window>,
+    target: &impl IsA<gtk4::Widget>,
+    presses: u32,
+) {
     use glib::prelude::ToVariant;
-    const BUS: &str = "org.gnome.Mutter.RemoteDesktop";
-    const SESSION: &str = "org.gnome.Mutter.RemoteDesktop.Session";
     const BTN_LEFT: i32 = 0x110;
-    const SHIFT_L: u32 = 0xffe1;
     let window = window.as_ref();
     window.fullscreen();
     wait_until(Duration::from_secs(5), || {
         window.is_fullscreen() && target.as_ref().is_mapped() && target.as_ref().width() > 0
     });
     flush_after_delay(Duration::from_millis(200));
-    let connection = gio::bus_get_sync(gio::BusType::Session, None::<&gio::Cancellable>)
-        .expect("the headless session bus");
-    let call = |object: &str, interface: &str, method: &str, parameters: Option<glib::Variant>| {
-        connection
-            .call_sync(
-                Some(BUS),
-                object,
-                interface,
-                method,
-                parameters.as_ref(),
-                None,
-                gio::DBusCallFlags::NONE,
-                5_000,
-                None::<&gio::Cancellable>,
-            )
-            .unwrap_or_else(|error| panic!("RemoteDesktop {method}: {error}"))
-    };
-    let reply = call(
-        "/org/gnome/Mutter/RemoteDesktop",
-        BUS,
-        "CreateSession",
-        None,
+    let session = RemoteDesktop::start();
+    session.notify(
+        "NotifyPointerMotionRelative",
+        &(1.0f64, 1.0f64).to_variant(),
     );
-    let session = reply
-        .child_value(0)
-        .str()
-        .expect("a session path")
-        .to_owned();
-    let notify = |method: &str, parameters: glib::Variant| {
-        call(&session, SESSION, method, Some(parameters));
-        flush_after_delay(Duration::from_millis(60));
-    };
-    call(&session, SESSION, "Start", None);
-    // The compositor drops a new session's first device notification.
-    notify("NotifyKeyboardKeysym", (SHIFT_L, true).to_variant());
-    notify("NotifyKeyboardKeysym", (SHIFT_L, false).to_variant());
-    notify("NotifyPointerMotionRelative", (1.0f64, 1.0f64).to_variant());
     flush_after_delay(Duration::from_millis(300));
     let target = target.as_ref();
     let centre =
@@ -993,18 +1024,127 @@ pub fn activate_with_real_press(window: &impl IsA<gtk4::Window>, target: &impl I
     let on_screen = target
         .compute_point(window, &centre)
         .expect("the target is inside its fullscreen window");
-    notify(
+    session.notify(
         "NotifyPointerMotionRelative",
-        (-10_000.0f64, -10_000.0f64).to_variant(),
+        &(-10_000.0f64, -10_000.0f64).to_variant(),
     );
-    notify(
+    session.notify(
         "NotifyPointerMotionRelative",
-        (f64::from(on_screen.x()), f64::from(on_screen.y())).to_variant(),
+        &(f64::from(on_screen.x()), f64::from(on_screen.y())).to_variant(),
     );
-    notify("NotifyPointerButton", (BTN_LEFT, true).to_variant());
-    notify("NotifyPointerButton", (BTN_LEFT, false).to_variant());
-    call(&session, SESSION, "Stop", None);
+    for _ in 0..presses {
+        session.notify("NotifyPointerButton", &(BTN_LEFT, true).to_variant());
+        session.notify("NotifyPointerButton", &(BTN_LEFT, false).to_variant());
+    }
+    drop(session);
     wait_until(Duration::from_secs(5), || window.is_active());
+}
+
+/// Type each chord of X keysyms through the compositor's RemoteDesktop, as a
+/// user would: a chord's keys are pressed in order and released in reverse.
+/// The keys go to the window's focus, so the window must already be active
+/// (for example after [`activate_with_real_press`]).
+///
+/// # Panics
+///
+/// When the compositor offers no RemoteDesktop session.
+pub fn type_with_real_keyboard(chords: &[&[u32]]) {
+    use glib::prelude::ToVariant;
+    let session = RemoteDesktop::start();
+    for chord in chords {
+        for keysym in *chord {
+            session.notify("NotifyKeyboardKeysym", &(*keysym, true).to_variant());
+        }
+        for keysym in chord.iter().rev() {
+            session.notify("NotifyKeyboardKeysym", &(*keysym, false).to_variant());
+        }
+        flush_after_delay(Duration::from_millis(100));
+    }
+}
+
+/// One started `org.gnome.Mutter.RemoteDesktop` session of the headless
+/// compositor, stopped on drop.
+struct RemoteDesktop {
+    connection: gio::DBusConnection,
+    session: String,
+}
+
+impl RemoteDesktop {
+    const BUS: &str = "org.gnome.Mutter.RemoteDesktop";
+    const SESSION: &str = "org.gnome.Mutter.RemoteDesktop.Session";
+
+    fn start() -> Self {
+        use glib::prelude::ToVariant;
+        const SHIFT_L: u32 = 0xffe1;
+        let connection = gio::bus_get_sync(gio::BusType::Session, None::<&gio::Cancellable>)
+            .expect("the headless session bus");
+        let reply = Self::call_on(
+            &connection,
+            "/org/gnome/Mutter/RemoteDesktop",
+            Self::BUS,
+            "CreateSession",
+            None,
+        );
+        let session = reply
+            .child_value(0)
+            .str()
+            .expect("a session path")
+            .to_owned();
+        let remote = Self {
+            connection,
+            session,
+        };
+        Self::call_on(
+            &remote.connection,
+            &remote.session,
+            Self::SESSION,
+            "Start",
+            None,
+        );
+        // The compositor drops a new session's first device notification.
+        remote.notify("NotifyKeyboardKeysym", &(SHIFT_L, true).to_variant());
+        remote.notify("NotifyKeyboardKeysym", &(SHIFT_L, false).to_variant());
+        remote
+    }
+
+    fn call_on(
+        connection: &gio::DBusConnection,
+        object: &str,
+        interface: &str,
+        method: &str,
+        parameters: Option<&glib::Variant>,
+    ) -> glib::Variant {
+        connection
+            .call_sync(
+                Some(Self::BUS),
+                object,
+                interface,
+                method,
+                parameters,
+                None,
+                gio::DBusCallFlags::NONE,
+                5_000,
+                None::<&gio::Cancellable>,
+            )
+            .unwrap_or_else(|error| panic!("RemoteDesktop {method}: {error}"))
+    }
+
+    fn notify(&self, method: &str, parameters: &glib::Variant) {
+        Self::call_on(
+            &self.connection,
+            &self.session,
+            Self::SESSION,
+            method,
+            Some(parameters),
+        );
+        flush_after_delay(Duration::from_millis(60));
+    }
+}
+
+impl Drop for RemoteDesktop {
+    fn drop(&mut self) {
+        Self::call_on(&self.connection, &self.session, Self::SESSION, "Stop", None);
+    }
 }
 
 /// Every widget of every toplevel (popovers and dialogs included), depth first.

@@ -103,7 +103,9 @@ the narrowest predicate that matches the workflow under test, such as
 `file-open-complete`, `search-complete`, `save-complete`, or
 `workspace-refresh-complete`. Workspace refresh readiness includes watcher
 lifecycle work, one bounded coalescing mailbox notice, targeted/full-refresh
-debounce state, active directory scans and batched row application, persistence,
+debounce state, active directory scans and batched row application, paced
+directory collapses and the navigation keys held behind them
+(`workspace.collapse_pending`), persistence,
 filter animation, command-palette indexing, and bounded note-source refreshes. Current command-palette query
 work is tracked by `search-complete`, `visual-geometry-settled`,
 `accessibility-settled`, and broad `idle` readiness. Palette queries retain at

@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+- A126 probe and sample (`slice-large-directory-collapse` D22): a key press
+  a capture-phase controller stopped, put back later with
+  `gdk_display_put_event`, is delivered again through GTK's route as the same
+  event, and the focused list's binding acts on it from the focus of that
+  time; presses put back together arrive in order, before a low-priority
+  idle. Fixture `fixtures::a126` (`HoldFixture`, `Mark`, `hold_fixture`). The
+  probe drives real input for its whole verdict, so A126 joins
+  `REMOTE_INPUT_AXIOMS`.
+- A123 probe and sample (`slice-large-directory-collapse` D22): hiding one
+  subtree's realized row widgets by opacity 0, `can-target` false and
+  accessible `hidden` runs no row measure, setup or teardown, keeps the band
+  and allocation, draws no pixel (selected, focused or hovered), picks the
+  list, and real pointer input over a hidden row does nothing; a created row
+  is not in the list at bind and is hidden after its insertion; an unmap and
+  map rewrites `hidden` on the rows it maps. Fixture `fixtures::a123`
+  (`HideFixture`, `hide_fixture`, `hide_row`, `clear_row`, `read_band`,
+  `reset_counts`, `BandReading`).
+- A119's accessible half corrected (`slice-large-directory-collapse`): GTK
+  writes the expander's accessible `expanded` state at bind and on every row
+  notify other than `expanded` and `item`, and only the icon's on
+  `notify::expanded` alone; `set_expanded` notifies `children` after
+  `expanded`, so it writes both. The probe now emits `notify::expanded` alone
+  for the first check and checks a real `set_expanded` separately. The old
+  statement had never been observed: the lane ran with `GTK_A11Y=none` until
+  it moved to `GTK_A11Y=test`, which refuted it.
+- A124 and A125 probes and samples (`slice-large-directory-collapse` D25):
+  a bound-row removal run from a `G_PRIORITY_HIGH_IDLE` source outside any
+  frame creates and binds the entering rows inside the splice, leaves them
+  mapped, and the next frame runs no setup or bind; such a source, armed in
+  `after-paint`, in a dispatch while the next frame is due, or in its own
+  dispatch, runs before the next frame and reads the counter of the frame just
+  painted. Fixtures `fixtures::a124` (`idle_removal`, `IdleRemoval`,
+  `REMOVED_ROWS`, with A118's `tree_fixture`) and `fixtures::a125`
+  (`clock_fixture`, `ClockFixture`, `Event`, `read_case`). `RowCounters`
+  gains `binds`, counted by A118's fixture.
 - A127, A128 and A129 probes and samples (`stream-replace-all`): a regex
   `GtkSourceSearchContext::replace_all` expands GRegex references (`\N`,
   `\g<N>`, `\g<name>`, `\g<1>0` as group 1 then `0`) and leaves `$1`
@@ -41,6 +76,12 @@
   measured as well when slow probes are included
   (`fixtures::a95::SLOW_SIZES`), each held to the same `get_item` ceiling;
   the pull-request lane keeps the fast 16,384 / 131,072 pair.
+- A114 probe and sample (`slice-large-directory-collapse` R4): a
+  `GtkTreeListModel` keeps no row object for a node nothing references; the
+  next `get_item` hands out a new object without the dead one's handlers,
+  while the node keeps its expansion. Fixture `fixtures::a114`
+  (`row_object_fixture`, `RowObjectFixture`, `FIRST_CHILDREN`,
+  `SECOND_CHILDREN`).
 - A113 probe and sample (`diagnose-ci-only-reflow-guard-failure`): a
   `GtkTextView`'s aligned scroll to its first line (`scroll_to_iter` or
   `scroll_to_mark`, aligned at 0) rests the vertical value at the top margin
@@ -55,6 +96,21 @@
   mid-document). Fixture `fixtures::a112` (`EmissionLog`, `Emission`,
   `moved_on_its_own`, `every_move_was_carried`, `document_view`,
   `wrapped_document_view`, `scroll_to_target`, `rewrap`).
+- A118, A119 and A120 probes and samples (`slice-large-directory-collapse`):
+  on a mapped tree list, removing bound rows replaces their row widgets
+  inside `items-changed` and never reuses one, while removing unbound rows
+  after or before the band changes none and leaves the band in place;
+  `GtkTreeExpander`'s toggle gesture lives on its re-created icon, a
+  capture-phase release claim on the expander denies it, its key bindings
+  never reach it from the focus the list gives a row whose child is an
+  overlay, but do once Tab moves the focus onto the expander, and an
+  ancestor's capture-phase `Stop` prevents them, its parameterless class actions
+  resolve before an inserted group, and it keeps the expander's accessible
+  `expanded` state at bind (corrected above: and on every row notify but
+  `expanded`); a class rule draws a checked arrow as the
+  collapsed one in both directions. Inside an SDK sandbox A119 checks its
+  input-free half and skips only its input half. New
+  fixtures `fixtures::a118` to `fixtures::a120`.
 - A108, A109, A110 and A111 probes and samples (`lighten-notes-browser-rows`):
   a label list's frame after a retext is mostly layout and grows with the
   realized rows, where a text-independent measure does not; a

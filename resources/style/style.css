@@ -179,6 +179,19 @@ listview.workspace-file-tree row:focus {
   outline-offset: -2px;
 }
 
+/* A directory row whose children are still being removed in paced steps is
+ * still expanded in GTK: draw its checked arrow collapsed, in both text
+ * directions, from the input on (slice-large-directory-collapse D6, ledger
+ * A120). Adwaita draws the expanded arrow by swapping the icon source to
+ * pan-down-symbolic, so this sets the collapsed source back. */
+treeexpander.lushtext-collapsing > expander:checked {
+  -gtk-icon-source: -gtk-icontheme("pan-end-symbolic");
+}
+
+treeexpander.lushtext-collapsing > expander:checked:dir(rtl) {
+  -gtk-icon-source: -gtk-icontheme("pan-end-symbolic-rtl");
+}
+
 .workspace-file-open-indicator {
   min-width: 3px;
   min-height: 18px;

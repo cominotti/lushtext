@@ -1089,6 +1089,7 @@ fn workspace_snapshot(window: &LushtextWindow) -> AutomationWorkspaceSnapshot {
         reveal_depth: evidence.reveal_depth,
         limited_directory_count: bounded_len(evidence.limited_directory_count),
         loading_directory_count: bounded_len(evidence.loading_directory_count),
+        collapse_pending: evidence.collapse_pending,
     }
 }
 

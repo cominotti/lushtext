@@ -164,9 +164,17 @@ SHARDS: dict[str, Shard] = {
             "sidebar",
             "workspace_entry_visibility",
         ),
+        # The two longest held-key tests of `workspace_tree_virtualization`
+        # (slice-large-directory-collapse task 10.14: real input, 26 and
+        # three held collapses) joined by name on 2026-11-18 after the last
+        # CI measurement: the local surfaces shard grew from 13.0 to 18.7
+        # minutes with the four held-key tests in it, against the 20-minute
+        # margin, while editor-page took 4.3.
         tests=(
             "window::test_local_history_restore_defers_compactly_until_progress_capacity_clears",
             "window::test_selected_restore_tab_gets_bounded_priority_after_capacity_releases",
+            "workspace_tree_virtualization::test_keys_after_a_held_key_wait_behind_it",
+            "workspace_tree_virtualization::test_replayed_navigation_matches_gtk",
         ),
         ci_minutes=11.0,
         measured_in=MEASURED_IN,

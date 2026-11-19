@@ -92,7 +92,8 @@ local history, and careful recovery behavior.
   are listed in full (131,072 entries and far beyond): entries load in small
   batches from the top while the first screen is already usable, and only a
   directory past a 512 MiB memory budget ends with a "Showing X of Y entries"
-  row.
+  row. Collapsing a large directory shows at once and removes its rows over a
+  few frames, so the window keeps responding.
 - **Hidden files and excluded names** as one workspace-wide rule: `Show Hidden
   Files` (`Ctrl+Shift+H`, main menu, or Preferences) reveals dotfiles in the
   sidebar, the command palette, and workspace search together, while an
@@ -597,12 +598,19 @@ Cargo workspace:
   `seams.rs` sit beside it, and the per-section coordination roles
   (`scan_admission.rs`, `scan_execution.rs`, `refresh_execution.rs`,
   `folder_execution.rs`, `file_execution.rs`, `peek_execution.rs`,
-  `reorder_execution.rs`, `watch.rs`) live in `workspace_section/`. Plain policy
+  `reorder_execution.rs`, `collapse_execution.rs`, `watch.rs`) live in
+  `workspace_section/`; `collapse_execution.rs` is the one entry point that
+  collapses and expands directory rows, collapsing a large one in paced steps
+  that keep the window responsive (its child `collapse_execution/held_keys.rs`
+  holds the navigation keys pressed meanwhile, and `scan_execution`'s child
+  `scan_execution/path_cache_detach.rs` detaches the collapsing directories'
+  path caches at once instead of row by row). Plain policy
   for weighted disposal and workspace search lives in
   `model/{workspace_search,plain_disposal}.rs`, while the
   workspace tree workflow's own pure policy — per-store scan ownership,
-  workspace-save generations, inline-rename intent, and the confirmed-delete
-  identity verdict — lives beside that workflow in `ui/sidebar/policy.rs`.
+  workspace-save generations, inline-rename intent, the confirmed-delete
+  identity verdict, and the collapse step — lives beside that workflow in
+  `ui/sidebar/policy.rs`.
   The Browse Notes and command palette rows draw their text with
   `ui/row_text/` (`LushtextRowText`, a label-role widget measured without
   shaping when its font covers the text), retire their rows in bounded turns

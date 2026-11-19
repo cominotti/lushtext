@@ -189,6 +189,10 @@ pub struct WorkspaceTreeEvidence {
     pub limited_directory_count: usize,
     /// Expanded directories still loading their rows in batches.
     pub loading_directory_count: usize,
+    /// Whether a sliced directory collapse still runs in any section, or
+    /// keys held behind one still wait (`slice-large-directory-collapse`
+    /// D11, D22).
+    pub collapse_pending: bool,
     /// Reveals that ended `superseded` (by a newer reveal or by disposal).
     pub reveal_superseded_count: u64,
     /// Whether a reveal is still expanding, scanning, or settling.
@@ -257,6 +261,11 @@ impl LushtextSidebar {
         // Cells only: reading a reveal neither polls it nor touches the tree.
         let reveal = self.workspace_reveal_observation();
         // The last mirror row of each materialized directory only.
+        let collapse_pending = imp
+            .sections
+            .borrow()
+            .iter()
+            .any(LushtextWorkspaceSection::collapse_blocks_readiness);
         let (limited_directory_count, loading_directory_count) = imp
             .sections
             .borrow()
@@ -285,6 +294,7 @@ impl LushtextSidebar {
             reveal_depth: reveal.depth,
             limited_directory_count,
             loading_directory_count,
+            collapse_pending,
         }
     }
 
@@ -390,6 +400,7 @@ impl LushtextSidebar {
             reveal_depth: shared.reveal_depth,
             limited_directory_count: shared.limited_directory_count,
             loading_directory_count: shared.loading_directory_count,
+            collapse_pending: shared.collapse_pending,
             reveal_superseded_count: reveal.superseded_count,
             reveal_pending: reveal.pending,
         }
@@ -420,6 +431,9 @@ pub(crate) struct WorkspaceSnapshotEvidence {
     pub(crate) limited_directory_count: usize,
     /// Expanded directories still loading (ending in a loading row).
     pub(crate) loading_directory_count: usize,
+    /// Whether a sliced directory collapse still runs in any section
+    /// (`slice-large-directory-collapse` D11).
+    pub(crate) collapse_pending: bool,
 }
 
 /// One materialized directory listing, read from its plain store mirror.
@@ -436,6 +450,10 @@ pub struct DirectoryListingEvidence {
     pub directory_limited: bool,
     /// Loading rows ending the listing (zero or one).
     pub loading_tail_rows: usize,
+    /// Sibling paths the directory's path cache holds when this listing's
+    /// store owns it, else zero (a detached or another store's cache;
+    /// `slice-large-directory-collapse` D24).
+    pub cached_paths: usize,
 }
 
 /// One complete observation of a single workspace **section**'s state.
@@ -482,6 +500,27 @@ pub struct WorkspaceSectionEvidence {
     pub cache_full_rebuilds: u64,
     /// Cache resets because a new live store took over a directory.
     pub cache_owner_resets: u64,
+    /// Path-cache rows sliced collapse steps removed one by one (zero when
+    /// the collapse detached the caches at its intent, design D24).
+    pub cache_collapse_rows_removed: u64,
+    /// Directory path caches sliced collapses detached at their intent.
+    pub cache_detached_parents: u64,
+    /// Detached caches whose stale entries the retirement has not finished.
+    pub cache_detached_pending: usize,
+    /// Stale entries of detached caches the retirement removed.
+    pub cache_detached_rows_retired: u64,
+    /// Calls of the walk restoring a unique path's location.
+    pub cache_unique_restores: u64,
+    /// Re-expanded directories whose remaining rows are being cached again.
+    pub cache_adoptions_pending: usize,
+    /// Rows those adoptions cached, ever.
+    pub cache_adopted_rows: u64,
+    /// Most rows one adoption turn cached.
+    pub cache_adopted_rows_turn_high_water: usize,
+    /// Directories re-cached whole from their mirror in one call (the
+    /// consistency fallback, a take-over by a new store, or a refill without
+    /// D24's adoption), ever.
+    pub cache_mirror_recaches: u64,
     /// Largest cache operation count one applied batch performed.
     pub cache_batch_operations_high_water: usize,
     /// Largest number of row batches one GTK turn applied.
@@ -548,6 +587,56 @@ pub struct WorkspaceSectionEvidence {
     pub open_row_paths: std::collections::HashSet<std::path::PathBuf>,
     /// Paths this section renders with the active-tab marker.
     pub active_row_paths: std::collections::HashSet<std::path::PathBuf>,
+
+    // --- the sliced directory collapse (`collapse_execution`, design D11) ---
+    /// Running collapses in request order; empty when none runs.
+    pub collapses: Vec<workspace_section::CollapseEvidence>,
+    /// Why the most recent collapse ended.
+    pub last_collapse_end: Option<workspace_section::CollapseEnd>,
+    /// Collapse steps taken.
+    pub collapse_steps_total: u64,
+    /// Collapses GTK's direct call made whole.
+    pub collapse_direct_total: u64,
+    /// Steps the low-priority fallback ran for a mapped list whose frame
+    /// clock starved, or for an unmapped list.
+    pub collapse_starved_steps_total: u64,
+    /// Steps the between-frames idle ran: unbound chunks removed outside any
+    /// frame (`slice-large-directory-collapse` D19, task 10.3).
+    pub collapse_between_steps_total: u64,
+    /// The longest collapse step since the queue last started running, in
+    /// microseconds (task 10.1).
+    pub collapse_step_us_max: u64,
+    /// The longest step-source dispatch or between-frames turn since the
+    /// queue last started running, in microseconds (design D25, R14).
+    pub collapse_step_dispatch_us_max: u64,
+    /// Those dispatches and turns, in order, at most a bounded number per run
+    /// (design D25).
+    pub collapse_step_dispatches: Vec<workspace_section::StepDispatch>,
+    /// Whether the section's collapse `after-paint` handler is connected
+    /// (design D25: only while a collapse is pending on a mapped list).
+    pub collapse_after_paint_connected: bool,
+    /// `after-paint` emissions that handler ran, ever.
+    pub collapse_after_paint_runs: u64,
+    /// Row widgets the section's factory created, ever.
+    pub row_setups: u64,
+    /// Row widgets of collapsing subtrees hidden now (design D22).
+    pub collapse_hidden_rows: u32,
+    /// Passes over the band that projected that hiding, ever.
+    pub collapse_hidden_syncs: u64,
+    /// Of those, the passes its one-shot re-apply source ran.
+    pub collapse_hidden_reapply_runs: u64,
+    /// Keys waiting behind a collapse now: held, or put back and not yet
+    /// delivered again (design D22, task 10.14).
+    pub collapse_held_keys: u32,
+    /// Keys held behind a collapse, ever.
+    pub collapse_keys_held_total: u64,
+    /// Held keys put back on GDK's queue, ever.
+    pub collapse_keys_replayed_total: u64,
+    /// Held keys dropped because the focus had left the list, ever.
+    pub collapse_keys_dropped_total: u64,
+    /// The directory of the latest child-scan terminal publication, and
+    /// whether its store was the shown (retained) one (D12, task 1.4).
+    pub last_scan_terminal: Option<(std::path::PathBuf, bool)>,
 }
 
 impl LushtextWorkspaceSection {
@@ -581,6 +670,15 @@ impl LushtextWorkspaceSection {
         let cache_rebuild_operations = refresh.cache_rebuild_operations.get();
         let cache_full_rebuilds = refresh.cache_full_rebuilds.get();
         let cache_owner_resets = refresh.cache_owner_resets.get();
+        let cache_collapse_rows_removed = refresh.cache_collapse_rows_removed.get();
+        let cache_detached_parents = refresh.cache_detached_parents.get();
+        let cache_detached_pending = imp.detached_child_caches.borrow().len();
+        let cache_detached_rows_retired = refresh.cache_detached_rows_retired.get();
+        let cache_unique_restores = refresh.cache_unique_restores.get();
+        let cache_adoptions_pending = imp.child_cache_adoptions.borrow().len();
+        let cache_adopted_rows = refresh.cache_adopted_rows.get();
+        let cache_adopted_rows_turn_high_water = refresh.cache_adopted_rows_turn_high_water.get();
+        let cache_mirror_recaches = refresh.cache_mirror_recaches.get();
         let cache_batch_operations_high_water = refresh.cache_batch_operations_high_water.get();
         let reconcile_max_batches_per_turn = refresh.reconcile_max_batches_per_turn.get();
         let reconcile_last_terminal_us = refresh.reconcile_last_terminal_us.get();
@@ -608,6 +706,30 @@ impl LushtextWorkspaceSection {
 
         let reorder_drag_hover_fallback_count = workspace_section::drag_hover_child_model_count();
 
+        let workspace_section::CollapseTotals {
+            collapses,
+            last_end: last_collapse_end,
+            steps_total: collapse_steps_total,
+            direct_total: collapse_direct_total,
+            starved_steps_total: collapse_starved_steps_total,
+            between_steps_total: collapse_between_steps_total,
+            step_us_max: collapse_step_us_max,
+            step_dispatch_us_max: collapse_step_dispatch_us_max,
+            step_dispatches: collapse_step_dispatches,
+            after_paint_connected: collapse_after_paint_connected,
+            after_paint_runs: collapse_after_paint_runs,
+            row_setups,
+            hidden_rows: collapse_hidden_rows,
+            hidden_syncs: collapse_hidden_syncs,
+            hidden_reapply_runs: collapse_hidden_reapply_runs,
+            held_keys_waiting: collapse_held_keys,
+            keys_held_total: collapse_keys_held_total,
+            keys_replayed_total: collapse_keys_replayed_total,
+            keys_dropped_total: collapse_keys_dropped_total,
+        } = self.collapse_evidence();
+
+        let last_scan_terminal = refresh.last_scan_terminal.borrow().clone();
+
         let (open_row_paths, active_row_paths) = {
             let snapshot = imp.file_row_state_snapshot.borrow();
             (snapshot.open_identities(), snapshot.active_identities())
@@ -627,6 +749,15 @@ impl LushtextWorkspaceSection {
             cache_rebuild_operations,
             cache_full_rebuilds,
             cache_owner_resets,
+            cache_collapse_rows_removed,
+            cache_detached_parents,
+            cache_detached_pending,
+            cache_detached_rows_retired,
+            cache_unique_restores,
+            cache_adoptions_pending,
+            cache_adopted_rows,
+            cache_adopted_rows_turn_high_water,
+            cache_mirror_recaches,
             cache_batch_operations_high_water,
             reconcile_max_batches_per_turn,
             reconcile_last_terminal_us,
@@ -649,6 +780,26 @@ impl LushtextWorkspaceSection {
             reorder_drag_hover_fallback_count,
             open_row_paths,
             active_row_paths,
+            collapses,
+            last_collapse_end,
+            collapse_steps_total,
+            collapse_direct_total,
+            collapse_starved_steps_total,
+            collapse_between_steps_total,
+            collapse_step_us_max,
+            collapse_step_dispatch_us_max,
+            collapse_step_dispatches,
+            collapse_after_paint_connected,
+            collapse_after_paint_runs,
+            row_setups,
+            collapse_hidden_rows,
+            collapse_hidden_syncs,
+            collapse_hidden_reapply_runs,
+            collapse_held_keys,
+            collapse_keys_held_total,
+            collapse_keys_replayed_total,
+            collapse_keys_dropped_total,
+            last_scan_terminal,
         }
     }
 
@@ -659,20 +810,40 @@ impl LushtextWorkspaceSection {
         let imp = self.imp();
         let paths = imp.child_store_paths.borrow();
         let mirrors = imp.child_row_mirrors.borrow();
+        let owners = imp.child_cache_owners.borrow();
+        let child_paths = imp.child_paths.borrow();
         let mut listings = mirrors
             .iter()
             .filter_map(|(key, rows)| {
                 let path = paths.get(key)?.clone();
-                let listed = rows.iter().filter(|row| row.path.is_some()).count();
-                let budget = rows.iter().rev().find_map(|row| match row.placeholder {
+                // Placeholder rows only ever end a listing, so the tail after
+                // the last path row holds them all: reading it alone keeps
+                // this read O(placeholders) rather than O(listing), which a
+                // timeline that reads the surface after every dispatch of a
+                // 131,072-row collapse otherwise paid
+                // (`slice-large-directory-collapse` design R9, task 10.1).
+                let tail = rows
+                    .iter()
+                    .rev()
+                    .take_while(|row| row.path.is_none())
+                    .count();
+                let listed = rows.len() - tail;
+                let tail = &rows[listed..];
+                let budget = tail.iter().rev().find_map(|row| match row.placeholder {
                     Some(DirectoryPlaceholder::Budget { total, .. }) => Some(total),
                     _ => None,
                 });
-                let loading = rows
+                let loading = tail
                     .iter()
                     .filter(|row| row.placeholder == Some(DirectoryPlaceholder::Loading))
                     .count();
+                let cached_paths = if owners.get(&path) == Some(key) {
+                    child_paths.get(&path).map_or(0, Vec::len)
+                } else {
+                    0
+                };
                 Some(DirectoryListingEvidence {
+                    cached_paths,
                     path,
                     directory_retained_entries: listed,
                     directory_total_entries: budget.unwrap_or(listed),

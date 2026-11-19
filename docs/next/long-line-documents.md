@@ -4506,6 +4506,129 @@ review", "Implementation decisions"); evidence in
   an owned collapse path that empties a large directory's store in slices
   before GTK's collapse, removing A91's share of the exception, and the
   attribution of the rare 14–18 ms re-expansion outlier at 131,072 entries.
+- **`slice-large-directory-collapse` (stage 3, 2026-11-15; branch
+  `slice-large-directory-collapse`, design
+  `openspec/changes/slice-large-directory-collapse/design.md`).**
+  - *The exception re-attributed.* Stage 1's profile put 89 % of the
+    collapse call in `GtkListView`'s item manager, not in A91's rb-tree
+    teardown (10 %): GTK destroys every removed row widget and creates the
+    rows entering the band anew, because a released widget is reused only
+    for the same item (new axiom **A118**, both toolkits). The
+    toolkit-floor exception above is therefore not a floor: the cost scales
+    with the realized rows a removal touches, at about 190 µs to replace a
+    sidebar row plus about 185 µs to style it.
+  - *What it does.* `collapse_directory` (`ui/sidebar/workspace_section/collapse_execution.rs`)
+    owns every LushText collapse route (the arrow through a release claim,
+    A119; row activation; the folder header; the reveal; the reorder hover;
+    the expander's class keys once Tab focuses it). A subtree above
+    `DIRECT_COLLAPSE_ROWS` shows collapsed in the input dispatch (the arrow
+    through an `expander:checked` class rule, A120, and the accessible
+    state), then empties in paced steps from a tick callback: unbound rows
+    in chunks first, then at most `SIDEBAR_REALIZED_ROWS_PER_FRAME` bound
+    rows per frame, then GTK's direct collapse of what is left. The step is
+    the Kani-checked pure `next_collapse_step` (scheduled shard
+    `core-sidebar-collapse`). Residual routes keep GTK's direct collapse: a
+    refresh splice, a section rebuild or model reset, the class actions
+    (AT-SPI `DoAction`) and drag-hover expansion.
+  - *D12 resolved.* The 37–50 ms dispatch about 0.5 s after a
+    131,072-entry collapse, and BL's rare 14–18 ms re-expansion outlier, are
+    the publication of the scan GTK's post-collapse `is_expandable()` probe
+    starts (the section's terminal-publication counter advances in exactly
+    that dispatch). It is this change's named residual, printed and not
+    judged, **owned by `stop-expander-bind-time-child-scans`, which should
+    be queued next**: not scanning the discarded probe store removes it. The
+    probe store also keeps a whole listing alive beside the shown one: a
+    re-expansion right after a collapse of 131,072 entries peaked at 1.1–2.4 GiB
+    in a debug widget test, against 1.2 GiB for BL's expand, collapse and
+    re-expand of the same directory.
+  - *Status (stage 4, 2026-11-15): verdict failed, not merged.* The quiet
+    interleaved campaign (four rounds, 1-minute load 2.2–3.3, cairo; design
+    "Measured baseline") passes the `B_SETTLE_US` half of every collapse
+    with nothing after the directory (input 0.1–0.4 ms against `main`'s
+    14.8–28.3 ms; every frame within 12.1 ms; the steps' own time against
+    `B_INTERACT_US` is not measured yet) and the re-expansion in the middle of a 131,072-entry
+    collapse (every frame within 1.2 ms against `main`'s 75–95 ms). It fails
+    at the candidate unit of 32 rows: with rows after the directory each
+    unit's frame takes 16.8–24.3 ms, four to seven of them a collapse (where
+    `main` has one 56–73 ms frame after a 37–56 ms input), and the folder
+    header's two-root collapse takes five frames of 20.0–29.9 ms. Expansion
+    is over budget on `main` and the branch alike (256 entries: a
+    20.6–30.2 ms load terminal, then a 41–62 ms frame), so design D10's cap
+    is in scope. Owed before a new verdict: units 8 and 16 measured, the
+    expansion and two-root profiles, a step-time instrument for the
+    `B_INTERACT_US` half of the pass bar, the probe store's identity
+    (task 1.4), and the final-code campaign with GL figures (design "Stage 4
+    verdict"), plus the stage 4 review's findings (design "Stage 4 review
+    findings"; one blocker: the expander key route takes characters typed
+    into inline rename and collapses the directory).
+  - *Design revision (2026-11-15, after stage 4; design "Design revision
+    after stage 4").* Attribution (branch-only rounds at units 8, 16 and 32,
+    load 2.9–3.6, and window-cut `perf` profiles): a unit's frame is linear
+    in its rows, 0.45–0.6 ms a row replaced and styled, with no dominant
+    fixed per-splice cost, and completion is one unit per frame, so units 8
+    and 16 fit `B_SETTLE_US` but finish 2–4× later than `main` (400:256:
+    413 / 203 ms against 93–121 ms). The revision adds a completion bar
+    (no later than `main` plus two frames, or 100 ms where `main` is faster),
+    lighter rows (decorations on demand), destroy-only units, unbound
+    removal between frames without LushText's per-row bookkeeping, a
+    bottom-up order for several collapses, and the expansion cap (the
+    expansion profile is row creation and CSS validation). `main`'s
+    never-settling folder-header collapse is a real bug, fixed here: the
+    expansion-intent hook lives on `GtkTreeListRow` objects that GTK
+    discards when no widget shows the row, so a collapse through a fresh row
+    object never prunes `expanded_paths` and `schedule_child_state_restore`
+    expands the root again (new axiom A114). The axioms are
+    now A118–A120 (`main` took A113; A115–A117 are held by
+    `quiet-headless-session-services`). Still not merged; the final verdict
+    campaign is queued as not runnable until the implementation lands.
+    The revision's review (design R8) rejected running the first step in
+    the input dispatch (the first frame already runs it, 17–42 µs after the
+    input), corrected the completion table's 400:64 bar, added the watch
+    contribution to the intent fix, and settled the expansion cap against
+    tall viewports.
+  - *D19 go/no-go (2026-11-17, design R9).* The skip-cache upper bound of
+    the unbound-row bookkeeping cut completes the 0:131,072 collapse in
+    112–153 ms against R3's 100 ms (`main` 24–30 ms), so the change returned
+    to design and revised the bar, not the mechanism: above 16,384
+    flattened rows a collapse is allowed 0.5 µs a further row (57 ms at
+    131,072), with the arrow in the first frame and no frame over budget;
+    the settled time is recorded, not judged. The DWARF profile names R2's
+    `[unknown]` callers (`PathBuf` equality and path hashing, 37 % of the
+    window) and a 5.7 % measurement bias in the verdict test's per-dispatch
+    evidence read. The 400:131,072 figure is provisional, queued.
+  - *Go/no-go on the real code (2026-11-18, design R11).* The reworked
+    code (task 10.4's lighter rows included) completed the 0:131,072
+    collapse in 156.1–157.6 ms against R9's 157.3 ms in every repetition:
+    NOGO, so the change returned to design again. The profile splits a
+    collapse into a CPU-bound phase that removes the rows no widget shows
+    and a frame-paced tail of four or five band frames, during which the
+    children stay drawn. The revision hides the collapsing subtree's
+    realized rows in the first frame, paint-only (new axiom A123), so where
+    nothing follows the subtree the picture is final before `main`'s frozen
+    collapse ends; it has the input dispatch remove one unbound chunk, takes
+    the path cache out of the chunk if the queued attribution confirms a
+    frame, and pre-registers a one-frame selection margin for every
+    selection and go/no-go round. Six branch-only rounds are queued; the
+    slice model over each child store stays the recorded next step.
+  - *What `stop-expander-bind-time-child-scans` must build on.* Its proposal
+    says `row_factory.rs` is unchanged; this change makes that false. Build
+    on: `collapse_directory` and `expand_directory`
+    (`ui/sidebar/workspace_section/collapse_execution.rs`), the only
+    LushText callers of `TreeListRow::set_expanded` under `ui/sidebar/`
+    (`make check-workflow-boundaries`); `row_factory.rs`'s setup-time
+    capture-phase `GestureClick` on the expander (`install_arrow_gesture`)
+    and its bind-time `apply_collapse_projection`; the removal of the inert
+    bind-time `observe_controllers()` loop; the on-demand row decorations
+    and the bind-time expansion hook of the revision; and
+    `collapse_blocks_readiness` inside `refresh_blocks_readiness`. Its
+    probe-scan fix removes this change's named residual (D12), and the
+    unpruned intent of R4 is one more reason its deferred materialization
+    must not depend on row-object handlers.
+  - *Follow-ups recorded:* lighter sidebar rows (each realized row costs
+    about 375 µs to replace and style); an upstream-report candidate for
+    `gtk_list_item_change_finish` destroying unclaimed row widgets instead
+    of reusing them (`docs/upstream-reports.md`, candidate only, never filed
+    without per-report approval).
 
 ## BN `bound-notes-browser-by-budget` (implementation record, 2026-11-07)
 
@@ -4736,6 +4859,7 @@ handoff's `runs.log` every run).
 | DP `drill-down-palette-categories` | A1 (realized-row cap), A87, A90 (revealing a list costs its realized rows), A93 (remove-then-add, and BN's retarget publish), A95 (far select-and-scroll); added by DP: A96 (a natural-height lazy list measures, allocates and publishes around its realized rows: 206 / 205 `get_item` calls at 512 and 131,072 items), A97 (`stop-search` on Escape with or without text, text kept; a capture controller sees Backspace before the entry, on an empty entry, and its release; a held key arrives as presses without releases) |
 | BM `bin-minimap-markers-per-row` | A33 (`visible-only`), A42 (paragraph lines), A45 (map retirement), A1-style band-only projection unchanged; added by BM: A98 (a property-less tag is bookkeeping only; text inserted strictly inside a tagged range carries it), A99 (`line_at_y` on a map is monotone, skips hidden lines, flat cost), A100 (`forward` is 3 µs inside a completed scan, 74.5 ms before it; `occurrences-count` reads -1 after an edit and notifies on rescan), A101 (an overlay sibling of the map is not redrawn when the map scrolls), A102 (`forward_async` never blocks a dispatch, but a pending request superseded by a query change never returns and GIO logs a CRITICAL) |
 | CF `scope-font-zoom-restyle` | A47 (hidden widgets take a class without a restyle until shown), A72 (why the font stays CSS, not a tag); added by CF: A86 (a display provider reload revalidates every widget even with unchanged text and grows with the window; an unmatched load changes no font; a per-widget class swap applies the new size and does not grow with unrelated widgets) |
+| SL `slice-large-directory-collapse` | A1 (realized-row cap), A22 (synchronous expansion; the `is_expandable()` probe store), A87, A91 (corrected: the rb-tree teardown is about a tenth of a collapse's cost); added by SL: A118 (removing bound rows replaces their row widgets inside `items-changed` and never reuses one for another item), A119 (the expander's disclosure routes: the click gesture on its icon, denied by a release claim; the class keys only after Tab; parameterless class actions), A120 (an `expander:checked` class rule draws the collapsed arrow) |
 | C0 itself (the scrollbar-warning fix below) | A37 |
 
 Two probes corrected the designs that cite them, and C1/C2 must read the

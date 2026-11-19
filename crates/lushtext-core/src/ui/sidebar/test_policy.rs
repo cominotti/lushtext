@@ -27,7 +27,7 @@
 //! capability; slots 3a and 3b recorded the same decision for
 //! `services/editor_io.rs`.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 /// Test-only overrides for one process's workspace tree workflow.
 struct WorkspaceTreeTestPolicy {
@@ -42,6 +42,8 @@ struct WorkspaceTreeTestPolicy {
     load_worker_delay_ms: AtomicU64,
     /// Overrides a directory's retained-byte budget; zero keeps production.
     directory_retained_bytes: AtomicU64,
+    /// How sliced collapses are paced (a `CollapsePacingForTest` as `u8`).
+    collapse_pacing: AtomicU8,
 }
 
 impl WorkspaceTreeTestPolicy {
@@ -51,6 +53,7 @@ impl WorkspaceTreeTestPolicy {
             rename_worker_delay_ms: AtomicU64::new(0),
             load_worker_delay_ms: AtomicU64::new(0),
             directory_retained_bytes: AtomicU64::new(0),
+            collapse_pacing: AtomicU8::new(CollapsePacingForTest::FrameClock as u8),
         }
     }
 }
@@ -156,4 +159,48 @@ pub fn set_sidebar_directory_retained_bytes_for_test(bytes: u64) {
 pub(super) fn directory_retained_bytes_override() -> Option<u64> {
     let bytes = POLICY.directory_retained_bytes.load(Ordering::Acquire);
     (bytes > 0).then_some(bytes)
+}
+
+/// How a test lets sliced collapses step.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum CollapsePacingForTest {
+    /// Production pacing: the frame clock, with the starvation fallback.
+    FrameClock = 0,
+    /// Off the frame clock, as a starved clock would leave it: only the
+    /// low-priority fallback, its starvation timeout and the
+    /// no-unit-after-a-starved-step rule run.
+    NoFrameClock = 1,
+    /// No step runs at all, so a test can act while a collapse is pending.
+    Hold = 2,
+    /// The list stays mapped and no tick callback is installed, as a stopped
+    /// frame clock of a mapped window leaves it: only the fallback's
+    /// mapped-and-starved branch runs, after `COLLAPSE_FRAME_STARVATION_MS`
+    /// (design R6.2).
+    MappedNoTicks = 3,
+}
+
+/// Pace sliced collapses as `pacing` says.
+///
+/// **A limit override standing in for a compositor state** (`slice-large-
+/// directory-collapse` task 3.2): a minimized or occluded window keeps its
+/// widgets mapped while its frame clock may stop ticking, which a headless
+/// session cannot produce on demand. `NoFrameClock` is that state as the
+/// collapse sees it. `Hold` pins a collapse in the middle, so a test can
+/// scroll, rebind or re-expand a collapsing row at a known point instead of
+/// racing the 9 ms fallback.
+pub fn set_sidebar_collapse_pacing_for_test(pacing: CollapsePacingForTest) {
+    POLICY
+        .collapse_pacing
+        .store(pacing as u8, Ordering::Release);
+}
+
+/// The pacing a test chose.
+pub(super) fn collapse_pacing() -> CollapsePacingForTest {
+    match POLICY.collapse_pacing.load(Ordering::Acquire) {
+        1 => CollapsePacingForTest::NoFrameClock,
+        2 => CollapsePacingForTest::Hold,
+        3 => CollapsePacingForTest::MappedNoTicks,
+        _ => CollapsePacingForTest::FrameClock,
+    }
 }

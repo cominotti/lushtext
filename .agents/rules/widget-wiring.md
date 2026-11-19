@@ -156,6 +156,30 @@ event-controller ownership explicit when the controller itself is the lifetime
 owner. Remaining row-data uses should be scalar state, not hidden signal or
 binding ownership.
 
+## Work Between Frames
+
+Work that must land before the next frame but must not run inside it (the
+sidebar's paced collapse, `slice-large-directory-collapse` D25, ledger
+A124/A125) runs from a **one-shot `G_PRIORITY_HIGH_IDLE` source**: above the
+frame clock's own priority and below input, so it runs between frames even
+when a frame is due, and the frame then lays out only what it changed.
+
+- Arm it from the input dispatch, from a frame's `after-paint` on the widget's
+  frame clock, and from its own dispatch while work is left; at most one is
+  armed, and its id is cleared at the start of its dispatch.
+- Connect the `after-paint` handler only while work is pending on a mapped
+  widget, one handler per owner, on the clock the widget has now; disconnect it
+  on `unmap` and reconnect it on `map`, and make any periodic fallback reconnect
+  it when it finds the widget mapped without it, because a tick callback alone
+  keeps the clock running without anything ever arming the source.
+- A tick callback may stay registered to keep frames coming, but takes no
+  step: a step inside the frame clock's update phase is a step inside the frame.
+- A per-frame budget read outside a frame keys on the frame counter, which
+  between frames equals the counter of the frame just painted.
+- Widget state the work must re-apply after GTK writes it (a `map` that resets
+  an accessible state) is re-applied from the same kind of source, armed by the
+  event, never from the frame tick.
+
 ## Action Catalog And Automation Docs
 
 Every user operation exposed through an app action, window action, command
@@ -386,7 +410,7 @@ Code that "looks wired correctly" can silently fail if GTK4's internal gesture s
 2. **Widget signal emission** — does the widget actually emit the signal on user input? (e.g., `GtkListView::activate` on click)
 3. **Gesture interception** — does an internal gesture on a child widget claim the event before the parent can process it?
 
-**Disable a blocking child gesture at the source.** `GtkTreeExpander`'s internal `GtkGestureClick` (BUBBLE phase) intercepts clicks on every row and stops `GtkListView::activate`; file rows set its `propagation_phase` to `None` through `observe_controllers()` in `connect_bind`, which keeps `GtkListView`'s double-click activation for files and expand/collapse for directories. When a child widget's internal gesture blocks parent behavior, disable that gesture rather than racing it from a higher phase ([history](../../docs/memorials/tree-expander-activation.md)).
+**Own a toolkit gesture by claiming its sequence, not by reconfiguring it.** On GTK 4.24.1 `GtkTreeExpander`'s toggle `GtkGestureClick` lives on its `expander` icon child, which GTK destroys and re-creates with the row's expandability, and the expander itself carries none (ledger A119), so a bind-time `observe_controllers()` pass over the expander finds nothing. The sidebar takes the arrow click over with one capture-phase gesture installed on the expander at setup: it lets the press through and claims the sequence on a release inside the current icon, before the icon's bubble gesture sees it, so the row's press-side behaviour stays GTK's whatever icon GTK has created since. When a child widget's gesture must not act, claim the sequence it would claim, in a phase that runs first, at the moment and area it claims ([history](../../docs/memorials/tree-expander-activation.md)).
 
 **Keyboard shortcut variant of the same pitfall:** `GtkListView` keyboard focus usually lands on a realized row widget inside the list, not on the `GtkListView` wrapper itself. For list-wide shortcuts such as sidebar `Space` peek, attach the `EventControllerKey` to the list view in `PropagationPhase::Capture` and gate the handler against focused controls that should still own their keys (for example inline rename `GtkEntry`s or row buttons). If the shortcut logic assumes `list_view.has_focus()` or only works when tests emit the key directly on the list widget, real users will see "nothing happens" even though synthetic tests pass.
 

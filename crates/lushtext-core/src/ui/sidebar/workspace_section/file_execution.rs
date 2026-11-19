@@ -114,10 +114,19 @@ impl super::LushtextWorkspaceSection {
                 let mut was_collapsed = false;
                 if context_is_dir
                     && let Some(row) = section.find_dir_row(&context_path)
-                    && !row.is_expanded()
+                    && !section.row_shows_expanded(&row)
                 {
                     was_collapsed = true;
-                    row.set_expanded(true);
+                    section.expand_directory(&row);
+                } else if section.path_is_collapsing(&target_dir)
+                    && let Some(row) = section.find_dir_row(&target_dir)
+                {
+                    // The target lies in a collapsing subtree, whose stores
+                    // are being drained: expand it first, which ends the
+                    // covering collapse and refills, and append after it
+                    // (design R6.6).
+                    was_collapsed = true;
+                    section.expand_directory(&row);
                 }
 
                 let new_item = FileTreeItem::new(temp_path, is_dir, None);
@@ -256,12 +265,36 @@ impl super::LushtextWorkspaceSection {
         let entry_weak = entry.downgrade();
         let label_weak = label.downgrade();
         let box_weak = content_box.downgrade();
+        // `leave` is emitted inside GTK's focus crossing, while the window
+        // still walks from the old focus (the entry's text) to the common
+        // ancestor. Removing the entry there cuts that walk off, and GTK 4.24
+        // then spins on `gtk_widget_get_parent (NULL)` for ever
+        // (`gtkwindow.c`, `synthesize_focus_change_events`;
+        // `slice-large-directory-collapse` task 9.12). So the teardown runs
+        // after the crossing, and only if the window's focus is no longer in
+        // the entry: a window that merely lost activation (another window
+        // took the focus) also emits `leave`, and keeps the rename.
         focus_ctl.connect_leave(move |_| {
-            if let (Some(entry), Some(label), Some(content_box)) = (
-                entry_weak.upgrade(),
-                label_weak.upgrade(),
-                box_weak.upgrade(),
-            ) {
+            let section_weak = section_weak.clone();
+            let path_c = path_c.clone();
+            let entry_weak = entry_weak.clone();
+            let label_weak = label_weak.clone();
+            let box_weak = box_weak.clone();
+            glib::idle_add_local_once(move || {
+                let (Some(entry), Some(label), Some(content_box)) = (
+                    entry_weak.upgrade(),
+                    label_weak.upgrade(),
+                    box_weak.upgrade(),
+                ) else {
+                    return;
+                };
+                let focus_in_entry = entry
+                    .root()
+                    .and_then(|root| root.focus())
+                    .is_some_and(|focus| focus == entry || focus.is_ancestor(&entry));
+                if focus_in_entry {
+                    return;
+                }
                 if is_new {
                     if let Some(section) = section_weak.upgrade() {
                         section.cancel_new_item(&path_c, &entry, &label, &content_box);
@@ -269,7 +302,7 @@ impl super::LushtextWorkspaceSection {
                 } else {
                     cancel_rename(&entry, &label, &content_box);
                 }
-            }
+            });
         });
         entry.add_controller(focus_ctl);
     }

@@ -49,7 +49,7 @@ fn realized_folder_row_content(
     section: &LushtextWorkspaceSection,
 ) -> (
     gtk4::ApplicationWindow,
-    gtk4::Button,
+    Option<gtk4::Button>,
     gtk4::Image,
     gtk4::Label,
 ) {
@@ -75,14 +75,17 @@ fn realized_folder_row_content(
         .child()
         .and_downcast::<gtk4::Box>()
         .expect("tree expander child should be the content box");
+    // Only a top-level workspace-folder row is given the reorder handle, as
+    // the content box's first child (slice-large-directory-collapse D17).
     let drag_handle = content_box
         .first_child()
         .and_downcast::<gtk4::Button>()
-        .expect("content box should start with the reorder handle");
-    let icon = drag_handle
-        .next_sibling()
-        .and_downcast::<gtk4::Widget>()
-        .expect("reorder handle should be followed by the open-file indicator")
+        .filter(|button| button.has_css_class("workspace-folder-drag-handle"));
+    let open_indicator = drag_handle
+        .as_ref()
+        .map_or_else(|| content_box.first_child(), WidgetExt::next_sibling);
+    let icon = open_indicator
+        .expect("the row content should hold the open-file indicator")
         .next_sibling()
         .and_downcast::<gtk4::Image>()
         .expect("open-file indicator should be followed by the row icon");
@@ -818,6 +821,39 @@ fn realized_reorder_shield_for_path(
     None
 }
 
+/// Realized file-tree rows (rows whose list item holds the factory overlay).
+fn realized_file_row_count(section: &LushtextWorkspaceSection) -> usize {
+    let mut rows = 0;
+    let mut row_widget = section.imp().file_tree_view.first_child();
+    while let Some(row) = row_widget {
+        if row.first_child().and_downcast::<gtk4::Overlay>().is_some() {
+            rows += 1;
+        }
+        row_widget = row.next_sibling();
+    }
+    rows
+}
+
+/// Realized file-tree rows whose overlay holds a targetable reorder shield.
+fn realized_rows_with_targetable_shield(section: &LushtextWorkspaceSection) -> usize {
+    let mut rows = 0;
+    let mut row_widget = section.imp().file_tree_view.first_child();
+    while let Some(row) = row_widget {
+        if let Some(overlay) = row.first_child().and_downcast::<gtk4::Overlay>() {
+            let mut child = overlay.first_child();
+            while let Some(widget) = child {
+                if widget.has_css_class("workspace-folder-dnd-shield") && widget.can_target() {
+                    rows += 1;
+                    break;
+                }
+                child = widget.next_sibling();
+            }
+        }
+        row_widget = row.next_sibling();
+    }
+    rows
+}
+
 fn visible_reorder_drop_target_count(section: &LushtextWorkspaceSection) -> usize {
     let mut visible = 0;
     let mut row_widget = section.imp().file_tree_view.first_child();
@@ -1253,6 +1289,8 @@ fn test_workspace_folder_reorder_handle_only_shows_when_folder_can_move() {
 
     let (one_folder_window, one_folder_handle, _, _) =
         realized_folder_row_content(&one_folder_section);
+    let one_folder_handle =
+        one_folder_handle.expect("a top-level workspace-folder row carries the reorder handle");
     assert!(
         !one_folder_handle.is_visible(),
         "a single workspace folder has no reorder destination"
@@ -1272,6 +1310,8 @@ fn test_workspace_folder_reorder_handle_only_shows_when_folder_can_move() {
 
     let (_two_folder_window, two_folder_handle, _, _) =
         realized_folder_row_content(&two_folder_section);
+    let two_folder_handle =
+        two_folder_handle.expect("a top-level workspace-folder row carries the reorder handle");
     assert!(
         two_folder_handle.is_visible(),
         "top-level workspace folders should expose a drag handle when reordering is possible"
@@ -1435,10 +1475,11 @@ fn test_workspace_folder_reorder_handle_is_hidden_on_descendant_rows() {
         tree_contains_path(&section, &nested)
     });
 
-    let nested_handle = realized_drag_handle_for_path(&section, &nested)
-        .expect("descendant row should still have the recycled handle widget");
+    // A descendant row is created without the handle (design D17); a row
+    // recycled from a top-level row keeps it, hidden.
+    let nested_handle = realized_drag_handle_for_path(&section, &nested);
     assert!(
-        !nested_handle.is_visible(),
+        nested_handle.is_none_or(|handle| !handle.is_visible()),
         "descendant directory rows must not expose workspace-folder reorder handles"
     );
 }
@@ -1643,12 +1684,18 @@ fn test_workspace_folder_reorder_drag_hover_does_not_expand_or_restart_watch() {
         .expect("nested folder expander should be realized");
     let second_shield = realized_reorder_shield_for_path(&section, second.path())
         .expect("second top-level folder should have a reorder shield");
-    let nested_shield = realized_reorder_shield_for_path(&section, &nested)
-        .expect("nested folder should have a reorder shield");
+    // Descendant rows are created without reorder surfaces; the shield is
+    // given to every realized row when a drag starts (design D17).
+    assert!(
+        realized_reorder_shield_for_path(&section, &nested).is_none(),
+        "a descendant row should carry no reorder shield outside a drag"
+    );
+    assert!(
+        realized_drop_target_for_path(&section, &nested).is_none(),
+        "a descendant row should carry no insertion-line surface"
+    );
     let second_drop_target = realized_drop_target_for_path(&section, second.path())
         .expect("second top-level folder should have insertion-line surface");
-    let nested_drop_target = realized_drop_target_for_path(&section, &nested)
-        .expect("nested folder should have insertion-line surface");
     assert!(
         second_expander.can_target(),
         "folder expanders should normally receive pointer targeting"
@@ -1658,7 +1705,7 @@ fn test_workspace_folder_reorder_drag_hover_does_not_expand_or_restart_watch() {
         "descendant folder expanders should normally receive pointer targeting"
     );
     assert!(
-        !second_shield.can_target() && !nested_shield.can_target(),
+        !second_shield.can_target(),
         "reorder shields should be inert outside active drags"
     );
     AccessibleAudit::new()
@@ -1667,12 +1714,7 @@ fn test_workspace_folder_reorder_drag_hover_does_not_expand_or_restart_watch() {
             gtk4::AccessibleState::Disabled,
         ])
         .assert_on(&second_shield);
-    AccessibleAudit::new()
-        .states(&[
-            gtk4::AccessibleState::Hidden,
-            gtk4::AccessibleState::Disabled,
-        ])
-        .assert_on(&nested_shield);
+    let nested_shield = std::cell::RefCell::new(None::<gtk4::Widget>);
 
     let expanded_transitions = Rc::new(Cell::new(0));
     let second_transitions = Rc::clone(&expanded_transitions);
@@ -1700,10 +1742,26 @@ fn test_workspace_folder_reorder_drag_hover_does_not_expand_or_restart_watch() {
                 nested_expander.can_target(),
                 "reorder drags must not retarget descendant disclosure widgets"
             );
+            // Every realized row, file rows included, owns drag hover through
+            // a targetable shield as soon as the drag starts.
+            assert_eq!(
+                realized_rows_with_targetable_shield(&section),
+                realized_file_row_count(&section),
+                "every realized row should get a targetable shield when the drag starts"
+            );
+            let shield = realized_reorder_shield_for_path(&section, &nested)
+                .expect("the drag start should give the descendant row a shield");
+            AccessibleAudit::new()
+                .states(&[
+                    gtk4::AccessibleState::Hidden,
+                    gtk4::AccessibleState::Disabled,
+                ])
+                .assert_on(&shield);
             assert!(
-                second_shield.can_target() && nested_shield.can_target(),
+                second_shield.can_target() && shield.can_target(),
                 "active reorder drags should target the row shields instead of expanders"
             );
+            nested_shield.replace(Some(shield));
             let valid_hover =
                 section.simulate_workspace_folder_reorder_hover_after_for_test(second.path());
             assert!(valid_hover.owns_hover, "valid hover should be shield-owned");
@@ -1751,8 +1809,9 @@ fn test_workspace_folder_reorder_drag_hover_does_not_expand_or_restart_watch() {
                 "invalid descendant hover should be owned but show no insertion line"
             );
             assert!(
-                !nested_drop_target.property::<bool>("visible"),
-                "descendant hover should leave its insertion-line surface hidden"
+                realized_drop_target_for_path(&section, &nested)
+                    .is_none_or(|surface| !surface.property::<bool>("visible")),
+                "descendant hover should show no insertion-line surface"
             );
             assert!(
                 !nested_row.is_expanded(),
@@ -1783,6 +1842,9 @@ fn test_workspace_folder_reorder_drag_hover_does_not_expand_or_restart_watch() {
         !LushtextWorkspaceSection::workspace_folder_reorder_drag_owns_row_hover_for_test(),
         "row-surface drag ownership should end with the reorder drag"
     );
+    let nested_shield = nested_shield
+        .take()
+        .expect("the descendant row's shield was created during the drag");
     assert!(
         !second_shield.can_target() && !nested_shield.can_target(),
         "row shields should become inert again when reorder drag ends"
@@ -2383,6 +2445,8 @@ fn test_workspace_section_chrome_icons_remain_symbolic() {
     let dir = tempfile::tempdir().expect("expected operation to succeed");
     let nested = dir.path().join("nested");
     fixture::create_dir(&nested);
+    // Non-empty, so its row can be focused.
+    fixture::write_text(&nested.join("inside.txt"), "x");
     section.load_folders(&[FolderTreeEntry::Directory {
         path: dir.path().to_path_buf(),
     }]);
@@ -2405,18 +2469,14 @@ fn test_workspace_section_chrome_icons_remain_symbolic() {
     );
 
     let window = present_section_window(&section);
-    wait_until(Duration::from_secs(2), || {
-        section.imp().file_tree_view.first_child().is_some()
+    // The Focus Folder control exists only on rows that can be focused, a
+    // non-root directory (slice-large-directory-collapse D17).
+    section.expand_folders();
+    wait_until(Duration::from_secs(5), || {
+        realized_overlay_for_path(&section, &nested).is_some()
     });
-    let row_widget = section
-        .imp()
-        .file_tree_view
-        .first_child()
-        .expect("list view should realize the first row");
-    let overlay = row_widget
-        .first_child()
-        .and_downcast::<gtk4::Overlay>()
-        .expect("row child should be the factory overlay");
+    let overlay = realized_overlay_for_path(&section, &nested)
+        .expect("the nested directory row should be realized");
     let mut child = overlay.first_child();
     let mut focus_button = None;
     while let Some(candidate) = child {

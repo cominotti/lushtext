@@ -130,6 +130,8 @@ pub struct RowCounters {
     pub setups: Cell<u32>,
     /// `teardown` emissions: row widgets destroyed.
     pub teardowns: Cell<u32>,
+    /// `bind` emissions, for the fixtures that count them (A124).
+    pub binds: Cell<u32>,
     /// The list items bound now.
     pub bound: RefCell<Vec<glib::WeakRef<gtk4::ListItem>>>,
 }

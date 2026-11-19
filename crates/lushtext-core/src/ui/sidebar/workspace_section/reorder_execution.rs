@@ -66,6 +66,13 @@ thread_local! {
     static REGISTERED_FOLDER_REORDER_SECTIONS: RefCell<Vec<glib::WeakRef<LushtextWorkspaceSection>>> = const { RefCell::new(Vec::new()) };
 }
 
+/// Style hook of the reorder drag handle, a row's content box's first child.
+const DRAG_HANDLE_CLASS: &str = "workspace-folder-drag-handle";
+/// Style hook of the transparent full-row shield that owns reorder hover.
+const DND_SHIELD_CLASS: &str = "workspace-folder-dnd-shield";
+/// Style hook of the transparent surface that positions the insertion line.
+const DROP_TARGET_CLASS: &str = "workspace-folder-drop-target";
+
 /// Row-local data key used for one-shot expansion-watch suppression after defensive DnD collapse.
 const SUPPRESS_EXPANDED_WATCH_KEY: &str = "workspace-reorder-suppress-expanded-watch";
 
@@ -78,27 +85,53 @@ struct FolderReorderHoverDecision {
 }
 
 impl LushtextWorkspaceSection {
-    /// Install drag/drop controllers on one recycled list item widget.
-    pub(super) fn install_folder_reorder_dnd(
+    /// Give one workspace-folder row its reorder drag handle, on demand
+    /// (`slice-large-directory-collapse` D17), and return it.
+    ///
+    /// Only top-level workspace-folder rows can start a reorder, so the handle,
+    /// its image and its `GtkDragSource` are created when such a row is first
+    /// bound (or when a membership change makes a bound row one), never in the
+    /// factory's setup: every other row stays without them. The handle is the
+    /// content box's first child, and a recycled row keeps it hidden.
+    pub(super) fn ensure_folder_reorder_drag_handle(
         &self,
-        list_item: &gtk4::ListItem,
-        drag_handle: &gtk4::Button,
-        overlay: &gtk4::Overlay,
-        drop_shield: &gtk4::Box,
-        drop_target_surface: &gtk4::Box,
-    ) {
+        content_box: &gtk4::Box,
+    ) -> gtk4::Button {
+        if let Some(drag_handle) = content_box_drag_handle(content_box) {
+            return drag_handle;
+        }
+        let drag_handle = gtk4::Button::from_icon_name("list-drag-handle-symbolic");
+        drag_handle.set_valign(gtk4::Align::Center);
+        drag_handle.set_focusable(false);
+        drag_handle.set_tooltip_text(Some("Reorder Folder"));
+        drag_handle.set_visible(false);
+        drag_handle.set_sensitive(false);
+        drag_handle.add_css_class("flat");
+        drag_handle.add_css_class("circular");
+        drag_handle.add_css_class(DRAG_HANDLE_CLASS);
+        accessibility::set_labelled_description(
+            &drag_handle,
+            "Reorder Folder",
+            "Drag or use the folder context menu to reorder this workspace folder",
+        );
+        accessibility::set_hidden(&drag_handle, true);
+        accessibility::set_disabled(&drag_handle, true);
+
         // DragSource prepare runs after the handle has started a drag; resolve
-        // the payload from the currently bound row so recycled widgets never
-        // cache stale folder identity.
+        // the payload from the row the handle's expander is bound to now, so
+        // recycled widgets never cache stale folder identity.
         let drag_source = gtk4::DragSource::new();
         drag_source.set_actions(gdk::DragAction::MOVE);
-
         let section_weak = self.downgrade();
-        let list_item_weak = list_item.downgrade();
+        let handle_weak = drag_handle.downgrade();
         drag_source.connect_prepare(move |_, _, _| {
             let section = section_weak.upgrade()?;
-            let list_item = list_item_weak.upgrade()?;
-            let payload = drag_payload_for_list_item(&section, &list_item)?;
+            let handle = handle_weak.upgrade()?;
+            let tree_row = handle
+                .ancestor(gtk4::TreeExpander::static_type())
+                .and_downcast::<gtk4::TreeExpander>()?
+                .list_row()?;
+            let payload = drag_payload_for_tree_row(&section, &tree_row)?;
             begin_folder_reorder_drag(payload.clone());
             Some(gdk::ContentProvider::for_value(
                 &encode_drag_payload(&payload).to_value(),
@@ -112,6 +145,32 @@ impl LushtextWorkspaceSection {
             false
         });
         drag_handle.add_controller(drag_source);
+        content_box.prepend(&drag_handle);
+        drag_handle
+    }
+
+    /// Give one row the transparent full-row reorder shield and its
+    /// `GtkDropTarget`, on demand (`slice-large-directory-collapse` D17).
+    ///
+    /// Top-level workspace-folder rows get it when bound; every other realized
+    /// row gets it only while a reorder drag is active (at the drag's start and
+    /// when bound during it), because the shield must own drag hover on every
+    /// row before `GtkTreeExpander` can treat it as disclosure hover. A row keeps
+    /// it once created; it is inert (not targetable) outside a drag.
+    pub(super) fn ensure_folder_reorder_shield(&self, overlay: &gtk4::Overlay) {
+        if reorder_shield(overlay).is_some() {
+            return;
+        }
+        let drop_shield = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        drop_shield.add_css_class(DND_SHIELD_CLASS);
+        drop_shield.set_can_target(false);
+        drop_shield.set_focusable(false);
+        drop_shield.set_halign(gtk4::Align::Fill);
+        drop_shield.set_valign(gtk4::Align::Fill);
+        drop_shield.set_hexpand(true);
+        drop_shield.set_vexpand(true);
+        accessibility::set_hidden(&drop_shield, true);
+        accessibility::set_disabled(&drop_shield, true);
 
         // DropTarget lives on the transparent row shield. Capture-phase hover
         // is owned before GtkTreeExpander can treat the drag as disclosure hover.
@@ -120,29 +179,28 @@ impl LushtextWorkspaceSection {
         drop_target.connect_accept(move |_, _| folder_reorder_drag_should_own_row_hover());
 
         let section_weak = self.downgrade();
-        let list_item_weak = list_item.downgrade();
         let overlay_weak = overlay.downgrade();
-        let drop_surface_weak = drop_target_surface.downgrade();
         let shown_position = Rc::new(Cell::new(None));
         let shown_position_for_motion = Rc::clone(&shown_position);
         drop_target.connect_motion(move |_, _, y| {
             let Some(section) = section_weak.upgrade() else {
                 return gdk::DragAction::empty();
             };
-            let Some(list_item) = list_item_weak.upgrade() else {
-                return gdk::DragAction::empty();
-            };
             let Some(overlay) = overlay_weak.upgrade() else {
                 return gdk::DragAction::empty();
             };
-            let Some(drop_surface) = drop_surface_weak.upgrade() else {
-                return gdk::DragAction::empty();
-            };
             let position = drop_position_for_y(overlay.height(), y);
-            let decision = active_drag_hover_decision_for_list_item(&section, &list_item, position);
+            let target_folder_id = bound_tree_row(&overlay)
+                .and_then(|tree_row| workspace_folder_id_for_bound_row(&section, &tree_row));
+            let decision = active_drag_hover_decision_for_target(
+                &section,
+                target_folder_id.as_ref(),
+                position,
+            );
             if decision.shows_indicator {
+                let drop_surface = ensure_folder_reorder_drop_indicator(&overlay);
                 show_drop_indicator(&drop_surface, &shown_position_for_motion, position);
-            } else {
+            } else if let Some(drop_surface) = reorder_indicator_surface(&overlay) {
                 hide_drop_indicator(&drop_surface, &shown_position_for_motion);
             }
             if decision.owns_hover {
@@ -152,21 +210,24 @@ impl LushtextWorkspaceSection {
             }
         });
 
-        let drop_surface_weak = drop_target_surface.downgrade();
+        let overlay_weak = overlay.downgrade();
         let shown_position_for_leave = Rc::clone(&shown_position);
         drop_target.connect_leave(move |_| {
-            if let Some(drop_surface) = drop_surface_weak.upgrade() {
+            if let Some(overlay) = overlay_weak.upgrade()
+                && let Some(drop_surface) = reorder_indicator_surface(&overlay)
+            {
                 hide_drop_indicator(&drop_surface, &shown_position_for_leave);
             }
         });
 
         let section_weak = self.downgrade();
-        let list_item_weak = list_item.downgrade();
         let overlay_weak = overlay.downgrade();
-        let drop_surface_weak = drop_target_surface.downgrade();
         let shown_position_for_drop = shown_position;
         drop_target.connect_drop(move |_, value, _, y| {
-            if let Some(drop_surface) = drop_surface_weak.upgrade() {
+            let Some(overlay) = overlay_weak.upgrade() else {
+                return false;
+            };
+            if let Some(drop_surface) = reorder_indicator_surface(&overlay) {
                 hide_drop_indicator(&drop_surface, &shown_position_for_drop);
             }
             let Ok(payload_text) = value.get::<String>() else {
@@ -178,16 +239,30 @@ impl LushtextWorkspaceSection {
             let Some(section) = section_weak.upgrade() else {
                 return false;
             };
-            let Some(list_item) = list_item_weak.upgrade() else {
-                return false;
-            };
-            let Some(overlay) = overlay_weak.upgrade() else {
+            let Some(tree_row) = bound_tree_row(&overlay) else {
                 return false;
             };
             let position = drop_position_for_y(overlay.height(), y);
-            section.request_workspace_folder_drop_from_payload(&payload, &list_item, position)
+            section.request_workspace_folder_drop_from_payload(&payload, &tree_row, position)
         });
         drop_shield.add_controller(drop_target);
+        overlay.add_overlay(&drop_shield);
+        overlay.set_measure_overlay(&drop_shield, false);
+    }
+
+    /// Give a top-level workspace-folder row everything a reorder uses: the
+    /// drag handle, the shield and the insertion-line surface (design D17).
+    pub(super) fn ensure_folder_reorder_row_surfaces(&self, overlay: &gtk4::Overlay) {
+        if let Some(content_box) = overlay
+            .child()
+            .and_downcast::<gtk4::TreeExpander>()
+            .and_then(|expander| expander.child())
+            .and_downcast::<gtk4::Box>()
+        {
+            self.ensure_folder_reorder_drag_handle(&content_box);
+        }
+        self.ensure_folder_reorder_shield(overlay);
+        ensure_folder_reorder_drop_indicator(overlay);
     }
 
     /// Register this section for drag-lifetime shield synchronization.
@@ -222,6 +297,9 @@ impl LushtextWorkspaceSection {
     pub(super) fn sync_folder_reorder_shields_for_active_drag(&self) {
         let active = folder_reorder_drag_is_active();
         for_each_realized_file_row_overlay(self, |overlay| {
+            if active {
+                self.ensure_folder_reorder_shield(&overlay);
+            }
             set_reorder_shield_targetable(&overlay, active);
             if !active {
                 hide_reorder_indicator(&overlay);
@@ -237,6 +315,9 @@ impl LushtextWorkspaceSection {
         for_each_realized_file_row_overlay(self, |overlay| {
             let show_handle =
                 workspace_folder_reorder_handle_should_show_for_overlay(self, &overlay);
+            if show_handle {
+                self.ensure_folder_reorder_row_surfaces(&overlay);
+            }
             set_reorder_handle_visible(&overlay, show_handle);
             hide_reorder_indicator(&overlay);
             if !folder_reorder_drag_is_active() {
@@ -249,14 +330,13 @@ impl LushtextWorkspaceSection {
     fn request_workspace_folder_drop_from_payload(
         &self,
         payload: &FolderDragPayload,
-        target_list_item: &gtk4::ListItem,
+        target_row: &gtk4::TreeListRow,
         position: DropPosition,
     ) -> bool {
         if payload.workspace_id != self.workspace_id() {
             return false;
         }
-        let Some(target_folder_id) = workspace_folder_id_for_list_item(self, target_list_item)
-        else {
+        let Some(target_folder_id) = workspace_folder_id_for_bound_row(self, target_row) else {
             return false;
         };
         self.request_workspace_folder_drop(&payload.folder_id, &target_folder_id, position)
@@ -421,8 +501,17 @@ pub(super) fn reset_reorder_row_for_unbind(overlay: &gtk4::Overlay) {
     hide_reorder_indicator(overlay);
 }
 
-/// Prepare one newly-bound row for the current drag state.
-pub(super) fn reset_reorder_row_for_bind(overlay: &gtk4::Overlay) {
+/// Prepare one newly-bound row for the current drag state: a row bound while a
+/// reorder drag is active gets its shield now (design D17).
+pub(super) fn reset_reorder_row_for_bind(
+    section: Option<&LushtextWorkspaceSection>,
+    overlay: &gtk4::Overlay,
+) {
+    if folder_reorder_drag_is_active()
+        && let Some(section) = section
+    {
+        section.ensure_folder_reorder_shield(overlay);
+    }
     set_reorder_shield_targetable(overlay, folder_reorder_drag_is_active());
     hide_reorder_indicator(overlay);
     if folder_reorder_drag_is_active() {
@@ -457,15 +546,6 @@ fn folder_reorder_drag_should_own_row_hover() -> bool {
 /// Test seam for the DropTarget accept decision.
 pub(super) fn folder_reorder_drag_owns_row_hover_for_test() -> bool {
     folder_reorder_drag_should_own_row_hover()
-}
-
-fn active_drag_hover_decision_for_list_item(
-    section: &LushtextWorkspaceSection,
-    list_item: &gtk4::ListItem,
-    position: DropPosition,
-) -> FolderReorderHoverDecision {
-    let target_folder_id = workspace_folder_id_for_list_item(section, list_item);
-    active_drag_hover_decision_for_target(section, target_folder_id.as_ref(), position)
 }
 
 /// Validate workspace identity, target identity, and no-op moves for live hover feedback.
@@ -572,26 +652,39 @@ fn drop_source_and_new_index(
 }
 
 /// Resolve the DnD payload from the currently bound recycled row.
-fn drag_payload_for_list_item(
+fn drag_payload_for_tree_row(
     section: &LushtextWorkspaceSection,
-    list_item: &gtk4::ListItem,
+    tree_row: &gtk4::TreeListRow,
 ) -> Option<FolderDragPayload> {
-    let folder_id = workspace_folder_id_for_list_item(section, list_item)?;
+    let folder_id = workspace_folder_id_for_bound_row(section, tree_row)?;
     Some(FolderDragPayload {
         workspace_id: section.workspace_id(),
         folder_id,
     })
 }
 
-fn workspace_folder_id_for_list_item(
+fn workspace_folder_id_for_bound_row(
     section: &LushtextWorkspaceSection,
-    list_item: &gtk4::ListItem,
+    tree_row: &gtk4::TreeListRow,
 ) -> Option<WorkspaceFolderId> {
     if !section.imp().drilldown_stack.borrow().is_empty() {
         return None;
     }
-    let tree_row = list_item.item().and_downcast::<gtk4::TreeListRow>()?;
-    workspace_folder_id_for_tree_row(&tree_row)
+    workspace_folder_id_for_tree_row(tree_row)
+}
+
+/// The row a realized file-row overlay's expander is bound to now.
+fn bound_tree_row(overlay: &gtk4::Overlay) -> Option<gtk4::TreeListRow> {
+    overlay
+        .child()
+        .and_downcast::<gtk4::TreeExpander>()?
+        .list_row()
+}
+
+/// Whether a bound row is a top-level workspace folder, the only kind of row
+/// that is created with its reorder surfaces (design D17).
+pub(super) fn row_is_workspace_folder_root(tree_row: &gtk4::TreeListRow) -> bool {
+    workspace_folder_id_for_tree_row(tree_row).is_some()
 }
 
 /// Resolve a persisted top-level folder id; drill-down mode disables reordering.
@@ -726,7 +819,7 @@ fn reorder_shield(overlay: &gtk4::Overlay) -> Option<gtk4::Widget> {
     let mut child = overlay.first_child();
     while let Some(widget) = child {
         child = widget.next_sibling();
-        if widget.has_css_class("workspace-folder-dnd-shield") {
+        if widget.has_css_class(DND_SHIELD_CLASS) {
             return Some(widget);
         }
     }
@@ -736,17 +829,58 @@ fn reorder_shield(overlay: &gtk4::Overlay) -> Option<gtk4::Widget> {
 fn reorder_drag_handle(overlay: &gtk4::Overlay) -> Option<gtk4::Button> {
     let expander = overlay.child().and_downcast::<gtk4::TreeExpander>()?;
     let content_box = expander.child().and_downcast::<gtk4::Box>()?;
+    content_box_drag_handle(&content_box)
+}
+
+/// The drag handle a row's content box carries, if it was ever given one: it is
+/// always the box's first child.
+pub(super) fn content_box_drag_handle(content_box: &gtk4::Box) -> Option<gtk4::Button> {
     content_box
         .first_child()
         .and_downcast::<gtk4::Button>()
-        .filter(|button| button.has_css_class("workspace-folder-drag-handle"))
+        .filter(|button| button.has_css_class(DRAG_HANDLE_CLASS))
+}
+
+/// Give one top-level workspace-folder row its insertion-line surface (a
+/// transparent positioning box holding the one fixed-height painted line), on
+/// demand (design D17), and return it.
+fn ensure_folder_reorder_drop_indicator(overlay: &gtk4::Overlay) -> gtk4::Box {
+    if let Some(drop_target) = reorder_indicator_surface(overlay) {
+        return drop_target;
+    }
+    let drop_target = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    drop_target.add_css_class(DROP_TARGET_CLASS);
+    drop_target.set_can_target(false);
+    drop_target.set_focusable(false);
+    drop_target.set_halign(gtk4::Align::Fill);
+    drop_target.set_valign(gtk4::Align::Start);
+    drop_target.set_height_request(2);
+    drop_target.set_visible(false);
+    accessibility::set_hidden(&drop_target, true);
+    accessibility::set_disabled(&drop_target, true);
+
+    let drop_indicator = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    drop_indicator.add_css_class("workspace-folder-drop-indicator");
+    drop_indicator.set_can_target(false);
+    drop_indicator.set_focusable(false);
+    drop_indicator.set_halign(gtk4::Align::Fill);
+    drop_indicator.set_valign(gtk4::Align::Center);
+    drop_indicator.set_hexpand(true);
+    drop_indicator.set_height_request(2);
+    accessibility::set_hidden(&drop_indicator, true);
+    accessibility::set_disabled(&drop_indicator, true);
+    drop_target.append(&drop_indicator);
+
+    overlay.add_overlay(&drop_target);
+    overlay.set_measure_overlay(&drop_target, false);
+    drop_target
 }
 
 fn reorder_indicator_surface(overlay: &gtk4::Overlay) -> Option<gtk4::Box> {
     let mut child = overlay.first_child();
     while let Some(widget) = child {
         child = widget.next_sibling();
-        if widget.has_css_class("workspace-folder-drop-target") {
+        if widget.has_css_class(DROP_TARGET_CLASS) {
             return widget.downcast::<gtk4::Box>().ok();
         }
     }
@@ -786,7 +920,7 @@ pub(super) fn empty_children_model_for_drag_hover(
             && row.is_expanded()
         {
             suppress_next_expanded_watch_for_drag(&row);
-            row.set_expanded(false);
+            section.collapse_directory(&row, super::collapse_execution::CollapseOrigin::Reorder);
         }
     });
     store

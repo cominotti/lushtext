@@ -1,0 +1,126 @@
+## ADDED Requirements
+
+### Requirement: Collapsing a sidebar directory fits the interaction budgets
+Collapsing a sidebar directory by a route LushText owns SHALL keep the input dispatch and every step within `B_INTERACT_US`, and every dispatch until the listing is retired within `B_SETTLE_US`, at every size. The first frame after the input SHALL show the collapse. No frame SHALL bring more than `SIDEBAR_REALIZED_ROWS_PER_FRAME` rows into the realized band. A toolkit cost that cannot fit SHALL be a recorded toolkit-floor exception.
+
+#### Scenario: How the budgets are measured
+- **WHEN** the verdict test measures a collapse
+- **THEN** it runs on the optimized widget build with the sidebar presented, at host load below 4, interleaved with `main`
+- **AND** no step runs inside the frame clock's dispatch: every bound unit, and the first unbound chunk after the input, runs in a step-source dispatch of its own, and that whole dispatch is read against `B_INTERACT_US`; the other unbound chunks run in between-frames turns, each read against `B_INTERACT_US`; the frame that styles, measures and allocates the rows a step brought into the band runs no step and is read against `B_SETTLE_US`
+- **AND** at most one unit of bound rows is removed per frame interval (between two frames of the list's frame clock) across all the window's sections
+- **AND** a unit runs as steps of at most `COLLAPSE_STEP_ROWS` bound rows, each in a step-source dispatch of its own, except a removal that brings no row into the band, which may take up to `COLLAPSE_DESTROY_ONLY_ROWS` rows in one dispatch
+
+#### Scenario: A toolkit floor
+- **WHEN** a step cannot fit `B_INTERACT_US` at the smallest measured unit because of the toolkit's per-widget cost
+- **THEN** it is recorded as a measured toolkit-floor exception citing a GTK axiom with a probe and a sample, and is not left unexplained
+
+#### Scenario: Routes left to GTK
+- **WHEN** a refresh splice or model reset removes an expanded directory, or an assistive technology invokes the expander's collapse action
+- **THEN** GTK collapses directly, and the dispatch is measured and recorded as a residual
+
+#### Scenario: A directory with rows after it
+- **WHEN** the user collapses an expanded directory of 256 entries followed by 400 rows
+- **THEN** the input dispatch and every step fit `B_INTERACT_US`, and every frame until it is collapsed fits `B_SETTLE_US`
+
+#### Scenario: A huge directory
+- **WHEN** the user collapses an expanded directory of 131,072 entries, with nothing after it and with 400 rows after it
+- **THEN** the children no row widget is bound to are removed in chunks of at most `COLLAPSE_UNBOUND_CHUNK_ROWS`, the first in the first step dispatch after the input within `B_INTERACT_US` and the rest within the list turn slice, the bound children in units, and every dispatch fits its budget
+
+#### Scenario: A collapse nobody draws
+- **WHEN** a sliced collapse starts or continues while the sidebar is hidden, the section body is collapsed or the window is unmapped, or while the list stays mapped but its frame clock delivers no frame
+- **THEN** its steps continue from a low-priority source within the same bounds, the collapse completes, and readiness becomes complete
+
+#### Scenario: Several directories at once
+- **WHEN** the folder header collapses two expanded roots of 4,096 entries each in one input
+- **THEN** both rows show the collapse in the first frame, every frame interval takes at most one unit of bound rows across both collapses, and both complete
+- **AND** the later root drains first, so the earlier root's steps bring into the band no row of a subtree that is itself being collapsed
+
+#### Scenario: A small directory
+- **WHEN** the directory's subtree holds at most `DIRECT_COLLAPSE_ROWS` flattened rows
+- **THEN** it collapses in the input dispatch, as on `main`, within `B_INTERACT_US`
+- **AND** when one input collapses several such directories (the folder header), the input dispatch collapses them directly only until `COLLAPSE_STEP_ROWS` rows are removed in total, and the rest are paced like a sliced collapse
+
+#### Scenario: The collapse shows in the first frame
+- **WHEN** a sliced collapse starts
+- **THEN** the first frame after the input shows the collapsed arrow, and both the row and its expander report `expanded` false to assistive technologies, within `INPUT_TO_FRAME_US` of the input
+- **AND** they keep reporting it until the collapse ends, including after the row is rebound
+
+#### Scenario: A removal that brings no row into the band
+- **WHEN** a step removes bound rows of a subtree with nothing after it beyond the realized band
+- **THEN** it may remove up to `COLLAPSE_DESTROY_ONLY_ROWS` rows, within `B_INTERACT_US`, because no row widget is created in their place
+
+#### Scenario: The first frame lays out the first unit
+- **WHEN** a sliced collapse starts
+- **THEN** the input dispatch shows the intent, hides the subtree's realized rows, removes no row, arms the step source, and stays within `B_INTERACT_US`
+- **AND** the step source, which runs above the frame clock's priority and below input, runs in its own dispatches before the first frame after the input: first at most one chunk of `COLLAPSE_UNBOUND_CHUNK_ROWS` unbound rows, then, when that chunk removed every unbound row of the subtree, the collapse's first bound unit; when unbound rows remain, the between-frames source continues them, so no second frame passes before the work continues
+- **AND** that first frame lays out at most one unit of bound rows, runs no step, and shows the collapse
+
+#### Scenario: Unbound rows leave between frames
+- **WHEN** a sliced collapse removes rows no widget is bound to
+- **THEN** those chunks run between frames, never inside a frame dispatch, each turn within the list turn slice plus one chunk
+- **AND** the first chunk after the input runs in the step source's own dispatch, alone, within `B_INTERACT_US`
+
+#### Scenario: A frame lays out one unit and runs no step
+- **WHEN** a sliced collapse with 400 rows after the directory removes bound rows
+- **THEN** each bound unit runs in a step-source dispatch armed by the input, by the previous frame's `after-paint`, by the between-frames source, or by the step source's own previous dispatch when that dispatch removed a chunk and the next step is bound, at most one unit per frame interval
+- **AND** no rows leave the directory's stores during a frame clock dispatch, and the frame after the unit only styles, measures, allocates and paints the rows it brought into the band
+
+#### Scenario: The probe scan's publication is a named residual
+- **WHEN** a dispatch after the collapse publishes the scan that GTK's `is_expandable()` probe started for the collapsed directory
+- **THEN** the verdict test prints it separately, it is excluded from this requirement's pass bar, and it is recorded as owned by `stop-expander-bind-time-child-scans`
+
+### Requirement: A sidebar collapse finishes within main's time plus a bounded allowance
+A sidebar directory collapse by a route LushText owns SHALL draw its collapsed rows within `main`'s time plus a bounded allowance, measured from the input to the frame that draws them: at most `main`'s time plus two 60 Hz frames, or 100 ms where `main` takes less. A collapsing subtree of more than 16,384 flattened rows SHALL be allowed 0.5 µs more for each row beyond 16,384, and no more; when one input collapses several directories, their subtrees' rows are summed.
+
+#### Scenario: A collapse finishes no later than main's
+- **WHEN** the verdict test collapses each measured case on `main` and on the branch
+- **THEN** it prints each side's completion: from the start of the input dispatch to the end of the first frame dispatch after which the directory row is collapsed
+- **AND** the branch's worst completion is at most `max(main's worst + 33.3 ms, 100 ms) + max(0, R − 16,384) × 0.5 µs`, where `R` is the flattened rows at the input of the subtree, or of all the subtrees one input collapses
+- **AND** it prints each side's settled time (until the section's readiness holds) beside it, recorded and not judged
+- **AND** the probe that detects the completing frame reads the directory row's expansion only, not the section's whole evidence, so the measurement adds no per-dispatch work that grows with the listing
+
+#### Scenario: A very large directory finishes later, bounded
+- **WHEN** the user collapses an expanded directory of 131,072 entries
+- **THEN** the arrow and the accessible state show the collapse in the first frame, its visible children are hidden in that frame, no dispatch exceeds its budget, and the rows finish leaving the model within the bar above, which for that size allows at most 57.3 ms past the same case's bar without the allowance (`main`'s worst plus 33.3 ms, or 100 ms)
+
+#### Scenario: The folder header
+- **WHEN** the folder header collapses two expanded roots of 4,096 entries each
+- **THEN** each side's completion is taken at the first frame that draws both roots collapsed; on `main`, whose deferred restore later expands the second root again, that frame is expected before the restore, and the verdict test reports it if it never comes
+
+### Requirement: A sidebar collapse's picture is final in the first frame where nothing follows it
+Where no row follows the collapsing subtree in the flattened list and the directory row is on screen at the input, the rows the viewport draws during a sidebar collapse by a route LushText owns SHALL be final in the first frame after the input. Otherwise they SHALL be final within the completion bar of the requirement above. The scrollbar is excluded; completion judges it.
+
+#### Scenario: The picture is final in the first frame when nothing follows
+- **WHEN** the user collapses an expanded directory of 131,072 entries, or of 256, 4,096 or 16,385, with no row after it in the list and its row on screen
+- **THEN** the first frame after the input draws the directory row collapsed and none of its children, and no later frame until the collapse settles draws a row the viewport did not show in that frame or moves one
+- **AND** only the scrollbar changes afterwards, when the collapse completes
+
+#### Scenario: The picture-final figure
+- **WHEN** the verdict test measures a collapse on `main` and on the branch
+- **THEN** after each frame dispatch it records the rows the viewport draws (a list-view child drawn with opacity above 0 inside the viewport, with its path and rendered top), and prints as picture-final the end of the first frame dispatch from which every later record until settled equals the last one
+- **AND** the branch's worst picture-final is within the first frame after the input where no row followed the subtree in the list and the directory row was on screen at the input, and within the case's completion bar otherwise, including when rows follow the subtree outside the band
+- **AND** it prints each case's picture-final and completion beside `main`'s completion
+
+### Requirement: Small-directory expansion is measured against the settle budget
+The sidebar expansion verdict SHALL also cover directories of 64, 256 and 1,024 entries, with and without 400 rows after them, on a first expansion and right after a collapse. A dispatch that applies a directory's rows and exceeds `B_SETTLE_US` SHALL be attributed with a profile before it is fixed, and fixed as the attribution shows.
+
+#### Scenario: Measuring first
+- **WHEN** this change starts implementation
+- **THEN** quiet, interleaved `main` figures for these expansions are recorded before any fix, with the decision to cap or not
+
+#### Scenario: Row-widget creation is the cost
+- **WHEN** the attribution puts an over-budget expansion dispatch in the creation and styling of row widgets
+- **THEN** a load's batches bring at most `SIDEBAR_REALIZED_ROWS_PER_FRAME` rows into the realized band per frame
+
+#### Scenario: Another cost
+- **WHEN** the attribution puts it elsewhere
+- **THEN** it is fixed as the attribution shows, or recorded as a toolkit-floor exception under the existing settle-budget requirement
+
+#### Scenario: The rows the user sees come first
+- **WHEN** an expansion's batches are capped per frame
+- **THEN** the first frame after the expansion shows the first `SIDEBAR_REALIZED_ROWS_PER_FRAME` rows, which fill the viewport at the verdict window's height as on `main`, and later frames add the rest of the realized band
+- **AND** in a viewport taller than that unit, the remaining visible rows appear top-down in the following frames, one unit a frame, rather than in one frame over budget
+
+#### Scenario: Expanding a 256-entry directory
+- **WHEN** the user expands a directory of 256 entries after the decision above
+- **THEN** every dispatch from the expansion to its terminal fits `B_SETTLE_US`, except a recorded toolkit-floor exception and the probe scan's publication that the collapse requirement names as a residual

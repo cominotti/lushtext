@@ -144,6 +144,46 @@ Expected screen-reader behavior includes:
   did not initiate it, and interrupting them for it would be worse than the
   stale affordance it replaces. The same is true in reverse for a directory
   emptied on disk.
+- Collapsing a large directory in the workspace sidebar is paced over several
+  frames (`slice-large-directory-collapse`), but its accessible state changes at
+  once: in the dispatch of the key press or click, the row and its expander
+  report `expanded` false, the arrow draws collapsed, and when selection or
+  keyboard focus was inside the directory they move to the directory row
+  itself, so a screen reader never follows a row that is about to disappear.
+  The rows then go in the background; the change is not announced, as GTK's own
+  collapse is not. From the same dispatch, every realized row of the
+  collapsing subtree is hidden (design D22): it draws nothing, takes no pointer
+  input (a click, a double click or a hover on that region selects, activates
+  or prelights nothing), and reports the accessible `hidden` state, so AT-SPI
+  does not present it (ledger A123; the state is written again after GTK maps a
+  row, which resets it). Any end of the collapse (completion, re-expansion,
+  removal, a reload) shows the rows again. Which rows are inside is decided by
+  the tree, not by path, so the same directory listed again under an
+  overlapping workspace folder is neither hidden nor stopped from loading
+  (`accessibility-smoke` case `workspace-tree-large-collapse`). The arrow
+  keys, `Page Up`, `Page Down`, `Home` and `End` (with or without `Shift` or
+  `Ctrl`) pressed on a row of the tree while a directory of that workspace
+  collapses wait for the collapse, so the focus is never drawn on a hidden
+  row; once it has ended and the next frame has laid out the final tree, they
+  act in the order pressed, exactly as GTK's own bindings act on that tree
+  (`Down` from the directory row lands on the row after it). `Enter`,
+  `space`, `Menu` and `Shift+F10` pressed behind such a key wait behind it and
+  act on the row it reaches. `Escape`, `Tab` and window shortcuts act at
+  once, and keys typed in an inline rename are never held. If the focus has
+  left the tree by the time the collapse ends, the waiting keys are dropped,
+  never sent to the widget that now has the focus. Activating the directory row (`Enter`, or a double click),
+  clicking its arrow, and the tree's collapse keys with focus on the row's
+  expander, which `Tab` reaches from the row (`minus`, `slash`, their keypad
+  forms, `Shift+Left` and `Ctrl+Shift+Left`, reversed in right-to-left text,
+  and `Ctrl+space`) take the paced collapse;
+  an expand key on a collapsing row ends the collapse. The expander's AT-SPI
+  actions (`listitem.collapse`, `listitem.toggle-expand`) keep GTK's direct
+  collapse, which behaves as before and may take one long frame on a very
+  large directory. The collapse keys are taken only while the focus is on
+  the expander itself: while an inline rename's entry holds the focus,
+  every key it consumes (`minus`, `slash`, `plus` and the rest) is typed
+  into the name, and a key it does not consume reaches GTK's own expander
+  binding, exactly as before this change (a residual route).
 
 - The main window exposes the tab strip, shell buttons, workspace sidebar
   toggle, document-properties toggle, status metadata, editor region, and

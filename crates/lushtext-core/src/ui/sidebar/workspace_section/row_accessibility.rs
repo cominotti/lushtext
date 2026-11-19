@@ -25,8 +25,10 @@ const ROW_EXPANDED_ACCESSIBILITY_HOOK: &str = "workspace-row-expanded-accessibil
 #[derive(Clone, Copy)]
 pub(super) struct FileTreeRowAccessibilityTarget<'a> {
     pub(super) overlay: &'a gtk4::Overlay,
-    pub(super) drag_handle: &'a gtk4::Button,
-    pub(super) focus_btn: &'a gtk4::Button,
+    /// The reorder drag handle, when the row was given one (design D17).
+    pub(super) drag_handle: Option<&'a gtk4::Button>,
+    /// The Focus Folder button, when the row was given one (design D17).
+    pub(super) focus_btn: Option<&'a gtk4::Button>,
     pub(super) file_item: &'a FileTreeItem,
     pub(super) tree_row: &'a gtk4::TreeListRow,
     pub(super) section: &'a super::LushtextWorkspaceSection,
@@ -84,30 +86,34 @@ pub(super) fn apply_file_tree_row_accessibility(target: FileTreeRowAccessibility
     accessibility::apply_row_accessibility(overlay, row_accessibility);
 
     let expanded = if file_item.is_dir() && !file_item.is_placeholder() {
-        Some(tree_row.is_expanded())
+        Some(section.row_shows_expanded(tree_row))
     } else {
         None
     };
     accessibility::set_expanded(overlay, expanded);
     accessibility::set_disabled(overlay, file_item.is_placeholder());
 
-    let reorder_label = format!("Reorder workspace folder {display_name}");
-    accessibility::set_labelled_description(
-        drag_handle,
-        &reorder_label,
-        "Drag or use the folder context menu to reorder this workspace folder",
-    );
-    accessibility::set_hidden(drag_handle, !show_reorder_handle);
-    accessibility::set_disabled(drag_handle, !show_reorder_handle);
+    if let Some(drag_handle) = drag_handle {
+        let reorder_label = format!("Reorder workspace folder {display_name}");
+        accessibility::set_labelled_description(
+            drag_handle,
+            &reorder_label,
+            "Drag or use the folder context menu to reorder this workspace folder",
+        );
+        accessibility::set_hidden(drag_handle, !show_reorder_handle);
+        accessibility::set_disabled(drag_handle, !show_reorder_handle);
+    }
 
-    let focus_label = format!("Focus folder {display_name}");
-    accessibility::set_labelled_description(
-        focus_btn,
-        &focus_label,
-        "Temporarily show this folder as the root of the workspace tree",
-    );
-    accessibility::set_hidden(focus_btn, !show_focus);
-    accessibility::set_disabled(focus_btn, !show_focus);
+    if let Some(focus_btn) = focus_btn {
+        let focus_label = format!("Focus folder {display_name}");
+        accessibility::set_labelled_description(
+            focus_btn,
+            &focus_label,
+            "Temporarily show this folder as the root of the workspace tree",
+        );
+        accessibility::set_hidden(focus_btn, !show_focus);
+        accessibility::set_disabled(focus_btn, !show_focus);
+    }
 }
 
 pub(super) fn install_expanded_accessibility_hook(
@@ -130,10 +136,17 @@ pub(super) fn install_expanded_accessibility_hook(
             return;
         };
 
-        accessibility::set_expanded(&overlay, Some(row.is_expanded()));
-        if let Some(section) = section_weak.upgrade() {
-            let description = file_tree_row_description(&file_item, row, &section);
-            accessibility::set_description(&overlay, &description);
+        let Some(section) = section_weak.upgrade() else {
+            accessibility::set_expanded(&overlay, Some(row.is_expanded()));
+            return;
+        };
+        accessibility::set_expanded(&overlay, Some(section.row_shows_expanded(row)));
+        let description = file_tree_row_description(&file_item, row, &section);
+        accessibility::set_description(&overlay, &description);
+        // A notify other than `expanded` re-runs GTK's bind-time projection on
+        // the expander; keep a collapsing row's state (design D6).
+        if let Some(expander) = overlay.child().and_downcast::<gtk4::TreeExpander>() {
+            section.apply_collapse_projection(&overlay, &expander, row);
         }
     });
 
@@ -156,7 +169,7 @@ pub(super) fn clear_expanded_accessibility_hook(overlay: &gtk4::Overlay) {
     }
 }
 
-fn file_tree_row_description(
+pub(super) fn file_tree_row_description(
     file_item: &FileTreeItem,
     tree_row: &gtk4::TreeListRow,
     section: &super::LushtextWorkspaceSection,
@@ -195,7 +208,7 @@ fn file_tree_row_description(
         parts.push("Empty folder".to_string());
     } else if file_item.is_dir() {
         parts.push(
-            if tree_row.is_expanded() {
+            if section.row_shows_expanded(tree_row) {
                 "Expanded"
             } else {
                 "Collapsed"
@@ -239,11 +252,7 @@ impl super::LushtextWorkspaceSection {
             let label = expander
                 .child()
                 .and_downcast::<gtk4::Box>()
-                .and_then(|content| content.first_child())
-                .and_then(|handle| handle.next_sibling())
-                .and_then(|indicator| indicator.next_sibling())
-                .and_then(|icon| icon.next_sibling())
-                .and_downcast::<gtk4::Label>();
+                .and_then(|content| super::row_factory::row_icon_and_label(&content).1);
             if let Some(label) = label {
                 label.set_use_markup(false);
                 label.set_label(&item.name());

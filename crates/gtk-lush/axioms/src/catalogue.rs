@@ -1860,6 +1860,24 @@ const CATALOGUE: &[Axiom] = &[
         probe: Some(probes::probe_a113),
     },
     Axiom {
+        id: AxiomId::new(114),
+        name: "a114_a_tree_list_row_object_nothing_references_is_replaced",
+        statement: "A GtkTreeListModel keeps no GtkTreeListRow object for a node nothing \
+                    references: once every reference is dropped the object is finalized, and \
+                    the next get_item for the node hands out a new object without the dead \
+                    one's handlers, while the node keeps its expansion; a row a list item is \
+                    bound to keeps its object",
+        dependent_designs: &[
+            "slice-large-directory-collapse R4/D20: the sidebar's collapse and expand entry \
+             points record expansion intent and refresh the row's watch contribution \
+             themselves, and the expansion hook is installed at factory bind as well as at \
+             splices, because a hook on a row object no widget shows dies with it",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a114),
+    },
+    Axiom {
         id: AxiomId::new(115),
         name: "a115_gtk_a11y_test_keeps_accessible_state_and_activates_no_bus",
         statement: "With GTK_A11Y=test, GTK 4 gives each widget a GtkTestATContext whose \
@@ -1911,6 +1929,63 @@ const CATALOGUE: &[Axiom] = &[
         probe: Some(probes::probe_a117),
     },
     Axiom {
+        id: AxiomId::new(118),
+        name: "a118_removing_bound_rows_replaces_their_row_widgets",
+        statement: "On a mapped GtkListView over a GtkTreeListModel, removing rows a list item is \
+                    bound to destroys those list items inside the removal's items-changed and \
+                    creates fresh ones for the rows entering the band in the same call, never \
+                    reusing a removed one; removing the unbound rows after or before the band \
+                    destroys and creates none and leaves the band on the same items",
+        dependent_designs: &[
+            "slice-large-directory-collapse D1/D4: a sidebar collapse costs the row widgets GTK \
+             replaces, so the owned collapse removes the unbound rows first, in chunks, then \
+             the bound rows in units of SIDEBAR_REALIZED_ROWS_PER_FRAME, one per frame",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a118),
+    },
+    Axiom {
+        id: AxiomId::new(119),
+        name: "a119_a_tree_expander_disclosure_routes_can_be_owned",
+        statement: "GtkTreeExpander's toggle GestureClick lives on its re-created expander icon, \
+                    not on the expander, and a capture-phase gesture on the expander claiming \
+                    the release inside the icon denies it without changing the press; its class \
+                    key bindings fire only for keys reaching the expander, which the focus the \
+                    list gives a row whose child is an overlay does not but Tab from that row \
+                    (onto the expander) does, and an ancestor's capture-phase Stop prevents \
+                    them; its three \
+                    parameterless class actions resolve before an inserted listitem group and \
+                    collapse at once; it sets the expander's accessible expanded state at bind \
+                    and on every other row notify, only the icon's on notify::expanded \
+                    alone, and both on set_expanded (whose children notify follows \
+                    expanded)",
+        dependent_designs: &[
+            "slice-large-directory-collapse D5/D6: the sidebar owns the click by a release \
+             claim and the expander's class key bindings by a capture-phase key controller \
+             on the list view (collapse keys, and expand keys on a collapsing row), keeps the expander's accessible state in step with \
+             its collapse, and leaves the class actions (AT-SPI DoAction) as GTK's direct \
+             collapse",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a119),
+    },
+    Axiom {
+        id: AxiomId::new(120),
+        name: "a120_a_class_rule_draws_a_checked_expander_collapsed",
+        statement: "An application CSS rule on a class of GtkTreeExpander draws the arrow of its \
+                    expander:checked icon exactly as the collapsed arrow, in LTR and RTL, under \
+                    the shipped style, while the row stays expanded and the icon checked",
+        dependent_designs: &[
+            "slice-large-directory-collapse D6: a sliced collapse shows its intent in the \
+             input's first frame through the lushtext-collapsing class",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a120),
+    },
+    Axiom {
         id: AxiomId::new(122),
         name: "a122_an_extend_selection_handler_returning_false_lets_gtk_select",
         statement: "GtkTextView's extend-selection (emitted on a double or triple click) returns \
@@ -1928,6 +2003,83 @@ const CATALOGUE: &[Axiom] = &[
         slow: false,
         version_bound: None,
         probe: Some(probes::probe_a122),
+    },
+    Axiom {
+        id: AxiomId::new(123),
+        name: "a123_hiding_tree_rows_by_opacity_is_paint_only",
+        statement: "On a presented GtkListView over a GtkTreeListModel, hiding one subtree's \
+                    realized row widgets by opacity 0, can-target false and accessible hidden \
+                    runs no row measure, setup or teardown, keeps the band and the list's \
+                    allocation, draws no pixel of a hidden row (selected, focused or under the \
+                    pointer), picks no widget inside one, and a real hover, press or double \
+                    press over one prelights, selects and activates nothing; GTK writes a \
+                    created row's hidden state after its bind (gtk_widget_map) and again on \
+                    unmap and map, never while it stays mapped, and keeps the opacity and \
+                    can-target; clearing the rows is paint-only too",
+        dependent_designs: &[
+            "slice-large-directory-collapse D22: the collapsing subtree's rows are hidden at \
+             intent on their row widgets, re-applied at bind and after the step that created \
+             or mapped them, and cleared by every end of the collapse",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a123),
+    },
+    Axiom {
+        id: AxiomId::new(124),
+        name: "a124_a_bound_row_removal_from_an_idle_leaves_the_frame_only_layout",
+        statement: "On a mapped, presented GtkListView over a GtkTreeListModel, a removal of \
+                    bound rows run from a one-shot G_PRIORITY_HIGH_IDLE source outside any \
+                    frame clock dispatch creates and binds the entering rows' widgets inside \
+                    the splice, leaves each of them and its list row widget mapped (so with \
+                    accessible hidden false) when the splice returns, and the next frame runs \
+                    no factory setup or bind for them",
+        dependent_designs: &[
+            "slice-large-directory-collapse D25: each bound collapse unit runs in a \
+             step-source dispatch of its own between frames, so the frame after it lays out \
+             that unit's rows and runs no step; D22's hidden rows are re-applied at the end \
+             of the step that created them",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a124),
+    },
+    Axiom {
+        id: AxiomId::new(125),
+        name: "a125_a_high_idle_source_runs_before_the_next_frame",
+        statement: "A one-shot G_PRIORITY_HIGH_IDLE source armed in a frame clock's \
+                    after-paint, in a dispatch that runs while the next frame is already due, or \
+                    in its own dispatch runs before the next frame's before-paint; read inside \
+                    it, gdk_frame_clock_get_frame_counter equals the counter of the frame just \
+                    painted, and it advances only when the next frame starts",
+        dependent_designs: &[
+            "slice-large-directory-collapse D25: the step source is armed by the input, by \
+             each frame's after-paint, by the between-frames idle and by its own dispatch, and \
+             the one-unit-per-frame-interval token reads the frame counter there, outside a \
+             frame dispatch",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a125),
+    },
+    Axiom {
+        id: AxiomId::new(126),
+        name: "a126_a_held_key_press_put_back_is_delivered_again",
+        statement: "A key press a capture-phase key controller stopped, put back on the \
+                    display's event queue later with gdk_display_put_event, is delivered again \
+                    through GTK's normal route as the same GdkEvent: capture controllers see it \
+                    again and the focused list's class key binding acts on it from the focus of \
+                    that time; presses put back in one dispatch arrive in the order put, before a \
+                    G_PRIORITY_LOW idle added in that dispatch",
+        dependent_designs: &[
+            "slice-large-directory-collapse D22: the sidebar holds the navigation keys pressed \
+             while a collapse is pending, so the focus never lands on a hidden row, and puts \
+             them back once the collapse has ended and a frame has laid out the final tree, \
+             so GTK applies them as it applies the keys queued behind main's frozen collapse",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a126),
     },
     Axiom {
         id: AxiomId::new(127),

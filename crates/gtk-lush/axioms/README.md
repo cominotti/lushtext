@@ -66,7 +66,8 @@ With `GTK_LUSH_AXIOMS_SANDBOX=1` (set only by `make gtk-axioms-runtimes`
 inside a GNOME SDK sandbox, which has no session bus), a sample whose probe
 drives the compositor's RemoteDesktop (`REMOTE_INPUT_AXIOMS`: A59–A61, A64,
 A97) prints `skipped (needs RemoteDesktop): <id>` and exits `0` before
-connecting.
+connecting. A119 instead checks its input-free half there and skips only its
+input half, saying so.
 
 From your own gtk-rs code, with GTK and Libadwaita initialized:
 
@@ -126,7 +127,10 @@ end-of-store batch splice, a tail row expansion, a list's first reveal, and a
 row's collapse)
 followed with LushText's budgeted workspace lists
 (`bound-lists-by-budget-not-count`); each sample measures its two sizes on a
-button. Every sample prints its usage on `--help`/`-h` and
+button. A118–A120 (what removing bound and unbound rows of a mapped tree list
+costs in row widgets, the tree expander's disclosure routes and how to own
+them, and a class rule drawing a checked arrow collapsed) followed with
+LushText's sliced sidebar collapse (`slice-large-directory-collapse`). A114 (a tree list row object nothing references dies, and the next fetch hands out a new one without its handlers) followed with the same change's expansion-intent fix. A123 (hiding a tree list's row widgets by opacity, `can-target` and `hidden` is paint-only, and a created row is hidden after its insertion) and A124–A125 (a bound-row removal run from a high-priority idle between frames leaves the next frame only layout, and such an idle runs before the next frame and reads the counter of the frame just painted) followed with the same change's step source (D25). A126 (a key press a capture controller held, put back on the display's queue, is delivered again through GTK's route in order) followed with the same change's held navigation keys (D22). Every sample prints its usage on `--help`/`-h` and
 refuses an unknown argument before GTK starts; a sample with its own modes
 declares them in a `SampleFlags` and calls `support::guard(&FLAGS)` first in
 `main` (`make check-gtk-axioms` checks it). Never run a sample without

@@ -46,6 +46,7 @@ ACCESSIBILITY_CASES=(
     workspace-tree-dense-constrained
     workspace-tree-deep-expanded
     workspace-tree-limited
+    workspace-tree-large-collapse
     workspace-tree-file-peek
     workspace-tree-folder-context-menu
     workspace-header-context-menu
@@ -362,6 +363,7 @@ MATRIX_ROWS_BY_CASE = {
     "workspace-tree-dense-constrained": ["A11Y-WORKSPACE-DENSE-DEEP"],
     "workspace-tree-deep-expanded": ["A11Y-WORKSPACE-DENSE-DEEP"],
     "workspace-tree-limited": ["A11Y-WORKSPACE-DENSE-DEEP", "A11Y-WORKSPACE-BUSY-ERROR"],
+    "workspace-tree-large-collapse": ["A11Y-WORKSPACE-LARGE-COLLAPSE"],
     "workspace-tree-file-peek": ["A11Y-WORKSPACE-PEEK"],
     "workspace-tree-folder-context-menu": ["A11Y-WORKSPACE-CONTEXT", "A11Y-WORKSPACE-DRAG-DROP", "A11Y-CONTEXT-MENUS-GENERAL"],
     "workspace-header-context-menu": ["A11Y-WORKSPACE-CONTEXT", "A11Y-CONTEXT-MENUS-GENERAL"],
@@ -713,6 +715,31 @@ record_focus_anchor() {
     smoke_fail "accessibility focus target '${expected_name}' missing from '${capture}'. Artifacts: $ARTIFACT_DIR"
 }
 
+assert_no_anchor_prefix() {
+    local capture="$1"
+    local surface="$2"
+    local role="$3"
+    local name_prefix="$4"
+    local tree="$ARTIFACT_DIR/assertions/${capture}-atspi-tree.txt"
+    local report="$ARTIFACT_DIR/assertions/accessibility-anchors.txt"
+    local pattern="role='$role' name='$name_prefix"
+
+    if ! grep -F "$pattern" "$tree" >/dev/null; then
+        printf 'PASS surface=%s role=%s absent_name_prefix=%s tree=%s\n' "$surface" "$role" "$name_prefix" "$tree" >>"$report"
+        record_accessibility_assertion "$capture" "absent-prefix" "$surface" "$role" "$name_prefix" "$tree"
+        return
+    fi
+
+    {
+        echo "Unexpected accessibility anchor prefix:"
+        echo "surface=$surface"
+        echo "role=$role"
+        echo "name_prefix=$name_prefix"
+        echo "tree=$tree"
+    } >&2
+    smoke_fail "accessibility anchor prefix '${name_prefix}' still present in '${capture}'. Artifacts: $ARTIFACT_DIR"
+}
+
 assert_text_interface() {
     local capture="$1"
     local surface="$2"
@@ -1029,6 +1056,41 @@ seed_limited_directory_workspace_for_capture() {
         "folders": [
           {
             "id": "limited-root",
+            "path": "$root"
+          }
+        ]
+      }
+    ]
+  }
+}
+JSON
+}
+
+seed_large_collapse_workspace_for_capture() {
+    local capture="$1"
+    local data_dir="$ARTIFACT_DIR/captures/$capture/data/lushtext"
+    local root="$ARTIFACT_DIR/fixtures-large-collapse/collapse-root"
+    mkdir -p "$data_dir" "$root/collapse-directory"
+    local index
+    for index in $(seq -w 1 4096); do
+        : >"$root/collapse-directory/collapse-entry-$index.txt"
+    done
+    : >"$root/collapse-sibling.txt"
+    cat >"$data_dir/workspaces.json" <<JSON
+{
+  "kind": "dev.cominotti.lushtext.workspace-state",
+  "version": 1,
+  "data": {
+    "current_scope": {
+      "kind": "all"
+    },
+    "workspaces": [
+      {
+        "id": "large-collapse-smoke",
+        "name": "Large Collapse Smoke",
+        "folders": [
+          {
+            "id": "collapse-root",
             "path": "$root"
           }
         ]
@@ -1817,6 +1879,25 @@ run_accessibility_capture "workspace-tree-limited" \
 end_list_budget_capture
 # The budget row states shown and total entries and how to reach the rest.
 assert_anchor_prefix "workspace-tree-limited" "workspace tree" "list item" "Showing "
+fi
+
+if case_selected "workspace-tree-large-collapse"; then
+seed_large_collapse_workspace_for_capture "workspace-tree-large-collapse"
+collapse_dir="$ARTIFACT_DIR/fixtures-large-collapse/collapse-root/collapse-directory"
+# A 4,096-entry directory collapsed with the AT-SPI bus and a listener up
+# (slice-large-directory-collapse D22): the sliced collapse ends, and no row
+# of the subtree is left in the presented tree, hidden or not.
+run_accessibility_capture "workspace-tree-large-collapse" \
+    --step wait-window-action:reveal-workspace-path \
+    --step window-string-action:reveal-workspace-path="$collapse_dir/collapse-entry-0001.txt" \
+    --step wait-predicate:workspace-refresh-complete \
+    --step wait-atspi-text:"collapse-entry-0001.txt" \
+    --step atspi-click-button:"^collapse-directory$" \
+    --step wait-predicate:workspace-refresh-complete
+assert_anchor "workspace-tree-large-collapse" "workspace sidebar" "list" "Workspace file tree"
+assert_anchor "workspace-tree-large-collapse" "workspace sidebar" "list item" "Folder collapse-directory"
+assert_anchor "workspace-tree-large-collapse" "workspace sidebar" "list item" "File collapse-sibling.txt"
+assert_no_anchor_prefix "workspace-tree-large-collapse" "workspace sidebar" "list item" "File collapse-entry-"
 fi
 
 if case_selected "workspace-tree-file-peek"; then

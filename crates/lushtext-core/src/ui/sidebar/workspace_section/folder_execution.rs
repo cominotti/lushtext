@@ -387,16 +387,15 @@ impl LushtextWorkspaceSection {
 
     /// Collapses the top-level folders of this workspace section.
     pub fn collapse_folders(&self) {
-        for row in self.expanded_folder_rows() {
-            row.set_expanded(false);
-        }
+        let rows = self.expanded_folder_rows();
+        self.collapse_directories(&rows, super::collapse_execution::CollapseOrigin::Header);
         self.sync_file_row_states();
     }
 
     /// Expands the top-level folders of this workspace section if they are not confirmed empty.
     pub fn expand_folders(&self) {
         for row in self.collapsed_non_empty_folder_rows() {
-            row.set_expanded(true);
+            self.expand_directory(&row);
         }
         self.sync_file_row_states();
     }
@@ -404,9 +403,13 @@ impl LushtextWorkspaceSection {
     /// Toggle the expansion state of the top-level folders as one group.
     pub fn toggle_folders(&self) {
         let rows = self.toggleable_folder_rows();
-        let any_collapsed = rows.iter().any(|row| !row.is_expanded());
-        for row in rows {
-            row.set_expanded(any_collapsed);
+        let any_collapsed = rows.iter().any(|row| !self.row_shows_expanded(row));
+        if any_collapsed {
+            for row in &rows {
+                self.expand_directory(row);
+            }
+        } else {
+            self.collapse_directories(&rows, super::collapse_execution::CollapseOrigin::Header);
         }
         self.sync_file_row_states();
     }
@@ -418,6 +421,36 @@ impl LushtextWorkspaceSection {
     /// through the list's own `scroll_to`, never by moving the outer scroller.
     pub(in crate::ui::sidebar) fn select_and_scroll_to(&self, target_path: &Path) {
         if let Some((position, _)) = self.flattened_row_for_path(target_path) {
+            self.select_and_scroll_to_position(position);
+        }
+    }
+
+    /// Restore `target_path`'s selection after a background refresh, moving
+    /// the keyboard focus with it only when a row or the list itself held
+    /// the focus. A refresh must not take the focus from a widget inside a
+    /// row, such as an inline-rename entry: that would end the rename the
+    /// user is typing into (`slice-large-directory-collapse` task 9.12).
+    pub(in crate::ui::sidebar) fn restore_selection(&self, target_path: &Path) {
+        let Some((position, _)) = self.flattened_row_for_path(target_path) else {
+            return;
+        };
+        let list = &*self.imp().file_tree_view;
+        let list_widget: &gtk4::Widget = list.upcast_ref();
+        let focus_inside_a_row = list
+            .root()
+            .and_then(|root| root.focus())
+            .is_some_and(|focus| {
+                &focus != list_widget
+                    && focus.parent().as_ref() != Some(list_widget)
+                    && focus.is_ancestor(list_widget)
+            });
+        if focus_inside_a_row {
+            if let Some(selection) = list.model().and_downcast::<gtk4::SingleSelection>() {
+                selection.set_selected(position);
+                list.scroll_to(position, gtk4::ListScrollFlags::NONE, None);
+            }
+            self.imp().pending_selection.borrow_mut().take();
+        } else {
             self.select_and_scroll_to_position(position);
         }
     }
@@ -589,14 +622,14 @@ impl LushtextWorkspaceSection {
     fn expanded_folder_rows(&self) -> Vec<gtk4::TreeListRow> {
         self.folder_rows()
             .into_iter()
-            .filter(gtk4::TreeListRow::is_expanded)
+            .filter(|row| self.row_shows_expanded(row))
             .collect()
     }
 
     fn collapsed_non_empty_folder_rows(&self) -> Vec<gtk4::TreeListRow> {
         self.folder_rows()
             .into_iter()
-            .filter(|row| !row.is_expanded())
+            .filter(|row| !self.row_shows_expanded(row))
             .filter(|row| {
                 row.item()
                     .and_downcast::<FileTreeItem>()
@@ -633,7 +666,7 @@ impl LushtextWorkspaceSection {
                         .and_then(|item| item.path())
                         .is_some_and(|path| section.imp().expanded_paths.borrow().contains(&path));
                 if should_expand {
-                    row.set_expanded(true);
+                    section.expand_directory(&row);
                 }
             }
 
