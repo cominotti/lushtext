@@ -29,7 +29,9 @@ If any check loses sight inside the macro, the sweep stops and the audit learns 
 
 ### D3. The ratchet
 
-- **The audit.** A `scripts/check-weak-captures.py` (or a mode of `check-signal-connections.py`) counts `.downgrade()` calls in `ui/` (comments and strings stripped) and compares the count with a ceiling recorded in the script. A `.downgrade()` that stores a `WeakRef` in a field rather than capturing it counts too; those are D2's listed exceptions.
+- **The audit.** A `scripts/check-weak-captures.py` (or a mode of `check-signal-connections.py`) counts `.upgrade()` calls whose receiver is a bare local name (`<ident>.upgrade()`, not preceded by `.`), in `ui/` with comments and strings stripped, and compares the count with a ceiling recorded in the script.
+  - On `origin/main` that form is 621 sites; upgrades of fields (`self.imp().x.upgrade()` and similar) are 17 and are not counted, so a new `WeakRef` field never trips the audit.
+  - D2's listed exceptions are the bare-local upgrades that legitimately stay manual.
 - **What fails.** It fails above the ceiling and when the count is below it, so the ceiling is lowered in the same change.
 - **`--self-test`** plants an extra site and a stale ceiling.
 

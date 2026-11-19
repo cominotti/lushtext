@@ -14,6 +14,10 @@ The spike SHALL measure three ways of building one realized list row with the sa
 - **THEN** each arm builds a row with the same widget tree depth, text children and badge
 - **AND** the observation records each arm's medians for 32 created rows, 205 created rows and the retext frame
 
+#### Scenario: Rebinding compares binding owners
+- **WHEN** a subclass arm rebinds a 205-row band to new items
+- **THEN** the observation records the rebind cost with bindings rebuilt per bind and with one binding group retargeted per row
+
 #### Scenario: Measurements are timing verdicts
 - **WHEN** the spike's figures are taken for the decision
 - **THEN** they come from `scripts/measure.sh` runs on the reference CPU set under the load gate, with the protocol and pass bar written before the run

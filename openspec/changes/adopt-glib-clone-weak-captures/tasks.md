@@ -16,7 +16,7 @@ Start: only after every edit, spec and queued change of the programme coordinato
 
 ## 2. Ratchet and rule
 
-- [ ] 2.1 Add the audit (design D3) at the post-probe count, with its self-test, and wire it into `check-policy` (and `check-policy-ci` if `close-audited-gate-gaps` has merged). Change `.agents/rules/rust.md` ("Modern Rust Idioms") to prescribe `clone!`. Verify with `make check-policy` and `make check-agent-docs`. Commit and push.
+- [ ] 2.1 Add the audit (design D3) at the post-probe count, with its self-test, and wire it into `check-policy` (and `check-policy-ci` if `close-audited-gate-gaps` has merged). Change `.agents/rules/rust.md` ("Modern Rust Idioms") to prescribe `clone!`, and replace the example at `rust.md:459-464` with one that clones an `Rc<dyn Fn>` out of its cell before invoking it. Verify with `make check-policy` and `make check-agent-docs`. Commit and push.
 
 ## 3. Sweep
 

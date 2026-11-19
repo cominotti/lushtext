@@ -20,6 +20,21 @@ LushText production code SHALL NOT read or attach Rust values on GObjects throug
 - **THEN** the new row receives the expansion watch exactly once
 - **AND** a collapsed row is not retained by the marker
 
+#### Scenario: Two live rows for one item each get one watch
+- **WHEN** two `GtkTreeListRow`s for the same item are alive at once and both are seen by the watch
+- **THEN** each has exactly one expansion handler
+
+#### Scenario: A drag collapse cannot leave a suppression armed
+- **WHEN** a reorder drag collapses a folder row that has no expansion handler
+- **THEN** no suppression remains after the collapse returns
+- **AND** the row's next user expansion restarts its watch
+- **AND** child rows torn down by the collapse are not suppressed
+
+#### Scenario: A row's bindings may be a binding group
+- **WHEN** a row widget owns its item bindings through one binding group retargeted at bind and unbind
+- **THEN** a rebound row shows only the new item's values
+- **AND** the retained-site audit lists the row as a GTK-native binding owner
+
 #### Scenario: Untyped object data fails the audit
 - **WHEN** code under `crates/lushtext-core/src` calls `set_data`, `steal_data`, `data`, `set_qdata`, `steal_qdata` or `qdata`
 - **THEN** the policy audit fails and names the file and line

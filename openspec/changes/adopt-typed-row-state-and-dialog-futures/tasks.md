@@ -29,11 +29,13 @@ Start: only after every edit, spec and queued change of the programme coordinato
 
 ## 3. Sidebar row and markers
 
-- [ ] 3.1 Add widget tests for the two sidebar scenarios in the spec:
+- [ ] 3.1 Add widget tests for the sidebar scenarios in the spec:
   - recycle a directory row and assert the old expanded handler no longer fires;
-  - recreate a `TreeListRow` for the same item and assert one watch.
+  - recreate a `TreeListRow` for the same item and assert one watch;
+  - keep two rows alive for one item and assert one handler each;
+  - collapse, by a reorder drag, a folder row that has no expansion handler, then expand it as a user would and assert its watch restarts.
   
-  Verify on `main` (the second may already pass; say so).
+  Verify on `main`. The drag-collapse test is expected to fail there; say which others already pass.
 - [ ] 3.2 Build `WorkspaceTreeRow` (design D2), move the accessibility hook into it, and replace the two markers with weak references (design D3). Re-key `row_factory.rs` in both visual-policy implementations with parity assertions. Verify with the sidebar shards, `workspace_tree_virtualization`, `make check-visual-proof-policy`'s self-tests and `make visual-geometry-smoke`, including the `workspace-tree-reveal` scenario.
 - [ ] 3.3 Run the gate order and the three smokes. Commit through `heavy.sh`, signed, and push.
 

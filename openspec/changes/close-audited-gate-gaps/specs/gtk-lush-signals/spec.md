@@ -15,9 +15,9 @@ Every LushText subscription to the shared application settings instance from a w
 - **AND** neither keeps handler ids it must remember to disconnect
 
 #### Scenario: Discarded handler id fails the settings gate
-- **WHEN** code outside the owner helpers calls a two-argument settings `connect_changed(Some(…))` whose statement neither binds the id with `let` nor passes or returns it
+- **WHEN** code outside the owner helpers calls a two-argument settings `connect_changed(Some(…))` and discards the id, through `let _ =`, `let _unused =` or a bare statement
 - **THEN** `make check-settings-writes` fails and names the file and line
-- **AND** a call split over lines after `let id =`, or one on a widget such as an entry or a buffer, does not fail
+- **AND** a call bound to a used name (even when split over lines after `let id =`), returned as a block's tail expression, or made on a widget such as an entry or a buffer does not fail
 
 #### Scenario: Process-lifetime subscription is allowlisted
 - **WHEN** `ui/theme.rs` installs its display-wide font and transparency subscriptions once at startup

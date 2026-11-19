@@ -16,7 +16,8 @@ See `proposal.md`. The probe style follows `gtk_lush_axioms::probe_a108` and `pr
 - **Cases per arm:**
   - create 32 rows: `splice` into an empty model, then the frame;
   - create 205 rows: the same, to a full band;
-  - retext all 205 rows bound to the band.
+  - retext all 205 rows bound to the band;
+  - rebind all 205 rows to new items, once with a `BindingBag` rebuilt per bind and once with a `glib::BindingGroup` retargeted by `set_source` (subclass arms only).
 - **Rounds.** Seven per case, after one warm-up; arms interleaved (a, b, c, a, b, c …) to share drift. Run through `scripts/measure.sh` with `--lock-timeout 300` after the load gate (`parallel-agent-work.md`, "Measurements").
 - **Reported values:** the dispatch time of the creating `splice` and the next frame's layout and total. Units are µs, with medians and the min-max spread.
 

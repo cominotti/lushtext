@@ -14,7 +14,7 @@ The six changes it names live under `openspec/changes/`. None starts before the 
 | --- | --- |
 | 22 of 32 `check-policy` audits outside CI | 33 prerequisites. CI's `Lint` runs 8 as `make` steps and 2 more through their scripts (`install-cargo-public-api.sh --self-test`, `widget-shards.py github-outputs`); 23 run only in the local hook. |
 | 659 manual `.downgrade()` sites in 136 files | 581 in 134 files of `ui/`. 705 `.upgrade()` calls: 301 plain `if let`, 176 `let … else`, 27 in `if let` chains, 96 split over lines. |
-| 43 `file:line:column` exclusions in `.cargo/mutants.toml` | 12. A moved anchor stops matching and its mutant reappears as a survivor, so the failure is loud. |
+| 43 `file:line:column` exclusions in `.cargo/mutants.toml` | Nearly right: 41 entries are anchored to a line number, 12 of them also to a column. Every one also names the mutant it excludes (`file:LINE:.*<mutant>`), so a shifted anchor stops matching and its mutant reappears as a survivor: the failure is loud. Keeping 41 line numbers current is still real maintenance. |
 | `model/` has zero `pub(crate)` | 10. 33 `model` modules are named from `crates/lushtext`, benches or fuzz, so most of the `pub` surface is used across crates. |
 | 174 `Result<_, String>` in `cargo-gtk-proof` | 172: `live.rs` 52, `runner.rs` 36, `automation.rs` 16, `capture.rs` 16, `policy.rs` 14, `process.rs` 12, others 26. |
 | 23 `Arc<PathBuf>` in the palette index | 26, about half in the test-only oracle `index/reference.rs`. |
@@ -26,6 +26,8 @@ The six changes it names live under `openspec/changes/`. None starts before the 
 
 | Item | Change |
 | --- | --- |
+| `tests/widget/window.rs` is 21,939 lines; `build.rs` copies every widget test file into `OUT_DIR` and rewrites it, so editors, backtraces and `cargo fmt` see generated copies | `improve-widget-test-ergonomics` |
+| No contributor quickstart | `improve-widget-test-ergonomics` |
 | CI format check misses `crates/lushtext/tests/widget/*.rs` (`ci.yml:67` runs `cargo fmt --all`) | `close-audited-gate-gaps` |
 | 23 policy audits only in the hook | `close-audited-gate-gaps` (`check-policy-ci` plus covered-elsewhere and local-only lists, checked by a script) |
 | No `workspace-hack` check | `close-audited-gate-gaps` (see "workspace-hack" below) |
@@ -80,9 +82,9 @@ The configuration "nine excluded plus the `cargo-gtk-proof` dependency" was not 
   - Template signal handlers also connect by runtime name, outside `ui::signal_connect` and `make check-signal-connections`.
 - **A pre-commit hook of under ten seconds, with CI as the authority.** It contradicts merging on local evidence (maintainer, 2026-11-14), and the smoke audit found every real visual failure in local implementation runs. `smoke-gate-coherence` owns the smoke demand.
 - **Moving `run_self_tests()` and `run_embedded_png_corpus()` behind `#[cfg(test)]`.** They back `cargo gtk-proof policy --self-test` and `corpus`, and the `cargo-gtk-proof` spec requires the first ("Proof policy target has Rust parity evidence").
-- **Removing the `file:line:column` anchors in `.cargo/mutants.toml`.** There are 12. Name-keyed re-keying is already the rule when a file changes (`testing.md`, "Path-keyed gates").
+- **Removing the line anchors in `.cargo/mutants.toml`.** There are 41 (12 with a column), and each names its mutant, so a shift fails loudly. Name-keyed re-keying is already the rule when a file changes (`testing.md`, "Path-keyed gates"); a wholesale move to name keys would widen several exclusions.
 - **A thread pool in `gtk-lush-tasks`.** Outstanding work is already capped at eight, and no measurement shows thread creation costing anything next to the I/O.
-- **`Arc<Path>` in the palette index.** It is a 16-byte fat pointer against 8, about half the sites are in the test-only oracle, and sizes are charged in the index budgets. No gain is measured.
+- **`Arc<Path>` in the palette index.** No gain is measured: production holds one `FolderRecord` per workspace folder, and the per-file `OwnedIndexedFile` exists only under `test-utils`.
 - **Narrowing `model/` to `pub(crate)` wholesale.** Most of the surface is named across crates.
 - **A flat PNG buffer in `cargo-gtk-proof`.** No measurement shows a cost.
 - **Rewording the family crates' internal references (21 lines).** It edits Kani inputs read by scheduled shards, for no measured gain.
@@ -95,18 +97,22 @@ The configuration "nine excluded plus the `cargo-gtk-proof` dependency" was not 
 - **Continuous Miri.** The one pure-Rust `unsafe` kernel (`services/editor_io/text_scans/health_avx2.rs`) was run under Miri: 410 s, no UB reported (`openspec/changes/archive/2026-11-06-avx2-health-scan-kernel/tasks.md:43`). Miri cannot execute GTK FFI. It is run by hand when that kernel or new pure `unsafe` changes.
 - **Archiving `formal/evaluation/`.** The models stay as disposable evidence by maintainer decision D7 (option A), and `formal/evaluation/verus/kani-step.patch` is the first step on any revisit trigger (`docs/next/formal-verification.md`).
 
+## A conscious trade-off
+
+These changes close real CI gaps and defects and add three gate rules and one ratchet, while most of the audit's human-ergonomics items stay open. That order is deliberate: the project merges on local evidence with autonomous agents, so correctness and CI alignment come first.
+
+One ergonomics option is distinct from the declined "CI as the authority" hook: **a light intermediate commit, with every local proof still mandatory before the merge** (a pre-push or merge-time check). The tree-hash stamp planned for `smoke-gate-coherence` points the same way. It is open, and has been forwarded to the programme coordinator, who owns that change.
+
 ## Open, with no change yet
 
 Each needs its own decision or change:
 - the `docs/` audit of the other 49 `.claude/handoffs/` references;
-- splitting `crates/lushtext/tests/widget/window.rs` (21,939 lines) and replacing `crates/lushtext/build.rs`'s textual rewrite with a declarative registry;
 - moving process archaeology out of doc comments while keeping every `Kind:` line and recorded exception reason `make check-thresholds` requires;
 - the scope of `docs/thresholds.md` (kept as it is for now);
 - SonarQube Cloud (kept until there is a count of its actionable findings);
-- a one-page contributor quickstart;
 - splitting the large `constructed()` methods into named setup functions;
 - consolidating `impl` blocks spread over many files (bounded by the role-home convention);
 - grouping evidence-only state fields into a telemetry sub-struct;
 - `OnceCell` for set-once fields;
-- the audit's defects 3 and 4: the `expect` in `model/workspace.rs` `generate_id` (practically unreachable), and the borrow held while invoking the search progress callback (a latent reentrancy risk; `rust.md` prescribes that pattern today);
+- the audit's defects 3 and 4: the `expect` in `model/workspace.rs` `generate_id` (practically unreachable), and the borrow held while invoking the search progress callback (`search_panel/execution.rs`). The latter is a latent reentrancy risk; nobody has yet checked whether any callback re-registers its own slot. `rust.md:459-464` teaches the pattern through its `if let` example, which `adopt-glib-clone-weak-captures` corrects;
 - `SupersedingTimer::is_armed()`, which ships with the change that migrates the draft evidence flags in `ui/window/imp.rs`, its first consumer.

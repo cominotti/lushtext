@@ -38,6 +38,7 @@ See `proposal.md`, "Why", for the measured gaps. Three facts shape the approach:
   | Decided by the first run (4) | `check-kill-point-gating`, `check-flatpak-source-tree`, `check-temp-scope`, `check-rustc-frontend-threads` |
   | Local-only (5) | `check-agent-helpers` and `check-build-cache-helpers` (host systemd user slices and build-cache root); `test-flatpak-install-origin` (prints `SKIP:` without `flatpak`, so it proves nothing on the runner); `check-accessibility-policy` and `check-visual-proof-policy` (they verify local smoke summaries against the dirty tree; on a clean checkout they pass without proving anything) |
 
+- **Baseline for the job's budget.** In the last three green `main` runs (44479238042, 44416653444, 44413424957) the `Lint` job took 1 min 43 s, 1 min 57 s and 2 min 03 s, against `timeout-minutes: 25`. Of `check-policy`'s recipes only `cargo run -p cargo-gtk-proof -- policy` and the terminology test call `cargo`; the rest are scripts. So the aggregate joins `Lint`. A separate parallel job remains the fallback, decided by the two runs task 1.6 measures.
 - **First run.** A prerequisite that fails on the runner for an environmental reason moves to the local-only table with that reason. One that fails on a real finding is fixed (`preexisting-blockers.md`).
 - **Rejected:** six more `run:` steps in `ci.yml` (the audit's proposal). Nothing would keep the two lists in step, and the next new audit would repeat the gap.
 
@@ -75,9 +76,9 @@ The investigation of 2026-11-19, recorded with its figures in `docs/next/refacto
 - **Callers.** The sidebar drops its `visibility_signals` tracking for this pair, and the window passes `&*obj`.
 - **The gate.** `check-settings-writes.py` gains one rule:
   - **Scope.** It matches only the two-argument settings form `.connect_changed(\s*Some(`, outside `ui/settings_writes.rs` and `ui/workspace_visibility.rs`, the owner helpers.
-  - **What fails.** It walks back to the start of the statement, across lines, and fails unless the statement binds the id (`let <ident> =`, `let <pattern> =`), iterates it (`for … in`), or passes or returns it.
+  - **What fails.** It walks back to the start of the statement, across lines. It fails when the id is discarded: `let _ =`, `let _<name> =` (an underscore binding drops the id at the end of its scope, and dropping a `SignalHandlerId` does not disconnect), or a bare statement ending in `;`. It passes when the id is bound to a used name (`let id =`), iterated (`for … in`), passed as an argument, or returned, including as a block's tail expression with no `;` (the form `workspace_visibility.rs` uses).
   - **Allowlist.** It accepts `ui/theme.rs` with an expected count of 3, so a fourth discarded site there fails.
-  - **Self-test cases:** `let _ =`, a bare statement, `let id =` on the previous line, `for id in …`, `buffer.connect_changed(move |_|` (single argument, not matched), the owner-form call, and the theme count.
+  - **Self-test cases:** `let _ =`, `let _unused =`, a bare statement, `let id =` on the previous line, `for id in …`, a block's tail expression, `buffer.connect_changed(move |_|` (single argument, not matched), the owner-form call, and the theme count.
 - **Rejected:**
   - Keeping the returned ids and asking the window to track them. Correct, but the next caller can discard them again.
   - A rule matching every `connect_changed(`. It would flag about 25 legitimate widget calls.

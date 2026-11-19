@@ -27,6 +27,7 @@ See `proposal.md`, "Why". Constraints:
 
 ### D2. The row form comes from the spike
 
+- **Bindings in a row widget.** A row that rebinds the same property bindings to each item may own them through one `glib::BindingGroup` (available under the workspace's `glib` feature `v2_88`), built once at construction and retargeted with `set_source` at bind and unbind, instead of a `BindingBag` rebuilt per bind. The spike's rebind case decides which is used; the retained-site audit lists each binding-group row.
 - **Template or Rust subclass** (the spike chose one). Each factory gets a row widget (`SearchResultRow`, `PaletteRow`, `OpenRecentRow`, `SkippedFileRow`, `NotesBrowserRow`, `WorkspaceTreeRow`).
   - **Shape.** Typed children and `bind(&item)` / `unbind()` methods. The factory's `setup` creates the row, `bind` and `unbind` call it.
   - **Bags.** Row-owned `BindingBag` and `SignalBag` live in the row's `imp` and are cleared in `unbind`.
@@ -40,17 +41,22 @@ See `proposal.md`, "Why". Constraints:
   Children are still found by sibling order, recorded as a known limit.
 - **Sidebar row.** `WorkspaceTreeRow` keeps the overlay, the expander's gesture handling (`ui.md`, "Disable TreeExpander's gesture for file rows") and the reorder shield exactly. Its code moves out of `row_factory.rs`, so that path key is re-keyed in both visual-policy implementations, with a parity assertion in each self-test.
 
-### D3. `GtkTreeListRow` markers as weak references
+### D3. `GtkTreeListRow` markers in typed, identity-checked state
 
-- **Expansion watch.** `WATCH_EXPANDED_HOOK_KEY` marks a `TreeListRow` that already has its `notify::expanded` handler. The marker moves onto `FileTreeItem` as `watched_row: WeakRef<TreeListRow>`. The hook is installed when the item's current row is not that row, by `upgrade()` and pointer equality.
-  - A recreated row for the same item gets its handler.
-  - A collapsed row is not retained.
-  - Pointer reuse cannot alias, because a dead `WeakRef` upgrades to `None`.
-- **Reorder marker.** `SUPPRESS_EXPANDED_WATCH_KEY` is a one-shot marker consumed by the next `notify::expanded`. It becomes `suppress_next_expanded: RefCell<Option<WeakRef<TreeListRow>>>` on the section, taken by the handler when it matches.
-- **Rejected:**
-  - A strong `HashSet` of rows: it retains collapsed rows.
-  - An address-keyed set: it is fooled by pointer reuse.
-  - A plain `bool` on the item: it is wrong when GTK recreates the row.
+- **Expansion watch.** `WATCH_EXPANDED_HOOK_KEY` marks a `TreeListRow` that already has its `notify::expanded` handler. It is installed for rows the watch sees (`watch.rs:117`, `:154`).
+  - **Replacement.** The section keeps `watched_rows: RefCell<HashMap<usize, WeakRef<TreeListRow>>>`, keyed by the row's object address. An entry counts only while its `WeakRef` still upgrades to the very row being asked about (pointer equality).
+  - **What that covers:**
+    - a recreated row for the same item gets its handler;
+    - two rows alive at once for one item each get exactly one;
+    - a reused address with a dead `WeakRef` is treated as new, and its stale entry is replaced.
+  - **Pruning.** Dead entries are pruned when they are met, and once per targeted refresh pass, so the map is bounded by the live rows.
+  - **Rejected:**
+    - a `WeakRef` field on `FileTreeItem`: it answers "the last row watched for this item", not "this row has a handler", and installs twice when two rows are alive;
+    - a strong `HashSet`: it retains collapsed rows;
+    - a bare address set: it is fooled by pointer reuse.
+- **Reorder marker.** `SUPPRESS_EXPANDED_WATCH_KEY` suppresses one watch restart when a drag collapses a folder. Today the caller marks the row and calls `set_expanded(false)` (`reorder_execution.rs:788-789`). The marker is consumed only by the row's watch handler, so a row without one keeps the marker armed, and its next real expansion is suppressed. That latent bug exists on `main` too.
+  - **Replacement.** A scoped guard: `SuppressExpandedWatch::for_row(&section, &row)` stores that row's `WeakRef` in a section slot, and its `Drop` clears the slot. The caller holds it only around `row.set_expanded(false)`, so the slot can never outlive the collapse it was set for, whether or not a handler consumed it.
+  - **Identity.** The handler suppresses only when the slot holds its own row. The `expanded=false` that child rows emit during teardown is therefore not suppressed, unlike with a section-wide boolean.
 
 ### D4. `open_future` inside `spawn_future_local`, behind a characterization test
 
