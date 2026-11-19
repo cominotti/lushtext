@@ -725,7 +725,7 @@ impl Drop for DraftPipelinePolicyReset {
         set_lazy_draft_read_delay_for_test(0);
         set_draft_mutation_delays_for_test(0, 0, 0);
         set_draft_manifest_completion_delay_for_test(0);
-        fail_next_draft_mutations_for_test(false, false, false);
+        fail_next_draft_mutations_for_test(false, false, false, false);
     }
 }
 

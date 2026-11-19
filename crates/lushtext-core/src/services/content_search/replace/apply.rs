@@ -2,7 +2,8 @@
 
 //! Replace All apply orchestration: the shell of [`ReplaceFileProtocol`].
 //!
-//! Every file runs the protocol's actions in order, one call each (design D3):
+//! Every file runs the protocol's actions in order, one call each, through
+//! `protocol_drive::drive` (design D3):
 //! guard and facts (P0), body admission (P1), pass A into the undo body (P2),
 //! output admission (P3), the entry and the armed manifest (P4), pass B into
 //! the target (P5), then release (P6). Pass A streams the target into its body
@@ -40,6 +41,7 @@ use crate::services::filesystem::read::{BoundedStreamError, stream_bounded};
 use crate::services::filesystem::types::FileFacts;
 use crate::services::filesystem::{WriteLabel, metadata as fs_metadata, write as fs_write};
 use crate::services::kill_point::{self, KillWindow};
+use crate::services::protocol_drive::{Protocol, drive};
 use crate::services::search_backup::{self, StreamEntryRecord, TargetIdentity};
 
 /// Everything one Replace All run needs, borrowed from its caller.
@@ -430,6 +432,24 @@ impl ProducerVerdict {
     }
 }
 
+/// One file's Replace All protocol as [`drive`] runs it.
+impl Protocol for ReplaceFileProtocol {
+    type Action = FileAction;
+    type Outcome = FileOutcome;
+    type End = FileEnd;
+
+    fn end(action: FileAction) -> Option<FileEnd> {
+        match action {
+            FileAction::Finish(end) => Some(end),
+            _ => None,
+        }
+    }
+
+    fn advance(&mut self, outcome: FileOutcome) -> FileAction {
+        self.step(outcome)
+    }
+}
+
 /// Execute one file's protocol.
 #[expect(
     clippy::too_many_lines,
@@ -467,7 +487,7 @@ fn process_file(
 
     let data_dir = run.request.journal_data_dir;
     let body_path = search_backup::body_path(data_dir, path);
-    let (mut protocol, mut action) = ReplaceFileProtocol::start(run.journal);
+    let (mut protocol, first) = ReplaceFileProtocol::start(run.journal);
     let mut guard = None;
     let mut facts: Option<FileFacts> = None;
     let mut source_len = 0u64;
@@ -479,346 +499,334 @@ fn process_file(
     let mut line = None;
     let mut count = 0usize;
 
-    let end = loop {
-        let outcome = match action {
-            FileAction::Finish(end) => break end,
-            FileAction::AcquireTarget => match fs_write::TargetWriteGuard::acquire(path) {
+    let end = drive(&mut protocol, first, |action| match action {
+        FileAction::AcquireTarget => match fs_write::TargetWriteGuard::acquire(path) {
+            Err(e) => {
+                run.errors
+                    .push(format!("Failed to lock {}: {e}", path.display()));
+                reason = ReplaceSkipReason::Unreadable;
+                FileOutcome::Failed
+            }
+            Ok(acquired) => {
+                guard = Some(acquired);
+                if cancel.load(Ordering::Relaxed) {
+                    FileOutcome::Cancelled
+                } else {
+                    match fs_metadata::file_facts(path) {
+                        Err(e) => {
+                            run.errors
+                                .push(format!("Failed to stat {}: {e}", path.display()));
+                            reason = ReplaceSkipReason::Unreadable;
+                            FileOutcome::Failed
+                        }
+                        Ok(found) if found.byte_size > run.file_limit => {
+                            run.errors.push(format!(
+                                "Skipped {}: file is larger than the {} Replace All limit",
+                                path.display(),
+                                iec_size(run.file_limit),
+                            ));
+                            reason = ReplaceSkipReason::LargerThanOpenTier;
+                            FileOutcome::Failed
+                        }
+                        Ok(found)
+                            if pass == ReplacePass::First
+                                && found.byte_size > MAIN_REPLACE_FILE_BYTES =>
+                        {
+                            FileOutcome::Defer
+                        }
+                        Ok(found) => {
+                            source_len = found.byte_size;
+                            facts = Some(found);
+                            FileOutcome::Done
+                        }
+                    }
+                }
+            }
+        },
+        FileAction::AdmitBody => {
+            provisional = run.ledger.provisionally_waived(pass, source_len);
+            let free = fs_metadata::free_space(data_dir).ok();
+            if disk_admits(free, source_len, !provisional) {
+                FileOutcome::Done
+            } else {
+                reason = ReplaceSkipReason::NotEnoughDiskSpace;
+                FileOutcome::Failed
+            }
+        }
+        FileAction::PrepareJournal => match search_backup::begin_incremental_journal(data_dir) {
+            Ok(()) => FileOutcome::Done,
+            Err(e) => {
+                run.errors.push(format!(
+                    "Failed to prepare undo journal before replacing {}: {e}",
+                    path.display()
+                ));
+                reason = ReplaceSkipReason::UndoJournalFailed;
+                FileOutcome::Failed
+            }
+        },
+        FileAction::WriteBody => {
+            // The first pass replays `main`'s per-file bound, which never
+            // exceeds the per-file limit in force.
+            let output_limit = match pass {
+                ReplacePass::First => MAIN_REPLACE_FILE_BYTES.min(run.file_limit),
+                ReplacePass::Second => run.file_limit,
+            };
+            let file_limit = run.file_limit;
+            let mut verdict = ProducerVerdict::default();
+            let mut summary = None;
+            let pass_a = pass_timing::timed(pass_timing::Pass::A, || {
+                fs_write::atomic_replace_stream(&body_path, WriteLabel::REPLACE_UNDO_BODY, |body| {
+                    let mut stream = ReplaceStream::new(
+                        &edits,
+                        output_limit,
+                        std::io::sink(),
+                        Sha256Sink::default(),
+                        Sha256Sink::default(),
+                    );
+                    let streamed = stream_bounded(
+                        path,
+                        file_limit,
+                        effective_stream_chunk_bytes(),
+                        || cancel.load(Ordering::Relaxed),
+                        |chunk| {
+                            body.write_all(chunk).map_err(StreamStop::Io)?;
+                            stream.feed(chunk)
+                        },
+                    );
+                    let stopped = match streamed {
+                        Ok(_) => None,
+                        Err(BoundedStreamError::Cancelled) => {
+                            verdict.cancelled = true;
+                            return Err(std::io::Error::other("cancelled"));
+                        }
+                        Err(BoundedStreamError::LimitExceeded { .. }) => {
+                            return Err(verdict.fail(ReplaceSkipReason::LargerThanOpenTier));
+                        }
+                        Err(BoundedStreamError::Io(e)) => {
+                            verdict.stop = Some(ReplaceSkipReason::Unreadable);
+                            return Err(e);
+                        }
+                        Err(BoundedStreamError::Consumer(StreamStop::Io(e))) => {
+                            return Err(e);
+                        }
+                        Err(BoundedStreamError::Consumer(StreamStop::Outcome(o))) => Some(o),
+                    };
+                    let (done, _) = stream.finish().map_err(|stop| match stop {
+                        StreamStop::Io(e) => e,
+                        StreamStop::Outcome(_) => std::io::Error::other("stream stopped"),
+                    })?;
+                    match stopped.unwrap_or(done.outcome) {
+                        ReplacementTextOutcome::Replaced { .. } => {}
+                        ReplacementTextOutcome::OutputLimitExceeded
+                            if pass == ReplacePass::First =>
+                        {
+                            verdict.defer = true;
+                            return Err(std::io::Error::other("deferred"));
+                        }
+                        ReplacementTextOutcome::OutputLimitExceeded => {
+                            return Err(verdict.fail(ReplaceSkipReason::LargerThanOpenTier));
+                        }
+                        ReplacementTextOutcome::NotUtf8 => {
+                            return Err(verdict.fail(ReplaceSkipReason::NotUtf8));
+                        }
+                        ReplacementTextOutcome::StaleLine { line_number } => {
+                            verdict.line = Some(line_number);
+                            return Err(verdict.fail(ReplaceSkipReason::ChangedSinceSearch));
+                        }
+                        ReplacementTextOutcome::Unchanged => {
+                            verdict.unchanged = true;
+                            return Err(std::io::Error::other("unchanged"));
+                        }
+                        ReplacementTextOutcome::InvalidPreview { .. } => {
+                            return Err(verdict.fail(ReplaceSkipReason::InvalidPreview));
+                        }
+                        ReplacementTextOutcome::Cancelled => {
+                            verdict.cancelled = true;
+                            return Err(std::io::Error::other("cancelled"));
+                        }
+                    }
+                    let facts = facts.as_ref().expect("facts precede pass A");
+                    if done.source_len != facts.byte_size || !facts_unchanged(facts, path) {
+                        return Err(verdict.fail(ReplaceSkipReason::ChangedDuringReplace));
+                    }
+                    summary = Some(done);
+                    Ok(())
+                })
+            });
+            match pass_a {
+                Ok(()) => {
+                    let done = summary.expect("a successful pass A has a summary");
+                    run.metrics.absorb_construction(done.metrics);
+                    if let ReplacementTextOutcome::Replaced { replacement_count } = done.outcome {
+                        count = replacement_count;
+                    }
+                    source_len = done.source_len;
+                    original = Some(ContentDigest {
+                        len: done.source_len,
+                        sha256: done.source_digest.finish(),
+                    });
+                    replaced = Some(ContentDigest {
+                        len: done.output_len,
+                        sha256: done.output_digest.finish(),
+                    });
+                    kill_point::reach(
+                        KillWindow::ReplaceBodyBeforeEntry,
+                        WriteLabel::REPLACE_UNDO_BODY.as_str(),
+                    );
+                    run_after_pass_a_hook_for_test(path);
+                    FileOutcome::Done
+                }
+                Err(fs_write::DurableWriteError::AfterRename(e)) => {
+                    run.errors.push(format!(
+                        "Undo body for {} may not be durable: {e}",
+                        path.display()
+                    ));
+                    reason = ReplaceSkipReason::UndoJournalFailed;
+                    FileOutcome::BodyUnconfirmed
+                }
+                Err(fs_write::DurableWriteError::BeforeRename(e)) => {
+                    if verdict.cancelled
+                        || (cancel.load(Ordering::Relaxed)
+                            && verdict.stop.is_none()
+                            && !verdict.defer)
+                    {
+                        FileOutcome::Cancelled
+                    } else if verdict.unchanged {
+                        FileOutcome::NoChange
+                    } else if verdict.defer {
+                        FileOutcome::Defer
+                    } else {
+                        reason = verdict.stop.unwrap_or(ReplaceSkipReason::UndoJournalFailed);
+                        line = verdict.line;
+                        run.errors.push(format!(
+                            "Skipped {}: {}",
+                            path.display(),
+                            skip_detail(reason, &e)
+                        ));
+                        FileOutcome::Failed
+                    }
+                }
+            }
+        }
+        FileAction::AdmitOutput => {
+            let output_len = replaced.map_or(0, |digest| digest.len);
+            charge = if provisional {
+                run.ledger.charge(pass, path, source_len, output_len)
+            } else {
+                None
+            };
+            let target_dir = fs_write::parent_or_current(path);
+            let target_free = fs_metadata::free_space(target_dir).ok();
+            let admitted = if charge.is_some() {
+                disk_admits(target_free, output_len, false)
+            } else {
+                // Not waived after all: both filesystems keep the reserve.
+                let journal_free = fs_metadata::free_space(data_dir).ok();
+                disk_admits(target_free, output_len, true) && disk_admits(journal_free, 0, true)
+            };
+            if admitted {
+                FileOutcome::Done
+            } else {
+                if let Some(taken) = charge.take() {
+                    run.ledger.reclaim(taken);
+                }
+                reason = ReplaceSkipReason::NotEnoughDiskSpace;
+                FileOutcome::Failed
+            }
+        }
+        FileAction::WriteEntry => {
+            let record = StreamEntryRecord {
+                original: original.expect("pass A recorded the original"),
+                replaced: replaced.expect("pass A recorded the output"),
+                identity: target_identity(facts.as_ref().expect("facts precede the entry")),
+            };
+            match search_backup::save_stream_entry(data_dir, path, &record) {
+                Ok(()) => FileOutcome::Done,
                 Err(e) => {
-                    run.errors
-                        .push(format!("Failed to lock {}: {e}", path.display()));
-                    reason = ReplaceSkipReason::Unreadable;
+                    run.errors.push(format!(
+                        "Failed to persist undo journal before replacing {}: {e}",
+                        path.display()
+                    ));
+                    reason = ReplaceSkipReason::UndoJournalFailed;
                     FileOutcome::Failed
                 }
-                Ok(acquired) => {
-                    guard = Some(acquired);
-                    if cancel.load(Ordering::Relaxed) {
+            }
+        }
+        FileAction::ArmJournal => {
+            match search_backup::mark_incremental_journal_active(data_dir, run.launch) {
+                Ok(()) => FileOutcome::Done,
+                Err(e) => {
+                    run.errors.push(format!(
+                        "Failed to activate undo journal before replacing {}: {e}",
+                        path.display()
+                    ));
+                    reason = ReplaceSkipReason::UndoJournalFailed;
+                    FileOutcome::Failed
+                }
+            }
+        }
+        FileAction::WriteTarget => {
+            run_before_target_write_hook_for_test(path);
+            let digest_in = original.expect("pass A recorded the original");
+            let digest_out = replaced.expect("pass A recorded the output");
+            let facts_before = facts.as_ref().expect("facts precede pass B");
+            let mut verdict = ProducerVerdict::default();
+            let result = pass_timing::timed(pass_timing::Pass::B, || {
+                write_target_from_body(
+                    path,
+                    &body_path,
+                    &edits,
+                    digest_in,
+                    digest_out,
+                    facts_before,
+                    cancel,
+                    run.request.progress,
+                    &mut verdict,
+                )
+            });
+            match result {
+                Ok(()) => FileOutcome::Done,
+                Err(fs_write::DurableWriteError::AfterRename(e)) => {
+                    run.errors.push(format!(
+                        "Failed to sync parent directory for {}: {e}",
+                        path.display()
+                    ));
+                    FileOutcome::RenamedUnconfirmed
+                }
+                Err(fs_write::DurableWriteError::BeforeRename(e)) => {
+                    if verdict.cancelled {
                         FileOutcome::Cancelled
                     } else {
-                        match fs_metadata::file_facts(path) {
-                            Err(e) => {
-                                run.errors
-                                    .push(format!("Failed to stat {}: {e}", path.display()));
-                                reason = ReplaceSkipReason::Unreadable;
-                                FileOutcome::Failed
-                            }
-                            Ok(found) if found.byte_size > run.file_limit => {
-                                run.errors.push(format!(
-                                    "Skipped {}: file is larger than the {} Replace All limit",
-                                    path.display(),
-                                    iec_size(run.file_limit),
-                                ));
-                                reason = ReplaceSkipReason::LargerThanOpenTier;
-                                FileOutcome::Failed
-                            }
-                            Ok(found)
-                                if pass == ReplacePass::First
-                                    && found.byte_size > MAIN_REPLACE_FILE_BYTES =>
-                            {
-                                FileOutcome::Defer
-                            }
-                            Ok(found) => {
-                                source_len = found.byte_size;
-                                facts = Some(found);
-                                FileOutcome::Done
-                            }
-                        }
-                    }
-                }
-            },
-            FileAction::AdmitBody => {
-                provisional = run.ledger.provisionally_waived(pass, source_len);
-                let free = fs_metadata::free_space(data_dir).ok();
-                if disk_admits(free, source_len, !provisional) {
-                    FileOutcome::Done
-                } else {
-                    reason = ReplaceSkipReason::NotEnoughDiskSpace;
-                    FileOutcome::Failed
-                }
-            }
-            FileAction::PrepareJournal => {
-                match search_backup::begin_incremental_journal(data_dir) {
-                    Ok(()) => FileOutcome::Done,
-                    Err(e) => {
-                        run.errors.push(format!(
-                            "Failed to prepare undo journal before replacing {}: {e}",
-                            path.display()
-                        ));
-                        reason = ReplaceSkipReason::UndoJournalFailed;
+                        reason = verdict.stop.unwrap_or(ReplaceSkipReason::WriteFailed);
+                        run.errors
+                            .push(format!("Failed to write {}: {e}", path.display()));
                         FileOutcome::Failed
                     }
                 }
             }
-            FileAction::WriteBody => {
-                // The first pass replays `main`'s per-file bound, which never
-                // exceeds the per-file limit in force.
-                let output_limit = match pass {
-                    ReplacePass::First => MAIN_REPLACE_FILE_BYTES.min(run.file_limit),
-                    ReplacePass::Second => run.file_limit,
-                };
-                let file_limit = run.file_limit;
-                let mut verdict = ProducerVerdict::default();
-                let mut summary = None;
-                let pass_a = pass_timing::timed(pass_timing::Pass::A, || {
-                    fs_write::atomic_replace_stream(
-                        &body_path,
-                        WriteLabel::REPLACE_UNDO_BODY,
-                        |body| {
-                            let mut stream = ReplaceStream::new(
-                                &edits,
-                                output_limit,
-                                std::io::sink(),
-                                Sha256Sink::default(),
-                                Sha256Sink::default(),
-                            );
-                            let streamed = stream_bounded(
-                                path,
-                                file_limit,
-                                effective_stream_chunk_bytes(),
-                                || cancel.load(Ordering::Relaxed),
-                                |chunk| {
-                                    body.write_all(chunk).map_err(StreamStop::Io)?;
-                                    stream.feed(chunk)
-                                },
-                            );
-                            let stopped = match streamed {
-                                Ok(_) => None,
-                                Err(BoundedStreamError::Cancelled) => {
-                                    verdict.cancelled = true;
-                                    return Err(std::io::Error::other("cancelled"));
-                                }
-                                Err(BoundedStreamError::LimitExceeded { .. }) => {
-                                    return Err(verdict.fail(ReplaceSkipReason::LargerThanOpenTier));
-                                }
-                                Err(BoundedStreamError::Io(e)) => {
-                                    verdict.stop = Some(ReplaceSkipReason::Unreadable);
-                                    return Err(e);
-                                }
-                                Err(BoundedStreamError::Consumer(StreamStop::Io(e))) => {
-                                    return Err(e);
-                                }
-                                Err(BoundedStreamError::Consumer(StreamStop::Outcome(o))) => {
-                                    Some(o)
-                                }
-                            };
-                            let (done, _) = stream.finish().map_err(|stop| match stop {
-                                StreamStop::Io(e) => e,
-                                StreamStop::Outcome(_) => std::io::Error::other("stream stopped"),
-                            })?;
-                            match stopped.unwrap_or(done.outcome) {
-                                ReplacementTextOutcome::Replaced { .. } => {}
-                                ReplacementTextOutcome::OutputLimitExceeded
-                                    if pass == ReplacePass::First =>
-                                {
-                                    verdict.defer = true;
-                                    return Err(std::io::Error::other("deferred"));
-                                }
-                                ReplacementTextOutcome::OutputLimitExceeded => {
-                                    return Err(verdict.fail(ReplaceSkipReason::LargerThanOpenTier));
-                                }
-                                ReplacementTextOutcome::NotUtf8 => {
-                                    return Err(verdict.fail(ReplaceSkipReason::NotUtf8));
-                                }
-                                ReplacementTextOutcome::StaleLine { line_number } => {
-                                    verdict.line = Some(line_number);
-                                    return Err(verdict.fail(ReplaceSkipReason::ChangedSinceSearch));
-                                }
-                                ReplacementTextOutcome::Unchanged => {
-                                    verdict.unchanged = true;
-                                    return Err(std::io::Error::other("unchanged"));
-                                }
-                                ReplacementTextOutcome::InvalidPreview { .. } => {
-                                    return Err(verdict.fail(ReplaceSkipReason::InvalidPreview));
-                                }
-                                ReplacementTextOutcome::Cancelled => {
-                                    verdict.cancelled = true;
-                                    return Err(std::io::Error::other("cancelled"));
-                                }
-                            }
-                            let facts = facts.as_ref().expect("facts precede pass A");
-                            if done.source_len != facts.byte_size || !facts_unchanged(facts, path) {
-                                return Err(verdict.fail(ReplaceSkipReason::ChangedDuringReplace));
-                            }
-                            summary = Some(done);
-                            Ok(())
-                        },
-                    )
-                });
-                match pass_a {
-                    Ok(()) => {
-                        let done = summary.expect("a successful pass A has a summary");
-                        run.metrics.absorb_construction(done.metrics);
-                        if let ReplacementTextOutcome::Replaced { replacement_count } = done.outcome
-                        {
-                            count = replacement_count;
-                        }
-                        source_len = done.source_len;
-                        original = Some(ContentDigest {
-                            len: done.source_len,
-                            sha256: done.source_digest.finish(),
-                        });
-                        replaced = Some(ContentDigest {
-                            len: done.output_len,
-                            sha256: done.output_digest.finish(),
-                        });
-                        kill_point::reach(
-                            KillWindow::ReplaceBodyBeforeEntry,
-                            WriteLabel::REPLACE_UNDO_BODY.as_str(),
-                        );
-                        run_after_pass_a_hook_for_test(path);
-                        FileOutcome::Done
-                    }
-                    Err(fs_write::DurableWriteError::AfterRename(e)) => {
-                        run.errors.push(format!(
-                            "Undo body for {} may not be durable: {e}",
-                            path.display()
-                        ));
-                        reason = ReplaceSkipReason::UndoJournalFailed;
-                        FileOutcome::BodyUnconfirmed
-                    }
-                    Err(fs_write::DurableWriteError::BeforeRename(e)) => {
-                        if verdict.cancelled
-                            || (cancel.load(Ordering::Relaxed)
-                                && verdict.stop.is_none()
-                                && !verdict.defer)
-                        {
-                            FileOutcome::Cancelled
-                        } else if verdict.unchanged {
-                            FileOutcome::NoChange
-                        } else if verdict.defer {
-                            FileOutcome::Defer
-                        } else {
-                            reason = verdict.stop.unwrap_or(ReplaceSkipReason::UndoJournalFailed);
-                            line = verdict.line;
-                            run.errors.push(format!(
-                                "Skipped {}: {}",
-                                path.display(),
-                                skip_detail(reason, &e)
-                            ));
-                            FileOutcome::Failed
-                        }
-                    }
-                }
+        }
+        FileAction::RemoveEntry => match remove_own_entry(data_dir, path) {
+            Ok(()) => FileOutcome::Done,
+            Err(e) => {
+                run.errors.push(format!(
+                    "Failed to remove undo journal entry for {}: {e}",
+                    path.display()
+                ));
+                FileOutcome::Failed
             }
-            FileAction::AdmitOutput => {
-                let output_len = replaced.map_or(0, |digest| digest.len);
-                charge = if provisional {
-                    run.ledger.charge(pass, path, source_len, output_len)
-                } else {
-                    None
-                };
-                let target_dir = fs_write::parent_or_current(path);
-                let target_free = fs_metadata::free_space(target_dir).ok();
-                let admitted = if charge.is_some() {
-                    disk_admits(target_free, output_len, false)
-                } else {
-                    // Not waived after all: both filesystems keep the reserve.
-                    let journal_free = fs_metadata::free_space(data_dir).ok();
-                    disk_admits(target_free, output_len, true) && disk_admits(journal_free, 0, true)
-                };
-                if admitted {
-                    FileOutcome::Done
-                } else {
-                    if let Some(taken) = charge.take() {
-                        run.ledger.reclaim(taken);
-                    }
-                    reason = ReplaceSkipReason::NotEnoughDiskSpace;
-                    FileOutcome::Failed
-                }
+        },
+        FileAction::RemoveBody => match remove_own_body(data_dir, path) {
+            Ok(()) => FileOutcome::Done,
+            Err(e) => {
+                run.errors.push(format!(
+                    "Failed to remove undo body for {}: {e}",
+                    path.display()
+                ));
+                FileOutcome::Failed
             }
-            FileAction::WriteEntry => {
-                let record = StreamEntryRecord {
-                    original: original.expect("pass A recorded the original"),
-                    replaced: replaced.expect("pass A recorded the output"),
-                    identity: target_identity(facts.as_ref().expect("facts precede the entry")),
-                };
-                match search_backup::save_stream_entry(data_dir, path, &record) {
-                    Ok(()) => FileOutcome::Done,
-                    Err(e) => {
-                        run.errors.push(format!(
-                            "Failed to persist undo journal before replacing {}: {e}",
-                            path.display()
-                        ));
-                        reason = ReplaceSkipReason::UndoJournalFailed;
-                        FileOutcome::Failed
-                    }
-                }
-            }
-            FileAction::ArmJournal => {
-                match search_backup::mark_incremental_journal_active(data_dir, run.launch) {
-                    Ok(()) => FileOutcome::Done,
-                    Err(e) => {
-                        run.errors.push(format!(
-                            "Failed to activate undo journal before replacing {}: {e}",
-                            path.display()
-                        ));
-                        reason = ReplaceSkipReason::UndoJournalFailed;
-                        FileOutcome::Failed
-                    }
-                }
-            }
-            FileAction::WriteTarget => {
-                run_before_target_write_hook_for_test(path);
-                let digest_in = original.expect("pass A recorded the original");
-                let digest_out = replaced.expect("pass A recorded the output");
-                let facts_before = facts.as_ref().expect("facts precede pass B");
-                let mut verdict = ProducerVerdict::default();
-                let result = pass_timing::timed(pass_timing::Pass::B, || {
-                    write_target_from_body(
-                        path,
-                        &body_path,
-                        &edits,
-                        digest_in,
-                        digest_out,
-                        facts_before,
-                        cancel,
-                        run.request.progress,
-                        &mut verdict,
-                    )
-                });
-                match result {
-                    Ok(()) => FileOutcome::Done,
-                    Err(fs_write::DurableWriteError::AfterRename(e)) => {
-                        run.errors.push(format!(
-                            "Failed to sync parent directory for {}: {e}",
-                            path.display()
-                        ));
-                        FileOutcome::RenamedUnconfirmed
-                    }
-                    Err(fs_write::DurableWriteError::BeforeRename(e)) => {
-                        if verdict.cancelled {
-                            FileOutcome::Cancelled
-                        } else {
-                            reason = verdict.stop.unwrap_or(ReplaceSkipReason::WriteFailed);
-                            run.errors
-                                .push(format!("Failed to write {}: {e}", path.display()));
-                            FileOutcome::Failed
-                        }
-                    }
-                }
-            }
-            FileAction::RemoveEntry => match remove_own_entry(data_dir, path) {
-                Ok(()) => FileOutcome::Done,
-                Err(e) => {
-                    run.errors.push(format!(
-                        "Failed to remove undo journal entry for {}: {e}",
-                        path.display()
-                    ));
-                    FileOutcome::Failed
-                }
-            },
-            FileAction::RemoveBody => match remove_own_body(data_dir, path) {
-                Ok(()) => FileOutcome::Done,
-                Err(e) => {
-                    run.errors.push(format!(
-                        "Failed to remove undo body for {}: {e}",
-                        path.display()
-                    ));
-                    FileOutcome::Failed
-                }
-            },
-        };
-        action = protocol.step(outcome);
-    };
+        },
+        FileAction::Finish(_) => unreachable!("`drive` never executes the terminal action"),
+    });
     run.journal = protocol.journal();
     drop(guard);
 

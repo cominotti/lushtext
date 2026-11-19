@@ -43,6 +43,11 @@ pub(super) struct DirtyDraftCompletion {
 }
 
 /// Dirty editor state captured before autosave starts copying buffer text.
+///
+/// It holds no body-write token: a candidate becomes writable only through
+/// [`DirtyDraftCandidate::into_writable`], so the pipelines, which take only
+/// [`WritableDraftCandidate`], cannot be handed one whose id was never
+/// registered.
 pub(super) struct DirtyDraftCandidate {
     /// Stable identity captured before snapshotting begins.
     pub(super) draft_id: String,
@@ -56,9 +61,67 @@ pub(super) struct DirtyDraftCandidate {
     pub(super) buffer: sourceview5::Buffer,
     /// Main-thread intent assigned before snapshot admission.
     pub(super) intent: DraftMutationIntent,
-    /// Proof the body may be written, minted by the pass's registration step;
-    /// a candidate without one is refused rather than written.
-    pub(super) registered: Option<draft_service::RegisteredDraft>,
+}
+
+impl DirtyDraftCandidate {
+    /// Pair this candidate with the body-write token for its own id.
+    ///
+    /// The only way to make a [`WritableDraftCandidate`]. A token minted for
+    /// another id is refused, and both values come back unchanged, so the
+    /// caller still holds the candidate (to report its id as refused) and the
+    /// token (to pair with its own candidate).
+    #[expect(
+        clippy::result_large_err,
+        reason = "the Err hands the candidate back by move, as large as the Ok; boxing it \
+                  would allocate to return a value the caller already owned"
+    )]
+    pub(super) fn into_writable(
+        self,
+        token: draft_service::RegisteredDraft,
+    ) -> Result<WritableDraftCandidate, (Self, draft_service::RegisteredDraft)> {
+        let draft_id = self.draft_id.clone();
+        claim_token(self, &draft_id, token).map(|(candidate, registered)| WritableDraftCandidate {
+            candidate,
+            registered,
+        })
+    }
+}
+
+/// The check behind [`DirtyDraftCandidate::into_writable`]: `owner` (whose id
+/// is `owner_id`) keeps `token` only when the token authorizes that id.
+///
+/// Generic over the owner so the check is unit-testable without the GTK
+/// buffer a real candidate holds.
+fn claim_token<T>(
+    owner: T,
+    owner_id: &str,
+    token: draft_service::RegisteredDraft,
+) -> Result<(T, draft_service::RegisteredDraft), (T, draft_service::RegisteredDraft)> {
+    if token.draft_id() == owner_id {
+        Ok((owner, token))
+    } else {
+        Err((owner, token))
+    }
+}
+
+/// A dirty candidate together with the body-write token for its id: the only
+/// candidate the autosave and asynchronous close pipelines take.
+///
+/// Its fields are private to this module, so it exists only by
+/// [`DirtyDraftCandidate::into_writable`], which checked the pairing; the
+/// token reaches the worker's `write_draft` call by move, never cloned
+/// (`RegisteredDraft` is not `Clone`).
+pub(super) struct WritableDraftCandidate {
+    candidate: DirtyDraftCandidate,
+    registered: draft_service::RegisteredDraft,
+}
+
+impl WritableDraftCandidate {
+    /// The candidate and its token, for the stage that snapshots the body and
+    /// hands the token to the worker that writes it.
+    pub(super) fn into_parts(self) -> (DirtyDraftCandidate, draft_service::RegisteredDraft) {
+        (self.candidate, self.registered)
+    }
 }
 
 /// Compact metadata retained after one draft body has been durably written.
@@ -235,6 +298,30 @@ pub(crate) struct PendingPreservation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn untitled_token(draft_id: &str) -> draft_service::RegisteredDraft {
+        draft_service::RegisteredDraft::without_registration(draft_id, false, false, false)
+            .expect("an untitled id needs no registration")
+    }
+
+    /// The pairing check behind `into_writable` keeps a token only for its
+    /// own id, and gives both values back otherwise.
+    #[test]
+    fn into_writable_refuses_a_token_for_a_different_id() {
+        let (owner, token) = claim_token("candidate", "untitled-a", untitled_token("untitled-a"))
+            .expect("a token for the candidate's own id is accepted");
+        assert_eq!(owner, "candidate");
+        assert_eq!(token.draft_id(), "untitled-a");
+
+        let (owner, token) = claim_token("candidate", "untitled-a", untitled_token("untitled-b"))
+            .expect_err("a token for another id is refused");
+        assert_eq!(owner, "candidate", "the refused candidate comes back");
+        assert_eq!(
+            token.draft_id(),
+            "untitled-b",
+            "the refused token comes back for its own candidate"
+        );
+    }
 
     fn entry(id: &str, saved_at_secs: u64) -> DraftEntry {
         DraftEntry {

@@ -1190,6 +1190,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
 | `crates/lushtext-core/src/ui/window/drafts/policy.rs` | `FIRST_DIRTY_AUTOSAVE_DEBOUNCE_MS` | 750 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-core/src/ui/window/drafts/policy.rs` | `UNRESTORED_COPY_MAX_RETRY_TICKS` | 12 | out: time | one minute of 5 s autosave ticks (`apply-verification-altitude-redesigns` design G3) |
 
 ### `crates/lushtext-core/src/ui/window/editor_focus/mod.rs`
 

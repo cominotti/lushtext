@@ -6,6 +6,7 @@
 //! not workspace-scoped in the UI — all tabs share one `AdwTabView`.
 
 use crate::model::session::SessionData;
+use crate::services::app_data_layout::{AppDataLayout, AppDataLocation};
 use crate::services::json_format::KIND_SESSION;
 use crate::services::recovery_metadata::{
     RecoveryLoad, RecoveryLoadConfig, RecoveryMetadataClass, load_enveloped_json_or_default,
@@ -17,8 +18,10 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
-/// Fixed filename for the global session file.
-const SESSION_FILENAME: &str = "session.json";
+/// `AppDataLocation::Session` under the data home `data_dir`.
+fn session_path(data_dir: &std::path::Path) -> std::path::PathBuf {
+    AppDataLayout::new(data_dir).path(AppDataLocation::Session)
+}
 
 fn ordered_session_saves() -> &'static Mutex<HashMap<std::path::PathBuf, u64>> {
     static SAVES: OnceLock<Mutex<HashMap<std::path::PathBuf, u64>>> = OnceLock::new();
@@ -46,7 +49,7 @@ pub fn load(data_dir: &Path) -> Result<SessionData> {
 /// empty session.
 #[must_use]
 pub fn load_recovering(data_dir: &Path) -> RecoveryLoad<SessionData> {
-    let path = data_dir.join(SESSION_FILENAME);
+    let path = session_path(data_dir);
     load_enveloped_json_or_default(
         &RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::Session),
         KIND_SESSION,
@@ -59,7 +62,7 @@ pub fn load_recovering(data_dir: &Path) -> RecoveryLoad<SessionData> {
 ///
 /// Returns an error if the session file cannot be serialized or written.
 pub fn save(data_dir: &Path, session: &SessionData) -> Result<()> {
-    let path = data_dir.join(SESSION_FILENAME);
+    let path = session_path(data_dir);
     let config = RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::Session);
     let diagnostics = save_enveloped_json_path(&config, KIND_SESSION, session)?;
     for diagnostic in diagnostics {
@@ -139,7 +142,7 @@ mod tests {
     #[test]
     fn recovering_load_preserves_malformed_session_with_diagnostics() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        crate::services::filesystem::fixture::write_text(&dir.path().join(SESSION_FILENAME), "bad");
+        crate::services::filesystem::fixture::write_text(&session_path(dir.path()), "bad");
 
         let load = load_recovering(dir.path());
 
@@ -322,7 +325,7 @@ mod tests {
     fn recovering_load_preserves_pre_public_bare_session() {
         let dir = TempDir::new().expect("expected operation to succeed");
         crate::services::filesystem::fixture::write_text(
-            &dir.path().join(SESSION_FILENAME),
+            &session_path(dir.path()),
             r#"{"tabs":[],"active_tab_index":null}"#,
         );
 

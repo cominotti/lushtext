@@ -41,7 +41,7 @@ pub fn atomic_replace(
     label: WriteLabel,
     bytes: &[u8],
 ) -> Result<(), DurableWriteError> {
-    durable_write::atomic_write_bytes_classified(path, label.as_str(), bytes)
+    durable_write::atomic_write_bytes_classified(path, label, bytes)
 }
 
 /// Atomically replace a file in a user workspace, then sweep its own crash leftovers.
@@ -87,7 +87,7 @@ pub fn atomic_replace_stream<F>(
 where
     F: FnOnce(&mut dyn Write) -> std::io::Result<()>,
 {
-    durable_write::atomic_write_stream_classified(path, label.as_str(), write_content)
+    durable_write::atomic_write_stream_classified(path, label, write_content)
 }
 
 /// Stream a durable replacement of a user-workspace file, then sweep its own
@@ -222,7 +222,7 @@ pub fn is_cross_device(error: &std::io::Error) -> bool {
 /// Returns an error when the source cannot be read or the destination cannot be
 /// written durably with the source's metadata.
 pub fn copy_durable(from: &Path, to: &Path, label: WriteLabel) -> std::io::Result<()> {
-    durable_write::copy_durable(from, to, label.as_str())
+    durable_write::copy_durable(from, to, label)
 }
 
 /// Move a file by a durable copy, removing the source only after the
@@ -234,7 +234,7 @@ pub fn copy_durable(from: &Path, to: &Path, label: WriteLabel) -> std::io::Resul
 /// Returns an error when the copy fails or the source cannot be removed and
 /// its directory synced.
 pub fn move_durable(from: &Path, to: &Path, label: WriteLabel) -> std::io::Result<()> {
-    durable_write::move_durable(from, to, label.as_str())
+    durable_write::move_durable(from, to, label)
 }
 
 /// Create an empty file only when the destination is absent, then sync its parent.
@@ -318,6 +318,22 @@ mod tests {
         let to = dir.path().join("to.txt");
         fixture::write_text(&from, "body");
         (dir, from, to)
+    }
+
+    /// The boundary's durable copy writes the destination and keeps the
+    /// source, and reports a source it cannot read.
+    #[test]
+    fn copy_durable_keeps_the_source_and_reports_a_missing_one() {
+        let (dir, from, to) = renamed_pair();
+        copy_durable(&from, &to, WriteLabel::LOCAL_HISTORY_COPY).expect("copy");
+        fixture::assert_text(&to, "body");
+        fixture::assert_text(&from, "body");
+
+        let missing = dir.path().join("missing.txt");
+        let error = copy_durable(&missing, &dir.path().join("copy.txt"), WriteLabel::SAVE)
+            .expect_err("a missing source cannot be copied");
+        assert_eq!(error.kind(), ErrorKind::NotFound);
+        assert!(!fixture::exists(&dir.path().join("copy.txt")));
     }
 
     /// `rust-1-100-adoption` A8: an `EOPNOTSUPP`/`ENOSYS` directory `fsync`

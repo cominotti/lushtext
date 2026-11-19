@@ -1225,8 +1225,13 @@ failing-first:
 - **the production hold did not match the proved model:** when the set-aside
   copy of an unrestored body failed, production released the restore hold
   anyway, so the next autosave replaced the only copy. The hold now stays and
-  each autosave tick retries the copy (`unrestored_copy_retries` in
-  `DraftEvidence`); widget test
+  the periodic autosave tick retries the copy (`unrestored_copy_retries` in
+  `DraftEvidence`; since `apply-verification-altitude-redesigns` group 3 only
+  the 5 s timer retries, with exponential backoff capped at 12 ticks, one
+  minute: `policy::unrestored_copy_retry_delay_ticks`, the due tick and
+  failure count of each retry in the evidence; the hold itself is untouched,
+  and delaying a retry only removes attempts, so S1–S4 are unaffected and
+  Kani is not rerun); widget test
   `test_a_failed_set_aside_copy_keeps_autosave_off_the_unshown_draft`;
 - **a preserved draft opened from `Preferences > Data` was never draft-dirty**
   (the bounded install suspends the handlers that mark it), so deleting its
@@ -1252,6 +1257,21 @@ ungated tree, and a scratch call to `draft_service::fixture::write_body` in
 `ui/window/drafts/journal.rs` compiled before the gate and after it failed with
 ``error[E0433]: cannot find `fixture` in `draft_service` ``. The deferral
 inventory entry for `write_body` is closed.
+
+**Token carried by type (2026-11-18, `apply-verification-altitude-redesigns`
+group 5).** The asynchronous autosave and close pipelines no longer check for
+the token at run time. A `DirtyDraftCandidate` holds none; the registration
+step turns it into a `WritableDraftCandidate` (candidate plus its
+`RegisteredDraft`) only through `DirtyDraftCandidate::into_writable`, which
+refuses a token minted for another id, and only when
+`journal_core::may_write_after_registration` admits it. The pipelines take only
+`WritableDraftCandidate`, so both "recovery metadata was not registered"
+branches in the body-write workers are gone, and a refused candidate's id is
+reported and kept draft-dirty as before. The synchronous close flush in
+`journal.rs` keeps its local `Option<RegisteredDraft>`: no stage boundary lies
+between its registration and its write. `journal_core.rs`, `model/draft.rs`
+and the token's minting surface are unchanged and the token is still not
+`Clone`, so no harness input moved (Kani: none).
 
 #### K8 — dropping axiom A6
 
@@ -1494,6 +1514,15 @@ relaunching the ordinary binary and requiring no lost work: all three passed
 kill-point code (`strings target/release/lushtext` finds neither
 `LUSHTEXT_KILL_AT` nor the abort message; the feature binary finds both), and
 no Meson, Flatpak, or Snap build passes the feature.
+
+Since `apply-verification-altitude-redesigns` (group 6) the release check is
+automated: the crash smoke reads the ordinary binary, and
+`target/release/lushtext` when one is built, and fails before any scenario on
+either kill-point marker (`assertions/no-kill-points.json`).
+`make check-kill-point-gating` (in `make check-policy`) keeps the feature
+gating only `kill_point::reach`, so the victim launches run the ordinary binary
+plus kill points; every launch records its role (`seed`, `victim`,
+`relaunch`) and binary, and `seed` and `relaunch` always run the ordinary one.
 
 ### Step 8a — Set-aside retention (`bound-draft-set-aside-retention`)
 
@@ -2759,8 +2788,47 @@ Both wait for it because of `durable_write` overlap; the facts are:
     action` style; a conformance lane that drives shells against proven
     cores should treat them as one more proven core and their shells
     (`replace/apply.rs`, `replace/undo.rs`) as one more shell.
+- **Group 1 of `apply-verification-altitude-redesigns` (2026-11-18)** gives
+  the conformance change its single tap site. `services/protocol_drive.rs`
+  holds the `Protocol` trait (`Action`, `Outcome`, `End`, `end`, `advance`)
+  and the one loop `drive`, outside both Kani oracle modules, which stay
+  byte-identical. Six shells run through it: `atomic_write_stream_with_metadata`,
+  `run_rename_protocol` and `move_durable` (`durable_write.rs`, over
+  `WriteProtocol`, `RenameProtocol`, `MoveProtocol`), the Replace All apply
+  and undo shells (`replace/apply.rs`, `replace/undo.rs`, over
+  `ReplaceFileProtocol` and `ReplaceUndoProtocol`), and the journal shrink
+  (`search_backup.rs`, a private `ShrinkRun` over `shrink_step`). Every action
+  and outcome of every shell passes the one `execute(action)` call in
+  `drive`, so a tap there observes each run and can inject a crash before or
+  after an action; typed fault injection (a faithful `Fail` with its
+  `last_error`) stays with the conformance change, because only a shell's
+  `execute` arm builds it. A nested durable write (a move's `Copy`) is a
+  nested `drive` on the same thread. No fallback was needed: the Replace
+  apply closure kept its arms. The group also fixed a pre-existing shrink
+  defect its characterization test found: the orphan-body cleanup removed a
+  body whose entry the shrink had failed to remove, leaving that entry
+  referencing a missing body; the shrink now keeps it. The stage-4 review
+  closed the rest of that defect class: an unlisted entry the bounded or
+  failed entry scan never reached kept its entry while the cleanup deleted
+  its body, so the orphan-body cleanup now removes a body only when its entry
+  file is confirmed missing (design, "Review (stage 4, 2026-11-18)").
 
 ## 4. Deferral inventory
+
+- **Three `replace/apply.rs::process_file` mutation survivors, for
+  `verify-shell-conformance-against-proven-cores`** (recorded 2026-11-18 by
+  the `apply-verification-altitude-redesigns` review). Pre-existing on
+  `main`, surfaced by that change's re-indentation, none equivalent, so none
+  is excluded: 649 (`||` to `&&` in the pass-A facts check, a same-size
+  change reported under pass B's skip reason), 689 (`||` to `&&`) and 691
+  (delete `!`) in the cancelled test (a cancel raised after the stream's last
+  check reported as `NoChange` or `Failed`). Each needs code between two
+  actions of one file's protocol, which no seam reaches and a new
+  `*_for_test` setter may not add. A before-action tap in `protocol_drive::drive`
+  kills all three: modify the target same-size before `WriteBody` (649);
+  raise cancel and break the bodies directory before `WriteBody` (689, 691).
+  The two other survivors of that group (690, 725) are killed by tests on
+  existing seams.
 
 - ~~`sliced-protected-install` (C3): the planner's whole-plan properties
   K1–K6, K8 and K9 are property-tested, not Kani-proved.~~ **Closed
@@ -2827,9 +2895,14 @@ Both wait for it because of `durable_write` overlap; the facts are:
 - Phase 0: a lineage index repaired from snapshot files derives each
   timestamp from the snapshot id (capture time), so a preserved stale draft's
   `saved_at_secs` stamp does not survive an index repair.
-- Phase 0: the startup leftover sweep skips the legacy folder-note sidecar
-  directory kept for older releases, and a pass over a directory larger than
-  its budget may leave leftovers for a later pass.
+- Phase 0: ~~the startup leftover sweep skips the legacy folder-note sidecar
+  directory kept for older releases~~ **fixed (2026-11-18, group 2 of
+  `apply-verification-altitude-redesigns`)**: the app-data layout
+  (`services/app_data_layout.rs`) marks that directory `SweptLast`, so the
+  sweep visits it after the lineages, with whatever budget remains; every
+  other directory keeps its order and share of the budget. Still open: a pass
+  over a directory larger than its budget may leave leftovers for a later
+  pass.
 - **Fixed (2026-09-24, `bound-draft-set-aside-retention`): the set-aside
   copy of a newer body was skipped.** The Quint vs TLA+ evaluation found it
   (E1): the real `draft_service`, driven against a Rust abstract disk model.

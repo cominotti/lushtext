@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config;
 use crate::model::sidecar_identity::stable_path_hash;
+use crate::services::app_data_layout::AppDataLocation;
 use crate::services::filesystem::{
     PathStatus, WriteLabel, metadata as fs_metadata, mutate as fs_mutate, read as fs_read,
     write as fs_write,
@@ -26,9 +27,16 @@ use super::diagnostics::FormatClassification;
 use super::inventory::FormatInventoryItem;
 
 /// App-data directory containing format-upgrade backup attempts.
-pub const FORMAT_UPGRADE_BACKUP_DIR: &str = "format-upgrade-backups";
+///
+/// Spelled by the app-data layout; kept as a name for callers outside
+/// `services` (UI and tests).
+pub const FORMAT_UPGRADE_BACKUP_DIR: &str = AppDataLocation::FormatUpgradeBackups.relative_str();
 /// Per-run directory holding the backed-up item copies.
-pub const FORMAT_UPGRADE_BACKUP_ITEMS_DIR: &str = "items";
+///
+/// Spelled by the app-data layout; kept as a name for callers outside
+/// `services` (UI and tests).
+pub const FORMAT_UPGRADE_BACKUP_ITEMS_DIR: &str =
+    crate::services::app_data_layout::run_items_dir_name();
 /// Maximum attempts to find a unique backup directory for one operation.
 ///
 /// Timestamp collisions are rare, but the bound keeps a hostile prefilled

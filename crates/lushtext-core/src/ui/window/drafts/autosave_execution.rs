@@ -47,12 +47,14 @@ use super::policy::{
     draft_candidate_is_eligible,
 };
 use super::seams::{
-    AcceptedDraft, DirtyDraftCandidate, DirtyDraftCompletion, DraftFlushError, DraftManifestFailure,
+    AcceptedDraft, DirtyDraftCandidate, DirtyDraftCompletion, DraftFlushError,
+    DraftManifestFailure, WritableDraftCandidate,
 };
 use super::{
     automatic_draft_limit, delay_draft_body_for_test, delay_draft_manifest_completion_for_test,
     delay_draft_manifest_for_test, fail_next_draft_body_for_test,
     fail_next_draft_manifest_for_test, first_dirty_autosave_debounce,
+    injected_draft_registration_failure_for_test,
 };
 use crate::ui::window::LushtextWindow;
 
@@ -64,16 +66,28 @@ impl LushtextWindow {
             let Some(window) = window_weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            window.autosave_tick();
+            window.periodic_autosave_tick();
             glib::ControlFlow::Continue
         });
         *self.imp().drafts.autosave_source_id.borrow_mut() = Some(source_id);
     }
 
-    /// Single autosave tick: collect dirty tabs and write drafts.
+    /// One tick of the 5 s timer: count it, retry the unrestored copies whose
+    /// backoff has elapsed, then run the autosave pass.
+    ///
+    /// Only this tick retries a failed copy; the first-dirty debounce and the
+    /// pending rerun call `autosave_tick` directly, because neither has
+    /// anything to do with the copy's failure cause.
+    fn periodic_autosave_tick(&self) {
+        let ticks = &self.imp().drafts.autosave_timer_ticks;
+        ticks.set(ticks.get().saturating_add(1));
+        self.retry_unrestored_copies();
+        self.autosave_tick();
+    }
+
+    /// Single autosave pass: collect dirty tabs and write drafts.
     pub(super) fn autosave_tick(&self) {
         self.cancel_first_dirty_draft_autosave();
-        self.retry_unrestored_copies();
         self.evaluate_preserved_drafts_if_placed();
         let drafts = &self.imp().drafts;
         // Another window's journal work counts as a mutation in flight: the
@@ -124,37 +138,57 @@ impl LushtextWindow {
     /// whose registration did not commit is not written at all; it stays
     /// dirty and retryable. Ids already registered skip the step, so a
     /// steady-state pass costs nothing extra.
+    ///
+    /// `then` receives the candidates that hold their body-write token, as
+    /// [`WritableDraftCandidate`]s, and the ids of every other candidate,
+    /// refused.
     fn register_new_draft_ids_then<F>(&self, candidates: Vec<DirtyDraftCandidate>, then: F)
     where
-        F: FnOnce(&Self, Vec<DirtyDraftCandidate>, Vec<String>) + 'static,
+        F: FnOnce(&Self, Vec<WritableDraftCandidate>, Vec<String>) + 'static,
     {
         let trusted = self.imp().drafts.manifest_authority.get().is_trusted();
-        let mut candidates = candidates;
-        let registrations: Vec<(String, Option<std::path::PathBuf>)> = {
+        // The journal core mints the body-write token directly when no
+        // registration is needed; otherwise only a committed registration
+        // below may. Candidates keep their collection order.
+        let staged: Vec<StagedDraftCandidate> = {
             let manifest = self.imp().drafts.manifest.borrow();
-            let mut registrations = Vec::new();
-            for candidate in &mut candidates {
-                // The journal core mints the body-write token directly when no
-                // registration is needed; otherwise only a committed
-                // registration below may.
-                candidate.registered = draft_service::RegisteredDraft::without_registration(
-                    &candidate.draft_id,
-                    candidate.original_path.is_some(),
-                    manifest.find_by_id(&candidate.draft_id).is_some(),
-                    trusted,
-                );
-                if candidate.registered.is_none() {
-                    registrations
-                        .push((candidate.draft_id.clone(), candidate.original_path.clone()));
-                }
-            }
-            registrations
+            candidates
+                .into_iter()
+                .map(|candidate| {
+                    match draft_service::RegisteredDraft::without_registration(
+                        &candidate.draft_id,
+                        candidate.original_path.is_some(),
+                        manifest.find_by_id(&candidate.draft_id).is_some(),
+                        trusted,
+                    ) {
+                        // Minted for this candidate's id, so `into_writable`
+                        // accepts it; were it ever refused, the candidate
+                        // would take the registration path, never be dropped.
+                        Some(token) => match candidate.into_writable(token) {
+                            Ok(writable) => StagedDraftCandidate::Writable(writable),
+                            Err((candidate, _)) => {
+                                StagedDraftCandidate::NeedsRegistration(candidate)
+                            }
+                        },
+                        None => StagedDraftCandidate::NeedsRegistration(candidate),
+                    }
+                })
+                .collect()
         };
+        let registrations: Vec<(String, Option<std::path::PathBuf>)> = staged
+            .iter()
+            .filter_map(|staged| match staged {
+                StagedDraftCandidate::NeedsRegistration(candidate) => {
+                    Some((candidate.draft_id.clone(), candidate.original_path.clone()))
+                }
+                StagedDraftCandidate::Writable(_) => None,
+            })
+            .collect();
         if registrations.is_empty() {
-            then(self, candidates, Vec::new());
+            let (writable, refused) = finish_registration(staged, Vec::new(), false);
+            then(self, writable, refused);
             return;
         }
-        let required: HashSet<String> = registrations.iter().map(|(id, _)| id.clone()).collect();
         let data_dir = json_store::data_dir();
         let session = self.collect_session_for_draft_reconciliation();
         let authority = self.imp().drafts.manifest_authority.get();
@@ -173,16 +207,20 @@ impl LushtextWindow {
                         saved_at_secs: editor_io::now_epoch_secs(),
                     })
                     .collect::<Vec<_>>();
-                let result =
-                    draft_service::register_draft_entries(&data_dir, &session, authority, &entries)
-                        .map_err(DraftManifestFailure::from);
+                let result = match injected_draft_registration_failure_for_test() {
+                    Err(error) => Err(DraftManifestFailure::injected(&error)),
+                    Ok(()) => draft_service::register_draft_entries(
+                        &data_dir, &session, authority, &entries,
+                    )
+                    .map_err(DraftManifestFailure::from),
+                };
                 (result, entries)
             },
             move |(), (result, registered)| {
                 let Some(window) = window_weak.upgrade() else {
                     return;
                 };
-                let mut tokens = match window.apply_draft_registration(result, &registered) {
+                let tokens = match window.apply_draft_registration(result, &registered) {
                     Ok(tokens) => tokens,
                     Err(detail) => {
                         tracing::warn!("Failed to register new draft ids: {detail}");
@@ -190,36 +228,17 @@ impl LushtextWindow {
                     }
                 };
                 let committed = !tokens.is_empty();
-                let mut candidates = candidates;
-                for candidate in &mut candidates {
-                    if candidate.registered.is_none()
-                        && let Some(index) = tokens
-                            .iter()
-                            .position(|token| token.draft_id() == candidate.draft_id)
-                    {
-                        candidate.registered = Some(tokens.swap_remove(index));
-                    }
-                }
-                let (writable, refused): (Vec<_>, Vec<_>) =
-                    candidates.into_iter().partition(|candidate| {
-                        journal_core::may_write_after_registration(
-                            required.contains(&candidate.draft_id),
-                            committed,
-                        ) && candidate.registered.is_some()
-                    });
-                let refused = refused
-                    .into_iter()
-                    .map(|candidate| candidate.draft_id)
-                    .collect();
+                let (writable, refused) = finish_registration(staged, tokens, committed);
                 then(&window, writable, refused);
             },
         );
     }
 
-    /// Drive one autosave pass without waiting for the production timer.
+    /// Drive one periodic timer tick (the tick count, due unrestored-copy
+    /// retries, then the autosave pass) without waiting for the timer.
     #[cfg(feature = "test-utils")]
     pub fn autosave_tick_for_test(&self) {
-        self.autosave_tick();
+        self.periodic_autosave_tick();
     }
 
     /// Record that `editor` holds text its draft does not: the one draft-owed
@@ -372,7 +391,6 @@ impl LushtextWindow {
                 editor: editor.downgrade(),
                 buffer: editor.buffer(),
                 intent,
-                registered: None,
             });
         }
         (dirty_tabs, restore_blocked)
@@ -381,7 +399,7 @@ impl LushtextWindow {
     /// Snapshot and write one close candidate before admitting the next body.
     fn drive_close_draft_pipeline<F: FnOnce(Result<()>) + 'static>(
         &self,
-        mut candidates: Vec<DirtyDraftCandidate>,
+        mut candidates: Vec<WritableDraftCandidate>,
         accepted: Vec<AcceptedDraft>,
         failures: DraftPipelineFailures,
         on_done: F,
@@ -390,6 +408,7 @@ impl LushtextWindow {
             self.commit_close_draft_pipeline(accepted, failures, on_done);
             return;
         };
+        let (candidate, registered) = candidate.into_parts();
 
         let window_weak = self.downgrade();
         // Every terminal outcome clears this capture's token before the next
@@ -426,7 +445,6 @@ impl LushtextWindow {
                     let data_dir = json_store::data_dir();
                     let draft_id = candidate.draft_id.clone();
                     let original_path = candidate.original_path;
-                    let registered = candidate.registered;
                     let completion = DirtyDraftCompletion {
                         draft_id: candidate.draft_id,
                         dirty_generation: candidate.dirty_generation,
@@ -442,9 +460,6 @@ impl LushtextWindow {
                             let text = text.into_string_on_worker();
                             delay_draft_body_for_test();
                             fail_next_draft_body_for_test()?;
-                            let registered = registered.ok_or_else(|| {
-                                anyhow::anyhow!("{draft_id}: recovery metadata was not registered")
-                            })?;
                             draft_service::write_draft(&data_dir, &registered, &text)?;
                             Ok::<_, anyhow::Error>(DraftEntry {
                                 draft_id,
@@ -640,7 +655,7 @@ impl LushtextWindow {
     /// Snapshot and durably write one autosave candidate at a time.
     pub(super) fn drive_dirty_draft_pipeline(
         &self,
-        mut candidates: Vec<DirtyDraftCandidate>,
+        mut candidates: Vec<WritableDraftCandidate>,
         accepted: Vec<AcceptedDraft>,
         failures: DraftPipelineFailures,
     ) {
@@ -648,6 +663,7 @@ impl LushtextWindow {
             self.commit_dirty_draft_pipeline(accepted, failures);
             return;
         };
+        let (candidate, registered) = candidate.into_parts();
 
         let window_weak = self.downgrade();
         // Every terminal outcome clears this capture's token before the next
@@ -682,7 +698,6 @@ impl LushtextWindow {
                     let data_dir = json_store::data_dir();
                     let draft_id = candidate.draft_id.clone();
                     let original_path = candidate.original_path.clone();
-                    let registered = candidate.registered;
                     let completion = DirtyDraftCompletion {
                         draft_id: candidate.draft_id,
                         dirty_generation: candidate.dirty_generation,
@@ -699,9 +714,6 @@ impl LushtextWindow {
                             let text = text.into_string_on_worker();
                             delay_draft_body_for_test();
                             fail_next_draft_body_for_test()?;
-                            let registered = registered.ok_or_else(|| {
-                                anyhow::anyhow!("{draft_id}: recovery metadata was not registered")
-                            })?;
                             let result = draft_service::write_draft(&data_dir, &registered, &text)
                                 .map(|()| DraftEntry {
                                     draft_id,
@@ -936,4 +948,54 @@ impl LushtextWindow {
             );
         });
     }
+}
+
+/// A candidate between token minting and the pass's registration commit.
+enum StagedDraftCandidate {
+    /// Its token was minted without registration.
+    Writable(WritableDraftCandidate),
+    /// Its id must be registered before its body is written.
+    NeedsRegistration(DirtyDraftCandidate),
+}
+
+/// Partition one pass's candidates after its registration step, in
+/// collection order.
+///
+/// `journal_core::may_write_after_registration` is the gate: a candidate that
+/// needed registration is writable only when the registration committed, and
+/// then only with the token minted for its own id. Every other candidate is
+/// refused, by id, and stays draft-dirty for the next pass.
+fn finish_registration(
+    staged: Vec<StagedDraftCandidate>,
+    mut tokens: Vec<draft_service::RegisteredDraft>,
+    committed: bool,
+) -> (Vec<WritableDraftCandidate>, Vec<String>) {
+    let mut writable = Vec::new();
+    let mut refused = Vec::new();
+    for staged in staged {
+        let candidate = match staged {
+            StagedDraftCandidate::Writable(candidate) => {
+                writable.push(candidate);
+                continue;
+            }
+            StagedDraftCandidate::NeedsRegistration(candidate) => candidate,
+        };
+        let token = if journal_core::may_write_after_registration(true, committed) {
+            tokens
+                .iter()
+                .position(|token| token.draft_id() == candidate.draft_id)
+                .map(|index| tokens.swap_remove(index))
+        } else {
+            None
+        };
+        let Some(token) = token else {
+            refused.push(candidate.draft_id);
+            continue;
+        };
+        match candidate.into_writable(token) {
+            Ok(candidate) => writable.push(candidate),
+            Err((candidate, _)) => refused.push(candidate.draft_id),
+        }
+    }
+    (writable, refused)
 }

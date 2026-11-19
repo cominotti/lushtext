@@ -36,7 +36,14 @@ temp, rename, sync directory, remove temp, finish with a classification).
 `MoveProtocol` and `RenameProtocol` do the same for `move_durable` and
 `rename_durable`. `durable_write.rs` is only the shell: it executes each action
 with exactly one backend call and feeds that call's outcome back unchanged, so
-every ordering and classification decision lives in the core. Because the core
+every ordering and classification decision lives in the core. The loop that
+does this exists once, `services/protocol_drive.rs`: each core implements its
+`Protocol` trait beside its shell, and every shell (the write, move and rename
+here, and Replace All's apply, undo and journal-shrink shells) calls
+`protocol_drive::drive` with a closure that executes one action. A move's
+`Copy` action runs a whole durable write, a `drive` nested inside the move's.
+A source check (`no_shell_steps_its_core_outside_protocol_advance`) fails if a
+shell steps its core in a loop of its own. Because the core
 is finite and I/O-free, Kani (`make kani`) explores every outcome sequence and
 every crash point of the real core against a model disk with POSIX crash
 semantics, and proves:
@@ -146,25 +153,55 @@ into a silent success. Because the final temp-file sync happens *before* the
 rename, a failure there leaves the previous destination bytes intact, so the
 safe outcome is always "report failure, previous content preserved."
 
+## Temp names, labels and kill points
+
+A temp file is named `.{file}.{tag}.{pid}.{seq}.tmp` by
+`services/filesystem/temp_name.rs`, the one owner of the format: `format`
+builds it and `parse` is the crash-leftover sweep's predicate. The tag is a
+`WriteLabel`, a closed set of constants (`WriteLabel::KNOWN`), and the label
+travels as a `WriteLabel` from the public entry points through the durable
+write, copy and move down to `temp_name::format`, which is the only place it
+becomes a string. A caller therefore cannot write a temp whose tag the sweep
+would not recognise; a name with an unknown tag can only be crafted by hand,
+and `parse` refuses it. The names are pinned per label by
+`the_builder_emits_the_same_temp_name_for_every_known_label`, because the
+sweep reads names that older builds wrote.
+
+The startup sweep (`services/app_data_leftovers.rs`) does not keep its own
+list of where temps can land: it visits every location the app-data layout
+(`services/app_data_layout.rs`) marks swept, in a fixed order that spends its
+shared budget the same way on every launch: the flat directories, each
+format-upgrade run with its `items/`, each local-history lineage, then the
+legacy folder-note sidecar directory last. A file location is covered by its
+parent directory, which a unit test checks is swept, so a new location added
+to the layout is covered or fails to compile.
+
+The crash smoke's kill points (`services/kill_point.rs`, feature
+`crash-kill-points`) narrow on a key, `LUSHTEXT_KILL_AT=name@key#n`. The key
+is the write label's string for the durable-write and Replace All windows
+(`durable-renamed-before-dirsync@json`, for example), and the **draft id**
+for the two draft windows, which is why `kill_point::reach` keeps taking a
+string.
+
 ## Using it
 
-Prefer the shared helper over hand-rolled temp+rename:
+Prefer the shared helper over hand-rolled temp+rename. Callers use the public
+boundary, `services::filesystem::write`, and name the write with a label:
 
 ```rust
-use crate::services::durable_write;
+use crate::services::filesystem::{WriteLabel, write as fs_write};
 
 // Don't care about the failure phase:
-durable_write::atomic_write_bytes(path, "save", bytes)?;
+fs_write::atomic_replace(path, WriteLabel::SAVE, bytes)?;
 
-// Need to distinguish lost-write from durability-unconfirmed:
-durable_write::atomic_write_bytes_classified(path, "save", bytes)
-    .map_err(|e| match e {
-        durable_write::DurableWriteError::BeforeRename(io) => /* report failure */,
-        durable_write::DurableWriteError::AfterRename(io)  => /* durability warning */,
-    })?;
-
-durable_write::atomic_write_stream_classified(path, "json", |writer| {
+// Stream into the temp file, distinguishing lost-write from
+// durability-unconfirmed:
+fs_write::atomic_replace_stream(path, WriteLabel::JSON, |writer| {
     serde_json::to_writer_pretty(writer, value).map_err(std::io::Error::other)
+})
+.map_err(|e| match e {
+    fs_write::DurableWriteError::BeforeRename(io) => /* report failure */,
+    fs_write::DurableWriteError::AfterRename(io)  => /* durability warning */,
 })?;
 ```
 

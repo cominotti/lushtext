@@ -3,7 +3,8 @@
 //! Replace All undo and cancellation rollback: the shell of
 //! [`ReplaceUndoProtocol`] (design D6).
 //!
-//! Each entry runs U0–U3 under its target guard: take facts, stream-hash the
+//! Each entry runs U0–U3 under its target guard, through
+//! `protocol_drive::drive`: take facts, stream-hash the
 //! current file, admit and stream the original back from its body (or, for a
 //! legacy entry, from the entry JSON re-read on this worker), then retire the
 //! entry before its body. Nothing here holds a whole file.
@@ -26,6 +27,7 @@ use crate::services::filesystem::read::{BoundedStreamError, stream_bounded};
 use crate::services::filesystem::types::FileFacts;
 use crate::services::filesystem::{WriteLabel, metadata as fs_metadata, write as fs_write};
 use crate::services::kill_point::{self, KillWindow};
+use crate::services::protocol_drive::{Protocol, drive};
 use crate::services::search_backup;
 
 /// Restore files from backup (undo Replace All).
@@ -149,6 +151,24 @@ pub(super) fn rollback_applied_files(backup: &ReplaceUndoBackup) -> RollbackResu
     result
 }
 
+/// One entry's undo protocol as [`drive`] runs it.
+impl Protocol for ReplaceUndoProtocol {
+    type Action = UndoAction;
+    type Outcome = UndoOutcome;
+    type End = UndoEnd;
+
+    fn end(action: UndoAction) -> Option<UndoEnd> {
+        match action {
+            UndoAction::Finish(end) => Some(end),
+            _ => None,
+        }
+    }
+
+    fn advance(&mut self, outcome: UndoOutcome) -> UndoAction {
+        self.step(outcome)
+    }
+}
+
 /// State one Undo carries across its entries: whether the manifest still
 /// needs re-arming for this launch (design D6, D9).
 struct UndoSession<'a> {
@@ -175,84 +195,78 @@ impl<'a> UndoSession<'a> {
         // A legacy entry belongs to a manifest that lists it, so it is retired
         // by the manifest rewrite of the caller's shrink, never here.
         let retire = matches!(entry.original_source, UndoOriginal::Body(_));
-        let (mut protocol, mut action) = ReplaceUndoProtocol::start(self.rearm_needed, retire);
+        let (mut protocol, first) = ReplaceUndoProtocol::start(self.rearm_needed, retire);
         let mut guard = None;
         let mut facts: Option<FileFacts> = None;
-        let end = loop {
-            let outcome = match action {
-                UndoAction::Finish(end) => break end,
-                UndoAction::AcquireTarget => match fs_write::TargetWriteGuard::acquire(path) {
-                    Err(_) => UndoOutcome::Failed,
-                    Ok(acquired) => {
-                        guard = Some(acquired);
-                        match fs_metadata::file_facts(path) {
-                            Err(_) => UndoOutcome::Failed,
-                            Ok(found) => {
-                                facts = Some(found);
-                                run_undo_after_metadata_hook_for_test(path);
-                                UndoOutcome::Done
-                            }
-                        }
-                    }
-                },
-                UndoAction::HashCurrent => UndoOutcome::Current(current_content(
-                    path,
-                    entry,
-                    facts.as_ref().expect("facts precede the hash"),
-                )),
-                UndoAction::RearmJournal => {
-                    if self.rearm() {
-                        UndoOutcome::Done
-                    } else {
-                        UndoOutcome::Failed
-                    }
-                }
-                UndoAction::AdmitRestore => {
-                    // The raw need only, never the reserve: `main`'s undo wrote
-                    // the same temp with none (design D6).
-                    let free = fs_metadata::free_space(fs_write::parent_or_current(path)).ok();
-                    if disk_admits(free, entry.original.len, false) {
-                        UndoOutcome::Done
-                    } else {
-                        UndoOutcome::Failed
-                    }
-                }
-                UndoAction::WriteRestore => {
-                    match write_restore(
-                        path,
-                        entry,
-                        facts.as_ref().expect("facts precede the restore"),
-                        bytes,
-                    ) {
-                        // A rename whose directory sync failed holds the
-                        // original bytes: it is restored, and the next hash
-                        // of a retry sees them.
-                        Ok(()) | Err(fs_write::DurableWriteError::AfterRename(_)) => {
+        let end = drive(&mut protocol, first, |action| match action {
+            UndoAction::AcquireTarget => match fs_write::TargetWriteGuard::acquire(path) {
+                Err(_) => UndoOutcome::Failed,
+                Ok(acquired) => {
+                    guard = Some(acquired);
+                    match fs_metadata::file_facts(path) {
+                        Err(_) => UndoOutcome::Failed,
+                        Ok(found) => {
+                            facts = Some(found);
+                            run_undo_after_metadata_hook_for_test(path);
                             UndoOutcome::Done
                         }
-                        Err(fs_write::DurableWriteError::BeforeRename(_)) => UndoOutcome::Failed,
                     }
                 }
-                UndoAction::RemoveEntry => {
-                    match crate::services::filesystem::mutate::remove_file_if_exists(
-                        &entry.entry_file,
-                    ) {
+            },
+            UndoAction::HashCurrent => UndoOutcome::Current(current_content(
+                path,
+                entry,
+                facts.as_ref().expect("facts precede the hash"),
+            )),
+            UndoAction::RearmJournal => {
+                if self.rearm() {
+                    UndoOutcome::Done
+                } else {
+                    UndoOutcome::Failed
+                }
+            }
+            UndoAction::AdmitRestore => {
+                // The raw need only, never the reserve: `main`'s undo wrote
+                // the same temp with none (design D6).
+                let free = fs_metadata::free_space(fs_write::parent_or_current(path)).ok();
+                if disk_admits(free, entry.original.len, false) {
+                    UndoOutcome::Done
+                } else {
+                    UndoOutcome::Failed
+                }
+            }
+            UndoAction::WriteRestore => {
+                match write_restore(
+                    path,
+                    entry,
+                    facts.as_ref().expect("facts precede the restore"),
+                    bytes,
+                ) {
+                    // A rename whose directory sync failed holds the
+                    // original bytes: it is restored, and the next hash
+                    // of a retry sees them.
+                    Ok(()) | Err(fs_write::DurableWriteError::AfterRename(_)) => UndoOutcome::Done,
+                    Err(fs_write::DurableWriteError::BeforeRename(_)) => UndoOutcome::Failed,
+                }
+            }
+            UndoAction::RemoveEntry => {
+                match crate::services::filesystem::mutate::remove_file_if_exists(&entry.entry_file)
+                {
+                    Ok(_) => UndoOutcome::Done,
+                    Err(_) => UndoOutcome::Failed,
+                }
+            }
+            UndoAction::RemoveBody => match &entry.original_source {
+                UndoOriginal::Body(body) => {
+                    match crate::services::filesystem::mutate::remove_file_if_exists(body) {
                         Ok(_) => UndoOutcome::Done,
                         Err(_) => UndoOutcome::Failed,
                     }
                 }
-                UndoAction::RemoveBody => match &entry.original_source {
-                    UndoOriginal::Body(body) => {
-                        match crate::services::filesystem::mutate::remove_file_if_exists(body) {
-                            Ok(_) => UndoOutcome::Done,
-                            Err(_) => UndoOutcome::Failed,
-                        }
-                    }
-                    UndoOriginal::LegacyEntry => UndoOutcome::Done,
-                },
-            };
-            action = protocol.step(outcome);
-        };
+                UndoOriginal::LegacyEntry => UndoOutcome::Done,
+            },
+            UndoAction::Finish(_) => unreachable!("`drive` never executes the terminal action"),
+        });
         self.rearm_needed = protocol.rearm_needed();
         drop(guard);
         (end, facts)

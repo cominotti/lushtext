@@ -281,6 +281,8 @@ fn is_legacy_folder_note_compatibility(relative: &str, line: &str) -> bool {
             | "docs/recovery-reliability.md"
             | "openspec/specs/workspace-notes/spec.md"
             | "crates/lushtext-core/src/model/migration_ledger.rs"
+            | "crates/lushtext-core/src/services/app_data_layout.rs"
+            | "crates/lushtext-core/src/services/app_data_leftovers.rs"
             | "crates/lushtext-core/src/services/folder_note_service.rs"
             | "crates/lushtext-core/src/services/format_upgrade/diagnostics.rs"
             | "crates/lushtext-core/src/services/format_upgrade/inventory.rs"
