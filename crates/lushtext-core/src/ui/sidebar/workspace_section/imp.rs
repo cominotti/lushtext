@@ -20,7 +20,9 @@ pub(super) use super::context_menus::FileContextTarget;
 use super::folder_execution::{
     ActiveFolderEmptyProbe, FolderEmptyProbeKey, PendingFolderEmptyProbe,
 };
-use super::scan_execution::{ActiveChildScan, PendingChildScan, RetiringListing};
+use super::scan_execution::{
+    ActiveChildScan, ChildCacheAdoption, PendingChildScan, RetiringListing,
+};
 use super::watch_targets::MaterializedWatchTargets;
 use crate::model::workspace::{
     FolderTreeEntry, WorkspaceFolderId, WorkspaceFolderMoveDirection, WorkspaceId,
@@ -58,13 +60,30 @@ type WorkspaceCallback = Box<dyn Fn(&WorkspaceId)>;
 /// Cached position of a file tree item for O(1) model removal.
 /// Stores the parent directory (or `None` for configured top-level rows) and
 /// the index within the parent's `ListStore`.
-#[derive(Debug, Clone, Eq, PartialEq)]
+///
+/// Two locations are equal when they name the same position: the cache epoch
+/// is bookkeeping, not part of the position.
+#[derive(Debug, Clone)]
 pub struct ItemLocation {
     /// Parent directory store containing the item; `None` means top-level folder row.
     pub parent_dir: Option<PathBuf>,
     /// Current index within that parent `ListStore` for direct removal.
     pub index: usize,
+    /// The section's cache epoch when this location was cached. A sliced
+    /// collapse detaches its directories' path caches whole at its intent
+    /// (`slice-large-directory-collapse` D24): every location under a
+    /// detached parent cached at or before the detach's epoch is stale, and
+    /// no reader sees it, until the listing retirement removes it.
+    pub epoch: u64,
 }
+
+impl PartialEq for ItemLocation {
+    fn eq(&self, other: &Self) -> bool {
+        self.parent_dir == other.parent_dir && self.index == other.index
+    }
+}
+
+impl Eq for ItemLocation {}
 
 /// Runtime widget references for the section-owned peek popover.
 #[derive(Default)]
@@ -144,6 +163,23 @@ pub struct RefreshRuntimeState {
     /// Cache resets because a new live store took over a directory, each
     /// costing the previous store's rows once.
     pub cache_owner_resets: Cell<u64>,
+    /// Path-cache rows that sliced collapse steps removed one by one: zero
+    /// whenever the collapse detached the caches at its intent
+    /// (`slice-large-directory-collapse` D24).
+    pub cache_collapse_rows_removed: Cell<u64>,
+    /// Directory path caches a sliced collapse detached at its intent.
+    pub cache_detached_parents: Cell<u64>,
+    /// Stale entries of detached caches the listing retirement removed.
+    pub cache_detached_rows_retired: Cell<u64>,
+    /// Calls of the walk that restores a unique path's location after its
+    /// duplicate left (`restore_unique_item_location`).
+    pub cache_unique_restores: Cell<u64>,
+    /// Rows the adoptions of re-expanded directories cached, ever.
+    pub cache_adopted_rows: Cell<u64>,
+    /// Most rows one adoption turn cached.
+    pub cache_adopted_rows_turn_high_water: Cell<usize>,
+    /// Whole-mirror re-caches of a directory in one call, ever.
+    pub cache_mirror_recaches: Cell<u64>,
     /// Largest cache operation count one applied batch performed.
     pub cache_batch_operations_high_water: Cell<usize>,
     /// Largest number of row batches one GTK turn applied.
@@ -386,6 +422,18 @@ pub struct LushtextWorkspaceSection {
     pub visible_path_counts: RefCell<HashMap<PathBuf, usize>>,
     /// O(1) path → (parent, index) lookup for fast model removal.
     pub item_locations: RefCell<HashMap<PathBuf, ItemLocation>>,
+    /// The cache epoch new locations carry (`ItemLocation::epoch`).
+    pub(super) child_cache_epoch: Cell<u64>,
+    /// Directories whose path caches a sliced collapse detached, each with
+    /// the last epoch its stale locations carry; an entry goes when the
+    /// listing retirement has removed that detach's entries
+    /// (`slice-large-directory-collapse` D24).
+    pub(in crate::ui::sidebar) detached_child_caches: RefCell<HashMap<PathBuf, u64>>,
+    /// Re-expanded directories whose remaining rows are being cached again
+    /// in slices after their caches were detached (D24).
+    pub(in crate::ui::sidebar) child_cache_adoptions: RefCell<HashMap<PathBuf, ChildCacheAdoption>>,
+    /// The idle source running `child_cache_adoptions`, while one is armed.
+    pub(super) child_cache_adoption_source: RefCell<Option<glib::SourceId>>,
     /// Widgets backing the section-owned file peek popover.
     pub peek_widgets: PeekWidgets,
     /// Active peek target, generation, and focus-return contract.

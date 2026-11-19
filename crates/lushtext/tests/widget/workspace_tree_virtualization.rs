@@ -3119,6 +3119,76 @@ fn test_bound_units_run_outside_the_frame() {
     drop(tree.window);
 }
 
+/// Design D23 (task 10.9's guard, the large and held cases): at 0:131,072
+/// the first step-source dispatch after the input removes D23's one unbound
+/// chunk, before the first frame, and the between-frames idle removes the
+/// rest of the unbound rows; under `CollapsePacingForTest::Hold` nothing is
+/// removed at all.
+#[test]
+fn test_a_large_collapse_takes_one_chunk_then_the_between_frames_idle() {
+    use lushtext_core::ui::sidebar::workspace_section::StepDispatchKind as Kind;
+    let count = 1 << 17;
+    let (tree, nested) = expanded_nested(count, 0);
+    let events = collapse_rows_per_frame_phase(&tree, &nested);
+    let first_frame = events.first().map_or(i64::MAX, |first| first.1);
+    let dispatches = tree
+        .section
+        .workspace_section_evidence()
+        .collapse_step_dispatches;
+    let before_first: Vec<_> = dispatches
+        .iter()
+        .filter(|dispatch| dispatch.frame_counter < first_frame)
+        .filter(|dispatch| dispatch.kind != Kind::Idle)
+        .collect();
+    assert!(
+        before_first
+            .first()
+            .is_some_and(|first| first.kind == Kind::Chunk),
+        "the first step-source dispatch takes D23's chunk: {before_first:?}"
+    );
+    assert_eq!(
+        before_first
+            .iter()
+            .filter(|dispatch| dispatch.kind == Kind::Chunk)
+            .count(),
+        1,
+        "one chunk from the step source before the first frame: {before_first:?}"
+    );
+    assert!(
+        dispatches
+            .iter()
+            .any(|dispatch| dispatch.kind == Kind::Between),
+        "the between-frames idle removes the rest: {dispatches:?}"
+    );
+    assert!(
+        tree.section
+            .workspace_section_evidence()
+            .collapse_between_steps_total
+            > 0
+    );
+    // Held: the input dispatch and everything after it remove nothing.
+    expand_and_load(&tree, &nested, count);
+    flush_after_delay(Duration::from_millis(300));
+    let pacing = Pacing::set(CollapsePacing::Hold);
+    let store = row_for_path(&tree.section, &nested)
+        .and_then(|row| row.children())
+        .and_downcast::<gtk4::gio::ListStore>()
+        .expect("the directory's store");
+    activate_tree_row(&tree.section, &nested);
+    flush_after_delay(Duration::from_millis(300));
+    assert_eq!(
+        store.n_items(),
+        u32::try_from(count).unwrap_or(u32::MAX),
+        "a held collapse removes no row: {}",
+        collapse_state(&tree.section)
+    );
+    drop(pacing);
+    wait_until(Duration::from_secs(120), || {
+        collapse_settled(&tree.section, &nested)
+    });
+    drop(tree.window);
+}
+
 /// Design D25 (task 11.3): each frame's `after-paint` arms the step source,
 /// which runs before the next frame (ledger A125): while the subtree still
 /// lists rows at a frame's `after-paint`, the next frame's `before-paint`
@@ -5484,8 +5554,17 @@ fn print_case(
     // R9's allowance, `max(0, R - 16,384) x 0.5 us`, in whole microseconds.
     let allowance_us = subtree_rows.saturating_sub(16 * 1024) / 2;
     let input_over_interact = input_us > B_INTERACT_US;
+    // Task 7.1 (rung T1's figure): the input plus the timeline up to the end
+    // of its first frame dispatch, against `INPUT_TO_FRAME_US`.
+    let input_to_frame_us = timeline
+        .dispatches
+        .iter()
+        .find(|dispatch| dispatch.layout_us.is_some())
+        .map(|frame| input_us + frame.start_us + frame.took_us);
+    let input_to_frame_over = input_to_frame_us
+        .is_some_and(|us| !lushtext_core::model::responsiveness_budget::input_to_frame_within(us));
     println!(
-        "collapse-verdict {{\"case\":\"{case}\",\"siblings\":{siblings},\"entries\":{entries},\"subtree_rows\":{subtree_rows},\"r9_allowance_us\":{allowance_us},\"input_us\":{input_us},\"input_over_interact\":{input_over_interact},\"worst_frame_us\":{},\"worst_frame_layout_us\":{},\"worst_frame_paint_us\":{},\"worst_other_us\":{},\"done_us\":{},\"shown_us\":{},\"picture_final_us\":{},\"mono_start_us\":{},\"terminals_before_shown\":{},\"step_us_max\":{step_us_max},\"dispatches\":{},\"over_interact\":{},\"over_settle\":{}}}",
+        "collapse-verdict {{\"case\":\"{case}\",\"siblings\":{siblings},\"entries\":{entries},\"subtree_rows\":{subtree_rows},\"r9_allowance_us\":{allowance_us},\"input_us\":{input_us},\"input_over_interact\":{input_over_interact},\"worst_frame_us\":{},\"worst_frame_layout_us\":{},\"worst_frame_paint_us\":{},\"worst_other_us\":{},\"done_us\":{},\"shown_us\":{},\"picture_final_us\":{},\"mono_start_us\":{},\"terminals_before_shown\":{},\"step_us_max\":{step_us_max},\"dispatches\":{},\"over_interact\":{},\"over_settle\":{},\"input_to_frame_us\":{},\"input_to_frame_over\":{input_to_frame_over}}}",
         timeline.worst(true),
         timeline.worst_layout(),
         timeline.worst_paint(),
@@ -5506,6 +5585,7 @@ fn print_case(
         timeline.dispatches.len(),
         timeline.over(B_INTERACT_US),
         timeline.over(B_SETTLE_US),
+        input_to_frame_us.map_or_else(|| "null".to_owned(), |us| us.to_string()),
     );
     print_step_dispatches(section, case, siblings, entries, timeline.mono_start_us);
 }
@@ -7286,4 +7366,342 @@ fn test_replayed_navigation_matches_gtk() {
     tree.window.remove_controller(&recorder);
     drop(watch);
     drop(tree.window);
+}
+
+// ---------------------------------------------------------------------------
+// Design D24 (task 10.15): the path cache leaves the collapse's steps.
+// ---------------------------------------------------------------------------
+
+/// The sibling paths `directory`'s path cache holds, read from the listing
+/// of the store that owns it: GTK's `is_expandable()` probe store lists the
+/// same directory and owns no cache (A22).
+fn cached_paths(section: &LushtextWorkspaceSection, directory: &Path) -> usize {
+    section
+        .workspace_section_evidence()
+        .directory_listings
+        .iter()
+        .filter(|listing| listing.path == directory)
+        .map(|listing| listing.cached_paths)
+        .max()
+        .unwrap_or(0)
+}
+
+/// Design D24: a sliced 131,072-entry collapse detaches the directory's path
+/// cache at its intent, so no collapse step removes a path-cache row, the
+/// consistency fallback never runs, and the listing retirement removes the
+/// detached entries afterwards. Fails before D24: every chunk and bound step
+/// spliced its rows out of the caches (`cache_collapse_rows_removed` counts
+/// all 131,072).
+#[test]
+fn test_a_sliced_collapse_removes_no_path_cache_rows_in_its_steps() {
+    let count = 1 << 17;
+    let tree = tree_with_siblings(count, 0);
+    let nested = tree.root.join("nested");
+    expand_and_load(&tree, &nested, count);
+    flush_after_delay(Duration::from_millis(300));
+    let before = tree.section.workspace_section_evidence();
+    assert_eq!(
+        cached_paths(&tree.section, &nested),
+        count,
+        "the loaded directory's cache lists every entry"
+    );
+    activate_row(&tree.section, &nested);
+    let intent = tree.section.workspace_section_evidence();
+    assert_eq!(
+        intent.collapses.len(),
+        1,
+        "{}",
+        collapse_state(&tree.section)
+    );
+    assert_eq!(
+        cached_paths(&tree.section, &nested),
+        0,
+        "the cache left at the intent"
+    );
+    assert_eq!(
+        intent.cache_detached_parents,
+        before.cache_detached_parents + 1
+    );
+    wait_until(Duration::from_secs(120), || {
+        collapsed_and_settled(&tree.section, &nested)
+    });
+    let after = tree.section.workspace_section_evidence();
+    assert_eq!(
+        after.cache_collapse_rows_removed, before.cache_collapse_rows_removed,
+        "no step removed a path-cache row"
+    );
+    assert_eq!(
+        after.cache_full_rebuilds, before.cache_full_rebuilds,
+        "no step reached the consistency fallback"
+    );
+    wait_until(Duration::from_secs(60), || {
+        tree.section
+            .workspace_section_evidence()
+            .cache_detached_pending
+            == 0
+    });
+    let retired = tree.section.workspace_section_evidence();
+    assert_eq!(
+        retired.cache_detached_rows_retired - before.cache_detached_rows_retired,
+        u64::try_from(count).unwrap_or(u64::MAX),
+        "the retirement removed every detached entry"
+    );
+    assert_eq!(retired.cache_unique_restores, before.cache_unique_restores);
+    drop(tree.window);
+}
+
+/// Design D24, R12: a re-expansion before the retirement of the detached
+/// cache ends caches the rows the steps left again, in slices (the
+/// adoption), before the refill's first batch: the listing ends with every
+/// entry cached, no location restored by the duplicate walk, no full
+/// rebuild and no owner reset, and the retirement, which ends afterwards,
+/// keeps every re-cached entry.
+#[test]
+fn test_reexpanding_before_the_cache_retirement_ends_recaches_every_entry() {
+    let count = 1 << 15;
+    let tree = tree_with_siblings(count, 0);
+    let nested = tree.root.join("nested");
+    expand_and_load(&tree, &nested, count);
+    flush_after_delay(Duration::from_millis(300));
+    let before = tree.section.workspace_section_evidence();
+    activate_row(&tree.section, &nested);
+    let _ = dispatch_timeline(
+        &tree.section,
+        Duration::from_millis(30),
+        Duration::ZERO,
+        || false,
+    );
+    let mid = tree.section.workspace_section_evidence();
+    assert_eq!(mid.collapses.len(), 1, "{}", collapse_state(&tree.section));
+    assert!(
+        mid.cache_detached_pending > 0,
+        "the detached cache's retirement has not ended"
+    );
+    activate_row(&tree.section, &nested);
+    wait_until(Duration::from_secs(120), || {
+        loaded_and_settled(&tree.section, &nested, count)
+            && row_for_path(&tree.section, &nested).is_some_and(|row| row.is_expanded())
+    });
+    let after = tree.section.workspace_section_evidence();
+    assert_eq!(
+        cached_paths(&tree.section, &nested),
+        count,
+        "every entry is cached again"
+    );
+    assert_eq!(
+        after.cache_mirror_recaches, before.cache_mirror_recaches,
+        "no directory re-cached whole from its mirror in one call"
+    );
+    assert_eq!(after.cache_full_rebuilds, before.cache_full_rebuilds);
+    assert_eq!(after.cache_unique_restores, before.cache_unique_restores);
+    assert_eq!(after.cache_owner_resets, before.cache_owner_resets);
+    assert_eq!(after.cache_adoptions_pending, 0);
+    assert!(
+        after.cache_adopted_rows > before.cache_adopted_rows,
+        "the adoption cached the rows the steps left"
+    );
+    assert_eq!(
+        after.cache_collapse_rows_removed,
+        before.cache_collapse_rows_removed
+    );
+    wait_until(Duration::from_secs(60), || {
+        tree.section
+            .workspace_section_evidence()
+            .cache_detached_pending
+            == 0
+    });
+    assert_eq!(
+        cached_paths(&tree.section, &nested),
+        count,
+        "the retirement kept every re-cached entry"
+    );
+    drop(tree.window);
+}
+
+/// Design D24: a subtree another workspace folder lies inside keeps the
+/// per-step cache splice instead of detaching, so the folder's path, counted
+/// twice, stays exact: the collapse detaches nothing, its steps remove the
+/// cache rows, and the second folder's row stays listed and expanded.
+#[test]
+fn test_a_subtree_holding_another_workspace_folder_is_not_detached() {
+    ensure_gtk_init();
+    let count = 4096;
+    let dir = tempfile::tempdir().expect("overlapping folders tempdir");
+    let root = dir.path().join("root");
+    let big = root.join("big");
+    let shared = big.join("shared");
+    seed_files(&big, count);
+    seed_files(&shared, 8);
+    save_workspaces(vec![WorkspaceConfig::with_folders(
+        WorkspaceId::new("overlap-inside"),
+        "overlap-inside",
+        vec![
+            WorkspaceFolder::new(root.clone()),
+            WorkspaceFolder::new(shared.clone()),
+        ],
+    )]);
+    let (window, sidebar) = present_sidebar_window(800);
+    let section = mapped_sections(&sidebar, 1).remove(0);
+    wait_until(Duration::from_secs(30), || {
+        row_for_path(&section, &root).is_some()
+    });
+    wait_for_refresh_idle(&section);
+    row_for_path(&section, &root)
+        .expect("root/")
+        .set_expanded(true);
+    wait_until(Duration::from_secs(30), || {
+        row_for_path(&section, &big).is_some()
+    });
+    wait_for_refresh_idle(&section);
+    row_for_path(&section, &big)
+        .expect("big/")
+        .set_expanded(true);
+    wait_until(Duration::from_secs(60), || {
+        loaded_and_settled(&section, &big, count + 1)
+    });
+    flush_after_delay(Duration::from_millis(300));
+    let before = section.workspace_section_evidence();
+    activate_row(&section, &big);
+    assert_eq!(
+        section.workspace_section_evidence().collapses.len(),
+        1,
+        "a sliced collapse: {}",
+        collapse_state(&section)
+    );
+    wait_until(Duration::from_secs(60), || {
+        collapsed_and_settled(&section, &big)
+    });
+    let after = section.workspace_section_evidence();
+    assert_eq!(
+        after.cache_detached_parents, before.cache_detached_parents,
+        "nothing detached"
+    );
+    assert!(
+        after.cache_collapse_rows_removed > before.cache_collapse_rows_removed,
+        "the steps kept the cache exact"
+    );
+    assert_eq!(after.cache_full_rebuilds, before.cache_full_rebuilds);
+    let model = section
+        .imp()
+        .tree_model
+        .borrow()
+        .as_ref()
+        .cloned()
+        .expect("model");
+    let top_level_shared = (0..model.n_items())
+        .filter_map(|index| model.item(index).and_downcast::<gtk4::TreeListRow>())
+        .any(|row| {
+            row.depth() == 0
+                && row
+                    .item()
+                    .and_downcast::<FileTreeItem>()
+                    .and_then(|item| item.path())
+                    .as_deref()
+                    == Some(shared.as_path())
+        });
+    assert!(top_level_shared, "the second folder's row stays listed");
+    drop(window);
+}
+
+/// Design D24: with two overlapping folders (`root/` and `root/shared/`)
+/// both showing `shared/` loaded, the collapse of the occurrence under
+/// `root/` (whose store owns the directory's path cache, having loaded
+/// last) detaches nothing, so the directory keeps the per-step cache splice
+/// as before D24, and the other occurrence keeps listing every entry. Fails
+/// when only a folder strictly inside the subtree excludes it: the collapse
+/// detached the shared directory's cache.
+#[test]
+fn test_collapsing_one_of_two_listed_occurrences_detaches_nothing() {
+    ensure_gtk_init();
+    let count = 4096;
+    let dir = tempfile::tempdir().expect("overlapping folders tempdir");
+    let root = dir.path().join("root");
+    let shared = root.join("shared");
+    seed_files(&shared, count);
+    save_workspaces(vec![WorkspaceConfig::with_folders(
+        WorkspaceId::new("overlap-both"),
+        "overlap-both",
+        vec![
+            WorkspaceFolder::new(root.clone()),
+            WorkspaceFolder::new(shared.clone()),
+        ],
+    )]);
+    let (window, sidebar) = present_sidebar_window(800);
+    let section = mapped_sections(&sidebar, 1).remove(0);
+    let row_at_depth = |path: &Path, depth: u32| {
+        let model = section.imp().tree_model.borrow().as_ref().cloned()?;
+        (0..model.n_items())
+            .filter_map(|index| model.item(index).and_downcast::<gtk4::TreeListRow>())
+            .find(|row| {
+                row.depth() == depth
+                    && row
+                        .item()
+                        .and_downcast::<FileTreeItem>()
+                        .and_then(|item| item.path())
+                        .as_deref()
+                        == Some(path)
+            })
+    };
+    let listed = |row: &gtk4::TreeListRow| {
+        row.children()
+            .and_downcast::<gtk4::gio::ListStore>()
+            .map_or(0, |store| store.n_items())
+            == u32::try_from(count).unwrap_or(u32::MAX)
+    };
+    wait_until(Duration::from_secs(30), || {
+        row_at_depth(&root, 0).is_some() && row_at_depth(&shared, 0).is_some()
+    });
+    wait_for_refresh_idle(&section);
+    // The second folder's occurrence loads first, the one under `root/`
+    // last, so the latter's store owns the directory's cache.
+    let outer = row_at_depth(&shared, 0).expect("the shared/ folder row");
+    outer.set_expanded(true);
+    wait_until(Duration::from_secs(60), || {
+        listed(&outer)
+            && !section
+                .workspace_section_evidence()
+                .refresh_blocks_readiness
+    });
+    row_at_depth(&root, 0).expect("root/").set_expanded(true);
+    wait_until(Duration::from_secs(30), || {
+        row_at_depth(&shared, 1).is_some()
+    });
+    wait_for_refresh_idle(&section);
+    let inner = row_at_depth(&shared, 1).expect("shared/ under root/");
+    inner.set_expanded(true);
+    wait_until(Duration::from_secs(60), || {
+        listed(&inner)
+            && !section
+                .workspace_section_evidence()
+                .refresh_blocks_readiness
+    });
+    flush_after_delay(Duration::from_millis(300));
+    let before = section.workspace_section_evidence();
+    section
+        .imp()
+        .file_tree_view
+        .emit_by_name::<()>("activate", &[&inner.position()]);
+    assert_eq!(
+        section.workspace_section_evidence().collapses.len(),
+        1,
+        "a sliced collapse: {}",
+        collapse_state(&section)
+    );
+    wait_until(Duration::from_secs(60), || {
+        !inner.is_expanded()
+            && !section
+                .workspace_section_evidence()
+                .refresh_blocks_readiness
+    });
+    wait_until(Duration::from_secs(60), || {
+        section.workspace_section_evidence().cache_detached_pending == 0
+    });
+    flush_after_delay(Duration::from_millis(300));
+    let after = section.workspace_section_evidence();
+    assert!(outer.is_expanded() && listed(&outer));
+    assert_eq!(
+        after.cache_detached_parents, before.cache_detached_parents,
+        "nothing detached"
+    );
+    drop(window);
 }

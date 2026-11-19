@@ -2566,6 +2566,47 @@ thresholds are pre-registered to the rounds below and to task 10.7.
     0:131,072 completion. If it costs less, D24 is void, and the
     largest LushText cost that round Q1's profile names in the unbound phase
     is cut instead, under the same failing-first discipline.
+  - *As built (task 10.15, 2026-11-19).* D24 is taken and implemented in
+    `workspace_section/scan_execution/path_cache_detach.rs`, with these
+    decisions, each recorded with its evidence in task 10.15:
+    - *The cache generation is a section-wide epoch.* Every location carries
+      the epoch it was cached at (`ItemLocation::epoch`; equality ignores
+      it), and `detached_child_caches` maps a detached parent to the last
+      epoch it retired. A location under that parent is live only when its
+      epoch is newer. Every reader goes through one accessor
+      (`live_item_location`) or the stale-unique rule below:
+      `rename_cached_item`, `remove_cached_item`, `shift_cached_indices`,
+      `capture_subtree`, and the splice and rebuild paths.
+    - *Duplicates are excluded, not counted.* A subtree one of whose
+      directories two live stores can list is not detached
+      (`subtree_is_listed_twice`: another workspace folder's root lies
+      strictly inside it, or it lies inside two folders, one inside the
+      other): it keeps the per-step splice, which keeps those paths, counted
+      twice, exact, and the cache of a shared directory with the store that
+      stays. (The first version tested only the first shape; a review found
+      the second, where the collapsing occurrence's store owned the cache the
+      other occurrence still lists.) Every detached path therefore has a count of one, so the counts
+      need one rule: a count of one whose location is stale (or absent under
+      a detached parent) is dropped before it is read or re-counted
+      (`drop_stale_unique`). The first invariant then costs nothing per row
+      inside a step, and D24 is not void.
+    - *An empty cache detaches nothing.* A store with no cached path records
+      no detach, so nothing waits on a retirement that never runs (a
+      property-test counterexample, now its regression seed).
+    - *The re-expansion adopts the cache in slices (new invariant).* A
+      re-expansion before the retirement ends would otherwise re-cache the
+      whole mirror in one dispatch through the consistency fallback (40 to
+      100 ms at 131,072 rows). Instead the refilled directory's store takes
+      ownership at once and a `G_PRIORITY_DEFAULT_IDLE` source caches the
+      mirror's rows again, `RETIRED_LISTING_ROWS_PER_UNIT` (4,096) per unit
+      within `turn_continues`; the refill's scan result is applied after it
+      ends. A mirror change abandons the adoption, and the consistency
+      fallback then repairs the cache as before.
+    - *The retirement keeps the re-cached entries.* It removes a location
+      only while its epoch is at most the retired one, and a count only
+      while no location is left behind a count of one, so a re-expansion
+      that re-cached a path keeps it; a later detach of the same directory
+      outlives an earlier retirement.
 - **D18's constant, re-chosen under the margin.** `COLLAPSE_DESTROY_ONLY_ROWS`
   candidates are 64, 128 and 256. Task 10.7 takes the largest whose worst
   step fits `B_INTERACT_US` and whose worst frame fits the 12 ms of task 10.4.

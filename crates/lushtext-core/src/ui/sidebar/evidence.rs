@@ -450,6 +450,10 @@ pub struct DirectoryListingEvidence {
     pub directory_limited: bool,
     /// Loading rows ending the listing (zero or one).
     pub loading_tail_rows: usize,
+    /// Sibling paths the directory's path cache holds when this listing's
+    /// store owns it, else zero (a detached or another store's cache;
+    /// `slice-large-directory-collapse` D24).
+    pub cached_paths: usize,
 }
 
 /// One complete observation of a single workspace **section**'s state.
@@ -496,6 +500,27 @@ pub struct WorkspaceSectionEvidence {
     pub cache_full_rebuilds: u64,
     /// Cache resets because a new live store took over a directory.
     pub cache_owner_resets: u64,
+    /// Path-cache rows sliced collapse steps removed one by one (zero when
+    /// the collapse detached the caches at its intent, design D24).
+    pub cache_collapse_rows_removed: u64,
+    /// Directory path caches sliced collapses detached at their intent.
+    pub cache_detached_parents: u64,
+    /// Detached caches whose stale entries the retirement has not finished.
+    pub cache_detached_pending: usize,
+    /// Stale entries of detached caches the retirement removed.
+    pub cache_detached_rows_retired: u64,
+    /// Calls of the walk restoring a unique path's location.
+    pub cache_unique_restores: u64,
+    /// Re-expanded directories whose remaining rows are being cached again.
+    pub cache_adoptions_pending: usize,
+    /// Rows those adoptions cached, ever.
+    pub cache_adopted_rows: u64,
+    /// Most rows one adoption turn cached.
+    pub cache_adopted_rows_turn_high_water: usize,
+    /// Directories re-cached whole from their mirror in one call (the
+    /// consistency fallback, a take-over by a new store, or a refill without
+    /// D24's adoption), ever.
+    pub cache_mirror_recaches: u64,
     /// Largest cache operation count one applied batch performed.
     pub cache_batch_operations_high_water: usize,
     /// Largest number of row batches one GTK turn applied.
@@ -645,6 +670,15 @@ impl LushtextWorkspaceSection {
         let cache_rebuild_operations = refresh.cache_rebuild_operations.get();
         let cache_full_rebuilds = refresh.cache_full_rebuilds.get();
         let cache_owner_resets = refresh.cache_owner_resets.get();
+        let cache_collapse_rows_removed = refresh.cache_collapse_rows_removed.get();
+        let cache_detached_parents = refresh.cache_detached_parents.get();
+        let cache_detached_pending = imp.detached_child_caches.borrow().len();
+        let cache_detached_rows_retired = refresh.cache_detached_rows_retired.get();
+        let cache_unique_restores = refresh.cache_unique_restores.get();
+        let cache_adoptions_pending = imp.child_cache_adoptions.borrow().len();
+        let cache_adopted_rows = refresh.cache_adopted_rows.get();
+        let cache_adopted_rows_turn_high_water = refresh.cache_adopted_rows_turn_high_water.get();
+        let cache_mirror_recaches = refresh.cache_mirror_recaches.get();
         let cache_batch_operations_high_water = refresh.cache_batch_operations_high_water.get();
         let reconcile_max_batches_per_turn = refresh.reconcile_max_batches_per_turn.get();
         let reconcile_last_terminal_us = refresh.reconcile_last_terminal_us.get();
@@ -715,6 +749,15 @@ impl LushtextWorkspaceSection {
             cache_rebuild_operations,
             cache_full_rebuilds,
             cache_owner_resets,
+            cache_collapse_rows_removed,
+            cache_detached_parents,
+            cache_detached_pending,
+            cache_detached_rows_retired,
+            cache_unique_restores,
+            cache_adoptions_pending,
+            cache_adopted_rows,
+            cache_adopted_rows_turn_high_water,
+            cache_mirror_recaches,
             cache_batch_operations_high_water,
             reconcile_max_batches_per_turn,
             reconcile_last_terminal_us,
@@ -767,6 +810,8 @@ impl LushtextWorkspaceSection {
         let imp = self.imp();
         let paths = imp.child_store_paths.borrow();
         let mirrors = imp.child_row_mirrors.borrow();
+        let owners = imp.child_cache_owners.borrow();
+        let child_paths = imp.child_paths.borrow();
         let mut listings = mirrors
             .iter()
             .filter_map(|(key, rows)| {
@@ -792,7 +837,13 @@ impl LushtextWorkspaceSection {
                     .iter()
                     .filter(|row| row.placeholder == Some(DirectoryPlaceholder::Loading))
                     .count();
+                let cached_paths = if owners.get(&path) == Some(key) {
+                    child_paths.get(&path).map_or(0, Vec::len)
+                } else {
+                    0
+                };
                 Some(DirectoryListingEvidence {
+                    cached_paths,
                     path,
                     directory_retained_entries: listed,
                     directory_total_entries: budget.unwrap_or(listed),

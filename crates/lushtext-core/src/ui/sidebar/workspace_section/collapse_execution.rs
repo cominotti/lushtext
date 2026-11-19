@@ -31,7 +31,12 @@
 //!    its expander report `expanded = false`, the subtree's expansion intent
 //!    is pruned, its scans and loads and queued refresh targets are cancelled,
 //!    and selection and focus inside the subtree move to the directory row.
-//!    Every realized row of the subtree is hidden (design D22, below).
+//!    Every realized row of the subtree is hidden (design D22, below), and
+//!    each of its directories' path caches is detached whole, one map
+//!    removal each, its entries left to the listing retirement (design D24,
+//!    `scan_execution/path_cache_detach.rs`), so no step touches the caches;
+//!    a subtree another workspace folder lies inside keeps the per-step
+//!    splice instead.
 //!    A subtree of at most `DIRECT_COLLAPSE_ROWS` rows collapses directly
 //!    here instead, until the input has removed one step of rows
 //!    (`COLLAPSE_STEP_ROWS`) that way.
@@ -96,7 +101,9 @@
 //! - **Inversion: re-expansion.** An expansion of a collapsing row, by any
 //!   route, ends the collapse (`CollapseEnd::ReExpanded`) and refills the
 //!   partly drained store through `populate_child_store`, the existing scan
-//!   path. The row never left GTK's expanded state.
+//!   path. The row never left GTK's expanded state. Each refilled
+//!   directory's detached cache is adopted again from its mirror in slices
+//!   first, and the refill's scan result waits for that (design D24).
 //! - **Inversion: removal.** A refresh splice, a model reset or disposal that
 //!   removes the collapsing row ends its collapse (`CollapseEnd::Removed`);
 //!   GTK removes what is left directly.
@@ -1345,6 +1352,22 @@ impl LushtextWorkspaceSection {
             .cloned()
             .collect();
         expanded.sort_by_key(|candidate| candidate.components().count());
+        // The directories of collapses this one will take over, with their
+        // rows: their caches were detached at their own intent (design D24),
+        // so the collapse records locate them, not the path caches.
+        let collapsing: Vec<(PathBuf, gtk4::TreeListRow)> = self
+            .imp()
+            .collapse_runtime
+            .queue
+            .borrow()
+            .iter()
+            .filter(|record| record.path.starts_with(path) && record.path.as_path() != path)
+            .flat_map(|record| {
+                std::iter::once((record.path.clone(), record.row.clone()))
+                    .chain(record.descendants.iter().cloned())
+            })
+            .filter(|(_, candidate)| row_descends_from(candidate, row))
+            .collect();
         let mut found: Vec<(PathBuf, gtk4::TreeListRow)> = vec![(path.to_path_buf(), row.clone())];
         for candidate in expanded {
             let Some((parent_path, parent_row)) = found
@@ -1359,16 +1382,21 @@ impl LushtextWorkspaceSection {
             if candidate.parent() != Some(parent_path.as_path()) {
                 continue;
             }
-            let location = self
-                .imp()
-                .item_locations
-                .borrow()
-                .get(&candidate)
-                .cloned()?;
-            if location.parent_dir.as_deref() != Some(parent_path.as_path()) {
-                return None;
-            }
-            let child = parent_row.child_row(u32::try_from(location.index).ok()?)?;
+            let child = if let Some((_, taken)) = collapsing
+                .iter()
+                .find(|(collapsing_path, _)| *collapsing_path == candidate)
+            {
+                if !self.row_is_live(taken) {
+                    return None;
+                }
+                taken.clone()
+            } else {
+                let location = self.live_item_location(&candidate)?;
+                if location.parent_dir.as_deref() != Some(parent_path.as_path()) {
+                    return None;
+                }
+                parent_row.child_row(u32::try_from(location.index).ok()?)?
+            };
             if directory_path(&child).as_deref() != Some(candidate.as_path()) {
                 return None;
             }
@@ -1478,6 +1506,15 @@ impl LushtextWorkspaceSection {
             .retain(|candidate| !candidate.starts_with(&path));
         // No load, scan or refresh may append to a store being drained.
         self.stop_subtree_work(row, &path, &descendants);
+        // The steps never touch the path caches: each directory's cache
+        // leaves whole now, after `capture_subtree` and the selection move
+        // read the locations they need, and the listing retirement removes
+        // its entries in slices (design D24).
+        let stores: Vec<gio::ListStore> = std::iter::once(row)
+            .chain(descendants.iter().map(|(_, descendant)| descendant))
+            .filter_map(|candidate| candidate.children().and_downcast::<gio::ListStore>())
+            .collect();
+        super::scan_execution::detach_child_caches(self, &path, &stores);
         // Several collapses drain bottom-up (design R5, D7): a later
         // subtree's rows leave while unbound, so an earlier one's units bring
         // in only rows already collapsed. Removals never reorder two disjoint
@@ -1663,6 +1700,9 @@ impl LushtextWorkspaceSection {
             for (path, row) in refill {
                 imp.expanded_paths.borrow_mut().insert(path.clone());
                 if let Some(store) = row.children().and_downcast::<gio::ListStore>() {
+                    // Cache the rows the steps left before the refill's first
+                    // batch splices the caches (design D24).
+                    super::scan_execution::adopt_child_cache(self, &path, &store);
                     super::scan_execution::populate_child_store(self, &path, &store);
                 }
             }

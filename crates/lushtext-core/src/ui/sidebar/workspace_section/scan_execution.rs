@@ -60,6 +60,15 @@ use std::time::Duration;
 
 use super::super::file_tree_item::FileTreeItem;
 
+mod path_cache_detach;
+
+pub(crate) use path_cache_detach::ChildCacheAdoption;
+use path_cache_detach::{
+    DetachedCache, cancel_child_cache_adoptions, defer_until_adopted, drop_stale_unique,
+    location_is_live, retire_detached_rows,
+};
+pub(in crate::ui::sidebar) use path_cache_detach::{adopt_child_cache, detach_child_caches};
+
 struct ChildScanResult {
     cancelled: bool,
     error: Option<String>,
@@ -139,7 +148,10 @@ const CHILD_APPEND_BATCH_SIZE: usize = 256;
 const STALE_CACHE_ROWS_PER_UNIT: usize = 4 * 1024;
 
 /// Items a retiring listing's store, or rows its mirror, drop per unit; a
-/// turn runs units while `model::list_budget::turn_continues` holds.
+/// turn runs units while `model::list_budget::turn_continues` holds. The same
+/// unit bounds the path-cache entries one unit of a detached cache's
+/// retirement removes, and the rows one unit of a re-expanded directory's
+/// cache adoption caches (`slice-large-directory-collapse` D24).
 ///
 /// Kind: cap; a power of two, rounded down.
 const RETIRED_LISTING_ROWS_PER_UNIT: usize = 4 * 1024;
@@ -158,6 +170,9 @@ pub(crate) struct RetiringListing {
     /// The path-cache copies of those rows' paths, freed in these slices
     /// too rather than in the collapse step (task 10.3).
     paths: Vec<PathBuf>,
+    /// A directory's path cache a sliced collapse detached at its intent,
+    /// whose entries these slices remove (design D24).
+    detached: Option<DetachedCache>,
 }
 
 /// Rows per batch, one batch per frame, while a directory that was empty
@@ -468,6 +483,7 @@ fn clear_dir_states(section: &LushtextWorkspaceSection, roots: &HashSet<PathBuf>
     let under_removed_root =
         |path: &Path| path.ancestors().any(|ancestor| roots.contains(ancestor));
     super::folder_execution::cancel_folder_empty_probes_under_roots(section, roots);
+    cancel_child_cache_adoptions(section, under_removed_root);
     // Accepted removals retire expansion intent for the affected subtrees so a
     // later refresh cannot resurrect paths that no longer exist.
     section
@@ -559,6 +575,7 @@ fn retire_child_store(section: &LushtextWorkspaceSection, store: gio::ListStore)
     let store_key = child_store_key(&store);
     cancel_child_store_runtime(section, store_key);
     let imp = section.imp();
+    path_cache_detach::cancel_adoption_of_store(section, store_key);
     let mirror = imp
         .child_row_mirrors
         .borrow_mut()
@@ -576,6 +593,7 @@ fn retire_child_store(section: &LushtextWorkspaceSection, store: gio::ListStore)
             mirror,
             items: Vec::new(),
             paths: Vec::new(),
+            detached: None,
         },
     );
 }
@@ -652,12 +670,32 @@ fn drain_retiring_listings(section: &LushtextWorkspaceSection) -> bool {
                 .len()
                 .saturating_sub(RETIRED_LISTING_ROWS_PER_UNIT);
             listing.paths.truncate(keep);
+        } else if let Some(detached) = listing.detached.as_mut() {
+            let imp = section.imp();
+            let retired = retire_detached_rows(
+                &mut imp.visible_path_counts.borrow_mut(),
+                &mut imp.item_locations.borrow_mut(),
+                &mut imp.detached_child_caches.borrow_mut(),
+                detached,
+                RETIRED_LISTING_ROWS_PER_UNIT,
+            );
+            let refresh = &imp.refresh_runtime;
+            refresh.cache_detached_rows_retired.set(
+                refresh
+                    .cache_detached_rows_retired
+                    .get()
+                    .saturating_add(u64::try_from(retired).unwrap_or(u64::MAX)),
+            );
+            if detached.paths.is_empty() {
+                listing.detached = None;
+            }
         }
         units += 1;
         if !listing.items.is_empty()
             || listing.store.n_items() > 0
             || !listing.mirror.is_empty()
             || !listing.paths.is_empty()
+            || listing.detached.is_some()
         {
             section
                 .imp()
@@ -672,6 +710,7 @@ fn drain_retiring_listings(section: &LushtextWorkspaceSection) -> bool {
 pub(super) fn clear_all_dir_state(section: &LushtextWorkspaceSection) {
     // A model reset ends every collapse; GTK drops what is left of it.
     section.cancel_all_collapses();
+    cancel_child_cache_adoptions(section, |_| true);
     section
         .imp()
         .child_scan_lifetime
@@ -1057,13 +1096,11 @@ pub(super) fn drain_child_store(
         .borrow()
         .get(&store_key)
         .cloned();
-    // ATTRIBUTION PATCH (not committed): `SLC_SKIP_CACHE=1` bypasses the
-    // cache splice, the upper bound of task 10.3's bookkeeping cut.
-    static SLC_SKIP_CACHE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    let skip_cache = *SLC_SKIP_CACHE.get_or_init(|| std::env::var_os("SLC_SKIP_CACHE").is_some());
+    // A collapse that detached this directory's cache at its intent (design
+    // D24) left it unowned, so no step reaches the cache: only a subtree
+    // another workspace folder lies inside keeps this per-step splice.
     let mut removed_paths = Vec::new();
-    if !skip_cache
-        && let Some(parent) = parent
+    if let Some(parent) = parent
         && section.imp().child_cache_owners.borrow().get(&parent) == Some(&store_key)
     {
         removed_paths = section.drain_child_rows_cache(
@@ -1072,6 +1109,13 @@ pub(super) fn drain_child_store(
             path_start,
             path_count,
             old_path_rows,
+        );
+        let refresh = &section.imp().refresh_runtime;
+        refresh.cache_collapse_rows_removed.set(
+            refresh
+                .cache_collapse_rows_removed
+                .get()
+                .saturating_add(u64::try_from(removed_paths.len()).unwrap_or(u64::MAX)),
         );
     }
     if !removed_items.is_empty() || !removed_rows.is_empty() || !removed_paths.is_empty() {
@@ -1082,6 +1126,7 @@ pub(super) fn drain_child_store(
                 mirror: removed_rows,
                 items: removed_items,
                 paths: removed_paths,
+                detached: None,
             },
         );
     }
@@ -1224,6 +1269,12 @@ struct ScannedChildrenPlan {
 
 /// Apply one worker-computed plan through the direct or bounded GTK path.
 fn apply_scanned_children(section: &LushtextWorkspaceSection, scanned: ScannedChildrenPlan) {
+    // A re-expanded directory whose cache is being adopted again applies its
+    // refill once the adoption ends, so its first batch finds the caches
+    // exact (design D24).
+    let Some(scanned) = defer_until_adopted(section, scanned) else {
+        return;
+    };
     let ScannedChildrenPlan {
         store,
         dir_path,
@@ -1655,6 +1706,13 @@ fn reserve_child_cache_capacity(
         .entry(dir_path.to_path_buf())
         .or_default()
         .reserve(additional);
+    // While a detached cache of this directory waits for its retirement, the
+    // maps still hold its stale keys, which the load's rows overwrite in
+    // place: reserving for them too would rehash every entry in this
+    // dispatch (design D24).
+    if imp.detached_child_caches.borrow().contains_key(dir_path) {
+        return;
+    }
     imp.item_locations.borrow_mut().reserve(additional);
     imp.visible_path_counts.borrow_mut().reserve(additional);
 }
@@ -2057,10 +2115,28 @@ impl LushtextWorkspaceSection {
     }
 
     pub(super) fn reset_item_cache(&self) {
+        cancel_child_cache_adoptions(self, |_| true);
         self.imp().folder_paths.borrow_mut().clear();
         self.imp().child_paths.borrow_mut().clear();
         self.imp().visible_path_counts.borrow_mut().clear();
         self.imp().item_locations.borrow_mut().clear();
+        // Nothing stale is left to tell apart: a pending retirement of a
+        // detached cache then finds none of its entries.
+        self.imp().detached_child_caches.borrow_mut().clear();
+    }
+
+    /// The cache context the path-cache helpers stamp and check locations
+    /// with (design D24).
+    fn cache_epoch(&self) -> u64 {
+        self.imp().child_cache_epoch.get()
+    }
+
+    /// `path`'s cached location, unless a sliced collapse detached its
+    /// parent's cache since it was cached (design D24): every reader of
+    /// `item_locations` goes through this or checks `location_is_live`.
+    pub(super) fn live_item_location(&self, path: &Path) -> Option<ItemLocation> {
+        let location = self.imp().item_locations.borrow().get(path).cloned()?;
+        location_is_live(&location, &self.imp().detached_child_caches.borrow()).then_some(location)
     }
 
     pub(super) fn cache_top_level_item(&self, path: PathBuf, index: usize) {
@@ -2075,6 +2151,7 @@ impl LushtextWorkspaceSection {
             ItemLocation {
                 parent_dir: None,
                 index: insert_at,
+                epoch: self.cache_epoch(),
             },
         );
     }
@@ -2115,6 +2192,7 @@ impl LushtextWorkspaceSection {
             ItemLocation {
                 parent_dir: Some(parent_key),
                 index: insert_at,
+                epoch: self.cache_epoch(),
             },
         );
     }
@@ -2135,6 +2213,10 @@ impl LushtextWorkspaceSection {
         parent_dir: &Path,
         rows: &[DirectoryRowState],
     ) {
+        let refresh = &self.imp().refresh_runtime;
+        refresh
+            .cache_mirror_recaches
+            .set(refresh.cache_mirror_recaches.get().saturating_add(1));
         let new_occurrences = rows
             .iter()
             .enumerate()
@@ -2142,7 +2224,11 @@ impl LushtextWorkspaceSection {
             .collect::<Vec<_>>();
         let imp = self.imp();
         let metrics = replace_child_cache(
-            &imp.folder_paths.borrow(),
+            &CacheContext {
+                folder_paths: &imp.folder_paths.borrow(),
+                epoch: self.cache_epoch(),
+                detached: &imp.detached_child_caches.borrow(),
+            },
             &mut imp.child_paths.borrow_mut(),
             &mut imp.visible_path_counts.borrow_mut(),
             &mut imp.item_locations.borrow_mut(),
@@ -2165,7 +2251,11 @@ impl LushtextWorkspaceSection {
     fn forget_stale_child_rows(&self, parent_dir: &Path, rows: &[PathBuf]) {
         let imp = self.imp();
         forget_child_occurrences(
-            &imp.folder_paths.borrow(),
+            &CacheContext {
+                folder_paths: &imp.folder_paths.borrow(),
+                epoch: self.cache_epoch(),
+                detached: &imp.detached_child_caches.borrow(),
+            },
             &imp.child_paths.borrow(),
             &mut imp.visible_path_counts.borrow_mut(),
             &mut imp.item_locations.borrow_mut(),
@@ -2214,7 +2304,11 @@ impl LushtextWorkspaceSection {
             return;
         }
         let operations = splice_child_cache(
-            &imp.folder_paths.borrow(),
+            &CacheContext {
+                folder_paths: &imp.folder_paths.borrow(),
+                epoch: self.cache_epoch(),
+                detached: &imp.detached_child_caches.borrow(),
+            },
             &mut imp.child_paths.borrow_mut(),
             &mut imp.visible_path_counts.borrow_mut(),
             &mut imp.item_locations.borrow_mut(),
@@ -2264,7 +2358,11 @@ impl LushtextWorkspaceSection {
             return Vec::new();
         }
         let (removed, operations) = drain_child_cache(
-            &imp.folder_paths.borrow(),
+            &CacheContext {
+                folder_paths: &imp.folder_paths.borrow(),
+                epoch: self.cache_epoch(),
+                detached: &imp.detached_child_caches.borrow(),
+            },
             &mut imp.child_paths.borrow_mut(),
             &mut imp.visible_path_counts.borrow_mut(),
             &mut imp.item_locations.borrow_mut(),
@@ -2283,9 +2381,12 @@ impl LushtextWorkspaceSection {
     }
 
     pub(super) fn rename_cached_item(&self, old_path: &Path, new_path: &Path) {
-        let Some(location) = self.imp().item_locations.borrow_mut().remove(old_path) else {
+        // A stale location (a detached cache's, design D24) is the
+        // retirement's to remove, not a row to rename.
+        let Some(location) = self.live_item_location(old_path) else {
             return;
         };
+        self.imp().item_locations.borrow_mut().remove(old_path);
 
         match location.parent_dir.as_deref() {
             None => {
@@ -2495,15 +2596,20 @@ impl LushtextWorkspaceSection {
 
     fn shift_cached_indices(&self, parent_dir: Option<&Path>, start: usize, delta: isize) {
         let parent_key = parent_dir.map(Path::to_path_buf);
+        let detached = self.imp().detached_child_caches.borrow();
         for location in self.imp().item_locations.borrow_mut().values_mut() {
-            if location.parent_dir == parent_key && location.index >= start {
+            if location.parent_dir == parent_key
+                && location.index >= start
+                && location_is_live(location, &detached)
+            {
                 location.index = location.index.saturating_add_signed(delta);
             }
         }
     }
 
     fn remove_cached_item(&self, target_path: &Path) -> Option<ItemLocation> {
-        let removed = self.imp().item_locations.borrow_mut().remove(target_path)?;
+        let removed = self.live_item_location(target_path)?;
+        self.imp().item_locations.borrow_mut().remove(target_path);
         match removed.parent_dir.as_deref() {
             None => {
                 let mut folder_paths = self.imp().folder_paths.borrow_mut();
@@ -2563,6 +2669,13 @@ impl LushtextWorkspaceSection {
     }
 
     fn cache_item_location(&self, path: PathBuf, location: ItemLocation) {
+        // A detached cache's stale occurrence is not counted (design D24).
+        drop_stale_unique(
+            &mut self.imp().visible_path_counts.borrow_mut(),
+            &mut self.imp().item_locations.borrow_mut(),
+            &self.imp().detached_child_caches.borrow(),
+            &path,
+        );
         let count = {
             let mut counts = self.imp().visible_path_counts.borrow_mut();
             let count = counts.entry(path.clone()).or_insert(0);
@@ -2579,6 +2692,16 @@ impl LushtextWorkspaceSection {
     }
 
     pub(super) fn forget_visible_path_occurrence(&self, path: &Path) {
+        // The only counted occurrence was a detached cache's: nothing live
+        // to forget (design D24).
+        if drop_stale_unique(
+            &mut self.imp().visible_path_counts.borrow_mut(),
+            &mut self.imp().item_locations.borrow_mut(),
+            &self.imp().detached_child_caches.borrow(),
+            path,
+        ) {
+            return;
+        }
         let remaining = {
             let mut counts = self.imp().visible_path_counts.borrow_mut();
             let Some(count) = counts.get_mut(path) else {
@@ -2600,6 +2723,11 @@ impl LushtextWorkspaceSection {
     }
 
     fn restore_unique_item_location(&self, path: &Path) {
+        let refresh = &self.imp().refresh_runtime;
+        refresh
+            .cache_unique_restores
+            .set(refresh.cache_unique_restores.get().saturating_add(1));
+        let epoch = self.cache_epoch();
         if let Some(index) = self
             .imp()
             .folder_paths
@@ -2612,6 +2740,7 @@ impl LushtextWorkspaceSection {
                 ItemLocation {
                     parent_dir: None,
                     index,
+                    epoch,
                 },
             );
             return;
@@ -2624,6 +2753,7 @@ impl LushtextWorkspaceSection {
                     ItemLocation {
                         parent_dir: Some(parent_dir.clone()),
                         index,
+                        epoch,
                     },
                 );
                 return;
@@ -2642,6 +2772,15 @@ impl LushtextWorkspaceSection {
     }
 }
 
+/// What the path-cache helpers read beside the maps they change: the
+/// top-level folder rows, the epoch new locations carry, and the detached
+/// caches whose stale entries no count may include (design D24).
+struct CacheContext<'a> {
+    folder_paths: &'a [PathBuf],
+    epoch: u64,
+    detached: &'a HashMap<PathBuf, u64>,
+}
+
 /// Bounded-cost evidence for one child-cache replacement.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct ChildCacheRebuildMetrics {
@@ -2656,13 +2795,18 @@ struct ChildCacheRebuildMetrics {
 /// the other already-materialized rows to recover its sole location; crucially,
 /// that recovery is shared rather than repeated once per inserted row.
 fn replace_child_cache(
-    folder_paths: &[PathBuf],
+    context: &CacheContext<'_>,
     child_paths: &mut HashMap<PathBuf, Vec<PathBuf>>,
     visible_path_counts: &mut HashMap<PathBuf, usize>,
     item_locations: &mut HashMap<PathBuf, ItemLocation>,
     parent_dir: &Path,
     new_occurrences: &[(usize, PathBuf)],
 ) -> ChildCacheRebuildMetrics {
+    let folder_paths = context.folder_paths;
+    let epoch = context.epoch;
+    for (_, path) in new_occurrences {
+        drop_stale_unique(visible_path_counts, item_locations, context.detached, path);
+    }
     let old_paths = child_paths.remove(parent_dir).unwrap_or_default();
     let input_rows = old_paths.len().saturating_add(new_occurrences.len());
     let mut operations = old_paths.len();
@@ -2720,6 +2864,7 @@ fn replace_child_cache(
                 ItemLocation {
                     parent_dir: Some(parent_dir.to_path_buf()),
                     index: *index,
+                    epoch,
                 },
             );
         }
@@ -2740,6 +2885,7 @@ fn replace_child_cache(
                 ItemLocation {
                     parent_dir: None,
                     index,
+                    epoch,
                 },
             );
         }
@@ -2761,6 +2907,7 @@ fn replace_child_cache(
                     ItemLocation {
                         parent_dir: Some(other_parent.clone()),
                         index,
+                        epoch,
                     },
                 );
             }
@@ -2798,12 +2945,17 @@ pub(super) fn child_cache_rebuild_operation_evidence(row_count: usize) -> (usize
                 ItemLocation {
                     parent_dir: Some(parent.clone()),
                     index,
+                    epoch: 0,
                 },
             )
         })
         .collect::<HashMap<_, _>>();
     let metrics = replace_child_cache(
-        &[],
+        &CacheContext {
+            folder_paths: &[],
+            epoch: 0,
+            detached: &HashMap::new(),
+        },
         &mut child_paths,
         &mut visible_path_counts,
         &mut item_locations,
@@ -2846,7 +2998,7 @@ fn remove_matching_items(
     reason = "the four caches are separate RefCell borrows owned by the section"
 )]
 fn splice_child_cache(
-    folder_paths: &[PathBuf],
+    context: &CacheContext<'_>,
     child_paths: &mut HashMap<PathBuf, Vec<PathBuf>>,
     visible_path_counts: &mut HashMap<PathBuf, usize>,
     item_locations: &mut HashMap<PathBuf, ItemLocation>,
@@ -2855,6 +3007,10 @@ fn splice_child_cache(
     removed: &[PathBuf],
     inserted: &[PathBuf],
 ) -> usize {
+    let epoch = context.epoch;
+    for path in inserted {
+        drop_stale_unique(visible_path_counts, item_locations, context.detached, path);
+    }
     let mut operations = removed.len().saturating_add(inserted.len());
     let siblings = child_paths.entry(parent_dir.to_path_buf()).or_default();
     let start = path_start.min(siblings.len());
@@ -2877,6 +3033,7 @@ fn splice_child_cache(
                 ItemLocation {
                     parent_dir: Some(parent_dir.to_path_buf()),
                     index: start.saturating_add(offset),
+                    epoch,
                 },
             );
         } else {
@@ -2889,6 +3046,7 @@ fn splice_child_cache(
             operations = operations.saturating_add(1);
             if let Some(location) = item_locations.get_mut(path)
                 && location.parent_dir.as_deref() == Some(parent_dir)
+                && location_is_live(location, context.detached)
             {
                 location.index = offset;
             }
@@ -2898,7 +3056,7 @@ fn splice_child_cache(
         child_paths.remove(parent_dir);
     }
     operations.saturating_add(resolve_unique_occurrences(
-        folder_paths,
+        context,
         child_paths,
         visible_path_counts,
         item_locations,
@@ -2911,7 +3069,7 @@ fn splice_child_cache(
 /// not cloned) and release their occurrences. Returns the removed paths and
 /// the operations performed.
 fn drain_child_cache(
-    folder_paths: &[PathBuf],
+    context: &CacheContext<'_>,
     child_paths: &mut HashMap<PathBuf, Vec<PathBuf>>,
     visible_path_counts: &mut HashMap<PathBuf, usize>,
     item_locations: &mut HashMap<PathBuf, ItemLocation>,
@@ -2931,6 +3089,7 @@ fn drain_child_cache(
             operations = operations.saturating_add(1);
             if let Some(location) = item_locations.get_mut(path)
                 && location.parent_dir.as_deref() == Some(parent_dir)
+                && location_is_live(location, context.detached)
             {
                 location.index = offset;
             }
@@ -2942,7 +3101,7 @@ fn drain_child_cache(
     let recover =
         release_child_occurrences(visible_path_counts, item_locations, parent_dir, &removed);
     operations = operations.saturating_add(resolve_unique_occurrences(
-        folder_paths,
+        context,
         child_paths,
         visible_path_counts,
         item_locations,
@@ -2955,7 +3114,7 @@ fn drain_child_cache(
 /// already (a superseded store's rows, purged in slices): their occurrence
 /// counts and locations, resolving any path left unique elsewhere.
 fn forget_child_occurrences(
-    folder_paths: &[PathBuf],
+    context: &CacheContext<'_>,
     child_paths: &HashMap<PathBuf, Vec<PathBuf>>,
     visible_path_counts: &mut HashMap<PathBuf, usize>,
     item_locations: &mut HashMap<PathBuf, ItemLocation>,
@@ -2965,7 +3124,7 @@ fn forget_child_occurrences(
     let recover =
         release_child_occurrences(visible_path_counts, item_locations, parent_dir, removed);
     removed.len().saturating_add(resolve_unique_occurrences(
-        folder_paths,
+        context,
         child_paths,
         visible_path_counts,
         item_locations,
@@ -3011,16 +3170,20 @@ fn release_child_occurrences(
 /// occurrence left and no location: one shared walk of the folder rows and
 /// the materialized child rows, as `replace_child_cache` does.
 fn resolve_unique_occurrences(
-    folder_paths: &[PathBuf],
+    context: &CacheContext<'_>,
     child_paths: &HashMap<PathBuf, Vec<PathBuf>>,
     visible_path_counts: &HashMap<PathBuf, usize>,
     item_locations: &mut HashMap<PathBuf, ItemLocation>,
     recover: Vec<PathBuf>,
 ) -> usize {
+    let (folder_paths, epoch) = (context.folder_paths, context.epoch);
     let mut unresolved = recover
         .into_iter()
         .filter(|path| {
-            visible_path_counts.get(path) == Some(&1) && !item_locations.contains_key(path)
+            visible_path_counts.get(path) == Some(&1)
+                && item_locations
+                    .get(path)
+                    .is_none_or(|location| !location_is_live(location, context.detached))
         })
         .collect::<HashSet<_>>();
     if unresolved.is_empty() {
@@ -3035,6 +3198,7 @@ fn resolve_unique_occurrences(
                 ItemLocation {
                     parent_dir: None,
                     index,
+                    epoch,
                 },
             );
         }
@@ -3051,6 +3215,7 @@ fn resolve_unique_occurrences(
                     ItemLocation {
                         parent_dir: Some(other_parent.clone()),
                         index,
+                        epoch,
                     },
                 );
             }
@@ -3149,7 +3314,11 @@ mod index_tests {
                 child_paths.insert(parent.clone(), old);
             }
             splice_child_cache(
-                &folder_paths,
+                &CacheContext {
+                    folder_paths: &folder_paths,
+                    epoch: 0,
+                    detached: &HashMap::new(),
+                },
                 &mut child_paths,
                 &mut counts,
                 &mut locations,
@@ -3215,7 +3384,11 @@ mod index_tests {
                 child_paths.insert(parent.clone(), old);
             }
             let (drained, _) = drain_child_cache(
-                &folder_paths,
+                &CacheContext {
+                    folder_paths: &folder_paths,
+                    epoch: 0,
+                    detached: &HashMap::new(),
+                },
                 &mut child_paths,
                 &mut counts,
                 &mut locations,
@@ -3254,6 +3427,7 @@ mod index_tests {
                 .push(ItemLocation {
                     parent_dir: None,
                     index,
+                    epoch: 0,
                 });
         }
         for (parent, rows) in child_rows {
@@ -3264,6 +3438,7 @@ mod index_tests {
                     .push(ItemLocation {
                         parent_dir: Some(parent.clone()),
                         index: *index,
+                        epoch: 0,
                     });
             }
         }
@@ -3326,7 +3501,11 @@ mod index_tests {
             ]);
 
             replace_child_cache(
-                &folder_paths,
+                &CacheContext {
+                    folder_paths: &folder_paths,
+                    epoch: 0,
+                    detached: &HashMap::new(),
+                },
                 &mut child_paths,
                 &mut counts,
                 &mut locations,

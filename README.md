@@ -594,7 +594,10 @@ Cargo workspace:
   `reorder_execution.rs`, `collapse_execution.rs`, `watch.rs`) live in
   `workspace_section/`; `collapse_execution.rs` is the one entry point that
   collapses and expands directory rows, collapsing a large one in paced steps
-  that keep the window responsive. Plain policy
+  that keep the window responsive (its child `collapse_execution/held_keys.rs`
+  holds the navigation keys pressed meanwhile, and `scan_execution`'s child
+  `scan_execution/path_cache_detach.rs` detaches the collapsing directories'
+  path caches at once instead of row by row). Plain policy
   for weighted disposal and workspace search lives in
   `model/{workspace_search,plain_disposal}.rs`, while the
   workspace tree workflow's own pure policy — per-store scan ownership,
