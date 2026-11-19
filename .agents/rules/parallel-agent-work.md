@@ -84,21 +84,25 @@ Change worktrees live in `.claude/worktrees/<change>`.
 
 ## Implementation slots and ordering
 
-- **At most five implementation stages run at once.** Before its first heavy
-  command, a stage acquires its slot (`C` is the change name):
-
-  ```
-  mkdir -p "${H:?}/IMPL-SLOTS"
-  flock -w 10 "$H/IMPL-SLOTS/.lock" sh -c '
-    [ -d "$0/$1" ] && exit 0
-    [ "$(find "$0" -mindepth 1 -maxdepth 1 -type d | wc -l)" -lt 5 ] || exit 1
-    mkdir "$0/$1" && date -Is >"$0/$1/since"' "${H:?}/IMPL-SLOTS" "${C:?}"
-  ```
-
-  - Exit 1 means every slot is taken: repeat in the foreground ("Waiting").
-    Coordinator placeholders count as taken.
+- **At most five implementation stages run at once, and at most three while
+  `MEASURE-QUEUE.md` holds a ready unit.** A unit is a `## ` entry, or each
+  `### ` part of an entry that has parts. It is ready when its **last**
+  `Status:` line, with or without the list dash or Markdown `**`, starts
+  with `READY`:
+  entries keep their history of Status lines. Fewer stages then run beside the rounds a change waits on, so the
+  quiet window comes sooner.
+- Before its first heavy command, a stage acquires its slot with
+  `scripts/impl-slots.sh acquire "${C:?}"` (`C` is the change name), which
+  waits in the foreground for at most 540 s per call and exits 124 when it
+  timed out: repeat the call ("Waiting"). It counts every slot directory,
+  coordinator placeholders included, and evicts nothing held above the cap.
+  It exits 2 for a name with no worktree `.claude/worktrees/<name>`, so a
+  stage whose worktree is named otherwise (`args.worktree_override`)
+  acquires under the worktree's directory name, and the script's guard and
+  lens prompts read and release the slot under that name.
+  `scripts/impl-slots.sh cap` prints the cap and the ready units behind it.
   - Before the stage ends, whatever the outcome, it runs
-    `rm -rf "${H:?}/IMPL-SLOTS/${C:?}"`.
+    `scripts/impl-slots.sh release "${C:?}"`.
   - Only the coordinator removes another change's slot.
 - Spec, spec-review and review stages take no slot. Their heavy commands
   still go through `heavy.sh`.
@@ -118,6 +122,11 @@ Change worktrees live in `.claude/worktrees/<change>`.
     `timeout 540 bash -c 'until <try>; do sleep 30; done'`.
 - It never waits with `run_in_background`, a monitor, or by ending its turn.
   A subagent that ends its turn is finished, and its work stays undone.
+- **It never returns while a command it started is still running.** Gates run
+  in the foreground (a Bash timeout of up to 600 s), or a detached command is
+  checked in repeated foreground calls until it exits. An agent that returned
+  with its gates in the background left them to die and its fixes
+  uncommitted.
 - Only the main session may end its turn to wait for a task notification.
 - Never hold `INTENT`, `LOCK`, `IMPL-SLOTS/.lock` or the `MEASURE-QUEUE.md`
   lock while waiting for anything else (`verification-runs.md`). `MERGE-LOCK`
@@ -129,23 +138,58 @@ Change worktrees live in `.claude/worktrees/<change>`.
 - The wall time of a build, a test suite or a smoke run is not a verdict. Run
   it through `heavy.sh`, never `measure.sh`, and record `/proc/loadavg`
   before and after.
-- Timing verdicts (the responsiveness lane, interleaved benches) go through
-  `measure.sh`. Before **each** `measure.sh` call:
-  - require the one-minute load below 4 for 30 s:
-    `for i in 1 2 3 4 5 6; do awk '{exit !($1 < 4)}' /proc/loadavg || exit 1; sleep 5; done`;
-  - meet any stricter precondition the lane's runbook sets;
-  - pass `--lock-timeout 300`.
-- If the check fails or `measure.sh` exits 75, append the remaining rounds to
+- **Timing verdicts drain first and are judged on busy CPUs** (the
+  maintainer's decision of 2026-11-18, level 1;
+  [why](../../docs/memorials/2026-11-18-change-flow-time.md)). The
+  responsiveness lane, interleaved benches and every other verdict round go
+  through three steps, with `scripts/quiet-gate.py`:
+  1. Holding nothing, `scripts/quiet-gate.py wait-outsiders` waits until host
+     CPU use outside our own work (`user-lushtext.slice`, the legacy slice and
+     the shared `cst-sccache-*` scopes) is below 3.5 CPUs over 30 s. It exits
+     124 after 540 s.
+  2. `scripts/measure.sh --lock-timeout 2400`, so our own heavy work finishes
+     under `INTENT`, runs the round as
+     `scripts/quiet-gate.py run --label <label> --log <file> -- <command>`.
+  3. Inside the lock the wrapper samples busy CPUs for 30 s and runs the
+     round only below 4 (else exit 76, the round did not run). The round is
+     **kept** only when it exits 0 and the busy CPUs over the whole round and
+     over 30 s after it are both below 4 (else exit 77).
+  - The bar is 4 busy CPUs. The 1-minute load is still recorded by
+    `measure.sh` and is not the criterion.
+  - Meet any stricter precondition the lane's runbook sets.
+  - A stage agent cannot hold one Bash call for 2400 s: it starts step 2
+    detached (`setsid nohup … &`) and waits for its PID with
+    `scripts/wait-for.sh --pid <pid> --timeout 540` in repeated foreground
+    calls.
+  - A round measured under outside load is never counted as a pass.
+- If `wait-outsiders` exits 124, `measure.sh` exits 75, or a round exits 76
+  or 77 and the window stays busy, append the remaining rounds to
   `MEASURE-QUEUE.md` under `flock "$H/MEASURE-QUEUE.md"`, then carry on. The
   entry gives:
   - the change, branch and worktree;
   - the exact commands, cases and round order;
   - the artifact directories and the budget;
-  - `Status: PENDING`.
+  - its status: `Status: READY <sha>` for rounds a change waits on whose
+    tree is final (`<sha>` is the commit they measure), `Status: PENDING
+    (NOT READY: <reason>)` for rounds it will wait on that cannot run yet
+    (their owner replaces the line with `READY <sha>`), and
+    `Status: PENDING` for non-blocking attribution and calibration. Only
+    `READY` lowers the slot cap.
+- **A verdict class is set before any verdict round** (`verification-runs.md`,
+  "Timing campaigns"): a non-inferiority verdict blocks the merge like any
+  other, and an improvement verdict owed by a follow-up change does not.
 - A queued verdict does not hold up implementation. The review reports
   "ready, measurement pending" and ends without merging.
 - Once the coordinator has run the queue and recorded the verdict:
-  - if the verdict meets the budget, it starts a merge-only run;
+  - if the verdict meets the budget, it starts a merge-only run: it
+    resumes the change's run (`resumeFromRunId`) with `args.review_extra`
+    naming the recorded verdict, which changes only the final review's
+    prompt, so the earlier stages replay from the cache and the final
+    review runs again; a `review-only` run that stopped before the merge is
+    resumed with `args.merge` instead. A resume replays only the calls
+    before the first changed one (probes C5 and C6 in the change's
+    `probes.md`); when it replays nothing, the merge-only run is a new
+    `review-only` run with `args.merge`;
   - if it does not, it sends the change back.
 
 ## Merging
@@ -158,33 +202,97 @@ Change worktrees live in `.claude/worktrees/<change>`.
   or gets its own change in the ledger. Only CI results nobody has read wait
   for the end of the programme. CI is checked once then, and every red job is
   fixed in that work stream (`preexisting-blockers.md`).
-- Exception: a change whose evidence exists only in CI may dispatch and read
-  its own runs. Examples:
-  - a `.github/workflows` change;
-  - a pull-request Kani shard budget taken from the PR's run.
-
-  It waits with `timeout 540 gh run watch <id> --exit-status` in repeated
-  foreground calls, and merges only when those runs pass. It waits before
+- Exception: a change whose **correctness** evidence exists only in CI, such
+  as a `.github/workflows` change, may dispatch and read its own runs. It
+  waits with `timeout 540 gh run watch <id> --exit-status` in repeated
+  foreground calls, one run at a time by its id (`gh pr checks --watch` has
+  returned while runs were still pending), and merges only when those runs
+  pass. It waits before
   step 1, never while holding `MERGE-LOCK`. If the `origin/main` merge in
   step 2 changes files that evidence covers, it releases the lock, pushes,
   and waits for the new runs first.
+- **Kani shard budgets are archive evidence, not merge evidence**
+  (`verification-runs.md`, "Kani", "Shard budgets"). Stage 3 dispatches the
+  runs and never watches them; stage 4 reads the finished ones with
+  `gh run view`. A finished red run or a figure over a margin blocks the
+  merge. A run still in progress does not: the change merges on local
+  evidence, releases `MERGE-LOCK`, appends `ARCHIVE OWED <change>: kani
+  <run ids>` to the ledger, waits for the runs in the foreground outside
+  every lock, and takes `MERGE-LOCK` again for the archive commit alone.
+  - The figures are written only in the archive commit, never on the branch
+    (a branch edit changes the tree and voids the gate records of step 2).
+    That commit's diff of `scripts/kani-shards.py` touches only the pending
+    records' `measured_in` and figure fields; check it before committing.
+  - A red result found then keeps the change active, and the fix goes
+    through a new pull request of the same change before the archive.
 - **Merges are serialized under `$H/MERGE-LOCK`.**
   1. Take it:
      `timeout 540 bash -c 'until mkdir "$0/MERGE-LOCK" 2>/dev/null; do sleep 30; done' "${H:?}"`,
      repeated. Then write `owner.txt`, one item per line, the change name
      first: change, PR number, run id, `date -Is`.
   2. Holding it:
-     - `git fetch origin`, then `git merge origin/main`, always;
-     - rerun `make check` and the tests covering files changed on either
-       side, through `heavy.sh`;
+     - `git fetch --prune origin`, then `git merge origin/main`, always.
+     - **A merge that made no commit reruns only a gate with no pass on
+       record.** The tree is the one the gates ran on: for `make check` and
+       for `make test`, each in a lookup of its own (one call with several
+       `--gate` values passes on any one of them), name the line
+       `scripts/gate-trees.sh lookup <wt> --gate '<gate>'` finds on this
+       exact `HEAD^{tree}`, and run the gate when it finds none (a full
+       `make test` record covers any subset of tests: pass
+       `--gate 'make test'` as well). The smokes are not looked up here.
+       The pre-commit hook (`make check-policy`) refuses a commit that
+       carries a smoke-relevant file unless the accessibility and visual
+       summaries match the fingerprint of the whole smoke-relevant set
+       (`check-accessibility-policy --strict-current-tree`), and one that
+       carries a visual-sensitive file unless a visual-geometry summary
+       matches the commit's diff (`check-visual-proof-policy`); a file
+       under the UI prefixes is both. `git merge` runs no pre-commit hook.
+       So when a merge in the branch brought smoke-relevant files in and no
+       later commit of the branch's own line (first parent, not on
+       `origin/main`) carried a file under the UI prefixes, the apply stage
+       records the three smokes on its tree, and the script requires those
+       records before the merge stage ("Stages after implementation" 3).
+     - **A merge that made a commit reruns every gate on the post-merge
+       tree** (maintainer, 2026-11-19), through `heavy.sh`: `make check`,
+       the full `make test`, and the three smokes when the branch or the
+       merged-in commits touch a smoke-relevant file, one under the UI
+       prefixes (`testing.md`, "Proof Obligations of a Change") or on the
+       exact list of `scripts/accessibility_source_fingerprint.py`, as its
+       `is_relevant` decides. A docs-only merge commit is no exception.
+     - Record each gate you run with
+       `scripts/gate-trees.sh record <wt> --gate '<gate>' -- scripts/heavy.sh … -- make <gate>`.
+       Only that helper writes `gate-trees.log`, and it never deletes a line.
+       It records nothing for a dirty or changing worktree, or for a gate
+       that never ran (exit 75, 78, 126 or 127). It records a failing run as
+       a fail, and a run that timed out (124) or was killed by a signal as
+       `result=interrupted`: lookup reuses neither, and names an interrupted
+       line on stderr, so a hang or an OOM kill that passed on a retry
+       leaves a trace for the flake rule. A tree with a recorded failure of a
+       named gate is never reused, since a pass and a fail on one tree is a
+       flake.
+     - **Voiding a fail, append-only.** When a fail line's log shows that
+       the gate never ran (a wrapper's usage refusal exits 2, as a failing
+       `make` does), the coordinator, and no stage agent, appends a void:
+       `scripts/gate-trees.sh void <checkout> --change <change> --line
+       <the fail line's timestamp> --gate '<gate>' --log <that log> --reason
+       '<why>'`. It names exactly one fail line, the fail line stays, and
+       lookup then ignores that line alone. The coordinator notes the void
+       in the change's handoff. A worktree branched before the void
+       subcommand existed reads a void or interrupted line as a fail until
+       it merges `main`, which the prepare stage does.
      - `git push origin HEAD`, to the branch of the same name (never
        `HEAD:main`).
-  3. Merge with
+  3. `git fetch --prune origin`, then `git merge-base --is-ancestor origin/main HEAD`.
+     If it fails, `main` moved since step 2: repeat step 2. If it holds,
+     GitHub's merge commit gets the tree the gates ran on. Then merge with
      `gh pr merge <n> --merge --admin --match-head-commit "$(git rev-parse HEAD)"`.
      `--admin` skips required checks and reviews.
   4. Archive the change in a fresh worktree on `origin/main` after
      `git fetch`, commit it through `heavy.sh`, and push that one commit with
      `git push origin HEAD:main`, under the same authorization.
+     An archive that still owes Kani figures follows in a second
+     `MERGE-LOCK` hold, as above; the archive commit's hook then runs the full
+     `make check`, because `scripts/kani-shards.py` is not docs-only.
   5. Once the archive is on `origin/main`, release the lock only if it is
      yours:
      `[ "$(head -n1 "${H:?}/MERGE-LOCK/owner.txt")" = "${C:?}" ] && rm -rf "${H:?}/MERGE-LOCK"`.
@@ -205,12 +313,340 @@ Change worktrees live in `.claude/worktrees/<change>`.
 - A commit that touches the UI prefixes still needs the three smokes current
   (`testing.md`), so put those files in as few task-group commits as
   possible, ideally the last.
-- After the `origin/main` merge under `MERGE-LOCK`, rerun a visual lane only
-  if the merged-in changes touch the same UI-prefix files.
+- After an `origin/main` merge under `MERGE-LOCK` that made a commit, the
+  three smokes rerun when the branch or the merged-in commits touch a
+  smoke-relevant file ("Merging" step 2); a merge that made no commit reruns
+  only a gate that has no pass on record there.
 - After the merge:
-  1. `git fetch origin`.
+  1. `git fetch --prune origin`.
   2. Check that `git -C <wt> status --porcelain` is empty and that
      `git -C <wt> merge-base --is-ancestor HEAD origin/main` succeeds.
   3. Remove the worktree first, since a branch checked out in a worktree
      cannot be deleted: `git worktree remove <wt>`.
-  4. `git branch -D <branch>`, then `git push origin --delete <branch>`.
+  4. `git branch -D <branch>`, then `git push origin --delete <branch>`, and
+     the same for the twin Kani ref `<branch>-kani-2` when stage 3 pushed one.
+
+## Running a change
+
+- **One workflow run per change, one agent per stage.** The stages, in order:
+  spec, spec review, implementation, prepare, `/simplify`, review lenses,
+  apply and gates, final review with merge and archive ("Stages after
+  implementation"). Each stage is
+  bound to a skill and the prompt adds only what the skill does not cover:
+  - spec: `openspec-propose` for a new change, `openspec-update-change` for
+    one whose `openspec/changes/<name>/` is already on `main`;
+  - implementation: `openspec-apply-change`;
+  - archive: `openspec-archive-change`.
+- **The versioned script is `.claude/workflows/programme-change.js`**, a
+  real file, never a symlink. The guaranteed way to run it is the path form
+  from the main checkout,
+  `Workflow({scriptPath: '.claude/workflows/programme-change.js', args})`:
+  `scriptPath` loads only files inside the session's directories, so never
+  run a copy in a sibling worktree. The name form
+  `Workflow({name: 'programme-change'})` is a convenience for sessions
+  started after the script reached `main`; a session that was already
+  running when it was added may not find it by name. `args.mode` is `new`,
+  `fast-lane`, `revise`, `continue` or `review-only` (an existing pull
+  request from the prepare stage on, stopping before the merge unless
+  `args.merge`); `revise` and `review-only` need `args.pr` and
+  `args.worktree`, and every argument is checked before the first agent
+  runs. `args.dry_run` prints the stages a mode would run. The script's header
+  lists the other arguments. Host details (the push command, the gh account) go in
+  `args.local`, free text the coordinator keeps outside the repository;
+  nothing host-specific is written into the script. Its prompts cite rule
+  sections and never copy them (`make check-workflow-scripts`), so a rule
+  edit reaches every later run. Each script has a stub-agent harness beside
+  it, `<name>.test.mjs`, which the same target runs; a change to a script's
+  control flow changes its harness in the same commit.
+- **What every stage agent does**, whatever its prompt says:
+  - stays in its own worktree and handoff directory, and never touches
+    another worktree, another change's branch or the main checkout;
+  - reads `$H/<change>/COORDINATOR-NOTE.txt` at the start and before each
+    heavy command group; the coordinator steers a running stage only through
+    that file;
+  - works headless: never `make run`, never the live desktop, never the
+    real application data or `~/.config`;
+  - writes commit messages to a file and commits with `git commit -F`
+    through `heavy.sh`, which forwards no stdin;
+  - fetches with `git fetch --prune`, so a branch deleted on GitHub leaves
+    no stale `refs/remotes/origin/<branch>`;
+  - merges `origin/main` into its branch and never rebases a pushed branch
+    or pushes with `--force` or `--force-with-lease`: a rejected push means
+    fetch, merge, rerun the affected gates and push again. When
+    `origin/<branch>` holds a commit made on GitHub (an "Update branch"
+    merge or a web conflict resolution), it merges `origin/<branch>` too
+    before pushing and never drops that commit. The
+    `refs/remotes/origin/*` refs are shared by every worktree, so a tip read
+    before another session's fetch is not evidence about your branch;
+  - reads a helper's exit status, never its output alone: empty output
+    means "nothing to do" only when the helper documents that status, and
+    any status it does not document as success means blocked.
+- **Never `SendMessage` a running workflow agent.** It revives a second copy
+  of that agent, which then edits the same worktree.
+- **Changes to the change-delivery rules keep the quality floor.** An edit
+  to this file or to `verification-runs.md` gets an independent spec review
+  and a stage-4 review against the existing rules, and its `design.md` has a
+  table naming each rule edit, the rule it touches and why the floor holds.
+  The floor: the data-safety review; an independent code reviewer; every
+  gate on every distinct tree that reaches `main`; pre-registered verdicts
+  through `measure.sh`, judged by "Measurements"; `B_INTERACT_US` and
+  `B_SETTLE_US`; flakes as blockers; no lane, shard, scenario or assertion
+  removed. An edit that would let an ungated tree reach `main` is a
+  must-fix.
+- **A new crate or top-level directory** is outside the fast lane until a
+  change adds it to `scripts/check-fast-lane.py`'s allowlist ("Fast lane").
+
+## Fast lane
+
+- A change may skip the separate spec-review stage when
+  `scripts/check-fast-lane.py` classes every path it plans (`--paths`) and
+  every path it changed (`--base origin/main`) `eligible` or `declare`, and
+  it plans no timing verdict.
+  - `eligible`: `docs/`, `openspec/`, and Markdown files at the repository
+    root; a path a gate names literally becomes `declare`.
+  - `declare`: agent guidance (rules, skill text, `AGENTS.md`, `SOUL.md`,
+    `CLAUDE.md`).
+  - Everything else is not eligible: shipped code, proofs, tests, gate
+    implementations (the `Makefile` among them, since it wires every gate),
+    packaging, CI, the workflow scripts, any new directory,
+    and the two change-delivery rules, this file and `verification-runs.md`,
+    whose edits always get a spec review ("Running a change").
+- **Every `declare` path needs a "Gate effect: none" section** in
+  `proposal.md`, saying for each such file that no gate is narrowed, removed
+  or re-keyed and no item of the floor changes.
+- In the fast lane, stage 1 writes `proposal.md`, the delta specs and
+  `tasks.md` (`design.md` is optional, so `proposal.md` carries a
+  "Decisions" section) and records its own spec-review checklist under
+  "Self-review". The independent apply agent of stage 4 then also reviews the
+  spec artifacts, re-runs the check on the real diff and verifies each
+  declaration against it line by line.
+- **Leaving the fast lane.** A not-eligible path found at any stage, or a
+  false or missing declaration, sends the change to an independent spec
+  review before any further implementation or the merge.
+
+## Design revisions
+
+- A design revision is a run of the revise mode's stage 1 on an existing
+  change, or any rewrite of `design.md` decisions after a blocked stage 4 or
+  a failed pre-registered gate. `design.md` lists them under
+  `## Design revisions`, one line each (date, trigger, id); the original
+  design is revision 0.
+- **When a change with two revisions is blocked again**, an agent that wrote
+  none of its design or code reads the design, the gates, the evidence and
+  the attributions, and returns `continue`, `re-scope` or `shelve` with
+  reasons. The coordinator records it in the ledger and tells the
+  maintainer.
+- `continue` or `re-scope` starts the next revision with an attribution
+  spike: one agent, no edits to OpenSpec artifacts, output
+  `$H/<change>/spike-<n>.md` with figures (its rounds go through
+  "Measurements"). The revision cites it.
+- `shelve` marks the change `SHELVED <date>: <reason>` in the ledger and the
+  programme record. Branch, worktree and pull request stay; it holds no slot
+  or lock and resumes only through the coordinator.
+
+## Stages after implementation
+
+Workflow agents have no `Agent` tool, so every parallel review comes from the
+script, and inside a workflow both skills below run their single-pass forms.
+
+0. **Prepare**, in its own agent, which edits nothing. The worktree must be
+   one listed by the main checkout's `git worktree list`, on the change's
+   branch, with an empty `git status --porcelain`: uncommitted work belongs
+   to an implementation round, never to the review stages. It fetches,
+   merges `origin/<branch>` and `origin/main` when they hold commits the
+   branch lacks, pushes, and sets the branch to track `origin/<branch>`. A
+   conflict aborts the merge and stops the run: resolving it is
+   implementation work, which the review stages must see. Every mode runs
+   it, `review-only` included. A run that stops between `/simplify` and the
+   apply commit leaves `/simplify`'s edits uncommitted, so it is resumed,
+   or an implementation round (`continue`) commits or drops them before a
+   new `review-only` run.
+1. **`/simplify`**, in its own agent, quality only. It starts from a clean
+   worktree and is invoked with the change worktree's absolute path as its
+   argument, never bare: the agent's working directory is the main checkout
+   and cannot move. Its prompt names the base itself (`origin/main...HEAD`
+   for the committed work, `HEAD` for its own edits), because the recipe's
+   default range is empty on a pushed branch. It runs the tests of what it
+   touched, leaves its edits uncommitted, and saves them, new files included,
+   as `$H/<change>/simplify.patch`.
+2. **Review lenses, in parallel and findings only.** Each writes
+   `$H/<change>/review-findings-<lens>.md` and returns its findings.
+   - Before them, a read-only agent records the scope, with every
+     comparison and count made in the shell rather than copied by the
+     agent: `HEAD`, and whether it equals the pull request's head and the
+     upstream; the counts of committed files (`git diff --name-only
+     origin/main...HEAD`) and uncommitted ones; and the exit status and the
+     one-line output of `scripts/agent-topology.py review-lenses --base
+     origin/main --flags-only`, which the script parses itself. A non-zero
+     exit stops the run: a selector that failed is never "no domain lens".
+   - **`code-review high <PR>`** reviews the committed work, and, when
+     `/simplify` left edits, a second call **`code-review high <absolute
+     worktree path>`** reviews only those. The path form diffs against the
+     branch's upstream, so on a branch tracking `origin/<branch>` at `HEAD`
+     it sees exactly the uncommitted edits and none of the commits (probe
+     C4); the PR form sees the PR's files (probes C2 and C3). Never pass
+     `--fix` (a forked review edits the main checkout) and never a bare
+     level (it reviews the main checkout's last commit). The lens agent has
+     **no schema**, takes the findings from the Skill result's text or, when
+     that carries none, from the fork transcript
+     (`subagents/agent-<agentId>.jsonl` of the session, the input of the
+     fork's last `StructuredOutput` call), and ends with one
+     `skill_findings_source:` line per call, one `CODE-REVIEW-SCOPE:` line
+     per call (the PR, or the base the fork named, with file and line
+     counts), one `findings_count: pr=<n> worktree=<n>` line with each
+     call's own count (`pr=<n>` alone for one call) and a last
+     `CODE-REVIEW-STATUS:` line (`ok`, `empty` or `failed`). The prompt does not carry the expected
+     counts; the script checks each count against the scope reading, and the
+     worktree call's base against `HEAD` and `origin/<branch>` (a call that
+     diffed against `main` reviewed the whole branch, probe P4). A missing
+     line, a scope that does not match, or `ok` over no findings is a failed
+     lens: one rerun, then the run stops. When the worktree has not
+     changed since, the coordinator resumes the run with `args.lens_round`
+     one higher: every lens prompt and the scope reading change with it, so
+     they run again and nothing before them does.
+   - **An empty review stops the run.** The script judges the PR call on
+     its own count: a PR call with no findings is an empty review, whatever
+     the worktree call found, because findings on `/simplify`'s small edits
+     say nothing about the committed work. An empty review needs a non-zero
+     quoted scope for every call (else the lens failed); the script then
+     stops with its own message, and only the coordinator, after reading
+     the findings file, resumes it with `args.accept_empty_review` set to
+     the token that message prints. The token is the reviewed `HEAD` plus a
+     digest of that review's text, so it accepts that one review on the
+     resume, which replays it, and no other review of the same `HEAD`.
+   - **The fork may run repository scripts** (probe C4 ran
+     `impl-slots.sh acquire`). The lens agent runs none itself, releases
+     this change's slot if the review created it, and lists what the fork
+     ran in its findings file; `impl-slots.sh` gives no slot to a name
+     without a change worktree, and the guard (below) compares this
+     change's slot and `MERGE-LOCK` ownership around the lens group.
+   - **Domain lenses, only when the change touches data or performance**, as
+     the skills' own triggers declare. The selector's flags: `data` (the
+     `[data_safety]` table of `.agents/skills/skill-policy.toml`, the
+     machine form of the `data-safety` description) adds the `data-safety`
+     full audit; `performance` (`performance-scope`) adds the three
+     gtk-perf-review leaf checklists by name, since a workflow agent cannot
+     delegate; `modules_moved`, inside such a fan-out, adds `rust-hex-arch`.
+     With neither flag, `code-review` runs alone. A domain lens returns
+     `status: ran` with a non-empty `examined` list (files read, checklist
+     sections applied), or it is a failed lens.
+     `scripts/agent-topology.py validate` (in `make check-agent-skills`)
+     checks the selector against the skills' trigger text in both
+     directions: every path and keyword the `data-safety` description names
+     is selected and every selected one is named, and the same for the areas
+     of the `gtk-perf-review` description against the performance scope.
+   - The script refuses, before its first agent, any change or branch name
+     that is not a lowercase name (a main-branch alias such as `main`,
+     `HEAD` or `@`, a ref path, a revision expression or a commit hash), a
+     worktree that is not one directory under `.claude/worktrees/` named
+     after the change (`args.worktree_override` relaxes the name only) or
+     whose absolute path holds anything but letters, digits, `.`, `_`, `-`
+     and `/` (it goes into shell lines), a
+     PR value that is not a number, `#number` or pull URL, a stage or
+     carried PR that differs from `args.pr`, a carried implementation
+     report that is not complete, and a `continue` run with `skip_impl` but
+     no pull request. A stage after implementation never runs
+     without a pull request.
+3. **One apply agent**, which wrote none of the code, first re-runs the
+   selector and stops when its flags differ from the ones the lenses ran
+   under. It dedupes the findings, checks each against the code, applies the
+   confirmed ones in the worktree and records the rejected ones with reasons,
+   marking those a lens raised as correctness bugs. It runs the three smokes
+   once when its commit carries a smoke-relevant file, commits `/simplify`'s
+   edits and its own together locally **before** any long gate, runs the full
+   gates once on the result (`make check` and the full `make test` among
+   them), each through `scripts/gate-trees.sh record`, records the three
+   smokes on the committed tree when a merge in the branch brought
+   smoke-relevant files in and no later commit of the branch's own line
+   carried a file under the UI prefixes (no hook saw that content with all
+   three smokes), re-dispatches a Kani
+   budget run its edits make stale (`verification-runs.md`, "Kani"), and
+   pushes at the end. It is the last agent that edits code. A read-only
+   agent then checks, in the shell, that the worktree is clean, that `HEAD`
+   and `HEAD^{tree}` are the ones the apply agent returned and are pushed,
+   that `scripts/gate-trees.sh lookup` finds a `make check` pass and, in a
+   lookup of its own, a `make test` pass for that tree, and the three smoke
+   passes when that merge case holds or its check fails; the script stops on
+   any difference, before the merge stage.
+4. **The final review, merge and archive agent edits nothing.** It reviews
+   exactly the apply range the script passes (the lens `HEAD` to the apply
+   `HEAD`, merge commits included), checks that `HEAD^{tree}` is the gated
+   tree before "Merging" step 2, and re-checks every correctness finding the
+   apply agent rejected. "No findings" is not the merge test, because every
+   review pass returns unverified findings: it blocks only on a confirmed
+   defect of the apply range, a wrongly rejected correctness finding, or one
+   in the main-checkout guard, the main-branch protection or the push path,
+   and then it returns `blocked` and fixes nothing; the coordinator sends the
+   change back through an implementation round and the review stages. An
+   `origin/main` merge under `MERGE-LOCK` that conflicts is aborted, the lock
+   released and the run blocked; a clean one joins the reviewed range. It
+   also checks what the skills do not: every `tasks.md` box, the verdicts,
+   that the data-safety audit ran when it was owed, and the docs. Then it
+   follows "Merging". Its verdict is one of a fixed set, and a missing or
+   unknown verdict stops the run as unfinished. Its archive commit is the
+   one "Merging" step 4 describes, with the spec sync of the archive skill
+   and any Kani figures the change owes. A `blocked` verdict after `gh pr
+   merge` keeps the merge commit it reports, and the script's stop says so.
+5. **The post-merge check.** Both merged verdicts name GitHub's merge commit
+   and the tree it merged. A read-only agent then checks, in the shell, that
+   the merge commit is on `origin/main` and has that tree, and runs
+   `scripts/gate-trees.sh lookup --tree` against it, with the helper and
+   the smoke-relevance test (`is_relevant` of
+   `scripts/accessibility_source_fingerprint.py`) read from `origin/main`:
+   `make check` and `make test` always, and the three smokes when the
+   `origin/main` merge brought commits in and a file of the branch or of
+   those commits is smoke-relevant, or, after a merge that made no commit,
+   when the apply tree owed them as records.
+   Every stage that records gates is given the one set of gate strings
+   this check looks up (each the bare make target), and the merge stage
+   returns full hashes, which the reading resolves again in the shell. After a merge that made no commit,
+   the tree must be the apply tree. A helper
+   missing from `origin/main`, a failed classifier or a missing record is a
+   failure, never a pass. The change is already on `main` then, so the stop
+   is a report: the coordinator checks the records by hand and fixes a gap
+   by a follow-up change.
+
+## Workflow agents
+
+- **The script guards the main checkout around every stage.** Before and
+  after each stage, and around each parallel lens group, a guard agent reads
+  the main checkout's `git status --porcelain` (as a sha256 of the output,
+  untracked files included), `HEAD` and branch, and whether this change
+  holds an implementation slot or `MERGE-LOCK`, and the script stops the run
+  on any difference (porcelain alone misses a commit or a branch switch; the
+  slot and lock readings catch a review fork that took one). Giving a slot
+  or the lock up during a stage is not a difference; taking one and still
+  holding it is. The comparison
+  is before against after; the coordinator does not move the main checkout
+  while a run is in flight, and if it must, the run stops at the next guard.
+- **Every reading before a stage names that stage.** It carries a digest of
+  the stage's prompt, so a resume that changes a stage (through
+  `args.review_extra` or `args.lens_round`) takes the reading before it
+  live: a resume replays only the calls before the first changed one
+  (probes C5 and C6), so a reading in that prefix is from the first run,
+  and the reading after a live stage is live too.
+- **Resuming after a guard stop.** The stop message prints a token bound to
+  the stage and to every field of the after reading. When the difference is
+  not the run's doing, the coordinator resumes the same run, same mode and
+  arguments, with that token in `args.guard_ack`; the cached stages are
+  reused, and the token accepts that one stage's reading and nothing else.
+  `args.guard_ack` and `args.accept_empty_review` are read by the script
+  only and never reach a prompt.
+- Every command names its target: `git -C <worktree>` or absolute paths,
+  because `cd` does not persist between a workflow agent's calls.
+- Each agent sets `TMPDIR=$H/<change>/tmp/<stage>` (`testing.md`, "Temporary
+  Files", still applies), runs every harness or probe under `timeout`, writes
+  its brief to `$H/<change>/brief-<stage>.md` and re-reads it before its final
+  check.
+- **Outward writes are limited to this list:** pushing the change branch and
+  its twin Kani ref, and deleting both after the merge ("Durability");
+  creating and updating the change's pull request and merging it under
+  `MERGE-LOCK`; the archive push to `main`; `kani.yml` dispatches for shard
+  budgets. An agent changes no other external state: no Sonar issue status
+  or quality-gate edits, no GitHub settings, rulesets or labels, no
+  upstream comments, no releases. It writes any such need to
+  `$H/<change>/host-asks.md` for the maintainer.
+- The observed behaviours behind these rules (cwd, forks, schemas, return
+  paths) are recorded outside the repository in the maintainer's note
+  `~/.claude/rules/workflow-agents-observed-behaviour.md`, as evidence only;
+  the rules above stand without it.
