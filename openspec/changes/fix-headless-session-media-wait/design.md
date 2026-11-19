@@ -302,14 +302,19 @@ namespace cannot use `/proc/<pid>/exe`). The fix keeps that choice:
   cargo's remove-then-link leaves the path briefly absent (1 of 40 under the
   loop with the first half alone, 0 of 100 with both).
 
-**Known residual.** The GTK axiom probes A115 and A116
-(`crates/gtk-lush/axioms/src/probes/`) spawn `$GTK_LUSH_SESSION_BIN` for their
-control child directly, not through the shim, so they keep cargo's brief
-remove-then-link window without a retry. With the suffix gone they fail only
-if a rebuild lands in that window of milliseconds, not whenever one has
-happened since the session started. Changing the axioms crate would owe
-`make gtk-axioms`, so it is left to `media-skip-classification` or a later
-change.
+**The axiom probes' spawn (stage-4 review).** The GTK axiom probes A115
+and A116 (`crates/gtk-lush/axioms/src/probes/`) spawn `$GTK_LUSH_SESSION_BIN`
+for their control child directly, not through the shim, so with the suffix
+gone they still failed if a rebuild landed in cargo's remove-then-link window.
+Stage 3 left this as a residual on the premise that changing the axioms crate
+would owe `make gtk-axioms`; `verification-runs.md` says an edited probe owes
+only its own samples (A115 and A116 are not marked slow, so the PR jobs cover
+both toolkits). The review therefore fixed it here, as `preexisting-blockers.md`
+requires: `session_names::spawn_retrying_helper_relink` retries the control's
+spawn on `NotFound` or `ExecutableFileBusy`, 10 x 0.1 s like the shim, and
+returns any other error at once. Proof: a unit test that failed against a
+non-retrying stub, and `make gtk-axiom-sample AXIOM=115 CHECK=1` and
+`AXIOM=116`.
 
 `preexisting-blockers.md` makes it part of this change. It invalidates no
 earlier proof except the helper-dependent reruns D8 names: tasks 2.3 and 2.6
@@ -321,7 +326,9 @@ are invariant failures).
 ## Scope boundaries
 
 - **Kani: none** (no proven module touched).
-- **GTK axioms: none.** The change relies on no GTK-family behaviour. The
+- **GTK axioms: no axiom added or changed.** The change relies on no GTK-family
+  behaviour. The review's D9 fix edits the A115/A116 probes' shared spawn, so
+  their two samples ran (`make gtk-axiom-sample`). The
   WirePlumber behaviour it relies on (`session-services.lua` ordered last;
   `pw-dump` omitting empty metadata) is not a GTK axiom. It is recorded in
   `.agents/rules/build.md`, "PipeWire and WirePlumber updates", as a
@@ -344,3 +351,8 @@ are invariant failures).
   turns from a silent pass, or a later capture failure, into a session
   failure. That is intended, and is read once at the end of the programme
   with the rest of CI.
+  Every CI job that starts a media session (`end-user-smoke.yml`: visual,
+  visual-geometry, accessibility, crash recovery) runs `fedora:45`, which
+  ships the same WirePlumber 0.5 line as the host where the predicate was
+  proved (0.5.19, whose `session-services.lua` sets `session.services`); no
+  pull-request job starts one.

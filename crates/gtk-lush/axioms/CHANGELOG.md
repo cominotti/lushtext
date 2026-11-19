@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Fix:** the A115 and A116 probes' nested control run retries its spawn
+  of `GTK_LUSH_SESSION_BIN` (10 x 0.1 s) while the path is missing or busy,
+  because a `cargo build` in the same checkout removes, then relinks, the
+  session helper it names (`fix-headless-session-media-wait`, design D9). Any
+  other spawn error is reported at once, as before.
 - A127, A128 and A129 probes and samples (`stream-replace-all`): a regex
   `GtkSourceSearchContext::replace_all` expands GRegex references (`\N`,
   `\g<N>`, `\g<name>`, `\g<1>0` as group 1 then `0`) and leaves `$1`

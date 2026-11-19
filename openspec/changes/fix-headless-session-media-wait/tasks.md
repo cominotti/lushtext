@@ -248,3 +248,18 @@
   G1, the D9 fix and G2. The merge belongs to the coordinator's merge-only
   run, held by the maintainer's 2026-11-18 decision until the new workflow
   template is ready.)
+
+## 8. Stage-4 review fixes
+
+- [x] 8.1 Merge `origin/main` (the #118 template) into the branch before any
+  fix commit.
+- [x] 8.2 D9 residual: the A115/A116 control spawn retries a helper relink
+  (`session_names::spawn_retrying_helper_relink`), failing-first against a
+  non-retrying stub; `make gtk-axiom-sample AXIOM=115 CHECK=1` and
+  `AXIOM=116` pass; axioms `CHANGELOG.md`.
+- [x] 8.3 Label the programme record's lane table as non-verdict, with the
+  sequential baseline against concurrent lanes; record the CI images in
+  design Risks.
+- [x] 8.4 Gates on the final tree: `make check`, `cargo test -p
+  gtk-lush-axioms --lib`, `cargo test -p gtk-lush-proof-harness`, `openspec
+  validate fix-headless-session-media-wait --strict`.

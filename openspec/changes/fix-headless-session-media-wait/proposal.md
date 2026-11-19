@@ -79,10 +79,13 @@ was only slow, by chance does not.
 - `crates/gtk-lush/proof-harness/src/session/{mod.rs,observe.rs}` (GTK Lush
   family crate, internal `0.0.0` path API: one additive public function in
   `session::observe`; no new dependency), and `scripts/headless-session` (the
-  D9 retry; on no smoke fingerprint list).
+  D9 retry; on no smoke fingerprint list), and
+  `crates/gtk-lush/axioms/src/probes/session_names.rs` (the A115/A116
+  control spawn retries the same relink; added at stage-4 review, D9).
 - No application code, UI files, GTK behaviour, Kani-proven module or timed
-  path. Kani: none (no proven module touched). GTK axioms: none (no GTK-family
-  behaviour is relied on; the WirePlumber behaviour relied on is recorded in
+  path. Kani: none (no proven module touched). GTK axioms: no axiom added or changed (no GTK-family
+  behaviour is relied on; the A115 and A116 samples run because their spawn
+  changed; the WirePlumber behaviour relied on is recorded in
   `build.md` with the existing PipeWire/WirePlumber update check). No timing
   verdict is owed: lane wall time is evidence, measured through `heavy.sh`
   with the load recorded.

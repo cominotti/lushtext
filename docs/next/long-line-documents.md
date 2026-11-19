@@ -5234,9 +5234,12 @@ one flagged stage, a single-rep 22 ms dispatch (design, "Measurement").
   saved) before its command, and no lane reads that as a skip.
 - **A second fix.** The lane proof also found and fixed a pre-existing race
   in the helper's exported `GTK_LUSH_SESSION_BIN`: it could name a
-  `… (deleted)` file after a concurrent rebuild.
-- **Lane cost** (10 green runs each, the three lanes concurrent in one
-  worktree, timed from memory admission, 1-minute load 2.4-13.6):
+  `… (deleted)` file after a concurrent rebuild. The shim and the A115/A116
+  axiom probes' control spawn retry briefly while a rebuild relinks it.
+- **Lane cost** (non-verdict wall times through `heavy.sh`, not
+  `measure.sh`: 10 green runs each, the three lanes concurrent in one
+  worktree, timed from memory admission, 1-minute load 2.4-13.6; the
+  2026-11-18 column ran the three lanes one after another):
 
   | Lane | 2026-11-18 | Now |
   | --- | --- | --- |
