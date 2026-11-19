@@ -122,6 +122,10 @@ A change MAY use the fast lane only when `scripts/check-fast-lane.py` classes ev
 - **THEN** the checker reports `declare`, and `proposal.md` holds "Gate effect: none" for that file
 - **AND** stage 4 verifies it line by line, and a rule edit that narrows a gate is a violation
 
+#### Scenario: A fast-lane run found not eligible takes the normal stages
+- **WHEN** a run in the fast-lane mode gets `not-eligible` from its spec stage
+- **THEN** it takes the full spec review, and the implementation and apply prompts carry no fast-lane instruction
+
 #### Scenario: Gate implementations are not fast
 - **WHEN** a change edits `scripts/flatpak-source-tree.sh`, `scripts/agent-topology.py`, `.agents/skills/skill-policy.toml` or `crates/gtk-lush/proof-harness/`
 - **THEN** the checker reports it not eligible
@@ -258,8 +262,16 @@ The workflow script SHALL compare the main checkout's `git status --porcelain`, 
 - **THEN** the script stops the run and reports the difference
 
 #### Scenario: A main-branch alias is refused
-- **WHEN** the change, the branch argument or the spec stage's branch is `main`, `HEAD`, or starts with `heads/`, `refs/`, `origin/`, `remotes/` or `tags/`
+- **WHEN** the change, the branch argument, the spec stage's branch or a spec carried into a resumed run names `main`, `HEAD` or `@`, or a branch that starts with `heads/`, `refs/`, `origin/`, `remotes/` or `tags/`
 - **THEN** the script stops before the next agent runs
+
+#### Scenario: A worktree outside the change worktrees is refused
+- **WHEN** a worktree argument, the spec stage's worktree or a spec carried into a resumed run is not one directory under `.claude/worktrees/`, including `.claude/worktrees/..` and `.claude/worktrees/.`
+- **THEN** the script stops before the next agent runs
+
+#### Scenario: Only the listed outward writes appear in stage prompts
+- **WHEN** the spec stage finds a change not viable, or the revision decision agent decides
+- **THEN** it writes its record to the change's handoff directory, pushes nothing, and the coordinator records it in the ledger or the programme record
 
 #### Scenario: A PR value is normalized
 - **WHEN** an argument or a stage returns the PR as `7`, `#7` or `https://github.com/<owner>/<repo>/pull/7`

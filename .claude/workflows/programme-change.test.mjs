@@ -283,10 +283,58 @@ const CASES = {
   async 'every stage prompt carries the foreground rule'() {
     const prompts = []
     await run({ ...BASE, mode: 'new' }, Object.fromEntries(Object.keys(DEFAULTS).filter(k => k !== 'guard').map(k => [k, (l, p, o) => { prompts.push([l, p]); return DEFAULTS[k](l, p, o) }])))
+    check(prompts.length > 0, 'no stage prompt was captured')
     for (const [label, prompt] of prompts) {
       if (label.startsWith('flags:')) continue
       check(has(prompt, 'never return, or end your turn, while a command you started is still running'), `${label} lacks the foreground rule`)
+      check(has(prompt, 'git fetch --prune') && has(prompt, 'origin/<branch>') && has(prompt, 'exit status'), `${label} lacks the fetch, branch-merge or exit-status rule (note 21:35)`)
     }
+  },
+  // Stage-4 review (2026-11-18) cases.
+  async 'continue mode refuses a carried spec outside a change worktree or on a main alias'() {
+    for (const spec of [
+      { change_name: 'demo', worktree: '/repo', branch: 'demo' },
+      { change_name: 'demo', worktree: ARG_WT, branch: 'origin/main' },
+    ]) {
+      const r = await run({ ...BASE, mode: 'continue', pr: 9, spec })
+      check(typeof r.result.stopped === 'string' && r.calls.length === 0, `${JSON.stringify(spec)}: ${JSON.stringify(r.result)} after ${JSON.stringify(r.calls)}`)
+    }
+  },
+  async 'dot segments and @ are not change worktrees or branches'() {
+    for (const worktree of ['/repo/.claude/worktrees/..', '/repo/.claude/worktrees/../', '/repo/.claude/worktrees/.']) {
+      const r = await run({ ...BASE, mode: 'review-only', pr: 7, worktree })
+      check(has(r.result.stopped, 'change worktree') && r.calls.length === 0, `${worktree}: ${JSON.stringify(r.result)}`)
+    }
+    const at = await run({ ...BASE, mode: 'review-only', pr: 7, worktree: ARG_WT, branch: '@' })
+    check(has(at.result.stopped, 'main-branch alias') && at.calls.length === 0, JSON.stringify(at.result))
+  },
+  async 'a fast-lane run its spec stage found not eligible runs the normal stages'() {
+    const r = await run({ ...BASE, mode: 'fast-lane' }, { spec: () => ({ ...DEFAULTS.spec(), fast_lane: 'not-eligible' }) })
+    check(!has(r.prompts['implement-1:demo'], 'check-fast-lane') && !has(r.prompts['apply:demo'], 'check-fast-lane'), 'fast-lane instructions reached a not-eligible change')
+    check(r.result.merge && !r.result.stopped, JSON.stringify(r.result))
+    const e = await run({ ...BASE, mode: 'fast-lane' }, { spec: () => ({ ...DEFAULTS.spec(), fast_lane: 'eligible' }) })
+    check(has(e.prompts['implement-1:demo'], 'check-fast-lane') && has(e.prompts['apply:demo'], 'check-fast-lane'), 'an eligible fast-lane change lost its re-checks')
+  },
+  async 'a not-viable spec and a revision decision write only to the handoff'() {
+    const r = await run({ ...BASE, mode: 'new' })
+    check(!has(r.prompts['spec:demo'], 'commit to main') && has(r.prompts['spec:demo'], 'not-viable.md'), r.prompts['spec:demo'])
+    const d = await run({ ...BASE, mode: 'revise', revision: 3, pr: 7, worktree: ARG_WT })
+    const prompt = d.prompts['decision:demo']
+    check(!has(prompt, 'PARALLEL-LEDGER') && has(prompt, 'decision-3.md'), prompt)
+  },
+  async 'continue with skip_impl and no PR anywhere stops before simplify'() {
+    const r = await run({ ...BASE, mode: 'continue', skip_impl: true, spec: { change_name: 'demo', worktree: ARG_WT, branch: 'demo' },
+      impl: { tasks_complete: true, report: 'r', gates: '' } })
+    check(has(r.result.stopped, 'no pull request') && !r.work.some(l => l.startsWith('simplify:')), JSON.stringify(r.result))
+  },
+  async 'an empty pr argument means no PR'() {
+    const r = await run({ ...BASE, mode: 'new', pr: null })
+    check(r.result.merge && !r.result.stopped, JSON.stringify(r.result))
+  },
+  async 'the flags stage names its target instead of changing directory'() {
+    const r = await run({ ...BASE, mode: 'review-only', pr: 7, worktree: ARG_WT })
+    const prompt = r.prompts['flags:demo']
+    check(!/\bcd /.test(prompt) && has(prompt, `${ARG_WT}/scripts/agent-topology.py review-lenses`), prompt)
   },
 }
 

@@ -220,7 +220,7 @@ Change worktrees live in `.claude/worktrees/<change>`.
      repeated. Then write `owner.txt`, one item per line, the change name
      first: change, PR number, run id, `date -Is`.
   2. Holding it:
-     - `git fetch origin`, then `git merge origin/main`, always;
+     - `git fetch --prune origin`, then `git merge origin/main`, always;
      - with a clean status, rerun `make check` and the tests covering files
        changed on either side, through `heavy.sh`, **except** a gate that
        `scripts/gate-trees.sh lookup <wt> --gate '<gate>'` finds already
@@ -233,7 +233,7 @@ Change worktrees live in `.claude/worktrees/<change>`.
        a dirty or changing worktree;
      - `git push origin HEAD`, to the branch of the same name (never
        `HEAD:main`).
-  3. `git fetch origin`, then `git merge-base --is-ancestor origin/main HEAD`.
+  3. `git fetch --prune origin`, then `git merge-base --is-ancestor origin/main HEAD`.
      If it fails, `main` moved since step 2: repeat step 2. If it holds,
      GitHub's merge commit gets the tree the gates ran on. Then merge with
      `gh pr merge <n> --merge --admin --match-head-commit "$(git rev-parse HEAD)"`.
@@ -267,7 +267,7 @@ Change worktrees live in `.claude/worktrees/<change>`.
 - After the `origin/main` merge under `MERGE-LOCK`, rerun a visual lane only
   if the merged-in changes touch the same UI-prefix files.
 - After the merge:
-  1. `git fetch origin`.
+  1. `git fetch --prune origin`.
   2. Check that `git -C <wt> status --porcelain` is empty and that
      `git -C <wt> merge-base --is-ancestor HEAD origin/main` succeeds.
   3. Remove the worktree first, since a branch checked out in a worktree
@@ -314,11 +314,19 @@ Change worktrees live in `.claude/worktrees/<change>`.
     real application data or `~/.config`;
   - writes commit messages to a file and commits with `git commit -F`
     through `heavy.sh`, which forwards no stdin;
+  - fetches with `git fetch --prune`, so a branch deleted on GitHub leaves
+    no stale `refs/remotes/origin/<branch>`;
   - merges `origin/main` into its branch and never rebases a pushed branch
     or pushes with `--force` or `--force-with-lease`: a rejected push means
-    fetch, merge, rerun the affected gates and push again. The
+    fetch, merge, rerun the affected gates and push again. When
+    `origin/<branch>` holds a commit made on GitHub (an "Update branch"
+    merge or a web conflict resolution), it merges `origin/<branch>` too
+    before pushing and never drops that commit. The
     `refs/remotes/origin/*` refs are shared by every worktree, so a tip read
-    before another session's fetch is not evidence about your branch.
+    before another session's fetch is not evidence about your branch;
+  - reads a helper's exit status, never its output alone: empty output
+    means "nothing to do" only when the helper documents that status, and
+    any status it does not document as success means blocked.
 - **Never `SendMessage` a running workflow agent.** It revives a second copy
   of that agent, which then edits the same worktree.
 - **Changes to the change-delivery rules keep the quality floor.** An edit
@@ -419,10 +427,13 @@ script, and inside a workflow both skills below run their single-pass forms.
      directions: every path and keyword the `data-safety` description names
      is selected and every selected one is named, and the same for the areas
      of the `gtk-perf-review` description against the performance scope.
-   - The script refuses a main-branch alias (`main`, `HEAD`, `heads/…`,
+   - The script refuses a main-branch alias (`main`, `HEAD`, `@`, `heads/…`,
      `refs/…`, `origin/…`, `remotes/…`, `tags/…`) as the change's branch, a
-     worktree outside `.claude/worktrees/`, and a PR value that is not a
-     number, `#number` or pull URL. The `code-review` lens ends with
+     worktree that is not one directory under `.claude/worktrees/` (`.` and
+     `..` included), whether a stage returned them or a resumed run carried
+     them in its arguments, and a PR value that is not a number, `#number`
+     or pull URL. A stage after implementation never runs without a pull
+     request. The `code-review` lens ends with
      `CODE-REVIEW-STATUS: ok` or `failed` after its `skill_findings_source`
      line; the status line is the check, and an empty or summary-only body
      marked `ok` still fails, since a `code-review high` pass always returns

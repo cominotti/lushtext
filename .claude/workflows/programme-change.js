@@ -49,8 +49,15 @@ if (!A.change) return { stopped: 'args.change is required' }
 // A change's branch is never main under any name git resolves to it.
 function isMainRef(ref) {
   const r = String(ref || '').trim()
-  return /^(main|master|HEAD)$/.test(r) || /^(heads|refs|origin|remotes|tags)\//.test(r)
+  return /^(main|master|HEAD|@)$/.test(r) || /^(heads|refs|origin|remotes|tags)\//.test(r)
 }
+// A change worktree is one directory under .claude/worktrees/, never . or ..
+// (<main>/.claude/worktrees/.. is inside the main checkout).
+function isChangeWorktree(path) {
+  const m = String(path || '').match(/\/\.claude\/worktrees\/([^/]+)\/?$/)
+  return !!m && m[1] !== '.' && m[1] !== '..'
+}
+const hasPr = value => value !== undefined && value !== null && value !== ''
 // A PR number from n, "#n" or a pull URL; null when it is none of those.
 function normalizePr(value) {
   if (value === undefined || value === null || value === '') return null
@@ -59,8 +66,8 @@ function normalizePr(value) {
   return Number.isInteger(n) && n > 0 ? n : null
 }
 if (isMainRef(A.change) || isMainRef(A.branch)) return { stopped: `refusing a main-branch alias as the change or branch: ${A.change} / ${A.branch}` }
-if (A.pr !== undefined && normalizePr(A.pr) === null) return { stopped: `args.pr is not a PR number, #number or pull URL: ${JSON.stringify(A.pr)}` }
-if (A.worktree && !/\/\.claude\/worktrees\/[^/]+\/?$/.test(A.worktree)) return { stopped: `args.worktree must be a change worktree under .claude/worktrees/: ${A.worktree}` }
+if (hasPr(A.pr) && normalizePr(A.pr) === null) return { stopped: `args.pr is not a PR number, #number or pull URL: ${JSON.stringify(A.pr)}` }
+if (A.worktree && !isChangeWorktree(A.worktree)) return { stopped: `args.worktree must be a change worktree under .claude/worktrees/: ${A.worktree}` }
 if (A.mode === 'review-only' && (!normalizePr(A.pr) || !A.worktree)) return { stopped: 'review-only needs args.pr and args.worktree' }
 if (A.mode === 'continue' && A.skip_impl && !A.impl) return { stopped: 'skip_impl needs args.impl' }
 
@@ -124,7 +131,8 @@ Repository: the main checkout is the parent of \`git rev-parse --path-format=abs
 Before anything else, write this prompt to $H/${CHANGE}/brief-${stage}.md and use TMPDIR=$H/${CHANGE}/tmp/${stage} for every command; re-read the brief before your final check.
 Follow, by section: parallel-agent-work.md "Running a change", "Workflow agents", "Host ownership", "CPU and memory", "Waiting"; verification-runs.md "Shared-machine agent work"; testing.md "Gate Order Before a Commit"; git.md "Commit Messages" (the trailer names the model you are running on) and "General".
 Run every command in the foreground and wait for it to exit (a Bash timeout up to 600000 ms, or repeated foreground checks of a detached one); never return, or end your turn, while a command you started is still running.
-When origin/main has moved, merge it into the branch; never rebase a branch that was pushed, and never push with --force or --force-with-lease (parallel-agent-work.md "Running a change" says what to do when a push is rejected).
+Fetch with git fetch --prune. When origin/main has moved, merge it into the branch; if GitHub added a commit to origin/<branch> (say, through its Update branch button), merge origin/<branch> as well and keep that commit. Never rebase a branch that was pushed, and never push with --force or --force-with-lease (parallel-agent-work.md "Running a change" says what to do when a push is rejected).
+A helper's empty output means nothing by itself: read its exit status, and treat any status the helper does not document as success as blocked.
 Decide on your own, user experience first, and record each decision with its reason.
 ${LOCAL}`
 }
@@ -187,7 +195,7 @@ Return the archive path, the commit, and which worktrees and branches you remove
 let spike = null
 if (A.mode === 'revise' && (A.revision || 0) >= 3) {
   phase('Revision decision')
-  const g = await guarded('revision-decision', () => agent(`An independent decision on the existing OpenSpec change ${CHANGE} (PR #${ARG_PR}, worktree ${A.worktree}): it has had at least two design revisions and is blocked again. You wrote none of its design or code. Read its design.md (the "Design revisions" list and the latest stage-4 verdict), the gates, the evidence and the attributions so far, and decide continue, re-scope or shelve, as parallel-agent-work.md "Design revisions" describes. Edit nothing. Append your decision with its reasons to $H/PARALLEL-LEDGER.md for the maintainer.
+  const g = await guarded('revision-decision', () => agent(`An independent decision on the existing OpenSpec change ${CHANGE} (PR #${ARG_PR}, worktree ${A.worktree}): it has had at least two design revisions and is blocked again. You wrote none of its design or code. Read its design.md (the "Design revisions" list and the latest stage-4 verdict), the gates, the evidence and the attributions so far, and decide continue, re-scope or shelve, as parallel-agent-work.md "Design revisions" describes. Edit nothing in the repository. Write your decision with its reasons to $H/${CHANGE}/decision-${A.revision}.md; the coordinator records it in the ledger and tells the maintainer.
 ${common('revision-decision')}`, {
     label: `decision:${CHANGE}`, phase: 'Revision decision',
     schema: { type: 'object', properties: {
@@ -229,6 +237,12 @@ const REVIEW_SCHEMA = {
   required: ['verdict', 'findings'],
 }
 
+// The branch and worktree every later stage works in; checked before any of them runs.
+function specProblem(s) {
+  if (isMainRef(s.branch)) return `the spec names a main-branch alias as the branch: ${s.branch}`
+  if (!isChangeWorktree(s.worktree)) return `the spec names no change worktree under .claude/worktrees/: ${s.worktree}`
+  return null
+}
 let spec = null
 let review = null
 if (A.mode === 'review-only') {
@@ -247,7 +261,7 @@ Context: ${A.context || ''}`
     : `Write the OpenSpec change ${CHANGE} with the openspec-propose skill, in a new worktree <main>/.claude/worktrees/${CHANGE} on branch ${CHANGE} from origin/main.
 Context: ${A.context || ''}
 Records to read: ${A.records || 'the programme record and the rules the change touches'}.
-Keep this stage bounded: read what the design needs, and measure only when a decision depends on a number. Decide first whether the change is worth doing as described; if not, record why in the programme record (a docs-only commit to main) and return not-viable.
+Keep this stage bounded: read what the design needs, and measure only when a decision depends on a number. Decide first whether the change is worth doing as described; if not, write why to $H/${CHANGE}/not-viable.md, push nothing, and return not-viable (the coordinator records it in the programme record).
 Beyond the skill: design.md (or, in the fast lane, proposal.md "Decisions") records the measured baseline and, for a change on a timed path, its verdict class (verification-runs.md "Timing campaigns"); tasks.md covers failing-first tests, axioms and samples for toolkit behaviour relied on, the Kani shards (verification-runs.md "Kani"), lane cases and docs. A change that edits parallel-agent-work.md or verification-runs.md carries the floor table ("Running a change"). openspec validate ${CHANGE} --strict. One commit; push the branch; no pull request yet.`
   const fastPrompt = fast ? `
 FAST LANE (parallel-agent-work.md "Fast lane"): before writing, list every path the change will touch and run scripts/check-fast-lane.py --paths on that list from the worktree. If any path is not eligible, or a timing verdict is planned, return fast_lane "not-eligible" (the run then takes the full spec review). Otherwise write proposal.md with a "Decisions" section, a "Gate effect: none" section for every declare path, and your own spec-review checklist under "Self-review"; return fast_lane "eligible".` : ''
@@ -259,8 +273,8 @@ ${common('spec')}`, { label: `spec:${CHANGE}`, phase: 'Spec', schema: SPEC_SCHEM
   out.spec = spec
   if (!spec || spec.decision !== 'viable') return { ...out, stopped: 'spec stage: not viable, or the agent failed' }
   spec = { ...spec, worktree: spec.worktree || A.worktree, branch: spec.branch || A.branch || CHANGE, change_name: spec.change_name || CHANGE }
-  if (isMainRef(spec.branch)) return { ...out, stopped: `the spec stage returned a main-branch alias as the branch: ${spec.branch}` }
-  if (!spec.worktree || !/\/\.claude\/worktrees\/[^/]+\/?$/.test(spec.worktree)) return { ...out, stopped: `the spec stage returned no change worktree: ${spec.worktree}` }
+  const stageSpecProblem = specProblem(spec)
+  if (stageSpecProblem) return { ...out, stopped: stageSpecProblem }
 
   const skipReview = fast && spec.fast_lane === 'eligible'
   if (skipReview) {
@@ -278,6 +292,11 @@ ${common('spec-review')}`, { label: `spec-review:${CHANGE}`, phase: 'Spec review
   }
   if (A.design_only) return { ...out, stopped: 'design_only: stopped after the approved spec review' }
 }
+// Every mode's spec, from a stage or carried in args, passes the same checks.
+const carriedSpecProblem = specProblem(spec)
+if (carriedSpecProblem) return { ...out, stopped: carriedSpecProblem }
+// The fast-lane instructions apply only once the spec stage found the change eligible.
+const FAST = A.mode === 'fast-lane' && spec.fast_lane === 'eligible'
 
 // ---------------------------------------------------------------------------
 // Implementation (openspec-apply-change), in rounds for continue mode.
@@ -316,7 +335,7 @@ if (A.mode === 'review-only') {
     const g = await guarded(`implementation-${round}`, () => agent(`Stage 3 (implementation${rounds > 1 ? `, round ${round} of ${rounds}` : ''}) of the OpenSpec change ${spec.change_name}, worktree ${spec.worktree}, branch ${spec.branch}. The spec was reviewed independently; findings: ${review.findings}
 ${prev ? `Previous round's report (continue from it; the worktree may hold its uncommitted work, which you keep): ${prev}` : ''}
 Implement every unchecked tasks.md box with the openspec-apply-change skill: failing-first tests, axioms and samples, measurements, docs. The local gates are the merge evidence: make check, the rustdoc gate when doc comments changed, make test with no FLAKY line, the Kani shards the policy requires, make gtk-axioms when toolkit behaviour is relied on, the affected smokes and lane cases. Record each gate you run on the final tree with scripts/gate-trees.sh record (parallel-agent-work.md "Merging").
-${A.mode === 'fast-lane' ? 'Fast lane: before the PR, run scripts/check-fast-lane.py --base origin/main in the worktree and report it as fast_lane_recheck; a not-eligible path means stop implementing and report it.' : ''}
+${FAST ? 'Fast lane: before the PR, run scripts/check-fast-lane.py --base origin/main in the worktree and report it as fast_lane_recheck; a not-eligible path means stop implementing and report it.' : ''}
 ${prNote}
 ${IMPL_RULES}
 ${common(`implementation-${round}`)}
@@ -334,6 +353,7 @@ tasks_complete is true only when every tasks.md box is checked (a verdict queued
   if (!impl.tasks_complete || !impl.pr_number) return { ...out, stopped: 'implementation incomplete: ' + (impl.unchecked_tasks || 'no PR') }
 }
 const PR = impl.pr_number
+if (!PR) return { ...out, stopped: 'no pull request: pass args.pr or a carried impl.pr_number' }
 const WT = spec.worktree
 
 // ---------------------------------------------------------------------------
@@ -351,7 +371,7 @@ out.simplify = gsim.result
 if (!gsim.result) return { ...out, stopped: 'simplify agent failed' }
 
 phase('Review lenses')
-const gflags = await guarded('review-flags', () => agent(`In one Bash call, run: cd ${WT} && scripts/agent-topology.py review-lenses --base origin/main
+const gflags = await guarded('review-flags', () => agent(`In one Bash call, run: ${WT}/scripts/agent-topology.py review-lenses --base origin/main
 Return its data, performance and modules_moved flags and its paths. Change nothing.`,
   { label: `flags:${CHANGE}`, phase: 'Review lenses', effort: 'low',
     schema: { type: 'object', properties: {
@@ -450,7 +470,7 @@ const gapply = await guarded('apply', () => agent(`Apply stage for the change ${
 The worktree holds /simplify's uncommitted edits ($H/${CHANGE}/simplify.patch). The lens findings (also in $H/${CHANGE}/review-findings-*.md):
 ${lensDigest}
 Dedupe them, check each against the code, apply the confirmed ones in the worktree (failing-first where behaviour changes), and record each rejected one with its reason in $H/${CHANGE}/review-findings-applied.md. When files under the UI prefixes changed, run the three smokes once, right before the commit. Commit /simplify's edits and yours together, locally, before any long gate, so a stopped gate leaves nothing uncommitted. Then run every final gate one time on that tree, recording each with scripts/gate-trees.sh record (parallel-agent-work.md "Merging"); push at the end, and update the PR body.
-${A.mode === 'fast-lane' ? `Fast lane: you are also the independent reviewer of the spec artifacts (parallel-agent-work.md "Fast lane"). Re-run scripts/check-fast-lane.py --base origin/main and verify every "Gate effect: none" declaration against the diff, line by line. Return fast-lane-violation for a not-eligible path or a false or missing declaration.` : ''}
+${FAST ? `Fast lane: you are also the independent reviewer of the spec artifacts (parallel-agent-work.md "Fast lane"). Re-run scripts/check-fast-lane.py --base origin/main and verify every "Gate effect: none" declaration against the diff, line by line. Return fast-lane-violation for a not-eligible path or a false or missing declaration.` : ''}
 Return blocked when a must-fix stays open.
 ${common('apply')}`, { label: `apply:${CHANGE}`, phase: 'Apply and gates', ...REVIEW_AGENT, schema: APPLY_SCHEMA }))
 if (gapply.stopped) return { ...out, ...gapply }

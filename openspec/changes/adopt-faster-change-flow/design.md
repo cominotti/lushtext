@@ -411,3 +411,37 @@ The coordinator's notes of 19:25 and 19:47 arrived after the stage-2 review (its
 | Stage 3 decision | `.claude/workflows/` stays out of `sonar.sources`: the scripts are agent guidance, checked by `make check-workflow-scripts` and their harnesses (`build.md`, "SonarQube Cloud Scope", keeps agent guidance out) | Sonar scope review the rule asks for |
 | Note 20:38 (lessons from invowk's template review) | Stage agents never force-push and treat a rejected push as fetch, merge, rerun, push; the script refuses main-branch aliases, worktrees outside `.claude/worktrees/` and PR values that are not a number, `#number` or pull URL, and normalizes the PR; the `code-review` lens ends with `CODE-REVIEW-STATUS: ok|failed` (the check) after `skill_findings_source`, with an empty or summary-only body as a backstop failure; `scripts/agent-topology.py validate` checks the lens selector against the `data-safety` and `gtk-perf-review` trigger text in both directions, reusing `performance_path`'s scope; the merge agent reviews the apply commit only and blocks only on a confirmed defect it introduced or one in the guard, main protection or push path; the harness's stubs return distinct values per stage and test precedence | Each was a defect invowk's review found in its own template |
 | Ledger 18:36 | Decision 7 recorded as APPROVED with conditions and owned by smoke-gate-coherence, not "open" (D9 (b), proposal, memorial, PR body) | Stage 1's record was stale |
+
+## Stage-4 review (2026-11-18)
+
+An independent review of `origin/main..HEAD` (55e27161): the script, its harness, the helpers, the rules and the evidence. It checked the six gate records against `HEAD^{tree}` (f14a43bf), read each fail-first log, ran five hand mutants of the script through the harness (all caught), ran `scripts/check-fast-lane.py --base origin/main` (not eligible, as a change to the delivery rules must be) and grepped the rules, runbooks and scripts for the retired load criterion (none left). It also checked every row of the stage-3 revision, which no spec review had seen, against the "Quality floor" table. Each row holds. The two loosenings are D7's metric, decided by the maintainer, and the merge stage's stopping rule, recorded below.
+
+Findings, all fixed failing-first in the harness (`failfirst-stage4-harness.log` in the handoff directory: the eight new cases failed before the fix):
+
+| Severity | Finding | Fix |
+|---|---|---|
+| must-fix (main protection) | `continue` mode took `args.spec.worktree` and `args.spec.branch` without the alias and worktree checks, so a resumed run could aim every later stage at `main` or at the main checkout | One `specProblem` check for every mode's spec, from a stage or carried in the arguments |
+| must-fix (main protection) | The worktree pattern accepted `.claude/worktrees/..` and `.claude/worktrees/.`; the first is inside the main checkout, so `git -C` there works on it | `isChangeWorktree` refuses `.` and `..`; `@` joins the main aliases |
+| must-fix (outward writes) | A not-viable spec stage was told to make "a docs-only commit to main", a direct push the outward-writes list does not allow ("the archive commit is the only direct push") | It writes `$H/<change>/not-viable.md`, pushes nothing, and the coordinator records it |
+| should-fix (correctness) | The fast-lane instructions keyed on `args.mode`, so a fast-lane run its spec stage found not eligible got the full spec review and was then told by the implementation and apply prompts to stop at the first not-eligible path, ending in a false violation | `FAST` is set from the spec stage's `fast_lane: eligible` |
+| should-fix (rules) | The revision decision agent appended to `PARALLEL-LEDGER.md`, which "Design revisions" leaves to the coordinator | It writes `$H/<change>/decision-<n>.md` |
+| should-fix (correctness) | `continue` with `skip_impl` and no PR in the arguments or the carried report ran every later stage with `PR #null` | The run stops before `/simplify` when there is no PR; an argument `pr: null` counts as absent |
+| should-fix (rules) | Coordinator note 21:35 arrived after stage 3 and was in neither the rules nor the script: `git fetch --prune`, merging `origin/<branch>` when GitHub added a commit, and reading a helper's exit status rather than its empty output | "Running a change", "Merging" steps 2-3, "Durability" and every stage prompt. The note's fourth lesson, ordering checks that compare two `indexOf` results, is already met: the harness's order check uses `findIndex` from the previous match, and a missing stage fails it |
+| nit | The flags stage ran `cd <worktree> && scripts/…`, against the script's own rule of naming the target | `<worktree>/scripts/agent-topology.py`, whose repository root comes from its own path |
+
+Floor rows for this review's rule edits:
+
+| Rule edit | Existing rule it touches | Why the floor holds |
+|---|---|---|
+| `git fetch --prune` in "Running a change", "Merging" and "Durability" | "Merging" steps 2-3; "Durability" | Removes stale remote-tracking refs only; every gate, the ancestor check and the merge path are unchanged. |
+| Merge `origin/<branch>` before pushing | "Running a change" (rejected push) | Adds a merge and drops nothing. A GitHub-side commit changes the tree, so the gate records no longer match it and the gates rerun. |
+| A helper's undocumented exit status means blocked | "Running a change" | Fails closed. |
+| Refusals widened (`@`, dot segments, carried specs, no PR) | "Stages after implementation" | Strengthens the main-branch protection. |
+
+Decisions on the open questions of the stage-3 report (user experience first):
+
+1. **The stage-3 revision without a spec review.** This review checked each of its rows against the floor table, as that section asked, and found none that lowers the floor. The coordinator's Fable review of the template (task 5.3) reviews it a second time. No further spec-review stage is owed.
+2. **The merge stage's stopping rule** (review only the apply commit; "no findings" is not the merge test). It is kept. The lenses already review every commit before the apply commit, and the apply agent is an independent reviewer that wrote none of the code. So the floor item "an independent code reviewer" holds, and the rule only stops an unbounded review-fix loop. It comes from coordinator note 20:38, not from a maintainer decision, so it is listed for the maintainer.
+3. **An empty `code-review` result counts as a failed lens.** It is kept. A false stop costs one coordinator resume: a `review-only` run on the same pull request reruns the lenses. A false pass merges a change no lens read. Hollow passes have been observed: a forked review's output was lost behind a schema, and bracket-only or summary-only bodies slipped past invowk's filter. In this review's probes, `code-review high` returned findings every time, so the stop should be rare. This reading comes from coordinator notes 19:25 and 20:38, so it is also listed for the maintainer.
+4. **The probes the coordinator owes** (`host-asks.md`: the cwd under `isolation: 'worktree'`, `code-review` on an open PR, and `code-review` without a caller schema) stay owed. The template is not used before they are recorded, as task 4.4 says.
+5. **No merge in this stage** (task 5.3). The verdict is "ready, Fable template review pending".
