@@ -58,7 +58,7 @@
       "relationship": "The All Tabs popover becomes visible below the strip without moving the header, the strip or its All Tabs button"
     },
     {
-      "surface": "tab-bar",
+      "surface": "tab-strip",
       "relationship": "Only the All Tabs button's pressed state changes; the strip keeps its rectangle"
     },
     {

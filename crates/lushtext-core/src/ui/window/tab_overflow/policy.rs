@@ -237,6 +237,18 @@ pub fn all_tabs_match_announcement(matches: u32, total: u32, query_empty: bool) 
     }
 }
 
+/// The All Tabs list's accessible value text: the highlighted row's name
+/// first, so an assistive technology reading the list hears which tab Enter
+/// selects while the focus stays in the search entry, then the match count.
+/// The name is a row name, already bounded by [`all_tabs_row_name`].
+#[must_use]
+pub fn all_tabs_list_value_text(highlighted_row_name: Option<&str>, match_count: &str) -> String {
+    match highlighted_row_name {
+        Some(name) => format!("Selected {name}. {match_count}"),
+        None => match_count.to_owned(),
+    }
+}
+
 /// One row's accessible name: its title and the states a sighted user reads
 /// from its icons, cut to [`ALL_TABS_ROW_NAME_MAX_CHARS`] characters.
 #[must_use]
@@ -749,6 +761,18 @@ mod tests {
         // The longest name the app builds: a 255-byte file name and every state.
         let longest = all_tabs_row_name(&"y".repeat(255), true, true, true);
         assert!(longest.chars().count() <= ALL_TABS_ROW_NAME_MAX_CHARS);
+    }
+
+    #[test]
+    fn the_list_value_text_names_the_highlighted_row_before_the_count() {
+        assert_eq!(
+            all_tabs_list_value_text(Some("beta.txt, pinned"), "3 open tabs"),
+            "Selected beta.txt, pinned. 3 open tabs"
+        );
+        assert_eq!(
+            all_tabs_list_value_text(None, "No open tab matches"),
+            "No open tab matches"
+        );
     }
 
     #[test]

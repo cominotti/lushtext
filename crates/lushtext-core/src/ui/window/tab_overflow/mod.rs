@@ -25,13 +25,16 @@
 //! 4. **Yield to the strip** (`scroll_execution.rs`, driven by `watch.rs`):
 //!    a selection, page attach or detach, reorder, transfer, direction
 //!    change, wheel or press on the strip pauses our step and drops the
-//!    repeat, so the strip's own scroll wins.
+//!    repeat, so the strip's own scroll wins; a wheel or press also ends a
+//!    selection reveal.
 //! 5. **Reveal the selection** (`scroll_execution.rs`): the session
 //!    restore's terminal, and an All Tabs pick of the already selected tab,
 //!    ask the strip to bring the selected tab into view through its own
 //!    selection scrolling (ledger A133).
 //!    **Inversion:** it resumes from a tick callback on the bar, once per
-//!    frame after the strip is allocated, until the strip rests.
+//!    frame after the strip is allocated, until the strip rests; while the
+//!    strip is hidden (Focus Mode) it first resumes from the bar's one-shot
+//!    `map` handler.
 //! 6. **List → filter → select** (`all_tabs.rs`, `all_tabs_popover/`): the
 //!    All Tabs button opens a popover over a snapshot of the open tabs; a
 //!    query ranks them (`policy::rank_all_tabs`); an activated row selects

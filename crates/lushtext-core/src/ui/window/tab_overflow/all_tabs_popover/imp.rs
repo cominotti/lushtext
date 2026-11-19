@@ -13,8 +13,8 @@ use gtk4::{CompositeTemplate, gdk, glib};
 
 use super::super::policy::{
     ALL_TABS_ANNOUNCE_DELAY_MS, ALL_TABS_LIST_LABEL, ALL_TABS_NO_MATCH_TITLE,
-    ALL_TABS_SEARCH_LABEL, AllTabsCandidate, all_tabs_highlight, all_tabs_match_announcement,
-    all_tabs_row_name, rank_all_tabs,
+    ALL_TABS_SEARCH_LABEL, AllTabsCandidate, all_tabs_highlight, all_tabs_list_value_text,
+    all_tabs_match_announcement, all_tabs_row_name, rank_all_tabs,
 };
 use super::AllTabsPopoverFacts;
 use super::item::{AllTabsItem, AllTabsRow, AllTabsRowModel};
@@ -100,6 +100,14 @@ impl ObjectImpl for LushtextAllTabsPopover {
         let selection = gtk4::SingleSelection::new(Some(self.model.clone()));
         selection.set_autoselect(false);
         selection.set_can_unselect(true);
+        // The highlight moves while the focus stays in the search entry: the
+        // list's value text names the highlighted tab (as the palette does).
+        let popover_weak = self.obj().downgrade();
+        selection.connect_selected_notify(move |_| {
+            if let Some(popover) = popover_weak.upgrade() {
+                popover.imp().refresh_list_value_text();
+            }
+        });
         self.list_view.set_model(Some(&selection));
         self.selection.replace(Some(selection));
         self.list_view.set_factory(Some(&self.build_factory()));
@@ -287,7 +295,25 @@ impl LushtextAllTabsPopover {
         }
         accessibility::set_hidden(&*self.list_scroller, empty);
         accessibility::set_hidden(&*self.empty_state, !empty);
-        accessibility::set_value_text(&*self.list_view, &self.match_count_text());
+        self.refresh_list_value_text();
+    }
+
+    /// The list's value text: the highlighted tab's row name, then the match
+    /// count. Reads the row data, never a row object.
+    fn refresh_list_value_text(&self) {
+        // A selection change can still notify while the popover is disposed.
+        let (Some(list_view), Some(_)) = (self.list_view.try_get(), self.search_entry.try_get())
+        else {
+            return;
+        };
+        let name = self
+            .highlighted_position()
+            .and_then(|position| self.model.row_at(position))
+            .map(|row| all_tabs_row_name(&row.title, row.modified, row.pinned, row.current));
+        accessibility::set_value_text(
+            &list_view,
+            &all_tabs_list_value_text(name.as_deref(), &self.match_count_text()),
+        );
     }
 
     /// The match count for the current query: the list's value text and the

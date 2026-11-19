@@ -151,7 +151,8 @@ shows.
     `bar.pick(x, y)` and tests whether the result descends from the group. Both
     observers act, and count, only while a step or hold is active, so presses
     and scrolling inside the open popover (whose parent chain runs through the
-    bar) are inert.
+    bar) are inert. Outside our group and while the popover is closed, they
+    also end a running selection reveal (D13).
   - A direction change.
   - While `is-transferring-page` is true, a step requested by keyboard or
     automation is refused: the box's drag autoscroll (`:1463`) owns the strip
@@ -465,8 +466,10 @@ Recorded during implementation, each with its reason:
   `ActionSurface` named a button in the tab strip's end group
   (`header-button` is the header bar), so `ActionSurface::TabStripControl`
   joins the catalog vocabulary; the All Tabs half reuses it.
-- **A `tab-bar` visual surface.** The visual-geometry case checks the strip's
-  rectangle (so its height) before and after a step; no surface named the bar.
+- **The `tab-strip` visual surface.** The visual-geometry case checks the
+  strip's rectangle (so its height) before and after a step through the
+  existing `tab-strip` surface. A duplicate `tab-bar` surface for the same
+  widget was added first and removed in review, so one widget has one name.
 - **The visual-geometry case steps Forward** in a restored session of 41 tabs
   rather than crossing the overflow point in one session: no single action
   crosses it at a fixed size. The session's first tab is the case's activation
@@ -527,8 +530,8 @@ Recorded during implementation, each with its reason:
   pixel from its start (Back enabled) that later settled at 0. After the fix
   the traced case lands at 0 and the filtered case passed 6 of 6 runs, then
   every full run; it holds the `tab-overflow`
-  blocker meanwhile, ends at a step, a selection of the user's own, or
-  disposal, and the window's own selected-page handler ignores the
+  blocker meanwhile, ends at a step, a selection of the user's own, a wheel
+  or press on the strip (D13), or disposal, and the window's own selected-page handler ignores the
   re-announcement (nothing changed, so no projection runs twice and no
   selection generation advances). Failing-first: three restore shapes in
   `test_a_restore_leaves_the_selected_tab_in_view` (the first of forty, the
@@ -642,6 +645,46 @@ Recorded during implementation, each with its reason:
   create no event sequence. Widget tests assert the properties (`focus-on-click`,
   the gesture's phase and claim). The real press is proved in the accessibility
   smoke and the live check (task 4.3).
+
+### D13. Review decisions (code review of PR #119)
+
+- **The strip's own wheel or press ends a selection reveal.** Before, the
+  bar's observers acted only during a step, so a reveal still waiting for a
+  still frame re-announced the selection after the user had scrolled and
+  undid the scroll. Both observers now end the reveal, outside our group and
+  while the popover is closed (scrolling its list moves no strip). The call
+  is not in `cancel_tab_scroll_for_strip_input`: the selected-page handler
+  runs that for the reveal's own re-announcement. Failing-first:
+  `test_a_wheel_or_press_on_the_strip_ends_the_selection_reveal`.
+- **A reveal asked for while the strip is hidden is owed to its next map.**
+  A restore behind Focus Mode left the selected first tab of forty out of view
+  when the strip returned (strip value 4288). `reveal_selected_tab` now
+  connects a one-shot `map` handler on the bar instead of returning; the debt
+  does not hold the `tab-overflow` blocker, since Focus Mode can last
+  indefinitely, a later request replaces it, and disposal drops it.
+  Failing-first:
+  `test_a_restore_behind_focus_mode_shows_the_selected_tab_when_the_strip_returns`.
+- **Focus inside the popover is the popover's.** The popover is parented to
+  the All Tabs button, so focus in its search entry read as the button's, and
+  after `popdown` the menu button focuses itself before the popover's idle
+  restore runs; a close down to one tab then started the reconcile's editor
+  hand-off, which took the focus from the widget saved before opening.
+  `focused_control` now answers none inside the popover, and the hand-off
+  stands down while the restore is pending (`focus_restore_pending`).
+  Failing-first:
+  `test_a_close_to_one_tab_with_focus_in_the_popover_gives_the_saved_focus_back`.
+- **The highlight is named to assistive technologies.** Up and Down move the
+  highlight while the focus stays in the entry, so the list's value text now
+  names the highlighted tab before the match count
+  (`policy::all_tabs_list_value_text`, "Selected beta.txt. 3 open tabs"), as
+  the command palette does. Failing-first:
+  `test_moving_the_highlight_names_its_tab_in_the_lists_value_text`.
+- **Declined:** re-deciding only the enablement on a value change (the
+  observers only schedule the one coalesced reconcile, per
+  `ui/window/AGENTS.md`); one tab-view observer set for both the reconcile
+  and the re-snapshot (two owners, both deferred, so their order carries
+  nothing); `SignalBag` for the per-page and per-row handlers (it releases
+  only all at once, so the keyed map is still needed).
 
 ## Timing
 

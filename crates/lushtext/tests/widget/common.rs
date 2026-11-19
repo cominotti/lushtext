@@ -1078,17 +1078,37 @@ pub fn worst_dispatch_until(
 /// Whether the accessible `Label` property of `accessible` is exactly `label`
 /// (a value check; `AccessibleAudit` checks presence only).
 pub fn accessible_label_is(accessible: &impl IsA<gtk4::Accessible>, label: &str) -> bool {
+    accessible_string_property_is(accessible, gtk4::ffi::GTK_ACCESSIBLE_PROPERTY_LABEL, label)
+}
+
+/// Whether the accessible `ValueText` property of `accessible` is exactly
+/// `value_text` (a value check; `AccessibleAudit` checks presence only).
+pub fn accessible_value_text_is(accessible: &impl IsA<gtk4::Accessible>, value_text: &str) -> bool {
+    accessible_string_property_is(
+        accessible,
+        gtk4::ffi::GTK_ACCESSIBLE_PROPERTY_VALUE_TEXT,
+        value_text,
+    )
+}
+
+/// Whether the string-valued accessible `property` of `accessible` is
+/// exactly `value`.
+fn accessible_string_property_is(
+    accessible: &impl IsA<gtk4::Accessible>,
+    property: gtk4::ffi::GtkAccessibleProperty,
+    value: &str,
+) -> bool {
     use glib::translate::ToGlibPtr;
-    let expected = std::ffi::CString::new(label).expect("a label without NUL");
-    // SAFETY: `gtk_test_accessible_check_property` is variadic and, for the
-    // `Label` property, reads one `const char *` argument, which `expected`
-    // keeps alive for the call. The accessible pointer is borrowed for the
-    // call only. It returns NULL when the value matches, else a newly
-    // allocated message the caller frees.
+    let expected = std::ffi::CString::new(value).expect("a value without NUL");
+    // SAFETY: `gtk_test_accessible_check_property` is variadic and, for a
+    // string-valued property (`Label`, `ValueText`, the only callers), reads
+    // one `const char *` argument, which `expected` keeps alive for the call.
+    // The accessible pointer is borrowed for the call only. It returns NULL
+    // when the value matches, else a newly allocated message the caller frees.
     unsafe {
         let message = gtk4::ffi::gtk_test_accessible_check_property(
             accessible.as_ref().to_glib_none().0,
-            gtk4::ffi::GTK_ACCESSIBLE_PROPERTY_LABEL,
+            property,
             expected.as_ptr(),
         );
         if message.is_null() {

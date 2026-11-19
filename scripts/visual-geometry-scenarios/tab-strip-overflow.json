@@ -71,7 +71,7 @@
   "relative_pixel_anchors": [],
   "allowed_changing_regions": [
     {
-      "surface": "tab-bar",
+      "surface": "tab-strip",
       "relationship": "Only the unpinned tabs move: the strip keeps its rectangle, the trailing controls stay drawn where they were, Scroll Tabs Back is disabled before the step (the restored strip shows its selected first tab) and enabled after it"
     }
   ],

@@ -205,14 +205,17 @@ impl LushtextWindow {
     /// A close without an activation (Escape, a click outside, the shortcut
     /// again): give the focus back to the widget that had it, else the
     /// selected editor, else nobody. After the menu button's own close
-    /// handling, which would focus the button.
+    /// handling, which would focus the button. Until the restore runs, the
+    /// reconcile's focus hand-off stands down (`focus_restore_pending`).
     fn restore_focus_after_all_tabs(&self) {
         let saved = self.imp().tab_overflow.saved_focus.take();
+        self.imp().tab_overflow.focus_restore_pending.set(true);
         let window_weak = self.downgrade();
         glib::idle_add_local_once(move || {
             let Some(window) = window_weak.upgrade() else {
                 return;
             };
+            window.imp().tab_overflow.focus_restore_pending.set(false);
             let target = saved
                 .as_ref()
                 .and_then(glib::WeakRef::upgrade)

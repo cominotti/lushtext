@@ -1648,3 +1648,149 @@ fn test_tab_overflow_evidence_reads_materialize_nothing() {
         "a read schedules no reconcile"
     );
 }
+
+// --- Review fixes (code-review high, PR #119) -----------------------------
+
+/// The user's own wheel or press on the strip ends a running selection
+/// reveal, so its re-announced selection cannot undo the user's scroll. The
+/// reveal is started synchronously, by an All Tabs pick of the tab that is
+/// already selected, and the input follows in the same dispatch.
+#[test]
+fn test_a_wheel_or_press_on_the_strip_ends_the_selection_reveal() {
+    for input in ["wheel", "press"] {
+        let window = overflowing_window();
+        open_all_tabs(&window);
+        let (_, popover) = all_tabs(&window);
+        let selected = window.imp().tab_view.selected_page();
+        // The empty query highlights the selected tab; Enter picks it.
+        popover.search_entry().emit_by_name::<()>("activate", &[]);
+        assert_eq!(
+            window.imp().tab_view.selected_page(),
+            selected,
+            "{input}: the pick keeps the selection"
+        );
+        assert!(
+            evidence(&window).selection_reveal_pending,
+            "{input}: picking the selected tab starts the reveal"
+        );
+        if input == "wheel" {
+            let _ =
+                bar_scroll_observer(&window).emit_by_name::<bool>("scroll", &[&0.0f64, &1.0f64]);
+        } else {
+            // On the tabs, away from the trailing control group.
+            let bounds = unpinned(&window)
+                .compute_bounds(&*window.imp().tab_bar)
+                .expect("the unpinned scroller has bounds inside the bar");
+            let (x, y) = (
+                f64::from(bounds.x() + bounds.width() / 2.0),
+                f64::from(bounds.y() + bounds.height() / 2.0),
+            );
+            bar_press_observer(&window).emit_by_name::<()>("pressed", &[&1i32, &x, &y]);
+        }
+        assert!(
+            !evidence(&window).selection_reveal_pending,
+            "{input}: the user's own input on the strip ends the reveal"
+        );
+        settled(&window);
+    }
+}
+
+/// A restore whose strip Focus Mode hid shows the selected tab once the strip
+/// returns.
+#[test]
+fn test_a_restore_behind_focus_mode_shows_the_selected_tab_when_the_strip_returns() {
+    for active in [0usize, 20, 39] {
+        let window = window_at(1000);
+        activate_action(&window, "toggle-focus-mode");
+        flush_events();
+        let dir = tempfile::tempdir().expect("session tempdir");
+        restore_and_settle(&window, restored_session(dir.path(), 40, active));
+        assert!(
+            !window.imp().tab_bar.is_mapped(),
+            "Focus Mode hides the strip during the restore"
+        );
+        activate_action(&window, "toggle-focus-mode");
+        flush_events();
+        settled(&window);
+        assert_selected_tab_in_view(
+            &window,
+            &format!("tab {active} of forty, restored behind Focus Mode"),
+        );
+    }
+}
+
+/// With the focus in the popover's search entry, a close down to one tab
+/// hides the All Tabs button and closes the popover; the focus saved before
+/// opening comes back, with no second hand-off to the editor competing.
+#[test]
+fn test_a_close_to_one_tab_with_focus_in_the_popover_gives_the_saved_focus_back() {
+    let window = window_at(1000);
+    open_tabs(&window, 2);
+    // Let the new tabs' own editor-focus retries run out first.
+    crate::common::flush_after_delay(Duration::from_millis(300));
+    let saved = window.imp().new_tab_button.get();
+    assert!(
+        saved.grab_focus(),
+        "the header's New Tab button takes keyboard focus"
+    );
+    flush_events();
+    open_all_tabs(&window);
+    let (_, popover) = all_tabs(&window);
+    assert!(
+        focus_is(&window, &popover.search_entry()),
+        "the popover's search entry holds keyboard focus"
+    );
+    let tab_view = window.imp().tab_view.get();
+    let selected = tab_view.selected_page();
+    let other = (0..tab_view.n_pages())
+        .map(|index| tab_view.nth_page(index))
+        .find(|page| Some(page) != selected.as_ref())
+        .expect("a tab that is not selected");
+    tab_view.close_page(&other);
+    assert!(
+        wait_until_or_false(SETTLE, || !evidence(&window).popover_visible),
+        "the popover closes before its button hides"
+    );
+    // Past every retry a competing editor hand-off would make.
+    crate::common::flush_after_delay(Duration::from_millis(400));
+    assert!(
+        focus_is(&window, &saved),
+        "the focus saved before opening comes back, not {:?}",
+        gtk4::prelude::GtkWindowExt::focus(&window).map(|widget| widget.type_().name())
+    );
+}
+
+/// Up and Down from the search entry name the highlighted tab in the list's
+/// value text, so an assistive technology can tell which tab Enter selects.
+#[test]
+fn test_moving_the_highlight_names_its_tab_in_the_lists_value_text() {
+    let window = window_at(1000);
+    let dir = tempfile::tempdir().expect("tempdir");
+    open_files(&window, dir.path(), &["alpha.txt", "beta.txt", "gamma.txt"]);
+    open_all_tabs(&window);
+    let (_, popover) = all_tabs(&window);
+    let list = popover.list_view();
+    assert_eq!(
+        evidence(&window).popover_highlighted_position,
+        Some(2),
+        "the empty query highlights the selected tab"
+    );
+    assert!(
+        crate::common::accessible_value_text_is(
+            &list,
+            "Selected gamma.txt, current tab. 3 open tabs"
+        ),
+        "the list names the highlighted tab when the popover opens"
+    );
+    popover_key(&popover, gtk4::gdk::Key::Up);
+    assert_eq!(evidence(&window).popover_highlighted_position, Some(1));
+    assert!(
+        crate::common::accessible_value_text_is(&list, "Selected beta.txt. 3 open tabs"),
+        "Up names the newly highlighted tab"
+    );
+    set_query(&window, "zzz-no-such-tab");
+    assert!(
+        crate::common::accessible_value_text_is(&list, "No open tab matches"),
+        "with nothing highlighted only the match count remains"
+    );
+}

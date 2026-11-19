@@ -41,12 +41,19 @@ pub(crate) struct OverflowControls {
 }
 
 impl OverflowControls {
-    /// The scroll control that holds keyboard focus inside `window`, if any.
+    /// The scroll control that holds keyboard focus inside `window`, if any;
+    /// none while the focus is inside the All Tabs popover.
     pub(super) fn focused_control(
         &self,
         window: &impl IsA<gtk4::Window>,
     ) -> Option<OverflowControl> {
         let focus = gtk4::prelude::GtkWindowExt::focus(window.as_ref())?;
+        // The popover is parented to the All Tabs button, but focus inside it
+        // is the popover's: its close gives the saved focus back
+        // (`restore_focus_after_all_tabs`), and a hand-off here would compete.
+        if focus == *self.popover.upcast_ref::<gtk4::Widget>() || focus.is_ancestor(&self.popover) {
+            return None;
+        }
         [
             (
                 self.back.upcast_ref::<gtk4::Widget>(),

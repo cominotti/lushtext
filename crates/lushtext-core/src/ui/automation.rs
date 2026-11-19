@@ -1331,7 +1331,6 @@ fn visual_geometry_snapshot(window: &LushtextWindow) -> AutomationVisualGeometry
     );
     push_widget_surface(&mut surfaces, "tab-strip", &*imp.tab_bar, root);
     push_widget_surface(&mut surfaces, "status-bar", &*imp.status_bar, root);
-    push_widget_surface(&mut surfaces, "tab-bar", &*imp.tab_bar, root);
     push_widget_surface(&mut surfaces, "workspace-sidebar", &*imp.sidebar, root);
     // The rail host the workspace split view allocates the staged sidebar
     // into, and the content area whose right edge is the properties pane edge:

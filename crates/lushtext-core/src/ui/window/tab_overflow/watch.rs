@@ -14,8 +14,10 @@
 //!   session restore, a bulk close) the reconcile waits for the batch's
 //!   terminal, `refresh_tab_model_projections`, so the controls appear once.
 //! * **a cancellation** of our step or hold (`scroll_execution.rs`), on every
-//!   event that precedes a scroll of the strip's own. The bar's observers act
-//!   only while a step is active, and ignore a press inside our own group.
+//!   event that precedes a scroll of the strip's own. The bar's observers
+//!   cancel only while a step is active, and ignore a press inside our own
+//!   group; a wheel or press outside it, while the All Tabs popover is
+//!   closed, also ends a running selection reveal: the user moves the strip.
 
 use std::cell::{Cell, RefCell};
 use std::time::Duration;
@@ -81,6 +83,10 @@ pub(crate) struct TabOverflowState {
     pub(super) selection_reveal: RefCell<Option<super::scroll_execution::SelectionReveal>>,
     /// Whether the reveal is re-announcing the unchanged selection right now.
     pub(super) revealing_selection: Cell<bool>,
+    /// A reveal asked for while the bar was unmapped (Focus Mode hid the
+    /// strip): the bar's one-shot `map` handler that starts it. It does not
+    /// block readiness, since the strip may stay hidden indefinitely.
+    pub(super) owed_reveal: RefCell<Option<glib::SignalHandlerId>>,
     /// Whether the All Tabs button shows, as last published.
     pub(super) all_tabs_visible: Cell<bool>,
     /// The count the All Tabs button shows, as last published.
@@ -89,6 +95,10 @@ pub(crate) struct TabOverflowState {
     pub(super) all_tabs_count_publications: Cell<u32>,
     /// The focus to give back when the popover closes without an activation.
     pub(super) saved_focus: RefCell<Option<glib::WeakRef<gtk4::Widget>>>,
+    /// Whether the popover's focus restore waits for its idle. Until it runs,
+    /// the reconcile's hand-off stands down: the menu button focuses itself on
+    /// close, and a hand-off from it would compete with the restore.
+    pub(super) focus_restore_pending: Cell<bool>,
     /// The re-snapshot of an open popover after a tab change.
     pub(super) resnapshot: gtk_lush_settle::Debounce,
     /// Each tab page's title and pinned handlers, by page address.
@@ -210,10 +220,16 @@ impl LushtextWindow {
         scroll.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let window_weak = self.downgrade();
         scroll.connect_scroll(move |_, _, _| {
-            if let Some(window) = window_weak.upgrade()
-                && window.tab_scroll_step_active()
-            {
-                window.cancel_tab_scroll_for_strip_input();
+            if let Some(window) = window_weak.upgrade() {
+                // The user moves the strip: a reveal after a restore yields,
+                // so its re-announced selection cannot undo the user's scroll.
+                // Scrolling inside the open popover moves no strip.
+                if !window.all_tabs_popover_visible() {
+                    window.end_selection_reveal();
+                }
+                if window.tab_scroll_step_active() {
+                    window.cancel_tab_scroll_for_strip_input();
+                }
             }
             glib::Propagation::Proceed
         });
@@ -227,12 +243,17 @@ impl LushtextWindow {
             let Some(window) = window_weak.upgrade() else {
                 return;
             };
-            if !window.tab_scroll_step_active()
-                || window.press_is_inside_overflow_group(gesture, x, y)
-            {
+            if window.press_is_inside_overflow_group(gesture, x, y) {
                 return;
             }
-            window.cancel_tab_scroll_for_strip_input();
+            // A press on the strip (a tab, a drag) yields the reveal too;
+            // one inside the open popover does not.
+            if !window.all_tabs_popover_visible() {
+                window.end_selection_reveal();
+            }
+            if window.tab_scroll_step_active() {
+                window.cancel_tab_scroll_for_strip_input();
+            }
         });
         bar.add_controller(press);
     }
@@ -361,7 +382,9 @@ impl LushtextWindow {
         let rtl = is_rtl(&bar);
         let back = visible && extent.is_some_and(|extent| can_scroll_back(extent, rtl));
         let forward = visible && extent.is_some_and(|extent| can_scroll_forward(extent, rtl));
-        let focused = controls.focused_control(self);
+        let focused = (!state.focus_restore_pending.get())
+            .then(|| controls.focused_control(self))
+            .flatten();
 
         if visible != was_visible {
             controls.back.set_visible(visible);
@@ -430,6 +453,7 @@ impl LushtextWindow {
     /// Teardown: drop every pending source and the animation.
     pub(crate) fn dispose_tab_overflow(&self) {
         self.end_selection_reveal();
+        self.forget_owed_selection_reveal();
         let state = &self.imp().tab_overflow;
         if let Some(source) = state.repeat.take() {
             source.remove();

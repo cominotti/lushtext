@@ -1760,8 +1760,8 @@ fn push_tab_strip_overflow_relationships(
         status,
         "tab-strip-height-constant",
         match (
-            surface_box(before, "tab-bar"),
-            surface_box(after, "tab-bar"),
+            surface_box(before, "tab-strip"),
+            surface_box(after, "tab-strip"),
         ) {
             (Ok(was), Ok(now)) if was == now => Ok(()),
             (Ok(was), Ok(now)) => Err(format!("tab bar moved from {was:?} to {now:?}")),
@@ -1846,7 +1846,7 @@ fn push_all_tabs_popover_relationships(
             other => Err(format!("active transient surface is {other:?}")),
         },
     );
-    for name in ["tab-bar", "tab-strip-all-tabs"] {
+    for name in ["tab-strip", "tab-strip-all-tabs"] {
         push_relationship(
             rows,
             status,

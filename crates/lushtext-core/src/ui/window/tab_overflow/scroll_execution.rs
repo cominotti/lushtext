@@ -336,19 +336,25 @@ impl LushtextWindow {
     /// once per frame, after the strip has been allocated, it re-announces the
     /// unchanged selection each time the strip comes to rest, and ends once
     /// the strip stays still after an announcement, at most
-    /// [`SELECTION_REVEAL_MAX_FRAMES`] frames.
+    /// [`SELECTION_REVEAL_MAX_FRAMES`] frames. While the strip is hidden the
+    /// reveal is owed to the bar's next `map` instead, which does not block
+    /// readiness.
     pub(in crate::ui::window) fn reveal_selected_tab(&self) {
         self.end_selection_reveal();
         let imp = self.imp();
         let Some(bar) = imp.tab_bar.try_get() else {
             return;
         };
-        if imp.tab_view.selected_page().is_none()
-            || !bar.is_mapped()
-            || imp.tab_overflow.unpinned.borrow().is_none()
-        {
+        if imp.tab_view.selected_page().is_none() || imp.tab_overflow.unpinned.borrow().is_none() {
             return;
         }
+        if !bar.is_mapped() {
+            // The strip is hidden (Focus Mode): owe the reveal until it maps,
+            // when the strip shows wherever the hidden attaches left it.
+            self.owe_selection_reveal(&bar);
+            return;
+        }
+        self.forget_owed_selection_reveal();
         let ended = std::rc::Rc::new(std::cell::Cell::new(false));
         let window_weak = self.downgrade();
         let tick = bar.add_tick_callback({
@@ -443,6 +449,33 @@ impl LushtextWindow {
                 glib::ControlFlow::Break
             }
             Some(_) => glib::ControlFlow::Continue,
+        }
+    }
+
+    /// Owe a reveal to the bar's next `map` (inversion: control resumes in
+    /// `reveal_selected_tab` from the bar's one-shot `map` handler). A later
+    /// request replaces the debt.
+    fn owe_selection_reveal(&self, bar: &libadwaita::TabBar) {
+        self.forget_owed_selection_reveal();
+        let window_weak = self.downgrade();
+        let handler = bar.connect_map(move |bar| {
+            if let Some(window) = window_weak.upgrade()
+                && let Some(handler) = window.imp().tab_overflow.owed_reveal.take()
+            {
+                bar.disconnect(handler);
+                window.reveal_selected_tab();
+            }
+        });
+        self.imp().tab_overflow.owed_reveal.replace(Some(handler));
+    }
+
+    /// Drop an owed reveal (a reveal started, disposal). Idempotent.
+    pub(super) fn forget_owed_selection_reveal(&self) {
+        let handler = self.imp().tab_overflow.owed_reveal.take();
+        if let Some(handler) = handler
+            && let Some(bar) = self.imp().tab_bar.try_get()
+        {
+            bar.disconnect(handler);
         }
     }
 
