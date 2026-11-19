@@ -102,9 +102,10 @@ lose the `PipeWireStreamAdded` quit to the main thread and then waits out its
 The first round of task 6.2 (three lanes streamed concurrently in this one
 worktree, on `6c7cd399`) failed visual run 4, case `workspace-refresh`:
 `UNSUPPORTED-HOST: GTK_LUSH_SESSION_BIN=…/target/debug/gtk-lush-session (deleted) is not executable`.
-That was 1 nested session in about 470. Before it the round had 10 green
-runs (visual-geometry 1-2, accessibility 1-3, visual 1-3, plus the
-in-flight ones), and none of them counts toward the final proof.
+That was 1 nested session in about 470. The round's other runs were green:
+visual-geometry 1-4, accessibility 1-5, visual 1-3 and crash-recovery 1
+(the in-flight ones were let finish). None of them counts toward the final
+proof.
 
 - **Reproducer** (`race-repro.sh` in the handoff directory): a private copy
   of the helper re-uplifted the way cargo does it (remove, then hard link)
@@ -131,7 +132,8 @@ own trigger. The 2026-11-18 baseline ran its three lanes one after another.
 - `lane` is timed from memory admission: `/usr/bin/time` inside
   `heavy.sh`.
 - `heavy wall` adds `heavy.sh`'s wait for memory beside other agents' work.
-  Other worktrees held up to 44 of the slice's 48 GiB during these runs.
+  The admission lines in these runs' logs show up to 36 of the slice's
+  48 GiB held by others while they waited.
 
 A run counts as bad if any of these holds:
 

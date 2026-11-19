@@ -302,6 +302,15 @@ namespace cannot use `/proc/<pid>/exe`). The fix keeps that choice:
   cargo's remove-then-link leaves the path briefly absent (1 of 40 under the
   loop with the first half alone, 0 of 100 with both).
 
+**Known residual.** The GTK axiom probes A115 and A116
+(`crates/gtk-lush/axioms/src/probes/`) spawn `$GTK_LUSH_SESSION_BIN` for their
+control child directly, not through the shim, so they keep cargo's brief
+remove-then-link window without a retry. With the suffix gone they fail only
+if a rebuild lands in that window of milliseconds, not whenever one has
+happened since the session started. Changing the axioms crate would owe
+`make gtk-axioms`, so it is left to `media-skip-classification` or a later
+change.
+
 `preexisting-blockers.md` makes it part of this change. It invalidates no
 earlier proof except the helper-dependent reruns D8 names: tasks 2.3 and 2.6
 and the whole of 6.2 are rerun on the fixed helper. Tasks 2.4, 2.5, 3.x, 4.1

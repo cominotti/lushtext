@@ -33,3 +33,11 @@ A smoke lane SHALL report a case whose session failed because WirePlumber did no
 - **WHEN** a smoke case's session fails because WirePlumber did not load its linking policy
 - **THEN** the lane reports the case as failed and exits nonzero
 - **AND** the lane prints no `SKIP:` line for that case
+
+### Requirement: The exported helper path survives a rebuild
+Inside a session, the `GTK_LUSH_SESSION_BIN` the helper exports SHALL name the helper's file path without the ` (deleted)` suffix that Linux gives a replaced executable, and `scripts/headless-session` SHALL retry briefly before it reports that path as not executable.
+
+#### Scenario: A rebuild replaces the helper while a session runs
+- **WHEN** `target/debug/gtk-lush-session` is removed and linked again while a session runs, and code inside the session starts a nested `scripts/headless-session` stage
+- **THEN** the exported path names `target/debug/gtk-lush-session`
+- **AND** the nested stage starts instead of exiting as an unsupported host

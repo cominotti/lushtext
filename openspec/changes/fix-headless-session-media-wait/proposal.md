@@ -55,6 +55,11 @@ was only slow, by chance does not.
   of the three main media lanes plus one of the crash-recovery and
   command-palette notes lanes on the final tree, with per-lane wall time
   before and after.
+- A pre-existing blocker that the lane proof found (design D9): the
+  `GTK_LUSH_SESSION_BIN` the helper exports could name `… (deleted)` after a
+  concurrent rebuild, which failed a nested session as an unsupported host.
+  The helper strips that suffix, and `scripts/headless-session` retries its
+  `GTK_LUSH_SESSION_BIN` branch briefly.
 - Docs: the proof-harness CHANGELOG and README, `.agents/rules/build.md`
   ("PipeWire and WirePlumber updates": re-verify the readiness signal on a
   WirePlumber update), the QH record in `docs/next/long-line-documents.md`
@@ -65,14 +70,16 @@ was only slow, by chance does not.
 ### Modified Capabilities
 
 - `headless-session-hygiene`: ADDED requirements "Quiet media are ready
-  before the command starts", "A media readiness miss fails the session" and
-  "Lanes fail on a WirePlumber readiness miss".
+  before the command starts", "A media readiness miss fails the session",
+  "Lanes fail on a WirePlumber readiness miss" and "The exported helper path
+  survives a rebuild" (D9).
 
 ## Impact
 
 - `crates/gtk-lush/proof-harness/src/session/{mod.rs,observe.rs}` (GTK Lush
   family crate, internal `0.0.0` path API: one additive public function in
-  `session::observe`; no new dependency).
+  `session::observe`; no new dependency), and `scripts/headless-session` (the
+  D9 retry; on no smoke fingerprint list).
 - No application code, UI files, GTK behaviour, Kani-proven module or timed
   path. Kani: none (no proven module touched). GTK axioms: none (no GTK-family
   behaviour is relied on; the WirePlumber behaviour relied on is recorded in
