@@ -357,7 +357,10 @@ memory_scope_dir() {
 # harness exit code still propagates.
 run_with_widget_log() {
     local status=0
-    bls_start "$WIDGET_WARNING_REGEX" "$BENIGN_WIDGET_NOISE_REGEX"
+    if ! bls_start "$WIDGET_WARNING_REGEX" "$BENIGN_WIDGET_NOISE_REGEX"; then
+        echo "Error: $BLS__START_ERROR; not running the widget tests." >&2
+        return 1
+    fi
     bls_isolated "$@" 2>&1 | tee -p "/dev/fd/$BLS_IN" | emit_sanitized_widget_stream || status=$?
     bls_finish
 

@@ -63,6 +63,12 @@ BLS_REPORT_LINES=0
 BLS_KEPT_COUNT=0
 BLS_KEPT_BYTES=0
 BLS_KEPT_OVERFLOW=0
+BLS__BENIGN=
+BLS__W_REPORT=
+BLS__W_SUMMARY=
+BLS__W_KEPT=
+BLS__W_KEPT_SUMMARY=
+BLS__START_ERROR=
 
 # The sink: count every line, write lines while they fit in $1 bytes, read to
 # EOF, then write the summary to stderr (the summary descriptor).
@@ -133,7 +139,10 @@ bls__close() {
 }
 
 # bls_start <warn-ERE> <benign-ERE> [<keep-ERE>] [--keep-ignore-case]
-# Starts the stage and sets BLS_IN, the descriptor `tee -p` writes to.
+# Starts the stage and sets BLS_IN, the descriptor `tee -p` writes to. When
+# the outputs' directory cannot be made it starts nothing and fails; the
+# verdict of that attempt then fails closed (bls_finish keeps the reason).
+# It never falls back to outputs named at `/` (writable as root in CI).
 bls_start() {
     local dir
     bls_release
@@ -143,8 +152,11 @@ bls_start() {
     BLS__KEEP_FLAGS=(-aE)
     [[ "${4:-}" != --keep-ignore-case ]] || BLS__KEEP_FLAGS=(-aEi)
     BLS_COMPLETE=0 BLS_INCOMPLETE='' BLS_COUNT=0 BLS_REPORT='' BLS_REPORT_LINES=0
-    BLS_KEPT_COUNT=0 BLS_KEPT_BYTES=0 BLS_KEPT_OVERFLOW=0
-    dir="$(mktemp -d "${TMPDIR:-/tmp}/lt-scan-$BASHPID-XXXXXX")"
+    BLS_KEPT_COUNT=0 BLS_KEPT_BYTES=0 BLS_KEPT_OVERFLOW=0 BLS__START_ERROR=''
+    if ! dir="$(mktemp -d "${TMPDIR:-/tmp}/lt-scan-$BASHPID-XXXXXX")" || [[ ! -d "$dir" ]]; then
+        BLS__START_ERROR="the scan could not create its outputs in ${TMPDIR:-/tmp}"
+        return 1
+    fi
     # shellcheck disable=SC2094 # each output is opened once to write, once to read back
     exec {BLS__W_REPORT}>"$dir/report" {BLS_R_REPORT}<"$dir/report" \
         {BLS__W_SUMMARY}>"$dir/summary" {BLS_R_SUMMARY}<"$dir/summary" \
@@ -181,6 +193,11 @@ bls__read_summary() {
 
 # Close the stage's input, wait for it, and read its summaries.
 bls_finish() {
+    if [[ -n "$BLS__START_ERROR" ]]; then
+        BLS_COMPLETE=0
+        BLS_INCOMPLETE="$BLS__START_ERROR"
+        return 0
+    fi
     bls__close "$BLS_IN"
     BLS_IN=
     [[ -z "$BLS_PID" ]] || wait "$BLS_PID" 2>/dev/null || true
@@ -347,6 +364,21 @@ bls__case_binary() {
     bls_finish
     [[ "$BLS_COMPLETE" == 1 && "$BLS_COUNT" == 1 && "$BLS_REPORT" == 'x CRITICAL y' && "$BLS_KEPT_COUNT" == 2 ]] \
         || bls__fail "binary: a NUL byte changed the scan: complete=$BLS_COMPLETE count=$BLS_COUNT kept=$BLS_KEPT_COUNT report='$BLS_REPORT'"
+    bls_release
+    return 0
+}
+
+# A TMPDIR where the outputs cannot be made: bls_start fails and opens
+# nothing, and the verdict fails closed naming the reason.
+bls__case_no_tmpdir() {
+    local ctl="$1" status=0
+    TMPDIR="$ctl/no-such-base" bls_start "$BLS__WARN_ERE" "$BLS__BENIGN_ERE" 2>/dev/null || status=$?
+    (( status != 0 )) && [[ -z "$BLS_IN" && -z "$BLS_PID" && -z "$BLS_R_SUMMARY" ]] \
+        || bls__fail "no TMPDIR: bls_start gave status $status, BLS_IN='$BLS_IN' BLS_PID='$BLS_PID' BLS_R_SUMMARY='$BLS_R_SUMMARY'"
+    bls_finish
+    (( BLS_COMPLETE == 0 )) && [[ "$BLS_INCOMPLETE" == *"could not create its outputs"* ]] \
+        || bls__fail "no TMPDIR: complete=$BLS_COMPLETE incomplete='$BLS_INCOMPLETE'"
+    bls_check_unexpected 2>/dev/null && bls__fail "no TMPDIR: the verdict passed"
     bls_release
     return 0
 }
@@ -528,7 +560,7 @@ bls_isolated bash -c 'source "$1"; : >"$2.started"; for _ in $(seq 20); do bls__
     | tee -p "/dev/fd/$BLS_IN" >/dev/null
 bls_finish
 RUNNER
-    (BLS__FAILED=0; bls__case_classification; bls__case_binary; bls__case_drain_and_wait; exit "$BLS__FAILED") & pids+=($!)
+    (BLS__FAILED=0; bls__case_classification; bls__case_binary; bls__case_drain_and_wait; bls__case_no_tmpdir "$ctl"; exit "$BLS__FAILED") & pids+=($!)
     (BLS__FAILED=0; bls__case_flood; exit "$BLS__FAILED") & pids+=($!)
     (BLS__FAILED=0; bls__case_dead_stage "$ctl"; bls__case_linger "$ctl"; exit "$BLS__FAILED") & pids+=($!)
     (BLS__FAILED=0; bls__case_abnormal_exit "$ctl" KILL; exit "$BLS__FAILED") & pids+=($!)
@@ -538,7 +570,7 @@ RUNNER
     done
     elapsed=$(( ($(date +%s%N) - start) / 1000000 ))
     (( failed == 0 )) || return 1
-    echo "bounded-log-scan self-test passed in ${elapsed} ms (classification, NUL bytes read as text, 2^20-line floods bounded and counted, drain with exit status, slow stage awaited, dead stage fails closed, lingering daemon, kill -9 and SIGTERM leave nothing)."
+    echo "bounded-log-scan self-test passed in ${elapsed} ms (classification, NUL bytes read as text, 2^20-line floods bounded and counted, drain with exit status, slow stage awaited, an unusable TMPDIR and a dead stage fail closed, lingering daemon, kill -9 and SIGTERM leave nothing)."
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

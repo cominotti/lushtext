@@ -118,3 +118,25 @@ heavy self-test: an unusable TMPDIR gave status 1 and: mktemp: failed to create 
 
 and passes once each step of `heavy_report_dir` returns its failure
 (`heavy self-test: ok …`). The command never ran in either tree.
+
+## Review: the scan stage with an unusable TMPDIR (2026-11-19)
+
+`bls__case_no_tmpdir` (`TMPDIR=<missing base> bls_start …` must return
+nonzero with no stage or descriptor, and the verdict must fail closed naming
+the reason) failed first against the unchanged `bls_start`/`bls_finish`
+(the new case run over a copy of the old functions):
+
+```
+bounded-log-scan self-test: no TMPDIR: bls_start gave status 0, BLS_IN='11' BLS_PID='599572' BLS_R_SUMMARY=''
+head: error reading 'standard input': Is a directory
+bounded-log-scan self-test: no TMPDIR: complete=0 incomplete='the warning scan wrote no summary'
+```
+
+The old code returned 0 and started a stage after its `exec` tried
+`/report` and the other outputs, which only the missing permission refused.
+With the fix, the case passes (`bounded-log-scan self-test passed`). A widget
+run with `TMPDIR=/nonexistent-lt-review scripts/run-widget-tests.sh
+--self-test -- echo RAN` now prints `Error: the scan could not create its
+outputs in /nonexistent-lt-review; not running the widget tests.`, exits 1
+and never runs the command. Before the fix it printed `/report: Permission
+denied` and `BLS__W_REPORT: unbound variable`.

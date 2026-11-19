@@ -335,7 +335,10 @@ run_logged() {
     local keep="$1"
     shift
     local status
-    bls_start "$WARNING_REGEX" "$BENIGN_NOISE_REGEX" "$keep"
+    if ! bls_start "$WARNING_REGEX" "$BENIGN_NOISE_REGEX" "$keep"; then
+        echo "Error: $BLS__START_ERROR; not running $1." >&2
+        return 1
+    fi
     set +e
     bls_isolated "$@" 2>&1 | tee -p "/dev/fd/$BLS_IN"
     status="${PIPESTATUS[0]}"

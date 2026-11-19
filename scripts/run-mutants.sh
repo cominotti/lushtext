@@ -192,7 +192,10 @@ run_cargo_mutants() {
     local args=("$@")
     local status
 
-    bls_start '' '' "${NO_MUTANTS_REGEX}" --keep-ignore-case
+    if ! bls_start '' '' "${NO_MUTANTS_REGEX}" --keep-ignore-case; then
+        echo "Error: ${BLS__START_ERROR}; not running cargo mutants." >&2
+        return 1
+    fi
     set +e
     bls_isolated cargo mutants "${args[@]}" 2>&1 | tee -p "/dev/fd/${BLS_IN}"
     status="${PIPESTATUS[0]}"
@@ -366,7 +369,10 @@ run_slot() {
     if [[ -n "${shard}" ]]; then
         args+=(--shard "${shard}")
     fi
-    bls_start '' '' "${NO_MUTANTS_REGEX}" --keep-ignore-case
+    if ! bls_start '' '' "${NO_MUTANTS_REGEX}" --keep-ignore-case; then
+        echo "Error: ${BLS__START_ERROR}; not running cargo mutants." >&2
+        return 1
+    fi
     set +e
     bls_isolated cargo mutants "${args[@]}" 2>&1 | tee -p "/dev/fd/${BLS_IN}" | sed -u "s/^/[${name}] /"
     status="${PIPESTATUS[0]}"
