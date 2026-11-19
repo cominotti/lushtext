@@ -42,6 +42,24 @@ from nextest's default filter, while widget coverage in `make test` flows
 through the shared headless `scripts/run-widget-tests.sh` path so local
 verification matches CI.
 
+**Bounded warning scans.** The widget runner, the GTK axiom runner and the
+mutation runner scan the output of the command they run in a stage beside the
+live stream (`scripts/bounded-log-scan.sh`), never in a whole-output file. The
+stage applies the runner's own `grep -E` / `grep -Ev` regexes, keeps an exact
+count of unexpected lines and at most 64 KiB of them for the report, keeps at
+most 1 MiB of the lines a runner parses later (the axiom runner's result,
+slow-skip and observation lines; the mutation runner's no-mutants phrase, by
+its exact count), reads its input to EOF, and writes only to files unlinked as
+soon as they are open. Any unexpected line fails the run whatever the cap
+kept; a scan that did not finish, or axiom kept lines over 1 MiB, fail it
+closed. The widget runner starts and awaits the stage in its top-level shell,
+which owns the trap ([why](../../docs/memorials/2026-10-20-test-data-incidents.md)).
+`make check-temp-scope` (in `make check-policy`) shellchecks
+`bounded-log-scan.sh` and `run-widget-tests.sh` and runs
+`run-widget-tests.sh --self-test`, which runs the widget classification,
+memory-report and capture cases, the stage's self-test and the temp scope's,
+each once.
+
 The widget session's launcher (the `widget` profile of the session helper,
 below) sets the **seven** settings returned by
 `gtk_lush_proof_harness::recommended_pre_gtk_environment()` before the bus
@@ -651,7 +669,11 @@ SDK sandbox with `--no-session-bus --no-a11y-bus --no-documents-portal`
 (`SANDBOX_FLAGS`). `./scripts/run-gtk-axioms.sh --self-test` (in
 `make check-gtk-axioms`) asserts the benign lines pass and each defect class
 fails; a new class gets a case there, never a wider benign list
-([why](../../docs/memorials/axiom-lane-warning-scan.md)).
+([why](../../docs/memorials/axiom-lane-warning-scan.md)). The scan is
+streamed and bounded ("Bounded warning scans" under Dev Builds): the output
+goes live to the caller, the counts and the runtimes summary read the kept
+`{"axiom"…}` and `skipped (…)` lines (at most 1 MiB, an overflow fails the
+run), and no log is written.
 
 **Toolkit updates.** On any GTK, Libadwaita, GtkSourceView, Pango or GLib
 version change — the CI Fedora container image, the shipped GNOME runtime in

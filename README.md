@@ -833,6 +833,10 @@ Every test lane runs under `scripts/with-temp-scope.sh`, which gives it a
 private `TMPDIR`, removes it afterwards, and fails the run with `TEMP-LEAK:` if
 anything was left behind; the widget harness additionally gives each per-test
 child process its own temporary directory and removes it when the child exits.
+The widget and GTK axiom runners scan the output they stream for warnings
+without storing it: a bounded stage keeps an exact count of unexpected lines
+and the first 64 KiB of them, so a test that floods warnings fails with that
+count instead of filling `/tmp`.
 Tests never touch your real LushText data: every widget-test process points
 `LUSHTEXT_DATA_DIR` and the XDG base directories into that temporary directory
 before any test runs, and in test builds the app-data path resolver panics

@@ -62,14 +62,14 @@ Before the first heavy command: take an implementation slot (`parallel-agent-wor
 
 ## 5. Documentation
 
-- [ ] 5.1 `.agents/rules/testing.md` "Temporary Files":
+- [x] 5.1 `.agents/rules/testing.md` "Temporary Files":
   - a bullet that a runner's scan of a command's output is a bounded stream to unlinked descriptors, never a whole-output file;
   - the trap bullet amended: a `( … )` subshell has no traps, so register owned paths in the shell that holds the trap;
   - the new sweep prefixes (`lt-scan-`, `lt-heavy-`, `lt-envelope-`).
-- [ ] 5.2 `.agents/rules/build.md`:
+- [x] 5.2 `.agents/rules/build.md`:
   - the GTK axioms "Warning scan" paragraph (streamed, bounded, kept lines);
   - the widget runner wording where it describes the scan;
   - `make check-temp-scope` now runs `run-widget-tests.sh --self-test` (which runs the temp scope's and the stage's self-tests) and shellchecks both scripts.
-- [ ] 5.3 Append a dated 2026-11-15 entry to `docs/memorials/2026-10-20-test-data-incidents.md`: the four captures, tmpfs charging the scope, the subshell trap, and the 2026-11-18 cleanup. Link it from the `testing.md` bullet. Do not add a new memorial file, which would mean editing `docs/memorials/README.md`.
-- [ ] 5.4 Check `README.md` and `AGENTS.md` for wording about the widget warning scan or temporary files, and update any that is now stale. Neither lists this behaviour today, so record it if neither needs a change.
-- [ ] 5.5 Run `openspec validate bound-widget-log-capture --strict` and `make check-agent-docs`. Commit and push.
+- [x] 5.3 Append a dated 2026-11-15 entry to `docs/memorials/2026-10-20-test-data-incidents.md`: the four captures, tmpfs charging the scope, the subshell trap, and the 2026-11-18 cleanup. Link it from the `testing.md` bullet. Do not add a new memorial file, which would mean editing `docs/memorials/README.md`.
+- [x] 5.4 Check `README.md` and `AGENTS.md` for wording about the widget warning scan or temporary files, and update any that is now stale. Neither lists this behaviour today, so record it if neither needs a change.
+- [x] 5.5 Run `openspec validate bound-widget-log-capture --strict` and `make check-agent-docs`. Commit and push.
