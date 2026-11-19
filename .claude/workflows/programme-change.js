@@ -656,16 +656,19 @@ ${common('apply')}`, { label: `apply:${CHANGE}`, phase: 'Apply and gates', ...RE
 if (gapply.stopped) return { ...out, ...gapply }
 const applied = gapply.result
 out.apply = applied
-if (!applied) return { ...out, stopped: `apply agent failed: check whether it committed /simplify's edits before rerunning. ${LEFTOVERS}` }
+// The apply stage commits /simplify's edits and its own before its gates, so a
+// stop it returns may or may not have left them uncommitted.
+const APPLY_LEFTOVERS = `check git -C ${WT} status --porcelain: unless the apply stage committed /simplify's edits, ${LEFTOVERS.charAt(0).toLowerCase()}${LEFTOVERS.slice(1)}`
+if (!applied) return { ...out, stopped: `apply agent failed: ${APPLY_LEFTOVERS}` }
 if (applied.verdict === 'fast-lane-violation') {
   phase('Spec review')
-  const gr = await guarded('spec-review-after-violation', () => agent(`The change ${spec.change_name} (worktree ${WT}, PR #${PR}) left the fast lane: ${applied.summary}. Review its spec artifacts independently, as a full spec review (parallel-agent-work.md "Fast lane"), against the code and the rules; fix confirmed issues in one commit and push. Return unsound if it is.
+  const gr = await guarded('spec-review-after-violation', () => agent(`The change ${spec.change_name} (worktree ${WT}, PR #${PR}) left the fast lane: ${applied.summary}. Review its spec artifacts independently, as a full spec review (parallel-agent-work.md "Fast lane"), against the code and the rules; fix confirmed issues in one commit and push. The worktree may still hold /simplify's uncommitted edits ($H/${CHANGE}/simplify.patch) and the apply stage's: stage and commit only the spec artifacts you change, by name, and leave every other edit as it is. Return unsound if it is.
 ${common('spec-review-after-violation')}`, { label: `spec-review:${CHANGE}`, phase: 'Spec review', schema: REVIEW_SCHEMA }))
   if (gr.stopped) return { ...out, ...gr }
   out.review_after_violation = gr.result
-  return { ...out, stopped: 'fast-lane violation: full spec review done; resume with mode continue and skip_impl after reading it, with spec.fast_lane set to not-eligible' }
+  return { ...out, stopped: `fast-lane violation: full spec review done. After reading it, run an implementation round (mode continue, with spec.fast_lane set to not-eligible), not skip_impl: ${APPLY_LEFTOVERS}` }
 }
-if (applied.verdict !== 'ready') return { ...out, stopped: `apply stage: ${applied.verdict} (${applied.summary})` }
+if (applied.verdict !== 'ready') return { ...out, stopped: `apply stage: ${applied.verdict} (${applied.summary}). ${APPLY_LEFTOVERS}` }
 
 // What the apply stage says it produced, read back independently and compared
 // in the shell, not across two agents' copies: the merge stage reviews exactly
@@ -708,7 +711,12 @@ const MERGE_VERDICTS = ['merged', 'merged-archive-owed', 'ready', 'measurement-p
 const mergeNote = A.no_merge
   ? `DO NOT MERGE (coordinator: ${A.no_merge}). Do the review and the checks above, take no lock, then return the verdict ready, or blocked, with "${A.no_merge}" in the reason.`
   : `Merging: take MERGE-LOCK; make the origin/main merge of "Merging" step 2. If it conflicts, git -C ${WT} merge --abort, release MERGE-LOCK and return blocked: you resolve nothing. After a clean merge, review its diff against ${verified.head} as part of the range and return the final range and tree. Reuse gate records only for the identical tree (scripts/gate-trees.sh lookup --change ${CHANGE}); check that origin/main is an ancestor of HEAD before gh pr merge; read the Kani budget runs, never watch them, and follow the archive-owed path when they have not finished (parallel-agent-work.md "Merging"; verification-runs.md "Kani"). Archive with the openspec-archive-change skill and record it in ${A.programme_record || 'the programme record the change names'}. If another change has held MERGE-LOCK for more than 3 h, take nothing, break nothing, and return merge-lock-stale. After the origin/main merge, rerun the smokes only as "Durability" says. Release MERGE-LOCK on every exit path, then clean up as "Durability" describes.`
-const gmerge = await guarded('merge', () => agent(`Final review, merge and archive stage for the change ${spec.change_name}, PR #${PR}, worktree ${WT}, branch ${BRANCH}. You edit no file and make no commit of your own; the only commit you may make is the origin/main merge below, and only when it applies without conflicts.
+// The final review writes no code: under no_merge it commits nothing, and
+// otherwise only the conflict-free origin/main merge and the archive commit.
+const MERGE_COMMITS = A.no_merge
+  ? 'You edit no file and make no commit.'
+  : 'You edit no code, and you make two commits only: the origin/main merge below, when it applies without conflicts, and the archive commit on main, which touches only the archived change and the programme record.'
+const gmerge = await guarded('merge', () => agent(`Final review, merge and archive stage for the change ${spec.change_name}, PR #${PR}, worktree ${WT}, branch ${BRANCH}. ${MERGE_COMMITS}
 Implementation report: ${impl.report}
 Measurements it queued: ${impl.measurements_queued || 'none'}. Kani budget runs dispatched: ${impl.kani_dispatch || 'none'}${applied.kani_dispatch ? `, and by the apply stage: ${applied.kani_dispatch}` : ''}.
 Apply stage: ${applied.summary}; gates: ${applied.gates}
@@ -733,8 +741,10 @@ if (!merged) return { ...out, stopped: 'merge agent died: check MERGE-LOCK, the 
 if (!MERGE_VERDICTS.includes(merged.verdict)) return { ...out, stopped: `merge stage returned an unknown verdict ${JSON.stringify(merged.verdict)}; check MERGE-LOCK, the PR state and the archive by hand` }
 if (A.no_merge && /^merged/.test(merged.verdict)) return { ...out, stopped: `the merge stage reports ${merged.verdict} although args.no_merge was set; check the PR and main by hand` }
 if (merged.verdict === 'blocked') return { ...out, stopped: `final review blocked: ${merged.reason}. Nothing was merged; fix it in an implementation round (mode continue), then rerun review-only.` }
-if (merged.verdict === 'merged' && (!merged.merge_commit || !merged.archive_commit)) {
-  return { ...out, stopped: `the merge stage reports merged without a merge commit and an archive commit (${JSON.stringify({ merge: merged.merge_commit, archive: merged.archive_commit })}); check by hand` }
+// Both merged verdicts name the merge; only "merged" also names the archive.
+const OWED_COMMITS = { merged: ['merge_commit', 'archive_commit'], 'merged-archive-owed': ['merge_commit'] }[merged.verdict] || []
+if (OWED_COMMITS.some(k => !merged[k])) {
+  return { ...out, stopped: `the merge stage reports ${merged.verdict} without a merge commit${merged.verdict === 'merged' ? ' and an archive commit' : ''} (${JSON.stringify({ merge: merged.merge_commit, archive: merged.archive_commit })}); check by hand` }
 }
 out.verdict = merged.verdict
 return out

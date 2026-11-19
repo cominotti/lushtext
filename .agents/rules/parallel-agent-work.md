@@ -182,7 +182,12 @@ Change worktrees live in `.claude/worktrees/<change>`.
 - A queued verdict does not hold up implementation. The review reports
   "ready, measurement pending" and ends without merging.
 - Once the coordinator has run the queue and recorded the verdict:
-  - if the verdict meets the budget, it starts a merge-only run;
+  - if the verdict meets the budget, it starts a merge-only run: it
+    resumes the change's run (`resumeFromRunId`) with `args.review_extra`
+    naming the recorded verdict, which changes only the final review's
+    prompt, so the earlier stages replay from the cache and the final
+    review runs again; a `review-only` run that stopped before the merge is
+    resumed with `args.merge` instead;
   - if it does not, it sends the change back.
 
 ## Merging
@@ -234,10 +239,13 @@ Change worktrees live in `.claude/worktrees/<change>`.
        commit, finds no record and reruns. Record each gate you run with
        `scripts/gate-trees.sh record <wt> --gate '<gate>' -- scripts/heavy.sh … -- make <gate>`;
        only that helper writes `gate-trees.log`, and it records nothing for
-       a dirty or changing worktree. It records a failing run too (an
-       interrupted one, exit 75, 78, 124 or a signal, records nothing), and
-       a tree with a recorded failure of a named gate is never reused, since
-       a pass and a fail on one tree is a flake;
+       a dirty or changing worktree. It records a failing run too (a run
+       that was interrupted or could not start, exit 75, 78, 124, 126, 127
+       or a signal, records nothing), and a tree with a recorded failure of
+       a named gate is never reused, since a pass and a fail on one tree is
+       a flake. Only the coordinator removes a fail line, and only one whose
+       log shows the gate never ran (a wrapper's usage refusal); it notes the
+       removal in the change's handoff;
      - `git push origin HEAD`, to the branch of the same name (never
        `HEAD:main`).
   3. `git fetch --prune origin`, then `git merge-base --is-ancestor origin/main HEAD`.

@@ -280,7 +280,7 @@ const CASES = {
   async 'M3: the final review edits nothing and reviews the exact apply range'() {
     const r = await run({ ...BASE, mode: 'new' })
     const p = r.prompts['merge:demo']
-    check(!has(p, 'Fix such a defect') && has(p, 'fix nothing') && has(p, 'You edit no file'), 'the merge stage may still write a fix')
+    check(!has(p, 'Fix such a defect') && has(p, 'fix nothing') && has(p, 'You edit no code'), 'the merge stage may still write a fix')
     check(has(p, `log -p ${LH}..${H2}`) && has(p, `HEAD^{tree} is ${T2}`), 'the merge prompt lacks the exact range and tree')
     check(has(p, 'review-findings-applied.md') && has(p, 'wrongly rejected correctness finding'), 'rejected correctness findings are not re-checked')
     check(has(p, 'merge --abort') && has(p, 'you resolve nothing'), 'a conflicted origin/main merge is not blocked')
@@ -317,6 +317,39 @@ const CASES = {
     check(has(n.result.stopped, 'without a merge commit'), JSON.stringify(n.result))
     const x = await run({ ...BASE, mode: 'new', no_merge: 'pending' }, { merge: () => ({ verdict: 'merged', reason: '', merge_commit: 'm', archive_commit: 'a', notes: '' }) })
     check(has(x.result.stopped, 'no_merge was set'), JSON.stringify(x.result))
+  },
+  // Stage-4 review of the fix round (R1): the merge prompt allows exactly the
+  // two commits the stage owes (the conflict-free origin/main merge and the
+  // archive) and none under no_merge; R2: every merged verdict names its merge.
+  async 'R1: the merge prompt allows the archive commit and nothing else'() {
+    const r = await run({ ...BASE, mode: 'new' })
+    const p = r.prompts['merge:demo']
+    check(!has(p, 'the only commit you may make is the origin/main merge'), 'the merge prompt forbids the archive commit it asks for')
+    check(has(p, 'the archive commit') && has(p, 'You edit no code'), p.slice(0, 400))
+    let seen = ''
+    await run({ ...BASE, mode: 'new', no_merge: 'check pending' }, {
+      merge: (_l, prompt) => { seen = prompt; return { verdict: 'ready', reason: 'check pending', notes: '' } },
+    })
+    check(has(seen, 'You edit no file and make no commit') && !has(seen, 'the archive commit'), seen.slice(0, 400))
+  },
+  async 'R2: a merged-archive-owed verdict without a merge commit stops the run'() {
+    const r = await run({ ...BASE, mode: 'new' }, { merge: () => ({ verdict: 'merged-archive-owed', reason: 'kani pending', notes: '' }) })
+    check(has(r.result.stopped, 'without a merge commit'), JSON.stringify(r.result))
+    const ok = await run({ ...BASE, mode: 'new' }, { merge: () => ({ verdict: 'merged-archive-owed', reason: 'kani pending', merge_commit: 'm1', notes: '' }) })
+    check(ok.result.verdict === 'merged-archive-owed' && !ok.result.stopped, JSON.stringify(ok.result))
+  },
+  // R3: a stop after /simplify that can leave its edits uncommitted says so,
+  // and the fast-lane violation does not send the coordinator to skip_impl,
+  // whose prepare stage refuses a dirty worktree.
+  async 'R3: apply-stage stops name the uncommitted /simplify edits'() {
+    const b = await run(RO, { apply: () => ({ ...DEFAULTS.apply(), verdict: 'blocked', summary: 'flags differ' }) })
+    check(has(b.result.stopped, 'apply stage: blocked') && has(b.result.stopped, 'simplify.patch'), JSON.stringify(b.result))
+    const v = await run({ ...BASE, mode: 'fast-lane' }, {
+      spec: () => ({ ...DEFAULTS.spec(), fast_lane: 'eligible' }),
+      apply: () => ({ ...DEFAULTS.apply(), verdict: 'fast-lane-violation', summary: 'src path' }),
+    })
+    check(has(v.result.stopped, 'fast-lane violation') && has(v.result.stopped, 'simplify.patch'), JSON.stringify(v.result))
+    check(!has(v.result.stopped, 'resume with mode continue and skip_impl'), 'the violation stop sends the coordinator into a prepare stage that refuses the dirty worktree')
   },
   // Maintainer rule (b): an empty code-review stops unless accepted.
   async 'an empty code-review over a quoted scope stops, and passes only when accepted'() {

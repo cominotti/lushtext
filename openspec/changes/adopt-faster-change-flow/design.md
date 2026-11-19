@@ -488,7 +488,7 @@ Each must-fix has a case written first and seen failing against `d2f1b58b`: the 
 | N6 duplicated helpers in `agent-topology.py` | Partly fixed: `GIT_PREFIX` added to the fallback. Not deduplicated: the two scripts are standalone CLIs with their own test suites, and importing a hyphenated script by path would couple them for twelve lines. |
 | N7 header comment | Fixed. |
 | N8 `simplify.patch` omits new files | Fixed: `git add --intent-to-add` before the diff. |
-| Note 23:20: a fork runs repository scripts | Fixed: the lens agent runs none itself and releases this change's slot if the review created it; `impl-slots.sh acquire` refuses a name without a change worktree; the guard compares this change's slot and `MERGE-LOCK` ownership. A fork's `gate-trees.sh record` writes nothing while `/simplify`'s edits keep the worktree dirty, and S12 voids reuse after any recorded fail. |
+| Note 23:20: a fork runs repository scripts | Fixed: the lens agent runs none itself and releases this change's slot if the review created it; `impl-slots.sh acquire` refuses a name without a change worktree; the guard compares this change's slot and `MERGE-LOCK` ownership. While `/simplify`'s edits keep the worktree dirty, a fork's `gate-trees.sh record` writes nothing; when `/simplify` left none, a line it writes is a real run of that gate on the lens tree (a pass is true evidence, and a fail voids reuse, S12, so the apply read-back stops). |
 | Fable note on "Merging" step 2 (narrower than the floor's wording) | Not changed here: step 2 reruns `make check` and the tests covering both sides, which predates this change and is the floor's accepted form ("every gate on every distinct tree" is met by the record-or-rerun rule of D1). Listed for the maintainer. |
 
 A review of the first fix commit (`24dee3a0`) hardened four of these further, in the same round:
@@ -496,7 +496,7 @@ A review of the first fix commit (`24dee3a0`) hardened four of these further, in
 - **M1:** the lens prompt no longer carries the counts the lens must report (it could echo them), and the worktree call's quoted base must be `HEAD`, `@{upstream}`, `origin/<branch>` or a prefix of the lens `HEAD`: a matching count over `main` is still the P4 over-scope.
 - **M2, S6 again:** the scope reading no longer has an agent copy the selector's JSON and two file lists. The shell prints the counts (`wc -l`), whether `HEAD`, the PR head and the upstream are equal, and the one-line output of the new `review-lenses --flags-only` (test in `scripts/test-agent-topology.py`).
 - **S5:** the apply read-back compares in the shell (`rev-parse --verify '<hash>^{commit}'`, `'<hash>^{tree}'`), so an abbreviated hash is not a false stop, refuses a value that is not a hash before it reaches a command, and requires a `gate-trees.sh lookup` pass of `make check` for the tree, so "gated tree" is a record, not a claim.
-- **S12:** an interrupted run (exit 75, 78, 124, or a signal) records nothing; it is not a flake.
+- **S12:** an interrupted run (exit 75, 78, 124, or a signal) records nothing; it is not a flake. The stage-4 review added 126 and 127 (a command that could not start).
 - **S6:** a slot or lock given up during a stage is no difference; only one taken and still held is.
 - **Rule (b):** `args.accept_empty_review` is the reviewed `HEAD` the stop prints, so it accepts that one review and not a later one.
 - **Recovery:** every stop between `/simplify` and the apply commit says that the worktree holds `/simplify`'s edits, which a `continue` round commits or drops before a new `review-only` run (prepare refuses them).
@@ -513,9 +513,35 @@ Floor rows for this round's rule edits:
 | The final review edits nothing; exact range and tree; rejected correctness findings re-checked | "Stages after implementation" 4 | Strengthens "an independent code reviewer": no agent reviews its own fix, and conflict resolution goes through the review stages. |
 | Guard by status hash, slot and lock; `args.guard_ack` | "Workflow agents" | The comparison covers more (slot, lock); an acknowledgement accepts one named reading and is given only by the coordinator. |
 | `Makefile` not eligible for the fast lane | "Fast lane" | Strengthens: fewer changes skip the spec review. |
-| A recorded fail voids gate reuse on that tree; an interrupted run (exit 75, 78, 124 or a signal) records nothing | "Merging" step 2 | Strengthens: a flake can no longer hide behind a later pass. An interrupted run was never a result, so leaving it out loosens nothing. |
+| A recorded fail voids gate reuse on that tree; an interrupted or unstartable run (exit 75, 78, 124, 126, 127 or a signal) records nothing; only the coordinator removes a fail line, and only one whose log shows the gate never ran | "Merging" step 2 | Strengthens: a flake can no longer hide behind a later pass. An interrupted run was never a result, so leaving it out loosens nothing. |
 | Apply read-back in the shell, with a `gate-trees.sh` `make check` record for the tree | "Stages after implementation" 3 | Strengthens "every gate on every tree": the tree the final review gets is the gated one by record, not by the apply agent's word. |
 | Slot acquire exits 2 for a name without a change worktree; a Markdown `Status:` line counts; slots under `args.worktree_override` use the worktree's name | "Implementation slots and ordering" | Fewer stray slots, and the cap fails open less often. No gate changes. |
 | `revise` and `review-only` need the PR and worktree; every argument is checked before the first agent | "Running a change" | Fails closed earlier: no agent runs on a half-specified change, and no archive push happens before a bad argument is seen. |
 
 This round's stage 4 reviews and fixes as usual but does not merge: it ends "ready, Fable fix check pending", and the coordinator runs a narrow second Fable pass on the fix diff, then a merge-only run with `make test` on the final tree.
+
+### Stage-4 review of the fix round (2026-11-19)
+
+An independent stage-4 agent reviewed `d2f1b58b..12995cef` (code, harness, helpers, rule text and the gate records). The fixes are in one commit after `12995cef`, each with a case written first (`failfirst-stage4-fixround-harness.log`, `failfirst-stage4-fixround-gate-trees.log`):
+
+| Finding | Severity | Disposition |
+|---|---|---|
+| R1. The final review's prompt said "the only commit you may make is the origin/main merge", yet the same prompt asks for the archive, which edits the programme record and commits to `main`. An agent that obeys the first sentence skips the archive or returns a confused verdict. | should-fix | Fixed: the prompt allows exactly the conflict-free `origin/main` merge and the archive commit, and under `no_merge` no file and no commit. |
+| R2. `merged-archive-owed` passed as finished without a `merge_commit`, so a stage that never merged could end the run with a merged verdict (M5's check covered `merged` only). | should-fix | Fixed: both merged verdicts need the merge commit; `merged` also needs the archive commit. |
+| R3. The `apply stage: blocked` and fast-lane-violation stops did not say that `/simplify`'s edits may still be uncommitted, and the violation stop sent the coordinator to `continue` with `skip_impl`, whose prepare stage refuses a dirty worktree. | should-fix | Fixed: both stops carry the leftovers wording, the violation stop sends the change to an implementation round, and the spec review after a violation stages only the spec artifacts it changes. |
+| R4. `gate-trees.sh` recorded a command that could not start (126, 127) as a fail, which voids the tree for good. | should-fix | Fixed: 126 and 127 are interrupted runs. A fail line otherwise stays; only the coordinator removes one, and only when its log shows the gate never ran (a wrapper's usage refusal, which exits 2 like a `make` failure). Rule "Merging" step 2 and the gate-trees header say so. |
+| R5. The rule's "merge-only run" ("Measurements") named no invocation. | should-fix | Fixed in the rule: a resume of the change's run with `args.review_extra` naming the verdict (a `review-only` run that stopped before the merge: with `args.merge`). |
+| R6. That resumes with changed arguments reuse the cached stages (`args.guard_ack`, `args.accept_empty_review`, `args.merge`, `args.review_extra`) rests on the Workflow reference ("the longest unchanged prefix of agent() calls returns cached results"), not on a probe. The script keeps those arguments out of every earlier prompt for this reason. | open | Owed probe, listed in `probes.md` beside the lens-tail probe: both block the template's first real use, not this PR. |
+| R7. Task 6.1 claimed failing-first evidence for N2 and the slot tolerance, which the helper log did not show (each self-test stops at its first failure). | evidence | Closed: `failfirst-stage4-n2-slot.log` runs both cases against the `d2f1b58b` helpers (accepted, exit 0, slot created) and the fixed ones (exit 2, no slot). |
+| R8. The disposition row "a fork runs repository scripts" said a fork's `gate-trees.sh record` writes nothing; that holds only while `/simplify`'s edits keep the worktree dirty. | nit | Fixed in the row above. |
+| R9. `--PUSHED--` in the apply read-back reads the PR head from `gh`, which can trail a push by a moment, so a fast reading may stop the run spuriously. | nit | Kept: it fails closed, and a resume reruns only the reading. |
+| R10. The worktree path is interpolated unquoted into the shell lines, and only its suffix is checked. | nit | Kept: the path comes from the coordinator's arguments and every change path under the main checkout has no spaces; recorded for the maintainer. |
+| R11. `openspec validate --all --strict` fails on 86 main specs (long-requirement warnings), none touched by this change (`git diff origin/main...HEAD -- openspec/specs` is empty). | pre-existing | Not fixed here: a failure known on `main` gets its own change in the ledger ("Merging"), listed for the coordinator. |
+
+Floor rows for these edits:
+
+| Rule edit | Existing rule it touches | Why the floor holds |
+|---|---|---|
+| Unstartable runs (126, 127) record nothing; only the coordinator removes a fail line whose log shows the gate never ran | "Merging" step 2 | A run that never started was never a gate result; a gate that ran and failed keeps its line, so no flake is hidden, and the removal is the coordinator's and recorded. |
+| "Merge-only run" defined as a resume with `args.review_extra` or `args.merge` | "Measurements" | The final review still runs, independently, over the same range and tree, and "Merging" step 2 reruns the gates on any new tree. |
+

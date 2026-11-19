@@ -24,7 +24,7 @@ Under `MERGE-LOCK`, a gate the merge step owes SHALL be skipped only when `scrip
 - **THEN** `gate-trees.sh lookup` for that tree exits 1, naming the fail, and the merge step runs the gate
 
 #### Scenario: An interrupted run is not a result
-- **WHEN** the recorded command exits 75, 78, 124, or 128 and above (busy, off its CPUs, timed out, killed)
+- **WHEN** the recorded command exits 75, 78, 124, 126, 127, or 128 and above (busy, off its CPUs, timed out, could not start, killed)
 - **THEN** `gate-trees.sh record` writes no line and returns that status
 
 #### Scenario: Main moves before the PR merge
@@ -299,7 +299,7 @@ After implementation, `/simplify` SHALL run on a clean worktree with an absolute
 - **THEN** a read-only agent confirms them in the shell, with the push, the clean worktree and a `make check` record of `gate-trees.sh` for that tree, the script passes the range from the lens `HEAD` to that `HEAD` and the tree to the final review, which checks `HEAD^{tree}` before "Merging" step 2 and re-checks every rejected correctness finding
 
 #### Scenario: A dead merge agent is not a finished run
-- **WHEN** the merge agent returns nothing, a verdict outside its fixed set, `merged` without a merge and archive commit, or `merged` while `no_merge` was set
+- **WHEN** the merge agent returns nothing, a verdict outside its fixed set, `merged` without a merge and archive commit, `merged-archive-owed` without a merge commit, or `merged` while `no_merge` was set
 - **THEN** the script stops with a message to check `MERGE-LOCK`, the PR and the archive by hand
 
 #### Scenario: One trio for both passes
