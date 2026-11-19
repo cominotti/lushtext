@@ -750,13 +750,24 @@ Recorded during implementation, each with its reason:
   deterministically (`notes_browser`'s 131,072-row list refuses a temporary
   root over its 112-byte folder, the Open popover's path tooltips, the
   skipped-files dialog and the sidebar's 131,072-entry directory, which
-  charge path bytes against their budgets) and one passed on retry; all
-  seven passed with `TMPDIR` unset and failed again with the stage
-  `TMPDIR` (`ab-*.log` in the handoff directory), and the stall recording
-  showed storage was not a bottleneck. So `with-temp-scope.sh` now makes
-  its whole scope under `/tmp` when `TMPDIR` is too deep for a session in
-  it, where the lanes were proved, and the runtime-directory fallback of
-  `7c6d37fa` is gone; the seven pass under the stage `TMPDIR` with it.
+  charge path bytes against their budgets) and one,
+  `search_panel::test_an_apply_while_another_window_runs_is_refused`,
+  passed on retry (a separate race, D16). The seven rerun with a short
+  `TMPDIR` all passed (`ab-short-tmpdir-1.log` in the handoff directory).
+  Rerun under the stage `TMPDIR` (`ab-deep-tmpdir-1.log`), four failed again
+  with the gate run's own failures: the notes browser's "temporary root …
+  is 188 bytes, too long for a 112-byte folder", the two Open popover
+  tooltip waits (2 s) and the skipped-files dialog's wait (10 s). The
+  131,072-entry directory failed again only at its 240 s wait, which names
+  no cause; the settle-budget test reported nothing before the run's
+  timeout ended it; the apply test passed. The stall recording showed
+  storage was not a bottleneck. So `with-temp-scope.sh` now makes its whole
+  scope under `/tmp` when `TMPDIR` is too deep for a session in it, where
+  the lanes were proved, and the runtime-directory fallback of `7c6d37fa`
+  is gone. With it, all seven passed under the stage `TMPDIR`
+  (`ab-deep-tmpdir-fixed.log`): evidence of the fix for the four that
+  failed with their cause, and no evidence about the other three, whose
+  failure under the deep `TMPDIR` was never shown to have that cause.
 - **The run-mutants stub failure of `6ee67e14` is reproduced.** The stub
   extracted from `6ee67e14^`, run twice at once 2,000 times, interleaved its
   records 181 times ("ARGS mutants --shard 1/2ARGS"); the fixed stub, 0 of
@@ -826,6 +837,74 @@ The review lenses' findings, as the independent apply agent decided them
   `pause_step` and one `publishing` read; the All Tabs re-snapshot ignores
   the reveal's re-announcement, and `ui/window/AGENTS.md` makes that a rule
   for every `selected-page` observer.
+
+### D16. Implementation round 2 of 2026-11-19 (the gate's warning and flake)
+
+The apply stage's `make test` (D15) failed on two lines that are not this
+change's code: a `Gdk-WARNING` from the sidebar file peek, and
+`search_panel::test_an_apply_while_another_window_runs_is_refused`, which
+passed on retry. Both were attributed in the handoff directory (`attr-*`,
+`flaky-apply/`) before this round.
+
+- **The GDK warning is classified in the widget runner only.**
+  `gdk_frame_timings_presented() called on discarded frame.` is GTK 4.24's,
+  printed once per process when the compositor discards a popover's
+  unpainted buffer on a reposition and the toplevel's feedback of the same
+  frame is presented after it: the popover shares the toplevel's frame clock
+  and GDK marks the shared frame discarded from the popover's feedback alone.
+  GTK 4.22 has no such state; GTK `main` removed the transition in d2595c6b
+  (MR !10242), which `gtk-4-24` does not carry. The maintainer decided on
+  2026-11-19 to classify it: one exact `Gdk-WARNING` line from a harness
+  child in `BENIGN_WIDGET_NOISE_REGEX` of `scripts/run-widget-tests.sh`,
+  with ten near misses in its self-test that must still fail (skipped and
+  submitted frames, the reverse-order and duplicate-call messages,
+  `Gtk-WARNING`, `Gdk-CRITICAL`, a `(lushtext:N)` process, trailing text, a
+  shared test-name prefix). The self-test failed first. The smoke lanes stay
+  strict. The removal condition is in `build.md` and step 8 of the
+  toolkit-update runbook.
+- **A134 is a gated probe.** It runs a peek-like popover fixture for 60
+  cycles in a child traced with `WAYLAND_DEBUG=client`. A discard alone is
+  not a positive control (a content change without a reposition discards
+  too and prints nothing), so the control is the ordered pair in the trace:
+  in one paint the popover's feedback `discarded`, then the toplevel's
+  `presented`. The pair is required only at or above the GTK 4.24.0 bound;
+  below it it is recorded, because the floor's claim is GDK's alone and the
+  floor CI image's Mutter 50 was not traced. It held in 52 consecutive
+  rounds each on the host (GTK 4.24.1), inside `org.gnome.Sdk//51` and
+  inside `//50` (4.22.2), 32 of them under 12 busy-loop CPU hogs (load up
+  to 18.4), and five more through the probe runner; `//master` (4.25.1,
+  with d2595c6b) violates it, as the fix should (`a134-reliability/`,
+  `a134-runtimes-*.log`). The id was the next free one on `main` and every
+  open branch (the ledger's reservations end at A133).
+- **The sidebar peek's anchor is not tidied.** Re-anchoring the popover
+  only when its row moved would avoid one trigger, but it rests on an
+  unconfirmed inference about which re-anchor discards, it touches a UI
+  prefix, and the warning would stay possible from any other repositioned
+  popover; the classification is the decision.
+- **The search_panel flake is a product race, fixed in tests only here.**
+  Each window's startup palette file-index build reserves 64 MiB of the
+  128 MiB ordinary disposal lane, about 300 ms after its scope refresh,
+  which in a two-window test is when the second window confirms; today's
+  Confirm refuses a 64 MiB undo reservation that does not fit and does not
+  retry it. The product fix is its own change,
+  `replace-all-confirm-disposal-lane`. Here every test that confirms a
+  Replace All in a window confirms through `confirm_with_settled_file_index`
+  (`tests/widget/search_panel.rs`), which asks every window of the
+  application for a build (superseding a pending debounce, which no
+  evidence exposes) and waits until each has started and finished one and
+  holds no admission. No assertion changed and no production code changed.
+  The one windowless panel test keeps its plain Confirm: it has no window
+  and no index. Evidence, with the attribution's forced 3 s index-build
+  delay in a throwaway worktree (`attr-instrumentation.patch`, never
+  committed): the unmodified test failed on `undo-reservation-refused`
+  (`sp-forced-before.log`) and passed with the helper
+  (`sp-forced-after.log`); the whole module with the delay then failed
+  only `test_a_run_in_another_window_retires_this_windows_undo` the same
+  way (`sp-module-delay.log`), passed after that test's Confirms took the
+  helper too (`sp-module-delay-3.log`, 154 tests); and 72 concurrent runs
+  of the apply test under 8 CPU hogs passed, none with an index reservation
+  live at the second window's undo reservation (`sp-nat/`).
+- **D14's "seven pass" is corrected** to what its logs show, test by test.
 
 ## Timing
 

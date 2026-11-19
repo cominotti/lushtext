@@ -323,6 +323,27 @@ Mirror the A122 commit (`3a086b0e`): a ledger row, `CHANGELOG.md`, an
   workflow matrix row. Verify the `tab_overflow` unit tests and the
   `tab_overflow_navigation` widget module pass.
 
+## 7. Gate warning and flake (implementation round 2, 2026-11-19)
+
+- [x] 7.1 Classify GTK 4.24's `gdk_frame_timings_presented() called on
+  discarded frame.` in the widget runner only, with near misses in its
+  self-test. Verify the self-test fails first and then passes.
+- [x] 7.2 Add A134 (ledger row, catalogue entry, probe, sample, CHANGELOG),
+  version-qualified at GTK 4.24.0 with the ordered-pair control, and the
+  removal note in `build.md` and the toolkit-update runbook. Verify
+  `make check-gtk-axioms`, the probe on the host and inside
+  `org.gnome.Sdk//50` and `//51`, and the reliability rounds with and
+  without load (D16).
+- [x] 7.3 Confirm every windowed Replace All test through
+  `confirm_with_settled_file_index`. Verify, with the forced index-build
+  delay, that the apply test fails before and passes after, that the whole
+  `search_panel` module passes, and the concurrent batch under load.
+- [x] 7.4 Correct D14 and record D16; the gtk-testing pitfall note.
+- [x] 7.5 Final gates on the final tree, each through
+  `scripts/gate-trees.sh record`: `make check`, `make test` (no `FLAKY`,
+  `OOM-KILL:` or `SESSION-HYGIENE:` line), the rustdoc gate, and the three
+  smokes; commit and push.
+
 ## Workflow follow-up
 
 - Review the change and archive it after merge (`openspec-archive-change`).
