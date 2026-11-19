@@ -335,6 +335,17 @@ SETUP="$DNF_COMMAND"
 DIGEST="$(printf '%s\n%s\n' "$BASE_IMAGE" "$SETUP" | sha256sum | cut -c1-12)"
 LANE_IMAGE="lushtext-ci-widget:$DIGEST"
 
+CONTAINER=""
+setup_log=""
+# Removes the run's container and the image-setup log on every exit path.
+cleanup() {
+    [[ -z "$setup_log" ]] || rm -f "$setup_log"
+    [[ -n "$CONTAINER" ]] && docker rm -f "$CONTAINER" >/dev/null 2>&1
+    true
+}
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT TERM
+
 if ! docker image inspect "$LANE_IMAGE" >/dev/null 2>&1; then
     echo "ci-image-widget-test: preparing $LANE_IMAGE from $BASE_IMAGE"
     builder="lushtext-ci-widget-build-$$"
@@ -343,11 +354,11 @@ if ! docker image inspect "$LANE_IMAGE" >/dev/null 2>&1; then
     if ! docker run --name "$builder" "$BASE_IMAGE" bash -c "$SETUP" >"$setup_log" 2>&1; then
         docker rm -f "$builder" >/dev/null 2>&1 || true
         tail -n 20 "$setup_log" >&2
-        rm -f "$setup_log"
         echo "ci-image-widget-test: installing the widget job's packages failed" >&2
         exit 1
     fi
     rm -f "$setup_log"
+    setup_log=""
     docker commit "$builder" "$LANE_IMAGE" >/dev/null
     docker rm -f "$builder" >/dev/null
 fi
@@ -415,11 +426,6 @@ if [[ -n "$SHARD" ]]; then
 else
     LANE_STEP=(scripts/run-widget-tests.sh --headless --retries 1 -- "${TEST_ARGS[@]}")
 fi
-
-CONTAINER=""
-cleanup() { [[ -n "$CONTAINER" ]] && docker rm -f "$CONTAINER" >/dev/null 2>&1; true; }
-trap cleanup EXIT
-trap 'cleanup; exit 130' INT TERM
 
 echo "ci-image-widget-test: image $LANE_IMAGE ($BASE_IMAGE${EXTRA_PACKAGES:+ + $EXTRA_PACKAGES}), $LIMIT_LABEL, memory $MEMORY, $RUNS run(s)"
 echo "ci-image-widget-test: binary $BINARY ($(date -r "$BINARY" -Is))"

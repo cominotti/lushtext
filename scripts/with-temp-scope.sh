@@ -27,6 +27,11 @@ PID_PREFIXES=(
     lt-proof-
     gtk-lush-proof-run-
     gtk-lush-proof-runtime-
+    # The bounded scan stage's open window (scripts/bounded-log-scan.sh),
+    # heavy.sh's admission report and with-memory-cap.sh's envelope pid file.
+    lt-scan-
+    lt-heavy-
+    lt-envelope-
 )
 # Prefixes whose legacy names carried no PID; reclaimed after a day idle.
 PIDLESS_LEGACY_PREFIXES=(
@@ -290,6 +295,33 @@ self_test() {
             failed=1
         fi
     done
+
+    # The runners' named entries (bound-widget-log-capture): the scan stage's
+    # open window, heavy.sh's admission report and with-memory-cap.sh's
+    # envelope pid file. A dead owner's directory idle for two hours is swept;
+    # a live owner's is kept; a plain mktemp name is never ours to sweep.
+    local prefix
+    for prefix in lt-scan- lt-heavy- lt-envelope-; do
+        mkdir -p "$base/${prefix}$dead_pid-Ab3xYz/x" "$base/${prefix}$$-Cd4eFg"
+        touch -d '2 hours ago' "$base/${prefix}$dead_pid-Ab3xYz" "$base/${prefix}$$-Cd4eFg"
+    done
+    mkdir -p "$base/tmp.Q1w2E3r4T5"
+    touch -d '2 days ago' "$base/tmp.Q1w2E3r4T5"
+    sweep_stale_entries "$base"
+    for prefix in lt-scan- lt-heavy- lt-envelope-; do
+        if [[ -e "$base/${prefix}$dead_pid-Ab3xYz" ]]; then
+            echo "Error: the sweep kept the dead owner's ${prefix}$dead_pid-Ab3xYz." >&2
+            failed=1
+        fi
+        if [[ ! -e "$base/${prefix}$$-Cd4eFg" ]]; then
+            echo "Error: the sweep removed the live owner's ${prefix}$$-Cd4eFg." >&2
+            failed=1
+        fi
+    done
+    if [[ ! -e "$base/tmp.Q1w2E3r4T5" ]]; then
+        echo "Error: the sweep removed a plain mktemp entry." >&2
+        failed=1
+    fi
 
     if (( failed != 0 )); then
         return 1

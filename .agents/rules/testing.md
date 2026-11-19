@@ -38,7 +38,18 @@ directory ([why](../../docs/memorials/2026-10-20-test-data-incidents.md)).
   directory outside an artifact tree is owned by a value whose `Drop` removes
   it, so `?` early returns cannot skip cleanup. Shell scripts register their
   temp paths with an `EXIT` trap plus `INT`/`TERM` traps; Python drivers remove
-  runtime roots in `finally`, keeping only a listing in the artifacts.
+  runtime roots in `finally`, keeping only a listing in the artifacts. A
+  `( … )` subshell has no traps (bash resets them), so a path is created and
+  registered in the shell that holds the trap, never inside a subshell, or it
+  is an unlinked descriptor and needs no registration.
+- **A runner never captures a command's whole output.** A scan of the output
+  of a command it runs (warnings, a phrase, result lines) goes through
+  `scripts/bounded-log-scan.sh`: a stage beside the live stream that keeps an
+  exact count, at most 64 KiB of unexpected lines and at most 1 MiB of the
+  lines the runner parses later, on files unlinked as soon as they are open.
+  A whole-output temp file in `/tmp` is tmpfs charged to the run's memory
+  scope, and a flooding test once turned four of them into 4 GiB OOM kills
+  ([why](../../docs/memorials/2026-10-20-test-data-incidents.md)).
 - **Release session runtime dirs only after the session is gone.**
   `dbus-run-session` returns before the services its private bus activated have
   exited, and `xdg-document-portal` still holds its FUSE mount on `doc/`. Wait
@@ -59,7 +70,13 @@ directory ([why](../../docs/memorials/2026-10-20-test-data-incidents.md)).
   after an exact prefix so the next run can reclaim what a SIGKILLed run left:
   only real directories owned by the current user, whose PID is gone and which
   have been idle for an hour, are swept (a day for the one legacy PID-less
-  `gtk-lush-proof-runtime-*` form). A live run is never swept.
+  `gtk-lush-proof-runtime-*` form). A live run is never swept, nor is a plain
+  `mktemp` name (`tmp.*`), which nothing proves is ours. The prefixes are in
+  `with-temp-scope.sh`'s `PID_PREFIXES`; besides the test roots they cover the
+  scan stage's open window (`lt-scan-`), `heavy.sh`'s admission report
+  (`lt-heavy-`) and `with-memory-cap.sh`'s envelope pid file
+  (`lt-envelope-`). A runner's other temp entry that a child must name lives
+  in such a directory too.
 - **Every test lane runs under `scripts/with-temp-scope.sh`**, which gives the
   command a private `TMPDIR`, removes it on every exit (on Ctrl-C or SIGTERM
   after the session's services release the runtime directory, exiting 130 or
@@ -70,7 +87,9 @@ directory ([why](../../docs/memorials/2026-10-20-test-data-incidents.md)).
   shard and every shard of a parallel local run, each in its own scope), the CI
   non-widget step, `make gtk-axioms`, and the visual-geometry, visual,
   crash-recovery, and accessibility smoke targets all use it; wrap a new test
-  lane the same way. `make check-temp-scope` (in `make check`) self-tests it.
+  lane the same way. `make check-temp-scope` (in `make check`) self-tests it,
+  through `scripts/run-widget-tests.sh --self-test`, which also runs the
+  bounded scan stage's self-test.
   Mutation runs are deliberately not wrapped: a mutant that breaks cleanup must
   be caught by the tests, not fail the lane.
 

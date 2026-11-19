@@ -720,10 +720,18 @@ envelope_spawn_placeholder() {
 # With a report file (LUSHTEXT_ENVELOPE_REPORT, from scripts/heavy.sh) an
 # `envelope-start:` line is written before the command starts, and the
 # placeholder writes the `envelope:` line after it ends.
+# The envelope pid file's directory: `lt-envelope-<pid>-XXXXXX` in TMPDIR,
+# which with-temp-scope.sh's stale sweep reclaims if a SIGKILL lands before
+# envelope_run removes it (it ends in exec, so no trap would).
+envelope_pid_dir() {
+    mktemp -d "${TMPDIR:-/tmp}/lt-envelope-$$-XXXXXX"
+}
+
 envelope_run() {
-    local ns pidfile placeholder="" sub cgroup limit="" expected
+    local ns pid_dir pidfile placeholder="" sub cgroup limit="" expected
     ns=$(date +%s%N)
-    pidfile=$(mktemp "${TMPDIR:-/tmp}/with-memory-cap-envelope.XXXXXX")
+    pid_dir=$(envelope_pid_dir)
+    pidfile=$pid_dir/pid
     envelope_spawn_placeholder "$ns" "$pidfile"
     for _ in $(seq 200); do
         placeholder=$(cat "$pidfile" 2>/dev/null || true)
@@ -733,7 +741,7 @@ envelope_run() {
         placeholder=
         sleep 0.05
     done
-    rm -f "$pidfile"
+    rm -rf "$pid_dir"
     if [ -z "$placeholder" ]; then
         echo "with-memory-cap: the envelope's placeholder scope did not start in $HEAVY_SLICE within 10 s" >&2
         exit 1
@@ -858,6 +866,7 @@ self_test_cleanup() {
         done
     done
     [ -z "${self_test_admission_lock:-}" ] || rm -f "$self_test_admission_lock"
+    [ -z "${self_test_root:-}" ] || rm -rf "$self_test_root"
 }
 
 # What the private slices of self-test run $1 (its PID, or a fake name) left
@@ -1276,6 +1285,13 @@ self_test() {
     # Nor an enclosing helper's LOCK marker: the commit hook runs this under a
     # genuinely held shared LOCK, where every capped case would be refused.
     unset LUSHTEXT_AGENT_LOCK_HELD
+    # All scratch of the cases below (markers, reports, the admission lock,
+    # lock and envelope-test directories, the leftover probe, and the
+    # envelopes' own pid directories) lives under one root that the cleanup
+    # trap removes; a marker a late background command touches after that
+    # fails harmlessly instead of recreating a file in /tmp.
+    self_test_root=$(mktemp -d "${TMPDIR:-/tmp}/with-memory-cap-self-test.XXXXXX")
+    export TMPDIR=$self_test_root
     # A private admission lock: the cases below hold it for seconds, which on
     # the real one would hold up every agent's admissions. Waiters poll fast.
     export LUSHTEXT_ADMISSION_LOCK
@@ -1299,6 +1315,16 @@ self_test() {
     [ "$legacy_slice" = "$HEAVY_SLICE" ] || self_test_slices+=("$legacy_slice")
     self_test_sleepers=()
     trap self_test_cleanup EXIT
+    # The envelope's pid file lives in an `lt-envelope-<pid>-` directory of
+    # TMPDIR, which with-temp-scope.sh's stale sweep reclaims if a SIGKILL
+    # lands before envelope_run removes it.
+    local pid_dir
+    pid_dir=$(envelope_pid_dir 2>/dev/null) || pid_dir=
+    if [[ "${pid_dir##*/}" =~ ^lt-envelope-$$-[A-Za-z0-9]{6}$ && -d "$pid_dir" && "${pid_dir%/*}" == "${TMPDIR:-/tmp}" ]]; then
+        rm -rf -- "$pid_dir"
+    else
+        self_test_fail "the envelope pid directory was '$pid_dir', expected \${TMPDIR:-/tmp}/lt-envelope-$$-XXXXXX"
+    fi
     "$me" none true || self_test_fail "'none' did not pass through"
     status=0; "$me" 16GiB true 2>/dev/null || status=$?
     [ "$status" -eq 2 ] || self_test_fail "invalid cap accepted (status $status)"
@@ -1520,6 +1546,10 @@ self_test() {
         fi
         self_test_admission_cases
         self_test_envelope_cases
+        # Every envelope above removed its pid directory before its command ran.
+        local left
+        left=$(find "$self_test_root" -mindepth 1 -maxdepth 1 \( -name 'lt-envelope-*' -o -name 'with-memory-cap-envelope.*' \) -printf '%f ' 2>/dev/null)
+        [ -z "$left" ] || self_test_fail "the envelopes left pid entries behind: $left"
         local after_max
         after_max=$(systemctl --user show -p MemoryMax --value "$real_slice" 2>/dev/null || true)
         [ "$after_max" = "$real_max" ] || self_test_fail "the real $real_slice MemoryMax changed from '$real_max' to '$after_max'"
