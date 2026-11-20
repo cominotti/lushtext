@@ -151,7 +151,11 @@ their samples print `skipped (needs a session bus): <id>`. A117 (announcing
 through a `GtkTestATContext` kills the process) is the first probe whose
 claim is a crash: its child, the same executable re-run with
 `GTK_LUSH_AXIOMS_CONTROL=A117` and core dumps off, makes the call, and the
-probe reads how the child died. Every later axiom
+probe reads how the child died. A134 (GTK 4.24's once-per-process
+discarded-frame warning) is the first probe that reads a protocol trace: its
+child, re-run with `GTK_LUSH_AXIOMS_CONTROL=A134` and `WAYLAND_DEBUG=client`,
+prints the trace on stderr, and the probe's control is an ordered pair of
+feedback events in it (`parse_trace`). Every later axiom
 follows the same steps. Rewriting an
 unpinned axiom from measurement (as A10 was) keeps its id, gives it a probe,
 and renames its catalogue entry to the new statement.

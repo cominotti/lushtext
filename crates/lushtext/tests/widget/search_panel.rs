@@ -3038,7 +3038,7 @@ fn test_replace_all_then_undo_restores_original_file_bytes() {
         "previewed rows start checked so the confirm step applies exactly them",
     );
 
-    panel.activate_confirm_replacements();
+    confirm_with_settled_file_index(&panel);
     wait_until(Duration::from_secs(20), || {
         fixture::read_text(&first).contains("thread")
             && fixture::read_text(&second).contains("thread")
@@ -3175,7 +3175,7 @@ fn replace_all_over_with(
         evidence.replace_preview_count == plan.preview_rows && !evidence.replace_preview_pending
     });
     before_confirm();
-    panel.activate_confirm_replacements();
+    confirm_with_settled_file_index(&panel);
     wait_until(plan.budget, || {
         panel.evidence().last_apply_counts.is_some() && !panel.evidence().replace_preview_pending
     });
@@ -3436,7 +3436,7 @@ fn test_replace_all_applies_only_checked_rows_and_records_apply_counts() {
         .remove(&unchecked);
     assert_eq!(panel.evidence().checked_replacement_count, 1);
 
-    panel.activate_confirm_replacements();
+    confirm_with_settled_file_index(&panel);
     wait_until(Duration::from_secs(20), || {
         fixture::read_text(&first).contains("thread")
     });
@@ -4664,7 +4664,7 @@ fn cancel_mid_run_restores_every_file(cancel: impl FnOnce(&LushtextWindow, &Lush
         let evidence = panel.evidence();
         evidence.replace_preview_count == 5 && !evidence.replace_preview_pending
     });
-    panel.activate_confirm_replacements();
+    confirm_with_settled_file_index(&panel);
     wait_until(Duration::from_secs(20), || {
         panel
             .evidence()
@@ -4728,11 +4728,60 @@ fn replace_all_held_at_second_file(
         let evidence = panel.evidence();
         evidence.replace_preview_count == 3 && !evidence.replace_preview_pending
     });
-    panel.activate_confirm_replacements();
+    confirm_with_settled_file_index(&panel);
     wait_until(Duration::from_secs(20), || {
         panel.evidence().replace_in_flight
     });
     (panel, files)
+}
+
+/// Confirm the panel's Replace All once no palette file-index build holds
+/// the disposal lane (`settle_file_index_builds`).
+fn confirm_with_settled_file_index(panel: &LushtextSearchPanel) {
+    let window = panel
+        .root()
+        .and_downcast::<LushtextWindow>()
+        .expect("the search panel's window");
+    settle_file_index_builds(&window);
+    panel.activate_confirm_replacements();
+}
+
+/// Run one palette file-index build in every window of `window`'s
+/// application and wait until each has finished, so no build holds the
+/// ordinary disposal lane when a test confirms a Replace All.
+///
+/// A build reserves `MAX_FILE_INDEX_RETAINED_BYTES` (64 MiB) of the 128 MiB
+/// lane on the GTK thread until its worker shrinks it, and today's Confirm
+/// does not retry a refused 64 MiB undo reservation (the
+/// `replace-all-confirm-disposal-lane` change will). Each window's startup
+/// build fires 300 ms after its scope refresh, which in a two-window test is
+/// about when the second window confirms (`flaky-apply` attribution). Asking
+/// for a build supersedes a debounce still pending, which no evidence
+/// exposes, and the wait covers the build that request starts, so no startup
+/// build can begin after it.
+fn settle_file_index_builds(window: &LushtextWindow) {
+    let windows: Vec<LushtextWindow> = window
+        .application()
+        .expect("the test window's application")
+        .windows()
+        .into_iter()
+        .filter_map(|window| window.downcast::<LushtextWindow>().ok())
+        .collect();
+    let started: Vec<usize> = windows
+        .iter()
+        .map(|window| window.imp().file_index_builds.borrow().snapshot().started)
+        .collect();
+    for window in &windows {
+        window.rebuild_file_index();
+    }
+    wait_until(Duration::from_secs(30), || {
+        windows.iter().zip(&started).all(|(window, started)| {
+            let builds = window.imp().file_index_builds.borrow();
+            builds.snapshot().started > *started
+                && !builds.has_work()
+                && window.imp().file_index_admission.borrow().is_none()
+        })
+    });
 }
 
 /// Close the window during the run and return the dialog it asks with.
@@ -4984,7 +5033,7 @@ fn replace_all_through_fields(
         evidence.replace_preview_count == 1 && !evidence.replace_preview_pending
     });
     before_confirm();
-    panel.activate_confirm_replacements();
+    confirm_with_settled_file_index(&panel);
     wait_until(Duration::from_secs(20), || {
         panel.evidence().skipped_files_offered && !panel.evidence().replace_in_flight
     });
@@ -5063,7 +5112,7 @@ fn test_replace_in_editor_opens_a_closed_file_at_its_first_skipped_line() {
         let evidence = panel.evidence();
         evidence.replace_preview_count == 1 && !evidence.replace_preview_pending
     });
-    panel.activate_confirm_replacements();
+    confirm_with_settled_file_index(&panel);
     wait_until(Duration::from_secs(20), || {
         panel.evidence().skipped_files_offered && !panel.evidence().replace_in_flight
     });
@@ -5219,7 +5268,7 @@ fn test_replace_in_editor_on_a_protected_document_shows_the_notice() {
         let evidence = panel.evidence();
         evidence.replace_preview_count == 1 && !evidence.replace_preview_pending
     });
-    panel.activate_confirm_replacements();
+    confirm_with_settled_file_index(&panel);
     wait_until(Duration::from_secs(20), || {
         panel.evidence().skipped_files_offered && !panel.evidence().replace_in_flight
     });

@@ -1,5 +1,291 @@
 {
   "files": {
+    "all-tabs-popover.ui": {
+      "accessibility": [
+        {
+          "context": "",
+          "name": "label",
+          "path": "0:template:LushtextAllTabsPopover/1:accessibility",
+          "translatable": "yes",
+          "value": "All Tabs"
+        },
+        {
+          "context": "",
+          "name": "description",
+          "path": "0:template:LushtextAllTabsPopover/1:accessibility",
+          "translatable": "yes",
+          "value": "Search and pick one of the window's open tabs"
+        }
+      ],
+      "child_roles": [
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/1:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/2:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/5:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/3:child",
+          "type": ""
+        }
+      ],
+      "layout_properties": [],
+      "menu_attributes": [],
+      "menus": [],
+      "objects": [
+        {
+          "class": "GtkBox",
+          "id": "",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox"
+        },
+        {
+          "class": "GtkSearchEntry",
+          "id": "search_entry",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/1:child/0:object:GtkSearchEntry#search_entry"
+        },
+        {
+          "class": "GtkSeparator",
+          "id": "",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/2:child/0:object:GtkSeparator"
+        },
+        {
+          "class": "GtkStack",
+          "id": "stack",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack"
+        },
+        {
+          "class": "GtkBox",
+          "id": "empty_state",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state"
+        },
+        {
+          "class": "GtkLabel",
+          "id": "empty_title",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/5:child/0:object:GtkLabel#empty_title"
+        },
+        {
+          "class": "GtkScrolledWindow",
+          "id": "list_scroller",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/3:child/0:object:GtkScrolledWindow#list_scroller"
+        },
+        {
+          "class": "GtkListView",
+          "id": "list_view",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/3:child/0:object:GtkScrolledWindow#list_scroller/9:property/0:object:GtkListView#list_view"
+        }
+      ],
+      "properties": [
+        {
+          "context": "",
+          "name": "label",
+          "path": "0:template:LushtextAllTabsPopover/1:accessibility/0:property",
+          "translatable": "yes",
+          "value": "All Tabs"
+        },
+        {
+          "context": "",
+          "name": "orientation",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/0:property",
+          "translatable": "",
+          "value": "1"
+        },
+        {
+          "context": "",
+          "name": "margin-top",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/1:child/0:object:GtkSearchEntry#search_entry/0:property",
+          "translatable": "",
+          "value": "6"
+        },
+        {
+          "context": "",
+          "name": "margin-bottom",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/1:child/0:object:GtkSearchEntry#search_entry/1:property",
+          "translatable": "",
+          "value": "6"
+        },
+        {
+          "context": "",
+          "name": "margin-start",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/1:child/0:object:GtkSearchEntry#search_entry/2:property",
+          "translatable": "",
+          "value": "6"
+        },
+        {
+          "context": "",
+          "name": "margin-end",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/1:child/0:object:GtkSearchEntry#search_entry/3:property",
+          "translatable": "",
+          "value": "6"
+        },
+        {
+          "context": "",
+          "name": "placeholder-text",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/1:child/0:object:GtkSearchEntry#search_entry/4:property",
+          "translatable": "yes",
+          "value": "Search open tabs"
+        },
+        {
+          "context": "",
+          "name": "orientation",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/2:child/0:object:GtkSeparator/0:property",
+          "translatable": "",
+          "value": "0"
+        },
+        {
+          "context": "",
+          "name": "orientation",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/0:property",
+          "translatable": "",
+          "value": "1"
+        },
+        {
+          "context": "",
+          "name": "margin-top",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/1:property",
+          "translatable": "",
+          "value": "24"
+        },
+        {
+          "context": "",
+          "name": "margin-bottom",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/2:property",
+          "translatable": "",
+          "value": "24"
+        },
+        {
+          "context": "",
+          "name": "margin-start",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/3:property",
+          "translatable": "",
+          "value": "12"
+        },
+        {
+          "context": "",
+          "name": "margin-end",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/4:property",
+          "translatable": "",
+          "value": "12"
+        },
+        {
+          "context": "",
+          "name": "wrap",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/5:child/0:object:GtkLabel#empty_title/0:property",
+          "translatable": "",
+          "value": "true"
+        },
+        {
+          "context": "",
+          "name": "hexpand",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/3:child/0:object:GtkScrolledWindow#list_scroller/0:property",
+          "translatable": "",
+          "value": "true"
+        },
+        {
+          "context": "",
+          "name": "vexpand",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/3:child/0:object:GtkScrolledWindow#list_scroller/1:property",
+          "translatable": "",
+          "value": "true"
+        },
+        {
+          "context": "",
+          "name": "min-content-width",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/3:child/0:object:GtkScrolledWindow#list_scroller/2:property",
+          "translatable": "",
+          "value": "320"
+        },
+        {
+          "context": "",
+          "name": "hscrollbar-policy",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/3:child/0:object:GtkScrolledWindow#list_scroller/5:property",
+          "translatable": "",
+          "value": "2"
+        },
+        {
+          "context": "",
+          "name": "vscrollbar-policy",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/3:child/0:object:GtkScrolledWindow#list_scroller/6:property",
+          "translatable": "",
+          "value": "1"
+        },
+        {
+          "context": "",
+          "name": "propagate-natural-height",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/3:child/0:object:GtkScrolledWindow#list_scroller/7:property",
+          "translatable": "",
+          "value": "true"
+        },
+        {
+          "context": "",
+          "name": "propagate-natural-width",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/3:child/0:object:GtkScrolledWindow#list_scroller/8:property",
+          "translatable": "",
+          "value": "false"
+        }
+      ],
+      "roots": [
+        {
+          "class": "LushtextAllTabsPopover",
+          "parent": "GtkPopover",
+          "path": "0:template:LushtextAllTabsPopover",
+          "tag": "template"
+        }
+      ],
+      "style_classes": [
+        {
+          "name": "all-tabs-popover",
+          "path": "0:template:LushtextAllTabsPopover/2:style/0:class"
+        },
+        {
+          "name": "dim-label",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/5:child/0:object:GtkLabel#empty_title/2:style/0:class"
+        },
+        {
+          "name": "navigation-sidebar",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/3:child/0:object:GtkScrolledWindow#list_scroller/9:property/0:object:GtkListView#list_view/1:style/0:class"
+        }
+      ],
+      "translations": [
+        {
+          "context": "",
+          "name": "label",
+          "path": "0:template:LushtextAllTabsPopover/1:accessibility/0:property",
+          "value": "All Tabs"
+        },
+        {
+          "context": "",
+          "name": "description",
+          "path": "0:template:LushtextAllTabsPopover/1:accessibility/1:property",
+          "value": "Search and pick one of the window's open tabs"
+        },
+        {
+          "context": "",
+          "name": "placeholder-text",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/1:child/0:object:GtkSearchEntry#search_entry/4:property",
+          "value": "Search open tabs"
+        }
+      ]
+    },
     "command-palette.ui": {
       "accessibility": [],
       "child_roles": [
@@ -5625,6 +5911,11 @@
         },
         {
           "internal-child": "",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/15:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
           "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/2:child",
           "type": ""
         },
@@ -5774,6 +6065,11 @@
           "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/14:child/0:object:AdwShortcutsItem"
         },
         {
+          "class": "AdwShortcutsItem",
+          "id": "",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/15:child/0:object:AdwShortcutsItem"
+        },
+        {
           "class": "AdwShortcutsSection",
           "id": "",
           "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/2:child/0:object:AdwShortcutsSection"
@@ -5915,40 +6211,47 @@
           "name": "title",
           "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/9:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
-          "value": "Print"
+          "value": "All Tabs"
         },
         {
           "context": "",
           "name": "title",
           "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/10:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
-          "value": "Command Palette"
+          "value": "Print"
         },
         {
           "context": "",
           "name": "title",
           "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/11:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
-          "value": "Toggle Minimap"
+          "value": "Command Palette"
         },
         {
           "context": "",
           "name": "title",
           "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/12:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
-          "value": "Document Properties"
+          "value": "Toggle Minimap"
         },
         {
           "context": "",
           "name": "title",
           "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/13:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
-          "value": "Fullscreen"
+          "value": "Document Properties"
         },
         {
           "context": "",
           "name": "title",
           "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/14:child/0:object:AdwShortcutsItem/0:property",
+          "translatable": "yes",
+          "value": "Fullscreen"
+        },
+        {
+          "context": "",
+          "name": "title",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/15:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
           "value": "Focus Mode"
         },
@@ -6111,36 +6414,42 @@
           "context": "",
           "name": "title",
           "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/9:child/0:object:AdwShortcutsItem/0:property",
-          "value": "Print"
+          "value": "All Tabs"
         },
         {
           "context": "",
           "name": "title",
           "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/10:child/0:object:AdwShortcutsItem/0:property",
-          "value": "Command Palette"
+          "value": "Print"
         },
         {
           "context": "",
           "name": "title",
           "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/11:child/0:object:AdwShortcutsItem/0:property",
-          "value": "Toggle Minimap"
+          "value": "Command Palette"
         },
         {
           "context": "",
           "name": "title",
           "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/12:child/0:object:AdwShortcutsItem/0:property",
-          "value": "Document Properties"
+          "value": "Toggle Minimap"
         },
         {
           "context": "",
           "name": "title",
           "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/13:child/0:object:AdwShortcutsItem/0:property",
-          "value": "Fullscreen"
+          "value": "Document Properties"
         },
         {
           "context": "",
           "name": "title",
           "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/14:child/0:object:AdwShortcutsItem/0:property",
+          "value": "Fullscreen"
+        },
+        {
+          "context": "",
+          "name": "title",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/15:child/0:object:AdwShortcutsItem/0:property",
           "value": "Focus Mode"
         },
         {

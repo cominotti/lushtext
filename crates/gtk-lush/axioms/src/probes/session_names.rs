@@ -293,6 +293,8 @@ fn control_child(axiom: &str) -> ExitCode {
         "A115" => A11Y_BUS_NAME,
         // A117's child announces instead of watching the bus.
         "A117" => return crate::probes::a117::announce_child(),
+        // A134's child runs the popover fixture, traced, in its own process.
+        "A134" => return crate::probes::a134::popover_frames_child(),
         "A116" => {
             // The axiom's claim: `GDK_DEBUG=no-portals` alone does not stop
             // Libadwaita. The nested `--portals on` session clears it, so

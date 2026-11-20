@@ -67,6 +67,12 @@ impl fmt::Display for DocumentKind {
 
 /// Scenario type proving the workspace sidebar's rendered rows after a path reveal.
 pub(crate) const WORKSPACE_TREE_REVEAL_SCENARIO: &str = "workspace-tree-reveal";
+/// Scenario type of the overflowing tab strip's scroll controls
+/// (`tab-strip-overflow-navigation`).
+pub(crate) const TAB_STRIP_OVERFLOW_SCENARIO: &str = "tab-strip-overflow";
+/// Scenario type of the tab strip's All Tabs popover
+/// (`tab-strip-overflow-navigation`).
+pub(crate) const ALL_TABS_POPOVER_SCENARIO: &str = "all-tabs-popover";
 /// Scenario type for the staged window composition's first frame
 /// (`first-frame-window-shell`): the held first frame against the composed
 /// frame, in one session.
@@ -345,7 +351,11 @@ fn validate_visual_scenario(value: &Value) -> Result<(), ProofValidationError> {
                 ));
             }
         }
-        "command-palette-overlay" | "open-popover" | "replace-preview" => {}
+        "command-palette-overlay"
+        | "open-popover"
+        | "replace-preview"
+        | TAB_STRIP_OVERFLOW_SCENARIO
+        | ALL_TABS_POPOVER_SCENARIO => {}
         FIRST_FRAME_SHELL_SCENARIO => {
             if manifest.composition_hold_ms.is_none_or(|ms| ms == 0) {
                 return Err(ProofValidationError::malformed(
@@ -589,6 +599,14 @@ impl VisualScenarioManifest {
                 self.command_palette_cases(manifest_value)
             }
             "open-popover" => self.open_popover_cases(manifest_value),
+            TAB_STRIP_OVERFLOW_SCENARIO => {
+                let fixture_kinds = default_when_empty(&self.matrix.fixture_kinds, "forty-tabs");
+                self.fixture_kind_cases(manifest_value, &fixture_kinds, "back")
+            }
+            ALL_TABS_POPOVER_SCENARIO => {
+                let fixture_kinds = default_when_empty(&self.matrix.fixture_kinds, "forty-tabs");
+                self.fixture_kind_cases(manifest_value, &fixture_kinds, "open")
+            }
             WORKSPACE_TREE_REVEAL_SCENARIO => self.workspace_tree_reveal_cases(manifest_value),
             _ => Ok(Vec::new()),
         }

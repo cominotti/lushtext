@@ -80,6 +80,24 @@ def resolve(start: Path, environ: dict[str, str]) -> str:
     return ""
 
 
+def _fixture_parent() -> str:
+    """A temporary base with no `.cargo` config above it.
+
+    Cargo, and so `resolve`, reads every ancestor's `.cargo/config.toml`, so a
+    fixture under a TMPDIR inside the home directory (an agent stage's
+    `$H/<change>/tmp/<stage>`) would inherit the real `~/.cargo` config.
+    """
+    for candidate in (tempfile.gettempdir(), "/tmp"):
+        base = Path(candidate).resolve()
+        if not any(
+            (directory / ".cargo" / name).exists()
+            for directory in [base, *base.parents]
+            for name in ("config.toml", "config")
+        ):
+            return str(base)
+    raise SystemExit("next-rustc-wrapper self-test: every temporary base has a .cargo config above it")
+
+
 def self_test() -> int:
     failures = 0
 
@@ -91,7 +109,7 @@ def self_test() -> int:
             print(f"FAIL - {name}: got {got!r}, want {want!r}")
             failures += 1
 
-    with tempfile.TemporaryDirectory(prefix="lt-next-wrapper-") as raw:
+    with tempfile.TemporaryDirectory(prefix="lt-next-wrapper-", dir=_fixture_parent()) as raw:
         root = Path(raw)
         home = root / "home"
         (home / ".cargo").mkdir(parents=True)

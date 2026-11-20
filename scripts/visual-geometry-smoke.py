@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from smoke_runtime_dir import runtime_base
 from smoke_warning_classifiers import is_gdk_broken_pipe_teardown
 from visual_geometry_png import (
     Rect,
@@ -395,7 +396,7 @@ def outer_run(args: argparse.Namespace) -> int:
 
 
 def run_case_outer(case_json: Path, case_dir: Path, case: dict[str, Any]) -> dict[str, Any]:
-    runtime_root = Path(tempfile.mkdtemp(prefix="lt-vg-"))
+    runtime_root = Path(tempfile.mkdtemp(prefix="lt-vg-", dir=runtime_base("lt-vg-")))
     runtime_dir = runtime_root / "runtime"
     runtime_dir.mkdir()
     os.chmod(runtime_dir, 0o700)

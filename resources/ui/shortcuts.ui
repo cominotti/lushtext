@@ -61,6 +61,12 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
         </child>
         <child>
           <object class="AdwShortcutsItem">
+            <property name="title" translatable="yes">All Tabs</property>
+            <property name="accelerator">&lt;Control&gt;&lt;Shift&gt;o</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
             <property name="title" translatable="yes">Print</property>
             <property name="accelerator">&lt;Control&gt;p</property>
           </object>

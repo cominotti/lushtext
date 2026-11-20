@@ -314,6 +314,18 @@ Replace All, a match count) reads the old query; either wait past the delay
 or, when production itself prefills and acts at once, apply the query
 synchronously the way `search_bar::execution::apply_query` does.
 
+**A palette file-index build holds half the disposal lane.** Each window's
+startup index build fires 300 ms after its scope refresh and reserves 64 MiB
+of the 128 MiB ordinary disposal lane until its worker shrinks it, and a
+Replace All Confirm refuses a 64 MiB undo reservation that does not fit
+(the `replace-all-confirm-disposal-lane` change will retry it). A test that
+confirms a Replace All in a window (most of all a second window, created
+about when its build fires) calls `confirm_with_settled_file_index`
+(`tests/widget/search_panel.rs`), which asks every window for a build and
+waits until each has finished. With a forced 3 s index-build delay, both
+two-window apply tests failed on a refused undo reservation without it, and
+the whole module passed with it (`tab-strip-overflow-navigation` D16).
+
 If the question becomes "what does GTK consider visible, mapped, realized, or accessible here?", stop and read:
 
 - [../../gtk4-libadwaita-internals/references/lifecycle-and-ownership.md](../../gtk4-libadwaita-internals/references/lifecycle-and-ownership.md)

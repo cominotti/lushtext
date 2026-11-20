@@ -594,6 +594,8 @@ pub struct LushtextWindow {
     pub recent_documents: RecentDocumentsState,
     /// Tab-menu targeting, pinned-page wiring, and bulk-close authorization.
     pub tab_management: TabManagementState,
+    /// `WFR-TAB-OVERFLOW-NAVIGATION`'s production state.
+    pub(crate) tab_overflow: super::tab_overflow::TabOverflowState,
     /// Weak handle for browser-navigation actions while Browse Notes is visible.
     pub(super) active_notes_browser: RefCell<Option<ActiveNotesBrowser>>,
     /// Closed notes browsers whose realized rows are still being retired in
@@ -704,6 +706,7 @@ impl Default for LushtextWindow {
             startup_data_flow: StartupDataFlowState::default(),
             recent_documents: RecentDocumentsState::default(),
             tab_management: TabManagementState::default(),
+            tab_overflow: super::tab_overflow::TabOverflowState::default(),
             active_notes_browser: RefCell::new(None),
             notes_row_retirements: RefCell::new(Vec::new()),
             note_save_snapshots: RefCell::new(Vec::new()),
@@ -1117,6 +1120,11 @@ impl ObjectImpl for LushtextWindow {
         self.tab_view
             .connect_notify_local(Some("selected-page"), move |_, _| {
                 if let Some(window) = window_weak.upgrade() {
+                    // The tab-overflow reveal re-announces an unchanged
+                    // selection so the strip scrolls to it: nothing to project.
+                    if window.tab_overflow_reveals_selection() {
+                        return;
+                    }
                     let session = &window.imp().session;
                     if !session.applying_restore_selection.get() {
                         session
@@ -1155,12 +1163,14 @@ impl ObjectImpl for LushtextWindow {
             }
         });
 
+        obj.install_tab_overflow();
         obj.update_content_stack();
         obj.record_construction_stage("constructed_wiring", stage_start);
     }
 
     fn dispose(&self) {
         self.disposing.set(true);
+        self.obj().dispose_tab_overflow();
         // A retirement holds its browser state, which holds this window:
         // release it here, outside the borrow (the rest of its rows go now).
         let retirements = self.notes_row_retirements.take();

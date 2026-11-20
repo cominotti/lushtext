@@ -32,6 +32,14 @@
       ]
     },
     {
+      "id": "all-tabs-popover",
+      "test": "tab_overflow_navigation::test_all_tabs_popover_lists_pinned_modified_and_untitled_rows_in_strip_order",
+      "state": "representative rows",
+      "templates": [
+        "resources/ui/all-tabs-popover.ui"
+      ]
+    },
+    {
       "id": "open-popover-empty",
       "test": "open_popover::test_open_popover_empty_state_keeps_search_and_chooser_reachable",
       "state": "no-context startup",
@@ -104,6 +112,11 @@
     {
       "path": "resources/ui/markdown-preview.ui",
       "source": "resources/ui/markdown-preview.blp",
+      "coverage": "runtime"
+    },
+    {
+      "path": "resources/ui/all-tabs-popover.ui",
+      "source": "resources/ui/all-tabs-popover.blp",
       "coverage": "runtime"
     },
     {

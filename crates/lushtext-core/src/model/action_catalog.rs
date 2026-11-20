@@ -128,6 +128,8 @@ pub enum ActionSurface {
     /// actions; mutations still flow through GTK action activation.
     DbusAction,
     CustomMenuWidget,
+    /// A control in the tab strip's trailing group (`tab-strip-overflow-navigation`).
+    TabStripControl,
 }
 
 /// Test or smoke lane that proves an action remains wired correctly.
