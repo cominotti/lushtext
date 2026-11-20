@@ -1345,6 +1345,39 @@ fn test_escape_and_the_shortcut_again_keep_the_selection_and_restore_focus() {
 }
 
 #[test]
+fn test_escape_in_the_search_entry_closes_the_popover_and_nothing_under_it() {
+    let window = window_at(1000);
+    open_tabs(&window, 3);
+    activate_action(&window, "toggle-search-panel");
+    assert!(
+        wait_until_or_false(SETTLE, || window
+            .imp()
+            .search_panel_revealer
+            .reveals_child()),
+        "precondition: the search panel shows"
+    );
+    open_all_tabs(&window);
+    assert!(evidence(&window).popover_visible, "precondition: open");
+    let (_, popover) = all_tabs(&window);
+    // Escape in the entry: `stop-search` runs first, then the window's
+    // Bubble-phase controller sees the same key press (the transient
+    // dismissal ladder's child-handled latch).
+    popover
+        .search_entry()
+        .emit_by_name::<()>("stop-search", &[]);
+    assert!(window.handle_transient_escape_for_test());
+    flush_events();
+    assert!(
+        wait_until_or_false(SETTLE, || !evidence(&window).popover_visible),
+        "the popover closed"
+    );
+    assert!(
+        window.imp().search_panel_revealer.reveals_child(),
+        "the same Escape leaves the search panel open"
+    );
+}
+
+#[test]
 fn test_a_tab_closed_while_open_leaves_the_list_and_a_stale_activation_only_closes() {
     let window = window_at(1000);
     open_tabs(&window, 4);
@@ -1470,6 +1503,35 @@ fn test_one_announcement_per_settled_query() {
         "the announcement settles"
     );
     assert_eq!(evidence(&window).popover_announcements, before + 1);
+}
+
+#[test]
+fn test_a_close_before_the_query_settles_announces_no_match_count() {
+    let window = window_at(1000);
+    open_tabs(&window, 6);
+    open_all_tabs(&window);
+    let before = evidence(&window).popover_announcements;
+    let (_, popover) = all_tabs(&window);
+    popover.search_entry().set_text("unti");
+    flush_events();
+    assert!(
+        evidence(&window).popover_announcement_pending,
+        "precondition: the match count waits for the query to settle"
+    );
+    activate_action(&window, "toggle-all-tabs");
+    flush_events();
+    assert!(
+        wait_until_or_false(SETTLE, || !evidence(&window).popover_visible),
+        "the popover closed"
+    );
+    assert!(
+        !evidence(&window).popover_announcement_pending,
+        "the close drops the pending announcement"
+    );
+    // Past the announcement delay (500 ms): a count for a list that is gone
+    // would be announced over the restored focus.
+    crate::common::flush_after_delay(Duration::from_millis(800));
+    assert_eq!(evidence(&window).popover_announcements, before);
 }
 
 #[test]

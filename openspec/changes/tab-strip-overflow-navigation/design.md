@@ -223,7 +223,7 @@ and a widget subdirectory of it").
 | `tab_overflow/evidence.rs` | evidence (`TabOverflowEvidence`, `test-utils`-gated) |
 | `tab_overflow/test_policy.rs` | test-only timing: immediate animation completion and short repeat delays, compiled only with `test-utils` |
 | `tab_overflow/controls.rs` | **called presentation surface**: builds the end group, buttons, icons, tooltips and accessible names, and the focus hand-off |
-| `tab_overflow/all_tabs.rs` | **called presentation surface**: window-side snapshot rows, popup wiring, focus save and restore, and `select_tab_from_all_tabs` |
+| `tab_overflow/all_tabs_execution.rs` (named `all_tabs.rs` until the D17 apply stage) | coordination (`execution`, stage-order-qualified: stage 6): window-side snapshot rows and their re-snapshot `Debounce`, popup wiring, the focus save and generation-guarded restore, the Escape latch, and `select_tab_from_all_tabs` |
 | `tab_overflow/all_tabs_popover/{mod,imp,item}.rs` | **called presentation surfaces**: widget, factory and row object |
 
 **Policy** (`policy.rs`, `#![forbid(clippy::float_arithmetic,
@@ -231,7 +231,7 @@ clippy::disallowed_methods)]`, a new whole-pixel table row at `forbid` / 0) work
 over `StripScrollExtent { value_px, page_px, upper_px }`. The adapter rounds
 each `f64` once to the nearest whole pixel. Functions:
 
-- `unpinned_overflows`, `controls_visible` (show, hide and hold, from D2);
+- `strip_overflows` (named `unpinned_overflows` until D17), `controls_visible` (show, hide and hold, from D2);
 - `can_scroll_back`, `can_scroll_forward`, `next_scroll_target`, in reading
   order;
 - `all_tabs_button_visible(tab_count, strip_shown)`;
@@ -303,14 +303,21 @@ retirement.
   document text and does no buffer read. Untitled tabs are included. The
   palette's `Open Tabs` group is file-backed only
   (`ui/window/palette_shell.rs:366-389`).
-- **Filtering** uses `services::fuzzy::FuzzyQuery`, the matcher Recent Open's
-  service uses (`services/recent_documents.rs`). It scores the title first, then
-  the path, on the GTK thread. Ordering and highlight:
+- **Filtering** (`policy::rank_all_tabs`) runs on the GTK thread and ranks
+  each tab into the first tier it matches, case-insensitively: the title as a
+  prefix, the title as a substring, the folder (as shown, or as an absolute
+  path) as a substring, then the title fuzzily through
+  `services::fuzzy::FuzzyQuery`, the matcher Recent Open's service uses
+  (`services/recent_documents.rs`), by descending score. The path is never
+  matched fuzzily: a short query matches nearly every absolute path fuzzily,
+  which would list every tab. Ties keep strip order. Ordering and highlight:
   - an empty query keeps strip order and highlights the selected tab;
-  - a non-empty query ranks by score and highlights the first row.
+  - a non-empty query ranks by tier and score and highlights the first row.
 
-  The cost is O(tabs) short-string scores per keystroke. The
-  `all_tabs_filter_1024` bench case records a figure (Timing below):
+  The ranking costs O(tabs) short-string matches per keystroke. The
+  `all_tabs_filter_1024` bench case records the ranking's figure (Timing
+  below); a keystroke also builds the candidates, publishes the ranked rows
+  and re-projects the realized band, which the bench does not cover:
   **at most 233 µs per query over 1,024 tabs** (prefix 233 µs, fuzzy 220 µs,
   substring 167 µs, folder 165 µs, no match 151 µs, empty 0.5 µs; one
   `heavy.sh` run on 2026-11-18, load 3.28 → 7.55, a regression figure, not a
@@ -459,7 +466,7 @@ Recorded during implementation, each with its reason:
 
 - **No unpinned tab, no overflow.** With every tab pinned the unpinned tab box
   is not reallocated and its adjustment keeps the range of the tabs it held, so
-  the reconcile reads `unpinned_overflows` only while
+  the reconcile reads `strip_overflows` only while
   `n_pages > n_pinned_pages`. Without it, pinning every tab of an overflowing
   strip would leave the scroll buttons shown over an empty box.
 - **A new action surface, `tab-strip-control`.** No existing
@@ -905,6 +912,48 @@ passed on retry. Both were attributed in the handoff directory (`attr-*`,
   of the apply test under 8 CPU hogs passed, none with an index reservation
   live at the second window's undo reservation (`sp-nat/`).
 - **D14's "seven pass" is corrected** to what its logs show, test by test.
+
+### D17. Second apply stage of the programme template's review (2026-11-19)
+
+The lenses reviewed `11548532` with the second `/simplify` stage's edits;
+the independent apply agent decided their findings as follows (the full
+list, with each rejection's reason, is `review-findings-applied.md` in the
+handoff directory):
+
+- **One Escape in the All Tabs search entry closes the popover and nothing
+  under it.** `stop-search` closes the popover, and the window's
+  Bubble-phase Escape controller then sees the same key press, so an open
+  find bar or search panel closed with it. The search entry's `stop-search`
+  now sets the dismissal ladder's child-handled latch, as the palette's
+  does. Failing-first:
+  `test_escape_in_the_search_entry_closes_the_popover_and_nothing_under_it`
+  (`apply2-ff-escape.log`).
+- **A close drops a match count still waiting for the query to settle**,
+  which described a list that is gone and would have been announced over
+  the restored focus, and releases the snapshot, which the next popup
+  replaces anyway. Failing-first:
+  `test_a_close_before_the_query_settles_announces_no_match_count`
+  (`apply2-ff-close.log`).
+- **`all_tabs.rs` is `all_tabs_execution.rs`**, a stage-qualified
+  coordination role: it owns stage 6's re-snapshot `Debounce`, the
+  generation-guarded focus restore and the per-page handlers, which a called
+  presentation surface may not. The module doc, the facade's role table and
+  the matrix row say so; the row's figures are re-derived (3,947 lines).
+- **The overflow predicate is scroller-neutral**: `strip_overflows`
+  (formerly `unpinned_overflows`) is read for both scrollers, and the pinned
+  scroller's read sits beside `current_extent` in `scroll_execution.rs`, so
+  the two coordination modules no longer call each other for it. The
+  reconcile binds `OverflowControlsPlan`'s fields by their own names.
+- **The no-match title has one source**, `ALL_TABS_NO_MATCH_TITLE`; the
+  Blueprint no longer repeats it.
+- **The lookup and the extent type are re-exported for tests only**
+  (`test-utils`), since no production caller outside the workflow names
+  them.
+- **Wording.** D6 states the filter's tiers as implemented (the folder is
+  matched by substring only, never fuzzily) and what the bench measures (the
+  ranking's share of a keystroke); A134's users name the All Tabs popover as
+  a possible, unobserved trigger, since its height follows the filtered
+  list.
 
 ## Timing
 

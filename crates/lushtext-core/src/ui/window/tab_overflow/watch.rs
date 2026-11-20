@@ -27,11 +27,11 @@ use gtk_lush_settle::SettleBurst;
 use gtk4::prelude::*;
 
 use super::super::LushtextWindow;
-use super::all_tabs::{SET_ALL_TABS_VISIBLE_ACTION, TOGGLE_ALL_TABS_ACTION};
+use super::all_tabs_execution::{SET_ALL_TABS_VISIBLE_ACTION, TOGGLE_ALL_TABS_ACTION};
 use super::controls::{self, OverflowControls, SCROLL_BACK_ACTION, SCROLL_FORWARD_ACTION};
 use super::policy::{
-    ControlFocusFacts, OverflowControlsInputs, OverflowFacts, focus_after_disable,
-    plan_overflow_controls, unpinned_overflows,
+    ControlFocusFacts, OverflowControlsInputs, OverflowControlsPlan, OverflowFacts,
+    focus_after_disable, plan_overflow_controls, strip_overflows,
 };
 use super::scroll_execution::{current_extent, find_tab_scroller, is_rtl};
 
@@ -120,6 +120,12 @@ pub(super) fn release_page_watch((page, handlers): PageWatch) {
 }
 
 impl TabOverflowState {
+    /// The end group, once the install stage built it (a clone, so no borrow
+    /// is held while a caller drives GTK).
+    pub(super) fn controls(&self) -> Option<OverflowControls> {
+        self.controls.borrow().clone()
+    }
+
     /// Whether our step animation is playing.
     pub(super) fn animation_playing(&self) -> bool {
         self.animation.borrow().as_ref().is_some_and(is_playing)
@@ -129,12 +135,13 @@ impl TabOverflowState {
     /// (`adw_animation_pause`, never `reset` or `skip`: module docs of
     /// `scroll_execution.rs`). Returns whether it was playing.
     pub(super) fn pause_step(&self) -> bool {
-        let animation = self.animation.take();
-        let playing = animation.as_ref().is_some_and(is_playing);
-        if playing && let Some(animation) = animation {
-            libadwaita::prelude::AnimationExt::pause(&animation);
+        match self.animation.take() {
+            Some(animation) if is_playing(&animation) => {
+                libadwaita::prelude::AnimationExt::pause(&animation);
+                true
+            }
+            _ => false,
         }
-        playing
     }
 
     /// Whether the readiness blocker `tab-overflow` holds: a step, a hold, a
@@ -152,9 +159,7 @@ impl TabOverflowState {
                 .as_ref()
                 .is_some_and(|reveal| reveal.blocks_readiness(glib::monotonic_time()))
             || self
-                .controls
-                .borrow()
-                .as_ref()
+                .controls()
                 .is_some_and(|controls| controls.popover.publishing())
             || self.animation_playing()
     }
@@ -247,15 +252,7 @@ impl LushtextWindow {
             if let Some(window) = window_weak.upgrade()
                 && !window.imp().tab_overflow.pointer_in_group.get()
             {
-                // The user moves the strip: a reveal after a restore yields,
-                // so its re-announced selection cannot undo the user's scroll.
-                // Scrolling inside the open popover moves no strip.
-                if !window.all_tabs_popover_visible() {
-                    window.end_selection_reveal();
-                }
-                if window.tab_scroll_step_active() {
-                    window.cancel_tab_scroll_for_strip_input();
-                }
+                window.yield_to_strip_input();
             }
             glib::Propagation::Proceed
         });
@@ -269,23 +266,16 @@ impl LushtextWindow {
             let Some(window) = window_weak.upgrade() else {
                 return;
             };
-            if window.press_is_inside_overflow_group(gesture, x, y) {
-                return;
-            }
-            // A press on the strip (a tab, a drag) yields the reveal too;
-            // one inside the open popover does not.
-            if !window.all_tabs_popover_visible() {
-                window.end_selection_reveal();
-            }
-            if window.tab_scroll_step_active() {
-                window.cancel_tab_scroll_for_strip_input();
+            // A press on the strip (a tab, a drag) yields as a wheel does.
+            if !window.press_is_inside_overflow_group(gesture, x, y) {
+                window.yield_to_strip_input();
             }
         });
         bar.add_controller(press);
 
         // A wheel over our own group moves no strip: track the pointer there,
         // as the press observer resolves its own position.
-        if let Some(controls) = self.imp().tab_overflow.controls.borrow().clone() {
+        if let Some(controls) = self.imp().tab_overflow.controls() {
             let motion = gtk4::EventControllerMotion::new();
             let window_weak = self.downgrade();
             motion.connect_enter(move |_, _, _| {
@@ -303,11 +293,27 @@ impl LushtextWindow {
         }
     }
 
+    /// A wheel or press on the strip outside our group: the user moves the
+    /// strip, so our step or hold is cancelled. A reveal after a restore
+    /// yields too, so its re-announced selection cannot undo the user's
+    /// scroll, but not while the All Tabs popover is open: the popover is a
+    /// descendant of our group, its own input reaches these observers, and it
+    /// moves no strip. A step still playing when such input arrives (within
+    /// its 200 ms) is paused like any other.
+    fn yield_to_strip_input(&self) {
+        if !self.all_tabs_popover_visible() {
+            self.end_selection_reveal();
+        }
+        if self.tab_scroll_step_active() {
+            self.cancel_tab_scroll_for_strip_input();
+        }
+    }
+
     fn press_is_inside_overflow_group(&self, gesture: &gtk4::GestureClick, x: f64, y: f64) -> bool {
         let Some(widget) = gesture.widget() else {
             return false;
         };
-        let Some(controls) = self.imp().tab_overflow.controls.borrow().clone() else {
+        let Some(controls) = self.imp().tab_overflow.controls() else {
             return false;
         };
         widget
@@ -403,7 +409,7 @@ impl LushtextWindow {
         let imp = self.imp();
         let state = &imp.tab_overflow;
         state.waiting_for_terminal.set(false);
-        let Some(controls) = state.controls.borrow().clone() else {
+        let Some(controls) = state.controls() else {
             return;
         };
         let (Some(bar), Some(tab_view)) = (imp.tab_bar.try_get(), imp.tab_view.try_get()) else {
@@ -413,23 +419,25 @@ impl LushtextWindow {
         let extent = unpinned
             .as_ref()
             .map(|scroller| current_extent(&scroller.hadjustment()));
-        let pinned_overflows =
-            state.pinned.borrow().as_ref().is_some_and(|scroller| {
-                unpinned_overflows(current_extent(&scroller.hadjustment()))
-            });
         // An empty unpinned box is not reallocated, so its adjustment can keep
         // the range of the tabs it held: no unpinned tab, no overflow.
         let unpinned_tabs = tab_view.n_pages() > tab_view.n_pinned_pages();
         let facts = OverflowFacts {
             strip_shown: bar.property::<bool>("visible") && tab_view.n_pages() > 0,
-            unpinned_overflows: unpinned_tabs && extent.is_some_and(unpinned_overflows),
+            unpinned_overflows: unpinned_tabs && extent.is_some_and(strip_overflows),
             bar_overflowing: bar.is_overflowing(),
-            pinned_overflows,
+            pinned_overflows: state.pinned_overflows(),
         };
         state.unpinned_overflowing.set(facts.unpinned_overflows);
         let was_visible = state.controls_visible.get();
         let tab_count = u32::try_from(tab_view.n_pages()).unwrap_or(0);
-        let plan = plan_overflow_controls(OverflowControlsInputs {
+        let OverflowControlsPlan {
+            buttons_visible,
+            can_scroll_back,
+            can_scroll_forward,
+            all_tabs_visible,
+            group_attached,
+        } = plan_overflow_controls(OverflowControlsInputs {
             scroller_found: unpinned.is_some(),
             buttons_visible: was_visible,
             facts,
@@ -437,21 +445,15 @@ impl LushtextWindow {
             rtl: is_rtl(&bar),
             tab_count,
         });
-        let (visible, back, forward, all_tabs_visible) = (
-            plan.buttons_visible,
-            plan.can_scroll_back,
-            plan.can_scroll_forward,
-            plan.all_tabs_visible,
-        );
         let focused = (!state.focus_restore_pending.get())
             .then(|| controls.focused_control(self))
             .flatten();
 
-        if visible != was_visible {
-            controls.back.set_visible(visible);
-            controls.forward.set_visible(visible);
-            state.controls_visible.set(visible);
-            if visible {
+        if buttons_visible != was_visible {
+            controls.back.set_visible(buttons_visible);
+            controls.forward.set_visible(buttons_visible);
+            state.controls_visible.set(buttons_visible);
+            if buttons_visible {
                 state
                     .controls_shown_count
                     .set(state.controls_shown_count.get().saturating_add(1));
@@ -459,10 +461,10 @@ impl LushtextWindow {
                 self.end_tab_scroll_hold();
             }
         }
-        self.set_tab_overflow_action_enabled(SCROLL_BACK_ACTION, back);
-        self.set_tab_overflow_action_enabled(SCROLL_FORWARD_ACTION, forward);
-        state.can_scroll_back.set(back);
-        state.can_scroll_forward.set(forward);
+        self.set_tab_overflow_action_enabled(SCROLL_BACK_ACTION, can_scroll_back);
+        self.set_tab_overflow_action_enabled(SCROLL_FORWARD_ACTION, can_scroll_forward);
+        state.can_scroll_back.set(can_scroll_back);
+        state.can_scroll_forward.set(can_scroll_forward);
 
         if all_tabs_visible {
             controls.show_all_tabs_count(tab_count);
@@ -483,9 +485,8 @@ impl LushtextWindow {
         self.set_tab_overflow_action_enabled(TOGGLE_ALL_TABS_ACTION, all_tabs_visible);
         self.set_tab_overflow_action_enabled(SET_ALL_TABS_VISIBLE_ACTION, all_tabs_visible);
 
-        let attached = plan.group_attached;
-        if attached != state.group_attached.get() {
-            if attached {
+        if group_attached != state.group_attached.get() {
+            if group_attached {
                 bar.set_end_action_widget(Some(&controls.group));
             } else {
                 bar.set_end_action_widget(None::<&gtk4::Widget>);
@@ -493,10 +494,11 @@ impl LushtextWindow {
                 // delivered its `leave`.
                 state.pointer_in_group.set(false);
             }
-            state.group_attached.set(attached);
+            state.group_attached.set(group_attached);
         }
 
-        let focus_facts = ControlFocusFacts::new(back, forward, all_tabs_visible);
+        let focus_facts =
+            ControlFocusFacts::new(can_scroll_back, can_scroll_forward, all_tabs_visible);
         if let Some(control) = focused
             && !focus_facts.available(control)
             && !controls.focus_control(focus_after_disable(control, focus_facts))
@@ -529,7 +531,7 @@ impl LushtextWindow {
         for (_, watch) in watches {
             release_page_watch(watch);
         }
-        if let Some(controls) = state.controls.borrow().clone()
+        if let Some(controls) = state.controls()
             && controls.popover.is_visible()
         {
             controls.popover.popdown();

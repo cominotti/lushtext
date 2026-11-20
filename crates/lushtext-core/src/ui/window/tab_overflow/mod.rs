@@ -35,12 +35,14 @@
 //!    frame after the strip is allocated, until the strip rests; while the
 //!    strip is hidden (Focus Mode) it first resumes from the bar's one-shot
 //!    `map` handler.
-//! 6. **List → filter → select** (`all_tabs.rs`, `all_tabs_popover/`): the
-//!    All Tabs button opens a popover over a snapshot of the open tabs; a
-//!    query ranks them (`policy::rank_all_tabs`); an activated row selects
-//!    its tab and focuses its editor, and a close without one gives the
-//!    focus back. **Inversion:** control leaves the popover through its
-//!    row-activation callback and resumes in `select_tab_from_all_tabs`;
+//! 6. **List → filter → select** (`all_tabs_execution.rs`,
+//!    `all_tabs_popover/`): the All Tabs button opens a popover over a
+//!    snapshot of the open tabs; a query ranks them
+//!    (`policy::rank_all_tabs`); an activated row selects its tab and
+//!    focuses its editor, and a close without one gives the focus back; an
+//!    Escape its search entry consumed is latched for the window's
+//!    dismissal ladder. **Inversion:** control leaves the popover through
+//!    its row-activation callback and resumes in `select_tab_from_all_tabs`;
 //!    an open popover's re-snapshot resumes from a zero-delay `Debounce`.
 //!
 //! # Role home
@@ -58,13 +60,13 @@
 //! | `evidence.rs` | evidence surface (`test-utils`) |
 //! | `test_policy.rs` | test-only timing (`test-utils`) |
 //! | `controls.rs` | **called presentation surface**: the end group, buttons and focus moves |
-//! | `all_tabs.rs` | **called presentation surface**: the popover's snapshot, popup wiring, focus save and restore, and `select_tab_from_all_tabs` |
+//! | `all_tabs_execution.rs` | coordination (`execution`, stage-order-qualified: stage 6): the snapshot and its re-snapshot `Debounce`, popup wiring, the focus save and generation-guarded restore, the Escape latch, and `select_tab_from_all_tabs` |
 //! | `all_tabs_popover/` | **called presentation surfaces**: the popover widget, its row model and row object |
 
 pub mod all_tabs_popover;
 pub mod policy;
 
-mod all_tabs;
+mod all_tabs_execution;
 mod controls;
 mod scroll_execution;
 mod watch;
@@ -74,11 +76,12 @@ pub mod evidence;
 #[cfg(feature = "test-utils")]
 pub mod test_policy;
 
-pub(in crate::ui::window) use all_tabs::{
+pub(in crate::ui::window) use all_tabs_execution::{
     SET_ALL_TABS_QUERY_ACTION, SET_ALL_TABS_VISIBLE_ACTION, TOGGLE_ALL_TABS_ACCEL,
     TOGGLE_ALL_TABS_ACTION,
 };
 pub(in crate::ui::window) use controls::{SCROLL_BACK_ACTION, SCROLL_FORWARD_ACTION};
+#[cfg(feature = "test-utils")]
 pub use scroll_execution::find_tab_scroller;
 pub(crate) use watch::TabOverflowState;
 
@@ -150,7 +153,7 @@ impl LushtextWindow {
     /// The strip's controls as they show, for the visual-geometry surfaces.
     pub(crate) fn visible_tab_overflow_controls(&self) -> VisibleTabOverflowControls {
         let state = &self.imp().tab_overflow;
-        let controls = state.controls.borrow().clone();
+        let controls = state.controls();
         let Some(controls) = controls.filter(|_| state.group_attached.get()) else {
             return VisibleTabOverflowControls::default();
         };

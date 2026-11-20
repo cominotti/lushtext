@@ -25,8 +25,9 @@ use super::super::LushtextWindow;
 use super::policy::{
     RevealProgress, RevealStep, ScrollDirection, StripScrollExtent, TAB_SCROLL_ANIMATION_MS,
     TAB_SCROLL_REPEAT_DELAY_MS, TAB_SCROLL_REPEAT_INTERVAL_MS, can_scroll, next_scroll_target,
-    reveal_frame, reveal_holds_readiness, tab_in_view, unpinned_overflows,
+    reveal_frame, reveal_holds_readiness, strip_overflows, tab_in_view,
 };
+use super::watch::TabOverflowState;
 
 /// The deepest descendant level of an `AdwTabBar` the lookup walks: bar →
 /// revealer → box → scrolled window (`adw-tab-bar.ui`, ledger A132).
@@ -190,6 +191,17 @@ pub(super) fn extent_at(adjustment: &gtk4::Adjustment, value: f64) -> StripScrol
 /// `adjustment` rounded once into whole pixels at its current value.
 pub(super) fn current_extent(adjustment: &gtk4::Adjustment) -> StripScrollExtent {
     extent_at(adjustment, adjustment.value())
+}
+
+impl TabOverflowState {
+    /// Whether the pinned tabs overflow their own scroller, read as the
+    /// unpinned extent is; false when the lookup did not find it.
+    pub(super) fn pinned_overflows(&self) -> bool {
+        self.pinned
+            .borrow()
+            .as_ref()
+            .is_some_and(|scroller| strip_overflows(current_extent(&scroller.hadjustment())))
+    }
 }
 
 /// Whether `widget` lays out right to left.
@@ -459,16 +471,10 @@ impl LushtextWindow {
         if imp.tab_view.selected_page().is_none() {
             return glib::ControlFlow::Break;
         }
-        let pinned_overflows = imp
-            .tab_overflow
-            .pinned
-            .borrow()
-            .as_ref()
-            .is_some_and(|scroller| unpinned_overflows(current_extent(&scroller.hadjustment())));
         let (step, next) = reveal_frame(
             progress.get(),
             current_extent(&adjustment),
-            pinned_overflows,
+            imp.tab_overflow.pinned_overflows(),
             frames,
             frame_time_us,
         );

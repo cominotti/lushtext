@@ -128,7 +128,7 @@ impl ObjectImpl for LushtextAllTabsPopover {
         let popover_weak = obj.downgrade();
         obj.connect_closed(move |_| {
             if let Some(popover) = popover_weak.upgrade() {
-                popover.imp().retire_rows();
+                popover.imp().release_after_close();
             }
         });
     }
@@ -429,8 +429,19 @@ impl LushtextAllTabsPopover {
         self.model.finish_growth();
     }
 
-    /// After the popover closed: retire the realized rows in slices once the
-    /// list is unmapped (ledger A110), never inside the close dispatch.
+    /// After the popover closed: a match count still waiting for the query to
+    /// settle describes a list that is gone, so it is dropped; the snapshot
+    /// is released (the next popup takes a fresh one); and the realized rows
+    /// retire.
+    fn release_after_close(&self) {
+        let _ = self.announcement.clear();
+        let source = self.source.take();
+        drop(source);
+        self.retire_rows();
+    }
+
+    /// Retire the realized rows in slices once the list is unmapped (ledger
+    /// A110), never inside the close dispatch.
     fn retire_rows(&self) {
         let growth = self.growth.take();
         drop(growth);

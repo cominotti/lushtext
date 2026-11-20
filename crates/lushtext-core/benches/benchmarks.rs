@@ -816,9 +816,10 @@ fn bench_recent_document_search(c: &mut Criterion) {
     group.finish();
 }
 
-/// The All Tabs popover's filter over 1,024 open tabs: what one keystroke
-/// costs on the GTK thread (`tab-strip-overflow-navigation` D6). Regression
-/// evidence, not a timing verdict.
+/// The All Tabs popover's ranking over 1,024 open tabs: the ranking's share
+/// of one keystroke on the GTK thread (`tab-strip-overflow-navigation` D6);
+/// the keystroke's candidate build, row publish and band re-projection are
+/// not measured here. Regression evidence, not a timing verdict.
 fn bench_all_tabs_filter(c: &mut Criterion) {
     let titles: Vec<String> = (0..1_024)
         .map(|index| {

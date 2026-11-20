@@ -188,15 +188,8 @@
         },
         {
           "context": "",
-          "name": "label",
-          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/5:child/0:object:GtkLabel#empty_title/0:property",
-          "translatable": "yes",
-          "value": "No Open Tab Matches"
-        },
-        {
-          "context": "",
           "name": "wrap",
-          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/5:child/0:object:GtkLabel#empty_title/1:property",
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/5:child/0:object:GtkLabel#empty_title/0:property",
           "translatable": "",
           "value": "true"
         },
@@ -265,7 +258,7 @@
         },
         {
           "name": "dim-label",
-          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/5:child/0:object:GtkLabel#empty_title/3:style/0:class"
+          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/5:child/0:object:GtkLabel#empty_title/2:style/0:class"
         },
         {
           "name": "navigation-sidebar",
@@ -290,12 +283,6 @@
           "name": "placeholder-text",
           "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/1:child/0:object:GtkSearchEntry#search_entry/4:property",
           "value": "Search open tabs"
-        },
-        {
-          "context": "",
-          "name": "label",
-          "path": "0:template:LushtextAllTabsPopover/3:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/5:child/0:object:GtkLabel#empty_title/0:property",
-          "value": "No Open Tab Matches"
         }
       ]
     },

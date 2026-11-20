@@ -1,16 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! **Called presentation surface** of `WFR-TAB-OVERFLOW-NAVIGATION` — not a
-//! role: the window side of the All Tabs popover (design D6).
+//! Role: coordination (`execution`, stage-order-qualified: stage 6, list →
+//! filter → select) of `WFR-TAB-OVERFLOW-NAVIGATION`: the window side of the
+//! All Tabs popover (design D6).
 //!
-//! It takes the snapshot the popover lists (one compact row per tab, no
-//! document text, no buffer read), re-takes it through one zero-delay
-//! `Debounce` while the popover is open and the tabs change, saves the focus
-//! in the menu button's create-popup function and restores it when the
-//! popover closes without an activation, and selects an activated row's tab
-//! through `select_tab_from_all_tabs`, whose editor focus goes through
+//! It owns the stage's timing and lifecycle: it takes the snapshot the
+//! popover lists (one compact row per tab, no document text, no buffer
+//! read), re-takes it through one zero-delay `Debounce` while the popover is
+//! open and the tabs change (with the per-page title and pinned handlers that
+//! feed it), saves the focus in the menu button's create-popup function and
+//! restores it from a generation-guarded idle when the popover closes without
+//! an activation, latches an Escape the popover's search entry consumed for
+//! the window's dismissal ladder, and selects an activated row's tab through
+//! `select_tab_from_all_tabs`, whose editor focus goes through
 //! `ui/window/editor_focus/`. The decisions (ranking, highlight, copy) are
-//! `policy.rs`'s; the stages are narrated in `mod.rs`.
+//! `policy.rs`'s; the popover widget is `all_tabs_popover/`; the stages are
+//! narrated in `mod.rs`.
 
 use std::time::Duration;
 
@@ -38,7 +43,7 @@ impl LushtextWindow {
     /// Wire the popover, its button and the live re-snapshot. Runs once, from
     /// the workflow's install stage.
     pub(super) fn install_all_tabs(&self) {
-        let Some(controls) = self.imp().tab_overflow.controls.borrow().clone() else {
+        let Some(controls) = self.imp().tab_overflow.controls() else {
             return;
         };
         // Runs before the popover shows, on a click and on `popup()` alike:
@@ -59,6 +64,19 @@ impl LushtextWindow {
                 window.schedule_tab_overflow_reconcile();
             }
         });
+        // Escape in the search entry closes the popover through
+        // `stop-search`, and the window's Bubble-phase Escape controller then
+        // sees the same key press: latch it, so the ladder closes nothing
+        // under the popover (`transient_dismissal`'s one inversion).
+        let window_weak = self.downgrade();
+        controls
+            .popover
+            .search_entry()
+            .connect_stop_search(move |_| {
+                if let Some(window) = window_weak.upgrade() {
+                    window.mark_child_transient_escape_handled();
+                }
+            });
         let window_weak = self.downgrade();
         controls.popover.connect_row_activated(move |page| {
             if let Some(window) = window_weak.upgrade() {
@@ -150,7 +168,7 @@ impl LushtextWindow {
                 .tab_overflow
                 .resnapshot
                 .schedule(self, Duration::ZERO, |window, _| {
-                    if let Some(controls) = window.imp().tab_overflow.controls.borrow().clone()
+                    if let Some(controls) = window.imp().tab_overflow.controls()
                         && controls.popover.is_visible()
                     {
                         controls.popover.set_rows(window.all_tabs_snapshot());
@@ -197,7 +215,7 @@ impl LushtextWindow {
                 .saved_focus
                 .replace(focus.map(|widget| widget.downgrade()));
         }
-        if let Some(controls) = self.imp().tab_overflow.controls.borrow().clone() {
+        if let Some(controls) = self.imp().tab_overflow.controls() {
             controls.popover.prepare_to_show(self.all_tabs_snapshot());
         }
         self.set_all_tabs_query_enabled(true);
@@ -292,9 +310,7 @@ impl LushtextWindow {
     pub(crate) fn all_tabs_popover_visible(&self) -> bool {
         self.imp()
             .tab_overflow
-            .controls
-            .borrow()
-            .as_ref()
+            .controls()
             .is_some_and(|controls| controls.popover.is_visible())
     }
 
@@ -306,7 +322,7 @@ impl LushtextWindow {
     /// `win.set-all-tabs-visible`: the target-state form of the toggle,
     /// through the same menu button path.
     pub(super) fn set_all_tabs_visible(&self, visible: bool) {
-        let Some(controls) = self.imp().tab_overflow.controls.borrow().clone() else {
+        let Some(controls) = self.imp().tab_overflow.controls() else {
             return;
         };
         if visible {
@@ -320,7 +336,7 @@ impl LushtextWindow {
 
     /// `win.set-all-tabs-query`: type into the open popover's search entry.
     pub(super) fn set_all_tabs_query(&self, query: &str) {
-        if let Some(controls) = self.imp().tab_overflow.controls.borrow().clone()
+        if let Some(controls) = self.imp().tab_overflow.controls()
             && controls.popover.is_visible()
         {
             controls.popover.set_query(query);

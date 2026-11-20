@@ -36,16 +36,18 @@ pub const TAB_SCROLL_REPEAT_DELAY_MS: u32 = 400;
 /// Kind: out: time; a repeat cadence, one animation length per step.
 pub const TAB_SCROLL_REPEAT_INTERVAL_MS: u32 = 200;
 
-/// The unpinned tab scroller's horizontal adjustment in whole pixels, each
-/// value rounded once by the adapter. Its lower bound is always 0
+/// A tab scroller's horizontal adjustment in whole pixels, each value rounded
+/// once by the adapter: the unpinned scroller's, which every step, enablement
+/// and reveal decision reads, or the pinned scroller's, whose overflow alone
+/// the reconcile and the reveal read. Its lower bound is always 0
 /// (`gtk_adjustment_configure` in the tab box's allocation, ledger A132).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct StripScrollExtent {
     /// The adjustment's value.
     pub value_px: i32,
-    /// The visible width of the unpinned tabs.
+    /// The visible width of the scroller's tabs.
     pub page_px: i32,
-    /// The total width of the unpinned tabs.
+    /// The total width of the scroller's tabs.
     pub upper_px: i32,
 }
 
@@ -64,7 +66,8 @@ impl StripScrollExtent {
 pub struct OverflowFacts {
     /// Whether the tab strip itself is shown (tabs exist, not Focus Mode).
     pub strip_shown: bool,
-    /// Whether the unpinned adjustment overflows ([`unpinned_overflows`]).
+    /// Whether the unpinned adjustment overflows ([`strip_overflows`] of its
+    /// extent).
     pub unpinned_overflows: bool,
     /// `AdwTabBar:is-overflowing`, which a close animation's resize freeze
     /// holds true (ledger A133, design F4).
@@ -73,10 +76,10 @@ pub struct OverflowFacts {
     pub pinned_overflows: bool,
 }
 
-/// Whether the unpinned tabs are wider than their visible width by at least
-/// one pixel.
+/// Whether a tab scroller's tabs are wider than its visible width by at
+/// least one pixel: the one overflow rule both scrollers' readings share.
 #[must_use]
-pub const fn unpinned_overflows(extent: StripScrollExtent) -> bool {
+pub const fn strip_overflows(extent: StripScrollExtent) -> bool {
     extent.max_value() >= 1
 }
 
@@ -340,7 +343,7 @@ pub const fn reveal_frame(
     };
     match progress.announced_at_us {
         None if !still => (RevealStep::Wait, next),
-        None if width_kept && !unpinned_overflows(extent) && !pinned_overflows => {
+        None if width_kept && !strip_overflows(extent) && !pinned_overflows => {
             (RevealStep::End, next)
         }
         None => (
@@ -675,9 +678,9 @@ mod tests {
 
     #[test]
     fn overflow_needs_at_least_one_pixel_beyond_the_page() {
-        assert!(!unpinned_overflows(extent(0, 600, 600)));
-        assert!(unpinned_overflows(extent(0, 600, 601)));
-        assert!(!unpinned_overflows(extent(0, 0, 0)));
+        assert!(!strip_overflows(extent(0, 600, 600)));
+        assert!(strip_overflows(extent(0, 600, 601)));
+        assert!(!strip_overflows(extent(0, 0, 0)));
     }
 
     #[test]

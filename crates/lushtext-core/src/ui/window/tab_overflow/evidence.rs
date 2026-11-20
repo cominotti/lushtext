@@ -28,7 +28,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 
 use super::super::LushtextWindow;
-use super::all_tabs::{
+use super::all_tabs_execution::{
     SET_ALL_TABS_QUERY_ACTION, SET_ALL_TABS_VISIBLE_ACTION, TOGGLE_ALL_TABS_ACTION,
 };
 use super::all_tabs_popover::LushtextAllTabsPopover;
@@ -124,7 +124,7 @@ pub fn tab_overflow_evidence(window: &LushtextWindow) -> TabOverflowEvidence {
     let imp = window.imp();
     let state = &imp.tab_overflow;
     let unpinned = state.unpinned.borrow().clone();
-    let controls = state.controls.borrow().clone();
+    let controls = state.controls();
     let animation_active = state.animation_playing();
     let repeat_active = state.repeat.borrow().is_some();
     let bar = imp.tab_bar.try_get();

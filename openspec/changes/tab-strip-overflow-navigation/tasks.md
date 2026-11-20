@@ -63,7 +63,7 @@ Mirror the A122 commit (`3a086b0e`): a ledger row, `CHANGELOG.md`, an
   that narrates the stages and inversions, and `policy.rs` carrying the
   whole-pixel `forbid` pair. Write failing-first unit tests in `policy.rs`
   that fail to compile until 2.2:
-  - `unpinned_overflows`;
+  - `unpinned_overflows` (now `strip_overflows`, D17);
   - `controls_visible`: show, hide, the hysteresis band, and the frozen hold;
   - `can_scroll_back` and `can_scroll_forward` in LTR and RTL reading order;
   - `next_scroll_target`: clamping at both ends and a zero-width page;
@@ -198,7 +198,7 @@ Mirror the A122 commit (`3a086b0e`): a ledger row, `CHANGELOG.md`, an
   `make blueprint-generate`. Implement `tab_overflow/all_tabs_popover/{mod,imp,item}.rs`
   (D6): `LushtextRowText` rows, `RowAccessibility`, `RowGrowth`,
   `RowRetirement` and `FuzzyQuery`. Verify with `make check-blueprint`.
-- [x] 3.3 Implement `tab_overflow/all_tabs.rs`:
+- [x] 3.3 Implement `tab_overflow/all_tabs.rs` (now `all_tabs_execution.rs`, D17):
   - the snapshot (no document text);
   - the `Debounce` re-snapshot;
   - focus saved in `set_create_popup_func` and restored;
@@ -343,6 +343,20 @@ Mirror the A122 commit (`3a086b0e`): a ledger row, `CHANGELOG.md`, an
   `scripts/gate-trees.sh record`: `make check`, `make test` (no `FLAKY`,
   `OOM-KILL:` or `SESSION-HYGIENE:` line), the rustdoc gate, and the three
   smokes; commit and push.
+
+## 8. Second apply stage (2026-11-19)
+
+- [x] 8.1 Latch an Escape the All Tabs search entry consumed for the window's
+  dismissal ladder; drop a pending match-count announcement and release the
+  snapshot when the popover closes. Verify both new widget tests fail first
+  and then pass, with the `tab_overflow_navigation` and
+  `transient_dismissal` modules.
+- [x] 8.2 Rename `all_tabs.rs` to `all_tabs_execution.rs` and the predicate
+  to `strip_overflows`; move the pinned overflow read beside
+  `current_extent`; one source for the no-match title; gate the test-only
+  re-exports; D6, D17, the matrix row, A134 and the accessibility docs.
+- [x] 8.3 Final gates on the committed tree, each through
+  `scripts/gate-trees.sh record`; push.
 
 ## Workflow follow-up
 

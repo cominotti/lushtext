@@ -45,7 +45,6 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                 <property name="margin-end">12</property>
                 <child>
                   <object class="GtkLabel" id="empty_title">
-                    <property name="label" translatable="yes">No Open Tab Matches</property>
                     <property name="wrap">true</property>
                     <property name="justify">2</property>
                     <style>
