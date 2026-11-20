@@ -47,26 +47,33 @@ fix reuses an existing pattern, and #119's test workaround can then go.
   - Each time capacity changes, it recomputes which files are open with
     unsaved edits or an active save, and tries the reservation again.
   - Once admitted, it starts the same run as today.
-- While it waits, the run already counts as started:
+- While it waits, the run already counts as in flight:
   - the Replace All button reads **Cancel Replace All**;
-  - `replace_in_flight` is true and `search-complete` stays pending;
+  - `replace_in_flight` is true, and `search-complete` stays pending through
+    the claimed transaction (the `replace-preview` blocker);
   - another window's apply or Undo is refused, as during a run;
   - a window close asks the existing close-during-run question.
 
+  It has not yet *started* in the sense of "One Replace All undo journal per
+  application": every window's earlier Undo stays installed, and is retired
+  only when the run is admitted.
+
   Cancel, or Stop and Close, ends the wait at once, with nothing written and
-  the earlier Undo still available. Hiding the panel (Escape) or starting a
+  the earlier Undo and Show Skipped Files report still available. Hiding the panel (Escape) or starting a
   new search does not cancel it, just as neither cancels a run in progress.
 - The wait is visible and accessible:
   - one announced status message;
-  - a waiting line in the status bar, kept up for the whole wait;
+  - a waiting line in the status bar, kept up for the whole wait except while
+    a workspace search shows its own progress;
   - the Cancel Replace All button's accessible description and tooltip;
   - a new evidence field and a new automation snapshot field,
     `content_search.replace_admission_deferred`.
 - Panel dispose cancels the wakeup and releases the transaction, and the
-  parked selection goes to the disposal lane.
+  parked selection goes to the disposal lane. It calls back into no window.
 - Tests:
-  - #119's `confirm_with_settled_file_index` and `settle_file_index_builds`
-    workaround is retired, so the tests that used it now cover the fix;
+  - #119's `confirm_with_settled_file_index` workaround is retired, so the
+    tests that used it now cover the fix. `settle_file_index_builds` stays,
+    as the step before a test fills the lane (design D8);
   - a palette test-policy hook delays the file-index build;
   - failing-first tests for one window, two windows and the delayed index
     build.
@@ -133,7 +140,8 @@ None.
     claim, then admit-or-wait, then start.
   - `ui/search_panel/`: a new coordination module, `replace_admission.rs`,
     with the parked run and its capacity wakeup, plus `replace_execution.rs`
-    (cancel during the wait), `evidence.rs`, `imp.rs` (dispose),
+    (cancel during the wait), `journal.rs` (the dispose-time release of the
+    transaction fields it owns), `evidence.rs`, `imp.rs` (dispose),
     `accessibility.rs`, `mod.rs` (narrative and the resume callback) and
     `policy.rs` (the pure resume decision).
   - `ui/command_palette/test_policy.rs` and `ui/window/palette_shell.rs`: a
@@ -153,6 +161,7 @@ None.
 - **Proofs and data safety:**
   - Kani: none (`services/` is not touched).
   - Timing: none. The judged span bodies (`replace_completion`,
-    `replace_progress_heartbeat`) are unchanged.
+    `replace_progress_heartbeat`) are unchanged. The deferred Cancel path is
+    O(1) GTK work within `B_INTERACT_US` (design, "Timing").
   - The three smokes, for the UI-prefix files.
   - The data-safety audit, for the Replace All transaction and undo journal.

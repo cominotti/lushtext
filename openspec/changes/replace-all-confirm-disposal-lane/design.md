@@ -85,14 +85,33 @@ Each item was read in the code at `5b9abbb6`; the file is named with it.
   - the button click handler routes to `request_replace_cancel()`;
   - `begin_confirmed_replacement` refuses while the transaction is claimed;
   - `replace_preview_pending()` includes `replace_transaction_claimed()`, so
-    the `replace-preview` readiness stays pending;
-  - `search-complete` stays pending through `replace_in_flight`;
+    the `replace-preview` blocker stays raised (`ui/automation.rs`);
+  - `search-complete` stays pending through that same blocker, the claimed
+    transaction, not through `replace_in_flight`;
   - other windows' `begin_replace_transaction` refuses while this panel's
     transaction is claimed.
 - **A new search, Escape and panel hide do not touch a run in flight.**
   `invalidate_replace_preview_request` returns early once `preview_mode` and
   `preview_pending` are both false. That is the state after the partition
   completion, so the parked selection is unaffected.
+- **`finish_replace_run` clears the earlier skip report.** It sets
+  `last_skip_report` and `last_run_intent` from its argument and shows Show
+  Skipped Files only for a non-empty report (`replace_execution.rs`). Called
+  with `None`, it erases the earlier run's report. A cancelled wait therefore
+  cannot end through it (D4).
+- **A fill is only as full as the lane was when it was taken.**
+  `fill_disposal_capacity_for_test` reserves what is free at that moment.
+  `try_queue_replacement` (`model/plain_disposal.rs`) credits the replaced
+  weight, so if an index build held its 64 MiB when the fill was taken, the
+  build's later shrink can admit the parked reservation under the fill. Tests
+  that fill the lane settle index builds first (D8).
+- **What can advance this panel's `undo_backup_generation` while its
+  transaction is claimed.** Another window cannot (its
+  `begin_replace_transaction` and supersession are refused). This panel's own
+  deferred persisted-undo startup load can: `load_persisted_undo_backup`
+  waits on the same lane (`undo_capacity_wakeup`), re-reads the generation on
+  each retry, and installs through `set_undo_backup_in_memory`, which bumps
+  it. The parked freshness is then stale (D5).
 - **Progress notifications expire, and a search resolves them.**
   `NotificationBus::update_progress` records expire unless they are updated
   or heart-beaten, and a heartbeat only refreshes a record that still
@@ -136,23 +155,36 @@ build (`flaky-apply/attr-instrumentation.patch`), running
 **Non-Goals:** as `proposal.md` ("Non-goals") lists, with Undo's capacity
 refusal and the reservation's size first. Two more design-level boundaries:
 - the wait has no timeout;
-- the run's worker, journal and service are byte-for-byte unchanged.
+- the run's worker, the journal's on-disk protocol and the service are
+  byte-for-byte unchanged (`journal.rs` gains only the GTK-side dispose
+  release of D4).
 
 ## Decisions
 
 ### D1. The wait is the run's first phase, not a separate pre-run state
 
 On the first refusal, the window calls `begin_replace_run()` before
-parking. One part of `begin_replace_run` moves to admission:
+parking. So the `ReplaceRunControl` (cancel flag, progress), the run's intent
+copy and the Cancel Replace All button all exist from that moment, and
+`replace_in_flight` is true from then on. A resumed attempt reuses that
+control; it never calls `begin_replace_run` again.
+
+One part of `begin_replace_run` moves to admission, into a panel operation
+`clear_previous_skip_report()` that `start` calls:
 - clearing `last_skip_report` and `last_run_intent`;
 - hiding Show Skipped Files.
 
 So a cancelled wait keeps the earlier run's skip report and its Open and
-Replace in Editor rows, and `main` loses nothing. So the `ReplaceRunControl` (cancel flag, progress), the run's intent
-copy and the Cancel Replace All button all exist from that moment.
-`replace_in_flight` is true from then on. `supersede_prior_undo_for_replace()`
-stays where it is: only after the reservation succeeds, immediately before
-the worker starts.
+Replace in Editor rows, and `main` loses nothing. On a first attempt that is
+admitted at once, `start` calls `begin_replace_run()` and then
+`clear_previous_skip_report()`, in the same turn as today, so that path
+behaves exactly as on `main`.
+
+`supersede_prior_undo_for_replace()` stays where it is: only after the
+reservation succeeds, immediately before the worker starts. So every
+window's earlier Undo stays installed for the whole wait, and the
+requirement "One Replace All undo journal per application" reads "starting"
+as admission.
 
 Why:
 - **Escape keeps the run.** Confirm followed by Escape is the ordinary way
@@ -202,17 +234,27 @@ Operations:
 - `defer_replace_run(parked, observed_epoch)`: parks the run and arms the
   wakeup.
 - On wakeup, `resume_parked_replace_run()` takes the parked run. It then asks
-  the pure policy (D5) whether to resume, and invokes the window's new
-  `replace_run_resumed` callback (`mod.rs`, `connect_replace_run_resumed`)
-  with `ReplaceAdmissionResume::Resume(parked)`.
+  the pure policy (D5) for a `ReplaceAdmissionDecision`, and invokes the
+  window's new `replace_run_resumed` callback (`mod.rs`,
+  `connect_replace_run_resumed`) with a `ReplaceAdmissionResumption`:
+  `Resume(parked)` when the decision is `Resume`, or `Ended(reason)` after
+  retiring the parked selection when it is `Abandon(reason)`.
 - `cancel_parked_replace_run()`: used by `request_replace_cancel` only.
   Dispose does not call it (D4), because it must not call back into a
   window that is being destroyed.
   - It cancels the wakeup.
   - It hands the parked selection to bounded retirement (the existing
     `spawn_guarded_preview_retirement` path).
-  - It invokes the same callback with `Cancelled`.
+  - It invokes the same callback with `Ended(ReplaceWaitEnd::Cancelled)`.
+- `end_deferred_replace_run()`: the run-state end of a wait that never
+  started a worker (D4). It clears `replace_run` and `run_intent`, restores
+  the button label and its sensitivity, and leaves `last_skip_report`,
+  `last_run_intent` and Show Skipped Files untouched.
 - `replace_admission_deferred()`: the evidence read.
+
+The two enums are distinct on purpose: the policy's decision is scalar and
+GTK-free (`policy.rs`), while the resumption carries the parked
+`GuardedReplacements` and lives in `replace_admission.rs`.
 
 Why the panel:
 - every capacity wakeup, and each one's dispose cancel, lives with the
@@ -254,7 +296,9 @@ resumption:
    On a resumed attempt this also ends the wait:
    - stop the wait's keepalive (D6) and clear the button's waiting
      description;
-   - `finish_replace_run(Some(report))`, then `finish_replace_transaction()`;
+   - `finish_replace_run(Some(report))`, then `finish_replace_transaction()`.
+     Replacing the earlier skip report here is today's behaviour for an
+     all-unsaved Confirm;
    - `close_if_requested_after_replace_run()`, so a Close When Finished
      chosen during the wait still closes.
 3. `observed_epoch = disposal_capacity_epoch()`.
@@ -278,14 +322,18 @@ Notes:
 - **Cancel Replace All** (`request_replace_cancel`): while
   `replace_admission_deferred()` holds, it calls
   `cancel_parked_replace_run()` instead of setting the flag and waiting for a
-  worker that does not exist. The window's `Cancelled` handler then:
-  - stops the wait's status keepalive (D6);
-  - calls `finish_replace_run(None)` and `finish_replace_transaction()`;
+  worker that does not exist. The window's `Ended(Cancelled)` handler then:
+  - stops the wait's status keepalive (D6) and clears the button's waiting
+    description;
+  - calls `end_deferred_replace_run()` and `finish_replace_transaction()`.
+    It does **not** call `finish_replace_run(None)`, which would erase the
+    earlier skip report ("Facts");
   - publishes and announces "Replace All cancelled; no file was changed";
   - calls `close_if_requested_after_replace_run()`.
 
   The earlier Undo is still installed, because it was never superseded, and
   `finish_replace_transaction` makes its button sensitive again.
+  `finish_replace_run` itself is unchanged.
 - **Close.** `close_request` sees `replace_run_in_flight()` and asks the
   existing question:
   - "Stop and Close" routes through `request_replace_cancel` (above) and then
@@ -293,22 +341,34 @@ Notes:
   - "Close When Finished" waits for the run as it does today.
 - **Dispose.** `imp::dispose` cancels `replace_admission_wakeup`, drops the
   parked run (its `DisposalOwned` drop hands the payload to the lane, never
-  destroying it on GTK), and clears the transaction flags. It invokes no
-  window callback and publishes no status. A disposed panel
-  that a weak-ref upgrade can still reach can then no longer refuse another
-  window. No file has been written, so nothing needs recovery.
+  destroying it on GTK), and calls a new `journal.rs` operation,
+  `release_replace_transaction_on_dispose()`. That operation resets only the
+  two fields `journal.rs` owns (`replace_transaction_pending`,
+  `replace_transaction_generation`); it touches no widget, because GTK clears
+  template children in `dispose()`, which `finish_replace_transaction`'s
+  button and accessibility updates would read. Dispose invokes no window
+  callback and publishes no status. A disposed panel that a weak-ref upgrade
+  can still reach then no longer refuses another window. No file has been
+  written, so nothing needs recovery.
 
 ### D5. One pure decision for a resumption (`policy.rs`)
 
-`policy::replace_admission_resume(facts) -> ReplaceAdmissionResume` decides,
+`policy::replace_admission_resume(facts) -> ReplaceAdmissionDecision` decides,
 from GTK-free scalar facts:
 - whether the transaction is still claimed by this panel;
 - whether the parked freshness generation is still current;
 - whether cancel was requested;
 - whether the run control still exists.
 
-It returns `Resume`, or `Abandon(reason)`. An abandoned resumption follows the
-Cancelled path with its reason logged (counts only, no content).
+It returns `Resume`, or `Abandon(reason)` with a `ReplaceWaitEnd` reason:
+`Cancelled` when cancel was requested or the run control is gone,
+`Superseded` when the transaction or the freshness generation is no longer
+this run's (the persisted-undo startup load of "Facts"). An abandoned
+resumption ends as D4's Cancelled path does (`end_deferred_replace_run`,
+`finish_replace_transaction`, `close_if_requested_after_replace_run`), with
+its reason logged (counts only, no content), but its status message follows
+the reason: `Superseded` publishes `main`'s existing warning "Replace All was
+superseded before any files changed", because the user cancelled nothing.
 
 It is pure, so the mutation scope reaches it, and unit tests cover each
 input combination. The window never starts a run the policy did not clear.
@@ -327,13 +387,22 @@ input combination. The window never starts a run the policy did not clear.
   would not do: a search started during the wait resolves the record. So
   the waiting text comes back within a second of a search's own progress
   message (T4b).
+  - While a workspace search is in flight (`runtime.searching`), a tick does
+    not re-publish, so the two messages never alternate and pulse; the
+    search's own progress shows, and the waiting text returns at the first
+    tick after the search ends. The spec's "within a second" is that one
+    period; T4b allows 2 s, one period plus scheduling slack under load.
+  - The text is `Info` severity, which the status bar never announces
+    (`status_announcement_lane`), so a re-publish after a search does not
+    announce again.
   - `start_replace_progress_tracking` stops it and takes over the slot when
     the run starts.
-  - The `Cancelled` handler stops it and resolves the message.
+  - The `Ended` handler stops it and resolves the message.
 - **Button.** The label is Cancel Replace All (from `begin_replace_run`). The
   accessible description and tooltip read "Waiting for memory before Replace
   All starts" while deferred. They are set when the wait is entered and
-  cleared when it is left: at admission, on cancel and on the all-unsaved end.
+  cleared when it is left: at admission, on cancel or abandon, and on the
+  all-unsaved end.
   The setter lives in `accessibility.rs`, and `refresh_accessibility_state`
   does not compute it, because `finish_replace_run` calls that refresh inside
   the judged completion span ("Timing").
@@ -368,15 +437,30 @@ search does.
 
 All live in `crates/lushtext/tests/widget/search_panel.rs`.
 
+**Filling the lane.** Every test below that takes
+`fill_disposal_capacity_for_test()` first calls `settle_file_index_builds`
+on its window, and takes the fill in the same turn, with no event dispatch
+in between. A fill taken while an index build holds its 64 MiB would be
+released by that build's shrink ("Facts"), so the wait could end under the
+fill and the deferred-state assertions would race. Every preview and every
+file a test opens in a tab happens **before** the fill: Replace Preview and
+a small file load both reserve on the ordinary lane, and are refused under
+it.
+
+Every budget that waits for an async outcome is 20 s or more, as at the
+existing call sites (`gtk-testing`, Flake Discipline).
+
 - **T1, single window, filled lane.**
   1. Search and preview three files, then `wait_for_journal_disk_idle`.
-  2. Take `fill_disposal_capacity_for_test()` and Confirm.
+  2. Settle index builds, take the fill, and Confirm.
   3. After 500 ms, assert the deferred state:
      - no file changed;
      - `replace_admission_deferred` and `replace_in_flight` are true;
      - the transaction is claimed;
-     - the button reads Cancel Replace All.
-  4. Drop the fill. Within 10 s the run completes, every file reads
+     - the button reads Cancel Replace All;
+     - `search-complete` readiness is pending;
+     - after 11 s, the status line still shows the waiting text.
+  4. Drop the fill. Within 20 s the run completes, every file reads
      "thread\n", and Undo is offered.
 
   **Fails today:**
@@ -385,17 +469,28 @@ All live in `crates/lushtext/tests/widget/search_panel.rs`.
     test fails on `replace_in_flight` false;
   - at step 4, because the run never starts (the probe printed "run started
     after release false").
-- **T2, two windows.** B is deferred under a fill, and A's Confirm is refused
-  with "Another window is running…" while B waits. Dropping the fill completes
-  B, and A then confirms successfully. Fails today: B's transaction is
-  released at the refusal, so A's apply is not refused.
+- **T2, two windows.**
+  1. A makes a Replace All over its own file, so A offers Undo, and then
+     previews a second one.
+  2. B previews three files. Settle both windows' index builds, take the
+     fill, and confirm in B. B is deferred.
+  3. A's Confirm is refused with "Another window is running…", and A's Undo
+     is refused with the same message; A's file keeps "thread\n".
+  4. Dropping the fill completes B (and retires A's Undo then); A then
+     confirms its kept preview (a refused Confirm restores it) successfully.
+
+  Fails today: B's transaction is released at the refusal, so A's apply is
+  not refused, and A's Undo hits the capacity refusal instead.
 - **T3, cancel while waiting.**
-  1. Make an earlier Replace All, so Undo is offered.
-  2. Under a fill, preview and confirm a second one, then press Cancel.
+  1. Make an earlier Replace All in which one file is skipped as open with
+     unsaved changes, so Undo and Show Skipped Files are offered.
+  2. Preview a second one, then settle, take the fill and Confirm. Assert
+     that Undo is unavailable while the run waits. Press Cancel.
   3. Assert:
      - nothing changed;
      - the status says so;
      - the transaction is released;
+     - Show Skipped Files still lists the earlier run's skipped file;
      - Undo is offered again and restores the first run's files once the
        fill drops.
 
@@ -403,8 +498,9 @@ All live in `crates/lushtext/tests/widget/search_panel.rs`.
 - **T4, Escape while waiting.** The run still completes after the panel is
   hidden.
 - **T4b, a new search while waiting.** Start a workspace search while the run
-  waits. After the search is done, the status bar shows the waiting text
-  again within 2 s, and dropping the fill completes the run.
+  waits. While the search runs, the status line shows its progress, not the
+  waiting text. After it ends, the waiting text is back within 2 s (D6), and
+  dropping the fill completes the run.
 - **T5, close while waiting.** Stop and Close closes with files unchanged.
 - **T6, the original regression, with a build provably in flight.** The
   test runs with `with_file_index_build_delay(3 s)` installed. On `main`,
@@ -416,35 +512,65 @@ All live in `crates/lushtext/tests/widget/search_panel.rs`.
     `file_index_builds.snapshot().started` rises. With the 3 s delay, the
     build then holds its 64 MiB at Confirm.
   - Fails today: 2 of 2 in the attribution's forced overlap (Evidence 2).
-- **T7, a file becomes unsaved while waiting.** Under a fill, open one of the
-  three files in a tab and type into it. Drop the fill. That file keeps its
-  disk bytes and is reported as open with unsaved changes, and the other two
-  are replaced. This guards D3's recomputation: the worker's stale check
-  cannot see a tab-only edit.
+- **T7, a file becomes unsaved while waiting.** Open one of the three files
+  in a tab before the fill, unmodified. Under the fill, Confirm, then type
+  into that tab. Drop the fill. That file keeps its disk bytes and is
+  reported as open with unsaved changes, and the other two are replaced.
+  This guards D3's recomputation: the worker's stale check cannot see a
+  tab-only edit.
 - **T8, every file becomes unsaved while waiting.** As T7, with all three
-  files edited in tabs. Nothing is written, the unsaved-only report is
-  offered, the transaction is released, and a Close When Finished chosen
-  during the wait closes the window.
+  files open before the fill and edited during the wait. Before dropping the
+  fill, close the window and choose Close When Finished. After the drop:
+  - nothing is written;
+  - the unsaved-only report is offered and the transaction is released;
+  - the close path is re-entered: the window stays open and presents the
+    Save Changes? dialog for the three edited tabs (`close_request`), the
+    proof that `close_if_requested_after_replace_run` ran.
 - **T9, capacity still short.** In one GTK turn, drop the fill and take a
   second fill, so the epoch moves while the lane stays full. The run is
   still deferred after 500 ms. Dropping the second fill completes it.
-- **T10, dispose while waiting.** Destroy window B while its run waits (no
-  close dialog). No file changes. Window A can then preview and confirm, and
-  its run completes.
+- **T10, dispose while waiting.**
+  1. B previews and confirms over its own three files under the fill, and
+     the test asserts B is deferred (`replace_admission_deferred`, the
+     transaction claimed). This is where it fails today.
+  2. The test keeps a strong reference to B's panel, so the application's
+     weak registry still reaches it, and destroys window B (no close
+     dialog).
+  3. Drop the fill. A, whose preview was made before the fill, confirms:
+     it is not refused, and its run completes.
+  4. B's files still hold their original bytes, so the parked run never
+     started after capacity freed.
 - **Policy unit tests** for D5.
+- **Evidence proof.** The existing driven proof
+  `test_evidence_reads_stay_side_effect_free_across_journal_mutation` is
+  extended across the new mutations of `parked_replace_run` (defer, resume,
+  cancel), as `workflow-convention.md` "Evidence surfaces" requires of each
+  operation that takes a mutable borrow.
 
-**Retire #119's workaround.** `confirm_with_settled_file_index` and
-`settle_file_index_builds` go, and their 8 call sites go back to
-`panel.activate_confirm_replacements()`. Every call site waits on outcomes
-with budgets of 20 s or more:
+**Retire #119's confirm workaround.** `confirm_with_settled_file_index` goes,
+and its 8 call sites go back to `panel.activate_confirm_replacements()`.
+`settle_file_index_builds` stays, used only before a fill; its doc comment
+says why ("Filling the lane" above) and names this change as the reason the
+confirm wrapper could go. Every call site waits on outcomes with budgets of
+20 s or more:
 - the files' text;
 - `last_apply_counts` with `!replace_preview_pending`;
 - `files_done == 2`;
 - `skipped_files_offered && !replace_in_flight`.
 
 A deferral satisfies each of these once the build shrinks, so the 8 tests
-become coverage of this fix rather than a mask over it. The helper's doc
-comment names this change as the reason it can go.
+become coverage of this fix rather than a mask over it.
+
+`replace_all_held_at_second_file` returns on `replace_in_flight`, which is
+now true during the wait. Its callers expect an admitted run:
+`test_an_undo_while_another_window_runs_is_refused` asserts, right after it,
+that B's run retired A's Undo, which happens only at admission. It therefore
+waits for `replace_in_flight && !replace_admission_deferred`.
+
+Natural runs cannot show that these 14 tests (the 8 call sites and the 6
+callers of `replace_all_held_at_second_file`) survive an overlap: the
+attribution saw none in 72 unloaded runs. Task 2.8 also runs them once with
+the overlap forced.
 
 ### D9. Proof scope
 
@@ -478,8 +604,16 @@ Timing: none (no timed path touched).
   description is set and cleared outside the span too (D6).
 - The new code runs only on the refusal path, outside those spans:
   - the wait's keepalive;
-  - the `Cancelled` handler;
+  - the `Ended` handler;
   - the resumption, which runs the same tab walk the callback runs today.
+- **Cancel Replace All activation** is bound by `B_INTERACT_US`
+  (`main-thread-responsiveness`, "Replace All presentation stays within the
+  interaction budgets"), though no span measures it. During a wait it runs
+  `cancel_parked_replace_run` and the `Ended` handler: a source removal, an
+  O(1) hand-off of the parked payload to the disposal lane (never its
+  destruction on GTK), a few field writes and one status publication. It
+  walks no tab, buffer or list, so it is within the budget by construction,
+  like today's Cancel, which sets a flag. No span is added.
 - No verdict round is owed.
 
 ## Risks / Trade-offs
@@ -515,3 +649,12 @@ selection, so a revert loses nothing persisted.
   before the push by a second stage-1 commit (the waiting text's home and
   keepalive, T6's in-flight build, T7–T10, the skip report, dispose), not by
   a design revision.
+- Stage 2 (spec review), 2026-11-19, corrected the artifacts without changing
+  a decision's intent, so this is not a design revision either. It covered:
+  the cancelled wait ending through `end_deferred_replace_run` (D4); the
+  dispose-time release through `journal.rs`; the `Superseded` abandon
+  message (D5); the keepalive yielding to a running search (D6); and the
+  test fixes (D8: settling before a fill, previews and tabs before it,
+  20 s budgets, T2's Undo refusal, T8's Save Changes? dialog, T10's strong
+  reference, the evidence proof, the held helper, and the forced-overlap
+  run).
