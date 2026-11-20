@@ -263,3 +263,38 @@
 - [x] 8.4 Gates on the final tree: `make check`, `cargo test -p
   gtk-lush-axioms --lib`, `cargo test -p gtk-lush-proof-harness`, `openspec
   validate fix-headless-session-media-wait --strict`.
+
+## 9. Merge of `origin/main` at `5b9abbb6` (implementation round 2)
+
+- [x] 9.1 Merge `origin/main` (#118 template, #119 tab-strip overflow with
+  A132-A134). The one conflict, `crates/gtk-lush/axioms/CHANGELOG.md`, keeps
+  both sides' entries, newest first. Check the auto-merged hunks against
+  D1-D9: `session_names.rs` adds A134's control child, which re-runs the
+  probe's own executable and starts no nested session (no
+  `GTK_LUSH_SESSION_BIN` spawn, so no relink retry is owed);
+  `session/mod.rs` moves one test's tempdir under the short runtime base;
+  `build.md` adds the A134 classification paragraph. None touches the
+  readiness wait.
+- [x] 9.2 Task 4.1 again on the merged runners: the four D3 forms match no
+  skip pattern of `run-visual-smoke.sh` or `run-command-palette-notes-smoke.sh`
+  (both unchanged by the merge) and no AT-SPI retry text of
+  `cargo-gtk-proof` (`session_status` unchanged); the merged
+  `run-accessibility-smoke.sh` adds three cases and no skip path, and the
+  capture script, `visual-geometry-smoke.py` and `cargo-gtk-proof`'s
+  `host.rs` change only their runtime-directory base.
+- [x] 9.3 The merge changed the accessibility runner, `cargo-gtk-proof` and
+  the capture script, so D7 is rerun on the merged tree (seeds uncommitted,
+  artifacts under the handoff `seeded-r2/`): the four lane cases of 3.2 with
+  the WirePlumber seed, and both seeded defects of 6.1. Revert, rebuild, and
+  check that no binary carries a seed. Task 3.1 is not rerun: the merge
+  changed no helper code outside one test.
+- [x] 9.4 D8 on the merged tree: the capture probe (2.6) 10 times; each media
+  lane 10 consecutive green runs (6.2), `crash-recovery-smoke` and
+  `command-palette-notes-smoke` once each; the A115, A116 and A134 samples,
+  since `session_names.rs` was edited on both sides. Record them in
+  `evidence/lanes.md` and the QH record.
+- [x] 9.5 The final gates on the final tree, each through
+  `scripts/gate-trees.sh record --change fix-headless-session-media-wait`:
+  `make check`, `make test` (no `FLAKY` line) and the three smokes (owed:
+  the merge commit carries smoke-relevant files). `openspec validate
+  fix-headless-session-media-wait --strict`.

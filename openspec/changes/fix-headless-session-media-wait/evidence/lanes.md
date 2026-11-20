@@ -174,3 +174,69 @@ PROPOSED` line is owed. The lanes stay about 0.4-0.8 min above their
 before PR #110 gave every session its private system bus and monitors. The
 new figures also come from concurrent streams. Neither gap is attributed
 further here.
+
+## Round 2: after merging `origin/main` at `5b9abbb6` (tasks 9.1-9.4)
+
+The merge brought #118 and #119 (tab-strip overflow navigation, A132-A134).
+It changed files the D7 and D8 proofs cover: the accessibility runner (three
+new cases), `cargo-gtk-proof` (eight new visual-geometry cases, 107 in all,
+and a runtime-directory base for a deep `TMPDIR`), the capture script (the
+same base) and one test of the helper's `session/mod.rs`. No helper code
+outside that test changed, so task 3.1 was not rerun. Raw logs:
+`seeded-r2/`, `capture-r2/`, `lanes-r2/` and `tmp/implementation-1/` in the
+handoff directory.
+
+- **Task 4.1 again (9.2):** the four D3 forms match none of the skip
+  patterns of the visual and notes runners (both unchanged by the merge) and
+  none of `cargo-gtk-proof`'s AT-SPI retry texts (`session_status`
+  unchanged). The merged accessibility runner adds no skip path.
+- **D7 again (9.3), on the staged merge, seeds uncommitted:**
+  - with `policy.standard = disabled`, one case of each lane failed with the
+    D3 line in its session log and no `SKIP:` line: visual `short-layout`,
+    accessibility `workspace-tree`, visual-geometry
+    `command-palette-overlay--constrained--force-light` (status `failed`,
+    exit code 101, no `session-retry.json`) and command-palette notes;
+  - the `headerbar` animation made both `command-palette-overlay` cases fail
+    their protected region `header-bar` (59,220 of 59,220 pixels differ;
+    `status-bar` passed). Their comparison reports also list
+    `active-transient-visible` failed (`surface active-transient is not
+    visible`), which the round-1 seeded run did not show. Every green run
+    passes both cases, so it occurs only with the seed; it is recorded and
+    not attributed further;
+  - `Refresh Workspace Folderz` made `--case workspace-tree` fail with
+    `accessibility anchor 'Refresh Workspace Folders' missing`.
+
+  The seeds were reverted (`git diff` empty against the index) and the debug,
+  composition-hold, read-fault, helper and `cargo-gtk-proof` binaries
+  rebuilt; none carries a seed string.
+- **Capture probe (2.6 again):** 10 of 10 exited 0, linked and delivered the
+  first buffer on the single `pipewiresrc` attempt in 0.087-0.109 s, wrote a
+  640 x 480 RGBA PNG and had a clean guard; session wall 1.72-1.96 s, load
+  4.62 → 5.40.
+- **Axiom samples:** `make gtk-axiom-sample AXIOM=115 CHECK=1`, `116` and
+  `134` hold (GTK 4.24.1 / Adw 1.10.0).
+- **Lanes (6.2 again):** run 1 of each lane ran on the staged merge, whose
+  `git write-tree` (`3ef71a2f`) is the tree of the merge commit `f1dc40b7`;
+  runs 2-10 ran on that commit. Three concurrent streams in this worktree, as
+  in round 1 (visual-geometry; accessibility; visual, then crash recovery,
+  then command-palette notes); visual-geometry runs 8-10 ran after the other
+  streams had ended. The same four bad-run checks as round 1; every run was
+  green on all four.
+
+| Lane | Runs green | Lane mean (min-max) | Heavy wall max | 1-min load | Round 1 |
+| --- | --- | --- | --- | --- | --- |
+| `make visual-geometry-smoke` | 10 / 10 | 7.88 min (7.58-8.27) | 8.27 min | 4.92-49.77 | 7.13 min, 99 cases |
+| `make accessibility-smoke` | 10 / 10 | 3.85 min (3.44-4.79) | 4.80 min | 4.92-11.88 | 3.17 min |
+| `make visual-smoke` | 10 / 10 | 2.46 min (2.26-2.86) | 2.87 min | 4.92-11.42 | 2.32 min |
+| `make crash-recovery-smoke` | 1 / 1 | 0.97 min | 0.98 min | 9.30-10.14 | 0.56 min |
+| `make command-palette-notes-smoke` | 1 / 1 | 0.10 min | 0.10 min | 8.70-9.30 | 0.08 min |
+
+The visual-geometry lane now has 107 cases (eight tab-strip and All Tabs
+cases from #119) and the accessibility lane three more, so their means are
+not comparable with round 1 case for case. The trio is 14.2 min, against
+47.0 min on 2026-11-18. The visual lane stays below D8's 3 min line, so no
+`NEW CHANGE PROPOSED` line is owed. The last run of each lane under
+`build/smoke/` is green: visual-geometry unfiltered with 107 of 107 cases
+passed (parity `not-run`, diagnostic-only), accessibility and visual passed.
+These runs are not gate records; the gates of task 9.5 ran once more on the
+final tree, which adds this evidence commit, through `scripts/gate-trees.sh`.

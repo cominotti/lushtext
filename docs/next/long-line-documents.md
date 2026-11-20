@@ -5249,7 +5249,10 @@ one flagged stage, a single-rep 22 ms dispatch (design, "Measurement").
   | Trio | 47.0 min | 12.6 min |
 
   `crash-recovery-smoke` and `command-palette-notes-smoke` passed one run
-  each. Evidence:
+  each. After merging `main` at `5b9abbb6` (#119 added eight
+  visual-geometry and three accessibility cases), 10 more green runs each
+  took 7.9, 3.9 and 2.5 min (trio 14.2 min, load 4.9-49.8), with the
+  seeded failures and the capture probe rerun. Evidence:
   `openspec/changes/fix-headless-session-media-wait/evidence/`, in the
   archive once merged.
 
