@@ -816,6 +816,57 @@ fn bench_recent_document_search(c: &mut Criterion) {
     group.finish();
 }
 
+/// The All Tabs popover's ranking over 1,024 open tabs: the ranking's share
+/// of one keystroke on the GTK thread (`tab-strip-overflow-navigation` D6);
+/// the keystroke's candidate build, row publish and band re-projection are
+/// not measured here. Regression evidence, not a timing verdict.
+fn bench_all_tabs_filter(c: &mut Criterion) {
+    let titles: Vec<String> = (0..1_024)
+        .map(|index| {
+            format!(
+                "document-{index:04}-{}.rs",
+                ["mod", "notes", "résumé", "main"][index % 4]
+            )
+        })
+        .collect();
+    let folders: Vec<String> = (0..1_024)
+        .map(|index| format!("~/workspace/projet-équipe/section-{}/nested", index % 32))
+        .collect();
+    // The absolute folders behind the shown `~` labels, which the filter
+    // matches too.
+    let folder_paths: Vec<String> = folders
+        .iter()
+        .map(|folder| folder.replacen('~', "/var/home/user", 1))
+        .collect();
+    let candidates: Vec<lushtext_core::ui::window::AllTabsCandidate<'_>> = titles
+        .iter()
+        .zip(folders.iter().zip(&folder_paths))
+        .map(
+            |(title, (folder, folder_path))| lushtext_core::ui::window::AllTabsCandidate {
+                title,
+                folder: Some(folder),
+                folder_path: Some(folder_path),
+            },
+        )
+        .collect();
+    let mut group = c.benchmark_group("all_tabs_filter_1024");
+    for (id, query) in [
+        ("empty", ""),
+        ("prefix", "document-07"),
+        ("substring", "notes"),
+        ("folder", "section-31"),
+        ("fuzzy", "dcmnt"),
+        ("no_match", "zzqvv"),
+    ] {
+        group.bench_with_input(BenchmarkId::new("query", id), query, |b, query| {
+            b.iter(|| {
+                lushtext_core::ui::window::rank_all_tabs(black_box(query), black_box(&candidates))
+            });
+        });
+    }
+    group.finish();
+}
+
 fn bench_file_index_search(c: &mut Criterion) {
     let mut group = c.benchmark_group("file_index_search");
 
@@ -4680,6 +4731,7 @@ criterion_group!(
     benches,
     bench_fuzzy_score,
     bench_recent_document_search,
+    bench_all_tabs_filter,
     bench_file_index_search,
     bench_palette_categories,
     bench_palette_pipeline_hardening,

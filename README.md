@@ -98,6 +98,12 @@ local history, and careful recovery behavior.
   sidebar, the command palette, and workspace search together, while an
   editable `Always Excluded Names` list (default `.git`) keeps chosen names out
   of every surface regardless.
+- **Overflowing tab strip navigation**: when the tabs do not fit, Scroll Tabs
+  Back and Forward buttons at the strip's trailing end move it by about one
+  visible width (holding one keeps scrolling) without changing the selected
+  tab, and an **All Tabs** button with the open-tab count (`Ctrl+Shift+O`)
+  opens a searchable list of every open tab, filtered by name or folder; Enter
+  selects the best match, brings its tab into view and focuses its editor.
 - **Recent Open and command palette** via `Ctrl+K` and `Ctrl+Shift+P` for
   recent documents, workspace files, note records, and commands. A result group
   that has more matches than it shows ends with a **"N more…"** row; Enter on it
@@ -404,6 +410,7 @@ Common accelerators include:
 | Open recent documents | `Ctrl+K` |
 | Save / Save As | `Ctrl+S` / `Ctrl+Shift+S` |
 | Close tab | `Ctrl+W` |
+| All Tabs (list and search the open tabs) | `Ctrl+Shift+O` |
 | Print | `Ctrl+P` |
 | Find / Find and Replace | `Ctrl+F` / `Ctrl+H` |
 | Next / previous find match | `Ctrl+G` / `Ctrl+Shift+G` |

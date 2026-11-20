@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+- A134 probe and sample (`tab-strip-overflow-navigation`, the widget
+  runner's classification of one GTK 4.24 warning): a popover repositioned
+  in the frame clock's `after-paint` of the frame that drew its first buffer,
+  for 60 cycles, in a child process (`GTK_LUSH_AXIOMS_CONTROL=A134`,
+  `WAYLAND_DEBUG=client`, the first probe that reads a protocol trace). The
+  control is the ordered pair in the child's trace: in one paint the
+  popover's feedback `discarded`, then the toplevel's feedback `presented`
+  (`parse_trace`, `TraceCounts`). Version-qualified at GTK 4.24.0: at or
+  above it the child prints `gdk_frame_timings_presented() called on
+  discarded frame.` once (and the pair is a control); below it, nothing (the
+  pair is recorded only). Holds on the host (GTK 4.24.1 / Adw 1.10.0) and
+  inside `org.gnome.Sdk//51` and `//50` (4.22.2 / 1.9.0) in 52 rounds each,
+  32 of them under 12 busy-loop CPU hogs; `//master` (4.25.1, with GTK
+  d2595c6b) violates it, as the fix should. `PopoverFramesFixture`,
+  `popover_frames_in_child`, `PopoverFramesOutcome`, `DISCARDED_FRAME_WARNING`.
+- A132 and A133 probes and samples (`tab-strip-overflow-navigation`), over
+  one shared fixture, `probes::tab_strip` (`TabStripFixture`, the
+  `TabStripHost` that allocates an `AdwTabBar` a chosen width and its
+  natural height, `find_tab_scroller`, `tab_widgets`, `run_for`,
+  `wait_frames`). A132: the unpinned tab scroller is the template's first
+  `GtkScrolledWindow` without CSS class `pinned`; an outside write of its
+  hadjustment moves the tabs by the delta and holds while the tab box is
+  idle, a write during the box's animation pauses it, `page-increment` is
+  0.9 × `page-size`, and the right-to-left lower end shows the last tab; a
+  write in the frame the box's animation finishes is recorded as
+  `race_outcome` (`held` or `reverted`; it reverted on 4.22.2 and
+  4.24.1). A133: `is-overflowing` notifies both ways, inside allocation; the
+  unpinned tabs keep overflowing with a three-button end widget; the bar's
+  height is unchanged with and without it; selecting an out-of-view page
+  scrolls its tab into the page, and so does re-announcing the unchanged
+  `selected-page` after the strip scrolled away from it (added in the
+  review round; holds on 4.22.2 / 1.9.0 and 4.24.1 / 1.10.0). Fixtures `fixtures::a132` (`TABS`,
+  `fixture`, `write_scroll_value`, `describe_adjustment`,
+  `find_tab_scroller`, `overflows`) and `fixtures::a133` (`OverflowNotify`,
+  `end_group`, `fixture`, `record_notifies`). Checked on the host (GTK
+  4.24.1 / Adw 1.10.0) and inside `org.gnome.Sdk//50` (4.22.2 / 1.9.0) and
+  `//51`.
 - A127, A128 and A129 probes and samples (`stream-replace-all`): a regex
   `GtkSourceSearchContext::replace_all` expands GRegex references (`\N`,
   `\g<N>`, `\g<name>`, `\g<1>0` as group 1 then `0`) and leaves `$1`

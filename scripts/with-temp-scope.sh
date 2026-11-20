@@ -15,6 +15,13 @@
 # stale LushText test roots: exact known prefixes followed by a PID, real
 # directories owned by the current user, whose PID no longer exists and which
 # have been idle for an hour. Entries of a live run are never touched.
+#
+# The scope is made in TMPDIR when a private session inside it could bind its
+# deepest socket, and otherwise in /tmp. A TMPDIR that deep (an agent stage's
+# `$H/<change>/tmp/<stage>`, in the main checkout under $HOME) is not where
+# the lanes were proved: beyond the session's sockets, widget tests fix
+# folder lengths below the temporary root and charge path bytes against
+# their retained-byte budgets, and failed deterministically there.
 
 set -euo pipefail
 
@@ -43,9 +50,14 @@ Usage: scripts/with-temp-scope.sh [--session-runtime] LABEL -- COMMAND [ARGS...]
 Run COMMAND with TMPDIR set to a private scope directory, then fail if the
 command left any entry in it. The scope is always removed.
 
+The scope is made in TMPDIR, or in /tmp when TMPDIR is too deep for a
+private session's sockets (WITH_TEMP_SCOPE_SHORT_BASE overrides /tmp; the
+self-test uses it).
+
 --session-runtime also exports XDG_RUNTIME_DIR as a short, mode-0700
 directory inside the scope for a private dbus-run-session/Mutter session, and
 removes it once no process still uses it (see release_session_runtime_dir).
+It refuses a scope whose session sockets would not fit even then.
 EOF
 }
 
@@ -92,6 +104,9 @@ SESSION_RUNTIME_NAME=".session-runtime"
 # 107); Mutter's `wayland-0` beside it is shorter.
 SESSION_DEEPEST_SOCKET="gtk-lush-session/system-bus"
 SESSION_SOCKET_PATH_LIMIT=99
+# Where the scope goes when TMPDIR is too deep for a session inside it.
+SHORT_SCOPE_BASE="${WITH_TEMP_SCOPE_SHORT_BASE:-/tmp}"
+SHORT_SCOPE_BASE="${SHORT_SCOPE_BASE%/}"
 SESSION_RELEASE_POLLS=200   # x 0.05 s = 10 s
 SESSION_RELEASE_POLL_SECONDS=0.05
 
@@ -161,10 +176,16 @@ run_scoped() {
     fi
     local base="${TMPDIR:-/tmp}"
     base="${base%/}"
+    local name="lt-scope-$$-$label-XXXXXX"
+    # `XXXXXX` stands for the six characters mktemp puts there.
+    local probe="$base/$name/$SESSION_RUNTIME_NAME/$SESSION_DEEPEST_SOCKET"
+    if (( ${#probe} > SESSION_SOCKET_PATH_LIMIT )); then
+        base="$SHORT_SCOPE_BASE"
+    fi
     sweep_stale_entries "$base"
 
     local scope
-    scope="$(mktemp -d "$base/lt-scope-$$-$label-XXXXXX")"
+    scope="$(mktemp -d "$base/$name")"
     # shellcheck disable=SC2064 # expand the scope path now, not at exit
     trap "rm -rf -- '$scope'" EXIT
     # Ctrl-C and SIGTERM reach the command too (same process group). Record
@@ -181,7 +202,7 @@ run_scoped() {
         local socket="$runtime_dir/$SESSION_DEEPEST_SOCKET"
         if (( ${#socket} > SESSION_SOCKET_PATH_LIMIT )); then
             echo "Error: the session's system bus socket path would be ${#socket} bytes (limit $SESSION_SOCKET_PATH_LIMIT): $socket" >&2
-            echo "The temporary directory '$base' (TMPDIR) is too deep; point TMPDIR at a shorter one." >&2
+            echo "The temporary directory '$base' is too deep; point TMPDIR at a shorter one." >&2
             return 2
         fi
         mkdir -m 700 -- "$runtime_dir"
@@ -206,7 +227,9 @@ run_scoped() {
 
 self_test() {
     local base failed=0
-    base="$(mktemp -d)"
+    # Under the short base, so every case below runs where a scope stays put,
+    # whatever TMPDIR the self-test itself runs in.
+    base="$(mktemp -d "$SHORT_SCOPE_BASE/lt-st-base-$$-XXXXXX")"
     # shellcheck disable=SC2064
     trap "rm -rf -- '$base'" RETURN
 
@@ -223,14 +246,52 @@ self_test() {
         echo "Error: a session runtime directory was not provided or not released." >&2
         failed=1
     fi
-    local deep
+    # A TMPDIR too deep for a session's sockets (an agent stage's): the scope
+    # goes to the short base instead, with its runtime directory inside it,
+    # and is removed the same way; a plain scope moves too.
+    local deep short_base recorded
     deep="$base/$(printf 'd%.0s' {1..80})"
     mkdir -p "$deep"
-    if TMPDIR="$deep" "$0" --session-runtime deep -- true 2>/dev/null; then
+    # A private short base under the real one, so the check holds under any
+    # TMPDIR the self-test itself runs in.
+    short_base="$(mktemp -d "$SHORT_SCOPE_BASE/lt-st-$$-XXXXXX")"
+    # shellcheck disable=SC2064
+    trap "rm -rf -- '$base' '$short_base'" RETURN
+    recorded="$base/deep-scope"
+    if ! TMPDIR="$deep" WITH_TEMP_SCOPE_SHORT_BASE="$short_base" "$0" --session-runtime deep -- \
+        sh -c 'test -d "$XDG_RUNTIME_DIR" && mkdir "$XDG_RUNTIME_DIR/doc" && printf "%s\n%s\n" "$TMPDIR" "$XDG_RUNTIME_DIR" >"$0"' \
+        "$recorded" 2>/dev/null; then
+        echo "Error: a scope in a TMPDIR too deep for a session did not move to the short base." >&2
+        failed=1
+    else
+        local scope_seen runtime_seen
+        scope_seen="$(sed -n 1p "$recorded")"
+        runtime_seen="$(sed -n 2p "$recorded")"
+        if [[ "$scope_seen" != "$short_base/lt-scope-"* || "$runtime_seen" != "$scope_seen/"* ]]; then
+            echo "Error: the deep scope ran in '$scope_seen' with runtime '$runtime_seen', not under the short base." >&2
+            failed=1
+        fi
+        if (( ${#runtime_seen} + 1 + ${#SESSION_DEEPEST_SOCKET} > SESSION_SOCKET_PATH_LIMIT )); then
+            echo "Error: the moved scope's runtime directory '$runtime_seen' is still too deep." >&2
+            failed=1
+        fi
+    fi
+    if ! TMPDIR="$deep" WITH_TEMP_SCOPE_SHORT_BASE="$short_base" "$0" plain-deep -- \
+        sh -c 'printf "%s\n" "$TMPDIR" >"$0"' "$recorded" 2>/dev/null \
+        || [[ "$(cat "$recorded")" != "$short_base/lt-scope-"* ]]; then
+        echo "Error: a plain scope in a TMPDIR too deep for a session did not move to the short base." >&2
+        failed=1
+    fi
+    # When even the short base is too deep, a session scope is refused.
+    if TMPDIR="$deep" WITH_TEMP_SCOPE_SHORT_BASE="$deep" "$0" --session-runtime deeper -- true 2>/dev/null; then
         echo "Error: a session runtime with an overlong socket path was accepted." >&2
         failed=1
     fi
-    rm -rf -- "$deep"
+    if [[ -n "$(find "$deep" "$short_base" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+        echo "Error: a moved scope survived its run." >&2
+        failed=1
+    fi
+    rm -rf -- "$deep" "$short_base" "$recorded"
     # Ctrl-C mid-session: the scope still waits for the session's services
     # (here a detached process that recreates a runtime subdirectory a moment
     # later, as xdg-document-portal's doc/ mount did) before removing itself,

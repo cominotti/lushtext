@@ -5,7 +5,7 @@ This folder owns the top-level application shell adapter.
 ## Responsibilities
 
 - Keep `mod.rs` as the small public facade for `LushtextWindow`.
-- Keep workflow-specific logic in sibling modules and per-workflow role homes: `actions`, `attention_refresh`, `composition/`, `construction`, `dialogs`, `documents`, `drafts/`, `editor_focus/`, `editor_memory_eviction/`, `encoding/`, `focus_mode/`, `geometry/`, `local_history/`, `notes/`, `notifications/`, `palette_shell`, `preview`, `print/`, `recent_documents_journal`, `recent_open`, `replace_in_editor`, `search`, `search_progress_execution`, `session_restore/`, `set_aside_review`, `startup_data`, `tab_strip/`, `transient_dismissal/`, `workspace_scope`, and `zoom`.
+- Keep workflow-specific logic in sibling modules and per-workflow role homes: `actions`, `attention_refresh`, `composition/`, `construction`, `dialogs`, `documents`, `drafts/`, `editor_focus/`, `editor_memory_eviction/`, `encoding/`, `focus_mode/`, `geometry/`, `local_history/`, `notes/`, `notifications/`, `palette_shell`, `preview`, `print/`, `recent_documents_journal`, `recent_open`, `replace_in_editor`, `search`, `search_progress_execution`, `session_restore/`, `set_aside_review`, `startup_data`, `tab_overflow/`, `tab_strip/`, `transient_dismissal/`, `workspace_scope`, and `zoom`.
 - Keep `imp.rs` focused on template children, state, and setup glue rather than long workflow implementations.
 
 ## Local Contracts
@@ -58,6 +58,26 @@ This folder owns the top-level application shell adapter.
   `handle_tab_detached` (`tab_strip/close_execution.rs`), which also cancels the
   editor's load: `close_page` is cancellable, and running teardown before that
   terminal strands a cancelled tab's draft.
+- Keep the tab strip's overflow controls in the `tab_overflow/` role home
+  (`WFR-TAB-OVERFLOW-NAVIGATION`). Its observers only schedule the one
+  `SettleBurst` reconcile, because `is-overflowing` and the tab scrollers'
+  adjustments notify inside `AdwTabBar`'s allocation (ledger A133), and the
+  reconcile waits for a tab-model projection batch's terminal. A scroll step
+  writes the unpinned scroller's adjustment (A132) and is cancelled with
+  `adw_animation_pause`, never `reset` or `skip`, on every strip event that
+  starts a scroll of the strip's own. The lookup fails closed: no scroller, no
+  scroll buttons, nothing logged. The All Tabs popover lists a snapshot that
+  holds no document text, publishes staged and retires its rows after it
+  closes (`ui::list_growth`, `ui::list_retirement`), and is closed before
+  the end group hides or detaches. A restore's terminal, and a pick of the
+  already selected tab, bring the selected tab into view only by
+  re-announcing the unchanged selection to the strip
+  (`reveal_selected_tab`, ledger A133). **Every `selected-page` observer
+  under `ui/window/` checks `tab_overflow_reveals_selection()` first** and
+  treats the re-announcement as no selection change (the window's own
+  handler, the overflow watch and the All Tabs re-snapshot do). Whether the strip shows the whole selected
+  tab is read, never inferred from the edge flags, by
+  `selected_tab_in_view` (`window.tab_strip.selected_tab_in_view`).
 - Keep the recent-documents journal in `recent_documents_journal.rs` (the
   `journal` coordination role of `WFR-RECENT-DOCUMENTS`, whose canonical role
   home is `ui/open_popover/`). `recent_open.rs` is that row's window-side

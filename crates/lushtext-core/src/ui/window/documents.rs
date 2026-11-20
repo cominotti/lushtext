@@ -1165,6 +1165,10 @@ impl LushtextWindow {
             self.imp().tab_projection_refresh_defer_depth.set(0);
             if publish {
                 self.refresh_tab_model_projections();
+            } else {
+                // No terminal publish follows: a tab-overflow reconcile that
+                // waited for this batch resumes now.
+                self.resume_tab_overflow_after_unpublished_batch();
             }
         } else {
             self.imp().tab_projection_refresh_defer_depth.set(depth - 1);
@@ -1189,6 +1193,7 @@ impl LushtextWindow {
         self.update_content_stack();
         self.refresh_command_palette_sources();
         self.refresh_selected_tab_model_projections();
+        self.schedule_tab_overflow_reconcile();
     }
 
     /// Publish projections and policies derived from the selected tab once.

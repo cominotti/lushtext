@@ -64,6 +64,25 @@ def discover_repo_root() -> Path:
 
 
 REPO_ROOT = discover_repo_root()
+
+# The deepest socket a session binds in its runtime directory is the session
+# helper's private system bus, and dbus-daemon refuses a socket path over 99
+# bytes. The same rule as `scripts/smoke_runtime_dir.py` (`runtime_base`),
+# kept here so this helper stays self-contained.
+SESSION_DEEPEST_SOCKET = "gtk-lush-session/system-bus"
+DBUS_SOCKET_PATH_MAX = 99
+SHORT_RUNTIME_BASE = "/tmp"
+
+
+def short_runtime_parent(prefix: str) -> str:
+    """The temp directory, unless a runtime root made in it could not bind the
+    session's sockets; then SHORT_RUNTIME_BASE."""
+    base = os.path.realpath(tempfile.gettempdir())
+    # `tempfile.mkdtemp` appends eight random characters to the prefix.
+    probe = os.path.join(base, prefix + "X" * 8, "runtime", SESSION_DEEPEST_SOCKET)
+    return base if len(os.fsencode(probe)) <= DBUS_SOCKET_PATH_MAX else SHORT_RUNTIME_BASE
+
+
 APP_ID = os.environ.get("LUSHTEXT_DEBUG_APP_ID", "dev.cominotti.lushtext")
 APP_OBJECT_PATH = os.environ.get(
     "LUSHTEXT_DEBUG_APP_OBJECT_PATH", f"/{APP_ID.replace('.', '/')}"
@@ -544,8 +563,9 @@ def outer_run(args: argparse.Namespace) -> int:
     for name in ("data", "config", "cache"):
         (artifact_dir / name).mkdir(exist_ok=True)
     # PipeWire uses Unix sockets, so keep XDG_RUNTIME_DIR short even when
-    # callers preserve artifacts under a deeply nested checkout path.
-    runtime_root = Path(tempfile.mkdtemp(prefix="lt-rt-"))
+    # callers preserve artifacts under a deeply nested checkout path, and out
+    # of a TMPDIR too deep for the session's sockets (an agent stage's).
+    runtime_root = Path(tempfile.mkdtemp(prefix="lt-rt-", dir=short_runtime_parent("lt-rt-")))
     runtime_dir = runtime_root / "runtime"
     runtime_dir.mkdir()
     os.chmod(runtime_dir, 0o700)

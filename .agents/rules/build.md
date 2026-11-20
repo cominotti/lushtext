@@ -662,7 +662,12 @@ platform — run `make gtk-axioms` **first**, before any other work. A failing
 probe is an axiom change: never adjust a probe to match the new behaviour
 first, and when the shipped runtime and the floor disagree, version-qualify the
 entry rather than rewrite it (`make check-gtk-axioms` enforces the ledger
-form). The steps are in
+form). A classification of a toolkit warning
+exists only while the shipped toolkit has the defect: the widget runner's
+benign entry for GTK 4.24's `gdk_frame_timings_presented() called on
+discarded frame.` (ledger A134) is removed in the change that brings a shipped
+toolkit and CI image carrying GTK d2595c6b, which A134's `GTK >= 4.24` branch
+then fails on. The steps are in
 [`docs/runbooks/gtk-toolkit-update.md`](../../docs/runbooks/gtk-toolkit-update.md).
 Interleaved `GTK_AXIOMS_ONLY` re-test rounds run through `scripts/measure.sh`.
 A nightly verdict is a preview of the next adoption, never a ledger

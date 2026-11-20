@@ -1946,7 +1946,12 @@ mod tests {
 
     #[test]
     fn a_caller_runtime_dir_too_long_for_the_sockets_is_refused() {
-        let root = tempfile::tempdir().expect("tempdir");
+        // Under the short base, so `rt` fits whatever TMPDIR the test runs in
+        // (an agent stage's is too deep on its own).
+        let root = tempfile::Builder::new()
+            .prefix("lt-harness-test-")
+            .tempdir_in(SHORT_RUNTIME_BASE)
+            .expect("tempdir");
         let deep = root.path().join("x".repeat(120));
         std::fs::create_dir(&deep).expect("deep dir");
         let error = private_runtime_dir(&deep).expect_err("too long for a socket");

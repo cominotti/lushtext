@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "scenario_id": "all-tabs-popover",
+  "scenario_type": "all-tabs-popover",
+  "invariant_id": "all-tabs-popover-rendered",
+  "description": "On a restored session of forty-one tabs, win.set-all-tabs-visible opens the All Tabs popover and win.set-all-tabs-query filters it: the popover's search entry and rows are drawn inside the window at the minimum size, only its row list scrolls, and the header and the strip with its All Tabs button stay where they were.",
+  "matrix": {
+    "sizes": [
+      {
+        "id": "desktop",
+        "width": 1260,
+        "height": 900
+      },
+      {
+        "id": "minimum",
+        "width": 640,
+        "height": 600
+      }
+    ],
+    "color_schemes": [
+      "force-light",
+      "force-dark"
+    ],
+    "fixture_kinds": [
+      "forty-tabs"
+    ]
+  },
+  "protected_regions": [
+    {
+      "name": "header-bar",
+      "surface": "header-bar",
+      "comparison": "exact-equality",
+      "require_same_rect": true,
+      "mask_rects": []
+    }
+  ],
+  "pixel_anchors": [
+    {
+      "name": "tab-strip-all-tabs-ink",
+      "crop_surface": "tab-strip-all-tabs",
+      "detector": "non-background-row",
+      "min_pixels": 3
+    },
+    {
+      "name": "all-tabs-popover-list-ink",
+      "crop_surface": "all-tabs-popover-list",
+      "detector": "non-background-row",
+      "reference_surface": "all-tabs-popover-list",
+      "reference_offset_y": 6,
+      "min_pixels": 3,
+      "max_screen_y_delta": 0
+    }
+  ],
+  "relative_pixel_anchors": [],
+  "allowed_changing_regions": [
+    {
+      "surface": "active-transient",
+      "relationship": "The All Tabs popover becomes visible below the strip without moving the header, the strip or its All Tabs button"
+    },
+    {
+      "surface": "tab-strip",
+      "relationship": "Only the All Tabs button's pressed state changes; the strip keeps its rectangle"
+    },
+    {
+      "surface": "all-tabs-popover-list",
+      "relationship": "The filtered rows scroll inside the popover's bounded list while its search entry stays visible"
+    }
+  ],
+  "readiness_predicates": [
+    "session-restore-complete",
+    "visual-geometry-settled"
+  ]
+}
