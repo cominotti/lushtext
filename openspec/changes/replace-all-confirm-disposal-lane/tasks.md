@@ -54,10 +54,17 @@
   confirms and must be refused with "Another window is running Replace All";
   after the drop B completes. **It must fail on `main`**: A is not refused,
   because B's transaction was released at the refusal.
-- [ ] 1.4 Write T6: `test_an_apply_while_another_window_runs_is_refused` with
-  `with_file_index_build_delay(Duration::from_secs(3))` installed. Use a
-  variant test, and keep the original test too. **It must fail on `main`**
-  (attribution Evidence 2: 2 of 2).
+- [ ] 1.4 Write T6 (design D8): a variant of
+  `test_an_apply_while_another_window_runs_is_refused`, keeping the original
+  test too.
+  - Install `with_file_index_build_delay(Duration::from_secs(3))`.
+  - Confirm **without** `confirm_with_settled_file_index`: call
+    `rebuild_file_index()` on B's window, wait until
+    `file_index_builds.snapshot().started` rises, then Confirm, so the build
+    provably holds its 64 MiB.
+
+  **It must fail on `main`** (attribution Evidence 2: 2 of 2). Through the
+  helper it would pass, and that pass would prove nothing.
 - [ ] 1.5 Assign any new test to its widget shard in `scripts/widget-shards.py`
   if a new module file was added (`make check-widget-shards`).
 - [ ] 1.6 Run T1, T2 and T6 red with
@@ -84,10 +91,23 @@
   - the transaction is claimed;
   - the button reads Cancel Replace All.
 
-  Add T3 (cancel while waiting keeps the earlier Undo), T4 (Escape while
-  waiting still replaces) and T5 (Stop and Close while waiting writes
-  nothing). **Each must fail** before 2.4–2.6: T3–T5 because no Cancel
-  appears, and the extended T1 and T2 because the field is missing.
+  Add the tests of design D8:
+  - T3: cancel while waiting keeps the earlier Undo and the earlier Show
+    Skipped Files report;
+  - T4: Escape while waiting still replaces;
+  - T4b: after a new search during the wait, the waiting text comes back;
+  - T5: Stop and Close while waiting writes nothing;
+  - T7: a file edited in a tab during the wait is skipped as unsaved;
+  - T8: every file edited during the wait means nothing is written, and Close
+    When Finished closes;
+  - T9: an epoch change with the lane still full keeps the wait;
+  - T10: dispose while waiting writes nothing and frees the transaction for
+    another window.
+
+  **Each must fail** before 2.4–2.7:
+  - the extended T1 and T2 because the field is missing;
+  - T3–T5, T4b and T7–T10 because no wait exists, so no run starts after the
+    refusal.
 - [ ] 2.4 Add `ui/search_panel/replace_admission.rs` (design D2).
   - `ParkedReplaceRun`, `parked_replace_run` and `replace_admission_wakeup`
     in `imp::SearchPreviewState`.
@@ -104,32 +124,40 @@
   - the epoch is read before each attempt;
   - the skip set is recomputed on every attempt;
   - the unsaved-only report comes before any wait;
-  - `begin_replace_run` is called on the first refusal;
-  - `supersede_prior_undo_for_replace` is called only after admission.
+  - `begin_replace_run` is called on the first refusal, with its
+    skip-report clearing (`last_skip_report`, `last_run_intent`, Show
+    Skipped Files) moved to admission (design D1);
+  - `supersede_prior_undo_for_replace` is called only after admission;
+  - a resumed attempt that ends all-unsaved stops the keepalive, clears the
+    waiting description and calls `close_if_requested_after_replace_run`.
 
   Remove the "Replace All deferred while memory pressure clears; try again
-  shortly" message. Verify: T1, T2 and T6 pass.
+  shortly" message. Verify: T1, T2, T6, T7, T8 and T9 pass.
 - [ ] 2.6 Handle cancel, close and dispose during the wait (design D4):
   - `request_replace_cancel` takes the deferred branch;
   - the window's `Cancelled` handler publishes and announces "Replace All
     cancelled; no file was changed", and calls
     `close_if_requested_after_replace_run`;
   - `imp::dispose` cancels the wakeup, drops the parked run and clears the
-    transaction flags.
+    transaction flags. It invokes no window callback.
 
-  Verify: T3, T4 and T5 pass.
+  Verify: T3, T4, T5 and T10 pass.
 - [ ] 2.7 Show the wait (design D6):
   - the `replace-all-waiting` announcement;
-  - the progress status message, with its 1 s keepalive (stopped by
-    `start_replace_progress_tracking` and by the `Cancelled` handler);
-  - the button's accessible description and tooltip in
-    `ui/search_panel/accessibility.rs`;
+  - the progress status message, with a 1 s keepalive that **re-publishes**
+    it through `update_search_progress_message`, not a heartbeat. It is
+    stopped by `start_replace_progress_tracking`, by the `Cancelled` handler
+    and by the all-unsaved end;
+  - the button's accessible description and tooltip, set by a setter in
+    `ui/search_panel/accessibility.rs` on entering and leaving the wait.
+    `refresh_accessibility_state` does not compute them, so the judged
+    completion span's body stays unchanged;
   - the ungated `SearchPanelEvidence::replace_admission_deferred`;
   - the snapshot field `content_search.replace_admission_deferred` in
     `model/automation.rs` and `ui/automation.rs`.
 
   Verify: the extended T1 passes, including that the status line still shows
-  the waiting text after 11 s with the fill held. Run
+  the waiting text after 11 s with the fill held, and T4b passes. Run
   `make check-automation-docs` after 2.9.
 - [ ] 2.8 Retire `confirm_with_settled_file_index` and
   `settle_file_index_builds` (design D8). Restore the 8 call sites to

@@ -58,8 +58,8 @@ fix reuses an existing pattern, and #119's test workaround can then go.
   new search does not cancel it, just as neither cancels a run in progress.
 - The wait is visible and accessible:
   - one announced status message;
-  - a persistent "waiting for memory" line in the panel summary;
-  - the button's accessible description;
+  - a waiting line in the status bar, kept up for the whole wait;
+  - the Cancel Replace All button's accessible description and tooltip;
   - a new evidence field and a new automation snapshot field,
     `content_search.replace_admission_deferred`.
 - Panel dispose cancels the wakeup and releases the transaction, and the
@@ -102,7 +102,9 @@ fix reuses an existing pattern, and #119's test workaround can then go.
   wait is indefinite. Today the same case is refused every time. Now it shows
   a cancellable waiting state.
 - **Loss compared with `main`: none.** The "deferred … try again shortly"
-  warning for Replace All goes away. A refusal by another window's
+  warning for Replace All goes away. A cancelled wait also keeps the earlier
+  run's Show Skipped Files report, because the report is cleared only when
+  the new run is admitted. A refusal by another window's
   transaction is unchanged.
 
 ## Capabilities

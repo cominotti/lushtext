@@ -41,6 +41,10 @@ A run waiting for capacity SHALL behave as a run in flight: Cancel, and Stop and
 - **WHEN** the panel of a waiting run is disposed
 - **THEN** the wait is cancelled, no file is written, and another window can then start a Replace All
 
+#### Scenario: A cancelled wait keeps the earlier skip report
+- **WHEN** an earlier Replace All offered Show Skipped Files and the user cancels a later run while it waits for capacity
+- **THEN** Show Skipped Files still lists the earlier run's skipped files
+
 ### Requirement: A run waiting for capacity holds the application's transaction
 While a confirmed run waits for capacity in one window, an apply or Undo in another window SHALL be refused with the same status message as during a run, and Undo SHALL stay unavailable in the waiting window.
 
@@ -49,12 +53,16 @@ While a confirmed run waits for capacity in one window, an apply or Undo in anot
 - **THEN** window A's apply is refused with the "Another window is running Replace All" message, and no file is touched by it
 
 ### Requirement: The wait for capacity is reported accessibly
-While a confirmed run waits for capacity, the system SHALL show a persistent waiting state in the search panel, announce it once, describe it in the confirm button's accessible description, and report it in the workflow evidence and the automation snapshot. The readiness for workspace search SHALL stay pending.
+While a confirmed run waits for capacity, the system SHALL keep a waiting message in the status bar for the whole wait, announce it once, describe it in the Cancel Replace All button's accessible description, and report it in the workflow evidence and the automation snapshot. The readiness for workspace search SHALL stay pending.
 
 #### Scenario: State while waiting
 - **WHEN** a confirmed run is waiting for capacity
-- **THEN** the button reads Cancel Replace All, the panel says the run is waiting for memory, the automation snapshot reports `content_search.replace_admission_deferred` true and `replace_in_flight` true, and the waiting message is announced once
+- **THEN** the button reads Cancel Replace All, the status bar says the run is waiting for memory, the automation snapshot reports `content_search.replace_admission_deferred` true and `replace_in_flight` true, and the waiting message is announced once
 
 #### Scenario: State after the run starts
 - **WHEN** capacity allows the waiting run to start
 - **THEN** `replace_admission_deferred` is false, and the waiting text gives way to the run's progress
+
+#### Scenario: A new search during the wait
+- **WHEN** the user runs a new workspace search while a confirmed run waits for capacity
+- **THEN** the status bar shows the waiting message again within a second after the search's own progress message, and the run still starts once capacity allows
