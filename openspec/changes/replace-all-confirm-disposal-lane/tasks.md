@@ -95,9 +95,19 @@
   not, the freshness current or stale, cancel requested or not, the run
   control present or absent. **They must fail** (they do not compile) before
   2.2.
-- [ ] 2.2 Add `policy::replace_admission_resume` and `ReplaceAdmissionResume`
-  in `ui/search_panel/policy.rs`. They stay GTK-free. Verify: the 2.1 tests
-  pass and `make check-workflow-boundaries` passes.
+- [ ] 2.2 Add `policy::replace_admission_resume`, `ReplaceAdmissionDecision`
+  and `ReplaceWaitEnd` in `ui/search_panel/policy.rs`. They stay GTK-free.
+  Verify: the 2.1 tests pass and `make check-workflow-boundaries` passes.
+- [ ] 2.2a Add the evidence the group-2 tests read, so they compile before
+  the behaviour exists (widget tests are one binary):
+  - the slot `imp::SearchPreviewState::parked_replace_run`, holding a
+    `ParkedReplaceRun` (the `GuardedReplacements` plus the
+    `ReplaceJournalFreshness`), empty until 2.5 parks a run;
+  - the ungated `SearchPanelEvidence::replace_admission_deferred`, read
+    from that slot.
+
+  Verify: `make check-workflow-boundaries`, and every existing
+  `search_panel` widget test still compiles.
 - [ ] 2.3 Extend T1 and T2 with the deferred-state assertions of design D8,
   step 3:
   - `replace_admission_deferred` and `replace_in_flight` are true;
@@ -121,17 +131,25 @@
     Close When Finished chosen during the wait re-enters the close path,
     which presents Save Changes? for the edited tabs;
   - T9: an epoch change with the lane still full keeps the wait;
-  - T10: dispose while waiting, with B's panel kept alive, writes none of
-    B's files after the fill drops and frees the transaction for A.
+  - T10: dispose while waiting (window B destroyed, the test's references
+    dropped, and B's panel waited out until finalized) writes none of B's
+    files after the fill drops and frees the transaction for A;
 
-  **Each must fail** before 2.4–2.7:
-  - the extended T1 and T2 because the field is missing;
-  - T10 at its deferred-state assertion, for the same reason;
-  - T3–T5, T4b and T7–T9 because no wait exists, so no run starts after the
-    refusal.
+  Add T10b (design D8): a standalone panel's claimed transaction is released
+  by its dispose.
+
+  **Each must fail** before 2.4–2.7. With 2.2a in place they compile, and:
+  - the extended T1 and T2, and T10, fail at the deferred-state assertion,
+    because `replace_admission_deferred` stays false;
+  - T3–T5, T4b and T7–T9 fail because no wait exists, so no run starts after
+    the refusal;
+  - T10b fails because dispose releases nothing.
+- [ ] 2.3a Run the group-2 tests red, as 1.6 does, and save each log and
+  exit status to `$H/replace-all-confirm-disposal-lane/red/`. Verify: each
+  fails at the named point and at no earlier one.
 - [ ] 2.4 Add `ui/search_panel/replace_admission.rs` (design D2).
-  - `ParkedReplaceRun`, `parked_replace_run` and `replace_admission_wakeup`
-    in `imp::SearchPreviewState`.
+  - `replace_admission_wakeup` in `imp::SearchPreviewState` (the slot and
+    `ParkedReplaceRun` exist since 2.2a).
   - `defer_replace_run`, `resume_parked_replace_run`,
     `cancel_parked_replace_run`, `end_deferred_replace_run` and
     `replace_admission_deferred`; the `ReplaceAdmissionResumption` payload
@@ -160,7 +178,8 @@
     waiting description and calls `close_if_requested_after_replace_run`.
 
   Remove the "Replace All deferred while memory pressure clears; try again
-  shortly" message. Verify: T1, T2, T6, T7, T8 and T9 pass.
+  shortly" message. Verify: T2, T6, T7, T8 and T9 pass, and T1 passes except
+  its status-line assertion, which needs 2.7.
 - [ ] 2.6 Handle cancel, close and dispose during the wait (design D4):
   - `request_replace_cancel` takes the deferred branch;
   - the window's `Ended` handler calls `end_deferred_replace_run` and
@@ -174,7 +193,7 @@
     `release_replace_transaction_on_dispose()`. It invokes no window
     callback.
 
-  Verify: T3, T4, T5 and T10 pass.
+  Verify: T3, T4, T5, T10 and T10b pass.
 - [ ] 2.7 Show the wait (design D6):
   - the `replace-all-waiting` announcement;
   - the progress status message, with a 1 s keepalive that **re-publishes**
@@ -186,7 +205,6 @@
     `ui/search_panel/accessibility.rs` on entering and leaving the wait.
     `refresh_accessibility_state` does not compute them, so the judged
     completion span's body stays unchanged;
-  - the ungated `SearchPanelEvidence::replace_admission_deferred`;
   - the snapshot field `content_search.replace_admission_deferred` in
     `model/automation.rs` and `ui/automation.rs`.
 
@@ -253,8 +271,12 @@
   pass, with no `FLAKY`, `FLAKY-SHARD:`, `OOM-KILL:` or `SESSION-HYGIENE:`
   line. Record `/proc/loadavg` before and after.
 - [ ] 3.2 Run `openspec validate replace-all-confirm-disposal-lane --strict`
-  and `openspec validate --all --strict`, and check every box above against
-  its evidence.
+  (must pass) and `openspec validate --all --strict`, and check every box
+  above against its evidence. At the spec review, `--all --strict` exited 1
+  with 86 failures, the same set in this worktree and in the main checkout
+  at `5b9abbb6`, and this change among the passes. Expect the same: the
+  check is that this change passes and adds no failure. The 86 are a
+  coordinator item, not a blocker of this change.
 
 ## Workflow follow-up
 

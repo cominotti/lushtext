@@ -107,7 +107,11 @@ Each item was read in the code at `5b9abbb6`; the file is named with it.
   that fill the lane settle index builds first (D8).
 - **What can advance this panel's `undo_backup_generation` while its
   transaction is claimed.** Another window cannot (its
-  `begin_replace_transaction` and supersession are refused). This panel's own
+  `begin_replace_transaction` and supersession are refused). Outside the
+  journal's own terminals (Undo's finish, the run's completion) and test
+  seams, nothing in `ui/` calls `clear_undo_backup`,
+  `set_guarded_undo_backup` or `set_persisted_guarded_undo_backup`, so
+  hiding the panel, Escape and close do not bump it. This panel's own
   deferred persisted-undo startup load can: `load_persisted_undo_backup`
   waits on the same lane (`undo_capacity_wakeup`), re-reads the generation on
   each retry, and installs through `set_undo_backup_in_memory`, which bumps
@@ -530,16 +534,30 @@ existing call sites (`gtk-testing`, Flake Discipline).
   second fill, so the epoch moves while the lane stays full. The run is
   still deferred after 500 ms. Dropping the second fill completes it.
 - **T10, dispose while waiting.**
-  1. B previews and confirms over its own three files under the fill, and
-     the test asserts B is deferred (`replace_admission_deferred`, the
-     transaction claimed). This is where it fails today.
-  2. The test keeps a strong reference to B's panel, so the application's
-     weak registry still reaches it, and destroys window B (no close
-     dialog).
-  3. Drop the fill. A, whose preview was made before the fill, confirms:
-     it is not refused, and its run completes.
+  1. A previews its own file and B previews its own three files, both before
+     the fill. Settle, take the fill, and confirm in B. The test asserts B is
+     deferred (`replace_admission_deferred`, the transaction claimed). This
+     is where it fails today.
+  2. The test destroys window B (no close dialog) and drops every strong
+     reference it holds to window B and its panel, keeping only a
+     `glib::WeakRef` to the panel. `gtk_window_destroy` does not itself run
+     dispose; the last unref does. So the test waits, within 20 s, until the
+     weak reference no longer upgrades, which proves dispose and finalize
+     ran. A panel that stays alive is a leak, and a blocker.
+  3. Drop the fill. A confirms its kept preview: it is not refused, and its
+     run completes.
   4. B's files still hold their original bytes, so the parked run never
      started after capacity freed.
+- **T10b, dispose releases the transaction while the panel stays alive.**
+  The case T10 cannot reach: a disposed panel that something still holds,
+  so the application's weak registry still upgrades it. A standalone panel,
+  never parented, as `test_evidence_reads_survive_widget_disposal` builds
+  it (so its dispose raises no "has a parent" critical), claims a
+  transaction with `begin_replace_transaction_for_test`. The test runs
+  `run_dispose()` on it, keeps the strong reference, and asserts that a
+  second panel's `begin_replace_transaction_for_test` succeeds and that the
+  disposed panel's evidence reads without panicking. Fails today: dispose
+  releases nothing, so the second claim is refused.
 - **Policy unit tests** for D5.
 - **Evidence proof.** The existing driven proof
   `test_evidence_reads_stay_side_effect_free_across_journal_mutation` is
@@ -655,6 +673,7 @@ selection, so a revert loses nothing persisted.
   dispose-time release through `journal.rs`; the `Superseded` abandon
   message (D5); the keepalive yielding to a running search (D6); and the
   test fixes (D8: settling before a fill, previews and tabs before it,
-  20 s budgets, T2's Undo refusal, T8's Save Changes? dialog, T10's strong
-  reference, the evidence proof, the held helper, and the forced-overlap
-  run).
+  20 s budgets, T2's Undo refusal, T8's Save Changes? dialog, T10's
+  finalize wait and T10b, the evidence proof, the held helper, and the
+  forced-overlap run), plus the task order that lets the group-2 tests
+  compile and run red (tasks 2.2a, 2.3a).
