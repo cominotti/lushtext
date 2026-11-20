@@ -1,0 +1,358 @@
+# Design
+
+## Context
+
+The session helper is the one implementation of LushText's private headless
+sessions (`gtk-lush-proof-harness`, `session` module; `scripts/headless-session`
+execs its `gtk-lush-session` binary). With quiet media, `run_inner_body`
+starts PipeWire, waits for it (`pipewire_ready`: its socket plus a
+successful `pw-dump`), starts WirePlumber with `--profile=policy`, and then
+runs:
+
+```rust
+// WirePlumber publishes the session-manager metadata once its policy
+// runs; wait for it so a capture links on its first try.
+let _ = wait_until(|| {
+    pw_dump().is_some_and(|dump| dump.contains("\"metadata.name\": \"default\""))
+});
+```
+
+`wait_until` polls every 50 ms until `READY_TIMEOUT` (10 s). That code came
+with the helper (`2843a6d3`). It started costing every lane when
+`67cc12e0` (PR #110) moved them onto the helper. Before that, the lanes waited
+only for PipeWire and never for WirePlumber.
+
+The wait's purpose is sound. `pipewiresrc path=<node>` names a target, and it
+is WirePlumber's linking hooks (`policy.linking.standard`) that create the
+link. A capture that starts before they load could stall or fail on its first
+try. The predicate is what is wrong.
+
+## Measured baseline
+
+Details and loads are in `evidence/baseline.md`. All figures are non-verdict
+wall times on a loaded host (1-minute load 18-54).
+
+- A quiet `screencast` session around `true` takes 11.00-11.37 s; with
+  `--media off` it takes 0.78-1.06 s.
+- The `default` metadata exists: `pw-cli ls` lists it (id 37, owned by the
+  WirePlumber client) and `pw-metadata -n default` finds it. `pw-dump` omits
+  it, as it omits every metadata object without entries
+  (`persistent-sm-settings`, `sm-objects`, `default-profile`, `default`,
+  `route-settings`, `filters`). The helper therefore waits through a tool
+  that never prints the object it waits for. 0 of 203 saved dumps of one
+  trio contain it.
+- Waiting for `session.services ∋ policy.linking.standard` takes
+  61-85 ms (2 polls in each of 20 sessions). The session drops to
+  1.3-1.9 s, and with it 10 of 10
+  ScreenCast captures linked on their first try (link plus first buffer
+  0.14-0.18 s).
+- Lane cost on 2026-11-18 (round 1, load 4.0-9.5): visual-geometry 24.2 min
+  (99 media sessions), accessibility 13.0 min (59), visual 9.8 min (45);
+  trio 47.0 min, of which about 33.8 min are these waits. On 2026-11-06,
+  before PR #110: 7.1, 2.4 and 1.5 min.
+
+## Decisions
+
+### D1. Wait for `session.services` to list `policy.linking.standard`
+
+WirePlumber's `session-services.lua` sets the WirePlumber client object's
+`session.services` property from the features that loaded:
+`policy.linking.standard` is listed when the standard linking policy is
+loaded. `base`, which every profile inherits, requires the component, and
+`wireplumber.components.rules` puts it `before`-last: "session-services.lua
+must execute at the very end". When the property lists the linking policy,
+every component of the profile has loaded, the linking hooks included. Two
+facts carry that: the script lists the member only when
+`Core.test_feature ("policy.linking.standard")` holds, and that virtual
+feature `requires` the linking hooks (`hooks.linking.rescan`,
+`…target.prepare-link`, `…target.link`), so the member alone proves the
+hooks loaded; the ordering rule (it matches every named component) proves
+the rest of the profile loaded before it. It
+sits on a Client object, which `pw-dump` always prints with its properties.
+
+Alternatives rejected:
+
+- **Delete the wait, or shorten it.** Either would hide the race the wait
+  exists for, and would still not notice a WirePlumber that never loads its
+  policy. Shortening it keeps a blind wait.
+- **Wait for the `default` (or `filters`) metadata through the registry**
+  (`pw-cli ls`, `pw-metadata`). The object exists, but the component that
+  creates it loads before the linking hooks (`policy.default-nodes` and the
+  linking scripts require it). So its presence does not prove that linking is
+  loaded, and it would need a second tool in the hygiene allowlist.
+- **`wpctl status` succeeding.** This gives no ordering guarantee, and it is
+  another tool.
+
+### D2. A pure predicate in `session::observe`
+
+`pub fn wireplumber_policy_ready(pw_dump: &str) -> bool`, a sibling of
+`device_apis`, scans the dump by key, as `device_apis` does (the crate has no
+JSON dependency, and adds none). For each `"session.services"` string value
+it parses the bracketed list `[a, b, c]` and trims each member. It returns
+true iff a member equals `policy.linking.standard`. The match is by member,
+not by substring:
+
+- the saved dumps list the members in different orders;
+- a hypothetical `policy.linking.standard-extra` must not count.
+
+Only the session manager sets `session.services`. In a private session no
+other client sets it, so the scan needs no object association. The
+function is additive public API of an unpublished `0.0.0` crate. It sits
+where the session's other `pw-dump` readings live, and its unit tests use
+fixtures taken from real saved dumps.
+
+### D3. A missed deadline fails the session, loudly, before the command
+
+The wait keeps `READY_TIMEOUT` (10 s) as its deadline (D5). On a miss the
+helper:
+
+- writes the last successful dump, if any, to
+  `<log-dir>/pw-dump-not-ready.json`;
+- prints one bounded line:
+  `gtk-lush-session: WirePlumber did not load its linking policy within 10 s (session.services never listed policy.linking.standard; <where>)`,
+  where `<where>` is `last pw-dump in <path>`; or `no pw-dump succeeded`
+  when none did; or, without `--log-dir`,
+  `rerun with --log-dir to keep the last pw-dump`. Without `--log-dir` the
+  log directory is the helper's own and `run_inner` removes it at teardown,
+  so the dump is not kept there. Every lane passes `--log-dir`. A fourth
+  form, `the last pw-dump could not be saved to <path>`, covers a failed
+  write to the caller's log directory (added at implementation, so the
+  line never claims a dump that is not there; its wording avoids the visual
+  runner's `not writable` skip phrase);
+- returns `TEST_FAILURE_EXIT_CODE` (101) without starting the command.
+
+`run_inner` already tears down the media daemons, the monitors and the
+system bus on every return from `run_inner_body`, so the early exit leaks
+nothing. The exit code is neither 77 (unsupported host: the tools are
+there, `check-tools` said so) nor 93 (session hygiene: the host was not
+touched), so lanes report a plain failure.
+
+The wait's mechanics become testable without daemons. A small helper takes a
+deadline and a dump source (`FnMut() -> Option<String>`) and returns
+`Ok(())`, or `Err` carrying the last dump. Production passes `READY_TIMEOUT`
+and `pw_dump`; the unit tests pass a fake source and a deadline of a few
+milliseconds.
+
+### D4. The WirePlumber miss is never a host-support skip; the PipeWire skip class is deferred
+
+The visual (`scripts/run-visual-smoke.sh`) and command-palette notes
+(`scripts/run-command-palette-notes-smoke.sh`) runners grep a failed
+capture's session log for host-support phrases. A match records the case as
+`skipped` and calls `smoke_skip`, which **exits 0 for the whole lane**. The
+accessibility (`scripts/run-accessibility-smoke.sh`) and crash-recovery
+(`scripts/crash-recovery-smoke-driver.py`) lanes decide host support before
+any session, from `check-tools` and the commands they need, and fail a case
+whose session fails; so does the capture script both screenshot runners
+call (`.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py`),
+which returns the session's status. `make visual-geometry-smoke` is
+`cargo-gtk-proof` (Makefile), whose inner stage links this crate: in
+`crates/cargo-gtk-proof/src/live.rs`, `session_status` maps any exit other
+than 0 and 93 to `failed`, and `case_session_needs_atspi_startup_retry`
+retries a session once only when its log holds the AT-SPI registry startup
+texts (`Unable to register the application:`, `org.a11y.atspi.Registry`,
+`unit failed`), none of which the D3 line contains. The Python oracle
+(`scripts/visual-geometry-smoke.py`, `make visual-geometry-oracle-smoke`)
+also runs `screencast` sessions and fails on a nonzero session status.
+
+The D3 line is worded to match none of those phrases. The implementation
+greps it against every runner's skip patterns, and the seeded failure (D7.1)
+proves the lanes fail on it.
+
+**Deferred: `PipeWire did not become ready`.** One of the skip phrases came
+with `9a483f80` (2026-06-07). Then the capture script started PipeWire
+itself (`wait_for_pipewire`), and a host where PipeWire could not start was
+a host-support skip. Since PR #110 only the helper prints the phrase, and
+both `wait_for_pipewire` definitions (`capture-lushtext-mutter.py`,
+`crash-recovery-smoke-driver.py`) are uncalled. So a helper PipeWire
+readiness failure now turns the visual lane green with `SKIP:`.
+
+Whether that should become a failure depends on hosts this stage cannot
+observe: the scheduled `end-user-smoke.yml` containers run the lane, and CI
+is not polled during the programme. It also touches two fingerprinted
+scripts. So it is not part of this change. It is recorded as a
+`NEW CHANGE PROPOSED` line (`media-skip-classification`) in
+`.claude/handoffs/PARALLEL-LEDGER.md`.
+
+### D5. `READY_TIMEOUT` stays 10 s
+
+Readiness took 61-85 ms at load 44-50, so the margin is more than 100x and costs
+nothing on a healthy session. A healthy session now reaches the deadline
+only when it is broken, and then it fails. The constant keeps its kind and
+rustdoc.
+
+### D6. `--expect-dirty` keeps working
+
+The by-hand `--expect-dirty` mode runs the bare `main` profile. `main` also
+inherits `base`, which requires `support.session-services`, and it requires
+`policy.standard`, so the same signal applies. If `main` ever stops listing
+the linking policy, the mode fails at readiness with the D3 line. That would
+be visible, not silent.
+
+The signal existing is not the whole proof. `expect_dirty_outcome` succeeds
+only when the guard reports all four classes (`rtkit`, `bluez`,
+`hardware-device`, `module-rt`). Until now the bare daemons ran for the
+blind 10 s before `true` started; after this change they run for the
+readiness time plus `DRAIN_DELAY` (about 0.4 s). A class that needs the
+daemons to run longer (a bluez lookup after a timer, a device object
+exported late) would be missed, and the mode would fail for the wrong
+reason. So the implementation runs `--expect-dirty` three times and
+requires all four classes in each run.
+
+**Fallback, decided now:** if any of the three runs misses a class, the
+helper keeps the bare daemons running, in `--expect-dirty` only, for the
+rest of `READY_TIMEOUT` after readiness: the exposure the mode had before
+this change. The mode is by-hand and runs in no lane, so the 10 s costs
+nothing. The fallback is recorded in the CHANGELOG entry, and the three
+runs are repeated with it.
+
+### D7. Seeded failures
+
+Two proofs, neither committed:
+
+1. **The awaited signal absent, in a real session.** A temporary edit of
+   `wireplumber-quiet.conf` adds
+   `wireplumber.profiles = { policy = { policy.standard = disabled } }`.
+   `session.services` then exists without `policy.linking.standard`, which
+   proves the member semantics in a real session. If WirePlumber refuses the
+   override, the seed is `support.session-services = disabled`, which leaves
+   the property unset. Either way, expected:
+   - `scripts/headless-session session --profile screencast --log-dir <dir> -- true`
+     exits 101 with the D3 line after about 10 s, and the saved
+     `pw-dump-not-ready.json` shows the seeded `session.services` (no probe
+     can run inside such a session: its command never starts);
+   - one case each of the visual, accessibility, visual-geometry and
+     command-palette notes lanes fails, and none skips. The make targets take
+     no case filter, so these run through the runners with `--case` (or
+     `cargo-gtk-proof run --case-filter`), always with artifact directories
+     under the change's handoff directory, never `build/smoke/`, so no seeded
+     run can become a lane's last summary (task 3.2).
+
+   The edit is reverted before any gate runs. `make check-session-hygiene`
+   never sees it; its drift check covers module-rt and `hardware.*`, not
+   these features.
+2. **The lanes still catch a real defect.** A temporary, uncommitted visual
+   change inside a protected region of one visual-geometry scenario (for
+   example a CSS colour of a protected surface) makes
+   `make visual-geometry-smoke` fail that invariant. A wrong accessible name
+   on one AT-SPI anchor does the same for `make accessibility-smoke`.
+
+### D8. Lane proof and the record of lane cost
+
+On the final tree, each media lane runs 10 consecutive times, green, one
+`scripts/heavy.sh` call per run:
+
+- `make visual-geometry-smoke`;
+- `make accessibility-smoke`;
+- `make visual-smoke`.
+
+Each run's wall time and `/proc/loadavg` before and after go in
+`evidence/lanes.md`, beside the baseline. Any failure, `FLAKY` or `SKIP:`
+line is a blocker (`preexisting-blockers.md`). It is investigated, fixed,
+and the count restarts. `make crash-recovery-smoke` and
+`make command-palette-notes-smoke`, the other two lanes with quiet media
+(the notes runner is one of the two with the skip grep), each run once,
+green, on the same tree.
+
+**What the lanes prove, and what they do not.** Green lanes prove that
+no case fails or skips. They do not prove that each capture linked on its
+first try: the capture script's `gst-launch-1.0 … pipewiresrc` has a 15 s
+timeout, and `cargo-gtk-proof`'s animation cases wait up to
+`ANIMATION_FIRST_FRAME_TIMEOUT` (3 s) for a first stream frame and
+discard a miss. A slow link is therefore absorbed silently. The first-try
+clause is proved by the capture probe instead: the spec stage's
+`capture-probe.py`, rerun 10 times on the final helper (no experiment
+patch), must link and deliver its first buffer on its first attempt in
+every run, within 1 s (baseline: 0.14-0.18 s).
+
+**Expected after:** visual-geometry about 8 min, accessibility about 3.5
+min, visual about 2.5 min. If the visual lane stays clearly above about
+3 min at a comparable load, the rest of its growth since 2026-11-06 has
+another cause. In that case the implementation writes a `NEW CHANGE PROPOSED`
+line in `.claude/handoffs/PARALLEL-LEDGER.md` rather than widening this
+change.
+
+The before and after figures go into the QH record
+(`docs/next/long-line-documents.md`, "QH `quiet-headless-session-services`").
+That record is where the lanes' session cost is tracked; no separate
+lane-cost record exists.
+
+### D9. A pre-existing blocker found by the lane proof: the exported helper path
+
+Added at implementation (task 2.7). Visual run 4 of task 6.2 failed one case
+with `UNSUPPORTED-HOST: GTK_LUSH_SESSION_BIN=…/target/debug/gtk-lush-session (deleted) is not executable`.
+The inner stage exports `std::env::current_exe()` as `GTK_LUSH_SESSION_BIN`
+for code that starts a nested session (every screenshot capture's
+`compositor` stage goes through it). Linux names `/proc/self/exe`
+`<path> (deleted)` once that file is removed, and `cargo build`, which the
+shim runs before every session, re-uplifts the binary (remove, then link) on
+every run. So any two lanes in one worktree race. The parallel lane streams
+hit it once in about 470 nested sessions; a re-uplift loop every 2 ms makes it
+20 of 20.
+
+`own_executable()` had already fixed the same race for the inner stage's own
+exec, and kept the exported path on purpose (a consumer in another pid
+namespace cannot use `/proc/<pid>/exe`). The fix keeps that choice:
+
+- `exported_session_bin` drops the ` (deleted)` suffix whenever the path as
+  named does not exist, without requiring the rebuilt file to be linked at
+  that instant. The export then names the file at the original path, the same
+  helper rebuilt;
+- `scripts/headless-session` retries its `GTK_LUSH_SESSION_BIN` branch
+  (10 x 0.1 s), as its build branch already did for "Text file busy", because
+  cargo's remove-then-link leaves the path briefly absent (1 of 40 under the
+  loop with the first half alone, 0 of 100 with both).
+
+**The axiom probes' spawn (stage-4 review).** The GTK axiom probes A115
+and A116 (`crates/gtk-lush/axioms/src/probes/`) spawn `$GTK_LUSH_SESSION_BIN`
+for their control child directly, not through the shim, so with the suffix
+gone they still failed if a rebuild landed in cargo's remove-then-link window.
+Stage 3 left this as a residual on the premise that changing the axioms crate
+would owe `make gtk-axioms`; `verification-runs.md` says an edited probe owes
+only its own samples (A115 and A116 are not marked slow, so the PR jobs cover
+both toolkits). The review therefore fixed it here, as `preexisting-blockers.md`
+requires: `session_names::spawn_retrying_helper_relink` retries the control's
+spawn on `NotFound` or `ExecutableFileBusy`, 10 x 0.1 s like the shim, and
+returns any other error at once. Proof: a unit test that failed against a
+non-retrying stub, and `make gtk-axiom-sample AXIOM=115 CHECK=1` and
+`AXIOM=116`.
+
+`preexisting-blockers.md` makes it part of this change. It invalidates no
+earlier proof except the helper-dependent reruns D8 names: tasks 2.3 and 2.6
+and the whole of 6.2 are rerun on the fixed helper. Tasks 2.4, 2.5, 3.x, 4.1
+and 6.1 do not depend on the exported path (2.4 and 2.5 run no nested
+session; 3.x fails before the command; 4.1 is a text check; 6.1's failures
+are invariant failures).
+
+## Scope boundaries
+
+- **Kani: none** (no proven module touched).
+- **GTK axioms: no axiom added or changed.** The change relies on no GTK-family
+  behaviour. The review's D9 fix edits the A115/A116 probes' shared spawn, so
+  their two samples ran (`make gtk-axiom-sample`). The
+  WirePlumber behaviour it relies on (`session-services.lua` ordered last;
+  `pw-dump` omitting empty metadata) is not a GTK axiom. It is recorded in
+  `.agents/rules/build.md`, "PipeWire and WirePlumber updates", as a
+  re-check owed on every WirePlumber update, beside the module lists.
+- **No timing verdict.** Lane wall time is not a budgeted path.
+- **No application code, UI file, smoke runner or rule outside build.md
+  changes** (D9 adds one non-fingerprinted script change, the shim's retry), so neither the UI-prefix nor the fingerprinted-script proof
+  obligations apply. The lanes run anyway, as D8.
+
+## Risks
+
+- **A capture race hidden by the 10 s.** The capture probe linked 10 of 10
+  on its first try under load 50. The lanes' 10 green runs are the
+  full-scale proof. A race that surfaces there is a real defect, fixed in
+  this change.
+- **A future WirePlumber that renames the service or the property.** The
+  session then fails loudly at readiness (D3), and the build.md update check
+  points at the predicate.
+- **A scheduled CI container where WirePlumber never loads its policy**
+  turns from a silent pass, or a later capture failure, into a session
+  failure. That is intended, and is read once at the end of the programme
+  with the rest of CI.
+  Every CI job that starts a media session (`end-user-smoke.yml`: visual,
+  visual-geometry, accessibility, crash recovery) runs `fedora:45`, which
+  ships the same WirePlumber 0.5 line as the host where the predicate was
+  proved (0.5.19, whose `session-services.lua` sets `session.services`); no
+  pull-request job starts one.

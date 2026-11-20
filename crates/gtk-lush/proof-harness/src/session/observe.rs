@@ -99,6 +99,55 @@ pub fn device_apis(pw_dump: &str) -> Vec<String> {
     apis
 }
 
+/// Whether WirePlumber has loaded its whole profile, linking policy
+/// included: its client object's `session.services` property, a bracketed
+/// list (`[a, b, c]`), has `policy.linking.standard` as a whole member.
+///
+/// WirePlumber's `session-services.lua` sets that property from the features
+/// that loaded, and its component rules order it after every other component
+/// ("session-services.lua must execute at the very end"). It lists
+/// `policy.linking.standard` only when that virtual feature holds, which
+/// requires the linking hooks. So a member here means a `pipewiresrc` link
+/// to a named target can be made at once.
+///
+/// The property sits on a Client object, which `pw-dump` always prints with
+/// its properties. Readiness must not be read from a metadata object:
+/// `pw-dump` omits every metadata object without entries, and in a session
+/// without audio devices the `default` metadata has none.
+///
+/// The dump is scanned by key, as [`device_apis`] does; the order of the
+/// members does not matter, and a member that only starts with the name
+/// does not count.
+#[must_use]
+pub fn wireplumber_policy_ready(pw_dump: &str) -> bool {
+    const KEY: &str = "\"session.services\"";
+    const MEMBER: &str = "policy.linking.standard";
+    let mut rest = pw_dump;
+    while let Some(index) = rest.find(KEY) {
+        rest = &rest[index + KEY.len()..];
+        let Some(value) = rest.trim_start().strip_prefix(':') else {
+            continue;
+        };
+        let Some(value) = value.trim_start().strip_prefix('"') else {
+            continue;
+        };
+        let Some(end) = value.find('"') else {
+            continue;
+        };
+        let Some(list) = value[..end]
+            .trim()
+            .strip_prefix('[')
+            .and_then(|list| list.strip_suffix(']'))
+        else {
+            continue;
+        };
+        if list.split(',').any(|member| member.trim() == MEMBER) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Lines of a daemon's `/proc/<pid>/maps` or log that show module-rt loaded.
 #[must_use]
 pub fn module_rt_evidence(source: &str, text: &str) -> Vec<String> {
@@ -226,6 +275,93 @@ signal time=3 sender=org.freedesktop.DBus -> destination=(null destination) seri
 ]"#;
         assert_eq!(device_apis(dump), ["alsa", "v4l2"]);
         assert!(device_apis("[]").is_empty());
+    }
+
+    /// The WirePlumber `policy` client as a real saved dump prints it
+    /// (`baseline/logs-quiet-*/pw-dump.json`), cut to the keys that matter,
+    /// with `session.services` replaced by `services` (`None` drops it).
+    fn wireplumber_client(services: Option<&str>) -> String {
+        let services = services.map_or_else(String::new, |list| {
+            format!("        \"session.services\": \"{list}\",\n")
+        });
+        format!(
+            r#"[
+  {{
+    "id": 31,
+    "type": "PipeWire:Interface:Metadata",
+    "props": {{ "metadata.name": "settings" }},
+    "metadata": [
+      {{ "subject": 0, "key": "clock.rate", "type": "", "value": 48000 }}
+    ]
+  }},
+  {{
+    "id": 32,
+    "type": "PipeWire:Interface:Client",
+    "version": 3,
+    "permissions": [ "r", "w", "x", "m" ],
+    "info": {{
+      "change-mask": [ "props" ],
+      "props": {{
+        "application.name": "WirePlumber (policy)",
+        "application.process.binary": "wireplumber",
+        "application.version": "0.5.19",
+        "remote.name": "[pipewire-0-manager,pipewire-0]",
+{services}        "wireplumber.daemon": true,
+        "wireplumber.profile": "policy"
+      }}
+    }}
+  }}
+]"#
+        )
+    }
+
+    #[test]
+    fn wireplumber_policy_readiness_is_a_whole_session_services_member() {
+        let last = wireplumber_client(Some(
+            "[policy.default-nodes, policy.device.profile, policy.device.routes, policy.linking.role-based, policy.linking.standard]",
+        ));
+        let first = wireplumber_client(Some(
+            "[policy.linking.standard, policy.default-nodes, policy.linking.role-based, policy.device.routes, policy.device.profile]",
+        ));
+        let absent = wireplumber_client(None);
+        let without = wireplumber_client(Some(
+            "[policy.default-nodes, policy.device.profile, policy.device.routes, policy.linking.role-based]",
+        ));
+        let empty_list = wireplumber_client(Some("[]"));
+        let prefix_only = wireplumber_client(Some(
+            "[policy.default-nodes, policy.linking.standard-extra]",
+        ));
+        assert!(wireplumber_policy_ready(&last), "member last");
+        assert!(wireplumber_policy_ready(&first), "member first");
+        assert!(!wireplumber_policy_ready(&absent), "no session.services");
+        assert!(!wireplumber_policy_ready(&without), "member missing");
+        assert!(!wireplumber_policy_ready(&empty_list), "empty list");
+        assert!(!wireplumber_policy_ready(&prefix_only), "prefix only");
+        for malformed in [
+            "",
+            "not json",
+            "\"session.services\"",
+            "\"session.services\": ",
+            "\"session.services\": \"policy.linking.standard\"",
+            "\"session.services\": \"[policy.linking.standard",
+            "\"session.services\": 7, \"x\": \"[policy.linking.standard]\"",
+        ] {
+            assert!(!wireplumber_policy_ready(malformed), "{malformed:?}");
+        }
+    }
+
+    #[test]
+    fn the_old_default_metadata_predicate_never_holds_on_a_ready_dump() {
+        // `pw-dump` prints no metadata object without entries, and in a
+        // session without audio devices `default` has none, so the helper's
+        // old wait for this text always ran to its deadline.
+        for services in [
+            "[policy.default-nodes, policy.linking.standard]",
+            "[policy.linking.standard, policy.default-nodes]",
+        ] {
+            let dump = wireplumber_client(Some(services));
+            assert!(!dump.contains("\"metadata.name\": \"default\""));
+        }
     }
 
     #[test]

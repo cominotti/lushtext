@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- **Behaviour (quiet media readiness):** with media on, the session helper
+  now starts the command once WirePlumber's client object lists
+  `policy.linking.standard` in its `session.services` property, which
+  WirePlumber's `session-services.lua` sets after every other component of
+  its profile, the linking hooks included
+  (`fix-headless-session-media-wait`). The old wait looked for
+  `"metadata.name": "default"` in `pw-dump`, which can never hold:
+  `pw-dump` prints no metadata object without entries, and in a session
+  without audio devices `default` has none. So every media session ran the
+  blind 10 s `READY_TIMEOUT` and ignored the result, since the helper's first
+  lanes; readiness now takes tens of milliseconds.
+- **Behaviour (readiness miss):** a session whose WirePlumber does not list
+  its linking policy within `READY_TIMEOUT` no longer starts the command. It
+  saves the last `pw-dump` as `pw-dump-not-ready.json` in the `--log-dir`
+  (without `--log-dir` the helper's own log directory is removed at
+  teardown, and the line says so), prints one
+  `gtk-lush-session: WirePlumber did not load its linking policy within 10 s (…)`
+  line, and exits with `TEST_FAILURE_EXIT_CODE` (`101`): a failure, never an
+  unsupported-host (`77`) or session-hygiene (`93`) exit.
+- New `session::observe::wireplumber_policy_ready(pw_dump)`: the pure
+  readiness predicate, a whole-member match in the bracketed
+  `session.services` list, independent of member order.
+- **Fix:** the `GTK_LUSH_SESSION_BIN` the helper exports inside a session
+  no longer carries Linux's ` (deleted)` suffix. It came from
+  `current_exe()` (`/proc/self/exe`) once a concurrent `cargo build` had
+  re-uplifted `target/debug/gtk-lush-session`, so with several lanes in one
+  worktree a nested `scripts/headless-session` inside the session failed as
+  an unsupported host (1 of about 470 nested sessions; 20 of 20 under a
+  re-uplift loop). The suffix is dropped whenever the path as named does not
+  exist, and LushText's shim retries that branch briefly, as its build branch
+  already did (0 of 100 under the same loop).
 - **Breaking (behaviour):** a per-test child of `run_registered_tests()` exits
   with `TEST_FAILURE_EXIT_CODE` before GTK initializes unless
   `session::SESSION_ACTIVE_ENV` is set, which only the session helper's inner
