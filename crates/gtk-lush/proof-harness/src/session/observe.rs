@@ -81,22 +81,31 @@ pub fn name_acquisition(record: &BusRecord) -> Option<(String, String)> {
 /// `device.api` values of every object in `pw-dump` JSON.
 #[must_use]
 pub fn device_apis(pw_dump: &str) -> Vec<String> {
-    const KEY: &str = "\"device.api\"";
-    let mut apis = Vec::new();
+    string_values(pw_dump, "\"device.api\"")
+        .map(str::to_string)
+        .collect()
+}
+
+/// Every string value of `quoted_key` (the key with its JSON quotes) in
+/// `pw-dump` JSON, scanned by key: an occurrence whose value is not a
+/// string is skipped.
+fn string_values<'a>(pw_dump: &'a str, quoted_key: &'a str) -> impl Iterator<Item = &'a str> {
     let mut rest = pw_dump;
-    while let Some(index) = rest.find(KEY) {
-        rest = &rest[index + KEY.len()..];
-        let Some(value) = rest.trim_start().strip_prefix(':') else {
-            continue;
-        };
-        let Some(value) = value.trim_start().strip_prefix('"') else {
-            continue;
-        };
-        if let Some(end) = value.find('"') {
-            apis.push(value[..end].to_string());
+    std::iter::from_fn(move || {
+        while let Some(index) = rest.find(quoted_key) {
+            rest = &rest[index + quoted_key.len()..];
+            let Some(value) = rest.trim_start().strip_prefix(':') else {
+                continue;
+            };
+            let Some(value) = value.trim_start().strip_prefix('"') else {
+                continue;
+            };
+            if let Some(end) = value.find('"') {
+                return Some(&value[..end]);
+            }
         }
-    }
-    apis
+        None
+    })
 }
 
 /// Whether WirePlumber has loaded its whole profile, linking policy
@@ -120,32 +129,14 @@ pub fn device_apis(pw_dump: &str) -> Vec<String> {
 /// does not count.
 #[must_use]
 pub fn wireplumber_policy_ready(pw_dump: &str) -> bool {
-    const KEY: &str = "\"session.services\"";
     const MEMBER: &str = "policy.linking.standard";
-    let mut rest = pw_dump;
-    while let Some(index) = rest.find(KEY) {
-        rest = &rest[index + KEY.len()..];
-        let Some(value) = rest.trim_start().strip_prefix(':') else {
-            continue;
-        };
-        let Some(value) = value.trim_start().strip_prefix('"') else {
-            continue;
-        };
-        let Some(end) = value.find('"') else {
-            continue;
-        };
-        let Some(list) = value[..end]
+    string_values(pw_dump, "\"session.services\"").any(|value| {
+        value
             .trim()
             .strip_prefix('[')
             .and_then(|list| list.strip_suffix(']'))
-        else {
-            continue;
-        };
-        if list.split(',').any(|member| member.trim() == MEMBER) {
-            return true;
-        }
-    }
-    false
+            .is_some_and(|list| list.split(',').any(|member| member.trim() == MEMBER))
+    })
 }
 
 /// Lines of a daemon's `/proc/<pid>/maps` or log that show module-rt loaded.

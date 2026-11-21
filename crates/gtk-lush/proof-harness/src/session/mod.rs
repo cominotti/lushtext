@@ -1460,13 +1460,21 @@ fn log_file(log_dir: &Path, name: &str) -> Stdio {
         .map_or_else(|_| Stdio::null(), Stdio::from)
 }
 
-fn wait_until(mut ready: impl FnMut() -> bool) -> bool {
-    let deadline = Instant::now() + READY_TIMEOUT;
+fn wait_until(ready: impl FnMut() -> bool) -> bool {
+    poll_until(READY_TIMEOUT, POLL_INTERVAL, ready)
+}
+
+/// Polls `ready` every `poll` until it holds or `timeout` has passed. A
+/// passed timeout still reads once more, so a miss returns after one
+/// `ready` call that starts past the timeout: the wait lasts `timeout` plus
+/// at most one poll and two `ready` calls.
+fn poll_until(timeout: Duration, poll: Duration, mut ready: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if ready() {
             return true;
         }
-        std::thread::sleep(POLL_INTERVAL);
+        std::thread::sleep(poll);
     }
     ready()
 }
@@ -1478,28 +1486,27 @@ struct PolicyNotReady {
     last_dump: Option<String>,
 }
 
-/// Polls `dump` every `poll` until a dump shows WirePlumber's linking policy
-/// loaded ([`observe::wireplumber_policy_ready`]) or `deadline` has passed;
-/// a passed deadline still reads once. A miss carries the last dump that
-/// succeeded.
+/// Polls `dump` with [`poll_until`] until a dump shows WirePlumber's linking
+/// policy loaded ([`observe::wireplumber_policy_ready`]). A miss carries the
+/// last dump that succeeded.
 fn wait_for_wireplumber_policy(
-    deadline: Duration,
+    timeout: Duration,
     poll: Duration,
     mut dump: impl FnMut() -> Option<String>,
 ) -> Result<(), PolicyNotReady> {
-    let deadline = Instant::now() + deadline;
     let mut last_dump = None;
-    loop {
-        if let Some(text) = dump() {
-            if observe::wireplumber_policy_ready(&text) {
-                return Ok(());
-            }
+    let ready = poll_until(timeout, poll, || match dump() {
+        Some(text) if observe::wireplumber_policy_ready(&text) => true,
+        Some(text) => {
             last_dump = Some(text);
+            false
         }
-        if Instant::now() >= deadline {
-            return Err(PolicyNotReady { last_dump });
-        }
-        std::thread::sleep(poll);
+        None => false,
+    });
+    if ready {
+        Ok(())
+    } else {
+        Err(PolicyNotReady { last_dump })
     }
 }
 

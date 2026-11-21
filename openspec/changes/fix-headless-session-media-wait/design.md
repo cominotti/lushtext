@@ -300,7 +300,14 @@ namespace cannot use `/proc/<pid>/exe`). The fix keeps that choice:
 - `scripts/headless-session` retries its `GTK_LUSH_SESSION_BIN` branch
   (10 x 0.1 s), as its build branch already did for "Text file busy", because
   cargo's remove-then-link leaves the path briefly absent (1 of 40 under the
-  loop with the first half alone, 0 of 100 with both).
+  loop with the first half alone, 0 of 100 with both). Both branches share
+  one retry (`exec_helper`), which records whether a try reached `exec`. The
+  `GTK_LUSH_SESSION_BIN` branch reports an unsupported host (77) only when
+  the path never became executable; when `exec` itself kept failing (a
+  corrupt or half-written file, a noexec mount) it fails as the build branch
+  does (`cannot execute`, exit 1); before this change its one failed `exec`
+  ended the shell, also a failure (126). The build branch execs once more when no try reached `exec`,
+  so bash names why (added at the apply stage, from a review finding).
 
 **The axiom probes' spawn (stage-4 review).** The GTK axiom probes A115
 and A116 (`crates/gtk-lush/axioms/src/probes/`) spawn `$GTK_LUSH_SESSION_BIN`

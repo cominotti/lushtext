@@ -32,7 +32,10 @@
   an unsupported host (1 of about 470 nested sessions; 20 of 20 under a
   re-uplift loop). The suffix is dropped whenever the path as named does not
   exist, and LushText's shim retries that branch briefly, as its build branch
-  already did (0 of 100 under the same loop).
+  does (0 of 100 under the same loop). A path that stays missing or without
+  its exec bit is still reported as an unsupported host (`77`); one the
+  kernel keeps refusing to run fails as the build branch does (`cannot
+  execute`, exit `1`).
 - **Breaking (behaviour):** a per-test child of `run_registered_tests()` exits
   with `TEST_FAILURE_EXIT_CODE` before GTK initializes unless
   `session::SESSION_ACTIVE_ENV` is set, which only the session helper's inner
