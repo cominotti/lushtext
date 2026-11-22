@@ -5,12 +5,28 @@
 
 set -eu
 
-ROOT_DIR=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+ROOT_DIR=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 UI_DIR="$ROOT_DIR/resources/ui"
 CONTRACT_FILE="$UI_DIR/template-contract.json"
 BLUEPRINT_COMPILER_BIN=${BLUEPRINT_COMPILER:-blueprint-compiler}
 BLUEPRINT_TYPELIB_PATH=${BLUEPRINT_TYPELIB_PATH:-/usr/lib64/girepository-1.0}
 BLUEPRINT_GIR_PATH=${BLUEPRINT_GIR_PATH:-/usr/share/gir-1.0}
+
+# Temporary entries this script owns, removed on every exit path: the drift
+# check's generated tree and the compiler or lint output being classified.
+tmp_dir=
+output_file=
+remove_owned_temp() {
+    if [ -n "$output_file" ]; then
+        rm -f "$output_file"
+    fi
+    if [ -n "$tmp_dir" ]; then
+        rm -rf "$tmp_dir"
+    fi
+}
+trap remove_owned_temp EXIT
+trap 'remove_owned_temp; exit 130' INT
+trap 'remove_owned_temp; exit 143' TERM
 
 usage() {
     cat <<'EOF'
@@ -65,7 +81,7 @@ print_blueprint_context() {
     printf 'Blueprint compiler: %s\n' "$(blueprint_version)"
     printf 'Blueprint %s templates:\n' "$label"
     for blp_file in "$UI_DIR"/*.blp; do
-        printf '  %s\n' "${blp_file#$ROOT_DIR/}"
+        printf '  %s\n' "${blp_file#"$ROOT_DIR"/}"
     done
 }
 
@@ -136,6 +152,7 @@ compile_one() {
     if [ "$status" -ne 0 ]; then
         cat "$output_file" >&2
         rm -f "$output_file"
+        output_file=
         return "$status"
     fi
 
@@ -145,6 +162,7 @@ compile_one() {
         classify_status=$?
     fi
     rm -f "$output_file"
+    output_file=
     return "$classify_status"
 }
 
@@ -155,7 +173,7 @@ generate_templates() {
 
     for blp_file in "$UI_DIR"/*.blp; do
         ui_file=${blp_file%.blp}.ui
-        printf 'Generating %s\n' "${ui_file#$ROOT_DIR/}"
+        printf 'Generating %s\n' "${ui_file#"$ROOT_DIR"/}"
         compile_one "$blp_file" "$ui_file"
     done
 }
@@ -166,7 +184,6 @@ check_drift() {
     print_blueprint_context "drift-check"
 
     tmp_dir=$(mktemp -d)
-    trap 'rm -rf "$tmp_dir"' EXIT INT TERM
 
     failed=0
     for blp_file in "$UI_DIR"/*.blp; do
@@ -176,7 +193,7 @@ check_drift() {
         compile_one "$blp_file" "$generated_ui"
 
         if ! cmp -s "$committed_ui" "$generated_ui"; then
-            printf 'Blueprint drift detected: %s\n' "${committed_ui#$ROOT_DIR/}" >&2
+            printf 'Blueprint drift detected: %s\n' "${committed_ui#"$ROOT_DIR"/}" >&2
             diff -u "$committed_ui" "$generated_ui" >&2 || true
             failed=1
         fi
@@ -186,7 +203,7 @@ check_drift() {
 }
 
 audit_contract() {
-    printf 'Blueprint contract baseline: %s\n' "${CONTRACT_FILE#$ROOT_DIR/}"
+    printf 'Blueprint contract baseline: %s\n' "${CONTRACT_FILE#"$ROOT_DIR"/}"
     python3 "$ROOT_DIR/scripts/check-ui-template-contract.py" --baseline "$CONTRACT_FILE"
 }
 
@@ -383,6 +400,7 @@ PY
         result=$?
     fi
     rm -f "$output_file"
+    output_file=
     return "$result"
 }
 

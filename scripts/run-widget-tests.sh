@@ -9,9 +9,14 @@ TEMP_SCOPE="$SCRIPT_DIR/with-temp-scope.sh"
 # private system bus, no media, no accessibility bus, no portals, and the
 # harness's recommended pre-GTK environment set before the bus starts).
 HEADLESS_SESSION="$SCRIPT_DIR/headless-session"
+# The bounded warning scan beside the live stream (bls_start, bls_finish).
+# shellcheck source=scripts/bounded-log-scan.sh
+source "$SCRIPT_DIR/bounded-log-scan.sh"
 
-# Paths this script itself creates outside the scoped TMPDIR (the warning-scan
-# log), removed on every exit path, including SIGINT and SIGTERM.
+# Paths this script itself creates outside the scoped TMPDIR (self-test
+# fixtures), removed on every exit path, including SIGINT and SIGTERM. A
+# `( … )` subshell has no traps, so only this top-level shell appends here;
+# the warning scan names nothing (its outputs are unlinked descriptors).
 OWNED_TEMP_PATHS=()
 # shellcheck disable=SC2329 # invoked by the EXIT trap below
 remove_owned_temp_paths() {
@@ -31,6 +36,10 @@ MONITOR="2560x1600"
 SCOPE_LABEL=widget
 TEST_ARGS=()
 SELF_TEST=false
+# The command run_headless runs inside the headless environment. Empty means
+# the real harness (the temp scope, the session helper, the widget binary);
+# only `--self-test -- <command>`, the self-test's own entry point, sets it.
+WIDGET_HARNESS_COMMAND=()
 # gtk_lush_proof_harness::session::SESSION_HYGIENE_EXIT_CODE: the session
 # touched the host (rtkit, bluez, devices, an accessibility bus, a portal).
 # Such a run is never retried; a second session would touch the host again.
@@ -81,43 +90,64 @@ EOF
 # Line-buffered filters keep per-test progress visible in the job log, so a
 # cancelled run (for example a GitHub Actions job timeout) still shows how far
 # the suite got. `grep` exits 1 when every line was benign noise, which must not
-# be mistaken for a harness failure.
+# be mistaken for a harness failure. `-a`: a NUL byte must not turn the rest of
+# the job log into one "binary file matches" line.
 emit_sanitized_widget_stream() {
     local noise_filter=(cat)
     if [[ -n "${BENIGN_WIDGET_NOISE_REGEX}" ]]; then
-        noise_filter=(grep --line-buffered -Ev "$BENIGN_WIDGET_NOISE_REGEX")
+        noise_filter=(grep --line-buffered -aEv "$BENIGN_WIDGET_NOISE_REGEX")
     fi
     { "${noise_filter[@]}" || true; } \
         | awk 'NF { print; fflush(); blank = 0; next } !blank { print; fflush(); blank = 1 }'
 }
 
+# The verdict of the last scan (bls_finish): its exact count of unexpected
+# lines and a bounded excerpt, or a scan that did not finish, fail the run.
 check_for_unexpected_widget_warnings() {
-    local log_file="$1"
-    local unexpected
-    unexpected="$(grep -E "$WIDGET_WARNING_REGEX" "$log_file" | grep -Ev "$BENIGN_WIDGET_NOISE_REGEX" || true)"
-    if [[ -n "$unexpected" ]]; then
-        printf '%s\n' "$unexpected" >&2
-        echo "Error: unexpected warning output during widget tests." >&2
+    if ! bls_check_unexpected; then
+        if (( BLS_COMPLETE != 1 )); then
+            echo "Error: the widget warning scan did not finish (${BLS_INCOMPLETE:-no summary}); failing closed." >&2
+        else
+            echo "Error: unexpected warning output during widget tests ($BLS_COUNT unexpected lines)." >&2
+        fi
         return 1
     fi
 }
 
+# Classify the lines on stdin through the same stage a real run uses: 0 when
+# none is unexpected, 1 when the finished scan found one, 2 when the scan
+# could not start or did not finish.
+check_widget_lines() {
+    if ! bls_start "$WIDGET_WARNING_REGEX" "$BENIGN_WIDGET_NOISE_REGEX"; then
+        echo "Error: $BLS__START_ERROR; the lines were not classified." >&2
+        return 2
+    fi
+    bls_isolated cat 2>&1 | tee -p "/dev/fd/$BLS_IN" >/dev/null
+    bls_finish
+    if ! check_for_unexpected_widget_warnings; then
+        (( BLS_COMPLETE == 1 )) || return 2
+        return 1
+    fi
+}
+
+# Whether the lines on stdin were classified unexpected: a scan that did not
+# run rejects nothing.
+widget_lines_rejected() {
+    local code=0
+    check_widget_lines || code=$?
+    (( code == 1 ))
+}
+
 self_test_warning_classification() {
-    local log_file
-    log_file="$(mktemp)"
-    trap 'rm -f "$log_file"' RETURN
+    printf '%s\n' "** (mutter:582): WARNING **: 09:42:29.034: Skipping layers 1..n of your pipeline since the first layer is sliced. We don't currently support any multi-texturing with sliced textures but assume layer 0 is the most important to keep" \
+        | check_widget_lines
 
-    printf '%s\n' "** (mutter:582): WARNING **: 09:42:29.034: Skipping layers 1..n of your pipeline since the first layer is sliced. We don't currently support any multi-texturing with sliced textures but assume layer 0 is the most important to keep" >"$log_file"
-    check_for_unexpected_widget_warnings "$log_file"
-
-    python3 -B "$SCRIPT_DIR/smoke_warning_classifiers.py" --print-samples headless-session-services >"$log_file"
-    if ! check_for_unexpected_widget_warnings "$log_file"; then
+    if ! python3 -B "$SCRIPT_DIR/smoke_warning_classifiers.py" --print-samples headless-session-services | check_widget_lines; then
         echo "Error: widget warning self-test rejected the shared session-services family." >&2
         return 1
     fi
 
-    printf '%s\n' "Gtk-WARNING **: allocation failed" >"$log_file"
-    if check_for_unexpected_widget_warnings "$log_file" >/dev/null 2>&1; then
+    if ! printf '%s\n' "Gtk-WARNING **: allocation failed" | widget_lines_rejected >/dev/null 2>&1; then
         echo "Error: widget warning self-test accepted an unexpected GTK warning." >&2
         return 1
     fi
@@ -125,8 +155,8 @@ self_test_warning_classification() {
     # GTK 4.24's discarded-frame warning (ledger A134) is benign as this exact
     # line from a harness child, and as nothing else. The sample is the line a
     # gate run printed (tab-strip-overflow-navigation, gate-apply-test.log).
-    printf '%s\n' "(process:2232206): Gdk-WARNING **: 15:17:27.766: gdk_frame_timings_presented() called on discarded frame." >"$log_file"
-    if ! check_for_unexpected_widget_warnings "$log_file"; then
+    if ! printf '%s\n' "(process:2232206): Gdk-WARNING **: 15:17:27.766: gdk_frame_timings_presented() called on discarded frame." \
+        | check_widget_lines; then
         echo "Error: widget warning self-test rejected GTK 4.24's discarded-frame warning (A134)." >&2
         return 1
     fi
@@ -142,8 +172,7 @@ self_test_warning_classification() {
         "(lushtext:2232206): Gdk-WARNING **: 15:17:27.766: gdk_frame_timings_presented() called on discarded frame." \
         "(process:2232206): Gdk-WARNING **: 15:17:27.766: gdk_frame_timings_presented() called on discarded frame. Also something else" \
         "test window::test_x ... (process:2232206): Gdk-WARNING **: 15:17:27.766: gdk_frame_timings_presented() called on discarded frame."; do
-        printf '%s\n' "$near_miss" >"$log_file"
-        if check_for_unexpected_widget_warnings "$log_file" >/dev/null 2>&1; then
+        if ! printf '%s\n' "$near_miss" | widget_lines_rejected >/dev/null 2>&1; then
             echo "Error: widget warning self-test accepted a near miss of the discarded-frame warning: $near_miss" >&2
             return 1
         fi
@@ -152,9 +181,18 @@ self_test_warning_classification() {
     # GTK_A11Y=test reaches no AT-SPI bus, so the registry critical the old
     # session printed (its bus could not activate at-spi2-registryd) cannot
     # occur in a widget session; if it comes back, it fails the lane.
-    printf '%s\n' "(process:42): Gtk-CRITICAL **: 14:07:27.435: Unable to register the application: GDBus.Error:org.freedesktop.DBus.Error.NameHasNoOwner: Could not activate remote peer 'org.a11y.atspi.Registry': unit failed" >"$log_file"
-    if check_for_unexpected_widget_warnings "$log_file" >/dev/null 2>&1; then
+    if ! printf '%s\n' "(process:42): Gtk-CRITICAL **: 14:07:27.435: Unable to register the application: GDBus.Error:org.freedesktop.DBus.Error.NameHasNoOwner: Could not activate remote peer 'org.a11y.atspi.Registry': unit failed" \
+        | widget_lines_rejected >/dev/null 2>&1; then
         echo "Error: widget warning self-test accepted the AT-SPI registry critical." >&2
+        return 1
+    fi
+
+    # A NUL byte must not cut the live job log: without --text GNU grep prints
+    # only "binary file matches" for the whole stream.
+    local live
+    live="$(printf 'before\nnoise \0 bytes\nafter the NUL\n' | emit_sanitized_widget_stream 2>&1 | tr -d '\0')"
+    if [[ "$live" != $'before\nnoise  bytes\nafter the NUL' ]]; then
+        echo "Error: widget warning self-test: a NUL byte cut the live stream to '$live'." >&2
         return 1
     fi
 
@@ -164,8 +202,173 @@ self_test_warning_classification() {
         return 1
     fi
     echo "Widget retry classification self-test passed."
+    self_test_harness_status
     self_test_memory_report
+    self_test_capture_cases
+    "$SCRIPT_DIR/bounded-log-scan.sh" --self-test
     "$TEMP_SCOPE" --self-test
+}
+
+# A failed warning verdict never hides the harness's own failing exit code:
+# a session-hygiene exit that also printed an unexpected line stays 93, so
+# the retry loop does not start a second session; a clean exit with an
+# unexpected line fails with 1. A scan that could not start fails the check
+# with 2, never with 1, the code of a line classified unexpected, so no
+# rejection below passes without a classification.
+self_test_harness_status() {
+    local code=0
+    # shellcheck disable=SC2016 # expanded by the inner shell
+    "$0" --self-test -- bash -c 'echo "Gtk-WARNING **: noise"; exit "$0"' "$SESSION_HYGIENE_EXIT_CODE" >/dev/null 2>&1 || code=$?
+    if (( code != SESSION_HYGIENE_EXIT_CODE )); then
+        echo "Error: a session-hygiene exit with an unexpected warning became exit $code; it must stay $SESSION_HYGIENE_EXIT_CODE." >&2
+        return 1
+    fi
+    code=0
+    "$0" --self-test -- bash -c 'echo "Gtk-WARNING **: noise"' >/dev/null 2>&1 || code=$?
+    if (( code != 1 )); then
+        echo "Error: a clean exit with an unexpected warning gave exit $code, not 1." >&2
+        return 1
+    fi
+    code=0
+    TMPDIR="${TMPDIR:-/tmp}/run-widget-tests-no-such-$$/base" check_widget_lines </dev/null >/dev/null 2>&1 || code=$?
+    if (( code != 2 )); then
+        echo "Error: a warning scan that could not start gave status $code, not 2." >&2
+        return 1
+    fi
+    echo "Widget harness status self-test passed."
+}
+
+# Wait up to $2 tenths of a second for process $1 to exit.
+wait_for_exit() {
+    local tries=0
+    while kill -0 "$1" 2>/dev/null && (( tries < $2 )); do
+        sleep 0.1
+        tries=$((tries + 1))
+    done
+    ! kill -0 "$1" 2>/dev/null
+}
+
+# A capture case's directory: the fake harness and its private base. The fake
+# records the PID of the shell that runs it, floods `$1` chunks of 2^16
+# Gtk-CRITICAL lines (pausing `$2` s between them), then lists every named
+# file over 64 KiB in the base while its runner still runs.
+capture_case_dir() {
+    mkdir -p "$1/base"
+    cat >"$1/flood" <<'FLOOD'
+#!/usr/bin/env bash
+ctl="${0%/*}"
+echo "$PPID" >"$ctl/parent.tmp" && mv "$ctl/parent.tmp" "$ctl/parent"
+for _ in $(seq "$1"); do
+    # yes reports EPIPE on stderr where SIGPIPE is ignored (a git hook): drop it.
+    yes '(lushtext:1): Gtk-CRITICAL **: 00:00:00.000: gtk_widget_get_parent: assertion failed' 2>/dev/null | head -n 65536
+    sleep "$2"
+done
+find "$ctl/base" -type f -size +64k >"$ctl/big"
+touch "$ctl/done"
+FLOOD
+    chmod +x "$1/flood"
+}
+
+# Fail, naming its entries, when capture case $1's private base is not empty;
+# $2 says which case and when.
+capture_base_empty() {
+    local entries
+    entries="$(bls__entries "$1/base")"
+    [[ -z "$entries" ]] || { echo "Error: capture case $2 the base holds $entries" >&2; return 1; }
+}
+
+# (a) A flood of 2^20 lines: no capture over 64 KiB exists while it runs, the
+# run fails, and the report counts every line.
+capture_case_flood() {
+    local dir="$1" status failed=0
+    capture_case_dir "$dir"
+    set +e
+    TMPDIR="$dir/base" "$0" --self-test -- "$dir/flood" 16 0 2>&1 >/dev/null | tail -c 65536 >"$dir/err"
+    status="${PIPESTATUS[0]}"
+    set -e
+    if [[ -s "$dir/big" ]]; then
+        echo "Error: capture case (a): a capture over 64 KiB existed during the flood: $(head -n 3 "$dir/big" | tr '\n' ' ')" >&2
+        failed=1
+    fi
+    if (( status == 0 )); then
+        echo "Error: capture case (a): a flood of unexpected lines passed." >&2
+        failed=1
+    fi
+    if ! grep -q '1048576 unexpected' "$dir/err"; then
+        echo "Error: capture case (a): the report does not count the 1048576 unexpected lines: $(tail -c 300 "$dir/err")" >&2
+        failed=1
+    fi
+    capture_base_empty "$dir" "(a): after the flood" || failed=1
+    return "$failed"
+}
+
+# (b) kill -9 of the runner mid-flood: the base gains no entry while the
+# orphaned pipeline streams, nor after it ends.
+capture_case_kill() {
+    local dir="$1" failed=0
+    capture_case_dir "$dir"
+    if ! TMPDIR="$dir/base" bls__start_group "$0" --self-test -- "$dir/flood" 12 0.05 </dev/null >/dev/null 2>&1; then
+        echo "Error: capture case (b): the runner did not start as its own process group." >&2
+        failed=1
+    elif bls__wait_for_file "$dir/parent" 50; then
+        sleep 0.3
+        kill -KILL "$BLS__GROUP" 2>/dev/null || true
+        if ! wait_for_exit "$BLS__GROUP" 20; then
+            echo "Error: capture case (b): the runner survived kill -9." >&2
+            failed=1
+        fi
+        capture_base_empty "$dir" "(b): after kill -9" || failed=1
+        bls__wait_for_file "$dir/done" 100 || true
+        sleep 0.2
+        capture_base_empty "$dir" "(b): after the orphan ended" || failed=1
+    else
+        echo "Error: capture case (b): the fake harness never started." >&2
+        failed=1
+    fi
+    kill -KILL -- "-$BLS__GROUP" 2>/dev/null || true
+    return "$failed"
+}
+
+# (c) SIGTERM to the subshell that runs the command, mid-run: no scan entry
+# remains once the runner has finished.
+capture_case_term() {
+    local dir="$1" failed=0
+    capture_case_dir "$dir"
+    if ! TMPDIR="$dir/base" bls__start_group "$0" --self-test -- "$dir/flood" 12 0.05 </dev/null >/dev/null 2>&1; then
+        echo "Error: capture case (c): the runner did not start as its own process group." >&2
+        failed=1
+    elif bls__wait_for_file "$dir/parent" 50; then
+        sleep 0.2
+        kill -TERM "$(cat "$dir/parent")" 2>/dev/null || true
+        wait_for_exit "$BLS__GROUP" 100 || true
+        sleep 0.2
+        capture_base_empty "$dir" "(c): after SIGTERM to the subshell" || failed=1
+    else
+        echo "Error: capture case (c): the fake harness never started." >&2
+        failed=1
+    fi
+    kill -KILL -- "-$BLS__GROUP" 2>/dev/null || true
+    return "$failed"
+}
+
+# The capture cases (bound-widget-log-capture), side by side: run_headless,
+# and so run_with_widget_log in the same place a real run uses, over a fake
+# flooding command, with TMPDIR set to a private base that must gain no
+# entry. The flood never reaches this output: the live stream goes to
+# /dev/null and the runner's stderr is cut to its tail.
+self_test_capture_cases() {
+    local ctl failed=0 pid pids=()
+    ctl="$(mktemp -d)"
+    OWNED_TEMP_PATHS+=("$ctl")
+    capture_case_flood "$ctl/a" & pids+=($!)
+    capture_case_kill "$ctl/b" & pids+=($!)
+    capture_case_term "$ctl/c" & pids+=($!)
+    for pid in "${pids[@]}"; do
+        wait "$pid" || failed=1
+    done
+    rm -rf -- "$ctl"
+    (( failed == 0 )) || return 1
+    echo "Widget capture self-test passed (a flood bounded and counted, kill -9 and SIGTERM leave nothing)."
 }
 
 self_test_memory_report() {
@@ -216,51 +419,58 @@ memory_scope_dir() {
     [[ -n "$cgroup" ]] && printf '/sys/fs/cgroup%s\n' "$cgroup"
 }
 
+# Run "$@" with its output scanned for warnings beside the live stream. The
+# stage holds an exact count and at most 64 KiB of unexpected lines, names
+# nothing on disk, and is started and awaited in this shell (`wait` reaches
+# only this shell's children), so this runs in the top-level shell, never in
+# a `( … )` subshell. `tee -p` keeps the live stream going if the stage dies,
+# which then fails the verdict closed. `pipefail` is already set, so the
+# harness exit code still propagates.
 run_with_widget_log() {
-    local log_file
-    log_file="$(mktemp)"
-    OWNED_TEMP_PATHS+=("$log_file")
     local status=0
-    # `tee` keeps the full unfiltered capture that the warning classification
-    # scan below reads, while the sanitized stream reaches the caller's
-    # terminal or CI job log live. `pipefail` is already set, so the harness
-    # exit code still propagates.
-    "$@" 2>&1 | tee "$log_file" | emit_sanitized_widget_stream || status=$?
-
-    if ! check_for_unexpected_widget_warnings "$log_file"; then
-        rm -f "$log_file"
+    if ! bls_start "$WIDGET_WARNING_REGEX" "$BENIGN_WIDGET_NOISE_REGEX"; then
+        echo "Error: $BLS__START_ERROR; not running the widget tests." >&2
         return 1
     fi
+    bls_isolated "$@" 2>&1 | tee -p "/dev/fd/$BLS_IN" | emit_sanitized_widget_stream || status=$?
+    bls_finish
 
-    rm -f "$log_file"
+    # The verdict is always reported, but a failing harness keeps its own
+    # exit code: the retry loop must still see a session-hygiene exit.
+    if ! check_for_unexpected_widget_warnings; then
+        (( status != 0 )) || status=1
+    fi
     return "$status"
 }
 
+# The headless environment and the harness, in a subshell that creates and
+# registers nothing: the exports stay out of this shell's later attempts.
+# shellcheck disable=SC2329 # run by run_headless through run_with_widget_log
+headless_widget_harness() (
+    export GDK_BACKEND=wayland
+    export LUSHTEXT_WIDGET_HEADLESS_RUNNER=1
+    export LUSHTEXT_WIDGET_HEADLESS_MONITOR="$MONITOR"
+    # Cairo keeps widget tests on GTK's CPU fallback renderer, so headless
+    # containers do not probe missing Mesa/EGL devices; the session keeps
+    # a caller's GSK_RENDERER when a renderer bug is being chased.
+    unset DISPLAY WAYLAND_DISPLAY
+    "${WIDGET_HARNESS_COMMAND[@]}"
+)
+
 run_headless() {
-    local status
-    if (
-        export GDK_BACKEND=wayland
-        export LUSHTEXT_WIDGET_HEADLESS_RUNNER=1
-        export LUSHTEXT_WIDGET_HEADLESS_MONITOR="$MONITOR"
-        # Cairo keeps widget tests on GTK's CPU fallback renderer, so headless
-        # containers do not probe missing Mesa/EGL devices; the session keeps
-        # a caller's GSK_RENDERER when a renderer bug is being chased.
-        unset DISPLAY WAYLAND_DISPLAY
+    if (( ${#WIDGET_HARNESS_COMMAND[@]} == 0 )); then
         # The temp scope gives the whole harness a private TMPDIR and a short
         # private XDG_RUNTIME_DIR, releases the runtime directory only once
         # the session's services have exited, and fails the run if any test
         # process left a temporary entry behind. The session helper runs in
         # that directory and judges, at teardown, what the session touched.
-        run_with_widget_log \
-            "$TEMP_SCOPE" --session-runtime "$SCOPE_LABEL" -- \
-            "$HEADLESS_SESSION" run --profile widget --inherit-runtime-dir --monitor "$MONITOR" -- \
+        WIDGET_HARNESS_COMMAND=(
+            "$TEMP_SCOPE" --session-runtime "$SCOPE_LABEL" --
+            "$HEADLESS_SESSION" run --profile widget --inherit-runtime-dir --monitor "$MONITOR" --
             cargo test -p lushtext --test widget -- "${TEST_ARGS[@]}"
-    ); then
-        status=0
-    else
-        status=$?
+        )
     fi
-    return "$status"
+    run_with_widget_log headless_widget_harness
 }
 
 # Whether a failed attempt may be rerun: never after a session-hygiene verdict.
@@ -324,33 +534,40 @@ if ! [[ "$RETRIES" =~ ^[0-9]+$ ]]; then
     exit 1
 fi
 
-if [[ "$SELF_TEST" == true ]]; then
+if [[ "$SELF_TEST" == true && ${#TEST_ARGS[@]} -eq 0 ]]; then
     self_test_warning_classification
     exit 0
 fi
 
-attempt=1
-max_attempts=$((RETRIES + 1))
 status=0
-while (( attempt <= max_attempts )); do
-    if run_once; then
-        status=0
-        break
-    else
-        status=$?
-    fi
+if [[ "$SELF_TEST" == true ]]; then
+    # The self-test's own entry point: run_headless over a fake command,
+    # exactly as a real run would, then the same memory report.
+    WIDGET_HARNESS_COMMAND=("${TEST_ARGS[@]}")
+    run_headless || status=$?
+else
+    attempt=1
+    max_attempts=$((RETRIES + 1))
+    while (( attempt <= max_attempts )); do
+        if run_once; then
+            status=0
+            break
+        else
+            status=$?
+        fi
 
-    if (( attempt == max_attempts )); then
-        break
-    fi
-    if ! retry_allowed "$status"; then
-        echo "Widget test run failed its session-hygiene check (exit $status); not retrying." >&2
-        break
-    fi
+        if (( attempt == max_attempts )); then
+            break
+        fi
+        if ! retry_allowed "$status"; then
+            echo "Widget test run failed its session-hygiene check (exit $status); not retrying." >&2
+            break
+        fi
 
-    echo "Widget test run failed on attempt $attempt/$max_attempts; retrying..." >&2
-    attempt=$((attempt + 1))
-done
+        echo "Widget test run failed on attempt $attempt/$max_attempts; retrying..." >&2
+        attempt=$((attempt + 1))
+    done
+fi
 
 if [[ -n "${LUSHTEXT_MEMORY_CAP_KIB:-}" ]] && scope_dir="$(memory_scope_dir)"; then
     if ! report_memory_scope "$scope_dir"; then
