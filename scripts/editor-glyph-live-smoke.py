@@ -21,6 +21,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
+from smoke_runtime_dir import runtime_base  # noqa: E402
 from smoke_session import HEADLESS_SESSION, check_tools  # noqa: E402
 
 # An X11 (Xvfb) lane with no screenshots through PipeWire: no media, no
@@ -414,7 +415,11 @@ def inner_run(args: argparse.Namespace) -> int:
     """Run the isolated GUI session and write before/after typing artifacts."""
 
     args.artifact_dir.mkdir(parents=True, exist_ok=True)
-    runtime_root = Path(tempfile.mkdtemp(prefix="lushtext-editor-glyph."))
+    runtime_root = Path(
+        tempfile.mkdtemp(
+            prefix="lushtext-editor-glyph.", dir=runtime_base("lushtext-editor-glyph.")
+        )
+    )
     env = smoke_env(runtime_root)
     fixture = runtime_root / "glyph-live-smoke.txt"
     fixture.write_text("", encoding="utf-8")

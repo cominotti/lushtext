@@ -504,7 +504,7 @@ impl LushtextSearchPanel {
         self.invalidate_active_preview();
         imp.preview.preview_pending.set(false);
         imp.preview.preview_mode.set(false);
-        imp.replace_all_button.set_label("Replace All");
+        self.reset_replace_button_label_unless_running();
         self.update_replace_button_sensitivity();
         self.refresh_accessibility_state();
     }

@@ -1320,6 +1320,23 @@ fn evaluate_allowed_region_relationships(
                 header_open_precedes_new_tab(after_snapshot),
             );
         }
+        model::TAB_STRIP_OVERFLOW_SCENARIO => {
+            push_tab_strip_overflow_relationships(
+                &mut rows,
+                &mut status,
+                before_snapshot,
+                after_snapshot,
+            );
+        }
+        model::ALL_TABS_POPOVER_SCENARIO => {
+            push_all_tabs_popover_relationships(
+                &mut rows,
+                &mut status,
+                case,
+                before_snapshot,
+                after_snapshot,
+            );
+        }
         model::WORKSPACE_TREE_REVEAL_SCENARIO => {
             push_workspace_tree_reveal_relationships(
                 &mut rows,
@@ -1480,7 +1497,11 @@ fn push_workspace_tree_reveal_relationships(
             rows,
             status,
             "section-header-unchanged",
-            section_header_unchanged(before_snapshot, after_snapshot),
+            surface_unmoved(
+                before_snapshot,
+                after_snapshot,
+                REVEALED_SECTION_HEADER_SURFACE,
+            ),
         );
     }
 }
@@ -1616,14 +1637,16 @@ fn outer_scroll_unchanged(before: &Value, after: &Value) -> Result<(), String> {
     }
 }
 
-fn section_header_unchanged(before: &Value, after: &Value) -> Result<(), String> {
-    let before_rect = surface_box(before, REVEALED_SECTION_HEADER_SURFACE)?;
-    let after_rect = surface_box(after, REVEALED_SECTION_HEADER_SURFACE)?;
+/// Whether the visible surface `name` has the same rectangle in both
+/// snapshots.
+fn surface_unmoved(before: &Value, after: &Value, name: &str) -> Result<(), String> {
+    let before_rect = surface_box(before, name)?;
+    let after_rect = surface_box(after, name)?;
     if before_rect == after_rect {
         Ok(())
     } else {
         Err(format!(
-            "{REVEALED_SECTION_HEADER_SURFACE} moved from {before_rect:?} to {after_rect:?}"
+            "{name} moved from {before_rect:?} to {after_rect:?}"
         ))
     }
 }
@@ -1710,6 +1733,141 @@ fn header_open_precedes_new_tab(snapshot: &Value) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// The overflowing strip: its controls are drawn before and after the step,
+/// the strip keeps its rectangle (so its height), Forward was enabled before the
+/// step, and Back is enabled after it.
+fn push_tab_strip_overflow_relationships(
+    rows: &mut Vec<Value>,
+    status: &mut &'static str,
+    before: &Value,
+    after: &Value,
+) {
+    for (name, snapshot) in [
+        ("tab-strip-controls-before", before),
+        ("tab-strip-controls-after", after),
+    ] {
+        push_relationship(
+            rows,
+            status,
+            name,
+            surface_box(snapshot, "tab-strip-overflow-controls").map(|_| ()),
+        );
+    }
+    push_relationship(
+        rows,
+        status,
+        "tab-strip-height-constant",
+        surface_unmoved(before, after, "tab-strip"),
+    );
+    let flag = |snapshot: &Value, name: &str| {
+        snapshot
+            .pointer(&format!("/window/tab_strip/{name}"))
+            .and_then(Value::as_bool)
+    };
+    // The restored strip starts at its start (its selected first tab in
+    // view), so Back is disabled before the step: a step that did nothing
+    // would leave it disabled.
+    push_relationship(
+        rows,
+        status,
+        "tab-strip-step-enablement",
+        match (
+            flag(before, "scroll_back_enabled"),
+            flag(before, "scroll_forward_enabled"),
+            flag(after, "scroll_back_enabled"),
+            flag(after, "overflowing"),
+        ) {
+            (Some(false), Some(true), Some(true), Some(true)) => Ok(()),
+            other => Err(format!(
+                "expected the strip at its start before the step (Back disabled, Forward \
+                 enabled) and Back enabled after it, on an overflowing strip; read {other:?}"
+            )),
+        },
+    );
+    push_relationship(
+        rows,
+        status,
+        "tab-strip-controls-unmoved",
+        surface_unmoved(before, after, "tab-strip-scroll-back"),
+    );
+}
+
+/// The All Tabs popover: closed before, open after with its search entry and
+/// row list inside the window, the strip and the All Tabs button where they
+/// were, and the popover the active transient surface.
+fn push_all_tabs_popover_relationships(
+    rows: &mut Vec<Value>,
+    status: &mut &'static str,
+    case: &Value,
+    before: &Value,
+    after: &Value,
+) {
+    let popover_visible = |snapshot: &Value| {
+        snapshot
+            .pointer("/window/surfaces/all_tabs_popover_visible")
+            .and_then(Value::as_bool)
+    };
+    push_relationship(
+        rows,
+        status,
+        "all-tabs-popover-opens",
+        match (popover_visible(before), popover_visible(after)) {
+            (Some(false), Some(true)) => Ok(()),
+            other => Err(format!(
+                "expected the popover closed before and open after; read {other:?}"
+            )),
+        },
+    );
+    push_relationship(
+        rows,
+        status,
+        "all-tabs-popover-is-the-active-transient",
+        match after
+            .pointer("/window/surfaces/active_transient_surface")
+            .and_then(Value::as_str)
+        {
+            Some("all-tabs-popover") => surface_box(after, "active-transient").map(|_| ()),
+            other => Err(format!("active transient surface is {other:?}")),
+        },
+    );
+    for name in ["tab-strip", "tab-strip-all-tabs"] {
+        push_relationship(
+            rows,
+            status,
+            &format!("{name}-unmoved"),
+            surface_unmoved(before, after, name),
+        );
+    }
+    push_relationship(
+        rows,
+        status,
+        "all-tabs-popover-fits-the-window",
+        all_tabs_popover_fits(case, after),
+    );
+}
+
+/// The popover's search entry and list end inside the window's height, and
+/// its list scrolls rather than growing past it.
+fn all_tabs_popover_fits(case: &Value, snapshot: &Value) -> Result<(), String> {
+    let popover = surface_box(snapshot, "all-tabs-popover")?;
+    let search = surface_box(snapshot, "all-tabs-popover-search")?;
+    let list = surface_box(snapshot, "all-tabs-popover-list")?;
+    let height = case
+        .get("size")
+        .and_then(|size| size.get("height"))
+        .and_then(Value::as_i64)
+        .ok_or_else(|| "all-tabs-popover case is missing size.height".to_string())?;
+    let content_bottom = (search.y + search.height).max(list.y + list.height);
+    if popover.y >= 0 && search.height > 0 && list.height > 0 && content_bottom <= height {
+        Ok(())
+    } else {
+        Err(format!(
+            "all-tabs-popover rect y={} height={} content_bottom={} exceeds the window height {}",
+            popover.y, popover.height, content_bottom, height
+        ))
+    }
 }
 
 fn open_popover_content_relationship(case: &Value, snapshot: &Value) -> Result<(), String> {
@@ -2344,6 +2502,12 @@ fn write_fixture(case: &model::ExpandedCaseOverview, case_dir: &Path) -> Result<
     let text = match case.scenario_type() {
         Some("minimap-sidebar") => minimap_fixture_text(case),
         Some("open-popover") => "Open popover visual geometry fixture\n".to_string(),
+        Some(model::TAB_STRIP_OVERFLOW_SCENARIO) => {
+            "Tab strip overflow visual geometry fixture\n".to_string()
+        }
+        Some(model::ALL_TABS_POPOVER_SCENARIO) => {
+            "All Tabs popover visual geometry fixture\n".to_string()
+        }
         Some("replace-preview") => replace_preview_fixture_text(),
         Some(model::WORKSPACE_TREE_REVEAL_SCENARIO) => {
             "Workspace tree reveal visual geometry fixture\n".to_string()

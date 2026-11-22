@@ -164,6 +164,43 @@ pub(crate) fn parse_control_line(output: &str, axiom: AxiomId, name: &str) -> Op
 /// Lines of a control run's stderr kept in a failure message.
 const CONTROL_STDERR_TAIL_LINES: usize = 8;
 
+/// How often the control's spawn is tried while the helper path is missing
+/// or busy, and how long it waits between tries: the same 10 x 0.1 s as
+/// LushText's `scripts/headless-session` shim.
+const HELPER_SPAWN_ATTEMPTS: u32 = 10;
+const HELPER_SPAWN_RETRY_DELAY: Duration = Duration::from_millis(100);
+
+/// Run `spawn` until it succeeds, fails with anything but a missing or busy
+/// executable, or has been tried `attempts` times, sleeping `delay` between
+/// tries.
+///
+/// The helper path is the enclosing session's `target/debug` binary, and a
+/// `cargo build` in the same checkout re-uplifts it at any moment: it
+/// removes the file, then links the new one, so for an instant the path does
+/// not exist (`NotFound`), or is still being written (`ExecutableFileBusy`).
+fn spawn_retrying_helper_relink<T>(
+    attempts: u32,
+    delay: Duration,
+    mut spawn: impl FnMut() -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    let mut tried = 1;
+    loop {
+        match spawn() {
+            Err(error)
+                if tried < attempts
+                    && matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::ExecutableFileBusy
+                    ) =>
+            {
+                std::thread::sleep(delay);
+                tried += 1;
+            }
+            outcome => return outcome,
+        }
+    }
+}
+
 /// Run this executable as `axiom`'s control child in a nested `widget`
 /// session with `overrides` (`--a11y atspi`, or `--portals on`).
 ///
@@ -180,14 +217,18 @@ pub(crate) fn run_nested_control(
     overrides: &[&str],
 ) -> Result<ControlOutcome, String> {
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-    let output = Command::new(helper)
+    let mut command = Command::new(helper);
+    command
         .args(["run", "--profile", "widget"])
         .args(overrides)
         .arg("--")
         .arg(executable)
         .env(CONTROL_ENV, axiom.to_string())
-        .stdin(Stdio::null())
-        .output()
+        .stdin(Stdio::null());
+    let output =
+        spawn_retrying_helper_relink(HELPER_SPAWN_ATTEMPTS, HELPER_SPAWN_RETRY_DELAY, || {
+            command.output()
+        })
         .map_err(|error| format!("{}: {error}", helper.display()))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let appeared = parse_control_line(&stdout, axiom, name).ok_or_else(|| {
@@ -252,6 +293,8 @@ fn control_child(axiom: &str) -> ExitCode {
         "A115" => A11Y_BUS_NAME,
         // A117's child announces instead of watching the bus.
         "A117" => return crate::probes::a117::announce_child(),
+        // A134's child runs the popover fixture, traced, in its own process.
+        "A134" => return crate::probes::a134::popover_frames_child(),
         "A116" => {
             // The axiom's claim: `GDK_DEBUG=no-portals` alone does not stop
             // Libadwaita. The nested `--portals on` session clears it, so
@@ -403,5 +446,43 @@ mod tests {
         );
         assert_eq!(session_bus_skip_line(AxiomId::new(115), false), None);
         assert_eq!(session_bus_skip_line(AxiomId::new(1), true), None);
+    }
+
+    #[test]
+    fn the_control_spawn_outlasts_a_helper_relink_and_nothing_else() {
+        use std::io::{Error, ErrorKind};
+        // Missing, then busy, then in place: the third try runs it.
+        let mut tries = 0;
+        let outcome = spawn_retrying_helper_relink(10, Duration::ZERO, || {
+            tries += 1;
+            match tries {
+                1 => Err(Error::from(ErrorKind::NotFound)),
+                2 => Err(Error::from(ErrorKind::ExecutableFileBusy)),
+                _ => Ok(tries),
+            }
+        });
+        assert_eq!(outcome.expect("the relinked helper runs"), 3);
+        // Any other failure is returned at once.
+        let mut tries = 0;
+        let outcome = spawn_retrying_helper_relink(10, Duration::ZERO, || {
+            tries += 1;
+            Err::<(), _>(Error::from(ErrorKind::PermissionDenied))
+        });
+        assert_eq!(
+            outcome.map_err(|error| error.kind()),
+            Err(ErrorKind::PermissionDenied)
+        );
+        assert_eq!(tries, 1);
+        // A helper that never comes back fails after the last try.
+        let mut tries = 0;
+        let outcome = spawn_retrying_helper_relink(4, Duration::ZERO, || {
+            tries += 1;
+            Err::<(), _>(Error::from(ErrorKind::NotFound))
+        });
+        assert_eq!(
+            outcome.map_err(|error| error.kind()),
+            Err(ErrorKind::NotFound)
+        );
+        assert_eq!(tries, 4);
     }
 }

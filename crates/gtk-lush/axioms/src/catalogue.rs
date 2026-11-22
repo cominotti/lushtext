@@ -1970,6 +1970,62 @@ const CATALOGUE: &[Axiom] = &[
         version_bound: None,
         probe: Some(probes::probe_a129),
     },
+    Axiom {
+        id: AxiomId::new(132),
+        name: "a132_an_outside_write_scrolls_the_unpinned_tab_strip",
+        statement: "AdwTabBar's unpinned tabs live in the first GtkScrolledWindow of its template \
+                    without CSS class pinned; an outside write of its hadjustment value moves \
+                    the tabs by the written delta and holds across the next frames while the \
+                    tab box's scroll animation is idle, and a write while that animation plays \
+                    pauses it; page-increment is 0.9 x page-size, and in right-to-left the \
+                    lower end shows the last tab",
+        dependent_designs: &[
+            "tab-strip-overflow-navigation D3: the Scroll Tabs Back and Forward buttons find \
+             the unpinned scroller (ui/window/tab_overflow/scroll_execution.rs) and step its \
+             adjustment by its page increment, mapping Back to the upper end in right-to-left",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a132),
+    },
+    Axiom {
+        id: AxiomId::new(133),
+        name: "a133_tab_bar_overflow_notifies_and_keeps_its_height_with_an_end_widget",
+        statement: "AdwTabBar:is-overflowing notifies when the tabs cross the overflow \
+                    threshold both ways; the unpinned adjustment still overflows after a \
+                    three-button end action widget is attached at the width where it first \
+                    overflowed; attaching or removing that widget leaves the bar's height \
+                    unchanged; selecting an out-of-view page scrolls its tab inside the page",
+        dependent_designs: &[
+            "tab-strip-overflow-navigation D1, D2: the overflow controls sit in the end action \
+             widget, appear once the unpinned adjustment overflows and keep the strip's height; \
+             the All Tabs popover selects a page and relies on the strip scrolling to it",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a133),
+    },
+    Axiom {
+        id: AxiomId::new(134),
+        name: "a134_a_discarded_popover_frame_warns_when_its_toplevel_presents",
+        statement: "a GtkPopover's popup surface shares its toplevel's frame clock but keeps its \
+                    own presentation feedbacks: GTK >= 4.24 marks the shared frame discarded \
+                    when the compositor discards the popover's feedback (Mutter does on an \
+                    xdg_popup.reposition over an unpainted buffer), and the toplevel's \
+                    presented for the same frame then prints, once per process, \
+                    `gdk_frame_timings_presented() called on discarded frame.`; GTK < 4.24 \
+                    prints nothing (GTK main d2595c6b removed the transition)",
+        dependent_designs: &[
+            "the widget runner's classification of that one exact line \
+             (scripts/run-widget-tests.sh, BENIGN_WIDGET_NOISE_REGEX), removed once the \
+             shipped toolkit carries d2595c6b",
+            "the sidebar file peek, which re-anchors its popover on a worker completion and \
+             on every selection change (ui/sidebar/workspace_section/peek_execution.rs)",
+        ],
+        slow: false,
+        version_bound: Some(crate::version::VersionBound::gtk(4, 24, 0)),
+        probe: Some(probes::probe_a134),
+    },
 ];
 
 #[cfg(test)]

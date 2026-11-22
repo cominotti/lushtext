@@ -599,7 +599,9 @@ are in [`testing.md`](./testing.md). This section covers the lane.
   pending record (`PENDING DISPATCH` or `provisional`) whose owner is not an
   active directory under `openspec/changes/`, so the commit that archives a
   change still owing a figure fails its hook. Record a budget from a
-  dispatched run, the larger of two; when a shard breaks a margin, fit it by
+  dispatched run, the larger of two (when to dispatch, and who reads the
+  runs: [`verification-runs.md`](./verification-runs.md), "Kani"); when a
+  shard breaks a margin, fit it by
   the order in [`docs/runbooks/kani-shards.md`](../../docs/runbooks/kani-shards.md)
   (split, then solver, then a recorded bound reduction). Never raise
   `timeout-minutes` instead. The Kani install is cached on `KANI_VERSION`.
@@ -684,7 +686,12 @@ platform — run `make gtk-axioms` **first**, before any other work. A failing
 probe is an axiom change: never adjust a probe to match the new behaviour
 first, and when the shipped runtime and the floor disagree, version-qualify the
 entry rather than rewrite it (`make check-gtk-axioms` enforces the ledger
-form). The steps are in
+form). A classification of a toolkit warning
+exists only while the shipped toolkit has the defect: the widget runner's
+benign entry for GTK 4.24's `gdk_frame_timings_presented() called on
+discarded frame.` (ledger A134) is removed in the change that brings a shipped
+toolkit and CI image carrying GTK d2595c6b, which A134's `GTK >= 4.24` branch
+then fails on. The steps are in
 [`docs/runbooks/gtk-toolkit-update.md`](../../docs/runbooks/gtk-toolkit-update.md).
 Interleaved `GTK_AXIOMS_ONLY` re-test rounds run through `scripts/measure.sh`.
 A nightly verdict is a preview of the next adoption, never a ledger
@@ -699,6 +706,14 @@ against the new defaults and update the fragment and the version in its header
 comment; then run one screencast session (`make visual-geometry-smoke`). A
 changed default that loads module-rt, a hardware monitor or reaches rtkit
 fails that run with `SESSION-HYGIENE:` lines, which is the intended signal.
+On a WirePlumber update, also re-check the readiness signal the helper waits
+for (`session::observe::wireplumber_policy_ready`): that
+`/usr/share/wireplumber/scripts/session-services.lua` still sets the client's
+`session.services` and lists `policy.linking.standard` in it, and that
+`wireplumber.conf`'s component rules still order `support.session-services`
+after every other component. A renamed service or property fails the first
+screencast session before its command, with a `WirePlumber did not load its
+linking policy` line and `pw-dump-not-ready.json` in its log directory.
 
 ## Fuzzing
 

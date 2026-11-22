@@ -19,7 +19,9 @@
 # GTK_LUSH_SESSION_BIN, when set to an executable, is used as is (lanes that
 # do not run cargo, and code inside a session that starts a nested one).
 # Otherwise the binary is built incrementally with cargo. With neither,
-# the shim exits 77 so the lane reports an unsupported host.
+# the shim exits 77 so the lane reports an unsupported host. A helper that
+# is executable but that the kernel refuses to run (a corrupt or half-written
+# file, a noexec mount) is a failure, exit 1, never an unsupported host.
 
 set -euo pipefail
 
@@ -27,9 +29,39 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd "$here/.." && pwd)
 unsupported=77
 
+# exec_helper <bin> [args...]: exec the helper, retrying briefly; it returns
+# only when every try failed. Every `cargo build`, fresh or not, re-uplifts
+# target/debug/gtk-lush-session (it removes the file, then links a new
+# inode), and several lanes build it at once (`make test` starts every widget
+# shard together), so for an instant the path is missing, or exec fails with
+# "Text file busy" while it is written; the copy takes milliseconds. Once
+# running, the helper re-executes itself through its own /proc exe link,
+# never this path. `execfail` keeps a failed exec from ending the shell, and
+# `set +e` is needed too: under errexit bash ends the shell on a failed exec
+# even inside an `||` or `if` (bash 5.3). `exec_tried` records whether a try
+# reached exec, whose failure bash has then reported with its reason.
+exec_tried=0
+exec_helper() {
+    local bin=$1
+    shift
+    shopt -s execfail
+    set +e
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        if [[ -x "$bin" ]]; then
+            exec_tried=1
+            exec "$bin" "$@"
+        fi
+        sleep 0.1
+    done
+}
+
 if [[ -n "${GTK_LUSH_SESSION_BIN:-}" ]]; then
-    if [[ -x "$GTK_LUSH_SESSION_BIN" ]]; then
-        exec "$GTK_LUSH_SESSION_BIN" "$@"
+    # Inside a session the helper exports its own target/debug path, which a
+    # rebuild in the same worktree replaces at any moment.
+    exec_helper "$GTK_LUSH_SESSION_BIN" "$@"
+    if ((exec_tried)); then
+        echo "gtk-lush-session: cannot execute GTK_LUSH_SESSION_BIN=$GTK_LUSH_SESSION_BIN" >&2
+        exit 1
     fi
     echo "UNSUPPORTED-HOST: GTK_LUSH_SESSION_BIN=$GTK_LUSH_SESSION_BIN is not executable" >&2
     exit "$unsupported"
@@ -49,19 +81,11 @@ fi
 target_dir=$(cargo metadata --quiet --format-version 1 --no-deps --manifest-path "$repo/Cargo.toml" \
     | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
 bin="$target_dir/debug/gtk-lush-session"
-# Every `cargo build`, fresh or not, re-uplifts this file (a new inode), and
-# several lanes build it at once (`make test` starts every widget shard
-# together). While another build is writing it, exec fails with "Text file
-# busy"; the copy takes milliseconds, so retry briefly. Once running, the
-# helper re-executes itself through its own /proc exe link, never this path.
-# `execfail` keeps a failed exec from ending the shell, and `set +e` is
-# needed too: under errexit bash ends the shell on a failed exec even inside
-# an `||` or `if` (bash 5.3).
-shopt -s execfail
-set +e
-for _ in 1 2 3 4 5 6 7 8 9 10; do
+exec_helper "$bin" "$@"
+if ((!exec_tried)); then
+    # The path never became executable: one last exec lets bash say why
+    # (missing, or without the exec bit).
     exec "$bin" "$@"
-    sleep 0.1
-done
+fi
 echo "gtk-lush-session: cannot execute $bin" >&2
 exit 1

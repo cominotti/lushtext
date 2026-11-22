@@ -62,10 +62,17 @@ directory ([why](../../docs/memorials/2026-10-20-test-data-incidents.md)).
   (`gtk-lush-session/system-bus`) is the deepest, and `dbus-daemon` binds at
   most 99 bytes (`DBUS_SOCKET_PATH_MAX`, below the kernel's 107). The helper
   puts an owned runtime directory that would not fit under `/tmp` and refuses
-  an inherited one; `with-temp-scope.sh --session-runtime` refuses such a
-  scope; and the Python drivers' `smoke_runtime_dir.create_runtime_root`
-  falls back to `/tmp` when the scope's `TMPDIR` is too deep, which a
-  seven-digit PID can make it.
+  an inherited one; `with-temp-scope.sh` makes its whole scope under `/tmp`
+  when `TMPDIR` is too deep for a session inside it (an agent stage's
+  `$H/<change>/tmp/<stage>`, where widget tests that fix folder lengths or
+  charge path bytes against their budgets failed deterministically), and
+  `--session-runtime` refuses only a scope whose sockets would not fit even
+  there; and every other creator of a session runtime directory falls back to `/tmp`
+  when the scope's `TMPDIR` is too deep (which a seven-digit PID can make it):
+  the Python drivers through `smoke_runtime_dir.runtime_base`, the Mutter
+  capture helper of the `gtk-agentic-debugging` skill with the same rule, and
+  `cargo-gtk-proof`'s live runner (`host.rs`, `runtime_dir_for_artifact`).
+  A new one follows the same rule; a refused session names the directory.
 - **PID-bearing names and a conservative sweep.** Names carry the owning PID
   after an exact prefix so the next run can reclaim what a SIGKILLed run left:
   only real directories owned by the current user, whose PID is gone and which

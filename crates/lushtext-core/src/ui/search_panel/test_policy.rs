@@ -38,7 +38,9 @@ pub struct SearchPanelTestPolicy {
     pub replace_preview_delay: Duration,
     /// Artificial delay inside the checked-row selection partition.
     pub preview_selection_delay: Duration,
-    /// Artificial delay before undo-journal persistence touches the disk.
+    /// Artificial delay in undo-journal disk jobs: before a save or delete
+    /// touches the disk, and after a startup recovery has read an active
+    /// journal, before its completion is queued.
     pub undo_backup_disk_delay: Duration,
     /// Replace All preview row ceiling; zero keeps the production budget.
     pub replace_preview_max_rows: u64,
@@ -160,7 +162,7 @@ pub(super) fn delay_preview_selection() {
     sleep(load_delay(&PREVIEW_SELECTION_DELAY_MS));
 }
 
-/// Delay undo-journal persistence for ordering tests.
+/// Delay an undo-journal disk job for ordering tests.
 pub(super) fn delay_undo_backup_disk() {
     sleep(load_delay(&UNDO_BACKUP_DISK_DELAY_MS));
 }

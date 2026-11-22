@@ -11,9 +11,14 @@
 //! supersession or a generation race becomes observable. Each stage order owns
 //! one such delay, and each is read at exactly one point:
 //! [`delay_search_worker`] on the grouped-search worker in `query_execution`,
-//! and [`delay_index_update_worker`] on the index-mutation worker in
-//! `index_execution`. Both are fields of [`CommandPaletteTestPolicy`], so the
-//! workflow has one test policy value rather than one static per delay.
+//! [`delay_index_update_worker`] on the index-mutation worker in
+//! `index_execution`, and [`delay_file_index_build`] on the full index-build
+//! worker in `ui/window/palette_shell.rs`, after the build's GTK-side
+//! disposal reservation and before the worker shrinks it, so a test can hold
+//! that reservation across a Replace All Confirm
+//! (`replace-all-confirm-disposal-lane` design D7). All three are fields of
+//! [`CommandPaletteTestPolicy`], so the workflow has one test policy value
+//! rather than one static per delay.
 //!
 //! The whole module is gated behind the `test-utils` feature, so a build without
 //! that feature compiles no override storage and no override selection: the
@@ -24,6 +29,7 @@ use std::time::Duration;
 
 static SEARCH_WORKER_DELAY_MS: AtomicU64 = AtomicU64::new(0);
 static INDEX_UPDATE_WORKER_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+static FILE_INDEX_BUILD_DELAY_MS: AtomicU64 = AtomicU64::new(0);
 static RESULTS_PER_SOURCE: AtomicUsize = AtomicUsize::new(0);
 static CATEGORY_ROW_LIMIT: AtomicUsize = AtomicUsize::new(0);
 
@@ -38,6 +44,9 @@ pub struct CommandPaletteTestPolicy {
     pub search_worker_delay: Duration,
     /// Artificial delay before the incremental index-mutation worker starts.
     pub index_update_worker_delay: Duration,
+    /// Artificial delay at the start of the full file-index build worker,
+    /// while the build still holds its whole disposal reservation.
+    pub file_index_build_delay: Duration,
     /// Per-group row cap of the grouped view in place of
     /// `MAX_RESULTS_PER_SOURCE` (0: the production cap), so a test can force
     /// a "More" row on any group.
@@ -54,6 +63,7 @@ impl CommandPaletteTestPolicy {
         Self {
             search_worker_delay: load_delay(&SEARCH_WORKER_DELAY_MS),
             index_update_worker_delay: load_delay(&INDEX_UPDATE_WORKER_DELAY_MS),
+            file_index_build_delay: load_delay(&FILE_INDEX_BUILD_DELAY_MS),
             results_per_source: RESULTS_PER_SOURCE.load(Ordering::Acquire),
             category_row_limit: CATEGORY_ROW_LIMIT.load(Ordering::Acquire),
         }
@@ -66,6 +76,7 @@ impl CommandPaletteTestPolicy {
             &INDEX_UPDATE_WORKER_DELAY_MS,
             self.index_update_worker_delay,
         );
+        store_delay(&FILE_INDEX_BUILD_DELAY_MS, self.file_index_build_delay);
         RESULTS_PER_SOURCE.store(self.results_per_source, Ordering::Release);
         CATEGORY_ROW_LIMIT.store(self.category_row_limit, Ordering::Release);
     }
@@ -102,6 +113,13 @@ impl CommandPaletteTestPolicy {
         self.index_update_worker_delay = delay;
         self
     }
+
+    /// Delay the full file-index build worker while it holds its reservation.
+    #[must_use]
+    pub const fn with_file_index_build_delay(mut self, delay: Duration) -> Self {
+        self.file_index_build_delay = delay;
+        self
+    }
 }
 
 fn load_delay(cell: &AtomicU64) -> Duration {
@@ -129,6 +147,12 @@ pub(super) fn delay_search_worker() {
 /// Delay index-mutation worker entry for deterministic replacement-race tests.
 pub(super) fn delay_index_update_worker() {
     sleep(load_delay(&INDEX_UPDATE_WORKER_DELAY_MS));
+}
+
+/// Delay full file-index build worker entry, so the build's disposal
+/// reservation is provably held while a test confirms a Replace All.
+pub(crate) fn delay_file_index_build() {
+    sleep(load_delay(&FILE_INDEX_BUILD_DELAY_MS));
 }
 
 /// The grouped view's per-group cap override, when one is installed.

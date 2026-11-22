@@ -270,6 +270,10 @@ impl LushtextWindow {
             runtime.projection_batch_owned = false;
             self.end_tab_projection_refresh_batch();
         }
+        // Each page attached after the selection scrolled the strip to its new
+        // tab (ledger A132), so the selected tab can be out of view: let the
+        // strip bring it back once the terminal publish has shown the strip.
+        self.reveal_selected_tab();
         evidence::record_restore_outcome(self, metrics);
         self.schedule_orphan_cleanup(cleanup_allowed);
         self.evaluate_preserved_drafts_after_startup();

@@ -48,7 +48,16 @@ SESSION_HYGIENE_EXIT_CODE=93
 # services the session does not run; that family lives once in
 # smoke_warning_classifiers.py and is read here as POSIX ERE.
 SESSION_SERVICES_REGEX="$(python3 -B "$SCRIPT_DIR/smoke_warning_classifiers.py" --print-regex headless-session-services)"
-BENIGN_WIDGET_NOISE_REGEX='(dbus-daemon\[[0-9]+\]: .*org\.(freedesktop\.(portal|impl\.portal\.|systemd1)|a11y\.Bus)|\(/usr/libexec/xdg-desktop-portal:.*WARNING \*\*:|\*\* \(xdg-desktop-portal-gtk:.*WARNING \*\*:|Gdk-Message: .*Broken pipe$|^libmutter-Message:|^\*\* Message: .*Obtained a high priority EGL context$|^\*\* \(mutter:[0-9]+\): WARNING \*\*: ([0-9:.]+: )?Skipping layers 1\.\.n of your pipeline since the first layer is sliced\. We don'\''t currently support any multi-texturing with sliced textures but assume layer 0 is the most important to keep$|.*WARNING: Glycin running without sandbox\.( .*)?$)|'"$SESSION_SERVICES_REGEX"
+# GTK 4.24 prints `gdk_frame_timings_presented() called on discarded frame.`
+# once per process when the compositor discards a popover's unpainted buffer
+# while the popover is repositioned: the popover and its toplevel share one
+# frame clock, and GDK marks the shared frame discarded from one surface's
+# feedback (ledger A134; GTK 4.22 has no such state, and GTK main removed the
+# transition in d2595c6b, MR !10242, not in gtk-4-24). It is benign here as
+# that exact line from a harness child (`process`) and as nothing else; the
+# smoke lanes stay strict. Remove the entry once the shipped toolkit and the
+# CI image carry d2595c6b (build.md, "GTK Axioms and Toolkit Updates").
+BENIGN_WIDGET_NOISE_REGEX='(dbus-daemon\[[0-9]+\]: .*org\.(freedesktop\.(portal|impl\.portal\.|systemd1)|a11y\.Bus)|\(/usr/libexec/xdg-desktop-portal:.*WARNING \*\*:|\*\* \(xdg-desktop-portal-gtk:.*WARNING \*\*:|Gdk-Message: .*Broken pipe$|^libmutter-Message:|^\*\* Message: .*Obtained a high priority EGL context$|^\*\* \(mutter:[0-9]+\): WARNING \*\*: ([0-9:.]+: )?Skipping layers 1\.\.n of your pipeline since the first layer is sliced\. We don'\''t currently support any multi-texturing with sliced textures but assume layer 0 is the most important to keep$|.*WARNING: Glycin running without sandbox\.( .*)?$|^\(process:[0-9]+\): Gdk-WARNING \*\*: [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}: gdk_frame_timings_presented\(\) called on discarded frame\.$)|'"$SESSION_SERVICES_REGEX"
 # Cargo diagnostics spell this as a standalone `warning:` token. Requiring a
 # line/whitespace boundary keeps `--list` output such as `...visible_warning:
 # test` from being mistaken for a toolkit or compiler warning.
@@ -122,6 +131,33 @@ self_test_warning_classification() {
         echo "Error: widget warning self-test accepted an unexpected GTK warning." >&2
         return 1
     fi
+
+    # GTK 4.24's discarded-frame warning (ledger A134) is benign as this exact
+    # line from a harness child, and as nothing else. The sample is the line a
+    # gate run printed (tab-strip-overflow-navigation, gate-apply-test.log).
+    printf '%s\n' "(process:2232206): Gdk-WARNING **: 15:17:27.766: gdk_frame_timings_presented() called on discarded frame." >"$log_file"
+    if ! check_for_unexpected_widget_warnings "$log_file"; then
+        echo "Error: widget warning self-test rejected GTK 4.24's discarded-frame warning (A134)." >&2
+        return 1
+    fi
+    local near_miss
+    for near_miss in \
+        "(process:2232206): Gdk-WARNING **: 15:17:27.766: gdk_frame_timings_presented() called on skipped frame." \
+        "(process:2232206): Gdk-WARNING **: 15:17:27.766: gdk_frame_timings_presented() called on submitted frame." \
+        "(process:2232206): Gdk-WARNING **: 15:17:27.766: gdk_frame_timings_submitted() called on discarded frame." \
+        "(process:2232206): Gdk-WARNING **: 15:17:27.766: gdk_frame_timings_discarded() called on already presented frame." \
+        "(process:2232206): Gdk-WARNING **: 15:17:27.766: Duplicate call to gdk_frame_timings_presented() with different values: 1 != 2" \
+        "(process:2232206): Gtk-WARNING **: 15:17:27.766: gdk_frame_timings_presented() called on discarded frame." \
+        "(process:2232206): Gdk-CRITICAL **: 15:17:27.766: gdk_frame_timings_presented() called on discarded frame." \
+        "(lushtext:2232206): Gdk-WARNING **: 15:17:27.766: gdk_frame_timings_presented() called on discarded frame." \
+        "(process:2232206): Gdk-WARNING **: 15:17:27.766: gdk_frame_timings_presented() called on discarded frame. Also something else" \
+        "test window::test_x ... (process:2232206): Gdk-WARNING **: 15:17:27.766: gdk_frame_timings_presented() called on discarded frame."; do
+        printf '%s\n' "$near_miss" >"$log_file"
+        if check_for_unexpected_widget_warnings "$log_file" >/dev/null 2>&1; then
+            echo "Error: widget warning self-test accepted a near miss of the discarded-frame warning: $near_miss" >&2
+            return 1
+        fi
+    done
 
     # GTK_A11Y=test reaches no AT-SPI bus, so the registry critical the old
     # session printed (its bus could not activate at-spi2-registryd) cannot
