@@ -188,21 +188,36 @@ no_mutants_seen() {
     (( BLS_COMPLETE == 1 && BLS_KEPT_COUNT > 0 ))
 }
 
-run_cargo_mutants() {
-    local args=("$@")
-    local status
-
+# Run `cargo mutants "${@:2}"` with the phrase scan beside its live stream,
+# each live line prefixed with $1 when it is not empty. Returns cargo's exit
+# status; no_mutants_seen then reads the scan.
+cargo_mutants_scanned() {
+    local prefix=$1 status
+    shift
+    local live=(cat)
+    if [[ -n "${prefix}" ]]; then
+        # The prefix is the replacement of a sed `s`: escape its specials.
+        prefix=${prefix//\\/\\\\}
+        prefix=${prefix//&/\\&}
+        prefix=${prefix//\//\\/}
+        live=(sed -u "s/^/${prefix}/")
+    fi
     if ! bls_start '' '' "${NO_MUTANTS_REGEX}" --keep-ignore-case; then
         echo "Error: ${BLS__START_ERROR}; not running cargo mutants." >&2
         return 1
     fi
     set +e
-    bls_isolated cargo mutants "${args[@]}" 2>&1 | tee -p "/dev/fd/${BLS_IN}"
+    bls_isolated cargo mutants "$@" 2>&1 | tee -p "/dev/fd/${BLS_IN}" | "${live[@]}"
     status="${PIPESTATUS[0]}"
     set -e
     bls_finish
     bls_release
+    return "${status}"
+}
 
+run_cargo_mutants() {
+    local status=0
+    cargo_mutants_scanned '' "$@" || status=$?
     if (( status != 0 )) && no_mutants_seen; then
         echo "No relevant mutants were generated; treating this mutation lane as passing."
         return 0
@@ -369,16 +384,8 @@ run_slot() {
     if [[ -n "${shard}" ]]; then
         args+=(--shard "${shard}")
     fi
-    if ! bls_start '' '' "${NO_MUTANTS_REGEX}" --keep-ignore-case; then
-        echo "Error: ${BLS__START_ERROR}; not running cargo mutants." >&2
-        return 1
-    fi
-    set +e
-    bls_isolated cargo mutants "${args[@]}" 2>&1 | tee -p "/dev/fd/${BLS_IN}" | sed -u "s/^/[${name}] /"
-    status="${PIPESTATUS[0]}"
-    set -e
-    bls_finish
-    bls_release
+    status=0
+    cargo_mutants_scanned "[${name}] " "${args[@]}" || status=$?
     if (( status != 0 )) && no_mutants_seen; then
         echo "[${name}] No relevant mutants in this slot's share; counting it as passing."
         status=0
@@ -670,12 +677,14 @@ STUB
         || ! grep -q 'No relevant mutants in this slot' "${dir}/out"; then
         self_test_fail "a slot's no-mutants phrase was not detected: $(cat "${dir}/out")"
     fi
+    grep -qx '\[slot-1\] INFO noise' "${dir}/out" || self_test_fail "a slot's live line lost its [slot-1] prefix: $(cat "${dir}/out")"
     status=0; STUB_STATUS=4 TMPDIR="${dir}/scan-base" MUTANTS_MIRROR=1 MUTANTS_LOCAL_JOBS=1 "${me}" smoke >"${dir}/out" 2>&1 || status=$?
     (( status == 4 )) || self_test_fail "a slot without the phrase gave status ${status}, not 4: $(cat "${dir}/out")"
     if ! STUB_STATUS=2 STUB_PHRASE='No relevant mutants were found' TMPDIR="${dir}/scan-base" CI=true MUTANTS_MIRROR=1 MUTANTS_SHARD=1/4 "${me}" ci-full >"${dir}/out" 2>&1 \
         || ! grep -q 'treating this mutation lane as passing' "${dir}/out"; then
         self_test_fail "the CI path's no-mutants phrase was not detected: $(cat "${dir}/out")"
     fi
+    grep -qx 'INFO noise' "${dir}/out" || self_test_fail "the CI path's live stream lost or prefixed a line: $(cat "${dir}/out")"
     status=0; STUB_STATUS=2 STUB_PHRASE='10 mutants tested' TMPDIR="${dir}/scan-base" CI=true MUTANTS_MIRROR=1 MUTANTS_SHARD=1/4 "${me}" ci-full >"${dir}/out" 2>&1 || status=$?
     (( status == 2 )) || self_test_fail "the CI path without the phrase gave status ${status}, not 2: $(cat "${dir}/out")"
     [[ -z "$(find "${dir}/scan-base" -mindepth 1 -print -quit)" ]] || self_test_fail "the phrase scan left $(find "${dir}/scan-base" -mindepth 1 | head -n 3)"

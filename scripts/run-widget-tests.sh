@@ -105,17 +105,37 @@ emit_sanitized_widget_stream() {
 # lines and a bounded excerpt, or a scan that did not finish, fail the run.
 check_for_unexpected_widget_warnings() {
     if ! bls_check_unexpected; then
-        echo "Error: unexpected warning output during widget tests ($BLS_COUNT unexpected lines${BLS_INCOMPLETE:+; $BLS_INCOMPLETE})." >&2
+        if (( BLS_COMPLETE != 1 )); then
+            echo "Error: the widget warning scan did not finish (${BLS_INCOMPLETE:-no summary}); failing closed." >&2
+        else
+            echo "Error: unexpected warning output during widget tests ($BLS_COUNT unexpected lines)." >&2
+        fi
         return 1
     fi
 }
 
-# Classify the lines on stdin through the same stage a real run uses.
+# Classify the lines on stdin through the same stage a real run uses: 0 when
+# none is unexpected, 1 when the finished scan found one, 2 when the scan
+# could not start or did not finish.
 check_widget_lines() {
-    bls_start "$WIDGET_WARNING_REGEX" "$BENIGN_WIDGET_NOISE_REGEX"
+    if ! bls_start "$WIDGET_WARNING_REGEX" "$BENIGN_WIDGET_NOISE_REGEX"; then
+        echo "Error: $BLS__START_ERROR; the lines were not classified." >&2
+        return 2
+    fi
     bls_isolated cat 2>&1 | tee -p "/dev/fd/$BLS_IN" >/dev/null
     bls_finish
-    check_for_unexpected_widget_warnings
+    if ! check_for_unexpected_widget_warnings; then
+        (( BLS_COMPLETE == 1 )) || return 2
+        return 1
+    fi
+}
+
+# Whether the lines on stdin were classified unexpected: a scan that did not
+# run rejects nothing.
+widget_lines_rejected() {
+    local code=0
+    check_widget_lines || code=$?
+    (( code == 1 ))
 }
 
 self_test_warning_classification() {
@@ -127,7 +147,7 @@ self_test_warning_classification() {
         return 1
     fi
 
-    if printf '%s\n' "Gtk-WARNING **: allocation failed" | check_widget_lines >/dev/null 2>&1; then
+    if ! printf '%s\n' "Gtk-WARNING **: allocation failed" | widget_lines_rejected >/dev/null 2>&1; then
         echo "Error: widget warning self-test accepted an unexpected GTK warning." >&2
         return 1
     fi
@@ -135,8 +155,8 @@ self_test_warning_classification() {
     # GTK 4.24's discarded-frame warning (ledger A134) is benign as this exact
     # line from a harness child, and as nothing else. The sample is the line a
     # gate run printed (tab-strip-overflow-navigation, gate-apply-test.log).
-    printf '%s\n' "(process:2232206): Gdk-WARNING **: 15:17:27.766: gdk_frame_timings_presented() called on discarded frame." >"$log_file"
-    if ! check_for_unexpected_widget_warnings "$log_file"; then
+    if ! printf '%s\n' "(process:2232206): Gdk-WARNING **: 15:17:27.766: gdk_frame_timings_presented() called on discarded frame." \
+        | check_widget_lines; then
         echo "Error: widget warning self-test rejected GTK 4.24's discarded-frame warning (A134)." >&2
         return 1
     fi
@@ -152,8 +172,7 @@ self_test_warning_classification() {
         "(lushtext:2232206): Gdk-WARNING **: 15:17:27.766: gdk_frame_timings_presented() called on discarded frame." \
         "(process:2232206): Gdk-WARNING **: 15:17:27.766: gdk_frame_timings_presented() called on discarded frame. Also something else" \
         "test window::test_x ... (process:2232206): Gdk-WARNING **: 15:17:27.766: gdk_frame_timings_presented() called on discarded frame."; do
-        printf '%s\n' "$near_miss" >"$log_file"
-        if check_for_unexpected_widget_warnings "$log_file" >/dev/null 2>&1; then
+        if ! printf '%s\n' "$near_miss" | widget_lines_rejected >/dev/null 2>&1; then
             echo "Error: widget warning self-test accepted a near miss of the discarded-frame warning: $near_miss" >&2
             return 1
         fi
@@ -162,8 +181,8 @@ self_test_warning_classification() {
     # GTK_A11Y=test reaches no AT-SPI bus, so the registry critical the old
     # session printed (its bus could not activate at-spi2-registryd) cannot
     # occur in a widget session; if it comes back, it fails the lane.
-    if printf '%s\n' "(process:42): Gtk-CRITICAL **: 14:07:27.435: Unable to register the application: GDBus.Error:org.freedesktop.DBus.Error.NameHasNoOwner: Could not activate remote peer 'org.a11y.atspi.Registry': unit failed" \
-        | check_widget_lines >/dev/null 2>&1; then
+    if ! printf '%s\n' "(process:42): Gtk-CRITICAL **: 14:07:27.435: Unable to register the application: GDBus.Error:org.freedesktop.DBus.Error.NameHasNoOwner: Could not activate remote peer 'org.a11y.atspi.Registry': unit failed" \
+        | widget_lines_rejected >/dev/null 2>&1; then
         echo "Error: widget warning self-test accepted the AT-SPI registry critical." >&2
         return 1
     fi
@@ -183,20 +202,40 @@ self_test_warning_classification() {
         return 1
     fi
     echo "Widget retry classification self-test passed."
+    self_test_harness_status
     self_test_memory_report
     self_test_capture_cases
     "$SCRIPT_DIR/bounded-log-scan.sh" --self-test
     "$TEMP_SCOPE" --self-test
 }
 
-# Wait up to $2 tenths of a second for the file $1 to exist.
-wait_for_file() {
-    local tries=0
-    while [[ ! -e "$1" ]] && (( tries < $2 )); do
-        sleep 0.1
-        tries=$((tries + 1))
-    done
-    [[ -e "$1" ]]
+# A failed warning verdict never hides the harness's own failing exit code:
+# a session-hygiene exit that also printed an unexpected line stays 93, so
+# the retry loop does not start a second session; a clean exit with an
+# unexpected line fails with 1. A scan that could not start fails the check
+# with 2, never with 1, the code of a line classified unexpected, so no
+# rejection below passes without a classification.
+self_test_harness_status() {
+    local code=0
+    # shellcheck disable=SC2016 # expanded by the inner shell
+    "$0" --self-test -- bash -c 'echo "Gtk-WARNING **: noise"; exit "$0"' "$SESSION_HYGIENE_EXIT_CODE" >/dev/null 2>&1 || code=$?
+    if (( code != SESSION_HYGIENE_EXIT_CODE )); then
+        echo "Error: a session-hygiene exit with an unexpected warning became exit $code; it must stay $SESSION_HYGIENE_EXIT_CODE." >&2
+        return 1
+    fi
+    code=0
+    "$0" --self-test -- bash -c 'echo "Gtk-WARNING **: noise"' >/dev/null 2>&1 || code=$?
+    if (( code != 1 )); then
+        echo "Error: a clean exit with an unexpected warning gave exit $code, not 1." >&2
+        return 1
+    fi
+    code=0
+    TMPDIR="${TMPDIR:-/tmp}/run-widget-tests-no-such-$$/base" check_widget_lines </dev/null >/dev/null 2>&1 || code=$?
+    if (( code != 2 )); then
+        echo "Error: a warning scan that could not start gave status $code, not 2." >&2
+        return 1
+    fi
+    echo "Widget harness status self-test passed."
 }
 
 # Wait up to $2 tenths of a second for process $1 to exit.
@@ -230,6 +269,14 @@ FLOOD
     chmod +x "$1/flood"
 }
 
+# Fail, naming its entries, when capture case $1's private base is not empty;
+# $2 says which case and when.
+capture_base_empty() {
+    local entries
+    entries="$(bls__entries "$1/base")"
+    [[ -z "$entries" ]] || { echo "Error: capture case $2 the base holds $entries" >&2; return 1; }
+}
+
 # (a) A flood of 2^20 lines: no capture over 64 KiB exists while it runs, the
 # run fails, and the report counts every line.
 capture_case_flood() {
@@ -251,10 +298,7 @@ capture_case_flood() {
         echo "Error: capture case (a): the report does not count the 1048576 unexpected lines: $(tail -c 300 "$dir/err")" >&2
         failed=1
     fi
-    if [[ -n "$(bls__entries "$dir/base")" ]]; then
-        echo "Error: capture case (a): the base gained $(bls__entries "$dir/base")" >&2
-        failed=1
-    fi
+    capture_base_empty "$dir" "(a): after the flood" || failed=1
     return "$failed"
 }
 
@@ -266,23 +310,17 @@ capture_case_kill() {
     if ! TMPDIR="$dir/base" bls__start_group "$0" --self-test -- "$dir/flood" 12 0.05 </dev/null >/dev/null 2>&1; then
         echo "Error: capture case (b): the runner did not start as its own process group." >&2
         failed=1
-    elif wait_for_file "$dir/parent" 50; then
+    elif bls__wait_for_file "$dir/parent" 50; then
         sleep 0.3
         kill -KILL "$BLS__GROUP" 2>/dev/null || true
         if ! wait_for_exit "$BLS__GROUP" 20; then
             echo "Error: capture case (b): the runner survived kill -9." >&2
             failed=1
         fi
-        if [[ -n "$(bls__entries "$dir/base")" ]]; then
-            echo "Error: capture case (b): after kill -9 the base holds $(bls__entries "$dir/base")" >&2
-            failed=1
-        fi
-        wait_for_file "$dir/done" 100 || true
+        capture_base_empty "$dir" "(b): after kill -9" || failed=1
+        bls__wait_for_file "$dir/done" 100 || true
         sleep 0.2
-        if [[ -n "$(bls__entries "$dir/base")" ]]; then
-            echo "Error: capture case (b): after the orphan ended the base holds $(bls__entries "$dir/base")" >&2
-            failed=1
-        fi
+        capture_base_empty "$dir" "(b): after the orphan ended" || failed=1
     else
         echo "Error: capture case (b): the fake harness never started." >&2
         failed=1
@@ -299,15 +337,12 @@ capture_case_term() {
     if ! TMPDIR="$dir/base" bls__start_group "$0" --self-test -- "$dir/flood" 12 0.05 </dev/null >/dev/null 2>&1; then
         echo "Error: capture case (c): the runner did not start as its own process group." >&2
         failed=1
-    elif wait_for_file "$dir/parent" 50; then
+    elif bls__wait_for_file "$dir/parent" 50; then
         sleep 0.2
         kill -TERM "$(cat "$dir/parent")" 2>/dev/null || true
         wait_for_exit "$BLS__GROUP" 100 || true
         sleep 0.2
-        if [[ -n "$(bls__entries "$dir/base")" ]]; then
-            echo "Error: capture case (c): after SIGTERM to the subshell the base holds $(bls__entries "$dir/base")" >&2
-            failed=1
-        fi
+        capture_base_empty "$dir" "(c): after SIGTERM to the subshell" || failed=1
     else
         echo "Error: capture case (c): the fake harness never started." >&2
         failed=1
@@ -400,8 +435,10 @@ run_with_widget_log() {
     bls_isolated "$@" 2>&1 | tee -p "/dev/fd/$BLS_IN" | emit_sanitized_widget_stream || status=$?
     bls_finish
 
+    # The verdict is always reported, but a failing harness keeps its own
+    # exit code: the retry loop must still see a session-hygiene exit.
     if ! check_for_unexpected_widget_warnings; then
-        return 1
+        (( status != 0 )) || status=1
     fi
     return "$status"
 }

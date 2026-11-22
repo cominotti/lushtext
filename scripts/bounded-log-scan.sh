@@ -42,6 +42,10 @@
 #   scripts/bounded-log-scan.sh --self-test
 #       The bound, the drain, the wait, a dead stage, a lingering daemon and
 #       kill -9 / SIGTERM of a runner mid-flood. Linux only (/proc).
+#
+# Besides the `bls_` API, run-widget-tests.sh's capture self-test uses three
+# self-test helpers of this file: bls__start_group, bls__entries and
+# bls__wait_for_file (its second argument counts tenths of a second).
 
 BLS_REPORT_CAP=65536
 BLS_KEEP_CAP=1048576
@@ -246,13 +250,18 @@ bls_kept_path() { printf '/dev/fd/%s\n' "$BLS_R_KEPT"; }
 # The kept lines' byte count (at most BLS_KEEP_CAP).
 bls_kept_bytes() { printf '%s\n' "$BLS_KEPT_BYTES"; }
 
-# The verdict of the warning scan: 0 when it finished and found nothing.
-# Otherwise print the bounded excerpt and the exact count to stderr, and fail.
-bls_check_unexpected() {
+# Fail, naming the reason, unless the last scan finished.
+bls__check_complete() {
     if (( BLS_COMPLETE != 1 )); then
         echo "Error: the output scan was incomplete (${BLS_INCOMPLETE:-no summary}); failing closed." >&2
         return 1
     fi
+}
+
+# The verdict of the warning scan: 0 when it finished and found nothing.
+# Otherwise print the bounded excerpt and the exact count to stderr, and fail.
+bls_check_unexpected() {
+    bls__check_complete || return 1
     (( BLS_COUNT > 0 )) || return 0
     bls_unexpected_report >&2
     if (( BLS_COUNT > BLS_REPORT_LINES )); then
@@ -264,10 +273,7 @@ bls_check_unexpected() {
 
 # The kept lines' verdict for a runner that reads them: they must be whole.
 bls_check_kept() {
-    if (( BLS_COMPLETE != 1 )); then
-        echo "Error: the output scan was incomplete (${BLS_INCOMPLETE:-no summary}); failing closed." >&2
-        return 1
-    fi
+    bls__check_complete || return 1
     if (( BLS_KEPT_OVERFLOW != 0 )); then
         echo "Error: the kept output exceeded $((BLS_KEEP_CAP / 1048576)) MiB ($BLS_KEEP_CAP bytes; $BLS_KEPT_COUNT kept lines); failing closed." >&2
         return 1
@@ -501,6 +507,16 @@ bls__start_group() {
     [[ "$pgrp" == "$BLS__GROUP" ]]
 }
 
+# Wait up to $2 tenths of a second for the file $1 to exist.
+bls__wait_for_file() {
+    local tries=0
+    while [[ ! -e "$1" ]] && (( tries < $2 )); do
+        sleep 0.1
+        tries=$((tries + 1))
+    done
+    [[ -e "$1" ]]
+}
+
 # The entries of directory $1, on one line.
 bls__entries() {
     find "$1" -mindepth 1 -maxdepth 1 -printf '%f ' 2>/dev/null
@@ -508,15 +524,14 @@ bls__entries() {
 
 # kill -9 or SIGTERM ($2) of a runner mid-flood, with TMPDIR a private base.
 bls__case_abnormal_exit() {
-    local ctl="$1" signal="$2" base="$1/base-$2" pid tries=0
+    local ctl="$1" signal="$2" base="$1/base-$2" pid
     mkdir -p "$base"
     if ! TMPDIR="$base" bls__start_group bash "$ctl/runner" "${BASH_SOURCE[0]}" "$ctl/$signal" </dev/null >/dev/null 2>&1; then
         bls__fail "$signal: the runner did not start as its own process group"
         return 0
     fi
     pid="$BLS__GROUP"
-    while [[ ! -e "$ctl/$signal.started" ]] && (( tries < 50 )); do sleep 0.1; tries=$((tries + 1)); done
-    if [[ ! -e "$ctl/$signal.started" ]]; then
+    if ! bls__wait_for_file "$ctl/$signal.started" 50; then
         bls__fail "$signal: the runner never started"
     else
         sleep 0.3
@@ -527,8 +542,7 @@ bls__case_abnormal_exit() {
         fi
         [[ -z "$(bls__entries "$base")" ]] || bls__fail "$signal: during the orphan the base holds $(bls__entries "$base")"
         [[ "$signal" != KILL ]] || bls__check_orphan_outputs "$pid" "$signal"
-        tries=0
-        while [[ ! -e "$ctl/$signal.done" ]] && (( tries < 80 )); do sleep 0.1; tries=$((tries + 1)); done
+        bls__wait_for_file "$ctl/$signal.done" 80 || true
         sleep 0.1
         [[ -z "$(bls__entries "$base")" ]] || bls__fail "$signal: after the flood the base holds $(bls__entries "$base")"
     fi
@@ -562,12 +576,15 @@ bls_finish
 RUNNER
     (BLS__FAILED=0; bls__case_classification; bls__case_binary; bls__case_drain_and_wait; bls__case_no_tmpdir "$ctl"; exit "$BLS__FAILED") & pids+=($!)
     (BLS__FAILED=0; bls__case_flood; exit "$BLS__FAILED") & pids+=($!)
-    (BLS__FAILED=0; bls__case_dead_stage "$ctl"; bls__case_linger "$ctl"; exit "$BLS__FAILED") & pids+=($!)
+    (BLS__FAILED=0; bls__case_dead_stage "$ctl"; exit "$BLS__FAILED") & pids+=($!)
     (BLS__FAILED=0; bls__case_abnormal_exit "$ctl" KILL; exit "$BLS__FAILED") & pids+=($!)
     (BLS__FAILED=0; bls__case_abnormal_exit "$ctl" TERM; exit "$BLS__FAILED") & pids+=($!)
     for pid in "${pids[@]}"; do
         wait "$pid" || failed=1
     done
+    # Alone, after the floods: its 1 s budget times the verdict, not the
+    # forks of four flooding groups on a small CI runner.
+    (BLS__FAILED=0; bls__case_linger "$ctl"; exit "$BLS__FAILED") || failed=1
     elapsed=$(( ($(date +%s%N) - start) / 1000000 ))
     (( failed == 0 )) || return 1
     echo "bounded-log-scan self-test passed in ${elapsed} ms (classification, NUL bytes read as text, 2^20-line floods bounded and counted, drain with exit status, slow stage awaited, an unusable TMPDIR and a dead stage fail closed, lingering daemon, kill -9 and SIGTERM leave nothing)."
@@ -578,7 +595,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     case "${1:-}" in
         --self-test) bls_self_test ;;
         *)
-            sed -n '3,42p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '3,44p' "$0" | sed 's/^# \{0,1\}//'
             exit 2
             ;;
     esac

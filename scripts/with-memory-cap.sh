@@ -1289,7 +1289,12 @@ self_test() {
     # lock and envelope-test directories, the leftover probe, and the
     # envelopes' own pid directories) lives under one root that the cleanup
     # trap removes; a marker a late background command touches after that
-    # fails harmlessly instead of recreating a file in /tmp.
+    # fails harmlessly instead of recreating a file in /tmp. The trap is set
+    # first, so a failure before the cases still removes the root.
+    self_test_sleepers=()
+    self_test_slices=()
+    self_test_root=
+    trap self_test_cleanup EXIT
     self_test_root=$(mktemp -d "${TMPDIR:-/tmp}/with-memory-cap-self-test.XXXXXX")
     export TMPDIR=$self_test_root
     # A private admission lock: the cases below hold it for seconds, which on
@@ -1313,8 +1318,6 @@ self_test() {
     local legacy_slice=${HEAVY_SLICE#user-}
     self_test_slices=("$HEAVY_SLICE")
     [ "$legacy_slice" = "$HEAVY_SLICE" ] || self_test_slices+=("$legacy_slice")
-    self_test_sleepers=()
-    trap self_test_cleanup EXIT
     # The envelope's pid file lives in an `lt-envelope-<pid>-` directory of
     # TMPDIR, which with-temp-scope.sh's stale sweep reclaims if a SIGKILL
     # lands before envelope_run removes it.

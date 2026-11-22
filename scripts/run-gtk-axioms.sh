@@ -312,6 +312,17 @@ skipped (needs a session bus): A116 extra'
         failed=1
     fi
     bls_release
+    # A sample run whose scan could not start (an unusable TMPDIR) has no
+    # kept lines: its SDK report says so, and the runtimes loop goes on to
+    # the next SDK instead of aborting on a summary of nothing.
+    local no_scan_report
+    if TMPDIR="${TMPDIR:-/tmp}/gtk-axioms-no-such-$$/base" scan_lines </dev/null 2>/dev/null \
+        || ! no_scan_report="$(sdk_report self-test a01_x 2>&1)" \
+        || [[ "$no_scan_report" != *"the output scan did not start"* ]]; then
+        echo "Error: GTK axiom self-test: the SDK report of a scan that never started was: $no_scan_report" >&2
+        failed=1
+    fi
+    bls_release
     if [[ "$failed" -ne 0 ]]; then
         return 1
     fi
@@ -531,8 +542,7 @@ run_runtimes() {
             failed=1
         fi
         # This SDK's kept lines stay open until its summary has read them.
-        runtime_summary "$ref" "$(bls_kept_path)" "${examples[@]}"
-        echo "  kept: $BLS_KEPT_COUNT lines, $BLS_KEPT_BYTES of the $BLS_KEEP_CAP-byte cap"
+        sdk_report "$ref" "${examples[@]}"
         bls_release
         # The loop expands inside the SDK's shell, so it is single-quoted.
         # shellcheck disable=SC2016
@@ -543,6 +553,20 @@ run_runtimes() {
     done
     echo "GTK axiom runtimes: checked $ran SDK(s)."
     return "$failed"
+}
+
+# The report of SDK $1's sample run, over the selected samples "${@:2}". A
+# run whose scan never started kept nothing to summarize (check_samples has
+# already failed it), so the report says so and the loop goes on.
+sdk_report() {
+    local ref="$1"
+    shift
+    if [[ -z "$BLS_R_KEPT" ]]; then
+        echo "==> $ref: no summary: the output scan did not start"
+        return 0
+    fi
+    runtime_summary "$ref" "$(bls_kept_path)" "$@"
+    echo "  kept: $BLS_KEPT_COUNT lines, $BLS_KEPT_BYTES of the $BLS_KEEP_CAP-byte cap"
 }
 
 # The per-SDK summary: one line per selected sample with its verdict or skip
