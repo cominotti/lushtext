@@ -25,7 +25,31 @@ use super::LushtextSearchPanel;
 #[cfg(feature = "test-utils")]
 use super::item::SearchResultItem;
 
+/// The Replace All button's description outside a wait for memory.
+pub(super) const REPLACE_BUTTON_DESCRIPTION: &str = "Preview replacements before applying them";
+
+/// The Replace All button's description and tooltip while a confirmed run
+/// waits for disposal capacity (`replace-all-confirm-disposal-lane` design D6).
+pub(super) const REPLACE_WAITING_DESCRIPTION: &str = "Waiting for memory before Replace All starts";
+
 impl LushtextSearchPanel {
+    /// Project a wait for disposal capacity onto the Replace All button: its
+    /// accessible description and tooltip say what the run waits for while it
+    /// waits, and go back to the ordinary description when it leaves the
+    /// wait. Set on entering and leaving the wait only, never from
+    /// [`Self::refresh_accessibility_state`], whose callers include the judged
+    /// completion span.
+    pub(super) fn project_replace_wait(&self, waiting: bool) {
+        let button = &*self.imp().replace_all_button;
+        if waiting {
+            button.set_tooltip_text(Some(REPLACE_WAITING_DESCRIPTION));
+            accessibility::set_description(button, REPLACE_WAITING_DESCRIPTION);
+        } else {
+            button.set_tooltip_text(None);
+            accessibility::set_description(button, REPLACE_BUTTON_DESCRIPTION);
+        }
+    }
+
     /// Project the panel's live workflow state into GTK accessible metadata.
     pub(crate) fn refresh_accessibility_state(&self) {
         let imp = self.imp();

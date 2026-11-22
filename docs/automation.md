@@ -670,8 +670,9 @@ draft persistence or recovery resolution, workspace persistence, workspace filte
 workspace search or detached-result retirement, Markdown planning/projection/image work,
 deferred Markdown work, plain-payload worker retirement, or detached-render retirement,
 preview layout/code-block repair, editor search indexing, session
-restore, command-palette index debounce, Replace All preview generation, and
-close-safety work.
+restore, command-palette index debounce, Replace All preview generation, a
+confirmed Replace All run (including one that waits for disposal capacity to
+start, `content_search.replace_admission_deferred`), and close-safety work.
 
 Workspace persistence remains a blocker from the first requested mutation
 until the newest generation is durably saved. This includes debounce waiting,

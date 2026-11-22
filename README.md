@@ -127,7 +127,10 @@ local history, and careful recovery behavior.
   first skipped line with the in-tab replace bar ready, prefilled from the run
   (regex replacements translated for the editor). With several windows, the
   undo journal is one per application: a run in one window retires the others'
-  Undo and refuses a second run or Undo until it finishes. A search has no match limit: it keeps results within a
+  Undo and refuses a second run or Undo until it finishes. A Replace All
+  confirmed while memory is short waits and starts on its own once memory
+  frees up, with Cancel Replace All offered; nothing is lost and the preview
+  does not need to be made again. A search has no match limit: it keeps results within a
   memory budget (256 MiB, far above what the old 16,384-match cap kept), and
   past it says how many matches are shown and how many more were found.
 
@@ -659,8 +662,8 @@ way, the reference example, and the first migrated end to end: `mod.rs` narrates
 the search and Replace All stages, `policy.rs` holds the pure single-flight,
 retirement-budget, preview-freshness, and Replace All admission policy (plus
 the skip report wording and the Open and Replace in Editor translation),
-`execution.rs`/`retirement.rs`/`replace_execution.rs`/`journal.rs` are its
-coordination jobs — `journal.rs` owning the durable, generation-guarded undo
+`execution.rs`/`retirement.rs`/`replace_execution.rs`/`replace_admission.rs`/`journal.rs`
+are its coordination jobs — `journal.rs` owning the durable, generation-guarded undo
 record that Undo restores from — and `evidence.rs` is the surface its widget
 tests and the `window.content_search` automation snapshot both read.
 

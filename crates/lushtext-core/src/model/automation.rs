@@ -1325,8 +1325,12 @@ pub struct AutomationContentSearchSnapshot {
     pub skipped_replacement_count: u32,
     /// Whether a Replace All undo backup is available.
     pub has_undo_backup: bool,
-    /// Whether a Replace All run (including its rollback) is in flight.
+    /// Whether a Replace All run (including its rollback) is in flight, or a
+    /// confirmed run is waiting for disposal capacity to start.
     pub replace_in_flight: bool,
+    /// Whether a confirmed Replace All is waiting for the disposal capacity its
+    /// undo reservation needs, before any file is touched.
+    pub replace_admission_deferred: bool,
     /// Whether the run in flight was asked to stop.
     pub replace_cancel_requested: bool,
     /// Files the run in flight has finished, or `None` with no run.

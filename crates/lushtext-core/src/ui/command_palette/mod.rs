@@ -142,6 +142,8 @@ pub use evidence::CommandPaletteEvidence;
 pub use retirement::{FileIndexRetirementSnapshot, file_index_retirement_snapshot_for_test};
 #[cfg(feature = "test-utils")]
 pub use test_policy::CommandPaletteTestPolicy;
+#[cfg(feature = "test-utils")]
+pub(crate) use test_policy::delay_file_index_build;
 
 use crate::model::palette::{PaletteFileEntry, PaletteNoteEntry, SearchMode};
 use crate::services::palette::FileIndex;

@@ -255,6 +255,10 @@ impl LushtextWindow {
         spawn_blocking_then(
             (),
             move || {
+                // The build holds its whole reservation from here until the
+                // shrink below; a widget test can stretch that window.
+                #[cfg(feature = "test-utils")]
+                crate::ui::command_palette::delay_file_index_build();
                 let outcome = FileIndex::rebuild_cancellable_with_hint(
                     &request.workspace_folders,
                     request.capacity_hint,

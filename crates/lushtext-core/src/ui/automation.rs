@@ -1264,6 +1264,7 @@ fn content_search_snapshot(window: &LushtextWindow) -> AutomationContentSearchSn
         skipped_replacement_count: evidence.skipped_replacement_count,
         has_undo_backup: evidence.has_undo_backup,
         replace_in_flight: evidence.replace_in_flight,
+        replace_admission_deferred: evidence.replace_admission_deferred,
         replace_cancel_requested: evidence.replace_cancel_requested,
         replace_progress_files_done: progress.map(|progress| bounded_len(progress.files_done)),
         replace_progress_files_total: progress.map(|progress| bounded_len(progress.files_total)),

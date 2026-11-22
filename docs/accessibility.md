@@ -107,8 +107,18 @@ Expected screen-reader behavior includes:
   unreadable, has no row action and its description says why. A file that
   opens in Protected View gets the find bar and the Protected View notice.
   Closing the window or quitting during a run asks first (`Replace All Is
-  Still Running`), each option explained by a grouped row. No file content is
-  exposed. The accessibility smoke case `workspace-search-replace-skipped`
+  Still Running`), each option explained by a grouped row; while the run
+  still waits for memory, the question and the rows say that no file has
+  changed yet. A preview asked for during a run is refused with `Replace All
+  is running; preview again when it finishes`. A confirmed run
+  that must wait for memory before it starts is already a run: the button
+  reads `Cancel Replace All` with the description and tooltip `Waiting for
+  memory before Replace All starts`, the status bar keeps `Replace All will
+  start when memory frees up` up for the whole wait (except while a
+  workspace search shows its own progress), and the wait is announced once
+  (`replace-all-waiting`). Cancelling then says `Replace All cancelled; no
+  file was changed`, and the earlier Undo and Show Skipped Files stay
+  (`replace-all-confirm-disposal-lane`). No file content is exposed. The accessibility smoke case `workspace-search-replace-skipped`
   proves the button and the dialog's list and summary through AT-SPI.
 - The hidden-files view mode is one check item in the main menu, one switch in
   `Preferences > Workspace`, and one per-search `Hidden files` toggle in the
