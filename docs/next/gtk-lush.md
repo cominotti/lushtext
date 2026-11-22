@@ -263,7 +263,11 @@ The headless verification toolchain, split into:
   its first binary, `gtk-lush-session` (LushText's `scripts/headless-session`
   shim builds and execs it): profiles (`widget`, `plain`, `screencast`,
   `accessibility`), a private monitored system bus, quiet media, and a runtime
-  guard exiting `93` with `SESSION-HYGIENE:` lines. The recommended
+  guard exiting `93` with `SESSION-HYGIENE:` lines. Since
+  `fix-headless-session-media-wait` (2026-11) quiet media are ready when
+  WirePlumber's `session.services` lists `policy.linking.standard`
+  (`session::observe::wireplumber_policy_ready`), and a miss fails the
+  session (`101`) before its command. The recommended
   environment grew to **seven** settings (`GTK_A11Y=test`,
   `ADW_DISABLE_PORTAL=1`), applied by the launcher and only verified in the
   per-test child; `cargo-gtk-proof` now depends on the harness for its

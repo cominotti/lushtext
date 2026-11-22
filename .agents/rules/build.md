@@ -682,6 +682,14 @@ against the new defaults and update the fragment and the version in its header
 comment; then run one screencast session (`make visual-geometry-smoke`). A
 changed default that loads module-rt, a hardware monitor or reaches rtkit
 fails that run with `SESSION-HYGIENE:` lines, which is the intended signal.
+On a WirePlumber update, also re-check the readiness signal the helper waits
+for (`session::observe::wireplumber_policy_ready`): that
+`/usr/share/wireplumber/scripts/session-services.lua` still sets the client's
+`session.services` and lists `policy.linking.standard` in it, and that
+`wireplumber.conf`'s component rules still order `support.session-services`
+after every other component. A renamed service or property fails the first
+screencast session before its command, with a `WirePlumber did not load its
+linking policy` line and `pw-dump-not-ready.json` in its log directory.
 
 ## Fuzzing
 

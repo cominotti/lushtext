@@ -112,6 +112,14 @@ bluetoothd cannot be reached, and `dbus-monitor` records every attempt.
 monitors), module-rt off in the daemons and in every client (the
 `session/*.conf` fragments, compiled in), and helper-private config, state and
 data homes. With media on, the session's `XDG_CONFIG_HOME` must be private.
+The command starts once WirePlumber has loaded its linking policy: its client
+object's `session.services`, read from `pw-dump` by
+`session::observe::wireplumber_policy_ready`, lists
+`policy.linking.standard`, so a `pipewiresrc` capture links on its first try.
+If that does not happen within 10 s the command never starts: the helper
+saves the last dump as `pw-dump-not-ready.json` in the `--log-dir`, prints
+one `WirePlumber did not load its linking policy` line and exits `101`, a
+failure that no lane reads as a host-support skip.
 
 **Runtime guard.** At teardown, while every service is alive, a pure verdict
 (`session::verdict`) reads the observations and prints

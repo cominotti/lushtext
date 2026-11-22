@@ -5217,6 +5217,45 @@ the same time, so each count was attributed per process (`runtime-proof.md`
 four verdict rounds, plus two `dense/2000` attribution pairs that cleared the
 one flagged stage, a single-rep 22 ms dispatch (design, "Measurement").
 
+**Follow-up: the media readiness wait (`fix-headless-session-media-wait`,
+2026-11-19).**
+
+- **Cause.** After starting WirePlumber, the helper waited for
+  `"metadata.name": "default"` in `pw-dump` and ignored the result. `pw-dump`
+  prints no metadata object without entries, and in these sessions `default`
+  has none, so every media session ran the blind 10 s `READY_TIMEOUT`. That
+  was 203 waits, about 34 minutes, of the 47-minute smoke trio of
+  2026-11-18.
+- **Fix.** The helper now waits until WirePlumber's `session.services` lists
+  `policy.linking.standard`. WirePlumber sets that property after every other
+  component, the linking hooks included. Readiness takes tens of milliseconds;
+  a quiet `screencast` session around `true` takes 0.77-0.82 s, down from
+  11.0-11.4 s. A miss now fails the session (exit 101, with the last dump
+  saved) before its command, and no lane reads that as a skip.
+- **A second fix.** The lane proof also found and fixed a pre-existing race
+  in the helper's exported `GTK_LUSH_SESSION_BIN`: it could name a
+  `… (deleted)` file after a concurrent rebuild. The shim and the A115/A116
+  axiom probes' control spawn retry briefly while a rebuild relinks it.
+- **Lane cost** (non-verdict wall times through `heavy.sh`, not
+  `measure.sh`: 10 green runs each, the three lanes concurrent in one
+  worktree, timed from memory admission, 1-minute load 2.4-13.6; the
+  2026-11-18 column ran the three lanes one after another):
+
+  | Lane | 2026-11-18 | Now |
+  | --- | --- | --- |
+  | `visual-geometry-smoke` | 24.2 min | 7.1 min |
+  | `accessibility-smoke` | 13.0 min | 3.2 min |
+  | `visual-smoke` | 9.8 min | 2.3 min |
+  | Trio | 47.0 min | 12.6 min |
+
+  `crash-recovery-smoke` and `command-palette-notes-smoke` passed one run
+  each. After merging `main` at `5b9abbb6` (#119 added eight
+  visual-geometry and three accessibility cases), 10 more green runs each
+  took 7.9, 3.9 and 2.5 min (trio 14.2 min, load 4.9-49.8), with the
+  seeded failures and the capture probe rerun. Evidence:
+  `openspec/changes/fix-headless-session-media-wait/evidence/`, in the
+  archive once merged.
+
 ## SR `stream-replace-all` (implementation record, 2026-11-15; re-planned 2026-11-17; merged and archived 2026-11-18)
 
 Queue item 2. Status: **merged (PR #103, `main` `ea30711f`) and archived
