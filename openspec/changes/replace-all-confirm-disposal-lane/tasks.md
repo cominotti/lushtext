@@ -266,17 +266,23 @@
 
 ## 3. Integration gates
 
-- [ ] 3.1 Run `scripts/heavy.sh -- make check` and
+- [x] 3.1 Run `scripts/heavy.sh -- make check` and
   `scripts/heavy.sh --envelope 16G -- make test` on the final tree. Both must
   pass, with no `FLAKY`, `FLAKY-SHARD:`, `OOM-KILL:` or `SESSION-HYGIENE:`
   line. Record `/proc/loadavg` before and after.
-- [ ] 3.2 Run `openspec validate replace-all-confirm-disposal-lane --strict`
+- [x] 3.2 Run `openspec validate replace-all-confirm-disposal-lane --strict`
   (must pass) and `openspec validate --all --strict`, and check every box
   above against its evidence. At the spec review, `--all --strict` exited 1
   with 86 failures, the same set in this worktree and in the main checkout
   at `5b9abbb6`, and this change among the passes. Expect the same: the
   check is that this change passes and adds no failure. The 86 are a
   coordinator item, not a blocker of this change.
+
+  Done on the tree after the `origin/main` merge (`2bd42bdd`, the archive of
+  `fix-headless-session-media-wait`): this change is valid, and `--all
+  --strict` exits 1 with the same 86 failures (`r2/openspec-all-3.log`).
+  Task 3.1's gates are recorded in `gate-trees.log` on the tree of the commit
+  that carries these ticks.
 
 ## Workflow follow-up
 
