@@ -201,7 +201,8 @@ pub struct SearchPanelEvidence {
     pub journal_disk_jobs: u64,
     /// Dispatched undo-journal disk jobs whose GTK completion has not run yet.
     pub journal_disk_jobs_in_flight: usize,
-    /// Whether persisted Undo owns its single capacity-retry source.
+    /// Whether persisted Undo owns its single capacity-retry source, or waits
+    /// for this panel's claimed transaction to end before it loads.
     ///
     /// Test-gated because the underlying wakeup only reports armed state under
     /// the `test-utils` feature; production readiness uses
@@ -381,7 +382,8 @@ impl LushtextSearchPanel {
             journal_disk_jobs: preview.journal_disk_jobs.get(),
             journal_disk_jobs_in_flight: preview.journal_disk_jobs_in_flight.get(),
             #[cfg(feature = "test-utils")]
-            undo_capacity_retry_pending: preview.undo_capacity_wakeup.is_armed(),
+            undo_capacity_retry_pending: preview.undo_capacity_wakeup.is_armed()
+                || preview.persisted_undo_load_after_transaction.get(),
             #[cfg(feature = "test-utils")]
             undo_backup,
 
@@ -402,6 +404,14 @@ impl LushtextSearchPanel {
             .search_entry
             .try_get()
             .map_or_default(|entry| entry.text().to_string())
+    }
+
+    /// Whether a workspace-search worker is in flight, without the result
+    /// retirement [`Self::is_searching`] also counts: the window's search
+    /// progress and Replace All waiting text yield to the walk alone.
+    #[must_use]
+    pub(crate) fn search_worker_running(&self) -> bool {
+        self.imp().runtime.searching.get()
     }
 
     /// Return whether worker cancellation/search or result retirement is pending.

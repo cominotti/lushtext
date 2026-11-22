@@ -107,7 +107,13 @@ fix reuses an existing pattern, and #119's test workaround can then go.
 - **Edge case, existing today.** If the lane stays full with no wakeup (an
   installed index near its 64 MiB bound plus other long-lived owners), the
   wait is indefinite. Today the same case is refused every time. Now it shows
-  a cancellable waiting state.
+  a cancellable waiting state. For as long as it waits, the parked
+  selection keeps its own lane reservation (up to 64 MiB, the preview
+  outcome's), which `main` gave back at the refusal, so other lane users
+  have that much less room until the run starts or is cancelled. Every
+  window's installed Undo journal is credited to the run's reservation,
+  because the run's admission retires all of them, so those journals alone
+  never keep it waiting.
 - **Loss compared with `main`: none.** The "deferred … try again shortly"
   warning for Replace All goes away. A cancelled wait also keeps the earlier
   run's Show Skipped Files report, because the report is cleared only when

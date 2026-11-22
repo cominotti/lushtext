@@ -28,11 +28,12 @@
 //! A close while a run is in flight asks first ("Replace All Is Still
 //! Running"), acted on once the dialog has closed: Keep Running closes
 //! nothing; Close When Finished lets the run complete, keeps its journal
-//! active, and then re-enters the ordinary close path; Stop and Close cancels the run, which rolls back every file it
-//! rewrote, and then closes. Either way each file is original or replaced with
-//! an active journal entry. The run's completion resumes here
-//! (`close_if_requested_after_replace_run`), after the panel has finished its
-//! transaction.
+//! active, and then re-enters the ordinary close path; Stop and Close cancels
+//! the run, which rolls back every file it rewrote, and then closes. Either
+//! way each file is original or replaced with an active journal entry. The
+//! run's completion resumes here (`close_if_requested_after_replace_run`),
+//! after the panel has finished its transaction. A run still waiting for
+//! memory has written nothing, and the question says so.
 //!
 //! Slot 7b extracted this from `ui/window/search.rs`, whose matrix cell claimed
 //! this row's files were "all under `ui/search_panel/**`" — false by 928
@@ -49,6 +50,39 @@ use crate::services::notifications::{
 };
 
 use super::LushtextWindow;
+
+/// The close-during-run dialog's options, each explained by a grouped row.
+const CLOSE_DURING_RUN_OPTIONS: [(&str, &str); 3] = [
+    (
+        "Keep Running",
+        "Replace All continues; the window stays open.",
+    ),
+    (
+        "Stop and Close",
+        "Replace All stops and restores every file it already rewrote, then the window closes.",
+    ),
+    (
+        "Close When Finished",
+        "Replace All completes and keeps its Undo for the next launch, then the window closes.",
+    ),
+];
+
+/// The same options while the run still waits for memory: nothing is written
+/// yet, and Close When Finished waits for the start as well as the run.
+const CLOSE_DURING_WAIT_OPTIONS: [(&str, &str); 3] = [
+    (
+        "Keep Running",
+        "Replace All keeps waiting and starts when memory frees up; the window stays open.",
+    ),
+    (
+        "Stop and Close",
+        "Replace All is cancelled before it changes any file, then the window closes.",
+    ),
+    (
+        "Close When Finished",
+        "Replace All starts when memory frees up, completes and keeps its Undo for the next launch, then the window closes; until then the window stays open.",
+    ),
+];
 
 /// Response ids of the close-during-run dialog.
 const RESPONSE_KEEP_RUNNING: &str = "keep-running";
@@ -159,7 +193,7 @@ impl LushtextWindow {
                     .take();
                 return glib::ControlFlow::Break;
             }
-            if !panel.imp().runtime.searching.get() {
+            if !panel.search_worker_running() {
                 window.update_search_progress_message(REPLACE_WAITING_MESSAGE);
             }
             glib::ControlFlow::Continue
@@ -175,21 +209,17 @@ impl LushtextWindow {
     /// search's progress (its start resolved the waiting text), so it is left
     /// alone.
     pub(crate) fn stop_replace_wait_keepalive(&self) {
-        if let Some(source_id) = self
-            .imp()
-            .search_progress
-            .replace_wait_keepalive_source_id
-            .take()
+        let imp = self.imp();
+        let Some(source_id) = imp.search_progress.replace_wait_keepalive_source_id.take() else {
+            return;
+        };
+        source_id.remove();
+        if !imp.search_panel.search_worker_running()
+            && imp
+                .notification_bus
+                .resolve(NotificationOwner::Search, NotificationSurface::StatusBar)
         {
-            source_id.remove();
-            if !self.imp().search_panel.imp().runtime.searching.get()
-                && self
-                    .imp()
-                    .notification_bus
-                    .resolve(NotificationOwner::Search, NotificationSurface::StatusBar)
-            {
-                self.render_notifications();
-            }
+            self.render_notifications();
         }
     }
 
@@ -202,9 +232,21 @@ impl LushtextWindow {
             );
             return;
         }
+        // A run still waiting for memory has written nothing, so the
+        // question and its options say that instead of a rollback.
+        let waiting = self.imp().search_panel.replace_admission_deferred();
+        let options = if waiting {
+            CLOSE_DURING_WAIT_OPTIONS
+        } else {
+            CLOSE_DURING_RUN_OPTIONS
+        };
         let dialog = libadwaita::AlertDialog::new(
             Some("Replace All Is Still Running"),
-            Some("Closing now would stop it in the middle of its files."),
+            Some(if waiting {
+                "Replace All is waiting for memory and has not changed any file yet."
+            } else {
+                "Closing now would stop it in the middle of its files."
+            }),
         );
         dialog.add_response(RESPONSE_KEEP_RUNNING, "_Keep Running");
         dialog.add_response(RESPONSE_STOP_AND_CLOSE, "_Stop and Close");
@@ -222,20 +264,7 @@ impl LushtextWindow {
 
         let group = libadwaita::PreferencesGroup::new();
         group.set_title("Options");
-        for (title, subtitle) in [
-            (
-                "Keep Running",
-                "Replace All continues; the window stays open.",
-            ),
-            (
-                "Stop and Close",
-                "Replace All stops and restores every file it already rewrote, then the window closes.",
-            ),
-            (
-                "Close When Finished",
-                "Replace All completes and keeps its Undo for the next launch, then the window closes.",
-            ),
-        ] {
+        for (title, subtitle) in options {
             let row = libadwaita::ActionRow::new();
             row.set_title(title);
             row.set_subtitle(subtitle);
@@ -311,7 +340,7 @@ impl LushtextWindow {
             Duration::from_millis(500),
             move |window, _| {
                 let imp = window.imp();
-                if !imp.search_panel.imp().runtime.searching.get()
+                if !imp.search_panel.search_worker_running()
                     || !imp.search_panel_revealer.reveals_child()
                 {
                     return;
@@ -379,7 +408,7 @@ impl LushtextWindow {
                 return glib::ControlFlow::Break;
             };
             let imp = window.imp();
-            if !imp.search_panel.imp().runtime.searching.get() {
+            if !imp.search_panel.search_worker_running() {
                 window.finish_search_progress_tracking();
                 return glib::ControlFlow::Break;
             }

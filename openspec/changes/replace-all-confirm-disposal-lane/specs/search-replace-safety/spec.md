@@ -35,7 +35,7 @@ A run waiting for capacity SHALL behave as a run in flight: Cancel, and Stop and
 
 #### Scenario: Close while waiting
 - **WHEN** the user closes the window while the run waits for capacity
-- **THEN** the close-during-run question is shown, and Stop and Close closes the window with no file written
+- **THEN** the close-during-run question is shown and says that no file has changed yet, and Stop and Close closes the window with no file written
 
 #### Scenario: The window is destroyed while waiting
 - **WHEN** the panel of a waiting run is disposed
@@ -51,6 +51,14 @@ While a confirmed run waits for capacity in one window, an apply or Undo in anot
 #### Scenario: Apply in another window while one waits
 - **WHEN** window B's confirmed run is waiting for capacity and the user confirms a Replace All in window A
 - **THEN** window A's apply is refused with the "Another window is running Replace All" message, and no file is touched by it
+
+#### Scenario: Other windows' Undo journals do not keep a run waiting
+- **WHEN** other windows hold earlier Undo journals that, beside the run's undo reservation, exceed the disposal capacity, and nothing else holds it
+- **THEN** the confirmed run starts at once, and retires those windows' Undo as it starts
+
+#### Scenario: A journal recovery does not race a waiting or starting run
+- **WHEN** a window's startup recovery of an earlier active journal is waiting or in flight while a confirmed run waits or is admitted
+- **THEN** the recovery never ends the waiting run as superseded, and no window offers the journal the admitted run replaced as its Undo
 
 #### Scenario: Undo in another window while one waits
 - **WHEN** window A offers Undo for an earlier Replace All, window B's confirmed run is waiting for capacity, and the user activates Undo in window A

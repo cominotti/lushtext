@@ -188,6 +188,9 @@ pub struct SearchPreviewState {
     pub undo_backup_generation: Arc<AtomicU32>,
     /// One paced wakeup while an on-disk undo journal awaits disposal capacity.
     pub(super) undo_capacity_wakeup: crate::ui::plain_disposal::DisposalCapacityWakeup,
+    /// Whether that startup load stood down for this panel's claimed
+    /// transaction and resumes when it ends (`journal`).
+    pub(super) persisted_undo_load_after_transaction: Cell<bool>,
     /// Whether one Replace All apply or undo transaction owns journal mutation.
     pub replace_transaction_pending: Cell<bool>,
     /// Reserved generation awaiting handoff from preview selection to file apply.

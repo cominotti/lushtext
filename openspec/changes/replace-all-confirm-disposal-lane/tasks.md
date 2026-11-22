@@ -284,6 +284,37 @@
   Task 3.1's gates are recorded in `gate-trees.log` on the tree of the commit
   that carries these ticks.
 
+## 4. Apply-stage review fixes
+
+Findings of the review lenses confirmed and applied by the apply stage
+(`$H/replace-all-confirm-disposal-lane/review-findings-applied.md` lists each
+finding, applied or rejected with its reason). Each behaviour change has a
+widget test that failed first (`apply-red/`) and passes (`apply-green/`).
+
+- [x] 4.1 The undo reservation of a Replace All credits every window's
+  installed journal, which its admission retires
+  (`policy::combined_undo_weight`); test
+  `test_a_run_credits_every_windows_undo_journal_it_retires`.
+- [x] 4.2 The startup journal load stands down while the panel's own
+  transaction is claimed and resumes when it ends; test
+  `test_persisted_undo_load_waits_for_a_claimed_transaction`.
+- [x] 4.3 A run's admission retires every panel's pending or in-flight
+  journal load (wakeup cancelled, other panels' generations advanced, journal
+  or not); test `test_a_run_retires_another_windows_journal_load_in_flight`,
+  with the test policy's journal disk delay now also holding a startup
+  recovery after its read.
+- [x] 4.4 The close-during-run question says, while the run still waits,
+  that no file has changed (`test_stop_and_close_while_waiting_writes_nothing`),
+  and a preview asked for during a run says why nothing happens
+  (`test_escape_while_waiting_still_replaces`).
+- [x] 4.5 Structure: the admission attempt (epoch, then reservation) moved
+  into `replace_admission::try_admit_replace_run`, whose `RefusedReplaceRun`
+  alone can park a run; the attempt kind is explicit
+  (`AdmissionAttempt`); the waiting description is projected once per wait;
+  `end_deferred_replace_run` also releases the transaction; the window reads
+  the search worker through `search_worker_running`; the window module's
+  header names its stage-4 block.
+
 ## Workflow follow-up
 
 - Review stages: `/simplify`, then `code-review` plus the `data-safety` full

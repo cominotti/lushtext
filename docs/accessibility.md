@@ -107,7 +107,10 @@ Expected screen-reader behavior includes:
   unreadable, has no row action and its description says why. A file that
   opens in Protected View gets the find bar and the Protected View notice.
   Closing the window or quitting during a run asks first (`Replace All Is
-  Still Running`), each option explained by a grouped row. A confirmed run
+  Still Running`), each option explained by a grouped row; while the run
+  still waits for memory, the question and the rows say that no file has
+  changed yet. A preview asked for during a run is refused with `Replace All
+  is running; preview again when it finishes`. A confirmed run
   that must wait for memory before it starts is already a run: the button
   reads `Cancel Replace All` with the description and tooltip `Waiting for
   memory before Replace All starts`, the status bar keeps `Replace All will

@@ -17,7 +17,8 @@
 //!   preview reserves up front and shrinks to once its outcome is known.
 //! * [`plan_undo_reservation`] plus [`UndoReservationPlan`] — the undo-journal
 //!   admission arithmetic that decides whether a reservation replaces guarded
-//!   owners and what weight it credits back.
+//!   owners and what weight it credits back, and [`combined_undo_weight`],
+//!   the installed weight of every journal a Replace All's admission retires.
 //! * [`journal_generation_is_current`] — the freshness predicate every
 //!   generation-guarded journal install, clear, disk save, and disk delete
 //!   compares against.
@@ -143,6 +144,22 @@ pub fn plan_undo_reservation(
             .unwrap_or(0)
             .saturating_add(transient_input_weight.unwrap_or(0)),
     }
+}
+
+/// The combined reservation weight of several installed undo journals.
+///
+/// `None` only when no journal is installed, because `Some(0)` (a journal that
+/// measures nothing) still makes the reservation a replacement
+/// ([`plan_undo_reservation`]). A Replace All passes every window's journal,
+/// since its admission retires all of them in the same turn.
+#[must_use]
+pub fn combined_undo_weight(weights: impl IntoIterator<Item = Option<u64>>) -> Option<u64> {
+    weights
+        .into_iter()
+        .flatten()
+        .fold(None, |total: Option<u64>, weight| {
+            Some(total.unwrap_or(0).saturating_add(weight))
+        })
 }
 
 /// Whether a journal mutation still owns the generation it reserved.
@@ -1165,6 +1182,20 @@ mod replace_weight_tests {
             UndoReservationPlan::Replacement {
                 replaced_weight: u64::MAX
             }
+        );
+    }
+
+    #[test]
+    fn combined_undo_weight_sums_only_installed_journals() {
+        assert_eq!(combined_undo_weight([None, None]), None);
+        assert_eq!(combined_undo_weight([None, Some(0)]), Some(0));
+        assert_eq!(
+            combined_undo_weight([Some(700), None, Some(300)]),
+            Some(1_000)
+        );
+        assert_eq!(
+            combined_undo_weight([Some(u64::MAX), Some(1)]),
+            Some(u64::MAX)
         );
     }
 

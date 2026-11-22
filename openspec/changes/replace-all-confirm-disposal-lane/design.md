@@ -660,6 +660,24 @@ There is no data or format change: the journal, settings and on-disk state
 are untouched. Rollback is a revert. Pre-change behaviour only discarded a
 selection, so a revert loses nothing persisted.
 
+## Apply-stage review fixes
+
+Not a design revision: no decision above changes intent. The apply stage
+applied what the review lenses confirmed (tasks group 4):
+
+- D3's reservation credits every window's installed journal, not only this
+  panel's, because `supersede_prior_undo_for_replace` retires all of them in
+  the admission's turn. Without it, other windows' journals could keep the
+  run waiting on capacity only its own admission frees, while it holds the
+  transaction those windows need to Undo.
+- The startup journal load stands down while the panel's own transaction is
+  claimed, and the admission retires every panel's pending or in-flight load,
+  so a load can neither supersede a waiting run (D5's `Superseded`) nor
+  offer the journal the run replaced as Undo.
+- D3's steps 3 and 4 are one panel operation, `try_admit_replace_run`; its
+  refusal value carries the epoch, so the order cannot be broken by a caller.
+- D4's close question and D1's refused preview say what happened.
+
 ## Design revisions
 
 - Revision 0: 2026-11-19, the original design (stage 1 of

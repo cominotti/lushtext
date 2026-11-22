@@ -5959,6 +5959,15 @@ fn test_escape_while_waiting_still_replaces() {
     flush_after_delay(Duration::from_millis(500));
     assert_waiting(&panel);
 
+    // A preview asked for during the run says why nothing happens.
+    panel.activate_replace_preview();
+    flush_events();
+    assert_eq!(
+        status_text(&window),
+        "Replace All is running; preview again when it finishes"
+    );
+    assert_waiting(&panel);
+
     window.close_search_panel();
     flush_after_delay(Duration::from_millis(300));
     assert!(!window.imp().search_panel_revealer.reveals_child());
@@ -6046,6 +6055,11 @@ fn test_stop_and_close_while_waiting_writes_nothing() {
     assert_waiting(&panel);
 
     let dialog = close_during_run(&window);
+    assert_eq!(
+        dialog.body().as_str(),
+        "Replace All is waiting for memory and has not changed any file yet.",
+        "the question says the waiting run has written nothing"
+    );
     dialog.emit_by_name::<()>("response", &[&"stop-and-close"]);
     dialog.force_close();
     // Stop ends the wait at once: no worker existed, so there is nothing to
@@ -6262,4 +6276,158 @@ fn test_dispose_releases_a_claimed_transaction_while_the_panel_lives() {
         "dispose released the disposed panel's transaction"
     );
     other.finish_replace_transaction_for_test();
+}
+
+// ---------------------------------------------------------------------------
+// replace-all-confirm-disposal-lane, apply review: the wait never waits on
+// what only its own admission frees, and no journal load races it
+// ---------------------------------------------------------------------------
+
+/// Descriptors of one file whose retained weight is about `weight` bytes:
+/// the target path keeps that capacity, as a journal of many files would.
+fn heavy_undo_descriptors(path: &str, weight: usize) -> ReplaceUndoBackup {
+    sample_replace_descriptors(path)
+        .into_iter()
+        .map(|(target, entry)| {
+            let mut heavy = PathBuf::with_capacity(weight);
+            heavy.push(target);
+            (heavy, entry)
+        })
+        .collect()
+}
+
+/// Apply review (code-review 1): a Replace All's undo reservation credits
+/// every window's installed Undo journal, because its admission retires all
+/// of them in the same turn. Two other windows' journals that leave no room
+/// for the reservation beside them must not make the run wait for capacity
+/// only that admission would free.
+#[test]
+fn test_a_run_credits_every_windows_undo_journal_it_retires() {
+    const HEAVY_JOURNAL_BYTES: usize = 48 << 20;
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let window = test_window();
+    present_window(&window);
+    crate::common::wait_for_startup_data_flow(&window);
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let (panel, files) = preview_three_files(&window, dir.path());
+    wait_for_journal_disk_idle(&panel);
+    settle_file_index_builds(&window);
+    let others: Vec<LushtextSearchPanel> = (0..2)
+        .map(|index| {
+            let other = glib::Object::builder::<LushtextSearchPanel>().build();
+            wait_for_journal_disk_idle(&other);
+            other.set_persisted_undo_backup(heavy_undo_descriptors(
+                &format!("/heavy-{index}.txt"),
+                HEAVY_JOURNAL_BYTES,
+            ));
+            assert!(other.has_undo_backup());
+            other
+        })
+        .collect();
+
+    panel.activate_confirm_replacements();
+    wait_until(Duration::from_secs(20), || {
+        let evidence = panel.evidence();
+        all_read(&files, "thread\n")
+            && evidence.has_undo_backup
+            && !evidence.replace_in_flight
+            && !evidence.replace_transaction_pending
+    });
+    for other in &others {
+        assert!(
+            !other.has_undo_backup(),
+            "the admitted run retired every other window's Undo"
+        );
+    }
+}
+
+/// Apply review (code-review 2): the startup journal load stands down while
+/// this panel's transaction is claimed, so it cannot advance the journal
+/// generation a confirmed run reserved; it resumes when the transaction ends.
+#[test]
+fn test_persisted_undo_load_waits_for_a_claimed_transaction() {
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let data_dir = json_store::data_dir();
+    let backup = sample_replace_backup("/persisted-claimed.rs");
+    let capacity_hold = hold_disposal_capacity_for_test();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    wait_until(Duration::from_secs(2), || {
+        panel.evidence().undo_capacity_retry_pending
+    });
+    let claimed = panel
+        .begin_replace_transaction_for_test()
+        .expect("an idle panel grants the transaction");
+
+    drop(capacity_hold);
+    flush_after_delay(Duration::from_millis(350));
+    wait_for_journal_disk_idle(&panel);
+    assert!(
+        !panel.has_undo_backup(),
+        "no journal is installed under a claimed transaction"
+    );
+    assert_eq!(
+        panel.evidence().undo_backup_generation,
+        claimed,
+        "the claimed generation stays current"
+    );
+    assert!(
+        panel.evidence().undo_capacity_retry_pending,
+        "the load waits for the transaction to end"
+    );
+
+    panel.finish_replace_transaction_for_test();
+    wait_until(Duration::from_secs(5), || {
+        panel.has_undo_backup() && panel.evidence().undo_backup_matches(&backup)
+    });
+    assert!(!panel.evidence().undo_capacity_retry_pending);
+    let _ = search_backup::delete(&data_dir);
+}
+
+/// Apply review (data-safety RS-3): a run's admission retires another
+/// window's startup journal load that is still in flight, so that window
+/// never offers the superseded journal as Undo.
+#[test]
+fn test_a_run_retires_another_windows_journal_load_in_flight() {
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    struct PolicyReset;
+    impl Drop for PolicyReset {
+        fn drop(&mut self) {
+            SearchPanelTestPolicy::reset();
+        }
+    }
+    let window = test_window();
+    present_window(&window);
+    crate::common::wait_for_startup_data_flow(&window);
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let (panel, files) = preview_three_files(&window, dir.path());
+    wait_for_journal_disk_idle(&panel);
+    settle_file_index_builds(&window);
+
+    // An earlier run's active journal, which a window opened now recovers;
+    // its load holds what it read for two seconds before its completion.
+    sample_replace_backup("/earlier-run.txt");
+    let _reset = PolicyReset;
+    SearchPanelTestPolicy::default()
+        .with_undo_backup_disk_delay(Duration::from_secs(2))
+        .install();
+    let other = glib::Object::builder::<LushtextSearchPanel>().build();
+    assert_eq!(other.evidence().journal_disk_jobs_in_flight, 1);
+
+    panel.activate_confirm_replacements();
+    wait_until(Duration::from_secs(20), || {
+        let evidence = panel.evidence();
+        all_read(&files, "thread\n")
+            && evidence.has_undo_backup
+            && !evidence.replace_in_flight
+            && !evidence.replace_transaction_pending
+    });
+    wait_for_journal_disk_idle(&other);
+    flush_events();
+    assert!(
+        !other.has_undo_backup(),
+        "the journal the run superseded is not offered as Undo"
+    );
 }

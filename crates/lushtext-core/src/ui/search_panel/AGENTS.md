@@ -69,9 +69,22 @@ This folder owns the workspace-wide content search panel adapter.
   `ReplaceJournalFreshness`) lives in `replace_admission.rs` with one
   `DisposalCapacityWakeup`; each wakeup asks `policy::replace_admission_resume`
   and hands the window a `ReplaceAdmissionResumption`, and the window
-  recomputes the unsaved-tab skip set before every attempt. Every window's
+  recomputes the unsaved-tab skip set before every attempt. An attempt is
+  `try_admit_replace_run` (epoch, then reservation), and only its
+  `RefusedReplaceRun` can park a run, so the wakeup is always armed from the
+  epoch read before the refused attempt. The reservation credits **every**
+  window's installed journal (`policy::combined_undo_weight`), because the
+  admission retires all of them in the same turn; crediting only this
+  panel's would let other windows' journals keep the run waiting for
+  capacity only its own admission frees. Every window's
   earlier Undo stays installed until admission, and the earlier skip report
-  is cleared only at admission (`clear_previous_skip_report`). Only Cancel,
+  is cleared only at admission (`clear_previous_skip_report`). The startup
+  journal load (`load_persisted_undo_backup`) stands down while the panel's
+  own transaction is claimed and resumes in `finish_replace_transaction`, and
+  a run's admission retires every panel's pending or in-flight load: it
+  cancels each wakeup and advances every other panel's generation, journal
+  or not, so no load installs the superseded journal as Undo or advances
+  the generation a waiting run reserved. Only Cancel,
   Stop and Close, or dispose ends the wait: hiding the panel, Escape and a new
   search do not. A cancelled or superseded wait ends through
   `end_deferred_replace_run`, never `finish_replace_run(None)`, which would

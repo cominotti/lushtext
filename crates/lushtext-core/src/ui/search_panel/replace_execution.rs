@@ -79,6 +79,10 @@ pub(super) struct ReplacePreviewRequest {
     ticket: ReplacePreviewTicket,
 }
 
+/// The status line when a preview is asked for while a Replace All run is in
+/// flight, waiting for memory or writing.
+const PREVIEW_REFUSED_DURING_RUN: &str = "Replace All is running; preview again when it finishes";
+
 struct PreviewRetirementTerminal(Arc<AtomicUsize>);
 
 impl Drop for PreviewRetirementTerminal {
@@ -111,8 +115,13 @@ impl LushtextSearchPanel {
         let imp = self.imp();
         // A Replace All run in flight, including one waiting for memory, owns
         // the button as Cancel Replace All; a new preview could not be
-        // confirmed before it ends anyway (`replace-all-confirm-disposal-lane`).
+        // confirmed before it ends anyway (`replace-all-confirm-disposal-lane`),
+        // so the request is refused, and says why.
         if self.replace_run_in_flight() {
+            self.publish_journal_message(
+                PREVIEW_REFUSED_DURING_RUN,
+                crate::services::notifications::NotificationSeverity::Warning,
+            );
             return;
         }
         let Some(search_matches) = self.accepted_search_matches() else {
@@ -512,6 +521,14 @@ impl LushtextSearchPanel {
         self.update_replace_button_sensitivity();
     }
 
+    /// Put the button back to Replace All, unless a run in flight, waiting or
+    /// writing, owns it as Cancel Replace All (or Cancelling…).
+    pub(super) fn reset_replace_button_label_unless_running(&self) {
+        if !self.replace_run_in_flight() {
+            self.imp().replace_all_button.set_label("Replace All");
+        }
+    }
+
     /// The last run's skip report, while Show Skipped Files is offered.
     #[must_use]
     pub fn last_skip_report(&self) -> Option<Arc<ReplaceSkipReport>> {
@@ -550,10 +567,7 @@ impl LushtextSearchPanel {
             imp.preview.preview_outcome.take(),
             std::mem::take(&mut *imp.preview.checked_match_ids.borrow_mut()),
         );
-        // A run in flight, waiting or writing, keeps Cancel Replace All.
-        if !self.replace_run_in_flight() {
-            imp.replace_all_button.set_label("Replace All");
-        }
+        self.reset_replace_button_label_unless_running();
         self.restore_search_summary();
         self.update_replace_button_sensitivity();
         self.refresh_results_display();
@@ -596,10 +610,7 @@ impl LushtextSearchPanel {
             imp.preview.preview_outcome.take(),
             std::mem::take(&mut *imp.preview.checked_match_ids.borrow_mut()),
         );
-        // A run in flight, waiting or writing, keeps Cancel Replace All.
-        if !self.replace_run_in_flight() {
-            imp.replace_all_button.set_label("Replace All");
-        }
+        self.reset_replace_button_label_unless_running();
         self.restore_search_summary();
         self.refresh_results_display();
         self.refresh_accessibility_state();

@@ -7,7 +7,15 @@
 //! folder forwarding, focus save and restore, and the window-side entry points
 //! that hand replace/preview/confirm/undo to the panel's own coordination roles.
 //! Every one of those projects the workflow onto widgets or resolves a
-//! window-side target; none owns an ordered stage.
+//! window-side target.
+//!
+//! **One exception: the window side of Replace stage 4.** The `impl` block
+//! that claims a confirmed run's transaction, admits it or lets it wait, and
+//! starts it (`replace-all-confirm-disposal-lane` design D2, D3) orders the
+//! window-owned parts of that stage: the unsaved-tab skip set, the status lane,
+//! the worker spawn and its completion. The admission attempt and the wait
+//! themselves are the panel's (`ui/search_panel/replace_admission.rs`), and
+//! the matrix row records this split.
 //!
 //! **The one coordination job this module used to hold has moved out.** Search
 //! progress tracking — arm a delayed visibility, publish bounded progress,
@@ -31,7 +39,9 @@ use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::search_panel::SearchProgressUpdate;
 use crate::ui::search_panel::journal::UndoRestoreClaim;
 use crate::ui::search_panel::policy::ReplaceWaitEnd;
-use crate::ui::search_panel::replace_admission::{ParkedReplaceRun, ReplaceAdmissionResumption};
+use crate::ui::search_panel::replace_admission::{
+    AdmissionAttempt, ParkedReplaceRun, ReplaceAdmission, ReplaceAdmissionResumption,
+};
 use crate::ui::status_bar::MessageKind;
 use crate::ui::window::search_progress_execution::format_search_progress_message;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -232,7 +242,9 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                 return;
             };
             match resumption {
-                ReplaceAdmissionResumption::Resume(run) => window.admit_or_wait_replace_run(run),
+                ReplaceAdmissionResumption::Resume(run) => {
+                    window.admit_or_wait_replace_run(run, AdmissionAttempt::Resumed);
+                }
                 ReplaceAdmissionResumption::Ended(end) => window.end_replace_wait(end),
             }
         });
@@ -569,22 +581,25 @@ impl LushtextWindow {
             );
             return;
         };
-        self.admit_or_wait_replace_run(ParkedReplaceRun {
-            replacements,
-            freshness,
-        });
+        self.admit_or_wait_replace_run(
+            ParkedReplaceRun {
+                replacements,
+                freshness,
+            },
+            AdmissionAttempt::First,
+        );
     }
 
     /// Admit or wait: the same steps on the first attempt and on every
-    /// resumption. The skip set is recomputed from the current tabs, the
-    /// all-unsaved report comes before any wait, and the capacity epoch is
-    /// read before the reservation, so a release between the two still wakes
-    /// the wait.
-    fn admit_or_wait_replace_run(&self, run: ParkedReplaceRun) {
+    /// resumption. The skip set is recomputed from the current tabs, and the
+    /// all-unsaved report comes before any wait. The attempt itself, epoch
+    /// then reservation, is the panel's (`replace_admission`).
+    fn admit_or_wait_replace_run(&self, run: ParkedReplaceRun, attempt: AdmissionAttempt) {
         let imp = self.imp();
         // Only a resumed attempt finds the run open: the first one opens it at
         // its first refusal, or in `start_replace_run`.
-        let resumed = imp.search_panel.replace_run_in_flight();
+        let resumed = attempt == AdmissionAttempt::Resumed;
+        debug_assert_eq!(resumed, imp.search_panel.replace_run_in_flight());
         let (skip_paths, open_canonical_identities) = replace_skip_sets(self);
         if !run
             .replacements
@@ -616,20 +631,27 @@ impl LushtextWindow {
             return;
         }
 
-        let observed_epoch = crate::ui::plain_disposal::disposal_capacity_epoch();
-        if let Some(undo_reservation) = imp
-            .search_panel
-            .try_reserve_undo_replacement(run.replacements.reservation_weight())
-        {
-            self.start_replace_run(run, skip_paths, open_canonical_identities, undo_reservation);
-            return;
+        match imp.search_panel.try_admit_replace_run(run) {
+            ReplaceAdmission::Admitted {
+                run,
+                undo_reservation,
+            } => {
+                self.start_replace_run(
+                    run,
+                    skip_paths,
+                    open_canonical_identities,
+                    undo_reservation,
+                );
+            }
+            // Refused: the run waits as its first phase, holding the transaction.
+            ReplaceAdmission::Refused(refused) => {
+                if !resumed {
+                    imp.search_panel.begin_replace_run();
+                    self.show_replace_wait();
+                }
+                imp.search_panel.defer_replace_run(refused, attempt);
+            }
         }
-        // Refused: the run waits as its first phase, holding the transaction.
-        if !resumed {
-            imp.search_panel.begin_replace_run();
-            self.show_replace_wait();
-        }
-        imp.search_panel.defer_replace_run(run, observed_epoch);
     }
 
     /// A wait for disposal capacity ended before the run started: nothing
@@ -638,7 +660,6 @@ impl LushtextWindow {
         let imp = self.imp();
         self.stop_replace_wait_keepalive();
         imp.search_panel.end_deferred_replace_run();
-        imp.search_panel.finish_replace_transaction();
         match end {
             ReplaceWaitEnd::Cancelled => {
                 self.publish_status_message(REPLACE_WAIT_CANCELLED, MessageKind::Info);
@@ -648,10 +669,9 @@ impl LushtextWindow {
                     REPLACE_WAIT_CANCELLED,
                 );
             }
-            ReplaceWaitEnd::Superseded => self.publish_status_message(
-                "Replace All was superseded before any files changed",
-                MessageKind::Warning,
-            ),
+            ReplaceWaitEnd::Superseded => {
+                self.publish_status_message(REPLACE_SUPERSEDED, MessageKind::Warning);
+            }
         }
         self.close_if_requested_after_replace_run();
     }
@@ -820,7 +840,7 @@ impl LushtextWindow {
                             GuardedReplaceApplyResult::Superseded => {
                                 imp.search_panel.finish_replace_run(None);
                                 window.publish_status_message(
-                                    "Replace All was superseded before any files changed",
+                                    REPLACE_SUPERSEDED,
                                     MessageKind::Warning,
                                 );
                             }
@@ -857,6 +877,10 @@ impl LushtextWindow {
 
 /// The status line after a wait for memory was cancelled (design D4).
 const REPLACE_WAIT_CANCELLED: &str = "Replace All cancelled; no file was changed";
+
+/// The status line when a run was superseded, at its worker or while it
+/// waited, before any file changed.
+const REPLACE_SUPERSEDED: &str = "Replace All was superseded before any files changed";
 
 /// The skip set of one admission attempt: files open with unsaved edits or an
 /// in-flight save, and every open file's canonical identity. The replacement
