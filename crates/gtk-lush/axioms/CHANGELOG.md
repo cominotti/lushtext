@@ -17,6 +17,11 @@
   32 of them under 12 busy-loop CPU hogs; `//master` (4.25.1, with GTK
   d2595c6b) violates it, as the fix should. `PopoverFramesFixture`,
   `popover_frames_in_child`, `PopoverFramesOutcome`, `DISCARDED_FRAME_WARNING`.
+- **Fix:** the A115 and A116 probes' nested control run retries its spawn
+  of `GTK_LUSH_SESSION_BIN` (10 x 0.1 s) while the path is missing or busy,
+  because a `cargo build` in the same checkout removes, then relinks, the
+  session helper it names (`fix-headless-session-media-wait`, design D9). Any
+  other spawn error is reported at once, as before.
 - A132 and A133 probes and samples (`tab-strip-overflow-navigation`), over
   one shared fixture, `probes::tab_strip` (`TabStripFixture`, the
   `TabStripHost` that allocates an `AdwTabBar` a chosen width and its

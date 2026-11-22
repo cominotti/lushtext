@@ -113,7 +113,13 @@ const DBUS_SOCKET_PATH_MAX: usize = 99;
 /// make the session's socket paths too long (a nested session inside a test
 /// child whose `TMPDIR` is several levels deep).
 const SHORT_RUNTIME_BASE: &str = "/tmp";
+/// Deadline of each readiness wait: the system bus socket, PipeWire, and
+/// WirePlumber's linking policy. A healthy session is ready far sooner, so
+/// reaching it means the service is broken, and the session fails.
 const READY_TIMEOUT: Duration = Duration::from_secs(10);
+/// Name of the last `pw-dump` a WirePlumber readiness miss saves to the
+/// caller's log directory.
+const NOT_READY_DUMP_FILE: &str = "pw-dump-not-ready.json";
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const STOP_TIMEOUT: Duration = Duration::from_secs(3);
 /// Quiet time after the command exits, so in-flight bus messages are recorded.
@@ -309,6 +315,30 @@ fn own_executable() -> std::io::Result<PathBuf> {
         Ok(link)
     } else {
         std::env::current_exe()
+    }
+}
+
+/// The path exported as [`SESSION_BIN_ENV`]: the file this binary was started
+/// from, `current` being `std::env::current_exe()`.
+///
+/// `current_exe()` reads `/proc/self/exe`, which Linux names
+/// `<path> (deleted)` once that file was removed. `cargo build` re-uplifts
+/// `target/debug/gtk-lush-session` on every run (it removes the file, then
+/// links the new one), and `scripts/headless-session` builds before each
+/// session, so with several lanes in one worktree the inner stage exported a
+/// name no file had, and a nested `scripts/headless-session` inside the
+/// session failed as an unsupported host. The suffix is dropped whenever the
+/// path as named does not exist, even if the rebuilt file is not linked yet at
+/// this instant: the export names the file at the original path, which is the
+/// same helper, rebuilt.
+fn exported_session_bin(current: PathBuf, exists: impl Fn(&Path) -> bool) -> PathBuf {
+    use std::os::unix::ffi::OsStrExt as _;
+    if exists(&current) {
+        return current;
+    }
+    match current.as_os_str().as_bytes().strip_suffix(b" (deleted)") {
+        Some(original) => PathBuf::from(std::ffi::OsStr::from_bytes(original)),
+        None => current,
     }
 }
 
@@ -1209,11 +1239,28 @@ fn run_inner_body(
                 return ExitCode::from(UNSUPPORTED_HOST_EXIT_CODE);
             }
         }
-        // WirePlumber publishes the session-manager metadata once its policy
-        // runs; wait for it so a capture links on its first try.
-        let _ = wait_until(|| {
-            pw_dump().is_some_and(|dump| dump.contains("\"metadata.name\": \"default\""))
-        });
+        // A capture's `pipewiresrc path=<node>` is linked by WirePlumber's
+        // linking hooks, so the command starts only once they have loaded:
+        // `session.services` lists `policy.linking.standard`, which
+        // WirePlumber sets after every other component of its profile. A
+        // miss means WirePlumber never loaded its policy; the session fails
+        // before the command rather than letting a capture fail later.
+        if let Err(miss) = wait_for_wireplumber_policy(READY_TIMEOUT, POLL_INTERVAL, pw_dump) {
+            let path = log_dir.join(NOT_READY_DUMP_FILE);
+            let dump = match (&miss.last_dump, &plan.log_dir) {
+                (None, _) => MissDump::None,
+                (Some(_), None) => MissDump::NoLogDir,
+                (Some(text), Some(_)) => {
+                    if std::fs::write(&path, text).is_ok() {
+                        MissDump::Saved(&path)
+                    } else {
+                        MissDump::WriteFailed(&path)
+                    }
+                }
+            };
+            eprintln!("{}", wireplumber_miss_line(READY_TIMEOUT, dump));
+            return ExitCode::from(TEST_FAILURE_EXIT_CODE);
+        }
     }
 
     // 3. The command.
@@ -1244,7 +1291,7 @@ fn run_inner_body(
     if plan.export_bin
         && let Ok(exe) = std::env::current_exe()
     {
-        command.env(SESSION_BIN_ENV, exe);
+        command.env(SESSION_BIN_ENV, exported_session_bin(exe, Path::exists));
     }
     let status = match command.status() {
         Ok(status) => status,
@@ -1413,15 +1460,84 @@ fn log_file(log_dir: &Path, name: &str) -> Stdio {
         .map_or_else(|_| Stdio::null(), Stdio::from)
 }
 
-fn wait_until(mut ready: impl FnMut() -> bool) -> bool {
-    let deadline = Instant::now() + READY_TIMEOUT;
+fn wait_until(ready: impl FnMut() -> bool) -> bool {
+    poll_until(READY_TIMEOUT, POLL_INTERVAL, ready)
+}
+
+/// Polls `ready` every `poll` until it holds or `timeout` has passed. A
+/// passed timeout still reads once more, so a miss returns after one
+/// `ready` call that starts past the timeout: the wait lasts `timeout` plus
+/// at most one poll and two `ready` calls.
+fn poll_until(timeout: Duration, poll: Duration, mut ready: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if ready() {
             return true;
         }
-        std::thread::sleep(POLL_INTERVAL);
+        std::thread::sleep(poll);
     }
     ready()
+}
+
+/// WirePlumber did not list its linking policy before the deadline.
+#[derive(Debug, PartialEq, Eq)]
+struct PolicyNotReady {
+    /// The last dump that succeeded, if any.
+    last_dump: Option<String>,
+}
+
+/// Polls `dump` with [`poll_until`] until a dump shows WirePlumber's linking
+/// policy loaded ([`observe::wireplumber_policy_ready`]). A miss carries the
+/// last dump that succeeded.
+fn wait_for_wireplumber_policy(
+    timeout: Duration,
+    poll: Duration,
+    mut dump: impl FnMut() -> Option<String>,
+) -> Result<(), PolicyNotReady> {
+    let mut last_dump = None;
+    let ready = poll_until(timeout, poll, || match dump() {
+        Some(text) if observe::wireplumber_policy_ready(&text) => true,
+        Some(text) => {
+            last_dump = Some(text);
+            false
+        }
+        None => false,
+    });
+    if ready {
+        Ok(())
+    } else {
+        Err(PolicyNotReady { last_dump })
+    }
+}
+
+/// Where a readiness miss left its last dump, for the miss line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MissDump<'a> {
+    /// Saved to the caller's log directory.
+    Saved(&'a Path),
+    /// No `pw-dump` succeeded.
+    None,
+    /// The log directory is the helper's own and is removed at teardown.
+    NoLogDir,
+    /// Writing it to the caller's log directory failed.
+    WriteFailed(&'a Path),
+}
+
+/// The one bounded line a readiness miss prints. Its wording must match no
+/// smoke runner's host-support skip phrase: a miss is a failure, never a skip.
+fn wireplumber_miss_line(timeout: Duration, dump: MissDump<'_>) -> String {
+    let location = match dump {
+        MissDump::Saved(path) => format!("last pw-dump in {}", path.display()),
+        MissDump::None => "no pw-dump succeeded".to_string(),
+        MissDump::NoLogDir => "rerun with --log-dir to keep the last pw-dump".to_string(),
+        MissDump::WriteFailed(path) => {
+            format!("the last pw-dump could not be saved to {}", path.display())
+        }
+    };
+    format!(
+        "gtk-lush-session: WirePlumber did not load its linking policy within {} s (session.services never listed policy.linking.standard; {location})",
+        timeout.as_secs()
+    )
 }
 
 fn pipewire_ready() -> bool {
@@ -2129,6 +2245,111 @@ mod tests {
             Some(tool)
         );
         assert!(find_in_path(MUTTER_COMMAND, tempdir.path().as_os_str()).is_none());
+    }
+
+    #[test]
+    fn the_wireplumber_wait_starts_the_command_at_the_first_ready_dump() {
+        let ready = "\"session.services\": \"[policy.default-nodes, policy.linking.standard]\"";
+        let mut calls = 0;
+        let outcome =
+            wait_for_wireplumber_policy(Duration::from_secs(5), Duration::from_millis(1), || {
+                calls += 1;
+                match calls {
+                    1 => None,
+                    2 => Some("[]".to_string()),
+                    _ => Some(ready.to_string()),
+                }
+            });
+        assert_eq!(outcome, Ok(()));
+        assert_eq!(calls, 3, "ready on the third call, and no call after it");
+    }
+
+    #[test]
+    fn the_wireplumber_wait_misses_at_its_deadline_with_the_last_dump() {
+        let deadline = Duration::from_millis(20);
+        let started = Instant::now();
+        let mut calls = 0u32;
+        let outcome = wait_for_wireplumber_policy(deadline, Duration::from_millis(1), || {
+            calls += 1;
+            // A failed dump after a successful one keeps the successful one.
+            (!calls.is_multiple_of(3)).then(|| format!("dump {calls}"))
+        });
+        let elapsed = started.elapsed();
+        let Err(miss) = outcome else {
+            panic!("a source that is never ready misses");
+        };
+        let last = miss.last_dump.expect("a dump succeeded");
+        assert!(last.starts_with("dump "), "{last}");
+        let index: u32 = last["dump ".len()..].parse().expect("dump index");
+        assert!(index + 1 >= calls && index <= calls, "{index} of {calls}");
+        assert!(
+            elapsed >= deadline,
+            "it polled until the deadline: {elapsed:?}"
+        );
+        assert!(
+            elapsed < deadline + Duration::from_secs(5),
+            "it stopped at the deadline: {elapsed:?}"
+        );
+        let mut after = 0;
+        let never = wait_for_wireplumber_policy(Duration::ZERO, Duration::from_millis(1), || {
+            after += 1;
+            None
+        });
+        assert_eq!(never, Err(PolicyNotReady { last_dump: None }));
+        assert_eq!(after, 1, "a passed deadline still reads once");
+    }
+
+    #[test]
+    fn a_wireplumber_miss_prints_one_line_saying_where_the_dump_is() {
+        let path = Path::new("/run/logs/pw-dump-not-ready.json");
+        let prefix = "gtk-lush-session: WirePlumber did not load its linking policy within 10 s (session.services never listed policy.linking.standard; ";
+        let timeout = Duration::from_secs(10);
+        for (dump, location) in [
+            (
+                MissDump::Saved(path),
+                "last pw-dump in /run/logs/pw-dump-not-ready.json",
+            ),
+            (MissDump::None, "no pw-dump succeeded"),
+            (
+                MissDump::NoLogDir,
+                "rerun with --log-dir to keep the last pw-dump",
+            ),
+            (
+                MissDump::WriteFailed(path),
+                "the last pw-dump could not be saved to /run/logs/pw-dump-not-ready.json",
+            ),
+        ] {
+            assert_eq!(
+                wireplumber_miss_line(timeout, dump),
+                format!("{prefix}{location})")
+            );
+        }
+    }
+
+    #[test]
+    fn the_exported_session_bin_names_the_file_after_a_rebuild_replaced_it() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let rebuilt = Path::new("/w/target/debug/gtk-lush-session");
+        let replaced = PathBuf::from("/w/target/debug/gtk-lush-session (deleted)");
+        // `/proc/self/exe` after a rebuild: the suffix goes, whether or not
+        // the new file is in place at this instant (cargo removes, then links).
+        assert_eq!(exported_session_bin(replaced.clone(), |_| false), rebuilt);
+        assert_eq!(
+            exported_session_bin(replaced, |path| path == rebuilt),
+            rebuilt
+        );
+        // A path that exists as named is kept, even with that suffix.
+        let named = PathBuf::from("/w/odd (deleted)");
+        assert_eq!(exported_session_bin(named.clone(), |_| true), named);
+        // A missing path without the suffix is kept.
+        let plain = PathBuf::from("/w/gone");
+        assert_eq!(exported_session_bin(plain.clone(), |_| false), plain);
+        // Non-UTF-8 names are stripped by bytes.
+        let raw = PathBuf::from(std::ffi::OsStr::from_bytes(b"/w/\xff-bin (deleted)"));
+        assert_eq!(
+            exported_session_bin(raw, |_| false),
+            PathBuf::from(std::ffi::OsStr::from_bytes(b"/w/\xff-bin"))
+        );
     }
 
     #[test]
