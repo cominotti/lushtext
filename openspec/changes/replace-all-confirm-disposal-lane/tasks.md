@@ -37,7 +37,7 @@
 
 ## 1. Test seam and failing-first regressions (design D7, D8)
 
-- [ ] 1.1 Add the index-build delay seam.
+- [x] 1.1 Add the index-build delay seam.
   - `with_file_index_build_delay(Duration)` and `delay_file_index_build()` in
     `crates/lushtext-core/src/ui/command_palette/test_policy.rs`, behind
     `#[cfg(feature = "test-utils")]`.
@@ -48,7 +48,7 @@
   Verify: `cargo check -p lushtext --bins --locked` (default features) and
   `make check-clippy` pass, and a shipped build has no call (the `cfg`
   holds).
-- [ ] 1.2 Write T1 in `crates/lushtext/tests/widget/search_panel.rs`. It
+- [x] 1.2 Write T1 in `crates/lushtext/tests/widget/search_panel.rs`. It
   covers the single window with a filled lane: preview three files,
   `wait_for_journal_disk_idle`, `settle_file_index_builds`, then
   `fill_disposal_capacity_for_test()` in the same turn, Confirm, then after
@@ -59,13 +59,13 @@
   preview and open every tab before the fill.
   **It must fail on `main`** at the wait after the drop, because the run never
   starts.
-- [ ] 1.3 Write T2 (design D8): the two-window variant. A holds an Undo from
+- [x] 1.3 Write T2 (design D8): the two-window variant. A holds an Undo from
   an earlier run and a second preview; B previews, both windows settle, the
   fill is taken and B confirms; A's Confirm and A's Undo must each be
   refused with "Another window is running Replace All"; after the drop B
   completes and A's kept preview confirms. **It must fail on `main`**: A is
   not refused, because B's transaction was released at the refusal.
-- [ ] 1.4 Write T6 (design D8): a variant of
+- [x] 1.4 Write T6 (design D8): a variant of
   `test_an_apply_while_another_window_runs_is_refused`, keeping the original
   test too.
   - Install `with_file_index_build_delay(Duration::from_secs(3))`.
@@ -76,13 +76,13 @@
 
   **It must fail on `main`** (attribution Evidence 2: 2 of 2). Through the
   helper it would pass, and that pass would prove nothing.
-- [ ] 1.5 Assign any new test to its widget shard in `scripts/widget-shards.py`
+- [x] 1.5 Assign any new test to its widget shard in `scripts/widget-shards.py`
   if a new module file was added (`make check-widget-shards`).
-- [ ] 1.6 Run T1, T2 and T6 red with
+- [x] 1.6 Run T1, T2 and T6 red with
   `scripts/heavy.sh --envelope 16G -- scripts/run-widget-tests.sh --headless --retries 0 -- --exact <test>`.
   Save each log and its exit status to `$H/replace-all-confirm-disposal-lane/red/`.
   Verify: each fails at the named point and at no earlier one.
-- [ ] 1.7 Do not commit. Run the cheap gates on the red tree, then save it
+- [x] 1.7 Do not commit. Run the cheap gates on the red tree, then save it
   as a patch: `git -C <wt> add -N` the new files, then
   `git -C <wt> diff HEAD --binary > $H/replace-all-confirm-disposal-lane/red/red-tree.patch`,
   and record `git -C <wt> rev-parse HEAD` beside it. The tree is committed
@@ -90,15 +90,15 @@
 
 ## 2. Wait for capacity instead of giving up (spec: all four ADDED requirements; design D1–D6, D8)
 
-- [ ] 2.1 Write the unit tests for the pure resumption decision first,
+- [x] 2.1 Write the unit tests for the pure resumption decision first,
   covering every input combination of design D5: the transaction claimed or
   not, the freshness current or stale, cancel requested or not, the run
   control present or absent. **They must fail** (they do not compile) before
   2.2.
-- [ ] 2.2 Add `policy::replace_admission_resume`, `ReplaceAdmissionDecision`
+- [x] 2.2 Add `policy::replace_admission_resume`, `ReplaceAdmissionDecision`
   and `ReplaceWaitEnd` in `ui/search_panel/policy.rs`. They stay GTK-free.
   Verify: the 2.1 tests pass and `make check-workflow-boundaries` passes.
-- [ ] 2.2a Add the evidence the group-2 tests read, so they compile before
+- [x] 2.2a Add the evidence the group-2 tests read, so they compile before
   the behaviour exists (widget tests are one binary):
   - the slot `imp::SearchPreviewState::parked_replace_run`, holding a
     `ParkedReplaceRun` (the `GuardedReplacements` plus the
@@ -108,7 +108,7 @@
 
   Verify: `make check-workflow-boundaries`, and every existing
   `search_panel` widget test still compiles.
-- [ ] 2.3 Extend T1 and T2 with the deferred-state assertions of design D8,
+- [x] 2.3 Extend T1 and T2 with the deferred-state assertions of design D8,
   step 3:
   - `replace_admission_deferred` and `replace_in_flight` are true;
   - the transaction is claimed;
@@ -144,10 +144,10 @@
   - T3–T5, T4b and T7–T9 fail because no wait exists, so no run starts after
     the refusal;
   - T10b fails because dispose releases nothing.
-- [ ] 2.3a Run the group-2 tests red, as 1.6 does, and save each log and
+- [x] 2.3a Run the group-2 tests red, as 1.6 does, and save each log and
   exit status to `$H/replace-all-confirm-disposal-lane/red/`. Verify: each
   fails at the named point and at no earlier one.
-- [ ] 2.4 Add `ui/search_panel/replace_admission.rs` (design D2).
+- [x] 2.4 Add `ui/search_panel/replace_admission.rs` (design D2).
   - `replace_admission_wakeup` in `imp::SearchPreviewState` (the slot and
     `ParkedReplaceRun` exist since 2.2a).
   - `defer_replace_run`, `resume_parked_replace_run`,
@@ -163,7 +163,7 @@
 
   The parked selection is retired only through
   `spawn_guarded_preview_retirement`. Verify: `make check-workflow-boundaries`.
-- [ ] 2.5 Split the guarded Replace All callback in `ui/window/search.rs` into
+- [x] 2.5 Split the guarded Replace All callback in `ui/window/search.rs` into
   claim, then `admit_or_wait`, then start (design D2, D3):
   - the epoch is read before each attempt;
   - the skip set is recomputed on every attempt;
@@ -180,7 +180,7 @@
   Remove the "Replace All deferred while memory pressure clears; try again
   shortly" message. Verify: T2, T6, T7, T8 and T9 pass, and T1 passes except
   its status-line assertion, which needs 2.7.
-- [ ] 2.6 Handle cancel, close and dispose during the wait (design D4):
+- [x] 2.6 Handle cancel, close and dispose during the wait (design D4):
   - `request_replace_cancel` takes the deferred branch;
   - the window's `Ended` handler calls `end_deferred_replace_run` and
     `finish_replace_transaction`, never `finish_replace_run(None)`, which
@@ -194,7 +194,7 @@
     callback.
 
   Verify: T3, T4, T5, T10 and T10b pass.
-- [ ] 2.7 Show the wait (design D6):
+- [x] 2.7 Show the wait (design D6):
   - the `replace-all-waiting` announcement;
   - the progress status message, with a 1 s keepalive that **re-publishes**
     it through `update_search_progress_message`, not a heartbeat, and skips
@@ -211,7 +211,7 @@
   Verify: the extended T1 passes, including that the status line still shows
   the waiting text after 11 s with the fill held, and T4b passes. Run
   `make check-automation-docs` after 2.9.
-- [ ] 2.8 Retire `confirm_with_settled_file_index` (design D8). Restore its
+- [x] 2.8 Retire `confirm_with_settled_file_index` (design D8). Restore its
   8 call sites to `panel.activate_confirm_replacements()`. Keep
   `settle_file_index_builds` for the step before a fill and rewrite its doc
   comment. Make `replace_all_held_at_second_file` wait for
@@ -228,7 +228,7 @@
     check `git -C <wt> diff` shows none of it.
 
   Save every log to `$H/replace-all-confirm-disposal-lane/retire/`.
-- [ ] 2.9 Update the documentation `documentation.md` requires:
+- [x] 2.9 Update the documentation `documentation.md` requires:
   - `docs/automation.md` and `docs/automation-reference.md`: the new snapshot
     field row and anchor `snapshot-field-replace-admission-deferred`, plus
     `replace_in_flight`'s widened meaning;
@@ -247,18 +247,18 @@
     its Replace All feature text names the refusal.
 
   Verify: `make check-agent-docs` and `make check-automation-docs`.
-- [ ] 2.9a Extend
+- [x] 2.9a Extend
   `test_evidence_reads_stay_side_effect_free_across_journal_mutation`
   across `defer_replace_run`, `resume_parked_replace_run` and
   `cancel_parked_replace_run` (design D8, "Evidence proof";
   `workflow-convention.md`, "Evidence surfaces").
-- [ ] 2.10 Run the data-safety scoped checklist on the diff.
+- [x] 2.10 Run the data-safety scoped checklist on the diff.
   - Check that the earlier Undo survives every way out of the wait.
   - Check that no path writes a file without admission.
   - Check that the parked payload reaches the lane on every exit.
 
   Record the findings in `$H/replace-all-confirm-disposal-lane/data-safety-impl.md`.
-- [ ] 2.11 Run the cheap gates, `RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links -D rustdoc::bare_urls" cargo doc --workspace --no-deps`
+- [x] 2.11 Run the cheap gates, `RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links -D rustdoc::bare_urls" cargo doc --workspace --no-deps`
   (a new module doc) and the three smokes, then commit groups 1 and 2
   together as
   `fix(search-panel): wait for disposal capacity after Confirm instead of discarding the selection`

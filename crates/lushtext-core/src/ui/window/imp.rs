@@ -130,6 +130,9 @@ pub struct SearchProgressState {
     pub visible: Cell<bool>,
     /// Poll of the Replace All run in flight (design D8).
     pub replace_poll_source_id: RefCell<Option<glib::SourceId>>,
+    /// Keepalive of the waiting text while a confirmed Replace All waits for
+    /// disposal capacity (`replace-all-confirm-disposal-lane` design D6).
+    pub replace_wait_keepalive_source_id: RefCell<Option<glib::SourceId>>,
     /// A close waits for the Replace All run in flight (design D8).
     pub close_after_replace_run: Cell<bool>,
     /// Open and Replace in Editor waiting for its tab's load to settle

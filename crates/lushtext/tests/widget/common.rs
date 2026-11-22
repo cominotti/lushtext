@@ -1081,6 +1081,19 @@ pub fn accessible_label_is(accessible: &impl IsA<gtk4::Accessible>, label: &str)
     accessible_string_property_is(accessible, gtk4::ffi::GTK_ACCESSIBLE_PROPERTY_LABEL, label)
 }
 
+/// Whether the accessible `Description` property of `accessible` is exactly
+/// `description` (a value check; `AccessibleAudit` checks presence only).
+pub fn accessible_description_is(
+    accessible: &impl IsA<gtk4::Accessible>,
+    description: &str,
+) -> bool {
+    accessible_string_property_is(
+        accessible,
+        gtk4::ffi::GTK_ACCESSIBLE_PROPERTY_DESCRIPTION,
+        description,
+    )
+}
+
 /// Whether the accessible `ValueText` property of `accessible` is exactly
 /// `value_text` (a value check; `AccessibleAudit` checks presence only).
 pub fn accessible_value_text_is(accessible: &impl IsA<gtk4::Accessible>, value_text: &str) -> bool {

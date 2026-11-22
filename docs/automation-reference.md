@@ -683,6 +683,7 @@ once, by the identity's owner, not by every workflow that consumes it.*
 | `window.content_search` | `SearchPanelEvidence` | `skipped_replacement_count` | `content_search.skipped_replacement_count` |
 | `window.content_search` | `SearchPanelEvidence` | `has_undo_backup` | `content_search.has_undo_backup` |
 | `window.content_search` | `SearchPanelEvidence` | `replace_in_flight` | `content_search.replace_in_flight` |
+| `window.content_search` | `SearchPanelEvidence` | `replace_admission_deferred` | `content_search.replace_admission_deferred` |
 | `window.content_search` | `SearchPanelEvidence` | `replace_cancel_requested` | `content_search.replace_cancel_requested` |
 | `window.content_search` | `SearchPanelEvidence` | `replace_progress` | `content_search.replace_progress_files_done` |
 | `window.content_search` | `SearchPanelEvidence` | `replace_progress` | `content_search.replace_progress_files_total` |
@@ -961,7 +962,8 @@ sidebar show/hide animation and belongs to `WFR-SHELL-GEOMETRY`, not to this row
 | <span id="snapshot-field-omitted-replacement-count"></span>`snapshot-field-omitted-replacement-count` | `content_search.omitted_replacement_count` | `u32` | Number of eligible matches omitted by the Replace Preview resource budget. |
 | <span id="snapshot-field-skipped-replacement-count"></span>`snapshot-field-skipped-replacement-count` | `content_search.skipped_replacement_count` | `u32` | Number of source-truncated or invalid matches skipped by Replace Preview generation. |
 | <span id="snapshot-field-has-undo-backup"></span>`snapshot-field-has-undo-backup` | `content_search.has_undo_backup` | `bool` | Whether a Replace All undo backup is available. |
-| <span id="snapshot-field-replace-in-flight"></span>`snapshot-field-replace-in-flight` | `content_search.replace_in_flight` | `bool` | Whether a Replace All run, including the rollback after Cancel, is in flight. `search-complete` stays pending through it. |
+| <span id="snapshot-field-replace-in-flight"></span>`snapshot-field-replace-in-flight` | `content_search.replace_in_flight` | `bool` | Whether a Replace All run, including the rollback after Cancel, is in flight, or a confirmed run is waiting for disposal capacity to start (`content_search.replace_admission_deferred`). `search-complete` stays pending through it. |
+| <span id="snapshot-field-replace-admission-deferred"></span>`snapshot-field-replace-admission-deferred` | `content_search.replace_admission_deferred` | `bool` | Whether a confirmed Replace All is waiting for the disposal capacity its undo reservation needs, before any file is touched. It holds the application's Replace All transaction, and `replace_in_flight` is true with it; Cancel Replace All ends the wait with nothing written. |
 | <span id="snapshot-field-replace-cancel-requested"></span>`snapshot-field-replace-cancel-requested` | `content_search.replace_cancel_requested` | `bool` | Whether the run in flight was asked to stop. |
 | <span id="snapshot-field-replace-progress-files-done"></span>`snapshot-field-replace-progress-files-done` | `content_search.replace_progress_files_done` | `u32?` | Files the run in flight has finished; absent with no run. |
 | <span id="snapshot-field-replace-progress-files-total"></span>`snapshot-field-replace-progress-files-total` | `content_search.replace_progress_files_total` | `u32?` | Files the run in flight will visit; absent with no run. |

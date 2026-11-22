@@ -3038,7 +3038,7 @@ fn test_replace_all_then_undo_restores_original_file_bytes() {
         "previewed rows start checked so the confirm step applies exactly them",
     );
 
-    confirm_with_settled_file_index(&panel);
+    panel.activate_confirm_replacements();
     wait_until(Duration::from_secs(20), || {
         fixture::read_text(&first).contains("thread")
             && fixture::read_text(&second).contains("thread")
@@ -3175,7 +3175,7 @@ fn replace_all_over_with(
         evidence.replace_preview_count == plan.preview_rows && !evidence.replace_preview_pending
     });
     before_confirm();
-    confirm_with_settled_file_index(&panel);
+    panel.activate_confirm_replacements();
     wait_until(plan.budget, || {
         panel.evidence().last_apply_counts.is_some() && !panel.evidence().replace_preview_pending
     });
@@ -3436,7 +3436,7 @@ fn test_replace_all_applies_only_checked_rows_and_records_apply_counts() {
         .remove(&unchecked);
     assert_eq!(panel.evidence().checked_replacement_count, 1);
 
-    confirm_with_settled_file_index(&panel);
+    panel.activate_confirm_replacements();
     wait_until(Duration::from_secs(20), || {
         fixture::read_text(&first).contains("thread")
     });
@@ -3559,6 +3559,67 @@ fn test_evidence_reads_stay_side_effect_free_across_journal_mutation() {
         panel.evidence().journal_disk_jobs >= 2,
         "one install and one clear each dispatch a journal disk job",
     );
+
+    // The parked Replace All run (`replace-all-confirm-disposal-lane` task
+    // 2.9a): read around each operation that takes a mutable borrow of
+    // `parked_replace_run` (defer, resume, cancel), and check two reads of
+    // the same state agree.
+    let window = test_window();
+    present_window(&window);
+    crate::common::wait_for_startup_data_flow(&window);
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let assert_reads_agree = |panel: &LushtextSearchPanel| {
+        let first = panel.evidence();
+        let second = panel.evidence();
+        assert_eq!(
+            first.replace_admission_deferred,
+            second.replace_admission_deferred
+        );
+        assert_eq!(first.replace_in_flight, second.replace_in_flight);
+        assert_eq!(
+            first.replace_transaction_pending,
+            second.replace_transaction_pending
+        );
+        assert_eq!(first.undo_backup_generation, second.undo_backup_generation);
+        assert_eq!(first.preview_generation, second.preview_generation);
+        assert_eq!(
+            first.preview_retirement_jobs,
+            second.preview_retirement_jobs
+        );
+        first
+    };
+    // Defer, then resume.
+    let (window_panel, files) = preview_named_files(&window, dir.path(), "resumed");
+    wait_for_journal_disk_idle(&window_panel);
+    let fill = fill_lane_after_settling(&window);
+    window_panel.activate_confirm_replacements();
+    wait_until(Duration::from_secs(10), || {
+        window_panel.evidence().replace_admission_deferred
+    });
+    assert!(assert_reads_agree(&window_panel).replace_admission_deferred);
+    drop(fill);
+    wait_until(Duration::from_secs(20), || {
+        !window_panel.evidence().replace_admission_deferred
+    });
+    let resumed = assert_reads_agree(&window_panel);
+    assert!(!resumed.replace_admission_deferred);
+    wait_until(Duration::from_secs(20), || {
+        all_read(&files, "thread\n") && !window_panel.evidence().replace_transaction_pending
+    });
+    wait_for_journal_disk_idle(&window_panel);
+    // Defer, then cancel.
+    let (_, files) = preview_named_files(&window, dir.path(), "cancelled");
+    let fill = fill_lane_after_settling(&window);
+    window_panel.activate_confirm_replacements();
+    wait_until(Duration::from_secs(10), || {
+        window_panel.evidence().replace_admission_deferred
+    });
+    assert!(assert_reads_agree(&window_panel).replace_admission_deferred);
+    window_panel.imp().replace_all_button.get().emit_clicked();
+    let cancelled = assert_reads_agree(&window_panel);
+    assert!(!cancelled.replace_admission_deferred && !cancelled.replace_in_flight);
+    drop(fill);
+    assert_texts(&files, "needle\n");
 }
 
 /// Write a workspace of 18,000 matches (30 files of 600 lines).
@@ -4664,7 +4725,7 @@ fn cancel_mid_run_restores_every_file(cancel: impl FnOnce(&LushtextWindow, &Lush
         let evidence = panel.evidence();
         evidence.replace_preview_count == 5 && !evidence.replace_preview_pending
     });
-    confirm_with_settled_file_index(&panel);
+    panel.activate_confirm_replacements();
     wait_until(Duration::from_secs(20), || {
         panel
             .evidence()
@@ -4701,10 +4762,25 @@ fn cancel_mid_run_restores_every_file(cancel: impl FnOnce(&LushtextWindow, &Lush
 }
 
 /// Start a three-file Replace All whose worker holds after the second file's
-/// undo body, and return once the run is in flight.
+/// undo body, and return once the run is in flight and admitted: a run that
+/// waits for disposal capacity is in flight too, but it has not yet retired
+/// any window's Undo or started its worker.
 fn replace_all_held_at_second_file(
     window: &LushtextWindow,
     dir: &std::path::Path,
+) -> (LushtextSearchPanel, Vec<PathBuf>) {
+    replace_all_held_at_second_file_with(
+        window,
+        dir,
+        LushtextSearchPanel::activate_confirm_replacements,
+    )
+}
+
+/// [`replace_all_held_at_second_file`], confirming through `confirm`.
+fn replace_all_held_at_second_file_with(
+    window: &LushtextWindow,
+    dir: &std::path::Path,
+    confirm: impl FnOnce(&LushtextSearchPanel),
 ) -> (LushtextSearchPanel, Vec<PathBuf>) {
     let files: Vec<_> = (0..3)
         .map(|index| {
@@ -4728,37 +4804,28 @@ fn replace_all_held_at_second_file(
         let evidence = panel.evidence();
         evidence.replace_preview_count == 3 && !evidence.replace_preview_pending
     });
-    confirm_with_settled_file_index(&panel);
+    confirm(&panel);
     wait_until(Duration::from_secs(20), || {
-        panel.evidence().replace_in_flight
+        let evidence = panel.evidence();
+        evidence.replace_in_flight && !evidence.replace_admission_deferred
     });
     (panel, files)
 }
 
-/// Confirm the panel's Replace All once no palette file-index build holds
-/// the disposal lane (`settle_file_index_builds`).
-fn confirm_with_settled_file_index(panel: &LushtextSearchPanel) {
-    let window = panel
-        .root()
-        .and_downcast::<LushtextWindow>()
-        .expect("the search panel's window");
-    settle_file_index_builds(&window);
-    panel.activate_confirm_replacements();
-}
-
 /// Run one palette file-index build in every window of `window`'s
 /// application and wait until each has finished, so no build holds the
-/// ordinary disposal lane when a test confirms a Replace All.
+/// ordinary disposal lane when a test then fills it.
 ///
-/// A build reserves `MAX_FILE_INDEX_RETAINED_BYTES` (64 MiB) of the 128 MiB
-/// lane on the GTK thread until its worker shrinks it, and today's Confirm
-/// does not retry a refused 64 MiB undo reservation (the
-/// `replace-all-confirm-disposal-lane` change will). Each window's startup
-/// build fires 300 ms after its scope refresh, which in a two-window test is
-/// about when the second window confirms (`flaky-apply` attribution). Asking
-/// for a build supersedes a debounce still pending, which no evidence
-/// exposes, and the wait covers the build that request starts, so no startup
-/// build can begin after it.
+/// A Confirm no longer needs this: a refused undo reservation waits for the
+/// lane (`replace-all-confirm-disposal-lane`). A fill does: it reserves only
+/// what is free when it is taken, and a build reserves
+/// `MAX_FILE_INDEX_RETAINED_BYTES` (64 MiB) of the 128 MiB lane until its
+/// worker shrinks it, crediting the replaced weight, so a fill taken during a
+/// build leaves room once the build shrinks and the waiting run would be
+/// admitted under the fill. Each window's startup build fires 300 ms after
+/// its scope refresh. Asking for a build supersedes a debounce still pending,
+/// which no evidence exposes, and the wait covers the build that request
+/// starts, so no startup build can begin after it.
 fn settle_file_index_builds(window: &LushtextWindow) {
     let windows: Vec<LushtextWindow> = window
         .application()
@@ -5033,7 +5100,7 @@ fn replace_all_through_fields(
         evidence.replace_preview_count == 1 && !evidence.replace_preview_pending
     });
     before_confirm();
-    confirm_with_settled_file_index(&panel);
+    panel.activate_confirm_replacements();
     wait_until(Duration::from_secs(20), || {
         panel.evidence().skipped_files_offered && !panel.evidence().replace_in_flight
     });
@@ -5077,17 +5144,8 @@ fn wait_for_prefilled_editor(
 
 /// Open `path` and make it unsaved, so a Replace All skips it.
 fn open_unsaved(window: &LushtextWindow, path: &std::path::Path) -> LushtextEditorPage {
-    window.open_document(path);
-    wait_until(Duration::from_secs(10), || {
-        let editor = crate::common::active_editor(window);
-        editor.file_path().as_deref() == Some(path)
-            && editor.load_state() == lushtext_core::ui::editor_page::EditorLoadState::Loaded
-            && editor.accepts_user_edits()
-    });
-    let editor = crate::common::active_editor(window);
-    let buffer = editor.buffer();
-    buffer.insert(&mut buffer.end_iter(), "edit\n");
-    wait_until(Duration::from_secs(5), || editor.is_modified());
+    let editor = open_loaded(window, path);
+    edit_unsaved(&editor);
     editor
 }
 
@@ -5112,7 +5170,7 @@ fn test_replace_in_editor_opens_a_closed_file_at_its_first_skipped_line() {
         let evidence = panel.evidence();
         evidence.replace_preview_count == 1 && !evidence.replace_preview_pending
     });
-    confirm_with_settled_file_index(&panel);
+    panel.activate_confirm_replacements();
     wait_until(Duration::from_secs(20), || {
         panel.evidence().skipped_files_offered && !panel.evidence().replace_in_flight
     });
@@ -5268,7 +5326,7 @@ fn test_replace_in_editor_on_a_protected_document_shows_the_notice() {
         let evidence = panel.evidence();
         evidence.replace_preview_count == 1 && !evidence.replace_preview_pending
     });
-    confirm_with_settled_file_index(&panel);
+    panel.activate_confirm_replacements();
     wait_until(Duration::from_secs(20), || {
         panel.evidence().skipped_files_offered && !panel.evidence().replace_in_flight
     });
@@ -5456,4 +5514,752 @@ fn test_quitting_during_replace_all_asks_and_stop_and_close_restores_every_file(
             .is_empty(),
         "a rolled-back run leaves no active journal",
     );
+}
+
+// ---------------------------------------------------------------------------
+// replace-all-confirm-disposal-lane: a confirmed Replace All waits for the
+// disposal capacity its undo reservation needs (design D8)
+// ---------------------------------------------------------------------------
+
+/// Write three one-match files under `dir`, search and preview them in
+/// `window`'s panel, and return the panel and the files.
+fn preview_three_files(
+    window: &LushtextWindow,
+    dir: &std::path::Path,
+) -> (LushtextSearchPanel, Vec<PathBuf>) {
+    preview_named_files(window, dir, "wait")
+}
+
+/// [`preview_three_files`] with files named `<prefix>_<n>.txt`, so a second
+/// preview in the same folder finds only its own files once the first run
+/// replaced theirs.
+fn preview_named_files(
+    window: &LushtextWindow,
+    dir: &std::path::Path,
+    prefix: &str,
+) -> (LushtextSearchPanel, Vec<PathBuf>) {
+    let files: Vec<_> = (0..3)
+        .map(|index| {
+            let path = dir.join(format!("{prefix}_{index}.txt"));
+            fixture::write_text(&path, "needle\n");
+            path
+        })
+        .collect();
+    let panel = window.imp().search_panel.get();
+    panel.set_workspace_folders(vec![dir.to_path_buf()]);
+    panel.start_search(&search_spec("needle"));
+    wait_until(Duration::from_secs(15), || {
+        !panel.imp().runtime.searching.get() && panel.imp().runtime.total_matches.get() == 3
+    });
+    panel.enter_preview_mode("thread");
+    wait_until(Duration::from_secs(15), || {
+        let evidence = panel.evidence();
+        evidence.replace_preview_count == 3 && !evidence.replace_preview_pending
+    });
+    (panel, files)
+}
+
+/// Fill the ordinary disposal lane once no palette file-index build holds
+/// it (design D8, "Filling the lane"): the fill is taken in the same turn the
+/// settle wait returns, so no build can start between the two.
+fn fill_lane_after_settling(
+    window: &LushtextWindow,
+) -> lushtext_core::ui::plain_disposal::DisposalCapacityHold {
+    settle_file_index_builds(window);
+    lushtext_core::ui::plain_disposal::fill_disposal_capacity_for_test()
+}
+
+fn assert_texts(files: &[PathBuf], expected: &str) {
+    for path in files {
+        fixture::assert_text(path, expected);
+    }
+}
+
+fn all_read(files: &[PathBuf], expected: &str) -> bool {
+    files
+        .iter()
+        .all(|path| fixture::read_text(path) == expected)
+}
+
+/// The status line while a confirmed run waits (design D6).
+const REPLACE_WAITING: &str = "Replace All will start when memory frees up";
+/// The Cancel Replace All button's description and tooltip while it waits.
+const REPLACE_WAITING_DESCRIPTION: &str = "Waiting for memory before Replace All starts";
+/// The status after Cancel ends a wait.
+const REPLACE_WAIT_CANCELLED: &str = "Replace All cancelled; no file was changed";
+
+/// Assert the state of a confirmed run waiting for capacity (design D8,
+/// T1 step 3): deferred, in flight, holding the transaction, and offering
+/// Cancel Replace All with the waiting description.
+fn assert_waiting(panel: &LushtextSearchPanel) {
+    let evidence = panel.evidence();
+    assert!(
+        evidence.replace_admission_deferred,
+        "the confirmed run waits for capacity"
+    );
+    assert!(evidence.replace_in_flight, "a waiting run is in flight");
+    assert!(
+        evidence.replace_transaction_pending,
+        "a waiting run holds the transaction"
+    );
+    let button = panel.imp().replace_all_button.get();
+    assert_eq!(button.label().as_deref(), Some("Cancel Replace All"));
+    assert!(button.is_sensitive());
+    assert_eq!(
+        button.tooltip_text().as_deref(),
+        Some(REPLACE_WAITING_DESCRIPTION)
+    );
+    assert!(crate::common::accessible_description_is(
+        &button,
+        REPLACE_WAITING_DESCRIPTION
+    ));
+}
+
+/// Open `path` in `window` and wait until its tab accepts edits.
+fn open_loaded(window: &LushtextWindow, path: &std::path::Path) -> LushtextEditorPage {
+    window.open_document(path);
+    wait_until(Duration::from_secs(10), || {
+        let editor = crate::common::active_editor(window);
+        editor.file_path().as_deref() == Some(path)
+            && editor.load_state() == lushtext_core::ui::editor_page::EditorLoadState::Loaded
+            && editor.accepts_user_edits()
+    });
+    crate::common::active_editor(window)
+}
+
+/// Type into `editor` without saving.
+fn edit_unsaved(editor: &LushtextEditorPage) {
+    let buffer = editor.buffer();
+    buffer.insert(&mut buffer.end_iter(), "edit\n");
+    wait_until(Duration::from_secs(5), || editor.is_modified());
+}
+
+/// T1: a Confirm refused for disposal capacity waits, writes nothing while
+/// the lane is full, and replaces every file once it frees.
+#[test]
+fn test_confirm_under_a_full_lane_waits_and_then_replaces() {
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let window = test_window();
+    present_window(&window);
+    crate::common::wait_for_startup_data_flow(&window);
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let (panel, files) = preview_three_files(&window, dir.path());
+    wait_for_journal_disk_idle(&panel);
+
+    let fill = fill_lane_after_settling(&window);
+    panel.activate_confirm_replacements();
+    flush_after_delay(Duration::from_millis(500));
+    assert_texts(&files, "needle\n");
+
+    assert_waiting(&panel);
+    assert!(
+        window
+            .imp()
+            .status_bar
+            .imp()
+            .status_announcement_throttler
+            .has_recent_announcement_for_test(
+                accessibility::AnnouncementLane::StatusUpdate,
+                "workflow:replace-all-waiting",
+            ),
+        "entering the wait is announced",
+    );
+    let app = window
+        .application()
+        .and_downcast::<lushtext_core::app::LushtextApplication>()
+        .expect("the test window's application");
+    let search_ready = glib::MainContext::default().block_on(
+        lushtext_core::ui::automation::wait_for_ready_for_test(
+            app,
+            lushtext_core::model::automation::AutomationReadinessPredicate::SearchComplete,
+            1,
+        ),
+    );
+    assert!(
+        !search_ready.ok,
+        "search-complete stays pending while the run waits"
+    );
+    // A one-off status message expires after 10 s; the waiting text is kept
+    // up for the whole wait.
+    flush_after_delay(Duration::from_secs(11));
+    assert_eq!(status_text(&window), REPLACE_WAITING);
+    assert_waiting(&panel);
+    assert_texts(&files, "needle\n");
+
+    drop(fill);
+    wait_until(Duration::from_secs(20), || {
+        let evidence = panel.evidence();
+        all_read(&files, "thread\n")
+            && evidence.last_apply_counts.is_some()
+            && evidence.has_undo_backup
+            && !evidence.replace_in_flight
+            && !evidence.replace_transaction_pending
+    });
+    assert_texts(&files, "thread\n");
+    assert!(panel.imp().undo_button.property::<bool>("visible"));
+    assert!(!panel.evidence().replace_admission_deferred);
+    assert_ne!(status_text(&window), REPLACE_WAITING);
+    assert_eq!(panel.imp().replace_all_button.tooltip_text(), None);
+}
+
+/// T2: while window B's confirmed run waits for capacity, window A's apply
+/// and A's Undo are refused as during a run; once B is admitted and done,
+/// A's kept preview confirms.
+#[test]
+fn test_a_waiting_run_refuses_another_windows_apply_and_undo() {
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let window_a = test_window();
+    present_window(&window_a);
+    crate::common::wait_for_startup_data_flow(&window_a);
+    let window_b = second_window(&window_a);
+
+    // A: an earlier Replace All, so A offers Undo, then a second preview.
+    let dir_a = tempfile::tempdir().expect("expected operation to succeed");
+    let first_a = dir_a.path().join("a.txt");
+    fixture::write_text(&first_a, "needle\n");
+    let panel_a = replace_all_over(&window_a, dir_a.path(), 1, "thread");
+    wait_until(Duration::from_secs(20), || {
+        let evidence = panel_a.evidence();
+        evidence.has_undo_backup && !evidence.replace_transaction_pending
+    });
+    wait_for_journal_disk_idle(&panel_a);
+    let second_a = dir_a.path().join("a2.txt");
+    fixture::write_text(&second_a, "needle\n");
+    panel_a.start_search(&search_spec("needle"));
+    wait_until(Duration::from_secs(15), || {
+        !panel_a.imp().runtime.searching.get() && panel_a.imp().runtime.total_matches.get() == 1
+    });
+    panel_a.enter_preview_mode("thread");
+    wait_until(Duration::from_secs(15), || {
+        let evidence = panel_a.evidence();
+        evidence.replace_preview_count == 1 && !evidence.replace_preview_pending
+    });
+
+    // B previews three files, then confirms under a full lane.
+    let dir_b = tempfile::tempdir().expect("expected operation to succeed");
+    let (panel_b, files_b) = preview_three_files(&window_b, dir_b.path());
+    wait_for_journal_disk_idle(&panel_b);
+    let fill = fill_lane_after_settling(&window_a);
+    panel_b.activate_confirm_replacements();
+    flush_after_delay(Duration::from_millis(500));
+    assert_waiting(&panel_b);
+
+    panel_a.activate_confirm_replacements();
+    flush_after_delay(Duration::from_millis(300));
+    assert_eq!(status_text(&window_a), OTHER_WINDOW_BUSY);
+    assert!(
+        panel_a.imp().preview.preview_mode.get(),
+        "A keeps its preview for a retry"
+    );
+    assert!(!panel_a.evidence().replace_transaction_pending);
+    fixture::assert_text(&second_a, "needle\n");
+
+    panel_a.activate_undo_replacements();
+    flush_after_delay(Duration::from_millis(300));
+    assert_eq!(status_text(&window_a), OTHER_WINDOW_BUSY);
+    assert!(
+        panel_a.evidence().has_undo_backup,
+        "A's Undo stays installed"
+    );
+    fixture::assert_text(&first_a, "thread\n");
+    assert_texts(&files_b, "needle\n");
+
+    drop(fill);
+    wait_until(Duration::from_secs(20), || {
+        let evidence = panel_b.evidence();
+        all_read(&files_b, "thread\n")
+            && !evidence.replace_in_flight
+            && !evidence.replace_transaction_pending
+    });
+    assert!(
+        !panel_a.evidence().has_undo_backup,
+        "B's admitted run retired A's Undo"
+    );
+    panel_a.activate_confirm_replacements();
+    wait_until(Duration::from_secs(20), || {
+        fixture::read_text(&second_a) == "thread\n"
+            && !panel_a.evidence().replace_transaction_pending
+    });
+}
+
+/// T6: the original two-window regression, with a palette file-index build
+/// provably holding its reservation when B confirms (design D8, T6).
+#[test]
+fn test_an_apply_while_another_window_runs_is_refused_across_an_index_build() {
+    use lushtext_core::ui::command_palette::CommandPaletteTestPolicy;
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    struct PolicyReset;
+    impl Drop for PolicyReset {
+        fn drop(&mut self) {
+            CommandPaletteTestPolicy::reset();
+        }
+    }
+    let _reset = PolicyReset;
+    CommandPaletteTestPolicy::current()
+        .with_file_index_build_delay(Duration::from_secs(3))
+        .install();
+    let window_a = test_window();
+    present_window(&window_a);
+    crate::common::wait_for_startup_data_flow(&window_a);
+    let window_b = second_window(&window_a);
+
+    let dir_a = tempfile::tempdir().expect("expected operation to succeed");
+    let file_a = dir_a.path().join("a.txt");
+    fixture::write_text(&file_a, "needle\n");
+    let panel_a = window_a.imp().search_panel.get();
+    panel_a.set_workspace_folders(vec![dir_a.path().to_path_buf()]);
+    panel_a.start_search(&search_spec("needle"));
+    wait_until(Duration::from_secs(15), || {
+        !panel_a.imp().runtime.searching.get() && panel_a.imp().runtime.total_matches.get() == 1
+    });
+    panel_a.enter_preview_mode("thread");
+    wait_until(Duration::from_secs(15), || {
+        let evidence = panel_a.evidence();
+        evidence.replace_preview_count == 1 && !evidence.replace_preview_pending
+    });
+
+    let dir_b = tempfile::tempdir().expect("expected operation to succeed");
+    let (panel_b, files_b) =
+        replace_all_held_at_second_file_with(&window_b, dir_b.path(), |panel| {
+            let started = window_b.imp().file_index_builds.borrow().snapshot().started;
+            window_b.rebuild_file_index();
+            wait_until(Duration::from_secs(20), || {
+                window_b.imp().file_index_builds.borrow().snapshot().started > started
+            });
+            panel.activate_confirm_replacements();
+        });
+    panel_a.activate_confirm_replacements();
+    flush_after_delay(Duration::from_millis(300));
+    let evidence = panel_a.evidence();
+    assert!(!evidence.replace_transaction_pending && !evidence.replace_in_flight);
+    assert_eq!(status_text(&window_a), OTHER_WINDOW_BUSY);
+    assert!(
+        panel_a.imp().preview.preview_mode.get(),
+        "A can retry its preview"
+    );
+    fixture::assert_text(&file_a, "needle\n");
+
+    wait_until(Duration::from_secs(30), || {
+        !panel_b.evidence().replace_in_flight && !panel_b.evidence().replace_transaction_pending
+    });
+    assert_texts(&files_b, "thread\n");
+    fixture::assert_text(&file_a, "needle\n");
+}
+
+/// T3: Cancel while the run waits ends it at once with nothing written, keeps
+/// the earlier run's Undo and Show Skipped Files report, and Undo is not
+/// offered during the wait.
+#[test]
+fn test_cancel_while_waiting_keeps_the_earlier_undo_and_skip_report() {
+    use lushtext_core::model::content_search::ReplaceSkipReason;
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let window = test_window();
+    present_window(&window);
+    crate::common::wait_for_startup_data_flow(&window);
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let earlier: Vec<_> = (0..2)
+        .map(|index| {
+            let path = dir.path().join(format!("earlier_{index}.txt"));
+            fixture::write_text(&path, "needle\n");
+            path
+        })
+        .collect();
+    let unsaved = dir.path().join("unsaved.txt");
+    fixture::write_text(&unsaved, "needle\n");
+    let editor = open_unsaved(&window, &unsaved);
+
+    // The earlier run: two files replaced, the unsaved one skipped.
+    let panel = replace_all_over(&window, dir.path(), 3, "thread");
+    wait_until(Duration::from_secs(20), || {
+        let evidence = panel.evidence();
+        evidence.has_undo_backup && evidence.skipped_files_offered && !evidence.replace_in_flight
+    });
+    wait_for_journal_disk_idle(&panel);
+    assert_texts(&earlier, "thread\n");
+
+    // The later run, previewed before the fill, waits.
+    let later = dir.path().join("later.txt");
+    fixture::write_text(&later, "needle\n");
+    panel.start_search(&search_spec("needle"));
+    wait_until(Duration::from_secs(15), || {
+        !panel.imp().runtime.searching.get() && panel.imp().runtime.total_matches.get() == 2
+    });
+    panel.enter_preview_mode("thread");
+    wait_until(Duration::from_secs(15), || {
+        let evidence = panel.evidence();
+        evidence.replace_preview_count == 2 && !evidence.replace_preview_pending
+    });
+    let fill = fill_lane_after_settling(&window);
+    panel.activate_confirm_replacements();
+    flush_after_delay(Duration::from_millis(500));
+    assert_waiting(&panel);
+    assert!(
+        !panel.imp().undo_button.is_sensitive(),
+        "Undo is not offered while the run waits"
+    );
+    panel.activate_undo_replacements();
+    flush_events();
+    assert_texts(&earlier, "thread\n");
+
+    panel.imp().replace_all_button.get().emit_clicked();
+    let cancelled = panel.evidence();
+    assert!(!cancelled.replace_admission_deferred);
+    assert!(!cancelled.replace_in_flight);
+    assert!(!cancelled.replace_transaction_pending);
+    assert_eq!(status_text(&window), REPLACE_WAIT_CANCELLED);
+    assert_eq!(
+        panel.imp().replace_all_button.label().as_deref(),
+        Some("Replace All")
+    );
+    assert_eq!(panel.imp().replace_all_button.tooltip_text(), None);
+    fixture::assert_text(&later, "needle\n");
+    assert!(
+        cancelled.skipped_files_offered,
+        "the earlier skip report stays"
+    );
+    assert_eq!(skipped_for(&panel, ReplaceSkipReason::UnsavedChanges), 1);
+    let report = panel.last_skip_report().expect("the earlier skip report");
+    assert_eq!(report.files()[0].path, unsaved);
+    assert!(
+        cancelled.has_undo_backup,
+        "the earlier Undo stays installed"
+    );
+    assert!(panel.imp().undo_button.is_sensitive());
+    assert!(panel.imp().undo_button.property::<bool>("visible"));
+
+    drop(fill);
+    flush_after_delay(Duration::from_millis(300));
+    fixture::assert_text(&later, "needle\n");
+    panel.activate_undo_replacements();
+    wait_until(Duration::from_secs(20), || {
+        all_read(&earlier, "needle\n") && !panel.evidence().replace_transaction_pending
+    });
+    assert!(editor.is_modified(), "the unsaved tab keeps its edit");
+}
+
+/// T4: hiding the panel (Escape) while the run waits keeps the run, which
+/// replaces the files once capacity frees.
+#[test]
+fn test_escape_while_waiting_still_replaces() {
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let window = test_window();
+    present_window(&window);
+    crate::common::wait_for_startup_data_flow(&window);
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    window.toggle_search_panel();
+    let (panel, files) = preview_three_files(&window, dir.path());
+    wait_for_journal_disk_idle(&panel);
+    let fill = fill_lane_after_settling(&window);
+    panel.activate_confirm_replacements();
+    flush_after_delay(Duration::from_millis(500));
+    assert_waiting(&panel);
+
+    window.close_search_panel();
+    flush_after_delay(Duration::from_millis(300));
+    assert!(!window.imp().search_panel_revealer.reveals_child());
+    assert_waiting(&panel);
+    assert_texts(&files, "needle\n");
+
+    drop(fill);
+    wait_until(Duration::from_secs(20), || {
+        let evidence = panel.evidence();
+        all_read(&files, "thread\n") && !evidence.replace_in_flight && evidence.has_undo_backup
+    });
+}
+
+/// T4b: a workspace search during the wait shows its own state, the waiting
+/// text comes back within a keepalive period of the search ending, and the
+/// run still starts once capacity frees.
+#[test]
+fn test_a_new_search_while_waiting_hands_the_status_line_back() {
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    struct PolicyReset;
+    impl Drop for PolicyReset {
+        fn drop(&mut self) {
+            SearchPanelTestPolicy::reset();
+        }
+    }
+    let _reset = PolicyReset;
+    let window = test_window();
+    present_window(&window);
+    crate::common::wait_for_startup_data_flow(&window);
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    window.toggle_search_panel();
+    let (panel, files) = preview_three_files(&window, dir.path());
+    wait_for_journal_disk_idle(&panel);
+    let fill = fill_lane_after_settling(&window);
+    panel.activate_confirm_replacements();
+    flush_after_delay(Duration::from_millis(1_500));
+    assert_waiting(&panel);
+    assert_eq!(status_text(&window), REPLACE_WAITING);
+
+    SearchPanelTestPolicy::current()
+        .with_search_worker_delay(Duration::from_millis(2_500))
+        .install();
+    panel.start_search(&search_spec("needle"));
+    wait_until(Duration::from_secs(5), || {
+        panel.imp().runtime.searching.get()
+    });
+    let mut saw_waiting_during_search = false;
+    while panel.imp().runtime.searching.get() {
+        saw_waiting_during_search |= status_text(&window) == REPLACE_WAITING;
+        flush_after_delay(Duration::from_millis(50));
+    }
+    assert!(
+        !saw_waiting_during_search,
+        "the search's own state shows while it runs"
+    );
+    wait_until(Duration::from_secs(2), || {
+        status_text(&window) == REPLACE_WAITING
+    });
+    assert_waiting(&panel);
+    assert_texts(&files, "needle\n");
+
+    drop(fill);
+    wait_until(Duration::from_secs(20), || {
+        let evidence = panel.evidence();
+        all_read(&files, "thread\n") && !evidence.replace_in_flight && evidence.has_undo_backup
+    });
+}
+
+/// T5: Stop and Close while the run waits closes the window with no file
+/// written, even once capacity frees.
+#[test]
+fn test_stop_and_close_while_waiting_writes_nothing() {
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let window = test_window();
+    present_window(&window);
+    crate::common::wait_for_startup_data_flow(&window);
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let (panel, files) = preview_three_files(&window, dir.path());
+    wait_for_journal_disk_idle(&panel);
+    let fill = fill_lane_after_settling(&window);
+    panel.activate_confirm_replacements();
+    flush_after_delay(Duration::from_millis(500));
+    assert_waiting(&panel);
+
+    let dialog = close_during_run(&window);
+    dialog.emit_by_name::<()>("response", &[&"stop-and-close"]);
+    dialog.force_close();
+    // Stop ends the wait at once: no worker existed, so there is nothing to
+    // roll back, and the close goes on into the ordinary close path.
+    let stopped = panel.evidence();
+    assert!(!stopped.replace_admission_deferred);
+    assert!(!stopped.replace_in_flight);
+    assert!(!stopped.replace_transaction_pending);
+    assert_texts(&files, "needle\n");
+    // The close's own persistence needs the lane too, so the window goes once
+    // the other owner releases it; nothing is written meanwhile.
+    drop(fill);
+    wait_until(Duration::from_secs(30), || !window.is_visible());
+    flush_after_delay(Duration::from_millis(500));
+    assert_texts(&files, "needle\n");
+}
+
+/// T7: a file open before the fill and edited during the wait is skipped as
+/// open with unsaved changes when the run starts; the others are replaced.
+#[test]
+fn test_a_file_edited_while_waiting_is_skipped_as_unsaved() {
+    use lushtext_core::model::content_search::ReplaceSkipReason;
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let window = test_window();
+    present_window(&window);
+    crate::common::wait_for_startup_data_flow(&window);
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let (panel, files) = preview_three_files(&window, dir.path());
+    let editor = open_loaded(&window, &files[0]);
+    wait_for_journal_disk_idle(&panel);
+    let fill = fill_lane_after_settling(&window);
+    panel.activate_confirm_replacements();
+    flush_after_delay(Duration::from_millis(500));
+    assert_waiting(&panel);
+    edit_unsaved(&editor);
+
+    drop(fill);
+    wait_until(Duration::from_secs(20), || {
+        let evidence = panel.evidence();
+        evidence.last_apply_counts.is_some()
+            && !evidence.replace_in_flight
+            && !evidence.replace_transaction_pending
+    });
+    fixture::assert_text(&files[0], "needle\n");
+    assert_texts(&files[1..], "thread\n");
+    assert_eq!(skipped_for(&panel, ReplaceSkipReason::UnsavedChanges), 1);
+    let report = panel.last_skip_report().expect("the run's skip report");
+    assert_eq!(report.files()[0].path, files[0]);
+    assert!(editor.is_modified(), "the tab keeps its edit");
+}
+
+/// T8: every file edited during the wait means nothing is written, and a
+/// Close When Finished chosen during the wait re-enters the close path,
+/// which asks Save Changes? for the edited tabs.
+#[test]
+fn test_every_file_edited_while_waiting_writes_nothing_and_close_resumes() {
+    use lushtext_core::model::content_search::ReplaceSkipReason;
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let window = test_window();
+    present_window(&window);
+    crate::common::wait_for_startup_data_flow(&window);
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let (panel, files) = preview_three_files(&window, dir.path());
+    let editors: Vec<_> = files
+        .iter()
+        .map(|path| open_loaded(&window, path))
+        .collect();
+    wait_for_journal_disk_idle(&panel);
+    let fill = fill_lane_after_settling(&window);
+    panel.activate_confirm_replacements();
+    flush_after_delay(Duration::from_millis(500));
+    assert_waiting(&panel);
+    for editor in &editors {
+        edit_unsaved(editor);
+    }
+    let dialog = close_during_run(&window);
+    dialog.emit_by_name::<()>("response", &[&"close-when-finished"]);
+    dialog.force_close();
+    flush_after_delay(Duration::from_millis(300));
+    assert!(window.is_visible(), "the window waits for the run");
+
+    drop(fill);
+    wait_until(Duration::from_secs(20), || {
+        let evidence = panel.evidence();
+        evidence.skipped_files_offered
+            && !evidence.replace_in_flight
+            && !evidence.replace_transaction_pending
+    });
+    assert_texts(&files, "needle\n");
+    assert_eq!(skipped_for(&panel, ReplaceSkipReason::UnsavedChanges), 3);
+    assert!(!panel.evidence().has_undo_backup);
+    wait_until(Duration::from_secs(10), || {
+        window
+            .visible_dialog()
+            .and_then(|dialog| dialog.downcast::<libadwaita::AlertDialog>().ok())
+            .and_then(|dialog| dialog.heading())
+            .is_some_and(|heading| heading == "Save Changes?")
+    });
+    assert!(window.is_visible());
+    if let Some(dialog) = window.visible_dialog() {
+        dialog.force_close();
+    }
+    flush_events();
+}
+
+/// T9: a capacity change that still leaves the lane short keeps the wait,
+/// with its selection and transaction held.
+#[test]
+fn test_a_capacity_change_that_is_still_short_keeps_the_wait() {
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let window = test_window();
+    present_window(&window);
+    crate::common::wait_for_startup_data_flow(&window);
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let (panel, files) = preview_three_files(&window, dir.path());
+    wait_for_journal_disk_idle(&panel);
+    let fill = fill_lane_after_settling(&window);
+    panel.activate_confirm_replacements();
+    flush_after_delay(Duration::from_millis(500));
+    assert_waiting(&panel);
+
+    // One turn: the epoch moves, the lane stays full.
+    drop(fill);
+    let second_fill = lushtext_core::ui::plain_disposal::fill_disposal_capacity_for_test();
+    flush_after_delay(Duration::from_millis(500));
+    assert_waiting(&panel);
+    assert_texts(&files, "needle\n");
+
+    drop(second_fill);
+    wait_until(Duration::from_secs(20), || {
+        let evidence = panel.evidence();
+        all_read(&files, "thread\n") && !evidence.replace_in_flight && evidence.has_undo_backup
+    });
+}
+
+/// T10: destroying the window of a waiting run writes none of its files
+/// once capacity frees, and frees the transaction for another window.
+#[test]
+fn test_destroying_a_waiting_window_writes_nothing_and_frees_the_transaction() {
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let window_a = test_window();
+    present_window(&window_a);
+    crate::common::wait_for_startup_data_flow(&window_a);
+    let window_b = second_window(&window_a);
+
+    let dir_a = tempfile::tempdir().expect("expected operation to succeed");
+    let file_a = dir_a.path().join("a.txt");
+    fixture::write_text(&file_a, "needle\n");
+    let panel_a = window_a.imp().search_panel.get();
+    panel_a.set_workspace_folders(vec![dir_a.path().to_path_buf()]);
+    panel_a.start_search(&search_spec("needle"));
+    wait_until(Duration::from_secs(15), || {
+        !panel_a.imp().runtime.searching.get() && panel_a.imp().runtime.total_matches.get() == 1
+    });
+    panel_a.enter_preview_mode("thread");
+    wait_until(Duration::from_secs(15), || {
+        let evidence = panel_a.evidence();
+        evidence.replace_preview_count == 1 && !evidence.replace_preview_pending
+    });
+    let dir_b = tempfile::tempdir().expect("expected operation to succeed");
+    let (panel_b, files_b) = preview_three_files(&window_b, dir_b.path());
+    wait_for_journal_disk_idle(&panel_b);
+
+    let fill = fill_lane_after_settling(&window_a);
+    panel_b.activate_confirm_replacements();
+    flush_after_delay(Duration::from_millis(500));
+    let deferred = panel_b.evidence();
+    assert!(deferred.replace_admission_deferred);
+    assert!(deferred.replace_transaction_pending);
+
+    let panel_b_weak = panel_b.downgrade();
+    window_b.destroy();
+    drop(panel_b);
+    drop(window_b);
+    wait_until(Duration::from_secs(20), || panel_b_weak.upgrade().is_none());
+
+    drop(fill);
+    panel_a.activate_confirm_replacements();
+    wait_until(Duration::from_secs(20), || {
+        fixture::read_text(&file_a) == "thread\n" && !panel_a.evidence().replace_transaction_pending
+    });
+    flush_after_delay(Duration::from_millis(300));
+    assert_texts(&files_b, "needle\n");
+}
+
+/// T10b: a disposed panel that something still holds releases its claimed
+/// transaction, so another panel can claim it.
+#[test]
+fn test_dispose_releases_a_claimed_transaction_while_the_panel_lives() {
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let other = glib::Object::builder::<LushtextSearchPanel>().build();
+    wait_for_journal_disk_idle(&panel);
+    wait_for_journal_disk_idle(&other);
+    panel
+        .begin_replace_transaction_for_test()
+        .expect("an idle panel grants the transaction");
+    assert!(
+        other.begin_replace_transaction_for_test().is_none(),
+        "the transaction is one per application"
+    );
+
+    // SAFETY: this standalone, never-parented test panel is disposed exactly
+    // once, and afterwards only its evidence is read.
+    unsafe { panel.run_dispose() };
+    assert!(!panel.evidence().replace_transaction_pending);
+    assert!(
+        other.begin_replace_transaction_for_test().is_some(),
+        "dispose released the disposed panel's transaction"
+    );
+    other.finish_replace_transaction_for_test();
 }

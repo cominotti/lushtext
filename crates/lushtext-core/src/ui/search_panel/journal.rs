@@ -297,6 +297,23 @@ impl LushtextSearchPanel {
         self.refresh_accessibility_state();
     }
 
+    /// Release the transaction as the panel is disposed
+    /// (`replace-all-confirm-disposal-lane` design D4).
+    ///
+    /// Resets only the two transaction fields this module owns and touches no
+    /// widget: GTK clears template children in `dispose()`, which
+    /// [`Self::finish_replace_transaction`]'s button and accessibility updates
+    /// would read. A disposed panel the application registry can still reach
+    /// then no longer refuses another window's apply or Undo. Every worker that
+    /// holds a transaction (a run, its rollback, an Undo) keeps a strong
+    /// reference to its window until its completion has released it, so no live
+    /// worker's transaction is released here.
+    pub(super) fn release_replace_transaction_on_dispose(&self) {
+        let preview = &self.imp().preview;
+        preview.replace_transaction_generation.set(None);
+        preview.replace_transaction_pending.set(false);
+    }
+
     /// Hand the preview selection's reservation to the durable apply workflow.
     pub(crate) fn take_replace_transaction(&self) -> Option<ReplaceJournalFreshness> {
         let imp = self.imp();

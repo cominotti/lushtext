@@ -48,6 +48,9 @@ type ReplaceCallback = Box<dyn Fn(super::GuardedReplacements)>;
 
 /// Callback type for Undo All: receives the backup map to restore.
 type UndoCallback = Box<dyn Fn(Arc<super::GuardedReplaceUndoBackup>)>;
+
+/// Callback type for the end of a Replace All wait for disposal capacity.
+type ReplaceResumedCallback = Box<dyn Fn(super::replace_admission::ReplaceAdmissionResumption)>;
 type MessageCallback = Box<dyn Fn(&str, crate::services::notifications::NotificationSeverity)>;
 
 /// Delay text-entry searches long enough to batch normal typing without making
@@ -221,6 +224,11 @@ pub struct SearchPreviewState {
     pub last_apply_counts: Cell<Option<super::policy::ReplaceApplyCounts>>,
     /// Cancel flag and progress counters of the Replace All run in flight.
     pub(super) replace_run: RefCell<Option<super::replace_execution::ReplaceRunControl>>,
+    /// A confirmed run waiting for the disposal capacity its undo reservation
+    /// needs (`replace_admission`).
+    pub(super) parked_replace_run: RefCell<Option<super::replace_admission::ParkedReplaceRun>>,
+    /// The parked run's one paced capacity wakeup (`replace_admission`).
+    pub(super) replace_admission_wakeup: crate::ui::plain_disposal::DisposalCapacityWakeup,
     /// The request of the last accepted preview, which a Replace All run applies.
     pub(super) accepted_preview_intent: RefCell<Option<super::policy::ReplaceRunIntent>>,
     /// The request of the run in flight, captured as it began.
@@ -263,6 +271,8 @@ pub struct SearchCallbacks {
     pub replace_callback: RefCell<Option<ReplaceCallback>>,
     /// Called when "Undo" is clicked with the backup to restore.
     pub undo_callback: RefCell<Option<UndoCallback>>,
+    /// Called when a Replace All waiting for disposal capacity resumes or ends.
+    pub(crate) replace_run_resumed_callback: RefCell<Option<ReplaceResumedCallback>>,
     /// Called when the panel needs to surface a short status message.
     pub message_callback: RefCell<Option<MessageCallback>>,
     /// Called when a Skipped Files row is activated: Open and Replace in Editor.
@@ -526,6 +536,13 @@ impl ObjectImpl for LushtextSearchPanel {
         }
         self.preview.preview_capacity_wakeup.cancel();
         self.preview.undo_capacity_wakeup.cancel();
+        // A Replace All waiting for disposal capacity ends here without
+        // calling back into a window being destroyed: its selection's drop
+        // hands the payload to the lane, no file was written, and the
+        // application's transaction is released so another window may run.
+        self.preview.replace_admission_wakeup.cancel();
+        drop(self.preview.parked_replace_run.take());
+        self.obj().release_replace_transaction_on_dispose();
         // Unparent the programmatically-parented popover to avoid leak warnings.
         self.history_popover.unparent();
     }

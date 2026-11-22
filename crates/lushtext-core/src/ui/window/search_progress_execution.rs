@@ -26,9 +26,9 @@
 //! # Closing during a Replace All run (design D8)
 //!
 //! A close while a run is in flight asks first ("Replace All Is Still
-//! Running"): Keep Running closes nothing; Close When Finished lets the run
-//! complete, keeps its journal active, and then re-enters the ordinary close
-//! path; Stop and Close cancels the run, which rolls back every file it
+//! Running"), acted on once the dialog has closed: Keep Running closes
+//! nothing; Close When Finished lets the run complete, keeps its journal
+//! active, and then re-enters the ordinary close path; Stop and Close cancels the run, which rolls back every file it
 //! rewrote, and then closes. Either way each file is original or replaced with
 //! an active journal entry. The run's completion resumes here
 //! (`close_if_requested_after_replace_run`), after the panel has finished its
@@ -83,11 +83,21 @@ pub(super) fn format_replace_progress_message(
 /// period, the search progress delay, so a short run never flashes it.
 const REPLACE_PROGRESS_POLL: Duration = Duration::from_millis(500);
 
+/// The status line while a confirmed Replace All waits for disposal capacity
+/// (`replace-all-confirm-disposal-lane` design D6).
+const REPLACE_WAITING_MESSAGE: &str = "Replace All will start when memory frees up";
+
+/// Period of the waiting text's keepalive: one re-publication a second keeps
+/// the notification's lease and brings the text back within a second of a
+/// workspace search's own progress ending.
+const REPLACE_WAIT_KEEPALIVE: Duration = Duration::from_secs(1);
+
 impl LushtextWindow {
     /// Stage order **replace progress**: poll the run's atomics every 500 ms,
     /// publish the progress (the publication renews its lease, as the search
     /// heartbeat does), announce it once, and retire it once the run ends.
     pub(crate) fn start_replace_progress_tracking(&self) {
+        self.stop_replace_wait_keepalive();
         self.stop_replace_progress_tracking();
         let window_weak = self.downgrade();
         let announced = std::cell::Cell::new(false);
@@ -113,6 +123,70 @@ impl LushtextWindow {
                 .imp()
                 .notification_bus
                 .resolve(NotificationOwner::Search, NotificationSurface::StatusBar)
+            {
+                self.render_notifications();
+            }
+        }
+    }
+
+    /// Stage order **replace wait**: a confirmed run waits for disposal
+    /// capacity. Announce it once, publish the waiting text as the Search
+    /// owner's progress, and re-publish it every second while the wait lasts
+    /// (design D6). A re-publication renews the lease and restores the text
+    /// after a workspace search resolved the record; while a search is in
+    /// flight a tick publishes nothing, so the two messages never alternate.
+    /// The text is `Info`, which the status bar never announces, so only the
+    /// first publication is spoken, through the announcement here.
+    pub(crate) fn show_replace_wait(&self) {
+        self.stop_replace_wait_keepalive();
+        self.update_search_progress_message(REPLACE_WAITING_MESSAGE);
+        self.announce_workflow_update(
+            crate::ui::accessibility::AnnouncementLane::StatusUpdate,
+            "replace-all-waiting",
+            REPLACE_WAITING_MESSAGE,
+        );
+        let window_weak = self.downgrade();
+        let source_id = glib::timeout_add_local(REPLACE_WAIT_KEEPALIVE, move || {
+            let Some(window) = window_weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            let panel = &window.imp().search_panel;
+            if !panel.replace_admission_deferred() {
+                window
+                    .imp()
+                    .search_progress
+                    .replace_wait_keepalive_source_id
+                    .take();
+                return glib::ControlFlow::Break;
+            }
+            if !panel.imp().runtime.searching.get() {
+                window.update_search_progress_message(REPLACE_WAITING_MESSAGE);
+            }
+            glib::ControlFlow::Continue
+        });
+        self.imp()
+            .search_progress
+            .replace_wait_keepalive_source_id
+            .replace(Some(source_id));
+    }
+
+    /// Retire the waiting text's keepalive and the waiting text. While a
+    /// workspace search is in flight the Search owner's record is that
+    /// search's progress (its start resolved the waiting text), so it is left
+    /// alone.
+    pub(crate) fn stop_replace_wait_keepalive(&self) {
+        if let Some(source_id) = self
+            .imp()
+            .search_progress
+            .replace_wait_keepalive_source_id
+            .take()
+        {
+            source_id.remove();
+            if !self.imp().search_panel.imp().runtime.searching.get()
+                && self
+                    .imp()
+                    .notification_bus
+                    .resolve(NotificationOwner::Search, NotificationSurface::StatusBar)
             {
                 self.render_notifications();
             }
@@ -170,15 +244,26 @@ impl LushtextWindow {
         }
         dialog.set_extra_child(Some(&group));
 
-        let window = self.downgrade();
+        // The choice is acted on once the dialog has closed, not inside its
+        // response: a window close requested while an `AdwDialog` is still
+        // presented over it closes the dialog instead, so a Stop and Close
+        // whose run ends at once (a run still waiting for memory, or one that
+        // finished while the dialog was open) left the window open.
+        let choice = std::rc::Rc::new(std::cell::Cell::new(None));
+        let response_choice = std::rc::Rc::clone(&choice);
         dialog.connect_response(None, move |_, response| {
-            let Some(window) = window.upgrade() else {
-                return;
-            };
-            match response {
-                RESPONSE_CLOSE_WHEN_FINISHED => window.close_after_replace_run(false),
-                RESPONSE_STOP_AND_CLOSE => window.close_after_replace_run(true),
-                _ => {}
+            response_choice.set(match response {
+                RESPONSE_CLOSE_WHEN_FINISHED => Some(false),
+                RESPONSE_STOP_AND_CLOSE => Some(true),
+                _ => None,
+            });
+        });
+        let window = self.downgrade();
+        dialog.connect_closed(move |_| {
+            if let Some(stop) = choice.take()
+                && let Some(window) = window.upgrade()
+            {
+                window.close_after_replace_run(stop);
             }
         });
         dialog.present(Some(self));

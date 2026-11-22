@@ -7,7 +7,7 @@ This folder owns the workspace-wide content search panel adapter.
 - Keep the panel as the driving adapter, and keep the workflow readability roles this folder carries (it is the exemplar for `docs/workflow-readability-matrix.md` row `WFR-SEARCH-REPLACE`):
   - `mod.rs` is the **narrative facade**: it narrates the search and Replace All stage orders, names each control-flow inversion and where control resumes, and delegates every stage. It must not gain timers, generation counters, admission bookkeeping, or stage machinery. Beyond the trivial entry-point reads and writes of the visible query controls, widget mutation belongs in the coordination and adapter roles: a stage that needs to take state and repaint controls is delegated to a named intent-first operation such as `replace_execution::begin_confirmed_replacement` or `journal::hand_back_undo_backup`.
   - `policy.rs` is the **pure policy** module: search single-flight ownership, the per-turn retirement budget, and the `ReplacePreviewTicket`/`ReplacePreviewFacts` freshness seam. It must stay free of `gtk4`, `glib`, `gio`, `libadwaita`, and `sourceview5` imports so the default mutation scope keeps reaching it.
-  - `execution.rs` (streaming search), `retirement.rs` (bounded result disposal), `replace_execution.rs` (Replace All preview and checked apply), and `journal.rs` (the durable, generation-guarded undo journal) are the **coordination** modules. A coordination file is named for the job it performs (no `runtime.rs`, no workflow-descriptive `replace.rs`); `replace_execution.rs` carries the stage-order qualifier because `execution.rs` is the search stage order's execution module. The three `imp::SearchPreviewState` fields both Replace All modules touch (`replace_transaction_pending`, `replace_transaction_generation`, `undo_backup_generation`) are owned by `journal.rs`, and `replace_execution` reads the first two only through `replace_transaction_claimed` and `replace_transaction_generation_reserved` — do not add a direct field read back.
+  - `execution.rs` (streaming search), `retirement.rs` (bounded result disposal), `replace_execution.rs` (Replace All preview and checked apply), `replace_admission.rs` (Replace stage 4's admission: a confirmed run parked until the disposal lane can admit its undo reservation, and its one capacity wakeup), and `journal.rs` (the durable, generation-guarded undo journal) are the **coordination** modules. A coordination file is named for the job it performs (no `runtime.rs`, no workflow-descriptive `replace.rs`); `replace_execution.rs` carries the stage-order qualifier because `execution.rs` is the search stage order's execution module. The three `imp::SearchPreviewState` fields both Replace All modules touch (`replace_transaction_pending`, `replace_transaction_generation`, `undo_backup_generation`) are owned by `journal.rs`, and `replace_execution` reads the first two only through `replace_transaction_claimed` and `replace_transaction_generation_reserved` — do not add a direct field read back.
   - `evidence.rs` is the **evidence surface**: `SearchPanelEvidence` plus the scalar observation accessors. New inspection needs extend that surface; do not add per-field `*_for_test` getters.
   - `history`, `list_factory`, `item`, `results`, and `accessibility` are **called
     presentation surfaces** of `WFR-SEARCH-REPLACE`: they carry no role, own no
@@ -60,6 +60,25 @@ This folder owns the workspace-wide content search panel adapter.
   its reason. The action writes nothing. Its availability is
   `policy::replace_in_editor_availability`; a row whose file cannot open has
   no action.
+- **A confirmed run that cannot reserve its undo descriptors waits; it never
+  gives up** (`replace-all-confirm-disposal-lane`). The wait is the run's
+  first phase: `begin_replace_run` has run, so the button is Cancel Replace
+  All and `replace_in_flight` is true, and the panel holds the transaction, so
+  another window's apply or Undo is refused as during a run. The parked
+  `ParkedReplaceRun` (the `DisposalOwned` selection plus its
+  `ReplaceJournalFreshness`) lives in `replace_admission.rs` with one
+  `DisposalCapacityWakeup`; each wakeup asks `policy::replace_admission_resume`
+  and hands the window a `ReplaceAdmissionResumption`, and the window
+  recomputes the unsaved-tab skip set before every attempt. Every window's
+  earlier Undo stays installed until admission, and the earlier skip report
+  is cleared only at admission (`clear_previous_skip_report`). Only Cancel,
+  Stop and Close, or dispose ends the wait: hiding the panel, Escape and a new
+  search do not. A cancelled or superseded wait ends through
+  `end_deferred_replace_run`, never `finish_replace_run(None)`, which would
+  erase the earlier skip report. Dispose cancels the wakeup, drops the parked
+  selection to the lane, and calls `journal::release_replace_transaction_on_dispose`,
+  which resets only the two transaction fields and touches no widget; it
+  calls no window callback.
 - **The undo journal is one per application** (design D3a): `journal.rs`
   keeps a thread-local registry of every panel. A transaction (a run, its
   rollback, an Undo) in one window refuses an apply or Undo in another with a

@@ -109,6 +109,12 @@ impl LushtextSearchPanel {
     /// list to show before/after with checkboxes.
     pub fn enter_preview_mode(&self, replacement_text: &str) {
         let imp = self.imp();
+        // A Replace All run in flight, including one waiting for memory, owns
+        // the button as Cancel Replace All; a new preview could not be
+        // confirmed before it ends anyway (`replace-all-confirm-disposal-lane`).
+        if self.replace_run_in_flight() {
+            return;
+        }
         let Some(search_matches) = self.accepted_search_matches() else {
             return;
         };
@@ -253,6 +259,26 @@ impl LushtextSearchPanel {
         }
     }
 
+    /// Register the raw-vector callback used by the external widget harness
+    /// (kept here, beside the apply it observes, so the facade stays within
+    /// its line budget).
+    #[cfg(feature = "test-utils")]
+    pub fn connect_replace_all<F: Fn(Vec<crate::model::content_search::Replacement>) + 'static>(
+        &self,
+        f: F,
+    ) {
+        self.connect_guarded_replace_all(move |run| {
+            f(run.into_inner_for_current_install().replacements);
+        });
+    }
+
+    /// Retire a parked Replace All selection whose wait ended before the run
+    /// started, through the same bounded path as a superseded preview.
+    pub(super) fn retire_superseded_selection(&self, selection: super::GuardedReplacements) {
+        self.imp().preview.preview_worker_running.set(true);
+        self.spawn_guarded_preview_retirement(selection);
+    }
+
     /// Submit one superseded guarded preview payload to the disposal lane.
     ///
     /// Generic over the payload because the preview outcome and the partitioned
@@ -393,12 +419,26 @@ impl LushtextSearchPanel {
         imp.preview
             .run_intent
             .replace(imp.preview.accepted_preview_intent.borrow().clone());
-        imp.skipped_files_button.set_visible(false);
-        imp.preview.last_skip_report.replace(None);
-        imp.preview.last_run_intent.replace(None);
         imp.replace_all_button.set_label("Cancel Replace All");
         self.update_replace_button_sensitivity();
         control
+    }
+
+    /// The control of the run in flight, which a run admitted after a wait
+    /// for disposal capacity reuses (`replace-all-confirm-disposal-lane`).
+    #[must_use]
+    pub(crate) fn replace_run_control(&self) -> Option<ReplaceRunControl> {
+        self.imp().preview.replace_run.borrow().clone()
+    }
+
+    /// Replace stage 4 is admitted: the earlier run's skip report, its
+    /// request and Show Skipped Files give way to the run that now starts
+    /// (design D1). A wait that never reaches admission keeps them.
+    pub(crate) fn clear_previous_skip_report(&self) {
+        let imp = self.imp();
+        imp.skipped_files_button.set_visible(false);
+        imp.preview.last_skip_report.replace(None);
+        imp.preview.last_run_intent.replace(None);
     }
 
     /// Whether a durable Replace All run is in flight.
@@ -429,8 +469,13 @@ impl LushtextSearchPanel {
             .map(|run| Arc::clone(&run.progress))
     }
 
-    /// Ask the run in flight to stop; it rolls back what it replaced.
+    /// Ask the run in flight to stop; it rolls back what it replaced. A run
+    /// still waiting for disposal capacity has written nothing, so its wait
+    /// ends at once (`replace_admission`).
     pub(crate) fn request_replace_cancel(&self) -> bool {
+        if self.replace_admission_deferred() {
+            return self.cancel_parked_replace_run();
+        }
         let imp = self.imp();
         let requested = imp
             .preview
@@ -505,7 +550,10 @@ impl LushtextSearchPanel {
             imp.preview.preview_outcome.take(),
             std::mem::take(&mut *imp.preview.checked_match_ids.borrow_mut()),
         );
-        imp.replace_all_button.set_label("Replace All");
+        // A run in flight, waiting or writing, keeps Cancel Replace All.
+        if !self.replace_run_in_flight() {
+            imp.replace_all_button.set_label("Replace All");
+        }
         self.restore_search_summary();
         self.update_replace_button_sensitivity();
         self.refresh_results_display();
@@ -548,7 +596,10 @@ impl LushtextSearchPanel {
             imp.preview.preview_outcome.take(),
             std::mem::take(&mut *imp.preview.checked_match_ids.borrow_mut()),
         );
-        imp.replace_all_button.set_label("Replace All");
+        // A run in flight, waiting or writing, keeps Cancel Replace All.
+        if !self.replace_run_in_flight() {
+            imp.replace_all_button.set_label("Replace All");
+        }
         self.restore_search_summary();
         self.refresh_results_display();
         self.refresh_accessibility_state();
@@ -664,10 +715,17 @@ impl LushtextSearchPanel {
             imp.count_label
                 .set_text(&policy::count_label(total as usize, files as usize));
         }
+        // A search that completes while a confirmed run waits for memory keeps
+        // the wait's description on the button (design D6).
+        let description = if self.replace_admission_deferred() {
+            super::accessibility::REPLACE_WAITING_DESCRIPTION
+        } else {
+            super::accessibility::REPLACE_BUTTON_DESCRIPTION
+        };
         crate::ui::accessibility::set_labelled_description(
             &*imp.replace_all_button,
             "Replace all matches",
-            "Preview replacements before applying them",
+            description,
         );
     }
 }
