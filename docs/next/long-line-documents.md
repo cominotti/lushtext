@@ -5218,7 +5218,8 @@ four verdict rounds, plus two `dense/2000` attribution pairs that cleared the
 one flagged stage, a single-rep 22 ms dispatch (design, "Measurement").
 
 **Follow-up: the media readiness wait (`fix-headless-session-media-wait`,
-2026-11-19).**
+2026-11-19).** Status: **merged (PR #122, `main` `3133dee5`) and archived
+2026-11-21** (`openspec/changes/archive/2026-11-21-fix-headless-session-media-wait/`).
 
 - **Cause.** After starting WirePlumber, the helper waited for
   `"metadata.name": "default"` in `pw-dump` and ignored the result. `pw-dump`
@@ -5253,8 +5254,7 @@ one flagged stage, a single-rep 22 ms dispatch (design, "Measurement").
   visual-geometry and three accessibility cases), 10 more green runs each
   took 7.9, 3.9 and 2.5 min (trio 14.2 min, load 4.9-49.8), with the
   seeded failures and the capture probe rerun. Evidence:
-  `openspec/changes/fix-headless-session-media-wait/evidence/`, in the
-  archive once merged.
+  `openspec/changes/archive/2026-11-21-fix-headless-session-media-wait/evidence/`.
 
 ## SR `stream-replace-all` (implementation record, 2026-11-15; re-planned 2026-11-17; merged and archived 2026-11-18)
 
