@@ -1085,7 +1085,9 @@ pub fn classify_missing_reveal_component(
 /// interval removes up to [`SIDEBAR_REALIZED_ROWS_PER_FRAME`] such rows in
 /// steps of at most this many, each its own dispatch between two frames.
 /// Gate G1c chose it: 8-row steps took at most 5.7 ms against the 6 ms
-/// selection margin, where 16 rows took 7.7 ms and 32 rows 9.7 ms.
+/// selection margin, where 16 rows took 7.7 ms and 32 rows 9.7 ms; the
+/// constants round on the D24 code (task 10.7, round A1) measured them at
+/// most 5.9 ms in every sliced collapse.
 ///
 /// Kind: cap; a power of two, rounded down.
 pub const COLLAPSE_STEP_ROWS: u32 = 8;
@@ -1111,7 +1113,9 @@ pub const SIDEBAR_REALIZED_ROWS_PER_FRAME: u32 = 32;
 /// would enter the realized band in their place (nothing listed after the
 /// band): such a removal only destroys row widgets, at about a third of a
 /// replacement's cost (design D18, R2), so it may take more rows than
-/// [`SIDEBAR_REALIZED_ROWS_PER_FRAME`] within the same frame budget.
+/// [`SIDEBAR_REALIZED_ROWS_PER_FRAME`] within the same frame budget. Gate G4
+/// left 64: 128 and 256 missed the 6 ms selection margin (6.0–6.9 ms and
+/// 5.4–8.9 ms; task 10.7's repeats of rounds A6 and A7 re-read them).
 ///
 /// Kind: cap; a power of two, rounded down.
 pub const COLLAPSE_DESTROY_ONLY_ROWS: u32 = 64;
@@ -1119,7 +1123,10 @@ pub const COLLAPSE_DESTROY_ONLY_ROWS: u32 = 64;
 /// Rows no widget is bound to that one removal takes: their removal destroys
 /// and creates no widget (A110, A118), and costs LushText's mirror
 /// bookkeeping plus GTK's rb-tree removal (design D3, Prototype A: 4.9–6.6 ms
-/// per 16,384 rows under load, so half fits the turn slice).
+/// per 16,384 rows under load, so half fits the turn slice). Gate G2 kept
+/// it on the D24 code (task 10.7): at 16,384 a between-frames turn took up to
+/// 6.6 ms against the 6 ms margin, at 8,192 every chunk dispatch and turn at
+/// most 4.9 ms.
 ///
 /// Kind: cap; a power of two, rounded down.
 pub const COLLAPSE_UNBOUND_CHUNK_ROWS: u32 = 8_192;
@@ -1311,30 +1318,13 @@ pub const fn bound_step_rows(
     }
 }
 
-/// ATTRIBUTION PATCH (not committed; design R13, task 11.3): the bound rows
-/// one step-source dispatch may remove, from `SLC_STEP_ROWS`, default
-/// [`COLLAPSE_STEP_ROWS`] (task 11.4), clamped to at least 1 and at most the
-/// unit. Removed by task 10.11.
+/// Whether a bound removal can only destroy row widgets (design D18): no
+/// row is listed after the band, and at most [`SIDEBAR_REALIZED_ROWS_PER_FRAME`]
+/// rows before it, which bounds what a view clamped at its end can bring in
+/// from above.
 #[must_use]
-pub fn slc_attribution_step_rows() -> u32 {
-    // Kani proves the production policy: no environment is read under it
-    // (an `env::var` reaches `memchr` and `io::Error`, which CBMC cannot
-    // unwind).
-    #[cfg(kani)]
-    {
-        COLLAPSE_STEP_ROWS
-    }
-    #[cfg(not(kani))]
-    {
-        static ROWS: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-        *ROWS.get_or_init(|| {
-            std::env::var("SLC_STEP_ROWS")
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(COLLAPSE_STEP_ROWS)
-                .clamp(1, slc_attribution_unit_rows().max(1))
-        })
-    }
+pub const fn collapse_removal_is_destroy_only(facts: &CollapseFacts<'_>) -> bool {
+    facts.rows_after == 0 && facts.rows_before <= SIDEBAR_REALIZED_ROWS_PER_FRAME
 }
 
 /// The next removal of a collapse (design D4, D9):
@@ -1357,99 +1347,12 @@ pub fn slc_attribution_step_rows() -> u32 {
 ///
 /// Allocation-free and integer-only, so Kani proves it directly (C1–C5,
 /// `policy/kani_proofs.rs`). With no store it collapses the row.
-/// ATTRIBUTION PATCH (not committed): the unit from `SLC_UNIT`, default the
-/// constant, and the direct cap at most the unit.
-#[must_use]
-pub fn slc_attribution_unit_rows() -> u32 {
-    // Kani proves the production policy: no environment is read under it
-    // (an `env::var` reaches `memchr` and `io::Error`, which CBMC cannot
-    // unwind).
-    #[cfg(kani)]
-    {
-        SIDEBAR_REALIZED_ROWS_PER_FRAME
-    }
-    #[cfg(not(kani))]
-    {
-        static UNIT: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-        *UNIT.get_or_init(|| {
-            std::env::var("SLC_UNIT")
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(SIDEBAR_REALIZED_ROWS_PER_FRAME)
-        })
-    }
-}
-
-/// ATTRIBUTION PATCH (not committed).
-#[must_use]
-pub fn slc_attribution_direct_rows() -> u32 {
-    DIRECT_COLLAPSE_ROWS
-        .min(slc_attribution_unit_rows())
-        .min(slc_attribution_step_rows())
-}
-
-/// ATTRIBUTION PATCH (not committed): the destroy-only unit from
-/// `SLC_DESTROY`, default the constant.
-#[must_use]
-pub fn slc_attribution_destroy_only_rows() -> u32 {
-    // Kani proves the production policy: no environment is read under it
-    // (an `env::var` reaches `memchr` and `io::Error`, which CBMC cannot
-    // unwind).
-    #[cfg(kani)]
-    {
-        COLLAPSE_DESTROY_ONLY_ROWS.max(SIDEBAR_REALIZED_ROWS_PER_FRAME)
-    }
-    #[cfg(not(kani))]
-    {
-        static UNIT: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-        *UNIT.get_or_init(|| {
-            std::env::var("SLC_DESTROY")
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(COLLAPSE_DESTROY_ONLY_ROWS)
-                .max(slc_attribution_unit_rows())
-        })
-    }
-}
-
-/// ATTRIBUTION PATCH (not committed): the unbound chunk from `SLC_CHUNK`,
-/// default the constant.
-#[must_use]
-pub fn slc_attribution_chunk_rows() -> u32 {
-    // Kani proves the production policy: no environment is read under it
-    // (an `env::var` reaches `memchr` and `io::Error`, which CBMC cannot
-    // unwind).
-    #[cfg(kani)]
-    {
-        COLLAPSE_UNBOUND_CHUNK_ROWS
-    }
-    #[cfg(not(kani))]
-    {
-        static UNIT: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-        *UNIT.get_or_init(|| {
-            std::env::var("SLC_CHUNK")
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(COLLAPSE_UNBOUND_CHUNK_ROWS)
-        })
-    }
-}
-
-/// Whether a bound removal can only destroy row widgets (design D18): no
-/// row is listed after the band, and at most [`SIDEBAR_REALIZED_ROWS_PER_FRAME`]
-/// rows before it, which bounds what a view clamped at its end can bring in
-/// from above.
-#[must_use]
-pub const fn collapse_removal_is_destroy_only(facts: &CollapseFacts<'_>) -> bool {
-    facts.rows_after == 0 && facts.rows_before <= SIDEBAR_REALIZED_ROWS_PER_FRAME
-}
-
 #[must_use]
 pub fn next_collapse_step(facts: &CollapseFacts<'_>) -> CollapseStep {
     let Some(root) = facts.stores.first() else {
         return CollapseStep::CollapseRow;
     };
-    if root.span <= slc_attribution_direct_rows() {
+    if root.span <= DIRECT_COLLAPSE_ROWS {
         return CollapseStep::CollapseRow;
     }
     let mut chosen = 0;
@@ -1459,7 +1362,7 @@ pub fn next_collapse_step(facts: &CollapseFacts<'_>) -> CollapseStep {
         }
     }
     let store = facts.stores[chosen];
-    if chosen != 0 && store.length <= slc_attribution_direct_rows() {
+    if chosen != 0 && store.length <= DIRECT_COLLAPSE_ROWS {
         return CollapseStep::CollapseDescendant(chosen);
     }
     let first = store.first_row;
@@ -1476,14 +1379,14 @@ pub fn next_collapse_step(facts: &CollapseFacts<'_>) -> CollapseStep {
         }
     });
     if let Some((start, count)) = last_unheld {
-        let chunk = count.min(slc_attribution_chunk_rows());
+        let chunk = count.min(COLLAPSE_UNBOUND_CHUNK_ROWS);
         return CollapseStep::RemoveUnbound {
             store: chosen,
             start: start + count - chunk - first,
             count: chunk,
         };
     }
-    let surplus = store.length.saturating_sub(slc_attribution_direct_rows());
+    let surplus = store.length.saturating_sub(DIRECT_COLLAPSE_ROWS);
     if surplus == 0 {
         // The directory's own store, all held and small, under a span that
         // nothing above collapsed: only reachable with inconsistent facts
@@ -1491,9 +1394,9 @@ pub fn next_collapse_step(facts: &CollapseFacts<'_>) -> CollapseStep {
         return CollapseStep::CollapseRow;
     }
     let unit = if collapse_removal_is_destroy_only(facts) {
-        slc_attribution_destroy_only_rows()
+        COLLAPSE_DESTROY_ONLY_ROWS
     } else {
-        slc_attribution_unit_rows().min(slc_attribution_step_rows())
+        COLLAPSE_STEP_ROWS
     };
     CollapseStep::RemoveBound {
         store: chosen,
@@ -1849,9 +1752,9 @@ mod collapse_tests {
     /// 8 bound rows, and together at most the interval's budget.
     #[test]
     fn one_interval_removes_its_budget_in_steps_of_at_most_eight_rows() {
-        use super::{bound_step_rows, slc_attribution_step_rows, slc_attribution_unit_rows};
-        let budget = slc_attribution_unit_rows();
-        let step_rows = slc_attribution_step_rows();
+        use super::{COLLAPSE_STEP_ROWS, SIDEBAR_REALIZED_ROWS_PER_FRAME, bound_step_rows};
+        let budget = SIDEBAR_REALIZED_ROWS_PER_FRAME;
+        let step_rows = COLLAPSE_STEP_ROWS;
         for count in [1, 7, 8, 9, 31, 32, 33, 64, 1_000] {
             let mut left = budget;
             let mut charged = 0;

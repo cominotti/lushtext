@@ -83,7 +83,9 @@
 //!   a mapped list), by the between-frames idle when the next step is bound,
 //!   and by its own dispatch after D23's chunk or while the interval has rows
 //!   left. Its first dispatch after the input takes one unbound chunk (D23).
-//!   A frame interval removes at most `SIDEBAR_REALIZED_ROWS_PER_FRAME` bound
+//!   It takes no bound step until the first `after-paint` after the input
+//!   (design R13's rung T1): the first frame lays out the intent alone, and
+//!   the first bound unit runs in the interval after it. A frame interval removes at most `SIDEBAR_REALIZED_ROWS_PER_FRAME` bound
 //!   rows (the token reads the frame counter, which equals the counter of the
 //!   frame just painted there).
 //! - **The frame tick.** While the list is mapped and a collapse is pending, a
@@ -258,6 +260,14 @@ pub(super) struct CollapseRuntimeState {
     /// Whether the next step-source dispatch may take D23's one unbound
     /// chunk: set when a sliced collapse starts.
     first_chunk_pending: Cell<bool>,
+    /// Design R13's rung T1: set by an input that starts a sliced collapse,
+    /// cleared by the next `after-paint`. While it is set the step source
+    /// takes no bound step, so the first frame after the input lays out the
+    /// intent alone (the arrow, D22's hidden rows) and the first bound unit
+    /// runs in the interval after it. D23's chunk still runs before that
+    /// frame; the fallback ignores the flag, since an unmapped list paints
+    /// nothing.
+    first_paint_pending: Cell<bool>,
     /// `after-paint` emissions the section's handler ran.
     after_paint_runs: Cell<u64>,
     /// The longest step-source dispatch (the whole callback) or
@@ -509,9 +519,9 @@ impl LushtextWorkspaceSection {
             // At most one step of rows collapses directly in the input
             // dispatch, the bound a step-source dispatch keeps (design R13's
             // S2); the rest are paced.
-            if span <= crate::ui::sidebar::policy::slc_attribution_direct_rows()
+            if span <= crate::ui::sidebar::policy::DIRECT_COLLAPSE_ROWS
                 && direct_rows.saturating_add(span)
-                    <= crate::ui::sidebar::policy::slc_attribution_step_rows()
+                    <= crate::ui::sidebar::policy::COLLAPSE_STEP_ROWS
             {
                 direct_rows += span;
                 self.collapse_now(row);
@@ -519,6 +529,7 @@ impl LushtextWorkspaceSection {
             }
             self.start_sliced_collapse(row, path, origin, descendants);
             runtime.first_chunk_pending.set(true);
+            runtime.first_paint_pending.set(true);
         }
         // D22: the subtree's realized rows draw nothing and take no pointer
         // from the input dispatch on (G3: about 0.3 ms for the band, A123).
@@ -779,6 +790,8 @@ impl LushtextWorkspaceSection {
                 runtime
                     .after_paint_runs
                     .set(runtime.after_paint_runs.get().saturating_add(1));
+                // T1: the frame that showed the intent has painted.
+                runtime.first_paint_pending.set(false);
                 section.arm_step_source();
             }
         });
@@ -842,10 +855,14 @@ impl LushtextWorkspaceSection {
         let outcome = self.run_collapse_step(StepSource::Step { first_chunk });
         let pending = !runtime.queue.borrow().is_empty();
         if pending {
-            let budget = crate::ui::sidebar::policy::slc_attribution_unit_rows();
-            let rows_left = clock
-                .as_ref()
-                .map_or(0, |clock| clock_rows_left(clock, budget));
+            let budget = crate::ui::sidebar::policy::SIDEBAR_REALIZED_ROWS_PER_FRAME;
+            let rows_left = if runtime.first_paint_pending.get() {
+                0
+            } else {
+                clock
+                    .as_ref()
+                    .map_or(0, |clock| clock_rows_left(clock, budget))
+            };
             if outcome.chunks > 0 || (outcome.bound.is_some() && rows_left > 0) {
                 self.arm_step_source();
             }
@@ -938,6 +955,7 @@ impl LushtextWorkspaceSection {
         }
         self.disconnect_after_paint();
         runtime.first_chunk_pending.set(false);
+        runtime.first_paint_pending.set(false);
         runtime.last_step_us.set(0);
     }
 
@@ -1032,6 +1050,8 @@ impl LushtextWorkspaceSection {
     /// fallback takes a unit whatever it holds (design R6.2).
     fn interval_rows_left_for(&self, source: StepSource, budget: u32) -> u32 {
         match source {
+            // T1: no bound row before the first frame after the input.
+            StepSource::Step { .. } if self.imp().collapse_runtime.first_paint_pending.get() => 0,
             StepSource::Step { .. } => self
                 .imp()
                 .file_tree_view
@@ -1058,8 +1078,8 @@ impl LushtextWorkspaceSection {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "one step loop over the queue; ATTRIBUTION PATCH (task 11.3) adds the \
-                  interval budget, which task 11.4 moves into the policy"
+        reason = "one step loop over the queue, which reads the frame interval's budget \
+                  (design D25) for each bound step"
     )]
     fn run_collapse_step_from(&self, started: i64, source: StepSource) -> StepOutcome {
         let (unbound_allowed, bound_allowed, chunk_limit, starved) = match source {
@@ -1067,8 +1087,8 @@ impl LushtextWorkspaceSection {
             StepSource::Between => (true, false, usize::MAX, false),
             StepSource::Fallback { starved } => (true, true, usize::MAX, starved),
         };
-        let budget = crate::ui::sidebar::policy::slc_attribution_unit_rows();
-        let step_rows = crate::ui::sidebar::policy::slc_attribution_step_rows();
+        let budget = crate::ui::sidebar::policy::SIDEBAR_REALIZED_ROWS_PER_FRAME;
+        let step_rows = crate::ui::sidebar::policy::COLLAPSE_STEP_ROWS;
         let one_step = matches!(source, StepSource::Step { .. });
         let mut outcome = StepOutcome::default();
         let mut chunks = 0usize;

@@ -3047,6 +3047,9 @@ fn collapse_rows_per_frame_phase(tree: &LargeTree, nested: &Path) -> Vec<FramePh
 /// collapsing subtree loses no row, while rows do leave over the collapse.
 /// Fails before D25: the tick removed each bound unit in the frame's update
 /// phase, between the two.
+/// Rung T1 (design R13, task 10.7's reading): no bound unit runs before the
+/// first frame after the input. Fails before T1: the first bound unit ran in
+/// the step source the input armed.
 #[test]
 fn test_bound_units_run_outside_the_frame() {
     let (tree, nested) = expanded_nested(4096, 400);
@@ -3080,10 +3083,18 @@ fn test_bound_units_run_outside_the_frame() {
         .map(|dispatch| dispatch.kind)
         .filter(|kind| *kind != Kind::Between && *kind != Kind::Idle)
         .collect();
+    // Design R13's rung T1: D23's chunk runs before the first frame, and the
+    // first bound unit only after it, so that frame lays out the intent alone.
     assert!(
-        before_first.first() == Some(&Kind::Chunk) && before_first.contains(&Kind::Bound),
-        "D23's chunk, then the first bound unit (its dispatch re-armed the source), both \
-         before the first frame: {before_first:?} (all: {dispatches:?})"
+        before_first.first() == Some(&Kind::Chunk) && !before_first.contains(&Kind::Bound),
+        "D23's chunk before the first frame, and no bound unit until it has painted: \
+         {before_first:?} (all: {dispatches:?})"
+    );
+    assert!(
+        dispatches
+            .iter()
+            .any(|dispatch| dispatch.kind == Kind::Bound && dispatch.frame_counter >= first_frame),
+        "the bound units run from the first frame's `after-paint` on: {dispatches:?}"
     );
     // At most one unit of bound rows per frame interval (no removal here is
     // destroy-only: 400 rows follow the subtree).
@@ -7703,5 +7714,39 @@ fn test_collapsing_one_of_two_listed_occurrences_detaches_nothing() {
         after.cache_detached_parents, before.cache_detached_parents,
         "nothing detached"
     );
+    // Task 10.15's overlap invariant, as built: the directory has one cache
+    // owner, the collapsed occurrence's store, whose steps splice its paths
+    // out of the cache (nothing was detached), so the surviving occurrence
+    // lists every entry with no cache of its own until its next batch
+    // re-caches it from its mirror (design R11, D24 "As built"; the same on
+    // `main` by construction). Every row operation through it must still
+    // land: a delete through the survivor, twice, finds and removes each row
+    // through the store walk behind a cache miss.
+    let survivor_cached = cached_paths(&section, &shared);
+    let survivor_store = outer
+        .children()
+        .and_downcast::<gtk4::gio::ListStore>()
+        .expect("the survivor's store");
+    for (deleted_so_far, index) in [7, 4000].into_iter().enumerate() {
+        let deleted = shared.join(file_name(index));
+        fixture::remove_file(&deleted);
+        assert!(
+            section.remove_from_model(&deleted),
+            "a delete through the surviving occurrence finds its row (cached paths \
+             before: {survivor_cached})"
+        );
+        assert_eq!(
+            survivor_store.n_items(),
+            u32::try_from(count - deleted_so_far - 1).unwrap_or(u32::MAX),
+            "the survivor lists one entry less per delete"
+        );
+        assert!(
+            (0..survivor_store.n_items())
+                .filter_map(|position| survivor_store.item(position).and_downcast::<FileTreeItem>())
+                .all(|item| item.path().as_deref() != Some(deleted.as_path())),
+            "the deleted entry's row is gone from the survivor"
+        );
+    }
+    assert!(outer.is_expanded(), "the survivor stays expanded");
     drop(window);
 }
