@@ -129,7 +129,31 @@ pub enum DirectoryReconciliationPlan {
         replacement: Vec<DirectoryRowState>,
         /// Removed directory roots whose materialized descendant state must retire.
         removed_directory_roots: Vec<PathBuf>,
+        /// Where the removed current rows reappear, unchanged and in order,
+        /// inside `replacement`: `Some(k)` when `replacement[k..k + removed]`
+        /// equals them (and `removed` is not zero). An applier may then keep
+        /// those rows and insert `replacement[..k]` before them and
+        /// `replacement[k + removed..]` after them instead of replacing them,
+        /// which keeps their row widgets and their expansion. A directory a
+        /// collapse partly drained from the top refills this way
+        /// (`slice-large-directory-collapse`, round P2).
+        kept_at: Option<usize>,
     },
+}
+
+/// Where `kept` appears whole, in order, inside `replacement`, if it does and
+/// is not empty: the offset `k` with `replacement[k..k + kept.len()] == kept`.
+/// Rows are unique by path, so the first row of `kept` can match at most one
+/// position. Linear in `replacement`; it runs on the scan worker.
+#[must_use]
+pub fn kept_run_offset(
+    kept: &[DirectoryRowState],
+    replacement: &[DirectoryRowState],
+) -> Option<usize> {
+    let first = kept.first()?;
+    let offset = replacement.iter().position(|row| row == first)?;
+    let end = offset.checked_add(kept.len())?;
+    (replacement.get(offset..end)? == kept).then_some(offset)
 }
 
 /// Compute one prefix/middle/suffix plan from bounded plain row projections.
@@ -177,11 +201,14 @@ pub fn plan_directory_reconciliation(
         .cloned()
         .collect::<Vec<_>>();
     removed_directory_roots.sort_unstable();
+    let replacement = desired[prefix..replacement_end].to_vec();
+    let kept_at = kept_run_offset(&current[prefix..prefix + removed], &replacement);
     DirectoryReconciliationPlan::Splice {
         position: prefix,
         removed,
-        replacement: desired[prefix..replacement_end].to_vec(),
+        replacement,
         removed_directory_roots,
+        kept_at,
     }
 }
 
@@ -1335,6 +1362,7 @@ mod tests {
                 removed: 0,
                 replacement: vec![row("prefix-new")],
                 removed_directory_roots: Vec::new(),
+                kept_at: None,
             }
         );
         assert_eq!(apply_plan(current, plan), desired);
@@ -1358,10 +1386,12 @@ mod tests {
             removed,
             replacement,
             removed_directory_roots,
+            kept_at,
         } = &plan
         else {
             panic!("middle change should produce a splice");
         };
+        assert_eq!(*kept_at, None);
         assert_eq!(*position, 2_500);
         assert_eq!(*removed, 5_000);
         assert_eq!(replacement.len(), 5_000);
@@ -1393,6 +1423,108 @@ mod tests {
         assert_eq!(replacement.len(), 10_000);
         assert_eq!(removed_directory_roots.len(), 10_000);
         assert_eq!(apply_plan(current, plan), desired);
+    }
+
+    /// Apply a plan the way an applier that keeps `kept_at`'s rows does:
+    /// insert before and after them instead of replacing them.
+    fn apply_plan_keeping(
+        mut rows: Vec<DirectoryRowState>,
+        plan: DirectoryReconciliationPlan,
+    ) -> Vec<DirectoryRowState> {
+        if let DirectoryReconciliationPlan::Splice {
+            position,
+            removed,
+            replacement,
+            kept_at: Some(kept),
+            ..
+        } = plan
+        {
+            let after = replacement[kept + removed..].to_vec();
+            rows.splice(position + removed..position + removed, after);
+            rows.splice(position..position, replacement[..kept].to_vec());
+            return rows;
+        }
+        apply_plan(rows, plan)
+    }
+
+    #[test]
+    fn reconciliation_plan_keeps_rows_a_collapse_left_from_the_top() {
+        // A sliced collapse removed `row-00000..row-00007` and everything
+        // after `row-00202`; the refill's scan lists the whole directory.
+        let desired = (0..4_096)
+            .map(|index| row(format!("row-{index:05}")))
+            .collect::<Vec<_>>();
+        let current = desired[8..203].to_vec();
+
+        let plan = plan_directory_reconciliation(&current, &desired);
+
+        let DirectoryReconciliationPlan::Splice {
+            position,
+            removed,
+            kept_at,
+            ..
+        } = &plan
+        else {
+            panic!("a refill should produce a splice");
+        };
+        assert_eq!((*position, *removed, *kept_at), (0, 195, Some(8)));
+        assert_eq!(apply_plan(current.clone(), plan.clone()), desired);
+        assert_eq!(apply_plan_keeping(current, plan), desired);
+    }
+
+    #[test]
+    fn reconciliation_plan_keeps_nothing_when_the_removed_rows_changed() {
+        let current = vec![row("b"), row("c")];
+        let desired = vec![row("a"), row("b"), row("x"), row("d")];
+        let plan = plan_directory_reconciliation(&current, &desired);
+        let DirectoryReconciliationPlan::Splice { kept_at, .. } = &plan else {
+            panic!("a change should produce a splice");
+        };
+        assert_eq!(*kept_at, None);
+        assert_eq!(apply_plan_keeping(current, plan), desired);
+    }
+
+    #[test]
+    fn kept_run_offset_finds_only_a_whole_ordered_run() {
+        let rows = |names: &[&str]| names.iter().map(|name| row(*name)).collect::<Vec<_>>();
+        let replacement = rows(&["a", "b", "c", "d"]);
+        assert_eq!(kept_run_offset(&rows(&["b", "c"]), &replacement), Some(1));
+        assert_eq!(kept_run_offset(&rows(&["c", "d"]), &replacement), Some(2));
+        assert_eq!(
+            kept_run_offset(&rows(&["a", "b", "c", "d"]), &replacement),
+            Some(0)
+        );
+        assert_eq!(kept_run_offset(&rows(&["b", "d"]), &replacement), None);
+        assert_eq!(kept_run_offset(&rows(&["d", "e"]), &replacement), None);
+        assert_eq!(kept_run_offset(&rows(&["e"]), &replacement), None);
+        assert_eq!(kept_run_offset(&[], &replacement), None);
+    }
+
+    proptest::proptest! {
+        /// Applying a plan by keeping `kept_at`'s rows yields the desired rows,
+        /// as replacing them does, for any current listing that is a run of
+        /// the desired one or an arbitrary other listing.
+        #[test]
+        fn keeping_the_kept_run_reaches_the_desired_rows(
+            total in 0usize..64,
+            start in 0usize..64,
+            len in 0usize..64,
+            noise in proptest::collection::vec(0usize..96, 0..8),
+        ) {
+            let desired = (0..total)
+                .map(|index| row(format!("row-{index:03}")))
+                .collect::<Vec<_>>();
+            let start = start.min(total);
+            let end = start.saturating_add(len).min(total);
+            let mut current = desired[start..end].to_vec();
+            for index in noise {
+                let at = index.min(current.len());
+                current.insert(at, row(format!("row-{index:03}-gone")));
+            }
+            let plan = plan_directory_reconciliation(&current, &desired);
+            proptest::prop_assert_eq!(&apply_plan(current.clone(), plan.clone()), &desired);
+            proptest::prop_assert_eq!(apply_plan_keeping(current, plan), desired);
+        }
     }
 
     #[test]

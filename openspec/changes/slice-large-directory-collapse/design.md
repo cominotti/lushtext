@@ -4080,6 +4080,143 @@ sides, and it would measure what those tests already prove.
   wrote it. This is a prediction from A1's figures, not a measurement; the
   final campaign measures it.
 
+#### The repeats R5–R7 and the attributions P1 and P2 read (2026-11-24)
+
+The coordinator ran the five rounds of `MEASURE-QUEUE.md`, "Part A repeats
+(A5-A7, contamination rule) and two attributions on the D24 binary", on
+`rev9/bin/widget-d24` (3248a99a, the binary Part A ran) on 2026-11-24
+between 03:16 and 03:40. All five were kept under level 1 (exit 0, busy CPUs
+below 2.4 before and below 4 during and after, `rev/attr2/gate.log`;
+refused tries exited 76 before running and left no log), and no outside
+session ran headless work during them as far as the coordinator knows. Logs:
+`rev/attr2/slc-d24-{c4096-400,d256,d128}-rep1.log` and
+`rev/attr2/slc-d24-pdw-{input,reexpand}.{log,data}`. Readers and outputs, in
+the handoff's `impl2/`: `read_repeats.py` (Part A's reader, unchanged) with
+`repeats-output.txt` and `p1-verdicts.txt`; `read_p2.py` with
+`p2-output.txt`; `p2_chains.py` with `p2-chains.txt` (the GTK thread's samples
+in each over-budget dispatch, `perf script --tid 3841516` per repetition,
+`p2-r<n>-gtk.txt`). Each reading below is the one the entry pre-registered.
+
+**R5 (data only): no input over `B_INTERACT_US`.** 400:16,385 at chunk 4,096,
+three repetitions: inputs 2,308, 2,358 and 2,436 µs. A5's 12,681 µs input is
+not reproduced in the clean window.
+
+**G4: `COLLAPSE_DESTROY_ONLY_ROWS` is 64.** R6 (destroy-only 256) misses in
+every repetition: its 187-row destroy-only dispatch takes 7,516–9,411 µs at
+0:256, 0:4,096 and 0:131,072 (frames at most 1.8 ms). R7 (128) misses in five
+of nine: 6,134–6,813 µs at 0:131,072, 6,457 µs at 0:256, 6,161 and 6,407 µs
+at 0:4,096 (the other four 5,283–5,982 µs). Both repeats miss again in a
+window without outside load, so they decide, with no further repeat: the
+ladder falls to 64, the value the code already holds (G1's clean rounds had
+missed at both too). The constant does not change; its rustdoc and
+`docs/thresholds.md` now cite R6 and R7. 64's own 56-row dispatch at 0:64
+(7.6 ms in A1) stays recorded under C1: no rung lies below 64.
+
+**P1: no slow mode to attribute.** The 20 profiled collapses (0:256 and
+400:256, ten each) have inputs of 2,360–2,795 µs, median 2,506 µs, with no
+gap wider than 161 µs: one mode, so the split finds no slow repetition, and
+no LushText or GTK cost beyond a fast repetition can be named. The repeats
+agree: R5, R6 and R7's 21 collapses have inputs of 2,301–3,772 µs, none over
+6 ms. Part A's slow mode (about 7.2 ms in 9 of A1's 30 repetitions, and in
+most of A2–A7's, all on 2026-11-19) does not appear in 41 repetitions of the
+same binary on 2026-11-24, so it belongs to that day's windows, not to the
+code; what in those windows caused it is not known. Consequences, decided:
+nothing is cut, G3's rung is not applied (P1 names no hiding cost), and the
+risk stays where Part A put it: D2's pass bar holds the input to
+`B_INTERACT_US` in every round of the final campaign, on both sides.
+
+**P2: the slow re-expansion frame is attributed, and it is a LushText cost.**
+Four of the eight re-expansions (r0, r1, r3, r7) reproduce it: a frame of
+18.9, 22.5, 26.8 and 33.6 ms (layout 18.2–32.9 ms) 290–312 ms after the
+re-expanding input, after two dispatches of 11.6–17.7 ms, with the picture
+final at 311–339 ms; the other four have frames of at most 1.0 ms and the
+picture final at 1.0–14.3 ms. None of these dispatches is tagged `unshown`.
+- *Chain.* The two dispatches before the frame are
+  `g_list_store_splice` → `items-changed` → `GtkTreeListModel` → the list's
+  row widgets (`gtk_tree_expander_set_list_row`, `gtk_label_new`,
+  `g_object_new`; frees and `unlink_chunk` in the first, `g_malloc0` and
+  `calloc` in the second). The frame is `gtk_list_view_measure` /
+  `gtk_list_base_allocate` over those new rows: CSS selector matching
+  (`gtk_css_selector_tree_get_change`, `match_class`, `match_name`) and
+  shaping (`pango_hb_shape`). The DWARF chains stop inside GTK; the splice
+  that queued the work is the refill's reconciliation
+  (`scan_execution::apply_scanned_children`, whose callsite appears in r0's
+  window), after the refill's scan of 131,072 entries (667–686 samples on the
+  scan worker, about 170 ms) in each slow repetition.
+- *The condition.* "Re-expanded after the collapse's unbound rows had all
+  left" does not decide it: r0, r4 and r5 re-expanded after the last unbound
+  turn (24,373 and 7,989 rows), and r4 and r5 were fast. A widget test
+  reproduces it by counter (the pre-registered fallback, done so the reading
+  is not left open): `test_reexpanding_after_bound_units_refills_the_band_one_unit_a_frame`
+  collapses a 4,096-entry directory, re-expands it once one bound unit has
+  run, and counts row widgets per dispatch. The bound unit had removed the
+  band's first 8 rows, so the store held `row-00008` to `row-00202`, which is
+  no prefix of the scanned listing; the reconciliation plan's prefix and
+  suffix were both empty, and it replaced the 195 kept rows: one dispatch
+  destroyed 195 row widgets and a later one showed 203
+  (`impl2/p2-failing-first.log`). In r4 and r5 no bound unit had run, the
+  store still held the band from its first row, and the refill only
+  appended below it.
+- *The cut.* `plan_directory_reconciliation` now also reports where the
+  removed current rows reappear unchanged in the replacement
+  (`kept_at`, from the pure `kept_run_offset`, computed on the scan worker),
+  and the reconciliation keeps them: it inserts the rows before and after the
+  run instead of replacing it, so no row the store still lists is destroyed
+  and created again. Rows around a kept run land in the band, so they go in
+  one unit a frame, as into an empty store (D10's warm-up), and a kept run
+  with at most one unit around it takes two direct splices. A refresh whose
+  changes surround unchanged rows takes the same path, and keeps those rows'
+  widgets and expansion too (a replacing splice collapses the rows it
+  replaces). Unit and property tests pin the plan
+  (`reconciliation_plan_keeps_rows_a_collapse_left_from_the_top`,
+  `keeping_the_kept_run_reaches_the_desired_rows`); the widget test above
+  fails without the cut and passes with it.
+- *Task 1.4.* D12's attribution holds for the collapse: the one dispatch over
+  `B_SETTLE_US` after each 0:131,072 collapse is the `unshown` probe-scan
+  publication. For the re-expansion it does not: the slow frame is the
+  refill's own publication, not the probe scan's, and it is the cost cut
+  above. The re-expansion in the queued T1 round is the cut's first
+  measurement.
+
+**The C1 record, as it stands.** Missed margins, none over a hard bar on this
+binary, carried to the final campaign and BL's follow-ups: the completions at
+400:4,096 and 400:16,385 (over bar − M, under the bars, and T1 adds up to a
+frame); the 56-row destroy-only dispatch at 0:64 (7.6 ms; 7,993 µs before a
+re-expansion), with no rung below 64; the expansion cases' 13.7 ms frame and
+6.4–6.5 ms steps; and the input dispatch's slow mode of 2026-11-19, not
+reproduced. The re-expansion frame is no longer on this list: it is cut, and
+measured next.
+
+**What follows.** T1 and the P2 cut are unmeasured. Before the final campaign
+one branch-only round on the final code times them (`MEASURE-QUEUE.md`,
+"T1 round", queued READY with its readings stated before it runs): A1's
+cases, completion against R3's hard bars and `input_to_frame_us`. If the
+rows-after class misses a hard bar there, it goes to C3 (`main`'s direct
+collapse for that class), and the stage that reads the round builds C3
+before Part B. Part B stays PENDING on that reading.
+
+**Task 7.1's enforcement, as built.** Decisions, each with its reason:
+- The verdict test judges every owned case at the bars as written
+  (`judge_case`), and asserts once, after every case ran, on the optimized
+  build: a round that misses still logs every case, so a reading never
+  loses the cases after the first miss.
+- R3's completion bar is computed from R3's `main` figures
+  (`main_worst_completion_us`, the stage 4 campaign that R13's table also
+  uses), not from the `main` side of the same campaign: the test cannot see
+  the other side, and R13 fixed these bars before any round of Part B. If
+  Part B's `main` side measures a worse completion than R3's, the reading
+  may relax a bar by that figure; it never tightens one.
+- `INPUT_TO_FRAME_US` is judged for the collapse routes (row activation and
+  the folder header) only: rung T1 bounds the collapse's first frame (D6).
+  An expansion's first frame waits for its scan and is judged by D2's
+  dispatch bar.
+- D12's residual (a dispatch over `B_SETTLE_US` that published into a store
+  no row shows) is listed per case in `collapse-judged` and not judged; D2's
+  recorded toolkit-floor exceptions are not excepted in advance: the reading
+  of the round classifies a miss as one, with its profile.
+- The `main` side (`rev/verdict-main.patch`, task 10.1) carries the same
+  instrument and prints the same lines, and judges nothing.
+
 ### R14. Review of R13 (2026-11-18)
 
 Reviewed against the round logs (`rev/attr2/slc-r13-*.log`,
