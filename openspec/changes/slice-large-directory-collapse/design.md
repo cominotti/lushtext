@@ -4187,6 +4187,16 @@ re-expansion), with no rung below 64; the expansion cases' 13.7 ms frame and
 reproduced. The re-expansion frame is no longer on this list: it is cut, and
 measured next.
 
+(2026-11-24, after the T1 round, "The T1 round read" below.) The record now
+also holds: the 20 `INPUT_TO_FRAME_US` misses of the collapse routes listed
+there (0:4,096 once, 0:16,385 twice, 0:131,072 six times, 400:16,385 four
+times, 400:131,072 six times, the header once), T1 being the last rung; the
+input dispatch's slow mode, back once at 8,052 µs (400:256); the 9,122 µs
+two-chunk turn before a re-expansion; and the re-expansion frame again (two
+frames of about 60 ms in six repetitions: the P2 cut does not hold). The
+completions at 400:4,096 and 400:16,385 leave the record: the rows-after
+class misses a hard bar and goes to C3, so its paced figures no longer ship.
+
 **What follows.** T1 and the P2 cut are unmeasured. Before the final campaign
 one branch-only round on the final code times them (`MEASURE-QUEUE.md`,
 "T1 round", queued READY with its readings stated before it runs): A1's
@@ -4216,6 +4226,86 @@ before Part B. Part B stays PENDING on that reading.
   of the round classifies a miss as one, with its profile.
 - The `main` side (`rev/verdict-main.patch`, task 10.1) carries the same
   instrument and prints the same lines, and judges nothing.
+
+#### The T1 round read (2026-11-24)
+
+The coordinator ran `MEASURE-QUEUE.md`, "T1 round (rung T1 and the P2 cut,
+branch only, A1's cases on the final code)", on `rev10/bin/widget-t1`
+(7b88a169: task 7.1's enforcement, rung T1 and the P2 cut) on 2026-11-24 and
+kept it on its fourth try under level 1 (busy CPUs below 2.4 before, 2.35
+during and 2.51 after, `rev/attr2/gate.log`; tries 1 to 3 exited 76 before
+running). The test missed bars, exited nonzero and was rerun once by the
+widget harness in a fresh child, so the log holds two attempts of three
+repetitions each; by the entry both count, and the exit status decides
+nothing. Log `rev/attr2/slc-t1-base.log`. Readers in the handoff's `rev11/`:
+`t1-table.py` (per case, output `t1-table.txt`) and `t1-reps.py` (per
+repetition, output `t1-reps.txt`). Every rule below is the one the entry
+registered before the round ran, applied to all six repetitions of every
+case.
+
+**Completion, at R3's hard bars with R9's allowance.** One case misses:
+- *400:16,385:* completion 142,054 µs (attempt 1, repetition 2) and
+  141,584 µs (attempt 2, repetition 2), picture final 142,083 and
+  141,614 µs, against its bar of 139,300 µs. The other four repetitions are
+  123.1–139.2 ms (139,213 µs in attempt 2's repetition 1, 87 µs under the
+  bar).
+- Every other case meets its bar in every repetition, with the picture final
+  within 0.1 ms of completion: 400:64 at most 41.8 ms (bar 100 ms), 400:256
+  135.9 ms (154.3), 400:4,096 **135.6 ms (137.3)**, 400:131,072 156.1 ms
+  (214.6); 0:64 20.4 ms, 0:256 84.9 ms, 0:4,096 88.3 ms, 0:16,385 89.0 ms
+  (each against 100 ms), 0:131,072 113.0 ms (157.3); the header 88.3 ms
+  (148.3).
+- **Reading: a rows-after case missed its completion bar, so the rows-after
+  class (siblings 400, every size) goes to C3:** it keeps `main`'s direct
+  collapse, as R13's C3 states ("a class that misses R3's completion bar with
+  R9's allowance keeps `main`'s direct collapse, whatever its frames"). The
+  no-rows-after class (0:N) and the folder header meet their bars in every
+  repetition and keep the paced collapse. The stage that read the round
+  builds C3 before Part B ("C3 as built" below), and Part B measures that
+  code.
+
+**`INPUT_TO_FRAME_US` (16,666 µs), the collapse routes.** 20 of 66
+repetitions miss; T1 has no further rung, so each is recorded under C1, and
+Part B judges the figure at the bar:
+- 0:4,096: 19,658 µs (attempt 2, repetition 1);
+- 0:16,385: 20,800 and 17,008 µs (attempt 1, repetitions 0 and 2);
+- 0:131,072: all six, 17,755–23,033 µs (18,594, 23,033, 22,422; 21,579,
+  17,755, 22,049);
+- 400:16,385: four, 16,819–17,619 µs (attempt 1 repetition 2; attempt 2
+  repetitions 0 to 2);
+- 400:131,072: all six, 17,529–23,225 µs;
+- the header: 19,478 µs (attempt 1, repetition 1).
+The other cases meet it: 0:64 and 400:64 at 1.1–2.4 ms, 0:256, 0:4,096,
+400:256 and 400:4,096 at 13.9–15.4 ms. The figures fall in three groups by
+what runs before the first frame, which the attribution below follows.
+
+**D2's pass bar (input and every step within `B_INTERACT_US`, every dispatch
+within `B_SETTLE_US` except D12's residual).** Listed as data for Part B:
+- the input dispatch of 400:256, attempt 2, repetition 1: **8,052 µs**; the
+  other 65 inputs are at most 6,993 µs (five of them 5.5–7.0 ms, the slow
+  mode Part A saw on 2026-11-19 and P1 did not reproduce);
+- the re-expansion case, attempt 1, repetition 1: a between-frames turn of
+  two chunks (16,181 rows) of **9,122 µs**; every other step-source
+  dispatch and turn of the round is at most 5,823 µs;
+- the re-expansion case, attempt 1 and attempt 2, repetition 0: a frame of
+  **60,213 and 60,139 µs** (layout 59,653 and 59,594 µs), 281 ms after the
+  re-expanding input, untagged (no scan terminal published in it), with the
+  picture final at 341–342 ms; the other four repetitions have frames of at
+  most 1.8 ms and the picture final at 1.7–15.1 ms;
+- D12's residual (excepted, as registered): one `unshown` dispatch of
+  30.4–46.2 ms 591–663 ms after the input in every 0:131,072 and 400:131,072
+  collapse, the probe scan's publication;
+- worst frames otherwise at most 8.8 ms (400:131,072), and no other
+  dispatch over `B_SETTLE_US`.
+
+**The P2 cut: does not hold.** Two of the six re-expansions have a dispatch
+over `B_SETTLE_US` that is not D12's residual (the 60 ms frames above). By
+the entry they are attributed before Part B, by a counter in the widget test
+first, a DWARF round only if the counter is silent ("Attributions of the T1
+round" below). Both slow repetitions are the ones whose collapse had run a
+bound unit before the re-expansion: their between-frames turns ended 8.1 and
+15.1 ms before the re-expanding input, and the fast ones' 0.7–9.3 ms before
+it with rows still left or no unit yet.
 
 ### R14. Review of R13 (2026-11-18)
 
