@@ -1116,8 +1116,11 @@ pub const SIDEBAR_REALIZED_ROWS_PER_FRAME: u32 = 32;
 /// band): such a removal only destroys row widgets, at about a third of a
 /// replacement's cost (design D18, R2), so it may take more rows than
 /// [`SIDEBAR_REALIZED_ROWS_PER_FRAME`] within the same frame budget. Gate G4
-/// left 64: 128 and 256 missed the 6 ms selection margin (6.0–6.9 ms and
-/// 5.4–8.9 ms; task 10.7's repeats of rounds A6 and A7 re-read them).
+/// left 64: in its repeats, in a window without outside load, 256's
+/// destroy-only dispatch took 7.5–9.4 ms in every repetition (round R6) and
+/// 128's took 6.1–6.8 ms in five of nine (round R7), over the 6 ms
+/// selection margin (design R13, "The repeats R5–R7 and the attributions P1
+/// and P2 read"). 64 is the ladder's last rung.
 ///
 /// Kind: cap; a power of two, rounded down.
 pub const COLLAPSE_DESTROY_ONLY_ROWS: u32 = 64;

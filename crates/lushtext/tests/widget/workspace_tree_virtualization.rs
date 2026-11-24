@@ -5551,7 +5551,161 @@ fn test_a_collapse_at_the_tail_refills_no_more_than_a_unit_from_above() {
     drop(tree.window);
 }
 
-/// One case line of the collapse and expansion verdict.
+/// `main`'s worst completion of a collapse case, in µs, from the stage 4
+/// campaign (design R3's table, "Where `main` stands"; R13's selection-bar
+/// table), or `None` for a case R3 sets no completion bar for.
+const fn main_worst_completion_us(case: &str, siblings: usize, entries: usize) -> Option<u64> {
+    const JUST_OVER: usize = 16 * 1024 + 1;
+    const LARGE: usize = 128 * 1024;
+    match (case.as_bytes(), siblings, entries) {
+        (b"collapse", 0, LARGE) => Some(30_000),
+        (b"collapse", 0, 64 | 256 | 4096 | JUST_OVER) => Some(23_000),
+        (b"collapse", 400, 64) => Some(37_000),
+        (b"collapse", 400, 256) => Some(121_000),
+        (b"collapse", 400, 4096) => Some(104_000),
+        (b"collapse", 400, JUST_OVER) => Some(106_000),
+        (b"collapse", 400, LARGE) => Some(124_000),
+        (b"header-two-roots", 0, 4096) => Some(115_000),
+        _ => None,
+    }
+}
+
+/// Design R3's completion bar for a case, with R9's allowance:
+/// `max(main's worst + 33.3 ms, 100 ms) + allowance`, in µs (R13's table:
+/// 137.3 ms at 400:4,096, 157.3 ms at 0:131,072, 214.6 ms at 400:131,072).
+fn completion_bar_us(
+    case: &str,
+    siblings: usize,
+    entries: usize,
+    allowance_us: usize,
+) -> Option<u64> {
+    const TWO_FRAMES_US: u64 = 33_300;
+    const INSTANT_US: u64 = 100_000;
+    let main = main_worst_completion_us(case, siblings, entries)?;
+    let allowance = u64::try_from(allowance_us).unwrap_or(u64::MAX);
+    Some(
+        (main + TWO_FRAMES_US)
+            .max(INSTANT_US)
+            .saturating_add(allowance),
+    )
+}
+
+/// One case's verdict against the bars task 7.1 enforces, every one as
+/// written, with no selection margin: design D2's pass bar (the input and
+/// every collapse step within `B_INTERACT_US`, every dispatch within
+/// `B_SETTLE_US`, except the named residual of D12, the probe scan's
+/// publication into a store no row shows, which is listed and not judged),
+/// rung T1's `INPUT_TO_FRAME_US` for the collapse routes, and, for the cases R3 sets one, R3's
+/// completion bar with R9's allowance for both completion and the
+/// picture-final figure (task 10.16 decided that no case meets the
+/// first-frame bar's condition). The settled time is printed beside them,
+/// unjudged. Residual routes (D2) are printed and not judged. Returns the
+/// misses, one line each; D2's recorded toolkit-floor exceptions, if a
+/// final campaign records one, are classified by the reading of its round,
+/// not excepted here in advance.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a verdict-test helper over one case's printed figures"
+)]
+fn judge_case(
+    case: &str,
+    siblings: usize,
+    entries: usize,
+    allowance_us: usize,
+    input_us: u64,
+    step_us_max: u64,
+    input_to_frame_us: Option<u64>,
+    timeline: &DispatchTimeline,
+) -> Vec<String> {
+    use lushtext_core::model::responsiveness_budget::{
+        B_INTERACT_US, B_SETTLE_US, input_to_frame_within,
+    };
+    if case.starts_with("residual") {
+        return Vec::new();
+    }
+    let label = format!("{case} {siblings}:{entries}");
+    let mut misses = Vec::new();
+    if input_us > B_INTERACT_US {
+        misses.push(format!("{label}: input {input_us} us over B_INTERACT_US"));
+    }
+    if step_us_max > B_INTERACT_US {
+        misses.push(format!(
+            "{label}: a step took {step_us_max} us, over B_INTERACT_US"
+        ));
+    }
+    let over: Vec<(u64, u64)> = timeline
+        .dispatches
+        .iter()
+        .filter(|dispatch| {
+            dispatch.took_us > B_SETTLE_US && dispatch.published_terminal != Some(false)
+        })
+        .map(|dispatch| (dispatch.start_us, dispatch.took_us))
+        .collect();
+    if !over.is_empty() {
+        misses.push(format!(
+            "{label}: dispatches (start, took) over B_SETTLE_US: {over:?}"
+        ));
+    }
+    // Rung T1's bar is the collapse's first frame (design D6): the collapse
+    // routes only; an expansion's first frame is judged by D2's dispatch bar.
+    let collapse_route = case == "collapse" || case == "header-two-roots";
+    if collapse_route {
+        match input_to_frame_us {
+            Some(us) if !input_to_frame_within(us) => {
+                misses.push(format!(
+                    "{label}: input to frame {us} us, over INPUT_TO_FRAME_US"
+                ));
+            }
+            None => misses.push(format!("{label}: no frame after the input")),
+            Some(_) => {}
+        }
+    }
+    let bar = completion_bar_us(case, siblings, entries, allowance_us);
+    let completion = timeline.shown_us.map(|us| input_us + us);
+    let picture_final = timeline.picture_final_us.map(|us| input_us + us);
+    let residual: Vec<(u64, u64)> = timeline
+        .dispatches
+        .iter()
+        .filter(|dispatch| {
+            dispatch.took_us > B_SETTLE_US && dispatch.published_terminal == Some(false)
+        })
+        .map(|dispatch| (dispatch.start_us, dispatch.took_us))
+        .collect();
+    if let Some(bar) = bar {
+        match completion {
+            Some(us) if us > bar => {
+                misses.push(format!(
+                    "{label}: completion {us} us over its bar of {bar} us"
+                ));
+            }
+            None => misses.push(format!("{label}: no completing frame")),
+            Some(_) => {}
+        }
+        match picture_final {
+            Some(us) if us > bar => {
+                misses.push(format!(
+                    "{label}: picture final at {us} us, over its bar of {bar} us"
+                ));
+            }
+            None => misses.push(format!("{label}: no picture-final frame")),
+            Some(_) => {}
+        }
+    }
+    let null = |value: Option<u64>| value.map_or_else(|| "null".to_owned(), |us| us.to_string());
+    println!(
+        "collapse-judged {{\"case\":\"{case}\",\"siblings\":{siblings},\"entries\":{entries},\"completion_us\":{},\"completion_bar_us\":{},\"picture_final_us\":{},\"settled_us\":{},\"d12_residual\":{residual:?},\"misses\":{}}}",
+        null(completion),
+        null(bar),
+        null(picture_final),
+        null(timeline.done_us.map(|us| input_us + us)),
+        misses.len(),
+    );
+    misses
+}
+
+/// One case line of the collapse and expansion verdict, and its misses
+/// ([`judge_case`]).
+#[must_use]
 fn print_case(
     section: &LushtextWorkspaceSection,
     case: &str,
@@ -5559,7 +5713,7 @@ fn print_case(
     entries: usize,
     input_us: u64,
     timeline: &DispatchTimeline,
-) {
+) -> Vec<String> {
     let step_us_max = section.workspace_section_evidence().collapse_step_us_max;
     use lushtext_core::model::responsiveness_budget::{B_INTERACT_US, B_SETTLE_US};
     // R of design R9: the collapsing subtree's flattened rows at the input,
@@ -5607,6 +5761,16 @@ fn print_case(
         input_to_frame_us.map_or_else(|| "null".to_owned(), |us| us.to_string()),
     );
     print_step_dispatches(section, case, siblings, entries, timeline.mono_start_us);
+    judge_case(
+        case,
+        siblings,
+        entries,
+        allowance_us,
+        input_us,
+        step_us_max,
+        input_to_frame_us,
+        timeline,
+    )
 }
 
 /// The step dispatches of the case just printed (design D25, R14): their
@@ -5680,6 +5844,7 @@ fn test_directory_collapse_and_small_expansion_dispatches_fit_the_budgets() {
     const AFTER: Duration = Duration::from_millis(700);
     const BUDGET: Duration = Duration::from_secs(240);
     let full = timing_verdicts_enforced();
+    let mut misses: Vec<String> = Vec::new();
     let collapse_sizes: &[usize] = if full {
         &[64, 256, 4096, 16 * 1024 + 1, 128 * 1024]
     } else {
@@ -5741,14 +5906,14 @@ fn test_directory_collapse_and_small_expansion_dispatches_fit_the_budgets() {
                                 .is_some_and(|row| !row.is_expanded())
                         },
                     );
-                    print_case(
+                    misses.extend(print_case(
                         &tree.section,
                         "collapse",
                         siblings,
                         count,
                         input_us,
                         &timeline,
-                    );
+                    ));
                     flush_after_delay(Duration::from_millis(300));
                 }
                 drop(tree.window);
@@ -5772,14 +5937,14 @@ fn test_directory_collapse_and_small_expansion_dispatches_fit_the_budgets() {
                     let timeline = dispatch_timeline(&tree.section, BUDGET, AFTER, || {
                         loaded_and_settled(&tree.section, &nested, count)
                     });
-                    print_case(
+                    misses.extend(print_case(
                         &tree.section,
                         "expand-cold",
                         siblings,
                         count,
                         input_us,
                         &timeline,
-                    );
+                    ));
                     activate_row(&tree.section, &nested);
                     wait_until(Duration::from_secs(30), || {
                         collapsed_and_settled(&tree.section, &nested)
@@ -5788,14 +5953,14 @@ fn test_directory_collapse_and_small_expansion_dispatches_fit_the_budgets() {
                     let timeline = dispatch_timeline(&tree.section, BUDGET, AFTER, || {
                         loaded_and_settled(&tree.section, &nested, count)
                     });
-                    print_case(
+                    misses.extend(print_case(
                         &tree.section,
                         "expand-after-collapse",
                         siblings,
                         count,
                         input_us,
                         &timeline,
-                    );
+                    ));
                     drop(tree.window);
                 }
             }
@@ -5842,7 +6007,14 @@ fn test_directory_collapse_and_small_expansion_dispatches_fit_the_budgets() {
                         && row_for_path(&section, &second).is_some_and(|row| !row.is_expanded())
                 },
             );
-            print_case(&section, "header-two-roots", 0, 4096, input_us, &timeline);
+            misses.extend(print_case(
+                &section,
+                "header-two-roots",
+                0,
+                4096,
+                input_us,
+                &timeline,
+            ));
             drop(window);
         }
     }
@@ -5866,14 +6038,14 @@ fn test_directory_collapse_and_small_expansion_dispatches_fit_the_budgets() {
                 loaded_and_settled(&tree.section, &nested, count)
                     && row_for_path(&tree.section, &nested).is_some_and(|row| row.is_expanded())
             });
-            print_case(
+            misses.extend(print_case(
                 &tree.section,
                 "reexpand-mid-collapse",
                 0,
                 count,
                 input_us,
                 &timeline,
-            );
+            ));
             drop(tree.window);
         }
     }
@@ -5896,14 +6068,14 @@ fn test_directory_collapse_and_small_expansion_dispatches_fit_the_budgets() {
         let timeline = dispatch_timeline(&tree.section, BUDGET, AFTER, || {
             collapsed_and_settled(&tree.section, &nested)
         });
-        print_case(
+        misses.extend(print_case(
             &tree.section,
             "residual-expander-action",
             400,
             256,
             input_us,
             &timeline,
-        );
+        ));
         // A collapse while the sidebar is hidden.
         expand_and_load(&tree, &nested, 256);
         flush_after_delay(Duration::from_millis(300));
@@ -5914,14 +6086,14 @@ fn test_directory_collapse_and_small_expansion_dispatches_fit_the_budgets() {
         let timeline = dispatch_timeline(&tree.section, BUDGET, AFTER, || {
             collapsed_and_settled(&tree.section, &nested)
         });
-        print_case(
+        misses.extend(print_case(
             &tree.section,
             "residual-hidden-sidebar",
             400,
             256,
             input_us,
             &timeline,
-        );
+        ));
         // The sidebar's visibility is persisted: show it again for the next
         // window.
         gio::prelude::ActionGroupExt::activate_action(&tree.window, "toggle-sidebar", None);
@@ -5947,14 +6119,14 @@ fn test_directory_collapse_and_small_expansion_dispatches_fit_the_budgets() {
                         .workspace_section_evidence()
                         .refresh_blocks_readiness
             });
-            print_case(
+            misses.extend(print_case(
                 &tree.section,
                 "residual-refresh-splice",
                 0,
                 count,
                 input_us,
                 &timeline,
-            );
+            ));
             drop(tree.window);
         }
         let tree = tree_with_siblings(256, 0);
@@ -5973,15 +6145,26 @@ fn test_directory_collapse_and_small_expansion_dispatches_fit_the_budgets() {
                     .workspace_section_evidence()
                     .refresh_blocks_readiness
         });
-        print_case(
+        misses.extend(print_case(
             &tree.section,
             "residual-section-rebuild",
             0,
             256,
             input_us,
             &timeline,
-        );
+        ));
         drop(tree.window);
+    }
+    println!("collapse-verdict-misses {}", misses.len());
+    for miss in &misses {
+        println!("collapse-verdict-miss {miss}");
+    }
+    if full {
+        assert!(
+            misses.is_empty(),
+            "the collapse verdict missed {} bars (task 7.1): {misses:#?}",
+            misses.len()
+        );
     }
 }
 
@@ -7533,6 +7716,54 @@ fn test_reexpanding_before_the_cache_retirement_ends_recaches_every_entry() {
         cached_paths(&tree.section, &nested),
         count,
         "the retirement kept every re-cached entry"
+    );
+    drop(tree.window);
+}
+
+/// Task 1.4 (round P2's attribution, design R13): a re-expansion after the
+/// collapse's bound units have removed rows of the band refills the band one
+/// unit a frame (design D10), as a load into an empty directory does. The
+/// condition of the slow re-expansions P2 profiled (19–34 ms frames of CSS
+/// matching and shaping in the list's measure): every unbound row has left,
+/// a bound unit has run, and the refill's scan result arrives at a store
+/// that still lists the rest of the band. Fails with the refill's
+/// reconciliation batches alone: they splice 256 rows a batch into the band,
+/// and one dispatch shows well over a unit of row widgets.
+#[test]
+fn test_reexpanding_after_bound_units_refills_the_band_one_unit_a_frame() {
+    use lushtext_core::ui::sidebar::workspace_section::StepDispatchKind as Kind;
+    let count = 4096;
+    let (tree, nested) = expanded_nested(count, 0);
+    activate_row(&tree.section, &nested);
+    pump_dispatches_until(Duration::from_secs(60), || {
+        let evidence = tree.section.workspace_section_evidence();
+        evidence
+            .collapse_step_dispatches
+            .iter()
+            .any(|dispatch| dispatch.kind == Kind::Bound && dispatch.rows > 0)
+    });
+    let mid = tree.section.workspace_section_evidence();
+    assert_eq!(mid.collapses.len(), 1, "{}", collapse_state(&tree.section));
+    let changed = row_widgets_changed_per_dispatch(
+        &tree.section,
+        || activate_tree_row(&tree.section, &nested),
+        || {
+            loaded_and_settled(&tree.section, &nested, count)
+                && row_for_path(&tree.section, &nested).is_some_and(|row| row.is_expanded())
+        },
+    );
+    let over = changed
+        .iter()
+        .copied()
+        .find(|change| change.shown > COLLAPSE_UNIT);
+    assert!(
+        over.is_none(),
+        "one dispatch of the refill showed {over:?} row widgets, over the unit of \
+         {COLLAPSE_UNIT}: {changed:?}"
+    );
+    assert_eq!(
+        tree.section.workspace_section_evidence().last_collapse_end,
+        Some(lushtext_core::ui::sidebar::workspace_section::CollapseEnd::ReExpanded)
     );
     drop(tree.window);
 }
