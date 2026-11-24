@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Collapsing a sidebar directory fits the interaction budgets
-Collapsing a sidebar directory by a route LushText owns SHALL keep the input dispatch and every step within `B_INTERACT_US`, and every dispatch until the listing is retired within `B_SETTLE_US`, at every size, for every collapse that brings at most `SIDEBAR_REALIZED_ROWS_PER_FRAME` rows into the realized band. The first frame after the input SHALL show the collapse. No frame SHALL bring more than `SIDEBAR_REALIZED_ROWS_PER_FRAME` rows into the realized band. A toolkit cost that cannot fit SHALL be a recorded toolkit-floor exception. A collapse that brings more rows than that into the band, from after its subtree or through a view clamped at the list's end refilling from above, SHALL take `main`'s direct collapse in the input dispatch, which the completion requirement below bounds (design R13, C3: that class missed the completion bar when paced).
+Collapsing a sidebar directory by a route LushText owns SHALL keep the input dispatch and every step within `B_INTERACT_US`, and every dispatch until the listing is retired within `B_SETTLE_US`, at every size, except where the next requirement keeps `main`'s collapse. The first frame after the input SHALL show the collapse. No frame SHALL bring more than `SIDEBAR_REALIZED_ROWS_PER_FRAME` rows into the realized band. A toolkit cost that cannot fit SHALL be a recorded toolkit-floor exception.
 
 #### Scenario: How the budgets are measured
 - **WHEN** the verdict test measures a collapse
@@ -22,15 +22,10 @@ Collapsing a sidebar directory by a route LushText owns SHALL keep the input dis
 - **WHEN** the user collapses an expanded directory of 256 entries followed by 32 rows
 - **THEN** the collapse is paced, the input dispatch and every step fit `B_INTERACT_US`, and every frame until it is collapsed fits `B_SETTLE_US`
 
-#### Scenario: A directory with more rows after it keeps main's collapse
-- **WHEN** the user collapses an expanded directory of any size above `DIRECT_COLLAPSE_ROWS` whose collapse brings more than `SIDEBAR_REALIZED_ROWS_PER_FRAME` rows into the realized band, such as one followed by 400 rows, or one whose view is at its tail with 400 rows listed before it
-- **THEN** the input dispatch moves selection and focus inside the subtree to the directory row and collapses it directly, as `main` does, and the collapse is complete when that dispatch returns
-- **AND** the rows the other subtrees of the same input collapse, and the rows already realized, are not counted as brought in
-
 #### Scenario: A huge directory
 - **WHEN** the user collapses an expanded directory of 131,072 entries with nothing after it
 - **THEN** the children no row widget is bound to are removed in chunks of at most `COLLAPSE_UNBOUND_CHUNK_ROWS`, the first in the first step dispatch after the input within `B_INTERACT_US` and the rest within the list turn slice, the bound children in units, and every dispatch fits its budget
-- **AND** with 400 rows after it, it keeps `main`'s direct collapse, as in the scenario above
+- **AND** with 400 rows after it, it keeps `main`'s direct collapse (the next requirement)
 
 #### Scenario: A collapse nobody draws
 - **WHEN** a sliced collapse starts or continues while the sidebar is hidden, the section body is collapsed or the window is unmapped, or while the list stays mapped but its frame clock delivers no frame
@@ -75,6 +70,18 @@ Collapsing a sidebar directory by a route LushText owns SHALL keep the input dis
 #### Scenario: The probe scan's publication is a named residual
 - **WHEN** a dispatch after the collapse publishes the scan that GTK's `is_expandable()` probe started for the collapsed directory
 - **THEN** the verdict test prints it separately, it is excluded from this requirement's pass bar, and it is recorded as owned by `stop-expander-bind-time-child-scans`
+
+### Requirement: A collapse that refills the band beyond one unit keeps main's collapse
+A sidebar directory collapse by a route LushText owns that would bring more than `SIDEBAR_REALIZED_ROWS_PER_FRAME` rows into the realized band, from after its subtree or through a view clamped at the list's end refilling from above, SHALL take `main`'s direct collapse in the input dispatch, bounded by the completion requirement below (design R13, C3: that class missed the completion bar when paced).
+
+#### Scenario: A directory with more rows after it keeps main's collapse
+- **WHEN** the user collapses an expanded directory of any size above `DIRECT_COLLAPSE_ROWS` whose collapse brings more than `SIDEBAR_REALIZED_ROWS_PER_FRAME` rows into the realized band, such as one followed by 400 rows, or one whose view is at its tail with 400 rows listed before it
+- **THEN** the input dispatch moves selection and focus inside the subtree to the directory row and collapses it directly, as `main` does, and the collapse is complete when that dispatch returns
+- **AND** the rows the other subtrees of the same input collapse, and the rows already realized, are not counted as brought in
+
+#### Scenario: A unit or less stays paced
+- **WHEN** the collapse brings at most `SIDEBAR_REALIZED_ROWS_PER_FRAME` rows into the band, such as a directory followed by 32 rows, or one at the tail with 28 rows before it
+- **THEN** it is paced, as the requirement above states
 
 ### Requirement: A sidebar collapse finishes within main's time plus a bounded allowance
 A sidebar directory collapse by a route LushText owns SHALL draw its collapsed rows within `main`'s time plus a bounded allowance, measured from the input to the frame that draws them: at most `main`'s time plus two 60 Hz frames, or 100 ms where `main` takes less. A collapsing subtree of more than 16,384 flattened rows SHALL be allowed 0.5 µs more for each row beyond 16,384, and no more; when one input collapses several directories, their subtrees' rows are summed.

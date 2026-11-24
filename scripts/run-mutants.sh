@@ -6,6 +6,9 @@ set -euo pipefail
 MODE="${1:-}"
 MUTANTS_TIMEOUT="${MUTANTS_TIMEOUT:-300}"
 MUTANTS_SMOKE_FILE="${MUTANTS_SMOKE_FILE:-crates/lushtext-core/src/model/document_scale.rs}"
+# Whether the caller named the diff file. The default one is ours and is
+# regenerated on every run (ensure_diff_file).
+MUTANTS_DIFF_FILE_NAMED="${MUTANTS_DIFF_FILE:+1}"
 MUTANTS_DIFF_FILE="${MUTANTS_DIFF_FILE:-git.diff}"
 MUTANTS_BASE="${MUTANTS_BASE:-origin/main}"
 MUTANTS_SHARD="${MUTANTS_SHARD:-}"
@@ -225,11 +228,16 @@ run_cargo_mutants() {
     return "${status}"
 }
 
+# A diff file the caller named (an argument or MUTANTS_DIFF_FILE) is used as
+# it is. The default `git.diff` is written again on every run: an earlier
+# run's copy is gitignored and survives in the checkout, and reusing it
+# mutation-tests that run's change set (it failed one run on 2026-11-24 only
+# because its lines no longer matched the source).
 ensure_diff_file() {
-    local diff_file="$1"
+    local diff_file="$1" named="$2"
 
-    if [[ -f "${diff_file}" ]]; then
-        return
+    if [[ -n "${named}" ]]; then
+        [[ -f "${diff_file}" ]] && return
     fi
 
     require_command git
@@ -259,7 +267,7 @@ run_diff() {
         [[ -s "${diff_file}" ]] || fail "diff file is empty: ${diff_file}"
     fi
 
-    ensure_diff_file "${diff_file}"
+    ensure_diff_file "${diff_file}" "${1:-${MUTANTS_DIFF_FILE_NAMED}}"
 
     # An empty hunk set means the run proved nothing. Exiting 0 here let a
     # mis-scoped or stale diff read as a pass.
@@ -507,7 +515,7 @@ mirror_diff() {
         [[ -f "${diff_file}" ]] || fail "diff file does not exist: ${diff_file}"
         [[ -s "${diff_file}" ]] || fail "diff file is empty: ${diff_file}"
     fi
-    ensure_diff_file "${diff_file}"
+    ensure_diff_file "${diff_file}" "${1:-${MUTANTS_DIFF_FILE_NAMED}}"
     if ! grep -q '^@@ ' "${diff_file}"; then
         fail "no diff hunks found in ${diff_file}; nothing was mutation tested"
     fi
@@ -688,6 +696,23 @@ STUB
     status=0; STUB_STATUS=2 STUB_PHRASE='10 mutants tested' TMPDIR="${dir}/scan-base" CI=true MUTANTS_MIRROR=1 MUTANTS_SHARD=1/4 "${me}" ci-full >"${dir}/out" 2>&1 || status=$?
     (( status == 2 )) || self_test_fail "the CI path without the phrase gave status ${status}, not 2: $(cat "${dir}/out")"
     [[ -z "$(find "${dir}/scan-base" -mindepth 1 -print -quit)" ]] || self_test_fail "the phrase scan left $(find "${dir}/scan-base" -mindepth 1 | head -n 3)"
+
+    # The default diff file is written again on every run, never reused.
+    printf 'fn f() { let _ = 1; }\n' >src/lib.rs
+    git add src/lib.rs
+    git -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false commit -q -m change
+    printf 'diff --git a/stale.rs b/stale.rs\n@@ -1 +1 @@\n-stale\n+stale\n' >git.diff
+    : >"${STUB_LOG}"
+    MUTANTS_MIRROR=1 MUTANTS_LOCAL_JOBS=1 MUTANTS_BASE=HEAD~1 "${me}" diff >"${dir}/out" 2>&1 \
+        || self_test_fail "a default-diff run failed: $(cat "${dir}/out")"
+    git diff HEAD~1... >"${dir}/expected.diff"
+    cmp -s git.diff "${dir}/expected.diff" || self_test_fail "a stale default git.diff was reused: $(cat git.diff)"
+    # A diff file the caller names is used as it is.
+    cp "${dir}/expected.diff" "${dir}/named.diff"
+    printf '\n' >>"${dir}/named.diff"
+    MUTANTS_MIRROR=1 MUTANTS_LOCAL_JOBS=1 MUTANTS_BASE=HEAD~1 MUTANTS_DIFF_FILE="${dir}/named.diff" "${me}" diff >"${dir}/out" 2>&1 \
+        || self_test_fail "a named-diff run failed: $(cat "${dir}/out")"
+    ! cmp -s "${dir}/named.diff" "${dir}/expected.diff" || self_test_fail "a named diff file was rewritten"
 
     echo "run-mutants self-test: ok"
 }
