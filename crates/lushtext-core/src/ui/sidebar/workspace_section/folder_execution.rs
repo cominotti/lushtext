@@ -430,11 +430,25 @@ impl LushtextWorkspaceSection {
     /// the focus. A refresh must not take the focus from a widget inside a
     /// row, such as an inline-rename entry: that would end the rename the
     /// user is typing into (`slice-large-directory-collapse` task 9.12).
+    ///
+    /// A refresh that left the selection on `target_path` restores nothing:
+    /// `GtkSingleSelection` and the list's focus tracker both follow their
+    /// items through in-place splices, and a `scroll_to(FOCUS)` there would
+    /// move the focus from a row the user focused off the selection back to
+    /// the selected one (design R13, "The focus a background refresh took").
     pub(in crate::ui::sidebar) fn restore_selection(&self, target_path: &Path) {
         let Some((position, _)) = self.flattened_row_for_path(target_path) else {
             return;
         };
         let list = &*self.imp().file_tree_view;
+        if list
+            .model()
+            .and_downcast::<gtk4::SingleSelection>()
+            .is_some_and(|selection| selection.selected() == position)
+        {
+            self.imp().pending_selection.borrow_mut().take();
+            return;
+        }
         let list_widget: &gtk4::Widget = list.upcast_ref();
         let focus_inside_a_row = list
             .root()

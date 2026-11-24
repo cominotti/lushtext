@@ -4410,14 +4410,177 @@ a widget test first:
   131,072: after a bound unit, the re-expansion's refill inserts its first 8
   rows (2.0–5.0 ms) and the frame after it takes 12.9–21.4 ms; the control,
   a cold expansion of the same directory, inserts 33 rows and its frames take
-  3.9–5.6 ms. The excess is specific to the refill and does not grow with the
-  directory.
+  3.9–5.6 ms. The excess is specific to the refill. (Its growth with the
+  directory, which this reading first missed, is the process's history:
+  "The P2 refill-frame profile read" below.)
 - So the counter is silent and the round goes to a profile: the DWARF round
   `MEASURE-QUEUE.md`, "P2 refill-frame profile", queued READY with its
   reading pre-registered. Part B stays PENDING until it is read, and any
   LushText cost it names is cut failing-first first. Part B's re-expansion
   case is not evidence about P2 by itself: the T1 hold (below) changes the
   state the collapse is in 30 ms after the input.
+
+**The P2 refill-frame profile read (2026-11-24).** The coordinator ran the
+entry `MEASURE-QUEUE.md`, "P2 refill-frame profile", and kept both rounds
+under level 1: P2R on its second try (the first was busy and is not read)
+and P2V on its first (`rev/attr2/slc-c3-pdw-{refill,reexpand}.{log,data}`).
+Read by the entry's readings (scripts and tables in
+`.claude/handoffs/slice-large-directory-collapse/rev13/`: `p2r_windows.py`,
+`p2r_read.py`, `p2r-output.txt`, `p2r_depth.py`, `p2r-depth.txt`):
+- *P2R, the callers of the excess.* In each of the twelve REFILL
+  repetitions, the frame dispatch after the refill's first 8-row batch
+  exceeds the same repetition's median COLD frame almost wholly in style
+  validation under the frame clock's `gtk_css_node_validate`: summed over
+  the twelve, +776 samples (4 kHz) of style, +17 of paint and +1 of layout.
+  **No LushText frame carries any of it**: the only LushText frames in
+  either window, the row's `measure` and `size_allocate`, are equal or
+  lower in the REFILL frame. The leaves: `gtk_css_selector_tree_get_change`
+  +200, `match_class` +151, `match_name` +109, `gtk_css_selector_tree_match`
+  +96, `gtk_css_node_declaration_has_class` +51. The work is queued by the
+  refill's insertion of 8 rows before the kept run
+  (`scan_execution::splice_child_store`, about 195 realized rows after the
+  insertion point): `gtk_css_node_reposition` invalidates the next sibling
+  for `ANY_SIBLING | NTH_CHILD`, and `propagate_pending_changes` carries a
+  sibling change to every later sibling (`gtkcssnode.c`, GTK 4.24.1), so
+  every realized row after the insertion looks its style up again. The
+  restyled nodes' depth histogram is the COLD frame's (`p2r-depth.txt`):
+  whole row subtrees.
+- *The figure grew with the repetition, not with the directory.* REFILL
+  frames went 11.7 → 19.9 ms over r0–r5 at 4,096 and 21.4 → 31.0 ms at
+  131,072, in one process that ran 4,096 first (COLD 3.3–4.5 and
+  5.5–6.7 ms), about 1.6 ms a repetition. Destroying each window instead of
+  dropping it did not flatten it (`rev13/teardown-destroy.log`, one live
+  toplevel: 12.3 → 20.4 and 22.8 → 29.4 ms).
+- *The cause is LushText's.* Every widget-test fixture starts an
+  application (`common::test_application`), and `theme::load_css` added the
+  application CSS and the tab-content transparency provider for the
+  **display** at every startup, twice per test application (registration
+  and the harness's `startup` emission), connecting their settings handlers
+  again each time. Every display provider takes part in every style lookup,
+  so each restyle walked a provider list that grew with the fixtures the
+  process had run. The T1 round's re-expansion cases were fixtures 70–72
+  and 142–144 of their processes, where the 60 ms frames were (only the
+  first repetition of each attempt was slow there, by `slc-t1-base.log`).
+  Production starts one application per process, so the cost is the
+  instrument's, but the install was LushText's and not idempotent, the case
+  `ui/font_zoom.rs` already guarded.
+- *The cut, failing first.* `load_css` installs the display providers and
+  their handlers once per process, keyed on the font-zoom install as the font
+  rules are, and counts them (`theme::display_providers_added`).
+  `app::test_a_second_startup_adds_no_display_css_provider` failed first,
+  12 providers against 4 after three startups (`rev13/ffirst-unguarded.log`),
+  and passes on the cut (`rev13/ffirst-fixed.log`). The reproduction on the
+  cut, in a fresh process (`rev13/teardown-fixed.log`, binary
+  `rev13/bin/widget-p2-teardown5`, under `heavy.sh` at load 5–7, not a
+  measurement): REFILL frames 10.6–14.9 ms at 4,096 and 10.8–15.9 ms at
+  131,072, flat across the six repetitions; COLD frames 3.1–6.6 ms.
+- *The residual is GTK's, recorded with its leaf.* The REFILL frame still
+  exceeds the COLD frame by about 7 ms, in the same leaves: GTK's restyle of
+  the realized rows after an insertion before them. For D2's toolkit-floor
+  clause it is a **ledger candidate, not an axiom**: neither A118 nor A124
+  covers it (both are removals), and no figure measured on the cut is over a
+  bar (the frame is within `B_SETTLE_US` and `INPUT_TO_FRAME_US`), so no
+  decision relies on it. If Part B's re-expansion case misses its bar, its
+  attribution first needs a GTK-only probe (an insertion before K realized
+  rows against an append and a removal before them, with and without the
+  application stylesheet) and the axiom's sample, before the candidate is
+  entered; no exception is granted in advance.
+- *P2V.* No dispatch over `B_SETTLE_US` that is not D12's "unshown" residual
+  and worst frames of at most 1.6 ms in all eight repetitions: by the entry,
+  inconclusive about the verdict code, so P2R decides alone. As data: r3's
+  8,218 µs non-frame dispatch, 30 ms after the input, under `perf`.
+- *What follows.* Part B's branch binary is rebuilt with the cut, and the
+  main side's verdict patch carries the same guard
+  (`rev/verdict-main.README`): `main`'s `load_css` has the same per-startup
+  copy, and without it `main`'s late cases would restyle against the growing
+  list while the branch's do not. Earlier readings are not reread: every
+  figure measured late in a widget-test process carried a share of this
+  drift, on whichever side ran, and each decision taken on them stands on
+  its own reading; Part B measures both sides with the guard.
+
+**Coverage of the direct route, audited (2026-11-24).** C3 sends a class of
+collapses through `main`'s direct collapse, and a test whose collapse took
+that route would pass its end-state checks without exercising the paced
+code it names.
+- *The route of every collapse of the tree tests.* A build that prints each
+  collapse's route (`rev13/bin/widget-route-audit`, source diff
+  `rev13/widget-route-audit.source.patch`, never committed) ran the
+  `sidebar`, `workspace_section` and `workspace_tree_virtualization` modules,
+  310 tests without the verdict and diagnostic tests (`rev13/route-audit.log`,
+  per test `rev13/route-audit-summary.txt`). Three tests take a route other
+  than the paced one or the one-step direct collapse, each by design: the
+  two C3 tests (`test_a_collapse_with_rows_after_it_takes_the_direct_collapse`,
+  `test_a_collapse_at_the_tail_refills_no_more_than_a_unit_from_above`) and
+  `test_collapse_with_an_unlocated_subtree_leaves_the_selection` (R6.10's
+  uncaptured subtree). The folder-header tests' roots collapse paced (a root
+  of one step, 8 rows, directly, as S2 sets), and both overlap tests and
+  `test_a_taken_over_directory_ends_collapsed_after_its_ancestor_reexpands`
+  collapse paced. No two-root, header or overlap test reaches its end state
+  through C3's route.
+- *D24's cache owner and the delete through the survivor.*
+  `test_collapsing_one_of_two_listed_occurrences_detaches_nothing` lists its
+  folders in the order that keeps the paced route since `be5536f7` and
+  asserts the collapse is sliced; it now also asserts the owner: before the
+  collapse one occurrence owns the directory's 4,096-path cache, and after
+  it the survivor owns none. A variant in which the top-level occurrence
+  loads last fails the second assertion, 4,096 against 0
+  (`rev13/owner-variant.log`, source `rev13/widget-owner-variant.source.patch`),
+  so the test tells the owners apart.
+- *A flake found and fixed.*
+  `test_reexpanding_before_the_cache_retirement_ends_recaches_every_entry`
+  re-expanded after a fixed 30 ms, and an optimized build had finished the
+  retirement by then: it failed twice of two in isolation on
+  `rev12/bin/widget-c3` (`rev13/iso-reexp-widget-c3.log`) and twice in the
+  audit run. It now re-expands at the first dispatch after the retirement
+  begins (or at 30 ms in a build too slow to begin it), at 131,072 entries,
+  whose 32 units of 4,096 rows take several turns of `LIST_TURN_SLICE_US`;
+  it passed four of four in isolation on the optimized build
+  (`rev13/f2-*.log`).
+
+**The focus a background refresh took (2026-11-24).**
+`test_replayed_navigation_matches_gtk` failed or retried on the tree with
+the provider cut, in the debug lane and on the optimized build, always in
+the cases that start with the focus off the selection (24 and 25): the
+focus left its row for the selected root, 0.2 s after a window
+re-activation (`rev13/nav-debug-{1,2}.log`, `rev13/navdiag-*.log`).
+- *The cause.* A backtrace taken where the focus moved
+  (`rev13/navdiag-11.log`, build `rev13/bin/widget-navdiag4`, source
+  `rev13/widget-navdiag4.source.patch`, never committed) ends in
+  `restore_selection` → `select_and_scroll_to_position`, from the 1 ms
+  child-state restore after a scan terminal. The scan was the attention
+  refresh (`window/attention_refresh.rs`) that every `is-active` flip to
+  true queues, and the headless compositor flips it at every real-input
+  session the test opens. The restore called `scroll_to(FOCUS)` on the
+  selected row whenever a row held the focus, so any background refresh moved
+  a focus the user had put off the selection (Ctrl+arrow) back onto the
+  selected row. That was on `main` too, where the restore always moved the
+  focus (`select_and_scroll_to`). The test met it only when the refresh's
+  terminal landed inside a typed case, and the faster restyle of the provider
+  cut moved that timing.
+- *The fix, failing first.* A restore that finds the selection on its
+  target restores nothing: `GtkSingleSelection` and the list's focus tracker
+  follow their items through in-place splices, so there is nothing to put
+  back. A model replacement, which loses the selection, still restores it as
+  before, with the 9.12 rule for a focus inside a row.
+  `test_a_background_refresh_keeps_the_focus_off_the_selection` failed both
+  attempts first (focus on row 0, expected 4, `rev13/focus-ffirst.log`) and
+  passes with the fix, beside both 9.12 tests and the pending-selection
+  refresh test (`rev13/focus-fixed.log`). With the fix the navigation test
+  passed six of six runs in isolation on the optimized build
+  (`rev13/bin/widget-fixed3`) and two of two in the debug lane, none on a
+  retry (`rev13/navfix-{1..6}.log`, `rev13/navfix-debug-{1,2}.log`), where
+  the diagnostic builds without it had failed four runs of twelve and
+  retried a fifth (`rev13/navdiag-{1..12}.log`).
+
+**An observation the verdict judges.**
+`test_directory_expansion_dispatches_fit_the_settle_budget` reported
+dispatches over `B_SETTLE_US` (24.5 and 29.2 ms) on the optimized build
+under `heavy.sh` at load about 8, while other agents' work ran (the route
+audit's run). Its bar is enforced only on that build, which no gate runs, and
+a figure taken under outside load is not a verdict (`parallel-agent-work.md`,
+"Measurements"). Part B's `expand` case measures the expansion on both sides
+in a quiet window and judges it at its bar, with no exception granted in
+advance.
 
 **`INPUT_TO_FRAME_US`, by the part that carries each miss.** The first frame
 after an input comes one refresh interval after the frame painted before it

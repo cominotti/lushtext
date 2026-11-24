@@ -5126,6 +5126,55 @@ fn test_a_background_refresh_keeps_the_inline_rename() {
     drop(tree.window);
 }
 
+/// A background refresh that finds the selection where it left it leaves the
+/// keyboard focus alone: a row the user focused off the selection (Ctrl+arrow
+/// moves the focus without selecting) keeps it. The restore's
+/// `scroll_to(FOCUS)` moved the focus back to the selected row on every
+/// refresh, which `test_replayed_navigation_matches_gtk` met as a flake when
+/// the attention refresh of a window re-activation ran while it typed
+/// (design R13, "The focus a background refresh took").
+#[test]
+fn test_a_background_refresh_keeps_the_focus_off_the_selection() {
+    let (tree, nested) = expanded_nested(64, 0);
+    tree.section.stop_workspace_watch_for_test();
+    selection(&tree.section).set_selected(0);
+    let focused = nested.join(file_name(2));
+    let focused_index = tree_index_for_path(&tree.section, &focused).expect("row index");
+    let row = rendered_row_widget(&tree.section, &file_name(2)).expect("a realized row");
+    assert!(row.grab_focus(), "the row takes the focus");
+    flush_after_delay(Duration::from_millis(50));
+    assert_eq!(
+        window_focused_row(&tree.window, &tree.section),
+        Some(focused_index),
+        "the focus is on the row, off the selection"
+    );
+    let scans_before = tree
+        .section
+        .workspace_section_evidence()
+        .scan_pressure
+        .terminal_publications;
+    tree.section.queue_auto_refresh_for_test(vec![nested]);
+    tree.section.apply_queued_refresh_for_test();
+    wait_until(Duration::from_secs(10), || {
+        let evidence = tree.section.workspace_section_evidence();
+        evidence.scan_pressure.terminal_publications > scans_before
+            && !evidence.refresh_blocks_readiness
+    });
+    // The restore runs from a 1 ms timeout after the scan terminal.
+    flush_after_delay(Duration::from_millis(50));
+    assert_eq!(
+        selection(&tree.section).selected(),
+        0,
+        "the selection stays"
+    );
+    assert_eq!(
+        window_focused_row(&tree.window, &tree.section),
+        Some(focused_index),
+        "the refresh left the focus on the row the user focused"
+    );
+    drop(tree.window);
+}
+
 /// Design R6.2 (finding 2): a mapped list whose frame clock delivers no tick
 /// still completes a sliced collapse through the starvation fallback, which
 /// counts its steps; once ticks resume, no dispatch changes more than one
@@ -7891,9 +7940,17 @@ fn test_a_sliced_collapse_removes_no_path_cache_rows_in_its_steps() {
 /// entry cached, no location restored by the duplicate walk, no full
 /// rebuild and no owner reset, and the retirement, which ends afterwards,
 /// keeps every re-cached entry.
+///
+/// The re-expansion comes at the first dispatch after the retirement has
+/// begun, or 30 ms after the input in a build too slow to begin it by then:
+/// a fixed 30 ms wait let an optimized build finish the retirement first, and
+/// the precondition then failed (`slice-large-directory-collapse` design R13,
+/// "The P2 refill-frame profile read"). A turn retires units of 4,096 rows
+/// while `LIST_TURN_SLICE_US` lasts, so the 131,072 detached rows take
+/// several turns in any build.
 #[test]
 fn test_reexpanding_before_the_cache_retirement_ends_recaches_every_entry() {
-    let count = 1 << 15;
+    let count = 1 << 17;
     let tree = tree_with_siblings(count, 0);
     let nested = tree.root.join("nested");
     expand_and_load(&tree, &nested, count);
@@ -7904,7 +7961,12 @@ fn test_reexpanding_before_the_cache_retirement_ends_recaches_every_entry() {
         &tree.section,
         Duration::from_millis(30),
         Duration::ZERO,
-        || false,
+        || {
+            tree.section
+                .workspace_section_evidence()
+                .cache_detached_rows_retired
+                > before.cache_detached_rows_retired
+        },
     );
     let mid = tree.section.workspace_section_evidence();
     assert_eq!(mid.collapses.len(), 1, "{}", collapse_state(&tree.section));
@@ -8163,6 +8225,17 @@ fn test_collapsing_one_of_two_listed_occurrences_detaches_nothing() {
     });
     flush_after_delay(Duration::from_millis(300));
     let before = section.workspace_section_evidence();
+    // The cache owner (design D24, "As built"): the directory has one, the
+    // store that loaded last, the occurrence under `root/`.
+    assert_eq!(
+        before
+            .directory_listings
+            .iter()
+            .filter(|listing| listing.path == shared && listing.cached_paths == count)
+            .count(),
+        1,
+        "one occurrence owns the shared directory's path cache"
+    );
     section
         .imp()
         .file_tree_view
@@ -8198,6 +8271,11 @@ fn test_collapsing_one_of_two_listed_occurrences_detaches_nothing() {
     // land: a delete through the survivor, twice, finds and removes each row
     // through the store walk behind a cache miss.
     let survivor_cached = cached_paths(&section, &shared);
+    assert_eq!(
+        survivor_cached, 0,
+        "the collapsed occurrence owned the cache and its steps spliced it out, so the \
+         survivor owns none until its next batch"
+    );
     let survivor_store = outer
         .children()
         .and_downcast::<gtk4::gio::ListStore>()
