@@ -5241,7 +5241,10 @@ fn outer_with_inner(inner: usize, files: usize) -> (LargeTree, PathBuf, PathBuf)
 #[test]
 fn test_a_taken_over_directory_ends_collapsed_after_its_ancestor_reexpands() {
     use lushtext_core::ui::sidebar::workspace_section::CollapseEnd;
-    let (tree, outer, inner) = outer_with_inner(16 * 1024 + 1, 100);
+    // `outer/`'s files follow `inner/`'s subtree, so with more than
+    // `PACED_SIBLINGS` of them C3 would collapse `inner/` directly and
+    // nothing would be taken over.
+    let (tree, outer, inner) = outer_with_inner(16 * 1024 + 1, PACED_SIBLINGS);
     let pacing = Pacing::set(CollapsePacing::Hold);
     activate_tree_row(&tree.section, &inner);
     activate_tree_row(&tree.section, &outer);
@@ -8101,9 +8104,12 @@ fn test_collapsing_one_of_two_listed_occurrences_detaches_nothing() {
     save_workspaces(vec![WorkspaceConfig::with_folders(
         WorkspaceId::new("overlap-both"),
         "overlap-both",
+        // `shared/` first: C3 collapses directly a subtree followed by more
+        // than one unit of listed rows, and this test needs the collapse
+        // under `root/` sliced, so `root/` is the last folder.
         vec![
-            WorkspaceFolder::new(root.clone()),
             WorkspaceFolder::new(shared.clone()),
+            WorkspaceFolder::new(root.clone()),
         ],
     )]);
     let (window, sidebar) = present_sidebar_window(800);
@@ -8132,7 +8138,7 @@ fn test_collapsing_one_of_two_listed_occurrences_detaches_nothing() {
         row_at_depth(&root, 0).is_some() && row_at_depth(&shared, 0).is_some()
     });
     wait_for_refresh_idle(&section);
-    // The second folder's occurrence loads first, the one under `root/`
+    // The top-level `shared/` occurrence loads first, the one under `root/`
     // last, so the latter's store owns the directory's cache.
     let outer = row_at_depth(&shared, 0).expect("the shared/ folder row");
     outer.set_expanded(true);
