@@ -176,6 +176,12 @@ when a frame is due, and the frame then lays out only what it changed.
   step: a step inside the frame clock's update phase is a step inside the frame.
 - A per-frame budget read outside a frame keys on the frame counter, which
   between frames equals the counter of the frame just painted.
+- When the first frame after an input must show the input's effect alone
+  (the collapse's rung T1), gate the work on a flag the input sets and the
+  next `after-paint` clears, not on the frame counter: an input GDK delivers
+  in a frame's event flush already carries the counter of the frame that
+  paints it, so a counter charged at the input would hold the work one frame
+  too long.
 - Widget state the work must re-apply after GTK writes it (a `map` that resets
   an accessible state) is re-applied from the same kind of source, armed by the
   event, never from the frame tick.

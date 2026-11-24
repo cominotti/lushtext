@@ -2593,9 +2593,11 @@ cannot unwind. Under `cfg(kani)` the hooks now return the production
 constants, so the proof covers the shipped policy, and the shard passes: 4
 harnesses, 4.41 min, 2.44 GiB peak locally (the record rises to 4.5 min, still
 `PENDING DISPATCH (owed by slice-large-directory-collapse)` until two
-dispatched `kani.yml` runs). The hooks leave with task 10.11; this debt must be
-settled by those two dispatched runs, or moved to an active change, before
-this change is archived.
+dispatched `kani.yml` runs). The hooks left with task 10.11 (2026-11-24):
+`next_collapse_step` reads the constants directly, and the shard's local run
+on that code passed 4 of 4 harnesses with a 2.9 GiB envelope peak. The
+budget debt must still be settled by the two dispatched runs, or moved to an
+active change, before this change is archived.
 
 ### Minimap marker row binning (`bin-minimap-markers-per-row`, 2026-11-07)
 

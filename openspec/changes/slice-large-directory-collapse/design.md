@@ -2607,6 +2607,31 @@ thresholds are pre-registered to the rounds below and to task 10.7.
       while no location is left behind a count of one, so a re-expansion
       that re-cached a path keeps it; a later detach of the same directory
       outlives an earlier retirement.
+    - *The overlap invariant, read (2026-11-24).* "A path that a second
+      overlapping folder still lists is located during the collapse and
+      after it" holds for the first shape only: the other folder's root is a
+      top-level row, located through `folder_paths`, which no child step
+      touches. It does not hold for the second: a directory has one cache
+      owner, the store that loaded last, so when that occurrence collapses
+      its steps splice its paths out (nothing is detached), and the
+      surviving occurrence lists every entry with no cache of its own until
+      its next batch re-caches it from its mirror (the consistency check of
+      `splice_child_rows_cache`). The same holds without D24, and on `main`,
+      by construction. Not changed, for the user's sake: every row operation
+      through the survivor still lands. A delete walks the stores behind a
+      cache miss (`remove_from_model`), and a rename projects through the
+      row it was issued for (`file_item.set_path`), the cache update being
+      a no-op on a miss.
+      `test_collapsing_one_of_two_listed_occurrences_detaches_nothing` now
+      deletes two entries through the survivor after the collapse and
+      asserts that each row leaves its listing and the survivor stays
+      expanded (`impl1/overlap-survivor-2.log`; a first version that also
+      asserted the survivor cached again after a delete failed,
+      `impl1/overlap-survivor-1.log`: the store walk re-caches the listing
+      but does not make the survivor the owner, so the evidence reports no
+      owned cache until its next batch). The cost left is a store walk per
+      operation on an uncached survivor, bounded by the directory's listing,
+      in a case that needs two overlapping folders.
 - **D18's constant, re-chosen under the margin.** `COLLAPSE_DESTROY_ONLY_ROWS`
   candidates are 64, 128 and 256. Task 10.7 takes the largest whose worst
   step fits `B_INTERACT_US` and whose worst frame fits the 12 ms of task 10.4.
@@ -3849,6 +3874,183 @@ bar in these rounds.
   name this; it was decided for the input's budget. Several small
   directories under one folder header would otherwise make a 32-row input
   dispatch, the size of the 32-row steps G1 measured at up to 9.7 ms.
+
+#### The constants round and gate G5 read (task 10.7, 2026-11-24)
+
+The coordinator ran the seven rounds of `MEASURE-QUEUE.md`, "constants round
+and gate G5 on the D24 code", Part A, on `rev9/bin/widget-d24` (3248a99a: D22
+to D25, S2, the held keys and D24) on 2026-11-19 between 12:36 and 16:07.
+Each round was kept under the level-1 drain-first criterion (exit 0, busy CPUs
+below 4 during and after it, `rev/attr2/gate.log`). Logs:
+`rev/attr2/slc-d24-{base,c16384-0,c16384-400,c4096-0,c4096-400,d256,d128}.log`
+(A1 to A7; refused tries `*.try<N>.log` are not read). Reader
+`impl1/partA/read_partA.py`, output `impl1/partA/partA-output.txt`, both in
+the handoff. Every rule below was pre-registered in that entry and is applied
+to every repetition of every case. A "step" is a whole step-source dispatch of
+kind Bound with at most `COLLAPSE_STEP_ROWS` rows, Descendant or Terminal; a
+Bound dispatch of more rows is a destroy-only unit, G4's; Chunk and Between
+are G2's.
+
+**The contamination rule** (the coordinator's note of 16:15, recorded before
+the figures were read). A GDK attribution agent ran headless sessions outside
+`heavy.sh` while A5, A6 and A7 ran. A margin met there stands; a margin missed
+there makes the round contaminated, and it is repeated once in the same
+position before it decides anything. A5, A6 and A7 each missed a margin, so
+all three are queued again (`MEASURE-QUEUE.md`, "Part A repeats (A5-A7,
+contamination rule) and two attributions on the D24 binary", rounds R5, R6
+and R7, READY 3248a99a).
+
+**Task 10.7's margins, A1 (chunk 8,192, destroy-only 64, steps of 8; 30
+sliced-collapse repetitions and 3 of the header):**
+- *Worst frame:* at most 9.3 ms (400:4,096; the 0:* cases at most 1.7 ms, the
+  header 2.6 ms). Every repetition meets 12 ms.
+- *Steps:* at most 5.9 ms (400:256), the header's terminal 4.0 ms. Every
+  repetition meets 6 ms.
+- *Chunk and Between turns:* at most 4.9 ms. Every repetition meets 6 ms.
+- *Destroy-only unit (64):* 0:64's one 56-row dispatch reaches 7.6 ms (one of
+  three repetitions), as G1c recorded (4.9–7.8 ms). Over the 6 ms margin and
+  under `B_INTERACT_US`; no rung below 64 exists in G4's ladder, so it is
+  recorded under C1.
+- *Input dispatch:* **missed in 9 of 30 repetitions**, 6.5–8.1 ms, one of them
+  (400:256, 8,070 µs) over `B_INTERACT_US`; the header's inputs are 4.3–5.9 ms.
+  The distribution is bimodal and does not grow with the subtree: the median
+  is 2.6 ms, the slow mode about 7.2 ms at 0:256 as at 400:131,072. G1c's
+  binary (no D22 hiding, no D24 detach at intent) measured the same inputs at
+  0.1–0.6 ms, so the floor of about 2 ms and the slow mode both came with
+  tasks 10.13 to 10.15. G3's rung (hide the rows outside the viewport in the
+  first step-source dispatch) is pre-registered for an input over 6 ms, but
+  it moves only the hiding, which A123's probe timed at 0.3 ms for the band;
+  it is not applied unseen. Round P1 of the queued entry profiles the slow
+  mode (0:256 and 400:256, 10 repetitions each); a LushText cost it names is
+  cut under a failing-first test, and G3's rung is applied only if it names
+  the hiding. **This is the final campaign's hard-bar risk**: D2's pass bar
+  holds the input to `B_INTERACT_US` in every round, and A1 already has one
+  repetition over it.
+- *Completion against bar − M:* **missed at 400:4,096** (124.6–136.0 ms
+  against 120.6 ms) **and at 400:16,385** (123.1–132.7 ms against 122.6 ms) in
+  every repetition; every other case passes (0:131,072 107.3–108.7 against
+  140.6 ms; 400:131,072 151.7–156.4 against 197.9 ms; 400:256 118.2–132.1
+  against 137.6 ms; the header 73.6–75.3 against 131.6 ms). The bars
+  themselves are 137.3 and 139.3 ms: 400:4,096's worst repetition is 1.3 ms
+  under its hard bar. A3 and A5, which run 400:16,385 alone, measured 113.2 to
+  121.1 ms, so A1's full case order (the order R13 judges in) costs that case
+  about a frame. No rung is registered for a completion miss other than a
+  lost first frame (G2's), so both are recorded under C1 and the final
+  campaign judges them at the bars.
+- *Picture final:* `picture_final_us` equals `shown_us` within 0.1 ms in
+  every repetition, so it meets each case's completion bar wherever
+  completion does, and no 0:N repetition's picture is final in the first
+  frame dispatch, which is 10.16's open decision below.
+
+**G2: `COLLAPSE_UNBOUND_CHUNK_ROWS` stays 8,192.** 16,384 misses in a clean
+round: A2's between-frames turn at 0:131,072 is 6,589 and 6,082 µs in two of
+three repetitions. 8,192 passes both of its cases in A1 (Chunk and Between at
+most 4,802 µs at 0:131,072, none over 4 ms at 400:16,385). 4,096 is not
+needed, so A4 and A5 decide nothing; A5's contamination therefore holds
+nothing up, and its repeat (R5) is read as data on the input only. D23 holds:
+8,192 rows cover 400:4,096's unbound rows.
+
+**G5 (D24): passes.** On the D24 binary the Chunk and Between kinds of
+0:131,072 and 400:16,385 meet G2's 6 ms at 8,192 (above), so the path-cache
+splice that kept them at 9.2–10.7 ms in G1's rounds has left the chunk, as
+D24 intended. D24's invariants hold with their tests (task 10.15).
+
+**G4: not decided.** A6 (destroy-only 256: 187-row dispatches of 7.3–8.9 ms)
+and A7 (128: 6.0–6.8 ms in five of nine repetitions) both miss, and both ran
+in the contaminated window, so neither decides until its repeat (R6, R7) has
+run. `COLLAPSE_DESTROY_ONLY_ROWS` stays 64 meanwhile, the value G1's round
+left and the value the ladder falls back to. G1's clean rounds missed at both
+too (128 at 6.0–6.9 ms, 256 at 5.4–7.5 ms), so 64 is the expected result.
+
+**Rung T1 applies.** `input_to_frame_us` is over `INPUT_TO_FRAME_US`
+(16,666 µs) in 22 of 30 sliced-collapse repetitions and in all three of the
+header (18.0–31.4 ms where it misses). The reading was registered as "a miss
+applies T1", and T1 is built as R13 states it (below). Recorded beside it,
+because it bounds what T1 can buy: the instrument is measured against a 60 Hz
+headless compositor, and `expand-cold`, which runs no collapse code at all,
+misses it in 12 of 18 repetitions (18.1–28.6 ms). The first frame after an
+input waits for the next vblank, up to 16.7 ms, and its own layout comes on
+top. T1 removes the step and its rows' layout from that first frame; the
+vblank phase stays. Task 7.1 enforces `INPUT_TO_FRAME_US` on both sides of
+the final campaign, so `main` is read against the same floor.
+
+**Task 1.4 (D12's attribution): not confirmed.** In A1's three 0:131,072
+collapses, the one dispatch over `B_SETTLE_US` (30.2–40.7 ms, 611–628 ms
+after the input) is tagged `unshown` in every repetition, as D12 predicts.
+The re-expansion case is not: its first repetition has a **67.1 ms frame**
+(layout 66.5 ms), 311 ms after the re-expanding input, untagged, with two
+other dispatches of 15.0 and 12.6 ms before it and the picture final at
+378 ms; the other two repetitions have frames of at most 1.4 ms and the
+picture final at 1.4 ms. The slow repetition is the one whose collapse had
+removed every unbound row before the re-expansion (its fifth between-frames
+turn took the last 24,373 rows; the others' took 16,384 and left rows). By
+the pre-registered rule it is attributed before task 7.2: round P2 profiles
+the re-expansion at 8 repetitions, and task 1.4 stays open until it is read.
+
+**Task 10.16's open decision: the completion bar applies to every verdict
+case.** R11's first-frame bar applies "where no row followed the subtree in
+the flattened list and the directory row was on screen at the input". The
+verdict fixture's 0:N trees hold `top.txt` after the subtree, so a row
+follows it in every 0:N case, and their picture changes when the terminal
+collapse moves that row up. So no verdict case meets the first-frame bar's
+condition, and none exercises it; the timing verdict enforces the completion
+bar, which every case meets where its completion does. The first-frame
+picture itself is not a timing question: D22's widget tests prove it by
+counter (`test_collapse_hides_the_subtree_rows_in_the_first_frame`: every
+realized subtree row hidden after the input dispatch, before the first
+frame). Decided for the user: a timing case for the first-frame bar would
+need a fixture with nothing after the subtree, a third campaign case on both
+sides, and it would measure what those tests already prove.
+
+**What follows (task 10.7 as read).**
+- The constants: `COLLAPSE_STEP_ROWS` 8 (G1c, unchanged), `DIRECT_COLLAPSE_ROWS`
+  8, `SIDEBAR_REALIZED_ROWS_PER_FRAME` 32, `COLLAPSE_UNBOUND_CHUNK_ROWS` 8,192
+  (G2), `COLLAPSE_DESTROY_ONLY_ROWS` 64 until R6 and R7 are read (G4). Their
+  rustdoc and `docs/thresholds.md` rows carry these figures, and the hooks
+  are gone (task 10.11; `rev3/attribution-hooks.patch` re-applies them).
+- The misses recorded under C1, for the final campaign and BL's follow-ups:
+  the input dispatch (pending P1), the completions at 400:4,096 and
+  400:16,385, the 56-row destroy-only dispatch at 0:64, and the folder-header
+  input. None returns the change to design.
+- Part B (task 7.2) is not READY: it waits on R6 and R7 (G4), P1 (the input's
+  slow mode, which may cut code) and P2 (task 1.4's frame).
+
+#### Rung T1 as built (task 10.7's reading, 2026-11-24)
+
+- *Mechanism.* An input that starts a sliced collapse sets
+  `first_paint_pending`; the section's `after-paint` handler clears it before
+  it arms the step source. While it is set, the step source's interval has no
+  bound rows (`interval_rows_left_for` answers 0 and the re-arm reads the
+  same), so the step source the input armed takes D23's chunk only, and the
+  first bound unit runs in the step-source dispatch the first `after-paint`
+  arms. The between-frames idle takes no bound step anyway; the fallback
+  ignores the flag, because an unmapped or starved list paints no frame to
+  clear it. `stop_collapse_sources` clears it with the other per-run state.
+- *Why a flag and not the interval token.* Charging the whole interval to the
+  frame counter at the input would wait one frame too many for an input that
+  GDK delivers inside a frame's event flush: the counter is then the
+  counter of the frame that paints the intent, and that frame's `after-paint`
+  would still read a spent interval.
+- *A second input* that starts another sliced collapse while one is pending
+  sets the flag again, so the running collapse's next unit waits for that
+  input's first frame too: one frame, so that frame shows the new intent
+  alone.
+- *Test, failing-first.* `test_bound_units_run_outside_the_frame` now asserts
+  that before the first frame after the input only D23's chunk ran, no bound
+  unit, and that bound units run from the first frame's `after-paint` on. With
+  the flag never set it fails (`[Chunk, Bound, Bound, Bound, Bound]` before the
+  first frame, `impl1/t1-failing-first.log`); with T1 it passes, and so do the
+  first-frame, step-source, D23 and frame-handler tests
+  (`impl1/t1-green.log`).
+- *The lost frame, re-read against bar − M.* T1 moves the first interval's
+  bound rows one frame later, so a case's completion grows by up to one
+  frame. Read on A1's figures plus 16.7 ms: 400:64, 400:256, 400:131,072,
+  every 0:N case and the header stay under bar − M; 400:4,096 and 400:16,385,
+  already over it, go further (to about 141–153 ms against hard bars of 137.3
+  and 139.3 ms). By T1's rule they go to C1: the final campaign reads them at
+  the bars, and if they miss there C3 applies to the rows-after class as R13
+  wrote it. This is a prediction from A1's figures, not a measurement; the
+  final campaign measures it.
 
 ### R14. Review of R13 (2026-11-18)
 
