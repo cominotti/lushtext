@@ -597,6 +597,12 @@ pub struct WorkspaceSectionEvidence {
     pub collapse_steps_total: u64,
     /// Collapses GTK's direct call made whole.
     pub collapse_direct_total: u64,
+    /// Of those, the collapses design R13's C3 routed there: more than one
+    /// unit of rows would enter the band from after the subtree ("C3 as
+    /// built").
+    pub collapse_rows_after_direct_total: u64,
+    /// The latest collapse input's collapses routed by C3.
+    pub collapse_last_input_rows_after_direct: u32,
     /// Steps the low-priority fallback ran for a mapped list whose frame
     /// clock starved, or for an unmapped list.
     pub collapse_starved_steps_total: u64,
@@ -617,6 +623,8 @@ pub struct WorkspaceSectionEvidence {
     pub collapse_after_paint_connected: bool,
     /// `after-paint` emissions that handler ran, ever.
     pub collapse_after_paint_runs: u64,
+    /// Whether the collapse's between-frames idle is armed.
+    pub collapse_between_armed: bool,
     /// Row widgets the section's factory created, ever.
     pub row_setups: u64,
     /// Row widgets of collapsing subtrees hidden now (design D22).
@@ -711,6 +719,8 @@ impl LushtextWorkspaceSection {
             last_end: last_collapse_end,
             steps_total: collapse_steps_total,
             direct_total: collapse_direct_total,
+            rows_after_direct_total: collapse_rows_after_direct_total,
+            last_input_rows_after_direct: collapse_last_input_rows_after_direct,
             starved_steps_total: collapse_starved_steps_total,
             between_steps_total: collapse_between_steps_total,
             step_us_max: collapse_step_us_max,
@@ -718,6 +728,7 @@ impl LushtextWorkspaceSection {
             step_dispatches: collapse_step_dispatches,
             after_paint_connected: collapse_after_paint_connected,
             after_paint_runs: collapse_after_paint_runs,
+            between_armed: collapse_between_armed,
             row_setups,
             hidden_rows: collapse_hidden_rows,
             hidden_syncs: collapse_hidden_syncs,
@@ -784,6 +795,8 @@ impl LushtextWorkspaceSection {
             last_collapse_end,
             collapse_steps_total,
             collapse_direct_total,
+            collapse_rows_after_direct_total,
+            collapse_last_input_rows_after_direct,
             collapse_starved_steps_total,
             collapse_between_steps_total,
             collapse_step_us_max,
@@ -791,6 +804,7 @@ impl LushtextWorkspaceSection {
             collapse_step_dispatches,
             collapse_after_paint_connected,
             collapse_after_paint_runs,
+            collapse_between_armed,
             row_setups,
             collapse_hidden_rows,
             collapse_hidden_syncs,

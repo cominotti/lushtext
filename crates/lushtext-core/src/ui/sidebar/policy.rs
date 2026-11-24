@@ -1332,6 +1332,145 @@ pub const fn collapse_removal_is_destroy_only(facts: &CollapseFacts<'_>) -> bool
     facts.rows_after == 0 && facts.rows_before <= SIDEBAR_REALIZED_ROWS_PER_FRAME
 }
 
+/// One subtree a collapse input collapses, read in the flattened list at
+/// intent, before any row of the input is removed: the directory row's
+/// position and the rows listed under it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CollapsingSubtree {
+    /// The directory row's flattened position.
+    pub position: u32,
+    /// The rows listed under the directory, its expanded descendants'
+    /// included.
+    pub span: u32,
+}
+
+/// How a directory whose subtree outgrows the direct collapse
+/// ([`DIRECT_COLLAPSE_ROWS`]) is collapsed: design R13's closing rule, as the
+/// T1 round decided it ("C3 as built").
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CollapseRoute {
+    /// No more than [`SIDEBAR_REALIZED_ROWS_PER_FRAME`] rows enter the band:
+    /// the owned, paced collapse.
+    Paced,
+    /// More rows than that enter the band (the "rows after it" class, and
+    /// the tail collapse whose clamped view refills from above): GTK's direct
+    /// `set_expanded(false)` in the input dispatch, `main`'s collapse. The
+    /// T1 round's 400:16,385 case missed R3's completion bar on the paced
+    /// route, and C3 keeps `main`'s collapse for the whole class, at every
+    /// size.
+    Direct,
+}
+
+/// The rows of `range` listed under any of `subtrees` (their directory rows
+/// excluded), overlaps counted once.
+fn rows_under_subtrees(range: core::ops::Range<u32>, subtrees: &[CollapsingSubtree]) -> u32 {
+    let mut under: Vec<(u32, u32)> = subtrees
+        .iter()
+        .map(|subtree| {
+            let first = subtree.position.saturating_add(1);
+            let end = first.saturating_add(subtree.span);
+            (first.max(range.start), end.min(range.end))
+        })
+        .filter(|(first, end)| first < end)
+        .collect();
+    under.sort_unstable();
+    let mut covered = 0u32;
+    let mut reach = range.start;
+    for (first, end) in under {
+        let first = first.max(reach);
+        if end > first {
+            covered = covered.saturating_add(end - first);
+            reach = end;
+        }
+    }
+    covered
+}
+
+/// The rows a collapse of `subtree` brings into the realized band from after
+/// it: the rows listed after both the subtree's last row and the band's last
+/// realized row (`last_realized`; `None` when no row is realized), less the
+/// rows under `others`, the other subtrees the same input collapses (their
+/// directory rows stay listed). `listed` is the flattened list's length at
+/// intent. Rows already realized move but are not created, so they do not
+/// count (design R13's classes: "no row after the band at intent, or rows
+/// after it").
+#[must_use]
+pub fn rows_after_collapse(
+    listed: u32,
+    subtree: CollapsingSubtree,
+    last_realized: Option<u32>,
+    others: &[CollapsingSubtree],
+) -> u32 {
+    let subtree_last = subtree.position.saturating_add(subtree.span);
+    let band_last = last_realized.unwrap_or(0);
+    let first_after = subtree_last.max(band_last).saturating_add(1);
+    if first_after >= listed {
+        return 0;
+    }
+    (listed - first_after).saturating_sub(rows_under_subtrees(first_after..listed, others))
+}
+
+/// The rows a collapse brings into the band from before it when the view,
+/// clamped at its end, refills from above (design D18's clamp, the tail
+/// collapse): if fewer rows than the band holds stay listed from the band's
+/// first row on once every subtree of the input (`subtree` and `others`) is
+/// gone, the band takes the missing rows from those listed before it,
+/// outside the subtrees. `band` is the first and last realized row, `None`
+/// when no row is realized.
+#[must_use]
+pub fn rows_clamped_in_by_collapse(
+    listed: u32,
+    subtree: CollapsingSubtree,
+    band: Option<(u32, u32)>,
+    others: &[CollapsingSubtree],
+) -> u32 {
+    let Some((first, last)) = band else {
+        return 0;
+    };
+    if first >= listed || last < first {
+        return 0;
+    }
+    let mut every = Vec::with_capacity(others.len() + 1);
+    every.push(subtree);
+    every.extend_from_slice(others);
+    let band_rows = last - first + 1;
+    let staying = (listed - first).saturating_sub(rows_under_subtrees(first..listed, &every));
+    if staying >= band_rows {
+        return 0;
+    }
+    let before = first.saturating_sub(rows_under_subtrees(0..first, &every));
+    before.min(band_rows - staying)
+}
+
+/// The rows a collapse brings into the realized band, after it and, under
+/// the view's clamp, before it ([`rows_after_collapse`],
+/// [`rows_clamped_in_by_collapse`]): what [`collapse_route`] decides on.
+#[must_use]
+pub fn rows_brought_in_by_collapse(
+    listed: u32,
+    subtree: CollapsingSubtree,
+    band: Option<(u32, u32)>,
+    others: &[CollapsingSubtree],
+) -> u32 {
+    rows_after_collapse(listed, subtree, band.map(|(_, last)| last), others)
+        .saturating_add(rows_clamped_in_by_collapse(listed, subtree, band, others))
+}
+
+/// The route of a collapse that brings `rows_in` rows into the band
+/// ([`rows_brought_in_by_collapse`]): beyond one per-frame unit
+/// ([`SIDEBAR_REALIZED_ROWS_PER_FRAME`], the tolerance D18 gives a
+/// destroy-only removal's view clamp), the band's refill is the paced
+/// collapse's slow part (one unit an interval), and the collapse takes
+/// [`CollapseRoute::Direct`].
+#[must_use]
+pub const fn collapse_route(rows_in: u32) -> CollapseRoute {
+    if rows_in > SIDEBAR_REALIZED_ROWS_PER_FRAME {
+        CollapseRoute::Direct
+    } else {
+        CollapseRoute::Paced
+    }
+}
+
 /// The next removal of a collapse (design D4, D9):
 ///
 /// 1. the directory's whole remaining subtree is at most
@@ -1553,9 +1692,188 @@ mod collapse_tests {
     use proptest::prelude::*;
 
     use super::{
-        COLLAPSE_UNBOUND_CHUNK_ROWS, CollapseFacts, CollapseStep, CollapseStore,
-        DIRECT_COLLAPSE_ROWS, SIDEBAR_REALIZED_ROWS_PER_FRAME, collapse_band, next_collapse_step,
+        COLLAPSE_UNBOUND_CHUNK_ROWS, CollapseFacts, CollapseRoute, CollapseStep, CollapseStore,
+        CollapsingSubtree, DIRECT_COLLAPSE_ROWS, SIDEBAR_REALIZED_ROWS_PER_FRAME, collapse_band,
+        collapse_route, next_collapse_step, rows_after_collapse, rows_brought_in_by_collapse,
+        rows_clamped_in_by_collapse,
     };
+
+    const fn subtree(position: u32, span: u32) -> CollapsingSubtree {
+        CollapsingSubtree { position, span }
+    }
+
+    /// The T1 round's fixtures (design R13, "C3 as built"): a workspace folder
+    /// at row 0, `nested/` at row 1 with `entries` rows, `top.txt`, then
+    /// `siblings` files; the band realizes rows 0..=202.
+    fn fixture_route(entries: u32, siblings: u32) -> CollapseRoute {
+        let listed = 1 + 1 + entries + 1 + siblings;
+        let last_realized = Some((listed - 1).min(202));
+        collapse_route(rows_brought_in_by_collapse(
+            listed,
+            subtree(1, entries),
+            last_realized.map(|last| (0, last)),
+            &[],
+        ))
+    }
+
+    #[test]
+    fn the_rows_after_class_takes_the_direct_route_at_every_size() {
+        for entries in [64, 256, 4096, 16 * 1024 + 1, 128 * 1024] {
+            assert_eq!(
+                fixture_route(entries, 400),
+                CollapseRoute::Direct,
+                "400:{entries}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_collapse_with_nothing_after_the_band_stays_paced() {
+        for entries in [64, 256, 4096, 16 * 1024 + 1, 128 * 1024] {
+            assert_eq!(
+                fixture_route(entries, 0),
+                CollapseRoute::Paced,
+                "0:{entries}"
+            );
+        }
+    }
+
+    #[test]
+    fn rows_already_realized_after_the_subtree_do_not_count() {
+        // 64 rows of subtree, then 100 siblings, all inside the band.
+        assert_eq!(rows_after_collapse(167, subtree(1, 64), Some(166), &[]), 0);
+        // Ten of them beyond the band.
+        assert_eq!(rows_after_collapse(167, subtree(1, 64), Some(156), &[]), 10);
+        // Nothing realized: every row after the subtree enters.
+        assert_eq!(rows_after_collapse(167, subtree(1, 64), None, &[]), 101);
+    }
+
+    #[test]
+    fn rows_of_the_other_subtrees_of_the_same_input_do_not_count() {
+        // The folder header's fixture: two roots of 4,096 rows, both
+        // collapsing in one input.
+        let first = subtree(0, 4096);
+        let second = subtree(4097, 4096);
+        let listed = 2 + 2 * 4096;
+        assert_eq!(rows_after_collapse(listed, first, Some(202), &[second]), 1);
+        assert_eq!(rows_after_collapse(listed, second, Some(202), &[first]), 0);
+        assert_eq!(
+            collapse_route(rows_after_collapse(listed, first, Some(202), &[second])),
+            CollapseRoute::Paced
+        );
+        // Overlapping others count once.
+        assert_eq!(
+            rows_after_collapse(listed, first, Some(202), &[second, subtree(4100, 10)]),
+            1
+        );
+    }
+
+    #[test]
+    fn a_tail_collapse_whose_view_refills_from_above_takes_the_direct_route() {
+        // Test 5654's fixture: the root, `a-before/` with 400 rows, `nested/`
+        // with 4,096 rows, `top.txt`; the view at the tail realizes the last
+        // 203 rows, inside `nested/`.
+        let nested = subtree(402, 4096);
+        let listed = 402 + 1 + 4096 + 1;
+        let band = Some((listed - 203, listed - 1));
+        assert_eq!(
+            rows_after_collapse(listed, nested, band.map(|b| b.1), &[]),
+            0
+        );
+        assert_eq!(rows_clamped_in_by_collapse(listed, nested, band, &[]), 202);
+        assert_eq!(
+            collapse_route(rows_brought_in_by_collapse(listed, nested, band, &[])),
+            CollapseRoute::Direct
+        );
+        // At the top, nothing is clamped in.
+        assert_eq!(
+            rows_clamped_in_by_collapse(listed, nested, Some((0, 202)), &[]),
+            0
+        );
+        // With few rows before it, the clamp brings in at most those.
+        let short = subtree(2, 4096);
+        let listed = 2 + 1 + 4096 + 1;
+        let band = Some((listed - 203, listed - 1));
+        assert_eq!(rows_clamped_in_by_collapse(listed, short, band, &[]), 3);
+        assert_eq!(
+            collapse_route(rows_brought_in_by_collapse(listed, short, band, &[])),
+            CollapseRoute::Paced
+        );
+    }
+
+    #[test]
+    fn the_route_turns_direct_past_one_unit() {
+        assert_eq!(collapse_route(0), CollapseRoute::Paced);
+        assert_eq!(
+            collapse_route(SIDEBAR_REALIZED_ROWS_PER_FRAME),
+            CollapseRoute::Paced
+        );
+        assert_eq!(
+            collapse_route(SIDEBAR_REALIZED_ROWS_PER_FRAME + 1),
+            CollapseRoute::Direct
+        );
+    }
+
+    proptest! {
+        /// `rows_clamped_in_by_collapse` equals a row-by-row model of the
+        /// clamp.
+        #[test]
+        fn rows_clamped_in_matches_a_row_by_row_model(
+            listed in 1u32..400,
+            position in 0u32..400,
+            span in 0u32..200,
+            band in (0u32..400, 0u32..250),
+            others in proptest::collection::vec((0u32..400, 0u32..200), 0..3),
+        ) {
+            let (first, last) = (band.0, band.0 + band.1);
+            let band = Some((first, last));
+            let mut every: Vec<CollapsingSubtree> =
+                others.into_iter().map(|(p, s)| subtree(p, s)).collect();
+            let this = subtree(position, span);
+            let clamped = rows_clamped_in_by_collapse(listed, this, band, &every);
+            every.push(this);
+            let under = |row: u32| {
+                every
+                    .iter()
+                    .any(|other| row > other.position && row <= other.position + other.span)
+            };
+            let expected = if first >= listed {
+                0
+            } else {
+                let band_rows = (last - first + 1) as usize;
+                let staying = (first..listed).filter(|row| !under(*row)).count();
+                let before = (0..first).filter(|row| !under(*row)).count();
+                if staying >= band_rows { 0 } else { before.min(band_rows - staying) }
+            };
+            prop_assert_eq!(clamped as usize, expected);
+        }
+
+        /// `rows_after_collapse` equals a row-by-row count over the
+        /// flattened list.
+        #[test]
+        fn rows_after_collapse_matches_a_row_by_row_count(
+            listed in 0u32..400,
+            position in 0u32..400,
+            span in 0u32..200,
+            last in proptest::option::of(0u32..400),
+            others in proptest::collection::vec((0u32..400, 0u32..200), 0..4),
+        ) {
+            let others: Vec<CollapsingSubtree> =
+                others.into_iter().map(|(p, s)| subtree(p, s)).collect();
+            let counted = (0..listed)
+                .filter(|row| *row > position + span && last.is_none_or(|last| *row > last))
+                .filter(|row| {
+                    !others
+                        .iter()
+                        .any(|other| *row > other.position && *row <= other.position + other.span)
+                })
+                .count();
+            prop_assert_eq!(
+                rows_after_collapse(listed, subtree(position, span), last, &others) as usize,
+                counted
+            );
+        }
+    }
 
     /// A directory at flattened position 10 whose own store lists `length`
     /// rows and nothing expanded under it.

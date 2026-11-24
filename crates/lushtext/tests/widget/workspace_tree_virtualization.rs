@@ -2842,6 +2842,15 @@ fn row_widgets_changed_per_dispatch(
 
 /// A presented tree whose `nested/` (with `count` entries, `siblings` files
 /// after it) is expanded and fully listed.
+/// The most files after `nested/` for which [`expanded_nested`]'s collapse
+/// is still paced: design R13's C3 sends a collapse that brings more than one
+/// unit (`SIDEBAR_REALIZED_ROWS_PER_FRAME`) of rows into the band from after
+/// its subtree through `main`'s direct collapse ("C3 as built"), and
+/// `seed_workspace`'s `top.txt` is one of the rows after it. The paced
+/// mechanism's tests with rows after the subtree use this many.
+const PACED_SIBLINGS: usize =
+    lushtext_core::ui::sidebar::policy::SIDEBAR_REALIZED_ROWS_PER_FRAME as usize - 1;
+
 fn expanded_nested(count: usize, siblings: usize) -> (LargeTree, PathBuf) {
     let (dir, root) = seed_workspace(&[("nested", count)]);
     for index in 0..siblings {
@@ -2853,6 +2862,80 @@ fn expanded_nested(count: usize, siblings: usize) -> (LargeTree, PathBuf) {
     expand_and_load(&tree, &nested, count);
     flush_after_delay(Duration::from_millis(300));
     (tree, nested)
+}
+
+/// Design R13's C3 ("C3 as built"): a collapse that brings more than one
+/// unit of rows into the band from after its subtree keeps `main`'s direct
+/// collapse, at every size, and one with at most a unit after it stays
+/// paced. Fails with the paced collapse for every class: the 400-row
+/// collapses stay GTK-expanded after the input and run steps.
+#[test]
+fn test_a_collapse_with_rows_after_it_takes_the_direct_collapse() {
+    for (count, siblings, direct) in [
+        (64usize, 400usize, true),
+        (4096, 400, true),
+        (4096, PACED_SIBLINGS + 1, true),
+        (4096, PACED_SIBLINGS, false),
+        (4096, 0, false),
+    ] {
+        let (tree, nested) = expanded_nested(count, siblings);
+        let before = tree.section.workspace_section_evidence();
+        activate_row(&tree.section, &nested);
+        let after_input = tree.section.workspace_section_evidence();
+        let row = row_for_path(&tree.section, &nested).expect("the directory row");
+        let label = format!("{siblings}:{count}");
+        if direct {
+            assert!(
+                !row.is_expanded(),
+                "{label}: collapsed in the input dispatch"
+            );
+            assert!(
+                after_input.collapses.is_empty(),
+                "{label}: no paced collapse"
+            );
+            assert_eq!(
+                after_input.collapse_last_input_rows_after_direct, 1,
+                "{label}"
+            );
+            assert_eq!(
+                after_input.collapse_rows_after_direct_total,
+                before.collapse_rows_after_direct_total + 1,
+                "{label}"
+            );
+            assert_eq!(
+                after_input.collapse_direct_total,
+                before.collapse_direct_total + 1,
+                "{label}"
+            );
+        } else {
+            assert!(row.is_expanded(), "{label}: still GTK-expanded, collapsing");
+            assert_eq!(
+                after_input.collapses.len(),
+                1,
+                "{label}: one paced collapse"
+            );
+            assert_eq!(
+                after_input.collapse_last_input_rows_after_direct, 0,
+                "{label}"
+            );
+        }
+        wait_until(Duration::from_secs(60), || {
+            collapsed_and_settled(&tree.section, &nested)
+        });
+        let settled = tree.section.workspace_section_evidence();
+        if direct {
+            assert_eq!(
+                settled.collapse_steps_total, before.collapse_steps_total,
+                "{label}"
+            );
+        } else {
+            assert!(
+                settled.collapse_steps_total > before.collapse_steps_total,
+                "{label}"
+            );
+        }
+        drop(tree.window);
+    }
 }
 
 /// Dispatch one main-loop source at a time until `done` holds, for a test
@@ -2900,7 +2983,7 @@ use lushtext_core::ui::sidebar::CollapsePacingForTest as CollapsePacing;
 /// once the directory is collapsed. Fails on `main`: no class exists.
 #[test]
 fn test_collapse_shows_in_the_first_frame() {
-    let (tree, nested) = expanded_nested(4096, 400);
+    let (tree, nested) = expanded_nested(4096, PACED_SIBLINGS);
     let store = shown_store(&tree, &nested);
     let expander = expander_for(&tree.section, &nested).expect("the row is realized");
     assert!(
@@ -3060,7 +3143,7 @@ fn collapse_rows_per_frame_phase(tree: &LargeTree, nested: &Path) -> Vec<FramePh
 /// the step source the input armed.
 #[test]
 fn test_bound_units_run_outside_the_frame() {
-    let (tree, nested) = expanded_nested(4096, 400);
+    let (tree, nested) = expanded_nested(4096, PACED_SIBLINGS);
     let events = collapse_rows_per_frame_phase(&tree, &nested);
     let inside: Vec<_> = events
         .windows(2)
@@ -3104,21 +3187,27 @@ fn test_bound_units_run_outside_the_frame() {
             .any(|dispatch| dispatch.kind == Kind::Bound && dispatch.frame_counter >= first_frame),
         "the bound units run from the first frame's `after-paint` on: {dispatches:?}"
     );
-    // At most one unit of bound rows per frame interval (no removal here is
-    // destroy-only: 400 rows follow the subtree).
+    // At most one unit of bound rows per frame interval, or one destroy-only
+    // unit in an interval whose removals created no row widget (design D18:
+    // once the 32 rows after the subtree are all in the band, nothing is
+    // listed after it).
     let unit = lushtext_core::ui::sidebar::policy::SIDEBAR_REALIZED_ROWS_PER_FRAME;
-    let mut per_interval = std::collections::BTreeMap::<i64, (u32, u32)>::new();
+    let destroy_only = lushtext_core::ui::sidebar::policy::COLLAPSE_DESTROY_ONLY_ROWS;
+    let mut per_interval = std::collections::BTreeMap::<i64, (u32, u32, u32)>::new();
     for dispatch in &dispatches {
         let entry = per_interval.entry(dispatch.frame_counter).or_default();
         match dispatch.kind {
-            Kind::Bound | Kind::Descendant | Kind::Terminal => entry.0 += dispatch.rows,
+            Kind::Bound | Kind::Descendant | Kind::Terminal => {
+                entry.0 += dispatch.rows;
+                entry.2 += dispatch.rows_created;
+            }
             Kind::Idle => entry.1 += 1,
             Kind::Chunk | Kind::Between => {}
         }
     }
     let over: Vec<_> = per_interval
         .iter()
-        .filter(|(_, (rows, _))| *rows > unit)
+        .filter(|(_, (rows, _, created))| *rows > if *created == 0 { destroy_only } else { unit })
         .collect();
     assert!(
         over.is_empty(),
@@ -3129,7 +3218,7 @@ fn test_bound_units_run_outside_the_frame() {
     // not re-arm each other while the interval is spent).
     let idling: Vec<_> = per_interval
         .iter()
-        .filter(|(_, (_, idle))| *idle > 2)
+        .filter(|(_, (_, idle, _))| *idle > 2)
         .collect();
     assert!(
         idling.is_empty(),
@@ -3215,8 +3304,19 @@ fn test_a_large_collapse_takes_one_chunk_then_the_between_frames_idle() {
 /// phase, after its `before-paint`.
 #[test]
 fn test_the_step_source_runs_before_the_next_frame() {
-    let (tree, nested) = expanded_nested(4096, 400);
+    let (tree, nested) = expanded_nested(4096, PACED_SIBLINGS);
+    let steps = tree
+        .section
+        .workspace_section_evidence()
+        .collapse_steps_total;
     let events = collapse_rows_per_frame_phase(&tree, &nested);
+    assert!(
+        tree.section
+            .workspace_section_evidence()
+            .collapse_steps_total
+            > steps,
+        "the collapse was paced"
+    );
     let stalled: Vec<_> = events
         .windows(2)
         .filter(|pair| pair[0].0 == 'A' && pair[1].0 == 'B' && pair[0].2 > 0)
@@ -3243,7 +3343,7 @@ fn test_the_step_source_runs_before_the_next_frame() {
 /// ends, and no frame runs it after.
 #[test]
 fn test_the_step_source_leaves_no_frame_handler() {
-    let (tree, nested) = expanded_nested(4096, 400);
+    let (tree, nested) = expanded_nested(4096, PACED_SIBLINGS);
     assert!(
         !tree
             .section
@@ -3458,12 +3558,93 @@ fn test_unbound_rows_leave_between_frames() {
     drop(tree.window);
 }
 
-/// Design D2/D4: with 400 rows after a 256-entry directory, no dispatch of
-/// the collapse makes GTK create more than one unit of row widgets. Fails on
-/// `main`: the one collapse call replaces about 207.
+/// Rung T1's hold on unbound turns (design R13, "Attributions of the T1
+/// round"): no between-frames turn runs before the first frame after the
+/// input, so a turn in flight cannot delay that frame past its frame
+/// callback. D23's one chunk still runs in the step source before it, and
+/// the first bound unit still runs in the first interval after that frame
+/// (the hold costs the unbound rows an interval, not the bound ones). Fails
+/// when the between-frames idle starts at the input: the T1 round's
+/// 0:131,072 collapses ran three or four turns before their first frame.
+/// 16,385 entries is the T1 round's case with one chunk left after D23's.
+#[test]
+fn test_no_unbound_turn_runs_before_the_first_frame_after_the_input() {
+    use lushtext_core::ui::sidebar::workspace_section::StepDispatchKind as Kind;
+    let count = 16 * 1024 + 1;
+    let (tree, nested) = expanded_nested(count, 0);
+    let clock = tree
+        .section
+        .imp()
+        .file_tree_view
+        .frame_clock()
+        .expect("a mapped list has a frame clock");
+    let input_frame = clock.frame_counter();
+    activate_tree_row(&tree.section, &nested);
+    let paints = tree
+        .section
+        .workspace_section_evidence()
+        .collapse_after_paint_runs;
+    assert!(
+        !tree
+            .section
+            .workspace_section_evidence()
+            .collapse_between_armed,
+        "the input armed the between-frames idle before its first frame"
+    );
+    // One dispatch at a time up to the first `after-paint`: no turn runs.
+    pump_dispatches_until(Duration::from_secs(30), || {
+        let evidence = tree.section.workspace_section_evidence();
+        assert!(
+            !evidence
+                .collapse_step_dispatches
+                .iter()
+                .any(|dispatch| dispatch.kind == Kind::Between),
+            "a between-frames turn ran before the first after-paint"
+        );
+        evidence.collapse_after_paint_runs > paints
+    });
+    let painted = clock.frame_counter();
+    wait_until(Duration::from_secs(120), || {
+        collapse_settled(&tree.section, &nested)
+    });
+    let evidence = tree.section.workspace_section_evidence();
+    let first_bound = evidence
+        .collapse_step_dispatches
+        .iter()
+        .find(|dispatch| dispatch.kind == Kind::Bound)
+        .map(|dispatch| dispatch.frame_counter);
+    assert_eq!(
+        first_bound,
+        Some(painted),
+        "the first bound unit runs in the first interval after the frame that showed the intent"
+    );
+    let turns: Vec<i64> = evidence
+        .collapse_step_dispatches
+        .iter()
+        .filter(|dispatch| dispatch.kind == Kind::Between)
+        .map(|dispatch| dispatch.frame_counter)
+        .collect();
+    assert!(!turns.is_empty(), "the collapse ran between-frames turns");
+    assert!(
+        turns.iter().all(|frame| *frame > input_frame),
+        "a between-frames turn ran before the first frame after the input (frame {input_frame}): {turns:?}"
+    );
+    assert_eq!(
+        evidence.last_collapse_end,
+        Some(lushtext_core::ui::sidebar::workspace_section::CollapseEnd::Completed)
+    );
+    drop(tree.window);
+}
+
+/// Design D2/D4: with 32 rows after a 256-entry directory (`PACED_SIBLINGS`
+/// and `top.txt`, the most C3 leaves paced), no dispatch of the collapse
+/// makes GTK create more than one unit of row widgets or destroy more than
+/// a destroy-only unit. Fails with `main`'s direct collapse, which destroys
+/// most of the band's row widgets in one dispatch (checked by routing every
+/// collapse direct, 2026-11-24).
 #[test]
 fn test_collapsing_a_directory_with_rows_after_it_bounds_each_step() {
-    let (tree, nested) = expanded_nested(256, 400);
+    let (tree, nested) = expanded_nested(256, PACED_SIBLINGS);
     let created = row_widgets_changed_per_dispatch(
         &tree.section,
         || activate_tree_row(&tree.section, &nested),
@@ -3554,7 +3735,7 @@ fn test_collapsing_several_directories_takes_one_unit_per_frame() {
 /// ticks resume, no dispatch lays out two units.
 #[test]
 fn test_a_starved_frame_clock_still_completes_the_collapse() {
-    let (tree, nested) = expanded_nested(4096, 400);
+    let (tree, nested) = expanded_nested(4096, PACED_SIBLINGS);
     let pacing = Pacing::set(CollapsePacing::NoFrameClock);
     activate_tree_row(&tree.section, &nested);
     wait_until(Duration::from_secs(30), || {
@@ -3615,11 +3796,19 @@ fn test_a_rebound_collapsing_row_stays_collapsed_for_accessibility() {
 /// slice bin makes no correction, and no forwarded request is left pending.
 #[test]
 fn test_collapse_keeps_the_directory_row_still() {
-    let (tree, nested) = expanded_nested(256, 400);
+    let (tree, nested) = expanded_nested(256, PACED_SIBLINGS);
     let bin = tree.section.imp().file_tree_slice.clone();
     let corrections = bin.correction_count();
     let before = row_placement(&tree.section, "nested").expect("the row is drawn");
+    let steps = tree
+        .section
+        .workspace_section_evidence()
+        .collapse_steps_total;
     activate_tree_row(&tree.section, &nested);
+    assert!(
+        row_for_path(&tree.section, &nested).is_some_and(|row| row.is_expanded()),
+        "the collapse is paced, not direct"
+    );
     let context = glib::MainContext::default();
     let started = std::time::Instant::now();
     while !collapse_settled(&tree.section, &nested) {
@@ -3634,6 +3823,12 @@ fn test_collapse_keeps_the_directory_row_still() {
     }
     flush_after_delay(Duration::from_millis(300));
     assert_eq!(row_placement(&tree.section, "nested"), Some(before));
+    assert!(
+        tree.section
+            .workspace_section_evidence()
+            .collapse_steps_total
+            > steps
+    );
     assert_eq!(bin.correction_count(), corrections);
     assert!(!bin.outer_request_pending());
     drop(tree.window);
@@ -3645,7 +3840,7 @@ fn test_collapse_keeps_the_directory_row_still() {
 #[test]
 fn test_collapse_moves_selection_and_focus_to_the_directory() {
     for count in [4096usize, 8] {
-        let (tree, nested) = expanded_nested(count, 50);
+        let (tree, nested) = expanded_nested(count, PACED_SIBLINGS);
         let child = nested.join(file_name(3));
         select_and_scroll_to(&tree.section, &child);
         let directory = tree_index_for_path(&tree.section, &nested).expect("row index");
@@ -3766,7 +3961,7 @@ fn test_expanding_again_mid_collapse_restores_every_entry() {
 #[test]
 fn test_a_collapse_nobody_draws_completes() {
     for hide in ["sidebar", "section-body"] {
-        let (tree, nested) = expanded_nested(4096, 400);
+        let (tree, nested) = expanded_nested(4096, PACED_SIBLINGS);
         let pacing = Pacing::set(CollapsePacing::Hold);
         activate_tree_row(&tree.section, &nested);
         if hide == "sidebar" {
@@ -4079,7 +4274,7 @@ fn test_expander_keys_take_the_collapse_entry_point() {
 #[test]
 fn test_collapse_readiness_and_evidence() {
     use lushtext_core::ui::sidebar::workspace_section::CollapseOrigin;
-    let (tree, nested) = expanded_nested(4096, 400);
+    let (tree, nested) = expanded_nested(4096, PACED_SIBLINGS);
     let pacing = Pacing::set(CollapsePacing::Hold);
     activate_tree_row(&tree.section, &nested);
     let first = tree.section.workspace_section_evidence();
@@ -4937,7 +5132,7 @@ fn test_a_background_refresh_keeps_the_inline_rename() {
 /// unit of row widgets (the tick after a starved unit takes none).
 #[test]
 fn test_a_mapped_list_without_frames_still_completes_the_collapse() {
-    let (tree, nested) = expanded_nested(4096, 400);
+    let (tree, nested) = expanded_nested(4096, PACED_SIBLINGS);
     let pacing = Pacing::set(CollapsePacing::MappedNoTicks);
     activate_tree_row(&tree.section, &nested);
     wait_until(Duration::from_secs(60), || {
@@ -4989,7 +5184,7 @@ fn test_a_mapped_list_without_frames_still_completes_the_collapse() {
 /// is the failing-first half; this guards the weak keying.
 #[test]
 fn test_a_closed_window_leaves_the_next_window_its_units() {
-    let (first, nested) = expanded_nested(4096, 400);
+    let (first, nested) = expanded_nested(4096, PACED_SIBLINGS);
     activate_tree_row(&first.section, &nested);
     wait_until(Duration::from_secs(30), || {
         first
@@ -5001,7 +5196,7 @@ fn test_a_closed_window_leaves_the_next_window_its_units() {
     first.window.close();
     drop(first);
     flush_after_delay(Duration::from_millis(200));
-    let (second, nested) = expanded_nested(256, 400);
+    let (second, nested) = expanded_nested(256, PACED_SIBLINGS);
     let steps = second
         .section
         .workspace_section_evidence()
@@ -5521,34 +5716,54 @@ fn test_the_folder_header_collapses_directly_at_most_one_step_of_rows() {
     drop(sidebar);
 }
 
-/// Design D18: with 400 rows listed before the collapsing directory and the
-/// view at its tail, a bound removal with nothing after the band still takes
-/// one unit, because the view, clamped at its end, refills from above.
-/// Fails with D18's first rule (nothing after the band alone): the larger
-/// destroy-only unit brought its rows in from above.
+/// Design D18 and R13's C3 ("C3 as built"): with the view at the tail of the
+/// collapsing directory, the view, clamped at its end, refills the band from
+/// above. With 400 rows before it that refill is more than a unit, and the
+/// collapse takes `main`'s direct collapse. With few rows before it (at most
+/// a unit with the directory rows) the collapse stays paced and no dispatch
+/// changes more than a unit of row widgets. Fails with the paced collapse for
+/// both (the 400-row case stays GTK-expanded after the input), and with D18's
+/// first rule alone for the paced case (the larger destroy-only unit brought
+/// its rows in from above).
 #[test]
 fn test_a_collapse_at_the_tail_refills_no_more_than_a_unit_from_above() {
-    let (dir, root) = seed_workspace(&[("a-before", 400), ("nested", 4096)]);
-    let tree = present_single_folder(dir, root, "virtualized", 800);
-    tree.section.expand_folders();
-    let before = tree.root.join("a-before");
-    let nested = tree.root.join("nested");
-    expand_and_load(&tree, &before, 400);
-    expand_and_load(&tree, &nested, 4096);
-    flush_after_delay(Duration::from_millis(300));
-    scroll_outer_to_bottom(&tree.sidebar);
-    flush_after_delay(Duration::from_millis(300));
-    let created = row_widgets_changed_per_dispatch(
-        &tree.section,
-        || activate_tree_row(&tree.section, &nested),
-        || collapse_settled(&tree.section, &nested),
-    );
-    let over = RowChange::over_unit(&created);
-    assert!(
-        over.is_none(),
-        "one dispatch changed {over:?} row widgets: {created:?}"
-    );
-    drop(tree.window);
+    for (before_rows, direct) in [(400usize, true), (28, false)] {
+        let (dir, root) = seed_workspace(&[("a-before", before_rows), ("nested", 4096)]);
+        let tree = present_single_folder(dir, root, "virtualized", 800);
+        tree.section.expand_folders();
+        let before = tree.root.join("a-before");
+        let nested = tree.root.join("nested");
+        expand_and_load(&tree, &before, before_rows);
+        expand_and_load(&tree, &nested, 4096);
+        flush_after_delay(Duration::from_millis(300));
+        scroll_outer_to_bottom(&tree.sidebar);
+        flush_after_delay(Duration::from_millis(300));
+        let routed = tree
+            .section
+            .workspace_section_evidence()
+            .collapse_rows_after_direct_total;
+        let created = row_widgets_changed_per_dispatch(
+            &tree.section,
+            || activate_tree_row(&tree.section, &nested),
+            || collapse_settled(&tree.section, &nested),
+        );
+        let evidence = tree.section.workspace_section_evidence();
+        if direct {
+            assert_eq!(
+                evidence.collapse_rows_after_direct_total,
+                routed + 1,
+                "{before_rows} rows before: the tail collapse took the direct route"
+            );
+        } else {
+            assert_eq!(evidence.collapse_rows_after_direct_total, routed);
+            let over = RowChange::over_unit(&created);
+            assert!(
+                over.is_none(),
+                "{before_rows} rows before: one dispatch changed {over:?} row widgets: {created:?}"
+            );
+        }
+        drop(tree.window);
+    }
 }
 
 /// `main`'s worst completion of a collapse case, in µs, from the stage 4
@@ -5603,6 +5818,12 @@ fn completion_bar_us(
 /// misses, one line each; D2's recorded toolkit-floor exceptions, if a
 /// final campaign records one, are classified by the reading of its round,
 /// not excepted here in advance.
+///
+/// A case C3 sent through `main`'s direct collapse (`direct_route`, design
+/// R13, "C3 as built") keeps `main`'s frames by decision: its input, step,
+/// dispatch and first-frame figures are printed and not judged here (Part B
+/// compares them with `main`'s side), and its completion is judged at R3's
+/// bar like every other case.
 #[expect(
     clippy::too_many_arguments,
     reason = "a verdict-test helper over one case's printed figures"
@@ -5615,6 +5836,7 @@ fn judge_case(
     input_us: u64,
     step_us_max: u64,
     input_to_frame_us: Option<u64>,
+    direct_route: bool,
     timeline: &DispatchTimeline,
 ) -> Vec<String> {
     use lushtext_core::model::responsiveness_budget::{
@@ -5625,10 +5847,11 @@ fn judge_case(
     }
     let label = format!("{case} {siblings}:{entries}");
     let mut misses = Vec::new();
-    if input_us > B_INTERACT_US {
+    let paced = !direct_route;
+    if paced && input_us > B_INTERACT_US {
         misses.push(format!("{label}: input {input_us} us over B_INTERACT_US"));
     }
-    if step_us_max > B_INTERACT_US {
+    if paced && step_us_max > B_INTERACT_US {
         misses.push(format!(
             "{label}: a step took {step_us_max} us, over B_INTERACT_US"
         ));
@@ -5641,7 +5864,7 @@ fn judge_case(
         })
         .map(|dispatch| (dispatch.start_us, dispatch.took_us))
         .collect();
-    if !over.is_empty() {
+    if paced && !over.is_empty() {
         misses.push(format!(
             "{label}: dispatches (start, took) over B_SETTLE_US: {over:?}"
         ));
@@ -5649,7 +5872,7 @@ fn judge_case(
     // Rung T1's bar is the collapse's first frame (design D6): the collapse
     // routes only; an expansion's first frame is judged by D2's dispatch bar.
     let collapse_route = case == "collapse" || case == "header-two-roots";
-    if collapse_route {
+    if paced && collapse_route {
         match input_to_frame_us {
             Some(us) if !input_to_frame_within(us) => {
                 misses.push(format!(
@@ -5693,7 +5916,7 @@ fn judge_case(
     }
     let null = |value: Option<u64>| value.map_or_else(|| "null".to_owned(), |us| us.to_string());
     println!(
-        "collapse-judged {{\"case\":\"{case}\",\"siblings\":{siblings},\"entries\":{entries},\"completion_us\":{},\"completion_bar_us\":{},\"picture_final_us\":{},\"settled_us\":{},\"d12_residual\":{residual:?},\"misses\":{}}}",
+        "collapse-judged {{\"case\":\"{case}\",\"siblings\":{siblings},\"entries\":{entries},\"completion_us\":{},\"completion_bar_us\":{},\"picture_final_us\":{},\"settled_us\":{},\"d12_residual\":{residual:?},\"c3_direct\":{direct_route},\"misses\":{}}}",
         null(completion),
         null(bar),
         null(picture_final),
@@ -5714,7 +5937,13 @@ fn print_case(
     input_us: u64,
     timeline: &DispatchTimeline,
 ) -> Vec<String> {
-    let step_us_max = section.workspace_section_evidence().collapse_step_us_max;
+    let evidence = section.workspace_section_evidence();
+    let step_us_max = evidence.collapse_step_us_max;
+    // Design R13's C3 ("C3 as built"): a collapse case whose input took
+    // `main`'s direct collapse.
+    let direct_route = (case == "collapse" || case == "header-two-roots")
+        && evidence.collapse_last_input_rows_after_direct > 0;
+    let route = if direct_route { "direct" } else { "paced" };
     use lushtext_core::model::responsiveness_budget::{B_INTERACT_US, B_SETTLE_US};
     // R of design R9: the collapsing subtree's flattened rows at the input,
     // summed over the subtrees one input collapses (R10); every case's
@@ -5737,7 +5966,7 @@ fn print_case(
     let input_to_frame_over = input_to_frame_us
         .is_some_and(|us| !lushtext_core::model::responsiveness_budget::input_to_frame_within(us));
     println!(
-        "collapse-verdict {{\"case\":\"{case}\",\"siblings\":{siblings},\"entries\":{entries},\"subtree_rows\":{subtree_rows},\"r9_allowance_us\":{allowance_us},\"input_us\":{input_us},\"input_over_interact\":{input_over_interact},\"worst_frame_us\":{},\"worst_frame_layout_us\":{},\"worst_frame_paint_us\":{},\"worst_other_us\":{},\"done_us\":{},\"shown_us\":{},\"picture_final_us\":{},\"mono_start_us\":{},\"terminals_before_shown\":{},\"step_us_max\":{step_us_max},\"dispatches\":{},\"over_interact\":{},\"over_settle\":{},\"input_to_frame_us\":{},\"input_to_frame_over\":{input_to_frame_over}}}",
+        "collapse-verdict {{\"case\":\"{case}\",\"siblings\":{siblings},\"entries\":{entries},\"subtree_rows\":{subtree_rows},\"r9_allowance_us\":{allowance_us},\"input_us\":{input_us},\"input_over_interact\":{input_over_interact},\"worst_frame_us\":{},\"worst_frame_layout_us\":{},\"worst_frame_paint_us\":{},\"worst_other_us\":{},\"done_us\":{},\"shown_us\":{},\"picture_final_us\":{},\"mono_start_us\":{},\"terminals_before_shown\":{},\"step_us_max\":{step_us_max},\"dispatches\":{},\"over_interact\":{},\"over_settle\":{},\"input_to_frame_us\":{},\"input_to_frame_over\":{input_to_frame_over},\"route\":\"{route}\"}}",
         timeline.worst(true),
         timeline.worst_layout(),
         timeline.worst_paint(),
@@ -5769,6 +5998,7 @@ fn print_case(
         input_us,
         step_us_max,
         input_to_frame_us,
+        direct_route,
         timeline,
     )
 }
@@ -6355,7 +6585,7 @@ fn row_widget_shown(widget: &gtk4::Widget) -> bool {
 /// for it (ledger A123). Fails without D22: the subtree's rows still draw.
 #[test]
 fn test_collapse_hides_the_subtree_rows_in_the_first_frame() {
-    for siblings in [0, 400] {
+    for siblings in [0, PACED_SIBLINGS] {
         let (tree, nested) = expanded_nested(4096, siblings);
         let before = realized_row_widgets(&tree.section, &nested);
         let setups = tree.section.workspace_section_evidence().row_setups;
@@ -6416,14 +6646,14 @@ fn test_collapse_hides_the_subtree_rows_in_the_first_frame() {
 /// (A123: GTK's map writes it false).
 #[test]
 fn test_a_rebound_row_in_a_collapsing_subtree_stays_hidden() {
-    let (tree, nested) = expanded_nested(4096, 400);
+    let (tree, nested) = expanded_nested(4096, PACED_SIBLINGS);
     let pacing = Pacing::set(CollapsePacing::Hold);
     activate_tree_row(&tree.section, &nested);
     let index = tree_index_for_path(&tree.section, &nested).expect("row index");
     let list = tree.section.imp().file_tree_view.clone();
     for (target, label) in [
         (index + 2000, "inside the subtree"),
-        (index + 4096 + 60, "across the subtree's end"),
+        (index + 4096 + 20, "across the subtree's end"),
         (index + 100, "back inside"),
     ] {
         list.scroll_to(target, gtk4::ListScrollFlags::NONE, None);
@@ -6480,7 +6710,7 @@ fn test_every_collapse_end_shows_the_rows_again() {
         );
     };
     // Completion.
-    let (tree, nested) = expanded_nested(4096, 400);
+    let (tree, nested) = expanded_nested(4096, PACED_SIBLINGS);
     activate_tree_row(&tree.section, &nested);
     wait_until(Duration::from_secs(60), || {
         collapse_settled(&tree.section, &nested)
@@ -6539,7 +6769,7 @@ fn test_every_collapse_end_shows_the_rows_again() {
     assert_nothing_hidden(&tree.section, "model reset");
     drop(tree.window);
     // Removal of the collapsing directory.
-    let (tree, nested) = expanded_nested(4096, 400);
+    let (tree, nested) = expanded_nested(4096, PACED_SIBLINGS);
     let pacing = Pacing::set(CollapsePacing::Hold);
     activate_tree_row(&tree.section, &nested);
     fixture::remove_dir_all(&nested);
@@ -6567,7 +6797,7 @@ fn test_every_collapse_end_shows_the_rows_again() {
 /// false). No hiding pass runs inside a frame clock dispatch.
 #[test]
 fn test_a_created_row_in_a_collapsing_subtree_reports_hidden() {
-    let (tree, nested) = expanded_nested(4096, 400);
+    let (tree, nested) = expanded_nested(4096, PACED_SIBLINGS);
     let syncs_in_frames = std::rc::Rc::new(std::cell::Cell::new(0u64));
     let clock = tree
         .section
@@ -7201,7 +7431,7 @@ fn held_collapse_then(
 fn test_navigation_keys_wait_for_the_collapse() {
     use keysym::{DOWN, END};
     let count = 4096;
-    let (tree, nested) = expanded_nested(count, 400);
+    let (tree, nested) = expanded_nested(count, PACED_SIBLINGS);
     press_row_for_real(&tree, &nested);
     let directory = tree_index_for_path(&tree.section, &nested).expect("row index");
     let watch = HiddenFocusWatch::start(&tree.window, &tree.section);
@@ -7257,7 +7487,7 @@ fn test_navigation_keys_wait_for_the_collapse() {
 fn test_up_from_the_row_after_the_subtree_waits_for_the_collapse() {
     use keysym::UP;
     let count = 256;
-    let (tree, nested) = expanded_nested(count, 400);
+    let (tree, nested) = expanded_nested(count, PACED_SIBLINGS);
     press_row_for_real(&tree, &nested);
     let after = tree.root.join("top.txt");
     press_row_for_real(&tree, &after);
@@ -7293,7 +7523,7 @@ fn test_keys_after_a_held_key_wait_behind_it() {
     use std::cell::RefCell;
     use std::rc::Rc;
     let count = 256;
-    let (tree, nested) = expanded_nested(count, 400);
+    let (tree, nested) = expanded_nested(count, PACED_SIBLINGS);
     let directory = tree_index_for_path(&tree.section, &nested).expect("row index");
     press_row_for_real(&tree, &nested);
     let watch = HiddenFocusWatch::start(&tree.window, &tree.section);
@@ -7348,7 +7578,7 @@ fn test_keys_after_a_held_key_wait_behind_it() {
 
     // Down, then Escape and Tab: neither waits. A fresh window, so no state
     // of the case before carries over.
-    let (tree, nested) = expanded_nested(count, 400);
+    let (tree, nested) = expanded_nested(count, PACED_SIBLINGS);
     press_row_for_real(&tree, &nested);
     let watch = HiddenFocusWatch::start(&tree.window, &tree.section);
     let pacing = Pacing::set(CollapsePacing::Hold);
@@ -7385,7 +7615,7 @@ fn test_keys_after_a_held_key_wait_behind_it() {
     drop(tree.window);
 
     // Down, then Return, in a fresh window (it opens the file in an editor).
-    let (tree, nested) = expanded_nested(count, 400);
+    let (tree, nested) = expanded_nested(count, PACED_SIBLINGS);
     let after = tree.root.join("top.txt");
     press_row_for_real(&tree, &nested);
     let watch = HiddenFocusWatch::start(&tree.window, &tree.section);
@@ -7467,7 +7697,7 @@ fn test_replayed_navigation_matches_gtk() {
     use std::cell::RefCell;
     use std::rc::Rc;
     let count = 256;
-    let (tree, nested) = expanded_nested(count, 400);
+    let (tree, nested) = expanded_nested(count, PACED_SIBLINGS);
     let watch = HiddenFocusWatch::start(&tree.window, &tree.section);
     // The presses the window sees, before any route takes them.
     // The presses the window sees, before any route takes them, with the

@@ -24,6 +24,14 @@
 //! `SIDEBAR_REALIZED_ROWS_PER_FRAME` per frame interval, and collapsed
 //! directly once at most that many rows are left.
 //!
+//! A collapse that would bring more than `SIDEBAR_REALIZED_ROWS_PER_FRAME`
+//! rows into the band (rows after the subtree beyond the band, or a view
+//! clamped at the list's end refilling from above) is not sliced: refilling
+//! the band one unit an interval made it miss the completion bar (design R13,
+//! C3, the T1 round), so it keeps `main`'s direct collapse. The route is the
+//! pure `policy::collapse_route` over `policy::rows_brought_in_by_collapse`,
+//! read for every row of one input at intent, before any row changes.
+//!
 //! # Stage order
 //!
 //! 1. **Intent** (the input dispatch, no row work, design D6): the expander
@@ -39,7 +47,8 @@
 //!    splice instead.
 //!    A subtree of at most `DIRECT_COLLAPSE_ROWS` rows collapses directly
 //!    here instead, until the input has removed one step of rows
-//!    (`COLLAPSE_STEP_ROWS`) that way.
+//!    (`COLLAPSE_STEP_ROWS`) that way, and so does a collapse routed
+//!    `CollapseRoute::Direct` (above), after selection and focus have moved.
 //! 2. **Steps**: each step reads the subtree's expanded stores and GTK's held
 //!    positions, asks the pure `policy::next_collapse_step` for one removal,
 //!    and applies it: unbound chunks while `turn_continues` holds, and bound
@@ -85,8 +94,8 @@
 //!   left. Its first dispatch after the input takes one unbound chunk (D23).
 //!   It takes no bound step until the first `after-paint` after the input
 //!   (design R13's rung T1): the first frame lays out the intent alone, and
-//!   the first bound unit runs in the interval after it. A frame interval removes at most `SIDEBAR_REALIZED_ROWS_PER_FRAME` bound
-//!   rows (the token reads the frame counter, which equals the counter of the
+//!   the first bound unit runs in the interval after it. A frame interval
+//!   removes at most `SIDEBAR_REALIZED_ROWS_PER_FRAME` bound rows (the token reads the frame counter, which equals the counter of the
 //!   frame just painted there).
 //! - **The frame tick.** While the list is mapped and a collapse is pending, a
 //!   tick callback stays registered, taking no step: it keeps the clock
@@ -94,7 +103,10 @@
 //!   refreshes the starvation clock.
 //! - **The between-frames idle (design D19).** Unbound chunks leave from a
 //!   `G_PRIORITY_DEFAULT_IDLE` source, below the frame clock, while the turn
-//!   lasts.
+//!   lasts. It is held until the first `after-paint` after the input, and
+//!   that paint arms it (`unbound_turns_held`): a turn in flight when the
+//!   compositor's frame callback arrives would delay the first frame past
+//!   `INPUT_TO_FRAME_US` (design R13, "Attributions of the T1 round").
 //! - **The low-priority fallback.** While the list is not mapped, or a mapped
 //!   list's frame clock has not ticked within `COLLAPSE_FRAME_STARVATION_MS`,
 //!   steps resume from a `G_PRIORITY_LOW` timeout with the same bounds. A
@@ -126,9 +138,10 @@ use super::LushtextWorkspaceSection;
 use crate::model::list_budget::turn_continues;
 use crate::ui::accessibility;
 use crate::ui::sidebar::policy::{
-    COLLAPSE_FRAME_STARVATION_MS, CollapseFacts, CollapseStep, CollapseStore, FrameUnitToken,
-    bound_step_rows, collapse_band, collapse_removal_is_destroy_only, interval_rows_left,
-    next_collapse_step, record_interval_rows,
+    COLLAPSE_FRAME_STARVATION_MS, CollapseFacts, CollapseRoute, CollapseStep, CollapseStore,
+    CollapsingSubtree, FrameUnitToken, bound_step_rows, collapse_band,
+    collapse_removal_is_destroy_only, collapse_route, interval_rows_left, next_collapse_step,
+    record_interval_rows, rows_brought_in_by_collapse,
 };
 
 /// The expander class whose application CSS draws the checked arrow as
@@ -195,6 +208,15 @@ pub struct CollapseEvidence {
 /// band dies at once, and its node's expansion with it would be unreachable.
 type ExpandedDescendant = (PathBuf, gtk4::TreeListRow);
 
+/// One row of a collapse input, read at intent (design R13's C3): its path,
+/// its subtree (`None` when a descendant cannot be located, design R6.10),
+/// and the route the subtree's rows after it decide.
+struct CollapseIntent {
+    path: PathBuf,
+    capture: Option<(u32, Vec<ExpandedDescendant>)>,
+    route: Option<CollapseRoute>,
+}
+
 /// One queued collapse.
 struct CollapseRecord {
     /// The collapsing row, held strongly for the reason `ExpandedDescendant`
@@ -239,6 +261,10 @@ pub(super) struct CollapseRuntimeState {
     last_end: Cell<Option<CollapseEnd>>,
     steps_total: Cell<u64>,
     direct_total: Cell<u64>,
+    /// Collapses C3 sent through `main`'s direct collapse (design R13, "C3
+    /// as built"), and those of the latest collapse input.
+    rows_after_direct_total: Cell<u64>,
+    last_input_rows_after_direct: Cell<u32>,
     starved_steps_total: Cell<u64>,
     /// Steps the between-frames idle ran (design D19, task 10.3).
     between_steps_total: Cell<u64>,
@@ -352,6 +378,12 @@ pub struct CollapseTotals {
     pub steps_total: u64,
     /// Collapses GTK's direct call made whole.
     pub direct_total: u64,
+    /// Of those, the collapses design R13's C3 routed there because they
+    /// bring more than one unit of rows into the band from after their
+    /// subtree ("C3 as built").
+    pub rows_after_direct_total: u64,
+    /// The latest collapse input's collapses routed by C3.
+    pub last_input_rows_after_direct: u32,
     /// Steps the low-priority fallback ran.
     pub starved_steps_total: u64,
     /// Steps the between-frames idle ran: unbound chunks removed outside
@@ -369,6 +401,9 @@ pub struct CollapseTotals {
     pub after_paint_connected: bool,
     /// `after-paint` emissions its handler ran, ever.
     pub after_paint_runs: u64,
+    /// Whether the between-frames idle is armed (rung T1's hold: not while
+    /// the first frame after a collapse input has yet to paint).
+    pub between_armed: bool,
     /// Row widgets the factory created, ever.
     pub row_setups: u64,
     /// Row widgets hidden now (design D22).
@@ -501,14 +536,22 @@ impl LushtextWorkspaceSection {
             runtime.step_dispatch_us_max.set(0);
             runtime.step_dispatches.borrow_mut().clear();
         }
-        for row in rows {
-            let Some(path) = directory_path(row) else {
+        runtime.last_input_rows_after_direct.set(0);
+        let intents = self.read_collapse_intents(rows);
+        for (row, intent) in rows.iter().zip(intents) {
+            let Some(CollapseIntent {
+                path,
+                capture,
+                route,
+            }) = intent
+            else {
                 continue;
             };
+            // An earlier row of the same input may have taken this one over.
             if !row.is_expanded() || self.row_is_collapsing(row) {
                 continue;
             }
-            let Some((span, descendants)) = self.capture_subtree(row, &path) else {
+            let Some((span, descendants)) = capture else {
                 // The subtree's rows could not be located (a path shown twice by
                 // overlapping folders): GTK's direct collapse, as before,
                 // leaving selection and focus where they are (design R6.10).
@@ -527,6 +570,19 @@ impl LushtextWorkspaceSection {
                 self.collapse_now(row);
                 continue;
             }
+            // C3 (design R13, "C3 as built"): a collapse that brings more
+            // than one unit of rows into the band, from after its subtree or
+            // through the view's clamp, keeps `main`'s direct collapse.
+            if route == Some(CollapseRoute::Direct) {
+                runtime
+                    .last_input_rows_after_direct
+                    .set(runtime.last_input_rows_after_direct.get() + 1);
+                runtime
+                    .rows_after_direct_total
+                    .set(runtime.rows_after_direct_total.get() + 1);
+                self.collapse_now(row);
+                continue;
+            }
             self.start_sliced_collapse(row, path, origin, descendants);
             runtime.first_chunk_pending.set(true);
             runtime.first_paint_pending.set(true);
@@ -535,6 +591,96 @@ impl LushtextWorkspaceSection {
         // from the input dispatch on (G3: about 0.3 ms for the band, A123).
         self.sync_hidden_rows();
         self.arm_collapse_source();
+    }
+
+    /// Each of `rows`' subtree and route (design R13's C3, "C3 as built"),
+    /// read once at intent, before any row of the input is removed: `None`
+    /// for a row this input does not collapse. The other subtrees of the
+    /// same input are passed as `others`, so the folder header's later roots
+    /// do not count as rows after an earlier one.
+    fn read_collapse_intents(&self, rows: &[gtk4::TreeListRow]) -> Vec<Option<CollapseIntent>> {
+        let mut intents: Vec<Option<CollapseIntent>> = rows
+            .iter()
+            .map(|row| {
+                let path = directory_path(row)?;
+                if !row.is_expanded() || self.row_is_collapsing(row) {
+                    return None;
+                }
+                let capture = self.capture_subtree(row, &path);
+                Some(CollapseIntent {
+                    path,
+                    capture,
+                    route: None,
+                })
+            })
+            .collect();
+        let subtrees: Vec<Option<CollapsingSubtree>> = rows
+            .iter()
+            .zip(&intents)
+            .map(|(row, intent)| {
+                let (span, _) = intent.as_ref()?.capture.as_ref()?;
+                let position = row.position();
+                (position != gtk4::INVALID_LIST_POSITION).then_some(CollapsingSubtree {
+                    position,
+                    span: *span,
+                })
+            })
+            .collect();
+        if subtrees.iter().all(Option::is_none) {
+            return intents;
+        }
+        let band = match self.realized_extent() {
+            (Some(first), Some(last)) => Some((first, last)),
+            _ => None,
+        };
+        let listed = self.listed_rows();
+        for (index, intent) in intents.iter_mut().enumerate() {
+            let (Some(intent), Some(subtree)) = (intent.as_mut(), subtrees[index]) else {
+                continue;
+            };
+            let others: Vec<CollapsingSubtree> = subtrees
+                .iter()
+                .enumerate()
+                .filter(|(other, _)| *other != index)
+                .filter_map(|(_, other)| *other)
+                .collect();
+            intent.route = Some(collapse_route(rows_brought_in_by_collapse(
+                listed, subtree, band, &others,
+            )));
+        }
+        intents
+    }
+
+    /// The flattened positions of the first and last realized file rows,
+    /// `None` when no row is realized.
+    fn realized_extent(&self) -> (Option<u32>, Option<u32>) {
+        let mut first_realized = None::<u32>;
+        let mut last_realized = None::<u32>;
+        super::for_each_realized_file_row_overlay(self, |overlay| {
+            if let Some(row) = overlay
+                .child()
+                .and_downcast::<gtk4::TreeExpander>()
+                .and_then(|expander| expander.list_row())
+            {
+                let position = row.position();
+                if position != gtk4::INVALID_LIST_POSITION {
+                    last_realized = Some(last_realized.map_or(position, |last| last.max(position)));
+                    first_realized =
+                        Some(first_realized.map_or(position, |first| first.min(position)));
+                }
+            }
+        });
+        (first_realized, last_realized)
+    }
+
+    /// The flattened list's length.
+    fn listed_rows(&self) -> u32 {
+        self.imp()
+            .tree_model
+            .try_borrow()
+            .ok()
+            .and_then(|model| model.as_ref().map(ListModelExt::n_items))
+            .unwrap_or(0)
     }
 
     /// Expand the directory `row` (design D5): the only entry point for a
@@ -653,6 +799,8 @@ impl LushtextWorkspaceSection {
             last_end: runtime.last_end.get(),
             steps_total: runtime.steps_total.get(),
             direct_total: runtime.direct_total.get(),
+            rows_after_direct_total: runtime.rows_after_direct_total.get(),
+            last_input_rows_after_direct: runtime.last_input_rows_after_direct.get(),
             starved_steps_total: runtime.starved_steps_total.get(),
             between_steps_total: runtime.between_steps_total.get(),
             step_us_max: runtime.step_us_max.get(),
@@ -660,6 +808,7 @@ impl LushtextWorkspaceSection {
             step_dispatches: runtime.step_dispatches.borrow().clone(),
             after_paint_connected: runtime.after_paint.borrow().is_some(),
             after_paint_runs: runtime.after_paint_runs.get(),
+            between_armed: runtime.between.borrow().is_some(),
             row_setups: runtime.row_setups.get(),
             hidden_rows: u32::try_from(
                 runtime
@@ -790,9 +939,13 @@ impl LushtextWorkspaceSection {
                 runtime
                     .after_paint_runs
                     .set(runtime.after_paint_runs.get().saturating_add(1));
-                // T1: the frame that showed the intent has painted.
-                runtime.first_paint_pending.set(false);
+                // T1: the frame that showed the intent has painted; the
+                // unbound turns it held may start.
+                let held = runtime.first_paint_pending.replace(false);
                 section.arm_step_source();
+                if held {
+                    section.arm_between_frames_source();
+                }
             }
         });
         runtime.after_paint.replace(Some((clock.downgrade(), id)));
@@ -921,7 +1074,10 @@ impl LushtextWorkspaceSection {
     /// first turn that finds only unit steps; the tick re-arms it.
     fn arm_between_frames_source(&self) {
         let runtime = &self.imp().collapse_runtime;
-        if runtime.queue.borrow().is_empty() || runtime.between.borrow().is_some() {
+        if runtime.queue.borrow().is_empty()
+            || runtime.between.borrow().is_some()
+            || self.unbound_turns_held()
+        {
             return;
         }
         let section = self.downgrade();
@@ -959,10 +1115,29 @@ impl LushtextWorkspaceSection {
         runtime.last_step_us.set(0);
     }
 
+    /// Rung T1's hold on unbound turns (design R13, "Attributions of the T1
+    /// round"): until the first frame after a collapse input has painted, no
+    /// between-frames turn starts, so none is in flight when that frame's
+    /// callback arrives (the T1 round's 0:131,072 collapses ran three or four
+    /// turns of about 4.5 ms before it). The `after-paint` handler arms the
+    /// idle. A list that paces from the fallback paints nothing and holds
+    /// nothing.
+    fn unbound_turns_held(&self) -> bool {
+        self.imp().collapse_runtime.first_paint_pending.get()
+            && frame_ticks_allowed()
+            && self.imp().file_tree_view.is_mapped()
+            && self.imp().collapse_runtime.after_paint.borrow().is_some()
+    }
+
     /// One turn of the between-frames idle; whether it removed any rows. A
     /// turn that ends at a bound step arms the step source, so a unit that
     /// becomes next mid-interval runs before the next frame (design D25).
     fn run_between_frames_step(&self) -> bool {
+        if self.unbound_turns_held() {
+            // An idle armed before a later input: the `after-paint` handler
+            // arms it again.
+            return false;
+        }
         let runtime = &self.imp().collapse_runtime;
         let started = glib::monotonic_time();
         let setups_before = runtime.row_setups.get();
@@ -1309,13 +1484,7 @@ impl LushtextWorkspaceSection {
                 }
             }
         });
-        let listed = self
-            .imp()
-            .tree_model
-            .try_borrow()
-            .ok()
-            .and_then(|model| model.as_ref().map(ListModelExt::n_items))
-            .unwrap_or(0);
+        let listed = self.listed_rows();
         let rows_after = last_realized.map_or(listed, |last| listed.saturating_sub(last + 1));
         let rows_before = first_realized.unwrap_or(0);
         if let Some(selection) = self
