@@ -1802,6 +1802,24 @@ mod collapse_tests {
     }
 
     #[test]
+    fn a_one_row_band_at_the_tail_is_refilled_and_an_inverted_band_is_none() {
+        // `nested/` at row 10 with 100 rows, nothing after it: the band holds
+        // only its last row, which the collapse removes, so the clamped view
+        // brings one row in from above.
+        let nested = subtree(10, 100);
+        let listed = 10 + 1 + 100;
+        assert_eq!(
+            rows_clamped_in_by_collapse(listed, nested, Some((110, 110)), &[]),
+            1
+        );
+        // A band whose last row is before its first is no band.
+        assert_eq!(
+            rows_clamped_in_by_collapse(listed, nested, Some((110, 109)), &[]),
+            0
+        );
+    }
+
+    #[test]
     fn the_route_turns_direct_past_one_unit() {
         assert_eq!(collapse_route(0), CollapseRoute::Paced);
         assert_eq!(

@@ -193,6 +193,18 @@ exclude_re = [
     # unchanged. Scoped by column to these two clamps (column 21); the other
     # mutants of the function still mutate and are killed.
     "crates/lushtext-core/src/ui/sidebar/policy\\.rs:.*:21: replace > with >= in bound_step_rows",
+    # Equivalent (`slice-large-directory-collapse` design R13 "C3 as built",
+    # 2026-11-24): `rows_under_subtrees` keeps the clipped intervals with
+    # `.filter(|(first, end)| first < end)` and then counts each with `if end >
+    # first`. Turning the filter's `<` into `<=` admits only empty intervals,
+    # which the loop's own check adds nothing for; turning the loop's `>` into
+    # `>=` adds only `end == first`, which adds 0 and moves `reach` to `end`,
+    # no further than the sorted intervals after it start. Every count is
+    # unchanged (the proptest `rows_after_collapse_matches_a_row_by_row_count`
+    # and `rows_clamped_in_matches_a_row_by_row_model` compare with row-by-row
+    # models). Scoped by column to these two operators (38 and 16).
+    "crates/lushtext-core/src/ui/sidebar/policy\\.rs:.*:38: replace < with <= in rows_under_subtrees",
+    "crates/lushtext-core/src/ui/sidebar/policy\\.rs:.*:16: replace > with >= in rows_under_subtrees",
     # Never compiled by the mutation lane: `markdown_chunked_cap`'s
     # `cfg(not(feature = "test-utils"))` arm. Unlike the cfg-disabled stubs
     # around it, this is the arm that ships (a `const fn` returning `None`),
