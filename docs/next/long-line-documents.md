@@ -4610,6 +4610,28 @@ review", "Implementation decisions"); evidence in
     frame, and pre-registers a one-frame selection margin for every
     selection and go/no-go round. Six branch-only rounds are queued; the
     slice model over each child store stays the recorded next step.
+  - *The T1 round and C3 (2026-11-24, design R13, "The T1 round read" and
+    "C3 as built").* On the final mechanism (D24, D25, rung T1, the P2
+    refill cut), a branch-only selection round kept under the drain-first
+    criterion met R3's completion bar with R9's allowance in every case
+    with nothing after the directory (0:131,072 at 113.0 ms against
+    157.3 ms) and for the folder header (88.3 ms against 148.3 ms), and
+    missed it for one case with rows after it: 400:16,385 at 142.1 and
+    141.6 ms against 139.3 ms in two of six repetitions (400:4,096 reached
+    135.6 ms against 137.3 ms). By R13's closing rule C3 the class whose
+    collapse brings more than one unit of rows into the band keeps `main`'s
+    direct collapse at every size; the rest stays paced. **Deferred with its
+    figures:** a paced collapse for that class. Its cost is the band's
+    refill, one unit (32 rows) an interval, about seven intervals for 400
+    rows after; the levers left are a larger interval budget under D25, GTK
+    reusing removed row widgets in a removal (the upstream candidate below),
+    and lighter rows still. Also recorded under C1: 20 of 66 collapse
+    repetitions over `INPUT_TO_FRAME_US`, attributed to the compositor's
+    frame cadence plus a between-frames turn in flight at the frame
+    callback (cut: no turn before the first `after-paint`), and two
+    re-expansion frames of about 60 ms after a bound unit, reproduced in a
+    widget test with silent counters and queued for a profile before the
+    final campaign.
   - *What `stop-expander-bind-time-child-scans` must build on.* Its proposal
     says `row_factory.rs` is unchanged; this change makes that false. Build
     on: `collapse_directory` and `expand_directory`

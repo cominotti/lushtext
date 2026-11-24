@@ -4302,10 +4302,167 @@ within `B_SETTLE_US` except D12's residual).** Listed as data for Part B:
 over `B_SETTLE_US` that is not D12's residual (the 60 ms frames above). By
 the entry they are attributed before Part B, by a counter in the widget test
 first, a DWARF round only if the counter is silent ("Attributions of the T1
-round" below). Both slow repetitions are the ones whose collapse had run a
-bound unit before the re-expansion: their between-frames turns ended 8.1 and
-15.1 ms before the re-expanding input, and the fast ones' 0.7–9.3 ms before
-it with rows still left or no unit yet.
+round" below). The T1 log cannot say which repetitions had run a bound unit
+before the re-expansion (its step lines list only steps over 4 ms); the
+diagnostic runs below show that condition is the one that reproduces the
+slow frame.
+
+#### C3 as built (2026-11-24)
+
+The T1 reading sends the rows-after class to C3. As built (the commit is
+named in tasks 7.2 and 11.5):
+
+- **The class, as a predicate on the intent.** `policy.rs`'s
+  `rows_brought_in_by_collapse(listed, subtree, band, others)` counts the rows
+  the collapse brings into the realized band, read once per input before any
+  change: the rows listed after both the subtree's last row and the band's
+  last realized row (`rows_after_collapse`), plus, when the view is clamped
+  at the list's end, the rows it refills from above
+  (`rows_clamped_in_by_collapse`), less the rows under the other subtrees the
+  same input collapses (the folder header's). `collapse_route` sends the
+  collapse `Direct` when that count is more than one unit
+  (`SIDEBAR_REALIZED_ROWS_PER_FRAME`, 32), `Paced` otherwise. The direct
+  route moves selection and focus to the directory row, then calls GTK's
+  `set_expanded(false)` in the input dispatch: `main`'s collapse.
+- **Decisions, with their reasons.**
+  - *The threshold is one unit, not zero.* R13 names the classes "no row
+    after the band at intent, or rows after it". Every 0:N case of the
+    measured fixture lists one row after the band (`top.txt`), and that class
+    met every bar in the T1 round: a refill of up to one unit takes one
+    interval, the paced route's own rate, so it is not the rows-after cost
+    the round measured. D18 already gives a destroy-only removal one unit of
+    view-clamp tolerance; the class boundary uses the same unit. The widget
+    tests pin both sides: 32 rows after (`PACED_SIBLINGS` plus `top.txt`)
+    stay paced, 33 go direct.
+  - *Rows already realized do not count.* They move, but GTK creates no
+    widget for them; only rows entering the band are the refill.
+  - *The other subtrees of the same input do not count.* Their rows leave
+    with this one, so the header's two-root fixture brings in 1 and 0 rows
+    and stays paced, the class the T1 round measured within its bar.
+  - *The tail collapse is in the class (advisor item 4a).* With the view at
+    the end of the collapsing directory, the clamped view refills from
+    above, one unit an interval (D18), the same mechanism as rows after:
+    `test_a_collapse_at_the_tail_refills_no_more_than_a_unit_from_above`'s
+    fixture (400 rows before, `nested/` of 4,096, the view at its tail)
+    brings in 202 rows, about seven intervals, as the 400:N rows-after cases
+    take. It goes direct; with 28 rows before (at most a unit with the
+    directory rows) it stays paced, and its per-dispatch bound holds.
+  - *Decided at intent, once per input.* The route reads the band before any
+    row changes; a later collapse of another input decides its own.
+- **What C3 keeps on the direct route.** Everything that passes its own gates
+  in every case (R13, C3's first point): selection and focus to the
+  directory row, D24 for the paced route only (the direct route takes
+  `main`'s path-cache work), D17's lighter rows, D10's expansion cap, R4's
+  header fix, R6's fixes. The direct route has no hidden rows (D22), no held
+  keys (A126) and no readiness blocker, since nothing is pending after its
+  input dispatch.
+- **Evidence.** `collapse_rows_after_direct_total` and
+  `collapse_last_input_rows_after_direct` count the direct-route collapses,
+  in total and in the last input; the verdict line prints
+  `"route":"direct"|"paced"` and `collapse-judged` prints `"c3_direct"`.
+  `judge_case` still judges a direct-route case's completion and picture
+  final against R3's bar; it prints, but does not judge, its input, steps,
+  dispatches over `B_SETTLE_US` and `INPUT_TO_FRAME_US`, because C3 keeps
+  `main`'s collapse "whatever its frames". `rev/verdict-main.patch` prints
+  `"route":"paced"` and `"c3_direct":false` on `main`, which has no route.
+- **Failing first.** The policy tests and proptests
+  (`rev11/c3-policy-failing-first.log`), and the widget tests
+  `test_a_collapse_with_rows_after_it_takes_the_direct_collapse` and
+  `test_a_collapse_at_the_tail_refills_no_more_than_a_unit_from_above` with
+  the route forced paced (`rev11/c3-route-failing-first.log`: "400:64:
+  collapsed in the input dispatch"; "400 rows before: the tail collapse took
+  the direct route").
+- **Fixtures moved with the class.** The paced-route widget tests that used
+  400 siblings now use `PACED_SIBLINGS` (31, so 32 rows after with
+  `top.txt`), the most rows after C3 leaves paced; each asserts that its
+  collapse was sliced, because a test that routed direct would pass vacuously
+  (`rev11/vacuous-check.log`: two did until they asserted it). With only 32
+  rows after, the band holds every row after the subtree once a unit has
+  run, so later removals are destroy-only: `test_bound_units_run_outside_the_frame`
+  allows one destroy-only unit in an interval that created no row widget
+  (D18), and one unit otherwise. `test_a_rebound_row_in_a_collapsing_subtree_stays_hidden`
+  scrolled past the shorter list's end (a `gtk_list_view_scroll_to`
+  critical); its target is now inside it.
+- **Part B's reading for the direct class.** The 400:N cases are `main`'s
+  collapse on both sides. They are judged at R3's completion bar, as every
+  case; their input, frames and dispatches are read beside `main`'s in the
+  same round, and a branch figure worse than `main`'s worst by more than
+  the noise of `main`'s own repetitions is attributed before the merge.
+
+#### Attributions of the T1 round (2026-11-24)
+
+**The 60 ms re-expansion frames (the P2 cut).** By the entry, a counter in
+a widget test first:
+- *The counters are silent.* Diagnostic widget tests (not committed; source
+  `rev11/zzdiag-tests.rs`, logs `rev11/zzdiag*.log`) re-expand during the
+  collapse by the verdict protocol and count, per dispatch, the row widgets
+  created, shown and destroyed, and the rows whose allocation moved. In the
+  slow frame no row widget is created, shown or destroyed, and 15 of 207
+  rows move (`zzdiag6.log`), so neither D22's re-show nor the band's refill
+  as counted explains it.
+- *The condition.* In the debug build the repetitions whose collapse had run
+  a bound unit before the re-expansion are exactly the ones with a slow frame:
+  12.2–24.2 ms in r0 and r7 of `zzdiag5.log` and r0 and r3 of
+  `zzdiag6.log`; the others' longest dispatch is 7.0–8.2 ms.
+- *A reproduction.* `test_zz_diag_refill_frame_control` forces that
+  condition in an opt-level 2 build (`rev11/widget-diag-opt`,
+  `rev11/build-diag-opt.sh`, `zzdiag7.log`), three repetitions at 4,096 and
+  131,072: after a bound unit, the re-expansion's refill inserts its first 8
+  rows (2.0–5.0 ms) and the frame after it takes 12.9–21.4 ms; the control,
+  a cold expansion of the same directory, inserts 33 rows and its frames take
+  3.9–5.6 ms. The excess is specific to the refill and does not grow with the
+  directory.
+- So the counter is silent and the round goes to a profile: the DWARF round
+  `MEASURE-QUEUE.md`, "P2 refill-frame profile", queued READY with its
+  reading pre-registered. Part B stays PENDING until it is read, and any
+  LushText cost it names is cut failing-first first. Part B's re-expansion
+  case is not evidence about P2 by itself: the T1 hold (below) changes the
+  state the collapse is in 30 ms after the input.
+
+**`INPUT_TO_FRAME_US`, by the part that carries each miss.** The first frame
+after an input comes one refresh interval after the frame painted before it
+(the compositor's frame callback), so the figure's base is the age of the
+last frame at the input plus that interval, not LushText work. From the
+diagnostic runs (`zzdiag.log`):
+- *Base.* At 0:256 the last frame is 3.4–4.0 ms old at the input, the input
+  dispatch takes 2.8 ms and the frame starts about 10.3 ms after it: 16.7–
+  16.9 ms in the debug build, 13.9–15.4 ms in the T1 round. The cases that
+  meet the bar at 13–15 ms are this cadence.
+- *0:131,072 and 400:131,072 (all twelve), 0:16,385 and 0:4,096.* The
+  between-frames turns (4.2–4.6 ms each) run from the input, and one in
+  flight when the frame callback arrives delays the frame by the rest of the
+  turn. This part is LushText's: the cut is the hold below.
+- *400:16,385 (four).* Its first frame lays out the wide relayout of the
+  rows after the subtree (about 8 ms); C3 routes the class direct.
+- *The header (one, 19,478 µs).* Its input collapses two roots (4.3–5.5 ms),
+  and a 4.1 ms terminal step runs before the frame. The header stays paced;
+  the miss is recorded under C1 and Part B judges it at the bar.
+- *The 64-entry cases* get their first frame at once (1.1–2.4 ms); they are
+  not attributed further, since they meet the bar.
+
+**The cut: the hold on unbound turns (built).** No between-frames turn runs
+until the first `after-paint` after the input (`unbound_turns_held`): the
+input arms only the step source, whose D23 chunk runs before the frame, and
+the paint that ends the hold arms the between-frames idle. Bound units are
+not delayed: the first runs in the first interval after the paint
+(`test_no_unbound_turn_runs_before_the_first_frame_after_the_input`, failing
+first in `rev11/hold-failing-first.log` with the idle armed at the input).
+Its predicted cost is about one interval of completion where the unbound rows
+are the long part: 0:131,072 from 113 ms to about 130 ms, against its bar of
+157.3 ms. The margin it leaves under `INPUT_TO_FRAME_US` at 0:131,072 is
+about 2.5 ms and depends on where the input falls in the compositor's cycle,
+which the harness does not control; Part B judges it at the bar. While
+building it, re-arming the between-frames idle from every paint kept the idle
+cycling after a collapse ended, and `test_replayed_navigation_matches_gtk`
+then failed ("Ctrl+Down moved the focus" with no collapse pending; it passed
+on the committed code, `rev11/nav-head.log`); the idle is now re-armed only
+by the paint that ends a hold (`rev11/nav5.log`, `nav6.log`).
+
+**The 8,052 µs input (400:256).** That case is in the rows-after class, so
+C3 routes it direct and the paced input it measured no longer runs. The paced
+class's slow-mode inputs (5.5–7.0 ms, five of 66, all within
+`B_INTERACT_US`) stay unattributed: P1's profile did not reproduce the mode,
+and they are read again in Part B as data.
 
 ### R14. Review of R13 (2026-11-18)
 
