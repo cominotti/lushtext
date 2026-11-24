@@ -992,3 +992,19 @@ pub mod a128 {
 pub mod a129 {
     pub use crate::probes::a129::{CONSTRUCTS, DOCUMENT, first_match};
 }
+
+/// The tab strip the A132 probe scrolls by writing its unpinned adjustment,
+/// for its sample.
+pub mod a132 {
+    pub use crate::probes::a132::{TABS, fixture, write_scroll_value};
+    pub use crate::probes::tab_strip::{
+        TabStripFixture, describe_adjustment, find_tab_scroller, overflows,
+    };
+}
+
+/// The tab strip whose overflow and height the A133 probe reads, for its
+/// sample.
+pub mod a133 {
+    pub use crate::probes::a133::{OverflowNotify, end_group, fixture, record_notifies};
+    pub use crate::probes::tab_strip::{TabStripFixture, describe_adjustment, overflows};
+}

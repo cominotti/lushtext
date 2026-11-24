@@ -46,7 +46,15 @@ Toolkit Updates".
 7. **Read the per-SDK summary.** After each SDK the lane prints each sample's
    verdict or skip reason, the toolkit versions the samples reported, and the
    SDK's `pkg-config` module versions.
-8. **Update the pins** a gtk-rs bump moves: the Fedora version in `ci.yml` and
+8. **Retire the toolkit-warning classifications the update fixes.** The
+   widget runner classifies one GTK 4.24 line as benign,
+   `gdk_frame_timings_presented() called on discarded frame.` (ledger A134,
+   `BENIGN_WIDGET_NOISE_REGEX` in `scripts/run-widget-tests.sh`). Once the
+   shipped toolkit and the CI image carry GTK d2595c6b (MR !10242), A134's
+   `GTK >= 4.24` branch fails: in the same change, remove that entry and its
+   self-test sample (keep the near misses), and version-qualify A134 at the
+   first release with the fix.
+9. **Update the pins** a gtk-rs bump moves: the Fedora version in `ci.yml` and
    `release-benchmark.yml`, and the GNOME tag in `flatpak.yml` and the Flatpak
    manifest (build.md, "CI").
 

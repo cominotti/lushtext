@@ -42,6 +42,26 @@ from nextest's default filter, while widget coverage in `make test` flows
 through the shared headless `scripts/run-widget-tests.sh` path so local
 verification matches CI.
 
+**Bounded warning scans.** The widget runner, the GTK axiom runner and the
+mutation runner scan the output of the command they run in a stage beside the
+live stream (`scripts/bounded-log-scan.sh`), never in a whole-output file. The
+stage applies the runner's own `grep -E` / `grep -Ev` regexes, reading the
+stream as text (`grep -a`: a NUL byte would otherwise make GNU grep report only
+"binary file matches" and hide every match after it), keeps an exact
+count of unexpected lines and at most 64 KiB of them for the report, keeps at
+most 1 MiB of the lines a runner parses later (the axiom runner's result,
+slow-skip and observation lines; the mutation runner's no-mutants phrase, by
+its exact count), reads its input to EOF, and writes only to files unlinked as
+soon as they are open. Any unexpected line fails the run whatever the cap
+kept; a scan that did not finish, or axiom kept lines over 1 MiB, fail it
+closed. The widget runner starts and awaits the stage in its top-level shell,
+which owns the trap ([why](../../docs/memorials/2026-10-20-test-data-incidents.md)).
+`make check-temp-scope` (in `make check-policy`) shellchecks
+`bounded-log-scan.sh` and `run-widget-tests.sh` and runs
+`run-widget-tests.sh --self-test`, which runs the widget classification,
+memory-report and capture cases, the stage's self-test and the temp scope's,
+each once.
+
 The widget session's launcher (the `widget` profile of the session helper,
 below) sets the **seven** settings returned by
 `gtk_lush_proof_harness::recommended_pre_gtk_environment()` before the bus
@@ -653,7 +673,11 @@ SDK sandbox with `--no-session-bus --no-a11y-bus --no-documents-portal`
 (`SANDBOX_FLAGS`). `./scripts/run-gtk-axioms.sh --self-test` (in
 `make check-gtk-axioms`) asserts the benign lines pass and each defect class
 fails; a new class gets a case there, never a wider benign list
-([why](../../docs/memorials/axiom-lane-warning-scan.md)).
+([why](../../docs/memorials/axiom-lane-warning-scan.md)). The scan is
+streamed and bounded ("Bounded warning scans" under Dev Builds): the output
+goes live to the caller, the counts and the runtimes summary read the kept
+`{"axiom"…}` and `skipped (…)` lines (at most 1 MiB, an overflow fails the
+run), and no log is written.
 
 **Toolkit updates.** On any GTK, Libadwaita, GtkSourceView, Pango or GLib
 version change — the CI Fedora container image, the shipped GNOME runtime in
@@ -662,7 +686,12 @@ platform — run `make gtk-axioms` **first**, before any other work. A failing
 probe is an axiom change: never adjust a probe to match the new behaviour
 first, and when the shipped runtime and the floor disagree, version-qualify the
 entry rather than rewrite it (`make check-gtk-axioms` enforces the ledger
-form). The steps are in
+form). A classification of a toolkit warning
+exists only while the shipped toolkit has the defect: the widget runner's
+benign entry for GTK 4.24's `gdk_frame_timings_presented() called on
+discarded frame.` (ledger A134) is removed in the change that brings a shipped
+toolkit and CI image carrying GTK d2595c6b, which A134's `GTK >= 4.24` branch
+then fails on. The steps are in
 [`docs/runbooks/gtk-toolkit-update.md`](../../docs/runbooks/gtk-toolkit-update.md).
 Interleaved `GTK_AXIOMS_ONLY` re-test rounds run through `scripts/measure.sh`.
 A nightly verdict is a preview of the next adoption, never a ledger
@@ -677,6 +706,14 @@ against the new defaults and update the fragment and the version in its header
 comment; then run one screencast session (`make visual-geometry-smoke`). A
 changed default that loads module-rt, a hardware monitor or reaches rtkit
 fails that run with `SESSION-HYGIENE:` lines, which is the intended signal.
+On a WirePlumber update, also re-check the readiness signal the helper waits
+for (`session::observe::wireplumber_policy_ready`): that
+`/usr/share/wireplumber/scripts/session-services.lua` still sets the client's
+`session.services` and lists `policy.linking.standard` in it, and that
+`wireplumber.conf`'s component rules still order `support.session-services`
+after every other component. A renamed service or property fails the first
+screencast session before its command, with a `WirePlumber did not load its
+linking policy` line and `pw-dump-not-ready.json` in its log directory.
 
 ## Fuzzing
 

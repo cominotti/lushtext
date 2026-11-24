@@ -17,11 +17,15 @@
 //!   preview reserves up front and shrinks to once its outcome is known.
 //! * [`plan_undo_reservation`] plus [`UndoReservationPlan`] — the undo-journal
 //!   admission arithmetic that decides whether a reservation replaces guarded
-//!   owners and what weight it credits back.
+//!   owners and what weight it credits back, and [`combined_undo_weight`],
+//!   the installed weight of every journal a Replace All's admission retires.
 //! * [`journal_generation_is_current`] — the freshness predicate every
 //!   generation-guarded journal install, clear, disk save, and disk delete
 //!   compares against.
 //! * [`ReplaceApplyCounts`] — the last durable apply's observable counts.
+//! * [`replace_admission_resume`] over [`ReplaceAdmissionFacts`] — whether a
+//!   confirmed Replace All that waits for disposal capacity resumes, or ends
+//!   as [`ReplaceWaitEnd::Cancelled`] or [`ReplaceWaitEnd::Superseded`].
 //! * [`SEARCH_RESULTS_RETAINED_BYTES`] and [`SEARCH_MATCH_FIXED_CHARGE`] — the
 //!   retained-byte budget that replaced the 16,384-match count cap
 //!   (`bound-lists-by-budget-not-count` D3), and the wording that states what it
@@ -142,6 +146,22 @@ pub fn plan_undo_reservation(
     }
 }
 
+/// The combined reservation weight of several installed undo journals.
+///
+/// `None` only when no journal is installed, because `Some(0)` (a journal that
+/// measures nothing) still makes the reservation a replacement
+/// ([`plan_undo_reservation`]). A Replace All passes every window's journal,
+/// since its admission retires all of them in the same turn.
+#[must_use]
+pub fn combined_undo_weight(weights: impl IntoIterator<Item = Option<u64>>) -> Option<u64> {
+    weights
+        .into_iter()
+        .flatten()
+        .fold(None, |total: Option<u64>, weight| {
+            Some(total.unwrap_or(0).saturating_add(weight))
+        })
+}
+
 /// Whether a journal mutation still owns the generation it reserved.
 ///
 /// Every generation-guarded journal step — the in-memory install, the in-memory
@@ -163,6 +183,62 @@ pub struct ReplaceApplyCounts {
     pub skipped: u32,
     /// Files whose replacement reported an error.
     pub errors: u32,
+}
+
+/// What a confirmed Replace All waiting for disposal capacity knows when the
+/// capacity wakeup fires (`replace-all-confirm-disposal-lane` design D5).
+///
+/// Every field is a scalar read of live panel state at the resumption, so the
+/// decision stays GTK-free and testable over every combination.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ReplaceAdmissionFacts {
+    /// Whether this panel still holds the application's Replace All transaction.
+    pub transaction_claimed: bool,
+    /// Whether the parked journal freshness still matches the panel's journal
+    /// generation (`ReplaceJournalFreshness::is_current`).
+    pub freshness_current: bool,
+    /// Whether the user asked the waiting run to stop.
+    pub cancel_requested: bool,
+    /// Whether the run's control (cancel flag and progress) still exists.
+    pub run_control_present: bool,
+}
+
+/// Why a wait for capacity ended without starting the run.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReplaceWaitEnd {
+    /// The user cancelled, or the run's control is gone: nothing was changed.
+    Cancelled,
+    /// The transaction or the journal generation is no longer this run's (the
+    /// panel's own deferred persisted-undo startup load can install a journal
+    /// during the wait): the run was superseded before any file changed.
+    Superseded,
+}
+
+/// The decision for one resumption of a waiting Replace All.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReplaceAdmissionDecision {
+    /// Try the undo reservation again; the window recomputes the skip set first.
+    Resume,
+    /// End the wait without writing anything, for this reason.
+    Abandon(ReplaceWaitEnd),
+}
+
+/// Decide whether a waiting Replace All may try its admission again.
+///
+/// A cancel, or a run control that no longer exists, ends the wait as
+/// `Cancelled`; cancel wins over supersession because the user asked for it.
+/// Otherwise a lost transaction or a stale journal generation ends it as
+/// `Superseded`. Only a run that still owns all four facts resumes, so the
+/// window never starts a run this did not clear.
+#[must_use]
+pub const fn replace_admission_resume(facts: ReplaceAdmissionFacts) -> ReplaceAdmissionDecision {
+    if facts.cancel_requested || !facts.run_control_present {
+        ReplaceAdmissionDecision::Abandon(ReplaceWaitEnd::Cancelled)
+    } else if !facts.transaction_claimed || !facts.freshness_current {
+        ReplaceAdmissionDecision::Abandon(ReplaceWaitEnd::Superseded)
+    } else {
+        ReplaceAdmissionDecision::Resume
+    }
 }
 
 /// Compact latest query retained while one active search disconnects.
@@ -1110,6 +1186,20 @@ mod replace_weight_tests {
     }
 
     #[test]
+    fn combined_undo_weight_sums_only_installed_journals() {
+        assert_eq!(combined_undo_weight([None, None]), None);
+        assert_eq!(combined_undo_weight([None, Some(0)]), Some(0));
+        assert_eq!(
+            combined_undo_weight([Some(700), None, Some(300)]),
+            Some(1_000)
+        );
+        assert_eq!(
+            combined_undo_weight([Some(u64::MAX), Some(1)]),
+            Some(u64::MAX)
+        );
+    }
+
+    #[test]
     fn journal_generation_matches_only_its_own_reservation() {
         assert!(journal_generation_is_current(7, 7));
         assert!(!journal_generation_is_current(8, 7));
@@ -1484,5 +1574,74 @@ mod replace_in_editor_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod replace_admission_resume_tests {
+    use super::*;
+
+    /// Every combination of the four facts (design D5), with the decision the
+    /// table expects: a cancel or a lost run control ends as `Cancelled`, a
+    /// transaction or journal generation this run no longer holds ends as
+    /// `Superseded`, and only all four clear resumes. Cancel wins over
+    /// supersession, because the user asked for it.
+    #[test]
+    fn every_fact_combination_has_its_decision() {
+        for bits in 0u8..16 {
+            let facts = ReplaceAdmissionFacts {
+                transaction_claimed: bits & 1 != 0,
+                freshness_current: bits & 2 != 0,
+                cancel_requested: bits & 4 != 0,
+                run_control_present: bits & 8 != 0,
+            };
+            let expected = if facts.cancel_requested || !facts.run_control_present {
+                ReplaceAdmissionDecision::Abandon(ReplaceWaitEnd::Cancelled)
+            } else if !facts.transaction_claimed || !facts.freshness_current {
+                ReplaceAdmissionDecision::Abandon(ReplaceWaitEnd::Superseded)
+            } else {
+                ReplaceAdmissionDecision::Resume
+            };
+            assert_eq!(replace_admission_resume(facts), expected, "{facts:?}");
+        }
+    }
+
+    #[test]
+    fn a_current_claimed_run_resumes() {
+        assert_eq!(
+            replace_admission_resume(ReplaceAdmissionFacts {
+                transaction_claimed: true,
+                freshness_current: true,
+                cancel_requested: false,
+                run_control_present: true,
+            }),
+            ReplaceAdmissionDecision::Resume
+        );
+    }
+
+    #[test]
+    fn a_stale_journal_generation_is_superseded_not_cancelled() {
+        assert_eq!(
+            replace_admission_resume(ReplaceAdmissionFacts {
+                transaction_claimed: true,
+                freshness_current: false,
+                cancel_requested: false,
+                run_control_present: true,
+            }),
+            ReplaceAdmissionDecision::Abandon(ReplaceWaitEnd::Superseded)
+        );
+    }
+
+    #[test]
+    fn a_requested_cancel_wins_over_a_lost_transaction() {
+        assert_eq!(
+            replace_admission_resume(ReplaceAdmissionFacts {
+                transaction_claimed: false,
+                freshness_current: false,
+                cancel_requested: true,
+                run_control_present: true,
+            }),
+            ReplaceAdmissionDecision::Abandon(ReplaceWaitEnd::Cancelled)
+        );
     }
 }

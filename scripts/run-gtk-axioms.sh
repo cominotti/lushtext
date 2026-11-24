@@ -51,6 +51,11 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The bounded warning scan beside the live stream (bls_start, bls_finish): an
+# exact count, a 64 KiB excerpt, and at most 1 MiB of the lines the readers
+# below parse, all on unlinked descriptors; no whole-output log.
+# shellcheck source=scripts/bounded-log-scan.sh
+source "$REPO_ROOT/scripts/bounded-log-scan.sh"
 EXAMPLES_DIR="$REPO_ROOT/crates/gtk-lush/axioms/examples"
 UNSUPPORTED_HOST_EXIT_CODE=77
 HEADLESS_SESSION="$REPO_ROOT/scripts/headless-session"
@@ -188,22 +193,25 @@ run_headless() {
         "$HEADLESS_SESSION" run --profile widget --inherit-runtime-dir --monitor "$MONITOR" -- "$@"
 }
 
+# The verdict of the last scan (bls_finish): any unexpected line, or a scan
+# that did not finish, fails the lane.
 scan_warnings() {
-    local log_file="$1"
-    local found
-    found="$(grep -E "$WARNING_REGEX" "$log_file" | grep -Ev "$BENIGN_NOISE_REGEX" || true)"
-    if [[ -n "$found" ]]; then
-        printf '%s\n' "$found" >&2
+    if ! bls_check_unexpected; then
         echo "Error: unexpected warnings while running GTK axiom probes." >&2
         return 1
     fi
 }
 
+# Classify the lines on stdin as a sample run's output is classified, keeping
+# the result lines; the live copy is dropped.
+scan_lines() {
+    run_logged "$SAMPLE_KEEP_REGEX" cat >/dev/null
+}
+
 # The benign session lines must pass, and every defect class must fail,
 # including the ones seen from the SDK sandbox's helpers.
 self_test() {
-    local log_file line
-    log_file="$(mktemp)"
+    local line
     local benign=(
         'libmutter-Message: 02:16:19.694: Running Mutter (using mutter 50.4) as a Wayland display server'
         '** Message: 02:16:19.858: Obtained a high priority EGL context'
@@ -224,34 +232,61 @@ self_test() {
     local failed=0
     mapfile -t -O "${#benign[@]}" benign < <(python3 -B "$REPO_ROOT/scripts/smoke_warning_classifiers.py" \
         --print-samples headless-session-services)
-    printf '%s\n' "${benign[@]}" >"$log_file"
-    if ! scan_warnings "$log_file"; then
+    if ! scan_lines < <(printf '%s\n' "${benign[@]}"); then
         echo "Error: GTK axiom warning self-test rejected benign session output." >&2
         failed=1
     fi
     for line in "${defects[@]}"; do
-        printf '%s\n' "$line" >"$log_file"
-        if scan_warnings "$log_file" >/dev/null 2>&1; then
+        if scan_lines < <(printf '%s\n' "$line") 2>/dev/null; then
             echo "Error: GTK axiom warning self-test accepted: $line" >&2
             failed=1
         fi
     done
     # A slow sample skipped by design counts as a result and is not a
     # warning; anything else that only looks like one does not count.
-    printf '%s\n' '{"axiom":"A1","verdict":"holds","measured":{},"gtk":"4.22.5","adw":"1.9.3"}' \
-        'skipped (slow): A29' 'skipped (slow): A29 extra' 'not skipped (slow): A3' >"$log_file"
-    if ! scan_warnings "$log_file" || [[ "$(count_sample_results "$log_file")" -ne 2 ]]; then
+    local slow_log='{"axiom":"A1","verdict":"holds","measured":{},"gtk":"4.22.5","adw":"1.9.3"}
+skipped (slow): A29
+skipped (slow): A29 extra
+not skipped (slow): A3'
+    if ! scan_lines <<<"$slow_log" || [[ "$(count_sample_results "$(bls_kept_path)")" -ne 2 ]]; then
         echo "Error: GTK axiom self-test miscounted a slow sample skipped by design." >&2
         failed=1
     fi
     # A sample whose fixture needs RemoteDesktop or reads the session bus,
     # skipped inside an SDK sandbox (which has no session bus), likewise
     # counts as a result; any other reason does not.
-    printf '%s\n' '{"axiom":"A1","verdict":"holds"}' 'skipped (needs RemoteDesktop): A59' \
-        'skipped (needs a session bus): A115' 'skipped (needs RemoteDesktop): A59 extra' \
-        'skipped (needs a session): A60' 'skipped (needs a session bus): A116 extra' >"$log_file"
-    if ! scan_warnings "$log_file" || [[ "$(count_sample_results "$log_file")" -ne 3 ]]; then
+    local remote_log='{"axiom":"A1","verdict":"holds"}
+skipped (needs RemoteDesktop): A59
+skipped (needs a session bus): A115
+skipped (needs RemoteDesktop): A59 extra
+skipped (needs a session): A60
+skipped (needs a session bus): A116 extra'
+    if ! scan_lines <<<"$remote_log" || [[ "$(count_sample_results "$(bls_kept_path)")" -ne 3 ]]; then
         echo "Error: GTK axiom self-test miscounted a sample skipped for lack of RemoteDesktop." >&2
+        failed=1
+    fi
+    # The kept lines answer every reader as a full log would: the result
+    # count, the slow-skip count and the runtimes summary, on the samples
+    # above mixed with the session noise.
+    local full_log full_count kept_count full_slow kept_slow full_summary kept_summary
+    full_log="$(printf '%s\n' "${benign[@]}" "$slow_log" "$remote_log")"
+    scan_lines <<<"$full_log" || true
+    full_count="$(grep -cE "$SAMPLE_RESULT_REGEX" <<<"$full_log" || true)"
+    kept_count="$(count_sample_results "$(bls_kept_path)")"
+    full_slow="$(grep -cE "$SLOW_SKIP_REGEX" <<<"$full_log" || true)"
+    kept_slow="$(grep -cE "$SLOW_SKIP_REGEX" "$(bls_kept_path)" || true)"
+    full_summary="$(runtime_summary self-test <(printf '%s\n' "$full_log") a01_x a29_x a59_x a60_x a115_x a116_x)"
+    kept_summary="$(runtime_summary self-test "$(bls_kept_path)" a01_x a29_x a59_x a60_x a115_x a116_x)"
+    if [[ "$kept_count" != "$full_count" || "$kept_slow" != "$full_slow" || "$kept_summary" != "$full_summary" ]]; then
+        echo "Error: GTK axiom self-test: the kept lines disagree with the full log (results $kept_count/$full_count, slow skips $kept_slow/$full_slow, summary same: $([[ "$kept_summary" == "$full_summary" ]] && echo yes || echo no))." >&2
+        failed=1
+    fi
+    bls_release
+    # More than 1 MiB of kept lines fails the run and names the cap.
+    local overflow_err
+    if overflow_err="$(scan_lines < <(yes '{"axiom":"A1","verdict":"holds","measured":{},"gtk":"4.24.0","adw":"1.10.0"}' 2>/dev/null | head -n 16384) 2>&1)" \
+        || [[ "$overflow_err" != *"exceeded 1 MiB"* ]]; then
+        echo "Error: GTK axiom self-test accepted kept output over 1 MiB: $overflow_err" >&2
         failed=1
     fi
     # `runtimes --only` selects exactly the named samples, in the given order
@@ -271,12 +306,23 @@ self_test() {
         echo "Error: GTK axiom self-test accepted an empty --only list." >&2
         failed=1
     fi
-    printf '%s\n' '{"axiom":"A28","verdict":"holds"}' '{"axiom":"A79","verdict":"holds"}' >"$log_file"
-    if ! expect_sample_results "$log_file" 2 2>/dev/null || expect_sample_results "$log_file" 3 2>/dev/null; then
+    scan_lines < <(printf '%s\n' '{"axiom":"A28","verdict":"holds"}' '{"axiom":"A79","verdict":"holds"}') || true
+    if ! expect_sample_results "$(bls_kept_path)" 2 2>/dev/null || expect_sample_results "$(bls_kept_path)" 3 2>/dev/null; then
         echo "Error: GTK axiom self-test miscounted the results of a selected subset." >&2
         failed=1
     fi
-    rm -f "$log_file"
+    bls_release
+    # A sample run whose scan could not start (an unusable TMPDIR) has no
+    # kept lines: its SDK report says so, and the runtimes loop goes on to
+    # the next SDK instead of aborting on a summary of nothing.
+    local no_scan_report
+    if TMPDIR="${TMPDIR:-/tmp}/gtk-axioms-no-such-$$/base" scan_lines </dev/null 2>/dev/null \
+        || ! no_scan_report="$(sdk_report self-test a01_x 2>&1)" \
+        || [[ "$no_scan_report" != *"the output scan did not start"* ]]; then
+        echo "Error: GTK axiom self-test: the SDK report of a scan that never started was: $no_scan_report" >&2
+        failed=1
+    fi
+    bls_release
     if [[ "$failed" -ne 0 ]]; then
         return 1
     fi
@@ -290,20 +336,32 @@ self_test() {
     echo "GTK axiom warning classification, slow-skip and sample-list self-test passed."
 }
 
-# Run "$@" with its output teed to the log file $1, failing on a nonzero exit
-# or on a toolkit warning in the log.
+# Run "$@" with its output streamed live and scanned beside it (in this
+# shell, which starts and awaits the stage), keeping the lines matching the
+# ERE $1 ('' keeps nothing) for the readers below through bls_kept_path.
+# Fails on a nonzero exit, on a toolkit warning, on a scan that did not
+# finish, or on kept lines over 1 MiB. The kept lines stay readable until the
+# next run_logged or bls_release.
 run_logged() {
-    local log_file="$1"
+    local keep="$1"
     shift
     local status
+    if ! bls_start "$WARNING_REGEX" "$BENIGN_NOISE_REGEX" "$keep"; then
+        echo "Error: $BLS__START_ERROR; not running $1." >&2
+        return 1
+    fi
     set +e
-    "$@" 2>&1 | tee "$log_file"
+    bls_isolated "$@" 2>&1 | tee -p "/dev/fd/$BLS_IN"
     status="${PIPESTATUS[0]}"
     set -e
+    bls_finish
     if [[ "$status" -ne 0 ]]; then
         return "$status"
     fi
-    scan_warnings "$log_file"
+    scan_warnings || return 1
+    if [[ -n "$keep" ]]; then
+        bls_check_kept
+    fi
 }
 
 # Run every sample binary with --check, one after another, inside whatever
@@ -330,25 +388,28 @@ SAMPLE_CHECK_LOOP='
 # `skipped (needs a session bus): <id>` line per sample whose probe reads the
 # session bus (A115, A116).
 SAMPLE_RESULT_REGEX='^(\{"axiom"|skipped \((slow|needs RemoteDesktop|needs a session bus)\): A[0-9]+$)'
+SLOW_SKIP_REGEX='^skipped \(slow\): '
+# What a sample run keeps for those readers: a superset of SAMPLE_RESULT_REGEX,
+# SLOW_SKIP_REGEX and runtime_summary's two patterns; each reader still applies
+# its own.
+SAMPLE_KEEP_REGEX='^(\{"axiom"|skipped \()'
 count_sample_results() {
     grep -cE "$SAMPLE_RESULT_REGEX" "$1" || true
 }
 
 # Run the sample checks through "$@" (a command that ends where the loop's
-# arguments begin), logged to $1, and require one result per binary in
-# SAMPLE_BINARIES.
+# arguments begin), keeping their result lines (bls_kept_path), and require
+# one result per binary in SAMPLE_BINARIES.
 check_samples() {
-    local log_file="$1"
-    shift
-    if ! run_logged "$log_file" run_headless "$@" -c "$SAMPLE_CHECK_LOOP" gtk-axiom-samples \
+    if ! run_logged "$SAMPLE_KEEP_REGEX" run_headless "$@" -c "$SAMPLE_CHECK_LOOP" gtk-axiom-samples \
         "${SAMPLE_BINARIES[@]}"; then
         echo "Error: at least one sample --check did not hold." >&2
         return 1
     fi
-    expect_sample_results "$log_file" "${#SAMPLE_BINARIES[@]}"
+    expect_sample_results "$(bls_kept_path)" "${#SAMPLE_BINARIES[@]}"
 }
 
-# Fail unless the log $1 holds exactly $2 sample results.
+# Fail unless the lines at $1 hold exactly $2 sample results.
 expect_sample_results() {
     local checked
     checked="$(count_sample_results "$1")"
@@ -359,8 +420,6 @@ expect_sample_results() {
 }
 
 run_all() {
-    LOG_DIR="$(mktemp -d)"
-    trap 'rm -rf "$LOG_DIR"' EXIT
     export_headless_env
 
     # Build the samples first so a sample that does not compile fails before
@@ -377,7 +436,7 @@ run_all() {
     # set, so the harness does not relaunch through the library), because the
     # helper binary exports GTK_LUSH_SESSION_BIN, which the A115 and A116
     # controls need for their nested sessions.
-    if ! run_logged "$LOG_DIR/probes.log" run_headless \
+    if ! run_logged '' run_headless \
         env GTK_LUSH_AXIOMS_PROBE_HEADLESS_RUNNER=1 \
         cargo test -p gtk-lush-adoption-lab --test axiom_probes; then
         echo "Error: the probe binary failed." >&2
@@ -385,10 +444,11 @@ run_all() {
     fi
 
     echo "==> Sample --check runs"
-    check_samples "$LOG_DIR/samples.log" bash
+    check_samples bash
     local skipped
-    skipped="$(grep -cE '^skipped \(slow\): ' "$LOG_DIR/samples.log" || true)"
-    echo "GTK axioms: probe binary passed; ${#SAMPLE_BINARIES[@]} sample checks held ($skipped slow skipped by design)."
+    skipped="$(grep -cE "$SLOW_SKIP_REGEX" "$(bls_kept_path)" || true)"
+    bls_release
+    echo "GTK axioms: probe binary passed; ${#SAMPLE_BINARIES[@]} sample checks held ($skipped slow skipped by design; $BLS_KEPT_COUNT kept lines, $BLS_KEPT_BYTES of the $BLS_KEEP_CAP-byte cap)."
 }
 
 run_sample() {
@@ -444,8 +504,6 @@ run_runtimes() {
     if [[ ${#refs[@]} -eq 0 ]]; then
         refs=(org.gnome.Sdk//50 org.gnome.Sdk//51 org.gnome.Sdk//master)
     fi
-    LOG_DIR="$(mktemp -d)"
-    trap 'rm -rf "$LOG_DIR"' EXIT
     # Only here: the sandbox has no session bus, so a sample whose fixture
     # drives RemoteDesktop reports a skip instead of fixture-invalid. The host
     # lane (`all`, `sample`) never sets it.
@@ -477,13 +535,15 @@ run_runtimes() {
         echo "==> $ref: ${#SAMPLE_BINARIES[@]} sample --check run(s) against the SDK's toolkit"
         unset DISPLAY WAYLAND_DISPLAY
         # One sandbox per SDK runs every sample, each still its own process.
-        if ! check_samples "$LOG_DIR/runtime-${slug}.log" \
+        if ! check_samples \
             flatpak run --command=bash --filesystem=home --socket=wayland --nosocket=x11 \
             "${SANDBOX_FLAGS[@]}" "${env_flags[@]}" "$ref"; then
             echo "FAILED: sample checks on $ref." >&2
             failed=1
         fi
-        runtime_summary "$ref" "$LOG_DIR/runtime-${slug}.log" "${examples[@]}"
+        # This SDK's kept lines stay open until its summary has read them.
+        sdk_report "$ref" "${examples[@]}"
+        bls_release
         # The loop expands inside the SDK's shell, so it is single-quoted.
         # shellcheck disable=SC2016
         echo "  SDK modules: $(flatpak run --command=bash "${SANDBOX_FLAGS[@]}" "$ref" -c \
@@ -493,6 +553,20 @@ run_runtimes() {
     done
     echo "GTK axiom runtimes: checked $ran SDK(s)."
     return "$failed"
+}
+
+# The report of SDK $1's sample run, over the selected samples "${@:2}". A
+# run whose scan never started kept nothing to summarize (check_samples has
+# already failed it), so the report says so and the loop goes on.
+sdk_report() {
+    local ref="$1"
+    shift
+    if [[ -z "$BLS_R_KEPT" ]]; then
+        echo "==> $ref: no summary: the output scan did not start"
+        return 0
+    fi
+    runtime_summary "$ref" "$(bls_kept_path)" "$@"
+    echo "  kept: $BLS_KEPT_COUNT lines, $BLS_KEPT_BYTES of the $BLS_KEEP_CAP-byte cap"
 }
 
 # The per-SDK summary: one line per selected sample with its verdict or skip

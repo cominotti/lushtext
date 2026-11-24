@@ -45,11 +45,13 @@ impl HostProbeReport {
 ///
 /// When the artifact directory is too deep for a Unix socket path, the runtime
 /// directory falls back to a short `lt-proof-<pid>-<hash>` directory in the
-/// system temp dir. That directory is outside the artifact tree, so the layout
-/// owns it: dropping the layout removes it on every return path, including the
-/// `?` early returns between preparation and the explicit post-session
-/// [`RuntimeLayout::cleanup_runtime_dir`]. A process killed outright leaves it
-/// behind, which the next preparation's sweep reclaims once the PID is gone.
+/// system temp dir, or in [`SHORT_RUNTIME_BASE`] when the temp dir is too deep
+/// as well (an agent stage's `TMPDIR`). That directory is outside the artifact
+/// tree, so the layout owns it: dropping the layout removes it on every return
+/// path, including the `?` early returns between preparation and the explicit
+/// post-session [`RuntimeLayout::cleanup_runtime_dir`]. A process killed
+/// outright leaves it behind, which the next preparation's sweep reclaims once
+/// the PID is gone.
 #[derive(Debug)]
 pub(crate) struct RuntimeLayout {
     root: PathBuf,
@@ -62,6 +64,11 @@ pub(crate) struct RuntimeLayout {
 
 /// Prefix of the short runtime directory used for deep artifact paths.
 const TEMP_RUNTIME_PREFIX: &str = "lt-proof-";
+
+/// Where the short runtime directory goes when the system temp dir is too
+/// deep for the session's sockets too (the session helper's own
+/// `SHORT_RUNTIME_BASE`).
+const SHORT_RUNTIME_BASE: &str = "/tmp";
 
 /// Minimum idle age before a dead process's short runtime directory is swept.
 const STALE_TEMP_RUNTIME_MIN_AGE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
@@ -78,10 +85,10 @@ impl RuntimeLayout {
     /// Create runtime, data, config, and cache directories under the artifact root.
     pub(crate) fn prepare(artifact_dir: &Path) -> Result<Self, String> {
         let root = absolute_for_hash(&artifact_dir.join("runtime"))?;
-        let runtime_dir = runtime_dir_for_artifact(artifact_dir, &root)?;
+        let runtime_dir = runtime_dir_for_artifact(artifact_dir, &root, &std::env::temp_dir())?;
         let owns_temp_runtime_dir = !runtime_dir.starts_with(&root);
-        if owns_temp_runtime_dir {
-            sweep_stale_temp_runtime_dirs(&std::env::temp_dir());
+        if owns_temp_runtime_dir && let Some(base) = runtime_dir.parent() {
+            sweep_stale_temp_runtime_dirs(base);
         }
         let data_dir = root.join("data");
         let config_dir = root.join("config");
@@ -411,23 +418,36 @@ fn restrict_runtime_dir(runtime_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn runtime_dir_for_artifact(artifact_dir: &Path, root: &Path) -> Result<PathBuf, String> {
+/// Whether a session in runtime directory `dir` can bind its sockets:
+/// PipeWire's manager socket and the session helper's private system bus
+/// socket, the longest of them.
+fn runtime_dir_fits(dir: &Path) -> bool {
+    pipewire_manager_socket_path_len(dir) < 108
+        && session::runtime_dir_fits_sockets(&canonical_projection(dir))
+}
+
+/// The run's runtime directory: inside the artifact tree when the session's
+/// sockets fit there, else a short `lt-proof-<pid>-<hash>` directory in
+/// `temp_dir`, or in [`SHORT_RUNTIME_BASE`] when `temp_dir` is too deep too.
+fn runtime_dir_for_artifact(
+    artifact_dir: &Path,
+    root: &Path,
+    temp_dir: &Path,
+) -> Result<PathBuf, String> {
     let artifact_local = root.join("xdg-runtime");
-    // The session helper binds its private system bus socket inside the
-    // runtime directory, the longest of the session's socket paths.
-    if pipewire_manager_socket_path_len(&artifact_local) < 108
-        && session::runtime_dir_fits_sockets(&canonical_projection(&artifact_local))
-    {
+    if runtime_dir_fits(&artifact_local) {
         return Ok(artifact_local);
     }
 
     let mut hasher = DefaultHasher::new();
     absolute_for_hash(artifact_dir)?.hash(&mut hasher);
     let hash = hasher.finish();
-    Ok(std::env::temp_dir().join(format!(
-        "{TEMP_RUNTIME_PREFIX}{}-{hash:016x}",
-        std::process::id()
-    )))
+    let name = format!("{TEMP_RUNTIME_PREFIX}{}-{hash:016x}", std::process::id());
+    let in_temp = temp_dir.join(&name);
+    if runtime_dir_fits(&in_temp) {
+        return Ok(in_temp);
+    }
+    Ok(Path::new(SHORT_RUNTIME_BASE).join(name))
 }
 
 /// Remove `lt-proof-<pid>-<hash>` directories left by processes that died.
@@ -636,8 +656,36 @@ mod tests {
     }
 
     #[test]
+    fn a_temp_dir_too_deep_for_the_sockets_falls_back_to_the_short_base() {
+        let deep =
+            Path::new("/var/home/someone/Workspace/project/.claude/handoffs/a-change/tmp/stage");
+        let artifact = deep.join("case");
+        let runtime_dir =
+            runtime_dir_for_artifact(&artifact, &artifact.join("runtime"), deep).expect("runtime");
+        assert!(
+            runtime_dir.starts_with(SHORT_RUNTIME_BASE),
+            "{} is under {SHORT_RUNTIME_BASE}",
+            runtime_dir.display()
+        );
+        assert!(
+            runtime_dir_fits(&runtime_dir),
+            "{} fits",
+            runtime_dir.display()
+        );
+        let short = Path::new("/tmp/x");
+        let in_short =
+            runtime_dir_for_artifact(&artifact, &artifact.join("runtime"), short).expect("runtime");
+        assert!(in_short.starts_with(short), "a short temp dir is kept");
+    }
+
+    #[test]
     fn artifact_local_runtime_dir_is_left_to_the_artifact_tree() {
-        let tempdir = tempfile::tempdir().expect("tempdir");
+        // The artifact tree must be short enough for the sockets, whatever
+        // TMPDIR the test runs under.
+        let tempdir = tempfile::Builder::new()
+            .prefix("lt-gtk-proof-test-")
+            .tempdir_in(SHORT_RUNTIME_BASE)
+            .expect("tempdir");
 
         let layout = RuntimeLayout::prepare(tempdir.path()).expect("runtime layout");
         let runtime_dir = layout.runtime_dir.clone();

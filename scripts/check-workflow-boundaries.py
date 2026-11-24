@@ -547,6 +547,7 @@ WHOLE_PIXEL_POLICY_MODULES: dict[str, int] = {
     "ui/window/focus_mode/policy.rs": 0,
     "model/protected_fold.rs": 0,
     "ui/editor_page/protected_view/policy.rs": 0,
+    "ui/window/tab_overflow/policy.rs": 0,
     "ui/sidebar/policy.rs": 0,
 }
 # Role homes whose `policy.rs` files hold geometry decisions: any `policy.rs`

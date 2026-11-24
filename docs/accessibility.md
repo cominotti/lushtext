@@ -33,6 +33,8 @@ palette, or a direct shortcut. The complete in-app list lives under
 | Save / Save As | `Ctrl+S` / `Ctrl+Shift+S` |
 | Close tab | `Ctrl+W` |
 | Switch tabs | `Ctrl+Page Up` / `Ctrl+Page Down`, `Alt+1`…`Alt+9`; `Ctrl+Home` / `Ctrl+End` (with `Shift`, select to) stay with the document's start and end, never the first or last tab, with any number of tabs open |
+| Scroll an overflowing tab strip | `Tab` to **Scroll Tabs Back** / **Scroll Tabs Forward** at the strip's trailing end, then `Space` or `Enter` (one step each; holding a pointer press repeats); shown only while the tabs overflow |
+| List and search the open tabs | `Ctrl+Shift+O` (or the **All Tabs, N open** button after the scroll buttons, shown with two or more tabs) opens the All Tabs popover with the search entry focused; type to filter by name or folder, `Up`/`Down` move the highlight (the list's value text names the highlighted tab, as the command palette's does), `Enter` selects the highlighted tab and focuses its editor; `Escape` or `Ctrl+Shift+O` again closes it, and nothing under it (an open find bar or search panel stays), and returns focus where it was; the match count is announced once typing settles |
 | Print | `Ctrl+P` |
 | In-tab find / replace | `Ctrl+F` / `Ctrl+H` |
 | Inspect Line (view-only documents with very long lines) | `Ctrl+Alt+I`; `Page Down`/`Page Up` move the window, `Alt+Down`/`Alt+Up` go to the next or previous folded line; Tab reaches Previous Window, Next Window, Previous Folded Line, Next Folded Line, Line, Column, Go, Copy Window and Copy Whole Line; `Escape` closes |
@@ -105,8 +107,18 @@ Expected screen-reader behavior includes:
   unreadable, has no row action and its description says why. A file that
   opens in Protected View gets the find bar and the Protected View notice.
   Closing the window or quitting during a run asks first (`Replace All Is
-  Still Running`), each option explained by a grouped row. No file content is
-  exposed. The accessibility smoke case `workspace-search-replace-skipped`
+  Still Running`), each option explained by a grouped row; while the run
+  still waits for memory, the question and the rows say that no file has
+  changed yet. A preview asked for during a run is refused with `Replace All
+  is running; preview again when it finishes`. A confirmed run
+  that must wait for memory before it starts is already a run: the button
+  reads `Cancel Replace All` with the description and tooltip `Waiting for
+  memory before Replace All starts`, the status bar keeps `Replace All will
+  start when memory frees up` up for the whole wait (except while a
+  workspace search shows its own progress), and the wait is announced once
+  (`replace-all-waiting`). Cancelling then says `Replace All cancelled; no
+  file was changed`, and the earlier Undo and Show Skipped Files stay
+  (`replace-all-confirm-disposal-lane`). No file content is exposed. The accessibility smoke case `workspace-search-replace-skipped`
   proves the button and the dialog's list and summary through AT-SPI.
 - The hidden-files view mode is one check item in the main menu, one switch in
   `Preferences > Workspace`, and one per-search `Hidden files` toggle in the

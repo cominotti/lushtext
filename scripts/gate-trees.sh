@@ -56,7 +56,28 @@
 # LUSHTEXT_HANDOFF_DIR overrides it.
 
 set -euo pipefail
+# The helper's own text handling runs in the C locale; the gated command runs
+# in the caller's. Under LC_ALL=C GLib cannot convert a non-ASCII argument
+# ("Failed to configure: Invalid byte sequence in conversion input" from
+# Mutter in the accessibility smoke's protected-view-inspector case).
+if [ "${LC_ALL+set}" = set ]; then
+    CALLER_LC_ALL_SET=1
+    CALLER_LC_ALL=$LC_ALL
+else
+    CALLER_LC_ALL_SET=0
+    CALLER_LC_ALL=
+fi
 export LC_ALL=C
+
+# Run "$@" with the caller's LC_ALL (unset when the caller had none).
+run_in_caller_locale() {
+    if [ "$CALLER_LC_ALL_SET" = 1 ]; then
+        # shellcheck disable=SC2030 # local to the command's subshell on purpose
+        (export LC_ALL="$CALLER_LC_ALL"; "$@")
+    else
+        (unset LC_ALL; "$@")
+    fi
+}
 
 # A hook exports GIT_DIR and its siblings, which would override `git -C`
 # (.agents/rules/testing.md, "Test Isolation From Real App Data").
@@ -137,7 +158,7 @@ cmd_record() {
     logfile="$h/$change/gate-trees.log"
     status_before=$(status_of "$wt") || die "git status failed in $wt"
     tree_before=$(tree_of "$wt") || die "cannot read HEAD^{tree} in $wt"
-    "$@" || rc=$?
+    run_in_caller_locale "$@" || rc=$?
     status_after=$(status_of "$wt") || die "git status failed in $wt"
     tree_after=$(tree_of "$wt") || die "cannot read HEAD^{tree} in $wt"
     local result=pass
@@ -455,12 +476,28 @@ self_test() {
     [ "$rc" = 1 ] || self_test_fail "lookup reused a tree with an unknown result line"
     sed -i '$d' "$log"
 
+    # The gated command runs in the caller's locale, not the helper's C locale.
+    local seen="$tmp/locale-seen" saved_set=$CALLER_LC_ALL_SET saved=$CALLER_LC_ALL
+    CALLER_LC_ALL_SET=0
+    # shellcheck disable=SC2016 # the probe expands LC_ALL in its own shell
+    cmd_record "$wt" --gate 'make locale' -- sh -c 'printf %s "${LC_ALL-unset}" >"$1"' _ "$seen" >/dev/null 2>&1 \
+        || self_test_fail "a locale probe failed"
+    [ "$(cat "$seen")" = unset ] || self_test_fail "the command saw LC_ALL=$(cat "$seen") for a caller without one"
+    CALLER_LC_ALL_SET=1 CALLER_LC_ALL=C.UTF-8
+    # shellcheck disable=SC2016 # the probe expands LC_ALL in its own shell
+    cmd_record "$wt" --gate 'make locale' -- sh -c 'printf %s "${LC_ALL-unset}" >"$1"' _ "$seen" >/dev/null 2>&1 \
+        || self_test_fail "a locale probe failed"
+    [ "$(cat "$seen")" = C.UTF-8 ] || self_test_fail "the command saw LC_ALL=$(cat "$seen"), not the caller's C.UTF-8"
+    # shellcheck disable=SC2031 # the subshell's LC_ALL must not reach here
+    [ "$LC_ALL" = C ] || self_test_fail "the helper left the C locale"
+    CALLER_LC_ALL_SET=$saved_set CALLER_LC_ALL=$saved
+
     # A decoy repository's GIT_DIR, as a commit hook exports it, must not redirect the helper.
     local decoy="$tmp/decoy"
     git init -q "$decoy"
     out=$(GIT_DIR="$decoy/.git" GIT_WORK_TREE="$decoy" GIT_INDEX_FILE="$decoy/.git/index" \
         "$0" lookup "$wt" --gate 'make test') || self_test_fail "lookup under a decoy GIT_DIR missed"
-    echo "gate-trees self-test: ok (clean pass recorded; a clean fail recorded and voiding reuse of that gate on that tree; dirty-before, dirty-after and tree-changing runs record nothing; runs that never started record nothing, timed-out and killed runs record result=interrupted that lookup ignores but names; the coordinator void appends, names one fail line with its evidence log and never deletes; lookup --tree reads a given tree and needs --change; unknown results refuse; tabs and newlines refused in every field; exact gate match, covering gates, dirty lookup refused; decoy GIT_DIR ignored)"
+    echo "gate-trees self-test: ok (clean pass recorded; a clean fail recorded and voiding reuse of that gate on that tree; dirty-before, dirty-after and tree-changing runs record nothing; runs that never started record nothing, timed-out and killed runs record result=interrupted that lookup ignores but names; the coordinator void appends, names one fail line with its evidence log and never deletes; lookup --tree reads a given tree and needs --change; unknown results refuse; tabs and newlines refused in every field; exact gate match, covering gates, dirty lookup refused; the gated command runs in the caller's locale; decoy GIT_DIR ignored)"
 }
 
 case "${1:-}" in

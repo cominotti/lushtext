@@ -68,7 +68,14 @@ cd "$REPO_ROOT"
 echo "Building snap (LXD backend)..."
 snapcraft pack --use-lxd
 
-SNAP_FILE="$(ls -t "${SNAP_NAME}"_*.snap 2>/dev/null | head -n1 || true)"
+# The newest artifact snapcraft left here.
+SNAP_FILE=""
+for candidate in "${SNAP_NAME}"_*.snap; do
+  [ -e "$candidate" ] || continue
+  if [ -z "$SNAP_FILE" ] || [ "$candidate" -nt "$SNAP_FILE" ]; then
+    SNAP_FILE="$candidate"
+  fi
+done
 [ -n "$SNAP_FILE" ] || fail "no .snap artifact produced by snapcraft."
 echo "Built: $SNAP_FILE"
 
@@ -86,7 +93,8 @@ SAMPLE="$WORK_DIR/sample.txt"
 echo "hello from snap smoke test" > "$SAMPLE"
 trap 'rm -rf "$WORK_DIR"; sudo snap remove --purge "$SNAP_NAME" >/dev/null 2>&1 || true' EXIT
 
-LOG="$(mktemp)"
+# The app's output stays under the trapped WORK_DIR, removed on every exit.
+LOG="$WORK_DIR/app.log"
 echo "Launching confined app headlessly..."
 # A headless compositor (mutter --headless / xvfb) must be running; the runner
 # (or CI) provides it. Give the app a moment to register resources and open the

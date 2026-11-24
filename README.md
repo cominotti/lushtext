@@ -99,6 +99,12 @@ local history, and careful recovery behavior.
   sidebar, the command palette, and workspace search together, while an
   editable `Always Excluded Names` list (default `.git`) keeps chosen names out
   of every surface regardless.
+- **Overflowing tab strip navigation**: when the tabs do not fit, Scroll Tabs
+  Back and Forward buttons at the strip's trailing end move it by about one
+  visible width (holding one keeps scrolling) without changing the selected
+  tab, and an **All Tabs** button with the open-tab count (`Ctrl+Shift+O`)
+  opens a searchable list of every open tab, filtered by name or folder; Enter
+  selects the best match, brings its tab into view and focuses its editor.
 - **Recent Open and command palette** via `Ctrl+K` and `Ctrl+Shift+P` for
   recent documents, workspace files, note records, and commands. A result group
   that has more matches than it shows ends with a **"N more…"** row; Enter on it
@@ -122,7 +128,10 @@ local history, and careful recovery behavior.
   first skipped line with the in-tab replace bar ready, prefilled from the run
   (regex replacements translated for the editor). With several windows, the
   undo journal is one per application: a run in one window retires the others'
-  Undo and refuses a second run or Undo until it finishes. A search has no match limit: it keeps results within a
+  Undo and refuses a second run or Undo until it finishes. A Replace All
+  confirmed while memory is short waits and starts on its own once memory
+  frees up, with Cancel Replace All offered; nothing is lost and the preview
+  does not need to be made again. A search has no match limit: it keeps results within a
   memory budget (256 MiB, far above what the old 16,384-match cap kept), and
   past it says how many matches are shown and how many more were found.
 
@@ -405,6 +414,7 @@ Common accelerators include:
 | Open recent documents | `Ctrl+K` |
 | Save / Save As | `Ctrl+S` / `Ctrl+Shift+S` |
 | Close tab | `Ctrl+W` |
+| All Tabs (list and search the open tabs) | `Ctrl+Shift+O` |
 | Print | `Ctrl+P` |
 | Find / Find and Replace | `Ctrl+F` / `Ctrl+H` |
 | Next / previous find match | `Ctrl+G` / `Ctrl+Shift+G` |
@@ -660,8 +670,8 @@ way, the reference example, and the first migrated end to end: `mod.rs` narrates
 the search and Replace All stages, `policy.rs` holds the pure single-flight,
 retirement-budget, preview-freshness, and Replace All admission policy (plus
 the skip report wording and the Open and Replace in Editor translation),
-`execution.rs`/`retirement.rs`/`replace_execution.rs`/`journal.rs` are its
-coordination jobs — `journal.rs` owning the durable, generation-guarded undo
+`execution.rs`/`retirement.rs`/`replace_execution.rs`/`replace_admission.rs`/`journal.rs`
+are its coordination jobs — `journal.rs` owning the durable, generation-guarded undo
 record that Undo restores from — and `evidence.rs` is the surface its widget
 tests and the `window.content_search` automation snapshot both read.
 
@@ -848,6 +858,10 @@ Every test lane runs under `scripts/with-temp-scope.sh`, which gives it a
 private `TMPDIR`, removes it afterwards, and fails the run with `TEMP-LEAK:` if
 anything was left behind; the widget harness additionally gives each per-test
 child process its own temporary directory and removes it when the child exits.
+The widget and GTK axiom runners scan the output they stream for warnings
+without storing it: a bounded stage keeps an exact count of unexpected lines
+and the first 64 KiB of them, so a test that floods warnings fails with that
+count instead of filling `/tmp`.
 Tests never touch your real LushText data: every widget-test process points
 `LUSHTEXT_DATA_DIR` and the XDG base directories into that temporary directory
 before any test runs, and in test builds the app-data path resolver panics

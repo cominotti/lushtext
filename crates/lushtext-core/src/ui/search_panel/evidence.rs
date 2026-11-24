@@ -14,7 +14,8 @@
 //!
 //! Reentrancy constraint: [`LushtextSearchPanel::evidence`] takes shared
 //! `RefCell` borrows of the search flight, the deferred query, the queued
-//! preview request, the retirement observations, and the undo journal. It must
+//! preview request, the parked Replace All run, the retirement observations,
+//! and the undo journal. It must
 //! therefore be called from workflow code that is not already holding a
 //! `borrow_mut()` on any of those cells, or the borrow would panic. Every
 //! current caller observes from outside a mutation — widget tests and the
@@ -161,8 +162,12 @@ pub struct SearchPanelEvidence {
     pub replace_transaction_generation: Option<u32>,
     /// Counts published by the most recent durable Replace All apply.
     pub last_apply_counts: Option<super::policy::ReplaceApplyCounts>,
-    /// Whether a durable Replace All run is in flight (design D8).
+    /// Whether a durable Replace All run is in flight (design D8), including
+    /// a confirmed run still waiting for disposal capacity to start.
     pub replace_in_flight: bool,
+    /// Whether that run is still waiting for the disposal capacity its undo
+    /// reservation needs (`replace-all-confirm-disposal-lane`).
+    pub replace_admission_deferred: bool,
     /// Whether that run was asked to stop and roll back.
     pub replace_cancel_requested: bool,
     /// The run's progress: files finished, files in the run, target bytes
@@ -196,7 +201,8 @@ pub struct SearchPanelEvidence {
     pub journal_disk_jobs: u64,
     /// Dispatched undo-journal disk jobs whose GTK completion has not run yet.
     pub journal_disk_jobs_in_flight: usize,
-    /// Whether persisted Undo owns its single capacity-retry source.
+    /// Whether persisted Undo owns its single capacity-retry source, or waits
+    /// for this panel's claimed transaction to end before it loads.
     ///
     /// Test-gated because the underlying wakeup only reports armed state under
     /// the `test-utils` feature; production readiness uses
@@ -355,6 +361,7 @@ impl LushtextSearchPanel {
             replace_transaction_generation: preview.replace_transaction_generation.get(),
             last_apply_counts: preview.last_apply_counts.get(),
             replace_in_flight: self.replace_run_in_flight(),
+            replace_admission_deferred: self.replace_admission_deferred(),
             replace_cancel_requested: self.replace_cancel_requested(),
             replace_progress,
             replace_skip_counts,
@@ -375,7 +382,8 @@ impl LushtextSearchPanel {
             journal_disk_jobs: preview.journal_disk_jobs.get(),
             journal_disk_jobs_in_flight: preview.journal_disk_jobs_in_flight.get(),
             #[cfg(feature = "test-utils")]
-            undo_capacity_retry_pending: preview.undo_capacity_wakeup.is_armed(),
+            undo_capacity_retry_pending: preview.undo_capacity_wakeup.is_armed()
+                || preview.persisted_undo_load_after_transaction.get(),
             #[cfg(feature = "test-utils")]
             undo_backup,
 
@@ -396,6 +404,14 @@ impl LushtextSearchPanel {
             .search_entry
             .try_get()
             .map_or_default(|entry| entry.text().to_string())
+    }
+
+    /// Whether a workspace-search worker is in flight, without the result
+    /// retirement [`Self::is_searching`] also counts: the window's search
+    /// progress and Replace All waiting text yield to the walk alone.
+    #[must_use]
+    pub(crate) fn search_worker_running(&self) -> bool {
+        self.imp().runtime.searching.get()
     }
 
     /// Return whether worker cancellation/search or result retirement is pending.

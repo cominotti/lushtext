@@ -331,6 +331,7 @@ fn run_mutter_child_with_programs(
     fs::create_dir_all(&app_data_dir)
         .map_err(|error| format!("cannot create {}: {error}", app_data_dir.display()))?;
     prepare_open_popover_recents(&case, &case_dir, &app_data_dir)?;
+    prepare_tab_strip_overflow_session(&case, &case_dir, &app_data_dir)?;
     prepare_replace_preview_workspace(&case, Path::new(fixture), &app_data_dir)?;
     prepare_workspace_tree_reveal_fixture(&case, &case_dir, &app_data_dir)?;
     fs::write(case_dir.join("lushtext.stdout"), b"")
@@ -966,6 +967,12 @@ fn append_snapshot_predicate_wait(
     )
 }
 
+/// The All Tabs popover case's target-state action.
+const ALL_TABS_VISIBLE_ACTION: &str = "set-all-tabs-visible";
+/// The query the All Tabs popover case types: every fixture tab matches it
+/// (`tab-NN.txt`), so the filtered list still scrolls at the minimum size.
+const ALL_TABS_POPOVER_QUERY: &str = "tab-";
+
 fn activate_primary_case_action(
     client: &automation::AutomationClient,
     case: &Value,
@@ -974,6 +981,29 @@ fn activate_primary_case_action(
     if scenario_type(case)? == model::WORKSPACE_TREE_REVEAL_SCENARIO {
         let plan = workspace_tree_reveal_plan(case, case_dir)?;
         return activate_reveal(client, &plan.target);
+    }
+    if scenario_type(case)? == model::ALL_TABS_POPOVER_SCENARIO {
+        // Open through the target-state action, then type a query through
+        // the popover's own search entry once it shows.
+        let open = client.activate_window_action(
+            ALL_TABS_VISIBLE_ACTION,
+            automation::ActionParameter::Bool(true),
+        )?;
+        wait_for_snapshot_predicate(
+            client,
+            case_dir,
+            "All Tabs popover visible",
+            Duration::from_secs(10),
+            |snapshot| {
+                snapshot.pointer("/window/surfaces/all_tabs_popover_visible")
+                    == Some(&Value::Bool(true))
+            },
+        )?;
+        client.activate_window_action(
+            "set-all-tabs-query",
+            automation::ActionParameter::String(ALL_TABS_POPOVER_QUERY),
+        )?;
+        return Ok(open);
     }
     client.activate_window_action(
         primary_action_name(case)?,
@@ -2065,6 +2095,8 @@ fn primary_action_name(case: &Value) -> Result<&'static str, String> {
         "minimap-sidebar" => Ok("toggle-sidebar"),
         "command-palette-overlay" => Ok("toggle-command-palette"),
         "open-popover" => Ok("open-recent"),
+        model::TAB_STRIP_OVERFLOW_SCENARIO => Ok("scroll-tabs-forward"),
+        model::ALL_TABS_POPOVER_SCENARIO => Ok(ALL_TABS_VISIBLE_ACTION),
         "replace-preview" => Ok("preview-search-panel-replacements"),
         model::WORKSPACE_TREE_REVEAL_SCENARIO => Ok(REVEAL_WORKSPACE_PATH_ACTION),
         other => Err(format!(
@@ -2426,6 +2458,44 @@ fn prepare_open_popover_recents(
     }
 
     Ok(())
+}
+
+/// Tabs the overflowing-strip case restores: many times a strip's width.
+///
+/// Kind: out: tool; a proof fixture's size.
+const TAB_STRIP_OVERFLOW_TABS: usize = 40;
+
+/// Seed a restored session whose first tab is the case's activation file,
+/// followed by [`TAB_STRIP_OVERFLOW_TABS`] small files: whichever of the
+/// restore and the activation open selects last, it selects the first tab, so
+/// the strip starts at its start, where Scroll Tabs Forward is the enabled
+/// button.
+fn prepare_tab_strip_overflow_session(
+    case: &Value,
+    case_dir: &Path,
+    data_dir: &Path,
+) -> Result<(), String> {
+    if !matches!(
+        scenario_type(case)?,
+        model::TAB_STRIP_OVERFLOW_SCENARIO | model::ALL_TABS_POPOVER_SCENARIO
+    ) {
+        return Ok(());
+    }
+    let root = case_dir.join("tab-strip-overflow");
+    fs::create_dir_all(&root)
+        .map_err(|error| format!("cannot create {}: {error}", root.display()))?;
+    let mut paths = Vec::with_capacity(TAB_STRIP_OVERFLOW_TABS + 1);
+    let fixture = PathBuf::from(required_string(case, "fixture")?);
+    paths.push(fs::canonicalize(&fixture).unwrap_or(fixture));
+    for index in 0..TAB_STRIP_OVERFLOW_TABS {
+        let path = root.join(format!("tab-{index:02}.txt"));
+        fs::write(&path, format!("Tab strip overflow fixture {index}\n"))
+            .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
+        paths.push(path);
+    }
+    fs::create_dir_all(data_dir)
+        .map_err(|error| format!("cannot create {}: {error}", data_dir.display()))?;
+    write_open_popover_session(data_dir, &paths)
 }
 
 fn open_popover_recent_path(root: &Path, fixture_kind: &str, index: usize) -> PathBuf {

@@ -240,6 +240,7 @@ and raising one is a reviewed edit to this table and the script together:
 | `ui/window/focus_mode/policy.rs` | `forbid` | 0 |
 | `model/protected_fold.rs` | `forbid` | 0 |
 | `ui/editor_page/protected_view/policy.rs` | `forbid` | 0 |
+| `ui/window/tab_overflow/policy.rs` | `forbid` | 0 |
 | `ui/sidebar/policy.rs` | `forbid` | 0 |
 
 `ui/window/local_history/policy.rs` and `ui/window/focus_mode/policy.rs` apply the rule retroactively to the other migrated workflows whose
@@ -250,10 +251,14 @@ carries the pixel relationship (rows per 2000 px validation batch), so it is
 integer-only by the same rule. `ui/editor_page/protected_view/policy.rs`
 (`long-line-protected-view`) is a budget policy too: viewport steps, inspector
 windows and find batches in whole characters, bytes and adjustment increments,
-never fractional. `ui/sidebar/policy.rs` (`slice-large-directory-collapse`)
-is a budget policy in rows: the collapse step decides which rows one frame
-removes and how many row widgets it replaces, from flattened row positions,
-so it is integer-only too. The minimap's eight are GTK
+never fractional. `ui/window/tab_overflow/policy.rs`
+(`tab-strip-overflow-navigation`) decides the tab strip's overflow controls over
+the unpinned adjustment rounded once to whole pixels; its scroll animation,
+which interpolates the fractional adjustment value, stays in the adapter.
+`ui/sidebar/policy.rs` (`slice-large-directory-collapse`) is a budget policy
+in rows: the collapse step decides which rows one frame removes and how many
+row widgets it replaces, from flattened row positions, so it is integer-only
+too. The minimap's eight are GTK
 widget and adjustment coordinates (the projected-bounds bottom and fit, the
 native-slider estimate and fit, the adjustment distance and fitting page size,
 the target-relative line offset, and the minimum-height expansion). The marker

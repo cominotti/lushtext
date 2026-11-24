@@ -199,6 +199,7 @@ SHARDS: dict[str, Shard] = {
             "search_panel",
             "shell_geometry",
             "status_bar",
+            "tab_overflow_navigation",
             "tab_strip",
             "transient_dismissal",
             "window_composition",

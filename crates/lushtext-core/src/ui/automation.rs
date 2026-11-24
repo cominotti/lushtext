@@ -13,12 +13,13 @@ use crate::model::automation::{
     AUTOMATION_WORKFLOW_CONTENT_SEARCH, AUTOMATION_WORKFLOW_FILE_LOAD,
     AUTOMATION_WORKFLOW_MINIMAP_REFRESH, AUTOMATION_WORKFLOW_REPLACE_PREVIEW,
     AUTOMATION_WORKFLOW_SAVE, AUTOMATION_WORKFLOW_SEARCH, AUTOMATION_WORKFLOW_SESSION_RESTORE,
-    AUTOMATION_WORKFLOW_WORKSPACE_PATH_REVEAL, AUTOMATION_WORKFLOW_WORKSPACE_REFRESH,
-    AutomationCommandPaletteSnapshot, AutomationContentSearchSnapshot,
-    AutomationLocalHistorySnapshot, AutomationNativeMinimapDiagnosticSnapshot,
-    AutomationNotesSnapshot, AutomationNotificationSnapshot, AutomationReadinessPredicate,
-    AutomationReadinessResult, AutomationReadinessStatus, AutomationSearchSnapshot,
-    AutomationSnapshot, AutomationSurfaceSnapshot, AutomationTabSnapshot,
+    AUTOMATION_WORKFLOW_TAB_OVERFLOW, AUTOMATION_WORKFLOW_WORKSPACE_PATH_REVEAL,
+    AUTOMATION_WORKFLOW_WORKSPACE_REFRESH, AutomationCommandPaletteSnapshot,
+    AutomationContentSearchSnapshot, AutomationLocalHistorySnapshot,
+    AutomationNativeMinimapDiagnosticSnapshot, AutomationNotesSnapshot,
+    AutomationNotificationSnapshot, AutomationReadinessPredicate, AutomationReadinessResult,
+    AutomationReadinessStatus, AutomationSearchSnapshot, AutomationSnapshot,
+    AutomationSurfaceSnapshot, AutomationTabSnapshot, AutomationTabStripSnapshot,
     AutomationVisualAdjustmentSnapshot, AutomationVisualGeometrySnapshot,
     AutomationVisualPixelAnchorSnapshot, AutomationVisualRect,
     AutomationVisualScrollAnchorSnapshot, AutomationVisualSize, AutomationVisualSurfaceSnapshot,
@@ -29,10 +30,10 @@ use crate::model::automation::{
     READINESS_BLOCKER_EDITOR_SEARCH, READINESS_BLOCKER_FILE_LOAD, READINESS_BLOCKER_LINE_INSPECTOR,
     READINESS_BLOCKER_MINIMAP_REFRESH, READINESS_BLOCKER_PREVIEW_ANIMATION,
     READINESS_BLOCKER_REPLACE_PREVIEW, READINESS_BLOCKER_SAVE, READINESS_BLOCKER_SESSION_RESTORE,
-    READINESS_BLOCKER_WINDOW_COMPOSITION, READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION,
-    READINESS_BLOCKER_WORKSPACE_PATH_REVEAL, READINESS_BLOCKER_WORKSPACE_PERSIST,
-    READINESS_BLOCKER_WORKSPACE_SEARCH, READINESS_BLOCKER_WORKSPACE_SIDEBAR_ANIMATION,
-    READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
+    READINESS_BLOCKER_TAB_OVERFLOW, READINESS_BLOCKER_WINDOW_COMPOSITION,
+    READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION, READINESS_BLOCKER_WORKSPACE_PATH_REVEAL,
+    READINESS_BLOCKER_WORKSPACE_PERSIST, READINESS_BLOCKER_WORKSPACE_SEARCH,
+    READINESS_BLOCKER_WORKSPACE_SIDEBAR_ANIMATION, READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
 };
 use crate::model::content_search::ReplaceSkipReason;
 use crate::model::palette::{PaletteCategory, SearchMode};
@@ -586,6 +587,7 @@ fn inactive_workflow_observations() -> Vec<AutomationWorkflowObservation> {
         AUTOMATION_WORKFLOW_SESSION_RESTORE,
         AUTOMATION_WORKFLOW_MINIMAP_REFRESH,
         AUTOMATION_WORKFLOW_WORKSPACE_PATH_REVEAL,
+        AUTOMATION_WORKFLOW_TAB_OVERFLOW,
     ]
     .into_iter()
     .map(|workflow_id| AutomationWorkflowObservation::new(workflow_id, false, None))
@@ -634,6 +636,7 @@ fn window_workflow_observations(window: &LushtextWindow) -> Vec<AutomationWorkfl
         AutomationReadinessPredicate::WorkspaceRefreshComplete,
     );
     let path_reveal_active = imp.sidebar.workspace_path_reveal_pending();
+    let tab_overflow_active = window.tab_overflow_blocks_readiness();
     vec![
         AutomationWorkflowObservation::new(
             AUTOMATION_WORKFLOW_FILE_LOAD,
@@ -683,6 +686,11 @@ fn window_workflow_observations(window: &LushtextWindow) -> Vec<AutomationWorkfl
             AUTOMATION_WORKFLOW_WORKSPACE_PATH_REVEAL,
             path_reveal_active,
             path_reveal_active.then_some(READINESS_BLOCKER_WORKSPACE_PATH_REVEAL),
+        ),
+        AutomationWorkflowObservation::new(
+            AUTOMATION_WORKFLOW_TAB_OVERFLOW,
+            tab_overflow_active,
+            tab_overflow_active.then_some(READINESS_BLOCKER_TAB_OVERFLOW),
         ),
     ]
 }
@@ -828,6 +836,14 @@ fn window_readiness_blocker(
     ) {
         return Some(blocker);
     }
+    // The workflow's one production state, which its evidence surface views.
+    if let Some(blocker) = included_blocker(
+        predicate,
+        window.tab_overflow_blocks_readiness(),
+        READINESS_BLOCKER_TAB_OVERFLOW,
+    ) {
+        return Some(blocker);
+    }
     for index in 0..imp.tab_view.n_pages() {
         let page = imp.tab_view.nth_page(index);
         let Ok(editor) = page.child().downcast::<LushtextEditorPage>() else {
@@ -933,6 +949,7 @@ fn window_snapshot(window: &LushtextWindow) -> AutomationWindowSnapshot {
         active_tab_index,
         tabs,
         surfaces: surface_snapshot(window),
+        tab_strip: tab_strip_snapshot(window, tab_count),
         search: search_snapshot(window),
         workspace: workspace_snapshot(window),
         command_palette: command_palette_snapshot(window),
@@ -942,6 +959,18 @@ fn window_snapshot(window: &LushtextWindow) -> AutomationWindowSnapshot {
         notifications: notification_snapshot(window),
         visual_geometry: visual_geometry_snapshot(window),
         window_construction: window_construction_snapshot(window),
+    }
+}
+
+/// Project the tab strip's overflow state from the workflow's production state.
+fn tab_strip_snapshot(window: &LushtextWindow, tab_count: u32) -> AutomationTabStripSnapshot {
+    let facts = window.tab_strip_overflow_facts();
+    AutomationTabStripSnapshot {
+        overflowing: facts.overflowing,
+        scroll_back_enabled: facts.scroll_back_enabled,
+        scroll_forward_enabled: facts.scroll_forward_enabled,
+        selected_tab_in_view: facts.selected_tab_in_view,
+        tab_count,
     }
 }
 
@@ -1236,6 +1265,7 @@ fn content_search_snapshot(window: &LushtextWindow) -> AutomationContentSearchSn
         skipped_replacement_count: evidence.skipped_replacement_count,
         has_undo_backup: evidence.has_undo_backup,
         replace_in_flight: evidence.replace_in_flight,
+        replace_admission_deferred: evidence.replace_admission_deferred,
         replace_cancel_requested: evidence.replace_cancel_requested,
         replace_progress_files_done: progress.map(|progress| bounded_len(progress.files_done)),
         replace_progress_files_total: progress.map(|progress| bounded_len(progress.files_total)),
@@ -1351,6 +1381,7 @@ fn visual_geometry_snapshot(window: &LushtextWindow) -> AutomationVisualGeometry
         root,
     );
     push_open_popover_surfaces(window, &mut surfaces, root);
+    push_tab_overflow_surfaces(window, &mut surfaces, &mut pixel_anchors, root);
 
     if let Some(editor) = active_editor(window) {
         if let Some(viewport) = editor.editor_viewport_widget() {
@@ -1590,6 +1621,8 @@ fn push_active_transient_surface(
         push_widget_surface(surfaces, "active-transient", &*imp.search_panel, root);
     } else if open_popover_visible(window) {
         push_widget_surface(surfaces, "active-transient", &*imp.open_popover, root);
+    } else if let Some(popover) = window.visible_tab_overflow_controls().popover {
+        push_widget_surface(surfaces, "active-transient", &popover, root);
     } else {
         surfaces.push(absent_visual_surface("active-transient", "none-active"));
     }
@@ -1639,6 +1672,109 @@ fn push_open_popover_surfaces(
         &imp.open_popover.empty_state_widget(),
         root,
     );
+}
+
+/// The strip's trailing control group, its two scroll buttons and the All
+/// Tabs button, with a pixel anchor on each rendered button, and the All Tabs
+/// popover: the group is absent with `controls-hidden` while it is detached
+/// (nothing to show), each button while it does not show, and the popover
+/// with `popover-closed` while it is closed.
+fn push_tab_overflow_surfaces(
+    window: &LushtextWindow,
+    surfaces: &mut Vec<AutomationVisualSurfaceSnapshot>,
+    pixel_anchors: &mut Vec<AutomationVisualPixelAnchorSnapshot>,
+    root: &gtk4::Widget,
+) {
+    const SCROLL_BUTTONS: [(&str, &str); 2] = [
+        ("tab-strip-scroll-back", "tab-strip-scroll-back-ink"),
+        ("tab-strip-scroll-forward", "tab-strip-scroll-forward-ink"),
+    ];
+    const ALL_TABS: (&str, &str) = ("tab-strip-all-tabs", "tab-strip-all-tabs-ink");
+    const POPOVER: [&str; 2] = ["all-tabs-popover", "all-tabs-popover-search"];
+    const POPOVER_LIST: (&str, &str) = ("all-tabs-popover-list", "all-tabs-popover-list-ink");
+    let controls = window.visible_tab_overflow_controls();
+    match controls.group.as_ref() {
+        Some(group) => push_widget_surface(surfaces, "tab-strip-overflow-controls", group, root),
+        None => surfaces.push(absent_visual_surface(
+            "tab-strip-overflow-controls",
+            "controls-hidden",
+        )),
+    }
+    let (back, forward) = controls
+        .scroll_buttons
+        .as_ref()
+        .map(|(back, forward)| {
+            (
+                back.upcast_ref::<gtk4::Widget>(),
+                forward.upcast_ref::<gtk4::Widget>(),
+            )
+        })
+        .unzip();
+    for (names, button) in SCROLL_BUTTONS.into_iter().zip([back, forward]) {
+        let state = button.ok_or("controls-hidden");
+        push_anchored_surface(
+            surfaces,
+            pixel_anchors,
+            names,
+            state,
+            "button-not-drawn",
+            root,
+        );
+    }
+    let all_tabs = controls
+        .all_tabs
+        .as_ref()
+        .map(glib::object::Cast::upcast_ref::<gtk4::Widget>)
+        .ok_or("controls-hidden");
+    push_anchored_surface(
+        surfaces,
+        pixel_anchors,
+        ALL_TABS,
+        all_tabs,
+        "button-not-drawn",
+        root,
+    );
+    let list = if let Some(popover) = controls.popover.as_ref() {
+        push_widget_surface(surfaces, POPOVER[0], popover, root);
+        push_widget_surface(surfaces, POPOVER[1], &popover.search_entry(), root);
+        Ok(popover.list_scroller().upcast::<gtk4::Widget>())
+    } else {
+        for name in POPOVER {
+            surfaces.push(absent_visual_surface(name, "popover-closed"));
+        }
+        Err("popover-closed")
+    };
+    push_anchored_surface(
+        surfaces,
+        pixel_anchors,
+        POPOVER_LIST,
+        list.as_ref().map_err(|reason| *reason),
+        "list-not-drawn",
+        root,
+    );
+}
+
+/// One surface and the pixel anchor on its ink: rendered from `widget`, or
+/// both absent with the `Err` reason.
+fn push_anchored_surface(
+    surfaces: &mut Vec<AutomationVisualSurfaceSnapshot>,
+    pixel_anchors: &mut Vec<AutomationVisualPixelAnchorSnapshot>,
+    (surface, anchor): (&str, &str),
+    widget: Result<&gtk4::Widget, &'static str>,
+    not_drawn: &'static str,
+    root: &gtk4::Widget,
+) {
+    match widget {
+        Ok(widget) => {
+            let rendered = widget_visual_surface(surface, widget, root);
+            pixel_anchors.push(pixel_anchor(anchor, surface, rendered.rect, not_drawn));
+            surfaces.push(rendered);
+        }
+        Err(absent) => {
+            surfaces.push(absent_visual_surface(surface, absent));
+            pixel_anchors.push(absent_pixel_anchor(anchor, surface, absent));
+        }
+    }
 }
 
 fn open_popover_visible(window: &LushtextWindow) -> bool {
@@ -2231,6 +2367,7 @@ fn surface_snapshot(window: &LushtextWindow) -> AutomationSurfaceSnapshot {
         command_palette_visible: imp.palette_revealer.reveals_child(),
         search_panel_visible: imp.search_panel_revealer.reveals_child(),
         open_popover_visible: open_popover_visible(window),
+        all_tabs_popover_visible: window.all_tabs_popover_visible(),
         line_inspector_visible: window
             .active_editor()
             .is_some_and(|editor| editor.line_inspector_visible()),
@@ -2245,6 +2382,7 @@ fn surface_snapshot(window: &LushtextWindow) -> AutomationSurfaceSnapshot {
             imp.palette_revealer.reveals_child(),
             imp.search_panel_revealer.reveals_child(),
             open_popover_visible(window),
+            window.all_tabs_popover_visible(),
             active_editor_search,
         ),
         accessibility_ready,
@@ -2347,6 +2485,7 @@ fn active_transient_surface_name(
     command_palette_visible: bool,
     search_panel_visible: bool,
     open_popover_visible: bool,
+    all_tabs_popover_visible: bool,
     editor_search_visible: bool,
 ) -> Option<String> {
     if command_palette_visible {
@@ -2355,6 +2494,8 @@ fn active_transient_surface_name(
         Some("workspace-search".to_string())
     } else if open_popover_visible {
         Some("open-popover".to_string())
+    } else if all_tabs_popover_visible {
+        Some("all-tabs-popover".to_string())
     } else if editor_search_visible {
         Some("editor-search".to_string())
     } else {
