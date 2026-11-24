@@ -3121,6 +3121,9 @@ invariants").
   vsync is not yet due, the unit runs in the idle time before it, so the
   first frame ends no later than today's and usually earlier.
   `INPUT_TO_FRAME_US` is still checked by the verdict test (D6's scenario).
+  *Superseded by rung T1 (2026-11-24, "Rung T1 as built"):* the first frame
+  now lays out the intent alone; D23's chunk still runs before it, and the
+  first unit runs in the interval after it.
 - **D23, moved.** The one unbound chunk of D23 runs in the first step-source
   dispatch after the input, not in the input dispatch, so the input
   dispatch does no row work again (D6 and D21's rejection as written before
@@ -3903,14 +3906,27 @@ and R7, READY 3248a99a).
 **Task 10.7's margins, A1 (chunk 8,192, destroy-only 64, steps of 8; 30
 sliced-collapse repetitions and 3 of the header):**
 - *Worst frame:* at most 9.3 ms (400:4,096; the 0:* cases at most 1.7 ms, the
-  header 2.6 ms). Every repetition meets 12 ms.
+  header 2.6 ms). Every collapse and header repetition meets 12 ms.
 - *Steps:* at most 5.9 ms (400:256), the header's terminal 4.0 ms. Every
-  repetition meets 6 ms.
+  collapse and header repetition meets 6 ms.
 - *Chunk and Between turns:* at most 4.9 ms. Every repetition meets 6 ms.
 - *Destroy-only unit (64):* 0:64's one 56-row dispatch reaches 7.6 ms (one of
   three repetitions), as G1c recorded (4.9–7.8 ms). Over the 6 ms margin and
   under `B_INTERACT_US`; no rung below 64 exists in G4's ladder, so it is
   recorded under C1.
+- *Task 6.1's expansion cases* (task 10.7 scopes them in, at task 10.4's
+  12 ms frame margin). `expand-cold` meets it (frames at most 10.0 ms).
+  `expand-after-collapse`, whose collapse runs before each expansion, misses
+  three ways, all recorded under C1:
+  - one frame of **13.7 ms** (0:1,024, one of three repetitions; under
+    `B_SETTLE_US`);
+  - 8-row bound steps of **6.4–6.5 ms** in three of its repetitions (400:64
+    and 400:1,024), over the 6 ms margin and under `B_INTERACT_US`; 8 rows is
+    the ladder's last step rung;
+  - the 56-row destroy-only dispatch at **7,993 µs** (0:64), 7 µs under
+    `B_INTERACT_US`. **A second hard-bar risk for the final campaign.** The
+    lever G1's reading recorded applies if the campaign misses there: cap the
+    destroy-only unit at the step size while the interval is untouched.
 - *Input dispatch:* **missed in 9 of 30 repetitions**, 6.5–8.1 ms, one of them
   (400:256, 8,070 µs) over `B_INTERACT_US`; the header's inputs are 4.3–5.9 ms.
   The distribution is bimodal and does not grow with the subtree: the median
@@ -4010,8 +4026,9 @@ sides, and it would measure what those tests already prove.
   are gone (task 10.11; `rev3/attribution-hooks.patch` re-applies them).
 - The misses recorded under C1, for the final campaign and BL's follow-ups:
   the input dispatch (pending P1), the completions at 400:4,096 and
-  400:16,385, the 56-row destroy-only dispatch at 0:64, and the folder-header
-  input. None returns the change to design.
+  400:16,385, the 56-row destroy-only dispatch at 0:64 (7.6 ms in the collapse
+  case, 7,993 µs before a re-expansion), and the expansion cases' 13.7 ms
+  frame and 6.4–6.5 ms steps. None returns the change to design.
 - Part B (task 7.2) is not READY: it waits on R6 and R7 (G4), P1 (the input's
   slow mode, which may cut code) and P2 (task 1.4's frame).
 
@@ -4026,11 +4043,14 @@ sides, and it would measure what those tests already prove.
   arms. The between-frames idle takes no bound step anyway; the fallback
   ignores the flag, because an unmapped or starved list paints no frame to
   clear it. `stop_collapse_sources` clears it with the other per-run state.
-- *Why a flag and not the interval token.* Charging the whole interval to the
-  frame counter at the input would wait one frame too many for an input that
-  GDK delivers inside a frame's event flush: the counter is then the
-  counter of the frame that paints the intent, and that frame's `after-paint`
-  would still read a spent interval.
+- *Why a flag and not the interval token.* A flag the input sets and the
+  next `after-paint` clears depends on no assumption about which frame's
+  counter the input dispatch reads. Charging the interval at the input
+  would: if GDK delivered the input inside a frame (its `flush-events`
+  phase), the counter it reads could already be the one of the frame that
+  paints the intent, whose `after-paint` would then still see a spent
+  interval and hold the unit one frame longer. That delivery order is not
+  pinned by an axiom here, so the design does not rely on it either way.
 - *A second input* that starts another sliced collapse while one is pending
   sets the flag again, so the running collapse's next unit waits for that
   input's first frame too: one frame, so that frame shows the new intent
@@ -4041,7 +4061,15 @@ sides, and it would measure what those tests already prove.
   the flag never set it fails (`[Chunk, Bound, Bound, Bound, Bound]` before the
   first frame, `impl1/t1-failing-first.log`); with T1 it passes, and so do the
   first-frame, step-source, D23 and frame-handler tests
-  (`impl1/t1-green.log`).
+  (`impl1/t1-green.log`). Task 10.9's guard, as task 11.4 wrote T1's
+  failing-first test, now also asserts that the first frame shows or
+  destroys no row widget: without T1 it changed 32 and 23
+  (`impl1/t1-guard-failing-first.log`), and it passes with T1
+  (`impl1/t1-guard-green.log`). The delta spec's "The first frame lays out
+  the first unit" is now "The first frame lays out the intent alone".
+- *Unmeasured.* No round has timed a T1 binary: the final campaign (task 7.2)
+  is T1's first measurement, unless the stage that reads the queued repeats
+  queues a branch-only A1 round on the rebuilt binary first.
 - *The lost frame, re-read against bar − M.* T1 moves the first interval's
   bound rows one frame later, so a case's completion grows by up to one
   frame. Read on A1's figures plus 16.7 ms: 400:64, 400:256, 400:131,072,

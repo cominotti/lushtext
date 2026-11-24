@@ -2923,7 +2923,7 @@ fn test_collapse_shows_in_the_first_frame() {
     assert!(crate::common::accessible_expanded_is(&expander, false));
     let overlay = expander.parent().expect("the row overlay");
     assert!(crate::common::accessible_expanded_is(&overlay, false));
-    // Design D21 (a guard, revised for D19 and D25; task 10.9): the first
+    // Design D21 (a guard, revised for D19, D25 and T1; task 10.9): the first
     // frame after the input changes at most one unit of row widgets, and the
     // step source the input armed runs before that frame (ledger A125), so
     // its `before-paint` already sees fewer rows than the input left; the
@@ -2978,6 +2978,14 @@ fn test_collapse_shows_in_the_first_frame() {
     assert!(
         RowChange::over_unit(&[frames[0].1]).is_none(),
         "the first frame changed {:?}",
+        frames[0].1
+    );
+    // Design R13's rung T1: the first frame lays out the intent alone, so
+    // no bound row has left (no row widget shown or destroyed) by its
+    // `after-paint`; D23's chunk removed only unbound rows.
+    assert!(
+        frames[0].1.shown == 0 && frames[0].1.destroyed == 0,
+        "the first frame changed no row widget: {:?}",
         frames[0].1
     );
     assert!(

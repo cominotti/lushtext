@@ -49,11 +49,12 @@ Collapsing a sidebar directory by a route LushText owns SHALL keep the input dis
 - **WHEN** a step removes bound rows of a subtree with nothing after it beyond the realized band
 - **THEN** it may remove up to `COLLAPSE_DESTROY_ONLY_ROWS` rows, within `B_INTERACT_US`, because no row widget is created in their place
 
-#### Scenario: The first frame lays out the first unit
+#### Scenario: The first frame lays out the intent alone
 - **WHEN** a sliced collapse starts
 - **THEN** the input dispatch shows the intent, hides the subtree's realized rows, removes no row, arms the step source, and stays within `B_INTERACT_US`
-- **AND** the step source, which runs above the frame clock's priority and below input, runs in its own dispatches before the first frame after the input: first at most one chunk of `COLLAPSE_UNBOUND_CHUNK_ROWS` unbound rows, then, when that chunk removed every unbound row of the subtree, the collapse's first bound unit; when unbound rows remain, the between-frames source continues them, so no second frame passes before the work continues
-- **AND** that first frame lays out at most one unit of bound rows, runs no step, and shows the collapse
+- **AND** the step source, which runs above the frame clock's priority and below input, runs in its own dispatch before the first frame after the input and removes at most one chunk of `COLLAPSE_UNBOUND_CHUNK_ROWS` unbound rows and no bound row; when unbound rows remain, the between-frames source continues them
+- **AND** that first frame lays out no removed bound row, runs no step, and shows the collapse
+- **AND** the collapse's first bound unit runs from that frame's `after-paint`, before the next frame
 
 #### Scenario: Unbound rows leave between frames
 - **WHEN** a sliced collapse removes rows no widget is bound to

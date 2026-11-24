@@ -178,10 +178,8 @@ when a frame is due, and the frame then lays out only what it changed.
   between frames equals the counter of the frame just painted.
 - When the first frame after an input must show the input's effect alone
   (the collapse's rung T1), gate the work on a flag the input sets and the
-  next `after-paint` clears, not on the frame counter: an input GDK delivers
-  in a frame's event flush already carries the counter of the frame that
-  paints it, so a counter charged at the input would hold the work one frame
-  too long.
+  next `after-paint` clears, not on a frame-counter charge made at the input:
+  the flag holds whichever frame's counter the input dispatch reads.
 - Widget state the work must re-apply after GTK writes it (a `map` that resets
   an accessible state) is re-applied from the same kind of source, armed by the
   event, never from the frame tick.

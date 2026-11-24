@@ -1085,9 +1085,11 @@ pub fn classify_missing_reveal_component(
 /// interval removes up to [`SIDEBAR_REALIZED_ROWS_PER_FRAME`] such rows in
 /// steps of at most this many, each its own dispatch between two frames.
 /// Gate G1c chose it: 8-row steps took at most 5.7 ms against the 6 ms
-/// selection margin, where 16 rows took 7.7 ms and 32 rows 9.7 ms; the
+/// selection margin, where 16 rows took 7.7 ms and 32 rows 9.7 ms. The
 /// constants round on the D24 code (task 10.7, round A1) measured them at
-/// most 5.9 ms in every sliced collapse.
+/// most 5.9 ms in the collapse cases and up to 6.5 ms in the collapses that
+/// precede a re-expansion, over the margin and within `B_INTERACT_US`; 8 is
+/// the ladder's last rung (design R13, C1).
 ///
 /// Kind: cap; a power of two, rounded down.
 pub const COLLAPSE_STEP_ROWS: u32 = 8;
