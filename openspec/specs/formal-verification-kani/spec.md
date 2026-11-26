@@ -406,3 +406,84 @@ Because no Kani form of the engine that was tried fitted the shard margin (desig
 - **THEN** no source that is not valid UTF-8 is `Replaced` at any chunk size, it ends `NotUtf8`, `StaleLine` or `OutputLimitExceeded`, and with no edit and no limit it ends `NotUtf8`
 - **AND** an invalid source split by a seam is reached at least once
 - **AND** a mutant whose end of stream skips the UTF-8 carry's final check fails the check
+
+### Requirement: Imperative shells are conformance-tested against their proven cores
+The durable-write shells and the draft service SHALL each have a model-based
+conformance test whose oracle is the Kani-proven core inside its shared
+environment model, with no separately written expected behaviour. Each test
+SHALL drive the real shell and the model in lockstep with one operation
+script, including injected faults and crashes, and SHALL compare an
+abstraction of the real observable state with the model's state after every
+step.
+
+#### Scenario: The oracle is the proven code
+- **WHEN** a conformance test decides what the shell should have done after a step
+- **THEN** that expectation comes from the production core and the shared environment model that the Kani harnesses check
+- **AND** no hand-written expected-state table or parallel state machine is consulted
+
+#### Scenario: The durable-write and draft-service shells are covered
+- **WHEN** the conformance tests run
+- **THEN** the atomic write, copy, move, and rename shells are checked against `WriteProtocol`, `MoveProtocol`, `RenameProtocol`, and the write disk model
+- **AND** the draft service is checked against `journal_core` inside the journal model
+
+### Requirement: Conformance divergences are classified and recorded
+Every divergence a conformance test finds SHALL be recorded in the programme
+record with one of three classes and handled by it:
+
+- **shell**: a failing deterministic regression test first, then the fix;
+- **environment**: the model is corrected and the affected harnesses re-run;
+- **core**: the property is marked invalidated from the finding's commit, and
+  re-proved only after a harness that failed first passes.
+
+#### Scenario: A shell divergence is fixed failing-first
+- **WHEN** a conformance run finds a sequence after which the real disk or the shell's returned state differs from the model's
+- **THEN** the shrunk sequence is committed as a deterministic regression test that fails before the fix and passes after it
+- **AND** the programme record lists the finding with its classification
+
+#### Scenario: A core defect invalidates a proof
+- **WHEN** a divergence is traced to the proven core deciding unsafely
+- **THEN** the programme record marks the affected property as invalidated from the finding's commit
+- **AND** a Kani harness exhibits the counterexample before the core is fixed, and the property is recorded as proved again only after that harness passes
+
+### Requirement: Verification environment models are shared between Kani and conformance tests
+The journal model and the write disk model SHALL each live in one module,
+compiled for Kani and for test and `test-utils` builds and never for a
+shipping build. Each SHALL take its nondeterministic choices from its caller,
+from `kani::any()` under Kani and from the script in a conformance test. The
+move SHALL leave each harness proving the same properties at the same bounds.
+The modules SHALL be excluded from the mutation scope.
+
+#### Scenario: One model, two drivers
+- **WHEN** the Kani lane and the conformance tests run after the move
+- **THEN** both execute the same environment-model source, differing only in where its choices come from
+- **AND** every journal and write-protocol harness whose property is unchanged reports the same verdict at the same bound as before the move, every `kani::cover!` reports satisfied, and proof strength kills at least the previously recorded number of `write_protocol` and `journal_core` mutants
+
+#### Scenario: A shipping build compiles no model
+- **WHEN** the release binary is built with default features
+- **THEN** neither environment model module is compiled into it
+
+### Requirement: The journal model distinguishes a fault before an effect from one after it
+The journal model's fault SHALL be `None`, `BeforeEffect`, or `AfterEffect`.
+`AfterEffect` SHALL leave a body write's or manifest commit's effect live but
+unconfirmed while the window treats the step as failed. Unsynced unlinks and
+unsynced set-aside placements SHALL also be unconfirmed. A crash SHALL be
+free to keep or revert any unconfirmed effect, and a later sync of its
+directory SHALL confirm it. S1–S4 SHALL hold over this domain, and L1 after
+any fault-admitting prefix in it.
+
+#### Scenario: An after-rename failure is in the proved domain
+- **WHEN** a body write or any manifest commit fails after its rename landed
+- **THEN** the model represents that step as live, unconfirmed, and reported failed, S1–S4 are checked over that outcome, and L1 holds after any prefix that contains it
+
+#### Scenario: A crash may revert an unconfirmed effect
+- **WHEN** a crash follows an after-effect fault, an unsynced unlink, or a set-aside placement whose directory sync failed, before any later successful sync of the same directory
+- **THEN** the model explores both the kept and the reverted effect
+
+#### Scenario: Every effect whose sync can fail is in the domain
+- **WHEN** the widened model is reviewed against the service
+- **THEN** the body write and every manifest commit (registration, autosave commit, entry removal, orphan cleanup, startup reconciliation) admit `AfterEffect`, every unsynced unlink (a body deletion, an orphan delete) is unconfirmed, a set-aside move the service counts as placed after a failed directory sync is unconfirmed, and a set-aside copy whose directory sync failed is a failed step whose live copy is unconfirmed
+- **AND** a manifest commit reverts as a whole file, and a reverted set-aside move returns the body to its source
+
+#### Scenario: A restriction is stated, never silent
+- **WHEN** a harness cannot carry part of the widened domain within its shard budget after the shard-fitting order, or the model under-approximates the crash outcomes, as when several unconfirmed manifest commits revert together
+- **THEN** the restriction is stated in that harness, in this specification's delta, and in the programme record as a named residual
