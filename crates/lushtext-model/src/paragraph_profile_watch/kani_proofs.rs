@@ -51,7 +51,7 @@
 use super::{
     DeleteFacts, InsertFacts, ProfileWatchState, WatchPlan, complete, plan_delete, plan_insert,
 };
-use crate::model::paragraph_boundary::{
+use crate::paragraph_boundary::{
     PROFILE_THRESHOLD_COUNT, ParagraphLengthFold, ProfileConfig, ProfileThresholds,
 };
 

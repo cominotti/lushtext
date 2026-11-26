@@ -343,7 +343,7 @@ pub fn next_slice_boundary(text: &str, start: usize, budget: SliceBudget) -> usi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::paragraph_boundary::DocumentProfile;
+    use crate::paragraph_boundary::DocumentProfile;
 
     /// `lines` lines of `width` visible characters each, `\n`-ended.
     fn lines_of(width: usize, lines: usize) -> String {

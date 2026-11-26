@@ -3,7 +3,7 @@
 This is the developer-facing contract for LushText automation. Keep it in sync
 with `crates/lushtext-core/src/services/action_catalog/mod.rs`,
 `crates/lushtext-core/src/ui/automation.rs`, and
-`crates/lushtext-core/src/model/automation.rs`, plus the reusable client in
+`crates/lushtext-model/src/automation.rs`, plus the reusable client in
 `scripts/lushtext-automation.py`.
 
 Run:

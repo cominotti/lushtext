@@ -56,7 +56,7 @@ use super::journal_core::{
     startup_may_retire_stale, startup_restore, unapplied_restore_disposition,
     untrusted_commit_disposition, window_may_journal_draft,
 };
-use crate::model::draft::{DraftManifestAuthority, DraftManifestCompleteness};
+use lushtext_model::draft::{DraftManifestAuthority, DraftManifestCompleteness};
 
 /// The most draft ids any harness uses.
 const MAX_IDS: usize = 3;

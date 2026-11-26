@@ -833,10 +833,13 @@ def validate_data_safety_triggers(skills_root: Path, registry: dict[str, object]
         return [f"{where}: data_safety.skill has no readable description: {policy['skill']}"]
     errors: list[str] = []
     for suffix in policy.get("path_suffixes", []):
-        if isinstance(suffix, str) and f"{PurePosixPath(suffix).name}/" not in description:
-            errors.append(
-                f"{where}: data_safety path suffix {suffix!r} is not named in the {policy['skill']} description"
-            )
+        if isinstance(suffix, str):
+            path = PurePosixPath(suffix)
+            short = path.parent.name if path.name == "src" and path.parent.name else path.name
+            if f"{short}/" not in description:
+                errors.append(
+                    f"{where}: data_safety path suffix {suffix!r} is not named in the {policy['skill']} description"
+                )
     for entry in policy.get("content_patterns", []):
         if isinstance(entry, dict) and isinstance(entry.get("keyword"), str):
             if entry["keyword"] not in description:

@@ -107,6 +107,7 @@ MATRIX_PATH = REPO_ROOT / "docs/workflow-readability-matrix.md"
 RECORD_PATH = REPO_ROOT / "docs/next/workflow-readability.md"
 MUTANTS_CONFIG_PATH = REPO_ROOT / ".cargo/mutants.toml"
 CORE_SRC = Path("crates/lushtext-core/src")
+MODEL_SRC = Path("crates/lushtext-model/src")
 
 # The GTK family a pure policy module must never reach for. Keep this list in
 # sync with the same list in the capability spec and `.agents/rules/rust.md`.
@@ -721,7 +722,11 @@ def admitted_fn_position(code: str, position: int) -> int | None:
 def whole_pixel_policy_modules(root: Path) -> dict[Path, int]:
     """Return every protected module with its function-level admission ceiling."""
     core = root / CORE_SRC
-    modules = {core / path: ceiling for path, ceiling in WHOLE_PIXEL_POLICY_MODULES.items()}
+    model = root / MODEL_SRC
+    modules = {
+        (model / path.removeprefix("model/") if path.startswith("model/") else core / path): ceiling
+        for path, ceiling in WHOLE_PIXEL_POLICY_MODULES.items()
+    }
     for home in GEOMETRY_ROLE_HOMES:
         directory = core / home
         if directory.is_dir():
@@ -1196,6 +1201,8 @@ def normalize_claim(token: str) -> str | None:
         return None
     if candidate.startswith(REPO_PATH_PREFIXES):
         return candidate
+    if candidate.startswith("model/"):
+        return str(MODEL_SRC / candidate.removeprefix("model/"))
     if candidate.startswith(CORE_LAYER_PREFIXES):
         return str(CORE_SRC / candidate)
     return None
@@ -1610,18 +1617,18 @@ def parse_seam_ceiling(text: str) -> int | None:
 
 
 def count_for_test_declarations(root: Path) -> int:
-    """Count `pub`/`pub(crate)` `*_for_test` declarations in the governed crate.
+    """Count `pub`/`pub(crate)` `*_for_test` declarations in the governed crates.
 
     Counted over comment- and string-stripped code so a doc comment naming a
     retired getter cannot inflate the figure the ratchet compares.
     """
-    core = root / CORE_SRC
-    if not core.is_dir():
-        return 0
     total = 0
-    for path in sorted(core.rglob("*.rs")):
-        for _, line in code_lines(path.read_text(encoding="utf-8")):
-            total += len(FOR_TEST_DECLARATION_RE.findall(line))
+    for src_dir in (root / CORE_SRC, root / MODEL_SRC):
+        if not src_dir.is_dir():
+            continue
+        for path in sorted(src_dir.rglob("*.rs")):
+            for _, line in code_lines(path.read_text(encoding="utf-8")):
+                total += len(FOR_TEST_DECLARATION_RE.findall(line))
     return total
 
 
@@ -1929,7 +1936,7 @@ MINIMAL_MUTANTS_CONFIG = """
 test_tool = "nextest"
 
 examine_globs = [
-    "crates/lushtext-core/src/model/**/*.rs",
+    "crates/lushtext-model/src/**/*.rs",
     "crates/lushtext-core/src/services/**/*.rs",
     "crates/lushtext-core/src/ui/**/policy.rs",
 ]
@@ -2287,7 +2294,7 @@ def run_self_test() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         matrix, config = build_fixture(root, matrix_body=clean_row)
-        write(root / CORE_SRC / "model/example_policy.rs", "pub fn ok() {}\n")
+        write(root / MODEL_SRC / "example_policy.rs", "pub fn ok() {}\n")
         write(
             root / CORE_SRC / "ui/search_panel/policy.rs",
             "//! gtk4::Widget in a doc comment is fine.\npub fn decide() -> bool { true }\n",
@@ -2299,7 +2306,7 @@ def run_self_test() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         matrix, config = build_fixture(root, matrix_body=clean_row)
-        write(root / CORE_SRC / "model/example_policy.rs", "pub fn ok() {}\n")
+        write(root / MODEL_SRC / "example_policy.rs", "pub fn ok() {}\n")
         write(
             root / CORE_SRC / "ui/search_panel/policy.rs",
             "use gtk4::prelude::*;\npub fn decide(w: &gtk4::Widget) {}\n",
@@ -2320,7 +2327,7 @@ def run_self_test() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         matrix, config = build_fixture(root, matrix_body=clean_row)
-        write(root / CORE_SRC / "model/example_policy.rs", "pub fn ok() {}\n")
+        write(root / MODEL_SRC / "example_policy.rs", "pub fn ok() {}\n")
         write(
             root / CORE_SRC / "ui/example/unclassified.rs",
             "//! Some prose that names no role at all.\npub fn decide() -> bool { true }\n",
@@ -2332,7 +2339,7 @@ def run_self_test() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         matrix, config = build_fixture(root, matrix_body=clean_row)
-        write(root / CORE_SRC / "model/example_policy.rs", "pub fn ok() {}\n")
+        write(root / MODEL_SRC / "example_policy.rs", "pub fn ok() {}\n")
         # Every one of these is correctly named or correctly declared under the
         # convention and MUST NOT be reported.
         write(
@@ -2377,7 +2384,7 @@ def run_self_test() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         matrix, config = build_fixture(root, matrix_body=clean_row)
-        write(root / CORE_SRC / "model/example_policy.rs", "pub fn ok() {}\n")
+        write(root / MODEL_SRC / "example_policy.rs", "pub fn ok() {}\n")
         # A crate-root `policy.rs` is outside every real `examine_globs` entry:
         # the globs reach `model/**`, `services/**`, and `ui/**/policy.rs` only.
         # (`/**/` matches zero segments in globset, so `ui/policy.rs` *is*
@@ -2445,7 +2452,7 @@ def run_self_test() -> None:
                 "(1 workflow, relocates to `ui/search_panel/policy.rs`) | pending |\n"
             ),
         )
-        write(root / CORE_SRC / "model/example_policy.rs", "pub fn ok() {}\n")
+        write(root / MODEL_SRC / "example_policy.rs", "pub fn ok() {}\n")
         findings = check_tree(root, matrix, config)
         if findings:
             raise AssertionError(f"expected planned target to be exempt, got {findings}")
@@ -2468,7 +2475,7 @@ def run_self_test() -> None:
                 "```\n### WFR-EXAMPLE\n\n- facade: `ui/example/mod.rs`\n```\n"
             ),
         )
-        write(root / CORE_SRC / "model/example_policy.rs", "pub fn ok() {}\n")
+        write(root / MODEL_SRC / "example_policy.rs", "pub fn ok() {}\n")
         findings = check_tree(root, matrix, config)
         if findings:
             raise AssertionError(f"expected fenced documentation to be inert, got {findings}")
@@ -2485,7 +2492,7 @@ def run_self_test() -> None:
                 "`openspec/specs/absent-capability/spec.md`.\n"
             ),
         )
-        write(root / CORE_SRC / "model/example_policy.rs", "pub fn ok() {}\n")
+        write(root / MODEL_SRC / "example_policy.rs", "pub fn ok() {}\n")
         write(root / "openspec/changes/in-flight/specs/live-capability/spec.md", "# spec\n")
         findings = check_tree(root, matrix, config)
         if any("live-capability" in finding for finding in findings):
@@ -2505,7 +2512,7 @@ def run_self_test() -> None:
                 "`openspec/changes/bogus-change/evidence/parity.md`.\n"
             ),
         )
-        write(root / CORE_SRC / "model/example_policy.rs", "pub fn ok() {}\n")
+        write(root / MODEL_SRC / "example_policy.rs", "pub fn ok() {}\n")
         write(
             root / "openspec/changes/archive/2026-01-02-live-change/evidence/parity.md",
             "# parity\n",
@@ -2535,7 +2542,7 @@ def run_self_test() -> None:
                 "- mutation parity: none\n"
             ),
         )
-        write(root / CORE_SRC / "model/example_policy.rs", "pub fn ok() {}\n")
+        write(root / MODEL_SRC / "example_policy.rs", "pub fn ok() {}\n")
         write(root / CORE_SRC / "ui/search_panel/mod.rs", "pub struct Panel;\n")
         write(root / CORE_SRC / "ui/search_panel/evidence.rs", "pub struct Facts;\n")
         findings = check_tree(root, matrix, config)
@@ -2559,7 +2566,7 @@ def run_self_test() -> None:
                 "- mutation parity: none\n"
             ),
         )
-        write(root / CORE_SRC / "model/example_policy.rs", "pub fn ok() {}\n")
+        write(root / MODEL_SRC / "example_policy.rs", "pub fn ok() {}\n")
         write(root / CORE_SRC / "ui/search_panel/mod.rs", "pub struct Panel;\n")
         write(root / CORE_SRC / "ui/search_panel/evidence.rs", "pub struct Facts;\n")
         findings = check_tree(root, matrix, config)
@@ -3165,7 +3172,7 @@ def run_self_test() -> None:
         root = Path(tmp)
         # String literals and block comments name GTK types without importing them.
         matrix, config = build_fixture(root, matrix_body=clean_row)
-        write(root / CORE_SRC / "model/example_policy.rs", "pub fn ok() {}\n")
+        write(root / MODEL_SRC / "example_policy.rs", "pub fn ok() {}\n")
         write(
             root / CORE_SRC / "ui/search_panel/policy.rs",
             '/* gtk4::Widget in a block comment is fine. */\n'
@@ -3332,7 +3339,7 @@ def run_self_test() -> None:
         matrix, config = build_fixture(
             root, matrix_body=clean_row, budget_section=measurement_section(2)
         )
-        write(root / CORE_SRC / "model/example_policy.rs", "pub fn ok() {}\n")
+        write(root / MODEL_SRC / "example_policy.rs", "pub fn ok() {}\n")
         write_seams(root, 2)
         findings = check_tree(root, matrix, config)
         if any("exceed the recorded ceiling" in f for f in findings):
@@ -3346,7 +3353,7 @@ def run_self_test() -> None:
         matrix, config = build_fixture(
             root, matrix_body=clean_row, budget_section=measurement_section(5)
         )
-        write(root / CORE_SRC / "model/example_policy.rs", "pub fn ok() {}\n")
+        write(root / MODEL_SRC / "example_policy.rs", "pub fn ok() {}\n")
         write_seams(root, 1)
         findings = check_tree(root, matrix, config)
         if findings:
@@ -3358,7 +3365,7 @@ def run_self_test() -> None:
         matrix, config = build_fixture(
             root, matrix_body=clean_row, budget_section=measurement_section(2)
         )
-        write(root / CORE_SRC / "model/example_policy.rs", "pub fn ok() {}\n")
+        write(root / MODEL_SRC / "example_policy.rs", "pub fn ok() {}\n")
         write_seams(root, 3)
         findings = check_tree(root, matrix, config)
         breach = [f for f in findings if "exceed the recorded ceiling" in f]
@@ -3375,7 +3382,7 @@ def run_self_test() -> None:
         matrix, config = build_fixture(
             root, matrix_body=clean_row, budget_section=measurement_section(0)
         )
-        write(root / CORE_SRC / "model/example_policy.rs", "pub fn ok() {}\n")
+        write(root / MODEL_SRC / "example_policy.rs", "pub fn ok() {}\n")
         write(
             root / CORE_SRC / "ui/search_panel/imp.rs",
             "//! Role: called presentation surface.\n"
@@ -3397,7 +3404,7 @@ def run_self_test() -> None:
         # rule -- but the real-tree entry point, which always passes a record
         # path, reports it rather than silently retiring the ratchet.
         matrix, config = build_fixture(root, matrix_body=clean_row)
-        write(root / CORE_SRC / "model/example_policy.rs", "pub fn ok() {}\n")
+        write(root / MODEL_SRC / "example_policy.rs", "pub fn ok() {}\n")
         write_seams(root, 99)
         findings = check_tree(root, matrix, config)
         if findings:
@@ -3423,7 +3430,7 @@ def run_self_test() -> None:
                 "- externally reachable `\\*_for_test` declaration ceiling: 1\n"
             ),
         )
-        write(root / CORE_SRC / "model/example_policy.rs", "pub fn ok() {}\n")
+        write(root / MODEL_SRC / "example_policy.rs", "pub fn ok() {}\n")
         write_seams(root, 3)
         findings = check_tree(root, matrix, config, require_seam_ceiling=True)
         if not any("ratchet checked nothing" in finding for finding in findings):
@@ -3448,7 +3455,7 @@ def run_self_test() -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             matrix, config = build_fixture(root, matrix_body=clean_row)
-            write(root / CORE_SRC / "model/example_policy.rs", "pub fn ok() {}\n")
+            write(root / MODEL_SRC / "example_policy.rs", "pub fn ok() {}\n")
             policy = root / CORE_SRC / "ui/example/policy.rs"
             if parent is not None:
                 write(policy, "//! Pure.\npub fn decide() -> bool { true }\n" + parent)

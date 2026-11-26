@@ -31,7 +31,7 @@ VISUAL_SENSITIVE_PREFIXES = (
 # Every path the workspace-tree rendered-row invariant keys on is visual-sensitive
 # as well, through `is_visual_sensitive`, so those paths are not repeated here.
 VISUAL_SENSITIVE_EXACT = (
-    "crates/lushtext-core/src/model/automation.rs",
+    "crates/lushtext-model/src/automation.rs",
     "scripts/check-visual-proof-policy.py",
     "scripts/lushtext-automation.py",
     "scripts/test-visual-geometry.py",
@@ -206,7 +206,7 @@ def required_invariants_for_changes(paths: list[str]) -> list[str]:
             or path.startswith(SHELL_GEOMETRY_ROLE_HOME_PREFIX)
             or path == "crates/lushtext-core/src/ui/window/imp.rs"
             or path == "crates/lushtext-core/src/ui/automation.rs"
-            or path == "crates/lushtext-core/src/model/automation.rs"
+            or path == "crates/lushtext-model/src/automation.rs"
             or path == "resources/style/style.css"
             or path == "scripts/check-visual-proof-policy.py"
             or path == "scripts/lushtext-automation.py"
@@ -258,7 +258,7 @@ def required_animation_invariants_for_changes(paths: list[str]) -> list[str]:
             or path.startswith(SHELL_GEOMETRY_ROLE_HOME_PREFIX)
             or path == "crates/lushtext-core/src/ui/window/imp.rs"
             or path == "crates/lushtext-core/src/ui/automation.rs"
-            or path == "crates/lushtext-core/src/model/automation.rs"
+            or path == "crates/lushtext-model/src/automation.rs"
             or path == "scripts/check-visual-proof-policy.py"
             or path == "scripts/lushtext-automation.py"
             or path == "scripts/test-visual-geometry.py"
@@ -669,7 +669,7 @@ def run_self_tests() -> None:
     _self_test_shell_geometry_role_home_rekey()
     _self_test_workspace_tree_row_anchor_paths()
     assert is_visual_sensitive("crates/lushtext-core/src/ui/window/imp.rs")
-    assert is_visual_sensitive("crates/lushtext-core/src/model/automation.rs")
+    assert is_visual_sensitive("crates/lushtext-model/src/automation.rs")
     assert is_visual_sensitive("resources/ui/window.blp")
     assert is_visual_sensitive("resources/style/style.css")
     assert is_visual_sensitive("scripts/visual-geometry-scenarios/example.json")

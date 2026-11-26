@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use super::*;
-use crate::model::paragraph_boundary::next_paragraph_break;
+use crate::paragraph_boundary::next_paragraph_break;
 
 /// Closed paragraph lengths of `text`, the way C1's accumulator closes them
 /// (delimiters excluded, the last paragraph included).

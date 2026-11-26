@@ -1,0 +1,31 @@
+[package]
+name = "lushtext-model"
+version = "0.8.3"
+edition = "2024"
+rust-version.workspace = true
+license = "GPL-3.0-or-later"
+publish = false
+
+[package.metadata.lushtext-agent]
+performance-roots = ["src"]
+release-model-roots = ["src"]
+
+[features]
+# Expose unregistered fixture helpers for property tests and test suites.
+test-utils = []
+
+[dependencies]
+gtk-lush-proof-spine = { workspace = true }
+encoding_rs          = { workspace = true }
+memchr               = { workspace = true }
+regex                = { workspace = true }
+serde                = { workspace = true }
+workspace-hack       = { version = "0.1", path = "../../workspace-hack" }
+
+[dev-dependencies]
+proptest   = { workspace = true }
+serde_json = { workspace = true }
+tracing    = { workspace = true }
+
+[lints]
+workspace = true

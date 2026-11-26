@@ -203,11 +203,11 @@ pub const fn chunk_gate(facts: ChunkFacts) -> ChunkGate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::document_scale::S_SYNTAX;
+    use crate::document_scale::S_SYNTAX;
 
     #[test]
     fn only_a_language_with_a_chunked_cap_takes_the_chunked_order_above_its_threshold() {
-        use crate::model::document_scale::MODEL_MARKDOWN_CAP;
+        use crate::document_scale::MODEL_MARKDOWN_CAP;
         for cap in [None, Some(MODEL_MARKDOWN_CAP)] {
             for language in SyntaxLanguage::ALL {
                 let threshold = language.attach_after_install_threshold();

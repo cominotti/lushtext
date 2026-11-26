@@ -28,6 +28,7 @@ EXPECTED_MEMBERS = {
 LUSHTEXT_CRATES = {
     "lushtext",
     "lushtext-build-support",
+    "lushtext-model",
     "lushtext-core",
 }
 REQUIRED_FILES = (

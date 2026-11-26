@@ -28,6 +28,7 @@ EXPECTED_PACKAGES = {
 LUSHTEXT_PACKAGES = {
     "lushtext",
     "lushtext-build-support",
+    "lushtext-model",
     "lushtext-core",
 }
 REQUIRED_MATRIX_FIELDS = (

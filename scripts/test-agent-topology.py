@@ -250,6 +250,22 @@ class ReviewLensTests(LensFixture):
         result = self.lenses(("M", "crates/lushtext-core/src/services/draft_service.rs"))
         self.assertEqual(self.flags(result), (True, True, False))
 
+    def test_extracted_model_crate_edit_is_data_and_performance(self) -> None:
+        policy = {
+            **self.POLICY,
+            "data_safety": {
+                **self.POLICY["data_safety"],
+                "path_suffixes": ["src/ui", "src/services", "src/model", "lushtext-model/src"],
+            },
+        }
+        result = TOPOLOGY.review_lenses(
+            self.topology,
+            policy,
+            [TOPOLOGY.ChangedPath("M", "crates/lushtext-model/src/draft.rs")],
+            {},
+        )
+        self.assertTrue(result["data"])
+
     def test_docs_edit_needs_no_domain_lens(self) -> None:
         result = self.lenses(("M", "docs/memorials/x.md"), ("A", "openspec/changes/x/design.md"))
         self.assertEqual(self.flags(result), (False, False, False))
