@@ -69,13 +69,6 @@ pub(crate) enum Address {
     /// Destination-scoped: call `call` of the action named `action` (its
     /// `Debug` name, without fields) in a run of `kind` whose destination,
     /// learned from the run's rename, is `destination`.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "addressed by the unit tests until the drafts driver (D5) uses it"
-        )
-    )]
     Destination {
         kind: ProtocolKind,
         destination: PathBuf,
@@ -84,33 +77,12 @@ pub(crate) enum Address {
     },
     /// Scope-wide: the `call`-th tap point since the plan was installed, any
     /// primitive, inside or outside a protocol run.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "addressed by the unit tests until the drafts driver (D5) uses it"
-        )
-    )]
     ScopeWide { call: usize },
     /// The `sync_parent_dir` hook: let `succeeding` parent-directory syncs
     /// succeed, then fail the next one.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "only the durable-write unit tests' `*_for_test` setters arm it"
-        )
-    )]
     ParentSync { succeeding: u32 },
     /// The next `call` made inside an action named `action` of any run of
     /// `kind`.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "only the durable-write unit tests' `*_for_test` setters arm it"
-        )
-    )]
     NextInAction {
         kind: ProtocolKind,
         action: &'static str,
@@ -380,13 +352,6 @@ pub(crate) fn install(plan: TapPlan) -> TapGuard {
 
 /// Arm a guardless injection on this thread, consumed when it fires: the
 /// semantics of the durable-write `*_for_test` setters.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "only the durable-write unit tests' `*_for_test` setters use it"
-    )
-)]
 pub(crate) fn arm(injection: Injection) {
     TAP.with(|tap| tap.borrow_mut().legacy.push(injection));
 }

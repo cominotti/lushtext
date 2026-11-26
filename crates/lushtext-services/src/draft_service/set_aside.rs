@@ -584,9 +584,7 @@ mod tests {
         fixture::create_dir_all(&area);
         let source = draft_body_path(data.path(), "d6-draft");
         fixture::write_text(&source, "unsaved edits");
-        crate::filesystem::write::fail_next_parent_sync_for_test(
-            std::io::ErrorKind::Other,
-        );
+        crate::filesystem::write::fail_next_parent_sync_for_test(std::io::ErrorKind::Other);
 
         let unconfirmed = keep_copy(data.path(), "d6-draft", 7);
         assert!(
@@ -595,9 +593,7 @@ mod tests {
         );
         fixture::assert_text(&source, "unsaved edits");
 
-        crate::filesystem::write::fail_next_parent_sync_for_test(
-            std::io::ErrorKind::Other,
-        );
+        crate::filesystem::write::fail_next_parent_sync_for_test(std::io::ErrorKind::Other);
         assert!(
             keep_copy(data.path(), "d6-draft", 7).is_err(),
             "the same bytes are kept only once the area is synced"

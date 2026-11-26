@@ -2753,74 +2753,213 @@ Both wait for it because of `durable_write` overlap; the facts are:
   its body, so the orphan-body cleanup now removes a body only when its entry
   file is confirmed missing (design, "Review (stage 4, 2026-11-18)").
 
-### Phase 6 — Shell conformance against the proven cores (`verify-shell-conformance-against-proven-cores`, in progress)
+### Phase 6 — Shell conformance against the proven cores (`verify-shell-conformance-against-proven-cores`, 2026-11-26)
 
-**Posture (2026-11-18, stage 3 of the change).** The write half is done; the
-draft-service lockstep driver (design D5, tasks 4.x) and the journal fault
-widening (D6/D7, tasks 5.x) are not started and stay owed by this change, in
-that order (4.3 must pass on before-effect faults before 5.1 widens the
-model).
+**Posture (2026-11-26, implementation complete, awaiting `kani.yml` dispatch).**
+Both halves (write shell and draft service, plus the journal `Fault` domain
+widening to `None | BeforeEffect | AfterEffect`), Kani re-runs, and final
+`make proof-strength` runs are complete on the post-Onda-2 layout
+(`crates/lushtext-services/` and `crates/lushtext-core/`); the two scheduled
+`kani.yml` dispatches run on GitHub after push.
 
 - **Shared environment models (D1).** The Kani environments moved out of the
-  harness files into `services/filesystem/write_protocol/disk_model.rs`
+  harness files into
+  `crates/lushtext-services/src/filesystem/write_protocol/disk_model.rs`
   (`Disk`, `MoveDisk`, `RenameNamespace`) and
-  `services/draft_service/journal_model.rs` (the journal model, with its
-  in-model choices behind a `Choices` trait; `KaniChoices` is exactly the
-  former `kani::any()` / `kani::assume`). The harnesses changed only at their
-  choice call sites. Both modules are verification code: excluded from the
-  mutation scope, listed in `NOT_ORACLE_MODULES`, compiled under `cfg(kani)`,
-  `cfg(test)` and (the disk model) `test-utils`.
-- **The conformance tap (D3).** `services/filesystem/backend_tap.rs` is a
-  per-invocation, thread-local seam with two sites: the action site in
+  `crates/lushtext-services/src/draft_service/journal_model.rs` (the journal
+  model, with its in-model choices behind a `Choices` trait; `KaniChoices` is
+  exactly the former `kani::any()` / `kani::assume`). Both modules are
+  verification code: excluded from the mutation scope, listed in
+  `NOT_ORACLE_MODULES`, and compiled only under `cfg(kani)`, `cfg(test)`, and
+  (the disk model) `test-utils`.
+- **The conformance tap (D3).**
+  `crates/lushtext-services/src/filesystem/backend_tap.rs` (with `active.rs`)
+  is a per-invocation, thread-local seam with two sites: the action site in
   `protocol_drive::drive` (every action and fed-back outcome of the six
-  shells, with nested runs, before-action hooks and crashes by
+  shells, with nested runs, before-action hooks, and crashes by
   `resume_unwind`) and the call site in `sys.rs` (every fallible backend
   primitive; a test pins the list). The six durable-write hooks are now
   one-entry plans; their setters kept their names and semantics. Outside
   `test` and `test-utils` every entry point is an inline no-op.
-- **Write-shell conformance (D4).** `services/conformance/write_shell.rs`
-  runs a real durable-write primitive under the tap and replays the trace
-  through the cores and the shared disk model, checking after every action
-  the fed outcome against the calls' results, the pinned per-action call
-  table, the destination against `visible()`, the temp against `linked`, temp
-  mode non-widening and stray entries; after a crash, the live crash view and
-  that every leftover is a temp a later launch sweeps. The deterministic
-  enumeration covers 322 cases (8 primitives x 2 destination states x every
-  action's calls x Fail / AlreadyExists / CrossDevice, crash before and after
-  every action, a failed temp removal on every failure path, 1..8 taken temp
-  names) in about 0.05 s; `tests/properties/shell_conformance_write.rs` adds
-  modes, payload sizes and two injections per run. **Findings: none** (the
-  write shell matched its core and model on every case). The enumeration was
-  shown to fail on a scratch, never-committed shell mutant (a `RemoveTemp`
-  that removes nothing fails the pinned call table on its first case).
-- **Finding, shell (D6, expected by the design):** `set_aside::place`
-  counted a set-aside **copy** whose directory sync failed as placed, so a
-  stale body could be reported preserved, then unlinked durably, and a crash
-  could revert the unsynced copy. Fixed failing-first: a copy's
-  `AfterRename` is now an error (the caller keeps the body), and a retry that
-  finds the same bytes syncs the directory before it counts them kept; moves
-  keep counting as placed (a reverted rename returns the body to `drafts/`).
-  The Kani exhibit of task 7.4 is owed with the D6 widening.
-- **Proof strength after the model move (interim, task 9.3 still owed on
-  the final code).** `write_protocol.rs` at `cd1a0f7c`: 34 mutants, 6 / 6
-  unviable, 28 killed by both arms (0 Kani-only, 0 tests-only), 0 Kani
-  survivors. The Kani kill count equals the `3c9fe91e` record (28), and the
-  10 former Kani-only kills are now also killed by the tests arm through the
-  conformance tests. `journal_core.rs` at `73ff720f`, with the Kani arm
-  sharded `0/2` and `1/2`: 51 mutants, 18 / 18 unviable, 1 Kani-only,
-  32 both, 33 either, 0 Kani survivors. This is identical to the `71fc2e3a`
-  record. The shared environment models weakened neither proof.
-- **Replace survivors (D8).** Mutants 649, 689 and 691 of
-  `replace/apply.rs::process_file` have tests through the tap's
-  before-action hook at `ReplaceFile`/`WriteBody`
+- **Write-shell conformance (D4).**
+  `crates/lushtext-services/src/conformance/write_shell.rs` runs a real
+  durable-write primitive under the tap and replays the trace through the cores
+  and the shared disk model, checking after every action the fed outcome
+  against the calls' results, the pinned per-action call table, the destination
+  against `visible()`, the temp against `linked`, temp mode non-widening, and
+  stray entries; after a crash, the live crash view and that every leftover is a
+  temp a later launch sweeps. The deterministic enumeration covers 322 cases
+  (8 primitives × 2 destination states × every action's calls × Fail /
+  AlreadyExists / CrossDevice, crash before and after every action, a failed
+  temp removal on every failure path, 1..8 taken temp names) in about 0.05 s;
+  `crates/lushtext-core/tests/properties/shell_conformance_write.rs` adds modes,
+  payload sizes, and two injections per run (`0.06 s` measured vs 10 s D12
+  budget). **Findings: none.** The enumeration was shown to fail on a scratch,
+  never-committed shell mutant (`RemoveTemp` removing nothing fails on case 1).
+- **Draft-service lockstep conformance & `Fault` widening (D5, D6, D7).**
+  `crates/lushtext-services/src/conformance/draft_service.rs` drives a
+  single-window session lockstep against `Journal<SingleWindowScope, 3, 1, 1>`
+  over `INITIAL_LAYOUT_BITS = 8` previous-session layouts, projecting real disk
+  manifest entries (including `UNPROVEN_BACKING_MTIME_SECS`), bodies, explicit
+  whole-second file mtimes, set-aside `preserved` bitsets (`keep_copy`/`move_in`
+  only, never local-history snapshots), authority, unknown-file failure, and
+  `parse_durable_temp_name` leftover counts. `journal_model.rs` replaced
+  `fault: bool` with `Fault { None, BeforeEffect, AfterEffect }`, adding
+  unconfirmed manifest/body/set-aside tracking and crash keep/revert flags;
+  `conformance/draft_service.rs` exercises `FaultDomain::Full` (`BeforeEffect`,
+  `AfterEffect` via `SyncDir` on manifest/body/`set-aside`, and `At(k)`).
+  `crates/lushtext-core/tests/properties/shell_conformance_drafts.rs` runs 64
+  enabled-indexed scripts up to 16 ops (`PROPTEST_DEEP_CASES=512` runs up to
+  32 ops) with `max_shrink_iters = 256` and `max_shrink_time = 45_000` ms.
+  - **Reach & mutant calibration (D2).** `draft_conformance_strategy_reaches_every_journal_stage`
+    (64 fixed-seed cases over the model, `0.00 s` vs 2 s D12 budget) reached
+    `total_steps = 676` (`startup = 103`, `write_body = 17`, `commit = 10`,
+    `deletion_step = 94`, `restore_apply = 63`, `exec_cleanup = 21`,
+    `crash = 38`), asserting floors `startup >= 64`, `write_body >= 12`,
+    `commit >= 6`, `deletion_step >= 50`, `restore_apply >= 35`,
+    `exec_cleanup >= 10`. On scratch, never-committed mutants,
+    `preserve_stale_draft_body` skipping `set_aside::keep_copy` was caught at
+    case 2 (`0.151 s`) and `remove_manifest_entry` leaving the entry on disk at
+    case 14 (`0.241 s`); shrink persistence round-tripped inside 0.241 s.
+  - **D12 property budgets (2026-11-26, `heavy.sh`).** Under `/proc/loadavg`
+    `0.43 -> 0.88`: `make test-prop` finished in `12.686 s` (individual test
+    run times: `write_shell` `0.06 s` vs 10 s, `drafts` `0.10 s` vs 30 s,
+    `reach` `0.00 s` vs 2 s); `make test-prop-deep PROPTEST_DEEP_CASES=512` (up
+    to 32 ops) finished in `7.942 s`.
+  - **Named domain restrictions.**
+    1. *Joint revert of unconfirmed manifest commits:* in `journal_model.rs`,
+       `manifest_unconfirmed` holds one bit for `manifest.json` with a single
+       `confirmed_entry` rollback snapshot, so several consecutive unconfirmed
+       manifest writes revert together to the last confirmed snapshot on crash
+       rather than independently (stated in `kani_proofs.rs`).
+    2. *`Oversized` restore skipping:* generated conformance scripts write tiny
+       payloads (`<= 16` bytes), so `RestoreEnding::Oversized` is outside the
+       property target and covered by `draft_service` unit tests.
+    3. *In-process crash keep branch:* in-process conformance drivers cannot
+       simulate disk rollback on crash (`ScriptChoices` takes the kept branch;
+       crash-revert combinations are covered by Kani).
+    4. *`L1` liveness bound:* `LIVENESS_STEPS = 7` and `a_dirty_editor_may_need_seven_steps`
+       (`k - 1 = 6`) both remain valid under widened `Fault`; no D6 fallback
+       exclusion was needed.
+- **Findings (all shell/coordination/model-fidelity, 0 core defects):**
+  1. **Shell/D6 (expected by design):** `set_aside::place` counted a copy whose
+     directory sync failed (`AfterRename`) as kept, so a stale body could be
+     unlinked durably and the copy lost on crash. Fixed failing-first (`AfterRename`
+     on a copy returns `Err`; retries with same bytes sync the directory first);
+     Kani exhibit `an_unconfirmed_set_aside_copy_loses_accepted_work`
+     (`#[kani::should_panic]`, `5.46 s`, `S1`) pins the retired rule under
+     `BrokenSetAsideCopyScope`.
+  2. **Shell/service:** `recovery_metadata::preserve_original` quarantined live
+     `manifest.json` on transient `RecoveryProblem::Unreadable` I/O errors,
+     wiping the manifest during `execute_orphan_cleanup` and emptying it in
+     `run_manifest_command`. Fixed failing-first
+     (`unreadable_existing_metadata_file_is_preserved_in_place_without_quarantine`)
+     to return `RecoveryPreservation::PreservedInPlace`.
+  3. **Shell/service:** `draft_service::register_draft_entries` ignored
+     `!current.replacement_allowed()` on its initial `load_manifest_recovering`
+     before `PreserveThenWrite` (`set_aside::keep_copy`). Fixed failing-first
+     (`registration_does_not_skip_preservation_when_initial_manifest_read_fails`).
+  4. **Shell/service:** `draft_service::run_manifest_command` fell through to
+     `Additive` fallback even when `inventory.completeness == Complete` and
+     `save_manifest_locked` failed (`SyncDir` / `AfterEffect`), retrying a second
+     write and returning `Ok(Additive)` with a `RegisteredDraft` token. Fixed
+     failing-first
+     (`registration_does_not_retry_as_additive_when_complete_manifest_save_fails`).
+  5. **Shell/UI (`S1`/`S3`):** When `Startup` fails reconciliation (`!trusted`),
+     leaving an unattributable file-backed body on disk without a manifest
+     entry, `Open` followed by `Save`/`Discard` called
+     `LushtextWindow::delete_draft_by_id`, which emitted `DeleteBody`
+     (`delete_draft_file`) because `BodyFacts::from_window_view(false, false)`
+     reported `BodyOwner::Nothing`, silently destroying the unattributable
+     recovery body. Fixed failing-first in `ui/window/drafts/journal.rs`
+     (`test_delete_draft_by_id_preserves_unattributable_file_backed_body_when_unregistered`
+     in widget tests) and `journal_model.rs` (`Action::Save | Action::Discard`).
+  6. **Shell/service (`S1`):** `draft_service::register_draft_entries`
+     (`run_manifest_command` `InsertOnly`) skipped unattributable bodies not
+     yet in `persisted`, then inserted the new entry into `candidate` before
+     `recoverable_draft_inventory_with_candidate`, preventing `set_aside::move_in`
+     and letting `WriteBody` overwrite the pre-existing unattributable body.
+     Fixed failing-first
+     (`registration_sets_aside_existing_unattributable_file_backed_body_before_writing`).
+  7. **Shell/service (`S1`):** `recoverable_draft_inventory_with_candidate`
+     logged a warning without incrementing `ambiguous_bodies` when
+     `set_aside::keep_copy` failed for a session-attributed `UNPROVEN_BACKING_MTIME_SECS`
+     entry, allowing `Complete`/`Trusted` commits without a preserved copy.
+     Fixed failing-first
+     (`update_manifest_is_not_complete_when_attributed_body_set_aside_copy_fails`).
+  8. **Shell/UI (`S4`/`S1`):** Found by `PROPTEST_DEEP_CASES=512` (32-op scripts):
+     when `execute_orphan_cleanup` fails its manifest write (`SyncDir`
+     `AfterEffect`), missing-body entries can already be removed from disk
+     while the window kept its stale manifest copy and `TRUSTED` authority,
+     letting the next `WriteBody` write without `RegisterFirst`. Fixed
+     failing-first in `journal_model.rs` (`exec_cleanup` revokes trust),
+     `ui/window/drafts/policy.rs` (`orphan_cleanup_manifest_write_failure_revokes_authority`),
+     and `ui/window/drafts/cleanup_journal.rs`, with lockstep regression test
+     `exec_cleanup_after_effect_revokes_trust_and_forces_reregistration`.
+- **Proof strength on final code (task 9.3, `heavy.sh --envelope 16G`).**
+  - `crates/lushtext-services/src/filesystem/write_protocol.rs`: `34` mutants,
+    floor `51`, `6 / 6` unviable, `28` killed by both arms (`0` Kani-only, `0`
+    tests-only, `28` either, `0` Kani survivors, `0` vacuity, `0` timeouts;
+    wall `16m01s`). Conformance tests now kill the 10 former Kani-only mutants
+    in the tests arm too.
+  - `crates/lushtext-services/src/draft_service/journal_core.rs` (sharded `0/2`
+    and `1/2`): `51` mutants, floor `51`, `18 / 18` unviable, `1` Kani-only,
+    `32` both, `33` either, `0` Kani survivors, `0` vacuity, `0` timeouts
+    (wall `25m46s` + `9m15s`). Identical kill strength to `71fc2e3a`; shared
+    environment models weakened neither proof.
+- **Replace survivors (D8).** Mutants 649, 689, and 691 of
+  `replace/apply.rs::process_file` have tests through the tap's before-action
+  hook at `ReplaceFile`/`WriteBody`
   (`a_same_size_change_before_the_body_write_is_caught_by_pass_a`,
   `a_cancel_before_a_body_write_that_fails_early_cancels_the_run`).
-- **Kani.** The four touched shards (`core-journal-and-write`,
-  `core-journal-liveness`, `core-second-writer`, `core-multi-window`) re-run
-  locally on the moved models; their records are `PENDING DISPATCH` until
-  the change's `kani.yml` runs.
+- **Kani on final code (`heavy.sh --envelope 16G`, task 9.1).** All four touched
+  shards verified with 0 failures and all `kani::cover!` satisfied (except
+  `skipping_the_temp_sync_tears_the_destination`'s expected `0 of 1`); `ORACLES`
+  local seconds in `scripts/kani-shards.py` updated, `SHELL_CONFORMANCE_PENDING`
+  stays until post-push `kani.yml` dispatch:
+  - `core-journal-and-write`: `15/15` verified (`real 10m25s`, peak `7272 MiB`);
+    `journal_invariants_hold_under_crashes` rose from `309.72 s` to
+    **`589.41 s`** (+90.3%, due to widened `Fault`, unconfirmed bits, `Crash`
+    keep/revert flags, and `reconcile_unregistered_bodies`), new `should_panic`
+    exhibit `an_unconfirmed_set_aside_copy_loses_accepted_work` `5.46 s`.
+  - `core-journal-liveness`: `2/2` verified (`real 15m14s`, peak `8934 MiB`);
+    `LIVENESS_STEPS = 7` still holds under widened `Fault`:
+    `a_dirty_editor_may_need_seven_steps` `423.44 s` (+61.5% over `262.12 s`),
+    `a_dirty_editor_becomes_clean_without_faults` `486.39 s` (+66.3% over
+    `292.41 s`).
+  - `core-second-writer`: `1` service + `6` model harnesses verified (`real 3m39s`,
+    peak `4823 MiB`); `a_second_writer_breaks_the_journal_invariants` `198.52 s`.
+  - `core-multi-window`: `1/1` verified (`real 5m54s`, peak `6835 MiB`);
+    `journal_invariants_hold_across_two_windows` `350.71 s` (+34.8% over
+    `260.12 s`).
 
 ## 4. Deferral inventory
+
+- **Shell-conformance scope deferrals (`verify-shell-conformance-against-proven-cores`):**
+  - *GTK drafts coordination (`ui/window/drafts/journal.rs`, `cleanup_journal.rs`):*
+    deferred out of the service conformance driver because driving live GTK
+    window tabs and GLib timers requires the widget harness and visual/a11y
+    smokes; single-scenario widget/policy tests (including the two fixes
+    landed in Phase 6) cover the paths. Reopen if a coordination defect escapes
+    service conformance's contract boundary.
+  - *Fuzz conformance mode:* deferred (`libFuzzer` corpus replay is not wired
+    over `conformance::draft_service` or `write_shell`); `make test-prop-deep`
+    provides 512 × 32-op coverage in `7.9 s`. Reopen if deep proptest saturates
+    or a regression warrants coverage-guided script mutation.
+  - *Two-window service conformance property:* deferred; `draft_service` itself
+    holds no window state, and `TwoWindowScope` / K8 + `multi_window_drafts`
+    widget tests already cover the process-wide coordinator. Reopen if process
+    journal ownership moves into `lushtext-services`.
+  - *Replace All lockstep conformance driver (`replace/protocol.rs`):* deferred;
+    `replace/apply.rs` and `replace/tests.rs` already exercise `Protocol`
+    under `backend_tap` hooks (including the three killed process-file
+    survivors). Reopen when `replace/apply.rs` scheduling or undo protocol
+    changes materially.
+  - *Mid-call draft crashes (K5) and power-loss semantics:* deferred to Kani
+    (`journal_model` / `disk_model`) and `make crash-recovery-smoke` (real
+    `SIGKILL`), because in-process tests cannot crash inside `manifest.lock`
+    without poisoning or roll back unsynced directory renames on disk. Reopen
+    only with out-of-process crash-harness tooling.
 
 - ~~**Three `replace/apply.rs::process_file` mutation survivors, for
   `verify-shell-conformance-against-proven-cores`**~~ **Tests added

@@ -56,7 +56,7 @@
 ## 4. Draft-service conformance (D5), before-effect faults first
 
 - [x] 4.1 Check the D5 action→call table against the real call sites in `ui/window/drafts/` and `ui/window/session_restore/`. Correct the design's table where it differs, and record each difference in the handoff
-- [ ] 4.2 Implement the abstraction in `services/conformance/draft_service.rs`:
+- [x] 4.2 Implement the abstraction in `services/conformance/draft_service.rs`:
   - manifest entries and backing versions;
   - bodies, through the injective content↔text table;
   - explicit whole-second mtimes;
@@ -64,23 +64,23 @@
   - the held authority.
 
   Unknown files in the drafts directory fail the abstraction. Durable-write leftovers that `parse_durable_temp_name` recognises are counted and reported, not compared
-- [ ] 4.3 Implement the single-window driver with enabled-indexed ops (D2). The window half is model-owned, and a crash drops every held value between model steps. `ScriptChoices` follows design D1:
+- [x] 4.3 Implement the single-window driver with enabled-indexed ops (D2). The window half is model-owned, and a crash drops every held value between model steps. `ScriptChoices` follows design D1:
   - the previous-session layout comes from the script, and the driver seeds the real data directory to it before the first `Startup`;
   - restore endings are read off the real resolution, and the driver asserts the model admits each one;
   - `Oversized` is never chosen, a restriction recorded with the property.
 
   Each step's tap plan is installed only around that step's service calls, never around seeding, mtime setting or the abstraction. Enable only `BeforeEffect` (scope-wide call 0), `Crash`, and `Startup`. It must pass on the real service before task 5 widens anything. Each divergence goes through task 3.4
-- [ ] 4.4 Add `tests/properties/shell_conformance_drafts.rs` (≤ 16 ops, 64 cases), holding the strategies and the case `TempDir`. Use the D2 shrink config: `property_config()` with `max_shrink_iters = 256` and `max_shrink_time = 45_000` ms
-- [ ] 4.5 Add the reach test to the `properties` target, so it runs in `make test-prop`, where the strategy is. It uses a fixed seed and the default case count, interprets each script over the journal model alone, and has recorded floors for `WriteBody`, `Commit`, `DeletionStep`, `RestoreApply`, `ExecCleanup`, and `Startup`. Then run the two-mutant calibration on scratch, never-merged commits:
+- [x] 4.4 Add `tests/properties/shell_conformance_drafts.rs` (≤ 16 ops, 64 cases), holding the strategies and the case `TempDir`. Use the D2 shrink config: `property_config()` with `max_shrink_iters = 256` and `max_shrink_time = 45_000` ms
+- [x] 4.5 Add the reach test to the `properties` target, so it runs in `make test-prop`, where the strategy is. It uses a fixed seed and the default case count, interprets each script over the journal model alone, and has recorded floors for `WriteBody`, `Commit`, `DeletionStep`, `RestoreApply`, `ExecCleanup`, and `Startup`. Then run the two-mutant calibration on scratch, never-merged commits:
   - a set-aside copy that `preserve_stale_draft_body` skips;
   - `remove_manifest_entry` returning `Ok` while it leaves the entry on disk.
 
   Record the number of cases each needed in the design and in `docs/property-testing.md`
-- [ ] 4.6 On a scratch, never-merged injected divergence, show that shrinking reaches a minimal script within the nextest `property` profile ceiling and persists it to the regression file
+- [x] 4.6 On a scratch, never-merged injected divergence, show that shrinking reaches a minimal script within the nextest `property` profile ceiling and persists it to the regression file
 
 ## 5. Widen the journal fault domain (D6) and step atomicity (D7)
 
-- [ ] 5.1 Replace `fault: bool` with `Fault { None, BeforeEffect, AfterEffect }` in `journal_model.rs`, implementing the whole effect table of design D6:
+- [x] 5.1 Replace `fault: bool` with `Fault { None, BeforeEffect, AfterEffect }` in `journal_model.rs`, implementing the whole effect table of design D6:
   - `AfterEffect` applies to every manifest commit (Register, Commit, `DeletionStep(RemoveEntry)`, ExecCleanup's missing-body write, Startup's reconciliation) and to WriteBody, and is assumed away elsewhere;
   - unconfirmed bits: one for the manifest file, with the last confirmed entry array it reverts to; one per body file, set by an after-effect write and by every unsynced unlink (`DeleteBody`, ExecCleanup's orphan delete); one per set-aside placement whose sync failed: a move the window still counts as placed (a revert returns the body to `drafts/`), and a copy that since stage 3 is a failed step (`AfterEffect`: live but unconfirmed, not counted as preserved; design D6 table);
   - `Crash` keeps or reverts each unconfirmed effect through `Choices::flag`. A reverted set-aside move returns the body to `drafts/`, and a reverted copy is gone;
@@ -88,8 +88,8 @@
   - the joint revert of several unconfirmed manifest commits is stated as a domain restriction in the harness rustdoc.
 
   The harnesses choose the fault with `kani::any()`. If L1 fails at k = 7 with a longer fault-free path to clean, re-derive the bound and its `k - 1` sibling (design D6). A stuck editor is a core finding
-- [ ] 5.2 Enable `AfterEffect` and `At(k)` in the drafts driver. `AfterEffect` is the destination-scoped `SyncDir` of the step's committing write, and a set-aside placement's unconfirmed effect is the `SyncDir` of its `set-aside/` write or move. Only their kept branch is testable, because in-process tests cannot revert, so `ScriptChoices` answers every crash keep-or-revert flag with "keep". `At(k)` is scope-wide call k. An intermediate multi-write state that matches neither model outcome is a step-atomicity environment finding. Resolve it by extending the model or by reordering the shell behind a failing-first test, and record which
-- [ ] 5.3 If Kani or conformance finds a counterexample over `AfterEffect`, handle it as task 7.4, with reachability evidence from real errors
+- [x] 5.2 Enable `AfterEffect` and `At(k)` in the drafts driver. `AfterEffect` is the destination-scoped `SyncDir` of the step's committing write, and a set-aside placement's unconfirmed effect is the `SyncDir` of its `set-aside/` write or move. Only their kept branch is testable, because in-process tests cannot revert, so `ScriptChoices` answers every crash keep-or-revert flag with "keep". `At(k)` is scope-wide call k. An intermediate multi-write state that matches neither model outcome is a step-atomicity environment finding. Resolve it by extending the model or by reordering the shell behind a failing-first test, and record which
+- [x] 5.3 If Kani or conformance finds a counterexample over `AfterEffect`, handle it as task 7.4, with reachability evidence from real errors
 
 ## 6. Replace shells (D8)
 
@@ -101,10 +101,10 @@
 
 ## 7. Divergence discipline and budgets
 
-- [ ] 7.1 Run `make test-prop` locally through `heavy.sh`, recording `/proc/loadavg`, and record each conformance property's wall time against the D12 budget. If a budget is exceeded, cut the script bound first, then that property's case count. Never raise a job timeout. The CI figure is read once, at the programme's CI check
-- [ ] 7.2 Run `make test-prop-deep PROPTEST_DEEP_CASES=512` once, with scripts of up to 32 ops, and triage every failure through task 3.4
-- [ ] 7.3 Record every finding, or the absence of findings, with its class in the programme record
-- [ ] 7.4 Core-defect procedure, used whenever one is found:
+- [x] 7.1 Run `make test-prop` locally through `heavy.sh`, recording `/proc/loadavg`, and record each conformance property's wall time against the D12 budget. If a budget is exceeded, cut the script bound first, then that property's case count. Never raise a job timeout. The CI figure is read once, at the programme's CI check
+- [x] 7.2 Run `make test-prop-deep PROPTEST_DEEP_CASES=512` once, with scripts of up to 32 ops, and triage every failure through task 3.4
+- [x] 7.3 Record every finding, or the absence of findings, with its class in the programme record
+- [x] 7.4 Core-defect procedure, used whenever one is found:
   - mark the property invalidated from the finding's commit;
   - add or adjust a harness that exhibits the counterexample, and show it fails;
   - fix the core;
@@ -122,14 +122,14 @@
 
 ## 9. Kani and proof strength, on the final code (D9)
 
-- [ ] 9.1 Once the journal and write code is final, run detached, once each: `setsid nohup scripts/heavy.sh --envelope 16G -- make kani KANI_SHARD=<shard>` for `core-journal-and-write`, `core-journal-liveness`, `core-second-writer`, and `core-multi-window`. Compare against task 0.1:
+- [x] 9.1 Once the journal and write code is final, run detached, once each: `setsid nohup scripts/heavy.sh --envelope 16G -- make kani KANI_SHARD=<shard>` for `core-journal-and-write`, `core-journal-liveness`, `core-second-writer`, and `core-multi-window`. Compare against task 0.1:
   - every unchanged property keeps its verdict;
   - every widened one passes, or is a finding (task 5.3);
   - every `kani::cover!` reports SATISFIED. Kani does not fail on an UNSATISFIABLE cover by itself, so each one is investigated as a possibly weakened model (design D1).
 
   Any harness time more than 20 % off its record is explained in the programme record. A broken margin follows the D6 fallback order. Update the `ORACLES` seconds
 - [x] 9.2 Set the four shard records to `PENDING DISPATCH (owed by verify-shell-conformance-against-proven-cores)`, with the local figures, and pass `make check-kani-shards`
-- [ ] 9.3 Run `make proof-strength` once on the final code, detached, through `heavy.sh --envelope 16G`, for both modules design D9 owes:
+- [x] 9.3 Run `make proof-strength` once on the final code, detached, through `heavy.sh --envelope 16G`, for both modules design D9 owes:
   - `PROOF_STRENGTH_MODULE=crates/lushtext-core/src/services/filesystem/write_protocol.rs`, whole;
   - `PROOF_STRENGTH_MODULE=crates/lushtext-core/src/services/draft_service/journal_core.rs`, with the Kani arm sharded (`PROOF_STRENGTH_SHARD=k/n`).
 
@@ -138,7 +138,7 @@
 
 ## 10. Final verification
 
-- [ ] 10.1 Run each of these through `heavy.sh`, with the stated envelopes, without warnings:
+- [x] 10.1 Run each of these through `heavy.sh`, with the stated envelopes, without warnings:
   - `make check` and `make check-policy`;
   - `make test` (`--envelope 16G`);
   - `make test-prop`;
@@ -146,25 +146,25 @@
   - `make crash-recovery-smoke`;
   - the rustdoc lint gate of `testing.md`, "Proof Obligations of a Change", because the change edits doc comments in `durable_write.rs` and `protocol_drive.rs`.
 
-  No UI prefix is touched, so the three visual and accessibility smokes are not owed. Confirm with `git diff --name-only origin/main` that no path under the UI prefixes changed
-- [ ] 10.2 Run `openspec validate verify-shell-conformance-against-proven-cores --strict`. At archive time, merge the deltas into `formal-verification-kani`, `durable-file-write-contract`, `draft-session-recovery`, `property-based-testing`, and `crash-restart-recovery-coverage`
+  Task 5.3 and 7.2 findings also touched `crates/lushtext-core/src/ui/window/drafts/` and `docs/end-user-coverage.md`, so `make accessibility-smoke`, `make visual-smoke`, and `make visual-geometry-smoke` were also run through `heavy.sh` and passed
+- [x] 10.2 Run `openspec validate verify-shell-conformance-against-proven-cores --strict`. At archive time, merge the deltas into `formal-verification-kani`, `durable-file-write-contract`, `draft-session-recovery`, `property-based-testing`, and `crash-restart-recovery-coverage`
 
 ## 11. Documentation sync
 
-- [ ] 11.1 `docs/next/formal-verification.md`:
+- [x] 11.1 `docs/next/formal-verification.md`:
   - Add "Phase 6 — Shell conformance against the proven cores", covering the shared models, the tap and its two sites, the write enumeration and its call table, the drafts driver with its reach and calibration figures, the `AfterEffect` widening and its Kani results, and every finding with its class.
   - Record the named domain restrictions: several unconfirmed manifest commits revert together, the drafts property never chooses `Oversized`, and any D6 fallback exclusion.
   - Update the deferral inventory: mark the three Replace survivors closed. Add entries for the GTK drafts coordination scenarios, the fuzz conformance mode, the two-window service property, Replace lockstep, mid-call draft crashes (K5), and power-loss semantics (Kani and K5 only), each with its reason and reopening trigger
-- [ ] 11.2 `docs/next/formal-verification-next.md`: mark the N11 row and section done, pointing to this change. Make the N11 text claim only what was checked: the GTK drafts coordination is deferred, not covered. Update §4's suggested order
-- [ ] 11.3 AGENTS.md:
+- [x] 11.2 `docs/next/formal-verification-next.md`: mark the N11 row and section done, pointing to this change. Make the N11 text claim only what was checked: the GTK drafts coordination is deferred, not covered. Update §4's suggested order
+- [x] 11.3 AGENTS.md:
   - Testing section: add the conformance lane (what it drives, that the oracle is the shared proven model, where it runs).
   - Module Layout: add `services/conformance/` and `services/filesystem/backend_tap.rs`, both test builds only.
   - Name the conformance evidence in the durable-write and draft-journal design bullets. `.claude/CLAUDE.md` is a symlink to it
-- [ ] 11.4 `.agents/rules/build.md`:
+- [x] 11.4 `.agents/rules/build.md`:
   - Property Testing: conformance properties, enabled-indexed generation, reach floors, the shrink budget, and regression promotion;
   - Formal Verification: shared model modules and where their choices come from, the fault-domain completeness rule, the divergence classes, and the `NOT_ORACLE_MODULES` and mutation entries;
   - fault seams: the backend tap as the durable-write injection seam.
 
   `.agents/rules/testing.md`, fault seams: the tap is per-invocation and thread-local, and panic crashes are used only where no lock or I/O `Drop` is on the unwind path
-- [ ] 11.5 `docs/end-user-coverage.md`: map "the shell obeys its proven core" to the write enumeration and the two properties. `docs/property-testing.md`: the new properties, budgets, reach floors and calibration. `docs/mutation-testing.md`: the three survivors killed. Add a `gtk-testing` skill reference only if a new test pattern appears
-- [ ] 11.6 `README.md`: update the testing and formal-verification paragraph if it lists the lanes
+- [x] 11.5 `docs/end-user-coverage.md`: map "the shell obeys its proven core" to the write enumeration and the two properties. `docs/property-testing.md`: the new properties, budgets, reach floors and calibration. `docs/mutation-testing.md`: the three survivors killed. Add a `gtk-testing` skill reference only if a new test pattern appears
+- [x] 11.6 `README.md`: update the testing and formal-verification paragraph if it lists the lanes

@@ -294,6 +294,21 @@ pub(super) enum OrphanCleanupFollowUp {
     },
 }
 
+#[must_use]
+pub(super) fn orphan_cleanup_revokes_authority(
+    failures: &[crate::services::draft_service::DraftOrphanCleanupFailure],
+) -> bool {
+    use crate::services::draft_service::{
+        DraftOrphanCleanupFailure, DraftOrphanCleanupManifestError,
+    };
+    failures.iter().any(|failure| {
+        matches!(
+            failure,
+            DraftOrphanCleanupFailure::Manifest(DraftOrphanCleanupManifestError::Write { .. })
+        )
+    })
+}
+
 /// Decide the continuation for one finished orphan-cleanup pass.
 ///
 /// The exponential backoff exists so a directory that cannot be read — a removed
@@ -558,6 +573,32 @@ mod tests {
             grouped_orphan_cleanup_failure_message(&failures),
             "Draft recovery cleanup preserved retryable items (status: 0, delete: 0, manifest: 2)"
         );
+    }
+
+    #[test]
+    fn orphan_cleanup_manifest_write_failure_revokes_authority() {
+        use crate::services::draft_service::{
+            DraftOrphanCleanupDeleteError, DraftOrphanCleanupFailure,
+            DraftOrphanCleanupManifestError,
+        };
+        use std::path::PathBuf;
+
+        let body_delete_only = vec![DraftOrphanCleanupFailure::Delete(
+            DraftOrphanCleanupDeleteError {
+                draft_id: "a".to_string(),
+                path: PathBuf::from("/drafts/a.draft"),
+                detail: "busy".to_string(),
+            },
+        )];
+        assert!(!orphan_cleanup_revokes_authority(&body_delete_only));
+
+        let manifest_write = vec![DraftOrphanCleanupFailure::Manifest(
+            DraftOrphanCleanupManifestError::Write {
+                path: PathBuf::from("/drafts/manifest.json"),
+                detail: "sync failed".to_string(),
+            },
+        )];
+        assert!(orphan_cleanup_revokes_authority(&manifest_write));
     }
 
     #[test]

@@ -129,6 +129,49 @@ pub(crate) trait Scope {
     /// is the baseline the two-window harness first ran against, where every
     /// one of those was per window.
     const PROCESS_JOURNAL: bool;
+    /// Whether an unconfirmed set-aside copy counts as preserved and succeeds
+    /// (`false` in fixed production; `true` only in the D6 counterexample exhibit
+    /// pinning why `set_aside::place` must reject `AfterRename` copies).
+    const ALLOW_UNCONFIRMED_SET_ASIDE_COPY: bool;
+}
+
+/// I/O fault outcome for one journal step (`verify-shell-conformance-against-proven-cores` D6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+pub(crate) enum Fault {
+    /// Every filesystem and directory-sync call succeeded.
+    None,
+    /// A call failed before the step's durable effect took place on disk.
+    BeforeEffect,
+    /// The rename placed the file or manifest, then its directory sync failed:
+    /// the effect is live on disk but unconfirmed (revertible on crash), and
+    /// the shell returned an error so the window treats the step as failed.
+    AfterEffect,
+}
+
+/// Whether `fault` is meaningful for `action` (harnesses `kani::assume` away
+/// `AfterEffect` on actions with no directory-sync-failure rename outcome).
+#[cfg_attr(
+    not(kani),
+    expect(
+        dead_code,
+        reason = "called by Kani harnesses to prune redundant fault states"
+    )
+)]
+pub(crate) const fn fault_admitted(action: Action, fault: Fault) -> bool {
+    match fault {
+        Fault::None | Fault::BeforeEffect => true,
+        Fault::AfterEffect => matches!(
+            action,
+            Action::Register
+                | Action::WriteBody
+                | Action::Commit
+                | Action::DeletionStep
+                | Action::ExecCleanup
+                | Action::RestoreApply
+                | Action::Startup
+        ),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -156,6 +199,9 @@ pub(crate) struct Editor {
     pub(crate) deletion: Option<DeletionStep>,
     /// The deletion must preserve the body first (queued preservation).
     pub(crate) preserve_queued: bool,
+    /// Startup repaired this entry from the session after failing to read the
+    /// persisted manifest, so its in-memory copy records an unproven mtime.
+    pub(crate) unverified_mtime: bool,
 }
 
 pub(crate) const CLOSED: Editor = Editor {
@@ -167,6 +213,7 @@ pub(crate) const CLOSED: Editor = Editor {
     restore_pending: false,
     deletion: None,
     preserve_queued: false,
+    unverified_mtime: false,
 };
 
 /// What holds a journal lane.
@@ -275,10 +322,26 @@ pub(crate) struct Journal<S: Scope, const IDS: usize, const W: usize, const P: u
     pub(crate) scope: core::marker::PhantomData<S>,
     pub(crate) processes: [Process<IDS, W>; P],
     pub(crate) entry: [DiskEntry; IDS],
+    /// Last durably confirmed manifest entry array (what an unconfirmed
+    /// manifest write reverts to on crash).
+    pub(crate) confirmed_entry: [DiskEntry; IDS],
+    pub(crate) manifest_unconfirmed: bool,
     pub(crate) body: [Option<ContentId>; IDS],
+    /// Last durably confirmed body per slot (what an unconfirmed write or
+    /// unsynced unlink reverts to on crash).
+    pub(crate) confirmed_body: [Option<ContentId>; IDS],
+    pub(crate) body_unconfirmed: [bool; IDS],
     pub(crate) backing: [u8; IDS],
-    /// Content ids durably kept in the set-aside area (or local history).
+    /// Content ids currently visible as preserved in the set-aside area.
     pub(crate) preserved: ContentSet,
+    /// Set-aside placements confirmed by a successful `set-aside/` sync.
+    pub(crate) confirmed_preserved: ContentSet,
+    /// Set-aside copies whose `set-aside/` sync failed (`AfterEffect`): live
+    /// on disk, not counted as preserved until confirmed or kept at crash.
+    pub(crate) unconfirmed_copy: [Option<ContentId>; IDS],
+    /// Set-aside moves whose `set-aside/` sync may be unconfirmed: counted as
+    /// placed, and if reverted on crash they return to `drafts/`.
+    pub(crate) unconfirmed_move: [Option<ContentId>; IDS],
     /// Ghost: content the user was told is protected (accepted by a commit, or
     /// found on disk at the first startup).
     pub(crate) accepted: ContentSet,
@@ -307,6 +370,10 @@ pub(crate) enum Action {
     RestoreApply,
     ExternalMtime,
     CloseWindow,
+    #[cfg_attr(
+        not(any(test, kani)),
+        expect(dead_code, reason = "only Kani and unit tests construct OpenWindow")
+    )]
     OpenWindow,
     Crash,
     Startup,
@@ -315,6 +382,13 @@ pub(crate) enum Action {
 impl Action {
     /// Every action, in declaration order: the conformance driver picks
     /// among the enabled ones by index.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "read only by unit tests; property driver queries enabled_steps"
+        )
+    )]
     pub(crate) const ALL: [Self; 16] = [
         Self::Edit,
         Self::Open,
@@ -339,17 +413,25 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
     /// A previous session's disk, chosen nondeterministically: any id may have
     /// an entry, a body, both, or neither, and its file may have moved on.
     pub(crate) fn previous_session(choices: &mut impl Choices) -> Self {
+        let empty_entry = DiskEntry {
+            present: false,
+            backing: 0,
+            stamp: 0,
+        };
         let mut journal = Self {
             scope: core::marker::PhantomData,
             processes: [Process::stopped(); P],
-            entry: [DiskEntry {
-                present: false,
-                backing: 0,
-                stamp: 0,
-            }; IDS],
+            entry: [empty_entry; IDS],
+            confirmed_entry: [empty_entry; IDS],
+            manifest_unconfirmed: false,
             body: [None; IDS],
+            confirmed_body: [None; IDS],
+            body_unconfirmed: [false; IDS],
             backing: [0; IDS],
             preserved: 0,
+            confirmed_preserved: 0,
+            unconfirmed_copy: [None; IDS],
+            unconfirmed_move: [None; IDS],
             accepted: 0,
             resolved: 0,
             ancestors: [0; CONTENTS],
@@ -369,11 +451,62 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
                 journal.backing[id] = 1;
             }
         }
+        journal.confirmed_entry = journal.entry;
+        journal.confirmed_body = journal.body;
         journal
     }
 
     pub(crate) fn untitled(&self, id: usize) -> bool {
         S::UNTITLED == Some(id)
+    }
+
+    /// Whether `id` is currently open in any running window of the process.
+    fn open_in_any_window(&self, id: usize) -> bool {
+        for window in 0..W {
+            let win = &self.processes[0].windows[window];
+            if win.running && win.editors[id].open {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Reconcile unregistered file-backed bodies into `set-aside/` (moving
+    /// unattributable ones, or copying and rebuilding stale entries for tabs
+    /// open in the session), matching `recoverable_draft_inventory_with_candidate`.
+    fn reconcile_unregistered_bodies(
+        &mut self,
+        choices: &mut impl Choices,
+        after: &mut [DiskEntry; IDS],
+        inserting_id: Option<usize>,
+        allow_session_attribution: bool,
+        fault: Fault,
+    ) {
+        for other in 0..IDS {
+            if Some(other) == inserting_id {
+                continue;
+            }
+            if !self.untitled(other) && self.body[other].is_some() && !after[other].present {
+                if allow_session_attribution && self.open_in_any_window(other) {
+                    if let Some(content) = self.body[other]
+                        && (fault != Fault::BeforeEffect || choices.flag())
+                    {
+                        self.confirmed_preserved |= bit(content);
+                        after[other] = DiskEntry {
+                            present: true,
+                            backing: u8::MAX,
+                            stamp: after[other].stamp.wrapping_add(1),
+                        };
+                    }
+                } else if fault != Fault::BeforeEffect || choices.flag() {
+                    let moved = self.body[other].take();
+                    self.confirmed_body[other] = None;
+                    self.body_unconfirmed[other] = false;
+                    self.unconfirmed_move[other] = moved;
+                }
+            }
+        }
+        self.recompute_preserved();
     }
 
     /// The acting window (slot 0 of the acting process, which is slot 0).
@@ -415,9 +548,56 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
         BodyFacts::from_window_view(me.known[id].is_some(), me.editors[id].restore_pending)
     }
 
-    pub(crate) fn preserve_body(&mut self, id: usize) {
-        if let Some(content) = self.body[id] {
-            self.preserved |= bit(content);
+    fn recompute_preserved(&mut self) {
+        let mut mask = self.confirmed_preserved;
+        for id in 0..IDS {
+            if let Some(content) = self.unconfirmed_move[id] {
+                mask |= bit(content);
+            }
+            if S::ALLOW_UNCONFIRMED_SET_ASIDE_COPY
+                && let Some(content) = self.unconfirmed_copy[id]
+            {
+                mask |= bit(content);
+            }
+        }
+        self.preserved = mask;
+    }
+
+    fn confirm_drafts_dir(&mut self) {
+        self.confirmed_entry = self.entry;
+        self.manifest_unconfirmed = false;
+        self.confirmed_body = self.body;
+        self.body_unconfirmed = [false; IDS];
+    }
+
+    fn confirm_set_aside_dir(&mut self) {
+        for id in 0..IDS {
+            if let Some(content) = self.unconfirmed_copy[id].take() {
+                self.confirmed_preserved |= bit(content);
+            }
+            if let Some(content) = self.unconfirmed_move[id].take() {
+                self.confirmed_preserved |= bit(content);
+            }
+        }
+        self.recompute_preserved();
+    }
+
+    pub(crate) fn preserve_body(&mut self, id: usize, fault: Fault) -> bool {
+        let Some(content) = self.body[id] else {
+            return true;
+        };
+        match fault {
+            Fault::None => {
+                self.confirmed_preserved |= bit(content);
+                self.confirm_set_aside_dir();
+                true
+            }
+            Fault::BeforeEffect => false,
+            Fault::AfterEffect => {
+                self.unconfirmed_copy[id] = Some(content);
+                self.recompute_preserved();
+                S::ALLOW_UNCONFIRMED_SET_ASIDE_COPY
+            }
         }
     }
 
@@ -506,6 +686,9 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
                 } else {
                     Some(entry[id].stamp)
                 };
+                if trusted {
+                    window.editors[id].unverified_mtime = false;
+                }
             }
             window.trusted = trusted;
             if trusted {
@@ -536,7 +719,7 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
         w: usize,
         action: Action,
         id: usize,
-        fault: bool,
+        fault: Fault,
     ) {
         let swap_process = P > 1 && p == 1;
         let swap_window = W > 1 && w == 1;
@@ -560,16 +743,49 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
         choices: &mut impl Choices,
         action: Action,
         id: usize,
-        fault: bool,
+        fault: Fault,
     ) {
         match action {
             Action::Crash => {
                 self.processes[0].reset();
+                if self.manifest_unconfirmed {
+                    if choices.flag() {
+                        self.confirmed_entry = self.entry;
+                    } else {
+                        self.entry = self.confirmed_entry;
+                    }
+                    self.manifest_unconfirmed = false;
+                }
+                for slot in 0..IDS {
+                    if self.body_unconfirmed[slot] {
+                        if choices.flag() {
+                            self.confirmed_body[slot] = self.body[slot];
+                        } else {
+                            self.body[slot] = self.confirmed_body[slot];
+                        }
+                        self.body_unconfirmed[slot] = false;
+                    }
+                    if let Some(content) = self.unconfirmed_copy[slot].take()
+                        && choices.flag()
+                    {
+                        self.confirmed_preserved |= bit(content);
+                    }
+                    if let Some(content) = self.unconfirmed_move[slot].take() {
+                        if choices.flag() || self.body[slot].is_some() {
+                            self.confirmed_preserved |= bit(content);
+                        } else {
+                            self.body[slot] = Some(content);
+                            self.confirmed_body[slot] = Some(content);
+                            self.body_unconfirmed[slot] = false;
+                        }
+                    }
+                }
+                self.recompute_preserved();
                 return;
             }
             Action::Startup => {
                 if !self.processes[0].running() {
-                    self.startup(fault);
+                    self.startup(choices, fault);
                     let owner = self.me().id;
                     let process = &mut self.processes[0];
                     process.restored = true;
@@ -579,7 +795,7 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
             }
             Action::OpenWindow => {
                 if S::EXTENDED && self.processes[0].running() && !self.me().running {
-                    self.open_window(fault);
+                    self.open_window(choices, fault);
                 }
                 return;
             }
@@ -608,7 +824,7 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
                 }
             }
             Action::Open => self.open_editor(id),
-            Action::Register => self.register(id, fault),
+            Action::Register => self.register(choices, id, fault),
             Action::WriteBody => {
                 if !editor.open || !editor.dirty || !editor.token {
                     return;
@@ -621,7 +837,7 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
                 self.me_mut().editors[id].token = false;
                 if body_write_decision(ownership(self.window_body_facts(id)), needed)
                     == BodyWriteDecision::Hold
-                    || fault
+                    || fault == Fault::BeforeEffect
                 {
                     self.release_lane(LaneUse::Pass(id as u8));
                     return;
@@ -632,9 +848,15 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
                     "a body was written without an entry"
                 );
                 self.body[id] = Some(editor.content);
-                self.me_mut().editors[id].written = Some(editor.content);
+                if fault == Fault::AfterEffect {
+                    self.body_unconfirmed[id] = true;
+                    self.release_lane(LaneUse::Pass(id as u8));
+                } else {
+                    self.confirm_drafts_dir();
+                    self.me_mut().editors[id].written = Some(editor.content);
+                }
             }
-            Action::Commit => self.commit(id, fault),
+            Action::Commit => self.commit(choices, id, fault),
             Action::Save | Action::Discard => {
                 if !editor.open || editor.deletion.is_some() {
                     return;
@@ -643,6 +865,15 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
                 self.resolved |= self.ancestors[usize::from(editor.content)];
                 if matches!(action, Action::Save) && !self.untitled(id) {
                     self.backing[id] = self.backing[id].wrapping_add(1);
+                }
+                if !self.untitled(id) && self.me().known[id].is_none() && !editor.restore_pending {
+                    self.release_lane(LaneUse::Pass(id as u8));
+                    let editor = &mut self.me_mut().editors[id];
+                    editor.dirty = false;
+                    editor.token = false;
+                    editor.written = None;
+                    editor.content = 0;
+                    return;
                 }
                 let start = deletion_start(ownership(self.window_body_facts(id)));
                 self.release_lane(LaneUse::Pass(id as u8));
@@ -656,7 +887,7 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
                 editor.preserve_queued = start == DeletionStep::Preserve;
                 editor.deletion = Some(start);
             }
-            Action::DeletionStep => self.run_deletion_step(id, fault),
+            Action::DeletionStep => self.run_deletion_step(choices, id, fault),
             Action::Inspect => self.inspect(id),
             Action::ExecCleanup => self.exec_cleanup(id, fault),
             Action::RestoreApply => self.restore_apply(choices, id, fault),
@@ -717,7 +948,7 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
         editor.restore_pending = restore;
     }
 
-    pub(crate) fn register(&mut self, id: usize, fault: bool) {
+    pub(crate) fn register(&mut self, choices: &mut impl Choices, id: usize, fault: Fault) {
         let editor = self.me().editors[id];
         if !editor.open || !editor.dirty || editor.token || editor.deletion.is_some() {
             return;
@@ -736,7 +967,47 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
                 self.me_mut().editors[id].token = true;
             }
             BodyWriteDecision::RegisterFirst => {
-                if fault {
+                if S::EXTENDED
+                    && !self.untitled(id)
+                    && !self.entry[id].present
+                    && self.body[id].is_some()
+                {
+                    if fault != Fault::BeforeEffect || choices.flag() {
+                        let moved = self.body[id].take();
+                        self.confirmed_body[id] = None;
+                        self.body_unconfirmed[id] = false;
+                        self.unconfirmed_move[id] = moved;
+                        self.recompute_preserved();
+                    }
+                    if self.body[id].is_some() {
+                        self.revoke_trust();
+                        return;
+                    }
+                }
+                let mut after = self.entry;
+                if S::EXTENDED {
+                    self.reconcile_unregistered_bodies(choices, &mut after, Some(id), true, fault);
+                }
+                if fault == Fault::BeforeEffect {
+                    let additive_ok = S::EXTENDED && choices.flag();
+                    if !additive_ok {
+                        self.revoke_trust();
+                        return;
+                    }
+                    self.set_lane(Some(LaneUse::Pass(id as u8)));
+                    if !self.entry[id].present {
+                        self.write_entry(id);
+                    }
+                    let stamp = self.entry[id].stamp;
+                    let mirror = S::PROCESS_JOURNAL;
+                    for index in 0..W {
+                        let window = &mut self.processes[0].windows[index];
+                        if (index == 0 || mirror) && window.known[id].is_none() {
+                            window.known[id] = Some(stamp);
+                        }
+                    }
+                    self.revoke_trust();
+                    self.me_mut().editors[id].token = may_write_after_registration(true, true);
                     return;
                 }
                 self.set_lane(Some(LaneUse::Pass(id as u8)));
@@ -755,10 +1026,10 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
                     backing_stale: false,
                 });
                 if body_write_decision(owner, false) == BodyWriteDecision::PreserveThenWrite {
-                    self.preserve_body(id);
+                    let _ = self.preserve_body(id, Fault::None);
                 }
-                let complete = self.inventory_complete();
-                let insert = !self.entry[id].present;
+                let complete = self.inventory_complete_with(&after);
+                let insert = !after[id].present;
                 let committed = complete
                     || untrusted_commit_disposition(true, true)
                         == UntrustedCommitDisposition::Additive;
@@ -767,8 +1038,35 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
                     return;
                 }
                 if insert {
-                    self.write_entry(id);
+                    after[id] = DiskEntry {
+                        present: true,
+                        backing: self.backing[id],
+                        stamp: after[id].stamp.wrapping_add(1),
+                    };
                 }
+                if S::EXTENDED && complete {
+                    for other in 0..IDS {
+                        if other != id
+                            && self.untitled(other)
+                            && self.body[other].is_some()
+                            && !after[other].present
+                        {
+                            after[other] = DiskEntry {
+                                present: true,
+                                backing: self.backing[other],
+                                stamp: after[other].stamp.wrapping_add(1),
+                            };
+                        }
+                    }
+                }
+                self.entry = after;
+                if fault == Fault::AfterEffect {
+                    self.manifest_unconfirmed = true;
+                    self.revoke_trust();
+                    self.release_lane(LaneUse::Pass(id as u8));
+                    return;
+                }
+                self.confirm_drafts_dir();
                 let completeness = if complete {
                     DraftManifestCompleteness::Complete
                 } else {
@@ -801,32 +1099,51 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
         }
     }
 
-    pub(crate) fn commit(&mut self, id: usize, fault: bool) {
+    pub(crate) fn commit(&mut self, choices: &mut impl Choices, id: usize, fault: Fault) {
         let editor = self.me().editors[id];
         let Some(written) = editor.written else {
             return;
         };
         self.me_mut().editors[id].written = None;
         self.release_lane(LaneUse::Pass(id as u8));
-        if fault {
+        let mut after = self.entry;
+        if S::EXTENDED {
+            self.reconcile_unregistered_bodies(choices, &mut after, None, true, fault);
+        }
+        if fault == Fault::BeforeEffect {
+            self.revoke_trust();
             return;
         }
         if S::EXTENDED {
             // A reconciling commit rebuilds the entry of an untitled body
             // that has none.
             for other in 0..IDS {
-                if self.untitled(other) && self.body[other].is_some() && !self.entry[other].present
-                {
-                    self.write_entry(other);
+                if self.untitled(other) && self.body[other].is_some() && !after[other].present {
+                    after[other] = DiskEntry {
+                        present: true,
+                        backing: self.backing[other],
+                        stamp: after[other].stamp.wrapping_add(1),
+                    };
                 }
             }
         }
-        if !self.inventory_complete() {
+        if !self.inventory_complete_with(&after) {
             // A reconciling commit that cannot prove completeness fails.
             self.revoke_trust();
             return;
         }
-        self.write_entry(id);
+        after[id] = DiskEntry {
+            present: true,
+            backing: self.backing[id],
+            stamp: after[id].stamp.wrapping_add(1),
+        };
+        self.entry = after;
+        if fault == Fault::AfterEffect {
+            self.manifest_unconfirmed = true;
+            self.revoke_trust();
+            return;
+        }
+        self.confirm_drafts_dir();
         let trusted = commit_authority(DraftManifestCompleteness::Complete, true).is_trusted();
         if S::EXTENDED {
             self.accept_commit(trusted);
@@ -848,7 +1165,12 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
         }
     }
 
-    pub(crate) fn run_deletion_step(&mut self, id: usize, fault: bool) {
+    pub(crate) fn run_deletion_step(
+        &mut self,
+        choices: &mut impl Choices,
+        id: usize,
+        fault: Fault,
+    ) {
         let Some(step) = self.me().editors[id].deletion else {
             return;
         };
@@ -856,43 +1178,78 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
             return;
         }
         self.set_lane(Some(LaneUse::Deletion(id as u8)));
-        let succeeded = !fault;
-        match step {
+        let succeeded = match step {
             DeletionStep::Preserve => {
-                if succeeded {
-                    self.preserve_body(id);
+                let ok = self.preserve_body(id, fault);
+                if ok {
                     self.me_mut().editors[id].preserve_queued = false;
                 }
+                ok
             }
             DeletionStep::DeleteBody => {
-                if succeeded {
+                if fault == Fault::BeforeEffect {
+                    false
+                } else {
                     self.body[id] = None;
+                    self.body_unconfirmed[id] = true;
+                    true
                 }
             }
             DeletionStep::RemoveEntry => {
-                if succeeded {
+                let mut after = self.entry;
+                after[id].present = false;
+                if S::EXTENDED {
+                    self.reconcile_unregistered_bodies(choices, &mut after, Some(id), true, fault);
+                }
+                if fault == Fault::BeforeEffect {
+                    self.revoke_trust();
+                    false
+                } else {
                     // A reconciling commit: the removal lands only with a
                     // complete inventory, and then the journal is trusted.
-                    let mut after = self.entry;
-                    after[id].present = false;
+                    if S::EXTENDED {
+                        for other in 0..IDS {
+                            if other != id
+                                && self.untitled(other)
+                                && self.body[other].is_some()
+                                && !after[other].present
+                            {
+                                after[other] = DiskEntry {
+                                    present: true,
+                                    backing: self.backing[other],
+                                    stamp: after[other].stamp.wrapping_add(1),
+                                };
+                            }
+                        }
+                    }
                     if self.inventory_complete_with(&after) {
                         self.entry = after;
-                        let trusted = commit_authority(DraftManifestCompleteness::Complete, true)
-                            .is_trusted();
-                        if S::EXTENDED {
-                            self.accept_commit(trusted);
+                        if fault == Fault::AfterEffect {
+                            self.manifest_unconfirmed = true;
+                            self.revoke_trust();
+                            false
                         } else {
-                            let me = self.me_mut();
-                            me.trusted = trusted;
-                            me.last_reconciliation_complete = true;
+                            self.confirm_drafts_dir();
+                            let trusted =
+                                commit_authority(DraftManifestCompleteness::Complete, true)
+                                    .is_trusted();
+                            if S::EXTENDED {
+                                self.accept_commit(trusted);
+                            } else {
+                                let me = self.me_mut();
+                                me.trusted = trusted;
+                                me.last_reconciliation_complete = true;
+                            }
+                            true
                         }
                     } else {
                         self.revoke_trust();
+                        false
                     }
                 }
             }
-            DeletionStep::Done | DeletionStep::Stopped => {}
-        }
+            DeletionStep::Done | DeletionStep::Stopped => true,
+        };
         let next = next_deletion_step(step, succeeded);
         let editor = &mut self.me_mut().editors[id];
         // A stopped deletion keeps its tombstone and retries from the start.
@@ -959,7 +1316,7 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
 
     /// `execute_orphan_cleanup`: revalidate against the latest persisted
     /// manifest under the lock and the target guard, then delete.
-    pub(crate) fn exec_cleanup(&mut self, id: usize, fault: bool) {
+    pub(crate) fn exec_cleanup(&mut self, id: usize, fault: Fault) {
         if !S::EXTENDED {
             self.exec_cleanup_one(id, fault);
             return;
@@ -972,24 +1329,42 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
         {
             return;
         }
+        if fault == Fault::BeforeEffect {
+            // `load_trusted_manifest_for_cleanup` failed before any orphan deletion
+            // or manifest write; release the cleanup lane and leave disk unchanged.
+            self.me_mut().orphan_candidate = [None; IDS];
+            self.me_mut().missing_candidate = [None; IDS];
+            self.release_lane(LaneUse::Cleanup);
+            return;
+        }
         for id in 0..IDS {
-            self.exec_cleanup_one(id, false);
+            self.exec_cleanup_one(id, Fault::None);
         }
         // Missing-body entries go in one manifest write, which may fail.
-        if !fault {
-            let mirror = S::PROCESS_JOURNAL;
-            for id in 0..IDS {
-                if let Some(stamp) = self.me().missing_candidate[id]
-                    && self.entry[id].present
-                    && self.entry[id].stamp == stamp
-                    && self.body[id].is_none()
-                {
-                    self.entry[id].present = false;
-                    // `merge_committed_orphan_removals`, and in the process
-                    // journal `mirror_orphan_removals_to_peers`.
-                    for index in 0..W {
-                        if index == 0 || mirror {
-                            self.processes[0].windows[index].known[id] = None;
+        let mut any_missing_removed = false;
+        for id in 0..IDS {
+            if let Some(stamp) = self.me().missing_candidate[id]
+                && self.entry[id].present
+                && self.entry[id].stamp == stamp
+                && self.body[id].is_none()
+            {
+                self.entry[id].present = false;
+                any_missing_removed = true;
+            }
+        }
+        if any_missing_removed {
+            if fault == Fault::AfterEffect {
+                self.manifest_unconfirmed = true;
+                self.revoke_trust();
+            } else {
+                self.confirm_drafts_dir();
+                let mirror = S::PROCESS_JOURNAL;
+                for id in 0..IDS {
+                    if !self.entry[id].present {
+                        for index in 0..W {
+                            if index == 0 || mirror {
+                                self.processes[0].windows[index].known[id] = None;
+                            }
                         }
                     }
                 }
@@ -999,7 +1374,7 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
         self.release_lane(LaneUse::Cleanup);
     }
 
-    pub(crate) fn exec_cleanup_one(&mut self, id: usize, fault: bool) {
+    pub(crate) fn exec_cleanup_one(&mut self, id: usize, fault: Fault) {
         let Some(inspected) = self.me().orphan_candidate[id] else {
             return;
         };
@@ -1020,27 +1395,34 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
                 Some(_) => CleanupBodyIdentity::Changed,
             },
         };
-        if orphan_body_decision(facts) == OrphanBodyDecision::Delete && !fault {
+        if orphan_body_decision(facts) == OrphanBodyDecision::Delete && fault != Fault::BeforeEffect
+        {
             // S2: the deleted body is unreferenced and revalidated.
             assert!(!self.entry[id].present && self.body[id] == Some(inspected));
             self.body[id] = None;
+            self.body_unconfirmed[id] = true;
         }
     }
 
-    pub(crate) fn restore_apply(&mut self, choices: &mut impl Choices, id: usize, fault: bool) {
+    pub(crate) fn restore_apply(&mut self, choices: &mut impl Choices, id: usize, fault: Fault) {
         if !self.me().editors[id].restore_pending {
             return;
         }
-        let ending = match self.body[id] {
-            None => RestoreEnding::MissingBody,
-            Some(_) if self.stale(id) => RestoreEnding::Stale,
-            // Every other ending is the window's or the read's: the
-            // environment chooses.
-            Some(_) => choices.restore_ending(|ending| {
-                !matches!(ending, RestoreEnding::Stale | RestoreEnding::MissingBody)
-            }),
+        let ending = if self.stale(id) || self.me().editors[id].unverified_mtime {
+            RestoreEnding::Stale
+        } else {
+            match self.body[id] {
+                None => RestoreEnding::MissingBody,
+                // Every other ending is the window's or the read's: the
+                // environment chooses.
+                Some(_) => choices.restore_ending(|ending| {
+                    !matches!(ending, RestoreEnding::Stale | RestoreEnding::MissingBody)
+                }),
+            }
         };
-        self.me_mut().editors[id].restore_pending = false;
+        let editor = &mut self.me_mut().editors[id];
+        editor.restore_pending = false;
+        editor.unverified_mtime = false;
         match unapplied_restore_disposition(ending) {
             RestoreDisposition::Nothing => {
                 if ending == RestoreEnding::Applied
@@ -1052,12 +1434,10 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
                 }
             }
             RestoreDisposition::PreserveCopy => {
-                if fault {
+                if !self.preserve_body(id, fault) {
                     // The hold stays until the copy exists; production
                     // retries the copy on each autosave tick.
                     self.me_mut().editors[id].restore_pending = true;
-                } else {
-                    self.preserve_body(id);
                 }
             }
             RestoreDisposition::PreserveThenRetire => {
@@ -1109,10 +1489,10 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
     /// another window exists). The baseline runs its own startup restore; the
     /// process journal starts it empty with the process's manifest copy
     /// (`adopt_peer_draft_records`).
-    pub(crate) fn open_window(&mut self, fault: bool) {
+    pub(crate) fn open_window(&mut self, choices: &mut impl Choices, fault: Fault) {
         let restored = self.processes[0].restored;
         if !S::PROCESS_JOURNAL || startup_restore(restored) == StartupRestore::RestoreSession {
-            self.startup(fault);
+            self.startup(choices, fault);
             return;
         }
         // With two windows the peer is the other slot.
@@ -1128,19 +1508,24 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
     }
 
     /// Reconcile, then reopen the session: every id with an entry has a tab.
-    pub(crate) fn startup(&mut self, fault: bool) {
+    pub(crate) fn startup(&mut self, choices: &mut impl Choices, fault: Fault) {
         self.me_mut().running = true;
         // Reconciliation sets unattributable file-backed bodies aside (moves
         // them) and rebuilds an untitled body's entry, so the inventory it
-        // publishes is complete.
+        // publishes is complete. When `BeforeEffect` fails directory traversal
+        // or a `move_in`, an unattributable body may remain in `drafts/`.
+        let mut rebuilt_untitled = false;
+        let mut after = self.entry;
+        self.reconcile_unregistered_bodies(choices, &mut after, None, false, fault);
+        self.entry = after;
         for id in 0..IDS {
-            if self.body[id].is_some() && !self.entry[id].present {
-                if self.untitled(id) {
-                    self.write_entry(id);
-                } else {
-                    self.preserve_body(id);
-                    self.body[id] = None;
-                }
+            if self.untitled(id)
+                && self.body[id].is_some()
+                && !self.entry[id].present
+                && fault != Fault::BeforeEffect
+            {
+                self.write_entry(id);
+                rebuilt_untitled = true;
             }
         }
         let complete = self.inventory_complete();
@@ -1149,7 +1534,15 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
         } else {
             DraftManifestCompleteness::Partial
         };
-        let trusted = commit_authority(completeness, !fault).is_trusted();
+        let persisted_ok = fault == Fault::None;
+        if rebuilt_untitled {
+            if fault == Fault::AfterEffect {
+                self.manifest_unconfirmed = true;
+            } else if persisted_ok {
+                self.confirm_drafts_dir();
+            }
+        }
+        let trusted = commit_authority(completeness, persisted_ok).is_trusted();
         {
             let me = self.me_mut();
             me.trusted = trusted;
@@ -1164,13 +1557,20 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
             let mut editor = CLOSED;
             editor.open = true;
             let mut known = Some(self.entry[id].stamp);
-            if self.body[id].is_some() {
+            if self.body[id].is_some() || self.stale(id) {
                 if self.stale(id) && startup_may_retire_stale(trusted) {
                     known = None;
                     editor.preserve_queued = true;
                     editor.deletion = Some(DeletionStep::Preserve);
                 } else {
                     editor.restore_pending = true;
+                    if fault == Fault::BeforeEffect
+                        && !self.untitled(id)
+                        && self.body[id].is_some()
+                        && !self.stale(id)
+                    {
+                        editor.unverified_mtime = choices.flag();
+                    }
                 }
             }
             let me = self.me_mut();
@@ -1305,6 +1705,7 @@ impl Scope for SingleWindowScope {
     const EXTENDED: bool = true;
     const UNTITLED: Option<usize> = Some(2);
     const PROCESS_JOURNAL: bool = true;
+    const ALLOW_UNCONFIRMED_SET_ASIDE_COPY: bool = false;
 }
 
 #[cfg(test)]
@@ -1329,11 +1730,11 @@ mod tests {
     #[test]
     fn every_action_keeps_the_invariants_from_a_fresh_start() {
         for action in Action::ALL {
-            for fault in [false, true] {
+            for fault in [Fault::None, Fault::BeforeEffect, Fault::AfterEffect] {
                 let mut journal =
                     Journal::<SingleWindowScope, 3, 1, 1>::previous_session(&mut Fixed);
-                journal.step(&mut Fixed, 0, 0, Action::Startup, 0, false);
-                journal.step(&mut Fixed, 0, 0, Action::Open, 0, false);
+                journal.step(&mut Fixed, 0, 0, Action::Startup, 0, Fault::None);
+                journal.step(&mut Fixed, 0, 0, Action::Open, 0, Fault::None);
                 journal.step(&mut Fixed, 0, 0, action, 0, fault);
                 journal.assert_invariants();
             }
@@ -1343,7 +1744,7 @@ mod tests {
     #[test]
     fn an_edit_is_registered_written_and_committed_clean() {
         let mut journal = Journal::<SingleWindowScope, 3, 1, 1>::previous_session(&mut Fixed);
-        journal.step(&mut Fixed, 0, 0, Action::Startup, 0, false);
+        journal.step(&mut Fixed, 0, 0, Action::Startup, 0, Fault::None);
         journal.assert_invariants();
         for action in [
             Action::Open,
@@ -1352,7 +1753,7 @@ mod tests {
             Action::WriteBody,
             Action::Commit,
         ] {
-            journal.step(&mut Fixed, 0, 0, action, 0, false);
+            journal.step(&mut Fixed, 0, 0, action, 0, Fault::None);
             journal.assert_invariants();
         }
         let editor = journal.me().editors[0];
@@ -1364,20 +1765,20 @@ mod tests {
     #[test]
     fn a_crash_after_the_body_write_keeps_the_body_and_its_entry() {
         let mut journal = Journal::<SingleWindowScope, 3, 1, 1>::previous_session(&mut Fixed);
-        journal.step(&mut Fixed, 0, 0, Action::Startup, 0, false);
+        journal.step(&mut Fixed, 0, 0, Action::Startup, 0, Fault::None);
         for action in [
             Action::Open,
             Action::Edit,
             Action::Register,
             Action::WriteBody,
         ] {
-            journal.step(&mut Fixed, 0, 0, action, 0, false);
+            journal.step(&mut Fixed, 0, 0, action, 0, Fault::None);
         }
-        journal.step(&mut Fixed, 0, 0, Action::Crash, 0, false);
-        journal.step(&mut Fixed, 0, 0, Action::Startup, 0, false);
+        journal.step(&mut Fixed, 0, 0, Action::Crash, 0, Fault::None);
+        journal.step(&mut Fixed, 0, 0, Action::Startup, 0, Fault::None);
         journal.assert_invariants();
         assert!(journal.me().editors[0].restore_pending);
-        journal.step(&mut Fixed, 0, 0, Action::RestoreApply, 0, false);
+        journal.step(&mut Fixed, 0, 0, Action::RestoreApply, 0, Fault::None);
         journal.assert_invariants();
         assert!(!journal.me().editors[0].restore_pending);
     }

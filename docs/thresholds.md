@@ -472,6 +472,14 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-services/src/bookmark_excerpt.rs` | `BOOKMARK_EXCERPT_LINE_CHAR_LIMIT` | 4,096 | presentation cap | up from 4,096: characters an excerpt line shows (D12) |
 | `crates/lushtext-services/src/bookmark_excerpt.rs` | `BOOKMARK_EXCERPT_CANCELLATION_CHECK_LINES` | 1,024 | cap | power of two |
 
+### `crates/lushtext-services/src/conformance/draft_service.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-services/src/conformance/draft_service.rs` | `DRAFT_IDS` | 3 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
+| `crates/lushtext-services/src/conformance/draft_service.rs` | `INITIAL_LAYOUT_BITS` | 8 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
+| `crates/lushtext-services/src/conformance/draft_service.rs` | `BASE_MTIME_SECS` | 1,700,000,000 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
+
 ### `crates/lushtext-services/src/content_search/replace/mod.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |

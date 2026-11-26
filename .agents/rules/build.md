@@ -546,13 +546,17 @@ primitive in `sys.rs` goes through `tap::call`, or the pin in
 `backend_tap/tests.rs` fails.
 
 **Conformance properties** (`verify-shell-conformance-against-proven-cores`).
-`services/conformance/` holds drivers that take a caller-owned root and the
-operations to run, and name neither `proptest` nor `tempfile`; strategies and
-each case's `TempDir` live in `tests/properties/`. Operations are generated
-**enabled-indexed**: an index picks one of the actions the run (or the model)
-enables, modulo their count, so every script is valid and proptest's own
-shrinking stays sound. A shrunk divergence is committed as a failing
-deterministic `#[test]` before its fix.
+`crates/lushtext-services/src/conformance/` (`write_shell.rs`,
+`draft_service.rs`) holds drivers that take a caller-owned root and the
+operations to run, and name neither `proptest` nor `tempfile`; strategies,
+each case's `TempDir`, the 256-iter / 45 s shrink budget (`max_shrink_iters =
+256`, `max_shrink_time = 45_000`), and the deterministic reach-floor test live
+in `crates/lushtext-core/tests/properties/` (`shell_conformance_write.rs`,
+`shell_conformance_drafts.rs`). Operations are generated **enabled-indexed**:
+an index picks one of the actions the run (or the model) enables, modulo their
+count, so every script is valid and proptest's own shrinking stays sound. A
+shrunk divergence is committed as a failing deterministic `#[test]` before its
+fix.
 
 ## Formal Verification (Kani)
 
@@ -653,9 +657,11 @@ are in [`testing.md`](./testing.md). This section covers the lane.
   choice is an argument or goes through a `Choices` trait, which the
   harnesses answer with `kani::any()`/`kani::assume` and the drivers with
   what the real backend or service did. Such a module is excluded from the
-  mutation scope and listed in `NOT_ORACLE_MODULES`. A divergence between a
-  shell and its model is classified (shell, environment model, or core
-  defect) and recorded in the programme record.
+  mutation scope and listed in `NOT_ORACLE_MODULES`. The journal fault domain
+  (`Fault { None, BeforeEffect, AfterEffect }`) covers before-effect errors and
+  after-rename/dir-sync failures. A divergence between a shell and its model is
+  classified (shell, environment model, or core defect) and recorded in the
+  programme record.
 - **Proof strength.** `ORACLES` in `scripts/kani-shards.py` maps every
   Kani-checked module (optionally scoped to named functions) to its harnesses,
   cheapest first, with each harness's measured local seconds and a `ci` or

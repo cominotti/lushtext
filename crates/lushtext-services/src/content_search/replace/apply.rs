@@ -31,6 +31,7 @@ use super::{
     run_after_pass_a_hook_for_test, run_before_target_write_hook_for_test,
     take_replace_before_rename_failure_for_test,
 };
+use crate::filesystem::backend_tap::ProtocolKind;
 use crate::filesystem::leftovers::LaunchId;
 use crate::filesystem::read::{BoundedStreamError, stream_bounded};
 use crate::filesystem::types::FileFacts;
@@ -43,7 +44,6 @@ use lushtext_model::content_search::{
     ReplaceSkipReason, ReplaceSkipReport, Replacement,
 };
 use lushtext_model::size_units::iec_size;
-use crate::filesystem::backend_tap::ProtocolKind;
 
 /// Everything one Replace All run needs, borrowed from its caller.
 #[derive(Clone, Copy)]

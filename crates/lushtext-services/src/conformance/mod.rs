@@ -13,4 +13,5 @@
 //! deterministic enumerations live in the drivers' unit tests; the generated
 //! properties live in `tests/properties/`.
 
+pub mod draft_service;
 pub mod write_shell;

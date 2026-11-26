@@ -20,7 +20,8 @@ use super::journal_core::{
     untrusted_commit_disposition, window_may_journal_draft,
 };
 use super::journal_model::{
-    Action, CONTENTS, Choices, ContentId, Journal, LaneUse, Scope, SingleWindowScope,
+    Action, CONTENTS, Choices, ContentId, Fault, Journal, LaneUse, Scope, SingleWindowScope,
+    fault_admitted,
 };
 use lushtext_model::draft::{DraftManifestAuthority, DraftManifestCompleteness};
 
@@ -54,13 +55,19 @@ impl Scope for K3Scope {
     const EXTENDED: bool = false;
     const UNTITLED: Option<usize> = None;
     const PROCESS_JOURNAL: bool = true;
+    const ALLOW_UNCONFIRMED_SET_ASIDE_COPY: bool = false;
 }
 
 /// Nondeterministic actions after the first startup.
 const STEPS: usize = 8;
 
-/// S1–S4 over every sequence of `STEPS` actions, faults, crashes, and
-/// restarts after the first startup, for one window of one process.
+/// S1–S4 over every sequence of `STEPS` actions, faults (`None`,
+/// `BeforeEffect`, `AfterEffect`), crashes, and restarts after the first
+/// startup, for one window of one process.
+///
+/// Domain restriction (`AfterEffect`): several unconfirmed manifest commits
+/// revert together to the last confirmed entry array rather than an
+/// intermediate version (`verify-shell-conformance-against-proven-cores` D6).
 #[kani::proof]
 #[kani::unwind(9)]
 fn journal_invariants_hold_under_crashes() {
@@ -68,16 +75,121 @@ fn journal_invariants_hold_under_crashes() {
     journal.step(&mut KaniChoices, 0, 0, Action::Startup, 0, kani::any());
     journal.assert_invariants();
     for _ in 0..STEPS {
-        journal.step(
-            &mut KaniChoices,
-            0,
-            0,
-            kani::any(),
-            any_below(3),
-            kani::any(),
-        );
+        let action: Action = kani::any();
+        let fault: Fault = kani::any();
+        kani::assume(fault_admitted(action, fault));
+        journal.step(&mut KaniChoices, 0, 0, action, any_below(3), fault);
         journal.assert_invariants();
     }
+}
+
+/// Scope that restores the pre-D6 `set_aside::place` rule under which an
+/// `AfterRename` set-aside copy counted as durably preserved.
+struct BrokenSetAsideCopyScope;
+
+impl Scope for BrokenSetAsideCopyScope {
+    const EXTENDED: bool = true;
+    const UNTITLED: Option<usize> = Some(2);
+    const PROCESS_JOURNAL: bool = true;
+    const ALLOW_UNCONFIRMED_SET_ASIDE_COPY: bool = true;
+}
+
+/// Exhibit for the D6 set-aside copy finding (task 5.1 / 7.4): when an
+/// unconfirmed set-aside copy (`AfterEffect` on `Preserve`) counts as placed,
+/// deleting the body and committing the removal makes the unlink durable while a
+/// crash can revert the unsynced copy, violating S1.
+#[kani::proof]
+#[kani::should_panic]
+#[kani::unwind(9)]
+fn an_unconfirmed_set_aside_copy_loses_accepted_work() {
+    struct RevertUnconfirmed;
+    impl Choices for RevertUnconfirmed {
+        fn flag(&mut self) -> bool {
+            false
+        }
+
+        fn restore_ending(&mut self, admits: impl Fn(RestoreEnding) -> bool) -> RestoreEnding {
+            let ending = RestoreEnding::Applied;
+            assert!(admits(ending));
+            ending
+        }
+    }
+
+    let mut journal =
+        Journal::<BrokenSetAsideCopyScope, 3, 1, 1>::previous_session(&mut RevertUnconfirmed);
+    journal.step(
+        &mut RevertUnconfirmed,
+        0,
+        0,
+        Action::Startup,
+        0,
+        Fault::None,
+    );
+    journal.step(&mut RevertUnconfirmed, 0, 0, Action::Open, 0, Fault::None);
+    journal.step(&mut RevertUnconfirmed, 0, 0, Action::Edit, 0, Fault::None);
+    journal.step(
+        &mut RevertUnconfirmed,
+        0,
+        0,
+        Action::Register,
+        0,
+        Fault::None,
+    );
+    journal.step(
+        &mut RevertUnconfirmed,
+        0,
+        0,
+        Action::WriteBody,
+        0,
+        Fault::None,
+    );
+    journal.step(&mut RevertUnconfirmed, 0, 0, Action::Commit, 0, Fault::None);
+    journal.step(
+        &mut RevertUnconfirmed,
+        0,
+        0,
+        Action::ExternalMtime,
+        0,
+        Fault::None,
+    );
+    journal.step(&mut RevertUnconfirmed, 0, 0, Action::Crash, 0, Fault::None);
+    journal.step(
+        &mut RevertUnconfirmed,
+        0,
+        0,
+        Action::Startup,
+        0,
+        Fault::None,
+    );
+    // Preserve fails its set-aside SyncDir (AfterEffect) -> under the old rule it
+    // wrongly succeeds, DeleteBody unlinks, RemoveEntry commits (making the unlink
+    // durable), and Crash reverts the unconfirmed copy -> S1 panics.
+    journal.step(
+        &mut RevertUnconfirmed,
+        0,
+        0,
+        Action::DeletionStep,
+        0,
+        Fault::AfterEffect,
+    );
+    journal.step(
+        &mut RevertUnconfirmed,
+        0,
+        0,
+        Action::DeletionStep,
+        0,
+        Fault::None,
+    );
+    journal.step(
+        &mut RevertUnconfirmed,
+        0,
+        0,
+        Action::DeletionStep,
+        0,
+        Fault::None,
+    );
+    journal.step(&mut RevertUnconfirmed, 0, 0, Action::Crash, 0, Fault::None);
+    journal.assert_invariants();
 }
 
 /// Fault-free steps that bound L1: the smallest `k` that covers the longest
@@ -96,16 +208,12 @@ const LANE_DRAIN_STEPS: usize = 3;
 /// production pass order, a dirty open editor is clean within `steps` steps.
 fn dirty_editor_becomes_clean_within(steps: usize) -> bool {
     let mut journal = Journal::<SingleWindowScope, 3, 1, 1>::previous_session(&mut KaniChoices);
-    journal.step(&mut KaniChoices, 0, 0, Action::Startup, 0, false);
+    journal.step(&mut KaniChoices, 0, 0, Action::Startup, 0, Fault::None);
     for _ in 0..3 {
-        journal.step(
-            &mut KaniChoices,
-            0,
-            0,
-            kani::any(),
-            any_below(3),
-            kani::any(),
-        );
+        let action: Action = kani::any();
+        let fault: Fault = kani::any();
+        kani::assume(fault_admitted(action, fault));
+        journal.step(&mut KaniChoices, 0, 0, action, any_below(3), fault);
     }
     let id = any_below(3);
     let me = journal.me();
@@ -130,7 +238,7 @@ fn dirty_editor_becomes_clean_within(steps: usize) -> bool {
                 (action, other)
             }
         };
-        journal.step(&mut KaniChoices, 0, 0, action, other, false);
+        journal.step(&mut KaniChoices, 0, 0, action, other, Fault::None);
     }
     assert!(
         journal.lane_holder().is_none_or(|holder| matches!(
@@ -157,7 +265,7 @@ fn dirty_editor_becomes_clean_within(steps: usize) -> bool {
         } else {
             Action::Register
         };
-        journal.step(&mut KaniChoices, 0, 0, action, id, false);
+        journal.step(&mut KaniChoices, 0, 0, action, id, Fault::None);
     }
     !journal.me().editors[id].dirty
 }
@@ -189,6 +297,7 @@ impl Scope for TwoWindowScope {
     const EXTENDED: bool = true;
     const UNTITLED: Option<usize> = Some(1);
     const PROCESS_JOURNAL: bool = true;
+    const ALLOW_UNCONFIRMED_SET_ASIDE_COPY: bool = false;
 }
 
 /// The two-window scope as production stood before this change: every
@@ -206,6 +315,7 @@ impl Scope for TwoWindowBaselineScope {
     const EXTENDED: bool = true;
     const UNTITLED: Option<usize> = Some(1);
     const PROCESS_JOURNAL: bool = false;
+    const ALLOW_UNCONFIRMED_SET_ASIDE_COPY: bool = false;
 }
 
 /// Nondeterministic actions after the first startup in the two-window
@@ -222,13 +332,16 @@ fn two_windows<S: Scope>(steps: usize) {
     journal.step(&mut KaniChoices, 0, 0, Action::Startup, 0, kani::any());
     journal.assert_invariants();
     for _ in 0..steps {
+        let action: Action = kani::any();
+        let fault: Fault = kani::any();
+        kani::assume(fault_admitted(action, fault));
         journal.step(
             &mut KaniChoices,
             0,
             any_below(2),
-            kani::any(),
+            action,
             any_below(2),
-            kani::any(),
+            fault,
         );
         journal.assert_invariants();
     }
@@ -236,8 +349,13 @@ fn two_windows<S: Scope>(steps: usize) {
 
 /// S1–S4, and one owning window per draft id, over every sequence of
 /// `TWO_WINDOW_STEPS` actions by either of two windows of one process (one
-/// file-backed and one untitled id, at most three edits), with faults, window
-/// opens and closes, crashes, and restarts.
+/// file-backed and one untitled id, at most three edits), with faults (`None`,
+/// `BeforeEffect`, `AfterEffect`), window opens and closes, crashes, and
+/// restarts.
+///
+/// Domain restriction (`AfterEffect`): several unconfirmed manifest commits
+/// revert together to the last confirmed entry array rather than an
+/// intermediate version (`verify-shell-conformance-against-proven-cores` D6).
 #[kani::proof]
 #[kani::unwind(9)]
 fn journal_invariants_hold_across_two_windows() {
@@ -257,22 +375,29 @@ const SECOND_WRITER_STEPS: usize = 6;
 /// same disk. Kani reports which of S1–S4 fail; the programme record keeps the
 /// counterexamples and the decision. Kept as `should_panic`: the day this
 /// passes, A6 is no longer needed and the record must change.
+///
+/// Domain restriction (`AfterEffect`): several unconfirmed manifest commits
+/// revert together to the last confirmed entry array rather than an
+/// intermediate version (`verify-shell-conformance-against-proven-cores` D6).
 #[kani::proof]
 #[kani::should_panic]
 #[kani::unwind(9)]
 fn a_second_writer_breaks_the_journal_invariants() {
     let mut journal = Journal::<K3Scope, 3, 1, 2>::previous_session(&mut KaniChoices);
-    journal.step(&mut KaniChoices, 0, 0, Action::Startup, 0, false);
-    journal.step(&mut KaniChoices, 1, 0, Action::Startup, 0, false);
+    journal.step(&mut KaniChoices, 0, 0, Action::Startup, 0, Fault::None);
+    journal.step(&mut KaniChoices, 1, 0, Action::Startup, 0, Fault::None);
     journal.assert_invariants();
     for _ in 0..SECOND_WRITER_STEPS {
+        let action: Action = kani::any();
+        let fault: Fault = kani::any();
+        kani::assume(fault_admitted(action, fault));
         journal.step(
             &mut KaniChoices,
             any_below(2),
             0,
-            kani::any(),
+            action,
             any_below(3),
-            kani::any(),
+            fault,
         );
         journal.assert_invariants();
     }

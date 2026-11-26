@@ -102,7 +102,7 @@ mod cleanup_types;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod fixture;
 pub mod journal_core;
-#[cfg(any(kani, test))]
+#[cfg(any(kani, test, feature = "test-utils"))]
 pub(crate) mod journal_model;
 #[cfg(kani)]
 mod kani_proofs;
@@ -370,7 +370,8 @@ pub fn new_untitled_draft_id() -> String {
 const UNTITLED_DRAFT_ID_KIND: &str = "untitled";
 
 /// Whether `draft_id` names an untitled draft rather than a path-backed one.
-fn is_untitled_draft_id(draft_id: &str) -> bool {
+#[must_use]
+pub fn is_untitled_draft_id(draft_id: &str) -> bool {
     draft_id
         .strip_prefix(UNTITLED_DRAFT_ID_KIND)
         .is_some_and(|rest| rest.starts_with('-'))
@@ -575,7 +576,17 @@ pub fn register_draft_entries(
     // older, possibly stale body that the body write about to follow would
     // overwrite. The journal core's ownership check says so; keep a copy
     // first, since refusing is safer than overwriting.
-    let persisted = load_manifest_recovering(data_dir).value;
+    let current = load_manifest_recovering(data_dir);
+    if !current.replacement_allowed() {
+        return Err(DraftManifestUpdateError {
+            authority: DraftManifestAuthority::default(),
+            detail: format!(
+                "draft manifest recovery evidence forbids registration ({:?}, prior authority {:?})",
+                current.outcome, known_authority,
+            ),
+        });
+    }
+    let persisted = current.value;
     for entry in entries {
         let Some(existing) = persisted.find_by_id(&entry.draft_id) else {
             continue;
@@ -747,6 +758,39 @@ where
         .map(|entry| entry.draft_id.clone())
         .collect();
     update(&mut manifest);
+    if kind == ManifestCommandKind::InsertOnly {
+        for entry in &manifest.drafts {
+            if original_ids.contains(&entry.draft_id) || is_untitled_draft_id(&entry.draft_id) {
+                continue;
+            }
+            let body_path = draft_body_path(data_dir, &entry.draft_id);
+            let exists = match fs_metadata::path_status(&body_path) {
+                Ok(status) => status.is_present(),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                Err(error) => {
+                    return Err(DraftManifestUpdateError {
+                        authority: DraftManifestAuthority::default(),
+                        detail: format!(
+                            "could not inspect existing draft {} before registering it: {error}",
+                            entry.draft_id
+                        ),
+                    });
+                }
+            };
+            if exists
+                && let Err(error) =
+                    set_aside::move_in(data_dir, &entry.draft_id, editor_io::now_epoch_secs())
+            {
+                return Err(DraftManifestUpdateError {
+                    authority: DraftManifestAuthority::default(),
+                    detail: format!(
+                        "could not set aside pre-existing unattributable draft {} before registration: {error}",
+                        entry.draft_id
+                    ),
+                });
+            }
+        }
+    }
     // The persisted manifest plus exactly this command's inserts, kept for the
     // additive fallback: it forgets nothing the persisted manifest recorded.
     let additive_candidate = (kind == ManifestCommandKind::InsertOnly).then(|| manifest.clone());
@@ -780,13 +824,17 @@ where
                     ),
                 }));
             }
-            Err(error) => DraftManifestUpdateError {
-                authority: journal_core::commit_authority(
-                    DraftManifestCompleteness::Complete,
-                    false,
-                ),
-                detail: format!("failed to persist completely reconciled draft manifest: {error}"),
-            },
+            Err(error) => {
+                return Err(DraftManifestUpdateError {
+                    authority: journal_core::commit_authority(
+                        DraftManifestCompleteness::Complete,
+                        false,
+                    ),
+                    detail: format!(
+                        "failed to persist completely reconciled draft manifest: {error}"
+                    ),
+                });
+            }
         }
     } else {
         DraftManifestUpdateError {
@@ -1638,6 +1686,7 @@ fn recoverable_draft_inventory_with_candidate(
     // read as stale and delete; keep a set-aside copy before it can.
     for (draft_id, saved_at) in attributed_copies {
         if let Err(error) = set_aside::keep_copy(data_dir, &draft_id, saved_at) {
+            ambiguous_bodies = ambiguous_bodies.saturating_add(1);
             tracing::warn!(
                 "Could not keep a set-aside copy of attributed draft {draft_id}: {error}"
             );
@@ -3633,6 +3682,89 @@ mod tests {
     }
 
     #[test]
+    fn registration_does_not_skip_preservation_when_initial_manifest_read_fails() {
+        let dir = TempDir::new().expect("registration unreadable manifest tempdir");
+        let path = dir.path().join("notes.md");
+        fixture::write_text(&path, "disk");
+        fixture::set_modified(
+            &path,
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(10),
+        );
+        let draft_id = draft_id_for_path(&path);
+        super::fixture::write_body(dir.path(), &draft_id, "older stale edits").expect("write body");
+        save_manifest(
+            dir.path(),
+            &DraftManifest {
+                drafts: vec![file_entry(&draft_id, &path, Some(1))],
+                cleanup_continuation: None,
+            },
+        )
+        .expect("seed stale entry");
+        let fresh = DraftEntry {
+            original_mtime_secs: crate::editor_io::mtime_secs(&path),
+            saved_at_secs: 9,
+            ..file_entry(&draft_id, &path, None)
+        };
+
+        let plan = crate::filesystem::backend_tap::TapPlan::record().inject(
+            crate::filesystem::backend_tap::Address::ScopeWide { call: 0 },
+            crate::filesystem::backend_tap::Injected::FAIL,
+        );
+        let guard = crate::filesystem::backend_tap::install(plan);
+        let result = register_draft_entries(
+            dir.path(),
+            &SessionData::default(),
+            DraftManifestAuthority::TRUSTED,
+            std::slice::from_ref(&fresh),
+        );
+        let _trace = guard.finish();
+
+        assert!(
+            result.is_err(),
+            "registration must fail rather than skip set-aside preservation when the manifest read fails"
+        );
+        assert!(
+            !fixture::exists(&set_aside_dir(dir.path()))
+                || fixture::entry_names(&set_aside_dir(dir.path())).is_empty()
+        );
+    }
+
+    #[test]
+    fn registration_does_not_retry_as_additive_when_complete_manifest_save_fails() {
+        let dir = TempDir::new().expect("registration sync fail tempdir");
+        let path = dir.path().join("notes.md");
+        fixture::write_text(&path, "disk");
+        let entry = DraftEntry {
+            draft_id: draft_id_for_path(&path),
+            original_path: Some(path.clone()),
+            original_mtime_secs: crate::editor_io::mtime_secs(&path),
+            saved_at_secs: 5,
+        };
+
+        let plan = crate::filesystem::backend_tap::TapPlan::record().inject(
+            crate::filesystem::backend_tap::Address::Destination {
+                kind: crate::filesystem::backend_tap::ProtocolKind::Write,
+                destination: manifest_path(dir.path()),
+                action: "SyncDir",
+                call: 0,
+            },
+            crate::filesystem::backend_tap::Injected::FAIL,
+        );
+        let guard = crate::filesystem::backend_tap::install(plan);
+        let result = register_draft_entries(
+            dir.path(),
+            &SessionData::default(),
+            DraftManifestAuthority::TRUSTED,
+            std::slice::from_ref(&entry),
+        );
+        let _trace = guard.finish();
+
+        let err = result
+            .expect_err("failed SyncDir on complete commit must return Err, not retry as Additive");
+        assert!(!err.authority().is_trusted());
+    }
+
+    #[test]
     fn set_aside_copy_of_a_changed_body_under_the_same_stamp_keeps_both() {
         let dir = TempDir::new().expect("set-aside changed body tempdir");
         super::fixture::write_body(dir.path(), "abcdef0123456789", "first").expect("body");
@@ -3724,9 +3856,7 @@ mod tests {
         super::fixture::write_body(dir.path(), &draft_id, "stale edits").expect("write body");
         // Create the area first, so its own creation takes no injected sync.
         fixture::create_dir_all(&set_aside_dir(dir.path()));
-        crate::filesystem::write::fail_next_parent_sync_for_test(
-            std::io::ErrorKind::Other,
-        );
+        crate::filesystem::write::fail_next_parent_sync_for_test(std::io::ErrorKind::Other);
 
         let outcome = preserve_stale_draft_body(dir.path(), &file_entry(&draft_id, &path, Some(1)));
 
@@ -5086,5 +5216,75 @@ mod tests {
             .expect("expected operation to succeed");
         let result = read_draft(dir.path(), "abc").expect("expected operation to succeed");
         assert_eq!(result, Some("second".to_string()));
+    }
+
+    #[test]
+    fn registration_sets_aside_existing_unattributable_file_backed_body_before_writing() {
+        let dir = TempDir::new().expect("tempdir");
+        let file_path = dir.path().join("notes.txt");
+        fixture::write_text(&file_path, "on disk\n");
+        let draft_id = draft_id_for_path(&file_path);
+        save_manifest(dir.path(), &DraftManifest::default()).expect("seed empty manifest");
+        super::fixture::write_body(dir.path(), &draft_id, "unattributable work")
+            .expect("seed unattributable body");
+
+        let registration = register_draft_entries(
+            dir.path(),
+            &SessionData::default(),
+            DraftManifestAuthority::default(),
+            &[file_entry(&draft_id, &file_path, Some(10))],
+        )
+        .expect("register draft entry");
+        let registered = match registration {
+            DraftRegistration::Committed { registered, .. }
+            | DraftRegistration::Additive { registered, .. } => registered,
+        };
+        assert_eq!(registered.len(), 1);
+        write_draft(dir.path(), &registered[0], "newer replacement").expect("write new body");
+
+        let preserved = set_aside::list(dir.path()).expect("list set-aside");
+        assert!(
+            preserved.rows.iter().any(|row| {
+                set_aside::read(dir.path(), &row.path).ok().as_deref()
+                    == Some("unattributable work")
+            }),
+            "pre-existing unattributable body must be set aside before new body write overwrites it"
+        );
+    }
+
+    #[test]
+    fn update_manifest_is_not_complete_when_attributed_body_set_aside_copy_fails() {
+        use crate::filesystem::backend_tap::{self, Address, Injected, ProtocolKind, TapPlan};
+
+        let dir = TempDir::new().expect("tempdir");
+        let file_path = dir.path().join("notes.txt");
+        fixture::write_text(&file_path, "on disk\n");
+        let draft_id = draft_id_for_path(&file_path);
+        save_manifest(dir.path(), &DraftManifest::default()).expect("seed empty manifest");
+        super::fixture::write_body(dir.path(), &draft_id, "session attributed work")
+            .expect("seed unregistered body");
+        let session = SessionData {
+            tabs: vec![session_tab(&file_path)],
+            active_tab_index: Some(0),
+        };
+
+        let guard = backend_tap::install(TapPlan::record().inject(
+            Address::Protocol {
+                kind: ProtocolKind::Write,
+                run: 0,
+                ordinal: 0,
+                call: 0,
+            },
+            Injected::FAIL,
+        ));
+        let err = update_manifest(
+            dir.path(),
+            &session,
+            DraftManifestAuthority::TRUSTED,
+            |_| {},
+        )
+        .expect_err("failed keep_copy for an attributed draft must keep manifest untrusted");
+        let _trace = guard.finish();
+        assert!(!err.authority().is_trusted());
     }
 }

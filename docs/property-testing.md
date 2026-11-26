@@ -24,7 +24,22 @@ The property-test target currently covers:
   the same case makes. Each case runs the real primitive under the conformance
   tap and replays it through the proven core and its shared Kani disk model;
   the exhaustive single-fault and crash enumeration of the same driver runs in
-  the unit tests (`services::conformance::write_shell`)
+  the unit tests (`services::conformance::write_shell`). Budget: <= 10 s (0.06 s
+  measured).
+- Shell conformance of the draft journal
+  (`shell_conformance_drafts.rs`, `verify-shell-conformance-against-proven-cores`):
+  generated enabled-indexed scripts (up to 16 ops in default 64-case runs, up to
+  32 ops in `PROPTEST_DEEP_CASES=512` runs) over `INITIAL_LAYOUT_BITS = 8`
+  previous-session layouts with `BeforeEffect`, `AfterEffect`, `At(k)` faults,
+  and crashes (`FaultDomain::Full`), driving real `draft_service` lockstep
+  against `Journal<SingleWindowScope, 3, 1, 1>` (`max_shrink_iters = 256`,
+  `max_shrink_time = 45_000` ms). Budgets: <= 30 s for `drafts` (0.10 s
+  measured) and <= 2 s for `draft_conformance_strategy_reaches_every_journal_stage`
+  (0.00 s measured; 64 fixed-seed model scripts asserting floors
+  `startup >= 64`, `write_body >= 12`, `commit >= 6`, `deletion_step >= 50`,
+  `restore_apply >= 35`, `exec_cleanup >= 10`). Two-mutant calibration caught
+  `preserve_stale_draft_body` skipping `set_aside::keep_copy` at case 2 (0.151 s)
+  and `remove_manifest_entry` leaving the entry on disk at case 14 (0.241 s).
 
 Keep GTK widget construction, compositor behavior, D-Bus or portal state,
 filesystem watcher timing, file chooser flows, and live sessions out of this

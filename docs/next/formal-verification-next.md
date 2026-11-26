@@ -50,7 +50,7 @@ change adopts it.
 | 6 | `bound-draft-set-aside-retention` | Fix first: the E1 set-aside naming defect (a body counts as kept only under a byte-identical copy; Kani K9). Then N10 set-aside retention: no automatic deletion, a soft bound that asks for review, and the 256-entry listing bug fixed | — |
 | 7 | `add-sidebar-visual-proof-scenario` (**implemented 2026-10-10**) | N10 sidebar proof: the `reveal-workspace-path` action and the rendered-row pixel check. **Done**: `win.reveal-workspace-path`, the `workspace-path-revealed` readiness predicate, `ViewportSliceBin::outer_request_pending()`, and the `workspace-tree-reveal` scenario type with the `workspace-tree-rendered-row-anchors` invariant (programme record, §4) | — |
 | 8 | `apply-verification-altitude-redesigns` (**merged 2026-11-18, PR #117, `main` `8d4f5d7b`; archived 2026-11-18** as `openspec/changes/archive/2026-11-18-apply-verification-altitude-redesigns/`) | N8, as six groups that can be applied one at a time. **Done**: all six groups applied (the `Protocol` driver, one app-data layout owner, the unrestored-copy backoff, `WriteLabel` down to the temp name, the writable draft-candidate type, explicit smoke-binary roles); status per group under N8 | 1, 6 |
-| 9 | `verify-shell-conformance-against-proven-cores` (**in progress 2026-11-18**) | N11: the imperative shells checked against the Kani-proven cores used as oracles. **Done so far**: the shared environment models, the conformance tap, the write-shell enumeration and property, the Replace survivor tests, and one shell fix (an unconfirmed set-aside copy counted as kept). **Still owed by the change**: the draft-service lockstep driver and the journal fault widening (`AfterEffect`, `At(k)`); the GTK drafts coordination is deferred, not covered (programme record, Phase 6) | 1, 3 |
+| 9 | `verify-shell-conformance-against-proven-cores` (**implemented 2026-11-26, awaiting `kani.yml` dispatch**) | N11: the imperative shells checked against the Kani-proven cores used as oracles. **Done**: shared environment models, conformance tap, write-shell enumeration and property, Replace survivor tests, draft-service lockstep driver (`FaultDomain::Full`), widened `Fault` model + Kani exhibit, final Kani and `make proof-strength` runs (`write_protocol` 28/28, `journal_core` 33/33), and 8 shell/UI/reconciliation findings fixed failing-first; the GTK drafts coordination is deferred, not covered (programme record, Phase 6) | 1, 3 |
 | — | `evaluate-verus-for-unbounded-proofs` (**implemented 2026-11-15**; merged as `11769e02` (PR #107) and archived 2026-11-15) | The Verus deductive verifier on claims Kani holds only for bounded scopes, after the two Kani-first attempts. Evaluation only. **Done**: [`formal-verification-verus.md`](./formal-verification-verus.md) recommended keeping Kani alone, which the maintainer accepted on 2026-11-15, closing the evaluation without V2 and without a Kani follow-up; V1 reproduced its known answers, the Kani inductive step was not proved within budget, and V2 was not completed | — |
 | — | `evaluate-quint-and-tlaplus-empirically` (**implemented 2026-09-24**) | An empirical Quint vs TLA+ comparison, with open exploration. Evaluation only. **Done**: [`formal-verification-quint-vs-tlaplus.md`](./formal-verification-quint-vs-tlaplus.md) decided Kani only for maintained properties, TLA+ with TLC for the disposable N6 sketch, and no Quint; its E1 run found a set-aside defect, fixed first in change 6 | — |
 
@@ -261,16 +261,20 @@ existing mutation lane to the new one.
 - Freshness precision for drafts (a nanosecond or file-identity token) needs
   a manifest format bump, so wait for one.
 
-### N11. Check the shells against the proven cores
+### N11. Check the shells against the proven cores (**done 2026-11-26** by `verify-shell-conformance-against-proven-cores`)
 
 Kani proves the pure cores: `journal_core`, `WriteProtocol`, `MoveProtocol`,
 `RenameProtocol`, and the slice-bin decisions. It does not prove the
 imperative shells that drive them:
 
 - the GTK drafts coordination (`ui/window/drafts/journal.rs`,
-  `cleanup_journal.rs`);
-- the durable-write shell loop running against the real filesystem;
-- the seam between the two.
+  `cleanup_journal.rs`) — **deferred, not covered by the service driver**
+  (covered by single-scenario widget/policy tests and the two S1/S3/S4 guards
+  landed in Phase 6);
+- the durable-write shell loop running against the real filesystem (**done**,
+  322-case enumeration + generated `shell_conformance_write` property);
+- the draft-service shell over a tempdir (**done**, `conformance/draft_service.rs`
+  + `shell_conformance_drafts`, `FaultDomain::Full`, 512 × 32-op deep check).
 
 A model-based test closes the chain. Random operation sequences, including
 "crash means stop and reload", drive the real `draft_service` and write
@@ -366,7 +370,7 @@ oscillate" within stated per-bin bounds. Lean therefore stays dormant.
 N1 ✓ measured, geometry shard PR-gated ─► N2 ✓ more pure policies ─► N3 breakpoint loop
 N5 ✓ token airtight ─► N4 ✓ multi-window + ✓ two-bin requests
 N9 mutation × proofs (done 2026-10-10)
-N11 after N4 (multi-window; N5 is done); N6, N7 only on their triggers; N8, N10 opportunistic
+N11 ✓ shell conformance against proven cores (done 2026-11-26; GTK drafts coordination deferred); N6, N7 only on their triggers; N8 ✓, N10 ✓
 ```
 
 N1 and N5 landed together in `harden-kani-lane-and-draft-token`, and N2

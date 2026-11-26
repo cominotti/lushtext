@@ -323,12 +323,18 @@ to:
   the steps that reached each of `WriteBody`, `Commit`, `DeletionStep`,
   `RestoreApply`, `ExecCleanup` and `Startup`, and asserts a recorded floor
   for each. A generator change that drops reach then fails a test instead of
-  passing vacuously.
+  passing vacuously. **Measured (64 cases, fixed ChaCha seed, `FaultDomain::Full`)**:
+  `total_steps = 676`, `startup = 103`, `write_body = 17`, `commit = 10`,
+  `deletion_step = 94`, `restore_apply = 63`, `exec_cleanup = 21`, `crash = 38`.
+  **Recorded floors**: `startup >= 64`, `write_body >= 12`, `commit >= 6`,
+  `deletion_step >= 50`, `restore_apply >= 35`, `exec_cleanup >= 10`.
 - **Mutant calibration.** Two scratch, never-merged mutants of the service
   are each caught within the default case count, and the counts are recorded:
-  - `preserve_stale_draft_body` skipping its set-aside copy;
+  - `preserve_stale_draft_body` skipping its set-aside copy: caught at **case 2**
+    (`successes: 1`, `0.151 s` including 256 shrink iterations);
   - `remove_manifest_entry` returning `Ok` while leaving the entry on disk,
-    an effect mutant. The deletion order is the driver's, taken from
+    an effect mutant: caught at **case 14** (`successes: 13`, `0.241 s` including
+    256 shrink iterations). The deletion order is the driver's, taken from
     `journal_core`, so an order mutant would not be a service mutant.
 
 **Shrink budget.** The conformance properties start from

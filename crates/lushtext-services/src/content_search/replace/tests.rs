@@ -2917,9 +2917,7 @@ fn a_body_that_cannot_be_installed_skips_its_file_without_cancelling_the_run() {
 // --- survivors only a before-action hook reaches (D8) ---------------------
 
 /// The tap's before-action hook at this file's `WriteBody`.
-fn before_write_body(
-    hook: impl FnOnce() + 'static,
-) -> crate::filesystem::backend_tap::TapGuard {
+fn before_write_body(hook: impl FnOnce() + 'static) -> crate::filesystem::backend_tap::TapGuard {
     use crate::filesystem::backend_tap::{self as tap, ActionAt, ProtocolKind, TapPlan};
     tap::install(TapPlan::record().before_action(
         ActionAt::Named {

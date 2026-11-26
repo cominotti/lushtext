@@ -55,6 +55,8 @@ mod search_replacement;
 mod session_draft_roundtrip;
 #[path = "properties/settings_write_batch.rs"]
 mod settings_write_batch;
+#[path = "properties/shell_conformance_drafts.rs"]
+mod shell_conformance_drafts;
 #[path = "properties/shell_conformance_write.rs"]
 mod shell_conformance_write;
 #[path = "properties/sidecar_reconciliation.rs"]

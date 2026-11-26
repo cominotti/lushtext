@@ -378,6 +378,7 @@ SHARDS: dict[str, Shard] = {
         "lushtext-services",
         (
             "draft_service::kani_proofs::journal_invariants_hold_under_crashes",
+            "draft_service::kani_proofs::an_unconfirmed_set_aside_copy_loses_accepted_work",
             "draft_service::kani_proofs::journal_set_aside_",
             "draft_service::kani_proofs::journal_decisions_",
             "draft_service::set_aside_retention::kani_proofs::",
@@ -848,12 +849,12 @@ ORACLES: dict[str, Oracle] = {
         _SERVICES,
         (
             _h(_JOURNAL + "journal_decisions_follow_their_documented_rules", 0.35, "ci"),
-            _h(_JOURNAL + "journal_set_aside_keeps_every_body_it_reports_kept", 4.13, "local"),
-            _h(_JOURNAL + "journal_set_aside_stamp_only_naming_loses_a_newer_body", 4.01, "local"),
-            _h(_JOURNAL + "a_dirty_editor_becomes_clean_without_faults", 292.41, "local"),
-            _h(_JOURNAL + "a_dirty_editor_may_need_seven_steps", 262.12, "local"),
-            _h(_JOURNAL + "journal_invariants_hold_across_two_windows", 260.12, "local"),
-            _h(_JOURNAL + "journal_invariants_hold_under_crashes", 309.72, "local"),
+            _h(_JOURNAL + "journal_set_aside_keeps_every_body_it_reports_kept", 2.77, "local"),
+            _h(_JOURNAL + "journal_set_aside_stamp_only_naming_loses_a_newer_body", 2.73, "local"),
+            _h(_JOURNAL + "a_dirty_editor_becomes_clean_without_faults", 486.39, "local"),
+            _h(_JOURNAL + "a_dirty_editor_may_need_seven_steps", 423.44, "local"),
+            _h(_JOURNAL + "journal_invariants_hold_across_two_windows", 350.71, "local"),
+            _h(_JOURNAL + "journal_invariants_hold_under_crashes", 589.41, "local"),
         ),
     ),
     "crates/lushtext-services/src/draft_service/set_aside_retention.rs": Oracle(
@@ -1156,6 +1157,10 @@ NOT_ORACLE_HARNESSES: dict[str, str] = {
     _JOURNAL + "a_second_writer_breaks_the_journal_invariants": (
         "pins axiom A6 (one writer per data directory), not a property of journal_core; "
         "journal_invariants_hold_under_crashes says more, and it costs minutes per mutant"
+    ),
+    _JOURNAL + "an_unconfirmed_set_aside_copy_loses_accepted_work": (
+        "pins the retired pre-D6 rule that counted an AfterRename set-aside copy "
+        "as preserved; tests BrokenSetAsideCopyScope, not a property of the fixed core"
     ),
     _SHELL_LOOP + "shell_loop_layout_setter_flaps": (
         "pins the retired pre-fix properties setter, a model inside the harness file, "
