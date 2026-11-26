@@ -2914,26 +2914,41 @@ widening to `None | BeforeEffect | AfterEffect`), Kani re-runs, and final
   hook at `ReplaceFile`/`WriteBody`
   (`a_same_size_change_before_the_body_write_is_caught_by_pass_a`,
   `a_cancel_before_a_body_write_that_fails_early_cancels_the_run`).
-- **Kani on final code (`heavy.sh --envelope 16G`, task 9.1).** All four touched
-  shards verified with 0 failures and all `kani::cover!` satisfied (except
-  `skipping_the_temp_sync_tears_the_destination`'s expected `0 of 1`); `ORACLES`
-  local seconds in `scripts/kani-shards.py` updated, `SHELL_CONFORMANCE_PENDING`
-  stays until post-push `kani.yml` dispatch:
-  - `core-journal-and-write`: `15/15` verified (`real 10m25s`, peak `7272 MiB`);
-    `journal_invariants_hold_under_crashes` rose from `309.72 s` to
-    **`589.41 s`** (+90.3%, due to widened `Fault`, unconfirmed bits, `Crash`
-    keep/revert flags, and `reconcile_unregistered_bodies`), new `should_panic`
-    exhibit `an_unconfirmed_set_aside_copy_loses_accepted_work` `5.46 s`.
-  - `core-journal-liveness`: `2/2` verified (`real 15m14s`, peak `8934 MiB`);
-    `LIVENESS_STEPS = 7` still holds under widened `Fault`:
-    `a_dirty_editor_may_need_seven_steps` `423.44 s` (+61.5% over `262.12 s`),
-    `a_dirty_editor_becomes_clean_without_faults` `486.39 s` (+66.3% over
-    `292.41 s`).
-  - `core-second-writer`: `1` service + `6` model harnesses verified (`real 3m39s`,
-    peak `4823 MiB`); `a_second_writer_breaks_the_journal_invariants` `198.52 s`.
-  - `core-multi-window`: `1/1` verified (`real 5m54s`, peak `6835 MiB`);
+- **Kani on final code (`heavy.sh --envelope 16G`, task 9.1) and two `kani.yml`
+  CI dispatches (task 9.4).** All harnesses verified with 0 failures and all
+  `kani::cover!` satisfied (except
+  `skipping_the_temp_sync_tears_the_destination`'s expected `0 of 1`). In the
+  initial dispatch on `af0368da` (`45863627881`), 33/34 shards passed while the
+  combined two-harness `core-journal-liveness` job hit the 30-minute cap
+  (`30m05s`), so commit `43f228fc` split `core-journal-liveness` into two
+  1-harness scheduled shards (`core-journal-liveness` and
+  `core-journal-liveness-bound`, keeping `LIVENESS_STEPS = 7`). Two sequential
+  `kani.yml` dispatches on `43f228fc` (`45870574779` and `45876967219`) both
+  passed `36/36` jobs, and `scripts/kani-shards.py` records the max of the two
+  (`SHELL_CONFORMANCE_MEASURED_IN`, zero `PENDING DISPATCH` remaining):
+  - `core-journal-and-write` (`15/15`): local `10m25s` (`7272 MiB`); CI runs
+    `17.63m / 4.51 GiB` (`45870574779`) and `21.85m / 4.51 GiB` (`45876967219`)
+    -> recorded **`21.9m / 4.6 GiB`**. `journal_invariants_hold_under_crashes`
+    rose locally from `309.72 s` to **`589.41 s`** (CI max `1151.47 s`, due to
+    widened `Fault`, unconfirmed bits, `Crash` keep/revert flags, and
+    `reconcile_unregistered_bodies`), new `should_panic` exhibit
+    `an_unconfirmed_set_aside_copy_loses_accepted_work` `5.46 s` (CI `12.54 s`).
+  - `core-journal-liveness` (`1/1`: `a_dirty_editor_becomes_clean_without_faults`,
+    `LIVENESS_STEPS = 7`): local `486.39 s` (+66.3% over `292.41 s`); CI runs
+    `14.49m / 7.37 GiB` and `15.78m / 7.37 GiB` -> recorded **`15.8m / 7.4 GiB`**
+    (CI max `858.79 s`).
+  - `core-journal-liveness-bound` (`1/1`: `a_dirty_editor_may_need_seven_steps`,
+    `LIVENESS_STEPS = 7`): local `423.44 s` (+61.5% over `262.12 s`); CI runs
+    `11.28m / 6.72 GiB` and `12.91m / 6.73 GiB` -> recorded **`13.0m / 6.8 GiB`**
+    (CI max `705.72 s`). Combined pair pre-split ran `15m14s` (`8934 MiB`) locally.
+  - `core-second-writer` (`1` service + `6` model harnesses): local `3m39s`
+    (`4823 MiB`); `a_second_writer_breaks_the_journal_invariants` `198.52 s` (CI
+    max `352.42 s`); CI runs `7.19m / 4.18 GiB` and `7.51m / 4.18 GiB` ->
+    recorded **`7.6m / 4.2 GiB`**.
+  - `core-multi-window` (`1/1`): local `5m54s` (`6835 MiB`);
     `journal_invariants_hold_across_two_windows` `350.71 s` (+34.8% over
-    `260.12 s`).
+    `260.12 s`, CI max `674.52 s`); CI runs `12.74m / 3.90 GiB` and
+    `11.89m / 3.90 GiB` -> recorded **`12.8m / 3.9 GiB`**.
 
 ## 4. Deferral inventory
 

@@ -134,7 +134,7 @@
   - `PROOF_STRENGTH_MODULE=crates/lushtext-core/src/services/draft_service/journal_core.rs`, with the Kani arm sharded (`PROOF_STRENGTH_SHARD=k/n`).
 
   Compare each kill count with the programme record's last figure. A count below it means a weakened model, a finding under task 3.4. Triage each survivor in the programme record
-- [ ] 9.4 At the end of implementation, after the final push, dispatch `kani.yml` twice on the branch and record both run ids in the handoff. Do not watch them. The archive records the larger figure of the two runs in each of the four shard records, because the archive commit's hook fails on a pending record
+- [x] 9.4 At the end of implementation, after the final push, dispatch `kani.yml` twice on the branch and record both run ids in the handoff. Do not watch them. The archive records the larger figure of the two runs in each of the four shard records, because the archive commit's hook fails on a pending record (Run #1 on `af0368da`, `45863627881`, passed 33/34 shards with `core-journal-liveness` timing out at `30m05s`, so commit `43f228fc` split it into `core-journal-liveness` + `core-journal-liveness-bound`; two sequential dispatches on `43f228fc` — runs `45870574779` and `45876967219` — both passed `36/36`, and the larger CI figures are recorded in `scripts/kani-shards.py` `SHELL_CONFORMANCE_MEASURED_IN`, `docs/next/formal-verification.md`, and `.claude/handoffs/verify-shell-conformance-against-proven-cores/stage3-implementation.md`, clearing all `PENDING DISPATCH` entries.)
 
 ## 10. Final verification
 
