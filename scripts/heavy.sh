@@ -66,7 +66,9 @@
 # a daemon it leaves behind (dbus-daemon, mutter, an sccache server) cannot
 # keep LOCK held after it exits and freeze a pending measurement. SIGINT,
 # SIGTERM and SIGHUP sent to this script are forwarded to the command, and its
-# exit status is returned.
+# exit status is returned. They are trapped from the moment LOCK is held, so a
+# signal during the setup that follows never leaves LOCK to a subshell; one
+# that arrives before it ends the script at once, holding nothing.
 #
 # A heavy.sh started by the command (directly or inside a measurement) runs in
 # place instead of taking the locks again, which would deadlock behind a
@@ -612,6 +614,19 @@ self_test() {
     status=0; wait "$pid" || status=$?
     [ "$status" -eq 143 ] || fail "SIGTERM gave status $status, expected 143" || return
     flock -n -x "$lock" true || fail "LOCK outlived a signalled command" || return
+    # The same signal at points spread over the setup (memory admission,
+    # INTENT, LOCK, the parallelism reads that hold LOCK): LOCK is free once
+    # the script has exited. Untrapped during those reads, a kill left LOCK
+    # held by an orphaned command substitution in 72 of 200 random kills.
+    local offset
+    for offset in 0.00 0.01 0.02 0.03 0.04 0.05 0.06 0.08 0.10 0.13 0.16 0.20; do
+        "$me" --mem none -- sleep 30 2>/dev/null &
+        pid=$!
+        sleep "$offset"
+        kill -TERM "$pid"
+        wait "$pid" 2>/dev/null || true
+        flock -n -x "$lock" true || fail "LOCK outlived a command signalled ${offset}s into the setup" || return
+    done
 
     # A pending measurement (INTENT held exclusively) blocks new starts.
     exec 8>>"$intent"
@@ -842,9 +857,15 @@ while :; do
     exec 6>&-
     exec 7>>"$AGENT_LOCK_MEASURE"
     flock -s 7
+    # Trap the signals as soon as LOCK is held, before the command
+    # substitutions below: their subshells inherit fd 7, and a signal that
+    # killed this script while one ran would leave LOCK held by the orphaned
+    # subshell (the self-test's "LOCK outlived a signalled command" under
+    # load). Trapped, a signal is recorded, the substitutions finish, and
+    # agent_run_child starts no command.
+    agent_trap_signals
     # shellcheck disable=SC2046 # two words on purpose
     heavy_export_parallelism $(heavy_parallelism "$(cpu_list_expand "$(cpu_own_affinity)" | wc -l)" "$(heavy_lock_shared_holders)" "$cap")
-    agent_trap_signals
     LUSHTEXT_AGENT_LOCK_HELD=$(agent_lock_marker shared)
     export LUSHTEXT_AGENT_LOCK_HELD
     : >"$report"
