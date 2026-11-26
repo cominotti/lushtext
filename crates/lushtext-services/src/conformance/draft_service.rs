@@ -24,7 +24,8 @@ use crate::draft_service::journal_model::{
     SingleWindowScope, bit,
 };
 use crate::draft_service::{
-    self, DraftOrphanCleanupPlan, DraftRegistration, RegisteredDraft, drafts_dir, set_aside,
+    self, DraftOrphanCleanupFailure, DraftOrphanCleanupManifestError, DraftOrphanCleanupPlan,
+    DraftRegistration, RegisteredDraft, drafts_dir, set_aside,
 };
 use crate::filesystem::backend_tap::{
     self as tap, Address, Call, Injected, ProtocolKind, TapPlan, TapTrace,
@@ -908,6 +909,114 @@ fn classify_trace_fault(trace: &TapTrace, expected_sync_dir: Option<&Path>) -> T
     TraceFaultKind::None
 }
 
+/// Execute one `Action::ExecCleanup` step against both the real `draft_service`
+/// and the proven journal model, projecting partial `DraftFault::At(k)` outcomes
+/// faithfully when one phase (orphan unlink vs. missing-entry manifest commit)
+/// fails while the other succeeds.
+fn run_exec_cleanup_step(
+    env: &mut DriverEnv,
+    model: &mut Journal<SingleWindowScope, DRAFT_IDS, 1, 1>,
+    choices: &mut impl Choices,
+    id: usize,
+    fault: DraftFault,
+    domain: FaultDomain,
+    step_idx: usize,
+) -> Result<(), String> {
+    let mut stepped = false;
+    let mut model_fault = Fault::None;
+    if model.lane_holder()
+        == Some(LaneHolder {
+            window: model.me().id,
+            lane_use: LaneUse::Cleanup,
+        })
+        && let Some(plan) = env.cleanup_plan.take()
+    {
+        let (tap_plan, injected) = tap_plan_for(
+            fault,
+            domain,
+            AfterTarget::Destination(manifest_file_path(&env.data_dir)),
+        );
+        let guard = tap::install(tap_plan);
+        let outcome = draft_service::execute_orphan_cleanup(&env.data_dir, plan);
+        let trace = guard.finish();
+        let drafts_parent = drafts_dir(&env.data_dir);
+        let fired = classify_trace_fault(&trace, Some(&drafts_parent));
+        if !outcome.failures.is_empty() && (!injected || fired == TraceFaultKind::None) {
+            return Err(format!(
+                "step {step_idx} ExecCleanup unexpected failures: {:?}",
+                outcome.failures
+            ));
+        }
+        let load_failed = outcome.failures.iter().any(|failure| {
+            matches!(
+                failure,
+                DraftOrphanCleanupFailure::Manifest(DraftOrphanCleanupManifestError::Load { .. })
+            )
+        });
+        if load_failed {
+            model_fault = Fault::BeforeEffect;
+        } else if outcome.failures.is_empty() && fired == TraceFaultKind::None {
+            model_fault = Fault::None;
+        } else {
+            // `execute_orphan_cleanup` unlinks orphan bodies first and commits
+            // missing-body manifest removals second. Under `DraftFault::At(k)`,
+            // either phase can fail while the other commits; project each
+            // observed phase onto the model using its existing primitives.
+            for slot in 0..DRAFT_IDS {
+                if model.me().orphan_candidate[slot].is_some() {
+                    let body_path =
+                        drafts_dir(&env.data_dir).join(format!("{}.draft", env.draft_ids[slot]));
+                    let unlinked = outcome.deleted_files.iter().any(|p| p == &body_path)
+                        || outcome.already_absent_files.iter().any(|p| p == &body_path);
+                    model.exec_cleanup_one(
+                        slot,
+                        if unlinked {
+                            Fault::None
+                        } else {
+                            Fault::BeforeEffect
+                        },
+                    );
+                }
+            }
+            let manifest_write_failed = outcome.failures.iter().any(|failure| {
+                matches!(
+                    failure,
+                    DraftOrphanCleanupFailure::Manifest(
+                        DraftOrphanCleanupManifestError::Write { .. }
+                    )
+                )
+            });
+            if manifest_write_failed {
+                env.authority = DraftManifestAuthority::default();
+                if fired == TraceFaultKind::AfterEffect {
+                    model.step(choices, 0, 0, Action::ExecCleanup, id, Fault::AfterEffect);
+                } else {
+                    model.me_mut().missing_candidate = [None; DRAFT_IDS];
+                    model.step(choices, 0, 0, Action::ExecCleanup, id, Fault::None);
+                }
+                model.revoke_trust();
+            } else {
+                for slot in 0..DRAFT_IDS {
+                    if model.me().missing_candidate[slot].is_some()
+                        && !outcome
+                            .committed_manifest_removals
+                            .iter()
+                            .any(|fp| fp.draft_id == env.draft_ids[slot])
+                    {
+                        model.me_mut().missing_candidate[slot] = None;
+                    }
+                }
+                model.step(choices, 0, 0, Action::ExecCleanup, id, Fault::None);
+            }
+            stepped = true;
+        }
+    }
+    if !stepped {
+        model.step(choices, 0, 0, Action::ExecCleanup, id, model_fault);
+    }
+    Ok(())
+}
+
 /// Run a script against both the real `draft_service` and the proven journal model.
 ///
 /// # Panics
@@ -1478,40 +1587,15 @@ pub fn check_draft_script(
                 model.step(&mut choices, 0, 0, Action::Inspect, id, Fault::None);
             }
             Action::ExecCleanup => {
-                if model.lane_holder()
-                    == Some(LaneHolder {
-                        window: model.me().id,
-                        lane_use: LaneUse::Cleanup,
-                    })
-                    && let Some(plan) = env.cleanup_plan.take()
-                {
-                    let (tap_plan, injected) = tap_plan_for(
-                        op.fault,
-                        domain,
-                        AfterTarget::Destination(manifest_file_path(&env.data_dir)),
-                    );
-                    let guard = tap::install(tap_plan);
-                    let outcome = draft_service::execute_orphan_cleanup(&env.data_dir, plan);
-                    let trace = guard.finish();
-                    let drafts_parent = drafts_dir(&env.data_dir);
-                    let fired = classify_trace_fault(&trace, Some(&drafts_parent));
-                    if !outcome.failures.is_empty() && (!injected || fired == TraceFaultKind::None)
-                    {
-                        return Err(format!(
-                            "step {step_idx} ExecCleanup unexpected failures: {:?}",
-                            outcome.failures
-                        ));
-                    }
-                    model_fault = if outcome.failures.is_empty() {
-                        Fault::None
-                    } else if fired == TraceFaultKind::AfterEffect {
-                        env.authority = DraftManifestAuthority::default();
-                        Fault::AfterEffect
-                    } else {
-                        Fault::BeforeEffect
-                    };
-                }
-                model.step(&mut choices, 0, 0, Action::ExecCleanup, id, model_fault);
+                run_exec_cleanup_step(
+                    &mut env,
+                    &mut model,
+                    &mut choices,
+                    id,
+                    op.fault,
+                    domain,
+                    step_idx,
+                )?;
             }
             Action::RestoreApply => {
                 if model.me().editors[id].restore_pending {
@@ -1775,5 +1859,130 @@ mod tests {
         }
         check_draft_script(dir.path(), bits, &script, FaultDomain::Full)
             .expect("ExecCleanup AfterEffect must revoke trust before next body write");
+    }
+
+    #[test]
+    fn exec_cleanup_at_k_missing_entry_script_conforms() {
+        // Slot 1: missing-body entry (entry=true, body=false, backing=false).
+        let bits = [false, false, false, true, false, false, false, false];
+        for call in 0..=32 {
+            let dir = TempDir::new().expect("tempdir");
+            let mut choices = ScriptChoices::new(bits);
+            let mut model =
+                Journal::<SingleWindowScope, DRAFT_IDS, 1, 1>::previous_session(&mut choices);
+            let mut script = Vec::new();
+            for &(action, fault) in &[
+                (Action::Startup, DraftFault::None),
+                (Action::Inspect, DraftFault::None),
+                (Action::ExecCleanup, DraftFault::At(call)),
+            ] {
+                let mut next_op = op(action, &model, 0);
+                next_op.fault = fault;
+                script.push(next_op);
+                let model_fault = match fault {
+                    DraftFault::None | DraftFault::At(_) => Fault::None,
+                    DraftFault::BeforeEffect => Fault::BeforeEffect,
+                    DraftFault::AfterEffect => Fault::AfterEffect,
+                };
+                model.step(&mut choices, 0, 0, action, 0, model_fault);
+            }
+            check_draft_script(dir.path(), bits, &script, FaultDomain::Full)
+                .unwrap_or_else(|err| panic!("At({call}) diverged: {err}"));
+        }
+    }
+
+    #[test]
+    fn exec_cleanup_at_k_with_both_orphan_and_missing_entry_conforms() {
+        // Empty previous session except slot 1 missing-body entry (`entry=true, body=false`);
+        // after Startup, place an unaccepted untitled orphan body in slot 2 so both
+        // `orphan_candidate[2]` and `missing_candidate[1]` coexist in one Inspect -> ExecCleanup
+        // pass while keeping S1/S3/S4 invariants satisfied.
+        let bits = [false, false, false, true, false, false, false, false];
+        let mut saw_orphan_fail_only = false;
+        let mut saw_before_rename_manifest_fail = false;
+        let mut saw_after_effect_manifest_fail = false;
+
+        for call in 0..=32 {
+            let dir = TempDir::new().expect("tempdir");
+            let mut choices = ScriptChoices::new(bits);
+            let mut model =
+                Journal::<SingleWindowScope, DRAFT_IDS, 1, 1>::previous_session(&mut choices);
+            let mut env = DriverEnv::new(dir.path());
+            env.seed_previous_session(&model)
+                .expect("seed previous session");
+            env.authority = draft_service::load_restore_state_cancellable(
+                &env.data_dir,
+                &AtomicBool::new(false),
+            )
+            .manifest_authority;
+            assert!(env.authority.is_trusted());
+            model.step(&mut choices, 0, 0, Action::Startup, 0, Fault::None);
+
+            let content = 1;
+            model.body[2] = Some(content);
+            model.confirmed_body[2] = Some(content);
+            draft_service::fixture::write_body(
+                &env.data_dir,
+                &env.draft_ids[2],
+                &content_text(content),
+            )
+            .expect("seed untitled orphan body");
+            model.assert_invariants();
+
+            model.step(&mut choices, 0, 0, Action::Inspect, 0, Fault::None);
+            assert!(model.me().orphan_candidate[2].is_some());
+            assert!(model.me().missing_candidate[1].is_some());
+            env.cleanup_plan = Some(
+                draft_service::inspect_orphan_cleanup_against_persisted(&env.data_dir, 0)
+                    .expect("inspect cleanup"),
+            );
+
+            run_exec_cleanup_step(
+                &mut env,
+                &mut model,
+                &mut choices,
+                0,
+                DraftFault::At(call),
+                FaultDomain::Full,
+                2,
+            )
+            .unwrap_or_else(|err| panic!("At({call}) ExecCleanup failed: {err}"));
+            model.assert_invariants();
+            let real = env
+                .abstract_state()
+                .expect("abstract state after ExecCleanup");
+            let mut counts = ReachCounts::default();
+            compare_states(3, Action::ExecCleanup, 0, &real, &model, &mut counts)
+                .unwrap_or_else(|err| panic!("At({call}) diverged: {err}"));
+
+            let orphan_exists = fixture::exists(
+                &drafts_dir(&env.data_dir).join(format!("{}.draft", env.draft_ids[2])),
+            );
+            let missing_entry_exists = draft_service::load_manifest(&env.data_dir)
+                .expect("load manifest after At(k)")
+                .find_by_id(&env.draft_ids[1])
+                .is_some();
+            if orphan_exists && !missing_entry_exists {
+                saw_orphan_fail_only = true;
+            }
+            if !orphan_exists && missing_entry_exists {
+                saw_before_rename_manifest_fail = true;
+            }
+            if !orphan_exists && !missing_entry_exists && !model.me().trusted {
+                saw_after_effect_manifest_fail = true;
+            }
+        }
+        assert!(
+            saw_orphan_fail_only,
+            "At(k) sweep must hit orphan unlink failure while missing-entry commit succeeds"
+        );
+        assert!(
+            saw_before_rename_manifest_fail,
+            "At(k) sweep must hit BeforeRename manifest failure after orphan unlink succeeds"
+        );
+        assert!(
+            saw_after_effect_manifest_fail,
+            "At(k) sweep must hit AfterEffect manifest failure revoking trust"
+        );
     }
 }

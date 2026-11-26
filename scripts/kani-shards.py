@@ -261,14 +261,15 @@ SETTLE_EVIDENCE_MEASURED_IN = (
 # docs/next/formal-verification.md, "Replace All protocol and stream".
 REPLACE_MEASURED_IN = "runs 44330495557, 44338924357 (max of the two)"
 # verify-shell-conformance-against-proven-cores moved the journal and write
-# environment models out of the harness files (design D1). Local run on the
-# moved models, the four shards at once beside other agents' smokes
-# (2026-11-18): journal-and-write 14/14 (peak 4.4 GiB), liveness 2/2 (5.4 GiB),
-# second-writer 7/7 (4.0 GiB), multi-window 1/1 (4.2 GiB); the CI figures
-# come from the change's two kani.yml dispatches.
+# environment models out of the harness files (design D1) and widened the draft
+# journal model with `AfterEffect` + unregistered-body reconciliation. Local run
+# on the final models (2026-11-26, 16G envelopes): journal-and-write 15/15
+# (10m25s, peak 7.1 GiB), liveness 2/2 (15m14s, 8.7 GiB), second-writer 7/7
+# (3m39s, 4.7 GiB), multi-window 1/1 (5m54s, 6.7 GiB); the CI figures come from
+# the change's two kani.yml dispatches.
 SHELL_CONFORMANCE_PENDING = (
     "; PENDING DISPATCH (owed by verify-shell-conformance-against-proven-cores): "
-    "local run 2026-11-18, every harness's verdict unchanged"
+    "local run 2026-11-26, every harness verified"
 )
 STREAM_REPLACE_RAISED_IN = "; raised by runs 44330495557, 44338924357 (max of the two)"
 REPLACE_PROTOCOL_CI_MINUTES = 2.8

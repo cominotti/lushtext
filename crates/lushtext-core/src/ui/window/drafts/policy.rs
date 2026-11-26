@@ -294,6 +294,10 @@ pub(super) enum OrphanCleanupFollowUp {
     },
 }
 
+/// Revoke manifest trust only when orphan cleanup fails to commit its
+/// updated manifest (`Manifest::Write`), leaving on-disk metadata uncertain
+/// (post-rename `SyncDir` or manifest commit failure); `Manifest::Load`,
+/// `Delete`, and `Status` failures never modify persisted manifest authority.
 #[must_use]
 pub(super) fn orphan_cleanup_revokes_authority(
     failures: &[crate::services::draft_service::DraftOrphanCleanupFailure],

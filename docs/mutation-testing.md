@@ -662,10 +662,11 @@ the conformance tap's before-action hook reaches. Two tests in
 `a_same_size_change_before_the_body_write_is_caught_by_pass_a` (`||` to `&&`
 in pass A's facts check) and
 `a_cancel_before_a_body_write_that_fails_early_cancels_the_run` (`||` to `&&`
-and the deleted `!` in the cancelled test). Focused run on 2026-11-19,
+and the deleted `!` in the cancelled test). Focused run on 2026-11-19 (path
+and anchors updated post-Onda-2),
 `scripts/heavy.sh --envelope 36G -- env
-MUTANTS_SMOKE_FILE=crates/lushtext-core/src/services/content_search/replace/apply.rs
-'MUTANTS_RE=apply\.rs:(651:59|691:25|693:32):' make mutants-smoke` (the
+MUTANTS_SMOKE_FILE=crates/lushtext-services/src/content_search/replace/apply.rs
+'MUTANTS_RE=apply\.rs:(656:59|696:25|698:32):' make mutants-smoke` (the
 mutants' current anchors): 3 mutants, 3 caught, 0 missed.
 
 Do not silence a survivor just because the current test suite misses it. The
