@@ -1131,6 +1131,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/ui/sidebar/policy.rs` | `SIDEBAR_TYPICAL_FLOOR_RETENTION` | 454,033,408 | derived | 131,072 rows of 32-byte names under a 256-byte parent (D3) |
 | `crates/lushtext-core/src/ui/sidebar/policy.rs` | `SIDEBAR_DIRECTORY_RETAINED_BYTES` | 536,870,912 | presentation cap | up from SIDEBAR_TYPICAL_FLOOR_RETENTION, the larger floor: a directory's retained-byte budget, replacing MAX_DIR_ENTRIES (D3) |
 | `crates/lushtext-core/src/ui/sidebar/policy.rs` | `PERSIST_DEBOUNCE_MS` | 150 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-core/src/ui/sidebar/policy.rs` | `MATERIALIZATION_DRAIN_BATCH` | 256 | cap | power of two, rounded down; bounded pending child-store materializations per `Priority::HIGH` drain dispatch |
 | `crates/lushtext-core/src/ui/sidebar/policy.rs` | `REVEAL_SETTLE_FRAME_BUDGET` | 64 | coverage window | rounded up (D5) |
 
 ### `crates/lushtext-core/src/ui/sidebar/reveal_execution.rs`

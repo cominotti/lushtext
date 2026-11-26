@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- A135 probe and sample (`stop-expander-bind-time-child-scans`): `GtkTreeExpander`
+  queries `GtkTreeListRow::is_expandable()` synchronously on `set_list_row`,
+  rebinds, `hide-expander` changes, and row notifies other than `expanded` and
+  `item` (including `notify::children` on collapse); positive answers are never
+  cached, probe models are finalized before return, `set_expanded(true)` keeps
+  the installed model alive as `children()`, collapse finalizes it and causes
+  one fresh probe, and `None` answers are cached permanently (`node->empty`).
+  Fixture `fixtures::a135` (`ExpanderTree`, `ROOT_ITEMS`, `EXPANDABLE`,
+  `CHILDLESS`, `CHILD_ITEM`).
 - A134 probe and sample (`tab-strip-overflow-navigation`, the widget
   runner's classification of one GTK 4.24 warning): a popover repositioned
   in the frame clock's `after-paint` of the frame that drew its first buffer,

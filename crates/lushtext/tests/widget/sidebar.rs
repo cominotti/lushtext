@@ -674,7 +674,8 @@ fn evidence_without_live_mailbox(
     normalized
 }
 
-/// Seed one workspace whose folder holds a nested directory, so expansion is real.
+/// Seed one workspace whose folder holds a nested directory and enough sibling
+/// subdirectories to make the sidebar scroll, so expansion and scroll inertness are real.
 fn seed_expandable_workspace() -> tempfile::TempDir {
     ensure_gtk_init();
     let folders_dir = tempfile::tempdir().expect("workspace folders tempdir");
@@ -682,6 +683,11 @@ fn seed_expandable_workspace() -> tempfile::TempDir {
     fixture::create_dir_all(&root.join("nested").join("deeper"));
     fixture::write_text(&root.join("nested").join("leaf.txt"), "leaf\n");
     fixture::write_text(&root.join("top.txt"), "top\n");
+    for index in 0..60 {
+        let sub = root.join(format!("sub-{index:02}"));
+        fixture::create_dir_all(&sub);
+        fixture::write_text(&sub.join("file.txt"), "x\n");
+    }
 
     let mut workspaces = WorkspacesFile::default();
     workspaces.workspaces.push(WorkspaceConfig::with_one_folder(
@@ -714,22 +720,62 @@ fn inertness_probe(sidebar: &LushtextSidebar) -> InertnessProbe {
     }
     dir_store_keys.sort();
     dir_row_keys.sort();
-    let section_scan_pressure: usize = sidebar
-        .imp()
+    let section_scan_pressure: usize = evidence
         .sections
-        .borrow()
         .iter()
         .map(|section| {
-            let pressure = section.workspace_section_evidence().scan_pressure;
+            let pressure = section.scan_pressure;
             pressure.active_scans + pressure.pending_scans + pressure.admission_waiting_scans
         })
         .sum();
-    let watch_generations: u64 = sidebar
-        .imp()
+    let child_model_creations: u64 = evidence
         .sections
-        .borrow()
         .iter()
-        .map(|section| section.workspace_section_evidence().watch_target_generation)
+        .map(|section| section.scan_pressure.child_model_creations)
+        .sum();
+    let child_model_probes_discarded: u64 = evidence
+        .sections
+        .iter()
+        .map(|section| section.scan_pressure.child_model_probes_discarded)
+        .sum();
+    let child_materializations: u64 = evidence
+        .sections
+        .iter()
+        .map(|section| section.scan_pressure.child_materializations)
+        .sum();
+    let pending_materializations: usize = evidence
+        .sections
+        .iter()
+        .map(|section| section.scan_pressure.pending_materializations)
+        .sum();
+    let scan_submissions: u64 = evidence
+        .sections
+        .iter()
+        .map(|section| section.scan_pressure.scan_submissions)
+        .sum();
+    let registered_child_stores: usize = evidence
+        .sections
+        .iter()
+        .map(|section| section.scan_pressure.registered_child_stores)
+        .sum();
+    let mut dir_store_liveness = std::collections::BTreeMap::new();
+    let mut registered_child_store_paths = std::collections::BTreeSet::new();
+    let mut scan_submissions_by_path = std::collections::BTreeMap::new();
+    for section in &evidence.sections {
+        for (path, live) in &section.dir_store_liveness {
+            dir_store_liveness.insert(path.clone(), *live);
+        }
+        for path in &section.registered_child_store_paths {
+            registered_child_store_paths.insert(path.clone());
+        }
+        for (path, count) in &section.scan_submissions_by_path {
+            *scan_submissions_by_path.entry(path.clone()).or_insert(0) += *count;
+        }
+    }
+    let watch_generations: u64 = evidence
+        .sections
+        .iter()
+        .map(|section| section.watch_target_generation)
         .sum();
     InertnessProbe {
         reveal: (
@@ -744,6 +790,15 @@ fn inertness_probe(sidebar: &LushtextSidebar) -> InertnessProbe {
         expanded_path_count: evidence.expanded_path_count,
         section_count: evidence.section_count,
         section_scan_pressure,
+        child_model_creations,
+        child_model_probes_discarded,
+        child_materializations,
+        pending_materializations,
+        scan_submissions,
+        registered_child_stores,
+        dir_store_liveness,
+        registered_child_store_paths,
+        scan_submissions_by_path,
         watch_generations,
         dir_store_keys,
         dir_row_keys,
@@ -766,6 +821,15 @@ struct InertnessProbe {
     expanded_path_count: usize,
     section_count: usize,
     section_scan_pressure: usize,
+    child_model_creations: u64,
+    child_model_probes_discarded: u64,
+    child_materializations: u64,
+    pending_materializations: usize,
+    scan_submissions: u64,
+    registered_child_stores: usize,
+    dir_store_liveness: std::collections::BTreeMap<std::path::PathBuf, bool>,
+    registered_child_store_paths: std::collections::BTreeSet<std::path::PathBuf>,
+    scan_submissions_by_path: std::collections::BTreeMap<std::path::PathBuf, u64>,
     watch_generations: u64,
     /// Hazard 1: `find_store_for_dir` **inserts** while looking up.
     dir_store_keys: Vec<std::path::PathBuf>,
@@ -834,7 +898,11 @@ fn test_workspace_tree_evidence_reads_are_inert_collapsed_and_expanded() {
     // --- expanded ---
     let section = sidebar.imp().sections.borrow()[0].clone();
     section.expand_folders();
-    flush_after_delay(Duration::from_millis(600));
+    wait_until(Duration::from_secs(10), || {
+        let evidence = sidebar.workspace_tree_evidence();
+        !evidence.refresh_blocks_readiness && evidence.process_active_scan_tasks == 0
+    });
+    flush_after_delay(Duration::from_millis(400));
 
     let before_expanded = inertness_probe(&sidebar);
     // The registry halves of this proof would pass vacuously against two empty maps, so
@@ -859,6 +927,98 @@ fn test_workspace_tree_evidence_reads_are_inert_collapsed_and_expanded() {
         before_expanded, after_expanded,
         "reading the surface with rows expanded must disturb nothing — this is the \
          case where row.children() would materialize and a cache lookup would evict"
+    );
+
+    // --- before and after a scroll ---
+    let adjustment = sidebar.imp().outer_scrolled_window.vadjustment();
+    assert!(
+        adjustment.upper() > adjustment.page_size(),
+        "expanded fixture must overflow the outer scroller so scroll is real"
+    );
+    let before_scroll = inertness_probe(&sidebar);
+    for _ in 0..5 {
+        let _ = sidebar.workspace_tree_evidence();
+    }
+    assert_eq!(
+        before_scroll,
+        inertness_probe(&sidebar),
+        "reading the surface before a scroll must disturb nothing"
+    );
+    adjustment.set_value(adjustment.upper() - adjustment.page_size());
+    flush_after_delay(Duration::from_millis(300));
+    wait_until(Duration::from_secs(10), || {
+        let evidence = sidebar.workspace_tree_evidence();
+        !evidence.refresh_blocks_readiness && evidence.process_active_scan_tasks == 0
+    });
+    let after_scroll = inertness_probe(&sidebar);
+    for _ in 0..5 {
+        let _ = sidebar.workspace_tree_evidence();
+    }
+    assert_eq!(
+        after_scroll,
+        inertness_probe(&sidebar),
+        "reading the surface after a scroll must disturb nothing"
+    );
+    adjustment.set_value(0.0);
+    flush_after_delay(Duration::from_millis(300));
+    wait_until(Duration::from_secs(10), || {
+        let evidence = sidebar.workspace_tree_evidence();
+        !evidence.refresh_blocks_readiness && evidence.process_active_scan_tasks == 0
+    });
+
+    // --- before and after an expand/collapse ---
+    let nested_path = _folders.path().join("root").join("nested");
+    let nested_row = {
+        let tree_model = section
+            .imp()
+            .tree_model
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("tree model");
+        (0..tree_model.n_items())
+            .find_map(|index| {
+                let row = tree_model.item(index).and_downcast::<gtk4::TreeListRow>()?;
+                let item = row
+                    .item()
+                    .and_downcast::<lushtext_core::ui::sidebar::file_tree_item::FileTreeItem>()?;
+                (item.path().as_deref() == Some(nested_path.as_path())).then_some(row)
+            })
+            .expect("nested row")
+    };
+    let before_expand_nested = inertness_probe(&sidebar);
+    for _ in 0..5 {
+        let _ = sidebar.workspace_tree_evidence();
+    }
+    assert_eq!(before_expand_nested, inertness_probe(&sidebar));
+    nested_row.set_expanded(true);
+    wait_until(Duration::from_secs(10), || {
+        let evidence = sidebar.workspace_tree_evidence();
+        !evidence.refresh_blocks_readiness && evidence.process_active_scan_tasks == 0
+    });
+    let after_expand_nested = inertness_probe(&sidebar);
+    for _ in 0..5 {
+        let _ = sidebar.workspace_tree_evidence();
+    }
+    assert_eq!(
+        after_expand_nested,
+        inertness_probe(&sidebar),
+        "reading the surface after expanding a nested row must disturb nothing"
+    );
+    nested_row.set_expanded(false);
+    flush_after_delay(Duration::from_millis(300));
+    wait_until(Duration::from_secs(10), || {
+        let evidence = sidebar.workspace_tree_evidence();
+        !evidence.refresh_blocks_readiness && evidence.process_active_scan_tasks == 0
+    });
+    let after_collapse_nested = inertness_probe(&sidebar);
+    for _ in 0..5 {
+        let _ = sidebar.workspace_tree_evidence();
+    }
+    assert_eq!(
+        after_collapse_nested,
+        inertness_probe(&sidebar),
+        "reading the surface after collapsing a nested row must disturb nothing"
     );
 
     // Repeated reads of unchanged state are identical values, not merely

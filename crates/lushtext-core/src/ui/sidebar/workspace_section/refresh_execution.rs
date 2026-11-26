@@ -196,6 +196,12 @@ impl LushtextWorkspaceSection {
             pending_empty_probes: self.imp().folder_empty_pending.borrow().len(),
             empty_probe_stale_rejections: refresh.empty_probe_stale_rejections.get(),
             empty_probe_terminal_publications: refresh.empty_probe_terminal_publications.get(),
+            child_model_creations: refresh.child_model_creations.get(),
+            child_model_probes_discarded: refresh.child_model_probes_discarded.get(),
+            child_materializations: refresh.child_materializations.get(),
+            pending_materializations: self.imp().pending_materializations.borrow().len(),
+            scan_submissions: refresh.scan_submissions.get(),
+            registered_child_stores: self.imp().child_store_paths.borrow().len(),
         }
     }
 

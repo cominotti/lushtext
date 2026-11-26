@@ -155,7 +155,10 @@ probe reads how the child died. A134 (GTK 4.24's once-per-process
 discarded-frame warning) is the first probe that reads a protocol trace: its
 child, re-run with `GTK_LUSH_AXIOMS_CONTROL=A134` and `WAYLAND_DEBUG=client`,
 prints the trace on stderr, and the probe's control is an ordered pair of
-feedback events in it (`parse_trace`). Every later axiom
+feedback events in it (`parse_trace`). A135 (`stop-expander-bind-time-child-scans`:
+`GtkTreeExpander` calls `is_expandable()` synchronously on every bind, rebind,
+`hide-expander` change, and collapse `children` notify, discarding unkept probe
+models on return) extends A22's tree-model family. Every later axiom
 follows the same steps. Rewriting an
 unpinned axiom from measurement (as A10 was) keeps its id, gives it a probe,
 and renames its catalogue entry to the new statement.

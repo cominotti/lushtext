@@ -18,7 +18,8 @@
 //! | Module | Role | Stage order it serves |
 //! | --- | --- | --- |
 //! | `scan_admission` | `admission` | the per-child-store directory-scan flight |
-//! | `scan_execution` | `execution` | the child scan worker, reconciliation, and child-store materialization |
+//! | `materialization_execution` | `execution` | deferred child-store materialization drain (`Priority::HIGH`) |
+//! | `scan_execution` | `execution` | the child scan worker, reconciliation, and child-store population |
 //! | `refresh_execution` | `execution` | targeted in-place and full refresh coalescing |
 //! | `folder_execution` | `execution` | top-level folder rows, the empty probe, focused-folder drilldown |
 //! | `file_execution` | `execution` | file create, inline rename, delete |
@@ -56,6 +57,7 @@ mod icon_presentation;
 // ObjectSubclass/template state in `imp.rs`, matching GLib's split between the
 // reference-counted object API and per-instance implementation data.
 mod imp;
+mod materialization_execution;
 mod peek_execution;
 mod refresh_execution;
 mod reorder_execution;
@@ -140,6 +142,18 @@ pub struct WorkspaceScanPressureEvidence {
     pub pending_empty_probes: usize,
     pub empty_probe_stale_rejections: u64,
     pub empty_probe_terminal_publications: u64,
+    /// Child `gio::ListStore` instances created by `build_children_model`.
+    pub child_model_creations: u64,
+    /// Probe child stores finalized by GTK before the materialization drain ran.
+    pub child_model_probes_discarded: u64,
+    /// Installed child stores materialized by the drain into `populate_child_store`.
+    pub child_materializations: u64,
+    /// Entries currently queued in `pending_materializations`.
+    pub pending_materializations: usize,
+    /// Submissions to `populate_child_store` across the section's lifetime.
+    pub scan_submissions: u64,
+    /// Currently registered child stores in `child_store_paths`.
+    pub registered_child_stores: usize,
 }
 
 #[cfg(feature = "test-utils")]

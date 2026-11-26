@@ -2026,6 +2026,25 @@ const CATALOGUE: &[Axiom] = &[
         version_bound: Some(crate::version::VersionBound::gtk(4, 24, 0)),
         probe: Some(probes::probe_a134),
     },
+    Axiom {
+        id: AxiomId::new(135),
+        name: "a135_tree_expander_queries_expandability_on_every_bind",
+        statement: "GtkTreeExpander queries GtkTreeListRow::is_expandable() synchronously from \
+                    set_list_row and from row property notifications other than expanded and item \
+                    (including notify::children), whatever hide-expander says; is_expandable() \
+                    caches only negative (None) answers and never positive ones, calling the create \
+                    function again on every query and finalizing any unkept probe model before \
+                    returning; set_expanded(true) keeps the installed model alive as children(), and \
+                    set_expanded(false) finalizes it and leads a bound expander to make one fresh \
+                    probe; after None, further queries and rebinds call the create function no more",
+        dependent_designs: &[
+            "stop-expander-bind-time-child-scans: workspace_section/materialization_execution.rs \
+             and the create closure in workspace_section/folder_execution.rs",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a135),
+    },
 ];
 
 #[cfg(test)]
@@ -2044,6 +2063,9 @@ mod tests {
         // A55-A58 were C6's draft ids, renumbered to A67-A73 when C5's
         // A52-A54 landed; ids are never reused.
         for number in (1..=54).chain(59..=74) {
+            assert!(find(AxiomId::new(number)).is_some(), "A{number} missing");
+        }
+        for number in 132..=135 {
             assert!(find(AxiomId::new(number)).is_some(), "A{number} missing");
         }
     }
