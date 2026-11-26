@@ -35,12 +35,19 @@ the shared workstation, and which verification runs a change makes, is in
 
 ## Dev Builds
 
-Use `make` targets for development; `make help` prints the catalogue. The
-Makefile auto-detects nextest for non-widget tests across the workspace;
-`.config/nextest.toml` excludes the `widget` binary (and `binary(=axiom_probes)`)
-from nextest's default filter, while widget coverage in `make test` flows
-through the shared headless `scripts/run-widget-tests.sh` path so local
-verification matches CI.
+Use `make` targets for development; `make help` prints the catalogue. For
+fast single-package feedback loops during local editing, `make clippy-pkg`,
+`make check-pkg`, and `make test-pkg` accept `PKG=<crate>` (defaulting to
+`lushtext-core`, with `FILTER=<substring>` on `test-pkg`), keeping the shared
+`target/` debug fingerprints intact; `make build-fast` and `make test-fast`
+provide an opt-in Cranelift backend (`CRANELIFT_TOOLCHAIN`, defaulting to
+`nightly-2026-08-21`) in each checkout's isolated build-cache directory while
+keeping `make check`, `make pre-commit`, CI, benchmarks, and releases on the
+pinned LLVM 1.98.0 toolchain. The Makefile auto-detects nextest for non-widget tests across the
+workspace; `.config/nextest.toml` excludes the `widget` binary (and
+`binary(=axiom_probes)`) from nextest's default filter, while widget coverage in
+`make test` flows through the shared headless `scripts/run-widget-tests.sh`
+path so local verification matches CI.
 
 **Bounded warning scans.** The widget runner, the GTK axiom runner and the
 mutation runner scan the output of the command they run in a stage beside the
@@ -226,8 +233,18 @@ Each checkout gets `checkouts/<basename>-<sha256(realpath)[:16]>` there (with
 a `CACHEDIR.TAG` and a record of its real path; `checkout-path` resolves it
 without creating it, for the Makefile's `BUILD_CACHE_CHECKOUT` and
 `proof-strength.py`'s import), and the mutation slots live in `mutants/`.
+`make build-cache-status` reports disk usage under the root, and
 `make build-cache-prune` removes the directories of checkouts that no longer
-exist and nothing else. `make check-build-cache-helpers` (in
+exist plus temporary `<checkout>/flatpak-builder/build` unpack trees inside
+live checkouts (while preserving `cache/`, `downloads/`, `checksums/`,
+`ccache/` and `mutants/`). `FLATPAK_BUILDER_FLAGS` also passes
+`--delete-build-dirs` on new builds. Debug smoke lanes (`composition-hold-build`,
+`smoke-read-faults-build`, and `crash-recovery-smoke`'s kill-point build) share
+`SMOKE_TARGET_DIR` (`target/smoke`) with `SMOKE_PROFILE_DEBUG` (`0`) under a
+shared lock and stage each binary at its legacy path; local mutation mirror
+slots likewise receive `CARGO_PROFILE_DEV_DEBUG=$(MUTANTS_PROFILE_DEBUG)` (`0`)
+from the Makefile so neither touches the shared `target/` build-dir
+fingerprints. `make check-build-cache-helpers` (in
 `make check-policy`) self-tests the helpers and audits the Makefile, `scripts/`
 and `.githooks/`: nothing exports `CARGO_INCREMENTAL=1`, the widget, test,
 Clippy and dev-build targets (and `run-widget-tests.sh`, `widget-shards.py`)
