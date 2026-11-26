@@ -8,9 +8,9 @@
 # gate code or enable the feature:
 #
 #   1. `feature = "crash-kill-points"` in Rust sources appears only in
-#      crates/lushtext-core/src/services/kill_point.rs;
-#   2. the feature is declared only by its two Cargo.toml lines (the core
-#      feature and the binary's forward), and no other manifest line names it;
+#      crates/lushtext-services/src/kill_point.rs;
+#   2. the feature is declared only by its three Cargo.toml lines (services,
+#      core's forward, and the binary's forward), and no other manifest line names it;
 #   3. `--features crash-kill-points` (or `-F`, `--features=`, or a feature
 #      list holding it) appears only in the Makefile's smoke build line.
 #
@@ -21,7 +21,7 @@
 set -euo pipefail
 
 SELF="scripts/check-kill-point-gating.sh"
-GATE_FILE="crates/lushtext-core/src/services/kill_point.rs"
+GATE_FILE="crates/lushtext-services/src/kill_point.rs"
 # shellcheck disable=SC2016,SC1003
 SMOKE_BUILD_LINE='CARGO_PROFILE_DEV_DEBUG=$(SMOKE_PROFILE_DEBUG) cargo build -p lushtext --features crash-kill-points --target-dir "$(SMOKE_TARGET_DIR)" && \'
 
@@ -66,7 +66,8 @@ check_tree() {
 
     # 2. Manifest declarations.
     local -A allowed_manifest=(
-        ["crates/lushtext-core/Cargo.toml"]='crash-kill-points = []'
+        ["crates/lushtext-services/Cargo.toml"]='crash-kill-points = []'
+        ["crates/lushtext-core/Cargo.toml"]='crash-kill-points = ["lushtext-services/crash-kill-points"]'
         ["crates/lushtext/Cargo.toml"]='crash-kill-points = ["lushtext-core/crash-kill-points"]'
     )
     local -A seen_manifest=()
@@ -81,7 +82,7 @@ check_tree() {
             if [[ -n "${allowed_manifest[$file]:-}" && "$trimmed" == "${allowed_manifest[$file]}" ]]; then
                 seen_manifest[$file]=1
             else
-                fail "$file:$number: names crash-kill-points outside its two declarations" || status=1
+                fail "$file:$number: names crash-kill-points outside its allowed declarations" || status=1
             fi
         done < <(grep -n 'crash-kill-points' "$root/$file" || true)
     done
@@ -121,10 +122,12 @@ self_test() {
     local tmp=$SELF_TEST_DIR
     make_tree() {
         local dir=$1
-        mkdir -p "$dir/crates/lushtext-core/src/services" "$dir/crates/lushtext"
+        mkdir -p "$dir/crates/lushtext-services/src" "$dir/crates/lushtext-core/src" "$dir/crates/lushtext"
         printf '#[cfg(feature = "crash-kill-points")]\npub fn reach() {}\n' \
             >"$dir/$GATE_FILE"
-        printf '[features]\ncrash-kill-points = []\n' >"$dir/crates/lushtext-core/Cargo.toml"
+        printf '[features]\ncrash-kill-points = []\n' >"$dir/crates/lushtext-services/Cargo.toml"
+        printf '[features]\ncrash-kill-points = ["lushtext-services/crash-kill-points"]\n' \
+            >"$dir/crates/lushtext-core/Cargo.toml"
         printf '[features]\ncrash-kill-points = ["lushtext-core/crash-kill-points"]\n' \
             >"$dir/crates/lushtext/Cargo.toml"
         printf 'smoke:\n\t%s\n# crash-kill-points is mentioned here\n' "$SMOKE_BUILD_LINE" >"$dir/Makefile"

@@ -1019,7 +1019,7 @@ def _self_test_workspace_tree_row_anchor_paths() -> None:
             f"{path} must require the workspace-tree rendered-row invariant"
         )
     for path in (
-        "crates/lushtext-core/src/services/draft_service.rs",
+        "crates/lushtext-services/src/draft_service.rs",
         "crates/lushtext-core/src/ui/sidebar/dialogs.rs",
         "crates/lushtext-core/src/ui/sidebar/persist_execution.rs",
         "crates/gtk-lush/widgets/src/clip_bin/mod.rs",

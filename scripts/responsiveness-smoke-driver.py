@@ -1125,7 +1125,7 @@ class IntegrityLedger:
 # Post-open settle (bound-post-open-settle, C6; design D1, D8)
 # --------------------------------------------------------------------------
 #
-# The probe's post-open records (crates/lushtext-core/src/services/
+# The probe's post-open records (crates/lushtext-services/src/
 # responsiveness_log.rs): one `span` per post-open stage, a `mark` on every
 # GtkSourceBuffer `highlight-updated` and every change of the editor's
 # vertical adjustment `upper`, and a `settle_sentinel` mark each time the

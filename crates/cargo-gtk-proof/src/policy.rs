@@ -139,7 +139,7 @@ pub(crate) fn run_self_tests() -> Result<(), String> {
             "scripts/visual-geometry-scenarios/workspace-tree-reveal-at-rest.json",
             true,
         ),
-        ("crates/lushtext-core/src/services/draft_service.rs", false),
+        ("crates/lushtext-services/src/draft_service.rs", false),
     ] {
         let requires = required_invariants_for_changes(&[path.to_string()])
             .contains(&WORKSPACE_TREE_ROW_ANCHORS_INVARIANT.to_string());
@@ -1228,7 +1228,7 @@ mod tests {
             );
         }
         for path in [
-            "crates/lushtext-core/src/services/draft_service.rs",
+            "crates/lushtext-services/src/draft_service.rs",
             "crates/lushtext-core/src/ui/sidebar/dialogs.rs",
             "crates/lushtext-core/src/ui/sidebar/persist_execution.rs",
             "crates/gtk-lush/widgets/src/clip_bin/mod.rs",

@@ -27,7 +27,7 @@ fallback_suffixes = ["src/ui", "src/services", "src/model", "benches"]
 # `<name>/`) or a keyword is missing from that description.
 [data_safety]
 skill = "data-safety"
-path_suffixes = ["src/ui", "src/services", "src/model", "lushtext-model/src"]
+path_suffixes = ["src/ui", "src/services", "src/model", "lushtext-model/src", "lushtext-services/src"]
 content_patterns = [
   { keyword = "file I/O", pattern = "services::filesystem|std::[f]s\\b|\\bFileMonitor\\b|\\bgio::File\\b" },
   { keyword = "buffer state", pattern = "\\bTextBuffer\\b|\\bset_modified\\b|\\bis_modified\\b|\\bbuffer\\(\\)" },

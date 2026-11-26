@@ -52,7 +52,9 @@ Ten mechanical guarantees, all derived from
    machine-readable: a bare stem or a brace expansion classifies a file for a
    human reader while leaving this check blind.
 8. Test-seam ratchet: the count of externally reachable `*_for_test`
-   declarations under `crates/lushtext-core/src` must not exceed the ceiling the
+   declarations under the governed crates (`crates/lushtext-core/src`,
+   `crates/lushtext-model/src`, `crates/lushtext-services/src`) must not exceed
+   the ceiling the
    matrix records. Only excess fails. A count below the ceiling passes without a
    finding, because forcing the figure down on every cleanup would train a reader
    to treat it as a number to adjust rather than a ceiling to stay under.
@@ -108,6 +110,7 @@ RECORD_PATH = REPO_ROOT / "docs/next/workflow-readability.md"
 MUTANTS_CONFIG_PATH = REPO_ROOT / ".cargo/mutants.toml"
 CORE_SRC = Path("crates/lushtext-core/src")
 MODEL_SRC = Path("crates/lushtext-model/src")
+SERVICES_SRC = Path("crates/lushtext-services/src")
 
 # The GTK family a pure policy module must never reach for. Keep this list in
 # sync with the same list in the capability spec and `.agents/rules/rust.md`.
@@ -1203,6 +1206,8 @@ def normalize_claim(token: str) -> str | None:
         return candidate
     if candidate.startswith("model/"):
         return str(MODEL_SRC / candidate.removeprefix("model/"))
+    if candidate.startswith("services/"):
+        return str(SERVICES_SRC / candidate.removeprefix("services/"))
     if candidate.startswith(CORE_LAYER_PREFIXES):
         return str(CORE_SRC / candidate)
     return None
@@ -1623,7 +1628,7 @@ def count_for_test_declarations(root: Path) -> int:
     retired getter cannot inflate the figure the ratchet compares.
     """
     total = 0
-    for src_dir in (root / CORE_SRC, root / MODEL_SRC):
+    for src_dir in (root / CORE_SRC, root / MODEL_SRC, root / SERVICES_SRC):
         if not src_dir.is_dir():
             continue
         for path in sorted(src_dir.rglob("*.rs")):
@@ -1658,7 +1663,7 @@ def seam_ratchet_findings(text: str, root: Path, *, required: bool) -> list[str]
         return []
     return [
         f"{display_path(MATRIX_PATH)}: {actual} externally reachable `*_for_test` "
-        f"declarations under {CORE_SRC} exceed the recorded ceiling of {ceiling}. "
+        f"declarations across {CORE_SRC}, {MODEL_SRC}, and {SERVICES_SRC} exceed the recorded ceiling of {ceiling}. "
         "Extend the owning workflow's evidence surface with the fact the test "
         "needs and delete the getter; or, deliberately, raise the ceiling in the "
         "matrix's Measurement Definitions in this same change with a stated reason"
@@ -1937,7 +1942,7 @@ test_tool = "nextest"
 
 examine_globs = [
     "crates/lushtext-model/src/**/*.rs",
-    "crates/lushtext-core/src/services/**/*.rs",
+    "crates/lushtext-services/src/**/*.rs",
     "crates/lushtext-core/src/ui/**/policy.rs",
 ]
 """.lstrip()

@@ -587,7 +587,8 @@ Cargo workspace:
 
 - `crates/lushtext-build-support` - build-script helper crate.
 - `crates/lushtext-model` - pure GTK-free domain types and verified policy.
-- `crates/lushtext-core` - application logic: services, GTK widgets, and `model` re-export of `lushtext-model`. Its main-window adapter keeps pure responsive policy in
+- `crates/lushtext-services` - GTK-free application services and I/O adapters.
+- `crates/lushtext-core` - GTK widgets plus `model` and `services` re-exports. Its main-window adapter keeps pure responsive policy in
   `ui/window/geometry/policy.rs`, keeps draft intent epochs in
   `ui/window/drafts/`, bounds progressive tab restoration in
   `ui/window/session_restore/`, composes each window in bounded stages

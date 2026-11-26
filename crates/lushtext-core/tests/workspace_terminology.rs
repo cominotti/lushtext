@@ -83,6 +83,7 @@ const SCAN_TARGETS: &[&str] = &[
     "openspec/specs",
     "resources/ui",
     "crates/lushtext-model/src",
+    "crates/lushtext-services/src",
     "crates/lushtext-core/benches",
     "crates/lushtext-core/src",
     "crates/lushtext-core/tests",
@@ -94,6 +95,7 @@ const PATH_SCAN_TARGETS: &[&str] = &[
     "data",
     "resources/ui",
     "crates/lushtext-model/src",
+    "crates/lushtext-services/src",
     "crates/lushtext-core/benches",
     "crates/lushtext-core/src",
     "crates/lushtext-core/tests",
@@ -283,13 +285,13 @@ fn is_legacy_folder_note_compatibility(relative: &str, line: &str) -> bool {
             | "docs/recovery-reliability.md"
             | "openspec/specs/workspace-notes/spec.md"
             | "crates/lushtext-model/src/migration_ledger.rs"
-            | "crates/lushtext-core/src/services/app_data_layout.rs"
-            | "crates/lushtext-core/src/services/app_data_leftovers.rs"
-            | "crates/lushtext-core/src/services/folder_note_service.rs"
-            | "crates/lushtext-core/src/services/format_upgrade/diagnostics.rs"
-            | "crates/lushtext-core/src/services/format_upgrade/inventory.rs"
-            | "crates/lushtext-core/src/services/json_format.rs"
-            | "crates/lushtext-core/src/services/note_storage.rs"
+            | "crates/lushtext-services/src/app_data_layout.rs"
+            | "crates/lushtext-services/src/app_data_leftovers.rs"
+            | "crates/lushtext-services/src/folder_note_service.rs"
+            | "crates/lushtext-services/src/format_upgrade/diagnostics.rs"
+            | "crates/lushtext-services/src/format_upgrade/inventory.rs"
+            | "crates/lushtext-services/src/json_format.rs"
+            | "crates/lushtext-services/src/note_storage.rs"
             | "crates/lushtext-core/tests/persistent_json_format.rs"
             | "crates/lushtext-core/tests/fixtures/persistent_json/legacy-folder-note-sidecar-v1.json"
     ) && (line.contains("legacy")
@@ -304,7 +306,7 @@ fn is_legacy_folder_note_identity_field(relative: &str) -> bool {
     matches!(
         relative,
         "crates/lushtext-model/src/folder_note.rs"
-            | "crates/lushtext-core/src/services/folder_note_service.rs"
+            | "crates/lushtext-services/src/folder_note_service.rs"
             | "crates/lushtext-core/tests/fixtures/persistent_json/legacy-folder-note-sidecar-v1.json"
     )
 }

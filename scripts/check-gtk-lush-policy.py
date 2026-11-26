@@ -29,6 +29,7 @@ LUSHTEXT_CRATES = {
     "lushtext",
     "lushtext-build-support",
     "lushtext-model",
+    "lushtext-services",
     "lushtext-core",
 }
 REQUIRED_FILES = (

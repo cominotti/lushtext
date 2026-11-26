@@ -24,6 +24,7 @@ release_files=(
     meson.build
     crates/lushtext/Cargo.toml
     crates/lushtext-model/Cargo.toml
+    crates/lushtext-services/Cargo.toml
     crates/lushtext-core/Cargo.toml
     Cargo.lock
     "$metainfo_file"
@@ -341,12 +342,16 @@ verify_version_surfaces() {
         die "crates/lushtext/Cargo.toml does not contain release version '$plain'"
     grep -Fq "version = \"$plain\"" crates/lushtext-model/Cargo.toml ||
         die "crates/lushtext-model/Cargo.toml does not contain release version '$plain'"
+    grep -Fq "version = \"$plain\"" crates/lushtext-services/Cargo.toml ||
+        die "crates/lushtext-services/Cargo.toml does not contain release version '$plain'"
     grep -Fq "version = \"$plain\"" crates/lushtext-core/Cargo.toml ||
         die "crates/lushtext-core/Cargo.toml does not contain release version '$plain'"
     [[ "$(cargo_lock_version_for lushtext)" == "$plain" ]] ||
         die "Cargo.lock does not contain lushtext version '$plain'"
     [[ "$(cargo_lock_version_for lushtext-model)" == "$plain" ]] ||
         die "Cargo.lock does not contain lushtext-model version '$plain'"
+    [[ "$(cargo_lock_version_for lushtext-services)" == "$plain" ]] ||
+        die "Cargo.lock does not contain lushtext-services version '$plain'"
     [[ "$(cargo_lock_version_for lushtext-core)" == "$plain" ]] ||
         die "Cargo.lock does not contain lushtext-core version '$plain'"
     grep -Fq "<release version=\"$plain\"" "$metainfo_file" ||
@@ -467,6 +472,7 @@ prepare_release_files() {
     set_meson_version "$plain"
     set_first_toml_package_version crates/lushtext/Cargo.toml "$plain"
     set_first_toml_package_version crates/lushtext-model/Cargo.toml "$plain"
+    set_first_toml_package_version crates/lushtext-services/Cargo.toml "$plain"
     set_first_toml_package_version crates/lushtext-core/Cargo.toml "$plain"
     refresh_cargo_lock
     upsert_appstream_release "$plain" "$notes_file"
