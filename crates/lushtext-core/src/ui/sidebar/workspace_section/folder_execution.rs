@@ -385,10 +385,27 @@ impl LushtextWorkspaceSection {
         self.sync_file_row_states();
     }
 
+    /// Set `row`'s expansion state and mirror the transition directly.
+    ///
+    /// A `GtkTreeListRow` outside the realized band can be a fresh object with
+    /// no `notify::expanded` hook installed (ledger A114, design R4/D20). Calling
+    /// `record_row_expansion_transition` and `refresh_workspace_watch_row` here
+    /// keeps `expanded_paths` and watch targets consistent even for unhooked rows;
+    /// both helpers are idempotent when the hook also fires on a bound row.
+    pub(in crate::ui::sidebar) fn set_row_expanded_and_record(
+        &self,
+        row: &gtk4::TreeListRow,
+        expanded: bool,
+    ) {
+        row.set_expanded(expanded);
+        self.record_row_expansion_transition(row);
+        self.refresh_workspace_watch_row(row);
+    }
+
     /// Collapses the top-level folders of this workspace section.
     pub fn collapse_folders(&self) {
         for row in self.expanded_folder_rows() {
-            row.set_expanded(false);
+            self.set_row_expanded_and_record(&row, false);
         }
         self.sync_file_row_states();
     }
@@ -396,7 +413,7 @@ impl LushtextWorkspaceSection {
     /// Expands the top-level folders of this workspace section if they are not confirmed empty.
     pub fn expand_folders(&self) {
         for row in self.collapsed_non_empty_folder_rows() {
-            row.set_expanded(true);
+            self.set_row_expanded_and_record(&row, true);
         }
         self.sync_file_row_states();
     }
@@ -406,7 +423,7 @@ impl LushtextWorkspaceSection {
         let rows = self.toggleable_folder_rows();
         let any_collapsed = rows.iter().any(|row| !row.is_expanded());
         for row in rows {
-            row.set_expanded(any_collapsed);
+            self.set_row_expanded_and_record(&row, any_collapsed);
         }
         self.sync_file_row_states();
     }
@@ -678,7 +695,7 @@ impl LushtextWorkspaceSection {
                         .and_then(|item| item.path())
                         .is_some_and(|path| section.imp().expanded_paths.borrow().contains(&path));
                 if should_expand {
-                    row.set_expanded(true);
+                    section.set_row_expanded_and_record(&row, true);
                 }
             }
 

@@ -158,7 +158,11 @@ impl LushtextWorkspaceSection {
         }
     }
 
-    fn install_expanded_watch_hook(&self, row: &gtk4::TreeListRow) {
+    /// Install the expansion hook on `row` once. Called at model install, at
+    /// splices, and at factory bind so every realized `TreeListRow` keeps the
+    /// hook even after GTK replaced an unreferenced row object (ledger A114,
+    /// design R4/D20).
+    pub(super) fn install_expanded_watch_hook(&self, row: &gtk4::TreeListRow) {
         // SAFETY: the private marker stores only `true` on this row. The row
         // owns its signal handler, whose closure captures the section weakly.
         if unsafe { row.data::<bool>(WATCH_EXPANDED_HOOK_KEY) }.is_some() {

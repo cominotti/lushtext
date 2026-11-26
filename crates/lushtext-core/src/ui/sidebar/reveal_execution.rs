@@ -341,7 +341,7 @@ impl LushtextSidebar {
                 return RevealStep::Finish(missing_component(section, parent, directory, true));
             };
             if !row.is_expanded() {
-                row.set_expanded(true);
+                section.set_row_expanded_and_record(&row, true);
                 if !row.is_expanded() {
                     // Known empty, or not a directory: nothing below it to reveal.
                     return RevealStep::Finish(WorkspaceRevealStatus::NotFound);
@@ -504,7 +504,7 @@ impl LushtextSidebar {
                 // what this reveal expanded.
                 for directory in active.expanded_by_reveal.iter().rev() {
                     if let Some(row) = section.tree_row_for_path(directory) {
-                        row.set_expanded(false);
+                        section.set_row_expanded_and_record(&row, false);
                     }
                 }
             }

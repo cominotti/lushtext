@@ -921,7 +921,7 @@ pub(super) fn empty_children_model_for_drag_hover(
             && row.is_expanded()
         {
             suppress_next_expanded_watch_for_drag(&row);
-            row.set_expanded(false);
+            section.set_row_expanded_and_record(&row, false);
         }
     });
     store

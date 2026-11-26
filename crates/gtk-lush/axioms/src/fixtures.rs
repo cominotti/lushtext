@@ -908,6 +908,14 @@ pub mod a113 {
     pub use crate::probes::text::TextViewFixture;
 }
 
+/// The two-directory tree whose far row object the A114 probe drops, for its
+/// sample.
+pub mod a114 {
+    pub use crate::probes::a114::{
+        FIRST_CHILDREN, RowObjectFixture, SECOND_CHILDREN, row_object_fixture,
+    };
+}
+
 /// The text view whose `extend-selection` the A122 probe emits, for its
 /// sample.
 pub mod a122 {

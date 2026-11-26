@@ -20,7 +20,9 @@ use crate::common::{
 };
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_core::model::workspace::{WorkspaceConfig, WorkspaceId, WorkspacesFile};
+use lushtext_core::model::workspace::{
+    WorkspaceConfig, WorkspaceFolder, WorkspaceId, WorkspacesFile,
+};
 use lushtext_core::services::{json_store, workspace_manager};
 use lushtext_core::ui::accessibility::test_audit::AccessibleAudit;
 use lushtext_core::ui::sidebar::LushtextSidebar;
@@ -3055,4 +3057,175 @@ fn test_a_reorder_drag_gives_every_realized_row_a_shield() {
         "the shields are inert after the drag"
     );
     drop(tree.window);
+}
+
+/// Design R4, D20: the folder header collapses every expanded root, also one
+/// whose row no widget showed (a row object nobody hooked, ledger A114), and
+/// a later refresh restores none; a directory under a root collapsed
+/// through such a row (a failed reveal's own collapse) leaves the expanded
+/// paths and the watch targets as a collapse through its bound row does.
+/// Fails before the fix: the far root's collapse notified nobody, and the
+/// deferred restore expanded it again.
+#[test]
+fn test_the_folder_header_collapses_every_root() {
+    use lushtext_core::services::workspace_watch::WorkspaceWatchTarget;
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("two roots tempdir");
+    let first = dir.path().join("first");
+    let second = dir.path().join("second");
+    seed_files(&first, 4096);
+    seed_files(&second.join("small"), 8);
+    seed_files(&second, 16);
+    save_workspaces(vec![WorkspaceConfig::with_folders(
+        WorkspaceId::new("two-roots"),
+        "two-roots",
+        vec![
+            WorkspaceFolder::new(first.clone()),
+            WorkspaceFolder::new(second.clone()),
+        ],
+    )]);
+    let (window, sidebar) = present_sidebar_window(800);
+    let section = mapped_sections(&sidebar, 1).remove(0);
+    section.expand_folders();
+    wait_until(Duration::from_secs(60), || {
+        maybe_listing(&section, &first).is_some_and(|l| l.directory_retained_entries == 4096)
+            && row_for_path(&section, &second).is_some_and(|row| row.is_expanded())
+            && !section
+                .workspace_section_evidence()
+                .refresh_blocks_readiness
+    });
+    scroll_outer_to(&sidebar, 0.0);
+    assert!(
+        expander_for(&section, &second).is_none(),
+        "the second root's row lies outside the band"
+    );
+    section.collapse_folders();
+    wait_until(Duration::from_secs(60), || {
+        row_for_path(&section, &first).is_some_and(|row| !row.is_expanded())
+            && row_for_path(&section, &second).is_some_and(|row| !row.is_expanded())
+            && !section
+                .workspace_section_evidence()
+                .refresh_blocks_readiness
+    });
+    let collapsed_evidence = section.workspace_section_evidence();
+    for root in [&first, &second] {
+        assert!(
+            !collapsed_evidence.expanded_paths.contains(root),
+            "{} must leave expanded_paths immediately on collapse (got {:?})",
+            root.display(),
+            collapsed_evidence.expanded_paths
+        );
+    }
+    section.queue_auto_refresh_for_test(vec![first.clone(), second.clone()]);
+    section.apply_queued_refresh_for_test();
+    wait_for_refresh_idle(&section);
+    flush_after_delay(Duration::from_millis(500));
+    let evidence = section.workspace_section_evidence();
+    for root in [&first, &second] {
+        assert!(
+            row_for_path(&section, root).is_some_and(|row| !row.is_expanded()),
+            "{} stays collapsed (expanded_paths={:?})",
+            root.display(),
+            evidence.expanded_paths
+        );
+        assert!(!evidence.expanded_paths.contains(root));
+    }
+    // A directory under a root, expanded and collapsed through row objects no
+    // widget shows: a reveal of an existing file below it records small/ in
+    // expanded_paths and watch_targets; then scrolling back to the top and
+    // revealing a missing path below a sibling directory (or collapsing) leaves
+    // expanded_paths and watch_targets clean.
+    section.expand_folders();
+    wait_until(Duration::from_secs(60), || {
+        maybe_listing(&section, &first).is_some_and(|l| l.directory_retained_entries == 4096)
+            && row_for_path(&section, &second).is_some_and(|row| row.is_expanded())
+            && !section
+                .workspace_section_evidence()
+                .refresh_blocks_readiness
+    });
+    scroll_outer_to(&sidebar, 0.0);
+    let small = second.join("small");
+    assert!(
+        expander_for(&section, &small).is_none(),
+        "small/ lies outside the band"
+    );
+    // First, expanding small/ via a reveal of an offscreen sibling's child must
+    // record small/ in expanded_paths and watch_targets even before small/ is scrolled into view;
+    // then a failed reveal of small/missing/file.txt expands small/ and rolls it back cleanly.
+    activate_reveal_workspace_path(&window, &small.join("row-00000.txt"));
+    wait_until(Duration::from_secs(30), || {
+        !section
+            .workspace_section_evidence()
+            .refresh_blocks_readiness
+            && !sidebar.workspace_tree_evidence().reveal_pending
+    });
+    flush_after_delay(Duration::from_millis(500));
+    let revealed_evidence = section.workspace_section_evidence();
+    assert!(
+        revealed_evidence.expanded_paths.contains(&small),
+        "successful reveal must record offscreen ancestor {} in expanded_paths ({:?})",
+        small.display(),
+        revealed_evidence.expanded_paths
+    );
+    assert!(
+        revealed_evidence
+            .watch_targets
+            .contains(&WorkspaceWatchTarget::directory(small.clone())),
+        "successful reveal must watch offscreen ancestor {} ({:?})",
+        small.display(),
+        revealed_evidence.watch_targets
+    );
+    // Collapse back and verify a failed reveal of small/missing/file.txt while small/
+    // is offscreen expands small/, fails NotFound, and rolls back expanded_paths + watch_targets.
+    section.collapse_folders();
+    wait_until(Duration::from_secs(60), || {
+        row_for_path(&section, &first).is_some_and(|row| !row.is_expanded())
+            && row_for_path(&section, &second).is_some_and(|row| !row.is_expanded())
+            && !section
+                .workspace_section_evidence()
+                .refresh_blocks_readiness
+    });
+    section.expand_folders();
+    wait_until(Duration::from_secs(60), || {
+        maybe_listing(&section, &first).is_some_and(|l| l.directory_retained_entries == 4096)
+            && row_for_path(&section, &second).is_some_and(|row| row.is_expanded())
+            && !section
+                .workspace_section_evidence()
+                .refresh_blocks_readiness
+    });
+    scroll_outer_to(&sidebar, 0.0);
+    assert!(
+        expander_for(&section, &small).is_none(),
+        "small/ lies outside the band"
+    );
+    activate_reveal_workspace_path(&window, &small.join("missing").join("file.txt"));
+    wait_until(Duration::from_secs(30), || {
+        !section
+            .workspace_section_evidence()
+            .refresh_blocks_readiness
+            && !sidebar.workspace_tree_evidence().reveal_pending
+    });
+    flush_after_delay(Duration::from_millis(500));
+    let tree_evidence = sidebar.workspace_tree_evidence();
+    assert_eq!(
+        tree_evidence.reveal_status,
+        WorkspaceRevealStatus::NotFound,
+        "the reveal expanded small/ and failed on missing/file.txt"
+    );
+    let evidence = section.workspace_section_evidence();
+    assert!(
+        row_for_path(&section, &small).is_some_and(|row| !row.is_expanded()),
+        "small/ stays collapsed after reveal rollback (expanded_paths={:?})",
+        evidence.expanded_paths
+    );
+    assert!(!evidence.expanded_paths.contains(&small));
+    assert!(
+        !evidence
+            .watch_targets
+            .contains(&WorkspaceWatchTarget::directory(small)),
+        "{:?}",
+        evidence.watch_targets
+    );
+    drop(window);
+    drop(sidebar);
 }
