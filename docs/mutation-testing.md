@@ -12,7 +12,7 @@ The default scope is configured in `.cargo/mutants.toml`, and membership is
 decided by **convention, not by directory**. The `examine_globs` list covers:
 
 - Domain model code under `crates/lushtext-model/src/**`
-- Service code under `crates/lushtext-core/src/services/**`
+- Service code under `crates/lushtext-services/src/**`
 - Pure workflow policy modules matching
   `crates/lushtext-core/src/ui/**/policy.rs`
 
@@ -157,7 +157,7 @@ the shard table, and `make check-kani-shards` checks it.
 ```sh
 make proof-strength-list                                   # population, floor, harness order; verifies nothing
 make proof-strength                                        # every oracle module, both arms, then the report
-make proof-strength PROOF_STRENGTH_MODULE=crates/lushtext-core/src/services/filesystem/write_protocol.rs
+make proof-strength PROOF_STRENGTH_MODULE=crates/lushtext-services/src/filesystem/write_protocol.rs
 make proof-strength PROOF_STRENGTH_TIER=ci                 # the cheap harnesses only
 make proof-strength PROOF_STRENGTH_ARM=kani PROOF_STRENGTH_SHARD=0/4
 ./scripts/proof-strength.py report --markdown build/proof-strength.md
@@ -365,15 +365,15 @@ The largest missed clusters were:
 | File | Missed mutants | Ratchet direction |
 |------|----------------|-------------------|
 | `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` (then `ui/editor_page/minimap.rs`) | 215 | Geometry and marker-color helper assertions |
-| `crates/lushtext-core/src/services/editor_io.rs` | 74 | Lossy preview, line ending, file health, and encoding-analysis assertions |
+| `crates/lushtext-services/src/editor_io.rs` | 74 | Lossy preview, line ending, file health, and encoding-analysis assertions |
 | `crates/lushtext-core/src/ui/markdown_preview/policy.rs` (then `ui/markdown_preview/inline_footnotes.rs`) | 49 | Scan-plan, delimiter, escape, and lowered-output tests |
-| `crates/lushtext-core/src/services/file_tree.rs` | 8 | Bounded-scan telemetry assertions: `examined_entries`, `peak_retained_entries`, `peak_retained_bytes`, and `error` on the published `DirectoryScan` |
-| `crates/lushtext-core/src/services/draft_service.rs` | 5 | Orphan-cleanup continuation assertions: `retained`, `failures`, `next_manifest_offset`, and `directory_wrapped` on the published plan and outcome |
-| `crates/lushtext-core/src/services/palette/index.rs` | 26 | Index construction, root interning, recursion cap, and path filtering tests |
+| `crates/lushtext-services/src/file_tree.rs` | 8 | Bounded-scan telemetry assertions: `examined_entries`, `peak_retained_entries`, `peak_retained_bytes`, and `error` on the published `DirectoryScan` |
+| `crates/lushtext-services/src/draft_service.rs` | 5 | Orphan-cleanup continuation assertions: `retained`, `failures`, `next_manifest_offset`, and `directory_wrapped` on the published plan and outcome |
+| `crates/lushtext-services/src/palette/index.rs` | 26 | Index construction, root interning, recursion cap, and path filtering tests |
 | `crates/lushtext-model/src/encoding.rs` | 24 | Table tests for IDs, labels, BOM policy, display, and mode parsing |
-| `crates/lushtext-core/src/services/local_history_service.rs` | 23 | Availability, snapshot lifecycle, and pruning tests |
-| `crates/lushtext-core/src/services/bookmark_service.rs` | 23 | Sidecar delete, move, root matching, and list-workspace tests |
-| `crates/lushtext-core/src/services/notifications.rs` | 20 | Progress, expiry, dismiss, and inline-view reducer tests |
+| `crates/lushtext-services/src/local_history_service.rs` | 23 | Availability, snapshot lifecycle, and pruning tests |
+| `crates/lushtext-services/src/bookmark_service.rs` | 23 | Sidecar delete, move, root matching, and list-workspace tests |
+| `crates/lushtext-services/src/notifications.rs` | 20 | Progress, expiry, dismiss, and inline-view reducer tests |
 
 Calibration also found that `crates/lushtext-core/src/ui/window/tabs.rs`
 produced 40 missed mutants dominated by `LushtextWindow::...` GTK adapter

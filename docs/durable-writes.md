@@ -2,7 +2,7 @@
 
 LushText persists every file it owns — your documents, drafts, session state,
 workspace metadata, and Replace All rewrites — through one shared helper,
-`crates/lushtext-core/src/services/durable_write.rs`. This page documents the
+`crates/lushtext-services/src/durable_write.rs`. This page documents the
 guarantees that helper makes so callers do not re-derive the filesystem contract
 by hand.
 

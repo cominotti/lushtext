@@ -222,7 +222,7 @@ and `replace_admission.rs` narrate the thirteenth.
 
 **Stop semantics at the content-search boundary.** The walker's stop reasons are
 now distinguished by owner (`WalkStop` in
-`crates/lushtext-core/src/services/content_search/search.rs`). The caller's
+`crates/lushtext-services/src/content_search/search.rs`). The caller's
 `cancel` flag means "discard this flight" and is written only by the panel's
 supersede/close path; a result-cap or identity-limit stop ends production
 without touching it, so the streaming tick still drains the buffered matches,
@@ -778,19 +778,29 @@ Declared as:
 - externally reachable `\*_for_test` declaration ceiling: <integer>
 ```
 
-- externally reachable `\*_for_test` declaration ceiling: 174
+- externally reachable `\*_for_test` declaration ceiling: 179
 
 Predicate, identical to the one
 [`docs/next/workflow-readability.md`](next/workflow-readability.md) records this
 figure against: `pub fn` and `pub(crate) fn` whose name ends `_for_test`, under
-`crates/lushtext-core/src`, counted over comment- and string-stripped code so a
-doc comment naming a retired getter cannot inflate it. A further 18 declarations
+`crates/lushtext-core/src`, `crates/lushtext-model/src`, and
+`crates/lushtext-services/src`, counted over comment- and string-stripped code so
+a doc comment naming a retired getter cannot inflate it. A further 18 declarations
 are `pub(super)` and are outside the predicate by design. Against the census's
 **300**, and **188** at `69f78b09`.
 
 Raising the ceiling is permitted and is a **reviewed decision**: do it in the same
 change, with a stated reason, after establishing that the fact the test needs
 genuinely cannot go on the owning workflow's evidence surface.
+
+**Raised 174 → 179 by `extract-lushtext-services` (2026-11-26).** Zero new test
+seams were added. Extracting `services/` into its own crate required rewriting
+`pub(in crate::services)` on five existing fault-injection helpers inside
+`crates/lushtext-services/src/` (`durable_write::{next_no_replace_unsupported_for_test, fail_next_rename_cross_device_for_test}`,
+`filesystem::sys::cross_device_error_for_test` for both `#[cfg(unix)]` and
+`#[cfg(not(unix))]`, and `filesystem::write::fail_next_rename_cross_device_for_test`)
+to `pub(crate)`, keeping identical crate-internal visibility while matching
+`FOR_TEST_DECLARATION_RE`.
 
 **Raised 171 → 174 by `stream-replace-all` (2026-11-15).** The three are
 service-level test seams of the streaming Replace All, none an inspection

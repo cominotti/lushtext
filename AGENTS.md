@@ -39,7 +39,8 @@ Cargo workspace:
 
 - `crates/lushtext-build-support` — tiny build-script helper crate, including the build-only filesystem boundary used by `build.rs` files that cannot depend on runtime services
 - `crates/lushtext-model` — pure domain types and pure policy (no GTK, GLib, GIO, Adwaita, or GtkSourceView), re-exported as `lushtext_core::model`
-- `crates/lushtext-core` — application services and GTK4/Libadwaita UI widgets (re-exports `lushtext_model as model`)
+- `crates/lushtext-services` — GTK-free application services and I/O adapters (`filesystem/`, persistence, search, file index, drafts), re-exported as `lushtext_core::services`
+- `crates/lushtext-core` — GTK4/Libadwaita UI widgets and app shell (`ui/`, `app.rs`, `config.rs`, re-exports `lushtext_model as model` and `lushtext_services as services`)
 - `crates/lushtext` — thin binary entry point plus integration and widget tests
 - `crates/gtk-lush/` — GTK Lush family crates (`signals`, `settle`, `tasks`, `viewport`, `widgets` with `ClipBin`, `ViewportSliceBin` and `RenderHoldOverlay`, `proof-harness`, `proof-spine`, `axioms`): stable in-tree platform APIs consumed through workspace path dependencies; governance in `crates/gtk-lush/GOVERNANCE.md`. `axioms` holds the isolated probe and one interactive/`--check` sample per GTK axiom ledger entry
 - `crates/gtk-lush-adoption-lab` — second-consumer GTK application for adoption validation; it may depend on several GTK Lush crates but is not a family crate and must stay outside `crates/gtk-lush/`. Its `tests/axiom_probes.rs` (`harness = false`) runs every axiom probe headless; nextest excludes `binary(=axiom_probes)` and `make gtk-lush-adoption-lab` runs `--bins`

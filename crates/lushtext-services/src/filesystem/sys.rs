@@ -1,0 +1,871 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Private backend for raw filesystem APIs.
+//!
+//! This is the intentional exception to the repository-wide direct filesystem
+//! ban. Keeping `std::fs`, Unix extension traits, and `rustix` here lets the
+//! public boundary stay readable while this module owns low-level descriptor
+//! handling and platform details.
+
+use std::ffi::{CString, OsString};
+use std::fs;
+use std::io::{self, Read};
+use std::path::{Path, PathBuf};
+
+use super::types::FileKind;
+use super::{FileIdentity, read::BoundedFileReadError};
+
+pub(crate) type File = fs::File;
+pub(crate) type Metadata = fs::Metadata;
+
+#[cfg(unix)]
+#[derive(Clone, Debug)]
+pub(crate) struct UnixMetadata {
+    pub mode: u32,
+    pub uid: u32,
+    pub gid: u32,
+}
+
+pub(crate) struct RawDirectoryEntry {
+    pub path: PathBuf,
+    pub file_name: OsString,
+    pub kind: FileKind,
+    /// The entry itself is a symbolic link (`kind` is its target's).
+    pub is_symlink: bool,
+}
+
+pub(crate) fn read(path: &Path) -> io::Result<Vec<u8>> {
+    fs::read(path)
+}
+
+pub(crate) fn read_to_string(path: &Path) -> io::Result<String> {
+    fs::read_to_string(path)
+}
+
+/// Open `path` for appending, creating it owner-only (`0o600`) when absent.
+///
+/// Measurement evidence only (`write::EvidenceAppendLog`); never a durable
+/// persistence path.
+#[cfg(any(test, feature = "responsiveness-probes"))]
+pub(crate) fn open_append_create(path: &Path) -> io::Result<File> {
+    let mut options = fs::OpenOptions::new();
+    options.append(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
+pub(crate) fn create_new_empty_file(path: &Path) -> io::Result<()> {
+    let file = create_temp_file(path, None)?;
+    sync_file(&file)
+}
+
+pub(crate) fn metadata(path: &Path) -> io::Result<fs::Metadata> {
+    fs::metadata(path)
+}
+
+pub(crate) fn symlink_metadata(path: &Path) -> io::Result<fs::Metadata> {
+    fs::symlink_metadata(path)
+}
+
+pub(crate) fn canonicalize(path: &Path) -> io::Result<PathBuf> {
+    fs::canonicalize(path)
+}
+
+pub(crate) fn path_exists(path: &Path) -> bool {
+    metadata(path).is_ok()
+}
+
+#[cfg(not(unix))]
+fn kind_from_std_metadata(metadata: &fs::Metadata) -> FileKind {
+    let file_type = metadata.file_type();
+    if file_type.is_file() {
+        FileKind::File
+    } else if file_type.is_dir() {
+        FileKind::Directory
+    } else {
+        FileKind::Other
+    }
+}
+
+#[cfg(unix)]
+fn kind_from_rustix_file_type(file_type: rustix::fs::FileType) -> FileKind {
+    if file_type.is_file() {
+        FileKind::File
+    } else if file_type.is_dir() {
+        FileKind::Directory
+    } else {
+        FileKind::Other
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn create_dir(path: &Path) -> io::Result<()> {
+    rustix::fs::mkdirat(
+        rustix::fs::CWD,
+        path,
+        rustix::fs::Mode::from_raw_mode(0o777),
+    )
+    .map_err(io::Error::from)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn create_dir(path: &Path) -> io::Result<()> {
+    fs::create_dir(path)
+}
+
+pub(crate) fn create_dir_all(path: &Path) -> io::Result<()> {
+    fs::create_dir_all(path)
+}
+
+#[cfg(unix)]
+pub(crate) fn remove_file(path: &Path) -> io::Result<()> {
+    rustix::fs::unlinkat(rustix::fs::CWD, path, rustix::fs::AtFlags::empty())
+        .map_err(io::Error::from)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn remove_file(path: &Path) -> io::Result<()> {
+    fs::remove_file(path)
+}
+
+#[cfg(unix)]
+pub(crate) fn remove_dir(path: &Path) -> io::Result<()> {
+    rustix::fs::unlinkat(rustix::fs::CWD, path, rustix::fs::AtFlags::REMOVEDIR)
+        .map_err(io::Error::from)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn remove_dir(path: &Path) -> io::Result<()> {
+    fs::remove_dir(path)
+}
+
+pub(crate) fn remove_dir_all(path: &Path) -> io::Result<()> {
+    fs::remove_dir_all(path)
+}
+
+#[cfg(unix)]
+pub(crate) fn rename(from: &Path, to: &Path) -> io::Result<()> {
+    rustix::fs::renameat(rustix::fs::CWD, from, rustix::fs::CWD, to).map_err(io::Error::from)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn rename(from: &Path, to: &Path) -> io::Result<()> {
+    fs::rename(from, to)
+}
+
+/// Whether an I/O error is `EXDEV`: a rename whose source and target live on
+/// different filesystems, so only a copy can move the bytes.
+///
+/// std decodes `EXDEV` (and its Windows counterpart) as `CrossesDevices`.
+pub(crate) fn is_cross_device(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::CrossesDevices
+}
+
+/// The error a kernel returns for a rename across filesystems, for fault injection.
+#[cfg(all(test, unix))]
+pub(crate) fn cross_device_error_for_test() -> io::Error {
+    io::Error::from(rustix::io::Errno::XDEV)
+}
+
+#[cfg(all(test, not(unix)))]
+pub(crate) fn cross_device_error_for_test() -> io::Error {
+    io::Error::from(io::ErrorKind::CrossesDevices)
+}
+
+/// Rename only when the destination does not exist, atomically.
+///
+/// `rename(2)` silently replaces a regular destination, so a caller that must not
+/// destroy an existing file cannot get there with a `stat` first: the check and
+/// the rename are two syscalls, and another process can create the destination
+/// between them. `RENAME_NOREPLACE` makes the check and the rename one kernel
+/// operation, which is the only way to close that window.
+///
+/// Returns [`io::ErrorKind::AlreadyExists`] when the destination exists.
+///
+/// # Errors
+///
+/// Returns [`io::ErrorKind::Unsupported`] when the running kernel or filesystem
+/// does not implement the flag, so callers can fall back to a best-effort check
+/// rather than refusing every rename. Linux added `RENAME_NOREPLACE` in 3.15 and
+/// not every filesystem implements it; `EINVAL`, `ENOSYS`, and `EOPNOTSUPP` all
+/// mean "not available here".
+///
+/// That meaning holds for **this** call only. The durable wrapper syncs the
+/// parent directories afterwards, and a directory `fsync` can fail with
+/// `EOPNOTSUPP` as well, after the rename took effect; the wrapper reports that
+/// as `DurableWriteError::AfterRename`, so callers branch on the class first.
+#[cfg(unix)]
+pub(crate) fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+    match rustix::fs::renameat_with(
+        rustix::fs::CWD,
+        from,
+        rustix::fs::CWD,
+        to,
+        rustix::fs::RenameFlags::NOREPLACE,
+    ) {
+        Ok(()) => Ok(()),
+        Err(rustix::io::Errno::INVAL | rustix::io::Errno::NOSYS | rustix::io::Errno::OPNOTSUPP) => {
+            Err(io::Error::from(io::ErrorKind::Unsupported))
+        }
+        Err(error) => Err(io::Error::from(error)),
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn rename_no_replace(_from: &Path, _to: &Path) -> io::Result<()> {
+    // No portable atomic equivalent; callers fall back to their own check.
+    Err(io::Error::from(io::ErrorKind::Unsupported))
+}
+
+/// Streaming read chunk shared by the bounded and prefix readers.
+///
+/// Sixty-four kibibytes keeps each read syscall large enough for throughput
+/// while making the between-chunk cancellation checks frequent on slow media.
+///
+/// Kind: cap; a power of two, rounded down.
+const READ_CHUNK_BYTES: usize = 64 * 1024;
+
+pub(crate) fn read_prefix(path: &Path, byte_limit: usize) -> io::Result<Vec<u8>> {
+    let mut file = fs::File::open(path)?;
+    let mut limited = Read::by_ref(&mut file).take(u64::try_from(byte_limit).unwrap_or(u64::MAX));
+    let mut bytes = Vec::new();
+    limited.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+pub(crate) fn read_prefix_cancellable<F>(
+    path: &Path,
+    byte_limit: usize,
+    mut cancelled: F,
+) -> Result<Vec<u8>, BoundedFileReadError>
+where
+    F: FnMut() -> bool,
+{
+    let mut file = fs::File::open(path).map_err(BoundedFileReadError::Io)?;
+    let mut bytes = Vec::new();
+    let mut chunk = vec![0u8; READ_CHUNK_BYTES].into_boxed_slice();
+
+    loop {
+        if cancelled() {
+            return Err(BoundedFileReadError::Cancelled);
+        }
+        let remaining = byte_limit.saturating_sub(bytes.len());
+        if remaining == 0 {
+            return Ok(bytes);
+        }
+        let read_len = remaining.min(READ_CHUNK_BYTES);
+        let count = file
+            .read(&mut chunk[..read_len])
+            .map_err(BoundedFileReadError::Io)?;
+        if count == 0 {
+            return Ok(bytes);
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+    }
+}
+
+pub(crate) fn read_bounded<F>(
+    path: &Path,
+    byte_limit: u64,
+    capacity_hint: u64,
+    mut cancelled: F,
+) -> Result<Vec<u8>, BoundedFileReadError>
+where
+    F: FnMut() -> bool,
+{
+    let usize_max = u64::try_from(usize::MAX).unwrap_or(u64::MAX);
+    let initial_capacity =
+        usize::try_from(capacity_hint.min(byte_limit).min(usize_max)).unwrap_or(usize::MAX);
+    let mut bytes = Vec::with_capacity(initial_capacity);
+    let mut file = fs::File::open(path).map_err(BoundedFileReadError::Io)?;
+    let mut chunk = vec![0u8; READ_CHUNK_BYTES].into_boxed_slice();
+
+    loop {
+        if cancelled() {
+            return Err(BoundedFileReadError::Cancelled);
+        }
+        let retained = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        if retained == byte_limit {
+            let mut sentinel = [0u8; 1];
+            let count = file.read(&mut sentinel).map_err(BoundedFileReadError::Io)?;
+            return if count == 0 {
+                Ok(bytes)
+            } else {
+                Err(BoundedFileReadError::LimitExceeded { byte_limit })
+            };
+        }
+        let remaining = byte_limit.saturating_sub(retained);
+        let read_len =
+            usize::try_from(remaining.min(READ_CHUNK_BYTES as u64)).unwrap_or(READ_CHUNK_BYTES);
+        let count = file
+            .read(&mut chunk[..read_len])
+            .map_err(BoundedFileReadError::Io)?;
+        if count == 0 {
+            return Ok(bytes);
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+    }
+}
+
+/// Stream `path` to `consume` in chunks of at most `chunk_bytes`, refusing
+/// to read past `byte_limit` (one sentinel byte tells an exact-limit file from
+/// a larger one). Returns the bytes streamed.
+pub(crate) fn stream_bounded<F, C, E>(
+    path: &Path,
+    byte_limit: u64,
+    chunk_bytes: usize,
+    mut cancelled: F,
+    mut consume: C,
+) -> Result<u64, super::read::BoundedStreamError<E>>
+where
+    F: FnMut() -> bool,
+    C: FnMut(&[u8]) -> Result<(), E>,
+{
+    use super::read::BoundedStreamError;
+    let mut file = fs::File::open(path).map_err(BoundedStreamError::Io)?;
+    let mut chunk = vec![0u8; chunk_bytes.max(1)].into_boxed_slice();
+    let mut streamed = 0u64;
+    loop {
+        if cancelled() {
+            return Err(BoundedStreamError::Cancelled);
+        }
+        if streamed == byte_limit {
+            let mut sentinel = [0u8; 1];
+            let count = read_retrying(&mut file, &mut sentinel).map_err(BoundedStreamError::Io)?;
+            return if count == 0 {
+                Ok(streamed)
+            } else {
+                Err(BoundedStreamError::LimitExceeded { byte_limit })
+            };
+        }
+        let remaining = byte_limit - streamed;
+        let read_len = usize::try_from(remaining.min(chunk.len() as u64)).unwrap_or(chunk.len());
+        let count =
+            read_retrying(&mut file, &mut chunk[..read_len]).map_err(BoundedStreamError::Io)?;
+        if count == 0 {
+            return Ok(streamed);
+        }
+        consume(&chunk[..count]).map_err(BoundedStreamError::Consumer)?;
+        streamed += count as u64;
+    }
+}
+
+fn read_retrying(file: &mut fs::File, buffer: &mut [u8]) -> io::Result<usize> {
+    loop {
+        match file.read(buffer) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            result => return result,
+        }
+    }
+}
+
+/// Bytes an unprivileged process may still write on the filesystem holding
+/// `path` (`f_bavail * f_frsize`).
+#[cfg(unix)]
+pub(crate) fn free_space(path: &Path) -> io::Result<u64> {
+    let stat = rustix::fs::statvfs(path).map_err(io::Error::from)?;
+    Ok(stat.f_bavail.saturating_mul(stat.f_frsize))
+}
+
+#[cfg(not(unix))]
+pub(crate) fn free_space(_path: &Path) -> io::Result<u64> {
+    Err(io::Error::from(io::ErrorKind::Unsupported))
+}
+
+#[cfg(unix)]
+pub(crate) fn file_identity(metadata: &Metadata) -> Option<FileIdentity> {
+    use std::os::unix::fs::MetadataExt;
+
+    Some(FileIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
+}
+
+#[cfg(not(unix))]
+pub(crate) fn file_identity(_metadata: &Metadata) -> Option<FileIdentity> {
+    None
+}
+
+/// Return the Unix flags used to open a directory for entry traversal.
+///
+/// `DIRECTORY` keeps accidental file or special-device paths out of the raw
+/// directory reader, while `CLOEXEC` prevents traversal descriptors from leaking
+/// into helper processes spawned while a scan is still alive.
+#[cfg(unix)]
+pub(super) fn directory_traversal_open_flags() -> rustix::fs::OFlags {
+    rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC
+}
+
+#[cfg(unix)]
+/// Visit raw Unix directory entries without materializing platform-specific
+/// traversal details above the filesystem boundary.
+///
+/// Returning `false` from the visitor stops traversal early, which lets bounded
+/// scanners enforce caps without reading the rest of a large directory.
+pub(crate) fn visit_directory_entries<F>(path: &Path, mut visit: F) -> io::Result<()>
+where
+    F: FnMut(RawDirectoryEntry) -> bool,
+{
+    use std::os::unix::ffi::OsStringExt;
+
+    let fd = rustix::fs::openat(
+        rustix::fs::CWD,
+        path,
+        directory_traversal_open_flags(),
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(io::Error::from)?;
+    let mut dir = rustix::fs::Dir::new(fd).map_err(io::Error::from)?;
+
+    while let Some(entry) = dir.read() {
+        let entry = entry.map_err(io::Error::from)?;
+        let name_bytes = entry.file_name().to_bytes();
+        if name_bytes == b"." || name_bytes == b".." {
+            continue;
+        }
+        let file_name = OsString::from_vec(name_bytes.to_vec());
+        let child_path = path.join(&file_name);
+        let Ok(dir_fd) = dir.fd() else {
+            continue;
+        };
+        let Ok(stat) = rustix::fs::statat(dir_fd, entry.file_name(), rustix::fs::AtFlags::empty())
+        else {
+            continue;
+        };
+        let kind = kind_from_rustix_file_type(rustix::fs::FileType::from_raw_mode(stat.st_mode));
+        // The entry's own type comes from `readdir` (`d_type`); only a
+        // filesystem that reports no type pays an `lstat`
+        // (`scale-file-index` D2).
+        let is_symlink = match entry.file_type() {
+            rustix::fs::FileType::Symlink => true,
+            rustix::fs::FileType::Unknown => rustix::fs::statat(
+                dir_fd,
+                entry.file_name(),
+                rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+            )
+            .is_ok_and(|own| {
+                rustix::fs::FileType::from_raw_mode(own.st_mode) == rustix::fs::FileType::Symlink
+            }),
+            _ => false,
+        };
+        if !visit(RawDirectoryEntry {
+            path: child_path,
+            file_name,
+            kind,
+            is_symlink,
+        }) {
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn visit_directory_entries<F>(path: &Path, mut visit: F) -> io::Result<()>
+where
+    F: FnMut(RawDirectoryEntry) -> bool,
+{
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let is_symlink = entry
+            .file_type()
+            .is_ok_and(|file_type| file_type.is_symlink());
+        if !visit(RawDirectoryEntry {
+            path: entry.path(),
+            file_name: entry.file_name(),
+            kind: kind_from_std_metadata(&metadata),
+            is_symlink,
+        }) {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Visit the entry names of one directory without stat-ing any entry.
+///
+/// Name-only callers such as the leftover sweep filter by name first and pay a
+/// metadata call only for the few names that match. Returning `false` from the
+/// visitor stops traversal early.
+#[cfg(unix)]
+pub(crate) fn visit_directory_names<F>(path: &Path, mut visit: F) -> io::Result<()>
+where
+    F: FnMut(&std::ffi::OsStr) -> bool,
+{
+    use std::os::unix::ffi::OsStrExt;
+
+    let fd = rustix::fs::openat(
+        rustix::fs::CWD,
+        path,
+        directory_traversal_open_flags(),
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(io::Error::from)?;
+    let mut dir = rustix::fs::Dir::new(fd).map_err(io::Error::from)?;
+    while let Some(entry) = dir.read() {
+        let entry = entry.map_err(io::Error::from)?;
+        let name_bytes = entry.file_name().to_bytes();
+        if name_bytes == b"." || name_bytes == b".." {
+            continue;
+        }
+        if !visit(std::ffi::OsStr::from_bytes(name_bytes)) {
+            break;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn visit_directory_names<F>(path: &Path, mut visit: F) -> io::Result<()>
+where
+    F: FnMut(&std::ffi::OsStr) -> bool,
+{
+    for entry in fs::read_dir(path)? {
+        if !visit(&entry?.file_name()) {
+            break;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+pub(crate) fn mode(path: &Path) -> io::Result<u32> {
+    rustix::fs::stat(path)
+        .map(|stat| stat.st_mode)
+        .map_err(io::Error::from)
+}
+
+#[cfg(unix)]
+pub(crate) fn inode(path: &Path) -> io::Result<u64> {
+    rustix::fs::stat(path)
+        .map(|stat| stat.st_ino)
+        .map_err(io::Error::from)
+}
+
+/// Inode of the entry itself, **without** following a final symlink.
+///
+/// `stat` follows links, so a dangling symlink has no readable identity at all. A
+/// delete confirmed on such a row is a delete of the *link*, which does have one.
+pub(crate) fn link_inode(path: &Path) -> io::Result<u64> {
+    rustix::fs::lstat(path)
+        .map(|stat| stat.st_ino)
+        .map_err(io::Error::from)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn mode(_path: &Path) -> io::Result<u32> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "permission-mode queries require Unix",
+    ))
+}
+
+#[cfg(not(unix))]
+pub(crate) fn link_inode(path: &Path) -> io::Result<u64> {
+    inode(path)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn inode(_path: &Path) -> io::Result<u64> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "inode queries require Unix",
+    ))
+}
+
+#[cfg(unix)]
+pub(crate) fn descriptor_file_len(path: &Path) -> io::Result<u64> {
+    let stat = rustix::fs::stat(path).map_err(io::Error::from)?;
+    u64::try_from(stat.st_size).map_err(|_| io::Error::other("negative file size"))
+}
+
+#[cfg(not(unix))]
+pub(crate) fn descriptor_file_len(path: &Path) -> io::Result<u64> {
+    Ok(metadata(path)?.len())
+}
+
+#[cfg(unix)]
+pub(crate) fn sync_dir_descriptor(path: &Path) -> io::Result<()> {
+    let fd = rustix::fs::openat(
+        rustix::fs::CWD,
+        path,
+        directory_traversal_open_flags(),
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(io::Error::from)?;
+    rustix::fs::fsync(&fd).map_err(io::Error::from)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn sync_dir_descriptor(_path: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+/// Create a new temp file with exclusive semantics and caller-selected Unix mode.
+///
+/// Durable writes use this instead of `File::create` so temp files never follow
+/// or overwrite an existing path while preserving the target's intended mode.
+pub(crate) fn create_temp_file(path: &Path, mode: Option<u32>) -> io::Result<File> {
+    let fd = rustix::fs::openat(
+        rustix::fs::CWD,
+        path,
+        rustix::fs::OFlags::WRONLY
+            | rustix::fs::OFlags::CREATE
+            | rustix::fs::OFlags::EXCL
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::from_raw_mode(mode.unwrap_or(0o666)),
+    )
+    .map_err(io::Error::from)?;
+    Ok(File::from(fd))
+}
+
+#[cfg(not(unix))]
+/// Create a new temp file on non-Unix platforms using the closest standard API.
+pub(crate) fn create_temp_file(path: &Path, _mode: Option<u32>) -> io::Result<File> {
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+}
+
+#[cfg(unix)]
+pub(crate) fn sync_file(file: &File) -> io::Result<()> {
+    rustix::fs::fsync(file).map_err(io::Error::from)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn sync_file(file: &File) -> io::Result<()> {
+    file.sync_all()
+}
+
+#[cfg(unix)]
+pub(crate) fn required_metadata(path: &Path) -> io::Result<UnixMetadata> {
+    let stat = rustix::fs::stat(path).map_err(io::Error::from)?;
+    Ok(UnixMetadata {
+        mode: stat.st_mode,
+        uid: stat.st_uid,
+        gid: stat.st_gid,
+    })
+}
+
+#[cfg(unix)]
+pub(crate) fn apply_mode(file: &File, mode: u32) -> io::Result<()> {
+    rustix::fs::fchmod(file, rustix::fs::Mode::from_raw_mode(mode)).map_err(io::Error::from)
+}
+
+#[cfg(unix)]
+pub(crate) fn best_effort_chown(file: &File, uid: u32, gid: u32) {
+    let _ = rustix::fs::fchown(
+        file,
+        Some(rustix::fs::Uid::from_raw(uid)),
+        Some(rustix::fs::Gid::from_raw(gid)),
+    );
+}
+
+#[cfg(target_os = "linux")]
+/// Copy Linux extended attributes when possible without making them part of
+/// the durability contract.
+///
+/// Missing permissions or unsupported xattrs are ignored so preserving optional
+/// metadata never turns a content-safe write into a user-visible failure.
+pub(crate) fn copy_xattrs_best_effort(source: &Path, dest: &File) {
+    let Ok(names) = xattr_names(source) else {
+        return;
+    };
+
+    for name in names
+        .split(|&byte| byte == 0)
+        .filter(|name| !name.is_empty())
+    {
+        let Ok(name) = CString::new(name) else {
+            continue;
+        };
+        let Ok(value) = get_xattr_with_name(source, name.as_c_str()) else {
+            continue;
+        };
+        let _ = rustix::fs::fsetxattr(
+            dest,
+            name.as_c_str(),
+            &value,
+            rustix::fs::XattrFlags::empty(),
+        );
+    }
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+pub(crate) fn copy_xattrs_best_effort(_source: &Path, _dest: &File) {}
+
+#[cfg(target_os = "linux")]
+fn xattr_names(path: &Path) -> io::Result<Vec<u8>> {
+    // The `_query` form asks the kernel for the size; a zero-length buffer
+    // passed to `listxattr` returns an empty list instead (rustix 1.1.6,
+    // RUSTSEC-2026-0486).
+    let len = rustix::fs::listxattr_query(path).map_err(io::Error::from)?;
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut names = vec![0u8; len];
+    let written = rustix::fs::listxattr(path, &mut names).map_err(io::Error::from)?;
+    names.truncate(written);
+    Ok(names)
+}
+
+#[cfg(target_os = "linux")]
+fn get_xattr_with_name<Name: Copy + rustix::path::Arg>(
+    path: &Path,
+    name: Name,
+) -> io::Result<Vec<u8>> {
+    let len = rustix::fs::getxattr_query(path, name).map_err(io::Error::from)?;
+    let mut value = vec![0u8; len];
+    let read = rustix::fs::getxattr(path, name, &mut value).map_err(io::Error::from)?;
+    value.truncate(read);
+    Ok(value)
+}
+
+/// Raw writers and metadata setters that serve only `filesystem::fixture`,
+/// which is itself test-only. Gating them as one module keeps every shipping
+/// build free of a raw writer that bypasses the durable-write path.
+#[cfg(any(test, feature = "test-utils"))]
+mod fixture_ops {
+    use std::fs;
+    use std::io::{self, Seek, SeekFrom, Write};
+    use std::path::Path;
+
+    #[cfg(target_os = "linux")]
+    use super::get_xattr_with_name;
+
+    pub(crate) fn write(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
+        fs::write(path, contents)
+    }
+
+    pub(crate) fn create_sparse_file(path: &Path, len: u64) -> io::Result<()> {
+        let file = fs::File::create(path)?;
+        file.set_len(len)
+    }
+
+    pub(crate) fn write_at_start(path: &Path, bytes: &[u8]) -> io::Result<()> {
+        let mut file = fs::OpenOptions::new().write(true).open(path)?;
+        file.seek(SeekFrom::Start(0))?;
+        file.write_all(bytes)
+    }
+
+    /// Set a path's access and modification times without following a final symlink.
+    #[cfg(unix)]
+    pub(crate) fn set_times_no_follow(path: &Path, time: std::time::SystemTime) -> io::Result<()> {
+        let since_epoch = time
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        let timespec = rustix::fs::Timespec {
+            tv_sec: i64::try_from(since_epoch.as_secs())
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?,
+            tv_nsec: since_epoch.subsec_nanos().into(),
+        };
+        rustix::fs::utimensat(
+            rustix::fs::CWD,
+            path,
+            &rustix::fs::Timestamps {
+                last_access: timespec,
+                last_modification: timespec,
+            },
+            rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+        )
+        .map_err(io::Error::from)
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn set_times_no_follow(path: &Path, time: std::time::SystemTime) -> io::Result<()> {
+        fs::File::options()
+            .write(true)
+            .open(path)?
+            .set_modified(time)
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn symlink(target: &Path, link: &Path) -> io::Result<()> {
+        rustix::fs::symlinkat(target, rustix::fs::CWD, link).map_err(io::Error::from)
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn symlink(_target: &Path, _link: &Path) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "symlink fixtures require Unix",
+        ))
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn set_permissions_mode(path: &Path, mode: u32) -> io::Result<()> {
+        rustix::fs::chmodat(
+            rustix::fs::CWD,
+            path,
+            rustix::fs::Mode::from_raw_mode(mode),
+            rustix::fs::AtFlags::empty(),
+        )
+        .map_err(io::Error::from)
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn set_permissions_mode(_path: &Path, _mode: u32) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "permission-mode fixtures require Unix",
+        ))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn set_xattr(path: &Path, name: &str, value: &[u8]) -> io::Result<()> {
+        rustix::fs::setxattr(path, name, value, rustix::fs::XattrFlags::empty())
+            .map_err(io::Error::from)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(crate) fn set_xattr(_path: &Path, _name: &str, _value: &[u8]) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "xattr fixtures require Linux",
+        ))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn get_xattr(path: &Path, name: &str) -> io::Result<Vec<u8>> {
+        get_xattr_with_name(path, name)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(crate) fn get_xattr(_path: &Path, _name: &str) -> io::Result<Vec<u8>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "xattr fixtures require Linux",
+        ))
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+pub(crate) use fixture_ops::*;
+
+#[cfg(all(test, unix))]
+mod tests {
+    use rustix::fs::OFlags;
+
+    use super::directory_traversal_open_flags;
+
+    #[test]
+    fn directory_traversal_open_flags_require_directory_and_close_on_exec() {
+        let flags = directory_traversal_open_flags();
+
+        assert_eq!(flags & OFlags::ACCMODE, OFlags::RDONLY);
+        assert!(flags.contains(OFlags::DIRECTORY));
+        assert!(flags.contains(OFlags::CLOEXEC));
+    }
+}

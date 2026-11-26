@@ -449,7 +449,7 @@ its interleaved verdict (`avx2-health-scan-kernel`).
 
 | File | Function | Measurement | NEON | Dispatch crate |
 | --- | --- | --- | --- | --- |
-| `crates/lushtext-core/src/services/editor_io/text_scans/health_avx2.rs` | `count` (the 64-byte AVX2 block kernel `count_blocks` behind `is_x86_feature_detected!("avx2")` and `("popcnt")`; fallback `text_scans::count_health_characters_memchr`) | `docs/benchmarks/transient-file-load.md#avx2-file-health-kernel` | unmeasured (no aarch64 host); aarch64 uses `memchr`'s NEON `memchr3` | none |
+| `crates/lushtext-services/src/editor_io/text_scans/health_avx2.rs` | `count` (the 64-byte AVX2 block kernel `count_blocks` behind `is_x86_feature_detected!("avx2")` and `("popcnt")`; fallback `text_scans::count_health_characters_memchr`) | `docs/benchmarks/transient-file-load.md#avx2-file-health-kernel` | unmeasured (no aarch64 host); aarch64 uses `memchr`'s NEON `memchr3` | none |
 
 ## Modern Rust Idioms
 

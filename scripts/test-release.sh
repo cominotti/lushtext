@@ -50,6 +50,7 @@ write_fixture_files() {
     mkdir -p \
         "$fixture/crates/lushtext" \
         "$fixture/crates/lushtext-model" \
+        "$fixture/crates/lushtext-services" \
         "$fixture/crates/lushtext-core" \
         "$fixture/data" \
         "$fixture/build-aux"
@@ -76,6 +77,13 @@ version = "0.1.0"
 edition = "2024"
 EOF
 
+    cat > "$fixture/crates/lushtext-services/Cargo.toml" <<'EOF'
+[package]
+name = "lushtext-services"
+version = "0.1.0"
+edition = "2024"
+EOF
+
     cat > "$fixture/crates/lushtext-core/Cargo.toml" <<'EOF'
 [package]
 name = "lushtext-core"
@@ -93,6 +101,10 @@ version = "0.1.0"
 
 [[package]]
 name = "lushtext-model"
+version = "0.1.0"
+
+[[package]]
+name = "lushtext-services"
 version = "0.1.0"
 
 [[package]]
@@ -178,8 +190,9 @@ set -euo pipefail
 if [[ "$1" == "update" && "${2:-}" == "-w" ]]; then
     lushtext_version="$(awk -F\" '/^version = "/ { print $2; exit }' crates/lushtext/Cargo.toml)"
     model_version="$(awk -F\" '/^version = "/ { print $2; exit }' crates/lushtext-model/Cargo.toml)"
+    services_version="$(awk -F\" '/^version = "/ { print $2; exit }' crates/lushtext-services/Cargo.toml)"
     core_version="$(awk -F\" '/^version = "/ { print $2; exit }' crates/lushtext-core/Cargo.toml)"
-    awk -v lush="$lushtext_version" -v model="$model_version" -v core="$core_version" '
+    awk -v lush="$lushtext_version" -v model="$model_version" -v services="$services_version" -v core="$core_version" '
         $0 == "name = \"lushtext\"" {
             print
             getline
@@ -190,6 +203,12 @@ if [[ "$1" == "update" && "${2:-}" == "-w" ]]; then
             print
             getline
             print "version = \"" model "\""
+            next
+        }
+        $0 == "name = \"lushtext-services\"" {
+            print
+            getline
+            print "version = \"" services "\""
             next
         }
         $0 == "name = \"lushtext-core\"" {
@@ -327,6 +346,7 @@ with_release_lib 'prepare_release_files v1.2.3 notes.txt ""; validate_release_me
 grep -q "version: '1.2.3'" "$fixture/meson.build"
 grep -q 'version = "1.2.3"' "$fixture/crates/lushtext/Cargo.toml"
 grep -q 'version = "1.2.3"' "$fixture/crates/lushtext-model/Cargo.toml"
+grep -q 'version = "1.2.3"' "$fixture/crates/lushtext-services/Cargo.toml"
 grep -q 'version = "1.2.3"' "$fixture/crates/lushtext-core/Cargo.toml"
 grep -q '<release version="1.2.3"' "$fixture/data/dev.cominotti.lushtext.metainfo.xml.in"
 grep -q 'Release notes &amp; polish' "$fixture/data/dev.cominotti.lushtext.metainfo.xml.in"

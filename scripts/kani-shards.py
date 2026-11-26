@@ -50,6 +50,7 @@ KANI_VERSION_RE = re.compile(r"^KANI_VERSION \?= (\S+)$", re.M)
 PACKAGES = {
     "gtk-lush-widgets": REPO_ROOT / "crates/gtk-lush/widgets/src",
     "lushtext-model": REPO_ROOT / "crates/lushtext-model/src",
+    "lushtext-services": REPO_ROOT / "crates/lushtext-services/src",
     "lushtext-core": REPO_ROOT / "crates/lushtext-core/src",
 }
 
@@ -364,13 +365,13 @@ SHARDS: dict[str, Shard] = {
         measured_in=CLOSED_LOOP_MEASURED_IN,
     ),
     "core-journal-and-write": Shard(
-        "lushtext-core",
+        "lushtext-services",
         (
-            "services::draft_service::kani_proofs::journal_invariants_hold_under_crashes",
-            "services::draft_service::kani_proofs::journal_set_aside_",
-            "services::draft_service::kani_proofs::journal_decisions_",
-            "services::draft_service::set_aside_retention::kani_proofs::",
-            "services::filesystem::write_protocol::kani_proofs::",
+            "draft_service::kani_proofs::journal_invariants_hold_under_crashes",
+            "draft_service::kani_proofs::journal_set_aside_",
+            "draft_service::kani_proofs::journal_decisions_",
+            "draft_service::set_aside_retention::kani_proofs::",
+            "filesystem::write_protocol::kani_proofs::",
         ),
         gate="scheduled",
         ci_minutes=12.0,
@@ -380,8 +381,8 @@ SHARDS: dict[str, Shard] = {
     # verify-multi-window-draft-journal added the journal lane to the model,
     # which made the two L1 harnesses too slow to share the journal shard.
     "core-journal-liveness": Shard(
-        "lushtext-core",
-        ("services::draft_service::kani_proofs::a_dirty_editor_",),
+        "lushtext-services",
+        ("draft_service::kani_proofs::a_dirty_editor_",),
         gate="scheduled",
         ci_minutes=15.2,
         ci_peak_gib=4.8,
@@ -390,8 +391,8 @@ SHARDS: dict[str, Shard] = {
     # probe-long-line-toolkit-costs added the responsiveness-budget arithmetic
     # here: seconds of CBMC, too small for a shard of its own.
     "core-second-writer": Shard(
-        "lushtext-core",
-        ("services::draft_service::kani_proofs::a_second_writer_",),
+        "lushtext-services",
+        ("draft_service::kani_proofs::a_second_writer_",),
         gate="scheduled",
         ci_minutes=7.4,
         ci_peak_gib=2.7,
@@ -409,8 +410,8 @@ SHARDS: dict[str, Shard] = {
     # verify-multi-window-draft-journal: two windows of one process over the
     # journal machine, too large to share a job with the single-window harness.
     "core-multi-window": Shard(
-        "lushtext-core",
-        ("services::draft_service::kani_proofs::journal_invariants_hold_across_two_windows",),
+        "lushtext-services",
+        ("draft_service::kani_proofs::journal_invariants_hold_across_two_windows",),
         gate="scheduled",
         ci_minutes=8.9,
         ci_peak_gib=2.7,
@@ -679,16 +680,16 @@ SHARDS: dict[str, Shard] = {
     # tried fitted the margin, design D11 "Kani memory"). Local figures until
     # two kani.yml dispatches replace them.
     "core-replace-protocol": Shard(
-        "lushtext-core",
-        ("services::content_search::replace::protocol::kani_proofs::",),
+        "lushtext-services",
+        ("content_search::replace::protocol::kani_proofs::",),
         gate="pull-request",
         ci_minutes=REPLACE_PROTOCOL_CI_MINUTES,
         ci_peak_gib=REPLACE_PROTOCOL_CI_PEAK_GIB,
         measured_in=REPLACE_MEASURED_IN,
     ),
     "core-replace-stream": Shard(
-        "lushtext-core",
-        ("services::content_search::replace::stream::utf8::kani_proofs::",),
+        "lushtext-services",
+        ("content_search::replace::stream::utf8::kani_proofs::",),
         gate="scheduled",
         ci_minutes=REPLACE_STREAM_CI_MINUTES,
         ci_peak_gib=REPLACE_STREAM_CI_PEAK_GIB,
@@ -739,6 +740,7 @@ def _h(name: str, seconds: float, tier: str) -> OracleHarness:
 
 _WIDGETS = "gtk-lush-widgets"
 _MODEL = "lushtext-model"
+_SERVICES = "lushtext-services"
 _CORE = "lushtext-core"
 _W = "kani_proofs::"
 _SLICE_LOOP = (
@@ -763,9 +765,9 @@ _SLICE_LOOP = (
     _h(_W + "slice_loop_settle_evidence_waits_for_the_reslice", 190.38, "local"),
     _h(_W + "slice_loop_settle_evidence_without_the_reslice_is_stale", 88.4, "local"),
 )
-_JOURNAL = "services::draft_service::kani_proofs::"
-_RETENTION = "services::draft_service::set_aside_retention::kani_proofs::"
-_WRITE = "services::filesystem::write_protocol::kani_proofs::"
+_JOURNAL = "draft_service::kani_proofs::"
+_RETENTION = "draft_service::set_aside_retention::kani_proofs::"
+_WRITE = "filesystem::write_protocol::kani_proofs::"
 _MEMORY = "editor_memory::kani_proofs::"
 _SHELL = "ui::window::geometry::policy::kani_proofs::"
 _SHELL_LOOP = "ui::window::geometry::kani_proofs::"
@@ -774,8 +776,8 @@ _MINIMAP = "ui::editor_page::minimap::policy::kani_proofs::"
 _PREVIEW = "ui::markdown_preview::policy::kani_proofs::"
 _BUDGET = "responsiveness_budget::kani_proofs::"
 _WRITE_BATCH = "settings_write_batch::kani_proofs::"
-_REPLACE_PROTOCOL = "services::content_search::replace::protocol::kani_proofs::"
-_REPLACE_UTF8 = "services::content_search::replace::stream::utf8::kani_proofs::"
+_REPLACE_PROTOCOL = "content_search::replace::protocol::kani_proofs::"
+_REPLACE_UTF8 = "content_search::replace::stream::utf8::kani_proofs::"
 # document-scale-policy local seconds: the verification times of `make kani` on
 # this workstation (Kani 0.68.0, 2026-10-20), cheapest first per module.
 PROFILE_CARRY_SECONDS = 13.64
@@ -832,8 +834,8 @@ ORACLES: dict[str, Oracle] = {
             *_SLICE_LOOP,
         ),
     ),
-    "crates/lushtext-core/src/services/draft_service/journal_core.rs": Oracle(
-        _CORE,
+    "crates/lushtext-services/src/draft_service/journal_core.rs": Oracle(
+        _SERVICES,
         (
             _h(_JOURNAL + "journal_decisions_follow_their_documented_rules", 0.35, "ci"),
             _h(_JOURNAL + "journal_set_aside_keeps_every_body_it_reports_kept", 4.13, "local"),
@@ -844,8 +846,8 @@ ORACLES: dict[str, Oracle] = {
             _h(_JOURNAL + "journal_invariants_hold_under_crashes", 309.72, "local"),
         ),
     ),
-    "crates/lushtext-core/src/services/draft_service/set_aside_retention.rs": Oracle(
-        _CORE,
+    "crates/lushtext-services/src/draft_service/set_aside_retention.rs": Oracle(
+        _SERVICES,
         (
             _h(_RETENTION + "set_aside_retention_bound_and_notice_never_plan_a_deletion", 0.19, "ci"),
             _h(_RETENTION + "set_aside_retention_deleting_every_body_breaks_r2", 1.28, "ci"),
@@ -853,8 +855,8 @@ ORACLES: dict[str, Oracle] = {
             _h(_RETENTION + "set_aside_retention_notice_follows_the_bound_and_its_rate_limit", 12.73, "ci"),
         ),
     ),
-    "crates/lushtext-core/src/services/filesystem/write_protocol.rs": Oracle(
-        _CORE,
+    "crates/lushtext-services/src/filesystem/write_protocol.rs": Oracle(
+        _SERVICES,
         (
             _h(_WRITE + "a_move_removes_its_source_only_after_the_copy_is_durable", 0.07, "ci"),
             _h(_WRITE + "a_completed_rename_synced_every_directory_it_mutated", 0.08, "ci"),
@@ -1118,16 +1120,16 @@ ORACLES: dict[str, Oracle] = {
             _h(_WATCH + "watch_fast_path_without_a_carried_bound_is_unsound", WATCH_UNSOUND_SECONDS, "local"),
         ),
     ),
-    "crates/lushtext-core/src/services/content_search/replace/protocol.rs": Oracle(
-        _CORE,
+    "crates/lushtext-services/src/content_search/replace/protocol.rs": Oracle(
+        _SERVICES,
         (
             _h(_REPLACE_PROTOCOL + "shrink_removes_the_entry_before_the_body", REPLACE_SHRINK_SECONDS, "ci"),
             _h(_REPLACE_PROTOCOL + "undo_writes_only_to_a_file_holding_the_replaced_bytes", REPLACE_UNDO_SECONDS, "ci"),
             _h(_REPLACE_PROTOCOL + "an_apply_run_keeps_every_target_recoverable", REPLACE_PROTOCOL_RUN_SECONDS, "ci"),
         ),
     ),
-    "crates/lushtext-core/src/services/content_search/replace/stream/utf8.rs": Oracle(
-        _CORE,
+    "crates/lushtext-services/src/content_search/replace/stream/utf8.rs": Oracle(
+        _SERVICES,
         (
             _h(_REPLACE_UTF8 + "the_byte_scan_matches_core_from_utf8", REPLACE_UTF8_SCAN_SECONDS, "ci"),
             _h(_REPLACE_UTF8 + "utf8_seams_do_not_depend_on_the_chunk_size", REPLACE_UTF8_SEAMS_SECONDS, "ci"),
@@ -1564,6 +1566,7 @@ def oracle_self_test() -> None:
         core = root / "crates/lushtext-core/src"
         (root / "crates/gtk-lush/widgets/src").mkdir(parents=True)
         (root / "crates/lushtext-model/src").mkdir(parents=True)
+        (root / "crates/lushtext-services/src").mkdir(parents=True)
         (core / "m").mkdir(parents=True)
         (core / "lib.rs").write_text("pub mod m;\npub mod other;\n")
         (core / "m.rs").write_text("#[cfg(kani)]\nmod kani_proofs;\npub fn f() {}\n")

@@ -1,6 +1,6 @@
 ---
 name: gtk-perf-review
-description: "The single entry point for LushText performance review; it coordinates the responsiveness, scale and Rust hot-path leaf checklists. Use for Rust changes in ui, services, model, lushtext-model, benches or the GTK Lush signals, tasks, settle, viewport and widgets crates, their Cargo dependency or feature changes, Rust pull-request reviews, and questions about responsiveness, hangs, memory, large files, search, indexing, SIMD or benchmarks."
+description: "The single entry point for LushText performance review; it coordinates the responsiveness, scale and Rust hot-path leaf checklists. Use for Rust changes in ui, services, model, lushtext-model, lushtext-services, benches or the GTK Lush signals, tasks, settle, viewport and widgets crates, their Cargo dependency or feature changes, Rust pull-request reviews, and questions about responsiveness, hangs, memory, large files, search, indexing, SIMD or benchmarks."
 ---
 
 # GTK Performance Review
