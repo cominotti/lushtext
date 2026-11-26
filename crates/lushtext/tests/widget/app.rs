@@ -104,6 +104,30 @@ fn test_startup_registers_bundled_sourceview_scheme_path() {
     assert!(manager.scheme("Adwaita-dark").is_some());
 }
 
+/// Every display-wide provider adds its rules to every style lookup of every
+/// widget, so a second application started in the same process (each widget
+/// test window starts one) must not add the application CSS again: a copy per
+/// startup made every restyle slower the more windows a process had opened
+/// (originating in `slice-large-directory-collapse`, design R13).
+#[test]
+fn test_a_second_startup_adds_no_display_css_provider() {
+    ensure_gtk_init();
+    let first = test_lushtext_application();
+    let after_first = lushtext_core::ui::theme::display_providers_added();
+    assert!(
+        after_first > 0,
+        "the first startup adds the application CSS for the display"
+    );
+    let second = test_lushtext_application();
+    let third = test_lushtext_application();
+    assert_eq!(
+        lushtext_core::ui::theme::display_providers_added(),
+        after_first,
+        "later startups in the same process add no display provider"
+    );
+    drop((first, second, third));
+}
+
 #[test]
 fn test_startup_registers_bundled_app_icon_path() {
     ensure_gtk_init();

@@ -1691,7 +1691,9 @@ pub(super) fn schedule_child_state_restore(section: &LushtextWorkspaceSection) {
             }
             let pending_selection = section.imp().pending_selection.borrow().clone();
             if let Some(path) = pending_selection {
-                section.select_and_scroll_to(&path);
+                // A background restore keeps the focus where the user placed it
+                // (e.g., an inline-rename entry or a row focused off the selection).
+                section.restore_selection(&path);
             }
         }
     });

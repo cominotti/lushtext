@@ -39,6 +39,6 @@ pub mod settings_writes;
 pub mod sidebar;
 pub(crate) mod signal_connect;
 pub mod status_bar;
-pub(crate) mod theme;
+pub mod theme;
 pub mod window;
 pub(crate) mod workspace_visibility;
