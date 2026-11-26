@@ -754,17 +754,24 @@ fn with_directory_budget(bytes: u64, test: impl FnOnce()) {
     }
 }
 
-/// The listing evidence of `directory`, from the section's plain mirrors.
-fn listing(
+/// The listing evidence of `directory`, if the section has materialized it.
+fn maybe_listing(
     section: &LushtextWorkspaceSection,
     directory: &Path,
-) -> lushtext_core::ui::sidebar::evidence::DirectoryListingEvidence {
+) -> Option<lushtext_core::ui::sidebar::evidence::DirectoryListingEvidence> {
     section
         .workspace_section_evidence()
         .directory_listings
         .into_iter()
         .find(|listing| listing.path == directory)
-        .expect("the directory is materialized")
+}
+
+/// The listing evidence of `directory`, from the section's plain mirrors.
+fn listing(
+    section: &LushtextWorkspaceSection,
+    directory: &Path,
+) -> lushtext_core::ui::sidebar::evidence::DirectoryListingEvidence {
+    maybe_listing(section, directory).expect("the directory is materialized")
 }
 
 /// A directory past the per-directory budget ends with the budget row,
@@ -2402,7 +2409,8 @@ fn test_directory_expansion_dispatches_fit_the_settle_budget() {
             .expect("directory row")
             .set_expanded(true);
         let (held, worst) = worst_dispatch_until(Duration::from_secs(240), || {
-            listing(&tree.section, &nested).directory_retained_entries == count
+            maybe_listing(&tree.section, &nested)
+                .is_some_and(|entry| entry.directory_retained_entries == count)
                 && !tree
                     .section
                     .workspace_section_evidence()
@@ -2443,7 +2451,8 @@ fn test_directory_expansion_dispatches_fit_the_settle_budget() {
             .expect("directory row")
             .set_expanded(true);
         let (held, again) = worst_dispatch_until(Duration::from_secs(240), || {
-            listing(&tree.section, &nested).directory_retained_entries == count
+            maybe_listing(&tree.section, &nested)
+                .is_some_and(|entry| entry.directory_retained_entries == count)
                 && !tree
                     .section
                     .workspace_section_evidence()
@@ -2514,7 +2523,8 @@ fn test_directory_retention_stays_within_its_charge() {
         .expect("directory row")
         .set_expanded(true);
     wait_until(Duration::from_secs(120), || {
-        listing(&tree.section, &nested).directory_retained_entries == ROWS
+        maybe_listing(&tree.section, &nested)
+            .is_some_and(|entry| entry.directory_retained_entries == ROWS)
     });
     wait_for_refresh_idle(&tree.section);
     flush_after_delay(Duration::from_millis(300));
@@ -2544,7 +2554,8 @@ fn expand_and_load(tree: &LargeTree, directory: &Path, count: usize) {
         .expect("directory row")
         .set_expanded(true);
     wait_until(Duration::from_secs(120), || {
-        listing(&tree.section, directory).directory_retained_entries == count
+        maybe_listing(&tree.section, directory)
+            .is_some_and(|entry| entry.directory_retained_entries == count)
             && !tree
                 .section
                 .workspace_section_evidence()

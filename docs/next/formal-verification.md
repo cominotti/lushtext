@@ -451,6 +451,8 @@ declared envelope). A59–A61 and A64 are the first probes driven by real input,
 through the private compositor's RemoteDesktop interface. None was falsified,
 and no Kani harness or envelope cites them yet.
 
+`stop-expander-bind-time-child-scans` (2026-11-26) added **A135** (`a135_tree_expander_queries_expandability_on_every_bind`, probed headless against GTK 4.22.2 / Adw 1.9.0, 4.24.1 / 1.10.0, and 4.25.2 / 1.11.0): `GtkTreeExpander::update_for_list_row` re-evaluates `gtk_tree_list_row_is_expandable` on every bind, rebind, `hide-expander` change, and non-`expanded`/`item` row notify (including `notify::children` after collapse), while `GtkTreeListModel` caches only negative emptiness (`node->empty = TRUE`), discarding probe stores created for collapsed rows. Its disposition of hypotheses **H1–H5** (recorded in `openspec/changes/stop-expander-bind-time-child-scans/evidence/baseline.md`): H1 (GTK re-calls the create function and caches empty only) confirmed and pinned by A135; H2–H5 (bind-time child scans/registrations, scroll-time scan churn, accessible `Busy` toggles while scrolling, and collapse-time follow-up scans) eliminated by deferring registration and `populate_child_store` to `workspace_section/materialization_execution.rs`'s `Priority::HIGH` drain (`scan_submissions = 1` across bind and scroll-round-trip over 300 directories, `busy = false`, collapse `+0`). No Kani harness was added: `ui/sidebar/policy.rs::materialization_disposition` is a 4-boolean exhaustive decision table pinned by a 16-case unit test and `mutants-diff` (8 mutants generated over `ui/sidebar/policy.rs`: 6 caught, 2 unviable, 0 missed).
+
 ### Phase 2 — Kani lane
 
 - Add a `make kani` target, and an optional CI job using

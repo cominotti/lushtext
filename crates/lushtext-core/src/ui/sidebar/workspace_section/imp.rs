@@ -166,6 +166,16 @@ pub struct RefreshRuntimeState {
     pub scan_stale_completions: Cell<u64>,
     /// Current latest-only scans that published terminal reconciliation state.
     pub scan_terminal_publications: Cell<u64>,
+    /// Child `gio::ListStore` instances created by `build_children_model`.
+    pub child_model_creations: Cell<u64>,
+    /// Probe child stores dropped by GTK before the materialization drain ran.
+    pub child_model_probes_discarded: Cell<u64>,
+    /// Installed child stores handed to `populate_child_store` by the drain.
+    pub child_materializations: Cell<u64>,
+    /// Submissions to `populate_child_store` across the section's lifetime.
+    pub scan_submissions: Cell<u64>,
+    /// Submissions to `populate_child_store` keyed by directory path.
+    pub scan_submissions_by_path: RefCell<HashMap<PathBuf, u64>>,
     /// Largest active emptiness-probe count for any one configured folder.
     pub empty_probe_active_per_folder_high_water: Cell<usize>,
     /// Largest pending emptiness-probe count for any one configured folder.
@@ -326,6 +336,16 @@ pub struct LushtextWorkspaceSection {
     pub(super) child_admission_scans: RefCell<HashMap<usize, PendingChildScan>>,
     /// Section lifetime invalidating every queued or admitted child scan.
     pub(super) child_scan_lifetime: Cell<u64>,
+    /// Queued child stores returned by `build_children_model` awaiting the
+    /// `Priority::HIGH` materialization drain.
+    pub(super) pending_materializations:
+        RefCell<VecDeque<super::materialization_execution::PendingMaterialization>>,
+    /// Whether the `Priority::HIGH` materialization drain is currently armed.
+    pub(super) materialization_drain_armed: Cell<bool>,
+    /// Armed `Priority::HIGH` materialization drain idle source, removed on rebuild/dispose.
+    pub(super) materialization_drain_source: RefCell<Option<glib::SourceId>>,
+    /// Whether `dispose()` has run on this section widget.
+    pub(super) disposed: Cell<bool>,
     /// One-active plus one-latest generation policy per configured-folder probe.
     pub(super) folder_empty_flights: RefCell<HashMap<FolderEmptyProbeKey, WorkspaceScanFlight>>,
     /// Admitted top-level emptiness probe per stable folder identity.
@@ -530,6 +550,7 @@ impl ObjectImpl for LushtextWorkspaceSection {
     }
 
     fn dispose(&self) {
+        self.disposed.set(true);
         self.obj().unregister_folder_reorder_section();
         self.obj().stop_workspace_watch();
         super::scan_execution::clear_all_dir_state(&self.obj());

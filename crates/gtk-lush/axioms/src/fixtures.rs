@@ -951,3 +951,8 @@ pub mod a133 {
     pub use crate::probes::a133::{OverflowNotify, end_group, fixture, record_notifies};
     pub use crate::probes::tab_strip::{TabStripFixture, describe_adjustment, overflows};
 }
+
+/// The `TreeListModel` and constants the A135 probe measures, for its sample.
+pub mod a135 {
+    pub use crate::probes::a135::{CHILD_ITEM, CHILDLESS, EXPANDABLE, ExpanderTree, ROOT_ITEMS};
+}

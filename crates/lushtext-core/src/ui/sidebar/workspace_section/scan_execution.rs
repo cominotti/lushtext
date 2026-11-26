@@ -15,14 +15,17 @@
 //! coordination job**. Its admission gate moved to `scan_admission.rs` and its
 //! drag-hover shield to `reorder_execution.rs`; what remains here is one job.
 //!
-//! # This module owns the materialization entry point
+//! # This module no longer starts scans at create time
 //!
-//! `build_children_model` is the `GtkTreeListModel` create function — the single
-//! point at which a directory's children come into existence. The workflow's
-//! evidence surface MUST NOT reach it, directly or transitively: reading evidence
-//! must not materialize toolkit state, start a scan, or queue a watcher restart.
-//! Derive observations from `expanded_paths` instead, which is the authoritative live
-//! set.
+//! `build_children_model` is the `GtkTreeListModel` create function, but it only
+//! returns an empty `gio::ListStore` and queues a weak handle into
+//! `materialization_execution`. The `Priority::HIGH` materialization drain is the
+//! entry point that reaches `populate_child_store` for actually expanded rows
+//! (ledger A135). The workflow's evidence surface MUST NOT reach either
+//! `build_children_model` or `materialization_execution`, directly or transitively:
+//! reading evidence must not materialize toolkit state, start a scan, or queue a
+//! watcher restart. Derive observations from `expanded_paths` instead, which is
+//! the authoritative live set.
 //!
 //! # Expansion-state contract
 //!
@@ -161,7 +164,12 @@ const FIRST_BATCH_ROWS: usize = 32;
 /// Kind: cap; a power of two, rounded down.
 const CHILD_RECONCILE_DIRECT_ROWS: usize = CHILD_APPEND_BATCH_SIZE;
 
-/// Build the child model for one expanded directory and kick off its background scan.
+/// Build an empty child model for GTK's `GtkTreeListModel` create callback and
+/// queue it for deferred materialization.
+///
+/// Only stores GTK installs via `set_expanded(true)` survive until the
+/// `Priority::HIGH` drain runs; probe stores discarded by `is_expandable()`
+/// never trigger registration or filesystem I/O (ledger A135).
 pub(super) fn build_children_model(
     section: &LushtextWorkspaceSection,
     dir_path: &Path,
@@ -173,7 +181,9 @@ pub(super) fn build_children_model(
     // ListStore is GObject's observable list; TreeListModel/ListView react when
     // rows are appended or replaced.
     let store = gio::ListStore::new::<FileTreeItem>();
-    populate_child_store(section, dir_path, &store);
+    super::materialization_execution::enqueue_child_store_materialization(
+        section, dir_path, &store,
+    );
     store
 }
 
@@ -184,6 +194,15 @@ pub(super) fn populate_child_store(
     store: &gio::ListStore,
 ) {
     let path = dir_path.to_path_buf();
+    {
+        let refresh = &section.imp().refresh_runtime;
+        refresh
+            .scan_submissions
+            .set(refresh.scan_submissions.get().saturating_add(1));
+        let mut by_path = refresh.scan_submissions_by_path.borrow_mut();
+        let count = by_path.entry(path.clone()).or_insert(0);
+        *count = count.saturating_add(1);
+    }
     let store_key = child_store_key(store);
     ensure_child_store_identity(section, store);
     section
@@ -453,6 +472,7 @@ fn clear_dir_states(section: &LushtextWorkspaceSection, roots: &HashSet<PathBuf>
     }
     let under_removed_root =
         |path: &Path| path.ancestors().any(|ancestor| roots.contains(ancestor));
+    super::materialization_execution::retire_materializations_under_roots(section, roots);
     super::folder_execution::cancel_folder_empty_probes_under_roots(section, roots);
     // Accepted removals retire expansion intent for the affected subtrees so a
     // later refresh cannot resurrect paths that no longer exist.
@@ -632,6 +652,7 @@ pub(super) fn clear_all_dir_state(section: &LushtextWorkspaceSection) {
         .imp()
         .child_scan_lifetime
         .set(section.imp().child_scan_lifetime.get().wrapping_add(1));
+    super::materialization_execution::retire_all_materializations(section);
     for active in section.imp().child_active_scans.borrow_mut().drain() {
         active.1.token.store(true, Ordering::Release);
     }
@@ -745,7 +766,8 @@ pub(super) fn sync_child_scan_busy_state(section: &LushtextWorkspaceSection) {
 }
 
 pub(super) fn child_scan_blocks_readiness(section: &LushtextWorkspaceSection) -> bool {
-    !section.imp().child_active_scans.borrow().is_empty()
+    super::materialization_execution::has_live_pending_materializations(section)
+        || !section.imp().child_active_scans.borrow().is_empty()
         || !section.imp().child_pending_scans.borrow().is_empty()
         || !section.imp().child_admission_scans.borrow().is_empty()
         || !section.imp().child_reconcile_sources.borrow().is_empty()
@@ -808,7 +830,7 @@ fn child_scan_is_active(
     owns_current_flight && owns_active_payload
 }
 
-fn child_store_key(store: &gio::ListStore) -> usize {
+pub(super) fn child_store_key(store: &gio::ListStore) -> usize {
     store.as_ptr() as usize
 }
 
@@ -849,7 +871,7 @@ fn ensure_child_store_identity(section: &LushtextWorkspaceSection, store: &gio::
     sync_child_scan_busy_state(section);
 }
 
-fn child_store_identity_matches(
+pub(super) fn child_store_identity_matches(
     section: &LushtextWorkspaceSection,
     store_key: usize,
     store: &gio::ListStore,
