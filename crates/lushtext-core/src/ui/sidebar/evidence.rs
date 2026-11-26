@@ -15,7 +15,7 @@
 //! that rule was written for, because its model is a lazily materialized
 //! `GtkTreeListModel`: several innocuous-looking accessors *create* state.
 //!
-//! Six such accessors are known and are recorded with line evidence in the change's
+//! Seven such accessors are known and are recorded with line evidence in the change's
 //! `evidence/evidence-surface-materialization.md`. **This surface reaches none of
 //! them**, directly or transitively:
 //!
@@ -292,7 +292,7 @@ impl LushtextSidebar {
     /// Read one complete observation of this workflow's state.
     ///
     /// Side-effect free by construction, and that is a contract rather than an
-    /// aspiration: see the module doc for the six accessors this must never reach and
+    /// aspiration: see the module doc for the seven accessors this must never reach and
     /// for the borrow discipline the body below follows.
     #[must_use]
     pub fn workspace_tree_evidence(&self) -> WorkspaceTreeEvidence {

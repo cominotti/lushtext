@@ -7129,3 +7129,64 @@ fn test_emptiness_hints_watch_deltas_and_same_turn_refresh_under_deferred_materi
         "expanded directory should be scanned once when refresh runs in the same turn"
     );
 }
+
+#[test]
+fn test_same_turn_expand_then_collapse_retires_pending_materialization_and_starts_no_scan() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("same-turn expand+collapse tempdir");
+    let nested = dir.path().join("nested");
+    let child_file = nested.join("file.txt");
+    fixture::create_dir(&nested);
+    fixture::write_text(&child_file, "hello\n");
+
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("ws-same-turn-expand-collapse"));
+    section.load_workspace_folders(&[WorkspaceFolder::with_id(
+        WorkspaceFolderId::new("root"),
+        dir.path().to_path_buf(),
+    )]);
+    let _window = present_section_window(&section);
+    section.expand_folders();
+    wait_until(Duration::from_secs(5), || {
+        tree_contains_path(&section, &nested)
+            && !section
+                .workspace_section_evidence()
+                .refresh_blocks_readiness
+    });
+
+    let before = section.workspace_section_evidence().scan_pressure;
+    let nested_row = row_for_path(&section, &nested).expect("nested folder row");
+    nested_row.set_expanded(true);
+    nested_row.set_expanded(false);
+    assert!(
+        !section
+            .workspace_section_evidence()
+            .refresh_blocks_readiness,
+        "same-turn collapse must retire pending materialization immediately so readiness stays false"
+    );
+
+    wait_until(Duration::from_secs(5), || {
+        let ev = section.workspace_section_evidence();
+        ev.scan_pressure.pending_materializations == 0
+            && ev.child_reconcile_sources == 0
+            && !ev.refresh_blocks_readiness
+    });
+    flush_after_delay(Duration::from_millis(50));
+
+    let after = section.workspace_section_evidence();
+    assert_eq!(
+        after.scan_pressure.child_materializations, before.child_materializations,
+        "same-turn expand+collapse must produce zero child_materializations"
+    );
+    assert_eq!(
+        after.scan_pressure.scan_submissions, before.scan_submissions,
+        "same-turn expand+collapse must produce zero scan_submissions"
+    );
+    assert!(
+        !after.refresh_blocks_readiness,
+        "same-turn expand+collapse must leave child_scans_pending() / refresh_blocks_readiness false"
+    );
+    assert!(
+        !tree_contains_path(&section, &child_file),
+        "collapsed child entries must not materialize"
+    );
+}

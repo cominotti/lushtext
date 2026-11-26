@@ -31,7 +31,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use glib::object::ObjectExt;
+use glib::object::{ObjectExt, ObjectType};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::{gio, glib};
 
@@ -115,6 +115,34 @@ pub(super) fn retire_materializations_under_roots(
     }
 }
 
+/// Mark queued entries backed by `store` retired when a collapsed directory's
+/// child store moves into `retiring_child_stores` before the `Priority::HIGH`
+/// drain runs, returning whether any live queued entry was retired.
+pub(super) fn retire_materializations_for_store(
+    section: &LushtextWorkspaceSection,
+    store: &gio::ListStore,
+) -> bool {
+    let target_ptr = store.as_ptr();
+    let mut retired_any = false;
+    for entry in section
+        .imp()
+        .pending_materializations
+        .borrow_mut()
+        .iter_mut()
+    {
+        if !entry.retired
+            && entry
+                .store
+                .upgrade()
+                .is_some_and(|candidate| candidate.as_ptr() == target_ptr)
+        {
+            entry.retired = true;
+            retired_any = true;
+        }
+    }
+    retired_any
+}
+
 /// Cancel the armed drain and discard all queued entries on full rebuild or dispose.
 pub(super) fn retire_all_materializations(section: &LushtextWorkspaceSection) {
     let imp = section.imp();
@@ -162,11 +190,13 @@ fn drain_pending_materializations(section: &LushtextWorkspaceSection) {
         arm_materialization_drain(section);
     }
 
-    let current_lifetime = imp.child_scan_lifetime.get();
-    let disposed = imp.disposed.get();
     let mut applied_materialize = false;
 
     for entry in batch {
+        // Re-read inside the loop so a re-entrant lifetime bump or dispose during
+        // an earlier `populate_child_store` call governs remaining batch entries.
+        let current_lifetime = imp.child_scan_lifetime.get();
+        let disposed = imp.disposed.get();
         let upgraded = entry.store.upgrade();
         let already_materialized = upgraded.as_ref().is_some_and(|store| {
             let store_key = super::scan_execution::child_store_key(store);

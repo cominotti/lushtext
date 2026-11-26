@@ -562,6 +562,9 @@ fn retire_child_store(section: &LushtextWorkspaceSection, store: gio::ListStore)
     if store.ref_count() > 1 {
         return;
     }
+    if super::materialization_execution::retire_materializations_for_store(section, &store) {
+        sync_child_scan_busy_state(section);
+    }
     let store_key = child_store_key(&store);
     cancel_child_store_runtime(section, store_key);
     let imp = section.imp();
