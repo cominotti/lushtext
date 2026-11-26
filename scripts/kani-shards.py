@@ -392,13 +392,26 @@ SHARDS: dict[str, Shard] = {
     ),
     # verify-multi-window-draft-journal added the journal lane to the model,
     # which made the two L1 harnesses too slow to share the journal shard.
+    # verify-shell-conformance-against-proven-cores widened the model with
+    # `AfterEffect`, pushing the combined pair past the 30-minute CI cap in run
+    # 45863627881 (30m5s timeout); split each harness into its own 1-harness
+    # shard (`core-journal-liveness` and `core-journal-liveness-bound`) before
+    # the two final CI dispatches.
     "core-journal-liveness": Shard(
         "lushtext-services",
-        ("draft_service::kani_proofs::a_dirty_editor_",),
+        ("draft_service::kani_proofs::a_dirty_editor_becomes_clean_without_faults",),
         gate="scheduled",
         ci_minutes=15.2,
         ci_peak_gib=4.8,
         measured_in=MULTI_WINDOW_MEASURED_IN + PROOF_STRENGTH_RAISED_IN + SHELL_CONFORMANCE_PENDING,
+    ),
+    "core-journal-liveness-bound": Shard(
+        "lushtext-services",
+        ("draft_service::kani_proofs::a_dirty_editor_may_need_seven_steps",),
+        gate="scheduled",
+        ci_minutes=15.2,
+        ci_peak_gib=4.8,
+        measured_in=SHELL_CONFORMANCE_PENDING.lstrip("; "),
     ),
     # probe-long-line-toolkit-costs added the responsiveness-budget arithmetic
     # here: seconds of CBMC, too small for a shard of its own.
