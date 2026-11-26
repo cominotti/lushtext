@@ -22,7 +22,8 @@ set -euo pipefail
 
 SELF="scripts/check-kill-point-gating.sh"
 GATE_FILE="crates/lushtext-core/src/services/kill_point.rs"
-SMOKE_BUILD_LINE='cargo build -p lushtext --features crash-kill-points --target-dir target/crash-kill-points'
+# shellcheck disable=SC2016,SC1003
+SMOKE_BUILD_LINE='CARGO_PROFILE_DEV_DEBUG=$(SMOKE_PROFILE_DEBUG) cargo build -p lushtext --features crash-kill-points --target-dir "$(SMOKE_TARGET_DIR)" && \'
 
 # Forget any repository a calling git hook exported (testing.md).
 while IFS= read -r var; do

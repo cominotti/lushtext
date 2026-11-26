@@ -6,6 +6,7 @@
 # "Build Cache Root" section of .agents/rules/build.md):
 #
 #   scripts/build-cache.sh root
+#   scripts/build-cache.sh status
 #   scripts/build-cache.sh checkout [<path>]       # print and create
 #   scripts/build-cache.sh checkout-path [<path>]  # print only, create nothing
 #   scripts/build-cache.sh prune [--dry-run]
@@ -24,9 +25,12 @@
 # callers that resolve the location before they know they will write there
 # (the Makefile's variables, proof-strength.py's import).
 #
-# `prune` removes the checkout directories whose recorded path is no longer a
-# directory, and nothing else: the mutation slots (<root>/mutants) and live
-# checkouts' directories are kept.
+# `prune` removes:
+#   1. checkout directories whose recorded `checkout-path` is no longer a directory;
+#   2. temporary `<checkout>/flatpak-builder/build` unpack trees inside live
+#      checkout directories when no `flatpak-builder` process is running
+#      (`cache/`, `downloads/`, `checksums/` and `ccache/` are kept).
+# Mutation slots (`<root>/mutants`) and live checkouts' remaining directories are kept.
 #
 # `audit` (in `make check-build-cache-helpers`) fails when the Makefile,
 # scripts/ or .githooks/:
@@ -45,7 +49,7 @@ set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 usage() {
-    echo "usage: $0 root | checkout [<path>] | checkout-path [<path>] | prune [--dry-run] | --self-test" >&2
+    echo "usage: $0 root | status | checkout [<path>] | checkout-path [<path>] | prune [--dry-run] | --self-test" >&2
     exit 2
 }
 
@@ -93,23 +97,92 @@ checkout_create() {
     printf '%s\n' "$dir"
 }
 
+status() {
+    local root dir recorded state size fb_build fb_size
+    root=$(cache_root)
+    if [ ! -d "$root" ]; then
+        echo "build-cache root: $root (not created)"
+        return 0
+    fi
+    echo "build-cache root: $root ($(du -sh "$root" | cut -f1))"
+    echo "checkouts:"
+    local any_checkout=0
+    for dir in "$root"/checkouts/*/; do
+        dir=${dir%/}
+        [ -d "$dir" ] || continue
+        any_checkout=1
+        size=$(du -sh "$dir" | cut -f1)
+        if [ -f "$dir/checkout-path" ]; then
+            recorded=$(cat "$dir/checkout-path")
+            if [ -n "$recorded" ] && [ -d "$recorded" ]; then
+                state="live -> $recorded"
+            else
+                state="gone -> ${recorded:-<empty>}"
+            fi
+        else
+            state="untracked"
+        fi
+        fb_build="$dir/flatpak-builder/build"
+        if [ -d "$fb_build" ]; then
+            fb_size=$(du -sh "$fb_build" | cut -f1)
+            echo "  $size  $(basename "$dir")  [$state; flatpak-builder/build=$fb_size]"
+        else
+            echo "  $size  $(basename "$dir")  [$state]"
+        fi
+    done
+    [ "$any_checkout" = 1 ] || echo "  (none)"
+    echo "mutants:"
+    local any_mutant=0
+    for dir in "$root"/mutants/*/; do
+        dir=${dir%/}
+        [ -d "$dir" ] || continue
+        any_mutant=1
+        size=$(du -sh "$dir" | cut -f1)
+        echo "  $size  $(basename "$dir")"
+    done
+    [ "$any_mutant" = 1 ] || echo "  (none)"
+}
+
 prune() {
-    local dry=0 dir recorded removed=0
-    [ "${1:-}" = --dry-run ] && dry=1
+    local dry=0 dir recorded removed=0 fb_build fb_running=0 removed_checkouts=0
+    case "${1:-}" in
+        "") ;;
+        --dry-run) dry=1 ;;
+        *) usage ;;
+    esac
+    if command -v pgrep >/dev/null 2>&1 && pgrep -x flatpak-builder >/dev/null 2>&1; then
+        fb_running=1
+    fi
     for dir in "$(cache_root)"/checkouts/*/; do
         dir=${dir%/}
         [ -f "$dir/checkout-path" ] || continue
         recorded=$(cat "$dir/checkout-path")
-        [ -n "$recorded" ] && [ -d "$recorded" ] && continue
-        if [ "$dry" = 1 ]; then
-            echo "would remove $dir (checkout $recorded is gone)"
-        else
-            echo "removing $dir (checkout $recorded is gone)"
-            rm -rf -- "$dir"
+        if [ -z "$recorded" ] || [ ! -d "$recorded" ]; then
+            if [ "$dry" = 1 ]; then
+                echo "would remove $dir (checkout ${recorded:-<empty>} is gone)"
+            else
+                echo "removing $dir (checkout ${recorded:-<empty>} is gone)"
+                rm -rf -- "$dir"
+            fi
+            removed=$((removed + 1))
+            removed_checkouts=$((removed_checkouts + 1))
+            continue
         fi
-        removed=$((removed + 1))
+        fb_build="$dir/flatpak-builder/build"
+        if [ -d "$fb_build" ]; then
+            if [ "$fb_running" = 1 ]; then
+                echo "skipping $fb_build (flatpak-builder is running)"
+            elif [ "$dry" = 1 ]; then
+                echo "would remove $fb_build (temporary flatpak-builder build tree)"
+                removed=$((removed + 1))
+            else
+                echo "removing $fb_build (temporary flatpak-builder build tree)"
+                rm -rf -- "$fb_build"
+                removed=$((removed + 1))
+            fi
+        fi
     done
-    if [ "$removed" -gt 0 ] && [ "$dry" = 0 ]; then
+    if [ "$removed_checkouts" -gt 0 ] && [ "$dry" = 0 ]; then
         echo "A proof-strength worktree inside a removed directory stays listed by 'git worktree list'; 'git worktree prune' (or the next proof-strength run) drops it."
     fi
     [ "$removed" -gt 0 ] || echo "nothing to prune under $(cache_root)/checkouts"
@@ -118,7 +191,7 @@ prune() {
 
 # Makefile targets that build in the checkout's shared build dir (audit 2),
 # and the scripts they run.
-SHARED_BUILD_TARGETS='build|build-debug|run|test|test-unit|test-int|test-prop|test-prop-deep|test-widget|test-widget-headless|test-widget-shard|check-clippy|check|pre-commit|pre-commit-docs'
+SHARED_BUILD_TARGETS='build|build-debug|run|test|test-unit|test-pkg|test-int|test-prop|test-prop-deep|test-widget|test-widget-headless|test-widget-shard|check-clippy|clippy-pkg|check-pkg|check|pre-commit|pre-commit-docs'
 SHARED_BUILD_SCRIPTS='scripts/run-widget-tests.sh scripts/widget-shards.py'
 BUILD_PATH_WORDS='CARGO_TARGET_DIR|CARGO_BUILD_BUILD_DIR|build-dir|target-dir|--state-dir|state-dir|flatpak-builder|mutants|proof-strength'
 
@@ -213,15 +286,25 @@ self_test() {
     [ "$db" != "$da" ] || fail "two worktrees share $da" || return
     [ "$(cat "$db/checkout-path")" = "$(realpath "$dir/wt-b")" ] || fail "wt-b records the wrong path" || return
 
-    # Prune removes only the directory whose checkout is gone.
+    # Prune removes only the directory whose checkout is gone, plus temporary
+    # flatpak-builder/build trees on live checkouts while preserving cache/downloads.
     mkdir -p "$LUSHTEXT_BUILD_CACHE/mutants/slot-1/build"
+    mkdir -p "$da/flatpak-builder/build/tmp" "$da/flatpak-builder/cache/ostree" "$da/flatpak-builder/downloads/src"
+    touch "$da/flatpak-builder/build/tmp/obj" "$da/flatpak-builder/cache/ostree/ref" "$da/flatpak-builder/downloads/src/crate"
+    out=$("$me" status)
+    case $out in *"flatpak-builder/build="*);; *) fail "status omitted flatpak-builder/build: $out" || return ;; esac
     git -C "$dir/repo" worktree remove --force "$dir/wt-b"
     out=$("$me" prune --dry-run)
     [ -d "$db" ] || fail "prune --dry-run removed $db" || return
+    [ -d "$da/flatpak-builder/build" ] || fail "prune --dry-run removed flatpak-builder/build" || return
     case $out in *"would remove $db"*) ;; *) fail "dry run did not name $db: $out" || return ;; esac
+    case $out in *"would remove $da/flatpak-builder/build"*) ;; *) fail "dry run did not name flatpak-builder/build: $out" || return ;; esac
     "$me" prune >/dev/null
     [ ! -e "$db" ] || fail "prune kept the removed worktree's $db" || return
     [ -d "$da" ] || fail "prune removed the live checkout's $da" || return
+    [ ! -e "$da/flatpak-builder/build" ] || fail "prune kept live flatpak-builder/build" || return
+    [ -f "$da/flatpak-builder/cache/ostree/ref" ] || fail "prune removed flatpak-builder/cache" || return
+    [ -f "$da/flatpak-builder/downloads/src/crate" ] || fail "prune removed flatpak-builder/downloads" || return
     [ -d "$LUSHTEXT_BUILD_CACHE/mutants/slot-1/build" ] || fail "prune removed a mutation slot" || return
     b=$("$me" checkout-path "$dir/repo")
     [ "$b" != "$da" ] || fail "the main checkout shares wt-a's directory" || return
@@ -255,6 +338,7 @@ self_test() {
 
 case "${1:-}" in
     root) [ $# -eq 1 ] || usage; cache_root ;;
+    status) [ $# -eq 1 ] || usage; status ;;
     checkout) [ $# -le 2 ] || usage; checkout_create "${2:-}" ;;
     checkout-path) [ $# -le 2 ] || usage; checkout_dir "${2:-}" ;;
     prune) [ $# -le 2 ] || usage; prune "${2:-}" ;;

@@ -5,6 +5,7 @@
 # Targets:
 #   make build       - Release build
 #   make build-debug - Debug build
+#   make build-fast  - Opt-in local fast dev build via nightly Cranelift (isolated cache dir)
 #   make run         - Debug build + force a fresh dev run with GNOME desktop staging
 #   make run-format-upgrade-newer-manual-test - Launch with isolated future-version app data
 #   make run-format-upgrade-older-manual-test - Launch with isolated upgradeable old-version app data
@@ -13,6 +14,8 @@
 #   make clear-lushtext-xdg - Remove LushText-owned XDG data/config/cache/state and reset app settings
 #   make test        - Run all tests (unit + integration + widget)
 #   make test-unit   - Unit tests only (fast)
+#   make test-pkg    - Scoped unit tests for PKG (default: lushtext-core) and optional FILTER
+#   make test-fast   - Opt-in local fast unit tests via nightly Cranelift for PKG / FILTER
 #   make test-int    - Integration tests only
 #   make test-prop   - Bounded property tests for pure deterministic logic
 #   make test-prop-deep - Opt-in deeper property run with more generated cases
@@ -46,9 +49,12 @@
 #   make mutants-smoke - Small cargo-mutants smoke run
 #   make mutants-diff  - Mutation test current changes against origin/main
 #   make mutants-full  - Mutation test the configured deterministic scope
-#   make build-cache-prune - Remove build-cache directories of checkouts that no longer exist
+#   make build-cache-prune - Remove build-cache directories of missing checkouts and temporary flatpak-builder/build trees
+#   make build-cache-status - Show disk usage breakdown under the build cache root
 #   make fmt         - apply rustfmt everywhere, including the widget tests cargo fmt cannot reach
 #   make check       - fmt + all-feature clippy + fast policy audits
+#   make clippy-pkg  - Scoped clippy on PKG (default: lushtext-core)
+#   make check-pkg   - fmt + clippy-pkg fast daily check loop
 #   make blueprint-generate - Regenerate generated GtkBuilder .ui files from Blueprint .blp sources
 #   make check-blueprint - Validate Blueprint drift and generated UI template contract
 #   make lint-blueprint - Advisory grouped lint triage for Blueprint templates
@@ -96,8 +102,8 @@
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: fmt build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke kani proof-strength proof-strength-list check-kani-shards check-settings-writes check-font-zoom-registration check-signal-connections check-thresholds formal-evaluation check-widget-shards check-temp-scope test-widget test-widget-headless test-widget-shard test-search-retirement-release test-workspace-row-states build-cache-prune check-build-cache-helpers check-rustc-frontend-threads check-precommit-scope pre-commit-docs automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke smoke-read-faults-build visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke responsiveness-build responsiveness-smoke check-responsiveness-lane check-agent-helpers check-workflow-scripts mutants-smoke mutants-diff mutants-full mutants-list composition-hold-build \
-       check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-flatpak-ci-builds check-explicit-simd check-session-hygiene check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy check-cargo-public-api-install check-terminology check-kill-point-gating check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory gtk-axioms gtk-axiom-sample gtk-axioms-runtimes check-gtk-axioms automation-client-self-test check-policy lint-advisory sonar-local check check-agent-skills check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
+.PHONY: fmt build build-debug build-fast run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-pkg test-fast test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke kani proof-strength proof-strength-list check-kani-shards check-settings-writes check-font-zoom-registration check-signal-connections check-thresholds formal-evaluation check-widget-shards check-temp-scope test-widget test-widget-headless test-widget-shard test-search-retirement-release test-workspace-row-states build-cache-prune build-cache-status check-build-cache-helpers check-rustc-frontend-threads check-precommit-scope pre-commit-docs automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke smoke-read-faults-build visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke responsiveness-build responsiveness-smoke check-responsiveness-lane check-agent-helpers check-workflow-scripts mutants-smoke mutants-diff mutants-full mutants-list composition-hold-build \
+       check-fmt check-clippy clippy-pkg check-pkg check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-flatpak-ci-builds check-explicit-simd check-session-hygiene check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy check-cargo-public-api-install check-terminology check-kill-point-gating check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory gtk-axioms gtk-axiom-sample gtk-axioms-runtimes check-gtk-axioms automation-client-self-test check-policy lint-advisory sonar-local check check-agent-skills check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
        meson-build meson-test flatpak-deps flatpak flatpak-install cargo-sources update-deps-cooldown verify-flatpak-identity test-flatpak-identity-verifier test-flatpak-install-origin check-flatpak-source-tree test-dev-desktop-staging \
        flathub-manifest verify-flathub-manifest verify-flathub-domain \
@@ -275,7 +281,11 @@ MUTANTS_MEMORY_MAX ?= 36G
 # reduce-build-disk-writes. `none` disables it.
 LUSHTEXT_TEST_ADDRESS_SPACE ?= 4G
 export LUSHTEXT_TEST_ADDRESS_SPACE
-MUTANTS_LOCAL_PARALLELISM = MUTANTS_MIRROR=1 MUTANTS_LOCAL_JOBS=$(MUTANTS_LOCAL_JOBS) MUTANTS_TEST_THREADS=$(MUTANTS_LOCAL_TEST_THREADS) MUTANTS_BUILD_JOBS=$(MUTANTS_LOCAL_BUILD_JOBS)
+# Mutation mirror slots omit DWARF debuginfo by default to shrink slot storage
+# (~32 GiB -> less than half) and speed up mutant links without touching the
+# checkout's shared target/ fingerprints.
+MUTANTS_PROFILE_DEBUG ?= 0
+MUTANTS_LOCAL_PARALLELISM = MUTANTS_MIRROR=1 MUTANTS_LOCAL_JOBS=$(MUTANTS_LOCAL_JOBS) MUTANTS_TEST_THREADS=$(MUTANTS_LOCAL_TEST_THREADS) MUTANTS_BUILD_JOBS=$(MUTANTS_LOCAL_BUILD_JOBS) CARGO_PROFILE_DEV_DEBUG=$(MUTANTS_PROFILE_DEBUG)
 
 FLATPAK_REMOTE ?= flathub
 FLATPAK_REMOTE_URL ?= https://dl.flathub.org/repo/flathub.flatpakrepo
@@ -295,7 +305,7 @@ FLATPAK_MANIFEST := build-aux/dev.cominotti.lushtext.Flatpak.json
 FLATPAK_SOURCE_DIR ?= $(BUILD_CACHE_CHECKOUT)/flatpak-source
 FLATPAK_STAGED_MANIFEST = $(FLATPAK_SOURCE_DIR)/tree/$(FLATPAK_MANIFEST)
 FLATPAK_STAGE_SOURCE = ./scripts/flatpak-source-tree.sh stage . "$(FLATPAK_SOURCE_DIR)" >/dev/null
-FLATPAK_BUILDER_FLAGS = --disable-rofiles-fuse --force-clean --user --state-dir="$(FLATPAK_STATE_DIR)"
+FLATPAK_BUILDER_FLAGS = --disable-rofiles-fuse --force-clean --delete-build-dirs --user --state-dir="$(FLATPAK_STATE_DIR)"
 FLATPAK_BUILDER_DEPS_FLAGS := --assumeyes --install-deps-from=$(FLATPAK_REMOTE)
 FLATHUB_MANIFEST_OUT_DIR ?= build-aux/flathub
 FLATHUB_MANIFEST_COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
@@ -316,6 +326,57 @@ build-debug:
 run: build-debug
 	@echo "Running LushText..."
 	LUSHTEXT_DEV_RUN_FORCE_RESTART=1 ./scripts/run-dev-app.sh
+
+# Package / filter defaults for scoped daily-loop and Cranelift targets.
+PKG ?= lushtext-core
+FILTER ?=
+
+# Opt-in fast local dev loop using nightly Cranelift in this checkout's isolated
+# build-cache directory (`make check`, `pre-commit`, CI, benchmarks and releases
+# stay on the pinned 1.98.0 LLVM toolchain).
+CRANELIFT_TOOLCHAIN ?= nightly-2026-08-21
+CRANELIFT_TARGET_DIR = $(BUILD_CACHE_CHECKOUT)/cranelift
+CRANELIFT_GUARD = rustup component list --installed --toolchain "$(CRANELIFT_TOOLCHAIN)" 2>/dev/null | grep -q '^rustc-codegen-cranelift' || { \
+	echo "$@ needs Cranelift on $(CRANELIFT_TOOLCHAIN). Install with:" >&2; \
+	echo "  rustup component add rustc-codegen-cranelift-preview --toolchain $(CRANELIFT_TOOLCHAIN)" >&2; \
+	exit 1; \
+}
+
+# Build the debug app with Cranelift (isolated cache dir, zero target/ churn).
+build-fast:
+	@set -eu; $(CRANELIFT_GUARD); \
+	./scripts/build-cache.sh checkout >/dev/null; \
+	echo "Building lushtext with Cranelift ($(CRANELIFT_TOOLCHAIN))..."; \
+	CARGO_TARGET_DIR="$(CRANELIFT_TARGET_DIR)" CARGO_BUILD_BUILD_DIR="$(CRANELIFT_TARGET_DIR)/build" \
+		RUSTC_WRAPPER="" RUSTFLAGS="-Zcodegen-backend=cranelift" \
+		cargo "+$(CRANELIFT_TOOLCHAIN)" build -p lushtext
+
+# Run scoped unit tests with Cranelift (isolated cache dir).
+test-fast:
+	@set -eu; $(CRANELIFT_GUARD); \
+	./scripts/build-cache.sh checkout >/dev/null; \
+	echo "Running $(PKG) unit tests with Cranelift ($(CRANELIFT_TOOLCHAIN))$(if $(FILTER), matching '$(FILTER)',)..."; \
+	CARGO_TARGET_DIR="$(CRANELIFT_TARGET_DIR)" CARGO_BUILD_BUILD_DIR="$(CRANELIFT_TARGET_DIR)/build" \
+		RUSTC_WRAPPER="" RUSTFLAGS="-Zcodegen-backend=cranelift" \
+		$(TEMP_SCOPE) fast-test -- cargo "+$(CRANELIFT_TOOLCHAIN)" $(if $(HAS_NEXTEST),nextest run,test) -p "$(PKG)" --lib $(if $(FILTER),-- "$(FILTER)",)
+
+# Scoped daily-loop clippy on a single workspace package (matches `check-clippy`
+# feature/lint posture without checking every crate in the workspace).
+clippy-pkg:
+	@echo "Running clippy on package $(PKG)..."
+	cargo clippy -p "$(PKG)" --all-targets --all-features -- -D warnings
+
+# Scoped daily-loop unit tests on a single workspace package.
+test-pkg:
+	@echo "Running unit tests on package $(PKG)$(if $(FILTER), matching '$(FILTER)',)..."
+ifdef HAS_NEXTEST
+	$(TEMP_SCOPE) nextest-pkg -- cargo nextest run -p "$(PKG)" --lib $(if $(FILTER),-- "$(FILTER)",)
+else
+	$(TEMP_SCOPE) cargo-test-pkg -- cargo test -p "$(PKG)" --lib $(if $(FILTER),-- "$(FILTER)",)
+endif
+
+# Scoped fast check (formatting + single-package clippy).
+check-pkg: check-fmt clippy-pkg
 
 # Preserve the original manual-test command name; it now means the newer-data drill.
 run-format-upgrade-manual-test: run-format-upgrade-newer-manual-test
@@ -604,9 +665,13 @@ check-precommit-scope:
 	@echo "Checking the docs-only pre-commit allowlist against Rust build inputs..."
 	PYTHONDONTWRITEBYTECODE=1 python3 -B ./scripts/precommit-scope.py check-includes
 
-# Remove the build-cache directories of checkouts that no longer exist.
+# Remove build-cache directories of missing checkouts and temporary flatpak-builder/build trees.
 build-cache-prune:
 	./scripts/build-cache.sh prune
+
+# Show disk usage breakdown under the build cache root.
+build-cache-status:
+	./scripts/build-cache.sh status
 
 # The GTK Lush API advisory's cargo-public-api install (restore-main-ci D3):
 # checksum, the one reviewed lockfile override, and the override's retirement.
@@ -695,6 +760,14 @@ visual-smoke: build-debug smoke-read-faults-build
 	$(TEMP_SCOPE) visual -- ./scripts/run-visual-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual" \
 		--read-fault-binary "$(PWD)/target/smoke-read-faults/debug/lushtext"
 
+# Smoke debug binaries share one isolated target directory and omit DWARF
+# debuginfo by default (SMOKE_PROFILE_DEBUG=0) so GTK dependencies compile once
+# across smoke lanes without churning target/debug/ fingerprints; each binary is
+# staged at the legacy lane path expected by CI and smoke drivers. Never enabled
+# in release, Meson, Flatpak, or Snap builds.
+SMOKE_TARGET_DIR ?= target/smoke
+SMOKE_PROFILE_DEBUG ?= 0
+
 # The smoke-only `composition-hold` build the visual-geometry lane's
 # first-frame-shell scenario launches (`first-frame-window-shell`): it can hold
 # window composition after the first frame (`LUSHTEXT_COMPOSITION_HOLD_MS`).
@@ -702,7 +775,12 @@ visual-smoke: build-debug smoke-read-faults-build
 # enabled in release, Meson, Flatpak, or Snap builds.
 composition-hold-build:
 	@echo "Building the composition-hold debug binary..."
-	CARGO_TARGET_DIR=target/composition-hold cargo build -p lushtext --features composition-hold
+	@set -eu; \
+	mkdir -p "$(dir $(SMOKE_TARGET_DIR))"; \
+	exec 9>"$(SMOKE_TARGET_DIR).lock"; \
+	flock 9; \
+	CARGO_PROFILE_DEV_DEBUG=$(SMOKE_PROFILE_DEBUG) cargo build -p lushtext --features composition-hold --target-dir "$(SMOKE_TARGET_DIR)" && \
+	install -Dm755 "$(SMOKE_TARGET_DIR)/debug/lushtext" "target/composition-hold/debug/lushtext"
 
 visual-geometry-smoke: build-debug composition-hold-build
 	@echo "Running same-session visual geometry invariant lane..."
@@ -726,7 +804,12 @@ editor-glyph-live-smoke: build-debug
 # binary (and every release, Meson, Flatpak, and Snap build) never carries it.
 crash-recovery-smoke: build-debug
 	@echo "Building the crash-kill-points smoke binary..."
-	cargo build -p lushtext --features crash-kill-points --target-dir target/crash-kill-points
+	@set -eu; \
+	mkdir -p "$(dir $(SMOKE_TARGET_DIR))"; \
+	exec 9>"$(SMOKE_TARGET_DIR).lock"; \
+	flock 9; \
+	CARGO_PROFILE_DEV_DEBUG=$(SMOKE_PROFILE_DEBUG) cargo build -p lushtext --features crash-kill-points --target-dir "$(SMOKE_TARGET_DIR)" && \
+	install -Dm755 "$(SMOKE_TARGET_DIR)/debug/lushtext" "target/crash-kill-points/debug/lushtext"
 	@echo "Running crash recovery smoke lane..."
 	$(TEMP_SCOPE) crash-recovery -- ./scripts/run-crash-recovery-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/crash-recovery" \
 		--kill-point-binary "$(PWD)/target/crash-kill-points/debug/lushtext"
@@ -756,7 +839,12 @@ accessibility-smoke: build-debug smoke-read-faults-build
 # budgets with small fixtures (bound-lists-by-budget-not-count task 6.2).
 smoke-read-faults-build:
 	@echo "Building the smoke-read-faults smoke binary..."
-	cargo build -p lushtext --features smoke-read-faults,smoke-list-budgets --target-dir target/smoke-read-faults
+	@set -eu; \
+	mkdir -p "$(dir $(SMOKE_TARGET_DIR))"; \
+	exec 9>"$(SMOKE_TARGET_DIR).lock"; \
+	flock 9; \
+	CARGO_PROFILE_DEV_DEBUG=$(SMOKE_PROFILE_DEBUG) cargo build -p lushtext --features smoke-read-faults,smoke-list-budgets --target-dir "$(SMOKE_TARGET_DIR)" && \
+	install -Dm755 "$(SMOKE_TARGET_DIR)/debug/lushtext" "target/smoke-read-faults/debug/lushtext"
 
 BENCH_REPORT_OUT_DIR ?= docs/benchmarks
 SMOKE_ARTIFACT_DIR ?= build/smoke
@@ -1386,6 +1474,7 @@ help:
 	@echo "Build targets:"
 	@echo "  build        Release build (optimized)"
 	@echo "  build-debug  Debug build"
+	@echo "  build-fast   Opt-in fast local dev build via nightly Cranelift (isolated cache dir)"
 	@echo "  run          Debug build and force a fresh dev run with GNOME desktop staging"
 	@echo "  run-format-upgrade-newer-manual-test Launch with isolated future-version app data"
 	@echo "  run-format-upgrade-older-manual-test Launch with isolated upgradeable old-version app data"
@@ -1396,6 +1485,8 @@ help:
 	@echo "Test targets:"
 	@echo "  test         All tests (unit + integration + widget)"
 	@echo "  test-unit    Unit tests only (fast)"
+	@echo "  test-pkg     Scoped unit tests for PKG (default: lushtext-core) and optional FILTER"
+	@echo "  test-fast    Opt-in fast Cranelift unit tests for PKG and optional FILTER"
 	@echo "  test-int     Integration tests only"
 	@echo "  test-prop    Bounded property tests for pure deterministic logic"
 	@echo "  test-prop-deep Deeper property run with PROPTEST_DEEP_CASES"
@@ -1461,7 +1552,8 @@ help:
 	@echo "  mutants-diff Changed-code mutation against origin/main"
 	@echo "  mutants-full Configured deterministic mutation scope"
 	@echo "  mutants-list List configured mutants without running tests"
-	@echo "  build-cache-prune Remove build-cache directories of checkouts that no longer exist"
+	@echo "  build-cache-prune Remove build-cache directories of missing checkouts and temporary flatpak-builder/build trees"
+	@echo "  build-cache-status Show disk usage breakdown under the build cache root"
 	@echo "  check-build-cache-helpers Self-test the build-cache, mutation-slot, address-space and pre-commit-scope helpers"
 	@echo "  check-rustc-frontend-threads Self-test heavy.sh's parallel front-end rustc-wrapper and its next-wrapper resolver"
 	@echo "  check-precommit-scope No Rust build input is on the docs-only commit allowlist"
@@ -1521,6 +1613,8 @@ help:
 	@echo "Other targets:"
 	@echo "  check-fmt    rustfmt --check"
 	@echo "  check-clippy clippy -D warnings"
+	@echo "  clippy-pkg   Scoped clippy on PKG (default: lushtext-core)"
+	@echo "  check-pkg    check-fmt + clippy-pkg fast daily check loop"
 	@echo "  gtk-lush-doctests Run GTK Lush family doctests"
 	@echo "  gtk-lush-examples Compile GTK Lush standalone examples"
 	@echo "  gtk-lush-msrv Check GTK Lush family crates with GTK_LUSH_MSRV"
