@@ -2913,3 +2913,109 @@ fn a_body_that_cannot_be_installed_skips_its_file_without_cancelling_the_run() {
     assert!(outcome.undo_backup.contains_key(&first));
     assert!(!outcome.undo_backup.contains_key(&second));
 }
+
+// --- survivors only a before-action hook reaches (D8) ---------------------
+
+/// The tap's before-action hook at this file's `WriteBody`.
+fn before_write_body(hook: impl FnOnce() + 'static) -> crate::filesystem::backend_tap::TapGuard {
+    use crate::filesystem::backend_tap::{self as tap, ActionAt, ProtocolKind, TapPlan};
+    tap::install(TapPlan::record().before_action(
+        ActionAt::Named {
+            kind: ProtocolKind::ReplaceFile,
+            name: "WriteBody",
+            nth: 0,
+        },
+        hook,
+    ))
+}
+
+/// Mutant 649 (`||` to `&&` in pass A's facts check): a target rewritten
+/// with the same bytes and a new mtime after the target was stat'ed is
+/// caught by pass A, so its entry and target writes never run. With equal
+/// sizes only the mtime half of the check fires; the mutant lets pass A pass
+/// and leaves the change to pass B.
+#[test]
+fn a_same_size_change_before_the_body_write_is_caught_by_pass_a() {
+    use crate::filesystem::backend_tap::ProtocolKind;
+    let dir = tempdir().expect("tempdir");
+    let file = dir.path().join("touched.txt");
+    fixture::write_text(&file, "needle\n");
+    fixture::set_modified(
+        &file,
+        std::time::SystemTime::now() - std::time::Duration::from_secs(3600),
+    );
+    let touched = file.clone();
+    let guard = before_write_body(move || {
+        // The same bytes, so pass A's dry run sees no stale line.
+        fixture::write_text(&touched, "needle\n");
+        fixture::set_modified(&touched, std::time::SystemTime::now());
+    });
+    let (outcome, journal) = apply(
+        &[make_replacement(&file, 1, "needle", "thread", 0..6)],
+        &HashSet::new(),
+    );
+    let trace = guard.finish();
+    let outcome = outcome.expect("a changed file is a skip");
+    assert_eq!(fixture::read_text(&file), "needle\n");
+    assert_eq!(
+        outcome
+            .skip_report
+            .count(ReplaceSkipReason::ChangedDuringReplace),
+        1
+    );
+    let actions: Vec<&str> = trace
+        .steps
+        .iter()
+        .filter(|step| step.kind == ProtocolKind::ReplaceFile)
+        .map(|step| step.action_name.as_str())
+        .collect();
+    assert!(actions.contains(&"WriteBody"), "{actions:?}");
+    assert!(
+        !actions.contains(&"WriteEntry") && !actions.contains(&"WriteTarget"),
+        "pass A, not pass B, must refuse the changed file: {actions:?}"
+    );
+    assert!(!fs_metadata::exists(&search_backup::body_path(
+        journal.path(),
+        &file
+    )));
+}
+
+/// Mutants 689 (`||` to `&&`) and 691 (delete `!` before `verdict.defer`):
+/// a cancel raised just before the body write, whose write then fails
+/// before its producer runs, is reported as a cancel. The stream never sees
+/// the flag, so only the raised flag can make the outcome `Cancelled`; both
+/// mutants report the file as failed and let the run finish.
+#[test]
+fn a_cancel_before_a_body_write_that_fails_early_cancels_the_run() {
+    let dir = tempdir().expect("tempdir");
+    let file = dir.path().join("cancelled.txt");
+    fixture::write_text(&file, "needle\n");
+    let journal = tempdir().expect("journal");
+    let bodies = search_backup::bodies_dir(journal.path());
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let raised = std::sync::Arc::clone(&cancel);
+    let guard = before_write_body(move || {
+        raised.store(true, Ordering::Relaxed);
+        // A file where the bodies directory was: the body write's metadata
+        // probe fails, before its producer reads anything.
+        fixture::remove_dir_all(&bodies);
+        fixture::write_text(&bodies, "not a directory\n");
+    });
+    let _free = fs_metadata::fake_free_space_for_test(AMPLE_FREE);
+    let result = apply_replacements(
+        &[make_replacement(&file, 1, "needle", "thread", 0..6)],
+        &HashSet::new(),
+        &cancel,
+        journal.path(),
+    );
+    drop(guard);
+    match result {
+        Err(error) => assert!(error.to_string().contains("cancelled"), "{error}"),
+        Ok(outcome) => assert!(
+            outcome.cancelled,
+            "the raised cancel must cancel the run, not skip the file: {:?}",
+            outcome.skip_report
+        ),
+    }
+    assert_eq!(fixture::read_text(&file), "needle\n");
+}

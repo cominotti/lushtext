@@ -9879,6 +9879,84 @@ fn test_file_backed_draft_body_delete_failure_keeps_an_explicit_retry_tombstone(
 }
 
 #[test]
+fn test_delete_draft_by_id_preserves_unattributable_file_backed_body_when_unregistered() {
+    ensure_gtk_init();
+    let _policy_reset = DraftPipelinePolicyReset;
+    let dir = tempfile::tempdir().expect("unattributable delete guard tempdir");
+    let path = dir.path().join("unregistered-leftover.txt");
+    fixture::write_text(&path, "disk baseline\n");
+    let draft_id = draft_service::draft_id_for_path(&path);
+    let data_dir = json_store::data_dir();
+
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&path);
+    wait_until(Duration::from_secs(10), || {
+        active_editor(&window).load_state() == EditorLoadState::Loaded
+    });
+
+    // Simulate an unattributable file-backed crash leftover that Phase 1 left
+    // behind when reconciliation could not run (manifest has no entry for it).
+    draft_service::fixture::write_body(&data_dir, &draft_id, "unattributable recovery\n")
+        .expect("seed unattributable draft body");
+
+    window.delete_draft_by_id(&draft_id);
+    wait_until(Duration::from_secs(5), || {
+        !window.draft_evidence().mutation_inflight
+    });
+
+    assert!(
+        !window.draft_delete_is_tombstoned(&draft_id),
+        "deleting an unregistered file-backed tab must not tombstone or queue DeleteBody"
+    );
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &draft_id).expect("read unattributable body"),
+        Some("unattributable recovery\n".to_string())
+    );
+}
+
+#[test]
+fn test_delete_draft_by_id_preserves_unattributable_file_backed_body_while_autosave_inflight() {
+    ensure_gtk_init();
+    let _policy_reset = DraftPipelinePolicyReset;
+    let dir = tempfile::tempdir().expect("unattributable autosave-inflight guard tempdir");
+    let path = dir.path().join("unregistered-inflight.txt");
+    fixture::write_text(&path, "disk baseline\n");
+    let draft_id = draft_service::draft_id_for_path(&path);
+    let data_dir = json_store::data_dir();
+
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&path);
+    wait_until(Duration::from_secs(10), || {
+        active_editor(&window).load_state() == EditorLoadState::Loaded
+    });
+
+    // Simulate an unattributable file-backed crash leftover that Phase 1 left
+    // behind when reconciliation could not run (manifest has no entry for it).
+    draft_service::fixture::write_body(&data_dir, &draft_id, "unattributable recovery\n")
+        .expect("seed unattributable draft body");
+
+    // Another tab's autosave holds the window-wide `autosave_inflight` flag.
+    // Saving or discarding this unregistered tab must still keep the body.
+    window.imp().drafts.autosave_inflight.set(true);
+    window.delete_draft_by_id(&draft_id);
+    window.imp().drafts.autosave_inflight.set(false);
+    wait_until(Duration::from_secs(5), || {
+        !window.draft_evidence().mutation_inflight
+    });
+
+    assert!(
+        !window.draft_delete_is_tombstoned(&draft_id),
+        "deleting an unregistered file-backed tab while another tab autosaves must not tombstone or queue DeleteBody"
+    );
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &draft_id).expect("read unattributable body"),
+        Some("unattributable recovery\n".to_string())
+    );
+}
+
+#[test]
 fn test_draft_pipeline_close_blocks_and_preserves_retry_state_over_limit() {
     ensure_gtk_init();
     let _policy_reset = DraftPipelinePolicyReset;

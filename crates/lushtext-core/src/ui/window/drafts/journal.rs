@@ -649,6 +649,22 @@ impl LushtextWindow {
             .contains_key(draft_id);
         let entry = self.draft_manifest_entry(draft_id);
         let restore_pending = self.draft_restore_is_pending(draft_id);
+        let retry_tombstoned = self.draft_delete_is_tombstoned(draft_id);
+        // File-backed bodies are only ever written by this window after
+        // write-ahead registration puts their entry in the manifest (even
+        // during autosave, `apply_draft_registration` inserts the entry before
+        // `drive_dirty_draft_pipeline` writes any body). When no entry is
+        // present and no restore, preservation, or retry tombstone is active,
+        // any file-backed `.draft` on disk is an unattributable recovery body
+        // belonging to reconciliation, not an editor draft to unlink here.
+        if !draft_service::is_untitled_draft_id(draft_id)
+            && entry.is_none()
+            && !restore_pending
+            && !preservation_queued
+            && !retry_tombstoned
+        {
+            return;
+        }
         let owner = journal_core::ownership(journal_core::BodyFacts::from_window_view(
             entry.is_some(),
             restore_pending,

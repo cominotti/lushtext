@@ -16,12 +16,14 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::glib;
 
+use crate::model::draft::DraftManifestAuthority;
 use crate::services::notifications::NotificationSeverity;
 use crate::services::{draft_service, json_store};
 
 use super::policy;
 use super::policy::{
     OrphanCleanupFollowUp, grouped_orphan_cleanup_failure_message, orphan_cleanup_follow_up,
+    orphan_cleanup_revokes_authority,
 };
 use super::seams::OrphanCleanupUiResult;
 use super::{
@@ -156,12 +158,22 @@ impl LushtextWindow {
                             tracing::warn!("{message}");
                             window.publish_status_message(&message, NotificationSeverity::Warning);
                         }
-                        orphan_cleanup_follow_up(
-                            outcome.has_more_work,
-                            outcome.next_manifest_offset,
-                            !outcome.failures.is_empty(),
-                            window.imp().drafts.orphan_cleanup_failure_streak.get(),
-                        )
+                        if orphan_cleanup_revokes_authority(&outcome.failures) {
+                            // A failed or unconfirmed manifest write can leave disk and
+                            // in-memory manifest copies diverged (for example after an
+                            // `AfterEffect` dir-sync failure), so force write-ahead
+                            // registration until the next trusted commit.
+                            window
+                                .reject_draft_manifest_authority(DraftManifestAuthority::default());
+                            OrphanCleanupFollowUp::Stop
+                        } else {
+                            orphan_cleanup_follow_up(
+                                outcome.has_more_work,
+                                outcome.next_manifest_offset,
+                                !outcome.failures.is_empty(),
+                                window.imp().drafts.orphan_cleanup_failure_streak.get(),
+                            )
+                        }
                     }
                     Err(error) => {
                         let message = format!("Draft recovery cleanup scan failed: {error}");

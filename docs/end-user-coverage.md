@@ -79,6 +79,7 @@ the work it starts is the surfaces' pre-existing refresh:
 
 | Question | Lane |
 | --- | --- |
+| Does each imperative shell obey its proven core (`WriteProtocol`/`MoveProtocol`/`RenameProtocol` and `journal_core`) across faults and crashes? | unit, `lushtext_services::conformance::write_shell` (322-case enumeration); property, `properties::shell_conformance_write` and `properties::shell_conformance_drafts` (`draft_conformance_strategy_reaches_every_journal_stage`) |
 | Does the throttle admit and refuse correctly? | unit, `model::attention_refresh` |
 | Can any trigger sequence beat the floor, or override user work? | property, `properties::attention_refresh` |
 | Does an externally created, removed, or excluded file reach the palette? | widget, `attention_refresh` |

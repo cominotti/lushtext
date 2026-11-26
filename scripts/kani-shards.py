@@ -260,6 +260,17 @@ SETTLE_EVIDENCE_MEASURED_IN = (
 # is raised (`STREAM_REPLACE_RAISED_IN`), none is lowered. Per-run table:
 # docs/next/formal-verification.md, "Replace All protocol and stream".
 REPLACE_MEASURED_IN = "runs 44330495557, 44338924357 (max of the two)"
+# verify-shell-conformance-against-proven-cores moved the journal and write
+# environment models out of the harness files (design D1), widened the draft
+# journal model with `AfterEffect` + unregistered-body reconciliation, and split
+# `core-journal-liveness` into two 1-harness shards (`core-journal-liveness` and
+# `core-journal-liveness-bound`) after run 45863627881 hit the 30-minute CI cap.
+# Two sequential dispatched kani.yml runs on `43f228fc` (task 9.4, larger of
+# the two rounded up to 0.1): core-journal-and-write 21.85 / 17.63 min (4.51 GiB),
+# core-journal-liveness 15.78 / 14.49 min (7.37 GiB), core-journal-liveness-bound
+# 12.91 / 11.28 min (6.73 GiB), core-second-writer 7.51 / 7.19 min (4.18 GiB),
+# core-multi-window 11.89 / 12.74 min (3.90 GiB).
+SHELL_CONFORMANCE_MEASURED_IN = "runs 45870574779, 45876967219 (max of the two)"
 STREAM_REPLACE_RAISED_IN = "; raised by runs 44330495557, 44338924357 (max of the two)"
 REPLACE_PROTOCOL_CI_MINUTES = 2.8
 REPLACE_PROTOCOL_CI_PEAK_GIB = 1.7
@@ -368,25 +379,38 @@ SHARDS: dict[str, Shard] = {
         "lushtext-services",
         (
             "draft_service::kani_proofs::journal_invariants_hold_under_crashes",
+            "draft_service::kani_proofs::an_unconfirmed_set_aside_copy_loses_accepted_work",
             "draft_service::kani_proofs::journal_set_aside_",
             "draft_service::kani_proofs::journal_decisions_",
             "draft_service::set_aside_retention::kani_proofs::",
             "filesystem::write_protocol::kani_proofs::",
         ),
         gate="scheduled",
-        ci_minutes=12.0,
-        ci_peak_gib=2.6,
-        measured_in=MULTI_WINDOW_MEASURED_IN + PROOF_STRENGTH_RAISED_IN,
+        ci_minutes=21.9,
+        ci_peak_gib=4.6,
+        measured_in=SHELL_CONFORMANCE_MEASURED_IN,
     ),
     # verify-multi-window-draft-journal added the journal lane to the model,
     # which made the two L1 harnesses too slow to share the journal shard.
+    # verify-shell-conformance-against-proven-cores widened the model with
+    # `AfterEffect`, pushing the combined pair past the 30-minute CI cap in run
+    # 45863627881 (30m5s timeout); split each harness into its own 1-harness
+    # shard (`core-journal-liveness` and `core-journal-liveness-bound`).
     "core-journal-liveness": Shard(
         "lushtext-services",
-        ("draft_service::kani_proofs::a_dirty_editor_",),
+        ("draft_service::kani_proofs::a_dirty_editor_becomes_clean_without_faults",),
         gate="scheduled",
-        ci_minutes=15.2,
-        ci_peak_gib=4.8,
-        measured_in=MULTI_WINDOW_MEASURED_IN + PROOF_STRENGTH_RAISED_IN,
+        ci_minutes=15.8,
+        ci_peak_gib=7.4,
+        measured_in=SHELL_CONFORMANCE_MEASURED_IN,
+    ),
+    "core-journal-liveness-bound": Shard(
+        "lushtext-services",
+        ("draft_service::kani_proofs::a_dirty_editor_may_need_seven_steps",),
+        gate="scheduled",
+        ci_minutes=13.0,
+        ci_peak_gib=6.8,
+        measured_in=SHELL_CONFORMANCE_MEASURED_IN,
     ),
     # probe-long-line-toolkit-costs added the responsiveness-budget arithmetic
     # here: seconds of CBMC, too small for a shard of its own.
@@ -394,9 +418,9 @@ SHARDS: dict[str, Shard] = {
         "lushtext-services",
         ("draft_service::kani_proofs::a_second_writer_",),
         gate="scheduled",
-        ci_minutes=7.4,
-        ci_peak_gib=2.7,
-        measured_in=MULTI_WINDOW_MEASURED_IN + RESPONSIVENESS_BUDGET_REMEASURED_IN + CLOSE_PROTECTED_RAISED_IN + CLOSE_PROTECTED_FINAL_RAISED_IN,
+        ci_minutes=7.6,
+        ci_peak_gib=4.2,
+        measured_in=SHELL_CONFORMANCE_MEASURED_IN,
         extra_packages=(
             (
                 "lushtext-model",
@@ -413,9 +437,9 @@ SHARDS: dict[str, Shard] = {
         "lushtext-services",
         ("draft_service::kani_proofs::journal_invariants_hold_across_two_windows",),
         gate="scheduled",
-        ci_minutes=8.9,
-        ci_peak_gib=2.7,
-        measured_in=MULTI_WINDOW_MEASURED_IN + PROOF_STRENGTH_RAISED_IN + CLOSE_PROTECTED_FINAL_RAISED_IN,
+        ci_minutes=12.8,
+        ci_peak_gib=3.9,
+        measured_in=SHELL_CONFORMANCE_MEASURED_IN,
     ),
     "core-memory-policy": Shard(
         "lushtext-model",
@@ -837,33 +861,33 @@ ORACLES: dict[str, Oracle] = {
     "crates/lushtext-services/src/draft_service/journal_core.rs": Oracle(
         _SERVICES,
         (
-            _h(_JOURNAL + "journal_decisions_follow_their_documented_rules", 0.35, "ci"),
-            _h(_JOURNAL + "journal_set_aside_keeps_every_body_it_reports_kept", 4.13, "local"),
-            _h(_JOURNAL + "journal_set_aside_stamp_only_naming_loses_a_newer_body", 4.01, "local"),
-            _h(_JOURNAL + "a_dirty_editor_becomes_clean_without_faults", 292.41, "local"),
-            _h(_JOURNAL + "a_dirty_editor_may_need_seven_steps", 262.12, "local"),
-            _h(_JOURNAL + "journal_invariants_hold_across_two_windows", 260.12, "local"),
-            _h(_JOURNAL + "journal_invariants_hold_under_crashes", 309.72, "local"),
+            _h(_JOURNAL + "journal_decisions_follow_their_documented_rules", 0.56, "ci"),
+            _h(_JOURNAL + "journal_set_aside_keeps_every_body_it_reports_kept", 6.02, "ci"),
+            _h(_JOURNAL + "journal_set_aside_stamp_only_naming_loses_a_newer_body", 5.84, "ci"),
+            _h(_JOURNAL + "a_dirty_editor_becomes_clean_without_faults", 858.79, "ci"),
+            _h(_JOURNAL + "a_dirty_editor_may_need_seven_steps", 705.72, "ci"),
+            _h(_JOURNAL + "journal_invariants_hold_across_two_windows", 674.52, "ci"),
+            _h(_JOURNAL + "journal_invariants_hold_under_crashes", 1151.47, "ci"),
         ),
     ),
     "crates/lushtext-services/src/draft_service/set_aside_retention.rs": Oracle(
         _SERVICES,
         (
-            _h(_RETENTION + "set_aside_retention_bound_and_notice_never_plan_a_deletion", 0.19, "ci"),
-            _h(_RETENTION + "set_aside_retention_deleting_every_body_breaks_r2", 1.28, "ci"),
-            _h(_RETENTION + "set_aside_retention_deletes_only_confirmed_bodies", 2.6, "ci"),
+            _h(_RETENTION + "set_aside_retention_bound_and_notice_never_plan_a_deletion", 0.32, "ci"),
+            _h(_RETENTION + "set_aside_retention_deleting_every_body_breaks_r2", 1.99, "ci"),
+            _h(_RETENTION + "set_aside_retention_deletes_only_confirmed_bodies", 9.14, "ci"),
             _h(_RETENTION + "set_aside_retention_notice_follows_the_bound_and_its_rate_limit", 12.73, "ci"),
         ),
     ),
     "crates/lushtext-services/src/filesystem/write_protocol.rs": Oracle(
         _SERVICES,
         (
-            _h(_WRITE + "a_move_removes_its_source_only_after_the_copy_is_durable", 0.07, "ci"),
-            _h(_WRITE + "a_completed_rename_synced_every_directory_it_mutated", 0.08, "ci"),
-            _h(_WRITE + "every_rename_classification_describes_the_namespace", 0.18, "ci"),
-            _h(_WRITE + "skipping_the_temp_sync_tears_the_destination", 3.43, "ci"),
-            _h(_WRITE + "a_crash_never_tears_the_destination", 3.65, "ci"),
-            _h(_WRITE + "every_classification_describes_the_destination", 5.55, "ci"),
+            _h(_WRITE + "a_move_removes_its_source_only_after_the_copy_is_durable", 0.10, "ci"),
+            _h(_WRITE + "a_completed_rename_synced_every_directory_it_mutated", 0.15, "ci"),
+            _h(_WRITE + "every_rename_classification_describes_the_namespace", 0.24, "ci"),
+            _h(_WRITE + "skipping_the_temp_sync_tears_the_destination", 4.66, "ci"),
+            _h(_WRITE + "a_crash_never_tears_the_destination", 5.30, "ci"),
+            _h(_WRITE + "every_classification_describes_the_destination", 7.68, "ci"),
         ),
     ),
     "crates/lushtext-model/src/editor_memory.rs": Oracle(
@@ -1147,6 +1171,10 @@ NOT_ORACLE_HARNESSES: dict[str, str] = {
         "pins axiom A6 (one writer per data directory), not a property of journal_core; "
         "journal_invariants_hold_under_crashes says more, and it costs minutes per mutant"
     ),
+    _JOURNAL + "an_unconfirmed_set_aside_copy_loses_accepted_work": (
+        "pins the retired pre-D6 rule that counted an AfterRename set-aside copy "
+        "as preserved; tests BrokenSetAsideCopyScope, not a property of the fixed core"
+    ),
     _SHELL_LOOP + "shell_loop_layout_setter_flaps": (
         "pins the retired pre-fix properties setter, a model inside the harness file, "
         "not a property of the shipped policy"
@@ -1162,6 +1190,14 @@ NOT_ORACLE_MODULES: dict[str, str] = {
     "crates/lushtext-model/src/draft.rs": (
         "the journal harnesses import only the DraftManifestCompleteness enum from it; "
         "no harness checks its behaviour"
+    ),
+    "crates/lushtext-services/src/draft_service/journal_model.rs": (
+        "the journal harnesses' environment model, shared with the draft-service "
+        "conformance driver; verification code, not a checked core"
+    ),
+    "crates/lushtext-services/src/filesystem/write_protocol/disk_model.rs": (
+        "the write harnesses' disk model, shared with the write-shell conformance "
+        "driver; verification code, not a checked core"
     ),
 }
 

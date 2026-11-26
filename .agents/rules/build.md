@@ -532,6 +532,32 @@ permissions ([`testing.md`](./testing.md)); see the Replace/Undo
 after-metadata hook registry for a seam keyed by operation target that returns
 cleanup ownership from registration.
 
+**The conformance tap is the durable-write injection seam.**
+`services/filesystem/backend_tap.rs` (`cfg(any(test, feature =
+"test-utils"))`; inline no-ops otherwise, and its marker strings are on the
+crash-recovery smoke's no-kill-point list) records every action of every
+`protocol_drive::drive` run and every fallible `sys.rs` primitive, and injects
+typed backend errors, before-action hooks and crashes (`resume_unwind`, no
+panic hook) through a `TapPlan` installed on the calling thread
+(`tap::install`, uninstalled by its guard). New durable-write fault tests
+address it (by protocol run and action ordinal, by destination, scope-wide by
+call index, or by action name), never a new thread-local. A new fallible
+primitive in `sys.rs` goes through `tap::call`, or the pin in
+`backend_tap/tests.rs` fails.
+
+**Conformance properties** (`verify-shell-conformance-against-proven-cores`).
+`crates/lushtext-services/src/conformance/` (`write_shell.rs`,
+`draft_service.rs`) holds drivers that take a caller-owned root and the
+operations to run, and name neither `proptest` nor `tempfile`; strategies,
+each case's `TempDir`, the 256-iter / 45 s shrink budget (`max_shrink_iters =
+256`, `max_shrink_time = 45_000`), and the deterministic reach-floor test live
+in `crates/lushtext-core/tests/properties/` (`shell_conformance_write.rs`,
+`shell_conformance_drafts.rs`). Operations are generated **enabled-indexed**:
+an index picks one of the actions the run (or the model) enables, modulo their
+count, so every script is valid and proptest's own shrinking stays sound. A
+shrunk divergence is committed as a failing deterministic `#[test]` before its
+fix.
+
 ## Formal Verification (Kani)
 
 Which shards a change runs, and when, is decided by
@@ -624,6 +650,17 @@ are in [`testing.md`](./testing.md). This section covers the lane.
   `timeout-minutes` instead. The Kani install is cached on `KANI_VERSION`.
 - **Counterexamples** are triaged like a failing test: decide whether the code,
   the stated domain, or the envelope is wrong, and record the outcome in the
+  programme record.
+- **Shared environment models.** A model the harnesses and a conformance
+  driver both run lives beside its core, outside `kani_proofs.rs`
+  (`write_protocol/disk_model.rs`, `draft_service/journal_model.rs`): every
+  choice is an argument or goes through a `Choices` trait, which the
+  harnesses answer with `kani::any()`/`kani::assume` and the drivers with
+  what the real backend or service did. Such a module is excluded from the
+  mutation scope and listed in `NOT_ORACLE_MODULES`. The journal fault domain
+  (`Fault { None, BeforeEffect, AfterEffect }`) covers before-effect errors and
+  after-rename/dir-sync failures. A divergence between a shell and its model is
+  classified (shell, environment model, or core defect) and recorded in the
   programme record.
 - **Proof strength.** `ORACLES` in `scripts/kani-shards.py` maps every
   Kani-checked module (optionally scoped to named functions) to its harnesses,

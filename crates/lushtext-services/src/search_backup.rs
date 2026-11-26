@@ -15,6 +15,7 @@ use crate::content_search::{
     ReplaceUndoEntry, UndoOriginal, replace_undo_retained_byte_weight,
 };
 use crate::content_search::{ShrinkAction, shrink_step};
+use crate::filesystem::backend_tap::ProtocolKind;
 use crate::filesystem::leftovers::LaunchId;
 use crate::protocol_drive::{Protocol, drive};
 use crate::{
@@ -550,6 +551,7 @@ fn remove_unlisted_journal_entries(
 struct ShrinkRun(ShrinkAction);
 
 impl Protocol for ShrinkRun {
+    const KIND: ProtocolKind = ProtocolKind::Shrink;
     type Action = ShrinkAction;
     type Outcome = bool;
     type End = bool;

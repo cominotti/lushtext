@@ -31,6 +31,7 @@ use super::{
     run_after_pass_a_hook_for_test, run_before_target_write_hook_for_test,
     take_replace_before_rename_failure_for_test,
 };
+use crate::filesystem::backend_tap::ProtocolKind;
 use crate::filesystem::leftovers::LaunchId;
 use crate::filesystem::read::{BoundedStreamError, stream_bounded};
 use crate::filesystem::types::FileFacts;
@@ -439,6 +440,7 @@ impl ProducerVerdict {
 
 /// One file's Replace All protocol as [`drive`] runs it.
 impl Protocol for ReplaceFileProtocol {
+    const KIND: ProtocolKind = ProtocolKind::ReplaceFile;
     type Action = FileAction;
     type Outcome = FileOutcome;
     type End = FileEnd;

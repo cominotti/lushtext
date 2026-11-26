@@ -1036,7 +1036,10 @@ fn preserve_original(
     problem: &RecoveryProblem,
     bytes: Option<&[u8]>,
 ) -> RecoveryPreservation {
-    if matches!(problem, RecoveryProblem::UnsupportedFileKind { .. }) {
+    if matches!(
+        problem,
+        RecoveryProblem::UnsupportedFileKind { .. } | RecoveryProblem::Unreadable { .. }
+    ) {
         return RecoveryPreservation::PreservedInPlace;
     }
 
@@ -1460,6 +1463,33 @@ mod tests {
             RecoveryProblem::Unreadable { .. }
         ));
         assert!(!result.replacement_allowed());
+    }
+
+    #[test]
+    fn unreadable_existing_metadata_file_is_preserved_in_place_without_quarantine() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("manifest.json");
+        fixture::write_text(&path, "{\"drafts\":[]}");
+
+        let plan = crate::filesystem::backend_tap::TapPlan::record().inject(
+            crate::filesystem::backend_tap::Address::ScopeWide { call: 0 },
+            crate::filesystem::backend_tap::Injected::FAIL,
+        );
+        let guard = crate::filesystem::backend_tap::install(plan);
+        let result: RecoveryLoad<TestMetadata> = load_json_or_default(&config(dir.path(), &path));
+        let _trace = guard.finish();
+
+        assert_eq!(result.outcome, RecoveryLoadOutcome::PreservedDefault);
+        assert!(matches!(
+            result.diagnostics[0].problem,
+            RecoveryProblem::Unreadable { .. }
+        ));
+        assert_eq!(
+            result.diagnostics[0].preservation,
+            RecoveryPreservation::PreservedInPlace
+        );
+        assert!(!result.replacement_allowed());
+        assert_eq!(fixture::read_text(&path), "{\"drafts\":[]}");
     }
 
     #[test]

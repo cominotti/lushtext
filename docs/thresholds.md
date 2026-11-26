@@ -472,6 +472,14 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-services/src/bookmark_excerpt.rs` | `BOOKMARK_EXCERPT_LINE_CHAR_LIMIT` | 4,096 | presentation cap | up from 4,096: characters an excerpt line shows (D12) |
 | `crates/lushtext-services/src/bookmark_excerpt.rs` | `BOOKMARK_EXCERPT_CANCELLATION_CHECK_LINES` | 1,024 | cap | power of two |
 
+### `crates/lushtext-services/src/conformance/draft_service.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-services/src/conformance/draft_service.rs` | `DRAFT_IDS` | 3 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
+| `crates/lushtext-services/src/conformance/draft_service.rs` | `INITIAL_LAYOUT_BITS` | 8 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
+| `crates/lushtext-services/src/conformance/draft_service.rs` | `BASE_MTIME_SECS` | 1,700,000,000 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
+
 ### `crates/lushtext-services/src/content_search/replace/mod.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
@@ -502,6 +510,14 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-services/src/draft_service.rs` | `MANIFEST_REPAIR_ENTRY_OVERHEAD_BYTES` | 128 | coverage window | rounded up (D5) |
 | `crates/lushtext-services/src/draft_service.rs` | `MANIFEST_REPAIR_AUXILIARY_ENTRY_ALLOWANCE` | 1 | coverage window | power of two, rounded up |
 | `crates/lushtext-services/src/draft_service.rs` | `MAX_ORPHAN_CLEANUP_DRAFT_SCAN` | 2,048 | cap | power of two |
+
+### `crates/lushtext-services/src/draft_service/journal_model.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-services/src/draft_service/journal_model.rs` | `MAX_IDS` | 3 | out: tool | verification model scope (Kani harnesses and the conformance driver; never shipped) |
+| `crates/lushtext-services/src/draft_service/journal_model.rs` | `MAX_EDITS` | 3 | out: tool | verification model scope (Kani harnesses and the conformance driver; never shipped) |
+| `crates/lushtext-services/src/draft_service/journal_model.rs` | `CONTENTS` | 7 | out: tool | verification model scope (Kani harnesses and the conformance driver; never shipped) |
 
 ### `crates/lushtext-services/src/draft_service/set_aside.rs`
 

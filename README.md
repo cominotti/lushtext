@@ -772,6 +772,16 @@ and an evaluation of the Verus deductive verifier on unbounded claims
 Both rerun through `make formal-evaluation`, and their disposable models live
 in `formal/evaluation/`.
 
+Kani proves the pure cores; shell conformance checks that the imperative code
+driving them obeys them. A test-only tap at the one protocol loop and at every
+fallible filesystem call records each action and injects faults and crashes,
+and `crates/lushtext-services/src/conformance/` replays both the real
+durable-write primitives (`write_shell.rs`) and the draft journal (`draft_service.rs`)
+through their proven cores and the same models the Kani harnesses run, after
+every action (an exhaustive enumeration in `make test`, generated properties
+`shell_conformance_write.rs` and `shell_conformance_drafts.rs` plus its reach
+test in `make test-prop`).
+
 `make proof-strength` measures how much of each Kani-checked module the
 proofs actually pin: it runs cargo-mutants' mutants of the module against its
 Kani harnesses and against the tests, and reports the kill rates of both; see

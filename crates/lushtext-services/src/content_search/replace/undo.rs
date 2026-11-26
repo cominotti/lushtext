@@ -21,6 +21,7 @@ use super::{
     effective_main_replace_undo_bytes, effective_max_replace_file_bytes,
     run_undo_after_metadata_hook_for_test,
 };
+use crate::filesystem::backend_tap::ProtocolKind;
 use crate::filesystem::leftovers::{LaunchId, sweep_journal_owned_leftovers};
 use crate::filesystem::read::{BoundedStreamError, stream_bounded};
 use crate::filesystem::types::FileFacts;
@@ -153,6 +154,7 @@ pub(super) fn rollback_applied_files(backup: &ReplaceUndoBackup) -> RollbackResu
 
 /// One entry's undo protocol as [`drive`] runs it.
 impl Protocol for ReplaceUndoProtocol {
+    const KIND: ProtocolKind = ProtocolKind::ReplaceUndo;
     type Action = UndoAction;
     type Outcome = UndoOutcome;
     type End = UndoEnd;
