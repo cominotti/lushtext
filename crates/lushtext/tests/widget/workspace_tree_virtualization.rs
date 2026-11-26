@@ -2649,3 +2649,285 @@ fn test_a_collapsed_listing_held_elsewhere_is_released_not_emptied() {
     assert_eq!(held.n_items(), 300, "a shared listing keeps every item");
     drop(tree.window);
 }
+
+/// A presented tree whose `nested/` (with `count` entries, `siblings` files
+/// after it) is expanded and fully listed.
+fn expanded_nested(count: usize, siblings: usize) -> (LargeTree, PathBuf) {
+    let (dir, root) = seed_workspace(&[("nested", count)]);
+    for index in 0..siblings {
+        fixture::write_text(&root.join(format!("zz-{index:04}.txt")), "x");
+    }
+    let tree = present_single_folder(dir, root, "virtualized", 800);
+    tree.section.expand_folders();
+    let nested = tree.root.join("nested");
+    expand_and_load(&tree, &nested, count);
+    flush_after_delay(Duration::from_millis(300));
+    (tree, nested)
+}
+
+/// The realized expander showing `path`'s row, if any.
+fn expander_for(section: &LushtextWorkspaceSection, path: &Path) -> Option<gtk4::TreeExpander> {
+    let row = row_for_path(section, path)?;
+    let mut child = section.imp().file_tree_view.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        let expander = find_descendant(&widget, glib::object::ObjectExt::is::<gtk4::TreeExpander>)
+            .and_downcast::<gtk4::TreeExpander>();
+        if let Some(expander) = expander
+            && expander.list_row().as_ref() == Some(&row)
+        {
+            return Some(expander);
+        }
+    }
+    None
+}
+
+/// Open the file-row context menu on `path`'s row from the keyboard, so the
+/// section's actions target that row and its realized expander.
+fn open_row_context_menu(section: &LushtextWorkspaceSection, path: &Path) {
+    let index = tree_index_for_path(section, path).expect("the row is listed");
+    section
+        .imp()
+        .file_tree_view
+        .scroll_to(index, gtk4::ListScrollFlags::NONE, None);
+    wait_until(Duration::from_secs(5), || {
+        expander_for(section, path).is_some_and(|expander| expander.height() > 0)
+    });
+    selection(section).set_selected(index);
+    section.imp().file_tree_view.grab_focus();
+    flush_events();
+    let controllers = section.imp().file_tree_view.observe_controllers();
+    let mut opened = false;
+    for position in 0..controllers.n_items() {
+        if let Some(controller) = controllers
+            .item(position)
+            .and_downcast::<gtk4::EventControllerKey>()
+        {
+            let args: [&dyn ToValue; 3] = [
+                &gtk4::gdk::Key::Menu,
+                &0u32,
+                &gtk4::gdk::ModifierType::empty(),
+            ];
+            if glib::object::ObjectExt::emit_by_name::<bool>(&controller, "key-pressed", &args) {
+                opened = true;
+                break;
+            }
+        }
+    }
+    assert!(opened, "the Menu key opens the row's context menu");
+    wait_until(Duration::from_secs(5), || {
+        section
+            .imp()
+            .context_menu
+            .borrow()
+            .as_ref()
+            .is_some_and(gtk4::prelude::WidgetExt::is_visible)
+    });
+}
+
+/// The inline rename entry in `path`'s realized row, if any.
+fn rename_entry_for(section: &LushtextWorkspaceSection, path: &Path) -> Option<gtk4::Entry> {
+    let expander = expander_for(section, path)?;
+    find_descendant(
+        expander.upcast_ref(),
+        glib::object::ObjectExt::is::<gtk4::Entry>,
+    )
+    .and_downcast::<gtk4::Entry>()
+}
+
+/// Start inline rename on `path`'s row and wait until its entry holds the
+/// focus. Returns the entry.
+fn start_inline_rename(section: &LushtextWorkspaceSection, path: &Path) -> gtk4::Entry {
+    open_row_context_menu(section, path);
+    section
+        .activate_action("section.rename", None)
+        .expect("the rename action");
+    wait_until(Duration::from_secs(5), || {
+        rename_entry_for(section, path).is_some_and(|entry| {
+            section
+                .root()
+                .and_downcast::<gtk4::Window>()
+                .and_then(|window| gtk4::prelude::GtkWindowExt::focus(&window))
+                .is_some_and(|focus| focus.is_ancestor(&entry) || focus == entry)
+        })
+    });
+    let entry = rename_entry_for(section, path).expect("the rename entry");
+    // A presented test window is not active, and an inactive window's focus
+    // moves deliver no crossing the rename's focus controller acts on; on a
+    // desktop the window is active. Make it active with a real press inside
+    // the entry, which keeps the focus there.
+    let window = section
+        .root()
+        .and_downcast::<gtk4::Window>()
+        .expect("the section's window");
+    if !window.is_active() {
+        crate::common::activate_with_real_press(&window, &entry);
+    }
+    wait_until(Duration::from_secs(5), || {
+        gtk4::prelude::GtkWindowExt::focus(&window)
+            .is_some_and(|focus| focus.is_ancestor(&entry) || focus == entry)
+    });
+    entry
+}
+
+/// The position of the row holding the window's focus, if the focus is on a
+/// row of `section`'s list. Read from the window, not the list's
+/// `focus-child`: GTK clears the focus-child chain while the window is
+/// inactive, and the headless compositor deactivates it between real-input
+/// sessions, while the window's focus widget, which keys go to, stays.
+fn window_focused_row(window: &LushtextWindow, section: &LushtextWorkspaceSection) -> Option<u32> {
+    let list = section
+        .imp()
+        .file_tree_view
+        .upcast_ref::<gtk4::Widget>()
+        .clone();
+    let mut widget = gtk4::prelude::GtkWindowExt::focus(window);
+    while let Some(current) = widget {
+        let parent = current.parent();
+        if parent.as_ref() == Some(&list) {
+            return find_descendant(&current, glib::object::ObjectExt::is::<gtk4::TreeExpander>)
+                .and_downcast::<gtk4::TreeExpander>()
+                .and_then(|expander| expander.list_row())
+                .map(|row| row.position())
+                .filter(|position| *position != gtk4::INVALID_LIST_POSITION);
+        }
+        widget = parent;
+    }
+    None
+}
+
+/// Moving the focus out of an inline-rename entry ends the rename without a
+/// toolkit CRITICAL. The entry's focus-leave handler used to remove the entry
+/// from its row inside GTK's focus crossing, so the crossing's walk from the
+/// old focus to the common ancestor (`gtkwindow.c`,
+/// `synthesize_focus_change_events`: `for (w = old_focus; w != ancestor;
+/// w = gtk_widget_get_parent (w))`) never met the ancestor and spun on
+/// `gtk_widget_get_parent: assertion 'GTK_IS_WIDGET (widget)' failed`
+/// forever (originating in `slice-large-directory-collapse` task 9.12). Three
+/// cases: the list's own `scroll_to(FOCUS)` onto another row and onto the
+/// renamed row (the common ancestor is then the new focus itself), and a
+/// button outside the list.
+#[test]
+fn test_moving_the_focus_out_of_inline_rename_ends_it_cleanly() {
+    let (tree, nested) = expanded_nested(64, 0);
+    let capture = crate::common::LogCapture::start();
+    for case in ["another row", "the renamed row", "a header button"] {
+        let entry = start_inline_rename(&tree.section, &nested);
+        let list = &tree.section.imp().file_tree_view;
+        match case {
+            "another row" => {
+                let root = tree_index_for_path(&tree.section, &tree.root).expect("the root row");
+                list.scroll_to(root, gtk4::ListScrollFlags::FOCUS, None);
+            }
+            "the renamed row" => {
+                let row = tree_index_for_path(&tree.section, &nested).expect("the renamed row");
+                list.scroll_to(row, gtk4::ListScrollFlags::FOCUS, None);
+            }
+            _ => {
+                assert!(tree.section.imp().refresh_button.grab_focus());
+            }
+        }
+        wait_until(Duration::from_secs(5), || entry.parent().is_none());
+        flush_events();
+        assert!(
+            rename_entry_for(&tree.section, &nested).is_none(),
+            "{case}: the rename ended"
+        );
+        assert!(fixture::exists(&nested), "{case}: the name was kept");
+    }
+    let criticals: Vec<_> = capture
+        .entries()
+        .into_iter()
+        .filter(|entry| entry.critical)
+        .collect();
+    assert!(criticals.is_empty(), "{criticals:?}");
+    drop(tree.window);
+}
+
+/// A background refresh of the directory being renamed restores the selection
+/// without taking the focus from the inline-rename entry, so the rename
+/// survives it (before `restore_selection`, `scroll_to(FOCUS)` moved the
+/// focus to the row, which ended the rename inside the focus crossing;
+/// originating in `slice-large-directory-collapse` task 9.12).
+#[test]
+fn test_a_background_refresh_keeps_the_inline_rename() {
+    let (tree, nested) = expanded_nested(64, 0);
+    let capture = crate::common::LogCapture::start();
+    let entry = start_inline_rename(&tree.section, &nested);
+    let selected_before = selection(&tree.section).selected();
+    let scans_before = tree
+        .section
+        .workspace_section_evidence()
+        .scan_pressure
+        .terminal_publications;
+    tree.section.queue_auto_refresh_for_test(vec![nested]);
+    tree.section.apply_queued_refresh_for_test();
+    wait_until(Duration::from_secs(10), || {
+        let evidence = tree.section.workspace_section_evidence();
+        evidence.scan_pressure.terminal_publications > scans_before
+            && !evidence.refresh_blocks_readiness
+    });
+    // The restore runs from a 1 ms timeout after the scan terminal.
+    flush_after_delay(Duration::from_millis(50));
+    assert!(entry.parent().is_some(), "the rename entry stays");
+    assert!(
+        gtk4::prelude::GtkWindowExt::focus(&tree.window)
+            .is_some_and(|focus| focus.is_ancestor(&entry) || focus == entry),
+        "the rename entry keeps the focus"
+    );
+    assert_eq!(selection(&tree.section).selected(), selected_before);
+    let criticals: Vec<_> = capture
+        .entries()
+        .into_iter()
+        .filter(|entry| entry.critical)
+        .collect();
+    assert!(criticals.is_empty(), "{criticals:?}");
+    drop(tree.window);
+}
+
+/// A background refresh that finds the selection where it left it leaves the
+/// keyboard focus alone: a row the user focused off the selection (Ctrl+arrow
+/// moves the focus without selecting) keeps it. The restore's
+/// `scroll_to(FOCUS)` moved the focus back to the selected row on every
+/// refresh (originating in `slice-large-directory-collapse`, design R13).
+#[test]
+fn test_a_background_refresh_keeps_the_focus_off_the_selection() {
+    let (tree, nested) = expanded_nested(64, 0);
+    tree.section.stop_workspace_watch_for_test();
+    selection(&tree.section).set_selected(0);
+    let focused = nested.join(file_name(2));
+    let focused_index = tree_index_for_path(&tree.section, &focused).expect("row index");
+    let row = rendered_row_widget(&tree.section, &file_name(2)).expect("a realized row");
+    assert!(row.grab_focus(), "the row takes the focus");
+    flush_after_delay(Duration::from_millis(50));
+    assert_eq!(
+        window_focused_row(&tree.window, &tree.section),
+        Some(focused_index),
+        "the focus is on the row, off the selection"
+    );
+    let scans_before = tree
+        .section
+        .workspace_section_evidence()
+        .scan_pressure
+        .terminal_publications;
+    tree.section.queue_auto_refresh_for_test(vec![nested]);
+    tree.section.apply_queued_refresh_for_test();
+    wait_until(Duration::from_secs(10), || {
+        let evidence = tree.section.workspace_section_evidence();
+        evidence.scan_pressure.terminal_publications > scans_before
+            && !evidence.refresh_blocks_readiness
+    });
+    // The restore runs from a 1 ms timeout after the scan terminal.
+    flush_after_delay(Duration::from_millis(50));
+    assert_eq!(
+        selection(&tree.section).selected(),
+        0,
+        "the selection stays"
+    );
+    assert_eq!(
+        window_focused_row(&tree.window, &tree.section),
+        Some(focused_index),
+        "the refresh left the focus on the row the user focused"
+    );
+    drop(tree.window);
+}

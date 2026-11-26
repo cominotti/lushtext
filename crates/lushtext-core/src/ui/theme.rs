@@ -8,6 +8,8 @@
 //! this module to resolve the active source palette for transparent document
 //! surfaces.
 
+use std::cell::Cell;
+
 use gtk4::gio;
 use sourceview5::prelude::*;
 
@@ -64,18 +66,49 @@ pub(crate) fn register_app_icons() {
     }
 }
 
+thread_local! {
+    /// Display-wide providers `load_css` has added in this process.
+    static DISPLAY_PROVIDERS_ADDED: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Add `provider` for the display and count it in
+/// [`display_providers_added`].
+fn add_display_provider(display: &gdk4::Display, provider: &gtk4::CssProvider, priority: u32) {
+    gtk4::style_context_add_provider_for_display(display, provider, priority);
+    DISPLAY_PROVIDERS_ADDED.with(|added| added.set(added.get() + 1));
+}
+
+/// How many display-wide providers application startup has added in this
+/// process: the application CSS and the tab-content transparency provider,
+/// once (the font providers are `ui/font_zoom.rs`'s, also once). Every
+/// display provider takes part in every style lookup of every widget, so a
+/// second application started in the same process (each widget-test window
+/// starts one) adds none; a copy per startup made each restyle slower the
+/// more windows the process had opened (originating in
+/// `slice-large-directory-collapse`, design R13).
+#[must_use]
+pub fn display_providers_added() -> usize {
+    DISPLAY_PROVIDERS_ADDED.with(Cell::get)
+}
+
 /// Load the application CSS and set up the font customization provider.
-/// Must be called after GTK is initialized (i.e. during startup).
+/// Must be called after GTK is initialized (i.e. during startup). The
+/// display-wide providers and their settings handlers are installed by the
+/// first call in the process; a later call (another application instance)
+/// only re-applies the font.
 pub(crate) fn load_css() {
     let display = gdk4::Display::default().expect("display");
+    let first_install = !crate::ui::font_zoom::is_installed();
 
-    let css_provider = gtk4::CssProvider::new();
-    css_provider.load_from_resource("/dev/cominotti/lushtext/style/style.css");
-    gtk4::style_context_add_provider_for_display(
-        &display,
-        &css_provider,
-        gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
-    );
+    if first_install {
+        let css_provider = gtk4::CssProvider::new();
+        css_provider.load_from_resource("/dev/cominotti/lushtext/style/style.css");
+        add_display_provider(
+            &display,
+            &css_provider,
+            gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
 
     // Font rules (`scope-font-zoom-restyle`, ledger A86): two display
     // providers at user priority, loaded once per base font with a rule set
@@ -87,7 +120,6 @@ pub(crate) fn load_css() {
     // at 100 %. The editor keeps GtkTextView `monospace` disabled to avoid
     // active-line glyph clipping in GTK 4.22 / GtkSourceView 5.20.
     let settings = crate::ui::settings_writes::shared();
-    let first_install = !crate::ui::font_zoom::is_installed();
     crate::ui::font_zoom::install(&display);
     apply_font(&settings);
     if first_install {
@@ -112,11 +144,15 @@ pub(crate) fn load_css() {
         }
     }
 
+    if !first_install {
+        return;
+    }
+
     // Tab-content transparency uses one display-wide provider because the
     // setting is global and the CSS only becomes meaningful once widgets add
     // the specific surface classes from their templates.
     let transparency_provider = gtk4::CssProvider::new();
-    gtk4::style_context_add_provider_for_display(
+    add_display_provider(
         &display,
         &transparency_provider,
         gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
