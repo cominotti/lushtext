@@ -9,7 +9,7 @@ pub mod app;
 pub mod config;
 #[cfg(feature = "fuzzing")]
 pub mod fuzzing;
-pub mod model;
+pub use lushtext_model as model;
 pub mod services;
 pub mod ui;
 

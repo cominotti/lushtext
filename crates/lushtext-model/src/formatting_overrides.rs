@@ -6,7 +6,7 @@
 //! override, so the editor falls back to its loaded-document state or global
 //! preferences depending on the setting.
 
-use crate::model::encoding::{DocumentEncoding, LineEnding};
+use crate::encoding::{DocumentEncoding, LineEnding};
 
 /// Per-file formatting overrides from EditorConfig.
 ///

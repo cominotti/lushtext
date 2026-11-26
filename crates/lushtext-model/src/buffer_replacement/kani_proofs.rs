@@ -14,7 +14,7 @@
 //! `core-post-open-settle`).
 
 use super::{PacedSlice, ParagraphLength, SliceBudget, V_SLICE, batch_exceeds_slice};
-use crate::model::paragraph_boundary::ProfileSummary;
+use crate::paragraph_boundary::ProfileSummary;
 
 /// The longest paragraph sequence the harnesses range over.
 const MAX_PARAGRAPHS: usize = 6;

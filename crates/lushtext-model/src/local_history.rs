@@ -113,7 +113,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::model::sidecar_identity::DocumentSidecarIdentity;
+    use crate::sidecar_identity::DocumentSidecarIdentity;
 
     #[test]
     fn snapshot_origin_labels_match_browser_copy() {

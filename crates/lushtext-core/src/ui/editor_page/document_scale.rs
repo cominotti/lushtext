@@ -649,8 +649,9 @@ mod notice_limit_tests {
     use crate::ui::accessibility as a11y;
 
     /// No loss against `main` (`power-of-two-thresholds` D12): `main` passed a
-    /// 320-character notice through whole; the limit rounds up to 512, and the
-    /// longest notice the app ships stays whole.
+    /// 320-character notice through whole; the limit rounds up to 512, and
+    /// `lushtext_model::document_scale::tests::the_longest_unprotected_notice_fits_256_characters`
+    /// pins the longest shipped notice at 229 <= 256 < 512.
     #[test]
     fn no_loss_the_reduced_features_notice_keeps_every_character_main_kept() {
         let notice = "n".repeat(320);
@@ -658,8 +659,7 @@ mod notice_limit_tests {
             a11y::bounded_announcement_text(&notice, REDUCED_FEATURES_NOTICE_LIMIT),
             notice.as_str()
         );
-        let longest = crate::model::document_scale::tests::longest_unprotected_notice();
-        assert!(longest <= REDUCED_FEATURES_NOTICE_LIMIT, "{longest}");
+        const { assert!(256 <= REDUCED_FEATURES_NOTICE_LIMIT) };
         assert_eq!(REDUCED_FEATURES_NOTICE_LIMIT, 512);
     }
 }

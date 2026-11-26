@@ -82,6 +82,7 @@ const SCAN_TARGETS: &[&str] = &[
     "docs",
     "openspec/specs",
     "resources/ui",
+    "crates/lushtext-model/src",
     "crates/lushtext-core/benches",
     "crates/lushtext-core/src",
     "crates/lushtext-core/tests",
@@ -92,6 +93,7 @@ const SCAN_TARGETS: &[&str] = &[
 const PATH_SCAN_TARGETS: &[&str] = &[
     "data",
     "resources/ui",
+    "crates/lushtext-model/src",
     "crates/lushtext-core/benches",
     "crates/lushtext-core/src",
     "crates/lushtext-core/tests",
@@ -268,7 +270,7 @@ fn is_allowed_compatibility_reference(relative: &str, needle: &str, line: &str) 
 fn is_current_search_traversal_display_root(relative: &str) -> bool {
     matches!(
         relative,
-        "crates/lushtext-core/src/model/workspace_search.rs"
+        "crates/lushtext-model/src/workspace_search.rs"
             | "crates/lushtext-core/benches/benchmarks.rs"
     )
 }
@@ -280,7 +282,7 @@ fn is_legacy_folder_note_compatibility(relative: &str, line: &str) -> bool {
         "README.md"
             | "docs/recovery-reliability.md"
             | "openspec/specs/workspace-notes/spec.md"
-            | "crates/lushtext-core/src/model/migration_ledger.rs"
+            | "crates/lushtext-model/src/migration_ledger.rs"
             | "crates/lushtext-core/src/services/app_data_layout.rs"
             | "crates/lushtext-core/src/services/app_data_leftovers.rs"
             | "crates/lushtext-core/src/services/folder_note_service.rs"
@@ -301,7 +303,7 @@ fn is_legacy_folder_note_compatibility(relative: &str, line: &str) -> bool {
 fn is_legacy_folder_note_identity_field(relative: &str) -> bool {
     matches!(
         relative,
-        "crates/lushtext-core/src/model/folder_note.rs"
+        "crates/lushtext-model/src/folder_note.rs"
             | "crates/lushtext-core/src/services/folder_note_service.rs"
             | "crates/lushtext-core/tests/fixtures/persistent_json/legacy-folder-note-sidecar-v1.json"
     )

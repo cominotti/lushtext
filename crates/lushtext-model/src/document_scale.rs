@@ -1743,11 +1743,8 @@ pub(crate) mod tests {
         assert!(
             std::hint::black_box(SyntaxLanguage::Css).attach_after_install_threshold() >= 37 * 1024
         );
-        assert_eq!(
-            std::hint::black_box(crate::model::protected_fold::N_HEAD),
-            10_000
-        );
-        assert!(std::hint::black_box(crate::model::protected_fold::N_DENSE) >= 250);
+        assert_eq!(std::hint::black_box(crate::protected_fold::N_HEAD), 10_000);
+        assert!(std::hint::black_box(crate::protected_fold::N_DENSE) >= 250);
     }
 
     /// The paragraph gates of the amendment (`power-of-two-thresholds` D12,
@@ -1791,9 +1788,9 @@ pub(crate) mod tests {
     /// total-size and paragraph tier edge with and without the edit-time
     /// re-analysis reduction. `power-of-two-thresholds` task 4.6 checks the
     /// 256-character notice and announcement caps against it.
-    pub(crate) fn longest_unprotected_notice() -> usize {
-        const MIB: u64 = 1024 * 1024;
-        let sizes = [0, S_SYNTAX + 1, 8 * MIB + 1, 64 * MIB + 1, REFUSE_TO_OPEN];
+    fn longest_unprotected_notice() -> usize {
+        let mib: u64 = 1024 * 1024;
+        let sizes = [0, S_SYNTAX + 1, 8 * mib + 1, 64 * mib + 1, REFUSE_TO_OPEN];
         let lengths = [
             0,
             L_SYNTAX + 1,
@@ -1805,10 +1802,13 @@ pub(crate) mod tests {
         ];
         let mut longest = 0;
         for total_bytes in sizes {
-            for longest_paragraph in lengths {
-                for worst in [0, V_BATCH + 1] {
-                    let scale =
-                        DocumentScale::for_profile(profile(total_bytes, longest_paragraph, worst));
+            for longest_paragraph_chars in lengths {
+                for worst_batch_chars in [0, V_BATCH + 1] {
+                    let scale = DocumentScale::for_profile(ProfileSummary {
+                        total_bytes,
+                        longest_paragraph_chars,
+                        worst_batch_chars,
+                    });
                     for reduced in [
                         scale.reduced,
                         scale.reduced.union(

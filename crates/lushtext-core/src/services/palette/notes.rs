@@ -1981,20 +1981,6 @@ enum PaletteNoteDocumentSource {
     OpenTab(PaletteOpenTabSource),
 }
 
-impl PaletteOpenTabSource {
-    /// User-facing source label for rows that come from a saved open tab.
-    #[must_use]
-    pub fn row_label(&self) -> String {
-        match (&self.workspace_name, &self.workspace_folder) {
-            (Some(workspace_name), Some(folder)) => {
-                format!("Open tab · {workspace_name} · {}", folder.display())
-            }
-            (Some(workspace_name), None) => format!("Open tab · {workspace_name}"),
-            (None, _) => "Open tab · Outside workspace".to_string(),
-        }
-    }
-}
-
 impl PaletteNoteDocumentSource {
     /// User-facing source label shown in row subtitles and preview metadata.
     #[must_use]

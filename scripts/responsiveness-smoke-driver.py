@@ -95,10 +95,10 @@ RD_BUS = "org.gnome.Mutter.RemoteDesktop"
 RD_PATH = "/org/gnome/Mutter/RemoteDesktop"
 RD_SESSION_IFACE = "org.gnome.Mutter.RemoteDesktop.Session"
 
-# Budgets mirror crates/lushtext-core/src/model/responsiveness_budget.rs (the
+# Budgets mirror crates/lushtext-model/src/responsiveness_budget.rs (the
 # single source of truth; the report re-reads that file so a revised constant
 # is picked up without editing this script).
-BUDGET_SOURCE = REPO_ROOT / "crates/lushtext-core/src/model/responsiveness_budget.rs"
+BUDGET_SOURCE = REPO_ROOT / "crates/lushtext-model/src/responsiveness_budget.rs"
 DEFAULT_BUDGETS = {
     "B_INTERACT_US": 8_000,
     "B_SETTLE_US": 16_000,

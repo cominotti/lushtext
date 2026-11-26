@@ -361,10 +361,16 @@ class ChangedPath:
     path: str
 
 
-DESCRIPTION_PATH_RE = re.compile(r"(?<![\w$/.-])([a-z_]+)/(?![\w/])")
+DESCRIPTION_PATH_RE = re.compile(r"(?<![\w$/.-])([a-z_-]+)/(?![\w/])")
 DATA_KEYWORD_CLAUSE_RE = re.compile(r"\btouching (?P<items>[^;]+);")
 PERF_AREA_CLAUSE_RE = re.compile(r"\bRust changes in (?P<items>.+?) crates\b")
 LIST_SPLIT_RE = re.compile(r"\s*,\s*|\s*\bor\b\s*|\s*\band\b\s*|\bthe GTK Lush\b\s*")
+
+
+def _suffix_name(suffix: str) -> str:
+    """Short path component named in `SKILL.md` for a `[data_safety].path_suffixes` entry."""
+    path = PurePosixPath(suffix)
+    return path.parent.name if path.name == "src" and path.parent.name else path.name
 
 
 def read_skill_description(skills_root: Path, skill: str) -> str:
@@ -412,7 +418,7 @@ def lens_trigger_errors(
     if isinstance(data_skill, str):
         description = descriptions.get(data_skill, "")
         named_paths = set(DESCRIPTION_PATH_RE.findall(description))
-        selected_paths = {PurePosixPath(s).name for s in data_policy.get("path_suffixes", ())}
+        selected_paths = {_suffix_name(s) for s in data_policy.get("path_suffixes", ())}
         for name in sorted(named_paths - selected_paths):
             errors.append(f"{data_skill}: the description names {name}/, which is not in [data_safety].path_suffixes")
         for name in sorted(selected_paths - named_paths):

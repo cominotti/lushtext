@@ -1,6 +1,6 @@
 ---
 name: data-safety
-description: "Data-loss guard for LushText: drafts, save and close flows, session restore, Replace All undo, durable writes and async state changes. Applies automatically, as short scoped guidance, to Rust changes under ui/, services/ or model/ and to any code touching file I/O, buffer state, tab or window close, persistence, spawn_blocking_then or search/replace; invoke $data-safety by name for the full five-domain audit."
+description: "Data-loss guard for LushText: drafts, save and close flows, session restore, Replace All undo, durable writes and async state changes. Applies automatically, as short scoped guidance, to Rust changes under ui/, services/, model/ or lushtext-model/ and to any code touching file I/O, buffer state, tab or window close, persistence, spawn_blocking_then or search/replace; invoke $data-safety by name for the full five-domain audit."
 ---
 
 # Data Safety

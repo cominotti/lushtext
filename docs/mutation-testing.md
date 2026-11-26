@@ -11,7 +11,7 @@ generated input invariants; it does not replace mutation testing either.
 The default scope is configured in `.cargo/mutants.toml`, and membership is
 decided by **convention, not by directory**. The `examine_globs` list covers:
 
-- Domain model code under `crates/lushtext-core/src/model/**`
+- Domain model code under `crates/lushtext-model/src/**`
 - Service code under `crates/lushtext-core/src/services/**`
 - Pure workflow policy modules matching
   `crates/lushtext-core/src/ui/**/policy.rs`
@@ -94,7 +94,7 @@ admitted against the envelope, and `heavy.sh --mem none` is refused at once
 
 ```sh
 MUTANTS_TIMEOUT=600 make mutants-full
-MUTANTS_SMOKE_FILE=crates/lushtext-core/src/model/document_scale.rs make mutants-smoke
+MUTANTS_SMOKE_FILE=crates/lushtext-model/src/document_scale.rs make mutants-smoke
 MUTANTS_BASE=origin/main make mutants-diff
 MUTANTS_LOCAL_JOBS=1 MUTANTS_SHARD=0/4 make mutants-full   # one slot running one shard
 MUTANTS_LOCAL_JOBS=2 MUTANTS_TEST_THREADS=3 MUTANTS_BUILD_JOBS=3 make mutants-full   # override local parallelism
@@ -370,7 +370,7 @@ The largest missed clusters were:
 | `crates/lushtext-core/src/services/file_tree.rs` | 8 | Bounded-scan telemetry assertions: `examined_entries`, `peak_retained_entries`, `peak_retained_bytes`, and `error` on the published `DirectoryScan` |
 | `crates/lushtext-core/src/services/draft_service.rs` | 5 | Orphan-cleanup continuation assertions: `retained`, `failures`, `next_manifest_offset`, and `directory_wrapped` on the published plan and outcome |
 | `crates/lushtext-core/src/services/palette/index.rs` | 26 | Index construction, root interning, recursion cap, and path filtering tests |
-| `crates/lushtext-core/src/model/encoding.rs` | 24 | Table tests for IDs, labels, BOM policy, display, and mode parsing |
+| `crates/lushtext-model/src/encoding.rs` | 24 | Table tests for IDs, labels, BOM policy, display, and mode parsing |
 | `crates/lushtext-core/src/services/local_history_service.rs` | 23 | Availability, snapshot lifecycle, and pruning tests |
 | `crates/lushtext-core/src/services/bookmark_service.rs` | 23 | Sidecar delete, move, root matching, and list-workspace tests |
 | `crates/lushtext-core/src/services/notifications.rs` | 20 | Progress, expiry, dismiss, and inline-view reducer tests |

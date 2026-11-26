@@ -67,8 +67,8 @@ use super::{
     ProtectedSlice, SliceBudgetUnattainable, SliceKind, clear_ranges_for_turn,
     plan_protected_install, plan_with,
 };
-use crate::model::buffer_replacement::SliceBudget;
-use crate::model::protected_fold::{FoldRange, FoldState, FoldThresholds, fold_finish, fold_step};
+use crate::buffer_replacement::SliceBudget;
+use crate::protected_fold::{FoldRange, FoldState, FoldThresholds, fold_finish, fold_step};
 
 /// K7's recorded ranges.
 const MAX_RANGES: usize = 4;

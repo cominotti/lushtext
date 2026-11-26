@@ -17,8 +17,8 @@ use super::{
     ChunkFacts, ChunkGate, ChunkStep, HIGHLIGHT_CHUNK_BYTES, HighlightInstallOrder,
     MAX_SYNTAX_PARAGRAPH_BYTES, chunk_gate, highlight_install_order_with, next_chunk_step,
 };
-use crate::model::buffer_replacement::{PacedSlice, ParagraphLength, SliceBudget};
-use crate::model::document_scale::{MODEL_MARKDOWN_CAP, SyntaxLanguage};
+use crate::buffer_replacement::{PacedSlice, ParagraphLength, SliceBudget};
+use crate::document_scale::{MODEL_MARKDOWN_CAP, SyntaxLanguage};
 
 /// The longest paragraph sequence the slice harness ranges over.
 const MAX_PARAGRAPHS: usize = 6;

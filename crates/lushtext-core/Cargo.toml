@@ -7,10 +7,9 @@ license = "GPL-3.0-or-later"
 publish = false
 
 [package.metadata.lushtext-agent]
-performance-roots = ["src/ui", "src/services", "src/model", "benches"]
+performance-roots = ["src/ui", "src/services", "benches"]
 release-ui-roots = ["src/ui"]
 release-service-roots = ["src/services"]
-release-model-roots = ["src/model"]
 
 [features]
 # Deterministic crash injection for the crash-recovery smoke build only; see
@@ -38,15 +37,15 @@ fuzzing = []
 # The property suite seeds unregistered fixture bodies, which only exist
 # with `test-utils`.
 property-tests = ["test-utils"]
-test-utils = []
+test-utils = ["lushtext-model/test-utils"]
 
 [dependencies]
+lushtext-model  = { workspace = true }
 gtk-lush-settle = { workspace = true }
 gtk-lush-signals = { workspace = true }
 gtk-lush-tasks = { workspace = true }
 gtk-lush-viewport = { workspace = true }
 gtk-lush-widgets = { workspace = true }
-gtk-lush-proof-spine = { workspace = true }
 gtk4        = { workspace = true }
 libadwaita  = { workspace = true }
 sourceview5 = { workspace = true }
@@ -86,7 +85,8 @@ glib-build-tools = "0.22"
 lushtext-build-support = { workspace = true }
 
 [dev-dependencies]
-tempfile  = { workspace = true }
+lushtext-model = { workspace = true, features = ["test-utils"] }
+tempfile       = { workspace = true }
 criterion = { workspace = true }
 proptest  = { workspace = true }
 

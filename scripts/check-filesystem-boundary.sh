@@ -14,6 +14,7 @@ patterns='std::fs\b|use std::fs|std::os::unix::fs|std::os::unix::io|libc::|rusti
 scan_roots=(
   AGENTS.md
   crates/lushtext-build-support/src
+  crates/lushtext-model/src
   crates/lushtext/build.rs
   crates/lushtext-core/AGENTS.md
   crates/lushtext-core/build.rs
@@ -68,6 +69,7 @@ if [[ -n "$direct_durable_imports" ]]; then
 fi
 
 status_probe_roots=(
+  crates/lushtext-model/src
   crates/lushtext-core/src
   crates/lushtext-core/tests
   crates/lushtext-core/benches
@@ -127,7 +129,7 @@ fi
 leftovers="$(
   {
     rg -n 'FileWriteLock|FilesystemError|filesystem::sidecar|pub mod sidecar;|pub mod error;|pub use error::|pub type FileWriteLock' \
-      crates/lushtext-core/src crates/lushtext-core/tests crates/lushtext-core/benches \
+      crates/lushtext-model/src crates/lushtext-core/src crates/lushtext-core/tests crates/lushtext-core/benches \
       crates/lushtext/src crates/lushtext/tests AGENTS.md README.md .agents/rules .agents/skills 2>/dev/null || true
     rg -n 'rename_path' crates/lushtext-core/src/services/filesystem 2>/dev/null || true
     rg -n 'pub fn (write_bytes|sync_directory|symlink_facts)\b' \

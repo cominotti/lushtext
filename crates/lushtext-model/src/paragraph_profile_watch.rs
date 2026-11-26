@@ -393,7 +393,7 @@ pub fn complete(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::paragraph_boundary::ProfileThresholds;
+    use crate::paragraph_boundary::ProfileThresholds;
 
     fn config(r_batch: usize, v_batch: u64) -> ProfileConfig {
         ProfileConfig {

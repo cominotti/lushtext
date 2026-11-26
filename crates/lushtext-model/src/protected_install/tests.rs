@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use super::*;
-use crate::model::buffer_replacement::next_slice_boundary;
-use crate::model::protected_fold::{FoldThresholds, plan_folds};
+use crate::buffer_replacement::next_slice_boundary;
+use crate::protected_fold::{FoldThresholds, plan_folds};
 
 /// The characters of every paragraph of `text`, as C2's fold reads them.
 fn paragraph_chars(text: &str) -> Vec<u64> {
