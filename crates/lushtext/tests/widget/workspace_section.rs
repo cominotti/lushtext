@@ -1684,6 +1684,7 @@ fn test_workspace_folder_reorder_drag_hover_does_not_expand_or_restart_watch() {
         nested_transitions.set(nested_transitions.get() + 1);
     });
 
+    let before_drag_scan_pressure = section.workspace_section_evidence().scan_pressure;
     section.reset_workspace_folder_reorder_drag_hover_fallback_count_for_test();
     section.with_active_workspace_folder_reorder_drag_for_test(
         &WorkspaceFolderId::new("first"),
@@ -1771,6 +1772,21 @@ fn test_workspace_folder_reorder_drag_hover_does_not_expand_or_restart_watch() {
                 section.workspace_section_evidence().reorder_drag_hover_fallback_count,
                 0,
                 "shield-owned hover should never request the defensive child-model fallback"
+            );
+            let during_drag_scan_pressure = section.workspace_section_evidence().scan_pressure;
+            assert_eq!(
+                during_drag_scan_pressure.scan_submissions,
+                before_drag_scan_pressure.scan_submissions,
+                "folder-reorder drag hover must submit zero child scans"
+            );
+            assert_eq!(
+                during_drag_scan_pressure.child_materializations,
+                before_drag_scan_pressure.child_materializations,
+                "folder-reorder drag hover must materialize nothing"
+            );
+            assert_eq!(
+                during_drag_scan_pressure.pending_materializations, 0,
+                "folder-reorder drag hover must queue zero pending materializations"
             );
         },
     );
@@ -6512,4 +6528,665 @@ fn test_file_peek_selecting_directory_dismisses_preview() {
         Some(fixture.directory.as_path())
     );
     assert_tree_focus(&window, &fixture.section);
+}
+
+#[test]
+fn test_scrolling_and_collapsing_300_directories_starts_no_bind_time_child_scans() {
+    ensure_gtk_init();
+    lushtext_core::ui::settings_writes::set_uint(
+        lushtext_core::config::keys::WORKSPACE_EMPTY_FOLDER_LOOKAHEAD_CAP,
+        100,
+    );
+
+    let iso = crate::common::isolated_data_dir();
+    let dir = tempfile::tempdir().expect("300-dir tempdir");
+    let root = dir.path().join("workspace-folder");
+    fixture::create_dir_all(&root);
+    let mut subdirs = Vec::with_capacity(300);
+    for index in 0..300 {
+        let sub = root.join(format!("dir-{index:03}"));
+        fixture::create_dir(&sub);
+        fixture::write_text(&sub.join("file.txt"), "x\n");
+        subdirs.push(sub);
+    }
+
+    let window = crate::common::test_window();
+    window.set_default_size(1200, 480);
+    let sidebar = window.imp().sidebar.clone();
+    present_window(&window);
+    crate::common::wait_for_startup_data_flow(&window);
+
+    let mut workspaces = lushtext_core::model::workspace::WorkspacesFile::default();
+    workspaces.workspaces.push(
+        lushtext_core::model::workspace::WorkspaceConfig::with_one_folder(
+            WorkspaceId::new("ws-300-dirs"),
+            "300-dirs",
+            root.clone(),
+        ),
+    );
+    lushtext_core::services::workspace_manager::save(iso.path(), &workspaces)
+        .expect("save workspaces.json");
+    sidebar.load_workspaces();
+    wait_until(Duration::from_secs(10), || {
+        let sections = sidebar.imp().sections.borrow();
+        sections.len() == 1
+            && sections[0].workspace_id() == WorkspaceId::new("ws-300-dirs")
+            && sections[0].is_mapped()
+    });
+    let section = sidebar.imp().sections.borrow()[0].clone();
+    wait_until(Duration::from_secs(10), || {
+        !sidebar.workspace_tree_evidence().refresh_blocks_readiness
+    });
+
+    // Helper: pump main-loop sources for `duration`, tracking whether file_tree_view ever reports Busy
+    // and recording the slowest single main-context iteration in microseconds.
+    let pump_observing_busy = |view: &gtk4::ListView, duration: Duration| -> (bool, u128) {
+        let deadline = Instant::now() + duration;
+        let ctx = glib::MainContext::default();
+        let mut busy = gtk4::test_accessible_has_state(view, gtk4::AccessibleState::Busy);
+        let mut max_iter_us = 0u128;
+        while Instant::now() < deadline {
+            while ctx.pending() {
+                let start = Instant::now();
+                ctx.iteration(false);
+                max_iter_us = max_iter_us.max(start.elapsed().as_micros());
+                busy |= gtk4::test_accessible_has_state(view, gtk4::AccessibleState::Busy);
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        while ctx.pending() {
+            let start = Instant::now();
+            ctx.iteration(false);
+            max_iter_us = max_iter_us.max(start.elapsed().as_micros());
+            busy |= gtk4::test_accessible_has_state(view, gtk4::AccessibleState::Busy);
+        }
+        (busy, max_iter_us)
+    };
+
+    // Expand the workspace folder and wait for its 300 subdirectories to bind
+    // and lay out inside the outer scroller.
+    let bind_start = Instant::now();
+    section.expand_folders();
+    let adjustment = sidebar.imp().outer_scrolled_window.vadjustment();
+    wait_until(Duration::from_secs(10), || {
+        tree_contains_path(&section, &subdirs[299])
+            && !sidebar.workspace_tree_evidence().refresh_blocks_readiness
+            && adjustment.upper() > adjustment.page_size()
+    });
+    let (busy_bind, max_bind_iter_us) =
+        pump_observing_busy(&section.imp().file_tree_view, Duration::from_millis(200));
+    let bind_elapsed_us = bind_start.elapsed().as_micros();
+
+    // Read each subdirectory row's actual lookahead hint instead of assuming positions.
+    let mut hinted_nonempty_paths = Vec::new();
+    let mut unhinted_paths = Vec::new();
+    {
+        let tree_model = section
+            .imp()
+            .tree_model
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("tree model");
+        for i in 0..tree_model.n_items() {
+            if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>()
+                && let Some(item) = row.item().and_downcast::<FileTreeItem>()
+                && item.is_dir()
+                && let Some(path) = item.path()
+                && path != root
+            {
+                match item.is_empty() {
+                    Some(false) => hinted_nonempty_paths.push(path),
+                    None => unhinted_paths.push(path),
+                    Some(true) => panic!(
+                        "synthetic non-empty subdir marked empty: {}",
+                        path.display()
+                    ),
+                }
+            }
+        }
+    }
+    assert_eq!(
+        hinted_nonempty_paths.len(),
+        100,
+        "lookahead cap 100 should hint exactly 100 subdirectories Some(false)"
+    );
+    assert_eq!(
+        unhinted_paths.len(),
+        200,
+        "remaining 200 subdirectories should have None hint"
+    );
+
+    let step1 = section.workspace_section_evidence();
+    eprintln!(
+        "d4-step1-bind elapsed_us={bind_elapsed_us} max_iter_us={max_bind_iter_us} busy={busy_bind} creations={} probes_discarded={} materializations={} pending_mat={} scan_submissions={} registered_stores={} dir_stores_len={} live_dir_stores={} process_hw={}",
+        step1.scan_pressure.child_model_creations,
+        step1.scan_pressure.child_model_probes_discarded,
+        step1.scan_pressure.child_materializations,
+        step1.scan_pressure.pending_materializations,
+        step1.scan_pressure.scan_submissions,
+        step1.scan_pressure.registered_child_stores,
+        step1.dir_store_liveness.len(),
+        step1
+            .dir_store_liveness
+            .values()
+            .filter(|live| **live)
+            .count(),
+        step1.scan_pressure.process_scan_task_high_water,
+    );
+
+    // Step 2: scroll to the end through the outer scroller, observing Busy and dispatches.
+    let upper = adjustment.upper();
+    let page = adjustment.page_size();
+    assert!(
+        upper > page,
+        "300-row tree must overflow outer scroller (upper={upper}, page={page})"
+    );
+    let mut busy_scroll_end = false;
+    let mut max_scroll_end_iter_us = 0u128;
+    let scroll_steps = 8;
+    for s in 1..=scroll_steps {
+        let target = ((upper - page) * f64::from(s)) / f64::from(scroll_steps);
+        adjustment.set_value(target);
+        let (busy, iter_us) =
+            pump_observing_busy(&section.imp().file_tree_view, Duration::from_millis(60));
+        busy_scroll_end |= busy;
+        max_scroll_end_iter_us = max_scroll_end_iter_us.max(iter_us);
+    }
+    wait_until(Duration::from_secs(10), || {
+        !sidebar.workspace_tree_evidence().refresh_blocks_readiness
+    });
+    let (busy_tail, tail_iter_us) =
+        pump_observing_busy(&section.imp().file_tree_view, Duration::from_millis(100));
+    busy_scroll_end |= busy_tail;
+    max_scroll_end_iter_us = max_scroll_end_iter_us.max(tail_iter_us);
+
+    let step2 = section.workspace_section_evidence();
+    eprintln!(
+        "d4-step2-scroll-end max_iter_us={max_scroll_end_iter_us} busy={busy_scroll_end} creations={} probes_discarded={} materializations={} pending_mat={} scan_submissions={} registered_stores={} dir_stores_len={} live_dir_stores={} process_hw={}",
+        step2.scan_pressure.child_model_creations,
+        step2.scan_pressure.child_model_probes_discarded,
+        step2.scan_pressure.child_materializations,
+        step2.scan_pressure.pending_materializations,
+        step2.scan_pressure.scan_submissions,
+        step2.scan_pressure.registered_child_stores,
+        step2.dir_store_liveness.len(),
+        step2
+            .dir_store_liveness
+            .values()
+            .filter(|live| **live)
+            .count(),
+        step2.scan_pressure.process_scan_task_high_water,
+    );
+
+    // Step 3: scroll back to the top.
+    let mut busy_scroll_back = false;
+    let mut max_scroll_back_iter_us = 0u128;
+    for s in (0..scroll_steps).rev() {
+        let target = ((upper - page) * f64::from(s)) / f64::from(scroll_steps);
+        adjustment.set_value(target);
+        let (busy, iter_us) =
+            pump_observing_busy(&section.imp().file_tree_view, Duration::from_millis(60));
+        busy_scroll_back |= busy;
+        max_scroll_back_iter_us = max_scroll_back_iter_us.max(iter_us);
+    }
+    wait_until(Duration::from_secs(10), || {
+        !sidebar.workspace_tree_evidence().refresh_blocks_readiness
+    });
+    let step3 = section.workspace_section_evidence();
+    eprintln!(
+        "d4-step3-scroll-back max_iter_us={max_scroll_back_iter_us} busy={busy_scroll_back} creations={} probes_discarded={} materializations={} pending_mat={} scan_submissions={} registered_stores={} dir_stores_len={} live_dir_stores={} process_hw={}",
+        step3.scan_pressure.child_model_creations,
+        step3.scan_pressure.child_model_probes_discarded,
+        step3.scan_pressure.child_materializations,
+        step3.scan_pressure.pending_materializations,
+        step3.scan_pressure.scan_submissions,
+        step3.scan_pressure.registered_child_stores,
+        step3.dir_store_liveness.len(),
+        step3
+            .dir_store_liveness
+            .values()
+            .filter(|live| **live)
+            .count(),
+        step3.scan_pressure.process_scan_task_high_water,
+    );
+
+    // Step 4: expand one hinted directory, wait, then collapse it.
+    let first_expand_dir = hinted_nonempty_paths[0].clone();
+    let first_expand_file = first_expand_dir.join("file.txt");
+    let before_step4 = step3.clone();
+    row_for_path(&section, &first_expand_dir)
+        .expect("first expand dir row")
+        .set_expanded(true);
+    wait_until(Duration::from_secs(10), || {
+        tree_contains_path(&section, &first_expand_file)
+            && !sidebar.workspace_tree_evidence().refresh_blocks_readiness
+    });
+    let after_expand1 = section.workspace_section_evidence();
+
+    row_for_path(&section, &first_expand_dir)
+        .expect("first expand dir row before collapse")
+        .set_expanded(false);
+    let (_busy_collapse, max_collapse_iter_us) =
+        pump_observing_busy(&section.imp().file_tree_view, Duration::from_millis(150));
+    wait_until(Duration::from_secs(10), || {
+        !sidebar.workspace_tree_evidence().refresh_blocks_readiness
+    });
+    let step4 = section.workspace_section_evidence();
+    eprintln!(
+        "d4-step4-expand-collapse max_collapse_iter_us={max_collapse_iter_us} after_expand_submissions={} after_collapse_submissions={} after_expand_mat={} after_collapse_mat={} probes_discarded={} registered_stores={}",
+        after_expand1.scan_pressure.scan_submissions,
+        step4.scan_pressure.scan_submissions,
+        after_expand1.scan_pressure.child_materializations,
+        step4.scan_pressure.child_materializations,
+        step4.scan_pressure.child_model_probes_discarded,
+        step4.scan_pressure.registered_child_stores,
+    );
+
+    // Step 5: expand one unhinted (`None` lookahead) directory.
+    let second_expand_dir = unhinted_paths[0].clone();
+    let second_expand_file = second_expand_dir.join("file.txt");
+    row_for_path(&section, &second_expand_dir)
+        .expect("second expand dir row")
+        .set_expanded(true);
+    wait_until(Duration::from_secs(10), || {
+        tree_contains_path(&section, &second_expand_file)
+            && !sidebar.workspace_tree_evidence().refresh_blocks_readiness
+    });
+    let step5 = section.workspace_section_evidence();
+    eprintln!(
+        "d4-step5-expand-none creations={} probes_discarded={} materializations={} pending_mat={} scan_submissions={} registered_stores={} dir_stores_len={} live_dir_stores={}",
+        step5.scan_pressure.child_model_creations,
+        step5.scan_pressure.child_model_probes_discarded,
+        step5.scan_pressure.child_materializations,
+        step5.scan_pressure.pending_materializations,
+        step5.scan_pressure.scan_submissions,
+        step5.scan_pressure.registered_child_stores,
+        step5.dir_store_liveness.len(),
+        step5
+            .dir_store_liveness
+            .values()
+            .filter(|live| **live)
+            .count(),
+    );
+
+    // Target assertions (fail on current tree, pass after deferred materialization):
+    assert_eq!(
+        step1.scan_pressure.scan_submissions, 1,
+        "first bind of 300 collapsed subdirectories must submit only the workspace folder scan (got {})",
+        step1.scan_pressure.scan_submissions
+    );
+    assert_eq!(
+        step1.scan_pressure.registered_child_stores, 1,
+        "first bind must register only the workspace folder store (got {})",
+        step1.scan_pressure.registered_child_stores
+    );
+    assert_eq!(
+        step3.scan_pressure.scan_submissions, 1,
+        "scrolling to the end and back across 300 collapsed subdirectories must submit zero extra scans (got {})",
+        step3.scan_pressure.scan_submissions
+    );
+    assert_eq!(
+        step3.scan_pressure.registered_child_stores, 1,
+        "scrolling must register zero subdirectory stores (got {})",
+        step3.scan_pressure.registered_child_stores
+    );
+    assert_eq!(
+        step3.registered_child_store_paths,
+        std::collections::HashSet::from([root.clone()]),
+        "only the workspace folder may be in child_store_paths after bind and scroll"
+    );
+    assert_eq!(
+        step3.scan_submissions_by_path.keys().collect::<Vec<_>>(),
+        vec![&root],
+        "only the workspace folder may have scan submissions after bind and scroll"
+    );
+    for sub in &subdirs {
+        assert_ne!(
+            step3.dir_store_liveness.get(sub),
+            Some(&true),
+            "never-expanded directory {} must not have a live dir_stores entry",
+            sub.display()
+        );
+        assert!(
+            !step3.dir_store_liveness.contains_key(sub),
+            "never-expanded directory {} must not appear in dir_stores",
+            sub.display()
+        );
+    }
+    assert!(
+        !busy_bind && !busy_scroll_end && !busy_scroll_back,
+        "file tree accessible Busy state must stay false through bind ({busy_bind}), scroll-end ({busy_scroll_end}), and scroll-back ({busy_scroll_back})"
+    );
+    assert_eq!(
+        after_expand1.scan_pressure.child_materializations,
+        before_step4.scan_pressure.child_materializations + 1,
+        "expanding one directory must cause exactly one materialization"
+    );
+    assert_eq!(
+        after_expand1.scan_pressure.scan_submissions,
+        before_step4.scan_pressure.scan_submissions + 1,
+        "expanding one directory must submit exactly one scan"
+    );
+    assert_eq!(
+        step4.scan_pressure.scan_submissions, after_expand1.scan_pressure.scan_submissions,
+        "collapsing an expanded directory must add zero scan submissions"
+    );
+    assert!(
+        !tree_contains_path(&section, &first_expand_file),
+        "collapsing must remove the directory's children from the flattened tree"
+    );
+    assert_eq!(
+        step5.scan_pressure.child_materializations,
+        step4.scan_pressure.child_materializations + 1,
+        "expanding an unhinted (None) directory must cause exactly one materialization"
+    );
+    assert_eq!(
+        step5.scan_pressure.scan_submissions,
+        step4.scan_pressure.scan_submissions + 1,
+        "expanding an unhinted (None) directory must submit exactly one scan"
+    );
+    assert!(
+        tree_contains_path(&section, &second_expand_file),
+        "expanding an unhinted directory must display its children"
+    );
+    assert!(
+        !sidebar.workspace_tree_evidence().refresh_blocks_readiness,
+        "readiness must settle after expansion completes"
+    );
+}
+
+fn realized_row_label_and_focus_button(
+    section: &LushtextWorkspaceSection,
+    target_path: &Path,
+) -> (gtk4::Label, gtk4::Button) {
+    let overlay = realized_overlay_for_path(section, target_path)
+        .unwrap_or_else(|| panic!("realized overlay missing for {}", target_path.display()));
+    let expander = overlay
+        .child()
+        .and_downcast::<gtk4::TreeExpander>()
+        .expect("overlay child should be TreeExpander");
+    let content_box = expander
+        .child()
+        .and_downcast::<gtk4::Box>()
+        .expect("expander child should be Box");
+    let label = content_box
+        .first_child()
+        .and_downcast::<gtk4::Widget>()
+        .expect("drag handle")
+        .next_sibling()
+        .and_downcast::<gtk4::Widget>()
+        .expect("open indicator")
+        .next_sibling()
+        .and_downcast::<gtk4::Widget>()
+        .expect("icon")
+        .next_sibling()
+        .and_downcast::<gtk4::Label>()
+        .expect("label");
+    let mut focus_btn = None;
+    let mut sibling = overlay.first_child();
+    while let Some(child) = sibling {
+        if let Ok(button) = child.clone().downcast::<gtk4::Button>() {
+            focus_btn = Some(button);
+            break;
+        }
+        sibling = child.next_sibling();
+    }
+    (
+        label,
+        focus_btn.expect("overlay should own Focus Folder button"),
+    )
+}
+
+#[test]
+fn test_emptiness_hints_watch_deltas_and_same_turn_refresh_under_deferred_materialization() {
+    ensure_gtk_init();
+    let _iso = crate::common::isolated_data_dir();
+    lushtext_core::ui::settings_writes::set_uint(
+        lushtext_core::config::keys::WORKSPACE_EMPTY_FOLDER_LOOKAHEAD_CAP,
+        100,
+    );
+
+    let small_root = tempfile::tempdir().expect("small tempdir");
+    let empty_dir = small_root.path().join("a-empty");
+    let nonempty_dir = small_root.path().join("b-nonempty");
+    fixture::create_dir(&empty_dir);
+    fixture::create_dir(&nonempty_dir);
+    fixture::write_text(&nonempty_dir.join("one.txt"), "1\n");
+
+    let large_root = tempfile::tempdir().expect("large tempdir");
+    let mut large_subdirs = Vec::with_capacity(105);
+    for idx in 0..105 {
+        let sub = large_root.path().join(format!("sub-{idx:03}"));
+        fixture::create_dir(&sub);
+        fixture::write_text(&sub.join("two.txt"), "2\n");
+        large_subdirs.push(sub);
+    }
+
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("ws-task-4-2"));
+    section.load_workspace_folders(&[
+        WorkspaceFolder::with_id(
+            WorkspaceFolderId::new("small"),
+            small_root.path().to_path_buf(),
+        ),
+        WorkspaceFolder::with_id(
+            WorkspaceFolderId::new("large"),
+            large_root.path().to_path_buf(),
+        ),
+    ]);
+    let window = present_section_window_with_size(&section, 420, 480);
+    section.expand_folders();
+    wait_until(Duration::from_secs(10), || {
+        let evidence = section.workspace_section_evidence();
+        tree_contains_path(&section, &empty_dir)
+            && tree_contains_path(&section, &nonempty_dir)
+            && tree_contains_path(&section, &large_subdirs[104])
+            && !evidence.refresh_blocks_readiness
+            && evidence.scan_pressure.active_empty_probes == 0
+            && evidence.scan_pressure.pending_empty_probes == 0
+            && realized_overlay_for_path(&section, &empty_dir).is_some()
+            && realized_overlay_for_path(&section, &nonempty_dir).is_some()
+    });
+    let _ = &window;
+
+    let empty_row = row_for_path(&section, &empty_dir).expect("empty row");
+    let empty_item = empty_row
+        .item()
+        .and_downcast::<FileTreeItem>()
+        .expect("empty item");
+    assert_eq!(empty_item.is_empty(), Some(true));
+    assert!(!empty_row.is_expandable(), "Some(true) row has no expander");
+    let (empty_label, empty_focus) = realized_row_label_and_focus_button(&section, &empty_dir);
+    assert!(
+        empty_label.uses_markup() && empty_label.text().contains("(Empty)"),
+        "Some(true) row should display (Empty) label, got {:?}",
+        empty_label.text()
+    );
+    assert!(
+        !empty_focus.has_css_class("can-focus") && !empty_focus.is_visible(),
+        "Some(true) row must disable hover Focus Folder button"
+    );
+    assert!(
+        gtk4::test_accessible_has_state(&empty_focus, gtk4::AccessibleState::Hidden)
+            && gtk4::test_accessible_has_state(&empty_focus, gtk4::AccessibleState::Disabled),
+        "Some(true) row Focus Folder button must stay Hidden and Disabled in accessibility"
+    );
+
+    let nonempty_row = row_for_path(&section, &nonempty_dir).expect("nonempty row");
+    let nonempty_item = nonempty_row
+        .item()
+        .and_downcast::<FileTreeItem>()
+        .expect("nonempty item");
+    assert_eq!(nonempty_item.is_empty(), Some(false));
+    assert!(
+        nonempty_row.is_expandable(),
+        "Some(false) row keeps expander"
+    );
+    let (nonempty_label, nonempty_focus) =
+        realized_row_label_and_focus_button(&section, &nonempty_dir);
+    assert!(
+        !nonempty_label.uses_markup() && !nonempty_label.text().contains("(Empty)"),
+        "Some(false) row must not show (Empty)"
+    );
+    assert!(
+        nonempty_focus.has_css_class("can-focus")
+            && !gtk4::test_accessible_has_state(&nonempty_focus, gtk4::AccessibleState::Hidden)
+            && !gtk4::test_accessible_has_state(&nonempty_focus, gtk4::AccessibleState::Disabled),
+        "Some(false) row enables Focus Folder"
+    );
+
+    let unhinted_dir = large_subdirs
+        .iter()
+        .find(|path| {
+            row_for_path(&section, path)
+                .and_then(|r| r.item().and_downcast::<FileTreeItem>())
+                .is_some_and(|i| i.is_empty().is_none())
+        })
+        .expect("lookahead cap 100 over 105 subdirs leaves at least one None row")
+        .clone();
+    let unhinted_row = row_for_path(&section, &unhinted_dir).expect("unhinted row");
+    let unhinted_item = unhinted_row
+        .item()
+        .and_downcast::<FileTreeItem>()
+        .expect("unhinted item");
+    assert_eq!(unhinted_item.is_empty(), None);
+    assert!(unhinted_row.is_expandable(), "None row keeps expander");
+    section.imp().file_tree_view.scroll_to(
+        unhinted_row.position(),
+        gtk4::ListScrollFlags::NONE,
+        None,
+    );
+    wait_until(Duration::from_secs(5), || {
+        realized_overlay_for_path(&section, &unhinted_dir).is_some()
+    });
+    let (unhinted_label, unhinted_focus) =
+        realized_row_label_and_focus_button(&section, &unhinted_dir);
+    assert!(
+        !unhinted_label.uses_markup() && !unhinted_label.text().contains("(Empty)"),
+        "None row must not show (Empty)"
+    );
+    assert!(
+        unhinted_focus.has_css_class("can-focus")
+            && !gtk4::test_accessible_has_state(&unhinted_focus, gtk4::AccessibleState::Hidden)
+            && !gtk4::test_accessible_has_state(&unhinted_focus, gtk4::AccessibleState::Disabled),
+        "None row enables Focus Folder"
+    );
+
+    // Watch target appears on expand and disappears on collapse.
+    assert!(
+        !section
+            .workspace_section_evidence()
+            .watch_targets
+            .contains(&WorkspaceWatchTarget::directory(nonempty_dir.clone()))
+    );
+    nonempty_row.set_expanded(true);
+    wait_until(Duration::from_secs(5), || {
+        tree_contains_path(&section, &nonempty_dir.join("one.txt"))
+            && section
+                .workspace_section_evidence()
+                .watch_targets
+                .contains(&WorkspaceWatchTarget::directory(nonempty_dir.clone()))
+            && !section
+                .workspace_section_evidence()
+                .refresh_blocks_readiness
+    });
+    nonempty_row.set_expanded(false);
+    wait_until(Duration::from_secs(5), || {
+        !section
+            .workspace_section_evidence()
+            .watch_targets
+            .contains(&WorkspaceWatchTarget::directory(nonempty_dir.clone()))
+            && !section
+                .workspace_section_evidence()
+                .refresh_blocks_readiness
+    });
+
+    // A refresh in the same turn as an expansion yields one active scan, not two.
+    let before_same_turn = section.workspace_section_evidence();
+    let created_in_same_turn = unhinted_dir.join("same-turn.txt");
+    fixture::write_text(&created_in_same_turn, "same turn\n");
+    row_for_path(&section, &unhinted_dir)
+        .expect("unhinted row before same-turn refresh")
+        .set_expanded(true);
+    section.queue_auto_refresh_for_test(vec![created_in_same_turn.clone()]);
+    section.apply_queued_refresh_for_test();
+    wait_until(Duration::from_secs(5), || {
+        tree_contains_path(&section, &unhinted_dir.join("two.txt"))
+            && tree_contains_path(&section, &created_in_same_turn)
+            && !section
+                .workspace_section_evidence()
+                .refresh_blocks_readiness
+    });
+    let after_same_turn = section.workspace_section_evidence();
+    assert_eq!(
+        after_same_turn.scan_pressure.scan_submissions,
+        before_same_turn.scan_pressure.scan_submissions + 1,
+        "refresh in the same turn as expansion must submit exactly one scan"
+    );
+    assert_eq!(
+        after_same_turn.scan_submissions_by_path.get(&unhinted_dir),
+        Some(&1),
+        "expanded directory should be scanned once when refresh runs in the same turn"
+    );
+}
+
+#[test]
+fn test_same_turn_expand_then_collapse_retires_pending_materialization_and_starts_no_scan() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("same-turn expand+collapse tempdir");
+    let nested = dir.path().join("nested");
+    let child_file = nested.join("file.txt");
+    fixture::create_dir(&nested);
+    fixture::write_text(&child_file, "hello\n");
+
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("ws-same-turn-expand-collapse"));
+    section.load_workspace_folders(&[WorkspaceFolder::with_id(
+        WorkspaceFolderId::new("root"),
+        dir.path().to_path_buf(),
+    )]);
+    let _window = present_section_window(&section);
+    section.expand_folders();
+    wait_until(Duration::from_secs(5), || {
+        tree_contains_path(&section, &nested)
+            && !section
+                .workspace_section_evidence()
+                .refresh_blocks_readiness
+    });
+
+    let before = section.workspace_section_evidence().scan_pressure;
+    let nested_row = row_for_path(&section, &nested).expect("nested folder row");
+    nested_row.set_expanded(true);
+    nested_row.set_expanded(false);
+    assert!(
+        !section
+            .workspace_section_evidence()
+            .refresh_blocks_readiness,
+        "same-turn collapse must retire pending materialization immediately so readiness stays false"
+    );
+
+    wait_until(Duration::from_secs(5), || {
+        let ev = section.workspace_section_evidence();
+        ev.scan_pressure.pending_materializations == 0
+            && ev.child_reconcile_sources == 0
+            && !ev.refresh_blocks_readiness
+    });
+    flush_after_delay(Duration::from_millis(50));
+
+    let after = section.workspace_section_evidence();
+    assert_eq!(
+        after.scan_pressure.child_materializations, before.child_materializations,
+        "same-turn expand+collapse must produce zero child_materializations"
+    );
+    assert_eq!(
+        after.scan_pressure.scan_submissions, before.scan_submissions,
+        "same-turn expand+collapse must produce zero scan_submissions"
+    );
+    assert!(
+        !after.refresh_blocks_readiness,
+        "same-turn expand+collapse must leave child_scans_pending() / refresh_blocks_readiness false"
+    );
+    assert!(
+        !tree_contains_path(&section, &child_file),
+        "collapsed child entries must not materialize"
+    );
 }

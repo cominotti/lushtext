@@ -15,13 +15,14 @@
 //! that rule was written for, because its model is a lazily materialized
 //! `GtkTreeListModel`: several innocuous-looking accessors *create* state.
 //!
-//! Six such accessors are known and are recorded with line evidence in the change's
+//! Seven such accessors are known and are recorded with line evidence in the change's
 //! `evidence/evidence-surface-materialization.md`. **This surface reaches none of
 //! them**, directly or transitively:
 //!
 //! | Hazard | Why it must not be reached |
 //! | --- | --- |
-//! | `scan_execution::build_children_model` | the `GtkTreeListModel` create function — the materialization entry point itself |
+//! | `scan_execution::build_children_model` | the `GtkTreeListModel` create function — creates an empty store and queues a weak handle into `materialization_execution` |
+//! | `materialization_execution` | the `Priority::HIGH` materialization drain — the entry point that reaches `populate_child_store` for installed child stores |
 //! | `find_store_for_dir` | calls `row.children()` **and inserts into** the `dir_stores` cache: a nominal read materializes a child store, starts a background scan, and mutates a cache |
 //! | `find_dir_row` | **evicts** from `dir_rows` on a lookup |
 //! | `visible_child_stores` | calls `row.children()` with **no `is_expanded()` filter**, materializing every flattened row's children |
@@ -214,7 +215,7 @@ impl LushtextSidebar {
     /// Inert for the same reasons as the full surface: it reads `workspaces_file`,
     /// `current_scope`, the persistence state, the filter `Cell`, and the reveal's
     /// cells, and reaches none of the
-    /// six materializing accessors named in the module doc.
+    /// materializing accessors named in the module doc.
     #[must_use]
     pub(crate) fn workspace_snapshot_evidence(&self) -> WorkspaceSnapshotEvidence {
         let imp = self.imp();
@@ -291,7 +292,7 @@ impl LushtextSidebar {
     /// Read one complete observation of this workflow's state.
     ///
     /// Side-effect free by construction, and that is a contract rather than an
-    /// aspiration: see the module doc for the six accessors this must never reach and
+    /// aspiration: see the module doc for the seven accessors this must never reach and
     /// for the borrow discipline the body below follows.
     #[must_use]
     pub fn workspace_tree_evidence(&self) -> WorkspaceTreeEvidence {
@@ -458,6 +459,13 @@ pub struct WorkspaceSectionEvidence {
     // --- directory-scan pressure and admission ---
     /// Per-store scan flight pressure, plus the process-global admission counters.
     pub scan_pressure: workspace_section::WorkspaceScanPressureEvidence,
+    /// Liveness of every `dir_stores` weak entry (`true` if the store upgrades),
+    /// read from `RefCell` state only without invoking `find_store_for_dir`.
+    pub dir_store_liveness: std::collections::BTreeMap<std::path::PathBuf, bool>,
+    /// Directory paths currently registered in `child_store_paths`.
+    pub registered_child_store_paths: std::collections::HashSet<std::path::PathBuf>,
+    /// Cumulative `populate_child_store` scan submissions per directory path.
+    pub scan_submissions_by_path: std::collections::BTreeMap<std::path::PathBuf, u64>,
 
     // --- refresh planning ---
     /// Targeted paths queued for the next refresh pass.
@@ -563,6 +571,21 @@ impl LushtextWorkspaceSection {
 
         let refresh_blocks_readiness = self.workspace_refresh_blocks_readiness();
         let scan_pressure = self.child_scan_pressure_evidence();
+        let dir_store_liveness = imp
+            .dir_stores
+            .borrow()
+            .iter()
+            .map(|(path, weak)| (path.clone(), weak.upgrade().is_some()))
+            .collect();
+        let registered_child_store_paths =
+            imp.child_store_paths.borrow().values().cloned().collect();
+        let scan_submissions_by_path = imp
+            .refresh_runtime
+            .scan_submissions_by_path
+            .borrow()
+            .iter()
+            .map(|(path, count)| (path.clone(), *count))
+            .collect();
 
         let (refresh_pending_paths, refresh_pending_full_reload) = {
             let runtime = &imp.refresh_runtime;
@@ -616,6 +639,9 @@ impl LushtextWorkspaceSection {
         WorkspaceSectionEvidence {
             refresh_blocks_readiness,
             scan_pressure,
+            dir_store_liveness,
+            registered_child_store_paths,
+            scan_submissions_by_path,
             refresh_pending_paths,
             refresh_pending_full_reload,
             reconcile_batch_count,

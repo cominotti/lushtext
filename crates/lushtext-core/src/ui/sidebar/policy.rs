@@ -131,6 +131,83 @@ pub fn loading_row_description() -> &'static str {
 /// value, not narration.
 pub const PERSIST_DEBOUNCE_MS: u64 = 150;
 
+/// Maximum pending child-store materializations drained in one `Priority::HIGH`
+/// idle dispatch.
+///
+/// 256 matches `CHILD_APPEND_BATCH_SIZE` (`scan_execution.rs`); draining one
+/// entry is cheaper than splicing a row, so 256 entries stay well within the
+/// 8 ms interaction budget while bounding a GTK turn against large programmatic
+/// expansions.
+///
+/// Kind: cap; a power of two, rounded down.
+pub const MATERIALIZATION_DRAIN_BATCH: usize = 256;
+
+/// Live facts observed when the materialization drain inspects one queued
+/// child-store entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MaterializationFacts {
+    /// Whether the weak store reference still upgrades (false for probes
+    /// discarded inside `GtkTreeListRow::is_expandable`).
+    pub store_is_alive: bool,
+    /// Whether the entry's section lifetime matches `child_scan_lifetime` and
+    /// the section has not been disposed.
+    pub lifetime_is_current: bool,
+    /// Whether the directory path was retired (for example by `clear_dir_states`)
+    /// before the drain reached this entry.
+    pub path_retired: bool,
+    /// Whether `child_store_identity_matches` already holds (for example a
+    /// refresh reached the installed store before the drain ran).
+    pub already_materialized: bool,
+}
+
+/// What the materialization drain should do with one queued entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MaterializationDisposition {
+    /// GTK already finalized the store (an `is_expandable` probe): drop and count.
+    DiscardProbe,
+    /// The section lifetime changed, the section disposed, or the path retired: drop.
+    Retired,
+    /// A refresh already registered and populated this live store: skip without double-scanning.
+    AlreadyMaterialized,
+    /// An installed, unregistered live store: run `populate_child_store`.
+    Materialize,
+}
+
+/// Decide what the materialization drain does with one queued child-store entry.
+#[must_use]
+pub const fn materialization_disposition(
+    facts: MaterializationFacts,
+) -> MaterializationDisposition {
+    if !facts.store_is_alive {
+        return MaterializationDisposition::DiscardProbe;
+    }
+    if !facts.lifetime_is_current || facts.path_retired {
+        return MaterializationDisposition::Retired;
+    }
+    if facts.already_materialized {
+        return MaterializationDisposition::AlreadyMaterialized;
+    }
+    MaterializationDisposition::Materialize
+}
+
+/// How many queued materializations one drain dispatch takes and whether to re-arm.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MaterializationDrainStep {
+    /// Entries popped from the front of the queue in this dispatch (`<= MATERIALIZATION_DRAIN_BATCH`).
+    pub take: usize,
+    /// Whether more entries remain queued after taking `take`, requiring a re-arm.
+    pub rearm: bool,
+}
+
+/// Compute the bounded batch take and re-arm decision for `queued` entries.
+#[must_use]
+pub fn materialization_drain_step(queued: usize) -> MaterializationDrainStep {
+    MaterializationDrainStep {
+        take: queued.min(MATERIALIZATION_DRAIN_BATCH),
+        rearm: queued > MATERIALIZATION_DRAIN_BATCH,
+    }
+}
+
 /// What an inline rename commit should actually do.
 ///
 /// Naming the decision keeps the three outcomes distinguishable at the call
@@ -2020,5 +2097,218 @@ mod tests {
                 proptest::prop_assert_eq!(ancestor.components().count(), folder_path.components().count() + index);
             }
         }
+    }
+
+    #[test]
+    fn materialization_disposition_matches_exhaustive_truth_table() {
+        // Every combination of (store_is_alive, lifetime_is_current, path_retired, already_materialized)
+        // in 2^4 = 16 states, verified against an explicit reference table.
+        let expected: [(MaterializationFacts, MaterializationDisposition); 16] = [
+            // store_is_alive = false -> always DiscardProbe
+            (
+                MaterializationFacts {
+                    store_is_alive: false,
+                    lifetime_is_current: false,
+                    path_retired: false,
+                    already_materialized: false,
+                },
+                MaterializationDisposition::DiscardProbe,
+            ),
+            (
+                MaterializationFacts {
+                    store_is_alive: false,
+                    lifetime_is_current: false,
+                    path_retired: false,
+                    already_materialized: true,
+                },
+                MaterializationDisposition::DiscardProbe,
+            ),
+            (
+                MaterializationFacts {
+                    store_is_alive: false,
+                    lifetime_is_current: false,
+                    path_retired: true,
+                    already_materialized: false,
+                },
+                MaterializationDisposition::DiscardProbe,
+            ),
+            (
+                MaterializationFacts {
+                    store_is_alive: false,
+                    lifetime_is_current: false,
+                    path_retired: true,
+                    already_materialized: true,
+                },
+                MaterializationDisposition::DiscardProbe,
+            ),
+            (
+                MaterializationFacts {
+                    store_is_alive: false,
+                    lifetime_is_current: true,
+                    path_retired: false,
+                    already_materialized: false,
+                },
+                MaterializationDisposition::DiscardProbe,
+            ),
+            (
+                MaterializationFacts {
+                    store_is_alive: false,
+                    lifetime_is_current: true,
+                    path_retired: false,
+                    already_materialized: true,
+                },
+                MaterializationDisposition::DiscardProbe,
+            ),
+            (
+                MaterializationFacts {
+                    store_is_alive: false,
+                    lifetime_is_current: true,
+                    path_retired: true,
+                    already_materialized: false,
+                },
+                MaterializationDisposition::DiscardProbe,
+            ),
+            (
+                MaterializationFacts {
+                    store_is_alive: false,
+                    lifetime_is_current: true,
+                    path_retired: true,
+                    already_materialized: true,
+                },
+                MaterializationDisposition::DiscardProbe,
+            ),
+            // store_is_alive = true, lifetime_is_current = false -> always Retired
+            (
+                MaterializationFacts {
+                    store_is_alive: true,
+                    lifetime_is_current: false,
+                    path_retired: false,
+                    already_materialized: false,
+                },
+                MaterializationDisposition::Retired,
+            ),
+            (
+                MaterializationFacts {
+                    store_is_alive: true,
+                    lifetime_is_current: false,
+                    path_retired: false,
+                    already_materialized: true,
+                },
+                MaterializationDisposition::Retired,
+            ),
+            (
+                MaterializationFacts {
+                    store_is_alive: true,
+                    lifetime_is_current: false,
+                    path_retired: true,
+                    already_materialized: false,
+                },
+                MaterializationDisposition::Retired,
+            ),
+            (
+                MaterializationFacts {
+                    store_is_alive: true,
+                    lifetime_is_current: false,
+                    path_retired: true,
+                    already_materialized: true,
+                },
+                MaterializationDisposition::Retired,
+            ),
+            // store_is_alive = true, lifetime_is_current = true, path_retired = true -> Retired
+            (
+                MaterializationFacts {
+                    store_is_alive: true,
+                    lifetime_is_current: true,
+                    path_retired: true,
+                    already_materialized: false,
+                },
+                MaterializationDisposition::Retired,
+            ),
+            (
+                MaterializationFacts {
+                    store_is_alive: true,
+                    lifetime_is_current: true,
+                    path_retired: true,
+                    already_materialized: true,
+                },
+                MaterializationDisposition::Retired,
+            ),
+            // Live, current, not retired: AlreadyMaterialized vs Materialize
+            (
+                MaterializationFacts {
+                    store_is_alive: true,
+                    lifetime_is_current: true,
+                    path_retired: false,
+                    already_materialized: true,
+                },
+                MaterializationDisposition::AlreadyMaterialized,
+            ),
+            (
+                MaterializationFacts {
+                    store_is_alive: true,
+                    lifetime_is_current: true,
+                    path_retired: false,
+                    already_materialized: false,
+                },
+                MaterializationDisposition::Materialize,
+            ),
+        ];
+
+        for (index, (facts, want)) in expected.iter().enumerate() {
+            assert_eq!(
+                materialization_disposition(*facts),
+                *want,
+                "case {index}: {facts:?}"
+            );
+        }
+        assert_eq!(expected.len(), 16);
+    }
+
+    #[test]
+    fn materialization_drain_step_bounds_every_boundary() {
+        assert_eq!(MATERIALIZATION_DRAIN_BATCH, 256);
+        let n = 256usize;
+        assert_eq!(
+            materialization_drain_step(0),
+            MaterializationDrainStep {
+                take: 0,
+                rearm: false
+            }
+        );
+        assert_eq!(
+            materialization_drain_step(1),
+            MaterializationDrainStep {
+                take: 1,
+                rearm: false
+            }
+        );
+        assert_eq!(
+            materialization_drain_step(n - 1),
+            MaterializationDrainStep {
+                take: 255,
+                rearm: false
+            }
+        );
+        assert_eq!(
+            materialization_drain_step(n),
+            MaterializationDrainStep {
+                take: 256,
+                rearm: false
+            }
+        );
+        assert_eq!(
+            materialization_drain_step(n + 1),
+            MaterializationDrainStep {
+                take: 256,
+                rearm: true
+            }
+        );
+        assert_eq!(
+            materialization_drain_step(3 * n),
+            MaterializationDrainStep {
+                take: 256,
+                rearm: true
+            }
+        );
     }
 }

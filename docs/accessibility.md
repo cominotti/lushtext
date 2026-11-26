@@ -156,6 +156,9 @@ Expected screen-reader behavior includes:
   did not initiate it, and interrupting them for it would be worse than the
   stale affordance it replaces. The same is true in reverse for a directory
   emptied on disk.
+- The workspace file tree reports accessible `busy` only while refreshes or
+  scans of genuinely expanded directories run; binding, scrolling, and
+  collapsing collapsed rows never trigger child scans or toggle `busy`.
 
 - The main window exposes the tab strip, shell buttons, workspace sidebar
   toggle, document-properties toggle, status metadata, editor region, and
