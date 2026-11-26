@@ -2,15 +2,15 @@
 
 //! LushText — a minimalist text editor for GNOME.
 //!
-//! This crate contains all application logic: data models, services,
-//! and GTK4/Libadwaita UI widgets.
+//! This crate holds the GTK4/Libadwaita application and UI widgets, and
+//! re-exports [`lushtext_model`] as `model` and [`lushtext_services`] as `services`.
 
 pub mod app;
 pub mod config;
 #[cfg(feature = "fuzzing")]
 pub mod fuzzing;
-pub mod model;
-pub mod services;
+pub use lushtext_model as model;
+pub use lushtext_services as services;
 pub mod ui;
 
 use gio::prelude::*;

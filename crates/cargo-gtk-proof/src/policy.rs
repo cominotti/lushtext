@@ -31,7 +31,7 @@ const VISUAL_SENSITIVE_PREFIXES: &[&str] = &[
 /// visual-sensitive as well, through [`is_visual_sensitive`], so those paths
 /// are not repeated here.
 const VISUAL_SENSITIVE_EXACT: &[&str] = &[
-    "crates/lushtext-core/src/model/automation.rs",
+    "crates/lushtext-model/src/automation.rs",
     "scripts/check-visual-proof-policy.py",
     "scripts/lushtext-automation.py",
     "scripts/test-visual-geometry.py",
@@ -123,7 +123,7 @@ pub(crate) struct PolicyOutcome {
 
 pub(crate) fn run_self_tests() -> Result<(), String> {
     if !is_visual_sensitive("crates/lushtext-core/src/ui/window/imp.rs")
-        || !is_visual_sensitive("crates/lushtext-core/src/model/automation.rs")
+        || !is_visual_sensitive("crates/lushtext-model/src/automation.rs")
         || !is_visual_sensitive("resources/ui/window.blp")
         || !is_visual_sensitive("resources/style/style.css")
         || !is_visual_sensitive("scripts/visual-geometry-scenarios/example.json")
@@ -139,7 +139,7 @@ pub(crate) fn run_self_tests() -> Result<(), String> {
             "scripts/visual-geometry-scenarios/workspace-tree-reveal-at-rest.json",
             true,
         ),
-        ("crates/lushtext-core/src/services/draft_service.rs", false),
+        ("crates/lushtext-services/src/draft_service.rs", false),
     ] {
         let requires = required_invariants_for_changes(&[path.to_string()])
             .contains(&WORKSPACE_TREE_ROW_ANCHORS_INVARIANT.to_string());
@@ -904,7 +904,7 @@ fn required_invariants_for_changes(paths: &[String]) -> Vec<String> {
             || path.starts_with(SHELL_GEOMETRY_ROLE_HOME_PREFIX)
             || path == "crates/lushtext-core/src/ui/window/imp.rs"
             || path == "crates/lushtext-core/src/ui/automation.rs"
-            || path == "crates/lushtext-core/src/model/automation.rs"
+            || path == "crates/lushtext-model/src/automation.rs"
             || path == "resources/style/style.css"
             || path == "scripts/check-visual-proof-policy.py"
             || path == "scripts/lushtext-automation.py"
@@ -962,7 +962,7 @@ fn required_animation_invariants_for_changes(paths: &[String]) -> Vec<String> {
             || path.starts_with(SHELL_GEOMETRY_ROLE_HOME_PREFIX)
             || path == "crates/lushtext-core/src/ui/window/imp.rs"
             || path == "crates/lushtext-core/src/ui/automation.rs"
-            || path == "crates/lushtext-core/src/model/automation.rs"
+            || path == "crates/lushtext-model/src/automation.rs"
             || path == "scripts/check-visual-proof-policy.py"
             || path == "scripts/lushtext-automation.py"
             || path == "scripts/test-visual-geometry.py"
@@ -1228,7 +1228,7 @@ mod tests {
             );
         }
         for path in [
-            "crates/lushtext-core/src/services/draft_service.rs",
+            "crates/lushtext-services/src/draft_service.rs",
             "crates/lushtext-core/src/ui/sidebar/dialogs.rs",
             "crates/lushtext-core/src/ui/sidebar/persist_execution.rs",
             "crates/gtk-lush/widgets/src/clip_bin/mod.rs",

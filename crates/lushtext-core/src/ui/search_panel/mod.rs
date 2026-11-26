@@ -53,7 +53,8 @@
 //!    single apply transaction, opens a fresh attempt, and hands the partition
 //!    to `replace_execution::apply_checked_replacements`.
 //! 4. **Write the files and record the journal.** The window's Replace All
-//!    callback takes `journal`'s reserved generation, opens the run
+//!    callback takes `journal`'s reserved generation, reserves the undo
+//!    descriptors or waits for them in `replace_admission`, opens the run
 //!    (`replace_execution::begin_replace_run`: Cancel and progress), streams
 //!    the files, publishes the undo journal back through
 //!    `journal::publish_undo_journal_for_generation`, and ends the run with its
@@ -65,7 +66,7 @@
 //!    `journal::begin_undo_restore` and reports through
 //!    `journal::finish_undo_restore`.
 //!
-//! Ten inversions connect those stages (twelve with the search order's two):
+//! Eleven inversions connect those stages (thirteen with the search order's two):
 //!
 //! - Stage 2's reservation may be refused: the request parks and resumes in
 //!   `replace_execution`'s `preview_capacity_wakeup`, revalidated by `may_dispatch`.
@@ -76,6 +77,8 @@
 //! - That preview retirement resumes in a `glib::idle_add_once` callback which
 //!   re-enters `replace_execution::finish_preview_worker`; that drain re-enters
 //!   *itself* by tail recursion while the retained request is undispatchable.
+//! - Stage 4's refused undo reservation parks the run in `replace_admission`;
+//!   its wakeup hands the window a resumption, or an end with nothing written.
 //! - Stages 4 and 5 each leave the panel for `ui/window/search.rs`, which
 //!   performs the durable write in `services/content_search`. Control resumes
 //!   in `journal` — stage 4 via the publish/clear and finish operations above,
@@ -93,7 +96,7 @@
 //! | --- | --- |
 //! | facade | this module |
 //! | pure policy | `policy` |
-//! | coordination | `execution` (streaming search), `retirement` (bounded result disposal), `replace_execution` (the Replace All preview attempt and checked apply), `journal` (the durable undo journal, its transaction gate, and its three generation-guarded fields) |
+//! | coordination | `execution` (streaming search), `retirement` (bounded result disposal), `replace_execution` (the Replace All preview attempt and checked apply), `replace_admission` (stage 4's wait for disposal capacity), `journal` (the durable undo journal, its transaction gate, and its three generation-guarded fields) |
 //! | evidence | `evidence` |
 //! | called presentation surface (no role) | `imp`, `list_factory`, `item`, `results`, `history`, `accessibility`, `skipped_files` |
 //!
@@ -112,6 +115,7 @@ mod list_factory;
 // Public because the GTK-free policy benchmarks in `benches/benchmarks.rs`
 // address these pure types directly; nothing else outside this workflow does.
 pub mod policy;
+pub(crate) mod replace_admission;
 mod replace_execution;
 mod results;
 mod retirement;
@@ -136,8 +140,6 @@ pub use test_policy::SearchPanelTestPolicy;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-#[cfg(feature = "test-utils")]
-use crate::model::content_search::Replacement;
 use crate::services::content_search::ReplaceUndoBackup;
 use crate::services::notifications::NotificationSeverity;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -327,14 +329,6 @@ impl LushtextSearchPanel {
             .callbacks
             .replace_callback
             .replace(Some(Box::new(f)));
-    }
-
-    /// Register the raw-vector callback used by the external widget harness.
-    #[cfg(feature = "test-utils")]
-    pub fn connect_replace_all<F: Fn(Vec<Replacement>) + 'static>(&self, f: F) {
-        self.connect_guarded_replace_all(move |run| {
-            f(run.into_inner_for_current_install().replacements);
-        });
     }
 
     /// Register a callback invoked when "Undo" is clicked with the backup to restore.

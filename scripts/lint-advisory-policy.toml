@@ -360,7 +360,7 @@ rationale = "Unsafe inventory stays visible while existing `undocumented_unsafe_
 [[rules]]
 code = "clippy::option_option"
 classification = "accepted_advisory"
-path_globs = ["crates/lushtext-core/src/model/workspace_search.rs"]
+path_globs = ["crates/lushtext-model/src/workspace_search.rs"]
 max_count = 1
 rationale = "`WorkspaceSearchRootIndex::canonical_candidate` returns `Option<Option<PathBuf>>` because the two layers report different facts: the outer `None` means the walked path is not under that traversal root, and the inner `None` means the traversal root itself has no canonical identity. Both callers consume them differently — `?` on the outer, a `match` arm on the inner — so flattening would make a non-member path indistinguishable from a member whose root has no canonical form, which is exactly the confusion that produced duplicate search results. The nesting is documented at the definition and this classification is scoped to that one file so a new occurrence elsewhere still fails the lane."
 
@@ -371,7 +371,7 @@ rationale = "`WorkspaceSearchRootIndex::canonical_candidate` returns `Option<Opt
 [[rules]]
 code = "clippy::manual_assert_eq"
 classification = "accepted_advisory"
-path_globs = ["crates/lushtext-core/src/services/draft_service/set_aside.rs"]
+path_globs = ["crates/lushtext-services/src/draft_service/set_aside.rs"]
 max_count = 1
 rationale = "One unit-test equality assertion on a struct value; scoped so a new occurrence elsewhere still fails the lane."
 
@@ -444,7 +444,7 @@ rationale = "Widget registry code is generated and normalized separately from ha
 [[rules]]
 code = "clippy::doc_link_code"
 classification = "accepted_advisory"
-path_globs = ["crates/lushtext-core/src/model/protected_install.rs"]
+path_globs = ["crates/lushtext-model/src/protected_install.rs"]
 max_count = 1
 rationale = "One rustdoc range written as two intra-doc links around a code `..=`; it renders correctly, and the module is read by the Kani shard of `settle_budget_derivation_fits_and_never_overflows`, so a wording edit is left to the next change that touches it."
 

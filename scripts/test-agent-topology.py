@@ -180,5 +180,278 @@ class AgentTopologyTests(unittest.TestCase):
         )
 
 
+class LensFixture(unittest.TestCase):
+    """A small workspace and policy shared by the review-lens tests; it has no tests of its own."""
+
+    POLICY = {
+        "performance": {
+            "package_metadata_namespace": "lushtext-agent",
+            "package_metadata_key": "performance-roots",
+            "fallback_suffixes": ["src/ui", "src/services", "src/model", "benches"],
+        },
+        "data_safety": {
+            "skill": "data-safety",
+            "path_suffixes": ["src/ui", "src/services", "src/model"],
+            "content_patterns": [
+                {"keyword": "spawn_blocking_then", "pattern": "spawn_blocking_then"},
+                {"keyword": "persistence", "pattern": "json_store|durable_write"},
+            ],
+        },
+    }
+
+    def setUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tempdir.name)
+        packages = []
+        for name, root, roots in (
+            ("lushtext-core", "crates/lushtext-core", ["src/ui", "src/services", "src/model"]),
+            ("gtk-lush-settle", "crates/gtk-lush/settle", ["src"]),
+            ("gtk-lush-tasks", "crates/gtk-lush/tasks", []),
+        ):
+            directory = self.root / root
+            directory.mkdir(parents=True)
+            (directory / "Cargo.toml").write_text("[package]\nname='fixture'\n", encoding="utf-8")
+            packages.append(
+                {
+                    "id": name,
+                    "name": name,
+                    "manifest_path": str(directory / "Cargo.toml"),
+                    "metadata": {"lushtext-agent": {"performance-roots": roots}},
+                    "targets": [],
+                }
+            )
+        metadata = {
+            "workspace_root": str(self.root),
+            "workspace_members": [package["id"] for package in packages],
+            "packages": packages,
+        }
+        self.topology = TOPOLOGY.WorkspaceTopology(metadata, self.POLICY, self.root)
+
+    def tearDown(self) -> None:
+        self.tempdir.cleanup()
+
+
+
+class ReviewLensTests(LensFixture):
+    """The review fan-out flags of `review-lenses`, from the skills' declared triggers."""
+
+    def lenses(self, *changes: tuple[str, str], texts: dict[str, str] | None = None) -> dict[str, object]:
+        return TOPOLOGY.review_lenses(
+            self.topology,
+            self.POLICY,
+            [TOPOLOGY.ChangedPath(status, path) for status, path in changes],
+            texts or {},
+        )
+
+    def flags(self, result: dict[str, object]) -> tuple[bool, bool, bool]:
+        return result["data"], result["performance"], result["modules_moved"]
+
+    def test_draft_service_edit_is_data_and_performance(self) -> None:
+        result = self.lenses(("M", "crates/lushtext-core/src/services/draft_service.rs"))
+        self.assertEqual(self.flags(result), (True, True, False))
+
+    def test_extracted_model_crate_edit_is_data_and_performance(self) -> None:
+        policy = {
+            **self.POLICY,
+            "data_safety": {
+                **self.POLICY["data_safety"],
+                "path_suffixes": ["src/ui", "src/services", "src/model", "lushtext-model/src"],
+            },
+        }
+        result = TOPOLOGY.review_lenses(
+            self.topology,
+            policy,
+            [TOPOLOGY.ChangedPath("M", "crates/lushtext-model/src/draft.rs")],
+            {},
+        )
+        self.assertTrue(result["data"])
+
+    def test_extracted_services_crate_edit_is_data(self) -> None:
+        policy = {
+            **self.POLICY,
+            "data_safety": {
+                **self.POLICY["data_safety"],
+                "path_suffixes": [
+                    "src/ui",
+                    "src/services",
+                    "src/model",
+                    "lushtext-model/src",
+                    "lushtext-services/src",
+                ],
+            },
+        }
+        result = TOPOLOGY.review_lenses(
+            self.topology,
+            policy,
+            [TOPOLOGY.ChangedPath("M", "crates/lushtext-services/src/draft_service.rs")],
+            {},
+        )
+        self.assertTrue(result["data"])
+
+    def test_docs_edit_needs_no_domain_lens(self) -> None:
+        result = self.lenses(("M", "docs/memorials/x.md"), ("A", "openspec/changes/x/design.md"))
+        self.assertEqual(self.flags(result), (False, False, False))
+
+    def test_gtk_lush_settle_edit_is_performance_only(self) -> None:
+        result = self.lenses(
+            ("M", "crates/gtk-lush/settle/src/lib.rs"),
+            texts={"crates/gtk-lush/settle/src/lib.rs": "fn debounce() {}"},
+        )
+        self.assertEqual(self.flags(result), (False, True, False))
+
+    def test_renamed_module_is_a_module_move(self) -> None:
+        result = self.lenses(
+            ("R", "crates/lushtext-core/src/model/old_name.rs"),
+            ("R", "crates/lushtext-core/src/model/new_name.rs"),
+        )
+        self.assertEqual(self.flags(result), (True, True, True))
+        result = self.lenses(("A", "crates/gtk-lush/settle/tests/new_test.rs"))
+        self.assertFalse(result["modules_moved"], "a test file outside src/ is not a module move")
+
+    def test_content_pattern_outside_the_suffixes_is_data(self) -> None:
+        path = "crates/gtk-lush/tasks/src/lib.rs"
+        result = self.lenses(("M", path), texts={path: "pub fn spawn_blocking_then<S>() {}"})
+        self.assertEqual(self.flags(result), (True, False, False))
+        self.assertEqual(result["data_content_hits"], {path: ["spawn_blocking_then"]})
+        result = self.lenses(("M", path), texts={path: "pub fn unrelated() {}"})
+        self.assertEqual(self.flags(result), (False, False, False))
+
+    def test_collect_changes_reads_renames_uncommitted_and_untracked(self) -> None:
+        env = dict(TOPOLOGY.scrubbed_git_env(), GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1")
+
+        def git(*args: str) -> None:
+            subprocess.run(
+                ["git", "-C", str(self.root), "-c", "core.hooksPath=/dev/null", "-c", "user.name=t",
+                 "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", *args],
+                check=True, capture_output=True, env=env,
+            )
+
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.root)], check=True, env=env)
+        source = self.root / "crates" / "gtk-lush" / "tasks" / "src"
+        source.mkdir(parents=True)
+        (source / "lib.rs").write_text("pub fn a() {}\npub fn b() {}\npub fn c() {}\n", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "base")
+        git("checkout", "-q", "-b", "change")
+        git("mv", "crates/gtk-lush/tasks/src/lib.rs", "crates/gtk-lush/tasks/src/core.rs")
+        git("commit", "-q", "-m", "rename")
+        (source / "core.rs").write_text(
+            "pub fn a() {}\npub fn b() {}\npub fn c() {}\npub fn spawn_blocking_then() {}\n", encoding="utf-8"
+        )
+        (source / "fresh.rs").write_text("pub fn json_store() {}\n", encoding="utf-8")
+        changes, texts = TOPOLOGY.collect_changes(self.root, "main")
+        by_path = {change.path: change.status for change in changes}
+        self.assertEqual(by_path.get("crates/gtk-lush/tasks/src/lib.rs"), "R")
+        self.assertEqual(by_path.get("crates/gtk-lush/tasks/src/core.rs"), "R")
+        self.assertEqual(by_path.get("crates/gtk-lush/tasks/src/fresh.rs"), "A")
+        self.assertIn("spawn_blocking_then", texts["crates/gtk-lush/tasks/src/core.rs"])
+        self.assertIn("json_store", texts["crates/gtk-lush/tasks/src/fresh.rs"])
+        result = TOPOLOGY.review_lenses(self.topology, self.POLICY, changes, texts)
+        self.assertEqual(self.flags(result), (True, False, True))
+
+    def test_a_policy_without_the_data_safety_table_fails(self) -> None:
+        # A branch that predates the [data_safety] table must not read as
+        # "no data lens owed" (Fable review M2): the selector refuses instead.
+        change = [TOPOLOGY.ChangedPath("M", "crates/lushtext-core/src/services/draft_service.rs")]
+        for policy in (
+            {key: value for key, value in self.POLICY.items() if key != "data_safety"},
+            {**self.POLICY, "data_safety": {"skill": "data-safety", "content_patterns": []}},
+            {**self.POLICY, "data_safety": {"skill": "data-safety", "path_suffixes": []}},
+        ):
+            with self.assertRaises(ValueError):
+                TOPOLOGY.review_lenses(self.topology, policy, change, {})
+
+    def test_the_cli_exits_non_zero_without_the_data_safety_table(self) -> None:
+        policy_file = self.root / "policy.toml"
+        policy_file.write_text(
+            "[performance]\npackage_metadata_namespace = 'lushtext-agent'\n"
+            "package_metadata_key = 'performance-roots'\nfallback_suffixes = []\n"
+            "[release]\nworkflow_role_marker = 'agent-release-role'\nrequired_workflow_roles = []\n",
+            encoding="utf-8",
+        )
+        metadata_file = self.root / "metadata.json"
+        metadata_file.write_text(
+            json.dumps({"workspace_root": str(self.root), "workspace_members": [], "packages": []}),
+            encoding="utf-8",
+        )
+        env = dict(TOPOLOGY.scrubbed_git_env(), GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1")
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.root)], check=True, env=env)
+        subprocess.run(
+            ["git", "-C", str(self.root), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+             "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "-q",
+             "--allow-empty", "-m", "base"],
+            check=True, capture_output=True, env=env,
+        )
+        run = subprocess.run(
+            [sys.executable, str(SCRIPT), "--repo-root", str(self.root), "--metadata-json",
+             str(metadata_file), "--policy", str(policy_file), "review-lenses", "--base", "main"],
+            capture_output=True, text=True, env=env,
+        )
+        self.assertNotEqual(run.returncode, 0, run.stdout)
+        self.assertIn("data_safety", run.stderr)
+
+    def test_flags_only_prints_one_line_with_the_three_flags(self) -> None:
+        # The workflow's scope reading copies this line; it must be short.
+        line = TOPOLOGY.flags_line(
+            self.lenses(("M", "crates/lushtext-core/src/services/draft_service.rs"))
+        )
+        self.assertNotIn("\n", line)
+        self.assertEqual(json.loads(line), {"data": True, "modules_moved": False, "performance": True})
+
+
+
+class LensTriggerDriftTests(LensFixture):
+    """The lens selector and the skills' trigger text agree in both directions."""
+
+    DATA = (
+        "Data-loss guard. Applies to Rust changes under ui/, services/ or model/ and to any code "
+        "touching spawn_blocking_then or persistence; invoke $data-safety by name."
+    )
+    PERF = (
+        "Performance entry point. Use for Rust changes in ui, services, model, benches or the GTK Lush "
+        "settle crates, their Cargo dependency changes, and search/replace questions."
+    )
+
+    def errors(self, data: str | None = None, perf: str | None = None) -> list[str]:
+        policy = dict(self.POLICY)
+        policy["performance"] = {**self.POLICY["performance"], "umbrella": "gtk-perf-review"}
+        return TOPOLOGY.lens_trigger_errors(
+            self.topology,
+            policy,
+            {"data-safety": self.DATA if data is None else data, "gtk-perf-review": self.PERF if perf is None else perf},
+        )
+
+    def test_matching_triggers_pass(self) -> None:
+        self.assertEqual(self.errors(), [])
+
+    def test_a_data_path_the_description_names_must_be_selected(self) -> None:
+        errors = self.errors(data=self.DATA.replace("model/ and", "model/, tests/ and"))
+        self.assertTrue(any("tests/" in e and "not in [data_safety].path_suffixes" in e for e in errors), errors)
+
+    def test_a_selected_data_path_must_be_named(self) -> None:
+        errors = self.errors(data=self.DATA.replace(", services/ or model/", " or services/"))
+        self.assertTrue(any("model/" in e and "not named" in e for e in errors), errors)
+
+    def test_a_data_keyword_the_description_names_must_be_selected(self) -> None:
+        errors = self.errors(data=self.DATA.replace("spawn_blocking_then or", "spawn_blocking_then, buffer state or"))
+        self.assertTrue(any("buffer state" in e and "no content pattern" in e for e in errors), errors)
+
+    def test_a_selected_data_keyword_must_be_named(self) -> None:
+        errors = self.errors(data=self.DATA.replace("spawn_blocking_then or persistence", "spawn_blocking_then"))
+        self.assertTrue(any("persistence" in e and "not named" in e for e in errors), errors)
+
+    def test_a_missing_data_trigger_clause_fails(self) -> None:
+        errors = self.errors(data="Data-loss guard for drafts.")
+        self.assertTrue(any("touching" in e for e in errors), errors)
+
+    def test_a_performance_area_the_description_names_must_be_selected(self) -> None:
+        errors = self.errors(perf=self.PERF.replace("settle crates", "settle and viewport crates"))
+        self.assertTrue(any("viewport" in e and "not in the performance scope" in e for e in errors), errors)
+
+    def test_a_selected_performance_area_must_be_named(self) -> None:
+        errors = self.errors(perf=self.PERF.replace("or the GTK Lush settle crates", "crates"))
+        self.assertTrue(any("settle" in e and "not named" in e for e in errors), errors)
+
+
 if __name__ == "__main__":
     unittest.main()

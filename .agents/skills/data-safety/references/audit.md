@@ -48,7 +48,7 @@ Assigned by trigger likelihood (impact is always data loss):
 - **Normalize paths**: Normalize separators to `/`, strip any leading `./`, and derive a **path suffix alias** by removing everything through the last `/src/` when present.
   - `/repo/crates/lushtext-core/src/ui/window/drafts/journal.rs` → `ui/window/drafts/journal.rs`
   - `/repo/crates/lushtext-core/src/ui/window/session_restore/journal.rs` → `ui/window/session_restore/journal.rs`
-  - `crates/lushtext-core/src/services/session_service.rs` → `services/session_service.rs`
+  - `crates/lushtext-services/src/session_service.rs` → `services/session_service.rs`
   - `packages/editor-core/src/model/draft.rs` → `model/draft.rs`
 - **Match on suffix aliases, not repo layout**: Trigger matching must work for absolute paths, repo-relative paths, crate-relative paths, and future crate moves/reorgs.
 - **Relevant Rust app files**: Any normalized suffix under `ui/`, `services/`, or `model/` is in scope. If none match and no content-hint fallback below applies → "No data-safety-relevant changes" → stop.

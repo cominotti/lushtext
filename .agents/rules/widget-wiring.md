@@ -3,7 +3,7 @@ description: GTK widget composition, signal wiring, and widget-test rules
 paths:
   - "crates/lushtext-core/src/ui/**"
   - "crates/lushtext/tests/widget/**"
-  - "crates/lushtext-core/src/services/action_catalog/**"
+  - "crates/lushtext-services/src/action_catalog/**"
   - "resources/ui/**"
   - "crates/gtk-lush/widgets/**"
 ---

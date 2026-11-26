@@ -74,8 +74,8 @@ gitignore = true
 # generates 210 mutants with those entries removed and 187 with them applied, so
 # all six match real generated mutants and together suppress 23.
 examine_globs = [
-    "crates/lushtext-core/src/model/**/*.rs",
-    "crates/lushtext-core/src/services/**/*.rs",
+    "crates/lushtext-model/src/**/*.rs",
+    "crates/lushtext-services/src/**/*.rs",
     "crates/lushtext-core/src/ui/**/policy.rs",
 ]
 
@@ -83,20 +83,20 @@ exclude_globs = [
     # Test modules are already skipped by cargo-mutants when marked cfg(test),
     # but standalone test files are excluded explicitly to keep the mutation
     # scope about production behavior.
-    "crates/lushtext-core/src/services/palette/tests.rs",
+    "crates/lushtext-services/src/palette/tests.rs",
     # Shared fixture helpers live under services so production tests use the
     # filesystem boundary, but they are not production behavior themselves.
-    "crates/lushtext-core/src/services/filesystem/fixture.rs",
+    "crates/lushtext-services/src/filesystem/fixture.rs",
     # Its draft-body sibling is fixture code for the same reason (1 mutant).
-    "crates/lushtext-core/src/services/draft_service/fixture.rs",
+    "crates/lushtext-services/src/draft_service/fixture.rs",
     # The conformance tap and drivers (`verify-shell-conformance-against-proven-cores`)
     # are test seams and test drivers, compiled only under `cfg(test)` and
-    # `test-utils`: the active tap's state machine (109 mutants), the drivers
-    # (133), and the shipping build's inert no-op entry points (2), which the
-    # mutation lane's `test-utils` build never compiles.
-    "crates/lushtext-core/src/services/filesystem/backend_tap.rs",
-    "crates/lushtext-core/src/services/filesystem/backend_tap/**",
-    "crates/lushtext-core/src/services/conformance/**",
+    # `test-utils`: the active tap's state machine, the drivers, and the
+    # shipping build's inert no-op entry points, which the mutation lane's
+    # `test-utils` build never compiles.
+    "crates/lushtext-services/src/filesystem/backend_tap.rs",
+    "crates/lushtext-services/src/filesystem/backend_tap/**",
+    "crates/lushtext-services/src/conformance/**",
     # The scalar scans the accelerated `editor_io::text_scans` replaced, kept
     # verbatim as the oracle the property tests and the `editor_bytes` fuzz
     # target compare against (`simd-line-scans`, design D1). An oracle is not
@@ -104,18 +104,18 @@ exclude_globs = [
     # `cfg(test)`, `test-utils`, or `fuzzing`), and its correctness is the old
     # code's, which that change moved without editing. Path-keyed: re-key this
     # entry if the module moves.
-    "crates/lushtext-core/src/services/editor_io/text_scans/reference.rs",
+    "crates/lushtext-services/src/editor_io/text_scans/reference.rs",
     # The per-file file index the arena replaced, kept as the oracle the
     # `index_parity` property tests compare against (`scale-file-index` D6),
     # and the module that turns owned rows into an arena (`owned.rs`, the
     # benches' and tests' constructor), both compiled only under `cfg(test)`
     # or `test-utils`. The D9 tree-shape fixture is test data. Path-keyed:
     # re-key these entries if the modules move.
-    "crates/lushtext-core/src/services/palette/index/reference.rs",
-    "crates/lushtext-core/src/services/palette/index/owned.rs",
-    "crates/lushtext-core/src/services/palette/workspace_index_fixture.rs",
-    "crates/lushtext-core/src/services/palette/index_scale_tests.rs",
-    "crates/lushtext-core/src/services/palette/index/tests.rs",
+    "crates/lushtext-services/src/palette/index/reference.rs",
+    "crates/lushtext-services/src/palette/index/owned.rs",
+    "crates/lushtext-services/src/palette/workspace_index_fixture.rs",
+    "crates/lushtext-services/src/palette/index_scale_tests.rs",
+    "crates/lushtext-services/src/palette/index/tests.rs",
     # Kani harness modules are verification code. Each is declared
     # `#[cfg(kani)] mod kani_proofs;`, so no build cargo-mutants runs compiles
     # it and no test can kill a mutant inside it: before this entry the scope
@@ -138,8 +138,8 @@ exclude_globs = [
     # `test-utils`; a mutant inside one weakens the oracle, not a shipped
     # behaviour, and proof strength measures the harnesses that use them.
     # Path-keyed: re-key these entries if the modules move.
-    "crates/lushtext-core/src/services/filesystem/write_protocol/disk_model.rs",
-    "crates/lushtext-core/src/services/draft_service/journal_model.rs",
+    "crates/lushtext-services/src/filesystem/write_protocol/disk_model.rs",
+    "crates/lushtext-services/src/draft_service/journal_model.rs",
 ]
 
 exclude_re = [
@@ -148,27 +148,27 @@ exclude_re = [
     "impl Debug",
     # Equivalent: deleting the dedicated UTF-8 BOM arm in `encode_text` falls
     # through to the generic BOM-writing branch and produces identical bytes.
-    "crates/lushtext-core/src/services/editor_io\\.rs:.*delete match arm DocumentEncoding::Utf8Bom in encode_text",
+    "crates/lushtext-services/src/editor_io\\.rs:.*delete match arm DocumentEncoding::Utf8Bom in encode_text",
     # Property-test-only bridge: the default mutation lane intentionally omits
     # `lushtext-core/property-tests`; the property lane covers this helper.
-    "crates/lushtext-core/src/services/mod\\.rs:.*property_testing::rebase_document_identity_paths",
-    "crates/lushtext-core/src/services/content_search/replace/stream\\.rs:.*apply_replacements_to_text_for_property_test",
-    "crates/lushtext-core/src/services/palette/commands\\.rs:.*merge_sorted_for_property_test",
+    "crates/lushtext-services/src/lib\\.rs:.*property_testing::rebase_document_identity_paths",
+    "crates/lushtext-services/src/content_search/replace/stream\\.rs:.*apply_replacements_to_text_for_property_test",
+    "crates/lushtext-services/src/palette/commands\\.rs:.*merge_sorted_for_property_test",
     # Race-only branches: if metadata says a file exists but it disappears before
     # the read, recovery treats the state as missing. This is intentionally the
     # same user-visible fallback as startup without that metadata file.
-    "crates/lushtext-core/src/services/recovery_metadata\\.rs:.*replace match guard error\\.kind\\(\\) == io::ErrorKind::NotFound with (true|false) in load_existing_json_file",
-    "crates/lushtext-core/src/services/recovery_metadata\\.rs:.*replace == with != in load_existing_json_file",
-    "crates/lushtext-core/src/services/recovery_metadata\\.rs:.*replace match guard error\\.kind\\(\\) == io::ErrorKind::NotFound with (true|false) in load_existing_enveloped_json_file",
-    "crates/lushtext-core/src/services/recovery_metadata\\.rs:.*replace == with != in load_existing_enveloped_json_file",
-    "crates/lushtext-core/src/services/recovery_metadata\\.rs:.*replace match guard error\\.kind\\(\\) == io::ErrorKind::NotFound with (true|false) in load_existing_enveloped_json_file_for_replacement",
-    "crates/lushtext-core/src/services/recovery_metadata\\.rs:.*replace == with != in load_existing_enveloped_json_file_for_replacement",
+    "crates/lushtext-services/src/recovery_metadata\\.rs:.*replace match guard error\\.kind\\(\\) == io::ErrorKind::NotFound with (true|false) in load_existing_json_file",
+    "crates/lushtext-services/src/recovery_metadata\\.rs:.*replace == with != in load_existing_json_file",
+    "crates/lushtext-services/src/recovery_metadata\\.rs:.*replace match guard error\\.kind\\(\\) == io::ErrorKind::NotFound with (true|false) in load_existing_enveloped_json_file",
+    "crates/lushtext-services/src/recovery_metadata\\.rs:.*replace == with != in load_existing_enveloped_json_file",
+    "crates/lushtext-services/src/recovery_metadata\\.rs:.*replace match guard error\\.kind\\(\\) == io::ErrorKind::NotFound with (true|false) in load_existing_enveloped_json_file_for_replacement",
+    "crates/lushtext-services/src/recovery_metadata\\.rs:.*replace == with != in load_existing_enveloped_json_file_for_replacement",
     # Equivalent: missing snapshot files are intentionally ignored during
     # retention cleanup; this mutation only changes whether that no-op logs.
-    "crates/lushtext-core/src/services/local_history_service\\.rs:.*replace != with == in remove_snapshot_files",
+    "crates/lushtext-services/src/local_history_service\\.rs:.*replace != with == in remove_snapshot_files",
     # Equivalent for stable directory entries: non-symlink classification is
     # identical whether it uses `DirEntry::file_type()` or follows with metadata.
-    "crates/lushtext-core/src/services/file_tree\\.rs:.*replace match guard !file_type\\.is_symlink\\(\\) with false in classify_entry",
+    "crates/lushtext-services/src/file_tree\\.rs:.*replace match guard !file_type\\.is_symlink\\(\\) with false in classify_entry",
     # Equivalent under the workspace persistence state machine's own invariants,
     # confirmed by slot 5b's triage of the seven survivors this module inherited
     # when it relocated out of `model/workspace_persistence.rs`.
@@ -200,72 +200,71 @@ exclude_re = [
     # `reduce-build-disk-writes`' focused rounds). Its `test-utils` twin above
     # it is in scope and killed by the integration test `document_scale`.
     # Line-anchored: re-key this entry if the function moves.
-    "crates/lushtext-core/src/model/document_scale\\.rs:229:.*replace markdown_chunked_cap -> Option<u64> with Some\\([01]\\)",
+    "crates/lushtext-model/src/document_scale\\.rs:229:.*replace markdown_chunked_cap -> Option<u64> with Some\\([01]\\)",
     # Equivalent on LushText's Linux mutation target: this non-Unix metadata
     # shim is cfg-disabled, while the active Unix metadata probe remains in scope.
-    "crates/lushtext-core/src/services/durable_write\\.rs:805:.*MetadataPlan::probe -> std::io::Result<Self>",
-    "crates/lushtext-core/src/services/durable_write\\.rs:816:.*MetadataPlan::create_mode -> Option<u32> with Some\\(0\\)",
-    "crates/lushtext-core/src/services/durable_write\\.rs:816:.*MetadataPlan::create_mode -> Option<u32> with Some\\(1\\)",
+    "crates/lushtext-services/src/durable_write\\.rs:801:.*MetadataPlan::probe -> std::io::Result<Self>",
+    "crates/lushtext-services/src/durable_write\\.rs:812:.*MetadataPlan::create_mode -> Option<u32> with Some\\(0\\)",
+    "crates/lushtext-services/src/durable_write\\.rs:812:.*MetadataPlan::create_mode -> Option<u32> with Some\\(1\\)",
     # Equivalent on LushText's Linux mutation target: these non-Unix raw
     # filesystem fallbacks are cfg-disabled, while the active Unix backend
     # helpers remain mutation-scoped.
     # Line-anchored on the `cfg(not(unix))` (or non-Linux) twin of each helper;
     # re-keyed by `verify-shell-conformance-against-proven-cores`, whose tap
-    # wraps every backend primitive (several anchors were already stale on
-    # `main`). The non-Unix `sync_dir_descriptor` and non-Linux
-    # `copy_xattrs_best_effort` generate no mutant any more, so their entries
-    # were retired.
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:88:.*kind_from_std_metadata -> FileKind",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:123:.*create_dir -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:140:.*remove_file -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:153:.*remove_dir -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:169:.*rename -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:505:.*visit_directory_entries",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:513:.*visit_directory_entries",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:850:.*symlink",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:869:.*set_permissions_mode",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:597:.*mode",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:605:.*link_inode",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:610:.*inode",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:626:.*descriptor_file_len",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:672:.*create_temp_file",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:687:.*sync_file",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:887:.*set_xattr",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:900:.*get_xattr",
+    # wraps every backend primitive. The non-Unix `sync_dir_descriptor` and
+    # non-Linux `copy_xattrs_best_effort` generate no mutant any more, so their
+    # entries were retired.
+    "crates/lushtext-services/src/filesystem/sys\\.rs:87:.*kind_from_std_metadata -> FileKind",
+    "crates/lushtext-services/src/filesystem/sys\\.rs:122:.*create_dir -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
+    "crates/lushtext-services/src/filesystem/sys\\.rs:139:.*remove_file -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
+    "crates/lushtext-services/src/filesystem/sys\\.rs:152:.*remove_dir -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
+    "crates/lushtext-services/src/filesystem/sys\\.rs:168:.*rename -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
+    "crates/lushtext-services/src/filesystem/sys\\.rs:505:.*visit_directory_entries",
+    "crates/lushtext-services/src/filesystem/sys\\.rs:513:.*visit_directory_entries",
+    "crates/lushtext-services/src/filesystem/sys\\.rs:596:.*mode",
+    "crates/lushtext-services/src/filesystem/sys\\.rs:604:.*link_inode",
+    "crates/lushtext-services/src/filesystem/sys\\.rs:609:.*inode",
+    "crates/lushtext-services/src/filesystem/sys\\.rs:625:.*descriptor_file_len",
+    "crates/lushtext-services/src/filesystem/sys\\.rs:671:.*create_temp_file",
+    "crates/lushtext-services/src/filesystem/sys\\.rs:686:.*sync_file",
+    "crates/lushtext-services/src/filesystem/sys\\.rs:843:.*symlink",
+    "crates/lushtext-services/src/filesystem/sys\\.rs:862:.*set_permissions_mode",
+    "crates/lushtext-services/src/filesystem/sys\\.rs:876:.*set_xattr",
+    "crates/lushtext-services/src/filesystem/sys\\.rs:889:.*get_xattr",
     # Equivalent for Unix directory traversal flags: `RDONLY` is the empty
     # access-mode bitset and `DIRECTORY`/`CLOEXEC` are disjoint, so XOR produces
     # the same final flags here. The flag-contract test still catches removal.
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:.*replace \\| with \\^ in directory_traversal_open_flags",
+    "crates/lushtext-services/src/filesystem/sys\\.rs:.*replace \\| with \\^ in directory_traversal_open_flags",
     # Equivalent for Unix temp-file flags: `WRONLY`, `CREATE`, `EXCL`, and
     # `CLOEXEC` occupy disjoint bits, so XOR produces the same open flags here.
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:.*replace \\| with \\^ in create_temp_file",
+    "crates/lushtext-services/src/filesystem/sys\\.rs:.*replace \\| with \\^ in create_temp_file",
     # Durability-only wrappers: deleting the fsync calls has no stable unit-test
     # effect without crash/power-loss simulation; callers remain covered through
     # their bytes, permissions, and namespace behavior.
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:631:.*sync_dir_descriptor -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:680:.*sync_file -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
+    "crates/lushtext-services/src/filesystem/sys\\.rs:630:.*sync_dir_descriptor -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
+    "crates/lushtext-services/src/filesystem/sys\\.rs:679:.*sync_file -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
     # Ownership preservation is best-effort because ordinary users cannot
     # reliably create different-owner fixtures; mode, xattr, and ACL metadata
     # remain tested through observable durable-write behavior.
-    "crates/lushtext-core/src/services/filesystem/sys\\.rs:711:.*best_effort_chown",
+    "crates/lushtext-services/src/filesystem/sys\\.rs:710:.*best_effort_chown",
     # Durability-only wrapper: deleting the parent-directory fsync has no stable
     # observable unit-test effect, while callers are covered through their bytes
     # and namespace behavior.
-    "crates/lushtext-core/src/services/filesystem/write\\.rs:.*sync_parent_dir",
+    "crates/lushtext-services/src/filesystem/write\\.rs:.*sync_parent_dir",
     # Race-only diagnostic branch: if the recents file vanishes between status
     # and read, both paths return an empty recent list; only the warning changes.
     # Keyed on the `NotFound` guard (the function's only `==`), not a line: the
     # former `:252:` anchor had drifted off the function and matched nothing.
-    "crates/lushtext-core/src/services/recent_documents\\.rs:.*: replace (match guard error\\.kind\\(\\) == std::io::ErrorKind::NotFound with (true|false)|== with !=) in load_recent_file",
+    "crates/lushtext-services/src/recent_documents\\.rs:.*: replace (match guard error\\.kind\\(\\) == std::io::ErrorKind::NotFound with (true|false)|== with !=) in load_recent_file",
     # Equivalent while the public JSON envelope is still v1.
-    "crates/lushtext-core/src/services/format_upgrade/diagnostics\\.rs:.*latest_format_version -> u32 with 1",
+    "crates/lushtext-services/src/format_upgrade/diagnostics\\.rs:.*latest_format_version -> u32 with 1",
     # Equivalent after the preceding exact-version branch in
     # `classify_json_bytes`: latest-version envelopes return before the
     # future-version comparison, so `>` and `>=` see the same remaining inputs.
-    "crates/lushtext-core/src/services/format_upgrade/inventory\\.rs:.*replace > with >= in classify_json_bytes",
+    "crates/lushtext-services/src/format_upgrade/inventory\\.rs:.*replace > with >= in classify_json_bytes",
     # Equivalent on the Unix paths used by this target: `Path::parent()` does
     # not yield the same root path, so the loop guard behaves identically.
-    "crates/lushtext-core/src/services/editorconfig\\.rs:.*replace match guard parent != dir with true in resolve_for_path",
+    "crates/lushtext-services/src/editorconfig\\.rs:.*replace match guard parent != dir with true in resolve_for_path",
     # Equivalent: references emitted by pulldown-cmark also have definitions,
     # so label reservation is already covered by `FootnoteDefinition`, while
     # protected references fall through to the protected-depth catch-all arm.
@@ -306,16 +305,16 @@ exclude_re = [
     "crates/lushtext-core/src/ui/markdown_preview/policy\\.rs:.*replace next_char_len -> usize with 1",
     # Test-only global injector: path-scoped cleanup-failure injection is covered
     # by local-history retry tests; the all-path hook is retained for manual tests.
-    "crates/lushtext-core/src/services/local_history_service\\.rs:.*fail_next_obsolete_lineage_cleanup_for_test",
+    "crates/lushtext-services/src/local_history_service\\.rs:.*fail_next_obsolete_lineage_cleanup_for_test",
     # Diagnostics-only logging helper: callers keep and surface recovery
     # diagnostics through returned values; this mutation only suppresses tracing.
-    "crates/lushtext-core/src/services/note_storage\\.rs:.*trace_recovery_diagnostics",
+    "crates/lushtext-services/src/note_storage\\.rs:.*trace_recovery_diagnostics",
     # Feature-only hooks: widget race tests and fuzz targets own these paths in
     # their dedicated lanes, outside the default deterministic mutation scope.
-    "crates/lushtext-core/src/services/editor_io\\.rs:.*(set_load_delay_for_test|delay_load_for_test|classify_bytes_for_fuzzing)",
+    "crates/lushtext-services/src/editor_io\\.rs:.*(set_load_delay_for_test|delay_load_for_test|classify_bytes_for_fuzzing)",
     # The `test-utils` benchmark hooks of `simd-line-scans` (`bench_*`): the
     # default-feature build cargo-mutants tests never compiles them.
-    "crates/lushtext-core/src/services/editor_io\\.rs:.*bench_(load_analysis|load_analysis_fused|health_scan|trim|normalize|crlf_check)",
+    "crates/lushtext-services/src/editor_io\\.rs:.*bench_(load_analysis|load_analysis_fused|health_scan|trim|normalize|crlf_check)",
     # `MinimapAnalysisAccumulator::inspect_str` (simd-line-scans). Only the
     # first entry is line-anchored (re-key it on any edit above line 2804): it is
     # the per-character copy compiled only under `cfg(kani)`, which no test build
@@ -392,15 +391,15 @@ exclude_re = [
     # break end is a scalar boundary and so lies at or below an unfloored
     # budget end exactly when it lies at or below the floored one (and an
     # unfloored end inside a scalar never equals `text.len()`).
-    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:.*replace > with (>=|<|==) in slice_end_after_paragraph",
-    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:.*replace > with >= in ProfileConfig::window",
-    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:.*replace > with >= in ProfileSummary::max",
-    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:552:19: replace > with >= in ParagraphLengthFold::push",
-    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:584:26: replace > with >= in ParagraphLengthFold::push",
-    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:572:26: replace < with (>|==) in ParagraphLengthFold::push",
+    "crates/lushtext-model/src/paragraph_boundary\\.rs:.*replace > with (>=|<|==) in slice_end_after_paragraph",
+    "crates/lushtext-model/src/paragraph_boundary\\.rs:.*replace > with >= in ProfileConfig::window",
+    "crates/lushtext-model/src/paragraph_boundary\\.rs:.*replace > with >= in ProfileSummary::max",
+    "crates/lushtext-model/src/paragraph_boundary\\.rs:572:19: replace > with >= in ParagraphLengthFold::push",
+    "crates/lushtext-model/src/paragraph_boundary\\.rs:604:26: replace > with >= in ParagraphLengthFold::push",
+    "crates/lushtext-model/src/paragraph_boundary\\.rs:592:26: replace < with (>|==) in ParagraphLengthFold::push",
     # Equivalent in `model/protected_fold.rs` (long-line-protected-view): a
     # tie in `min_u64` returns the same value either way.
-    "crates/lushtext-core/src/model/protected_fold\\.rs:.*replace < with <= in min_u64",
+    "crates/lushtext-model/src/protected_fold\\.rs:.*replace < with <= in min_u64",
     # The SIMD fast paths of `model/paragraph_boundary.rs` (document-scale-policy):
     # equivalent because they change only which search finds the same byte,
     # or let a loop run once more over an empty tail. In `next_paragraph_break`
@@ -417,25 +416,25 @@ exclude_re = [
     # accepting a separator at `limit` (`<` with `<=`: none can start on a
     # line break or complete past the chunk's two-byte extension), and the
     # chunk size (`*` with `+`) change no result.
-    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:188:[0-9]+: replace (-|\\+) with (\\+|/|\\*) in next_delimiter_without_lead_stops",
-    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:192:34: replace < with <= in next_delimiter_without_lead_stops",
-    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:204:42: replace \\* with \\+",
-    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:112:17: replace < with <= in next_paragraph_break",
-    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:115:46: replace < with (>|==|<=) in next_paragraph_break",
-    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:15[57]:[0-9]+: replace \\+= with \\*= in next_paragraph_break",
-    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:268:15: replace > with >= in last_break_end_within",
-    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:278:[0-9]+: .* in last_break_end_within",
-    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:705:20: replace < with <= in ParagraphProfileAccumulator::push_str",
-    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:66[78]:[0-9]+: .*ParagraphProfileAccumulator::push_str",
+    "crates/lushtext-model/src/paragraph_boundary\\.rs:191:[0-9]+: replace (-|\\+) with (\\+|/|\\*) in next_delimiter_without_lead_stops",
+    "crates/lushtext-model/src/paragraph_boundary\\.rs:195:34: replace < with <= in next_delimiter_without_lead_stops",
+    "crates/lushtext-model/src/paragraph_boundary\\.rs:209:42: replace \\* with \\+",
+    "crates/lushtext-model/src/paragraph_boundary\\.rs:115:17: replace < with <= in next_paragraph_break",
+    "crates/lushtext-model/src/paragraph_boundary\\.rs:118:46: replace < with (>|==|<=) in next_paragraph_break",
+    "crates/lushtext-model/src/paragraph_boundary\\.rs:1(58|60):[0-9]+: replace \\+= with \\*= in next_paragraph_break",
+    "crates/lushtext-model/src/paragraph_boundary\\.rs:273:15: replace > with >= in last_break_end_within",
+    "crates/lushtext-model/src/paragraph_boundary\\.rs:283:[0-9]+: .* in last_break_end_within",
+    "crates/lushtext-model/src/paragraph_boundary\\.rs:751:20: replace < with <= in ParagraphProfileAccumulator::push_str",
+    "crates/lushtext-model/src/paragraph_boundary\\.rs:714:[0-9]+: .*ParagraphProfileAccumulator::push_str",
     # Equivalent in `model/paragraph_profile_watch.rs`: `>` with `>=` where
     # the tie picks an equal value (`max`, and the two upper clamps of
     # `window_range`), and `inner_lengths` reading the run when
     # `end_line == start_line`: a run that adds no line has no paragraph
     # delimiter (ledger A42: an insertion splits at its own delimiters), so it
     # yields no inner length either way.
-    "crates/lushtext-core/src/model/paragraph_profile_watch\\.rs:.*replace > with >= in max",
-    "crates/lushtext-core/src/model/paragraph_profile_watch\\.rs:.*replace > with >= in WindowPlan<'_>::inner_lengths",
-    "crates/lushtext-core/src/model/paragraph_profile_watch\\.rs:.*replace > with >= in window_range",
+    "crates/lushtext-model/src/paragraph_profile_watch\\.rs:.*replace > with >= in max",
+    "crates/lushtext-model/src/paragraph_profile_watch\\.rs:.*replace > with >= in WindowPlan<'_>::inner_lengths",
+    "crates/lushtext-model/src/paragraph_profile_watch\\.rs:.*replace > with >= in window_range",
     # Equivalent by construction in the AVX2 file-health kernel
     # (`avx2-health-scan-kernel`, design D5): the kernel and the `memchr3`
     # scan return the same counts for every byte string, so a mutant that
@@ -450,7 +449,7 @@ exclude_re = [
     # earlier and leaves more bytes to the `memchr3` tail. A mutant that skips
     # a block it should confirm changes counts and is killed by the lane and
     # property tests.
-    "crates/lushtext-core/src/services/editor_io/text_scans/health_avx2\\.rs:.*replace && with \\|\\| in count$",
-    "crates/lushtext-core/src/services/editor_io/text_scans/health_avx2\\.rs:.*replace && with \\|\\| in count_blocks$",
-    "crates/lushtext-core/src/services/editor_io/text_scans/health_avx2\\.rs:[0-9]+:[0-9]+: replace \\+ with \\*$",
+    "crates/lushtext-services/src/editor_io/text_scans/health_avx2\\.rs:.*replace && with \\|\\| in count$",
+    "crates/lushtext-services/src/editor_io/text_scans/health_avx2\\.rs:.*replace && with \\|\\| in count_blocks$",
+    "crates/lushtext-services/src/editor_io/text_scans/health_avx2\\.rs:[0-9]+:[0-9]+: replace \\+ with \\*$",
 ]

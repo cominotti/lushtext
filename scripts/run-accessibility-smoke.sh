@@ -25,6 +25,9 @@ ACCESSIBILITY_CASES=(
     preview-mode-transition
     editor
     focus-mode
+    tab-strip-overflow
+    all-tabs-popover
+    all-tabs-dismiss
     minimap-transition
     editor-search
     editor-save-completion
@@ -341,6 +344,9 @@ MATRIX_ROWS_BY_CASE = {
     "preview-mode-transition": ["A11Y-EDITOR-FOCUS-PREVIEW", "A11Y-MARKDOWN-CONSTRAINED"],
     "editor": ["A11Y-EDITOR-REPRESENTATIVE"],
     "focus-mode": ["A11Y-EDITOR-FOCUS-PREVIEW"],
+    "tab-strip-overflow": ["A11Y-TAB-STRIP-OVERFLOW"],
+    "all-tabs-popover": ["A11Y-TAB-STRIP-OVERFLOW"],
+    "all-tabs-dismiss": ["A11Y-TAB-STRIP-OVERFLOW"],
     "minimap-transition": ["A11Y-EDITOR-MINIMAP"],
     "editor-search": ["A11Y-EDITOR-SEARCH"],
     "editor-save-completion": ["A11Y-EDITOR-BUSY"],
@@ -1497,6 +1503,54 @@ run_accessibility_capture "focus-mode" \
     --step wait-atspi-text:"Editor for accessibility-smoke.txt"
 assert_anchor "focus-mode" "focus mode" "text" "Editor for accessibility-smoke.txt"
 record_focus_anchor "focus-mode" "Editor for accessibility-smoke.txt"
+fi
+
+if case_selected "tab-strip-overflow"; then
+# Forty new tabs overflow the strip at the smoke's window size, so the
+# trailing Scroll Tabs Back and Forward buttons join the tab list's parent.
+overflow_steps=()
+for _ in $(seq 1 40); do
+    overflow_steps+=(--step window-action:new-tab)
+done
+run_accessibility_capture "tab-strip-overflow" \
+    "${overflow_steps[@]}" \
+    --step wait-predicate:visual-geometry-settled
+assert_anchor "tab-strip-overflow" "tab strip" "button" "Scroll Tabs Back"
+assert_anchor "tab-strip-overflow" "tab strip" "button" "Scroll Tabs Forward"
+assert_anchor_prefix "tab-strip-overflow" "tab strip" "button" "All Tabs, "
+fi
+
+if case_selected "all-tabs-popover"; then
+# A real Ctrl+Shift+O opens the All Tabs popover over three tabs; a query
+# narrows it to the case's file, whose row text the tree exposes.
+run_accessibility_capture "all-tabs-popover" \
+    --step window-action:new-tab \
+    --step window-action:new-tab \
+    --step wait-predicate:accessibility-settled \
+    --step rd-key:Ctrl+Shift+O \
+    --step wait-atspi-text:"Search open tabs" \
+    --step window-string-action:set-all-tabs-query=accessibility \
+    --step wait-predicate:accessibility-settled \
+    --step wait-atspi-text:"accessibility-smoke.txt"
+assert_anchor "all-tabs-popover" "tab strip" "button" "All Tabs, 3 open"
+assert_anchor "all-tabs-popover" "all tabs popover" "entry" "Search open tabs"
+assert_anchor "all-tabs-popover" "all tabs popover" "list" "Open tabs"
+assert_anchor "all-tabs-popover" "all tabs popover" "label" "accessibility-smoke.txt"
+fi
+
+if case_selected "all-tabs-dismiss"; then
+# The shortcut again closes the popover and gives the keyboard back to the
+# editor that had it.
+run_accessibility_capture "all-tabs-dismiss" \
+    --step window-action:new-tab \
+    --step wait-predicate:accessibility-settled \
+    --step rd-key:Ctrl+Shift+O \
+    --step wait-atspi-text:"Search open tabs" \
+    --step rd-key:Ctrl+Shift+O \
+    --step wait-predicate:accessibility-settled \
+    --step wait-atspi-text:"Editor for Untitled"
+assert_anchor "all-tabs-dismiss" "editor" "text" "Editor for Untitled"
+record_focus_anchor "all-tabs-dismiss" "Editor for Untitled"
 fi
 
 if case_selected "minimap-transition"; then

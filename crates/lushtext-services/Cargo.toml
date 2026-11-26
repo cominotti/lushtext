@@ -1,0 +1,58 @@
+[package]
+name = "lushtext-services"
+version = "0.8.3"
+edition = "2024"
+rust-version.workspace = true
+license = "GPL-3.0-or-later"
+publish = false
+
+[package.metadata.lushtext-agent]
+performance-roots = ["src"]
+release-service-roots = ["src"]
+
+[features]
+# Deterministic crash injection for the crash-recovery smoke build only; see
+# `kill_point`. Never enabled in release, Meson, Flatpak, or Snap.
+crash-kill-points = []
+# Deterministic document-read denial for the accessibility and visual smoke
+# builds only; see `read_fault`. Never enabled in release, Meson, Flatpak, or Snap.
+smoke-read-faults = []
+# Smoke-only overrides of the workspace list budgets (`smoke_list_budgets`):
+# never in release, Meson, Flatpak or Snap builds.
+smoke-list-budgets = []
+responsiveness-probes = []
+fuzzing = []
+property-tests = ["test-utils"]
+test-utils = ["lushtext-model/test-utils"]
+
+[dependencies]
+lushtext-model        = { workspace = true }
+grep-regex            = { workspace = true }
+grep-searcher         = { workspace = true }
+grep-matcher          = { workspace = true }
+ignore                = { workspace = true }
+crossbeam-channel     = { workspace = true }
+memchr                = { workspace = true }
+serde                 = { workspace = true }
+serde_json            = { workspace = true }
+anyhow                = { workspace = true }
+thiserror             = { workspace = true }
+dirs                  = { workspace = true }
+notify-debouncer-full = { workspace = true }
+rustix                = { workspace = true }
+tracing               = { workspace = true }
+nucleo-matcher        = { workspace = true }
+simdutf8              = { workspace = true }
+sha2                  = { workspace = true }
+encoding_rs           = { workspace = true }
+unicase               = { workspace = true }
+editorconfig-parser   = { workspace = true }
+pulldown-cmark        = { workspace = true }
+workspace-hack        = { version = "0.1", path = "../../workspace-hack" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+proptest = { workspace = true }
+
+[lints]
+workspace = true

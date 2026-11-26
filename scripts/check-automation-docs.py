@@ -14,9 +14,9 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-ACTION_CATALOG = REPO_ROOT / "crates/lushtext-core/src/services/action_catalog/mod.rs"
+ACTION_CATALOG = REPO_ROOT / "crates/lushtext-services/src/action_catalog/mod.rs"
 AUTOMATION_UI = REPO_ROOT / "crates/lushtext-core/src/ui/automation.rs"
-AUTOMATION_MODEL = REPO_ROOT / "crates/lushtext-core/src/model/automation.rs"
+AUTOMATION_MODEL = REPO_ROOT / "crates/lushtext-model/src/automation.rs"
 AUTOMATION_SMOKE_DRIVER = REPO_ROOT / "scripts/automation-smoke-driver.py"
 AUTOMATION_CLIENT = REPO_ROOT / "scripts/lushtext-automation.py"
 ACCESSIBILITY_SMOKE = REPO_ROOT / "scripts/run-accessibility-smoke.sh"

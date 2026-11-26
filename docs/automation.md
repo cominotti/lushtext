@@ -586,6 +586,38 @@ widget-scoped, diagnostic-only, or known gaps. Stable setup actions include:
   unlabelled neighbour rows appear as `workspace-*` visual-geometry surfaces.
   A reveal never changes the scope, the sidebar's visibility, persistence, or any
   tab, and a failed reveal collapses whatever it expanded.
+- `win.scroll-tabs-back` and `win.scroll-tabs-forward` move an overflowing tab
+  strip by about one visible width toward the first or last tab without
+  selecting, focusing or reordering a tab. Each is enabled only while the
+  unpinned tabs overflow and the strip can still move that way, which
+  `window.tab_strip.overflowing`, `scroll_back_enabled` and
+  `scroll_forward_enabled` report. Wait on `visual-geometry-settled`: the
+  `tab-overflow` blocker holds until the step has landed and both enabled
+  states are current. While the buttons show, the trailing control group and
+  both buttons are the `tab-strip-overflow-controls`, `tab-strip-scroll-back`
+  and `tab-strip-scroll-forward` visual-geometry surfaces, beside the
+  existing `tab-strip` surface (the whole bar).
+  `window.tab_strip.selected_tab_in_view` reports whether the strip shows the
+  whole selected tab (null while the strip is hidden or a pinned tab is
+  selected): a restored session, including one restored behind Focus Mode
+  once the strip shows again, leaves it `true` after
+  `visual-geometry-settled`.
+- `win.toggle-all-tabs` (`Ctrl+Shift+O`) opens the tab strip's All Tabs
+  popover, a searchable list of every open tab, or closes it; it is enabled
+  only while the All Tabs button shows (two or more tabs on a shown strip).
+  For setup prefer the target-state `win.set-all-tabs-visible` (bool), and
+  type a query with `win.set-all-tabs-query` (string) while the popover is
+  open. `surfaces.all_tabs_popover_visible` reports it, and
+  `active_transient_surface` is `all-tabs-popover` while it is the topmost
+  open transient surface after the command palette, workspace search and the
+  Open popover. The `tab-overflow` blocker also holds while the popover is
+  still publishing (its staged first rows) or retiring rows after it closed,
+  and until a close's focus restore has run.
+  Its visual-geometry surfaces are `tab-strip-all-tabs` (the button, with the
+  pixel anchor `tab-strip-all-tabs-ink`), `all-tabs-popover`,
+  `all-tabs-popover-search` and `all-tabs-popover-list` (pixel anchor
+  `all-tabs-popover-list-ink`), absent with `controls-hidden` and
+  `popover-closed`. The snapshot never carries a tab title or path.
 
 Use target-state actions for scenario setup whenever possible. They are easier
 to reason about than parity toggles because repeated calls converge on the same
@@ -638,8 +670,9 @@ draft persistence or recovery resolution, workspace persistence, workspace filte
 workspace search or detached-result retirement, Markdown planning/projection/image work,
 deferred Markdown work, plain-payload worker retirement, or detached-render retirement,
 preview layout/code-block repair, editor search indexing, session
-restore, command-palette index debounce, Replace All preview generation, and
-close-safety work.
+restore, command-palette index debounce, Replace All preview generation, a
+confirmed Replace All run (including one that waits for disposal capacity to
+start, `content_search.replace_admission_deferred`), and close-safety work.
 
 Workspace persistence remains a blocker from the first requested mutation
 until the newest generation is durably saved. This includes debounce waiting,

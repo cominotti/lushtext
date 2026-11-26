@@ -49,6 +49,8 @@ KANI_VERSION_RE = re.compile(r"^KANI_VERSION \?= (\S+)$", re.M)
 # Kani name is its module path below the crate root plus its function name.
 PACKAGES = {
     "gtk-lush-widgets": REPO_ROOT / "crates/gtk-lush/widgets/src",
+    "lushtext-model": REPO_ROOT / "crates/lushtext-model/src",
+    "lushtext-services": REPO_ROOT / "crates/lushtext-services/src",
     "lushtext-core": REPO_ROOT / "crates/lushtext-core/src",
 }
 
@@ -96,9 +98,16 @@ class Shard:
     ci_peak_gib: float | None
     measured_in: str
     kani_flags: tuple[str, ...] = ()
+    extra_packages: tuple[tuple[str, tuple[str, ...]], ...] = ()
+
+    def package_groups(self) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        return ((self.package, self.filters), *self.extra_packages)
 
     def owns(self, package: str, harness: str) -> bool:
-        return self.package == package and any(f in harness for f in self.filters)
+        return any(
+            pkg == package and any(f in harness for f in flts)
+            for pkg, flts in self.package_groups()
+        )
 
 
 # The runs every budget below comes from: five `workflow_dispatch` runs of
@@ -366,13 +375,13 @@ SHARDS: dict[str, Shard] = {
         measured_in=CLOSED_LOOP_MEASURED_IN,
     ),
     "core-journal-and-write": Shard(
-        "lushtext-core",
+        "lushtext-services",
         (
-            "services::draft_service::kani_proofs::journal_invariants_hold_under_crashes",
-            "services::draft_service::kani_proofs::journal_set_aside_",
-            "services::draft_service::kani_proofs::journal_decisions_",
-            "services::draft_service::set_aside_retention::kani_proofs::",
-            "services::filesystem::write_protocol::kani_proofs::",
+            "draft_service::kani_proofs::journal_invariants_hold_under_crashes",
+            "draft_service::kani_proofs::journal_set_aside_",
+            "draft_service::kani_proofs::journal_decisions_",
+            "draft_service::set_aside_retention::kani_proofs::",
+            "filesystem::write_protocol::kani_proofs::",
         ),
         gate="scheduled",
         ci_minutes=12.0,
@@ -382,8 +391,8 @@ SHARDS: dict[str, Shard] = {
     # verify-multi-window-draft-journal added the journal lane to the model,
     # which made the two L1 harnesses too slow to share the journal shard.
     "core-journal-liveness": Shard(
-        "lushtext-core",
-        ("services::draft_service::kani_proofs::a_dirty_editor_",),
+        "lushtext-services",
+        ("draft_service::kani_proofs::a_dirty_editor_",),
         gate="scheduled",
         ci_minutes=15.2,
         ci_peak_gib=4.8,
@@ -392,30 +401,35 @@ SHARDS: dict[str, Shard] = {
     # probe-long-line-toolkit-costs added the responsiveness-budget arithmetic
     # here: seconds of CBMC, too small for a shard of its own.
     "core-second-writer": Shard(
-        "lushtext-core",
-        (
-            "services::draft_service::kani_proofs::a_second_writer_",
-            "model::responsiveness_budget::kani_proofs::",
-            "model::settings_write_batch::kani_proofs::",
-        ),
+        "lushtext-services",
+        ("draft_service::kani_proofs::a_second_writer_",),
         gate="scheduled",
         ci_minutes=7.4,
         ci_peak_gib=2.7,
         measured_in=MULTI_WINDOW_MEASURED_IN + RESPONSIVENESS_BUDGET_REMEASURED_IN + CLOSE_PROTECTED_RAISED_IN + CLOSE_PROTECTED_FINAL_RAISED_IN + SHELL_CONFORMANCE_PENDING,
+        extra_packages=(
+            (
+                "lushtext-model",
+                (
+                    "responsiveness_budget::kani_proofs::",
+                    "settings_write_batch::kani_proofs::",
+                ),
+            ),
+        ),
     ),
     # verify-multi-window-draft-journal: two windows of one process over the
     # journal machine, too large to share a job with the single-window harness.
     "core-multi-window": Shard(
-        "lushtext-core",
-        ("services::draft_service::kani_proofs::journal_invariants_hold_across_two_windows",),
+        "lushtext-services",
+        ("draft_service::kani_proofs::journal_invariants_hold_across_two_windows",),
         gate="scheduled",
         ci_minutes=8.9,
         ci_peak_gib=2.7,
         measured_in=MULTI_WINDOW_MEASURED_IN + PROOF_STRENGTH_RAISED_IN + CLOSE_PROTECTED_FINAL_RAISED_IN + SHELL_CONFORMANCE_PENDING,
     ),
     "core-memory-policy": Shard(
-        "lushtext-core",
-        ("model::editor_memory::kani_proofs::",),
+        "lushtext-model",
+        ("editor_memory::kani_proofs::",),
         gate="scheduled",
         ci_minutes=16.2,
         ci_peak_gib=9.0,
@@ -473,35 +487,40 @@ SHARDS: dict[str, Shard] = {
     ),
     "core-post-open-settle": Shard(
         "lushtext-core",
-        (
-            "model::buffer_replacement::kani_proofs::",
-            "model::highlight_chunking::kani_proofs::",
-            "ui::editor_page::load::policy::kani_proofs::",
-        ),
+        ("ui::editor_page::load::policy::kani_proofs::",),
         gate="scheduled",
         ci_minutes=17.2,
         ci_peak_gib=2.0,
         measured_in=CLOSE_PROTECTED_MEASURED_IN + CLOSE_PROTECTED_FINAL_RAISED_IN + STREAM_REPLACE_RAISED_IN,
+        extra_packages=(
+            (
+                "lushtext-model",
+                (
+                    "buffer_replacement::kani_proofs::",
+                    "highlight_chunking::kani_proofs::",
+                ),
+            ),
+        ),
     ),
     # bound-lists-by-budget-not-count: the list budget both workspace
     # workflows rely on (admission B1-B4, turn continuation T1-T2), so it
     # gates pull requests.
     "core-list-budget": Shard(
-        "lushtext-core",
-        ("model::list_budget::kani_proofs::",),
+        "lushtext-model",
+        ("list_budget::kani_proofs::",),
         gate="pull-request",
         ci_minutes=LIST_BUDGET_MINUTES,
         ci_peak_gib=LIST_BUDGET_PEAK_GIB,
         measured_in=LIST_BUDGET_MEASURED_IN + STREAM_REPLACE_RAISED_IN,
     ),
     "core-document-scale": Shard(
-        "lushtext-core",
+        "lushtext-model",
         (
-            "model::document_scale::kani_proofs::",
-            "model::reanalysis_pacing::kani_proofs::",
-            "model::paragraph_boundary::kani_proofs::boundary_newline_",
-            "model::paragraph_boundary::kani_proofs::boundary_line_length_",
-            "model::paragraph_boundary::kani_proofs::boundary_break_",
+            "document_scale::kani_proofs::",
+            "reanalysis_pacing::kani_proofs::",
+            "paragraph_boundary::kani_proofs::boundary_newline_",
+            "paragraph_boundary::kani_proofs::boundary_line_length_",
+            "paragraph_boundary::kani_proofs::boundary_break_",
         ),
         gate="scheduled",
         ci_minutes=10.2,
@@ -512,10 +531,10 @@ SHARDS: dict[str, Shard] = {
     # delimiter-rule agreement take about 13 of the boundary group's 18 local
     # minutes (symbolic `from_utf8` over 8 bytes).
     "core-paragraph-boundary": Shard(
-        "lushtext-core",
+        "lushtext-model",
         (
-            "model::paragraph_boundary::kani_proofs::boundary_agrees_",
-            "model::paragraph_boundary::kani_proofs::boundary_slice_end_",
+            "paragraph_boundary::kani_proofs::boundary_agrees_",
+            "paragraph_boundary::kani_proofs::boundary_slice_end_",
         ),
         gate="scheduled",
         ci_minutes=21.9,
@@ -523,10 +542,10 @@ SHARDS: dict[str, Shard] = {
         measured_in=DOCUMENT_SCALE_MEASURED_IN,
     ),
     "core-paragraph-profile": Shard(
-        "lushtext-core",
+        "lushtext-model",
         (
-            "model::paragraph_boundary::kani_proofs::profile_",
-            "model::paragraph_profile_watch::kani_proofs::watch_delete_",
+            "paragraph_boundary::kani_proofs::profile_",
+            "paragraph_profile_watch::kani_proofs::watch_delete_",
         ),
         gate="scheduled",
         ci_minutes=15.1,
@@ -537,24 +556,24 @@ SHARDS: dict[str, Shard] = {
     # minutes and about 10 GiB (CaDiCaL), so together they measured 38 local
     # minutes, beyond the 25-minute margin; one harness per shard.
     "core-profile-watch-step": Shard(
-        "lushtext-core",
-        ("model::paragraph_profile_watch::kani_proofs::watch_step_",),
+        "lushtext-model",
+        ("paragraph_profile_watch::kani_proofs::watch_step_",),
         gate="scheduled",
         ci_minutes=19.4,
         ci_peak_gib=10.4,
         measured_in=DOCUMENT_SCALE_MEASURED_IN,
     ),
     "core-profile-watch-reads": Shard(
-        "lushtext-core",
-        ("model::paragraph_profile_watch::kani_proofs::watch_reads_",),
+        "lushtext-model",
+        ("paragraph_profile_watch::kani_proofs::watch_reads_",),
         gate="scheduled",
         ci_minutes=19.5,
         ci_peak_gib=10.4,
         measured_in=DOCUMENT_SCALE_MEASURED_IN + STREAM_REPLACE_RAISED_IN,
     ),
     "core-profile-watch-unsound": Shard(
-        "lushtext-core",
-        ("model::paragraph_profile_watch::kani_proofs::watch_fast_path_",),
+        "lushtext-model",
+        ("paragraph_profile_watch::kani_proofs::watch_fast_path_",),
         gate="scheduled",
         ci_minutes=19.5,
         ci_peak_gib=10.4,
@@ -571,11 +590,11 @@ SHARDS: dict[str, Shard] = {
     # pull-request margin): the density bound (H1, H1w, H1c, H1x) gates pull
     # requests, the fold shape, UTF-8, column and slicing harnesses are scheduled.
     "core-protected-fold": Shard(
-        "lushtext-core",
+        "lushtext-model",
         (
-            "model::protected_fold::kani_proofs::density_bound_",
-            "model::protected_fold::kani_proofs::an_over_budget_window_",
-            "model::protected_fold::kani_proofs::production_thresholds_",
+            "protected_fold::kani_proofs::density_bound_",
+            "protected_fold::kani_proofs::an_over_budget_window_",
+            "protected_fold::kani_proofs::production_thresholds_",
         ),
         gate="pull-request",
         ci_minutes=12.9,
@@ -585,14 +604,14 @@ SHARDS: dict[str, Shard] = {
     # The scheduled rest is split again: the fold-shape harnesses alone took
     # 12 of the 17.3 local minutes the combined group did.
     "core-protected-install": Shard(
-        "lushtext-core",
+        "lushtext-model",
         # Its four harnesses by name: the module path alone would also own the
         # step harnesses of core-protected-install-step.
         (
-            "model::protected_install::kani_proofs::protected_clear_plan_",
-            "model::protected_install::kani_proofs::settle_budget_derivation_",
-            "model::protected_install::kani_proofs::unrounded_tail_end_",
-            "model::protected_install::kani_proofs::one_paragraph_fold_",
+            "protected_install::kani_proofs::protected_clear_plan_",
+            "protected_install::kani_proofs::settle_budget_derivation_",
+            "protected_install::kani_proofs::unrounded_tail_end_",
+            "protected_install::kani_proofs::one_paragraph_fold_",
         ),
         gate="scheduled",
         ci_minutes=8.7,
@@ -605,11 +624,11 @@ SHARDS: dict[str, Shard] = {
     # together, over the 15-minute local budget; the visible step alone takes
     # about 6.
     "core-protected-install-step": Shard(
-        "lushtext-core",
+        "lushtext-model",
         (
-            "model::protected_install::kani_proofs::step_initial_",
-            "model::protected_install::kani_proofs::step_head_",
-            "model::protected_install::kani_proofs::step_hidden_tail_",
+            "protected_install::kani_proofs::step_initial_",
+            "protected_install::kani_proofs::step_head_",
+            "protected_install::kani_proofs::step_hidden_tail_",
         ),
         gate="scheduled",
         ci_minutes=17.9,
@@ -617,27 +636,27 @@ SHARDS: dict[str, Shard] = {
         measured_in=CLOSE_PROTECTED_STEP_MEASURED_IN,
     ),
     "core-protected-install-step-visible": Shard(
-        "lushtext-core",
-        ("model::protected_install::kani_proofs::step_visible_",),
+        "lushtext-model",
+        ("protected_install::kani_proofs::step_visible_",),
         gate="scheduled",
         ci_minutes=11.9,
         ci_peak_gib=4.6,
         measured_in=CLOSE_PROTECTED_STEP_MEASURED_IN,
     ),
     "core-protected-fold-shape": Shard(
-        "lushtext-core",
-        ("model::protected_fold::kani_proofs::folds_hide_",),
+        "lushtext-model",
+        ("protected_fold::kani_proofs::folds_hide_",),
         gate="scheduled",
         ci_minutes=22.8,
         ci_peak_gib=1.8,
         measured_in=CLOSE_PROTECTED_MEASURED_IN + STREAM_REPLACE_RAISED_IN,
     ),
     "core-protected-fold-mapping": Shard(
-        "lushtext-core",
+        "lushtext-model",
         (
-            "model::protected_fold::kani_proofs::fold_byte_offset_",
-            "model::protected_fold::kani_proofs::fold_location_",
-            "model::protected_fold::kani_proofs::fold_plan_",
+            "protected_fold::kani_proofs::fold_byte_offset_",
+            "protected_fold::kani_proofs::fold_location_",
+            "protected_fold::kani_proofs::fold_plan_",
         ),
         gate="scheduled",
         ci_minutes=11.7,
@@ -671,16 +690,16 @@ SHARDS: dict[str, Shard] = {
     # tried fitted the margin, design D11 "Kani memory"). Local figures until
     # two kani.yml dispatches replace them.
     "core-replace-protocol": Shard(
-        "lushtext-core",
-        ("services::content_search::replace::protocol::kani_proofs::",),
+        "lushtext-services",
+        ("content_search::replace::protocol::kani_proofs::",),
         gate="pull-request",
         ci_minutes=REPLACE_PROTOCOL_CI_MINUTES,
         ci_peak_gib=REPLACE_PROTOCOL_CI_PEAK_GIB,
         measured_in=REPLACE_MEASURED_IN,
     ),
     "core-replace-stream": Shard(
-        "lushtext-core",
-        ("services::content_search::replace::stream::utf8::kani_proofs::",),
+        "lushtext-services",
+        ("content_search::replace::stream::utf8::kani_proofs::",),
         gate="scheduled",
         ci_minutes=REPLACE_STREAM_CI_MINUTES,
         ci_peak_gib=REPLACE_STREAM_CI_PEAK_GIB,
@@ -730,6 +749,8 @@ def _h(name: str, seconds: float, tier: str) -> OracleHarness:
 
 
 _WIDGETS = "gtk-lush-widgets"
+_MODEL = "lushtext-model"
+_SERVICES = "lushtext-services"
 _CORE = "lushtext-core"
 _W = "kani_proofs::"
 _SLICE_LOOP = (
@@ -754,19 +775,19 @@ _SLICE_LOOP = (
     _h(_W + "slice_loop_settle_evidence_waits_for_the_reslice", 190.38, "local"),
     _h(_W + "slice_loop_settle_evidence_without_the_reslice_is_stale", 88.4, "local"),
 )
-_JOURNAL = "services::draft_service::kani_proofs::"
-_RETENTION = "services::draft_service::set_aside_retention::kani_proofs::"
-_WRITE = "services::filesystem::write_protocol::kani_proofs::"
-_MEMORY = "model::editor_memory::kani_proofs::"
+_JOURNAL = "draft_service::kani_proofs::"
+_RETENTION = "draft_service::set_aside_retention::kani_proofs::"
+_WRITE = "filesystem::write_protocol::kani_proofs::"
+_MEMORY = "editor_memory::kani_proofs::"
 _SHELL = "ui::window::geometry::policy::kani_proofs::"
 _SHELL_LOOP = "ui::window::geometry::kani_proofs::"
 _PRESET = "ui::sidebar::width_preset::kani_proofs::"
 _MINIMAP = "ui::editor_page::minimap::policy::kani_proofs::"
 _PREVIEW = "ui::markdown_preview::policy::kani_proofs::"
-_BUDGET = "model::responsiveness_budget::kani_proofs::"
-_WRITE_BATCH = "model::settings_write_batch::kani_proofs::"
-_REPLACE_PROTOCOL = "services::content_search::replace::protocol::kani_proofs::"
-_REPLACE_UTF8 = "services::content_search::replace::stream::utf8::kani_proofs::"
+_BUDGET = "responsiveness_budget::kani_proofs::"
+_WRITE_BATCH = "settings_write_batch::kani_proofs::"
+_REPLACE_PROTOCOL = "content_search::replace::protocol::kani_proofs::"
+_REPLACE_UTF8 = "content_search::replace::stream::utf8::kani_proofs::"
 # document-scale-policy local seconds: the verification times of `make kani` on
 # this workstation (Kani 0.68.0, 2026-10-20), cheapest first per module.
 PROFILE_CARRY_SECONDS = 13.64
@@ -776,17 +797,17 @@ WATCH_DELETE_SECONDS = 1.0
 WATCH_READS_SECONDS = 651.83
 WATCH_STEP_SECONDS = 672.86
 WATCH_UNSOUND_SECONDS = 778.55
-_LIST_BUDGET = "model::list_budget::kani_proofs::"
-_SCALE = "model::document_scale::kani_proofs::"
-_PACED = "model::buffer_replacement::kani_proofs::"
-_REANALYSIS = "model::reanalysis_pacing::kani_proofs::"
-_CHUNKED = "model::highlight_chunking::kani_proofs::"
+_LIST_BUDGET = "list_budget::kani_proofs::"
+_SCALE = "document_scale::kani_proofs::"
+_PACED = "buffer_replacement::kani_proofs::"
+_REANALYSIS = "reanalysis_pacing::kani_proofs::"
+_CHUNKED = "highlight_chunking::kani_proofs::"
 _SETTLE = "ui::editor_page::load::policy::kani_proofs::"
-_BOUNDARY = "model::paragraph_boundary::kani_proofs::"
-_WATCH = "model::paragraph_profile_watch::kani_proofs::"
-_FOLD = "model::protected_fold::kani_proofs::"
+_BOUNDARY = "paragraph_boundary::kani_proofs::"
+_WATCH = "paragraph_profile_watch::kani_proofs::"
+_FOLD = "protected_fold::kani_proofs::"
 _PV = "ui::editor_page::protected_view::policy::kani_proofs::"
-_PI = "model::protected_install::kani_proofs::"
+_PI = "protected_install::kani_proofs::"
 _SHELL_POLICY_HARNESSES = (
     _h(_SHELL + "focus_mode_renders_no_secondary_surface", 0.11, "ci"),
     _h(_SHELL + "layout_never_renders_an_unrequested_surface", 0.2, "ci"),
@@ -823,8 +844,8 @@ ORACLES: dict[str, Oracle] = {
             *_SLICE_LOOP,
         ),
     ),
-    "crates/lushtext-core/src/services/draft_service/journal_core.rs": Oracle(
-        _CORE,
+    "crates/lushtext-services/src/draft_service/journal_core.rs": Oracle(
+        _SERVICES,
         (
             _h(_JOURNAL + "journal_decisions_follow_their_documented_rules", 0.35, "ci"),
             _h(_JOURNAL + "journal_set_aside_keeps_every_body_it_reports_kept", 4.13, "local"),
@@ -835,8 +856,8 @@ ORACLES: dict[str, Oracle] = {
             _h(_JOURNAL + "journal_invariants_hold_under_crashes", 309.72, "local"),
         ),
     ),
-    "crates/lushtext-core/src/services/draft_service/set_aside_retention.rs": Oracle(
-        _CORE,
+    "crates/lushtext-services/src/draft_service/set_aside_retention.rs": Oracle(
+        _SERVICES,
         (
             _h(_RETENTION + "set_aside_retention_bound_and_notice_never_plan_a_deletion", 0.19, "ci"),
             _h(_RETENTION + "set_aside_retention_deleting_every_body_breaks_r2", 1.28, "ci"),
@@ -844,8 +865,8 @@ ORACLES: dict[str, Oracle] = {
             _h(_RETENTION + "set_aside_retention_notice_follows_the_bound_and_its_rate_limit", 12.73, "ci"),
         ),
     ),
-    "crates/lushtext-core/src/services/filesystem/write_protocol.rs": Oracle(
-        _CORE,
+    "crates/lushtext-services/src/filesystem/write_protocol.rs": Oracle(
+        _SERVICES,
         (
             _h(_WRITE + "a_move_removes_its_source_only_after_the_copy_is_durable", 0.07, "ci"),
             _h(_WRITE + "a_completed_rename_synced_every_directory_it_mutated", 0.08, "ci"),
@@ -855,8 +876,8 @@ ORACLES: dict[str, Oracle] = {
             _h(_WRITE + "every_classification_describes_the_destination", 5.55, "ci"),
         ),
     ),
-    "crates/lushtext-core/src/model/editor_memory.rs": Oracle(
-        _CORE,
+    "crates/lushtext-model/src/editor_memory.rs": Oracle(
+        _MODEL,
         (
             _h(_MEMORY + "estimate_is_bookkeeping_when_evicted_and_floored_by_file_size_otherwise", 0.07, "local"),
             _h(_MEMORY + "ledger_crossing_flag_is_exact", 0.5, "local"),
@@ -946,8 +967,8 @@ ORACLES: dict[str, Oracle] = {
         ),
         functions=("clamped_preview_width",),
     ),
-    "crates/lushtext-core/src/model/responsiveness_budget.rs": Oracle(
-        _CORE,
+    "crates/lushtext-model/src/responsiveness_budget.rs": Oracle(
+        _MODEL,
         (
             _h(_BUDGET + "classification_is_sound_and_complete", 0.22, "ci"),
             _h(_BUDGET + "classification_is_monotone_in_the_lateness", 0.19, "ci"),
@@ -957,13 +978,13 @@ ORACLES: dict[str, Oracle] = {
         ),
         functions=("classify_dispatch", "histogram_bucket", "histogram_bucket_floor_us", "nearest_rank_percentile"),
     ),
-    "crates/lushtext-core/src/model/settings_write_batch.rs": Oracle(
-        _CORE,
+    "crates/lushtext-model/src/settings_write_batch.rs": Oracle(
+        _MODEL,
         (_h(_WRITE_BATCH + "a_flush_never_drops_the_latest_value_or_re_emits_a_persisted_one", 1.38, "ci"),),
         functions=("record", "observe_persisted", "acknowledge"),
     ),
-    "crates/lushtext-core/src/model/list_budget.rs": Oracle(
-        _CORE,
+    "crates/lushtext-model/src/list_budget.rs": Oracle(
+        _MODEL,
         (
             _h(_LIST_BUDGET + "every_turn_makes_progress", 0.02, "ci"),
             _h(_LIST_BUDGET + "rows_within_a_zero_charge_bounds_nothing", 0.02, "ci"),
@@ -989,8 +1010,8 @@ ORACLES: dict[str, Oracle] = {
             "retirement_unit_cut",
         ),
     ),
-    "crates/lushtext-core/src/model/document_scale.rs": Oracle(
-        _CORE,
+    "crates/lushtext-model/src/document_scale.rs": Oracle(
+        _MODEL,
         (
             _h(_SCALE + "scale_save_without_join_reenables_a_feature", 0.09, "ci"),
             _h(_SCALE + "scale_byte_tiers_match_the_tier_reference", 0.13, "ci"),
@@ -1002,16 +1023,16 @@ ORACLES: dict[str, Oracle] = {
             _h(_SCALE + "scale_edit_reanalysis_reduction_is_monotone_and_survives_the_join", 0.6, "ci"),
         ),
     ),
-    "crates/lushtext-core/src/model/reanalysis_pacing.rs": Oracle(
-        _CORE,
+    "crates/lushtext-model/src/reanalysis_pacing.rs": Oracle(
+        _MODEL,
         (
             _h(_REANALYSIS + "the_start_session_is_in_bounds", 0.02, "ci"),
             _h(_REANALYSIS + "a_session_continues_only_within_its_allowance", 0.5, "ci"),
             _h(_REANALYSIS + "a_session_that_never_merges_downgrades_within_the_step_bound", 0.2, "ci"),
         ),
     ),
-    "crates/lushtext-core/src/model/buffer_replacement.rs": Oracle(
-        _CORE,
+    "crates/lushtext-model/src/buffer_replacement.rs": Oracle(
+        _MODEL,
         (
             _h(_PACED + "the_paced_budget_follows_batch_density", 0.02, "ci"),
             _h(_PACED + "paced_slices_without_the_visible_budget_exceed_v_slice", 1.12, "ci"),
@@ -1020,8 +1041,8 @@ ORACLES: dict[str, Oracle] = {
         ),
         functions=("admit", "for_profile", "batch_exceeds_slice"),
     ),
-    "crates/lushtext-core/src/model/highlight_chunking.rs": Oracle(
-        _CORE,
+    "crates/lushtext-model/src/highlight_chunking.rs": Oracle(
+        _MODEL,
         (
             _h(_CHUNKED + "a_chunk_waits_at_most_once_and_never_when_analysed", 0.02, "ci"),
             _h(_CHUNKED + "a_chunked_language_is_gated_above_its_attach_threshold_only_by_the_scale", 0.03, "ci"),
@@ -1042,8 +1063,8 @@ ORACLES: dict[str, Oracle] = {
         ),
         functions=("next_restyle_range", "settle_stage", "new", "is_done"),
     ),
-    "crates/lushtext-core/src/model/paragraph_boundary.rs": Oracle(
-        _CORE,
+    "crates/lushtext-model/src/paragraph_boundary.rs": Oracle(
+        _MODEL,
         (
             _h(_BOUNDARY + "profile_slices_without_carry_disagree", PROFILE_CARRY_SECONDS, "ci"),
             _h(_BOUNDARY + "profile_matches_the_specification", PROFILE_SPEC_SECONDS, "ci"),
@@ -1055,8 +1076,8 @@ ORACLES: dict[str, Oracle] = {
             _h(_BOUNDARY + "boundary_slice_end_is_the_reference_choice", 293.39, "local"),
         ),
     ),
-    "crates/lushtext-core/src/model/protected_fold.rs": Oracle(
-        _CORE,
+    "crates/lushtext-model/src/protected_fold.rs": Oracle(
+        _MODEL,
         (
             _h(_FOLD + "production_thresholds_satisfy_the_preconditions", 0.03, "ci"),
             _h(_FOLD + "fold_location_is_total_and_round_trips", 0.43, "ci"),
@@ -1074,8 +1095,8 @@ ORACLES: dict[str, Oracle] = {
             _h(_FOLD + "fold_plan_is_independent_of_install_slicing_r3", 361.16, "local"),
         ),
     ),
-    "crates/lushtext-core/src/model/protected_install.rs": Oracle(
-        _CORE,
+    "crates/lushtext-model/src/protected_install.rs": Oracle(
+        _MODEL,
         (
             _h(_PI + "settle_budget_derivation_fits_and_never_overflows", 0.28, "ci"),
             _h(_PI + "one_paragraph_fold_shows_its_head_cap", 1.46, "ci"),
@@ -1100,8 +1121,8 @@ ORACLES: dict[str, Oracle] = {
             _h(_PV + "navigation_target_reaches_every_column", 784.45, "local"),
         ),
     ),
-    "crates/lushtext-core/src/model/paragraph_profile_watch.rs": Oracle(
-        _CORE,
+    "crates/lushtext-model/src/paragraph_profile_watch.rs": Oracle(
+        _MODEL,
         (
             _h(_WATCH + "watch_delete_between_cr_and_lf_preserves_the_invariant", WATCH_DELETE_SECONDS, "local"),
             _h(_WATCH + "watch_reads_are_bounded", WATCH_READS_SECONDS, "local"),
@@ -1109,16 +1130,16 @@ ORACLES: dict[str, Oracle] = {
             _h(_WATCH + "watch_fast_path_without_a_carried_bound_is_unsound", WATCH_UNSOUND_SECONDS, "local"),
         ),
     ),
-    "crates/lushtext-core/src/services/content_search/replace/protocol.rs": Oracle(
-        _CORE,
+    "crates/lushtext-services/src/content_search/replace/protocol.rs": Oracle(
+        _SERVICES,
         (
             _h(_REPLACE_PROTOCOL + "shrink_removes_the_entry_before_the_body", REPLACE_SHRINK_SECONDS, "ci"),
             _h(_REPLACE_PROTOCOL + "undo_writes_only_to_a_file_holding_the_replaced_bytes", REPLACE_UNDO_SECONDS, "ci"),
             _h(_REPLACE_PROTOCOL + "an_apply_run_keeps_every_target_recoverable", REPLACE_PROTOCOL_RUN_SECONDS, "ci"),
         ),
     ),
-    "crates/lushtext-core/src/services/content_search/replace/stream/utf8.rs": Oracle(
-        _CORE,
+    "crates/lushtext-services/src/content_search/replace/stream/utf8.rs": Oracle(
+        _SERVICES,
         (
             _h(_REPLACE_UTF8 + "the_byte_scan_matches_core_from_utf8", REPLACE_UTF8_SCAN_SECONDS, "ci"),
             _h(_REPLACE_UTF8 + "utf8_seams_do_not_depend_on_the_chunk_size", REPLACE_UTF8_SEAMS_SECONDS, "ci"),
@@ -1148,15 +1169,15 @@ NOT_ORACLE_HARNESSES: dict[str, str] = {
 
 # Modules a harness file imports from that are not oracles, each with its reason.
 NOT_ORACLE_MODULES: dict[str, str] = {
-    "crates/lushtext-core/src/model/draft.rs": (
+    "crates/lushtext-model/src/draft.rs": (
         "the journal harnesses import only the DraftManifestCompleteness enum from it; "
         "no harness checks its behaviour"
     ),
-    "crates/lushtext-core/src/services/draft_service/journal_model.rs": (
+    "crates/lushtext-services/src/draft_service/journal_model.rs": (
         "the journal harnesses' environment model, shared with the draft-service "
         "conformance driver; verification code, not a checked core"
     ),
-    "crates/lushtext-core/src/services/filesystem/write_protocol/disk_model.rs": (
+    "crates/lushtext-services/src/filesystem/write_protocol/disk_model.rs": (
         "the write harnesses' disk model, shared with the write-shell conformance "
         "driver; verification code, not a checked core"
     ),
@@ -1220,9 +1241,10 @@ def check(found: dict[str, list[str]], unowned: list[Path]) -> list[str]:
             if len(owners) != 1:
                 problems.append(f"{package} harness {name} matches shards {owners or 'none'}")
     for shard_name, shard in SHARDS.items():
-        for prefix in shard.filters:
-            if not any(prefix in name for name in found.get(shard.package, [])):
-                problems.append(f"shard {shard_name} prefix {prefix} matches no harness")
+        for package, filters in shard.package_groups():
+            for prefix in filters:
+                if not any(prefix in name for name in found.get(package, [])):
+                    problems.append(f"shard {shard_name} prefix {prefix} in {package} matches no harness")
     return problems
 
 
@@ -1498,18 +1520,42 @@ def shard_command(shards: dict[str, Shard], shard: str, target_dir: str) -> list
     return command
 
 
+def shard_commands(shards: dict[str, Shard], shard: str, target_dir: str) -> list[list[str]]:
+    """Every `cargo kani` command for one shard (one per package in the shard)."""
+    record = shards[shard]
+    commands = []
+    for package, filters in record.package_groups():
+        command = ["cargo", "kani", "-p", package, "--target-dir", target_dir, *record.kani_flags]
+        for prefix in filters:
+            command += ["--harness", prefix]
+        commands.append(command)
+    return commands
+
+
 def run(shard_names: list[str], target_dir: str, measure: str | None = None) -> int:
     records: list[dict[str, object]] = []
     result = 0
     for shard in shard_names:
-        command = shard_command(SHARDS, shard, target_dir)
-        print(f"Running Kani shard {shard}: {' '.join(command)}", flush=True)
-        if measure is None:
-            status = subprocess.run(command, cwd=REPO_ROOT, check=False).returncode
-        else:
-            record = shard_record(shard, *run_measured(command))
+        commands = shard_commands(SHARDS, shard, target_dir)
+        status = 0
+        total_seconds = 0.0
+        peak_kib = 0
+        combined_log = HarnessLog()
+        for command in commands:
+            print(f"Running Kani shard {shard}: {' '.join(command)}", flush=True)
+            if measure is None:
+                status = subprocess.run(command, cwd=REPO_ROOT, check=False).returncode
+            else:
+                cmd_status, cmd_seconds, cmd_peak_kib, cmd_log = run_measured(command)
+                status = cmd_status
+                total_seconds += cmd_seconds
+                peak_kib = max(peak_kib, cmd_peak_kib)
+                combined_log.harnesses.extend(cmd_log.harnesses)
+            if status != 0:
+                break
+        if measure is not None:
+            record = shard_record(shard, status, total_seconds, peak_kib, combined_log)
             records.append(record)
-            status = record["status"]
             print(
                 f"Kani shard {shard}: {record['wall_minutes']} min, peak RSS {record['peak_rss_gib']} GiB, "
                 f"{len(record['harnesses'])} harnesses",
@@ -1537,6 +1583,8 @@ def oracle_self_test() -> None:
         root = Path(scratch)
         core = root / "crates/lushtext-core/src"
         (root / "crates/gtk-lush/widgets/src").mkdir(parents=True)
+        (root / "crates/lushtext-model/src").mkdir(parents=True)
+        (root / "crates/lushtext-services/src").mkdir(parents=True)
         (core / "m").mkdir(parents=True)
         (core / "lib.rs").write_text("pub mod m;\npub mod other;\n")
         (core / "m.rs").write_text("#[cfg(kani)]\nmod kani_proofs;\npub fn f() {}\n")
@@ -1675,6 +1723,14 @@ def self_test() -> None:
     assert "loop-contracts" not in plain and "-Z" not in plain, plain
     assert contracts[:8] == ["cargo", "kani", "-p", "p", "--target-dir", "target/kani", "-Z", "loop-contracts"], contracts
     assert contracts[-2:] == ["--harness", "g"], contracts
+    multi = {
+        "m": replace(good, extra_packages=(("m2", ("h2",)),)),
+    }
+    assert shard_commands(multi, "m", "target/kani") == [
+        ["cargo", "kani", "-p", "p", "--target-dir", "target/kani", "--harness", "f"],
+        ["cargo", "kani", "-p", "m2", "--target-dir", "target/kani", "--harness", "h2"],
+    ]
+    assert multi["m"].owns("m2", "h2::x") and not multi["m"].owns("other", "h2::x")
 
 
 def main() -> int:
@@ -1698,7 +1754,12 @@ def main() -> int:
     found, unowned = discover()
     if args.command == "list":
         for shard_name, shard in SHARDS.items():
-            names = [n for n in found[shard.package] if shard.owns(shard.package, n)]
+            names = [
+                n
+                for package, _ in shard.package_groups()
+                for n in found[package]
+                if shard.owns(package, n)
+            ]
             budget = (
                 "unmeasured"
                 if shard.ci_minutes is None

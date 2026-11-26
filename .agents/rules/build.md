@@ -35,12 +35,39 @@ the shared workstation, and which verification runs a change makes, is in
 
 ## Dev Builds
 
-Use `make` targets for development; `make help` prints the catalogue. The
-Makefile auto-detects nextest for non-widget tests across the workspace;
-`.config/nextest.toml` excludes the `widget` binary (and `binary(=axiom_probes)`)
-from nextest's default filter, while widget coverage in `make test` flows
-through the shared headless `scripts/run-widget-tests.sh` path so local
-verification matches CI.
+Use `make` targets for development; `make help` prints the catalogue. For
+fast single-package feedback loops during local editing, `make clippy-pkg`,
+`make check-pkg`, and `make test-pkg` accept `PKG=<crate>` (defaulting to
+`lushtext-core`, with `FILTER=<substring>` on `test-pkg`), keeping the shared
+`target/` debug fingerprints intact; `make build-fast` and `make test-fast`
+provide an opt-in Cranelift backend (`CRANELIFT_TOOLCHAIN`, defaulting to
+`nightly-2026-08-21`) in each checkout's isolated build-cache directory while
+keeping `make check`, `make pre-commit`, CI, benchmarks, and releases on the
+pinned LLVM 1.98.0 toolchain. The Makefile auto-detects nextest for non-widget tests across the
+workspace; `.config/nextest.toml` excludes the `widget` binary (and
+`binary(=axiom_probes)`) from nextest's default filter, while widget coverage in
+`make test` flows through the shared headless `scripts/run-widget-tests.sh`
+path so local verification matches CI.
+
+**Bounded warning scans.** The widget runner, the GTK axiom runner and the
+mutation runner scan the output of the command they run in a stage beside the
+live stream (`scripts/bounded-log-scan.sh`), never in a whole-output file. The
+stage applies the runner's own `grep -E` / `grep -Ev` regexes, reading the
+stream as text (`grep -a`: a NUL byte would otherwise make GNU grep report only
+"binary file matches" and hide every match after it), keeps an exact
+count of unexpected lines and at most 64 KiB of them for the report, keeps at
+most 1 MiB of the lines a runner parses later (the axiom runner's result,
+slow-skip and observation lines; the mutation runner's no-mutants phrase, by
+its exact count), reads its input to EOF, and writes only to files unlinked as
+soon as they are open. Any unexpected line fails the run whatever the cap
+kept; a scan that did not finish, or axiom kept lines over 1 MiB, fail it
+closed. The widget runner starts and awaits the stage in its top-level shell,
+which owns the trap ([why](../../docs/memorials/2026-10-20-test-data-incidents.md)).
+`make check-temp-scope` (in `make check-policy`) shellchecks
+`bounded-log-scan.sh` and `run-widget-tests.sh` and runs
+`run-widget-tests.sh --self-test`, which runs the widget classification,
+memory-report and capture cases, the stage's self-test and the temp scope's,
+each once.
 
 The widget session's launcher (the `widget` profile of the session helper,
 below) sets the **seven** settings returned by
@@ -206,8 +233,18 @@ Each checkout gets `checkouts/<basename>-<sha256(realpath)[:16]>` there (with
 a `CACHEDIR.TAG` and a record of its real path; `checkout-path` resolves it
 without creating it, for the Makefile's `BUILD_CACHE_CHECKOUT` and
 `proof-strength.py`'s import), and the mutation slots live in `mutants/`.
+`make build-cache-status` reports disk usage under the root, and
 `make build-cache-prune` removes the directories of checkouts that no longer
-exist and nothing else. `make check-build-cache-helpers` (in
+exist plus temporary `<checkout>/flatpak-builder/build` unpack trees inside
+live checkouts (while preserving `cache/`, `downloads/`, `checksums/`,
+`ccache/` and `mutants/`). `FLATPAK_BUILDER_FLAGS` also passes
+`--delete-build-dirs` on new builds. Debug smoke lanes (`composition-hold-build`,
+`smoke-read-faults-build`, and `crash-recovery-smoke`'s kill-point build) share
+`SMOKE_TARGET_DIR` (`target/smoke`) with `SMOKE_PROFILE_DEBUG` (`0`) under a
+shared lock and stage each binary at its legacy path; local mutation mirror
+slots likewise receive `CARGO_PROFILE_DEV_DEBUG=$(MUTANTS_PROFILE_DEBUG)` (`0`)
+from the Makefile so neither touches the shared `target/` build-dir
+fingerprints. `make check-build-cache-helpers` (in
 `make check-policy`) self-tests the helpers and audits the Makefile, `scripts/`
 and `.githooks/`: nothing exports `CARGO_INCREMENTAL=1`, the widget, test,
 Clippy and dev-build targets (and `run-widget-tests.sh`, `widget-shards.py`)
@@ -601,7 +638,9 @@ are in [`testing.md`](./testing.md). This section covers the lane.
   pending record (`PENDING DISPATCH` or `provisional`) whose owner is not an
   active directory under `openspec/changes/`, so the commit that archives a
   change still owing a figure fails its hook. Record a budget from a
-  dispatched run, the larger of two; when a shard breaks a margin, fit it by
+  dispatched run, the larger of two (when to dispatch, and who reads the
+  runs: [`verification-runs.md`](./verification-runs.md), "Kani"); when a
+  shard breaks a margin, fit it by
   the order in [`docs/runbooks/kani-shards.md`](../../docs/runbooks/kani-shards.md)
   (split, then solver, then a recorded bound reduction). Never raise
   `timeout-minutes` instead. The Kani install is cached on `KANI_VERSION`.
@@ -682,7 +721,11 @@ SDK sandbox with `--no-session-bus --no-a11y-bus --no-documents-portal`
 (`SANDBOX_FLAGS`). `./scripts/run-gtk-axioms.sh --self-test` (in
 `make check-gtk-axioms`) asserts the benign lines pass and each defect class
 fails; a new class gets a case there, never a wider benign list
-([why](../../docs/memorials/axiom-lane-warning-scan.md)).
+([why](../../docs/memorials/axiom-lane-warning-scan.md)). The scan is
+streamed and bounded ("Bounded warning scans" under Dev Builds): the output
+goes live to the caller, the counts and the runtimes summary read the kept
+`{"axiom"…}` and `skipped (…)` lines (at most 1 MiB, an overflow fails the
+run), and no log is written.
 
 **Toolkit updates.** On any GTK, Libadwaita, GtkSourceView, Pango or GLib
 version change — the CI Fedora container image, the shipped GNOME runtime in
@@ -691,7 +734,12 @@ platform — run `make gtk-axioms` **first**, before any other work. A failing
 probe is an axiom change: never adjust a probe to match the new behaviour
 first, and when the shipped runtime and the floor disagree, version-qualify the
 entry rather than rewrite it (`make check-gtk-axioms` enforces the ledger
-form). The steps are in
+form). A classification of a toolkit warning
+exists only while the shipped toolkit has the defect: the widget runner's
+benign entry for GTK 4.24's `gdk_frame_timings_presented() called on
+discarded frame.` (ledger A134) is removed in the change that brings a shipped
+toolkit and CI image carrying GTK d2595c6b, which A134's `GTK >= 4.24` branch
+then fails on. The steps are in
 [`docs/runbooks/gtk-toolkit-update.md`](../../docs/runbooks/gtk-toolkit-update.md).
 Interleaved `GTK_AXIOMS_ONLY` re-test rounds run through `scripts/measure.sh`.
 A nightly verdict is a preview of the next adoption, never a ledger
@@ -706,6 +754,14 @@ against the new defaults and update the fragment and the version in its header
 comment; then run one screencast session (`make visual-geometry-smoke`). A
 changed default that loads module-rt, a hardware monitor or reaches rtkit
 fails that run with `SESSION-HYGIENE:` lines, which is the intended signal.
+On a WirePlumber update, also re-check the readiness signal the helper waits
+for (`session::observe::wireplumber_policy_ready`): that
+`/usr/share/wireplumber/scripts/session-services.lua` still sets the client's
+`session.services` and lists `policy.linking.standard` in it, and that
+`wireplumber.conf`'s component rules still order `support.session-services`
+after every other component. A renamed service or property fails the first
+screencast session before its command, with a `WirePlumber did not load its
+linking policy` line and `pw-dump-not-ready.json` in its log directory.
 
 ## Fuzzing
 
@@ -994,7 +1050,7 @@ The release procedure is the `publish-release` skill. Rules:
 - Commands: `make release VERSION=vX.Y.Z RELEASE_NOTES_FILE=...` or `make release-bump TYPE=major|minor|patch`; use `DRY_RUN=1` first. `PRERELEASE=alpha|beta|rc` starts or continues a prerelease stream, and `PROMOTE=1` is required to promote one to stable.
 - Real releases run from a clean `main`. The helper stages only intended release files, commits `chore(release): vX.Y.Z`, creates a signed tag, and pushes `main` plus the tag only after validation passes.
 - `RELEASE_NOTES_FILE` is mandatory for real releases: the notes become the AppStream release description in `data/dev.cominotti.lushtext.metainfo.xml.in`.
-- Version surfaces that move together: `meson.build`, `crates/lushtext/Cargo.toml`, `crates/lushtext-core/Cargo.toml`, `Cargo.lock`, AppStream releases, and `build-aux/cargo-sources.json`.
+- Version surfaces that move together: `meson.build`, `crates/lushtext/Cargo.toml`, `crates/lushtext-core/Cargo.toml`, `crates/lushtext-services/Cargo.toml`, `crates/lushtext-model/Cargo.toml`, `Cargo.lock`, AppStream releases, and `build-aux/cargo-sources.json`.
 - The Flatpak publication channel is the Cominotti-owned remote at `https://flatpak.cominotti.dev/` (`make cominotti-flatpak-repo`, then always `make verify-cominotti-flatpak-repo` and `make verify-cominotti-pages-limits`). Cloudflare Pages is the default backend, `COMINOTTI_FLATPAK_DEPLOY_COMMAND` an override, and Cloudflare R2 the first fallback when Pages limits are exceeded.
 - Public Cominotti install instructions keep GPG verification enabled; never publish `flatpak remote-add --no-gpg-verify` for the Cominotti remote except in clearly private local-testing notes.
 - **Flathub publication is not planned, and this is a standing decision rather than a deferral.** A skipped Flathub PR is expected output: do not report it as an outstanding action, do not treat absent `FLATHUB_TOKEN` / `FLATHUB_REPOSITORY` as configuration to complete, and do not propose work to enable it. The dormant `make flathub-manifest`, `make verify-flathub-manifest` and `make verify-flathub-domain` tooling stays covered by `scripts/test-flathub-manifest.sh`. The Flathub *remote* remains the source of the GNOME runtime and SDK.

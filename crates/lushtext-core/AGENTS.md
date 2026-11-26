@@ -1,6 +1,6 @@
 # lushtext-core
 
-This crate owns the application's real behavior: domain types, services, and GTK driving adapters.
+This crate owns the application's GTK driving adapters, and re-exports `crates/lushtext-model` as `model` and `crates/lushtext-services` as `services`.
 
 ## Boundaries
 

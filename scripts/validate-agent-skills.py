@@ -9,7 +9,7 @@ import re
 import subprocess
 import sys
 import tomllib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import unquote
 
 
@@ -70,6 +70,7 @@ def load_policy_registry(skills_root: Path, errors: list[str]) -> dict[str, obje
         "performance",
         "filesystem_contract",
         "release",
+        "data_safety",
     }:
         errors.append(f"{display_path(path)}: unsupported or missing top-level registry keys")
         return None
@@ -125,6 +126,41 @@ def load_policy_registry(skills_root: Path, errors: list[str]) -> dict[str, obje
             errors.append(
                 f"{display_path(path)}: filesystem_contract.paths must be safe relative paths"
             )
+    data_safety = registry["data_safety"]
+    if not isinstance(data_safety, dict) or set(data_safety) != {
+        "skill",
+        "path_suffixes",
+        "content_patterns",
+    }:
+        errors.append(f"{display_path(path)}: data_safety policy has unsupported shape")
+    else:
+        if not isinstance(data_safety["skill"], str) or not data_safety["skill"]:
+            errors.append(f"{display_path(path)}: data_safety.skill must be a skill name")
+        suffixes = data_safety["path_suffixes"]
+        if not isinstance(suffixes, list) or not suffixes or any(
+            not isinstance(value, str) or not value for value in suffixes
+        ):
+            errors.append(f"{display_path(path)}: data_safety.path_suffixes must be non-empty strings")
+        patterns = data_safety["content_patterns"]
+        if not isinstance(patterns, list) or not patterns:
+            errors.append(f"{display_path(path)}: data_safety.content_patterns must be a non-empty list")
+        else:
+            for entry in patterns:
+                if (
+                    not isinstance(entry, dict)
+                    or set(entry) != {"keyword", "pattern"}
+                    or not all(isinstance(entry[key], str) and entry[key] for key in entry)
+                ):
+                    errors.append(
+                        f"{display_path(path)}: each data_safety.content_patterns entry needs a keyword and a pattern"
+                    )
+                    continue
+                try:
+                    re.compile(entry["pattern"])
+                except re.error as error:
+                    errors.append(
+                        f"{display_path(path)}: data_safety pattern {entry['pattern']!r} is not a regex: {error}"
+                    )
     release = registry["release"]
     if not isinstance(release, dict) or set(release) != {
         "workflow_role_marker",
@@ -762,6 +798,57 @@ def validate_rules(
     return sorted(set(errors))
 
 
+def skill_description(skill_dir: Path) -> str | None:
+    """The frontmatter description of one skill, or None when it cannot be read."""
+
+    path = skill_dir / "SKILL.md"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = FRONTMATTER_RE.match(text)
+    if not match:
+        return None
+    data = load_yaml(path, match.group(1), [])
+    if not isinstance(data, dict) or not isinstance(data.get("description"), str):
+        return None
+    return data["description"]
+
+
+def validate_data_safety_triggers(skills_root: Path, registry: dict[str, object]) -> list[str]:
+    """Keep the machine form of the data-safety triggers inside the skill's own description.
+
+    The review-lens routing (`scripts/agent-topology.py review-lenses`) reads
+    the `[data_safety]` table; the skill's description is what agents read.
+    Each path suffix's last component (as `<name>/`) and each pattern's
+    keyword must appear in that description, so the two cannot drift apart.
+    """
+
+    policy = registry.get("data_safety")
+    if not isinstance(policy, dict) or not isinstance(policy.get("skill"), str):
+        return []
+    where = display_path(skills_root / REGISTRY_FILENAME)
+    description = skill_description(skills_root / policy["skill"])
+    if description is None:
+        return [f"{where}: data_safety.skill has no readable description: {policy['skill']}"]
+    errors: list[str] = []
+    for suffix in policy.get("path_suffixes", []):
+        if isinstance(suffix, str):
+            path = PurePosixPath(suffix)
+            short = path.parent.name if path.name == "src" and path.parent.name else path.name
+            if f"{short}/" not in description:
+                errors.append(
+                    f"{where}: data_safety path suffix {suffix!r} is not named in the {policy['skill']} description"
+                )
+    for entry in policy.get("content_patterns", []):
+        if isinstance(entry, dict) and isinstance(entry.get("keyword"), str):
+            if entry["keyword"] not in description:
+                errors.append(
+                    f"{where}: data_safety keyword {entry['keyword']!r} is not in the {policy['skill']} description"
+                )
+    return errors
+
+
 def validate_skills(skills_root: Path) -> list[str]:
     errors: list[str] = []
     if not skills_root.is_dir():
@@ -784,6 +871,9 @@ def validate_skills(skills_root: Path) -> list[str]:
         performance["umbrella"],
         *performance["leaves"],
     }
+    data_safety_skill = registry["data_safety"].get("skill") if isinstance(registry["data_safety"], dict) else None
+    if isinstance(data_safety_skill, str) and data_safety_skill:
+        registered_names.add(data_safety_skill)
     for missing in sorted(registered_names - skill_names):
         errors.append(
             f"{display_path(skills_root / REGISTRY_FILENAME)}: registered skill is missing: {missing}"
@@ -798,6 +888,7 @@ def validate_skills(skills_root: Path) -> list[str]:
             errors.append(
                 f"{display_path(skills_root / REGISTRY_FILENAME)}: performance leaf must disable implicit invocation: {leaf}"
             )
+    errors.extend(validate_data_safety_triggers(skills_root, registry))
     allowed_root = REPO_ROOT if skills_root.resolve() == DEFAULT_SKILLS_ROOT.resolve() else skills_root
     for skill_dir in skill_dirs:
         skill_name = validate_frontmatter(skill_dir, errors)

@@ -32,10 +32,13 @@
 //!    dispatched. Control resumes in a `spawn_blocking_then` completion closure
 //!    that only logs, because the in-memory journal was already published under
 //!    its generation guard before the worker started.
-//! 2. **Startup recovery, deferred by capacity.** When disposal admission
-//!    refuses the recovery reservation, control resumes in the
-//!    `undo_capacity_wakeup` closure, which re-enters
-//!    [`LushtextSearchPanel::load_persisted_undo_backup`] from the top.
+//! 2. **Startup recovery, deferred by capacity or by a claimed transaction.**
+//!    When disposal admission refuses the recovery reservation, control
+//!    resumes in the `undo_capacity_wakeup` closure; while this panel's
+//!    transaction is claimed, it resumes in
+//!    [`LushtextSearchPanel::finish_replace_transaction`]. Both re-enter
+//!    [`LushtextSearchPanel::load_persisted_undo_backup`] from the top, and a
+//!    run's admission retires either wait in every panel.
 //! 3. **Startup recovery, on the worker.** The recovery read returns through a
 //!    completion closure that re-checks the journal generation before installing
 //!    the recovered backup and revealing the undo affordance.
@@ -164,17 +167,28 @@ impl LushtextSearchPanel {
     }
 
     /// Reserve replacement ownership while every superseded guarded input remains installed.
-    pub(crate) fn try_reserve_undo_replacement(
+    ///
+    /// A Replace All (the caller with a transient input, its selection) credits
+    /// every window's installed journal, not only this panel's: its admission
+    /// retires all of them in the same turn (`supersede_prior_undo_for_replace`),
+    /// so a reservation that left them charged could wait for capacity that only
+    /// that admission frees (`replace-all-confirm-disposal-lane`). An Undo
+    /// replaces only this panel's journal.
+    pub(super) fn try_reserve_undo_replacement(
         &self,
         transient_input_weight: Option<u64>,
     ) -> Option<crate::ui::plain_disposal::DisposalReservation> {
-        let installed_weight = self
-            .imp()
-            .preview
-            .undo_backup
-            .borrow()
-            .as_ref()
-            .and_then(|backup| backup.reservation_weight());
+        let own_weight = self.installed_undo_reservation_weight();
+        let installed_weight = if transient_input_weight.is_some() {
+            super::policy::combined_undo_weight(
+                std::iter::once(own_weight).chain(
+                    other_application_panels(self)
+                        .map(|panel| panel.installed_undo_reservation_weight()),
+                ),
+            )
+        } else {
+            own_weight
+        };
         match super::policy::plan_undo_reservation(installed_weight, transient_input_weight) {
             UndoReservationPlan::Replacement { replaced_weight } => {
                 crate::ui::plain_disposal::try_reserve_replacement_for_gtk(
@@ -186,6 +200,16 @@ impl LushtextSearchPanel {
                 crate::ui::plain_disposal::try_reserve_for_gtk(MAX_REPLACE_UNDO_RETAINED_BYTES)
             }
         }
+    }
+
+    /// The disposal weight this panel's installed journal holds, if any.
+    fn installed_undo_reservation_weight(&self) -> Option<u64> {
+        self.imp()
+            .preview
+            .undo_backup
+            .borrow()
+            .as_ref()
+            .and_then(|backup| backup.reservation_weight())
     }
 
     /// Show the undo button (called after a successful replace).
@@ -295,6 +319,32 @@ impl LushtextSearchPanel {
         imp.undo_button.set_sensitive(self.has_undo_backup());
         self.update_replace_button_sensitivity();
         self.refresh_accessibility_state();
+        // A startup recovery that stood down for this transaction resumes now;
+        // a run's admission would already have retired it.
+        if imp
+            .preview
+            .persisted_undo_load_after_transaction
+            .replace(false)
+        {
+            self.load_persisted_undo_backup();
+        }
+    }
+
+    /// Release the transaction as the panel is disposed
+    /// (`replace-all-confirm-disposal-lane` design D4).
+    ///
+    /// Resets only the two transaction fields this module owns and touches no
+    /// widget: GTK clears template children in `dispose()`, which
+    /// [`Self::finish_replace_transaction`]'s button and accessibility updates
+    /// would read. A disposed panel the application registry can still reach
+    /// then no longer refuses another window's apply or Undo. Every worker that
+    /// holds a transaction (a run, its rollback, an Undo) keeps a strong
+    /// reference to its window until its completion has released it, so no live
+    /// worker's transaction is released here.
+    pub(super) fn release_replace_transaction_on_dispose(&self) {
+        let preview = &self.imp().preview;
+        preview.replace_transaction_generation.set(None);
+        preview.replace_transaction_pending.set(false);
     }
 
     /// Hand the preview selection's reservation to the durable apply workflow.
@@ -351,18 +401,27 @@ impl LushtextSearchPanel {
     /// Supersession is application-wide (design D3a): the journal on disk
     /// keeps only the latest run, so every other window's panel retires its
     /// Undo too and says so once in its status bar.
+    ///
+    /// A startup recovery still waiting or in flight is retired with it, in
+    /// every panel: what it read is the journal this run replaces. Here the
+    /// pending load is cancelled; another panel's generation is advanced even
+    /// when it has no journal installed, so a recovery or disk job of its own
+    /// in flight returns instead of installing the superseded journal or
+    /// touching the new run's. This panel's generation is the run's own
+    /// reservation and stays; a recovery it dispatched read an older
+    /// generation, and it dispatches none while its transaction is claimed.
     pub(crate) fn supersede_prior_undo_for_replace(&self) {
+        self.cancel_persisted_undo_load();
         let retired = self.imp().preview.undo_backup.replace(None);
         self.hide_undo_button();
         release_superseded_undo_journal(retired);
         for panel in other_application_panels(self) {
+            panel.cancel_persisted_undo_load();
+            panel.reserve_undo_backup_generation();
             let retired = panel.imp().preview.undo_backup.replace(None);
             if retired.is_none() {
                 continue;
             }
-            // Advance the generation, so a disk job of the retired journal
-            // in flight returns instead of touching the new run's journal.
-            panel.reserve_undo_backup_generation();
             panel.hide_undo_button();
             release_superseded_undo_journal(retired);
             panel.publish_journal_message(
@@ -453,7 +512,7 @@ impl LushtextSearchPanel {
         &self,
         backup: Arc<super::GuardedReplaceUndoBackup>,
     ) -> (u32, Option<Arc<super::GuardedReplaceUndoBackup>>) {
-        self.imp().preview.undo_capacity_wakeup.cancel();
+        self.cancel_persisted_undo_load();
         let previous = self
             .imp()
             .preview
@@ -465,7 +524,21 @@ impl LushtextSearchPanel {
     }
 
     /// Restore a crash-interrupted active journal, or clean inactive stale state.
+    ///
+    /// Stands down while this panel's transaction is claimed (a confirmed run,
+    /// waiting or writing, or an Undo): its install would advance the journal
+    /// generation that transaction reserved, superseding a waiting run, or
+    /// install the old journal over a running one. It resumes when the
+    /// transaction ends ([`Self::finish_replace_transaction`]), unless a run's
+    /// admission retired it first.
     pub(crate) fn load_persisted_undo_backup(&self) {
+        if self.replace_transaction_claimed() {
+            self.imp()
+                .preview
+                .persisted_undo_load_after_transaction
+                .set(true);
+            return;
+        }
         let observed_epoch = crate::ui::plain_disposal::disposal_capacity_epoch();
         let Some(reservation) =
             crate::ui::plain_disposal::try_reserve_for_gtk(MAX_REPLACE_UNDO_RETAINED_BYTES)
@@ -499,6 +572,8 @@ impl LushtextSearchPanel {
                 if recovery.active {
                     let backup = recovery.backup;
                     let active_backup = own_undo_journal_payload(reservation, backup);
+                    #[cfg(feature = "test-utils")]
+                    super::test_policy::delay_undo_backup_disk();
                     return Ok(PersistedUndoStartupLoad {
                         active_backup: Some(active_backup),
                     });
@@ -533,6 +608,14 @@ impl LushtextSearchPanel {
         );
     }
 
+    /// Retire a startup recovery that has not dispatched yet: its capacity
+    /// wakeup, or its wait for this panel's transaction to end.
+    fn cancel_persisted_undo_load(&self) {
+        let preview = &self.imp().preview;
+        preview.undo_capacity_wakeup.cancel();
+        preview.persisted_undo_load_after_transaction.set(false);
+    }
+
     fn schedule_persisted_undo_backup_retry(&self, observed_epoch: u64) {
         let panel_weak = self.downgrade();
         self.imp()
@@ -547,7 +630,7 @@ impl LushtextSearchPanel {
 
     /// Clear undo backup and hide the undo button.
     pub(crate) fn clear_undo_backup(&self) {
-        self.imp().preview.undo_capacity_wakeup.cancel();
+        self.cancel_persisted_undo_load();
         let generation = self
             .imp()
             .preview
@@ -680,7 +763,7 @@ impl LushtextSearchPanel {
     }
 
     /// Surface one journal message through the window's status lane.
-    fn publish_journal_message(
+    pub(super) fn publish_journal_message(
         &self,
         message: &str,
         severity: crate::services::notifications::NotificationSeverity,

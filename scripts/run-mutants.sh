@@ -5,7 +5,7 @@ set -euo pipefail
 
 MODE="${1:-}"
 MUTANTS_TIMEOUT="${MUTANTS_TIMEOUT:-300}"
-MUTANTS_SMOKE_FILE="${MUTANTS_SMOKE_FILE:-crates/lushtext-core/src/model/document_scale.rs}"
+MUTANTS_SMOKE_FILE="${MUTANTS_SMOKE_FILE:-crates/lushtext-model/src/document_scale.rs}"
 MUTANTS_DIFF_FILE="${MUTANTS_DIFF_FILE:-git.diff}"
 MUTANTS_BASE="${MUTANTS_BASE:-origin/main}"
 MUTANTS_SHARD="${MUTANTS_SHARD:-}"
@@ -32,6 +32,13 @@ MUTANTS_SLOT_MAX_GIB="${MUTANTS_SLOT_MAX_GIB:-24}"
 MUTANTS_SLOT_INCREMENTAL="${MUTANTS_SLOT_INCREMENTAL-}"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The phrase scan beside the live stream, in keep-only mode: its exact kept
+# count says whether cargo-mutants printed the no-mutants phrase, and nothing
+# is written to a named file (bls_start, bls_finish).
+# shellcheck source=scripts/bounded-log-scan.sh
+source "${here}/bounded-log-scan.sh"
+# cargo-mutants' ways of saying that it generated nothing to test.
+NO_MUTANTS_REGEX='no relevant mutants|no mutants were generated|found 0 mutants|(^|[^0-9])0 mutants (to test|tested)'
 
 # Cap per-job parallelism so concurrent jobs do not oversubscribe the host.
 # cargo-mutants runs MUTANTS_JOBS build/test pipelines at once; each one launches
@@ -176,23 +183,45 @@ mutants_args() {
     printf '%s\n' "${args[@]}"
 }
 
-run_cargo_mutants() {
-    local args=("$@")
-    local log_file
-    log_file="$(mktemp)"
+# Whether the last phrase scan finished and saw the no-mutants phrase.
+no_mutants_seen() {
+    (( BLS_COMPLETE == 1 && BLS_KEPT_COUNT > 0 ))
+}
 
+# Run `cargo mutants "${@:2}"` with the phrase scan beside its live stream,
+# each live line prefixed with $1 when it is not empty. Returns cargo's exit
+# status; no_mutants_seen then reads the scan.
+cargo_mutants_scanned() {
+    local prefix=$1 status
+    shift
+    local live=(cat)
+    if [[ -n "${prefix}" ]]; then
+        # The prefix is the replacement of a sed `s`: escape its specials.
+        prefix=${prefix//\\/\\\\}
+        prefix=${prefix//&/\\&}
+        prefix=${prefix//\//\\/}
+        live=(sed -u "s/^/${prefix}/")
+    fi
+    if ! bls_start '' '' "${NO_MUTANTS_REGEX}" --keep-ignore-case; then
+        echo "Error: ${BLS__START_ERROR}; not running cargo mutants." >&2
+        return 1
+    fi
     set +e
-    cargo mutants "${args[@]}" 2>&1 | tee "${log_file}"
-    local status="${PIPESTATUS[0]}"
+    bls_isolated cargo mutants "$@" 2>&1 | tee -p "/dev/fd/${BLS_IN}" | "${live[@]}"
+    status="${PIPESTATUS[0]}"
     set -e
+    bls_finish
+    bls_release
+    return "${status}"
+}
 
-    if (( status != 0 )) && grep -Eiq 'no relevant mutants|no mutants were generated|found 0 mutants|(^|[^0-9])0 mutants (to test|tested)' "${log_file}"; then
+run_cargo_mutants() {
+    local status=0
+    cargo_mutants_scanned '' "$@" || status=$?
+    if (( status != 0 )) && no_mutants_seen; then
         echo "No relevant mutants were generated; treating this mutation lane as passing."
-        rm -f "${log_file}"
         return 0
     fi
-
-    rm -f "${log_file}"
     return "${status}"
 }
 
@@ -340,7 +369,7 @@ slot_runner_var() {
 run_slot() {
     local slot=$1 out=$2 shard=$3 runner_var=$4 wrapper=$5
     shift 5
-    local name status log started="${SECONDS}"
+    local name status started="${SECONDS}"
     name="$(basename "${slot}")"
     close_slot_fds
     cd "${slot}/src"
@@ -355,19 +384,15 @@ run_slot() {
     if [[ -n "${shard}" ]]; then
         args+=(--shard "${shard}")
     fi
-    log="$(mktemp)"
-    set +e
-    cargo mutants "${args[@]}" 2>&1 | tee "${log}" | sed -u "s/^/[${name}] /"
-    status="${PIPESTATUS[0]}"
-    set -e
-    if (( status != 0 )) && grep -Eiq 'no relevant mutants|no mutants were generated|found 0 mutants|(^|[^0-9])0 mutants (to test|tested)' "${log}"; then
+    status=0
+    cargo_mutants_scanned "[${name}] " "${args[@]}" || status=$?
+    if (( status != 0 )) && no_mutants_seen; then
         echo "[${name}] No relevant mutants in this slot's share; counting it as passing."
         status=0
     fi
     if (( status == 4 )); then
         echo "[${name}] the unmutated baseline failed, so no mutant was tested; it ran under the per-test address-space limit LUSHTEXT_TEST_ADDRESS_SPACE=${LUSHTEXT_TEST_ADDRESS_SPACE:-none} (scripts/test-address-space-runner.sh): check its log for an allocation failure before raising the limit" >&2
     fi
-    rm -f "${log}"
     echo "[${name}] slot wall time $(( SECONDS - started )) s (shard ${shard:-all})"
     return "${status}"
 }
@@ -518,9 +543,11 @@ self_test() {
 #!/usr/bin/env bash
 out=""; prev=""
 for a in "$@"; do [[ "$prev" == --output ]] && out="$a"; prev="$a"; done
-{ printf 'ARGS'; printf ' %q' "$@"; printf '\n'
-  printf 'ENV jobs=%s inc=%s wrapper=%s target=%s pwd=%s\n' "${CARGO_MUTANTS_JOBS-unset}" "${CARGO_INCREMENTAL-unset}" "${RUSTC_WORKSPACE_WRAPPER-unset}" "${CARGO_TARGET_DIR-unset}" "$PWD"
-} >>"${STUB_LOG}"
+# Two slots run this stub at once: build the record first and append it in
+# one write, so their lines cannot interleave ("ARGSARGS ...").
+record="ARGS$(printf ' %q' "$@")"
+record+=$'\n'"$(printf 'ENV jobs=%s inc=%s wrapper=%s target=%s pwd=%s' "${CARGO_MUTANTS_JOBS-unset}" "${CARGO_INCREMENTAL-unset}" "${RUSTC_WORKSPACE_WRAPPER-unset}" "${CARGO_TARGET_DIR-unset}" "$PWD")"
+printf '%s\n' "$record" >>"${STUB_LOG}"
 if [[ -n "$out" ]]; then
     mkdir -p "$out/mutants.out/log"
     printf '{"outcomes": [], "total_mutants": 0, "missed": 0, "caught": 0, "timeout": 0, "unviable": 0, "success": 0, "cargo_mutants_version": "27.0.0"}\n' >"$out/mutants.out/outcomes.json"
@@ -537,8 +564,8 @@ STUB
     printf 'fn f() {}\n' >src/lib.rs
     git add src/lib.rs
     git -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false commit -q -m fixture
-    mkdir -p crates/lushtext-core/src/model
-    printf 'fn g() {}\n' >crates/lushtext-core/src/model/document_scale.rs
+    mkdir -p crates/lushtext-model/src
+    printf 'fn g() {}\n' >crates/lushtext-model/src/document_scale.rs
 
     # Two slots: --shard i/N each, --in-place, never --jobs, CARGO_MUTANTS_JOBS unset.
     : >"${STUB_LOG}"
@@ -554,7 +581,7 @@ STUB
     grep -q "wrapper=${LUSHTEXT_BUILD_CACHE}/mutants/rustc-passthrough.sh" "${STUB_LOG}" || self_test_fail "the workspace wrapper is not the slot-stable copy"
     grep -q "pwd=${LUSHTEXT_BUILD_CACHE}/mutants/slot-1/src" "${STUB_LOG}" || self_test_fail "a slot did not run from its src/"
     [[ -f "${dir}/repo/mutants.out/outcomes.json" && ! -e "${dir}/repo/mutants.out.slots" ]] || self_test_fail "the slots' reports were not merged"
-    [[ -f "${LUSHTEXT_BUILD_CACHE}/mutants/slot-1/src/crates/lushtext-core/src/model/document_scale.rs" ]] \
+    [[ -f "${LUSHTEXT_BUILD_CACHE}/mutants/slot-1/src/crates/lushtext-model/src/document_scale.rs" ]] \
         || self_test_fail "an untracked file was not synced into the slot"
 
     # One slot writes the checkout's mutants.out itself (--output <checkout>).
@@ -636,6 +663,31 @@ STUB
 ARGS mutants --workspace --test-workspace=true --test-tool nextest --no-shuffle --timeout 300 --baseline=skip --in-place --shard 1/4
 ARGS mutants --workspace --test-workspace=true --test-tool nextest --no-shuffle --timeout 300 --list" ]] \
         || self_test_fail "the CI/list arguments changed: ${out}"
+
+    # The no-mutants phrase, in the mirror slot and in the CI path: seen, the
+    # lane passes; absent, the exit status stays; either way nothing is left
+    # in a private TMPDIR (the scan names no file).
+    cat >"${dir}/bin/cargo" <<'STUB'
+#!/usr/bin/env bash
+[[ -z "${STUB_PHRASE:-}" ]] || printf 'INFO noise\n%s\nINFO done\n' "${STUB_PHRASE}"
+exit "${STUB_STATUS:-0}"
+STUB
+    mkdir -p "${dir}/scan-base"
+    if ! STUB_STATUS=4 STUB_PHRASE='Found 0 mutants to test' TMPDIR="${dir}/scan-base" MUTANTS_MIRROR=1 MUTANTS_LOCAL_JOBS=1 "${me}" smoke >"${dir}/out" 2>&1 \
+        || ! grep -q 'No relevant mutants in this slot' "${dir}/out"; then
+        self_test_fail "a slot's no-mutants phrase was not detected: $(cat "${dir}/out")"
+    fi
+    grep -qx '\[slot-1\] INFO noise' "${dir}/out" || self_test_fail "a slot's live line lost its [slot-1] prefix: $(cat "${dir}/out")"
+    status=0; STUB_STATUS=4 TMPDIR="${dir}/scan-base" MUTANTS_MIRROR=1 MUTANTS_LOCAL_JOBS=1 "${me}" smoke >"${dir}/out" 2>&1 || status=$?
+    (( status == 4 )) || self_test_fail "a slot without the phrase gave status ${status}, not 4: $(cat "${dir}/out")"
+    if ! STUB_STATUS=2 STUB_PHRASE='No relevant mutants were found' TMPDIR="${dir}/scan-base" CI=true MUTANTS_MIRROR=1 MUTANTS_SHARD=1/4 "${me}" ci-full >"${dir}/out" 2>&1 \
+        || ! grep -q 'treating this mutation lane as passing' "${dir}/out"; then
+        self_test_fail "the CI path's no-mutants phrase was not detected: $(cat "${dir}/out")"
+    fi
+    grep -qx 'INFO noise' "${dir}/out" || self_test_fail "the CI path's live stream lost or prefixed a line: $(cat "${dir}/out")"
+    status=0; STUB_STATUS=2 STUB_PHRASE='10 mutants tested' TMPDIR="${dir}/scan-base" CI=true MUTANTS_MIRROR=1 MUTANTS_SHARD=1/4 "${me}" ci-full >"${dir}/out" 2>&1 || status=$?
+    (( status == 2 )) || self_test_fail "the CI path without the phrase gave status ${status}, not 2: $(cat "${dir}/out")"
+    [[ -z "$(find "${dir}/scan-base" -mindepth 1 -print -quit)" ]] || self_test_fail "the phrase scan left $(find "${dir}/scan-base" -mindepth 1 | head -n 3)"
 
     echo "run-mutants self-test: ok"
 }

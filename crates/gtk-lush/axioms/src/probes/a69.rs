@@ -272,7 +272,7 @@ pub fn probe_a69() -> Observation {
 
 /// The budget every post-attach dispatch must fit for a size to pass the
 /// `S_BG_HIGHLIGHT` derivation: LushText's `B_SETTLE_US` (16,000 µs, owned by
-/// `crates/lushtext-core/src/model/responsiveness_budget.rs`).
+/// `crates/lushtext-model/src/responsiveness_budget.rs`).
 pub const B_SETTLE_US: u128 = 16_000;
 /// The smallest and largest document sizes the derivation brackets, bytes.
 pub const DERIVATION_BRACKET: (usize, usize) = (4 * 1024, 2 << 20);
@@ -676,7 +676,7 @@ impl HighlightFixture {
 }
 
 /// LushText's `B_INTERACT_US` (8,000 µs, owned by
-/// `crates/lushtext-core/src/model/responsiveness_budget.rs`): the budget each
+/// `crates/lushtext-model/src/responsiveness_budget.rs`): the budget each
 /// dispatch after a keystroke must fit for the typing derivation.
 pub const B_INTERACT_US: u128 = 8_000;
 

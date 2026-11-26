@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -326,6 +327,257 @@ def discover_release_workflows(repo_root: Path, policy: dict[str, object]) -> li
     return sorted(workflows, key=lambda workflow: workflow["role"])
 
 
+def scrubbed_git_env() -> dict[str, str]:
+    """The environment without the repository variables a git hook exports."""
+
+    env = dict(os.environ)
+    try:
+        names = subprocess.run(
+            ["git", "rev-parse", "--local-env-vars"], check=True, text=True, capture_output=True
+        ).stdout.split()
+    except (OSError, subprocess.CalledProcessError):
+        names = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR",
+                 "GIT_PREFIX"]
+    for name in names:
+        env.pop(name, None)
+    return env
+
+
+def git_output(repo_root: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo_root), *args],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=scrubbed_git_env(),
+    ).stdout
+
+
+@dataclass(frozen=True)
+class ChangedPath:
+    """One path of a change: its git status letter (A, C, D, M, R, T) and name."""
+
+    status: str
+    path: str
+
+
+DESCRIPTION_PATH_RE = re.compile(r"(?<![\w$/.-])([a-z_-]+)/(?![\w/])")
+DATA_KEYWORD_CLAUSE_RE = re.compile(r"\btouching (?P<items>[^;]+);")
+PERF_AREA_CLAUSE_RE = re.compile(r"\bRust changes in (?P<items>.+?) crates\b")
+LIST_SPLIT_RE = re.compile(r"\s*,\s*|\s*\bor\b\s*|\s*\band\b\s*|\bthe GTK Lush\b\s*")
+
+
+def _suffix_name(suffix: str) -> str:
+    """Short path component named in `SKILL.md` for a `[data_safety].path_suffixes` entry."""
+    path = PurePosixPath(suffix)
+    return path.parent.name if path.name == "src" and path.parent.name else path.name
+
+
+def read_skill_description(skills_root: Path, skill: str) -> str:
+    """The frontmatter `description` of `.agents/skills/<skill>/SKILL.md`, or ''.
+
+    It reuses `scripts/validate-agent-skills.py`'s `skill_description`, the
+    one frontmatter reader, so both checks read the same text.
+    """
+
+    spec = importlib.util.spec_from_file_location(
+        "lushtext_validate_agent_skills", Path(__file__).with_name("validate-agent-skills.py")
+    )
+    if spec is None or spec.loader is None:
+        return ""
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.skill_description(skills_root / skill) or ""
+
+
+def _list_items(text: str) -> set[str]:
+    return {item.strip() for item in LIST_SPLIT_RE.split(text) if item.strip()}
+
+
+def lens_trigger_errors(
+    topology: "WorkspaceTopology",
+    policy: dict[str, object],
+    descriptions: dict[str, str],
+) -> list[str]:
+    """Check, in both directions, that the lens selector matches the skills' triggers.
+
+    `review-lenses` selects from machine tables; agents read the skills'
+    descriptions. Data safety: every `<name>/` path the description names is
+    a `[data_safety].path_suffixes` entry and every entry is named, and every
+    item of its "touching ...;" clause is a content-pattern keyword and every
+    keyword is in that clause. Performance: every area of the umbrella's
+    "Rust changes in ... crates" clause is in the scope `performance_path`
+    uses (package `performance-roots`, a `src` root counting as the package
+    directory's name, plus the fallback suffixes), and every scope area is
+    named.
+    """
+
+    errors: list[str] = []
+    data_policy = policy.get("data_safety") or {}
+    data_skill = data_policy.get("skill")
+    if isinstance(data_skill, str):
+        description = descriptions.get(data_skill, "")
+        named_paths = set(DESCRIPTION_PATH_RE.findall(description))
+        selected_paths = {_suffix_name(s) for s in data_policy.get("path_suffixes", ())}
+        for name in sorted(named_paths - selected_paths):
+            errors.append(f"{data_skill}: the description names {name}/, which is not in [data_safety].path_suffixes")
+        for name in sorted(selected_paths - named_paths):
+            errors.append(f"{data_skill}: [data_safety] path suffix {name}/ is not named in the description")
+        clause = DATA_KEYWORD_CLAUSE_RE.search(description)
+        keywords = {entry["keyword"] for entry in data_policy.get("content_patterns", ())}
+        if clause is None:
+            errors.append(f"{data_skill}: the description has no \"touching ...;\" trigger clause to check the keywords against")
+        else:
+            # Keywords may contain the list words themselves ("tab or window
+            # close"), so take each keyword out of the clause whole, then
+            # whatever is left between separators is an unselected trigger.
+            remainder = clause.group("items")
+            for keyword in sorted(keywords, key=len, reverse=True):
+                if keyword in remainder:
+                    remainder = remainder.replace(keyword, ",")
+                else:
+                    errors.append(f"{data_skill}: [data_safety] keyword {keyword!r} is not named in the description's trigger clause")
+            for item in sorted(_list_items(remainder)):
+                errors.append(f"{data_skill}: the description's trigger {item!r} has no content pattern in [data_safety]")
+    performance = policy.get("performance") or {}
+    umbrella = performance.get("umbrella")
+    if isinstance(umbrella, str):
+        description = descriptions.get(umbrella, "")
+        key = performance["package_metadata_key"]
+        scope = {PurePosixPath(s).name for s in performance.get("fallback_suffixes", ())}
+        for package in topology.packages:
+            for root in topology.role_roots(package, key):
+                scope.add(PurePosixPath(package.root).name if root == "src" else PurePosixPath(root).name)
+        clause = PERF_AREA_CLAUSE_RE.search(description)
+        if clause is None:
+            errors.append(f"{umbrella}: the description has no \"Rust changes in ... crates\" clause to check the scope against")
+        else:
+            named = _list_items(clause.group("items"))
+            for item in sorted(named - scope):
+                errors.append(f"{umbrella}: the description names {item!r}, which is not in the performance scope")
+            for item in sorted(scope - named):
+                errors.append(f"{umbrella}: performance scope area {item!r} is not named in the description")
+    return errors
+
+
+def collect_changes(repo_root: Path, base: str) -> tuple[list[ChangedPath], dict[str, str]]:
+    """The change's paths against `base` and the changed text of each Rust file.
+
+    Paths come from the committed diff `base...HEAD` (both sides of a rename
+    or copy), the uncommitted diff against HEAD, and untracked files git does
+    not ignore (status A). The text of a Rust file is its added and removed
+    lines against the merge base, or the whole file when it is untracked.
+    """
+
+    changes: dict[str, ChangedPath] = {}
+    for diff in (
+        git_output(repo_root, "diff", "--name-status", "--find-renames", f"{base}...HEAD"),
+        git_output(repo_root, "diff", "--name-status", "--find-renames", "HEAD"),
+    ):
+        for line in diff.splitlines():
+            fields = line.split("\t")
+            if len(fields) < 2 or not fields[0]:
+                continue
+            status = fields[0][0]
+            for path in fields[1:]:
+                changes.setdefault(normalized(path), ChangedPath(status, normalized(path)))
+    untracked = [
+        normalized(line)
+        for line in git_output(repo_root, "ls-files", "--others", "--exclude-standard").splitlines()
+        if line
+    ]
+    for path in untracked:
+        changes.setdefault(path, ChangedPath("A", path))
+    merge_base = git_output(repo_root, "merge-base", base, "HEAD").strip()
+    texts: dict[str, str] = {}
+    for change in changes.values():
+        if not change.path.endswith(".rs"):
+            continue
+        if change.path in untracked:
+            try:
+                texts[change.path] = (repo_root / change.path).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                texts[change.path] = ""
+            continue
+        diff = git_output(repo_root, "diff", merge_base, "--", change.path)
+        texts[change.path] = "\n".join(
+            line[1:]
+            for line in diff.splitlines()
+            if line[:1] in "+-" and not line.startswith(("+++", "---"))
+        )
+    return sorted(changes.values(), key=lambda change: change.path), texts
+
+
+def review_lenses(
+    topology: "WorkspaceTopology",
+    policy: dict[str, object],
+    changes: list[ChangedPath],
+    texts: dict[str, str],
+) -> dict[str, object]:
+    """Which review lenses a change needs, from the triggers the skills declare.
+
+    - `data`: a Rust path under one of `[data_safety].path_suffixes`, or a
+      changed Rust line matching one of its `content_patterns` (the machine
+      form of the data-safety skill's description);
+    - `performance`: a path in the gtk-perf-review scope (`performance-scope`);
+    - `modules_moved`: an added, deleted, renamed or copied `.rs` file under
+      a `src/` tree.
+
+    Raises ValueError when the policy has no `[data_safety]` table or the
+    table has no path suffixes or no content patterns: a branch whose policy
+    predates the table would otherwise read as "no data lens owed".
+    """
+
+    data_policy = policy.get("data_safety")
+    if not isinstance(data_policy, dict):
+        raise ValueError("the skill policy has no [data_safety] table; merge origin/main first")
+    for key in ("path_suffixes", "content_patterns"):
+        if not data_policy.get(key):
+            raise ValueError(f"the skill policy's [data_safety] table has no {key}")
+    suffixes = tuple(data_policy["path_suffixes"])
+    patterns = [
+        (entry["keyword"], re.compile(entry["pattern"]))
+        for entry in data_policy["content_patterns"]
+    ]
+    data_paths: list[str] = []
+    data_hits: dict[str, list[str]] = {}
+    performance_paths: list[str] = []
+    moved: list[str] = []
+    for change in changes:
+        path = change.path
+        if topology.performance_path(path):
+            performance_paths.append(path)
+        if not path.endswith(".rs"):
+            continue
+        if change.status in {"A", "C", "D", "R"} and "src" in PurePosixPath(path).parts[:-1]:
+            moved.append(path)
+        if any(f"/{suffix}/" in f"/{path}" for suffix in suffixes):
+            data_paths.append(path)
+            continue
+        text = texts.get(path, "")
+        keywords = [keyword for keyword, pattern in patterns if pattern.search(text)]
+        if keywords:
+            data_paths.append(path)
+            data_hits[path] = keywords
+    return {
+        "data": bool(data_paths),
+        "performance": bool(performance_paths),
+        "modules_moved": bool(moved),
+        "paths": [change.path for change in changes],
+        "data_paths": data_paths,
+        "data_content_hits": data_hits,
+        "performance_paths": performance_paths,
+        "moved_modules": moved,
+    }
+
+
+def flags_line(lenses: dict[str, object]) -> str:
+    """The three lens flags as one compact JSON line (`review-lenses --flags-only`)."""
+
+    return json.dumps({key: lenses[key] for key in ("data", "modules_moved", "performance")},
+                      sort_keys=True, separators=(",", ":"))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=DEFAULT_REPO_ROOT)
@@ -339,6 +591,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("metainfo-files")
     subparsers.add_parser("release-workflows")
     subparsers.add_parser("validate")
+    lenses = subparsers.add_parser("review-lenses")
+    lenses.add_argument("--base", required=True)
+    lenses.add_argument("--flags-only", action="store_true",
+                        help="print only the data, performance and modules_moved flags, on one line")
     return parser
 
 
@@ -364,6 +620,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.command == "validate":
         errors = topology.validation_errors()
+        skills_root = repo_root / ".agents" / "skills"
+        errors.extend(
+            lens_trigger_errors(
+                topology,
+                policy,
+                {
+                    name: read_skill_description(skills_root, name)
+                    for name in (
+                        (policy.get("data_safety") or {}).get("skill"),
+                        policy["performance"].get("umbrella"),
+                    )
+                    if isinstance(name, str)
+                },
+            )
+        )
         try:
             discover_release_workflows(repo_root, policy)
         except ValueError as error:
@@ -382,6 +653,18 @@ def main(argv: list[str] | None = None) -> int:
         for path in input_paths(args.paths):
             for category in sorted(topology.release_categories(path)):
                 print(f"{category}\t{path}")
+    elif args.command == "review-lenses":
+        changes, texts = collect_changes(repo_root, args.base)
+        try:
+            lenses = review_lenses(topology, policy, changes, texts)
+        except ValueError as error:
+            print(f"review-lenses: {error}", file=sys.stderr)
+            return 2
+        if args.flags_only:
+            print(flags_line(lenses))
+        else:
+            json.dump(lenses, sys.stdout, indent=2, sort_keys=True)
+            print()
     elif args.command == "testing-surfaces":
         json.dump(topology.testing_surfaces(), sys.stdout, indent=2, sort_keys=True)
         print()

@@ -19,3 +19,4 @@ history of a crate goes to its `CHANGELOG.md`.
 | [axiom-lane-warning-scan.md](axiom-lane-warning-scan.md) | why the GTK axiom lane fails on any warning line, and the sample flag guard |
 | [release-terminology-guard.md](release-terminology-guard.md) | why `make check-terminology` runs in the local gate |
 | [2026-11-17-compiler-front-end-threads.md](2026-11-17-compiler-front-end-threads.md) | `heavy.sh`'s contention-sized `CARGO_BUILD_JOBS` and the parallel front-end wrapper, with the measurements |
+| [2026-11-18-change-flow-time.md](2026-11-18-change-flow-time.md) | the change-flow rules (no-op merge reuse, Kani dispatch timing, non-inferiority merges, design-loop limit, fast lane, slot cap, drain-first quiet criterion, review stages, workflow-agent guard) and their measured baseline |

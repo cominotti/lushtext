@@ -12,6 +12,8 @@ members = [
     "crates/gtk-lush/viewport",
     "crates/gtk-lush/widgets",
     "crates/lushtext-build-support",
+    "crates/lushtext-model",
+    "crates/lushtext-services",
     "crates/lushtext-core",
     "crates/lushtext",
     "workspace-hack",
@@ -37,6 +39,8 @@ gtk-lush-widgets = { path = "crates/gtk-lush/widgets" }
 gtk-lush-proof-harness = { path = "crates/gtk-lush/proof-harness" }
 gtk-lush-proof-spine = { path = "crates/gtk-lush/proof-spine" }
 lushtext-build-support = { path = "crates/lushtext-build-support" }
+lushtext-model = { path = "crates/lushtext-model" }
+lushtext-services = { path = "crates/lushtext-services" }
 lushtext-core = { path = "crates/lushtext-core" }
 
 # GTK / GNOME stack

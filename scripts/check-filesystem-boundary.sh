@@ -14,6 +14,8 @@ patterns='std::fs\b|use std::fs|std::os::unix::fs|std::os::unix::io|libc::|rusti
 scan_roots=(
   AGENTS.md
   crates/lushtext-build-support/src
+  crates/lushtext-model/src
+  crates/lushtext-services/src
   crates/lushtext/build.rs
   crates/lushtext-core/AGENTS.md
   crates/lushtext-core/build.rs
@@ -27,7 +29,7 @@ scan_roots=(
   .agents/skills
 )
 
-allow_re='(^crates/lushtext-build-support/src/lib\.rs:|^crates/lushtext-core/src/services/filesystem/(sys|fixture)\.rs:|^crates/lushtext-core/src/services/filesystem/mod\.rs:.*std::fs|^\.agents/skills/.*/scripts/.*\.py:)'
+allow_re='(^crates/lushtext-build-support/src/lib\.rs:|^crates/lushtext-services/src/filesystem/(sys|fixture)\.rs:|^crates/lushtext-services/src/filesystem/mod\.rs:.*std::fs|^\.agents/skills/.*/scripts/.*\.py:)'
 
 hits="$(
   rg -n "$patterns" "${scan_roots[@]}" 2>/dev/null || true
@@ -44,8 +46,8 @@ if [[ -n "$violations" ]]; then
 fi
 
 direct_sys_imports="$(
-  rg -n -U '(^use[^\n;]*filesystem::sys|filesystem::\{[^;]*\bsys\b|crate::services::filesystem::sys|super::filesystem::sys)' crates/lushtext-core/src 2>/dev/null \
-    | rg -v '(^crates/lushtext-core/src/services/filesystem/|^crates/lushtext-core/src/services/durable_write\.rs:)' \
+  rg -n -U '(^use[^\n;]*filesystem::sys|filesystem::\{[^;]*\bsys\b|crate::services::filesystem::sys|super::filesystem::sys)' crates/lushtext-core/src crates/lushtext-services/src 2>/dev/null \
+    | rg -v '(^crates/lushtext-services/src/filesystem/|^crates/lushtext-services/src/durable_write\.rs:)' \
     || true
 )"
 
@@ -56,8 +58,8 @@ if [[ -n "$direct_sys_imports" ]]; then
 fi
 
 direct_durable_imports="$(
-  rg -n -U '(^use[^\n;]*(crate::services|super|services)::durable_write|(^use[^\n;]*(crate::services|super|services)::\{[^;]*\bdurable_write\b)|crate::services::durable_write|super::durable_write|services::durable_write|durable_write::)' crates/lushtext-core/src 2>/dev/null \
-    | rg -v '(^crates/lushtext-core/src/services/filesystem/write\.rs:|^crates/lushtext-core/src/services/durable_write\.rs:)' \
+  rg -n -U '(^use[^\n;]*(crate::services|super|services)::durable_write|(^use[^\n;]*(crate::services|super|services)::\{[^;]*\bdurable_write\b)|crate::services::durable_write|super::durable_write|services::durable_write|durable_write::)' crates/lushtext-core/src crates/lushtext-services/src 2>/dev/null \
+    | rg -v '(^crates/lushtext-services/src/filesystem/write\.rs:|^crates/lushtext-services/src/durable_write\.rs:)' \
     || true
 )"
 
@@ -68,6 +70,8 @@ if [[ -n "$direct_durable_imports" ]]; then
 fi
 
 status_probe_roots=(
+  crates/lushtext-model/src
+  crates/lushtext-services/src
   crates/lushtext-core/src
   crates/lushtext-core/tests
   crates/lushtext-core/benches
@@ -79,7 +83,7 @@ status_probe_hits="$(
   {
     rg -n -U 'file_facts\([^\n;]*\)\s*\.is_(ok|err)(_and)?\(' "${status_probe_roots[@]}" --glob '*.rs' 2>/dev/null || true
     rg -n 'fn[[:space:]]+path_exists[[:space:]]*\(' "${status_probe_roots[@]}" --glob '*.rs' 2>/dev/null || true
-  } | rg -v '^crates/lushtext-core/src/services/filesystem/sys\.rs:' || true
+  } | rg -v '^crates/lushtext-services/src/filesystem/sys\.rs:' || true
 )"
 
 if [[ -n "$status_probe_hits" ]]; then
@@ -91,13 +95,13 @@ fi
 unused_status_helpers=""
 for helper in path_status exists; do
   declaration="$(
-    rg -n "pub fn ${helper}[[:space:]]*\\(" crates/lushtext-core/src/services/filesystem/metadata.rs 2>/dev/null || true
+    rg -n "pub fn ${helper}[[:space:]]*\\(" crates/lushtext-services/src/filesystem/metadata.rs 2>/dev/null || true
   )"
   [[ -z "$declaration" ]] && continue
 
   uses="$(
-    rg -n "(fs_metadata|metadata)::${helper}[[:space:]]*\\(" crates/lushtext-core/src --glob '*.rs' 2>/dev/null \
-      | rg -v '^crates/lushtext-core/src/services/filesystem/metadata\.rs:' \
+    rg -n "(fs_metadata|metadata)::${helper}[[:space:]]*\\(" crates/lushtext-core/src crates/lushtext-services/src --glob '*.rs' 2>/dev/null \
+      | rg -v '^crates/lushtext-services/src/filesystem/metadata\.rs:' \
       || true
   )"
   if [[ -z "$uses" ]]; then
@@ -113,8 +117,8 @@ fi
 
 engine_adapter_hits="$(
   rg -n -U '(^use[^\n;]*(grep_searcher|ignore)::|grep_searcher::|ignore::|WalkBuilder::|SearcherBuilder::)' \
-    crates/lushtext-core/src crates/lushtext/src --glob '*.rs' 2>/dev/null \
-    | rg -v '^crates/lushtext-core/src/services/content_search/search\.rs:' \
+    crates/lushtext-services/src crates/lushtext-core/src crates/lushtext/src --glob '*.rs' 2>/dev/null \
+    | rg -v '^crates/lushtext-services/src/content_search/search\.rs:' \
     || true
 )"
 
@@ -127,14 +131,14 @@ fi
 leftovers="$(
   {
     rg -n 'FileWriteLock|FilesystemError|filesystem::sidecar|pub mod sidecar;|pub mod error;|pub use error::|pub type FileWriteLock' \
-      crates/lushtext-core/src crates/lushtext-core/tests crates/lushtext-core/benches \
+      crates/lushtext-model/src crates/lushtext-services/src crates/lushtext-core/src crates/lushtext-core/tests crates/lushtext-core/benches \
       crates/lushtext/src crates/lushtext/tests AGENTS.md README.md .agents/rules .agents/skills 2>/dev/null || true
-    rg -n 'rename_path' crates/lushtext-core/src/services/filesystem 2>/dev/null || true
+    rg -n 'rename_path' crates/lushtext-services/src/filesystem 2>/dev/null || true
     rg -n 'pub fn (write_bytes|sync_directory|symlink_facts)\b' \
-      crates/lushtext-core/src/services/filesystem/metadata.rs \
-      crates/lushtext-core/src/services/filesystem/tree.rs \
-      crates/lushtext-core/src/services/filesystem/write.rs 2>/dev/null || true
-    find crates/lushtext-core/src/services/filesystem -maxdepth 1 \( -name error.rs -o -name sidecar.rs \) -print
+      crates/lushtext-services/src/filesystem/metadata.rs \
+      crates/lushtext-services/src/filesystem/tree.rs \
+      crates/lushtext-services/src/filesystem/write.rs 2>/dev/null || true
+    find crates/lushtext-services/src/filesystem -maxdepth 1 \( -name error.rs -o -name sidecar.rs \) -print
   } | sed '/^$/d'
 )"
 
@@ -207,8 +211,8 @@ from pathlib import Path
 root = Path(sys.argv[1])
 GATE = '#[cfg(any(test, feature = "test-utils"))]'
 FIXTURE_PARENTS = (
-    "crates/lushtext-core/src/services/draft_service.rs",
-    "crates/lushtext-core/src/services/filesystem/mod.rs",
+    "crates/lushtext-services/src/draft_service.rs",
+    "crates/lushtext-services/src/filesystem/mod.rs",
 )
 SHIPPING_FILES = (
     "build-aux/cargo.sh",
@@ -281,12 +285,14 @@ PY
 # A fixture tree that passes; each self-test case overwrites one file of it.
 make_fixture_tree() {
   local tree="$1"
-  mkdir -p "$tree/crates/lushtext-core/src/services/filesystem" "$tree/crates/lushtext" "$tree/build-aux" "$tree/snap"
+  mkdir -p "$tree/crates/lushtext-services/src/filesystem" "$tree/crates/lushtext-core" "$tree/crates/lushtext" "$tree/build-aux" "$tree/snap"
   printf '#[cfg(any(test, feature = "test-utils"))]\npub mod fixture;\n' \
-    > "$tree/crates/lushtext-core/src/services/draft_service.rs"
+    > "$tree/crates/lushtext-services/src/draft_service.rs"
   printf 'pub mod read;\n#[cfg(any(test, feature = "test-utils"))]\npub mod fixture;\n' \
-    > "$tree/crates/lushtext-core/src/services/filesystem/mod.rs"
-  printf '[features]\nproperty-tests = ["test-utils"]\ntest-utils = []\n' > "$tree/crates/lushtext-core/Cargo.toml"
+    > "$tree/crates/lushtext-services/src/filesystem/mod.rs"
+  printf '[features]\nproperty-tests = ["test-utils"]\ntest-utils = []\n' > "$tree/crates/lushtext-services/Cargo.toml"
+  printf '[features]\nproperty-tests = ["test-utils", "lushtext-services/property-tests"]\ntest-utils = ["lushtext-services/test-utils"]\n' \
+    > "$tree/crates/lushtext-core/Cargo.toml"
   printf '[features]\nmanual-format-upgrade-fixtures = ["lushtext-core/test-utils"]\n[dependencies]\nlushtext-core = { workspace = true }\n[dev-dependencies]\nlushtext-core = { workspace = true, features = ["test-utils"] }\n' \
     > "$tree/crates/lushtext/Cargo.toml"
   printf 'cargo build -p lushtext\n' > "$tree/build-aux/cargo.sh"
@@ -311,13 +317,13 @@ fixture_gating_case() {
 fixture_gating_self_test() {
   local scratch status=0
   scratch="$(mktemp -d)"
-  local draft=crates/lushtext-core/src/services/draft_service.rs
-  local fs_mod=crates/lushtext-core/src/services/filesystem/mod.rs
+  local draft=crates/lushtext-services/src/draft_service.rs
+  local fs_mod=crates/lushtext-services/src/filesystem/mod.rs
   {
     fixture_gating_case pass good &&
     fixture_gating_case fail ungated-draft-fixture "$draft" $'pub mod fixture;\n' &&
     fixture_gating_case fail wrongly-gated-filesystem-fixture "$fs_mod" $'#[cfg(test)]\npub mod fixture;\n' &&
-    fixture_gating_case fail default-feature crates/lushtext-core/Cargo.toml \
+    fixture_gating_case fail default-feature crates/lushtext-services/Cargo.toml \
       $'[features]\ndefault = ["test-utils"]\ntest-utils = []\n' &&
     fixture_gating_case fail shipped-dependency crates/lushtext/Cargo.toml \
       $'[dependencies]\nlushtext-core = { workspace = true, features = ["test-utils"] }\n' &&
