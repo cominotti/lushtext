@@ -1151,6 +1151,17 @@ pub fn check_draft_script(
                             if !in_session {
                                 continue;
                             }
+                            // If `resolve_file_draft_restore` returned `Unavailable`/`Err` (e.g. a
+                            // faulted backing `mtime_secs` check), `cleanup_stale_restore_entries`
+                            // never ran for this slot: `preloaded_drafts` has no entry, the manifest
+                            // still holds `draft_id`, and authority stays trusted. Leave the queued
+                            // `DeletionStep::Preserve` untouched for later steps.
+                            if !restored.preloaded_drafts.contains_key(draft_id)
+                                && restored.manifest.find_by_id(draft_id).is_some()
+                                && env.authority.is_trusted()
+                            {
+                                continue;
+                            }
                             let preserve_failed = matches!(
                                 restored.preloaded_drafts.get(draft_id),
                                 Some(PreloadedDraftRestore::Skip(PreloadedDraftSkip::StaleFile(
@@ -1761,6 +1772,37 @@ mod tests {
         )
         .expect("happy path conforms");
         assert!(counts.write_body >= 1 && counts.commit >= 1 && counts.deletion_step >= 2);
+    }
+
+    #[test]
+    fn startup_mtime_fault_preserves_authority_and_defers_stale_cleanup() {
+        let initial_bits = [false, false, false, true, false, true, false, false];
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ops = [DraftOp {
+            action_index: 0,
+            id_index: 0,
+            fault: DraftFault::At(23),
+            restore_choice: 0,
+        }];
+        check_draft_script(dir.path(), initial_bits, &ops, FaultDomain::Full)
+            .expect("startup mtime fault conforms");
+
+        for call in 0..32 {
+            let sweep_dir = tempfile::tempdir().expect("tempdir");
+            let sweep_ops = [DraftOp {
+                action_index: 0,
+                id_index: 0,
+                fault: DraftFault::At(call),
+                restore_choice: 0,
+            }];
+            check_draft_script(
+                sweep_dir.path(),
+                initial_bits,
+                &sweep_ops,
+                FaultDomain::Full,
+            )
+            .unwrap_or_else(|err| panic!("fault at call {call} diverged: {err}"));
+        }
     }
 
     #[test]
