@@ -25,8 +25,10 @@ const ROW_EXPANDED_ACCESSIBILITY_HOOK: &str = "workspace-row-expanded-accessibil
 #[derive(Clone, Copy)]
 pub(super) struct FileTreeRowAccessibilityTarget<'a> {
     pub(super) overlay: &'a gtk4::Overlay,
-    pub(super) drag_handle: &'a gtk4::Button,
-    pub(super) focus_btn: &'a gtk4::Button,
+    /// The reorder drag handle, when the row was given one (D17).
+    pub(super) drag_handle: Option<&'a gtk4::Button>,
+    /// The Focus Folder button, when the row was given one (D17).
+    pub(super) focus_btn: Option<&'a gtk4::Button>,
     pub(super) file_item: &'a FileTreeItem,
     pub(super) tree_row: &'a gtk4::TreeListRow,
     pub(super) section: &'a super::LushtextWorkspaceSection,
@@ -91,23 +93,27 @@ pub(super) fn apply_file_tree_row_accessibility(target: FileTreeRowAccessibility
     accessibility::set_expanded(overlay, expanded);
     accessibility::set_disabled(overlay, file_item.is_placeholder());
 
-    let reorder_label = format!("Reorder workspace folder {display_name}");
-    accessibility::set_labelled_description(
-        drag_handle,
-        &reorder_label,
-        "Drag or use the folder context menu to reorder this workspace folder",
-    );
-    accessibility::set_hidden(drag_handle, !show_reorder_handle);
-    accessibility::set_disabled(drag_handle, !show_reorder_handle);
+    if let Some(drag_handle) = drag_handle {
+        let reorder_label = format!("Reorder workspace folder {display_name}");
+        accessibility::set_labelled_description(
+            drag_handle,
+            &reorder_label,
+            "Drag or use the folder context menu to reorder this workspace folder",
+        );
+        accessibility::set_hidden(drag_handle, !show_reorder_handle);
+        accessibility::set_disabled(drag_handle, !show_reorder_handle);
+    }
 
-    let focus_label = format!("Focus folder {display_name}");
-    accessibility::set_labelled_description(
-        focus_btn,
-        &focus_label,
-        "Temporarily show this folder as the root of the workspace tree",
-    );
-    accessibility::set_hidden(focus_btn, !show_focus);
-    accessibility::set_disabled(focus_btn, !show_focus);
+    if let Some(focus_btn) = focus_btn {
+        let focus_label = format!("Focus folder {display_name}");
+        accessibility::set_labelled_description(
+            focus_btn,
+            &focus_label,
+            "Temporarily show this folder as the root of the workspace tree",
+        );
+        accessibility::set_hidden(focus_btn, !show_focus);
+        accessibility::set_disabled(focus_btn, !show_focus);
+    }
 }
 
 pub(super) fn install_expanded_accessibility_hook(
@@ -239,11 +245,7 @@ impl super::LushtextWorkspaceSection {
             let label = expander
                 .child()
                 .and_downcast::<gtk4::Box>()
-                .and_then(|content| content.first_child())
-                .and_then(|handle| handle.next_sibling())
-                .and_then(|indicator| indicator.next_sibling())
-                .and_then(|icon| icon.next_sibling())
-                .and_downcast::<gtk4::Label>();
+                .and_then(|content| super::row_factory::row_icon_and_label(&content).1);
             if let Some(label) = label {
                 label.set_use_markup(false);
                 label.set_label(&item.name());
