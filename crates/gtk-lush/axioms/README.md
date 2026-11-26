@@ -158,8 +158,11 @@ prints the trace on stderr, and the probe's control is an ordered pair of
 feedback events in it (`parse_trace`). A135 (`stop-expander-bind-time-child-scans`:
 `GtkTreeExpander` calls `is_expandable()` synchronously on every bind, rebind,
 `hide-expander` change, and collapse `children` notify, discarding unkept probe
-models on return) extends A22's tree-model family. Every later axiom
-follows the same steps. Rewriting an
+models on return) extends A22's tree-model family. A114
+(`slice-large-directory-collapse` R4/D20: a tree list row object nothing
+references dies, and the next fetch hands out a new one without its handlers
+while the node keeps its expansion) also extends the tree-model family. Every
+later axiom follows the same steps. Rewriting an
 unpinned axiom from measurement (as A10 was) keeps its id, gives it a probe,
 and renames its catalogue entry to the new statement.
 

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A114 probe and sample (`slice-large-directory-collapse` R4, D20): a
+  `GtkTreeListModel` keeps no row object for a node nothing references; the
+  next `get_item` hands out a new object without the dead one's handlers,
+  while the node keeps its expansion. Fixture `fixtures::a114`
+  (`row_object_fixture`, `RowObjectFixture`, `FIRST_CHILDREN`,
+  `SECOND_CHILDREN`).
 - A135 probe and sample (`stop-expander-bind-time-child-scans`): `GtkTreeExpander`
   queries `GtkTreeListRow::is_expandable()` synchronously on `set_list_row`,
   rebinds, `hide-expander` changes, and row notifies other than `expanded` and
