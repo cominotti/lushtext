@@ -203,7 +203,7 @@ impl BufferReplacementOutcome {
         };
         tracing::debug!(
             workflow = ?ticket.workflow,
-            generation = ticket.generation,
+            generation = ticket.generation.get(),
             cancel_reason = ?cancel_reason,
             slice_count = metrics.slice_count,
             cleared_characters = metrics.cleared_characters,
@@ -1335,7 +1335,7 @@ impl LushtextEditorPage {
         self.replace_buffer_bounded(BufferReplacementRequest::new(
             BufferReplacementTicket {
                 workflow: BufferReplacementWorkflow::Test,
-                generation,
+                generation: lushtext_model::values::BufferReplacementGeneration::new(generation),
             },
             body,
             move |_| current.get(),
@@ -1361,7 +1361,7 @@ impl LushtextEditorPage {
         let request = BufferReplacementRequest::new_returning_body_on_cancel(
             BufferReplacementTicket {
                 workflow: BufferReplacementWorkflow::Test,
-                generation,
+                generation: lushtext_model::values::BufferReplacementGeneration::new(generation),
             },
             body,
             move |_| current.get(),

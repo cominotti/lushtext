@@ -134,7 +134,7 @@ fn check_monotone(step: fn(ProtectedSession, SessionEvent) -> ProtectedSession) 
     let mut session = ProtectedSession {
         protected: true,
         entered_by_edit: kani::any(),
-        generation,
+        generation: lushtext_model::values::ProtectedViewGeneration::new(generation),
     };
     let count: usize = kani::any();
     kani::assume(count <= MAX_EVENTS);
@@ -230,7 +230,9 @@ fn entry_undo_ignores_the_entry_kind(
         } if session.protected => ProtectedSession {
             protected: false,
             entered_by_edit: false,
-            generation: session.generation.saturating_add(1),
+            generation: lushtext_model::values::ProtectedViewGeneration::new(
+                session.generation.get().saturating_add(1),
+            ),
         },
         _ => session.on_event(event),
     }

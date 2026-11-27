@@ -23,6 +23,12 @@ use lushtext_model::document::encoding::{
 };
 use lushtext_model::document::formatting_overrides::FormattingOverrides;
 use lushtext_model::persistence::bookmark::BookmarkRecord;
+use lushtext_model::values::{
+    AccessGeneration, AnalysisGeneration, BookmarkGeneration, CleanBaselineGeneration,
+    DraftGeneration, EditGeneration, EditorGeneration, LoadGeneration, LossyAnalysisGeneration,
+    MarkerGeneration, OverscrollGeneration, PathGeneration, PeriodicHistoryGeneration,
+    PolicyGeneration, SaveGeneration, SearchGeneration,
+};
 use lushtext_services::coordination::notifications::InlineActionNotification;
 use sourceview5::prelude::*;
 use std::cell::{Cell, RefCell};
@@ -71,7 +77,7 @@ type BookmarkActivatedCallback = Box<dyn Fn(BookmarkRecord)>;
 pub struct OverscrollState {
     /// Generation counter used to collapse bursts of GTK allocations into one
     /// idle overscroll recomputation after the layout settles.
-    pub update_generation: Cell<u32>,
+    pub update_generation: Cell<OverscrollGeneration>,
     /// Drop-owned adjustment observers for viewport page-size and value changes.
     pub observer: RefCell<Option<ViewportObserver>>,
     /// Shared lower-edge rest state for horizontal and vertical editor axes.
@@ -127,7 +133,7 @@ pub struct DraftState {
     /// Every user edit bumps this value. Draft autosave captures the counter with
     /// the text snapshot and clears `draft_dirty` only if the background write
     /// succeeds for the same generation.
-    pub dirty_generation: Cell<u64>,
+    pub dirty_generation: Cell<DraftGeneration>,
     /// Stable draft identifier for this tab across autosave cycles.
     pub draft_id: RefCell<Option<String>>,
     /// Whether this tab is currently showing draft-restored content.
@@ -148,7 +154,7 @@ pub struct SaveState {
     /// an in-flight durable write as already safe.
     pub inflight: Cell<bool>,
     /// Monotonic identity for the active save and any formatting installation.
-    pub generation: Cell<u64>,
+    pub generation: Cell<SaveGeneration>,
     /// Lifecycle handle for a save snapshot that is yielding between chunks.
     pub snapshot: RefCell<Option<BufferSnapshotHandle>>,
     /// The request the save workflow admitted, while one is in flight.
@@ -231,7 +237,7 @@ pub struct DocumentMetadataState {
     /// editing or switches tabs. Capturing this counter with the request lets
     /// the window ignore stale worker results instead of showing an outdated
     /// lossy-conversion confirmation.
-    pub lossy_analysis_generation: Cell<u32>,
+    pub lossy_analysis_generation: Cell<LossyAnalysisGeneration>,
     /// Active large-buffer capture for the newest lossy-analysis request.
     pub lossy_analysis_snapshot: RefCell<Option<BufferSnapshotHandle>>,
 }
@@ -396,7 +402,7 @@ pub struct BookmarkState {
     /// Bookmark sidecar I/O finishes later on the GTK main loop. If the user
     /// edits bookmarks before that completion lands, the stale load must not
     /// replace the newer live projection.
-    pub change_generation: Cell<u64>,
+    pub change_generation: Cell<BookmarkGeneration>,
     /// Callback invoked when bookmark state changes and should be persisted.
     pub changed_callback: RefCell<Option<NotesChangedCallback>>,
     /// Window callback installed after editor construction to route gutter activation
@@ -445,10 +451,10 @@ pub struct MinimapState {
     pub(super) marker_bins: RefCell<Option<MinimapMarkerBins>>,
     /// Advances whenever any marker kind may have changed (refresh, tag swap,
     /// scan completion), invalidating `marker_bins`.
-    pub marker_generation: Cell<u64>,
+    pub marker_generation: Cell<MarkerGeneration>,
     /// Advances when the in-tab search query or session changes, so search
     /// bins kept across a rescan are never another query's.
-    pub search_generation: Cell<u64>,
+    pub search_generation: Cell<SearchGeneration>,
     /// The search context whose `notify::occurrences-count` re-arms the
     /// refresh, held weakly, and its handler.
     pub(super) watched_search_context: RefCell<Option<glib::WeakRef<sourceview5::SearchContext>>>,
@@ -460,7 +466,7 @@ pub struct MinimapState {
     /// Current availability state for the minimap on this tab.
     pub availability: Cell<MinimapAvailability>,
     /// Monotonic identity invalidating every stale minimap analysis slice.
-    pub analysis_generation: Cell<u64>,
+    pub analysis_generation: Cell<AnalysisGeneration>,
     /// Editor lifetime identity checked before another analysis slice or publication.
     pub analysis_lifetime: Cell<u64>,
     /// Current bounded GTK-buffer cursor, when content analysis is required.
@@ -531,21 +537,21 @@ pub struct LocalHistoryState {
     /// Last clean saved text used to capture the "before edits" baseline snapshot.
     pub last_clean_text: RefCell<Option<crate::ui::plain_disposal::DisposalOwned<String>>>,
     /// Generation of the clean baseline currently owned by this editor/path cycle.
-    pub clean_baseline_generation: Cell<u64>,
+    pub clean_baseline_generation: Cell<CleanBaselineGeneration>,
     /// One automatic retry admission for the current clean baseline generation.
     pub baseline_retry_budget: Cell<u8>,
     /// Generation counter used to cancel or replace pending periodic capture timers.
-    pub periodic_generation: Cell<u32>,
+    pub periodic_generation: Cell<PeriodicHistoryGeneration>,
     /// One physically superseding five-minute callback owned by this tab.
     pub periodic_timer: SupersedingTimer,
     /// Current timer token for readiness and deterministic lifecycle tests.
     pub periodic_timer_token: Cell<Option<TimerToken>>,
     /// Generation advanced when disposal invalidates every in-flight capture.
-    pub editor_generation: Cell<u64>,
+    pub editor_generation: Cell<EditorGeneration>,
     /// Generation advanced whenever the saved-file identity changes.
-    pub path_generation: Cell<u64>,
+    pub path_generation: Cell<PathGeneration>,
     /// Generation advanced on every buffer content change.
-    pub edit_generation: Cell<u64>,
+    pub edit_generation: Cell<EditGeneration>,
     /// Cancellation for the current chunked periodic snapshot, if any.
     pub(crate) periodic_snapshot: RefCell<Option<BufferSnapshotHandle>>,
     /// Whether this editor already has one weak baseline waiter in the global FIFO.
@@ -577,9 +583,9 @@ pub struct MemoryResidencyState {
     /// reload from disk when re-focused.
     pub evicted: Cell<bool>,
     /// Window-wide least-recently-used generation assigned on load or activation.
-    pub access_generation: Cell<u64>,
+    pub access_generation: Cell<AccessGeneration>,
     /// Page-local generation advanced whenever residency or eligibility changes.
-    pub policy_generation: Cell<u64>,
+    pub policy_generation: Cell<PolicyGeneration>,
     /// Synthetic estimate used by deterministic budget widget tests.
     #[cfg(feature = "test-utils")]
     pub estimate_override: Cell<Option<u64>>,
@@ -590,7 +596,7 @@ pub struct MemoryResidencyState {
 pub struct LoadTrackingState {
     /// Monotonic identity for file loads so stale background completions cannot
     /// apply after a newer open or reopen starts for the same editor tab.
-    pub generation: Cell<u64>,
+    pub generation: Cell<LoadGeneration>,
     /// Cooperative cancellation token for the current background file load.
     /// A fresh `Arc<AtomicBool>` per load prevents a newer request from
     /// uncancelling an older background worker.
@@ -864,7 +870,7 @@ impl ObjectImpl for LushtextEditorPage {
         self.local_history.periodic_timer_token.set(None);
         self.local_history
             .editor_generation
-            .set(self.local_history.editor_generation.get().wrapping_add(1));
+            .set(self.local_history.editor_generation.get().next());
         self.preference_bindings.signals.clear();
         self.document_buffer_signals.clear();
         self.editing_buffer_signals.clear();

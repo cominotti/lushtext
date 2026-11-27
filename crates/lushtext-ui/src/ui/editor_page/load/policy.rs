@@ -49,6 +49,7 @@ mod kani_proofs;
 use crate::ui::editor_page::EditorLoadState;
 use lushtext_model::document::file_load::SYNCHRONOUS_INSTALL_THRESHOLD_BYTES;
 use lushtext_model::document::highlight_chunking::HighlightInstallOrder;
+use lushtext_model::values::LoadGeneration;
 
 /// Bound deletion work by characters so even four-byte Unicode stays within the
 /// byte-oriented installation slice policy.
@@ -145,14 +146,14 @@ pub enum LoadOutcome {
 #[derive(Clone, Debug)]
 pub(crate) struct LoadRequestTicket {
     /// The load generation this request was dispatched under.
-    pub(crate) load_generation: u64,
+    pub(crate) load_generation: LoadGeneration,
     /// The cancellation token this request was dispatched with.
     pub(crate) cancel_token: Arc<AtomicBool>,
 }
 
 impl LoadRequestTicket {
     /// Build the ticket one load request is dispatched and validated under.
-    pub(crate) fn new(load_generation: u64, cancel_token: Arc<AtomicBool>) -> Self {
+    pub(crate) fn new(load_generation: LoadGeneration, cancel_token: Arc<AtomicBool>) -> Self {
         Self {
             load_generation,
             cancel_token,
@@ -173,7 +174,7 @@ impl LoadRequestTicket {
 /// from being un-cancelled), and that token must not be set.
 pub(crate) fn load_request_is_current(
     ticket: &LoadRequestTicket,
-    live_generation: u64,
+    live_generation: LoadGeneration,
     live_cancel_token: &Arc<AtomicBool>,
 ) -> bool {
     ticket.load_generation == live_generation
@@ -188,11 +189,11 @@ pub(crate) fn load_request_is_current(
 /// token rather than comparing token identity. Keeping the two predicates
 /// distinct preserves the pre-migration behavior exactly.
 pub(crate) const fn installation_is_current(
-    live_generation: u64,
-    session_generation: u64,
+    live_generation: LoadGeneration,
+    session_generation: LoadGeneration,
     cancel_requested: bool,
 ) -> bool {
-    live_generation == session_generation && !cancel_requested
+    live_generation.get() == session_generation.get() && !cancel_requested
 }
 
 /// Whether decoded text must be installed in bounded main-loop slices.
@@ -811,20 +812,36 @@ mod tests {
     #[test]
     fn ticket_is_current_only_when_generation_token_and_cancellation_all_agree() {
         let cancel = token();
-        let ticket = LoadRequestTicket::new(7, Arc::clone(&cancel));
+        let ticket = LoadRequestTicket::new(LoadGeneration::new(7), Arc::clone(&cancel));
 
-        assert!(load_request_is_current(&ticket, 7, &cancel));
-        assert!(!load_request_is_current(&ticket, 8, &cancel));
-        assert!(!load_request_is_current(&ticket, 7, &token()));
+        assert!(load_request_is_current(
+            &ticket,
+            LoadGeneration::new(7),
+            &cancel
+        ));
+        assert!(!load_request_is_current(
+            &ticket,
+            LoadGeneration::new(8),
+            &cancel
+        ));
+        assert!(!load_request_is_current(
+            &ticket,
+            LoadGeneration::new(7),
+            &token()
+        ));
 
         cancel.store(true, Ordering::Release);
-        assert!(!load_request_is_current(&ticket, 7, &cancel));
+        assert!(!load_request_is_current(
+            &ticket,
+            LoadGeneration::new(7),
+            &cancel
+        ));
     }
 
     #[test]
     fn ticket_reports_cancellation() {
         let cancel = token();
-        let ticket = LoadRequestTicket::new(1, Arc::clone(&cancel));
+        let ticket = LoadRequestTicket::new(LoadGeneration::new(1), Arc::clone(&cancel));
         assert!(!ticket.cancel_requested());
 
         cancel.store(true, Ordering::Release);
@@ -833,9 +850,21 @@ mod tests {
 
     #[test]
     fn installation_freshness_ignores_token_identity() {
-        assert!(installation_is_current(4, 4, false));
-        assert!(!installation_is_current(5, 4, false));
-        assert!(!installation_is_current(4, 4, true));
+        assert!(installation_is_current(
+            LoadGeneration::new(4),
+            LoadGeneration::new(4),
+            false
+        ));
+        assert!(!installation_is_current(
+            LoadGeneration::new(5),
+            LoadGeneration::new(4),
+            false
+        ));
+        assert!(!installation_is_current(
+            LoadGeneration::new(4),
+            LoadGeneration::new(4),
+            true
+        ));
     }
 
     #[test]

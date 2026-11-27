@@ -33,6 +33,7 @@ use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
 use crate::ui::{accessibility, buffer_snapshot};
 use lushtext_model::persistence::local_history::{LocalHistorySnapshot, LocalHistorySnapshotMeta};
+use lushtext_model::values::HistoryPreviewGeneration;
 use lushtext_services::persistence::local_history_service;
 
 use super::policy;
@@ -196,7 +197,7 @@ pub(super) struct LocalHistoryBrowserState {
 }
 
 struct LocalHistoryPreviewInstallSession {
-    generation: u64,
+    generation: HistoryPreviewGeneration,
     snapshot: Option<LoadedSnapshot>,
     offset: usize,
     source_id: Option<glib::SourceId>,
@@ -551,7 +552,7 @@ impl LocalHistoryBrowserState {
     fn start_preview_load(self: &Rc<Self>, start: local_history_service::LocalHistoryPreviewStart) {
         if start.cancellation.is_cancelled() {
             self.finish_preview_load(
-                start.generation.get(),
+                start.generation,
                 Ok(GuardedLocalHistoryPreviewLoadOutcome::Cancelled),
             );
             return;
@@ -585,7 +586,6 @@ impl LocalHistoryBrowserState {
             request,
             cancellation,
         } = start;
-        let generation = generation.get();
         let state_weak = Rc::downgrade(self);
         spawn_blocking_then(
             (),
@@ -631,7 +631,7 @@ impl LocalHistoryBrowserState {
         let start = self.preview_admission.borrow_mut().take();
         if let Some(start) = start {
             self.finish_preview_load(
-                start.generation.get(),
+                start.generation,
                 Ok(GuardedLocalHistoryPreviewLoadOutcome::Cancelled),
             );
         }
@@ -639,14 +639,13 @@ impl LocalHistoryBrowserState {
 
     fn finish_preview_load(
         self: &Rc<Self>,
-        generation: u64,
+        generation: HistoryPreviewGeneration,
         result: anyhow::Result<GuardedLocalHistoryPreviewLoadOutcome>,
     ) {
         let (accepted, next) = {
             let mut loads = self.preview_loads.borrow_mut();
-            let typed = lushtext_model::values::HistoryPreviewGeneration::new(generation);
-            let accepted = loads.is_current(typed) && !self.disposed.get();
-            let next = loads.finish(typed);
+            let accepted = loads.is_current(generation) && !self.disposed.get();
+            let next = loads.finish(generation);
             (accepted, next)
         };
         if accepted {
@@ -693,7 +692,7 @@ impl LocalHistoryBrowserState {
     /// paragraphs show only their heads, so no layout reaches a hidden tail.
     fn begin_preview_install(
         self: &Rc<Self>,
-        generation: u64,
+        generation: HistoryPreviewGeneration,
         snapshot: GuardedLocalHistorySnapshot,
         fold_plan: Option<std::sync::Arc<FoldPlan>>,
     ) {
@@ -837,11 +836,7 @@ impl LocalHistoryBrowserState {
             return;
         };
         session.source_id = None;
-        if self.disposed.get()
-            || !self.preview_loads.borrow().is_current(
-                lushtext_model::values::HistoryPreviewGeneration::new(session.generation),
-            )
-        {
+        if self.disposed.get() || !self.preview_loads.borrow().is_current(session.generation) {
             if let Some(snapshot) = session.snapshot.take() {
                 retire_local_history_snapshot(snapshot);
             }

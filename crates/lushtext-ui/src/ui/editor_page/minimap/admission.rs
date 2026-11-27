@@ -106,7 +106,7 @@ impl LushtextEditorPage {
 
         // Reserve a fresh generation: cancellation above already advanced it, so
         // read it again rather than incrementing the stale value read on entry.
-        let generation = minimap.analysis_generation.get().wrapping_add(1);
+        let generation = minimap.analysis_generation.get().next();
         minimap.analysis_generation.set(generation);
         let lifetime = minimap.analysis_lifetime.get();
         let buffer = self.buffer();

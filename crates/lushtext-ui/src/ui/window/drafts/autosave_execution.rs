@@ -391,7 +391,7 @@ impl LushtextWindow {
             dirty_tabs.push(DirtyDraftCandidate {
                 draft_id,
                 original_path: editor.file_path(),
-                dirty_generation: editor.draft_dirty_generation(),
+                dirty_generation: editor.draft_generation(),
                 editor: editor.downgrade(),
                 buffer: editor.buffer(),
                 intent,
@@ -435,7 +435,7 @@ impl LushtextWindow {
                     if !captured_snapshot_is_current(
                         editor.draft_id().as_deref(),
                         candidate.draft_id.as_str(),
-                        editor.draft_dirty_generation(),
+                        editor.draft_generation(),
                         candidate.dirty_generation,
                         editor.is_modified(),
                         editor.is_evicted(),
@@ -541,7 +541,7 @@ impl LushtextWindow {
                 continue;
             };
             if editor.draft_id().as_deref() == Some(completion.draft_id.as_str())
-                && editor.draft_dirty_generation() == completion.dirty_generation
+                && editor.draft_generation() == completion.dirty_generation
                 && editor.is_modified()
                 && !editor.is_evicted()
                 && self
@@ -688,7 +688,7 @@ impl LushtextWindow {
                     if !captured_snapshot_is_current(
                         editor.draft_id().as_deref(),
                         candidate.draft_id.as_str(),
-                        editor.draft_dirty_generation(),
+                        editor.draft_generation(),
                         candidate.dirty_generation,
                         editor.is_modified(),
                         editor.is_evicted(),
@@ -754,7 +754,7 @@ impl LushtextWindow {
                     failures.over_limit += 1;
                     if let Some(editor) = candidate.editor.upgrade()
                         && editor.draft_id().as_deref() == Some(candidate.draft_id.as_str())
-                        && editor.draft_dirty_generation() == candidate.dirty_generation
+                        && editor.draft_generation() == candidate.dirty_generation
                     {
                         Self::show_automatic_recovery_limit(&editor);
                     }
@@ -832,8 +832,7 @@ impl LushtextWindow {
                                 // a newer edit must remain dirty for a later pass.
                                 if editor.draft_id().as_deref()
                                     == Some(completion.draft_id.as_str())
-                                    && editor.draft_dirty_generation()
-                                        == completion.dirty_generation
+                                    && editor.draft_generation() == completion.dirty_generation
                                     && window
                                         .imp()
                                         .drafts

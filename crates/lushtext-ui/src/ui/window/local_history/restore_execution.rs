@@ -26,6 +26,9 @@ use crate::ui::editor_page::{
 };
 use crate::ui::status_bar::MessageKind;
 use lushtext_model::persistence::local_history::LocalHistorySnapshot;
+use lushtext_model::values::{
+    BufferReplacementGeneration, EditGeneration, EditorGeneration, PathGeneration,
+};
 use lushtext_services::coordination::notifications::{
     InlineActionNotification, InlineNotificationStyle,
 };
@@ -71,9 +74,9 @@ struct RestoreWorkState {
 /// validation time, so there is nothing to capture separately.
 #[derive(Clone, Copy)]
 pub(super) struct LocalHistoryReplacementTicket {
-    editor_generation: u64,
-    path_generation: u64,
-    pub(super) edit_generation: u64,
+    editor_generation: EditorGeneration,
+    path_generation: PathGeneration,
+    pub(super) edit_generation: EditGeneration,
 }
 
 impl LocalHistoryReplacementTicket {
@@ -110,7 +113,7 @@ impl LushtextWindow {
         let request = BufferReplacementRequest::new_guarded_returning_body_on_cancel(
             BufferReplacementTicket {
                 workflow: BufferReplacementWorkflow::LocalHistoryUndo,
-                generation: ticket.edit_generation,
+                generation: BufferReplacementGeneration::new(ticket.edit_generation.get()),
             },
             undo_text,
             move |_| {
@@ -133,7 +136,8 @@ impl LushtextWindow {
                             generation,
                         },
                         ..
-                    } if generation == ticket.edit_generation && ticket.is_current(&editor)
+                    } if generation.get() == ticket.edit_generation.get()
+                        && ticket.is_current(&editor)
                 ) {
                     return;
                 }
@@ -270,7 +274,9 @@ impl LushtextWindow {
                         BufferReplacementRequest::new_guarded_returning_body_on_cancel(
                             BufferReplacementTicket {
                                 workflow: BufferReplacementWorkflow::LocalHistoryRestore,
-                                generation: ticket.edit_generation,
+                                generation: BufferReplacementGeneration::new(
+                                    ticket.edit_generation.get(),
+                                ),
                             },
                             restore_text,
                             move |_| {
@@ -290,7 +296,8 @@ impl LushtextWindow {
                                             generation,
                                         },
                                         ..
-                                    } if generation == ticket.edit_generation && ticket.is_current(&editor)
+                                    } if generation.get() == ticket.edit_generation.get()
+                                        && ticket.is_current(&editor)
                                 ) {
                                     set_local_history_action_enabled(&browser.restore_button, true);
                                     set_local_history_action_enabled(

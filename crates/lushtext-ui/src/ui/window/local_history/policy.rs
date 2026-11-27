@@ -21,6 +21,10 @@ use lushtext_model::document::buffer_replacement::SYNCHRONOUS_REPLACEMENT_THRESH
 use lushtext_model::persistence::local_history::{
     LocalHistorySnapshotMeta, LocalHistorySnapshotOrigin,
 };
+use lushtext_model::values::{
+    CleanBaselineGeneration, EditGeneration, EditorGeneration, PathGeneration,
+    PeriodicHistoryGeneration,
+};
 use lushtext_services::persistence::local_history_service::LocalHistoryAvailability;
 
 // --- viewer geometry -------------------------------------------------------
@@ -207,18 +211,18 @@ pub(super) const fn preview_install_is_complete(offset: usize, body_len: usize) 
 /// Identity captured before a baseline snapshot's worker starts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BaselineCaptureTicket {
-    pub(crate) editor_generation: u64,
-    pub(crate) path_generation: u64,
-    pub(crate) clean_baseline_generation: u64,
+    pub(crate) editor_generation: EditorGeneration,
+    pub(crate) path_generation: PathGeneration,
+    pub(crate) clean_baseline_generation: CleanBaselineGeneration,
     pub(crate) path: PathBuf,
 }
 
 /// Live editor state observed when a baseline capture reports back.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BaselineCaptureFacts {
-    pub(crate) editor_generation: u64,
-    pub(crate) path_generation: u64,
-    pub(crate) clean_baseline_generation: u64,
+    pub(crate) editor_generation: EditorGeneration,
+    pub(crate) path_generation: PathGeneration,
+    pub(crate) clean_baseline_generation: CleanBaselineGeneration,
     pub(crate) path: Option<PathBuf>,
     pub(crate) modified: bool,
     pub(crate) baseline_slot_empty: bool,
@@ -245,20 +249,20 @@ pub(crate) fn baseline_capture_is_current(
 /// Identity captured before a periodic snapshot's worker starts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PeriodicCaptureTicket {
-    pub(crate) editor_generation: u64,
-    pub(crate) path_generation: u64,
-    pub(crate) periodic_generation: u32,
-    pub(crate) edit_generation: u64,
+    pub(crate) editor_generation: EditorGeneration,
+    pub(crate) path_generation: PathGeneration,
+    pub(crate) periodic_generation: PeriodicHistoryGeneration,
+    pub(crate) edit_generation: EditGeneration,
     pub(crate) path: PathBuf,
 }
 
 /// Live editor state observed when a periodic capture is about to persist.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PeriodicCaptureFacts {
-    pub(crate) editor_generation: u64,
-    pub(crate) path_generation: u64,
-    pub(crate) periodic_generation: u32,
-    pub(crate) edit_generation: u64,
+    pub(crate) editor_generation: EditorGeneration,
+    pub(crate) path_generation: PathGeneration,
+    pub(crate) periodic_generation: PeriodicHistoryGeneration,
+    pub(crate) edit_generation: EditGeneration,
     pub(crate) path: Option<PathBuf>,
     pub(crate) modified: bool,
     pub(crate) availability: LocalHistoryAvailability,
@@ -530,10 +534,10 @@ mod tests {
 
     fn periodic_ticket() -> PeriodicCaptureTicket {
         PeriodicCaptureTicket {
-            editor_generation: 3,
-            path_generation: 5,
-            periodic_generation: 7,
-            edit_generation: 11,
+            editor_generation: EditorGeneration::new(3),
+            path_generation: PathGeneration::new(5),
+            periodic_generation: PeriodicHistoryGeneration::new(7),
+            edit_generation: EditGeneration::new(11),
             path: PathBuf::from("/workspace/current.md"),
         }
     }
@@ -563,10 +567,18 @@ mod tests {
     fn periodic_capture_rejects_close_edit_timer_and_identity_changes() {
         let ticket = periodic_ticket();
         for mutate in [
-            |facts: &mut PeriodicCaptureFacts| facts.editor_generation += 1,
-            |facts: &mut PeriodicCaptureFacts| facts.path_generation += 1,
-            |facts: &mut PeriodicCaptureFacts| facts.periodic_generation += 1,
-            |facts: &mut PeriodicCaptureFacts| facts.edit_generation += 1,
+            |facts: &mut PeriodicCaptureFacts| {
+                facts.editor_generation = facts.editor_generation.next();
+            },
+            |facts: &mut PeriodicCaptureFacts| {
+                facts.path_generation = facts.path_generation.next();
+            },
+            |facts: &mut PeriodicCaptureFacts| {
+                facts.periodic_generation = facts.periodic_generation.next();
+            },
+            |facts: &mut PeriodicCaptureFacts| {
+                facts.edit_generation = facts.edit_generation.next();
+            },
         ] {
             let mut changed = periodic_facts();
             mutate(&mut changed);
@@ -610,15 +622,15 @@ mod tests {
     #[test]
     fn failed_baseline_returns_only_to_its_original_cycle() {
         let ticket = BaselineCaptureTicket {
-            editor_generation: 3,
-            path_generation: 5,
-            clean_baseline_generation: 7,
+            editor_generation: EditorGeneration::new(3),
+            path_generation: PathGeneration::new(5),
+            clean_baseline_generation: CleanBaselineGeneration::new(7),
             path: PathBuf::from("/workspace/current.md"),
         };
         let facts = BaselineCaptureFacts {
-            editor_generation: 3,
-            path_generation: 5,
-            clean_baseline_generation: 7,
+            editor_generation: EditorGeneration::new(3),
+            path_generation: PathGeneration::new(5),
+            clean_baseline_generation: CleanBaselineGeneration::new(7),
             path: Some(ticket.path.clone()),
             modified: true,
             baseline_slot_empty: true,
@@ -626,9 +638,15 @@ mod tests {
         assert!(baseline_capture_is_current(&ticket, &facts));
 
         for mutate in [
-            |facts: &mut BaselineCaptureFacts| facts.editor_generation += 1,
-            |facts: &mut BaselineCaptureFacts| facts.path_generation += 1,
-            |facts: &mut BaselineCaptureFacts| facts.clean_baseline_generation += 1,
+            |facts: &mut BaselineCaptureFacts| {
+                facts.editor_generation = facts.editor_generation.next();
+            },
+            |facts: &mut BaselineCaptureFacts| {
+                facts.path_generation = facts.path_generation.next();
+            },
+            |facts: &mut BaselineCaptureFacts| {
+                facts.clean_baseline_generation = facts.clean_baseline_generation.next();
+            },
         ] {
             let mut stale = facts.clone();
             mutate(&mut stale);

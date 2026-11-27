@@ -15,6 +15,8 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use lushtext_model::values::DraftGeneration;
+
 // --- timing policy ---------------------------------------------------------
 
 /// First-dirty draft autosave delay after a clean edit cycle.
@@ -103,8 +105,8 @@ pub const fn draft_candidate_is_eligible(
 pub(super) fn captured_snapshot_is_current(
     live_draft_id: Option<&str>,
     expected_draft_id: &str,
-    live_dirty_generation: u64,
-    expected_dirty_generation: u64,
+    live_dirty_generation: DraftGeneration,
+    expected_dirty_generation: DraftGeneration,
     modified: bool,
     evicted: bool,
     buffer_untrusted: bool,
@@ -642,8 +644,8 @@ mod tests {
         assert!(captured_snapshot_is_current(
             Some("draft-a"),
             "draft-a",
-            7,
-            7,
+            DraftGeneration::new(7),
+            DraftGeneration::new(7),
             true,
             false,
             false
@@ -652,21 +654,27 @@ mod tests {
         assert!(!captured_snapshot_is_current(
             Some("draft-b"),
             "draft-a",
-            7,
-            7,
+            DraftGeneration::new(7),
+            DraftGeneration::new(7),
             true,
             false,
             false
         ));
         assert!(!captured_snapshot_is_current(
-            None, "draft-a", 7, 7, true, false, false
+            None,
+            "draft-a",
+            DraftGeneration::new(7),
+            DraftGeneration::new(7),
+            true,
+            false,
+            false
         ));
         // A newer edit landed during the capture.
         assert!(!captured_snapshot_is_current(
             Some("draft-a"),
             "draft-a",
-            8,
-            7,
+            DraftGeneration::new(8),
+            DraftGeneration::new(7),
             true,
             false,
             false
@@ -675,8 +683,8 @@ mod tests {
         assert!(!captured_snapshot_is_current(
             Some("draft-a"),
             "draft-a",
-            7,
-            7,
+            DraftGeneration::new(7),
+            DraftGeneration::new(7),
             false,
             false,
             false
@@ -684,8 +692,8 @@ mod tests {
         assert!(!captured_snapshot_is_current(
             Some("draft-a"),
             "draft-a",
-            7,
-            7,
+            DraftGeneration::new(7),
+            DraftGeneration::new(7),
             true,
             true,
             false
@@ -693,8 +701,8 @@ mod tests {
         assert!(!captured_snapshot_is_current(
             Some("draft-a"),
             "draft-a",
-            7,
-            7,
+            DraftGeneration::new(7),
+            DraftGeneration::new(7),
             true,
             false,
             true

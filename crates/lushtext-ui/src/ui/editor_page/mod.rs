@@ -55,6 +55,10 @@ use lushtext_model::document::encoding::{
 };
 use lushtext_model::document::formatting_overrides::FormattingOverrides;
 use lushtext_model::persistence::bookmark::BookmarkRecord;
+use lushtext_model::values::{
+    AccessGeneration, BookmarkGeneration, BufferReplacementGeneration, DraftGeneration,
+    LoadGeneration,
+};
 use lushtext_services::coordination::notifications::InlineActionNotification;
 
 #[cfg(feature = "test-utils")]
@@ -286,18 +290,22 @@ impl LushtextEditorPage {
             .document_metadata
             .lossy_analysis_generation
             .get()
-            .wrapping_add(1);
+            .next();
         self.imp()
             .document_metadata
             .lossy_analysis_generation
             .set(generation);
-        generation
+        generation.get()
     }
 
     /// Current generation for lossy-encoding analysis requests.
     #[must_use]
     pub(crate) fn lossy_analysis_generation(&self) -> u32 {
-        self.imp().document_metadata.lossy_analysis_generation.get()
+        self.imp()
+            .document_metadata
+            .lossy_analysis_generation
+            .get()
+            .get()
     }
 
     /// Current line-ending state detected during the last load.
@@ -460,7 +468,7 @@ impl LushtextEditorPage {
         self.replace_buffer_bounded(BufferReplacementRequest::new(
             BufferReplacementTicket {
                 workflow: BufferReplacementWorkflow::MemoryEviction,
-                generation,
+                generation: BufferReplacementGeneration::new(generation.get()),
             },
             String::new(),
             move |editor| {
@@ -486,7 +494,7 @@ impl LushtextEditorPage {
                             generation: current_generation,
                         },
                         ..
-                    } if current_generation == generation
+                    } if current_generation.get() == generation.get()
                 );
                 // An eviction that went stale after its first clear turn
                 // (an access, any policy change) still empties the buffer:
@@ -597,18 +605,21 @@ impl LushtextEditorPage {
     /// Current least-recently-used generation assigned by the owning window.
     #[must_use]
     pub(crate) fn memory_access_generation(&self) -> u64 {
-        self.imp().residency.access_generation.get()
+        self.imp().residency.access_generation.get().get()
     }
 
     /// Current residency and eviction-eligibility generation.
     #[must_use]
     pub(crate) fn memory_policy_generation(&self) -> u64 {
-        self.imp().residency.policy_generation.get()
+        self.imp().residency.policy_generation.get().get()
     }
 
     /// Assign a window-wide access generation and invalidate stale decisions.
     pub(crate) fn mark_memory_accessed(&self, generation: u64) {
-        self.imp().residency.access_generation.set(generation);
+        self.imp()
+            .residency
+            .access_generation
+            .set(AccessGeneration::new(generation));
         self.notify_memory_policy_changed();
     }
 
@@ -630,7 +641,7 @@ impl LushtextEditorPage {
         self.imp()
             .residency
             .policy_generation
-            .set(self.imp().residency.policy_generation.get().wrapping_add(1));
+            .set(self.imp().residency.policy_generation.get().next());
         if let Some(ref callback) = *self.imp().memory_changed_callback.borrow() {
             callback();
         }
@@ -729,13 +740,18 @@ impl LushtextEditorPage {
             self.imp()
                 .draft
                 .dirty_generation
-                .set(self.imp().draft.dirty_generation.get().wrapping_add(1));
+                .set(self.imp().draft.dirty_generation.get().next());
         }
         self.imp().draft.draft_dirty.set(dirty);
     }
 
     #[must_use]
     pub(crate) fn draft_dirty_generation(&self) -> u64 {
+        self.imp().draft.dirty_generation.get().get()
+    }
+
+    #[must_use]
+    pub(crate) fn draft_generation(&self) -> DraftGeneration {
         self.imp().draft.dirty_generation.get()
     }
 
@@ -777,6 +793,12 @@ impl LushtextEditorPage {
     /// Current file-load generation used to reject stale lazy draft completions.
     #[must_use]
     pub(crate) fn load_generation(&self) -> u64 {
+        self.imp().load_tracking.generation.get().get()
+    }
+
+    /// Typed file-load generation for window-owned draft recovery seams.
+    #[must_use]
+    pub(crate) fn typed_load_generation(&self) -> LoadGeneration {
         self.imp().load_tracking.generation.get()
     }
 
@@ -850,6 +872,12 @@ impl LushtextEditorPage {
     /// Snapshot the live bookmark projection generation for async race guards.
     #[must_use]
     pub fn bookmark_change_generation(&self) -> u64 {
+        bookmarks::bookmark_change_generation(self).get()
+    }
+
+    /// Typed bookmark projection generation for window-owned source capture.
+    #[must_use]
+    pub(crate) fn bookmark_generation(&self) -> BookmarkGeneration {
         bookmarks::bookmark_change_generation(self)
     }
 
@@ -865,7 +893,11 @@ impl LushtextEditorPage {
         bookmarks: &[BookmarkRecord],
         expected_generation: u64,
     ) -> bool {
-        bookmarks::load_bookmarks_if_generation_matches(self, bookmarks, expected_generation)
+        bookmarks::load_bookmarks_if_generation_matches(
+            self,
+            bookmarks,
+            BookmarkGeneration::new(expected_generation),
+        )
     }
 
     /// Clear all live bookmark marks for the current file identity.

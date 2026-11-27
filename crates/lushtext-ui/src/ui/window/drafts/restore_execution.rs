@@ -35,6 +35,7 @@ use crate::ui::editor_page::{
 use lushtext_model::persistence::draft::{
     FileDraftRestoreSkip, PreloadedDraftSkip, StaleDraftPreservation,
 };
+use lushtext_model::values::BufferReplacementGeneration;
 use lushtext_services::coordination::notifications::{
     InlineActionNotification, InlineNotificationStyle,
 };
@@ -260,7 +261,7 @@ impl LushtextWindow {
         let request = BufferReplacementRequest::new(
             BufferReplacementTicket {
                 workflow: BufferReplacementWorkflow::DraftRecovery,
-                generation: editor.draft_dirty_generation(),
+                generation: BufferReplacementGeneration::new(editor.draft_dirty_generation()),
             },
             text,
             |_| true,
@@ -308,7 +309,7 @@ impl LushtextWindow {
         let request = BufferReplacementRequest::new_guarded_returning_body_on_complete(
             BufferReplacementTicket {
                 workflow: BufferReplacementWorkflow::DraftRecovery,
-                generation: ticket.dirty_generation,
+                generation: BufferReplacementGeneration::new(ticket.dirty_generation.get()),
             },
             content,
             move |_| {
@@ -329,7 +330,7 @@ impl LushtextWindow {
                         },
                     ..
                 } = outcome
-                    && generation == terminal_ticket.dirty_generation
+                    && generation.get() == terminal_ticket.dirty_generation.get()
                     && let Some(editor) = terminal_ticket.current_editor(&window)
                     && let Some(body) = accepted_body_for_terminal.borrow_mut().take()
                 {

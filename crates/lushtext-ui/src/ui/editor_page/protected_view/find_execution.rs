@@ -28,6 +28,7 @@ use super::policy::{
 };
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::search_bar::{ExternalFindHandler, ExternalFindRequest, SearchOption};
+use lushtext_model::values::ProtectedFindGeneration;
 use lushtext_services::search::regex_query::{CompiledFindPattern, RegexCompileOptions};
 
 /// The tag on the current match while it lies in visible text.
@@ -46,7 +47,7 @@ pub(crate) struct FindHit {
 /// The editor's protected find state.
 #[derive(Debug, Default)]
 pub(crate) struct ProtectedFindState {
-    generation: Cell<u64>,
+    generation: Cell<ProtectedFindGeneration>,
     cancel: RefCell<Option<Arc<AtomicBool>>>,
     hits: RefCell<Vec<FindHit>>,
     current: Cell<Option<usize>>,
@@ -83,7 +84,7 @@ impl LushtextEditorPage {
         if let Some(previous) = state.cancel.take() {
             previous.store(true, Ordering::Relaxed);
         }
-        let generation = state.generation.get().wrapping_add(1);
+        let generation = state.generation.get().next();
         state.generation.set(generation);
         state.hits.borrow_mut().clear();
         state.current.set(None);
@@ -274,7 +275,7 @@ impl LushtextEditorPage {
         if let Some(previous) = state.cancel.take() {
             previous.store(true, Ordering::Relaxed);
         }
-        state.generation.set(state.generation.get().wrapping_add(1));
+        state.generation.set(state.generation.get().next());
         state.hits.borrow_mut().clear();
         state.current.set(None);
         self.clear_current_match_tag();

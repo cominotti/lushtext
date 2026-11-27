@@ -31,6 +31,10 @@ use gtk4::glib;
 use sourceview5::prelude::*;
 
 use crate::ui::editor_page::LushtextEditorPage;
+use lushtext_model::values::{
+    CleanBaselineGeneration, EditGeneration, EditorGeneration, PathGeneration,
+    PeriodicHistoryGeneration,
+};
 use lushtext_services::persistence::local_history_service::LocalHistoryAvailability;
 
 /// Process-local preview installation counters.
@@ -114,15 +118,15 @@ pub struct LocalHistoryEvidence {
     /// Whether the tab owns one scheduled periodic timer source.
     pub periodic_timer_pending: bool,
     /// Monotonic identity of the current periodic cycle.
-    pub periodic_generation: u32,
+    pub periodic_generation: PeriodicHistoryGeneration,
     /// Monotonic identity advanced by every buffer edit.
-    pub edit_generation: u64,
+    pub edit_generation: EditGeneration,
     /// Monotonic identity advanced by every path change.
-    pub path_generation: u64,
+    pub path_generation: PathGeneration,
     /// Monotonic identity advanced when the editor is disposed.
-    pub editor_generation: u64,
+    pub editor_generation: EditorGeneration,
     /// Monotonic identity advanced by each clean-baseline replacement.
-    pub clean_baseline_generation: u64,
+    pub clean_baseline_generation: CleanBaselineGeneration,
 
     // --- restore ---
     /// Whether an undo-restore body is available to the inline affordance.

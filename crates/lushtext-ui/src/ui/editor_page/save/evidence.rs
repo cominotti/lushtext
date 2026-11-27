@@ -32,6 +32,7 @@ use gtk4::glib;
 use super::policy::{QueuedSaveTicket, SaveCaptureMode, SaveWriteClassification};
 use super::{admission, execution};
 use crate::ui::editor_page::LushtextEditorPage;
+use lushtext_model::values::SaveGeneration;
 
 /// One consistent read of the document-save workflow.
 ///
@@ -49,7 +50,7 @@ pub struct SaveEvidence {
     /// in-flight durable write as already safe.
     pub inflight: bool,
     /// Monotonic identity of the current save and its formatting installation.
-    pub generation: u64,
+    pub generation: SaveGeneration,
 
     // --- admitted request identity ---
     /// The destination the admitted save is writing, when one is admitted.

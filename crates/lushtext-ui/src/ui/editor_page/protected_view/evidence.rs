@@ -8,6 +8,7 @@
 //! property, which does no work).
 
 use crate::ui::editor_page::LushtextEditorPage;
+use lushtext_model::values::ProtectedViewGeneration;
 
 /// The observable Protected View state of one editor.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -17,7 +18,7 @@ pub struct ProtectedViewEvidence {
     /// Whether the session entered through an edit.
     pub entered_by_edit: bool,
     /// The protected-session generation.
-    pub generation: u64,
+    pub generation: ProtectedViewGeneration,
     /// Bytes of the retained text source, when the session has one.
     pub source_bytes: Option<u64>,
     /// Whether the entry undo is offered now.

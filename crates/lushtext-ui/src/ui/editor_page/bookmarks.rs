@@ -11,6 +11,7 @@ use gtk4::prelude::*;
 use sourceview5::prelude::*;
 
 use lushtext_model::persistence::bookmark::{BookmarkId, BookmarkRecord};
+use lushtext_model::values::BookmarkGeneration;
 
 use super::{LushtextEditorPage, imp};
 
@@ -243,7 +244,7 @@ pub(super) fn bookmark_entry_count(editor: &LushtextEditorPage) -> usize {
 
 /// Return the live bookmark projection generation for async race guards.
 #[must_use]
-pub(super) fn bookmark_change_generation(editor: &LushtextEditorPage) -> u64 {
+pub(super) fn bookmark_change_generation(editor: &LushtextEditorPage) -> BookmarkGeneration {
     editor.imp().bookmarks.change_generation.get()
 }
 
@@ -252,7 +253,7 @@ pub(super) fn bookmark_change_generation(editor: &LushtextEditorPage) -> u64 {
 pub(super) fn load_bookmarks_if_generation_matches(
     editor: &LushtextEditorPage,
     bookmarks: &[BookmarkRecord],
-    expected_generation: u64,
+    expected_generation: BookmarkGeneration,
 ) -> bool {
     if bookmark_change_generation(editor) != expected_generation {
         return false;
@@ -264,7 +265,7 @@ pub(super) fn load_bookmarks_if_generation_matches(
 
 /// Advance the live bookmark projection generation after a real mutation.
 fn bump_bookmark_change_generation(editor: &LushtextEditorPage) {
-    let generation = bookmark_change_generation(editor).wrapping_add(1);
+    let generation = bookmark_change_generation(editor).next();
     editor.imp().bookmarks.change_generation.set(generation);
 }
 

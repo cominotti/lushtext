@@ -43,6 +43,7 @@ use core::num::NonZeroU64;
 
 use lushtext_model::document::document_scale::L_PROTECT;
 use lushtext_model::document::protected_fold::HEAD_CAP;
+use lushtext_model::values::ProtectedViewGeneration;
 
 #[cfg(kani)]
 mod kani_proofs;
@@ -847,7 +848,7 @@ pub(crate) struct ProtectedSession {
     /// The protected-session generation: advances on every whole-content
     /// install, reload from disk, entry and exit, so a stale ticket
     /// ([`super::seams::ProtectedViewTicket`]) is refused.
-    pub(crate) generation: u64,
+    pub(crate) generation: ProtectedViewGeneration,
 }
 
 impl ProtectedSession {
@@ -855,7 +856,7 @@ impl ProtectedSession {
     pub(crate) const EDITABLE: Self = Self {
         protected: false,
         entered_by_edit: false,
-        generation: 0,
+        generation: ProtectedViewGeneration::ZERO,
     };
 
     /// Whether the entry undo may be offered, given whether the newest undo step
@@ -879,7 +880,7 @@ impl ProtectedSession {
     /// `u64::MAX`, which no editor reaches (one advance per install).
     #[must_use]
     pub(crate) const fn on_event(self, event: SessionEvent) -> Self {
-        let next_generation = self.generation.saturating_add(1);
+        let next_generation = ProtectedViewGeneration::new(self.generation.get().saturating_add(1));
         match event {
             SessionEvent::Installed { protected, .. } => Self {
                 protected: self.protected || protected,
@@ -1870,7 +1871,7 @@ mod tests {
     const PROTECTED_ON_LOAD: ProtectedSession = ProtectedSession {
         protected: true,
         entered_by_edit: false,
-        generation: 1,
+        generation: ProtectedViewGeneration::new(1),
     };
 
     #[test]
@@ -1889,7 +1890,7 @@ mod tests {
                 protected: false,
             });
             assert!(kept.protected, "{kind:?}");
-            assert_eq!(kept.generation, 2);
+            assert_eq!(kept.generation, ProtectedViewGeneration::new(2));
             let entered = ProtectedSession::EDITABLE.on_event(SessionEvent::Installed {
                 kind,
                 protected: true,
@@ -1899,7 +1900,7 @@ mod tests {
                 ProtectedSession {
                     protected: true,
                     entered_by_edit: false,
-                    generation: 1
+                    generation: ProtectedViewGeneration::new(1)
                 }
             );
             let stays_editable = ProtectedSession::EDITABLE.on_event(SessionEvent::Installed {
@@ -1907,7 +1908,7 @@ mod tests {
                 protected: false,
             });
             assert!(!stays_editable.protected);
-            assert_eq!(stays_editable.generation, 1);
+            assert_eq!(stays_editable.generation, ProtectedViewGeneration::new(1));
         }
     }
 
@@ -1919,7 +1920,7 @@ mod tests {
             ProtectedSession {
                 protected: false,
                 entered_by_edit: false,
-                generation: 2
+                generation: ProtectedViewGeneration::new(2)
             }
         );
         let still = PROTECTED_ON_LOAD.on_event(SessionEvent::ReloadFromDisk { protected: true });
@@ -1928,7 +1929,7 @@ mod tests {
             ProtectedSession {
                 protected: true,
                 entered_by_edit: false,
-                generation: 2
+                generation: ProtectedViewGeneration::new(2)
             }
         );
     }
@@ -1941,7 +1942,7 @@ mod tests {
             ProtectedSession {
                 protected: true,
                 entered_by_edit: true,
-                generation: 1
+                generation: ProtectedViewGeneration::new(1)
             }
         );
         assert!(entered.entry_undo_available(true));
@@ -1964,7 +1965,7 @@ mod tests {
             ProtectedSession {
                 protected: false,
                 entered_by_edit: false,
-                generation: 2
+                generation: ProtectedViewGeneration::new(2)
             }
         );
         assert_eq!(
@@ -2009,10 +2010,10 @@ mod tests {
         let top = ProtectedSession {
             protected: true,
             entered_by_edit: false,
-            generation: u64::MAX,
+            generation: ProtectedViewGeneration::new(u64::MAX),
         };
         let next = top.on_event(SessionEvent::ReloadFromDisk { protected: true });
-        assert_eq!(next.generation, u64::MAX);
+        assert_eq!(next.generation, ProtectedViewGeneration::new(u64::MAX));
     }
 
     // --- inspector windows -------------------------------------------------

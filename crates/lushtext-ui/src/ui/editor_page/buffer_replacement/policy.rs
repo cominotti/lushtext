@@ -13,6 +13,8 @@
 //! Nothing here touches GTK, so the workflow's freshness, phase, cancellation,
 //! and terminal rules stay inside the default mutation scope.
 
+use lushtext_model::values::BufferReplacementGeneration;
+
 /// Whether a body's fold plan makes the replacement sliced through the
 /// protected executor at any size: a hidden tail that could exceed one tail
 /// slice (`sliced-protected-install`, C3). Calls the shared
@@ -47,7 +49,7 @@ pub enum BufferReplacementWorkflow {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BufferReplacementTicket {
     pub workflow: BufferReplacementWorkflow,
-    pub generation: u64,
+    pub generation: BufferReplacementGeneration,
 }
 
 /// Why one replacement stopped without publishing successful terminal state.
