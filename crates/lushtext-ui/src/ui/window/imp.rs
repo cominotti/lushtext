@@ -104,7 +104,7 @@ pub struct EditorMemoryState {
     /// Narrow guard for signals emitted synchronously by `EditorPage::evict`.
     pub applying_eviction: Cell<bool>,
     /// Window-wide generation source used for deterministic least-recent use.
-    pub next_access_generation: Cell<u64>,
+    pub next_access_generation: Cell<lushtext_model::values::AccessGeneration>,
     /// Number of aggregate evaluations, retained for coalescing assertions.
     pub evaluation_count: Cell<u64>,
     /// Full tab scans performed only for enforcement or reconciliation.
@@ -777,7 +777,7 @@ impl ObjectImpl for LushtextWindow {
 
         let w = settings.int(keys::WINDOW_WIDTH);
         let h = settings.int(keys::WINDOW_HEIGHT);
-        obj.set_height_request(NORMAL_MODE_MIN_HEIGHT_SP);
+        obj.set_height_request(NORMAL_MODE_MIN_HEIGHT_SP.as_sp());
         obj.set_default_size(w, h);
         if settings.boolean(keys::WINDOW_MAXIMIZED) {
             obj.maximize();

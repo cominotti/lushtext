@@ -249,15 +249,27 @@ pub(super) fn record_retired_request_cancellation(editor: &LushtextEditorPage, c
         .set(Some(cancelled));
 }
 
+/// Which installation slicing path an accepted payload took.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct InstallStartFacts {
+    pub(super) chunked: bool,
+    pub(super) highlight_chunked: bool,
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl InstallStartFacts {
+    pub(super) const DIRECT: Self = Self {
+        chunked: false,
+        highlight_chunked: false,
+    };
+}
+
 /// Record which installation path the accepted payload took.
-pub(super) fn record_install_started(
-    editor: &LushtextEditorPage,
-    chunked: bool,
-    highlight_chunked: bool,
-) {
+pub(super) fn record_install_started(editor: &LushtextEditorPage, facts: InstallStartFacts) {
     let load = &editor.imp().load;
-    load.installation_chunked.set(chunked);
-    load.installation_highlight_chunked.set(highlight_chunked);
+    load.installation_chunked.set(facts.chunked);
+    load.installation_highlight_chunked
+        .set(facts.highlight_chunked);
     load.protected_install
         .set(crate::ui::protected_fold::FoldedInstallMetrics::default());
     load.protected_clear_turns.set(0);

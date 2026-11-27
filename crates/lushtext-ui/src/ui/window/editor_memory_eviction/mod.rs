@@ -85,7 +85,7 @@ use crate::ui::editor_page::LushtextEditorPage;
 use lushtext_model::document::editor_memory::{
     EditorMemoryBudgetOutcome, EditorResidency, evaluate_editor_memory_budget,
 };
-use lushtext_model::values::{AccessGeneration, Bytes, EditorId, PolicyGeneration};
+use lushtext_model::values::{Bytes, EditorId};
 
 use super::LushtextWindow;
 use policy::UntrackDisposition;
@@ -132,12 +132,12 @@ impl LushtextWindow {
             state.active_editor.borrow_mut().take();
         }
 
-        match policy::untrack_disposition(
-            state.evaluation_running.get(),
-            state.applying_eviction.get(),
-            update.map(|update| update.total_bytes.as_bytes()),
-            state.accounting_uncertain.get(),
-        ) {
+        match policy::untrack_disposition(policy::UntrackFacts {
+            evaluation_running: state.evaluation_running.get(),
+            applying_eviction: state.applying_eviction.get(),
+            remaining_total_bytes: update.map(|update| update.total_bytes.as_bytes()),
+            accounting_uncertain: state.accounting_uncertain.get(),
+        }) {
             UntrackDisposition::RearmRunningPass => state.evaluation_armed.set(true),
             UntrackDisposition::IgnoreOwnEviction => {}
             UntrackDisposition::SchedulePass => self.schedule_editor_memory_evaluation(),
@@ -162,7 +162,7 @@ impl LushtextWindow {
         }
         let active_weak = editor.downgrade();
         state.active_editor.replace(Some(active_weak));
-        let generation = state.next_access_generation.get().wrapping_add(1);
+        let generation = state.next_access_generation.get().next();
         state.next_access_generation.set(generation);
         editor.mark_memory_accessed(generation);
     }
@@ -203,17 +203,17 @@ impl LushtextWindow {
         let update = state.ledger.borrow_mut().upsert(EditorResidency {
             editor_id,
             estimated_bytes: Bytes::from_bytes(editor.estimated_live_buffer_bytes()),
-            access_generation: AccessGeneration::new(editor.memory_access_generation()),
-            policy_generation: PolicyGeneration::new(editor.memory_policy_generation()),
+            access_generation: editor.memory_access_generation(),
+            policy_generation: editor.memory_policy_generation(),
             eligible_for_eviction: editor.eligible_for_memory_eviction(active),
         });
 
-        match policy::untrack_disposition(
-            state.evaluation_running.get(),
-            state.applying_eviction.get(),
-            Some(update.total_bytes.as_bytes()),
-            state.accounting_uncertain.get(),
-        ) {
+        match policy::untrack_disposition(policy::UntrackFacts {
+            evaluation_running: state.evaluation_running.get(),
+            applying_eviction: state.applying_eviction.get(),
+            remaining_total_bytes: Some(update.total_bytes.as_bytes()),
+            accounting_uncertain: state.accounting_uncertain.get(),
+        }) {
             UntrackDisposition::RearmRunningPass => state.evaluation_armed.set(true),
             UntrackDisposition::IgnoreOwnEviction => {}
             UntrackDisposition::SchedulePass => self.schedule_editor_memory_evaluation(),
@@ -304,8 +304,8 @@ impl LushtextWindow {
                 snapshot.push(EditorResidency {
                     editor_id: EditorId::new(editor.as_ptr() as usize),
                     estimated_bytes: Bytes::from_bytes(editor.estimated_live_buffer_bytes()),
-                    access_generation: AccessGeneration::new(editor.memory_access_generation()),
-                    policy_generation: PolicyGeneration::new(editor.memory_policy_generation()),
+                    access_generation: editor.memory_access_generation(),
+                    policy_generation: editor.memory_policy_generation(),
                     // Every uncertain or non-recoverable state stays protected.
                     eligible_for_eviction: editor.eligible_for_memory_eviction(active),
                 });

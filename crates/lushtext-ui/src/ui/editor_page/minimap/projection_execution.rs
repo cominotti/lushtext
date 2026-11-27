@@ -304,7 +304,10 @@ impl LushtextEditorPage {
         if cheap_minimap_availability(self) == MinimapAvailability::Visible {
             self.ensure_minimap_analysis(request);
         } else {
-            self.cancel_minimap_analysis(false, false);
+            self.cancel_minimap_analysis(
+                super::retirement::MinimapCacheDisposition::Retain,
+                super::retirement::MinimapMarkersDisposition::Keep,
+            );
         }
         let availability = current_availability(self);
         self.imp().minimap.availability.set(availability);

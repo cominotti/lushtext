@@ -146,7 +146,12 @@ pub(super) fn project_notification_surfaces(
         if is_selected {
             selected_view = Some(notification.clone());
         }
-        if let Some(surface) = policy::inline_alert_perceivable_on(preview_only, is_selected) {
+        let presentation = if preview_only {
+            policy::AlertEditorPresentation::PreviewOnly
+        } else {
+            policy::AlertEditorPresentation::Editor
+        };
+        if let Some(surface) = policy::inline_alert_perceivable_on(presentation, is_selected) {
             perceivable = Some((editor, notification, surface));
         }
     }

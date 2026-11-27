@@ -687,9 +687,9 @@ pub struct DraftPipelinePolicyReset;
 impl Drop for DraftPipelinePolicyReset {
     fn drop(&mut self) {
         use lushtext_ui::ui::window::{
-            fail_next_draft_mutations_for_test, set_automatic_draft_limit_for_test,
-            set_draft_manifest_completion_delay_for_test, set_draft_mutation_delays_for_test,
-            set_lazy_draft_read_delay_for_test,
+            DraftMutationFailurePlan, fail_next_draft_mutations_for_test,
+            set_automatic_draft_limit_for_test, set_draft_manifest_completion_delay_for_test,
+            set_draft_mutation_delays_for_test, set_lazy_draft_read_delay_for_test,
         };
         set_automatic_draft_limit_for_test(
             lushtext_services::persistence::draft_service::MAX_AUTOMATIC_DRAFT_BYTES,
@@ -697,7 +697,7 @@ impl Drop for DraftPipelinePolicyReset {
         set_lazy_draft_read_delay_for_test(0);
         set_draft_mutation_delays_for_test(0, 0, 0);
         set_draft_manifest_completion_delay_for_test(0);
-        fail_next_draft_mutations_for_test(false, false, false, false);
+        fail_next_draft_mutations_for_test(DraftMutationFailurePlan::default());
     }
 }
 

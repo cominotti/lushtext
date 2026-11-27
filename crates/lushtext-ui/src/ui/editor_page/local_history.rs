@@ -741,11 +741,17 @@ impl LushtextEditorPage {
     }
 
     fn reschedule_local_history_after_capture(&self) {
-        if should_reschedule_periodic_capture(
-            self.is_modified(),
-            self.file_path().is_some(),
-            self.imp().local_history.automatic_capture_suppressed.get(),
-        ) {
+        let backing = if self.file_path().is_some() {
+            crate::ui::window::local_history::policy::PeriodicPathBacking::FileBacked
+        } else {
+            crate::ui::window::local_history::policy::PeriodicPathBacking::Untitled
+        };
+        let allowance = if self.imp().local_history.automatic_capture_suppressed.get() {
+            crate::ui::window::local_history::policy::PeriodicCaptureAllowance::Suppressed
+        } else {
+            crate::ui::window::local_history::policy::PeriodicCaptureAllowance::Allowed
+        };
+        if should_reschedule_periodic_capture(self.is_modified(), backing, allowance) {
             self.schedule_local_history_periodic_capture();
         }
     }

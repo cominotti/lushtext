@@ -194,11 +194,11 @@ pub use seams::DraftFlushError;
 
 #[cfg(feature = "test-utils")]
 pub use test_policy::{
-    fail_next_draft_mutations_for_test, set_automatic_draft_limit_for_test,
-    set_draft_manifest_completion_delay_for_test, set_draft_mutation_delays_for_test,
-    set_draft_restore_delay_for_test, set_first_dirty_autosave_delay_for_test,
-    set_lazy_draft_read_delay_for_test, set_next_draft_body_disposal_probe_for_test,
-    set_orphan_cleanup_delays_for_test,
+    DraftMutationFailurePlan, fail_next_draft_mutations_for_test,
+    set_automatic_draft_limit_for_test, set_draft_manifest_completion_delay_for_test,
+    set_draft_mutation_delays_for_test, set_draft_restore_delay_for_test,
+    set_first_dirty_autosave_delay_for_test, set_lazy_draft_read_delay_for_test,
+    set_next_draft_body_disposal_probe_for_test, set_orphan_cleanup_delays_for_test,
 };
 
 /// Conservative pre-read reservation for one maximum automatic draft body.

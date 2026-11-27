@@ -76,11 +76,11 @@ pub use dialogs::set_close_safety_completion_delay_for_test;
 pub use documents::set_canonical_refresh_delay_for_test;
 #[cfg(feature = "test-utils")]
 pub use drafts::{
-    fail_next_draft_mutations_for_test, set_automatic_draft_limit_for_test,
-    set_draft_manifest_completion_delay_for_test, set_draft_mutation_delays_for_test,
-    set_draft_restore_delay_for_test, set_first_dirty_autosave_delay_for_test,
-    set_lazy_draft_read_delay_for_test, set_next_draft_body_disposal_probe_for_test,
-    set_orphan_cleanup_delays_for_test,
+    DraftMutationFailurePlan, fail_next_draft_mutations_for_test,
+    set_automatic_draft_limit_for_test, set_draft_manifest_completion_delay_for_test,
+    set_draft_mutation_delays_for_test, set_draft_restore_delay_for_test,
+    set_first_dirty_autosave_delay_for_test, set_lazy_draft_read_delay_for_test,
+    set_next_draft_body_disposal_probe_for_test, set_orphan_cleanup_delays_for_test,
 };
 #[cfg(feature = "test-utils")]
 pub use encoding::set_lossy_encoding_analysis_delay_for_test;
@@ -92,7 +92,7 @@ pub use focus_mode::FOCUS_MODE_AFFORDANCE_REVEAL_BUDGET;
 pub use notifications::policy::inline_alert_announcement_key;
 // The draft-candidate predicate is pure policy the tab/close regression test
 // evaluates directly, rather than asserting a proxy for the autosave contract.
-pub use drafts::policy::draft_candidate_is_eligible;
+pub use drafts::policy::{DraftCandidateFacts, draft_candidate_is_eligible};
 pub use local_history::{
     LocalHistoryPreviewInstallEvidence, local_history_preview_install_evidence,
 };

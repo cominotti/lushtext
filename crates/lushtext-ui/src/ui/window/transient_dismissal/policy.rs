@@ -120,13 +120,40 @@ pub fn topmost_dismissible(state: TransientSurfaceState) -> Option<TransientDism
 /// before the window's Bubble controller sees the same key event, so without the
 /// latch the shell would close the *next* surface underneath one the child just
 /// closed — the cascade the dismissal contract forbids.
+/// Whether an inner child widget already handled the Escape key event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChildEscapeHandling {
+    /// A child widget consumed Escape and set the latch.
+    Handled,
+    /// Escape was not consumed by a child widget.
+    Unhandled,
+}
+
+impl ChildEscapeHandling {
+    /// Classify a boolean latch into [`ChildEscapeHandling`].
+    #[must_use]
+    pub const fn from_handled(handled: bool) -> Self {
+        if handled {
+            Self::Handled
+        } else {
+            Self::Unhandled
+        }
+    }
+}
+
+/// What one `Escape` keypress at the window controller decides, purely.
+///
+/// The latch wins first. `GtkSearchEntry::stop-search` is emitted by a child
+/// before the window's Bubble controller sees the same key event, so without the
+/// latch the shell would close the *next* surface underneath one the child just
+/// closed — the cascade the dismissal contract forbids.
 #[must_use]
 pub fn escape_outcome(
-    child_already_handled: bool,
+    child_handling: ChildEscapeHandling,
     state: TransientSurfaceState,
     focus_mode_active: bool,
 ) -> EscapeOutcome {
-    if child_already_handled {
+    if matches!(child_handling, ChildEscapeHandling::Handled) {
         return EscapeOutcome::ChildAlreadyHandled;
     }
     if let Some(surface) = topmost_dismissible(state) {
@@ -138,14 +165,38 @@ pub fn escape_outcome(
     EscapeOutcome::Unhandled
 }
 
+/// Whether the command palette is currently revealed for pointer click-away checks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaletteRevealState {
+    /// Palette is hidden.
+    Hidden,
+    /// Palette is revealed.
+    Revealed,
+}
+
+impl PaletteRevealState {
+    /// Classify `revealed` into [`PaletteRevealState`].
+    #[must_use]
+    pub const fn from_revealed(revealed: bool) -> Self {
+        if revealed {
+            Self::Revealed
+        } else {
+            Self::Hidden
+        }
+    }
+}
+
 /// Whether a primary pointer press dismisses the command palette.
 ///
 /// A hidden palette ignores the press so an ordinary click never pays for
 /// click-away, and an inside press proceeds so the palette's own entry, mode
 /// selector, result rows, scrollbars, and child popup roots keep working.
 #[must_use]
-pub fn palette_click_away_dismisses(palette_revealed: bool, press_inside_palette: bool) -> bool {
-    palette_revealed && !press_inside_palette
+pub fn palette_click_away_dismisses(
+    palette: PaletteRevealState,
+    press_inside_palette: bool,
+) -> bool {
+    matches!(palette, PaletteRevealState::Revealed) && !press_inside_palette
 }
 
 #[cfg(test)]
@@ -238,10 +289,10 @@ mod tests {
     fn latch_beats_every_visible_surface_and_focus_mode() {
         let state = state_with(|s| s.command_palette_revealed = true);
         assert_eq!(
-            escape_outcome(true, state, true),
+            escape_outcome(ChildEscapeHandling::Handled, state, true),
             EscapeOutcome::ChildAlreadyHandled
         );
-        assert!(escape_outcome(true, state, true).stops_event());
+        assert!(escape_outcome(ChildEscapeHandling::Handled, state, true).stops_event());
     }
 
     #[test]
@@ -250,28 +301,48 @@ mod tests {
         // exits Focus Mode. Focus Mode must not exit while a surface is up.
         let with_palette = state_with(|s| s.command_palette_revealed = true);
         assert_eq!(
-            escape_outcome(false, with_palette, true),
+            escape_outcome(ChildEscapeHandling::Unhandled, with_palette, true),
             EscapeOutcome::Dismiss(TransientDismissal::CommandPalette)
         );
         assert_eq!(
-            escape_outcome(false, TransientSurfaceState::default(), true),
+            escape_outcome(
+                ChildEscapeHandling::Unhandled,
+                TransientSurfaceState::default(),
+                true
+            ),
             EscapeOutcome::ExitFocusMode
         );
     }
 
     #[test]
     fn nothing_visible_and_no_focus_mode_leaves_the_event_alone() {
-        let outcome = escape_outcome(false, TransientSurfaceState::default(), false);
+        let outcome = escape_outcome(
+            ChildEscapeHandling::Unhandled,
+            TransientSurfaceState::default(),
+            false,
+        );
         assert_eq!(outcome, EscapeOutcome::Unhandled);
         assert!(!outcome.stops_event());
     }
 
     #[test]
     fn click_away_dismisses_only_outside_presses_on_a_revealed_palette() {
-        assert!(palette_click_away_dismisses(true, false));
-        assert!(!palette_click_away_dismisses(true, true));
-        assert!(!palette_click_away_dismisses(false, false));
-        assert!(!palette_click_away_dismisses(false, true));
+        assert!(palette_click_away_dismisses(
+            PaletteRevealState::Revealed,
+            false
+        ));
+        assert!(!palette_click_away_dismisses(
+            PaletteRevealState::Revealed,
+            true
+        ));
+        assert!(!palette_click_away_dismisses(
+            PaletteRevealState::Hidden,
+            false
+        ));
+        assert!(!palette_click_away_dismisses(
+            PaletteRevealState::Hidden,
+            true
+        ));
     }
 
     #[test]
@@ -287,11 +358,11 @@ mod tests {
             Some(TransientDismissal::CommandPaletteCategory)
         );
         assert_eq!(
-            escape_outcome(false, state, true),
+            escape_outcome(ChildEscapeHandling::Unhandled, state, true),
             EscapeOutcome::Dismiss(TransientDismissal::CommandPaletteCategory)
         );
         assert_eq!(
-            escape_outcome(true, state, false),
+            escape_outcome(ChildEscapeHandling::Handled, state, false),
             EscapeOutcome::ChildAlreadyHandled,
             "the entry's own leave latched this Escape"
         );

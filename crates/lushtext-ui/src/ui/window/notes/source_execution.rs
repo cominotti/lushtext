@@ -543,13 +543,13 @@ fn finish_notes_browser_source_load(
     mode: palette_service::NotesBrowserMode,
     result: GuardedNoteSourceOutcome,
 ) {
-    let ticket = NotesBrowserTicket::<SourceFlight>::new(generation.get(), mode);
+    let ticket = NotesBrowserTicket::<SourceFlight>::new(generation, mode);
     let (accepted, next) = {
         let mut refreshes = state.source_refreshes.borrow_mut();
         let accepted = ticket.may_publish(&NotesBrowserFacts::new(
-            refreshes.is_current(generation),
+            super::seams::CoordinatorCurrency::from_is_current(refreshes.is_current(generation)),
             state.mode.get(),
-            state.disposed.get(),
+            super::seams::BrowserDisposal::from_disposed(state.disposed.get()),
         ));
         let next = refreshes.finish(generation);
         (accepted, next)
@@ -570,7 +570,7 @@ fn finish_notes_browser_source_load(
                 *state.source_truncation.borrow_mut() = source_truncation;
                 state
                     .source_generation
-                    .set(state.source_generation.get().wrapping_add(1));
+                    .set(state.source_generation.get().next());
                 state.listed_count.set(NotesBrowserListedCount {
                     listed,
                     found: load.rows_found.max(listed),

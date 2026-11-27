@@ -124,19 +124,28 @@ pub enum InlineAlertSurface {
     PreviewSurface,
 }
 
+/// Whether the tab currently displays its editor surface or preview-only surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AlertEditorPresentation {
+    /// Editor surface with its own inline info bar is shown.
+    Editor,
+    /// Preview-only mode hides the editor surface so the preview carries alerts.
+    PreviewOnly,
+}
+
 /// Where an editor's alert is perceivable, or `None` where nobody can see it.
 ///
 /// Whether the window itself is the active one is deliberately not an input:
 /// each window announces for its own selected tab.
 #[must_use]
 pub fn inline_alert_perceivable_on(
-    preview_only: bool,
+    presentation: AlertEditorPresentation,
     is_selected: bool,
 ) -> Option<InlineAlertSurface> {
-    match (is_selected, preview_only) {
+    match (is_selected, presentation) {
         (false, _) => None,
-        (true, false) => Some(InlineAlertSurface::EditorInfoBar),
-        (true, true) => Some(InlineAlertSurface::PreviewSurface),
+        (true, AlertEditorPresentation::Editor) => Some(InlineAlertSurface::EditorInfoBar),
+        (true, AlertEditorPresentation::PreviewOnly) => Some(InlineAlertSurface::PreviewSurface),
     }
 }
 
@@ -355,13 +364,19 @@ mod tests {
     #[test]
     fn an_alert_is_perceivable_only_on_the_selected_editor_outside_preview_only() {
         assert_eq!(
-            inline_alert_perceivable_on(false, true),
+            inline_alert_perceivable_on(AlertEditorPresentation::Editor, true),
             Some(InlineAlertSurface::EditorInfoBar)
         );
-        assert_eq!(inline_alert_perceivable_on(false, false), None);
-        assert_eq!(inline_alert_perceivable_on(true, false), None);
         assert_eq!(
-            inline_alert_perceivable_on(true, true),
+            inline_alert_perceivable_on(AlertEditorPresentation::Editor, false),
+            None
+        );
+        assert_eq!(
+            inline_alert_perceivable_on(AlertEditorPresentation::PreviewOnly, false),
+            None
+        );
+        assert_eq!(
+            inline_alert_perceivable_on(AlertEditorPresentation::PreviewOnly, true),
             Some(InlineAlertSurface::PreviewSurface),
             "preview-only hides the editor's bar, so the preview copy carries it"
         );

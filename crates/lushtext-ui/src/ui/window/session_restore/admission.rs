@@ -38,22 +38,37 @@ pub(crate) struct SessionRestoreRuntime {
     pub(super) selection_generation: SelectionGeneration,
 }
 
+#[derive(Clone, Copy)]
+enum RestoreSelectionPolicy {
+    PreserveExisting,
+    SelectRestored,
+}
+
+#[derive(Clone, Copy)]
+enum OrphanCleanupPolicy {
+    Allowed,
+    Deferred,
+}
+
 impl SessionRestoreRuntime {
     fn new(
         policy: SessionRestorePolicy,
-        preserve_existing_selection: bool,
+        selection: RestoreSelectionPolicy,
         selected_before: Option<glib::WeakRef<libadwaita::TabPage>>,
-        cleanup_allowed_on_terminal: bool,
+        cleanup: OrphanCleanupPolicy,
         selection_generation: SelectionGeneration,
     ) -> Self {
         Self {
             policy,
             scheduled_source: None,
-            preserve_existing_selection,
+            preserve_existing_selection: matches!(
+                selection,
+                RestoreSelectionPolicy::PreserveExisting
+            ),
             selected_before,
             requested_page: None,
             projection_batch_owned: true,
-            cleanup_allowed_on_terminal,
+            cleanup_allowed_on_terminal: matches!(cleanup, OrphanCleanupPolicy::Allowed),
             selection_generation,
         }
     }
@@ -79,7 +94,16 @@ impl LushtextWindow {
         let state = &self.imp().session;
         let generation = state.next_restore_generation.get().next();
         state.next_restore_generation.set(generation);
-        let preserve_existing_selection = self.imp().tab_view.n_pages() > 0;
+        let selection_policy = if self.imp().tab_view.n_pages() > 0 {
+            RestoreSelectionPolicy::PreserveExisting
+        } else {
+            RestoreSelectionPolicy::SelectRestored
+        };
+        let cleanup_policy = if cleanup_allowed {
+            OrphanCleanupPolicy::Allowed
+        } else {
+            OrphanCleanupPolicy::Deferred
+        };
         let selected_before = self
             .imp()
             .tab_view
@@ -94,9 +118,9 @@ impl LushtextWindow {
             .restore_runtime
             .replace(Some(SessionRestoreRuntime::new(
                 policy,
-                preserve_existing_selection,
+                selection_policy,
                 selected_before,
-                cleanup_allowed,
+                cleanup_policy,
                 selection_generation,
             )));
         self.schedule_session_restore_turn(generation);

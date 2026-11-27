@@ -15,6 +15,8 @@
 //! `ui/**/policy.rs` mutation scope.
 #![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]
 
+use lushtext_model::values::Sp;
+
 /// The accessible name and tooltip of the button that scrolls toward the first
 /// tab.
 pub const SCROLL_BACK_LABEL: &str = "Scroll Tabs Back";
@@ -44,19 +46,19 @@ pub const TAB_SCROLL_REPEAT_INTERVAL_MS: u32 = 200;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct StripScrollExtent {
     /// The adjustment's value.
-    pub value_px: i32,
+    pub value_px: Sp,
     /// The visible width of the scroller's tabs.
-    pub page_px: i32,
+    pub page_px: Sp,
     /// The total width of the scroller's tabs.
-    pub upper_px: i32,
+    pub upper_px: Sp,
 }
 
 impl StripScrollExtent {
     /// The largest value the adjustment can take.
     #[must_use]
-    pub const fn max_value(self) -> i32 {
-        let max = self.upper_px.saturating_sub(self.page_px);
-        if max > 0 { max } else { 0 }
+    pub const fn max_value(self) -> Sp {
+        let max = self.upper_px.as_sp().saturating_sub(self.page_px.as_sp());
+        Sp::new(if max > 0 { max } else { 0 })
     }
 }
 
@@ -80,7 +82,7 @@ pub struct OverflowFacts {
 /// least one pixel: the one overflow rule both scrollers' readings share.
 #[must_use]
 pub const fn strip_overflows(extent: StripScrollExtent) -> bool {
-    extent.max_value() >= 1
+    extent.max_value().as_sp() >= 1
 }
 
 /// Whether the scroll buttons show, given whether they show now.
@@ -123,9 +125,9 @@ const fn moves_up(direction: ScrollDirection, rtl: bool) -> bool {
 
 const fn can_move(extent: StripScrollExtent, up: bool) -> bool {
     if up {
-        extent.value_px < extent.max_value()
+        extent.value_px.as_sp() < extent.max_value().as_sp()
     } else {
-        extent.value_px > 0
+        extent.value_px.as_sp() > 0
     }
 }
 
@@ -153,24 +155,28 @@ pub const fn can_scroll_forward(extent: StripScrollExtent, rtl: bool) -> bool {
 #[must_use]
 pub const fn next_scroll_target(
     extent: StripScrollExtent,
-    increment_px: i32,
+    increment_px: Sp,
     direction: ScrollDirection,
     rtl: bool,
-) -> i32 {
-    let step = if increment_px > 0 { increment_px } else { 0 };
-    let target = if moves_up(direction, rtl) {
-        extent.value_px.saturating_add(step)
+) -> Sp {
+    let step = if increment_px.as_sp() > 0 {
+        increment_px.as_sp()
     } else {
-        extent.value_px.saturating_sub(step)
+        0
     };
-    let max = extent.max_value();
-    if target < 0 {
+    let target = if moves_up(direction, rtl) {
+        extent.value_px.as_sp().saturating_add(step)
+    } else {
+        extent.value_px.as_sp().saturating_sub(step)
+    };
+    let max = extent.max_value().as_sp();
+    Sp::new(if target < 0 {
         0
     } else if target > max {
         max
     } else {
         target
-    }
+    })
 }
 
 /// Whether the All Tabs button shows: two or more tabs on a shown strip.
@@ -179,12 +185,22 @@ pub const fn all_tabs_button_visible(tab_count: u32, strip_shown: bool) -> bool 
     strip_shown && tab_count >= 2
 }
 
+/// Whether any control in the end group is visible (`controls_visible` or
+/// `all_tabs_visible`), requiring the group to stay attached to the bar.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EndGroupVisibility {
+    /// Whether the Back/Forward scroll buttons show.
+    pub controls_visible: bool,
+    /// Whether the All Tabs button shows.
+    pub all_tabs_visible: bool,
+}
+
 /// Whether the end group is attached to the bar at all. With nothing to show
 /// it is detached (`set_end_action_widget(None)`): a hidden group would still
 /// leave the bar's end action bin and its padding visible (design F11).
 #[must_use]
-pub const fn group_attached(controls_visible: bool, all_tabs_visible: bool) -> bool {
-    controls_visible || all_tabs_visible
+pub const fn group_attached(visibility: EndGroupVisibility) -> bool {
+    visibility.controls_visible || visibility.all_tabs_visible
 }
 
 /// What the reconcile reads before it plans the controls.
@@ -245,7 +261,10 @@ pub const fn plan_overflow_controls(inputs: OverflowControlsInputs) -> OverflowC
         can_scroll_back,
         can_scroll_forward,
         all_tabs_visible,
-        group_attached: group_attached(buttons_visible, all_tabs_visible),
+        group_attached: group_attached(EndGroupVisibility {
+            controls_visible: buttons_visible,
+            all_tabs_visible,
+        }),
     }
 }
 
@@ -287,9 +306,9 @@ pub const fn reveal_holds_readiness(started_at_us: i64, now_us: i64) -> bool {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RevealProgress {
     /// The strip's value at the previous allocated frame, in whole pixels.
-    pub value_px: Option<i32>,
+    pub value_px: Option<Sp>,
     /// The strip's total width at the previous allocated frame.
-    pub upper_px: Option<i32>,
+    pub upper_px: Option<Sp>,
     /// The frame time of the announcement, once it was made.
     pub announced_at_us: Option<i64>,
 }
@@ -331,11 +350,13 @@ pub const fn reveal_frame(
     if frame > SELECTION_REVEAL_MAX_FRAMES {
         return (RevealStep::End, progress);
     }
-    if extent.page_px <= 0 {
+    if !extent.page_px.is_positive() {
         return (RevealStep::Wait, progress);
     }
-    let still = matches!(progress.value_px, Some(value) if value == extent.value_px);
-    let width_kept = matches!(progress.upper_px, Some(upper) if upper == extent.upper_px);
+    let still =
+        matches!(progress.value_px, Some(value) if value.as_sp() == extent.value_px.as_sp());
+    let width_kept =
+        matches!(progress.upper_px, Some(upper) if upper.as_sp() == extent.upper_px.as_sp());
     let next = RevealProgress {
         value_px: Some(extent.value_px),
         upper_px: Some(extent.upper_px),
@@ -369,8 +390,11 @@ pub const fn reveal_frame(
 /// scroller's `page_px`-wide view: the strip shows the whole tab. A tab or a
 /// view with no width (not allocated yet) is never in view.
 #[must_use]
-pub const fn tab_in_view(start_px: i32, width_px: i32, page_px: i32) -> bool {
-    width_px > 0 && page_px > 0 && start_px >= 0 && start_px.saturating_add(width_px) <= page_px
+pub const fn tab_in_view(start_px: Sp, width_px: Sp, page_px: Sp) -> bool {
+    width_px.is_positive()
+        && page_px.is_positive()
+        && start_px.as_sp() >= 0
+        && start_px.as_sp().saturating_add(width_px.as_sp()) <= page_px.as_sp()
 }
 
 /// The All Tabs button's tooltip, before its count.
@@ -439,18 +463,29 @@ pub fn all_tabs_list_value_text(highlighted_row_name: Option<&str>, match_count:
     }
 }
 
+/// State flags displayed alongside an All Tabs row's title.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AllTabsRowState {
+    /// Whether the document has unsaved modifications or held input.
+    pub modified: bool,
+    /// Whether the tab is pinned.
+    pub pinned: bool,
+    /// Whether the tab is currently selected.
+    pub current: bool,
+}
+
 /// One row's accessible name: its title and the states a sighted user reads
 /// from its icons, cut to [`ALL_TABS_ROW_NAME_MAX_CHARS`] characters.
 #[must_use]
-pub fn all_tabs_row_name(title: &str, modified: bool, pinned: bool, current: bool) -> String {
+pub fn all_tabs_row_name(title: &str, state: AllTabsRowState) -> String {
     let mut name: String = title
         .chars()
         .take(ALL_TABS_ROW_NAME_MAX_CHARS / 2)
         .collect();
     for (holds, word) in [
-        (current, ", current tab"),
-        (pinned, ", pinned"),
-        (modified, ", unsaved changes"),
+        (state.current, ", current tab"),
+        (state.pinned, ", pinned"),
+        (state.modified, ", unsaved changes"),
     ] {
         if holds {
             name.push_str(word);
@@ -563,7 +598,7 @@ pub enum OverflowControl {
 }
 
 /// Which controls can take focus when a focused one disables or hides.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ControlFocusFacts {
     /// Back is shown and enabled.
     pub back_available: bool,
@@ -574,20 +609,6 @@ pub struct ControlFocusFacts {
 }
 
 impl ControlFocusFacts {
-    /// The three availabilities, in group order.
-    #[must_use]
-    pub const fn new(
-        back_available: bool,
-        forward_available: bool,
-        all_tabs_available: bool,
-    ) -> Self {
-        Self {
-            back_available,
-            forward_available,
-            all_tabs_available,
-        }
-    }
-
     /// Whether `control` can still hold focus.
     #[must_use]
     pub const fn available(self, control: OverflowControl) -> bool {
@@ -655,23 +676,35 @@ mod tests {
 
     const fn extent(value_px: i32, page_px: i32, upper_px: i32) -> StripScrollExtent {
         StripScrollExtent {
-            value_px,
-            page_px,
-            upper_px,
+            value_px: Sp::new(value_px),
+            page_px: Sp::new(page_px),
+            upper_px: Sp::new(upper_px),
         }
     }
 
     #[test]
     fn a_tab_is_in_view_only_when_the_whole_tab_is_inside_the_page() {
-        assert!(tab_in_view(0, 126, 598));
-        assert!(tab_in_view(472, 126, 598));
-        assert!(!tab_in_view(473, 126, 598), "one pixel past the end");
-        assert!(!tab_in_view(-1, 126, 598), "one pixel before the start");
-        assert!(!tab_in_view(-3_000, 126, 598));
-        assert!(!tab_in_view(0, 0, 598), "an unallocated tab");
-        assert!(!tab_in_view(0, 126, 0), "an unallocated view");
+        assert!(tab_in_view(Sp::ZERO, Sp::new(126), Sp::new(598)));
+        assert!(tab_in_view(Sp::new(472), Sp::new(126), Sp::new(598)));
         assert!(
-            !tab_in_view(i32::MAX, 126, 598),
+            !tab_in_view(Sp::new(473), Sp::new(126), Sp::new(598)),
+            "one pixel past the end"
+        );
+        assert!(
+            !tab_in_view(Sp::new(-1), Sp::new(126), Sp::new(598)),
+            "one pixel before the start"
+        );
+        assert!(!tab_in_view(Sp::new(-3_000), Sp::new(126), Sp::new(598)));
+        assert!(
+            !tab_in_view(Sp::ZERO, Sp::ZERO, Sp::new(598)),
+            "an unallocated tab"
+        );
+        assert!(
+            !tab_in_view(Sp::ZERO, Sp::new(126), Sp::ZERO),
+            "an unallocated view"
+        );
+        assert!(
+            !tab_in_view(Sp::new(i32::MAX), Sp::new(126), Sp::new(598)),
             "no overflow at the range end"
         );
     }
@@ -783,30 +816,30 @@ mod tests {
     fn a_step_moves_one_increment_and_clamps_at_both_ends() {
         let start = extent(0, 600, 2_000);
         assert_eq!(
-            next_scroll_target(start, 540, ScrollDirection::Forward, false),
-            540
+            next_scroll_target(start, Sp::new(540), ScrollDirection::Forward, false),
+            Sp::new(540)
         );
         assert_eq!(
-            next_scroll_target(start, 540, ScrollDirection::Back, false),
-            0
+            next_scroll_target(start, Sp::new(540), ScrollDirection::Back, false),
+            Sp::ZERO
         );
         let near_end = extent(1_200, 600, 2_000);
         assert_eq!(
-            next_scroll_target(near_end, 540, ScrollDirection::Forward, false),
-            1_400
+            next_scroll_target(near_end, Sp::new(540), ScrollDirection::Forward, false),
+            Sp::new(1_400)
         );
         assert_eq!(
-            next_scroll_target(near_end, 540, ScrollDirection::Back, false),
-            660
+            next_scroll_target(near_end, Sp::new(540), ScrollDirection::Back, false),
+            Sp::new(660)
         );
         // Right-to-left: Back is toward the upper end, where the first tab is.
         assert_eq!(
-            next_scroll_target(start, 540, ScrollDirection::Back, true),
-            540
+            next_scroll_target(start, Sp::new(540), ScrollDirection::Back, true),
+            Sp::new(540)
         );
         assert_eq!(
-            next_scroll_target(near_end, 540, ScrollDirection::Forward, true),
-            660
+            next_scroll_target(near_end, Sp::new(540), ScrollDirection::Forward, true),
+            Sp::new(660)
         );
     }
 
@@ -814,18 +847,23 @@ mod tests {
     fn a_zero_width_page_or_an_empty_range_never_moves_outside_it() {
         let collapsed = extent(0, 0, 0);
         assert_eq!(
-            next_scroll_target(collapsed, 0, ScrollDirection::Forward, false),
-            0
+            next_scroll_target(collapsed, Sp::ZERO, ScrollDirection::Forward, false),
+            Sp::ZERO
         );
         let page_wider_than_range = extent(0, 800, 600);
         assert_eq!(
-            next_scroll_target(page_wider_than_range, 720, ScrollDirection::Forward, false),
-            0
+            next_scroll_target(
+                page_wider_than_range,
+                Sp::new(720),
+                ScrollDirection::Forward,
+                false
+            ),
+            Sp::ZERO
         );
         let zero_page = extent(10, 0, 100);
         assert_eq!(
-            next_scroll_target(zero_page, 0, ScrollDirection::Forward, false),
-            10
+            next_scroll_target(zero_page, Sp::ZERO, ScrollDirection::Forward, false),
+            Sp::new(10)
         );
     }
 
@@ -840,35 +878,67 @@ mod tests {
 
     #[test]
     fn the_group_attaches_only_while_something_in_it_shows() {
-        assert!(!group_attached(false, false));
-        assert!(group_attached(true, false));
-        assert!(group_attached(false, true));
-        assert!(group_attached(true, true));
+        assert!(!group_attached(EndGroupVisibility {
+            controls_visible: false,
+            all_tabs_visible: false,
+        }));
+        assert!(group_attached(EndGroupVisibility {
+            controls_visible: true,
+            all_tabs_visible: false,
+        }));
+        assert!(group_attached(EndGroupVisibility {
+            controls_visible: false,
+            all_tabs_visible: true,
+        }));
+        assert!(group_attached(EndGroupVisibility {
+            controls_visible: true,
+            all_tabs_visible: true,
+        }));
     }
 
     #[test]
     fn a_control_is_available_by_its_own_flag() {
         use OverflowControl::{AllTabs, Back, Forward};
-        let facts = ControlFocusFacts::new(true, false, true);
+        let facts = ControlFocusFacts {
+            back_available: true,
+            forward_available: false,
+            all_tabs_available: true,
+        };
         assert!(facts.available(Back));
         assert!(!facts.available(Forward));
         assert!(facts.available(AllTabs));
-        let facts = ControlFocusFacts::new(false, true, false);
+        let facts = ControlFocusFacts {
+            back_available: false,
+            forward_available: true,
+            all_tabs_available: false,
+        };
         assert!(!facts.available(Back));
         assert!(facts.available(Forward));
         assert!(!facts.available(AllTabs));
     }
 
+    #[derive(Clone, Copy)]
+    enum ScrollerLookup {
+        Found,
+        Missing,
+    }
+
+    #[derive(Clone, Copy)]
+    enum ScrollButtonsShown {
+        Visible,
+        Hidden,
+    }
+
     const fn plan_inputs(
-        scroller_found: bool,
-        buttons_visible: bool,
+        scroller: ScrollerLookup,
+        buttons: ScrollButtonsShown,
         facts: OverflowFacts,
         extent: Option<StripScrollExtent>,
         tab_count: u32,
     ) -> OverflowControlsInputs {
         OverflowControlsInputs {
-            scroller_found,
-            buttons_visible,
+            scroller_found: matches!(scroller, ScrollerLookup::Found),
+            buttons_visible: matches!(buttons, ScrollButtonsShown::Visible),
             facts,
             extent,
             rtl: false,
@@ -888,8 +958,8 @@ mod tests {
     #[test]
     fn no_scroller_means_no_scroll_buttons_and_no_scroll_action() {
         let plan = plan_overflow_controls(plan_inputs(
-            false,
-            true,
+            ScrollerLookup::Missing,
+            ScrollButtonsShown::Visible,
             shown(true),
             Some(extent(300, 1000, 4000)),
             40,
@@ -909,8 +979,8 @@ mod tests {
             ..shown(true)
         };
         let plan = plan_overflow_controls(plan_inputs(
-            true,
-            true,
+            ScrollerLookup::Found,
+            ScrollButtonsShown::Visible,
             hidden,
             Some(extent(300, 1000, 4000)),
             40,
@@ -918,8 +988,8 @@ mod tests {
         assert_eq!(plan, OverflowControlsPlan::default());
         // Shown and overflowing mid-range: both ways move.
         let plan = plan_overflow_controls(plan_inputs(
-            true,
-            false,
+            ScrollerLookup::Found,
+            ScrollButtonsShown::Hidden,
             shown(true),
             Some(extent(300, 1000, 4000)),
             40,
@@ -927,8 +997,8 @@ mod tests {
         assert!(plan.buttons_visible && plan.can_scroll_back && plan.can_scroll_forward);
         // At the start edge only Forward moves.
         let plan = plan_overflow_controls(plan_inputs(
-            true,
-            true,
+            ScrollerLookup::Found,
+            ScrollButtonsShown::Visible,
             shown(true),
             Some(extent(0, 1000, 4000)),
             40,
@@ -939,8 +1009,8 @@ mod tests {
     #[test]
     fn the_plan_attaches_the_group_for_all_tabs_alone() {
         let plan = plan_overflow_controls(plan_inputs(
-            true,
-            false,
+            ScrollerLookup::Found,
+            ScrollButtonsShown::Hidden,
             shown(false),
             Some(extent(0, 1000, 800)),
             2,
@@ -949,8 +1019,8 @@ mod tests {
         assert!(plan.all_tabs_visible);
         assert!(plan.group_attached);
         let plan = plan_overflow_controls(plan_inputs(
-            true,
-            false,
+            ScrollerLookup::Found,
+            ScrollButtonsShown::Hidden,
             shown(false),
             Some(extent(0, 1000, 400)),
             1,
@@ -1016,8 +1086,8 @@ mod tests {
     #[test]
     fn the_reveal_ends_at_the_frame_cap() {
         let progress = RevealProgress {
-            value_px: Some(10),
-            upper_px: Some(5000),
+            value_px: Some(Sp::new(10)),
+            upper_px: Some(Sp::new(5000)),
             announced_at_us: None,
         };
         let (step, _) = reveal_frame(
@@ -1066,23 +1136,51 @@ mod tests {
     fn a_disabled_focused_button_hands_focus_on_in_order() {
         use OverflowControl::{AllTabs, Back, Forward};
         assert_eq!(
-            focus_after_disable(Forward, ControlFocusFacts::new(true, false, true)),
+            focus_after_disable(
+                Forward,
+                ControlFocusFacts {
+                    back_available: true,
+                    forward_available: false,
+                    all_tabs_available: true,
+                }
+            ),
             FocusHandoff::Control(Back)
         );
         assert_eq!(
-            focus_after_disable(Back, ControlFocusFacts::new(false, true, false)),
+            focus_after_disable(
+                Back,
+                ControlFocusFacts {
+                    back_available: false,
+                    forward_available: true,
+                    all_tabs_available: false,
+                }
+            ),
             FocusHandoff::Control(Forward)
         );
         assert_eq!(
-            focus_after_disable(Back, ControlFocusFacts::new(false, false, true)),
+            focus_after_disable(
+                Back,
+                ControlFocusFacts {
+                    back_available: false,
+                    forward_available: false,
+                    all_tabs_available: true,
+                }
+            ),
             FocusHandoff::Control(AllTabs)
         );
         assert_eq!(
-            focus_after_disable(Forward, ControlFocusFacts::new(false, false, false)),
+            focus_after_disable(Forward, ControlFocusFacts::default()),
             FocusHandoff::Editor
         );
         assert_eq!(
-            focus_after_disable(AllTabs, ControlFocusFacts::new(true, true, false)),
+            focus_after_disable(
+                AllTabs,
+                ControlFocusFacts {
+                    back_available: true,
+                    forward_available: true,
+                    all_tabs_available: false,
+                }
+            ),
             FocusHandoff::Control(Back)
         );
     }
@@ -1187,17 +1285,22 @@ mod tests {
 
     #[test]
     fn a_row_name_carries_its_states_and_stays_bounded() {
+        let all_states = AllTabsRowState {
+            modified: true,
+            pinned: true,
+            current: true,
+        };
         assert_eq!(
-            all_tabs_row_name("notes.md", true, true, true),
+            all_tabs_row_name("notes.md", all_states),
             "notes.md, current tab, pinned, unsaved changes"
         );
-        assert_eq!(all_tabs_row_name("a", false, false, false), "a");
+        assert_eq!(all_tabs_row_name("a", AllTabsRowState::default()), "a");
         let long = "x".repeat(4_096);
-        let name = all_tabs_row_name(&long, true, true, true);
+        let name = all_tabs_row_name(&long, all_states);
         assert!(name.chars().count() <= ALL_TABS_ROW_NAME_MAX_CHARS);
         assert!(name.ends_with("unsaved changes"));
         // The longest name the app builds: a 255-byte file name and every state.
-        let longest = all_tabs_row_name(&"y".repeat(255), true, true, true);
+        let longest = all_tabs_row_name(&"y".repeat(255), all_states);
         assert!(longest.chars().count() <= ALL_TABS_ROW_NAME_MAX_CHARS);
     }
 

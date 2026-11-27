@@ -57,7 +57,7 @@ use lushtext_model::document::formatting_overrides::FormattingOverrides;
 use lushtext_model::persistence::bookmark::BookmarkRecord;
 use lushtext_model::values::{
     AccessGeneration, BookmarkGeneration, BufferReplacementGeneration, DraftGeneration,
-    LoadGeneration,
+    LoadGeneration, PolicyGeneration,
 };
 use lushtext_services::coordination::notifications::InlineActionNotification;
 
@@ -604,22 +604,19 @@ impl LushtextEditorPage {
 
     /// Current least-recently-used generation assigned by the owning window.
     #[must_use]
-    pub(crate) fn memory_access_generation(&self) -> u64 {
-        self.imp().residency.access_generation.get().get()
+    pub(crate) fn memory_access_generation(&self) -> AccessGeneration {
+        self.imp().residency.access_generation.get()
     }
 
     /// Current residency and eviction-eligibility generation.
     #[must_use]
-    pub(crate) fn memory_policy_generation(&self) -> u64 {
-        self.imp().residency.policy_generation.get().get()
+    pub(crate) fn memory_policy_generation(&self) -> PolicyGeneration {
+        self.imp().residency.policy_generation.get()
     }
 
     /// Assign a window-wide access generation and invalidate stale decisions.
-    pub(crate) fn mark_memory_accessed(&self, generation: u64) {
-        self.imp()
-            .residency
-            .access_generation
-            .set(AccessGeneration::new(generation));
+    pub(crate) fn mark_memory_accessed(&self, generation: AccessGeneration) {
+        self.imp().residency.access_generation.set(generation);
         self.notify_memory_policy_changed();
     }
 

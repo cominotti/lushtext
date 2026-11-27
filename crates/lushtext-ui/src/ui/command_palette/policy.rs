@@ -290,16 +290,37 @@ pub fn leave_selection(rows: &[GroupedRowKind], category: PaletteCategory) -> Op
         .and_then(position)
 }
 
+/// Whether the command palette query box is currently empty.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueryTextState {
+    /// Zero characters entered.
+    Empty,
+    /// At least one character entered.
+    NonEmpty,
+}
+
+impl QueryTextState {
+    /// Classify `is_empty` into [`QueryTextState`].
+    #[must_use]
+    pub const fn from_is_empty(is_empty: bool) -> Self {
+        if is_empty {
+            Self::Empty
+        } else {
+            Self::NonEmpty
+        }
+    }
+}
+
 /// Whether a Backspace press leaves the category view: only on a query that
 /// was already empty, with a key release seen since it became empty, so the
 /// auto-repeat of the Backspace that emptied it (presses without releases)
 /// does not leave (`drill-down-palette-categories` D5).
 #[must_use]
 pub const fn backspace_leaves_category(
-    query_is_empty: bool,
+    query: QueryTextState,
     release_seen_since_empty: bool,
 ) -> bool {
-    query_is_empty && release_seen_since_empty
+    matches!(query, QueryTextState::Empty) && release_seen_since_empty
 }
 
 /// Tracks [`backspace_leaves_category`]'s second input from the key events
@@ -328,7 +349,10 @@ impl BackspaceLeaveTracker {
     /// A Backspace press: whether it leaves the category view.
     #[must_use]
     pub const fn backspace_pressed(&self, query_is_empty: bool) -> bool {
-        backspace_leaves_category(query_is_empty, self.release_seen_since_empty)
+        backspace_leaves_category(
+            QueryTextState::from_is_empty(query_is_empty),
+            self.release_seen_since_empty,
+        )
     }
 
     /// Forget everything (entering or leaving a category view). An empty
@@ -509,17 +533,24 @@ pub const fn select_batch_kind(rebuild_pending: bool) -> FileIndexUpdateBatchKin
     }
 }
 
+/// Inputs to [`index_flush_is_blocked`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IndexFlushFacts {
+    /// Whether the background index worker is currently running.
+    pub worker_running: bool,
+    /// Whether no incremental path mutations are queued.
+    pub queue_is_empty: bool,
+    /// Whether a full index rebuild is pending.
+    pub rebuild_pending: bool,
+}
+
 /// Whether a flush turn must not start.
 ///
 /// A flush is blocked while the serialized worker still owns the index, and it
 /// is pointless when there is neither a queued mutation nor a pending rebuild.
 #[must_use]
-pub const fn index_flush_is_blocked(
-    worker_running: bool,
-    queue_is_empty: bool,
-    rebuild_pending: bool,
-) -> bool {
-    worker_running || (queue_is_empty && !rebuild_pending)
+pub const fn index_flush_is_blocked(facts: IndexFlushFacts) -> bool {
+    facts.worker_running || (facts.queue_is_empty && !facts.rebuild_pending)
 }
 
 /// Identity of one index-mutation batch, captured when it is dispatched.
@@ -691,8 +722,8 @@ pub fn next_activatable(activatable: &[bool], current: u32, delta: i32) -> Optio
 /// It appears only for a non-empty query that produced no activatable row: an
 /// empty query showing default rows is not a no-results state.
 #[must_use]
-pub const fn no_results_visible(has_activatable_results: bool, query_is_empty: bool) -> bool {
-    !has_activatable_results && !query_is_empty
+pub const fn no_results_visible(has_activatable_results: bool, query: QueryTextState) -> bool {
+    !has_activatable_results && matches!(query, QueryTextState::NonEmpty)
 }
 
 /// Pluralized result count for the results list's accessible value.
@@ -1015,18 +1046,41 @@ mod tests {
 
     #[test]
     fn flush_is_blocked_by_the_worker_or_by_having_nothing_to_do() {
-        assert!(index_flush_is_blocked(true, false, true), "worker owns it");
-        assert!(index_flush_is_blocked(true, true, false));
         assert!(
-            index_flush_is_blocked(false, true, false),
+            index_flush_is_blocked(IndexFlushFacts {
+                worker_running: true,
+                queue_is_empty: false,
+                rebuild_pending: true,
+            }),
+            "worker owns it"
+        );
+        assert!(index_flush_is_blocked(IndexFlushFacts {
+            worker_running: true,
+            queue_is_empty: true,
+            rebuild_pending: false,
+        }));
+        assert!(
+            index_flush_is_blocked(IndexFlushFacts {
+                worker_running: false,
+                queue_is_empty: true,
+                rebuild_pending: false,
+            }),
             "nothing queued and no rebuild"
         );
         assert!(
-            !index_flush_is_blocked(false, true, true),
+            !index_flush_is_blocked(IndexFlushFacts {
+                worker_running: false,
+                queue_is_empty: true,
+                rebuild_pending: true,
+            }),
             "an empty queue still flushes a pending rebuild"
         );
         assert!(
-            !index_flush_is_blocked(false, false, false),
+            !index_flush_is_blocked(IndexFlushFacts {
+                worker_running: false,
+                queue_is_empty: false,
+                rebuild_pending: false,
+            }),
             "a queued mutation flushes"
         );
     }
@@ -1196,13 +1250,13 @@ mod tests {
 
     #[test]
     fn no_results_needs_a_non_empty_query() {
-        assert!(no_results_visible(false, false));
+        assert!(no_results_visible(false, QueryTextState::NonEmpty));
         assert!(
-            !no_results_visible(false, true),
+            !no_results_visible(false, QueryTextState::Empty),
             "empty query shows defaults"
         );
-        assert!(!no_results_visible(true, false));
-        assert!(!no_results_visible(true, true));
+        assert!(!no_results_visible(true, QueryTextState::NonEmpty));
+        assert!(!no_results_visible(true, QueryTextState::Empty));
     }
 
     #[test]
@@ -1429,9 +1483,9 @@ mod tests {
 
     #[test]
     fn backspace_leaves_only_after_a_release_on_an_empty_query() {
-        assert!(!backspace_leaves_category(false, true));
-        assert!(!backspace_leaves_category(true, false));
-        assert!(backspace_leaves_category(true, true));
+        assert!(!backspace_leaves_category(QueryTextState::NonEmpty, true));
+        assert!(!backspace_leaves_category(QueryTextState::Empty, false));
+        assert!(backspace_leaves_category(QueryTextState::Empty, true));
         // Holding Backspace over "rs": press, press (query now empty), press…
         let mut tracker = BackspaceLeaveTracker::default();
         tracker.reset(false);

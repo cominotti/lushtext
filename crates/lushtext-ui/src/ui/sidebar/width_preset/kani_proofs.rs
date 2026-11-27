@@ -16,6 +16,7 @@
 //! never see this module. The harnesses check the functions that ship.
 
 use super::WorkspaceSidebarWidthPreset;
+use lushtext_model::values::Sp;
 
 /// `clamped_width_sp` is the spec formula
 /// `clamp(max(window_width, 1) * percent / 100, min_width_sp, max_width_sp)`
@@ -25,15 +26,15 @@ use super::WorkspaceSidebarWidthPreset;
 fn clamp_matches_the_spec_formula_and_bounds() {
     let preset: WorkspaceSidebarWidthPreset = kani::any();
     let window_width: i32 = kani::any();
-    let width = preset.clamped_width_sp(window_width);
+    let width = preset.clamped_width_sp(Sp::new(window_width));
     let hinted = i64::from(window_width.max(1)) * i64::from(preset.percent()) / 100;
     let expected = hinted.clamp(
-        i64::from(preset.min_width_sp()),
-        i64::from(preset.max_width_sp()),
+        i64::from(preset.min_width_sp().as_sp()),
+        i64::from(preset.max_width_sp().as_sp()),
     );
-    assert!(i64::from(width) == expected);
+    assert!(i64::from(width.as_sp()) == expected);
     assert!(width >= preset.min_width_sp() && width <= preset.max_width_sp());
-    assert!(width >= 1);
+    assert!(width >= Sp::new(1));
 }
 
 /// `clamped_width_sp` never decreases as the window width grows.
@@ -43,7 +44,7 @@ fn clamp_is_monotone_in_window_width() {
     let narrow: i32 = kani::any();
     let wide: i32 = kani::any();
     kani::assume(narrow <= wide);
-    assert!(preset.clamped_width_sp(narrow) <= preset.clamped_width_sp(wide));
+    assert!(preset.clamped_width_sp(Sp::new(narrow)) <= preset.clamped_width_sp(Sp::new(wide)));
 }
 
 /// The integer percentage is the stored hint fraction, exactly.

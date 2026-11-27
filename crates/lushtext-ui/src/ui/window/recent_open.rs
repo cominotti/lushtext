@@ -125,10 +125,10 @@ impl LushtextWindow {
                 false
             }
         };
-        policy::should_rebuild_rows(
-            self.imp().open_menu_button.is_active(),
-            self.imp().open_popover.is_visible(),
-        ) || seeded
+        policy::should_rebuild_rows(policy::OpenPopoverVisibility {
+            menu_button_active: self.imp().open_menu_button.is_active(),
+            popover_visible: self.imp().open_popover.is_visible(),
+        }) || seeded
     }
 
     pub(super) fn rebuild_open_popover_rows(&self) {

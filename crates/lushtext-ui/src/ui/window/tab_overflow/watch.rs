@@ -498,8 +498,11 @@ impl LushtextWindow {
             state.group_attached.set(group_attached);
         }
 
-        let focus_facts =
-            ControlFocusFacts::new(can_scroll_back, can_scroll_forward, all_tabs_visible);
+        let focus_facts = ControlFocusFacts {
+            back_available: can_scroll_back,
+            forward_available: can_scroll_forward,
+            all_tabs_available: all_tabs_visible,
+        };
         if let Some(control) = focused
             && !focus_facts.available(control)
             && !controls.focus_control(focus_after_disable(control, focus_facts))

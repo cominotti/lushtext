@@ -30,10 +30,10 @@ use lushtext_model::document::paragraph_boundary::DocumentProfile;
 
 use super::evidence;
 use super::policy::{
-    BufferReplacementCancelReason, BufferReplacementMetrics, BufferReplacementTicket,
-    CancelDisposition, ClearProgress, ReplacementPhase, StartDisposition, after_clear_slice,
-    cancel_disposition, guard_restores_on_terminal, insertion_is_complete, start_disposition,
-    turn_may_run,
+    BufferClearState, BufferReplacementCancelReason, BufferReplacementMetrics,
+    BufferReplacementTicket, CancelDisposition, ClearProgress, MutationProgress, ReplacementPhase,
+    StartDisposition, after_clear_slice, cancel_disposition, guard_restores_on_terminal,
+    insertion_is_complete, start_disposition, turn_may_run,
 };
 // The Protected View install mapping and the test-only actuation seams name
 // the workflow family; every caller supplies its own variant in its ticket.
@@ -189,8 +189,20 @@ pub enum BufferReplacementOutcome {
     },
 }
 
+#[derive(Clone, Copy)]
+enum ResourceRelease {
+    Released,
+    NotHeld,
+}
+
+impl ResourceRelease {
+    const fn as_bool(self) -> bool {
+        matches!(self, Self::Released)
+    }
+}
+
 impl BufferReplacementOutcome {
-    fn trace_terminal(&self, source_released: bool, guard_released: bool) {
+    fn trace_terminal(&self, source_release: ResourceRelease, guard_release: ResourceRelease) {
         let (ticket, cancel_reason, metrics) = match self {
             Self::Complete {
                 ticket, metrics, ..
@@ -209,8 +221,8 @@ impl BufferReplacementOutcome {
             cleared_characters = metrics.cleared_characters,
             inserted_bytes = metrics.inserted_bytes,
             peak_retained_bodies = metrics.peak_retained_bodies,
-            source_released,
-            guard_released,
+            source_released = source_release.as_bool(),
+            guard_released = guard_release.as_bool(),
             "buffer replacement reached terminal cleanup"
         );
     }
@@ -843,7 +855,12 @@ fn run_clear_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
         }
         state.body.as_deref().is_none_or(str::is_empty)
     };
-    match after_clear_slice(cleared, body_is_empty) {
+    let clear_state = if cleared {
+        BufferClearState::Emptied
+    } else {
+        BufferClearState::Remaining
+    };
+    match after_clear_slice(clear_state, body_is_empty) {
         ClearProgress::ContinueClearing => schedule_turn(session),
         ClearProgress::Finish => finish_session(session, None),
         ClearProgress::BeginInstalling => {
@@ -938,12 +955,18 @@ fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
     if insertion_is_complete(end, body_len) {
         finish_session(session, None);
     } else {
-        use crate::ui::editor_page::load::policy::{InstallSlicePacing, install_slice_pacing};
+        use crate::ui::editor_page::load::policy::{
+            InstallPacingFacts, InstallSlicePacing, install_slice_pacing,
+        };
         let laid_out = editor
             .as_ref()
             .is_some_and(LushtextEditorPage::install_follows_layout);
         let paced = budget == SliceBudget::PACED || highlighted;
-        match install_slice_pacing(paced, laid_out, protected) {
+        match install_slice_pacing(InstallPacingFacts {
+            dense: paced,
+            laid_out,
+            protected,
+        }) {
             InstallSlicePacing::BehindValidation => {
                 schedule_paced_turn(session, crate::ui::editor_page::load::PACED_SLICE_PRIORITY);
             }
@@ -1139,7 +1162,12 @@ fn cancel_session(
             editor.begin_chunked_highlight();
         }
     }
-    match cancel_disposition(disposing, mutation_started) {
+    let mutation = if mutation_started {
+        MutationProgress::Started
+    } else {
+        MutationProgress::NotStarted
+    };
+    match cancel_disposition(disposing, mutation) {
         CancelDisposition::FinishImmediately => finish_session(session, Some(reason)),
         CancelDisposition::ClearPartialBuffer => {
             session.borrow_mut().phase = ReplacementPhase::ClearingCancelled;
@@ -1236,7 +1264,12 @@ fn finish_session(
             }
         }
     };
-    outcome.trace_terminal(true, guard.is_some());
+    let guard_release = if guard.is_some() {
+        ResourceRelease::Released
+    } else {
+        ResourceRelease::NotHeld
+    };
+    outcome.trace_terminal(ResourceRelease::Released, guard_release);
     let Some(editor) = editor else {
         if let Some(callback) = callback {
             callback(outcome);

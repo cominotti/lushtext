@@ -56,13 +56,18 @@ pub(crate) fn cancel_load(editor: &LushtextEditorPage) {
     let was_loading = editor.imp().load_state.get() == EditorLoadState::Loading;
     let installation_active = editor.imp().load.installation.borrow().is_some();
     admission::discard_pending_request(editor);
+    let slot_occupancy = if installation_active {
+        policy::InstallSlotOccupancy::Occupied
+    } else {
+        policy::InstallSlotOccupancy::Idle
+    };
     editor
         .imp()
         .load
         .user_cancel_pending
         .set(policy::publishes_user_cancellation(
             was_loading,
-            installation_active,
+            slot_occupancy,
         ));
     cancel_current_load_resources(editor, AbortDisposition::Cancel);
     admission::retire_load_identity(editor);

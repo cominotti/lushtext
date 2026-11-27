@@ -122,7 +122,7 @@ pub(super) struct NotesBrowserState {
         RefCell<Arc<crate::ui::plain_disposal::DisposalOwned<Box<[NotesBrowserEntry]>>>>,
     /// Generation of the published source; rows carry it, so a row of a
     /// replaced source can neither render nor open.
-    pub(super) source_generation: Cell<u64>,
+    pub(super) source_generation: Cell<NotesSourceGeneration>,
     /// Rows listed against rows found for the published source.
     pub(super) listed_count: Cell<NotesBrowserListedCount>,
     /// Source generation whose limit was last announced.
@@ -589,7 +589,7 @@ impl LushtextWindow {
             raw_preview_buffer,
             open_button,
             back_button,
-            source_generation: Cell::new(0),
+            source_generation: Cell::new(NotesSourceGeneration::ZERO),
             listed_count: Cell::new(NotesBrowserListedCount::default()),
             limit_announced_generation: Cell::new(None),
             limit_announcements: Cell::new(0),
@@ -1184,9 +1184,7 @@ impl NotesBrowserState {
     /// Open the entry a listed row names, if the row still belongs to the
     /// published source (a row of a replaced source opens nothing).
     fn open_listed_row(&self, row: &NotesBrowserRow) {
-        if row.generation() != NotesSourceGeneration::new(self.source_generation.get())
-            || self.disposed.get()
-        {
+        if row.generation() != self.source_generation.get() || self.disposed.get() {
             return;
         }
         if let Ok(index) = usize::try_from(row.source_index()) {
@@ -1379,7 +1377,7 @@ fn bind_notes_row(
     row: &NotesBrowserRow,
     widgets: &NotesRowWidgets,
 ) {
-    if row.generation() != NotesSourceGeneration::new(state.source_generation.get()) {
+    if row.generation() != state.source_generation.get() {
         return;
     }
     let all_entries = state.all_entries.borrow();

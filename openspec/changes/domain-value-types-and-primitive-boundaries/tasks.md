@@ -17,10 +17,10 @@ Timing: `Verdict class: non-inferiority` on smoke cases `eviction/reselect`, `ev
 
 ## 3. Migrate generations, IDs, units, and multi-bool signatures
 
-- [ ] 3.1 Migrate `EditorId` and typed generations (`AccessGeneration`, `PolicyGeneration`, `LoadGeneration`, `EditGeneration`, `SaveGeneration`, `PathGeneration`, `MirrorGeneration`, etc.) across `lushtext-model`, `lushtext-services`, and `lushtext-ui` seams/policies/states until `scripts/check-domain-value-types.py` passes with ceiling 0.
-- [ ] 3.2 Adopt `Bytes`, `Sp`, `Micros`, `CharCount`, and `LineIndex` in `responsiveness_budget`, `editor_memory`, `protected_fold`, `protected_install`, `ui/window/geometry/policy.rs`, `ui/window/focus_mode/policy.rs`, `ui/sidebar/width_preset.rs`, and `ui/window/tab_overflow/policy.rs`, updating `docs/thresholds.md` rows to match; verify `make check-thresholds` and `make check-workflow-boundaries` pass.
-- [ ] 3.3 Replace all 48 multi-boolean signatures (`>= 2` positional `bool` parameters) in LushText plus `content_window` in `crates/gtk-lush/axioms/src/probes/a18.rs` with 1-byte `Copy` two-variant enums or named `Copy` fact structs, then enable `max-fn-params-bools = 1` in `clippy.toml` and `fn_params_excessive_bools = "deny"` in `Cargo.toml`; verify `make check` and `make test-unit` pass.
-- [ ] 3.4 Create a signed commit (`git commit -S`) and push the branch.
+- [x] 3.1 Migrate `EditorId` and typed generations (`AccessGeneration`, `PolicyGeneration`, `LoadGeneration`, `EditGeneration`, `SaveGeneration`, `PathGeneration`, `MirrorGeneration`, etc.) across `lushtext-model`, `lushtext-services`, and `lushtext-ui` seams/policies/states until `scripts/check-domain-value-types.py` passes with ceiling 0.
+- [x] 3.2 Adopt `Bytes`, `Sp`, `Micros`, `CharCount`, and `LineIndex` in `responsiveness_budget`, `editor_memory`, `protected_fold`, `protected_install`, `ui/window/geometry/policy.rs`, `ui/window/focus_mode/policy.rs`, `ui/sidebar/width_preset.rs`, and `ui/window/tab_overflow/policy.rs`, updating `docs/thresholds.md` rows to match; verify `make check-thresholds` and `make check-workflow-boundaries` pass.
+- [x] 3.3 Replace all 48 multi-boolean signatures (`>= 2` positional `bool` parameters) in LushText plus `content_window` in `crates/gtk-lush/axioms/src/probes/a18.rs` with 1-byte `Copy` two-variant enums or named `Copy` fact structs, then enable `max-fn-params-bools = 1` in `clippy.toml` and `fn_params_excessive_bools = "deny"` in `Cargo.toml`; verify `make check` and `make test-unit` pass.
+- [x] 3.4 Create a signed commit (`git commit -S`) and push the branch.
 
 ## 4. Kani, timing, documentation & full gate verification
 

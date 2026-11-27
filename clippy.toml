@@ -1,5 +1,8 @@
 # Clippy configuration for the whole workspace.
 #
+# Forbid two or more bool parameters in one signature (`fn_params_excessive_bools`).
+max-fn-params-bools = 1
+
 # `disallowed-methods` backs the whole-pixel geometry policy rule (see the
 # "Whole-pixel geometry policy" section of `.agents/rules/workflow-convention.md`).
 # `clippy::float_arithmetic` sees only the operators `+ - * / %`, so these float

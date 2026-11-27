@@ -98,6 +98,8 @@
 //! Compiled only under `cfg(kani)` (`make kani`); ordinary builds and tests
 //! never see this module.
 
+use lushtext_model::values::Sp;
+
 use super::policy::{
     AdaptiveShellInputs, AdaptiveShellLayout, OPEN_BUTTON_BREAKPOINT_MAX_WIDTH_SP,
     PropertiesPresentation, RenderedShellState, SecondarySurface, ShellWrite,
@@ -107,7 +109,7 @@ use crate::ui::sidebar::width_preset::WorkspaceSidebarWidthPreset;
 
 /// A layout no step reconciles towards: `step` replaces it before any does.
 const PLACEHOLDER_LAYOUT: AdaptiveShellLayout = AdaptiveShellLayout {
-    properties_breakpoint_max_width: 0,
+    properties_breakpoint_max_width: Sp::ZERO,
     workspace_consumes_width: false,
     properties_presentation: PropertiesPresentation::Pane,
     compact_surface: None,
@@ -132,8 +134,8 @@ struct TextScale {
 
 impl TextScale {
     /// Whether `max-width: {max_width_sp}sp` holds at `width_px` (A14).
-    fn holds(self, width_px: i32, max_width_sp: i32) -> bool {
-        i64::from(width_px) * self.den <= i64::from(max_width_sp) * self.num
+    fn holds(self, width_px: i32, max_width_sp: Sp) -> bool {
+        i64::from(width_px) * self.den <= i64::from(max_width_sp.as_sp()) * self.num
     }
 }
 
@@ -182,7 +184,7 @@ struct Adwaita {
     /// The current breakpoint.
     current: Option<Breakpoint>,
     /// The properties breakpoint's installed condition, `max-width: Nsp`.
-    condition_threshold: i32,
+    condition_threshold: Sp,
     /// `workspace_split_view.collapsed`.
     collapsed: bool,
 }
@@ -208,7 +210,7 @@ struct Shell {
     /// `imp.secondary_surfaces` and the widgets, as the plan reads them.
     rendered: RenderedShellState,
     /// `imp.properties_breakpoint_max_width`.
-    installed_threshold: i32,
+    installed_threshold: Sp,
     /// `window.width()`.
     width: i32,
     /// `imp.split_width_synced_for_width`.
@@ -231,7 +233,7 @@ struct Shell {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct RestState {
     rendered: RenderedShellState,
-    installed_threshold: i32,
+    installed_threshold: Sp,
     adwaita: Adwaita,
     synced_for_width: i32,
 }
@@ -245,6 +247,7 @@ impl Shell {
         let previous_width = any_width();
         let installed_threshold: i32 = kani::any();
         kani::assume((0..=4096).contains(&installed_threshold));
+        let installed_threshold = Sp::new(installed_threshold);
         let synced_for_width: i32 = kani::any();
         kani::assume(synced_for_width != next_width);
         let scale = any_text_scale();
@@ -322,7 +325,7 @@ impl Shell {
 
     fn inputs(&self) -> AdaptiveShellInputs {
         AdaptiveShellInputs {
-            window_width: self.width,
+            window_width: Sp::new(self.width),
             workspace_preset: self.intent.preset,
             workspace_requested_visible: self.intent.workspace_requested,
             properties_requested_visible: self.intent.properties_requested,
@@ -683,7 +686,7 @@ fn shell_loop_preserves_requested_visibility() {
     let mut shell = Shell::rested(SHIPPED, compact);
     let intent = shell.intent;
     kani::assume(shell.layout().properties_presentation == PropertiesPresentation::Sheet);
-    kani::assume(wide > WORKSPACE_BREAKPOINT_MAX_WIDTH_SP && wide != compact);
+    kani::assume(wide > WORKSPACE_BREAKPOINT_MAX_WIDTH_SP.as_sp() && wide != compact);
     shell.allocate_to_rest(wide);
     kani::assume(shell.layout().properties_presentation == PropertiesPresentation::Pane);
     let shown = |requested: bool| requested && !intent.focus_mode;
@@ -714,7 +717,7 @@ fn shell_loop_layout_agrees_with_policy_at_rest() {
         "the compact slot is handed to document properties"
     );
     kani::cover!(
-        width <= WORKSPACE_BREAKPOINT_MAX_WIDTH_SP
+        width <= WORKSPACE_BREAKPOINT_MAX_WIDTH_SP.as_sp()
             && shell.adwaita.collapsed
             && shell.intent.workspace_requested
             && !shell.rendered.workspace_shows_sidebar,

@@ -283,7 +283,14 @@ impl LushtextWindow {
             "Local history preview",
             "Read-only preview for the selected local-history snapshot",
         );
-        set_local_history_preview_accessibility(&preview_stack, "Loading snapshot", true, false);
+        set_local_history_preview_accessibility(
+            &preview_stack,
+            "Loading snapshot",
+            PreviewStackAccessibility {
+                busy: true,
+                invalid: false,
+            },
+        );
         preview_stack.add_named(&loading_preview_widget(), Some("loading"));
         preview_stack.add_named(&empty_snapshot_widget(), Some("empty"));
         preview_stack.add_named(&preview_error_widget("Preview unavailable"), Some("error"));
@@ -523,8 +530,10 @@ impl LocalHistoryBrowserState {
         set_local_history_preview_accessibility(
             &self.preview_stack,
             "Loading snapshot",
-            true,
-            false,
+            PreviewStackAccessibility {
+                busy: true,
+                invalid: false,
+            },
         );
         set_local_history_action_enabled(&self.restore_button, false);
         set_local_history_action_enabled(&self.copy_button, false);
@@ -575,8 +584,10 @@ impl LocalHistoryBrowserState {
             set_local_history_preview_accessibility(
                 &self.preview_stack,
                 "Snapshot preview deferred by memory pressure",
-                true,
-                false,
+                PreviewStackAccessibility {
+                    busy: true,
+                    invalid: false,
+                },
             );
             return;
         };
@@ -682,7 +693,14 @@ impl LocalHistoryBrowserState {
         self.preview_title.set_label(title);
         self.preview_meta.set_label("");
         self.preview_stack.set_visible_child_name("error");
-        set_local_history_preview_accessibility(&self.preview_stack, title, false, true);
+        set_local_history_preview_accessibility(
+            &self.preview_stack,
+            title,
+            PreviewStackAccessibility {
+                busy: false,
+                invalid: true,
+            },
+        );
     }
 
     /// Install a snapshot into the preview. A snapshot with a paragraph over
@@ -718,8 +736,7 @@ impl LocalHistoryBrowserState {
                 set_local_history_preview_accessibility(
                     &self.preview_stack,
                     "This snapshot was empty",
-                    false,
-                    false,
+                    PreviewStackAccessibility::default(),
                 );
                 // Copy stays disabled because there is nothing to copy, while
                 // Restore stays enabled: restoring to an empty document is a
@@ -899,8 +916,7 @@ impl LocalHistoryBrowserState {
                 "Snapshot from {}",
                 format_history_time(snapshot.meta.captured_at_millis)
             ),
-            false,
-            false,
+            PreviewStackAccessibility::default(),
         );
         set_local_history_action_enabled(&self.copy_button, true);
         set_local_history_action_enabled(&self.restore_button, true);
@@ -1131,16 +1147,21 @@ pub(super) fn set_local_history_action_enabled(button: &gtk4::Button, enabled: b
     accessibility::set_disabled(button, !enabled);
 }
 
+#[derive(Clone, Copy, Default)]
+struct PreviewStackAccessibility {
+    busy: bool,
+    invalid: bool,
+}
+
 /// Update the preview stack's workflow state after selection or preview loading.
 fn set_local_history_preview_accessibility(
     stack: &gtk4::Stack,
     value_text: &str,
-    busy: bool,
-    invalid: bool,
+    state: PreviewStackAccessibility,
 ) {
     accessibility::set_value_text(stack, value_text);
-    accessibility::set_busy(stack, busy);
-    accessibility::set_invalid(stack, invalid);
+    accessibility::set_busy(stack, state.busy);
+    accessibility::set_invalid(stack, state.invalid);
 }
 
 fn loading_preview_widget() -> gtk4::Widget {

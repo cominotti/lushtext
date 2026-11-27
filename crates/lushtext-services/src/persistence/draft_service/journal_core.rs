@@ -697,39 +697,92 @@ mod tests {
 
     use super::*;
 
-    fn facts(body_present: bool, entry: EntryState, pending: bool, stale: bool) -> BodyFacts {
+    #[derive(Clone, Copy)]
+    enum BodyPresence {
+        Present,
+        Absent,
+    }
+
+    #[derive(Clone, Copy)]
+    enum RestorePhase {
+        Pending,
+        Settled,
+    }
+
+    #[derive(Clone, Copy)]
+    enum BackingState {
+        Stale,
+        Current,
+    }
+
+    fn facts(
+        body: BodyPresence,
+        entry: EntryState,
+        restore: RestorePhase,
+        backing: BackingState,
+    ) -> BodyFacts {
         BodyFacts {
-            body_present,
+            body_present: matches!(body, BodyPresence::Present),
             entry,
-            restore_pending: pending,
-            backing_stale: stale,
+            restore_pending: matches!(restore, RestorePhase::Pending),
+            backing_stale: matches!(backing, BackingState::Stale),
         }
     }
 
     #[test]
     fn ownership_orders_unseen_over_version_over_registration() {
         assert_eq!(
-            ownership(facts(false, EntryState::Current, true, true)),
+            ownership(facts(
+                BodyPresence::Absent,
+                EntryState::Current,
+                RestorePhase::Pending,
+                BackingState::Stale,
+            )),
             BodyOwner::Nothing
         );
         assert_eq!(
-            ownership(facts(true, EntryState::Superseded, true, true)),
+            ownership(facts(
+                BodyPresence::Present,
+                EntryState::Superseded,
+                RestorePhase::Pending,
+                BackingState::Stale,
+            )),
             BodyOwner::Unseen
         );
         assert_eq!(
-            ownership(facts(true, EntryState::Current, false, true)),
+            ownership(facts(
+                BodyPresence::Present,
+                EntryState::Current,
+                RestorePhase::Settled,
+                BackingState::Stale,
+            )),
             BodyOwner::OtherVersion
         );
         assert_eq!(
-            ownership(facts(true, EntryState::Superseded, false, false)),
+            ownership(facts(
+                BodyPresence::Present,
+                EntryState::Superseded,
+                RestorePhase::Settled,
+                BackingState::Current,
+            )),
             BodyOwner::OtherVersion
         );
         assert_eq!(
-            ownership(facts(true, EntryState::Absent, false, false)),
+            ownership(facts(
+                BodyPresence::Present,
+                EntryState::Absent,
+                RestorePhase::Settled,
+                BackingState::Current,
+            )),
             BodyOwner::Unregistered
         );
         assert_eq!(
-            ownership(facts(true, EntryState::Current, false, false)),
+            ownership(facts(
+                BodyPresence::Present,
+                EntryState::Current,
+                RestorePhase::Settled,
+                BackingState::Current,
+            )),
             BodyOwner::Journal
         );
     }

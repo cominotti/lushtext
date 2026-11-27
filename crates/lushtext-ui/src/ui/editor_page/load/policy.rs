@@ -256,15 +256,45 @@ pub(crate) enum InstallSlicePacing {
 /// first (above validation, a long background install starved the visible
 /// view's layout; measured, design D4). Each slice is still bounded by its
 /// budget.
-pub(crate) const fn install_slice_pacing(
-    dense: bool,
-    laid_out: bool,
-    protected: bool,
-) -> InstallSlicePacing {
-    match (dense || protected, laid_out) {
+/// Inputs to [`install_slice_pacing`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct InstallPacingFacts {
+    /// Whether the body is dense or highlighted enough to require pacing.
+    pub(crate) dense: bool,
+    /// Whether the tab's view is laid out rather than showing a hidden placeholder.
+    pub(crate) laid_out: bool,
+    /// Whether the document is in Protected View (folded long paragraphs).
+    pub(crate) protected: bool,
+}
+
+/// Where a scheduled installation slice is queued relative to GTK layout work.
+///
+/// Paced bodies queue below validation so long documents do not starve active
+/// input; a background tab queues one step lower still so the visible tab wins.
+pub(crate) const fn install_slice_pacing(facts: InstallPacingFacts) -> InstallSlicePacing {
+    match (facts.dense || facts.protected, facts.laid_out) {
         (true, true) => InstallSlicePacing::BehindValidation,
         (true, false) => InstallSlicePacing::BehindVisibleWork,
         (false, _) => InstallSlicePacing::Timeout,
+    }
+}
+
+/// Whether the slice cursor already sits on a line start or mid-line.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ClearLineBoundary {
+    /// Cursor is at a line start.
+    LineStart,
+    /// Cursor is in the middle of a line.
+    MidLine,
+}
+
+impl ClearLineBoundary {
+    pub(crate) const fn from_starts_line(starts_line: bool) -> Self {
+        if starts_line {
+            Self::LineStart
+        } else {
+            Self::MidLine
+        }
     }
 }
 
@@ -281,22 +311,56 @@ pub(crate) fn clear_slice_char_count(remaining_chars: i32) -> i32 {
 /// each paragraph exactly once.
 pub(crate) const fn clear_slice_extends_to_paragraph_end(
     at_buffer_end: bool,
-    at_line_start: bool,
+    boundary: ClearLineBoundary,
 ) -> bool {
-    !at_buffer_end && !at_line_start
+    !at_buffer_end && matches!(boundary, ClearLineBoundary::MidLine)
+}
+
+/// Whether a load installation session has already reached a terminal state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SliceCompletion {
+    /// Still active.
+    Active,
+    /// Already terminal.
+    Terminal,
+}
+
+impl SliceCompletion {
+    pub(crate) const fn from_terminal(terminal: bool) -> Self {
+        if terminal {
+            Self::Terminal
+        } else {
+            Self::Active
+        }
+    }
+}
+
+/// Whether the owning editor page widget is still alive on the GTK tree.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EditorLifecycle {
+    /// Page is alive.
+    Alive,
+    /// Page has been disposed.
+    Disposed,
+}
+
+impl EditorLifecycle {
+    pub(crate) const fn from_alive(alive: bool) -> Self {
+        if alive { Self::Alive } else { Self::Disposed }
+    }
 }
 
 /// What one scheduled installation slice may do, given what it observed.
 pub(crate) const fn install_slice_action(
-    terminal: bool,
-    editor_alive: bool,
+    completion: SliceCompletion,
+    editor: EditorLifecycle,
     phase: LoadInstallPhase,
     installation_current: bool,
 ) -> InstallSliceAction {
-    if terminal {
+    if matches!(completion, SliceCompletion::Terminal) {
         return InstallSliceAction::Ignore;
     }
-    if !editor_alive {
+    if matches!(editor, EditorLifecycle::Disposed) {
         return InstallSliceAction::AbortDisposed;
     }
     // Bounded cleanup of a cancelled install is itself the response to a stale
@@ -343,15 +407,24 @@ pub(crate) const fn load_failure_state(previous: EditorLoadState) -> EditorLoadS
     }
 }
 
+/// Whether an installation session currently occupies the load slot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum InstallSlotOccupancy {
+    /// An installation session is active.
+    Occupied,
+    /// No installation session is active.
+    Idle,
+}
+
 /// Whether bounded cleanup must publish the user-cancelled terminal state.
 ///
 /// Only a cancellation that interrupted a load the user could see is worth a
 /// notification; disposal and idle cancellation are silent.
 pub(crate) const fn publishes_user_cancellation(
     was_loading: bool,
-    installation_active: bool,
+    installation: InstallSlotOccupancy,
 ) -> bool {
-    was_loading && installation_active
+    was_loading && matches!(installation, InstallSlotOccupancy::Occupied)
 }
 
 // ─── Post-open settle (`bound-post-open-settle`, design D1, D2, D9) ─────
@@ -688,12 +761,33 @@ mod tests {
                         (true, true) => BehindValidation,
                         (true, false) => BehindVisibleWork,
                     };
-                    assert_eq!(install_slice_pacing(dense, laid_out, protected), expected);
+                    assert_eq!(
+                        install_slice_pacing(InstallPacingFacts {
+                            dense,
+                            laid_out,
+                            protected,
+                        }),
+                        expected
+                    );
                 }
             }
         }
-        assert_eq!(install_slice_pacing(true, false, false), BehindVisibleWork);
-        assert_eq!(install_slice_pacing(false, false, false), Timeout);
+        assert_eq!(
+            install_slice_pacing(InstallPacingFacts {
+                dense: true,
+                laid_out: false,
+                protected: false,
+            }),
+            BehindVisibleWork
+        );
+        assert_eq!(
+            install_slice_pacing(InstallPacingFacts {
+                dense: false,
+                laid_out: false,
+                protected: false,
+            }),
+            Timeout
+        );
     }
 
     fn ranges(visible: ParagraphSpan, lengths: &[u64], v_slice: u64) -> Vec<(u32, u32)> {
@@ -934,32 +1028,69 @@ mod tests {
             CLEAR_SLICE_CHARS
         );
 
-        assert!(clear_slice_extends_to_paragraph_end(false, false));
-        assert!(!clear_slice_extends_to_paragraph_end(true, false));
-        assert!(!clear_slice_extends_to_paragraph_end(false, true));
-        assert!(!clear_slice_extends_to_paragraph_end(true, true));
+        assert!(clear_slice_extends_to_paragraph_end(
+            false,
+            ClearLineBoundary::MidLine
+        ));
+        assert!(!clear_slice_extends_to_paragraph_end(
+            true,
+            ClearLineBoundary::MidLine
+        ));
+        assert!(!clear_slice_extends_to_paragraph_end(
+            false,
+            ClearLineBoundary::LineStart
+        ));
+        assert!(!clear_slice_extends_to_paragraph_end(
+            true,
+            ClearLineBoundary::LineStart
+        ));
     }
 
     #[test]
     fn slice_action_orders_terminal_disposal_and_staleness() {
         assert_eq!(
-            install_slice_action(true, true, LoadInstallPhase::Installing, true),
+            install_slice_action(
+                SliceCompletion::Terminal,
+                EditorLifecycle::Alive,
+                LoadInstallPhase::Installing,
+                true
+            ),
             InstallSliceAction::Ignore
         );
         assert_eq!(
-            install_slice_action(false, false, LoadInstallPhase::Installing, true),
+            install_slice_action(
+                SliceCompletion::Active,
+                EditorLifecycle::Disposed,
+                LoadInstallPhase::Installing,
+                true
+            ),
             InstallSliceAction::AbortDisposed
         );
         assert_eq!(
-            install_slice_action(false, true, LoadInstallPhase::Installing, false),
+            install_slice_action(
+                SliceCompletion::Active,
+                EditorLifecycle::Alive,
+                LoadInstallPhase::Installing,
+                false
+            ),
             InstallSliceAction::AbortCancelled
         );
         assert_eq!(
-            install_slice_action(false, true, LoadInstallPhase::ClearingCancelled, false),
+            install_slice_action(
+                SliceCompletion::Active,
+                EditorLifecycle::Alive,
+                LoadInstallPhase::ClearingCancelled,
+                false
+            ),
             InstallSliceAction::RunPhase(LoadInstallPhase::ClearingCancelled)
         );
         assert_eq!(
-            install_slice_action(false, true, LoadInstallPhase::ClearingExisting, true),
+            install_slice_action(
+                SliceCompletion::Active,
+                EditorLifecycle::Alive,
+                LoadInstallPhase::ClearingExisting,
+                true
+            ),
             InstallSliceAction::RunPhase(LoadInstallPhase::ClearingExisting)
         );
     }
@@ -1039,10 +1170,22 @@ mod tests {
 
     #[test]
     fn user_cancellation_is_published_only_for_a_visible_interrupted_load() {
-        assert!(publishes_user_cancellation(true, true));
-        assert!(!publishes_user_cancellation(true, false));
-        assert!(!publishes_user_cancellation(false, true));
-        assert!(!publishes_user_cancellation(false, false));
+        assert!(publishes_user_cancellation(
+            true,
+            InstallSlotOccupancy::Occupied
+        ));
+        assert!(!publishes_user_cancellation(
+            true,
+            InstallSlotOccupancy::Idle
+        ));
+        assert!(!publishes_user_cancellation(
+            false,
+            InstallSlotOccupancy::Occupied
+        ));
+        assert!(!publishes_user_cancellation(
+            false,
+            InstallSlotOccupancy::Idle
+        ));
     }
 
     #[test]

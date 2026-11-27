@@ -179,10 +179,11 @@ impl LushtextEditorPage {
         }
 
         let margin = readable_column_margin(
-            self.source_view().width(),
+            lushtext_model::values::Sp::new(self.source_view().width()),
             approximate_char_width_pango_units(self.source_view().upcast_ref::<gtk4::Widget>()),
             state.target_columns.get(),
-        );
+        )
+        .as_sp();
         self.source_view().set_left_margin(margin);
         self.source_view().set_right_margin(margin);
         self.update_focus_mode_text_origin_guide();
@@ -321,6 +322,8 @@ pub(crate) fn approximate_char_width_pango_units(widget: &gtk4::Widget) -> i32 {
 mod tests {
     use proptest::prelude::*;
 
+    use lushtext_model::values::Sp;
+
     use crate::ui::window::focus_mode::policy::{
         MIN_FOCUS_MARGIN, PANGO_UNITS_PER_PIXEL, readable_column_margin,
     };
@@ -334,11 +337,12 @@ mod tests {
         approximate_char_width_pango: i32,
         target_columns: u32,
     ) -> i32 {
+        let floor = MIN_FOCUS_MARGIN.as_sp();
         let approximate_char_width =
             f64::from(approximate_char_width_pango) / f64::from(gtk4::pango::SCALE);
         let width = allocated_width.max(0);
         if width <= 0 || approximate_char_width <= 0.0 {
-            return MIN_FOCUS_MARGIN;
+            return floor;
         }
 
         let target_width = approximate_char_width * f64::from(target_columns.clamp(60, 120));
@@ -347,8 +351,8 @@ mod tests {
             clippy::cast_possible_truncation,
             reason = "GTK widget widths and text margins live in i32 pixel coordinates"
         )]
-        let margin = available_margin.max(f64::from(MIN_FOCUS_MARGIN)) as i32;
-        margin.min(width.saturating_div(3).max(MIN_FOCUS_MARGIN))
+        let margin = available_margin.max(f64::from(floor)) as i32;
+        margin.min(width.saturating_div(3).max(floor))
     }
 
     #[test]
@@ -365,7 +369,7 @@ mod tests {
             for width in -2..=2_600 {
                 for char_width in (-3..=16 * 1024).step_by(9) {
                     assert_eq!(
-                        readable_column_margin(width, char_width, target_columns),
+                        readable_column_margin(Sp::new(width), char_width, target_columns).as_sp(),
                         legacy_readable_column_margin(width, char_width, target_columns),
                         "width {width}, char width {char_width} Pango units, {target_columns} columns"
                     );
@@ -384,7 +388,7 @@ mod tests {
             target_columns in any::<u32>(),
         ) {
             prop_assert_eq!(
-                readable_column_margin(width, char_width, target_columns),
+                readable_column_margin(Sp::new(width), char_width, target_columns).as_sp(),
                 legacy_readable_column_margin(width, char_width, target_columns)
             );
         }

@@ -333,8 +333,10 @@ impl LushtextWindow {
 /// Shared by the refresh path and the evidence surface so a probe reports what
 /// the preview was actually told rather than a parallel derivation.
 fn preview_readable_column_applies(window: &LushtextWindow) -> bool {
-    policy::preview_takes_readable_column(
-        window.is_focus_mode_active(),
-        window.imp().preview_mode.get(),
-    )
+    let layout = if window.imp().preview_mode.get() {
+        policy::PreviewLayoutMode::PreviewOnly
+    } else {
+        policy::PreviewLayoutMode::SideBySide
+    };
+    policy::preview_takes_readable_column(window.is_focus_mode_active(), layout)
 }

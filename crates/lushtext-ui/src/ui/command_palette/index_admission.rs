@@ -84,11 +84,11 @@ impl LushtextCommandPalette {
     /// admission refuses the replacement index's byte weight.
     pub(super) fn flush_index_updates(&self) {
         let imp = self.imp();
-        if policy::index_flush_is_blocked(
-            imp.index_update_worker_running.get(),
-            imp.pending_index_updates.borrow().is_empty(),
-            imp.index_update_rebuild_pending.get(),
-        ) {
+        if policy::index_flush_is_blocked(policy::IndexFlushFacts {
+            worker_running: imp.index_update_worker_running.get(),
+            queue_is_empty: imp.pending_index_updates.borrow().is_empty(),
+            rebuild_pending: imp.index_update_rebuild_pending.get(),
+        }) {
             return;
         }
 

@@ -51,7 +51,7 @@ use gtk4::prelude::*;
 
 use crate::ui::editor_page::LushtextEditorPage;
 use lushtext_model::document::editor_memory::{EditorMemoryBudgetOutcome, EditorResidency};
-use lushtext_model::values::{AccessGeneration, Bytes, EditorId, PolicyGeneration};
+use lushtext_model::values::{Bytes, EditorId};
 
 use super::super::LushtextWindow;
 
@@ -137,8 +137,8 @@ fn live_residency(window: &LushtextWindow) -> Vec<EditorResidency> {
             current.push(EditorResidency {
                 editor_id: EditorId::new(editor.as_ptr() as usize),
                 estimated_bytes: Bytes::from_bytes(editor.estimated_live_buffer_bytes()),
-                access_generation: AccessGeneration::new(editor.memory_access_generation()),
-                policy_generation: PolicyGeneration::new(editor.memory_policy_generation()),
+                access_generation: editor.memory_access_generation(),
+                policy_generation: editor.memory_policy_generation(),
                 eligible_for_eviction: editor
                     .eligible_for_memory_eviction(selected.as_ref() == Some(&page)),
             });

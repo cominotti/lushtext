@@ -24,7 +24,10 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 
 use super::super::LushtextWindow;
-use super::policy::{CompositionPlan, CompositionStage, StageSet, composition_blocks_readiness};
+use super::policy::{
+    CompositionPlan, CompositionReadinessFacts, CompositionStage, StageSet,
+    composition_blocks_readiness,
+};
 use lushtext_model::budgets::construction_spans::span_duration_us;
 
 /// Everything a test, the readiness poll, or the snapshot may observe about
@@ -109,11 +112,11 @@ impl LushtextWindow {
             content_visible,
             workspace_visible,
             properties_visible,
-            blocks_readiness: composition_blocks_readiness(
-                plan.is_some(),
-                facts.complete,
-                facts.torn_down,
-            ),
+            blocks_readiness: composition_blocks_readiness(CompositionReadinessFacts {
+                begun: plan.is_some(),
+                complete: facts.complete,
+                torn_down: facts.torn_down,
+            }),
         }
     }
 }

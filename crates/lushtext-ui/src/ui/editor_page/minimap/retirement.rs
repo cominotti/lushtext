@@ -75,8 +75,28 @@ pub(crate) struct MinimapModifiedTracking {
     pub(super) retirement_slice_worst_us: Cell<u64>,
 }
 
+/// Whether cancelling minimap analysis discards the cached analysis result.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum MinimapCacheDisposition {
+    Retain,
+    Clear,
+}
+
+/// Whether cancelling minimap analysis strips collected long-line markers from the cache.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum MinimapMarkersDisposition {
+    Keep,
+    Release,
+}
+
 impl LushtextEditorPage {
-    pub(super) fn cancel_minimap_analysis(&self, clear_cache: bool, release_markers: bool) {
+    pub(super) fn cancel_minimap_analysis(
+        &self,
+        cache: MinimapCacheDisposition,
+        markers: MinimapMarkersDisposition,
+    ) {
+        let clear_cache = matches!(cache, MinimapCacheDisposition::Clear);
+        let release_markers = matches!(markers, MinimapMarkersDisposition::Release);
         let imp = self.imp();
         let had_session = imp.minimap.analysis_session.borrow().is_some();
         let source_id = imp.minimap.analysis_source_id.take();
@@ -109,22 +129,33 @@ impl LushtextEditorPage {
     }
 
     pub(super) fn discard_minimap_analysis_content(&self) {
-        self.cancel_minimap_analysis(true, false);
+        self.cancel_minimap_analysis(
+            MinimapCacheDisposition::Clear,
+            MinimapMarkersDisposition::Keep,
+        );
     }
 
     pub(super) fn discard_minimap_analysis_request(&self, marker_preference_changed: bool) {
-        let release_markers = marker_preference_changed
+        let markers = if marker_preference_changed
             && !self
                 .imp()
                 .settings
-                .boolean(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE);
-        self.cancel_minimap_analysis(false, release_markers);
+                .boolean(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE)
+        {
+            MinimapMarkersDisposition::Release
+        } else {
+            MinimapMarkersDisposition::Keep
+        };
+        self.cancel_minimap_analysis(MinimapCacheDisposition::Retain, markers);
     }
 
     pub(super) fn retire_minimap_analysis(&self) {
         let lifetime = &self.imp().minimap.analysis_lifetime;
         lifetime.set(lifetime.get().wrapping_add(1));
-        self.cancel_minimap_analysis(true, false);
+        self.cancel_minimap_analysis(
+            MinimapCacheDisposition::Clear,
+            MinimapMarkersDisposition::Keep,
+        );
     }
 
     /// Temporarily suspend edit tracking while programmatic buffer mutations run.

@@ -15,8 +15,9 @@ use super::super::TOGGLE_ALL_TABS_ACCEL;
 use super::super::policy::{
     ALL_TABS_ANNOUNCE_DELAY_MS, ALL_TABS_CURRENT_TOOLTIP, ALL_TABS_LIST_DESCRIPTION,
     ALL_TABS_LIST_LABEL, ALL_TABS_NO_MATCH_TITLE, ALL_TABS_PINNED_TOOLTIP,
-    ALL_TABS_SEARCH_DESCRIPTION, ALL_TABS_SEARCH_LABEL, AllTabsCandidate, all_tabs_highlight,
-    all_tabs_list_value_text, all_tabs_match_announcement, all_tabs_row_name, rank_all_tabs,
+    ALL_TABS_SEARCH_DESCRIPTION, ALL_TABS_SEARCH_LABEL, AllTabsCandidate, AllTabsRowState,
+    all_tabs_highlight, all_tabs_list_value_text, all_tabs_match_announcement, all_tabs_row_name,
+    rank_all_tabs,
 };
 #[cfg(feature = "test-utils")]
 use super::AllTabsPopoverFacts;
@@ -315,7 +316,16 @@ impl LushtextAllTabsPopover {
         let name = self
             .highlighted_position()
             .and_then(|position| self.model.row_at(position))
-            .map(|row| all_tabs_row_name(&row.title, row.modified, row.pinned, row.current));
+            .map(|row| {
+                all_tabs_row_name(
+                    &row.title,
+                    AllTabsRowState {
+                        modified: row.modified,
+                        pinned: row.pinned,
+                        current: row.current,
+                    },
+                )
+            });
         accessibility::set_value_text(
             &list_view,
             &all_tabs_list_value_text(name.as_deref(), &self.match_count_text()),
@@ -638,7 +648,14 @@ fn project_row(list_item: &gtk4::ListItem, item: &AllTabsItem) {
     widgets.subtitle.set_tooltip_text(Some(row.subtitle()));
     widgets.pinned.set_visible(row.pinned);
     widgets.current.set_visible(row.current);
-    let name = all_tabs_row_name(&row.title, row.modified, row.pinned, row.current);
+    let name = all_tabs_row_name(
+        &row.title,
+        AllTabsRowState {
+            modified: row.modified,
+            pinned: row.pinned,
+            current: row.current,
+        },
+    );
     accessibility::apply_list_item_row_accessibility(
         list_item,
         RowAccessibility::new(&name)

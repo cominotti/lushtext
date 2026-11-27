@@ -82,8 +82,8 @@ pub(super) fn apply_decision(window: &LushtextWindow, decision: EditorMemoryBudg
                 same_child: page.child().as_ptr() == editor.upcast_ref::<gtk4::Widget>().as_ptr(),
                 is_active,
                 generations_unchanged: editor.memory_access_generation()
-                    == candidate.access_generation.get()
-                    && editor.memory_policy_generation() == candidate.policy_generation.get(),
+                    == candidate.access_generation
+                    && editor.memory_policy_generation() == candidate.policy_generation,
                 still_reloadable: editor.eligible_for_memory_eviction(is_active),
             };
 

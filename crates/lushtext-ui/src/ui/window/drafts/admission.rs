@@ -240,14 +240,14 @@ impl LushtextWindow {
     /// comparing them.
     pub(crate) fn draft_workflow_blocks_readiness(&self) -> bool {
         let drafts = &self.imp().drafts;
-        policy::draft_workflow_blocks_readiness(
-            drafts.autosave_inflight.get(),
-            drafts.mutation_inflight.get(),
-            !drafts.pending_deletes.borrow().is_empty(),
-            drafts.restore_inflight_count.get() > 0,
-            drafts.lazy_restore_inflight.get(),
-            !drafts.lazy_restore_queue.borrow().is_empty(),
-        )
+        policy::draft_workflow_blocks_readiness(policy::DraftReadinessState {
+            autosave_inflight: drafts.autosave_inflight.get(),
+            mutation_inflight: drafts.mutation_inflight.get(),
+            pending_deletes: !drafts.pending_deletes.borrow().is_empty(),
+            restores_inflight: drafts.restore_inflight_count.get() > 0,
+            lazy_restore_inflight: drafts.lazy_restore_inflight.get(),
+            lazy_queue_non_empty: !drafts.lazy_restore_queue.borrow().is_empty(),
+        })
     }
 }
 

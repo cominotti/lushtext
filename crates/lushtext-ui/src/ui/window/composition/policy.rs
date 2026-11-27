@@ -159,9 +159,19 @@ impl StageSet {
 
 /// Whether a window's composition blocks readiness: it began (stage C ran)
 /// and neither completed nor left its application.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompositionReadinessFacts {
+    /// Whether composition stage C has begun (`runtime.plan.is_some()`).
+    pub begun: bool,
+    /// Whether every staged reveal has finished.
+    pub complete: bool,
+    /// Whether the window has torn down from its application.
+    pub torn_down: bool,
+}
+
 #[must_use]
-pub const fn composition_blocks_readiness(begun: bool, complete: bool, torn_down: bool) -> bool {
-    begun && !complete && !torn_down
+pub const fn composition_blocks_readiness(facts: CompositionReadinessFacts) -> bool {
+    facts.begun && !facts.complete && !facts.torn_down
 }
 
 /// What a window's composition plan is decided from, read once in stage C.

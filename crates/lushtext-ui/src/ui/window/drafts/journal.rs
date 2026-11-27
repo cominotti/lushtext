@@ -326,13 +326,13 @@ impl LushtextWindow {
             // rather than restating the terms is what keeps the
             // `buffer_untrusted` data-safety guard single-sourced: an added
             // term reaches this path, where a missed one is worst, automatically.
-            if !policy::draft_candidate_is_eligible(
-                editor.is_modified(),
-                editor.draft_dirty(),
-                editor.is_evicted(),
-                editor.draft_capture_blocked(),
-                false,
-            ) {
+            if !policy::draft_candidate_is_eligible(policy::DraftCandidateFacts {
+                modified: editor.is_modified(),
+                draft_dirty: editor.draft_dirty(),
+                evicted: editor.is_evicted(),
+                buffer_untrusted: editor.draft_capture_blocked(),
+                require_draft_dirty: false,
+            }) {
                 continue;
             }
             let Some(draft_id) = editor.draft_id() else {

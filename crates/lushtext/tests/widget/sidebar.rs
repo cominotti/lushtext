@@ -600,11 +600,13 @@ fn test_close_tab_for_path_defers_teardown_until_the_page_detaches() {
     assert!(editor.draft_id().is_some(), "expected a draft identity");
     assert!(
         lushtext_ui::ui::window::draft_candidate_is_eligible(
-            editor.is_modified(),
-            editor.draft_dirty(),
-            editor.is_evicted(),
-            editor.draft_capture_blocked(),
-            false,
+            lushtext_ui::ui::window::DraftCandidateFacts {
+                modified: editor.is_modified(),
+                draft_dirty: editor.draft_dirty(),
+                evicted: editor.is_evicted(),
+                buffer_untrusted: editor.draft_capture_blocked(),
+                require_draft_dirty: false,
+            }
         ),
         "a tab surviving a cancelled close must still be autosaved; this is the \
          contract the premature `cancel_load()` broke"

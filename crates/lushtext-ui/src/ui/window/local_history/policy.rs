@@ -283,6 +283,24 @@ pub(crate) fn periodic_capture_is_current(
         && facts.availability.allows_automatic_capture()
 }
 
+/// Whether the editor has a backing file path or is still untitled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PeriodicPathBacking {
+    /// Document is backed by a file path.
+    FileBacked,
+    /// Document is untitled (no path).
+    Untitled,
+}
+
+/// Whether automatic local-history periodic capture is currently allowed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PeriodicCaptureAllowance {
+    /// Automatic capture is active.
+    Allowed,
+    /// Automatic capture is suppressed (for example during an explicit save).
+    Suppressed,
+}
+
 /// Whether a finished capture should arm the next periodic timer.
 ///
 /// The suppressed check is what stops a save from re-arming the timer it just
@@ -290,10 +308,12 @@ pub(crate) fn periodic_capture_is_current(
 #[must_use]
 pub(crate) const fn should_reschedule_periodic_capture(
     modified: bool,
-    has_path: bool,
-    automatic_capture_suppressed: bool,
+    path_backing: PeriodicPathBacking,
+    allowance: PeriodicCaptureAllowance,
 ) -> bool {
-    modified && has_path && !automatic_capture_suppressed
+    modified
+        && matches!(path_backing, PeriodicPathBacking::FileBacked)
+        && matches!(allowance, PeriodicCaptureAllowance::Allowed)
 }
 
 // --- presentation ----------------------------------------------------------
@@ -613,10 +633,26 @@ mod tests {
 
     #[test]
     fn modified_file_backed_editors_reschedule_without_tight_retry() {
-        assert!(should_reschedule_periodic_capture(true, true, false));
-        assert!(!should_reschedule_periodic_capture(false, true, false));
-        assert!(!should_reschedule_periodic_capture(true, false, false));
-        assert!(!should_reschedule_periodic_capture(true, true, true));
+        assert!(should_reschedule_periodic_capture(
+            true,
+            PeriodicPathBacking::FileBacked,
+            PeriodicCaptureAllowance::Allowed
+        ));
+        assert!(!should_reschedule_periodic_capture(
+            false,
+            PeriodicPathBacking::FileBacked,
+            PeriodicCaptureAllowance::Allowed
+        ));
+        assert!(!should_reschedule_periodic_capture(
+            true,
+            PeriodicPathBacking::Untitled,
+            PeriodicCaptureAllowance::Allowed
+        ));
+        assert!(!should_reschedule_periodic_capture(
+            true,
+            PeriodicPathBacking::FileBacked,
+            PeriodicCaptureAllowance::Suppressed
+        ));
     }
 
     #[test]

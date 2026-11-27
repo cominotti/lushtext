@@ -390,12 +390,23 @@ pub(crate) enum SaveTextDisposition {
     RetireCaptured,
 }
 
+/// Whether automatic local-history snapshot capture can still run cleanly after saving.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum HistoryCaptureAvailability {
+    /// Local history can retain the captured clean text.
+    Available,
+    /// Local history capture is disabled or unavailable for this buffer.
+    Unavailable,
+}
+
 /// Decide what happens to captured save text after a successful write.
 #[must_use]
 pub(crate) const fn classify_saved_text(
     formatting_changed: bool,
-    automatic_capture_available: bool,
+    history_capture: HistoryCaptureAvailability,
 ) -> SaveTextDisposition {
+    let automatic_capture_available =
+        matches!(history_capture, HistoryCaptureAvailability::Available);
     if formatting_changed {
         SaveTextDisposition::MirrorFormattedIntoBuffer {
             retain_as_clean: automatic_capture_available,
@@ -572,23 +583,23 @@ mod tests {
     #[test]
     fn saved_text_disposition_covers_every_combination() {
         assert_eq!(
-            classify_saved_text(true, true),
+            classify_saved_text(true, HistoryCaptureAvailability::Available),
             SaveTextDisposition::MirrorFormattedIntoBuffer {
                 retain_as_clean: true
             }
         );
         assert_eq!(
-            classify_saved_text(true, false),
+            classify_saved_text(true, HistoryCaptureAvailability::Unavailable),
             SaveTextDisposition::MirrorFormattedIntoBuffer {
                 retain_as_clean: false
             }
         );
         assert_eq!(
-            classify_saved_text(false, true),
+            classify_saved_text(false, HistoryCaptureAvailability::Available),
             SaveTextDisposition::RetainCapturedAsClean
         );
         assert_eq!(
-            classify_saved_text(false, false),
+            classify_saved_text(false, HistoryCaptureAvailability::Unavailable),
             SaveTextDisposition::RetireCaptured
         );
     }

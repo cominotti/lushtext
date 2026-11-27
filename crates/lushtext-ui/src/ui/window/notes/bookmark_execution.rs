@@ -764,7 +764,7 @@ impl NotesBrowserState {
         start: bookmark_excerpt::BookmarkExcerptPreviewStart,
     ) {
         if start.cancellation.is_cancelled() {
-            Self::finish_bookmark_preview_load(state, start.generation.get(), None);
+            Self::finish_bookmark_preview_load(state, start.generation, None);
             return;
         }
 
@@ -773,7 +773,6 @@ impl NotesBrowserState {
             request,
             cancellation,
         } = start;
-        let generation = generation.get();
         let path = request.path.clone();
         let line = request.line;
         let state_weak = Rc::downgrade(state);
@@ -810,7 +809,7 @@ impl NotesBrowserState {
     /// clears exactly once and a retained pending request cannot stall.
     fn finish_bookmark_preview_load(
         state: &Rc<Self>,
-        generation: u64,
+        generation: lushtext_model::values::FlightGeneration,
         completion: Option<(
             std::path::PathBuf,
             u32,
@@ -820,13 +819,14 @@ impl NotesBrowserState {
         let ticket = NotesBrowserTicket::<PreviewFlight>::new(generation, state.mode.get());
         let (accepted, next) = {
             let mut loads = state.preview_loads.borrow_mut();
-            let typed = lushtext_model::values::FlightGeneration::new(ticket.generation());
             let accepted = ticket.may_publish(&NotesBrowserFacts::new(
-                loads.is_current(typed),
+                super::seams::CoordinatorCurrency::from_is_current(
+                    loads.is_current(ticket.generation()),
+                ),
                 state.mode.get(),
-                state.disposed.get(),
+                super::seams::BrowserDisposal::from_disposed(state.disposed.get()),
             ));
-            let next = loads.finish(typed);
+            let next = loads.finish(ticket.generation());
             (accepted, next)
         };
         if accepted && let Some((path, line, result)) = completion {

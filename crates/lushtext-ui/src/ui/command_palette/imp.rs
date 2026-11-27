@@ -594,7 +594,10 @@ impl LushtextCommandPalette {
 
         let has_results = items.iter().any(PaletteItem::is_result);
         self.no_results_label
-            .set_visible(policy::no_results_visible(has_results, query.is_empty()));
+            .set_visible(policy::no_results_visible(
+                has_results,
+                policy::QueryTextState::from_is_empty(query.is_empty()),
+            ));
 
         let selected = match self.leaving_category.take() {
             Some(category) => policy::leave_selection(&grouped_row_kinds(&items), category),

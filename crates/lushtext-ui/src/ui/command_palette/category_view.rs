@@ -306,7 +306,7 @@ impl LushtextCommandPalette {
         self.no_results_label
             .set_visible(policy::no_results_visible(
                 listed > 0,
-                request.query.is_empty(),
+                policy::QueryTextState::from_is_empty(request.query.is_empty()),
             ));
         let same_query = self.category_published_query.borrow().as_deref() == Some(&*request.query);
         self.category_published_query

@@ -31,7 +31,8 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 
 use super::super::LushtextWindow;
 use super::policy::{
-    EscapeOutcome, TransientDismissal, TransientSurfaceState, escape_outcome, topmost_dismissible,
+    ChildEscapeHandling, EscapeOutcome, TransientDismissal, TransientSurfaceState, escape_outcome,
+    topmost_dismissible,
 };
 
 /// Everything a test or probe may observe about transient dismissal.
@@ -65,6 +66,10 @@ pub fn transient_dismissal_evidence(window: &LushtextWindow) -> TransientDismiss
         child_escape_handled,
         focus_mode_active,
         topmost_dismissible: topmost_dismissible(surfaces),
-        escape_outcome: escape_outcome(child_escape_handled, surfaces, focus_mode_active),
+        escape_outcome: escape_outcome(
+            ChildEscapeHandling::from_handled(child_escape_handled),
+            surfaces,
+            focus_mode_active,
+        ),
     }
 }

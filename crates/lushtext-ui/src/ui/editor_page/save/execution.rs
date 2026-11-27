@@ -423,10 +423,12 @@ fn write_snapshot_async(
                 }
             }
 
-            let disposition = classify_saved_text(
-                formatting_changed,
-                history_availability.allows_automatic_capture(),
-            );
+            let history_capture = if history_availability.allows_automatic_capture() {
+                super::policy::HistoryCaptureAvailability::Available
+            } else {
+                super::policy::HistoryCaptureAvailability::Unavailable
+            };
+            let disposition = classify_saved_text(formatting_changed, history_capture);
             let retain_formatted_as_clean = matches!(
                 disposition,
                 SaveTextDisposition::MirrorFormattedIntoBuffer {

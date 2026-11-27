@@ -26,10 +26,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Temporary ratchet matching main (`c43309a3`) before Task 3.1 migrates all
-# generation and `editor_id` fields to typed `lushtext_model::values` wrappers.
-# Task 3.1 removes this ceiling and enforces strictly 0 violations.
-MIGRATION_CEILING: int | None = 152
+# Task 3.1 removed the ratchet ceiling and enforces strictly 0 raw
+# generation/`editor_id` boundary fields across model, services, and ui.
+MIGRATION_CEILING: int | None = None
 
 TEST_ONLY_FILE_PARTS = {
     "tests.rs",

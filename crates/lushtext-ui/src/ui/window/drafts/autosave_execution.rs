@@ -43,7 +43,8 @@ use lushtext_services::{editor_io, persistence::draft_service, persistence::json
 use super::policy;
 use super::policy::DraftPipelineFailures;
 use super::policy::{
-    AutosaveAdmission, autosave_admission, captured_snapshot_is_current, close_flush_must_wait,
+    AutosaveAdmission, AutosaveLaneState, CloseFlushWaitState, DraftCandidateFacts,
+    SnapshotLivenessFacts, autosave_admission, captured_snapshot_is_current, close_flush_must_wait,
     draft_candidate_is_eligible,
 };
 use super::seams::{
@@ -92,11 +93,11 @@ impl LushtextWindow {
         let drafts = &self.imp().drafts;
         // Another window's journal work counts as a mutation in flight: the
         // lane is process-wide, and a pass started now would race it.
-        if autosave_admission(
-            drafts.autosave_inflight.get(),
-            self.journal_mutation_busy(),
-            drafts.orphan_cleanup_inflight.get(),
-        ) == AutosaveAdmission::MarkPending
+        if autosave_admission(AutosaveLaneState {
+            autosave_inflight: drafts.autosave_inflight.get(),
+            mutation_inflight: self.journal_mutation_busy(),
+            cleanup_inflight: drafts.orphan_cleanup_inflight.get(),
+        }) == AutosaveAdmission::MarkPending
         {
             drafts.autosave_pending.set(true);
             return;
@@ -271,11 +272,11 @@ impl LushtextWindow {
     /// Schedule a short autosave after the first dirty edit in a clean cycle.
     pub(crate) fn schedule_first_dirty_draft_autosave(&self) {
         let drafts = &self.imp().drafts;
-        if autosave_admission(
-            drafts.autosave_inflight.get(),
-            self.journal_mutation_busy(),
-            false,
-        ) == AutosaveAdmission::MarkPending
+        if autosave_admission(AutosaveLaneState {
+            autosave_inflight: drafts.autosave_inflight.get(),
+            mutation_inflight: self.journal_mutation_busy(),
+            cleanup_inflight: false,
+        }) == AutosaveAdmission::MarkPending
         {
             drafts.autosave_pending.set(true);
             return;
@@ -352,13 +353,13 @@ impl LushtextWindow {
             let Some(editor) = child.downcast_ref::<LushtextEditorPage>() else {
                 continue;
             };
-            if !draft_candidate_is_eligible(
-                editor.is_modified(),
-                editor.draft_dirty(),
-                editor.is_evicted(),
-                editor.draft_capture_blocked(),
+            if !draft_candidate_is_eligible(DraftCandidateFacts {
+                modified: editor.is_modified(),
+                draft_dirty: editor.draft_dirty(),
+                evicted: editor.is_evicted(),
+                buffer_untrusted: editor.draft_capture_blocked(),
                 require_draft_dirty,
-            ) {
+            }) {
                 continue;
             }
             let Some(draft_id) = editor.draft_id() else {
@@ -437,9 +438,11 @@ impl LushtextWindow {
                         candidate.draft_id.as_str(),
                         editor.draft_generation(),
                         candidate.dirty_generation,
-                        editor.is_modified(),
-                        editor.is_evicted(),
-                        editor.draft_capture_blocked(),
+                        SnapshotLivenessFacts {
+                            modified: editor.is_modified(),
+                            evicted: editor.is_evicted(),
+                            buffer_untrusted: editor.draft_capture_blocked(),
+                        },
                     ) {
                         let mut failures = failures;
                         failures.snapshot_cancelled += 1;
@@ -639,12 +642,12 @@ impl LushtextWindow {
 
     /// Run a close continuation only after queued draft mutations have drained.
     fn wait_for_draft_mutations_then<F: FnOnce() + 'static>(&self, on_done: F) {
-        if close_flush_must_wait(
-            self.imp().drafts.mutation_inflight.get(),
-            false,
-            !self.imp().drafts.pending_deletes.borrow().is_empty(),
-            self.imp().drafts.restore_inflight_count.get() > 0,
-        ) {
+        if close_flush_must_wait(CloseFlushWaitState {
+            mutation_inflight: self.imp().drafts.mutation_inflight.get(),
+            cleanup_inflight: false,
+            pending_deletes: !self.imp().drafts.pending_deletes.borrow().is_empty(),
+            restores_inflight: self.imp().drafts.restore_inflight_count.get() > 0,
+        }) {
             let window_weak = self.downgrade();
             glib::timeout_add_local_once(policy::DRAFT_MUTATION_WAIT_POLL_INTERVAL, move || {
                 if let Some(window) = window_weak.upgrade() {
@@ -690,9 +693,11 @@ impl LushtextWindow {
                         candidate.draft_id.as_str(),
                         editor.draft_generation(),
                         candidate.dirty_generation,
-                        editor.is_modified(),
-                        editor.is_evicted(),
-                        editor.draft_capture_blocked(),
+                        SnapshotLivenessFacts {
+                            modified: editor.is_modified(),
+                            evicted: editor.is_evicted(),
+                            buffer_untrusted: editor.draft_capture_blocked(),
+                        },
                     ) {
                         window.imp().drafts.autosave_pending.set(true);
                         window.drive_dirty_draft_pipeline(candidates, accepted, failures);
@@ -905,12 +910,12 @@ impl LushtextWindow {
     /// Copies are serialized on GTK, writes run on workers, and `on_done` runs
     /// back on GTK after every candidate is accepted or classified.
     pub fn flush_dirty_drafts_async<F: FnOnce(Result<()>) + 'static>(&self, on_done: F) {
-        if close_flush_must_wait(
-            self.journal_mutation_busy(),
-            self.imp().drafts.orphan_cleanup_inflight.get(),
-            !self.imp().drafts.pending_deletes.borrow().is_empty(),
-            self.imp().drafts.restore_inflight_count.get() > 0,
-        ) {
+        if close_flush_must_wait(CloseFlushWaitState {
+            mutation_inflight: self.journal_mutation_busy(),
+            cleanup_inflight: self.imp().drafts.orphan_cleanup_inflight.get(),
+            pending_deletes: !self.imp().drafts.pending_deletes.borrow().is_empty(),
+            restores_inflight: self.imp().drafts.restore_inflight_count.get() > 0,
+        }) {
             let window_weak = self.downgrade();
             glib::timeout_add_local_once(policy::DRAFT_MUTATION_WAIT_POLL_INTERVAL, move || {
                 if let Some(window) = window_weak.upgrade() {

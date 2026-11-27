@@ -67,17 +67,35 @@ mod tests {
         OpenedDocumentFocus::Elsewhere,
     ];
 
+    #[derive(Clone, Copy)]
+    enum InputSinceMap {
+        Unseen,
+        Seen,
+    }
+
+    #[derive(Clone, Copy)]
+    enum DialogState {
+        None,
+        Visible,
+    }
+
+    #[derive(Clone, Copy)]
+    enum TransientState {
+        Closed,
+        Open,
+    }
+
     fn facts(
         focus: OpenedDocumentFocus,
-        user_input_since_map: bool,
-        dialog_visible: bool,
-        transient_surface_open: bool,
+        input: InputSinceMap,
+        dialog: DialogState,
+        transient: TransientState,
     ) -> OpenedDocumentFocusFacts {
         OpenedDocumentFocusFacts {
             focus,
-            user_input_since_map,
-            dialog_visible,
-            transient_surface_open,
+            user_input_since_map: matches!(input, InputSinceMap::Seen),
+            dialog_visible: matches!(dialog, DialogState::Visible),
+            transient_surface_open: matches!(transient, TransientState::Open),
         }
     }
 
@@ -85,15 +103,15 @@ mod tests {
     fn untouched_initial_focus_hands_the_keyboard_to_the_document() {
         assert!(opened_document_takes_focus(facts(
             OpenedDocumentFocus::Unset,
-            false,
-            false,
-            false
+            InputSinceMap::Unseen,
+            DialogState::None,
+            TransientState::Closed,
         )));
         assert!(opened_document_takes_focus(facts(
             OpenedDocumentFocus::Chrome,
-            false,
-            false,
-            false
+            InputSinceMap::Unseen,
+            DialogState::None,
+            TransientState::Closed,
         )));
     }
 
@@ -101,9 +119,9 @@ mod tests {
     fn a_focus_elsewhere_is_kept() {
         assert!(!opened_document_takes_focus(facts(
             OpenedDocumentFocus::Elsewhere,
-            false,
-            false,
-            false
+            InputSinceMap::Unseen,
+            DialogState::None,
+            TransientState::Closed,
         )));
     }
 
@@ -111,7 +129,12 @@ mod tests {
     fn user_input_since_map_keeps_any_focus_even_on_the_chrome() {
         for focus in FOCI {
             assert!(
-                !opened_document_takes_focus(facts(focus, true, false, false)),
+                !opened_document_takes_focus(facts(
+                    focus,
+                    InputSinceMap::Seen,
+                    DialogState::None,
+                    TransientState::Closed,
+                )),
                 "{focus:?}"
             );
         }
@@ -121,10 +144,16 @@ mod tests {
     fn a_dialog_or_transient_surface_keeps_the_focus() {
         for focus in FOCI {
             assert!(!opened_document_takes_focus(facts(
-                focus, false, true, false
+                focus,
+                InputSinceMap::Unseen,
+                DialogState::Visible,
+                TransientState::Closed,
             )));
             assert!(!opened_document_takes_focus(facts(
-                focus, false, false, true
+                focus,
+                InputSinceMap::Unseen,
+                DialogState::None,
+                TransientState::Open,
             )));
         }
     }
@@ -133,16 +162,16 @@ mod tests {
     fn the_handoff_happens_for_exactly_one_combination_per_untouched_focus() {
         let mut taken = 0;
         for focus in FOCI {
-            for input in [false, true] {
-                for dialog in [false, true] {
-                    for transient in [false, true] {
-                        let expected = !input
-                            && !dialog
-                            && !transient
+            for input in [InputSinceMap::Unseen, InputSinceMap::Seen] {
+                for dialog in [DialogState::None, DialogState::Visible] {
+                    for transient in [TransientState::Closed, TransientState::Open] {
+                        let expected = matches!(input, InputSinceMap::Unseen)
+                            && matches!(dialog, DialogState::None)
+                            && matches!(transient, TransientState::Closed)
                             && focus != OpenedDocumentFocus::Elsewhere;
                         let decided =
                             opened_document_takes_focus(facts(focus, input, dialog, transient));
-                        assert_eq!(decided, expected, "{focus:?} {input} {dialog} {transient}");
+                        assert_eq!(decided, expected, "{focus:?}");
                         taken += usize::from(decided);
                     }
                 }

@@ -37,6 +37,12 @@ use super::super::file_tree_item::FileTreeItem;
 use super::LushtextWorkspaceSection;
 use super::WorkspaceScanPressureEvidence;
 
+#[derive(Clone, Copy)]
+enum RefreshTrigger {
+    Auto,
+    Manual,
+}
+
 /// Short debounce for automatic refresh bursts after the watcher already
 /// coalesced backend events. This keeps rapid save/rename/remove sequences from
 /// rebuilding the same subtree multiple times on the GTK thread.
@@ -80,7 +86,7 @@ impl LushtextWorkspaceSection {
             .manual_refresh_announcing
             .set(true);
         self.emit_message("Refreshing workspace folders", NotificationSeverity::Info);
-        self.schedule_refresh(true, Vec::new(), true);
+        self.schedule_refresh(true, Vec::new(), RefreshTrigger::Manual);
     }
 
     /// Test helper for driving the automatic refresh path without filesystem events.
@@ -94,7 +100,7 @@ impl LushtextWorkspaceSection {
         if changed_paths.is_empty() {
             return;
         }
-        self.schedule_refresh(false, changed_paths, false);
+        self.schedule_refresh(false, changed_paths, RefreshTrigger::Auto);
     }
 
     /// Reload every folder tree without announcing a manual refresh.
@@ -107,15 +113,21 @@ impl LushtextWorkspaceSection {
         if !self.has_folders() {
             return;
         }
-        self.schedule_refresh(true, Vec::new(), false);
+        self.schedule_refresh(true, Vec::new(), RefreshTrigger::Auto);
     }
 
     /// Queue a conservative automatic refresh after mailbox overflow.
     pub(super) fn queue_auto_full_refresh(&self) {
-        self.schedule_refresh(true, Vec::new(), false);
+        self.schedule_refresh(true, Vec::new(), RefreshTrigger::Auto);
     }
 
-    fn schedule_refresh(&self, full_reload: bool, changed_paths: Vec<PathBuf>, manual: bool) {
+    fn schedule_refresh(
+        &self,
+        full_reload: bool,
+        changed_paths: Vec<PathBuf>,
+        trigger: RefreshTrigger,
+    ) {
+        let manual = matches!(trigger, RefreshTrigger::Manual);
         let runtime = &self.imp().refresh_runtime;
         if full_reload {
             runtime.pending_paths.borrow_mut().clear();

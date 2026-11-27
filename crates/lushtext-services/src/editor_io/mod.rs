@@ -2523,20 +2523,30 @@ mod tests {
         body
     }
 
-    fn utf16_bytes(text: &str, little_endian: bool, with_bom: bool) -> Vec<u8> {
+    #[derive(Clone, Copy)]
+    enum Utf16Endianness {
+        Little,
+        Big,
+    }
+
+    #[derive(Clone, Copy)]
+    enum Utf16Bom {
+        Present,
+        Absent,
+    }
+
+    fn utf16_bytes(text: &str, endianness: Utf16Endianness, bom: Utf16Bom) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(text.len() * 2 + 2);
-        if with_bom {
-            bytes.extend_from_slice(if little_endian {
-                &[0xFF, 0xFE]
-            } else {
-                &[0xFE, 0xFF]
+        if matches!(bom, Utf16Bom::Present) {
+            bytes.extend_from_slice(match endianness {
+                Utf16Endianness::Little => &[0xFF, 0xFE],
+                Utf16Endianness::Big => &[0xFE, 0xFF],
             });
         }
         for unit in text.encode_utf16() {
-            let pair = if little_endian {
-                unit.to_le_bytes()
-            } else {
-                unit.to_be_bytes()
+            let pair = match endianness {
+                Utf16Endianness::Little => unit.to_le_bytes(),
+                Utf16Endianness::Big => unit.to_be_bytes(),
             };
             bytes.extend_from_slice(&pair);
         }
@@ -2635,12 +2645,12 @@ mod tests {
         );
         assert!(bom_result.metadata.has_bom);
 
-        for (little_endian, expected) in [
-            (true, DocumentEncoding::Utf16Le),
-            (false, DocumentEncoding::Utf16Be),
+        for (endianness, expected) in [
+            (Utf16Endianness::Little, DocumentEncoding::Utf16Le),
+            (Utf16Endianness::Big, DocumentEncoding::Utf16Be),
         ] {
             let text = large_body("utf16 content with accents é and lines\r\n");
-            let bytes = utf16_bytes(&text, little_endian, true);
+            let bytes = utf16_bytes(&text, endianness, Utf16Bom::Present);
             let result = loaded(&bytes);
             assert_eq!(result.content, text);
             assert_eq!(result.metadata.encoding_state.opened_encoding, expected);
@@ -2659,7 +2669,7 @@ mod tests {
         // BOM-less UTF-16 needs a non-ASCII scalar early so chunked UTF-8
         // validation fails before the parity heuristic takes over.
         let bomless_text = format!("é{}", large_body("bomless utf16 line\n"));
-        let bomless = utf16_bytes(&bomless_text, true, false);
+        let bomless = utf16_bytes(&bomless_text, Utf16Endianness::Little, Utf16Bom::Absent);
         let bomless_result = loaded(&bomless);
         assert_eq!(bomless_result.content, bomless_text);
         assert_eq!(
@@ -2781,7 +2791,7 @@ mod tests {
         // UTF-16 LE with BOM: stage layout is decode slices then analysis
         // slices; the NUL scan is skipped for UTF-16.
         let text = "a".repeat(2 * 1024 * 1024);
-        let bom_bytes = utf16_bytes(&text, true, true);
+        let bom_bytes = utf16_bytes(&text, Utf16Endianness::Little, Utf16Bom::Present);
         let payload_bytes = bom_bytes.len() - 2;
         let decode_slices =
             u64::try_from(payload_bytes.div_ceil(LOAD_PROCESSING_CHUNK_BYTES)).expect("fits");
@@ -2829,7 +2839,7 @@ mod tests {
         // chunked UTF-8 validation in its first slice, then the parity
         // heuristic owns the following slices.
         let bomless_text = format!("é{}", "a".repeat(2 * 1024 * 1024));
-        let bomless_bytes = utf16_bytes(&bomless_text, true, false);
+        let bomless_bytes = utf16_bytes(&bomless_text, Utf16Endianness::Little, Utf16Bom::Absent);
         let bomless_file = NamedTempFile::new().expect("bomless utf16 fixture");
         fixture::write_bytes(bomless_file.path(), &bomless_bytes);
         cancel_load_after_processing_chunks_for_test(Some(3));

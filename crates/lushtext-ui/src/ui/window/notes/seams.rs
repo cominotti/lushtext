@@ -41,6 +41,7 @@
 
 use std::marker::PhantomData;
 
+use lushtext_model::values::FlightGeneration;
 use lushtext_services::palette::NotesBrowserMode;
 
 /// One of the browser's three independent background flights.
@@ -80,14 +81,14 @@ impl NotesBrowserFlight for PreviewFlight {
 /// Identity captured once when a browser flight is dispatched.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct NotesBrowserTicket<F: NotesBrowserFlight> {
-    generation: u64,
+    generation: FlightGeneration,
     mode: NotesBrowserMode,
     flight: PhantomData<F>,
 }
 
 impl<F: NotesBrowserFlight> NotesBrowserTicket<F> {
     /// Capture one flight's identity at dispatch time.
-    pub(super) const fn new(generation: u64, mode: NotesBrowserMode) -> Self {
+    pub(super) const fn new(generation: FlightGeneration, mode: NotesBrowserMode) -> Self {
         Self {
             generation,
             mode,
@@ -99,7 +100,7 @@ impl<F: NotesBrowserFlight> NotesBrowserTicket<F> {
     ///
     /// Completion paths need it to call `finish`, which must run whether or not
     /// the result is publishable so the coordinator's active slot always clears.
-    pub(super) const fn generation(self) -> u64 {
+    pub(super) const fn generation(self) -> FlightGeneration {
         self.generation
     }
 
@@ -120,6 +121,40 @@ impl<F: NotesBrowserFlight> NotesBrowserTicket<F> {
     }
 }
 
+/// Whether the owning coordinator still recognizes a ticket's generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CoordinatorCurrency {
+    /// Ticket still holds the coordinator's latest generation.
+    Current,
+    /// Ticket was superseded by a newer generation.
+    Stale,
+}
+
+impl CoordinatorCurrency {
+    pub(super) const fn from_is_current(current: bool) -> Self {
+        if current { Self::Current } else { Self::Stale }
+    }
+}
+
+/// Whether the notes browser has already been torn down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum BrowserDisposal {
+    /// Notes browser is still mounted and may publish results.
+    Alive,
+    /// Notes browser teardown has invalidated all publication.
+    Disposed,
+}
+
+impl BrowserDisposal {
+    pub(super) const fn from_disposed(disposed: bool) -> Self {
+        if disposed {
+            Self::Disposed
+        } else {
+            Self::Alive
+        }
+    }
+}
+
 /// Live state observed at one browser flight's completion.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct NotesBrowserFacts<F: NotesBrowserFlight> {
@@ -135,14 +170,14 @@ pub(super) struct NotesBrowserFacts<F: NotesBrowserFlight> {
 impl<F: NotesBrowserFlight> NotesBrowserFacts<F> {
     /// Record the live state one completion must be validated against.
     pub(super) const fn new(
-        coordinator_is_current: bool,
+        coordinator: CoordinatorCurrency,
         live_mode: NotesBrowserMode,
-        disposed: bool,
+        disposal: BrowserDisposal,
     ) -> Self {
         Self {
-            coordinator_is_current,
+            coordinator_is_current: matches!(coordinator, CoordinatorCurrency::Current),
             live_mode,
-            disposed,
+            disposed: matches!(disposal, BrowserDisposal::Disposed),
             flight: PhantomData,
         }
     }
@@ -157,43 +192,88 @@ mod tests {
 
     #[test]
     fn mode_gated_flight_rejects_a_completion_from_a_superseded_mode() {
-        let ticket = NotesBrowserTicket::<SourceFlight>::new(7, ALL);
-        assert!(ticket.may_publish(&NotesBrowserFacts::new(true, ALL, false)));
-        assert!(!ticket.may_publish(&NotesBrowserFacts::new(true, BOOKMARKS, false)));
+        let ticket = NotesBrowserTicket::<SourceFlight>::new(FlightGeneration::new(7), ALL);
+        assert!(ticket.may_publish(&NotesBrowserFacts::new(
+            CoordinatorCurrency::Current,
+            ALL,
+            BrowserDisposal::Alive
+        )));
+        assert!(!ticket.may_publish(&NotesBrowserFacts::new(
+            CoordinatorCurrency::Current,
+            BOOKMARKS,
+            BrowserDisposal::Alive
+        )));
     }
 
     #[test]
     fn query_flight_is_mode_gated_too() {
-        let ticket = NotesBrowserTicket::<QueryFlight>::new(3, BOOKMARKS);
-        assert!(ticket.may_publish(&NotesBrowserFacts::new(true, BOOKMARKS, false)));
-        assert!(!ticket.may_publish(&NotesBrowserFacts::new(true, ALL, false)));
+        let ticket = NotesBrowserTicket::<QueryFlight>::new(FlightGeneration::new(3), BOOKMARKS);
+        assert!(ticket.may_publish(&NotesBrowserFacts::new(
+            CoordinatorCurrency::Current,
+            BOOKMARKS,
+            BrowserDisposal::Alive
+        )));
+        assert!(!ticket.may_publish(&NotesBrowserFacts::new(
+            CoordinatorCurrency::Current,
+            ALL,
+            BrowserDisposal::Alive
+        )));
     }
 
     #[test]
     fn preview_flight_ignores_mode_by_declaration() {
         // Behavior preservation: the closed-file excerpt path never compared
         // mode, because row identity is revalidated instead.
-        let ticket = NotesBrowserTicket::<PreviewFlight>::new(3, ALL);
-        assert!(ticket.may_publish(&NotesBrowserFacts::new(true, BOOKMARKS, false)));
+        let ticket = NotesBrowserTicket::<PreviewFlight>::new(FlightGeneration::new(3), ALL);
+        assert!(ticket.may_publish(&NotesBrowserFacts::new(
+            CoordinatorCurrency::Current,
+            BOOKMARKS,
+            BrowserDisposal::Alive
+        )));
     }
 
     #[test]
     fn every_flight_rejects_a_stale_generation_and_a_disposed_dialog() {
-        let source = NotesBrowserTicket::<SourceFlight>::new(1, ALL);
-        let query = NotesBrowserTicket::<QueryFlight>::new(1, ALL);
-        let preview = NotesBrowserTicket::<PreviewFlight>::new(1, ALL);
-        assert!(!source.may_publish(&NotesBrowserFacts::new(false, ALL, false)));
-        assert!(!query.may_publish(&NotesBrowserFacts::new(false, ALL, false)));
-        assert!(!preview.may_publish(&NotesBrowserFacts::new(false, ALL, false)));
-        assert!(!source.may_publish(&NotesBrowserFacts::new(true, ALL, true)));
-        assert!(!query.may_publish(&NotesBrowserFacts::new(true, ALL, true)));
-        assert!(!preview.may_publish(&NotesBrowserFacts::new(true, ALL, true)));
+        let source = NotesBrowserTicket::<SourceFlight>::new(FlightGeneration::new(1), ALL);
+        let query = NotesBrowserTicket::<QueryFlight>::new(FlightGeneration::new(1), ALL);
+        let preview = NotesBrowserTicket::<PreviewFlight>::new(FlightGeneration::new(1), ALL);
+        assert!(!source.may_publish(&NotesBrowserFacts::new(
+            CoordinatorCurrency::Stale,
+            ALL,
+            BrowserDisposal::Alive
+        )));
+        assert!(!query.may_publish(&NotesBrowserFacts::new(
+            CoordinatorCurrency::Stale,
+            ALL,
+            BrowserDisposal::Alive
+        )));
+        assert!(!preview.may_publish(&NotesBrowserFacts::new(
+            CoordinatorCurrency::Stale,
+            ALL,
+            BrowserDisposal::Alive
+        )));
+        assert!(!source.may_publish(&NotesBrowserFacts::new(
+            CoordinatorCurrency::Current,
+            ALL,
+            BrowserDisposal::Disposed
+        )));
+        assert!(!query.may_publish(&NotesBrowserFacts::new(
+            CoordinatorCurrency::Current,
+            ALL,
+            BrowserDisposal::Disposed
+        )));
+        assert!(!preview.may_publish(&NotesBrowserFacts::new(
+            CoordinatorCurrency::Current,
+            ALL,
+            BrowserDisposal::Disposed
+        )));
     }
 
     #[test]
     fn ticket_reports_the_generation_its_coordinator_must_finish() {
-        let ticket = NotesBrowserTicket::<SourceFlight>::new(42, BOOKMARKS);
-        assert_eq!(ticket.generation(), 42);
+        let generation = FlightGeneration::new(42);
+        let ticket = NotesBrowserTicket::<SourceFlight>::new(generation, BOOKMARKS);
+        assert_eq!(ticket.generation(), generation);
         assert_eq!(ticket.mode(), BOOKMARKS);
     }
 
