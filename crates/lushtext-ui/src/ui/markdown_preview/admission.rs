@@ -23,6 +23,7 @@ use gtk4::prelude::*;
 
 use crate::ui::accessibility;
 use crate::ui::buffer_snapshot::{BufferSnapshotHandle, BufferSnapshotPayload};
+use lushtext_model::values::RenderGeneration;
 use lushtext_services::notes::markdown_render::{
     InlineFootnoteLowering, MAX_MARKDOWN_SOURCE_BYTES, lower_inline_footnotes, plan_markdown,
     source_limited_markdown_plan,
@@ -133,9 +134,7 @@ impl LushtextMarkdownPreview {
                             );
                         }
                         SnapshotMarkdownPlanOutcome::CapacityUnavailable { source_bytes } => {
-                            if preview.imp().render_session.borrow().is_current(
-                                lushtext_model::values::RenderGeneration::new(generation),
-                            ) {
+                            if preview.imp().render_session.borrow().is_current(generation) {
                                 preview.finish_markdown_capacity_pressure(generation, source_bytes);
                             }
                         }
@@ -174,7 +173,7 @@ impl LushtextMarkdownPreview {
 
     pub(super) fn render_markdown_generation(
         &self,
-        generation: u64,
+        generation: RenderGeneration,
         markdown: &str,
         context: MarkdownPreviewRenderContext,
     ) {
@@ -222,13 +221,17 @@ impl LushtextMarkdownPreview {
         );
     }
 
-    pub(super) fn finish_markdown_capacity_pressure(&self, generation: u64, source_bytes: usize) {
+    pub(super) fn finish_markdown_capacity_pressure(
+        &self,
+        generation: RenderGeneration,
+        source_bytes: usize,
+    ) {
         debug_assert!(source_bytes <= MAX_MARKDOWN_SOURCE_BYTES);
         self.show_markdown_memory_pressure();
-        self.imp().render_session.borrow_mut().transition(
-            lushtext_model::values::RenderGeneration::new(generation),
-            MarkdownRenderState::Failed,
-        );
+        self.imp()
+            .render_session
+            .borrow_mut()
+            .transition(generation, MarkdownRenderState::Failed);
     }
 
     pub(super) fn start_pending_markdown_render(&self, request: PendingMarkdownRender) {
@@ -283,14 +286,15 @@ impl LushtextMarkdownPreview {
     }
 
     /// Invalidate older work and open one new generation-owned render session.
-    pub(super) fn begin_render_session(&self) -> u64 {
+    pub(super) fn begin_render_session(&self) -> RenderGeneration {
         let imp = self.imp();
         if let Some(cancel) = imp.planning_cancel_token.borrow().as_ref() {
             cancel.store(true, Ordering::Release);
         }
         self.cancel_queued_image_work();
-        let generation = imp.render_session.borrow_mut().begin().get();
-        imp.render_generation.store(generation, Ordering::Release);
+        let generation = imp.render_session.borrow_mut().begin();
+        imp.render_generation
+            .store(generation.get(), Ordering::Release);
         #[cfg(feature = "test-utils")]
         {
             imp.projection_dispatch_count.set(0);

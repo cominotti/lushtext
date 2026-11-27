@@ -3495,7 +3495,12 @@ fn test_evidence_reports_transaction_state_separately_from_preview_pending() {
         claimed.replace_transaction_pending,
         "the apply transaction must be observable on its own field",
     );
-    assert_eq!(claimed.replace_transaction_generation, Some(reserved));
+    assert_eq!(
+        claimed
+            .replace_transaction_generation
+            .map(lushtext_model::values::ReplaceTransactionGeneration::get),
+        Some(reserved.get())
+    );
     assert_eq!(
         claimed.undo_backup_generation, reserved,
         "claiming the transaction reserves the journal generation it reports",

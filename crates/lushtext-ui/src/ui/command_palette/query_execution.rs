@@ -29,6 +29,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 
 use crate::ui::plain_disposal::DisposalOwned;
+use lushtext_model::values::FlightGeneration;
 use lushtext_model::workspace::palette::{
     PaletteCategory, PaletteFileEntry, PaletteNoteEntry, PaletteSearchRow, SearchMode,
 };
@@ -145,7 +146,7 @@ impl LushtextCommandPalette {
 
     /// Query stage 3: hand one admitted request to the worker lane.
     fn dispatch_query_worker(&self, start: palette::PaletteSearchStart<PaletteQueryRequest>) {
-        let generation = start.generation.get();
+        let generation = start.generation;
         let cancellation = start.cancellation;
         let request = start.request;
         gtk_lush_tasks::spawn_blocking_then(
@@ -169,16 +170,15 @@ impl LushtextCommandPalette {
     /// while the worker ran publishes nothing.
     fn settle_query_flight(
         &self,
-        generation: u64,
+        generation: FlightGeneration,
         outcome: PaletteSearchOutcome<PaletteQueryResult>,
         request: &PaletteQueryRequest,
     ) {
         let imp = self.imp();
         let (is_current, next) = {
             let mut flight = imp.search_flight.borrow_mut();
-            let typed = lushtext_model::values::FlightGeneration::new(generation);
-            let is_current = flight.is_current(typed);
-            let next = flight.finish(typed);
+            let is_current = flight.is_current(generation);
+            let next = flight.finish(generation);
             (is_current, next)
         };
 

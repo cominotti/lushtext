@@ -50,6 +50,7 @@
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
+use lushtext_model::values::{ReplaceTransactionGeneration, UndoBackupGeneration};
 use lushtext_services::search::content_search::{
     MAX_REPLACE_UNDO_RETAINED_BYTES, ReplaceJournalFreshness, ReplaceUndoBackup,
     replace_undo_retained_byte_weight,
@@ -272,12 +273,14 @@ impl LushtextSearchPanel {
     }
 
     /// Reserve the journal generation before Replace All can commit on a worker.
-    pub(crate) fn reserve_undo_backup_generation(&self) -> u32 {
-        self.imp()
-            .preview
-            .undo_backup_generation
-            .fetch_add(1, Ordering::AcqRel)
-            .wrapping_add(1)
+    pub(crate) fn reserve_undo_backup_generation(&self) -> UndoBackupGeneration {
+        UndoBackupGeneration::new(
+            self.imp()
+                .preview
+                .undo_backup_generation
+                .fetch_add(1, Ordering::AcqRel)
+                .wrapping_add(1),
+        )
     }
 
     /// Claim the sole UI Replace All apply/undo transaction and its journal generation.
@@ -301,13 +304,13 @@ impl LushtextSearchPanel {
         let generation = self.reserve_undo_backup_generation();
         imp.preview
             .replace_transaction_generation
-            .set(Some(generation));
+            .set(Some(ReplaceTransactionGeneration::new(generation.get())));
         imp.replace_all_button.set_sensitive(false);
         imp.undo_button.set_sensitive(false);
         self.refresh_accessibility_state();
         Some(ReplaceJournalFreshness::new(
             imp.preview.undo_backup_generation.clone(),
-            generation,
+            generation.get(),
         ))
     }
 
@@ -356,7 +359,7 @@ impl LushtextSearchPanel {
         let generation = imp.preview.replace_transaction_generation.take()?;
         Some(ReplaceJournalFreshness::new(
             imp.preview.undo_backup_generation.clone(),
-            generation,
+            generation.get(),
         ))
     }
 
@@ -460,7 +463,9 @@ impl LushtextSearchPanel {
         backup: super::GuardedReplaceUndoBackup,
         generation: u32,
     ) -> bool {
-        if !self.set_persisted_undo_backup_for_generation(backup, generation) {
+        if !self
+            .set_persisted_undo_backup_for_generation(backup, UndoBackupGeneration::new(generation))
+        {
             return false;
         }
         self.show_undo_button();
@@ -471,13 +476,15 @@ impl LushtextSearchPanel {
     pub(crate) fn set_persisted_undo_backup_for_generation(
         &self,
         backup: super::GuardedReplaceUndoBackup,
-        generation: u32,
+        generation: UndoBackupGeneration,
     ) -> bool {
         if !super::policy::journal_generation_is_current(
-            self.imp()
-                .preview
-                .undo_backup_generation
-                .load(Ordering::Acquire),
+            UndoBackupGeneration::new(
+                self.imp()
+                    .preview
+                    .undo_backup_generation
+                    .load(Ordering::Acquire),
+            ),
             generation,
         ) {
             drop(backup);
@@ -496,11 +503,13 @@ impl LushtextSearchPanel {
     /// Clear an empty service result only if its reservation is still current.
     pub(crate) fn clear_undo_backup_for_generation(&self, generation: u32) -> bool {
         if !super::policy::journal_generation_is_current(
-            self.imp()
-                .preview
-                .undo_backup_generation
-                .load(Ordering::Acquire),
-            generation,
+            UndoBackupGeneration::new(
+                self.imp()
+                    .preview
+                    .undo_backup_generation
+                    .load(Ordering::Acquire),
+            ),
+            UndoBackupGeneration::new(generation),
         ) {
             return false;
         }
@@ -511,7 +520,10 @@ impl LushtextSearchPanel {
     fn set_undo_backup_in_memory(
         &self,
         backup: Arc<super::GuardedReplaceUndoBackup>,
-    ) -> (u32, Option<Arc<super::GuardedReplaceUndoBackup>>) {
+    ) -> (
+        UndoBackupGeneration,
+        Option<Arc<super::GuardedReplaceUndoBackup>>,
+    ) {
         self.cancel_persisted_undo_load();
         let previous = self
             .imp()
@@ -520,7 +532,7 @@ impl LushtextSearchPanel {
             .fetch_add(1, Ordering::AcqRel);
         let retired = self.imp().preview.undo_backup.replace(Some(backup));
         self.refresh_accessibility_state();
-        (previous.wrapping_add(1), retired)
+        (UndoBackupGeneration::new(previous.wrapping_add(1)), retired)
     }
 
     /// Restore a crash-interrupted active journal, or clean inactive stale state.
@@ -548,11 +560,12 @@ impl LushtextSearchPanel {
             return;
         };
         let data_dir = json_store::data_dir();
-        let generation = self
-            .imp()
-            .preview
-            .undo_backup_generation
-            .load(Ordering::Acquire);
+        let generation = UndoBackupGeneration::new(
+            self.imp()
+                .preview
+                .undo_backup_generation
+                .load(Ordering::Acquire),
+        );
         let generation_counter = self.imp().preview.undo_backup_generation.clone();
         let callback_generation_counter = generation_counter.clone();
         self.charge_journal_disk_job();
@@ -561,7 +574,7 @@ impl LushtextSearchPanel {
             move || {
                 let _disk_guard = search_backup::acquire_journal_guard()?;
                 if !super::policy::journal_generation_is_current(
-                    generation_counter.load(Ordering::Acquire),
+                    UndoBackupGeneration::new(generation_counter.load(Ordering::Acquire)),
                     generation,
                 ) {
                     return Ok(PersistedUndoStartupLoad {
@@ -590,7 +603,9 @@ impl LushtextSearchPanel {
                 match result {
                     Ok(load) => {
                         if !super::policy::journal_generation_is_current(
-                            callback_generation_counter.load(Ordering::Acquire),
+                            UndoBackupGeneration::new(
+                                callback_generation_counter.load(Ordering::Acquire),
+                            ),
                             generation,
                         ) {
                             return;
@@ -631,12 +646,13 @@ impl LushtextSearchPanel {
     /// Clear undo backup and hide the undo button.
     pub(crate) fn clear_undo_backup(&self) {
         self.cancel_persisted_undo_load();
-        let generation = self
-            .imp()
-            .preview
-            .undo_backup_generation
-            .fetch_add(1, Ordering::AcqRel)
-            .wrapping_add(1);
+        let generation = UndoBackupGeneration::new(
+            self.imp()
+                .preview
+                .undo_backup_generation
+                .fetch_add(1, Ordering::AcqRel)
+                .wrapping_add(1),
+        );
         let retired = self.imp().preview.undo_backup.replace(None);
         self.hide_undo_button();
         self.delete_undo_backup_on_disk(generation, retired);
@@ -652,7 +668,7 @@ impl LushtextSearchPanel {
     /// Reserve one production journal generation for ordering regressions.
     #[cfg(feature = "test-utils")]
     #[must_use]
-    pub fn reserve_undo_backup_generation_for_test(&self) -> u32 {
+    pub fn reserve_undo_backup_generation_for_test(&self) -> UndoBackupGeneration {
         self.reserve_undo_backup_generation()
     }
 
@@ -666,7 +682,7 @@ impl LushtextSearchPanel {
     pub fn set_persisted_undo_backup_for_generation_for_test(
         &self,
         backup: ReplaceUndoBackup,
-        generation: u32,
+        generation: UndoBackupGeneration,
     ) -> bool {
         self.set_persisted_undo_backup_for_generation(
             guard_undo_backup_on_worker(backup)
@@ -678,9 +694,9 @@ impl LushtextSearchPanel {
     /// Claim the production transaction gate for widget race tests.
     #[cfg(feature = "test-utils")]
     #[must_use]
-    pub fn begin_replace_transaction_for_test(&self) -> Option<u32> {
+    pub fn begin_replace_transaction_for_test(&self) -> Option<UndoBackupGeneration> {
         self.begin_replace_transaction()
-            .map(|freshness| freshness.expected())
+            .map(|freshness| UndoBackupGeneration::new(freshness.expected()))
     }
 
     /// Release the production transaction gate for widget race tests.
@@ -712,7 +728,7 @@ impl LushtextSearchPanel {
         &self,
         backup: Arc<super::GuardedReplaceUndoBackup>,
         retired: Option<Arc<super::GuardedReplaceUndoBackup>>,
-        generation: u32,
+        generation: UndoBackupGeneration,
     ) {
         let data_dir = json_store::data_dir();
         let generation_counter = self.imp().preview.undo_backup_generation.clone();
@@ -727,7 +743,7 @@ impl LushtextSearchPanel {
                 // waits, instead of holding a worker slot (design D3a).
                 let is_current = || {
                     super::policy::journal_generation_is_current(
-                        generation_counter.load(Ordering::Acquire),
+                        UndoBackupGeneration::new(generation_counter.load(Ordering::Acquire)),
                         generation,
                     )
                 };
@@ -775,7 +791,7 @@ impl LushtextSearchPanel {
 
     fn delete_undo_backup_on_disk(
         &self,
-        generation: u32,
+        generation: UndoBackupGeneration,
         retired: Option<Arc<super::GuardedReplaceUndoBackup>>,
     ) {
         let data_dir = json_store::data_dir();
@@ -791,7 +807,7 @@ impl LushtextSearchPanel {
                 // waits, instead of holding a worker slot (design D3a).
                 let is_current = || {
                     super::policy::journal_generation_is_current(
-                        generation_counter.load(Ordering::Acquire),
+                        UndoBackupGeneration::new(generation_counter.load(Ordering::Acquire)),
                         generation,
                     )
                 };

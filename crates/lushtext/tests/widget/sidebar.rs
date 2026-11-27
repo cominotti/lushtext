@@ -775,12 +775,12 @@ fn inertness_probe(sidebar: &LushtextSidebar) -> InertnessProbe {
     let watch_generations: u64 = evidence
         .sections
         .iter()
-        .map(|section| section.watch_target_generation)
+        .map(|section| section.watch_target_generation.get())
         .sum();
     InertnessProbe {
         reveal: (
             evidence.reveal_status,
-            evidence.reveal_generation,
+            evidence.reveal_generation.get(),
             evidence.reveal_pending,
         ),
         expansion_capture_scans: evidence.expansion_capture_scans,
@@ -1136,7 +1136,7 @@ fn test_workspace_tree_evidence_reads_stay_side_effect_free_across_mutation() {
         evidence_without_live_mailbox(&sidebar.workspace_tree_evidence()),
         evidence_without_live_mailbox(&settled)
     );
-    assert!(settled.persistence_durable_generation >= 1);
+    assert!(settled.persistence_durable_generation.get() >= 1);
 }
 
 #[test]

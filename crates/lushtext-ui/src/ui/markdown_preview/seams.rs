@@ -36,6 +36,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use gtk4::prelude::*;
 
+use lushtext_model::values::RenderGeneration;
 use lushtext_services::notes::markdown_render::{
     MAX_MARKDOWN_RETAINED_BYTES, MAX_MARKDOWN_SOURCE_BYTES, MarkdownEventBatch, MarkdownPlanLimit,
     MarkdownRenderPlan,
@@ -216,7 +217,7 @@ pub(super) struct DefinitionRenderState {
 
 /// Latest document-sized planning request retained behind one active worker.
 pub(super) struct PendingMarkdownPlan {
-    pub(super) generation: u64,
+    pub(super) generation: RenderGeneration,
     pub(super) source: String,
     pub(super) context: MarkdownPreviewRenderContext,
 }
@@ -240,7 +241,7 @@ pub(super) enum SnapshotMarkdownPlanOutcome {
 }
 
 pub(super) fn try_guard_markdown_source(
-    generation: u64,
+    generation: RenderGeneration,
     markdown: &str,
     context: &MarkdownPreviewRenderContext,
 ) -> Option<GuardedPendingMarkdownPlan> {
@@ -250,7 +251,7 @@ pub(super) fn try_guard_markdown_source(
 }
 
 pub(super) fn pending_markdown_plan(
-    generation: u64,
+    generation: RenderGeneration,
     markdown: &str,
     context: MarkdownPreviewRenderContext,
 ) -> PendingMarkdownPlan {
@@ -270,14 +271,14 @@ pub(super) enum PendingMarkdownRender {
     Source(GuardedPendingMarkdownPlan),
     /// Compact terminal request that avoids retaining an already over-limit source.
     SourceLimited {
-        generation: u64,
+        generation: RenderGeneration,
         source_bytes: usize,
         context: MarkdownPreviewRenderContext,
     },
 }
 
 impl PendingMarkdownRender {
-    pub(super) fn generation(&self) -> u64 {
+    pub(super) fn generation(&self) -> RenderGeneration {
         match self {
             Self::Source(request) => request.generation,
             Self::SourceLimited { generation, .. } => *generation,
@@ -289,14 +290,14 @@ impl PendingMarkdownRender {
 pub(super) enum PendingMarkdownWork {
     Render(PendingMarkdownRender),
     Projection {
-        generation: u64,
+        generation: RenderGeneration,
         plan: GuardedMarkdownPlan,
         context: MarkdownPreviewRenderContext,
     },
 }
 
 impl PendingMarkdownWork {
-    pub(super) fn generation(&self) -> u64 {
+    pub(super) fn generation(&self) -> RenderGeneration {
         match self {
             Self::Render(request) => request.generation(),
             Self::Projection { generation, .. } => *generation,
