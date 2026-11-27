@@ -2030,4 +2030,42 @@ mod tests {
             "At(k) sweep must hit AfterEffect manifest failure revoking trust"
         );
     }
+
+    #[test]
+    fn startup_at_k_after_close_window_preserves_bodies_and_conforms() {
+        // Slot 1 has an entry and body from the previous session; after Startup
+        // -> RestoreApply(Applied) -> CloseWindow leaves an empty session with
+        // the persisted entry+body intact, an At(k) failure reading the
+        // manifest during the next Startup must preserve bodies in place rather
+        // than moving them to set-aside against an empty candidate.
+        let bits = [false, false, false, true, true, false, false, false];
+        for call in 0..=32 {
+            let dir = TempDir::new().expect("tempdir");
+            let mut choices = ScriptChoices::new(bits);
+            let mut model =
+                Journal::<SingleWindowScope, DRAFT_IDS, 1, 1>::previous_session(&mut choices);
+            let mut script = Vec::new();
+            for &(action, id, fault) in &[
+                (Action::Startup, 0, DraftFault::None),
+                (Action::RestoreApply, 1, DraftFault::None),
+                (Action::CloseWindow, 0, DraftFault::None),
+                (Action::Startup, 0, DraftFault::At(call)),
+            ] {
+                let mut next_op = op(action, &model, id);
+                next_op.fault = fault;
+                script.push(next_op);
+                let model_fault = match fault {
+                    DraftFault::None | DraftFault::At(_) => Fault::None,
+                    DraftFault::BeforeEffect => Fault::BeforeEffect,
+                    DraftFault::AfterEffect => Fault::AfterEffect,
+                };
+                if action == Action::RestoreApply {
+                    choices.next_restore_ending = Some(RestoreEnding::Applied);
+                }
+                model.step(&mut choices, 0, 0, action, id, model_fault);
+            }
+            check_draft_script(dir.path(), bits, &script, FaultDomain::Full)
+                .unwrap_or_else(|err| panic!("At({call}) diverged: {err}"));
+        }
+    }
 }
