@@ -11,9 +11,8 @@ Checks:
    raw integer `editor_id` or singular `generation` / `*_generation` fields.
 
 Usage:
-  scripts/check-domain-value-types.py              # check workspace against active ratchet
-  scripts/check-domain-value-types.py --strict     # require 0 raw boundary fields
-  scripts/check-domain-value-types.py --self-test  # run violation & pass fixture tests, then check
+  scripts/check-domain-value-types.py [--strict]     # require 0 raw boundary fields
+  scripts/check-domain-value-types.py --self-test     # run violation & pass fixture tests, then check
 """
 
 from __future__ import annotations
@@ -25,10 +24,6 @@ import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-
-# Task 3.1 removed the ratchet ceiling and enforces strictly 0 raw
-# generation/`editor_id` boundary fields across model, services, and ui.
-MIGRATION_CEILING: int | None = None
 
 TEST_ONLY_FILE_PARTS = {
     "tests.rs",
@@ -220,16 +215,16 @@ def find_raw_boundary_fields(root: Path) -> list[tuple[str, int, str, str, str]]
 
 
 def check(root: Path, *, strict: bool = False) -> list[str]:
+    _ = strict
     findings = check_values_layout_assertions(root)
     raw_hits = find_raw_boundary_fields(root)
-    ceiling = 0 if (strict or MIGRATION_CEILING is None) else MIGRATION_CEILING
-    if len(raw_hits) > ceiling:
+    if raw_hits:
         for rel, line_no, struct_name, field_name, field_ty in raw_hits:
             findings.append(
                 f"{rel}:{line_no}: `{struct_name}.{field_name}: {field_ty}` uses raw integer primitive instead of a `lushtext_model::values` wrapper"
             )
         findings.append(
-            f"raw generation/editor_id field count ({len(raw_hits)}) exceeds ceiling ({ceiling})"
+            f"raw generation/editor_id field count ({len(raw_hits)}) exceeds ceiling (0)"
         )
     return findings
 
@@ -326,8 +321,7 @@ def main() -> int:
         print(f"check-domain-value-types: {finding}", file=sys.stderr)
     if findings:
         return 1
-    mode = "strict 0" if (args.strict or MIGRATION_CEILING is None) else f"ratchet <= {MIGRATION_CEILING}"
-    print(f"check-domain-value-types passed ({mode})")
+    print("check-domain-value-types passed (strict 0)")
     return 0
 
 

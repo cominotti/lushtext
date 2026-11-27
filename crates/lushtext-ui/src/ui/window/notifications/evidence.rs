@@ -23,6 +23,7 @@
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
+use lushtext_model::values::EditorId;
 
 use super::super::LushtextWindow;
 
@@ -53,7 +54,7 @@ pub struct NotificationEvidence {
     pub preview_document_alert_visible: bool,
     /// The editor owner id and alert key the preview copy was last projected
     /// for (the projection ticket), if it shows an alert.
-    pub preview_document_alert_projection: Option<(usize, String)>,
+    pub preview_document_alert_projection: Option<(EditorId, String)>,
     /// Announcements emitted so far, per surface.
     pub announcements: InlineAlertAnnouncementCounts,
     /// Editors whose current alert has already been announced. Never larger

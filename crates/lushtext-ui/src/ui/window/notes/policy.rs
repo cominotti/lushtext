@@ -19,7 +19,7 @@ use std::path::PathBuf;
 
 use crate::ui::editor_page::BookmarkEditError;
 use lushtext_model::budgets::list_budget::grouped_thousands;
-use lushtext_model::values::NotesSourceGeneration;
+use lushtext_model::values::{BookmarkGeneration, NotesSourceGeneration};
 use lushtext_model::workspace::WorkspaceConfig;
 use lushtext_model::workspace::palette::PaletteNoteCategory;
 use lushtext_services::notes::bookmark_excerpt;
@@ -350,7 +350,10 @@ pub enum CaptureSliceDecision {
 /// the current one. An editor is never captured in one unbounded unit: a
 /// change restarts it, sliced like the first attempt.
 #[must_use]
-pub fn capture_slice_decision(recorded: Option<u64>, current: u64) -> CaptureSliceDecision {
+pub fn capture_slice_decision(
+    recorded: Option<BookmarkGeneration>,
+    current: BookmarkGeneration,
+) -> CaptureSliceDecision {
     match recorded {
         Some(generation) if generation != current => CaptureSliceDecision::RestartEditor,
         _ => CaptureSliceDecision::Proceed,
@@ -930,19 +933,22 @@ mod tests {
     #[test]
     fn a_capture_restarts_an_editor_on_any_generation_change() {
         assert_eq!(
-            capture_slice_decision(None, 7),
+            capture_slice_decision(None, BookmarkGeneration::new(7)),
             CaptureSliceDecision::Proceed
         );
         assert_eq!(
-            capture_slice_decision(Some(7), 7),
+            capture_slice_decision(Some(BookmarkGeneration::new(7)), BookmarkGeneration::new(7)),
             CaptureSliceDecision::Proceed
         );
         assert_eq!(
-            capture_slice_decision(Some(7), 8),
+            capture_slice_decision(Some(BookmarkGeneration::new(7)), BookmarkGeneration::new(8)),
             CaptureSliceDecision::RestartEditor
         );
         assert_eq!(
-            capture_slice_decision(Some(u64::MAX), 0),
+            capture_slice_decision(
+                Some(BookmarkGeneration::new(u64::MAX)),
+                BookmarkGeneration::ZERO
+            ),
             CaptureSliceDecision::RestartEditor,
             "a wrapped generation is a change"
         );

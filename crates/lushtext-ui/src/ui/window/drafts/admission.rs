@@ -621,12 +621,12 @@ impl LushtextWindow {
     }
 
     /// The next process-wide session-save generation.
-    pub(in crate::ui::window) fn next_process_session_generation(&self) -> u64 {
+    pub(in crate::ui::window) fn next_process_session_generation(&self) -> SessionGeneration {
         let Some(journal) = self.process_draft_journal() else {
-            return 0;
+            return SessionGeneration::ZERO;
         };
         let next = SessionGeneration::new(journal.session_generation.get().get().saturating_add(1));
         journal.session_generation.set(next);
-        next.get()
+        next
     }
 }

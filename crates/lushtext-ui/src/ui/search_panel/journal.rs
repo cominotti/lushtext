@@ -310,7 +310,7 @@ impl LushtextSearchPanel {
         self.refresh_accessibility_state();
         Some(ReplaceJournalFreshness::new(
             imp.preview.undo_backup_generation.clone(),
-            generation.get(),
+            generation,
         ))
     }
 
@@ -359,7 +359,7 @@ impl LushtextSearchPanel {
         let generation = imp.preview.replace_transaction_generation.take()?;
         Some(ReplaceJournalFreshness::new(
             imp.preview.undo_backup_generation.clone(),
-            generation.get(),
+            UndoBackupGeneration::new(generation.get()),
         ))
     }
 
@@ -461,11 +461,9 @@ impl LushtextSearchPanel {
     pub(crate) fn publish_undo_journal_for_generation(
         &self,
         backup: super::GuardedReplaceUndoBackup,
-        generation: u32,
+        generation: UndoBackupGeneration,
     ) -> bool {
-        if !self
-            .set_persisted_undo_backup_for_generation(backup, UndoBackupGeneration::new(generation))
-        {
+        if !self.set_persisted_undo_backup_for_generation(backup, generation) {
             return false;
         }
         self.show_undo_button();
@@ -501,7 +499,10 @@ impl LushtextSearchPanel {
     }
 
     /// Clear an empty service result only if its reservation is still current.
-    pub(crate) fn clear_undo_backup_for_generation(&self, generation: u32) -> bool {
+    pub(crate) fn clear_undo_backup_for_generation(
+        &self,
+        generation: UndoBackupGeneration,
+    ) -> bool {
         if !super::policy::journal_generation_is_current(
             UndoBackupGeneration::new(
                 self.imp()
@@ -509,7 +510,7 @@ impl LushtextSearchPanel {
                     .undo_backup_generation
                     .load(Ordering::Acquire),
             ),
-            UndoBackupGeneration::new(generation),
+            generation,
         ) {
             return false;
         }
@@ -696,7 +697,7 @@ impl LushtextSearchPanel {
     #[must_use]
     pub fn begin_replace_transaction_for_test(&self) -> Option<UndoBackupGeneration> {
         self.begin_replace_transaction()
-            .map(|freshness| UndoBackupGeneration::new(freshness.expected()))
+            .map(|freshness| freshness.expected())
     }
 
     /// Release the production transaction gate for widget race tests.

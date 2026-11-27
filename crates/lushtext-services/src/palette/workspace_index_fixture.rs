@@ -15,7 +15,7 @@
 //! one digest ([`SHAPE_DIGEST_4096`]) by both test suites.
 //!
 //! [`shape`] yields relative paths without touching the disk (the in-memory
-//! constructors stream it), and [`write`] creates the tree through the
+//! constructors stream it), and [`write()`] creates the tree through the
 //! filesystem fixture boundary.
 
 use std::path::Path;
@@ -85,9 +85,9 @@ const BRANCH_ROLL: u64 = 256;
 /// Kind: out: tool; a fixture draw range.
 const SECOND_LEVEL_ROLLS: u64 = 8;
 
-/// Name of the symlinked directory [`write`] adds at the root.
+/// Name of the symlinked directory [`write()`] adds at the root.
 pub const LINKED_DIRECTORY: &str = "linked_dir";
-/// Name of the symlinked file [`write`] adds at the root.
+/// Name of the symlinked file [`write()`] adds at the root.
 pub const LINKED_FILE: &str = "linked_file.txt";
 
 /// One entry of the shape, parents before children, as a `/`-separated path
@@ -213,7 +213,7 @@ impl Iterator for WorkspaceIndexShape {
     }
 }
 
-/// What [`write`] created.
+/// What [`write()`] created.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WorkspaceIndexFixtureSummary {
     /// Regular files written.

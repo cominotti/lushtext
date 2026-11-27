@@ -24,6 +24,6 @@ Timing: `Verdict class: non-inferiority` on smoke cases `eviction/reselect`, `ev
 
 ## 4. Kani, timing, documentation & full gate verification
 
-- [ ] 4.1 Run all affected scheduled Kani shards via `scripts/heavy.sh --envelope 16G -- make kani KANI_SHARD=<shard>` and dispatch PR/scheduled shard budget runs per `.agents/rules/verification-runs.md`.
-- [ ] 4.2 Run the pre-registered non-inferiority `scripts/measure.sh` / benchmark campaign and confirm all touched metrics stay within the 5% / 500 µs noise band and under `B_INTERACT_US` / `B_SETTLE_US`.
-- [ ] 4.3 Run `make check`, `make check-policy`, `make test-unit`, `make check-agent-docs`, and `openspec validate domain-value-types-and-primitive-boundaries --strict`; update `docs/next/idiomatic-rust-hexagonal-programme.md`, create a signed commit (`git commit -S`), and push the branch.
+- [x] 4.1 Run all affected scheduled Kani shards via `scripts/heavy.sh --envelope 16G -- make kani KANI_SHARD=<shard>` and dispatch PR/scheduled shard budget runs per `.agents/rules/verification-runs.md`.
+- [x] 4.2 Run the pre-registered non-inferiority `scripts/measure.sh` / benchmark campaign and confirm all touched metrics stay within the 5% / 500 µs noise band and under `B_INTERACT_US` / `B_SETTLE_US`.
+- [x] 4.3 Run `make check`, `make check-policy`, `make test-unit`, `make check-agent-docs`, and `openspec validate domain-value-types-and-primitive-boundaries --strict`; update `docs/next/idiomatic-rust-hexagonal-programme.md`, create a signed commit (`git commit -S`), and push the branch.

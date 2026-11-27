@@ -33,7 +33,7 @@ use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
 use crate::ui::{accessibility, buffer_snapshot};
 use lushtext_model::persistence::local_history::{LocalHistorySnapshot, LocalHistorySnapshotMeta};
-use lushtext_model::values::HistoryPreviewGeneration;
+use lushtext_model::values::{HistoryPreviewGeneration, Sp};
 use lushtext_services::persistence::local_history_service;
 
 use super::policy;
@@ -41,13 +41,13 @@ use crate::ui::window::LushtextWindow;
 
 /// Current window width, falling back to the configured default before the
 /// window is mapped in widget tests or at startup.
-fn current_window_width(window: &LushtextWindow) -> i32 {
-    policy::current_window_dimension(window.width(), window.default_size().0)
+fn current_window_width(window: &LushtextWindow) -> Sp {
+    policy::current_window_dimension(Sp::new(window.width()), Sp::new(window.default_size().0))
 }
 
 /// Current window height, with the same pre-map fallback.
-fn current_window_height(window: &LushtextWindow) -> i32 {
-    policy::current_window_dimension(window.height(), window.default_size().1)
+fn current_window_height(window: &LushtextWindow) -> Sp {
+    policy::current_window_dimension(Sp::new(window.height()), Sp::new(window.default_size().1))
 }
 
 pub(super) type GuardedLocalHistorySnapshot =
@@ -223,8 +223,8 @@ impl LushtextWindow {
             policy::viewer_dialog_size(current_window_width(self), current_window_height(self));
         let dialog = libadwaita::Dialog::builder()
             .title("Local History")
-            .content_width(dialog_width)
-            .content_height(dialog_height)
+            .content_width(dialog_width.as_sp())
+            .content_height(dialog_height.as_sp())
             // Keep the viewer at the configured desktop-scale size instead of
             // shrinking back down to the child widget's natural request.
             .follows_content_size(false)
@@ -330,8 +330,8 @@ impl LushtextWindow {
         );
 
         let split_view = libadwaita::NavigationSplitView::new();
-        split_view.set_min_sidebar_width(policy::VIEWER_MIN_SIDEBAR_WIDTH_SP);
-        split_view.set_max_sidebar_width(policy::VIEWER_MAX_SIDEBAR_WIDTH_SP);
+        split_view.set_min_sidebar_width(f64::from(policy::VIEWER_MIN_SIDEBAR_WIDTH_SP.as_sp()));
+        split_view.set_max_sidebar_width(f64::from(policy::VIEWER_MAX_SIDEBAR_WIDTH_SP.as_sp()));
         split_view.set_sidebar(Some(&libadwaita::NavigationPage::new(
             &build_history_sidebar(&path, &sidebar),
             "Snapshots",
@@ -482,8 +482,8 @@ impl LushtextWindow {
     pub(super) fn build_empty_local_history_dialog(path: &Path) -> libadwaita::Dialog {
         let dialog = libadwaita::Dialog::builder()
             .title("Local History")
-            .content_width(policy::EMPTY_WIDTH_SP)
-            .content_height(policy::EMPTY_HEIGHT_SP)
+            .content_width(policy::EMPTY_WIDTH_SP.as_sp())
+            .content_height(policy::EMPTY_HEIGHT_SP.as_sp())
             // `AdwStatusPage` has a narrow natural request; following content size
             // would collapse this empty-state browser instead of using the target.
             .follows_content_size(false)

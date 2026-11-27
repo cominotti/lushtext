@@ -146,9 +146,9 @@ impl StallVerdict {
 /// - [`StallVerdict::Over`] exactly when `L − ε > B` (the lower bound exceeds);
 /// - [`StallVerdict::Indeterminate`] otherwise.
 ///
-/// The comparisons are exact over the mathematical integers for every `u64`
+/// The comparisons are exact over the mathematical integers for every [`Micros`]
 /// input: `L + T` that does not fit a `u64` is not `Within`, and `L − ε` below
-/// zero is not `Over`. Kani proves this for every `u64` quadruple
+/// zero is not `Over`. Kani proves this for every [`Micros`] quadruple
 /// (`kani_proofs::classification_is_sound_and_complete`).
 #[must_use]
 pub const fn classify_dispatch(
@@ -178,7 +178,7 @@ pub const fn classify_dispatch(
 ///
 /// The index is the bit length of `value_us` (0 for 0, 1 for 1, 2 for 2–3,
 /// …), capped at the last bucket. It is monotone in `value_us`; Kani proves
-/// both properties for every `u64` (`kani_proofs::buckets_are_monotone_and_in_range`).
+/// both properties for every [`Micros`] (`kani_proofs::buckets_are_monotone_and_in_range`).
 #[must_use]
 pub const fn histogram_bucket(value_us: Micros) -> usize {
     let bit_length = (u64::BITS - value_us.as_us().leading_zeros()) as usize;

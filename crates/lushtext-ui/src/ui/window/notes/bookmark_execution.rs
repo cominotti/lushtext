@@ -128,7 +128,7 @@ impl LushtextWindow {
     ) {
         let path = path.to_path_buf();
         let path_for_load = path.clone();
-        let started_at_generation = editor.bookmark_change_generation();
+        let started_at_generation = editor.bookmark_generation();
         let window_weak = self.downgrade();
         spawn_blocking_then(
             editor.clone(),
@@ -189,7 +189,7 @@ impl LushtextWindow {
                         }
                     }
                     Err(error) => {
-                        if editor.bookmark_change_generation() != started_at_generation {
+                        if editor.bookmark_generation() != started_at_generation {
                             return;
                         }
                         tracing::error!("Failed to load notes for {}: {error}", path.display());

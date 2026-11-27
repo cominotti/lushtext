@@ -1249,6 +1249,8 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-ui/src/ui/window/local_history/policy.rs` | `VIEWER_MAX_WIDTH_SP` | 1,680 | out: geometry | UI geometry in sp or px (D1) |
 | `crates/lushtext-ui/src/ui/window/local_history/policy.rs` | `VIEWER_MIN_HEIGHT_SP` | 720 | out: geometry | UI geometry in sp or px (D1) |
 | `crates/lushtext-ui/src/ui/window/local_history/policy.rs` | `VIEWER_MAX_HEIGHT_SP` | 1,080 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/local_history/policy.rs` | `VIEWER_MIN_SIDEBAR_WIDTH_SP` | 260 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/local_history/policy.rs` | `VIEWER_MAX_SIDEBAR_WIDTH_SP` | 340 | out: geometry | UI geometry in sp or px (D1) |
 | `crates/lushtext-ui/src/ui/window/local_history/policy.rs` | `EMPTY_WIDTH_SP` | 640 | out: geometry | UI geometry in sp or px (D1) |
 | `crates/lushtext-ui/src/ui/window/local_history/policy.rs` | `EMPTY_HEIGHT_SP` | 480 | out: geometry | UI geometry in sp or px (D1) |
 | `crates/lushtext-ui/src/ui/window/local_history/policy.rs` | `PREVIEW_DIRECT_THRESHOLD_BYTES` | 524,288 | derived | computed from named inputs; not rounded (D2) |

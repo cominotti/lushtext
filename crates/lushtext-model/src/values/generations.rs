@@ -147,10 +147,6 @@ crate::define_generation!(
     pub NotesSourceGeneration(u64)
 );
 crate::define_generation!(
-    /// Notes browser accessible announcement generation.
-    pub NotesAnnouncementGeneration(u64)
-);
-crate::define_generation!(
     /// Multi-file Replace All preview generation.
     pub ReplacePreviewGeneration(u32)
 );
@@ -201,10 +197,6 @@ crate::define_generation!(
 crate::define_generation!(
     /// Recent-documents journal / open popover generation.
     pub RecentDocumentsGeneration(u64)
-);
-crate::define_generation!(
-    /// Background encoding detection / lossy-content generation.
-    pub EncodingGeneration(u64)
 );
 
 #[cfg(test)]

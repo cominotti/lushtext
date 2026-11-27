@@ -97,8 +97,8 @@ pub(in crate::ui::window) fn configure_split_views(
     preview_layout_view.set_layout_name(PREVIEW_LAYOUT_EDITOR);
     preview_split_view.set_sidebar_position(gtk4::PackType::End);
     preview_split_view.set_sidebar_width_unit(libadwaita::LengthUnit::Sp);
-    preview_split_view.set_min_sidebar_width(f64::from(PREVIEW_MIN_WIDTH_SP));
-    preview_split_view.set_max_sidebar_width(f64::from(PREVIEW_MIN_WIDTH_SP));
+    preview_split_view.set_min_sidebar_width(f64::from(PREVIEW_MIN_WIDTH_SP.as_sp()));
+    preview_split_view.set_max_sidebar_width(f64::from(PREVIEW_MIN_WIDTH_SP.as_sp()));
     preview_split_view.set_pin_sidebar(true);
     preview_split_view.set_enable_show_gesture(false);
     preview_split_view.set_enable_hide_gesture(false);

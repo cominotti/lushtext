@@ -11,7 +11,7 @@
 use std::cell::{Cell, RefCell};
 use std::time::{Duration, Instant};
 
-use lushtext_model::values::NotificationGeneration;
+use lushtext_model::values::{EditorId, NotificationGeneration};
 
 /// Lifetime for transient status and progress messages.
 ///
@@ -47,7 +47,7 @@ pub enum NotificationOwner {
     /// Workspace search progress and completion feedback.
     Search,
     /// One editor tab, keyed by its stable per-window editor ID.
-    Editor(usize),
+    Editor(EditorId),
 }
 
 /// UI surface where a notification may be rendered.
@@ -56,7 +56,7 @@ pub enum NotificationSurface {
     /// The persistent bottom status bar for window-level feedback.
     StatusBar,
     /// An editor-owned inline alert row above the text view.
-    EditorInfoBar(usize),
+    EditorInfoBar(EditorId),
 }
 
 /// Text and severity rendered by the status bar.
@@ -271,14 +271,14 @@ impl NotificationBus {
     }
 
     /// Return the latest inline action notification for one editor.
-    pub fn editor_info_bar_view(&self, editor_id: usize) -> Option<InlineActionNotification> {
+    pub fn editor_info_bar_view(&self, editor_id: EditorId) -> Option<InlineActionNotification> {
         self.editor_info_bar_view_at(editor_id, Instant::now())
     }
 
     /// Return the editor inline view at `now`, pruning expired records first.
     pub fn editor_info_bar_view_at(
         &self,
-        editor_id: usize,
+        editor_id: EditorId,
         now: Instant,
     ) -> Option<InlineActionNotification> {
         self.prune_expired(now);
@@ -539,7 +539,10 @@ mod tests {
             progress("Searching…"),
         ));
         assert!(bus.heartbeat(NotificationOwner::Search, NotificationSurface::StatusBar));
-        assert!(!bus.heartbeat(NotificationOwner::Editor(1), NotificationSurface::StatusBar));
+        assert!(!bus.heartbeat(
+            NotificationOwner::Editor(EditorId::new(1)),
+            NotificationSurface::StatusBar
+        ));
     }
 
     #[test]
@@ -551,7 +554,7 @@ mod tests {
             NotificationEvent::Publish,
             now,
             NotificationOwner::Search,
-            NotificationSurface::EditorInfoBar(1),
+            NotificationSurface::EditorInfoBar(EditorId::new(1)),
             Some(progress("Decoy same owner")),
         ));
         assert!(bus.reduce_at(
@@ -580,7 +583,7 @@ mod tests {
         let records = bus.records.borrow();
         let decoy_same_owner = records
             .iter()
-            .find(|record| record.surface == NotificationSurface::EditorInfoBar(1))
+            .find(|record| record.surface == NotificationSurface::EditorInfoBar(EditorId::new(1)))
             .expect("decoy same owner");
         let decoy_same_surface = records
             .iter()
@@ -730,7 +733,7 @@ mod tests {
             NotificationEvent::Publish,
             now,
             NotificationOwner::Search,
-            NotificationSurface::EditorInfoBar(1),
+            NotificationSurface::EditorInfoBar(EditorId::new(1)),
             Some(progress("Decoy same owner")),
         ));
         assert!(bus.reduce_at(
@@ -763,7 +766,7 @@ mod tests {
         assert_eq!(records.len(), 3);
         assert!(
             records.iter().any(|record| {
-                record.surface == NotificationSurface::EditorInfoBar(1)
+                record.surface == NotificationSurface::EditorInfoBar(EditorId::new(1))
                     && matches!(
                         &record.payload,
                         NotificationPayload::Progress(message)
@@ -891,8 +894,8 @@ mod tests {
         assert!(bus.reduce_at(
             NotificationEvent::Publish,
             now,
-            NotificationOwner::Editor(9),
-            NotificationSurface::EditorInfoBar(9),
+            NotificationOwner::Editor(EditorId::new(9)),
+            NotificationSurface::EditorInfoBar(EditorId::new(9)),
             Some(inline("Document Restored")),
         ));
 
@@ -909,7 +912,7 @@ mod tests {
                 .is_none()
         );
         assert!(
-            bus.editor_info_bar_view_at(9, now + Duration::from_secs(1))
+            bus.editor_info_bar_view_at(EditorId::new(9), now + Duration::from_secs(1))
                 .is_some()
         );
     }
@@ -956,13 +959,13 @@ mod tests {
         assert!(bus.reduce_at(
             NotificationEvent::Publish,
             now,
-            NotificationOwner::Editor(4),
-            NotificationSurface::EditorInfoBar(4),
+            NotificationOwner::Editor(EditorId::new(4)),
+            NotificationSurface::EditorInfoBar(EditorId::new(4)),
             Some(inline("File Has Changed on Disk")),
         ));
 
         assert!(
-            bus.editor_info_bar_view_at(4, now + Duration::from_secs(60))
+            bus.editor_info_bar_view_at(EditorId::new(4), now + Duration::from_secs(60))
                 .is_some()
         );
     }
@@ -992,18 +995,18 @@ mod tests {
         assert!(bus.reduce_at(
             NotificationEvent::Publish,
             now,
-            NotificationOwner::Editor(7),
-            NotificationSurface::EditorInfoBar(7),
+            NotificationOwner::Editor(EditorId::new(7)),
+            NotificationSurface::EditorInfoBar(EditorId::new(7)),
             Some(inline("Draft Changes Restored")),
         ));
 
         assert_eq!(
-            bus.editor_info_bar_view_at(7, now)
+            bus.editor_info_bar_view_at(EditorId::new(7), now)
                 .expect("editor notification visible")
                 .title,
             "Draft Changes Restored"
         );
-        assert!(bus.editor_info_bar_view_at(8, now).is_none());
+        assert!(bus.editor_info_bar_view_at(EditorId::new(8), now).is_none());
     }
 
     #[test]
@@ -1011,18 +1014,18 @@ mod tests {
         let bus = NotificationBus::default();
 
         assert!(bus.publish(
-            NotificationOwner::Editor(7),
-            NotificationSurface::EditorInfoBar(7),
+            NotificationOwner::Editor(EditorId::new(7)),
+            NotificationSurface::EditorInfoBar(EditorId::new(7)),
             inline("Draft Changes Restored"),
         ));
 
         assert_eq!(
-            bus.editor_info_bar_view(7)
+            bus.editor_info_bar_view(EditorId::new(7))
                 .expect("editor notification visible")
                 .title,
             "Draft Changes Restored"
         );
-        assert!(bus.editor_info_bar_view(8).is_none());
+        assert!(bus.editor_info_bar_view(EditorId::new(8)).is_none());
     }
 
     #[test]
@@ -1120,20 +1123,20 @@ mod tests {
         assert!(bus.reduce_at(
             NotificationEvent::Publish,
             now,
-            NotificationOwner::Editor(3),
-            NotificationSurface::EditorInfoBar(3),
+            NotificationOwner::Editor(EditorId::new(3)),
+            NotificationSurface::EditorInfoBar(EditorId::new(3)),
             Some(inline("File Has Changed on Disk")),
         ));
         assert!(bus.reduce_at(
             NotificationEvent::DismissOwner,
             now + Duration::from_secs(1),
-            NotificationOwner::Editor(3),
+            NotificationOwner::Editor(EditorId::new(3)),
             NotificationSurface::StatusBar,
             None,
         ));
 
         assert!(
-            bus.editor_info_bar_view_at(3, now + Duration::from_secs(1))
+            bus.editor_info_bar_view_at(EditorId::new(3), now + Duration::from_secs(1))
                 .is_none()
         );
     }
@@ -1142,13 +1145,13 @@ mod tests {
     fn public_dismiss_owner_reports_whether_records_changed() {
         let bus = NotificationBus::default();
 
-        assert!(!bus.dismiss_owner(NotificationOwner::Editor(3)));
+        assert!(!bus.dismiss_owner(NotificationOwner::Editor(EditorId::new(3))));
         assert!(bus.publish(
-            NotificationOwner::Editor(3),
-            NotificationSurface::EditorInfoBar(3),
+            NotificationOwner::Editor(EditorId::new(3)),
+            NotificationSurface::EditorInfoBar(EditorId::new(3)),
             inline("File Has Changed on Disk"),
         ));
-        assert!(bus.dismiss_owner(NotificationOwner::Editor(3)));
-        assert!(!bus.dismiss_owner(NotificationOwner::Editor(3)));
+        assert!(bus.dismiss_owner(NotificationOwner::Editor(EditorId::new(3))));
+        assert!(!bus.dismiss_owner(NotificationOwner::Editor(EditorId::new(3))));
     }
 }

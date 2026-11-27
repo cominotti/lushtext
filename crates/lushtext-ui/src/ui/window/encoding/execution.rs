@@ -33,6 +33,7 @@ use crate::ui::status_bar::MessageKind;
 use lushtext_model::document::encoding::{
     DocumentEncoding, FileHealthFindingKind, InvisibleCharactersMode, LineEnding,
 };
+use lushtext_model::values::{DraftGeneration, LossyAnalysisGeneration};
 use lushtext_services::editor_io::{self, LossyEncodingPreview};
 
 use super::super::LushtextWindow;
@@ -111,7 +112,7 @@ pub(super) fn begin_save_encoding_change(window: &LushtextWindow, encoding: Docu
     }
 
     let analysis_generation = editor.advance_lossy_analysis_generation();
-    let content_generation = editor.draft_dirty_generation();
+    let content_generation = editor.draft_generation();
     let buffer = editor.buffer();
     let editor_weak = editor.downgrade();
     let window_weak = window.downgrade();
@@ -190,11 +191,11 @@ pub(super) fn begin_save_encoding_change(window: &LushtextWindow, encoding: Docu
 fn analysis_is_current(
     window: &LushtextWindow,
     editor: &LushtextEditorPage,
-    analysis_generation: u32,
-    content_generation: u64,
+    analysis_generation: LossyAnalysisGeneration,
+    content_generation: DraftGeneration,
 ) -> bool {
     editor.lossy_analysis_generation() == analysis_generation
-        && editor.draft_dirty_generation() == content_generation
+        && editor.draft_generation() == content_generation
         && window.is_active_editor(editor)
 }
 
@@ -218,8 +219,8 @@ fn confirm_lossy_encoding_change(
     editor: &LushtextEditorPage,
     encoding: DocumentEncoding,
     preview: &LossyEncodingPreview,
-    analysis_generation: u32,
-    content_generation: u64,
+    analysis_generation: LossyAnalysisGeneration,
+    content_generation: DraftGeneration,
 ) {
     let dialog = libadwaita::AlertDialog::builder()
         .heading("Lossy Encoding Conversion")

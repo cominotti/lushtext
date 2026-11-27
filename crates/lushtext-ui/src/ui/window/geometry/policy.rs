@@ -236,7 +236,7 @@ pub(in crate::ui::window) fn desired_properties_share(window_width: Sp) -> PaneS
 
 /// Derive which secondary surfaces render, and how, for one stable intent.
 ///
-/// Kani proves (`policy/kani_proofs.rs`), for every `i32` width, preset,
+/// Kani proves (`policy/kani_proofs.rs`), for every [`Sp`] width, preset,
 /// requested visibility, Focus Mode, and compact-surface choice: Focus Mode
 /// renders nothing; an unrequested surface never renders; the sheet
 /// presentation renders at most one surface; the pane presentation above the

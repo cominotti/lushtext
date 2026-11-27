@@ -534,7 +534,7 @@ pub struct LushtextWindow {
     /// Whether the preview-only mode (Alt+P) is active (editor hidden, preview full-width).
     pub preview_mode: Cell<bool>,
     /// Legacy preferred side-by-side preview width from `preview-pane-position`.
-    pub preferred_preview_width: Cell<i32>,
+    pub preferred_preview_width: Cell<lushtext_model::values::Sp>,
     /// Whether showing the side-by-side sidebar waits for its first allocation.
     ///
     /// See `LushtextWindow::show_preview_sidebar_once_allocated`.
@@ -809,7 +809,8 @@ impl ObjectImpl for LushtextWindow {
         // The legacy preview-pane-position key now stores a preferred
         // side-by-side preview width. Preview still starts hidden; target-state
         // actions apply this width when the pane is explicitly requested.
-        let preferred_preview_width = settings.int(keys::PREVIEW_PANE_POSITION);
+        let preferred_preview_width =
+            lushtext_model::values::Sp::new(settings.int(keys::PREVIEW_PANE_POSITION));
         self.preferred_preview_width.set(preferred_preview_width);
         obj.sync_preview_width_constraints(w);
         obj.wire_preview_document_alert();
@@ -874,7 +875,9 @@ impl ObjectImpl for LushtextWindow {
             window
                 .imp()
                 .preferred_preview_width
-                .set(s.int(keys::PREVIEW_PANE_POSITION));
+                .set(lushtext_model::values::Sp::new(
+                    s.int(keys::PREVIEW_PANE_POSITION),
+                ));
             window.sync_preview_width_constraints(current_window_width(window));
             window.queue_preview_layout_settle();
         });

@@ -35,6 +35,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 
 use crate::ui::editor_page::LushtextEditorPage;
+use lushtext_model::values::EditorId;
 use lushtext_services::coordination::notifications::{
     InlineActionNotification, InlineAlertAction, StatusMessage,
 };
@@ -53,7 +54,7 @@ use crate::ui::window::StagedSurface;
 /// tab count.
 #[derive(Debug, Default)]
 pub(crate) struct NotificationProjectionState {
-    announced: RefCell<HashMap<usize, String>>,
+    announced: RefCell<HashMap<EditorId, String>>,
     counts: Cell<InlineAlertAnnouncementCounts>,
     /// What the preview copy currently shows, if anything.
     preview_ticket: RefCell<Option<DocumentAlertProjectionTicket>>,
@@ -71,7 +72,7 @@ impl NotificationProjectionState {
     }
 
     /// The owner id and alert key the preview copy was last projected for.
-    pub(super) fn preview_projection(&self) -> Option<(usize, String)> {
+    pub(super) fn preview_projection(&self) -> Option<(EditorId, String)> {
         self.preview_ticket
             .borrow()
             .as_ref()

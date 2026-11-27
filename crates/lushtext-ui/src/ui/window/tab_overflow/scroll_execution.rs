@@ -164,7 +164,8 @@ impl LushtextWindow {
     }
 }
 
-/// `value` rounded to the nearest whole pixel, saturating at the `i32` range.
+/// `value` rounded to the nearest whole pixel ([`Sp`](lushtext_model::values::Sp)),
+/// saturating at the `i32` range.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the value is rounded and clamped to the i32 range first; an adjustment value \

@@ -861,7 +861,7 @@ fn capture_unit(
         return start_next_editor(capture);
     };
     let generation = current.editor.bookmark_generation();
-    if capture_slice_decision(Some(current.generation.get()), generation.get())
+    if capture_slice_decision(Some(current.generation), generation)
         == CaptureSliceDecision::RestartEditor
     {
         // Drop what this editor gave, return its charge, and start it again.

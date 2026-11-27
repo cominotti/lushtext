@@ -56,8 +56,8 @@ use lushtext_model::document::encoding::{
 use lushtext_model::document::formatting_overrides::FormattingOverrides;
 use lushtext_model::persistence::bookmark::BookmarkRecord;
 use lushtext_model::values::{
-    AccessGeneration, BookmarkGeneration, BufferReplacementGeneration, DraftGeneration,
-    LoadGeneration, PolicyGeneration,
+    AccessGeneration, BookmarkGeneration, BufferReplacementGeneration, DraftGeneration, EditorId,
+    LoadGeneration, LossyAnalysisGeneration, PolicyGeneration,
 };
 use lushtext_services::coordination::notifications::InlineActionNotification;
 
@@ -281,7 +281,7 @@ impl LushtextEditorPage {
     }
 
     /// Advance the per-editor lossy-encoding request generation.
-    pub(crate) fn advance_lossy_analysis_generation(&self) -> u32 {
+    pub(crate) fn advance_lossy_analysis_generation(&self) -> LossyAnalysisGeneration {
         if let Some(snapshot) = self.imp().document_metadata.lossy_analysis_snapshot.take() {
             snapshot.dispose();
         }
@@ -295,17 +295,13 @@ impl LushtextEditorPage {
             .document_metadata
             .lossy_analysis_generation
             .set(generation);
-        generation.get()
+        generation
     }
 
     /// Current generation for lossy-encoding analysis requests.
     #[must_use]
-    pub(crate) fn lossy_analysis_generation(&self) -> u32 {
-        self.imp()
-            .document_metadata
-            .lossy_analysis_generation
-            .get()
-            .get()
+    pub(crate) fn lossy_analysis_generation(&self) -> LossyAnalysisGeneration {
+        self.imp().document_metadata.lossy_analysis_generation.get()
     }
 
     /// Current line-ending state detected during the last load.
@@ -723,8 +719,8 @@ impl LushtextEditorPage {
     }
 
     #[must_use]
-    pub fn notification_owner_id(&self) -> usize {
-        self.as_ptr() as usize
+    pub fn notification_owner_id(&self) -> EditorId {
+        EditorId::new(self.as_ptr() as usize)
     }
 
     #[must_use]
@@ -740,11 +736,6 @@ impl LushtextEditorPage {
                 .set(self.imp().draft.dirty_generation.get().next());
         }
         self.imp().draft.draft_dirty.set(dirty);
-    }
-
-    #[must_use]
-    pub(crate) fn draft_dirty_generation(&self) -> u64 {
-        self.imp().draft.dirty_generation.get().get()
     }
 
     #[must_use]
@@ -787,13 +778,7 @@ impl LushtextEditorPage {
         self.imp().draft.automatic_recovery_limited.set(limited);
     }
 
-    /// Current file-load generation used to reject stale lazy draft completions.
-    #[must_use]
-    pub(crate) fn load_generation(&self) -> u64 {
-        self.imp().load_tracking.generation.get().get()
-    }
-
-    /// Typed file-load generation for window-owned draft recovery seams.
+    /// Typed file-load generation for window-owned draft and preview seams.
     #[must_use]
     pub(crate) fn typed_load_generation(&self) -> LoadGeneration {
         self.imp().load_tracking.generation.get()
@@ -866,15 +851,9 @@ impl LushtextEditorPage {
         bookmarks::bookmark_entry_count(self)
     }
 
-    /// Snapshot the live bookmark projection generation for async race guards.
+    /// Typed bookmark projection generation for async race guards and window-owned source capture.
     #[must_use]
-    pub fn bookmark_change_generation(&self) -> u64 {
-        bookmarks::bookmark_change_generation(self).get()
-    }
-
-    /// Typed bookmark projection generation for window-owned source capture.
-    #[must_use]
-    pub(crate) fn bookmark_generation(&self) -> BookmarkGeneration {
+    pub fn bookmark_generation(&self) -> BookmarkGeneration {
         bookmarks::bookmark_change_generation(self)
     }
 
@@ -888,13 +867,9 @@ impl LushtextEditorPage {
     pub fn load_bookmarks_if_generation_matches(
         &self,
         bookmarks: &[BookmarkRecord],
-        expected_generation: u64,
+        expected_generation: BookmarkGeneration,
     ) -> bool {
-        bookmarks::load_bookmarks_if_generation_matches(
-            self,
-            bookmarks,
-            BookmarkGeneration::new(expected_generation),
-        )
+        bookmarks::load_bookmarks_if_generation_matches(self, bookmarks, expected_generation)
     }
 
     /// Clear all live bookmark marks for the current file identity.

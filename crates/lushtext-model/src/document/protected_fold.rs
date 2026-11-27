@@ -343,7 +343,7 @@ impl FoldRange {
 
     /// Where `column` (a character offset from the paragraph start) lies.
     ///
-    /// Total over every `u64` column and every range, overflow-free: Kani
+    /// Total over every [`CharCount`] column and every range, overflow-free: Kani
     /// proves (`fold_location_is_total_and_round_trips`), for any range whose
     /// `head_chars + tail_chars` fits a `u64` and any column, that the result
     /// is `Visible` iff `column < head_chars`, that a `Hidden` offset plus the

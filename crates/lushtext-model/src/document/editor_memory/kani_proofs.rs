@@ -295,7 +295,7 @@ impl ModelLedger {
     /// `EditorResidencyLedger::snapshot`, over the slots.
     fn records(&self) -> ([EditorResidency; 2], usize) {
         let unused = EditorResidency {
-            editor_id: EditorId::ZERO,
+            editor_id: EditorId::new(0),
             estimated_bytes: Bytes::ZERO,
             access_generation: crate::values::AccessGeneration::ZERO,
             policy_generation: crate::values::PolicyGeneration::ZERO,

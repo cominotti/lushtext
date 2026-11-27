@@ -261,7 +261,7 @@ impl LushtextWindow {
         let request = BufferReplacementRequest::new(
             BufferReplacementTicket {
                 workflow: BufferReplacementWorkflow::DraftRecovery,
-                generation: BufferReplacementGeneration::new(editor.draft_dirty_generation()),
+                generation: BufferReplacementGeneration::new(editor.draft_generation().get()),
             },
             text,
             |_| true,

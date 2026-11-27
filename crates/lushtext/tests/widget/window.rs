@@ -2804,7 +2804,7 @@ fn test_stale_bookmark_sidecar_load_does_not_replace_local_edits() {
     });
 
     let editor = active_editor(&window);
-    let stale_generation = editor.bookmark_change_generation();
+    let stale_generation = editor.bookmark_generation();
     let line_one = editor.buffer().iter_at_line(0).expect("line one");
     editor.buffer().place_cursor(&line_one);
     let _ = editor.toggle_bookmark_at_cursor();

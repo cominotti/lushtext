@@ -13,6 +13,7 @@
 use std::time::Duration;
 
 use crate::ui::accessibility::AnnouncementLane;
+use lushtext_model::values::EditorId;
 use lushtext_services::coordination::notifications::{
     InlineActionNotification, InlineNotificationStyle, NotificationOwner, NotificationSurface,
     StatusMessage,
@@ -41,7 +42,7 @@ pub struct EditorNotificationTarget {
 impl EditorNotificationTarget {
     /// Derive both halves from one editor's stable notification owner id.
     #[must_use]
-    pub fn for_editor(owner_id: usize) -> Self {
+    pub fn for_editor(owner_id: EditorId) -> Self {
         Self {
             owner: NotificationOwner::Editor(owner_id),
             surface: NotificationSurface::EditorInfoBar(owner_id),
@@ -167,14 +168,14 @@ pub fn inline_alert_announcement_due(announced: Option<&str>, current: &str) -> 
 /// against `DocumentAlertFacts`, so a click acts only on the alert the user saw.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocumentAlertProjectionTicket {
-    owner_id: usize,
+    owner_id: EditorId,
     alert_key: String,
 }
 
 impl DocumentAlertProjectionTicket {
     /// The notification owner id of the editor whose alert was projected.
     #[must_use]
-    pub const fn owner_id(&self) -> usize {
+    pub const fn owner_id(&self) -> EditorId {
         self.owner_id
     }
 
@@ -191,7 +192,7 @@ pub struct DocumentAlertFacts {
     /// Whether preview-only mode is active now.
     pub preview_only: bool,
     /// The notification owner id of the selected editor now, if any.
-    pub selected_owner: Option<usize>,
+    pub selected_owner: Option<EditorId>,
     /// The key of the selected editor's current alert, if any.
     pub current_alert_key: Option<String>,
 }
@@ -204,7 +205,7 @@ pub struct DocumentAlertFacts {
 #[must_use]
 pub fn plan_preview_document_alert(
     preview_only: bool,
-    selected_owner: Option<usize>,
+    selected_owner: Option<EditorId>,
     view: Option<&InlineActionNotification>,
 ) -> Option<DocumentAlertProjectionTicket> {
     if !preview_only {
@@ -285,15 +286,16 @@ mod tests {
 
     #[test]
     fn an_editor_target_derives_both_halves_from_one_owner_id() {
-        let target = EditorNotificationTarget::for_editor(7);
-        assert_eq!(target.owner(), NotificationOwner::Editor(7));
-        assert_eq!(target.surface(), NotificationSurface::EditorInfoBar(7));
+        let id = EditorId::new(7);
+        let target = EditorNotificationTarget::for_editor(id);
+        assert_eq!(target.owner(), NotificationOwner::Editor(id));
+        assert_eq!(target.surface(), NotificationSurface::EditorInfoBar(id));
     }
 
     #[test]
     fn editor_targets_for_different_editors_do_not_collide() {
-        let first = EditorNotificationTarget::for_editor(1);
-        let second = EditorNotificationTarget::for_editor(2);
+        let first = EditorNotificationTarget::for_editor(EditorId::new(1));
+        let second = EditorNotificationTarget::for_editor(EditorId::new(2));
         assert_ne!(first.owner(), second.owner());
         assert_ne!(first.surface(), second.surface());
     }
@@ -409,26 +411,28 @@ mod tests {
     #[test]
     fn the_preview_copy_is_planned_only_for_preview_only_with_an_alert() {
         let warning = alert(InlineNotificationStyle::Warning, "Changed", "On disk");
-        let ticket = plan_preview_document_alert(true, Some(3), Some(&warning))
+        let id = EditorId::new(3);
+        let ticket = plan_preview_document_alert(true, Some(id), Some(&warning))
             .expect("preview-only with an alert projects the copy");
-        assert_eq!(ticket.owner_id(), 3);
+        assert_eq!(ticket.owner_id(), id);
         assert_eq!(ticket.alert_key(), inline_alert_announcement_key(&warning));
 
         assert_eq!(
-            plan_preview_document_alert(false, Some(3), Some(&warning)),
+            plan_preview_document_alert(false, Some(id), Some(&warning)),
             None
         );
         assert_eq!(
             plan_preview_document_alert(true, None, Some(&warning)),
             None
         );
-        assert_eq!(plan_preview_document_alert(true, Some(3), None), None);
+        assert_eq!(plan_preview_document_alert(true, Some(id), None), None);
     }
 
     #[test]
     fn a_matching_ticket_and_facts_pair_is_current() {
         let warning = alert(InlineNotificationStyle::Warning, "Changed", "On disk");
-        let ticket = plan_preview_document_alert(true, Some(3), Some(&warning)).expect("ticket");
+        let ticket = plan_preview_document_alert(true, Some(EditorId::new(3)), Some(&warning))
+            .expect("ticket");
         assert!(document_alert_projection_is_current(
             &ticket,
             &facts_for(&ticket)
@@ -438,14 +442,15 @@ mod tests {
     #[test]
     fn every_ticket_facts_mismatch_is_stale() {
         let warning = alert(InlineNotificationStyle::Warning, "Changed", "On disk");
-        let ticket = plan_preview_document_alert(true, Some(3), Some(&warning)).expect("ticket");
+        let ticket = plan_preview_document_alert(true, Some(EditorId::new(3)), Some(&warning))
+            .expect("ticket");
 
         let left_preview_only = DocumentAlertFacts {
             preview_only: false,
             ..facts_for(&ticket)
         };
         let other_tab = DocumentAlertFacts {
-            selected_owner: Some(4),
+            selected_owner: Some(EditorId::new(4)),
             ..facts_for(&ticket)
         };
         let no_tab = DocumentAlertFacts {

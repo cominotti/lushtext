@@ -137,7 +137,7 @@ pub const PANGO_UNITS_PER_PIXEL: i32 = 1024;
 /// [`MIN_FOCUS_MARGIN`] and a third of the width. A non-positive width or
 /// character width yields the minimum.
 ///
-/// Equal, for every `i32` width, `i32` character width, and `u32` column count,
+/// Equal, for every [`Sp`] width, `i32` character width, and `u32` column count,
 /// to the `f64` form it replaced (which divided the character width by
 /// `pango::SCALE` first); the adapter's tests pin the two together.
 #[must_use]
