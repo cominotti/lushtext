@@ -106,6 +106,10 @@ use super::workspace_section::{self, LushtextWorkspaceSection};
 /// Every field is a scalar or an owned value: the surface never hands out a borrow,
 /// a widget, or a GTK collection.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct WorkspaceTreeEvidence {
     // --- workspace list ---
     /// Persisted workspaces.
@@ -407,6 +411,10 @@ impl LushtextSidebar {
 /// single derivation and the two cannot disagree. It exists only so a polled snapshot
 /// need not allocate the full surface's per-section collections.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub(crate) struct WorkspaceSnapshotEvidence {
     pub(crate) scope_kind: String,
     pub(crate) scope_workspace_id: Option<String>,
@@ -456,6 +464,10 @@ pub struct DirectoryListingEvidence {
 /// derived scalar is computed into a local before the struct literal so no field is read
 /// from inside a mutable borrow, and nothing here is a `TemplateChild`.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct WorkspaceSectionEvidence {
     /// Whether this section still has watcher, mailbox, or refresh work pending.
     pub refresh_blocks_readiness: bool,

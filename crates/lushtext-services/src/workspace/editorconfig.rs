@@ -108,17 +108,17 @@ pub fn resolve_for_path(file_path: &Path) -> FormattingOverrides {
         if !resolved_indent_width {
             match props.indent_size {
                 EditorConfigProperty::Value(s) => {
-                    #[expect(
-                        clippy::cast_possible_truncation,
-                        reason = "EditorConfig indent sizes are clamped to the GtkSourceView-supported range before converting to u32"
-                    )]
-                    let s = (s as i32).clamp(1, 12);
-                    result.indent_width = Some(s);
+                    let s = u8::try_from(s).unwrap_or(12).clamp(1, 12);
+                    result.indent_width = Some(
+                        lushtext_model::document::formatting_overrides::IndentWidthSetting::Spaces(
+                            s,
+                        ),
+                    );
                     resolved_indent_width = true;
                 }
                 EditorConfigProperty::Unset => {
-                    // Explicit unset → restore GtkSourceView default (-1 = use tab-width).
-                    result.indent_width = Some(-1);
+                    result.indent_width =
+                        Some(lushtext_model::document::formatting_overrides::IndentWidthSetting::InheritTabWidth);
                     resolved_indent_width = true;
                 }
                 EditorConfigProperty::None => {}
@@ -361,7 +361,10 @@ mod tests {
         touch(&file);
 
         let result = resolve_for_path(&file);
-        assert_eq!(result.indent_width, Some(3));
+        assert_eq!(
+            result.indent_width,
+            Some(lushtext_model::document::formatting_overrides::IndentWidthSetting::Spaces(3))
+        );
     }
 
     #[test]
@@ -375,7 +378,12 @@ mod tests {
         touch(&file);
 
         let result = resolve_for_path(&file);
-        assert_eq!(result.indent_width, Some(-1));
+        assert_eq!(
+            result.indent_width,
+            Some(
+                lushtext_model::document::formatting_overrides::IndentWidthSetting::InheritTabWidth
+            )
+        );
     }
 
     #[test]
@@ -444,7 +452,10 @@ mod tests {
         let result = resolve_for_path(&file);
         assert_eq!(result.tab_width, Some(2));
         assert_eq!(result.insert_spaces, Some(true));
-        assert_eq!(result.indent_width, Some(3));
+        assert_eq!(
+            result.indent_width,
+            Some(lushtext_model::document::formatting_overrides::IndentWidthSetting::Spaces(3))
+        );
         assert_eq!(result.line_ending, Some(LineEnding::Lf));
         assert_eq!(result.save_encoding, Some(DocumentEncoding::Utf8));
         assert_eq!(result.trim_trailing_whitespace, Some(false));
@@ -469,7 +480,10 @@ mod tests {
         touch(&py_file);
         let py_result = resolve_for_path(&py_file);
         assert_eq!(py_result.tab_width, Some(4));
-        assert_eq!(py_result.indent_width, Some(4));
+        assert_eq!(
+            py_result.indent_width,
+            Some(lushtext_model::document::formatting_overrides::IndentWidthSetting::Spaces(4))
+        );
     }
 
     #[test]
@@ -491,7 +505,10 @@ mod tests {
         touch(&file);
 
         let result = resolve_for_path(&file);
-        assert_eq!(result.indent_width, Some(1)); // Clamped to min
+        assert_eq!(
+            result.indent_width,
+            Some(lushtext_model::document::formatting_overrides::IndentWidthSetting::Spaces(1))
+        ); // Clamped to min
     }
 
     #[test]

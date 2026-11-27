@@ -56,6 +56,10 @@ pub(super) enum OverflowInstallPhase {
 
 /// Last-published overflow control visibility, enablement, and counters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only last-published control state snapshot DTO"
+)]
 pub(super) struct PublishedControlsSnapshot {
     pub(super) controls_visible: bool,
     pub(super) group_attached: bool,

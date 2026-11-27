@@ -186,6 +186,10 @@ pub(crate) struct DiskEntry {
 }
 
 #[derive(Clone, Copy)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Kani two-window draft-journal model facts"
+)]
 pub(crate) struct Editor {
     pub(crate) open: bool,
     pub(crate) content: ContentId,

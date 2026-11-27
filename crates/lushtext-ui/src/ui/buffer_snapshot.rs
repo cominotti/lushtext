@@ -627,6 +627,7 @@ pub enum BufferSnapshotTestEdit {
 /// One live chunked capture's ownership state and capture metrics.
 #[cfg(feature = "test-utils")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[expect(clippy::struct_excessive_bools, reason = "evidence DTO")]
 pub struct BufferSnapshotSessionEvidence {
     pub active: bool,
     pub progress_mark_live: bool,

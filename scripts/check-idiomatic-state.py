@@ -34,14 +34,12 @@ IMP_MAX_PRODUCTION_LINES = 500
 IMP_MAX_BOX_CALLBACKS = 2
 STATE_BAG_MIN_FIELDS = 4
 
-# Temporary migration ceilings ratcheted down after Batch B.
-# Remove to 0 in Change 4 Step 4.
 ACTIVE_CEILINGS: dict[str, int] = {
     "oversized_imp": 0,
     "imp_callback_farm": 0,
     "flat_state_bag": 0,
     "manual_reset_fn": 0,
-    "sentinel_outside_ffi": 1,
+    "sentinel_outside_ffi": 0,
 }
 
 CFG_TEST_RE = re.compile(r"^\s*#\[cfg\(\s*test\s*\)\]")

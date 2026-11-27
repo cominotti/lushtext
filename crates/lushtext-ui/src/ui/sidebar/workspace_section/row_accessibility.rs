@@ -119,11 +119,16 @@ pub(super) fn apply_file_tree_row_accessibility(target: FileTreeRowAccessibility
         .borrow()
         .as_ref()
         .map_or(0, ListModelExt::n_items);
-    let row_accessibility = if set_size > 0 && position != gtk4::INVALID_LIST_POSITION {
+    let row_accessibility = if set_size > 0
+        && position != gtk4::INVALID_LIST_POSITION
+        && let (Ok(pos), Ok(total)) = (
+            i32::try_from(position.saturating_add(1)),
+            i32::try_from(set_size),
+        ) {
         RowAccessibility::new(&label)
             .description(&description)
             .selected(selected)
-            .position((position + 1) as i32, set_size as i32)
+            .position(pos, total)
     } else {
         RowAccessibility::new(&label)
             .description(&description)

@@ -7,6 +7,7 @@
 
 use super::common::TestContext;
 use lushtext_model::document::encoding::{DocumentEncoding, LineEnding};
+use lushtext_model::document::formatting_overrides::IndentWidthSetting;
 use lushtext_services::workspace::editorconfig;
 
 #[test]
@@ -21,7 +22,7 @@ fn single_editorconfig_with_root() {
     let overrides = editorconfig::resolve_for_path(&file);
     assert_eq!(overrides.tab_width, Some(2));
     assert_eq!(overrides.insert_spaces, Some(true));
-    assert_eq!(overrides.indent_width, Some(4));
+    assert_eq!(overrides.indent_width, Some(IndentWidthSetting::Spaces(4)));
 }
 
 #[test]
@@ -69,7 +70,7 @@ fn section_glob_pattern_matching() {
     let py_result = editorconfig::resolve_for_path(&py);
     assert_eq!(py_result.insert_spaces, Some(true));
     assert_eq!(py_result.tab_width, Some(4));
-    assert_eq!(py_result.indent_width, Some(4));
+    assert_eq!(py_result.indent_width, Some(IndentWidthSetting::Spaces(4)));
 
     let mk_result = editorconfig::resolve_for_path(&mk);
     assert_eq!(mk_result.insert_spaces, Some(false));
@@ -177,7 +178,7 @@ fn partial_overrides_merge_correctly() {
     let overrides = editorconfig::resolve_for_path(&file);
     assert_eq!(overrides.tab_width, Some(2)); // From closer
     assert_eq!(overrides.insert_spaces, Some(true)); // From root
-    assert_eq!(overrides.indent_width, Some(4)); // From root
+    assert_eq!(overrides.indent_width, Some(IndentWidthSetting::Spaces(4))); // From root
 }
 
 #[test]

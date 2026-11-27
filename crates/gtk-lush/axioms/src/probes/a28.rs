@@ -31,7 +31,8 @@ pub fn predicted_overflow_length(view: &gtk4::TextView) -> (i64, usize) {
     let layout = view.create_pango_layout(Some(&sample));
     let (_, logical) = layout.extents();
     let total = i64::from(logical.width());
-    let advance = total / ADVANCE_SAMPLE_CHARS as i64;
+    let sample_chars = i64::try_from(ADVANCE_SAMPLE_CHARS).unwrap_or(1);
+    let advance = total / sample_chars;
     let length = if advance > 0 {
         usize::try_from(i64::from(i32::MAX) / advance + 1).unwrap_or(usize::MAX)
     } else {

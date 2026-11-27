@@ -36,6 +36,10 @@ use lushtext_model::persistence::draft::DraftManifestAuthority;
 /// and its serialization gate, the autosave lane, the restore lane, and orphan
 /// cleanup.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct DraftEvidence {
     // --- the journal's record ---
     /// Entries in the in-memory manifest.

@@ -104,6 +104,10 @@ impl WorkspaceWatchNotice {
 
 /// Bounded retained-state evidence used by deterministic tests and benchmarks.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only watch mailbox snapshot DTO"
+)]
 pub struct WorkspaceWatchMailboxSnapshot {
     /// Unique paths currently retained; always at most [`WORKSPACE_WATCH_PATH_CAP`].
     pub retained_paths: usize,

@@ -1127,7 +1127,7 @@ fn complete_loaded_installation_now(
     // The guard was restored above and the state is `Loaded`, so projections
     // that stood down during installation (the Markdown preview) re-render now.
     editor.fire_content_republished();
-    editor.imp().load.callbacks.failed.borrow_mut().take();
+    editor.imp().load.callbacks.failed.take();
     if let Some(callback) = editor.imp().load.callbacks.completed.take() {
         callback();
     }

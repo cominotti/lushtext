@@ -31,9 +31,10 @@ use lushtext_model::workspace::palette::{
 use lushtext_services::palette::{self, FileIndex};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
-type ActivateCallback = Box<dyn Fn(&PaletteItem)>;
+type ActivateCallback = Rc<dyn Fn(&PaletteItem)>;
 type EscapeCallback = Box<dyn Fn(PaletteEscape)>;
 
 // CompositeTemplate loads the UI layout from a compiled XML file (bundled

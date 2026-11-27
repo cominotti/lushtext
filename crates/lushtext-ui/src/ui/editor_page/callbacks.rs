@@ -12,42 +12,60 @@ use lushtext_services::coordination::notifications::InlineActionNotification;
 
 use super::LushtextEditorPage;
 use super::document_identity::InlineAlertLifetime;
+use crate::ui::signal_connect;
 
-type MemoryChangedCallback = Rc<dyn Fn()>;
 type NotificationCallback = Rc<dyn Fn(InlineActionNotification)>;
 type LoadSettledNotificationCallback = Rc<dyn Fn(bool) -> bool>;
 
+/// Cross-cutting notification callbacks and typed signal handle for one editor tab.
 #[derive(Default)]
 pub(crate) struct EditorCallbacks {
-    pub(crate) memory_changed: RefCell<Option<MemoryChangedCallback>>,
+    memory_changed_handler: RefCell<Option<glib::SignalHandlerId>>,
     pub(crate) notification: RefCell<Option<NotificationCallback>>,
     pub(crate) notification_load_settled: RefCell<Option<LoadSettledNotificationCallback>>,
 }
 
+impl EditorCallbacks {
+    pub(super) fn dispose(&self, page: &LushtextEditorPage) {
+        if let Some(id) = self.memory_changed_handler.take() {
+            page.disconnect(id);
+        }
+        self.notification.take();
+        self.notification_load_settled.take();
+    }
+}
+
 impl LushtextEditorPage {
-    /// Install the page-to-window callback for residency or safety changes.
+    /// Install the page-to-window observer for residency or safety changes.
     ///
-    /// It runs on the GTK main thread after edits, modified-state changes,
-    /// load/save transitions, eviction, or access updates. A new callback
-    /// replaces the previous window observer.
+    /// Runs on the GTK main thread after edits, modified-state changes,
+    /// load/save transitions, eviction, or access updates via the typed
+    /// `memory-policy-changed` GObject signal. A new observer replaces the
+    /// previous window observer.
     pub fn connect_memory_policy_changed<F: Fn() + 'static>(&self, f: F) {
-        *self.imp().callbacks.memory_changed.borrow_mut() = Some(Rc::new(f));
+        if let Some(prev) = self.imp().callbacks.memory_changed_handler.take() {
+            self.disconnect(prev);
+        }
+        let id = signal_connect::connect_void(self, "memory-policy-changed", false, move |_| {
+            f();
+        });
+        self.imp()
+            .callbacks
+            .memory_changed_handler
+            .replace(Some(id));
     }
 
     pub fn connect_inline_notification<F: Fn(InlineActionNotification) + 'static>(&self, f: F) {
         *self.imp().callbacks.notification.borrow_mut() = Some(Rc::new(f));
     }
 
-    /// Advance policy freshness and notify the window without copying text.
+    /// Advance policy freshness and emit `memory-policy-changed` without copying text.
     pub(crate) fn notify_memory_policy_changed(&self) {
         self.imp()
             .residency
             .policy_generation
             .set(self.imp().residency.policy_generation.get().next());
-        let callback = self.imp().callbacks.memory_changed.borrow().clone();
-        if let Some(callback) = callback {
-            callback();
-        }
+        signal_connect::emit_void(self, "memory-policy-changed", &[]);
     }
 
     pub(super) fn invoke_notification_or_render(&self, notification: InlineActionNotification) {

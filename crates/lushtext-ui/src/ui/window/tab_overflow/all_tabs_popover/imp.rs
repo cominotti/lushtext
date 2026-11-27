@@ -5,6 +5,7 @@
 //! sliced retirement of its rows.
 
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::time::Duration;
 
 use gtk4::prelude::*;
@@ -28,7 +29,7 @@ use crate::ui::list_growth::RowGrowth;
 use crate::ui::list_retirement::RowRetirement;
 use crate::ui::row_text::LushtextRowText;
 
-type ActivateCallback = Box<dyn Fn(Option<libadwaita::TabPage>)>;
+type ActivateCallback = Rc<dyn Fn(Option<libadwaita::TabPage>)>;
 
 /// The announcement throttle key of the match count.
 const ANNOUNCEMENT_KEY: &str = "all-tabs-results";
@@ -124,7 +125,7 @@ impl ObjectImpl for LushtextAllTabsPopover {
     }
 
     fn dispose(&self) {
-        self.bound.borrow_mut().clear();
+        self.bound.take().clear();
         let growth = self.growth.take();
         drop(growth);
         let retirement = self.retirement.take();
@@ -382,7 +383,8 @@ impl LushtextAllTabsPopover {
             .and_then(|row| row.page.upgrade());
         self.activated.set(true);
         self.obj().popdown();
-        if let Some(callback) = self.activate_callback.borrow().as_ref() {
+        let callback = self.activate_callback.borrow().clone();
+        if let Some(callback) = callback {
             callback(page);
         }
     }

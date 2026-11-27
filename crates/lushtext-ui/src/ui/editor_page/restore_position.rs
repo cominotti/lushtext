@@ -155,12 +155,13 @@ impl LushtextEditorPage {
             .protected_cursor
             .set(ProtectedCursorPosition::Unplaced);
 
-        if let Some(mut iter) = buffer.iter_at_line(cursor_line as i32) {
-            iter.forward_chars(cursor_col as i32);
+        if let Some(mut iter) = buffer.iter_at_line(i32::try_from(cursor_line).unwrap_or(i32::MAX))
+        {
+            iter.forward_chars(i32::try_from(cursor_col).unwrap_or(i32::MAX));
             buffer.place_cursor(&iter);
         }
 
-        if let Some(iter) = buffer.iter_at_line(scroll_line as i32) {
+        if let Some(iter) = buffer.iter_at_line(i32::try_from(scroll_line).unwrap_or(i32::MAX)) {
             self.scroll_to_document_iter(&iter, 0.0, true, 0.0, 0.0);
         }
     }

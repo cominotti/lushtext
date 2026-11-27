@@ -46,6 +46,10 @@ use lushtext_model::values::LoadGeneration;
 /// the shared byte admission it waits in, how the decoded payload is being
 /// installed, and how the load ended.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct LoadEvidence {
     // --- request identity and freshness ---
     /// Monotonic identity of this editor's newest load request.

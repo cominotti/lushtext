@@ -31,6 +31,10 @@ use lushtext_model::document::editor_memory::{
 /// where a swap compiles, passes every test that only asserts *something* was
 /// evicted, and clears the wrong buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pure policy fact bundle for candidate eviction recheck"
+)]
 pub struct EvictionRecheck {
     /// The editor is still a descendant of the live tab view.
     pub still_attached: bool,

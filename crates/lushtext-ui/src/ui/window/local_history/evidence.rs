@@ -82,6 +82,10 @@ pub fn local_history_preview_install_evidence() -> LocalHistoryPreviewInstallEvi
 /// Field groups follow the workflow's two stage orders: capture first, then the
 /// browse/restore surface's editor-side state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct LocalHistoryEvidence {
     // --- availability ---
     /// The size-derived mode for this document's saved file.

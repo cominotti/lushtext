@@ -714,14 +714,7 @@ fn test_search_panel_connect_close_requested() {
     panel.connect_close_requested(move || {
         called.set(true);
     });
-    assert!(
-        panel
-            .imp()
-            .callbacks
-            .close_requested_callback
-            .borrow()
-            .is_some()
-    );
+    assert!(panel.imp().callbacks.has_close_requested());
 }
 
 #[test]
@@ -732,7 +725,7 @@ fn test_search_panel_connect_open_file() {
     panel.connect_open_file(move |_path, _line| {
         called.set(true);
     });
-    assert!(panel.imp().callbacks.open_file_callback.borrow().is_some());
+    assert!(panel.imp().callbacks.has_open_file());
 }
 
 #[test]
@@ -1308,7 +1301,7 @@ fn test_connect_navigate_callback_stored() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     panel.connect_navigate_to_match(|_path, _line| {});
-    assert!(panel.imp().callbacks.navigate_callback.borrow().is_some());
+    assert!(panel.imp().callbacks.has_navigate());
 }
 
 #[test]
@@ -1324,7 +1317,7 @@ fn test_connect_search_progress_callback_stored() {
                 | SearchProgressUpdate::Done { .. }
         );
     });
-    assert!(panel.imp().callbacks.progress_callback.borrow().is_some());
+    assert!(panel.imp().callbacks.has_progress());
 }
 
 // ---------------------------------------------------------------------------
@@ -2399,7 +2392,7 @@ fn test_connect_undo_all_callback_stored() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     panel.connect_undo_all(|_backup| {});
-    assert!(panel.imp().callbacks.undo_callback.borrow().is_some());
+    assert!(panel.imp().callbacks.has_undo());
 }
 
 #[test]

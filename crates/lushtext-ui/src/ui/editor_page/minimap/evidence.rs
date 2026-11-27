@@ -66,6 +66,10 @@ use lushtext_model::values::AnalysisGeneration;
 /// carries no document text, no marker identities, and no widget handles.
 #[cfg(feature = "test-utils")]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct MinimapEvidence {
     /// Current editor-owned analysis generation.
     pub generation: AnalysisGeneration,

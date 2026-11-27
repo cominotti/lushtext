@@ -104,11 +104,9 @@ impl super::imp::LushtextSearchPanel {
             let Some(panel) = panel_weak.upgrade() else {
                 return;
             };
-            #[expect(
-                clippy::cast_sign_loss,
-                reason = "GtkListBoxRow indices are non-negative when a row exists"
-            )]
-            let idx = row.index() as usize;
+            let Ok(idx) = usize::try_from(row.index()) else {
+                return;
+            };
             let entry = {
                 let entries = panel.imp().history.history_entries.borrow();
                 entries.get(idx).cloned()
@@ -124,11 +122,9 @@ impl super::imp::LushtextSearchPanel {
                 let Some(panel) = panel_weak.upgrade() else {
                     return;
                 };
-                #[expect(
-                    clippy::cast_sign_loss,
-                    reason = "GtkListBoxRow indices are non-negative when a row exists"
-                )]
-                let idx = row.index() as usize;
+                let Ok(idx) = usize::try_from(row.index()) else {
+                    return;
+                };
                 let entry = {
                     let entries = panel.imp().history.saved_searches.borrow();
                     entries.get(idx).cloned()
@@ -285,13 +281,10 @@ impl LushtextSearchPanel {
                 let entry = SavedSearch::from_spec(name, panel.current_query_spec());
 
                 saved_searches::add(&mut panel.imp().history.saved_searches.borrow_mut(), entry);
-                let cb = panel.imp().callbacks.message_callback.borrow().clone();
-                if let Some(cb) = cb {
-                    cb(
-                        &format!("Search saved as '{display_name}'"),
-                        lushtext_services::coordination::notifications::NotificationSeverity::Info,
-                    );
-                }
+                panel.emit_message(
+                    &format!("Search saved as '{display_name}'"),
+                    lushtext_services::coordination::notifications::NotificationSeverity::Info,
+                );
                 // Persist a snapshot so later UI edits do not race this
                 // background save.
                 let entries_clone = panel.imp().history.saved_searches.borrow().clone();

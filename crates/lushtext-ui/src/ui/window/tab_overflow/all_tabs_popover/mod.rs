@@ -33,6 +33,10 @@ glib::wrapper! {
 /// object (`test-utils`; readiness reads `publishing`).
 #[cfg(feature = "test-utils")]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only evidence fact bundle DTO"
+)]
 pub(crate) struct AllTabsPopoverFacts {
     /// Rows the current query lists, listed or still growing.
     pub(crate) rows: u32,
@@ -88,7 +92,7 @@ impl LushtextAllTabsPopover {
     ) {
         self.imp()
             .activate_callback
-            .replace(Some(Box::new(callback)));
+            .replace(Some(std::rc::Rc::new(callback)));
     }
 
     /// Whether the last close followed a row activation.

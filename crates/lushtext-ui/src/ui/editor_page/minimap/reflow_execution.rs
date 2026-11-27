@@ -89,7 +89,7 @@ impl LushtextEditorPage {
         let handle_current = handle.is_current();
         handle.finish_if_current();
         if handle_current {
-            self.imp().overscroll.reflow_pause.borrow_mut().take();
+            self.imp().overscroll.reflow_pause.take();
         }
 
         // The rest flag was recorded from user scrolling outside the burst, so

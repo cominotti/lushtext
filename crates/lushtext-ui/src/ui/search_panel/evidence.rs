@@ -48,6 +48,10 @@ use super::skipped_files::SkippedFilesModel;
 /// Field groups follow the workflow's stages: the query the user typed, the
 /// streaming search and its bounded retirement, the Replace All preview and its
 /// worker lane, the undo journal, and the history/navigation projections.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct SearchPanelEvidence {
     // --- query surface ---
     /// Current query text.

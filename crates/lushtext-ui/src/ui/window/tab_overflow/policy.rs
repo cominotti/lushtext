@@ -65,6 +65,10 @@ impl StripScrollExtent {
 /// What the reconcile reads from the bar before deciding whether the scroll
 /// buttons show.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pure policy fact bundle for tab overflow"
+)]
 pub struct OverflowFacts {
     /// Whether the tab strip itself is shown (tabs exist, not Focus Mode).
     pub strip_shown: bool,
@@ -225,6 +229,10 @@ pub struct OverflowControlsInputs {
 /// What the reconcile publishes: every control's state at once, so no
 /// action is enabled while its control is hidden.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pure policy control-visibility snapshot"
+)]
 pub struct OverflowControlsPlan {
     /// Whether Back and Forward show.
     pub buttons_visible: bool,

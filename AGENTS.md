@@ -85,7 +85,7 @@ src/
     ├── sidebar/                # workspace sidebar; see ui/sidebar/AGENTS.md
     ├── search_panel/           # workspace search and Replace All; see ui/search_panel/AGENTS.md
     ├── command_palette/, open_popover/  # Ctrl+Shift+P palette; Ctrl+K recent-document popover
-    ├── markdown_preview/, search_bar/, info_bar/, status_bar/, properties_panel/, preferences/  # preview; in-tab find; inline alerts; status bar; document properties; preferences (Data page, Preserved Drafts, excluded names)
+    ├── markdown_preview/, search_bar/, info_bar/, status_bar/, properties_panel/, preferences/  # preview; in-tab find; inline alerts; status bar; document properties; preferences (Data page, Preserved Drafts, excluded names, appearance.rs)
     ├── automation.rs           # the read-only D-Bus automation adapter
     ├── accessibility.rs, buffer_snapshot.rs, theme.rs, plain_disposal.rs  # accessibility helpers; chunked buffer snapshots; display theme setup; non-blocking payload disposal
     ├── settings_writes.rs      # the one coalescing GSettings writer (cross-cutting)
@@ -284,7 +284,7 @@ The blocking Rust lint gate is curated and all-featured:
 command (the hook skips only the Clippy step for a docs-only commit, decided
 fail-closed by `scripts/precommit-scope.py`, and `make check-precommit-scope`
 fails if a Rust build input is on its allowlist), and `make check` also runs the fast policy audits (`make check-policy`:
-filesystem boundary, hexagonal crate boundaries, domain value types, typed error contracts, Blueprint drift and template contract, and the rest).
+filesystem boundary, hexagonal crate boundaries, domain value types, typed error contracts, idiomatic state & C-ism gates (`make check-idiomatic-state`), Blueprint drift and template contract, and the rest).
 Broad Clippy groups (`restriction`, `pedantic`, `nursery`, `cargo`) are
 advisory discovery inputs, not blocking policy; run `make lint-advisory` after a
 toolchain or dependency update. Dependency policy is

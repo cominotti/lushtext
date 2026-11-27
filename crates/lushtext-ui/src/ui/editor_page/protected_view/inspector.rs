@@ -19,6 +19,10 @@ use crate::ui::accessibility::{self, AnnouncementLane};
 
 /// What the inspector shows: the window's place in the document and its text.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only presentation snapshot DTO"
+)]
 pub(crate) struct InspectorPresentation {
     /// 1-based line number.
     pub(crate) line: u64,

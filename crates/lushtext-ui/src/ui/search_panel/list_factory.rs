@@ -190,10 +190,7 @@ impl imp::LushtextSearchPanel {
                 if result_item.is_match_item() {
                     let path = PathBuf::from(result_item.file_path());
                     let line = result_item.line_number();
-                    let cb = panel.imp().callbacks.open_file_callback.borrow().clone();
-                    if let Some(cb) = cb {
-                        cb(&path, line);
-                    }
+                    panel.emit_open_file(&path, line);
                 } else {
                     row.set_expanded(!row.is_expanded());
                 }
@@ -538,17 +535,10 @@ fn render_preview_markup(
         glib::markup_escape_text(original).to_string()
     };
 
-    #[expect(
-        clippy::cast_possible_wrap,
-        reason = "Rendered line fragments stay far below isize::MAX before they become GTK text buffer offsets"
-    )]
-    let new_len =
-        replaced.len() as isize - original.len() as isize + (end as isize - start as isize);
-    #[expect(
-        clippy::cast_sign_loss,
-        reason = "The highlight end offset is clamped to a non-negative value before converting to usize"
-    )]
-    let new_end = (start as isize + new_len).max(start as isize) as usize;
+    let new_end = end
+        .saturating_add(replaced.len())
+        .checked_sub(original.len())
+        .map_or(start, |candidate| candidate.max(start));
     let new_end = replaced.ceil_char_boundary(new_end.min(replaced.len()));
     let new_start = replaced.floor_char_boundary(start.min(replaced.len()));
 

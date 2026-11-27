@@ -38,6 +38,10 @@ use super::scroll_execution::{current_extent, is_rtl};
 
 /// Everything a test may observe about the tab strip's overflow controls.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct TabOverflowEvidence {
     /// Whether the lookup found the unpinned tab scroller.
     pub scroller_found: bool,

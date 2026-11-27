@@ -2481,6 +2481,10 @@ fn bounded_snapshot_text(text: impl AsRef<str>) -> String {
 }
 
 #[derive(Clone, Copy)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only D-Bus automation surface-visibility snapshot"
+)]
 struct TransientSurfaceVisibility {
     command_palette: bool,
     search_panel: bool,

@@ -110,11 +110,11 @@ impl MinimapState {
         self.reflow.reveal_pending.set(false);
         self.buffer_signals.clear();
         self.projection.map_signals.clear();
-        self.source_map.borrow_mut().take();
-        self.projection.marker_strip.borrow_mut().take();
-        self.render_hold.borrow_mut().take();
+        self.source_map.take();
+        self.projection.marker_strip.take();
+        self.render_hold.take();
         self.projection.search_signals.clear();
-        self.projection.marker_bins.borrow_mut().take();
+        self.projection.marker_bins.take();
     }
 }
 

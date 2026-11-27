@@ -574,6 +574,10 @@ fn test_rails_the_layout_hides_are_revealed_hidden_and_stay_hidden() {
 
 /// The shell state a forced path must leave as a composed window does.
 #[derive(Debug, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "widget test snapshot comparing shell widget visibility"
+)]
 struct ShellState {
     workspace_requested: bool,
     workspace_rendered: bool,

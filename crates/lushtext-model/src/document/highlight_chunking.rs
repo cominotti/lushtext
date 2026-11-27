@@ -162,6 +162,10 @@ pub const fn next_chunk_step(extent: AnalysisExtent, wait_state: ChunkWaitState)
 
 /// What one chunked install knows when its next chunk could go in.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pure policy fact bundle across independent chunking predicates"
+)]
 pub struct ChunkFacts {
     /// Chunks already in the buffer.
     pub chunks_inserted: u64,

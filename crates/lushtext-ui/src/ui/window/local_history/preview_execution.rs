@@ -570,7 +570,7 @@ impl LocalHistoryBrowserState {
             return;
         }
 
-        self.restore_phase.replace(RestorePhase::Idle);
+        self.dispose_restore_capture();
         self.restore_capacity_wakeup.cancel();
         self.retire_active_preview();
         self.preview_title.set_label("Loading snapshot…");
@@ -1218,8 +1218,9 @@ fn preview_status_page(
 }
 
 fn format_history_time(captured_at_millis: u64) -> String {
-    glib::DateTime::from_unix_local((captured_at_millis / 1000) as i64)
+    i64::try_from(captured_at_millis / 1000)
         .ok()
+        .and_then(|secs| glib::DateTime::from_unix_local(secs).ok())
         .and_then(|dt| dt.format("%Y-%m-%d %H:%M").ok())
         .map_or_else(|| "Unknown time".to_string(), Into::into)
 }

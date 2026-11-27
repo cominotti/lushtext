@@ -85,6 +85,10 @@ pub struct OpenPopoverRowChildLayoutSnapshot {
 /// with the GNOME Text Editor source constants without poking through GTK's
 /// recycled list rows.
 #[derive(Debug, Clone, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only layout snapshot DTO"
+)]
 pub struct OpenPopoverRowLayoutSnapshot {
     /// Top margin on the row grid.
     pub grid_margin_top: i32,
@@ -349,6 +353,10 @@ fn scroller_geometry(popover: &LushtextOpenPopover) -> OpenPopoverScrollerGeomet
 /// the in-memory entry list plus six scalars; reading it takes shared borrows
 /// only, releases each before the struct literal is built, and advances nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct RecentDocumentsJournalEvidence {
     /// Newest-first entries currently held in memory.
     ///

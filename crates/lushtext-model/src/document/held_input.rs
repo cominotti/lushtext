@@ -277,6 +277,10 @@ pub const fn insert_disposition(facts: InsertFacts) -> InsertDisposition {
 /// The facts one deletion (or undo/redo) is decided on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(kani, derive(kani::Arbitrary))]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pure policy fact bundle across independent removal predicates"
+)]
 pub struct RemovalFacts {
     /// The owning workflow's own edit.
     pub own_edit: bool,

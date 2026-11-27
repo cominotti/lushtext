@@ -181,6 +181,10 @@ fn bounded_match_line(
 
 /// Options controlling search behavior.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "orthogonal content-search toggle options"
+)]
 pub struct ContentSearchOptions {
     /// When true, matching is case-sensitive. Default: false.
     pub case_sensitive: bool,
@@ -216,6 +220,10 @@ impl Default for ContentSearchOptions {
 
 /// Boolean matching and traversal flags for [`ContentSearchOptions::new`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pure policy fact mask mirroring orthogonal search toggles"
+)]
 pub struct ContentSearchFlags {
     /// Whether ASCII/Unicode matching is case-sensitive.
     pub case_sensitive: bool,

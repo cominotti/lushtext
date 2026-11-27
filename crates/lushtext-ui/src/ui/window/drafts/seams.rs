@@ -700,35 +700,43 @@ impl DraftState {
     }
 
     pub(super) fn set_autosave_snapshot(&self, snapshot: BufferSnapshotHandle) {
-        *self.active_snapshot.borrow_mut() = ActiveDraftSnapshot::Autosave(snapshot);
+        let previous = self
+            .active_snapshot
+            .replace(ActiveDraftSnapshot::Autosave(snapshot));
+        if let ActiveDraftSnapshot::Autosave(old) | ActiveDraftSnapshot::Close(old) = previous {
+            old.dispose();
+        }
     }
 
     pub(super) fn take_autosave_snapshot(&self) -> Option<BufferSnapshotHandle> {
-        let mut slot = self.active_snapshot.borrow_mut();
-        if matches!(*slot, ActiveDraftSnapshot::Autosave(_)) {
-            match std::mem::take(&mut *slot) {
-                ActiveDraftSnapshot::Autosave(handle) => Some(handle),
-                _ => None,
-            }
-        } else {
-            None
+        let is_autosave = matches!(
+            *self.active_snapshot.borrow(),
+            ActiveDraftSnapshot::Autosave(_)
+        );
+        if is_autosave && let ActiveDraftSnapshot::Autosave(handle) = self.active_snapshot.take() {
+            return Some(handle);
         }
+        None
     }
 
     pub(super) fn set_close_snapshot(&self, snapshot: BufferSnapshotHandle) {
-        *self.active_snapshot.borrow_mut() = ActiveDraftSnapshot::Close(snapshot);
+        let previous = self
+            .active_snapshot
+            .replace(ActiveDraftSnapshot::Close(snapshot));
+        if let ActiveDraftSnapshot::Autosave(old) | ActiveDraftSnapshot::Close(old) = previous {
+            old.dispose();
+        }
     }
 
     pub(super) fn take_close_snapshot(&self) -> Option<BufferSnapshotHandle> {
-        let mut slot = self.active_snapshot.borrow_mut();
-        if matches!(*slot, ActiveDraftSnapshot::Close(_)) {
-            match std::mem::take(&mut *slot) {
-                ActiveDraftSnapshot::Close(handle) => Some(handle),
-                _ => None,
-            }
-        } else {
-            None
+        let is_close = matches!(
+            *self.active_snapshot.borrow(),
+            ActiveDraftSnapshot::Close(_)
+        );
+        if is_close && let ActiveDraftSnapshot::Close(handle) = self.active_snapshot.take() {
+            return Some(handle);
         }
+        None
     }
 
     pub(super) fn is_lazy_restore_inflight(&self) -> bool {
@@ -763,7 +771,7 @@ impl DraftState {
 
     /// Cancel any active chunked draft snapshot on window teardown.
     pub(in crate::ui::window) fn dispose_snapshots(&self) {
-        match std::mem::take(&mut *self.active_snapshot.borrow_mut()) {
+        match self.active_snapshot.take() {
             ActiveDraftSnapshot::None => {}
             ActiveDraftSnapshot::Autosave(snapshot) | ActiveDraftSnapshot::Close(snapshot) => {
                 snapshot.dispose();

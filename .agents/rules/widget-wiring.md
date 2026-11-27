@@ -154,7 +154,12 @@ Keep ordinary untracked `connect_*` calls when the source and target share the
 same widget/action lifetime and no later disconnect is needed. Keep
 event-controller ownership explicit when the controller itself is the lifetime
 owner. Remaining row-data uses should be scalar state, not hidden signal or
-binding ownership.
+binding ownership. Keep widget `imp.rs` files `<= 500` production lines with at
+most `2` `Box<dyn Fn...>` callback slots (consolidate multi-event observers into
+GObject signals via `ui::signal_connect` carrying typed event enums, or `Rc<dyn
+Fn>` cloned outside `RefCell::borrow()` before invocation), and model multi-flag
+widget lifecycle phases as algebraic `RefCell<Phase>` / `Cell<Phase>` enums
+(`make check-idiomatic-state`).
 
 ## Action Catalog And Automation Docs
 

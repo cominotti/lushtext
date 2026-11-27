@@ -40,6 +40,10 @@ use lushtext_model::values::SaveGeneration;
 /// admission, the admitted request's identity, how the buffer was captured, and
 /// how the durable write ended.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct SaveEvidence {
     // --- in-flight save ---
     /// Whether a save currently owns this editor.

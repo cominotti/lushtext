@@ -54,6 +54,10 @@ pub struct BufferReplacementTerminalDiagnostic {
 /// active session is doing, how bounded it has stayed, and how the last session
 /// ended.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct BufferReplacementEvidence {
     // --- ownership ---
     /// Whether a replacement session currently owns this editor.

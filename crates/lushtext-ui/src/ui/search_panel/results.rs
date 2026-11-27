@@ -16,13 +16,159 @@
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk4::glib;
 use gtk4::prelude::*;
 
 use super::item::SearchResultItem;
-use super::{LushtextSearchPanel, SearchMatchLocation};
+use super::{LushtextSearchPanel, SearchMatchLocation, SearchProgressUpdate};
+
+type ReplaceCallback = Rc<dyn Fn(super::GuardedReplacements)>;
+type ReplaceResumedCallback = Rc<dyn Fn(super::replace_admission::ReplaceAdmissionResumption)>;
+
+#[derive(Clone)]
+pub(super) enum SearchPanelEvent {
+    OpenFile(PathBuf, u32),
+    CloseRequested,
+    Navigate(PathBuf, u32),
+    Progress(SearchProgressUpdate),
+    Undo(Arc<super::GuardedReplaceUndoBackup>),
+    Message(
+        String,
+        lushtext_services::coordination::notifications::NotificationSeverity,
+    ),
+    ReplaceInEditor(PathBuf),
+}
+
+#[derive(Clone, glib::Boxed)]
+#[boxed_type(name = "LushtextSearchPanelEvent")]
+pub(super) struct BoxedSearchPanelEvent(pub(super) SearchPanelEvent);
+
+#[derive(Clone, Copy)]
+#[repr(usize)]
+pub(super) enum PanelEventSlot {
+    OpenFile = 0,
+    CloseRequested = 1,
+    Navigate = 2,
+    Progress = 3,
+    Undo = 4,
+    Message = 5,
+    ReplaceInEditor = 6,
+}
+
+/// Typed GObject signal handlers + move-only ownership callbacks wired by the window shell.
+#[derive(Default)]
+pub struct SearchCallbacks {
+    signal_handlers: RefCell<[Option<glib::SignalHandlerId>; 7]>,
+    /// Called when "Confirm Replace" is clicked with move-only checked replacements.
+    pub replace_callback: RefCell<Option<ReplaceCallback>>,
+    /// Called when a Replace All waiting for disposal capacity resumes or ends.
+    pub(crate) replace_run_resumed_callback: RefCell<Option<ReplaceResumedCallback>>,
+}
+
+impl SearchCallbacks {
+    fn has_slot(&self, slot: PanelEventSlot) -> bool {
+        self.signal_handlers.borrow()[slot as usize].is_some()
+    }
+
+    /// Whether an open-file listener is attached (used by widget wiring tests).
+    #[must_use]
+    pub fn has_open_file(&self) -> bool {
+        self.has_slot(PanelEventSlot::OpenFile)
+    }
+
+    /// Whether a navigate listener is attached (used by widget wiring tests).
+    #[must_use]
+    pub fn has_navigate(&self) -> bool {
+        self.has_slot(PanelEventSlot::Navigate)
+    }
+
+    /// Whether a search-progress listener is attached (used by widget wiring tests).
+    #[must_use]
+    pub fn has_progress(&self) -> bool {
+        self.has_slot(PanelEventSlot::Progress)
+    }
+
+    /// Whether an undo-all listener is attached (used by widget wiring tests).
+    #[must_use]
+    pub fn has_undo(&self) -> bool {
+        self.has_slot(PanelEventSlot::Undo)
+    }
+
+    /// Whether a close-requested listener is attached (used by widget wiring tests).
+    #[must_use]
+    pub fn has_close_requested(&self) -> bool {
+        self.has_slot(PanelEventSlot::CloseRequested)
+    }
+
+    pub(super) fn dispose(&self, panel: &LushtextSearchPanel) {
+        let handlers = self.signal_handlers.take();
+        for handler in handlers.into_iter().flatten() {
+            panel.disconnect(handler);
+        }
+        self.replace_callback.take();
+        self.replace_run_resumed_callback.take();
+    }
+}
+
+impl LushtextSearchPanel {
+    pub(super) fn replace_panel_event_handler<F: Fn(&SearchPanelEvent) + 'static>(
+        &self,
+        slot: PanelEventSlot,
+        handler: F,
+    ) {
+        let index = slot as usize;
+        let prev = self.imp().callbacks.signal_handlers.borrow_mut()[index].take();
+        if let Some(prev) = prev {
+            self.disconnect(prev);
+        }
+        let id = crate::ui::signal_connect::connect_void(self, "panel-event", false, move |vals| {
+            if let Some(Ok(boxed)) = vals.get(1).map(glib::Value::get::<&BoxedSearchPanelEvent>) {
+                handler(&boxed.0);
+            }
+        });
+        self.imp().callbacks.signal_handlers.borrow_mut()[index] = Some(id);
+    }
+
+    pub(super) fn emit_panel_event(&self, event: SearchPanelEvent) {
+        crate::ui::signal_connect::emit_void(self, "panel-event", &[&BoxedSearchPanelEvent(event)]);
+    }
+
+    pub(super) fn emit_close_requested(&self) {
+        self.emit_panel_event(SearchPanelEvent::CloseRequested);
+    }
+
+    pub(super) fn emit_open_file(&self, path: &Path, line: u32) {
+        self.emit_panel_event(SearchPanelEvent::OpenFile(path.to_path_buf(), line));
+    }
+
+    pub(super) fn emit_navigate(&self, path: &Path, line: u32) {
+        self.emit_panel_event(SearchPanelEvent::Navigate(path.to_path_buf(), line));
+    }
+
+    pub(super) fn emit_progress(&self, update: SearchProgressUpdate) {
+        self.emit_panel_event(SearchPanelEvent::Progress(update));
+    }
+
+    pub(super) fn emit_undo(&self, backup: Arc<super::GuardedReplaceUndoBackup>) {
+        self.emit_panel_event(SearchPanelEvent::Undo(backup));
+    }
+
+    pub(super) fn emit_message(
+        &self,
+        text: &str,
+        severity: lushtext_services::coordination::notifications::NotificationSeverity,
+    ) {
+        self.emit_panel_event(SearchPanelEvent::Message(text.to_string(), severity));
+    }
+
+    pub(super) fn emit_replace_in_editor(&self, path: &Path) {
+        self.emit_panel_event(SearchPanelEvent::ReplaceInEditor(path.to_path_buf()));
+    }
+}
 
 /// Match-navigation state used by F4 / Shift+F4.
 #[derive(Default)]
@@ -81,11 +227,7 @@ impl LushtextSearchPanel {
         drop(positions);
 
         self.select_match_in_results(next);
-
-        let cb = imp.callbacks.navigate_callback.borrow().clone();
-        if let Some(cb) = cb {
-            cb(&path, line_number);
-        }
+        self.emit_navigate(&path, line_number);
     }
 
     /// Navigate to the previous match (Shift+F4). Wraps around at the beginning.
@@ -108,11 +250,7 @@ impl LushtextSearchPanel {
         drop(positions);
 
         self.select_match_in_results(prev);
-
-        let cb = imp.callbacks.navigate_callback.borrow().clone();
-        if let Some(cb) = cb {
-            cb(&path, line_number);
-        }
+        self.emit_navigate(&path, line_number);
     }
 
     /// Get the search entry widget (for re-invocation focus/selection).

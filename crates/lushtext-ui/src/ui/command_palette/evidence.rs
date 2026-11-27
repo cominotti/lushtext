@@ -46,6 +46,10 @@ use super::policy;
 /// Field groups follow the workflow's two stage orders: the visible query
 /// surface and its single-flight search, the palette's installed sources, and
 /// the bounded incremental file-index mutation queue and its worker.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct CommandPaletteEvidence {
     // --- query surface ---
     /// Current query text in the palette entry.

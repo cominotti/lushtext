@@ -393,15 +393,7 @@ impl LushtextSearchPanel {
                 if let Some(dialog) = dialog.upgrade() {
                     dialog.close();
                 }
-                if let Some(callback) = panel
-                    .imp()
-                    .callbacks
-                    .replace_in_editor_callback
-                    .borrow()
-                    .clone()
-                {
-                    callback(&path);
-                }
+                panel.emit_replace_in_editor(&path);
             }
         });
 
@@ -525,10 +517,14 @@ impl LushtextSearchPanel {
 
     /// Connect Open and Replace in Editor, which a Skipped Files row activates.
     pub fn connect_replace_in_editor<F: Fn(&std::path::Path) + 'static>(&self, f: F) {
-        self.imp()
-            .callbacks
-            .replace_in_editor_callback
-            .replace(Some(std::rc::Rc::new(f)));
+        self.replace_panel_event_handler(
+            super::results::PanelEventSlot::ReplaceInEditor,
+            move |event| {
+                if let super::results::SearchPanelEvent::ReplaceInEditor(path) = event {
+                    f(path);
+                }
+            },
+        );
     }
 
     /// Replace stage 4 is admitted: the earlier run's skip report, its

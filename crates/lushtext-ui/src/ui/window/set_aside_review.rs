@@ -72,8 +72,6 @@ pub struct SetAsideReviewState {
     pub phase: SetAsideReviewPhase,
     /// `set_aside::placements()` when the last evaluation started.
     pub placements_seen: u64,
-    /// An evaluation is running off GTK (mirrored from `phase` for observers).
-    pub evaluation_inflight: bool,
     /// The user ran the review action in this process.
     pub reviewed: bool,
     /// Notices published in this process (evidence for tests and diagnostics).
@@ -81,6 +79,12 @@ pub struct SetAsideReviewState {
 }
 
 impl SetAsideReviewState {
+    /// Whether an off-GTK evaluation is currently in flight.
+    #[must_use]
+    pub const fn evaluation_inflight(&self) -> bool {
+        matches!(self.phase, SetAsideReviewPhase::Evaluating { .. })
+    }
+
     fn begin_startup(&mut self) {
         if matches!(self.phase, SetAsideReviewPhase::Unstarted) {
             self.phase = SetAsideReviewPhase::Idle {
@@ -92,14 +96,12 @@ impl SetAsideReviewState {
     fn start_evaluation(&mut self, placements_seen: u64) {
         let last_notified = self.phase.last_notified();
         self.phase = SetAsideReviewPhase::Evaluating { last_notified };
-        self.evaluation_inflight = true;
         self.placements_seen = placements_seen;
     }
 
     fn finish_evaluation(&mut self, notified: Option<SetAsideTotals>) {
         let last_notified = notified.or_else(|| self.phase.last_notified());
         self.phase = SetAsideReviewPhase::Idle { last_notified };
-        self.evaluation_inflight = false;
         if notified.is_some() {
             self.notices_published = self.notices_published.saturating_add(1);
         }

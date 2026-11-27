@@ -720,12 +720,13 @@ impl LushtextEditorPage {
 
     fn keep_top(&self, document: &sourceview5::Buffer, top: &gtk4::TextIter) {
         let mark = document.create_mark(None, top, true);
-        if let Some(old) = self
+        let old = self
             .imp()
             .view_attachment
             .kept_top
             .borrow_mut()
-            .replace(mark)
+            .replace(mark);
+        if let Some(old) = old
             && !old.is_deleted()
         {
             document.delete_mark(&old);

@@ -39,6 +39,10 @@ use lushtext_model::values::{FailedRestoreGeneration, RestoreGeneration, Selecti
 /// Field groups follow the workflow's two stage orders: the journal's write
 /// state, then the restore generation's admission and boundedness.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct SessionRestoreEvidence {
     // --- journal ---
     /// Whether the newest attempted session-file save failed and needs retry.

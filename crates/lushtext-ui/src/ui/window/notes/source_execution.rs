@@ -660,7 +660,7 @@ impl NotesBrowserState {
         stop_open_editor_capture(self);
         let previous = self.list_phase.replace(NotesListPhase::Idle);
         drop(previous);
-        self.bound_rows.borrow_mut().clear();
+        self.bound_rows.take().clear();
         let state = Rc::clone(self);
         let retirement = crate::ui::list_retirement::RowRetirement::start(
             Box::new(self.rows.clone()),

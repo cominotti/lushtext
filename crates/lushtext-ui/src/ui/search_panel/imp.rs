@@ -24,14 +24,14 @@ use gtk4::{self, CompositeTemplate, gio, glib};
 use libadwaita::subclass::prelude::*;
 use lushtext_model::workspace::workspace_visibility::WorkspaceEntryVisibility;
 
-use super::execution::{SearchCallbacks, SearchExecutionPhase, SearchRuntimeState};
+use super::execution::{SearchExecutionPhase, SearchRuntimeState};
 use super::history::{
     SearchHistoryState, create_dropdown_heading, create_dropdown_list, create_history_popover,
 };
 use super::journal::JournalState;
 use super::replace_admission::{ReplaceAdmissionPhase, ReplaceAdmissionState};
 use super::replace_execution::ReplaceExecutionState;
-use super::results::SearchNavigationState;
+use super::results::{BoxedSearchPanelEvent, SearchCallbacks, SearchNavigationState};
 use super::retirement::SearchRetirementState;
 use super::skipped_files::SkipReportState;
 use crate::ui::accessibility::AnnouncementThrottler;
@@ -229,6 +229,18 @@ impl ObjectSubclass for LushtextSearchPanel {
 }
 
 impl ObjectImpl for LushtextSearchPanel {
+    fn signals() -> &'static [glib::subclass::Signal] {
+        static SIGNALS: std::sync::OnceLock<Vec<glib::subclass::Signal>> =
+            std::sync::OnceLock::new();
+        SIGNALS.get_or_init(|| {
+            vec![
+                glib::subclass::Signal::builder("panel-event")
+                    .param_types([BoxedSearchPanelEvent::static_type()])
+                    .build(),
+            ]
+        })
+    }
+
     fn constructed(&self) {
         self.parent_constructed();
         let obj = self.obj();
@@ -261,6 +273,7 @@ impl ObjectImpl for LushtextSearchPanel {
             cancel_token.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         self.replace_execution.preview_capacity_wakeup.cancel();
+        self.journal.undo_capacity_wakeup.cancel();
         // A Replace All waiting for disposal capacity ends here without
         // calling back into a window being destroyed: its selection's drop
         // hands the payload to the lane, no file was written, and the
@@ -269,6 +282,7 @@ impl ObjectImpl for LushtextSearchPanel {
         if let ReplaceAdmissionPhase::Parked(parked) = self.replace_admission.phase.take() {
             drop(parked);
         }
+        self.callbacks.dispose(&self.obj());
         self.obj().release_replace_transaction_on_dispose();
         // Unparent the programmatically-parented popover to avoid leak warnings.
         self.history_popover.unparent();
@@ -424,33 +438,15 @@ impl LushtextSearchPanel {
 
         let panel_weak = self.obj().downgrade();
         self.search_entry.connect_stop_search(move |_| {
-            let Some(panel) = panel_weak.upgrade() else {
-                return;
-            };
-            let cb = panel
-                .imp()
-                .callbacks
-                .close_requested_callback
-                .borrow()
-                .clone();
-            if let Some(cb) = cb {
-                cb();
+            if let Some(panel) = panel_weak.upgrade() {
+                panel.emit_close_requested();
             }
         });
 
         let panel_weak = self.obj().downgrade();
         self.close_button.connect_clicked(move |_| {
-            let Some(panel) = panel_weak.upgrade() else {
-                return;
-            };
-            let cb = panel
-                .imp()
-                .callbacks
-                .close_requested_callback
-                .borrow()
-                .clone();
-            if let Some(cb) = cb {
-                cb();
+            if let Some(panel) = panel_weak.upgrade() {
+                panel.emit_close_requested();
             }
         });
     }

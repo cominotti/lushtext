@@ -760,14 +760,13 @@ fn format_file_size(bytes: u64) -> String {
 
 /// Render a stable local timestamp for the preview metadata line.
 fn format_modified_time(modified_at_secs: u64) -> Option<String> {
-    glib::DateTime::from_unix_local(modified_at_secs as i64)
-        .ok()
-        .map(|datetime| {
-            datetime.format("%Y-%m-%d %H:%M").map_or_else(
-                |_| UNKNOWN_MODIFIED_LABEL.to_string(),
-                |formatted| formatted.to_string(),
-            )
-        })
+    let secs = i64::try_from(modified_at_secs).ok()?;
+    glib::DateTime::from_unix_local(secs).ok().map(|datetime| {
+        datetime.format("%Y-%m-%d %H:%M").map_or_else(
+            |_| UNKNOWN_MODIFIED_LABEL.to_string(),
+            |formatted| formatted.to_string(),
+        )
+    })
 }
 
 /// Return whether `widget` is `ancestor` itself or one of its descendants.

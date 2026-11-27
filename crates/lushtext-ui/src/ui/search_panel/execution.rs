@@ -26,7 +26,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -52,39 +51,6 @@ use super::policy::{
 use super::results::make_display_path;
 use super::{SearchFileGroup, SearchMatchLocation, SearchProgressUpdate};
 use crate::ui::accessibility;
-
-type OpenFileCallback = Rc<dyn Fn(&Path, u32)>;
-type ReplaceInEditorCallback = Rc<dyn Fn(&Path)>;
-type NavigateCallback = Rc<dyn Fn(&Path, u32)>;
-type ProgressCallback = Rc<dyn Fn(SearchProgressUpdate)>;
-type ReplaceCallback = Rc<dyn Fn(super::GuardedReplacements)>;
-type UndoCallback = Rc<dyn Fn(Arc<super::GuardedReplaceUndoBackup>)>;
-type ReplaceResumedCallback = Rc<dyn Fn(super::replace_admission::ReplaceAdmissionResumption)>;
-type MessageCallback =
-    Rc<dyn Fn(&str, lushtext_services::coordination::notifications::NotificationSeverity)>;
-
-/// Callback glue owned by the search panel and wired by the window shell.
-#[derive(Default)]
-pub struct SearchCallbacks {
-    /// Called when the user activates a match result: (file_path, line_number).
-    pub open_file_callback: RefCell<Option<OpenFileCallback>>,
-    /// Called when the user presses Escape or the close button.
-    pub close_requested_callback: RefCell<Option<Rc<dyn Fn()>>>,
-    /// Called when F4 / Shift+F4 navigates to a match.
-    pub navigate_callback: RefCell<Option<NavigateCallback>>,
-    /// Called on search progress and completion.
-    pub progress_callback: RefCell<Option<ProgressCallback>>,
-    /// Called when "Confirm Replace" is clicked with checked replacements.
-    pub replace_callback: RefCell<Option<ReplaceCallback>>,
-    /// Called when "Undo" is clicked with the backup to restore.
-    pub undo_callback: RefCell<Option<UndoCallback>>,
-    /// Called when a Replace All waiting for disposal capacity resumes or ends.
-    pub(crate) replace_run_resumed_callback: RefCell<Option<ReplaceResumedCallback>>,
-    /// Called when the panel needs to surface a short status message.
-    pub message_callback: RefCell<Option<MessageCallback>>,
-    /// Called when a Skipped Files row is activated: Open and Replace in Editor.
-    pub replace_in_editor_callback: RefCell<Option<ReplaceInEditorCallback>>,
-}
 
 /// Phase of one workspace search execution.
 #[derive(Default)]
@@ -425,10 +391,7 @@ impl LushtextSearchPanel {
             && !cancel.swap(true, Ordering::AcqRel)
         {
             let files_searched = imp.runtime.last_progress_count.get();
-            let cb = imp.callbacks.progress_callback.borrow().clone();
-            if let Some(cb) = cb {
-                cb(SearchProgressUpdate::Cancelled { files_searched });
-            }
+            self.emit_progress(SearchProgressUpdate::Cancelled { files_searched });
         }
         if imp.runtime.flight.borrow().snapshot().active == 0 {
             let mut phase = imp.runtime.phase.borrow_mut();
@@ -467,9 +430,7 @@ impl LushtextSearchPanel {
         });
         imp.runtime.matches_found.set(0);
         self.refresh_accessibility_state();
-        if let Some(cb) = imp.callbacks.progress_callback.borrow().clone() {
-            cb(SearchProgressUpdate::Started);
-        }
+        self.emit_progress(SearchProgressUpdate::Started);
 
         let timer_cancel = cancel.clone();
         imp.error_label.set_visible(false);
@@ -625,11 +586,9 @@ impl LushtextSearchPanel {
             let files_visited = progress_counter.load(Ordering::Relaxed);
             if !completion_notified && files_visited > imp.runtime.last_progress_count.get() {
                 imp.runtime.last_progress_count.set(files_visited);
-                if let Some(cb) = imp.callbacks.progress_callback.borrow().clone() {
-                    cb(SearchProgressUpdate::Progress {
-                        files_searched: files_visited,
-                    });
-                }
+                panel.emit_progress(SearchProgressUpdate::Progress {
+                    files_searched: files_visited,
+                });
             }
 
             let total = imp.runtime.total_matches.get();
@@ -670,11 +629,9 @@ impl LushtextSearchPanel {
                     if files_visited > imp.runtime.last_progress_count.get() {
                         imp.runtime.last_progress_count.set(files_visited);
                     }
-                    if let Some(cb) = imp.callbacks.progress_callback.borrow().clone() {
-                        cb(SearchProgressUpdate::Done {
-                            files_searched: imp.runtime.last_progress_count.get(),
-                        });
-                    }
+                    panel.emit_progress(SearchProgressUpdate::Done {
+                        files_searched: imp.runtime.last_progress_count.get(),
+                    });
                 }
                 if !cancelled && total == 0 && !search_incomplete {
                     imp.count_label.set_text("No results found");

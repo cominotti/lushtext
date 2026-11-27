@@ -20,7 +20,8 @@
 //! | Module | Role | Owns |
 //! | --- | --- | --- |
 //! | this file | narrative facade | the four entry points and this narration |
-//! | `execution` | coordination | the session, the projection guard, body ownership, the scheduled turns, supersession, exactly-once terminal cleanup, and the four actuation seams |
+//! | `admission` | coordination | [`BufferReplacementState`], active/parked [`ReplacementSlot`] state, completion/settled callbacks, and the entry/disposal admission guards |
+//! | `execution` | coordination | the projection guard, body ownership, the scheduled turns, supersession, exactly-once terminal cleanup, and the four actuation seams |
 //! | [`policy`] | pure policy | the seam value types, the phase and cancellation decisions, terminal classification, and bounded-turn metrics accounting |
 //! | [`evidence`] | evidence | [`BufferReplacementEvidence`], the one typed value observers read |
 //!

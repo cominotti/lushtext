@@ -40,6 +40,10 @@ pub(crate) enum Entry {
 
 /// The inode a write creates as its temp file.
 #[derive(Clone, Copy, Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Kani crash-model inode facts"
+)]
 pub(crate) struct TempInode {
     pub(crate) data: Content,
     /// The bytes a crash would leave, as of the last successful sync.
@@ -55,6 +59,10 @@ pub(crate) struct TempInode {
 
 /// One destination of one atomic write.
 #[derive(Clone, Copy, Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Kani crash-model filesystem facts"
+)]
 pub(crate) struct Disk {
     pub(crate) probed: bool,
     pub(crate) temp: Option<TempInode>,

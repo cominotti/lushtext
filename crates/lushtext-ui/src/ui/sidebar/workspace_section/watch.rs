@@ -49,8 +49,8 @@ pub(super) enum WatchInstallPhase {
     /// No watcher installed and no install worker in flight.
     #[default]
     Idle,
-    /// One lifecycle worker currently owns watcher creation/teardown.
-    Installing,
+    /// One lifecycle worker with `WorkspaceWatchTicket` owns watcher creation/teardown.
+    Installing(WorkspaceWatchTicket),
     /// A watcher is installed for `generation`.
     Installed(WatchTargetGeneration),
     /// Watcher setup or polling failed terminally for `generation`.
@@ -219,7 +219,7 @@ impl WatchRuntimeState {
 
     /// Whether the watch-install worker is in flight, for the evidence surface.
     pub(crate) fn watch_worker_inflight_for_evidence(&self) -> bool {
-        matches!(self.install_phase.get(), WatchInstallPhase::Installing)
+        matches!(self.install_phase.get(), WatchInstallPhase::Installing(_))
     }
 }
 
@@ -253,7 +253,7 @@ impl LushtextWorkspaceSection {
 
         let watch = &self.imp().watch_runtime;
         let phase = watch.install_phase.get();
-        if matches!(phase, WatchInstallPhase::Installing) {
+        if matches!(phase, WatchInstallPhase::Installing(_)) {
             return true;
         }
         let targets = watch.targets.borrow();
@@ -438,7 +438,10 @@ impl LushtextWorkspaceSection {
 
     fn start_current_workspace_watch_retiring(&self, retiring: Option<WorkspaceWatcher>) {
         let runtime = &self.imp().watch_runtime;
-        if matches!(runtime.install_phase.get(), WatchInstallPhase::Installing) {
+        if matches!(
+            runtime.install_phase.get(),
+            WatchInstallPhase::Installing(_)
+        ) {
             if let Some(watcher) = retiring {
                 retire_watcher(watcher);
             }
@@ -451,12 +454,13 @@ impl LushtextWorkspaceSection {
             source_id.remove();
         }
         let old_watcher = retiring.or_else(|| self.imp().watch_runtime.watcher.borrow_mut().take());
+        let generation = snapshot.generation;
+        let targets = snapshot.targets;
+        let ticket = WorkspaceWatchTicket::new(generation, lifetime);
         self.imp()
             .watch_runtime
             .install_phase
-            .set(WatchInstallPhase::Installing);
-        let generation = snapshot.generation;
-        let targets = snapshot.targets;
+            .set(WatchInstallPhase::Installing(ticket));
         let section_weak = self.downgrade();
         #[cfg(feature = "test-utils")]
         let start_delay = self.imp().watch_runtime.test_start_delay.get();
@@ -467,8 +471,6 @@ impl LushtextWorkspaceSection {
             .watch_runtime
             .test_worker_starts
             .set(self.imp().watch_runtime.test_worker_starts.get() + 1);
-
-        let ticket = WorkspaceWatchTicket::new(generation, lifetime);
 
         gtk_lush_tasks::spawn_blocking_then(
             (section_weak, ticket),
@@ -489,11 +491,6 @@ impl LushtextWorkspaceSection {
                     retire_worker_result(result);
                     return;
                 };
-                section
-                    .imp()
-                    .watch_runtime
-                    .install_phase
-                    .set(WatchInstallPhase::Idle);
                 // One seam value validated as a unit, so the two stale cases stay
                 // distinguishable: a stale lifetime retires, a stale target
                 // generation re-enters the install.
@@ -501,17 +498,40 @@ impl LushtextWorkspaceSection {
                     section.imp().watch_runtime.targets.borrow().generation(),
                     section.imp().watch_runtime.lifetime_generation.get(),
                 );
+                let is_active_worker = section.imp().watch_runtime.install_phase.get()
+                    == WatchInstallPhase::Installing(ticket);
                 match ticket.disposition(&facts) {
                     WorkspaceWatchDisposition::Retire => {
+                        if is_active_worker {
+                            section
+                                .imp()
+                                .watch_runtime
+                                .install_phase
+                                .set(WatchInstallPhase::Idle);
+                        }
                         retire_worker_result(result);
                         return;
                     }
                     WorkspaceWatchDisposition::Restart => {
-                        let _ = section.imp().watch_runtime.restart_debounce.invalidate();
-                        section.start_current_workspace_watch_retiring(stale_watcher(result));
+                        if is_active_worker {
+                            section
+                                .imp()
+                                .watch_runtime
+                                .install_phase
+                                .set(WatchInstallPhase::Idle);
+                            let _ = section.imp().watch_runtime.restart_debounce.invalidate();
+                            section.start_current_workspace_watch_retiring(stale_watcher(result));
+                        } else {
+                            retire_worker_result(result);
+                        }
                         return;
                     }
-                    WorkspaceWatchDisposition::Install => {}
+                    WorkspaceWatchDisposition::Install => {
+                        if !is_active_worker {
+                            retire_worker_result(result);
+                            return;
+                        }
+                    }
                 }
                 let generation = ticket.targets_generation();
 
@@ -567,7 +587,12 @@ impl LushtextWorkspaceSection {
         if let Some(source_id) = runtime.poll_source_id.borrow_mut().take() {
             source_id.remove();
         }
-        runtime.install_phase.set(WatchInstallPhase::Idle);
+        if !matches!(
+            runtime.install_phase.get(),
+            WatchInstallPhase::Installing(_)
+        ) {
+            runtime.install_phase.set(WatchInstallPhase::Idle);
+        }
         if let Some(watcher) = runtime.watcher.borrow_mut().take() {
             retire_watcher(watcher);
         }

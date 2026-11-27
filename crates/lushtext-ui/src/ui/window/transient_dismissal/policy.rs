@@ -44,6 +44,10 @@ pub enum TransientDismissal {
 /// at a call site would be invisible to review and to every test that only
 /// asserts *something* was dismissed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pure policy visibility snapshot over independent shell surfaces"
+)]
 pub struct TransientSurfaceSnapshot {
     /// Whether the palette revealer currently reveals its child.
     pub command_palette_revealed: bool,

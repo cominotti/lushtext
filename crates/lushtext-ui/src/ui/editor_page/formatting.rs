@@ -269,7 +269,18 @@ pub(super) fn apply_formatting_settings(
         .unwrap_or_else(|| settings.boolean(keys::INSERT_SPACES));
     view.set_insert_spaces_instead_of_tabs(insert_spaces);
 
-    let indent_width = overrides.indent_width.unwrap_or(-1);
+    let indent_width = match overrides.indent_width {
+        None
+        | Some(
+            lushtext_model::document::formatting_overrides::IndentWidthSetting::InheritTabWidth,
+        ) => {
+            // ffi-sentinel: GtkSourceView uses -1 to inherit tab-width
+            -1
+        }
+        Some(lushtext_model::document::formatting_overrides::IndentWidthSetting::Spaces(n)) => {
+            i32::from(n)
+        }
+    };
     view.set_indent_width(indent_width);
 }
 

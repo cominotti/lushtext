@@ -491,7 +491,8 @@ impl LushtextCommandPalette {
         if !item.is_activatable() {
             return;
         }
-        if let Some(ref cb) = *self.activate_callback.borrow() {
+        let callback = self.activate_callback.borrow().clone();
+        if let Some(cb) = callback {
             cb(item);
         }
     }

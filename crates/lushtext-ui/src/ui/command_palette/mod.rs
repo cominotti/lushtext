@@ -294,7 +294,7 @@ impl LushtextCommandPalette {
 
     /// Register a callback for when an item is activated (Enter or click).
     pub fn connect_item_activated<F: Fn(&PaletteItem) + 'static>(&self, f: F) {
-        *self.imp().activate_callback.borrow_mut() = Some(Box::new(f));
+        *self.imp().activate_callback.borrow_mut() = Some(std::rc::Rc::new(f));
     }
 
     /// Index stage 1: add a newly created file to the search index.

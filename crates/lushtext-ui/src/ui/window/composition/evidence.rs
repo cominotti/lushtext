@@ -33,6 +33,10 @@ use lushtext_model::budgets::construction_spans::span_duration_us;
 /// Everything a test, the readiness poll, or the snapshot may observe about
 /// one window's composition.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct CompositionEvidence {
     /// Whether the window began composing (end of stage C).
     pub begun: bool,

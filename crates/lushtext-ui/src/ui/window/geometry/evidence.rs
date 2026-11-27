@@ -58,6 +58,10 @@ use super::execution;
 
 /// Everything a test or probe may observe about the adaptive shell geometry.
 #[derive(Debug, Clone, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct ShellGeometryEvidence {
     /// Whether the user last explicitly left the workspace sidebar open.
     pub workspace_requested_visible: bool,

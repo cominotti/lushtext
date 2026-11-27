@@ -8,6 +8,15 @@
 
 use crate::document::encoding::{DocumentEncoding, LineEnding};
 
+/// Domain override for per-file indent width (`EditorConfig` `indent_size`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndentWidthSetting {
+    /// Inherit `tab-width` (mapped to GtkSourceView's `-1` only at the UI setter).
+    InheritTabWidth,
+    /// Explicit indent width in spaces (`1..=12`).
+    Spaces(u8),
+}
+
 /// Per-file formatting overrides from EditorConfig.
 ///
 /// Only covers settings that can vary per-file (formatting). Visual-only
@@ -20,8 +29,7 @@ pub struct FormattingOverrides {
     /// Override for GtkSourceView `insert-spaces-instead-of-tabs` property.
     pub insert_spaces: Option<bool>,
     /// Override for GtkSourceView `indent-width` property.
-    /// -1 in GtkSourceView means "inherit from tab-width".
-    pub indent_width: Option<i32>,
+    pub indent_width: Option<IndentWidthSetting>,
     /// Save-time line ending requested by EditorConfig `end_of_line`.
     pub line_ending: Option<LineEnding>,
     /// Save-time encoding requested by EditorConfig `charset`.
@@ -73,7 +81,7 @@ mod tests {
         assert!(!o.is_empty());
 
         let o = FormattingOverrides {
-            indent_width: Some(4),
+            indent_width: Some(IndentWidthSetting::Spaces(4)),
             ..Default::default()
         };
         assert!(!o.is_empty());
@@ -108,7 +116,7 @@ mod tests {
         let a = FormattingOverrides {
             tab_width: Some(4),
             insert_spaces: Some(true),
-            indent_width: Some(2),
+            indent_width: Some(IndentWidthSetting::Spaces(2)),
             line_ending: Some(LineEnding::Lf),
             save_encoding: Some(DocumentEncoding::Utf8),
             trim_trailing_whitespace: Some(true),

@@ -24,14 +24,15 @@
 //! **hold** a workflow's GTK-side state; what it may not do is coordinate an
 //! ordered stage, and it does not.
 
-use std::cell::{Cell, RefCell};
-use std::rc::{Rc, Weak};
-use std::sync::Arc;
+use std::{
+    cell::{Cell, RefCell},
+    rc::{Rc, Weak},
+    sync::Arc,
+};
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_settle::Debounce;
-use gtk4::gio;
-use gtk4::prelude::*;
+use gtk4::{gio, prelude::*};
 use libadwaita::prelude::{AdwDialogExt, NavigationPageExt};
 
 use crate::ui::accessibility;
@@ -222,13 +223,10 @@ pub struct OpenEditorSnapshotEvidence {
     pub worst_turn_us: u64,
 }
 
-/// Scalar bounded-source and query-ownership evidence.
-///
-/// Not feature-gated: `evidence::NotesEvidence` carries it in **both** feature
-/// configurations, so gating the type would compile only under `test-utils` —
-/// the exact default-feature break slot 4 recorded. Only the *re-export* for the
-/// external widget harness is gated.
+/// Scalar bounded-source and query-ownership evidence (present in all builds so
+/// `evidence::NotesEvidence` stays uniform across feature sets).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[expect(clippy::struct_excessive_bools, reason = "snapshot DTO")]
 pub struct NotesBrowserRuntimeSnapshot {
     /// Rows retained by the immutable admitted source.
     pub source_entries: usize,

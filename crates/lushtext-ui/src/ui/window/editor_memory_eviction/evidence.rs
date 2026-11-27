@@ -57,6 +57,10 @@ use super::super::LushtextWindow;
 
 /// Everything a test or probe may observe about editor-memory eviction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct EditorMemoryEvictionEvidence {
     /// Completed aggregate passes, for burst-coalescing assertions.
     pub evaluation_count: u64,

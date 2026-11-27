@@ -177,6 +177,13 @@ impl ObjectSubclass for LushtextEditorPage {
 }
 
 impl ObjectImpl for LushtextEditorPage {
+    fn signals() -> &'static [glib::subclass::Signal] {
+        static SIGNALS: std::sync::OnceLock<Vec<glib::subclass::Signal>> =
+            std::sync::OnceLock::new();
+        SIGNALS
+            .get_or_init(|| vec![glib::subclass::Signal::builder("memory-policy-changed").build()])
+    }
+
     fn dispose(&self) {
         self.obj().close_line_inspector();
         super::save::admission::cancel_for_editor(&self.obj());
@@ -188,7 +195,9 @@ impl ObjectImpl for LushtextEditorPage {
         if let Some(snapshot) = self.document_metadata.lossy_analysis_snapshot.take() {
             snapshot.dispose();
         }
-        if let Some(snapshot) = self.local_history.periodic_snapshot.borrow_mut().take() {
+        if let super::local_history::PeriodicSnapshotCapture::Capturing(snapshot) =
+            self.local_history.periodic_snapshot.take()
+        {
             snapshot.dispose();
         }
         self.obj().dispose_minimap_analysis();
@@ -198,6 +207,7 @@ impl ObjectImpl for LushtextEditorPage {
         self.local_history
             .editor_generation
             .set(self.local_history.editor_generation.get().next());
+        self.callbacks.dispose(&self.obj());
         self.preference_bindings.signals.clear();
         self.document_buffer_signals.clear();
         self.editing_buffer_signals.clear();
@@ -205,10 +215,10 @@ impl ObjectImpl for LushtextEditorPage {
         self.focus_mode.buffer_signals.clear();
         self.frame_validation.clear();
         self.document_scale.signals.clear();
-        self.overscroll.observer.borrow_mut().take();
-        self.overscroll.reflow_pause.borrow_mut().take();
+        self.overscroll.observer.take();
+        self.overscroll.reflow_pause.take();
         self.overscroll.scroll_source_signals.clear();
-        self.focus_mode.text_origin_guide.borrow_mut().take();
+        self.focus_mode.text_origin_guide.take();
         self.obj().cancel_modified_tag_retirement();
         if let Some(monitor) = self.monitor.file_monitor.take() {
             monitor.cancel();

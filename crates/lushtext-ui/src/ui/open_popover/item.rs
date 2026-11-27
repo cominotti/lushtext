@@ -149,6 +149,10 @@ pub(super) struct RecentRowChildLayout {
 
 /// Internal test-only snapshot of the GNOME-shaped recent-row skeleton.
 #[cfg(feature = "test-utils")]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only layout snapshot DTO"
+)]
 pub(super) struct RecentRowLayoutSnapshot {
     pub grid_margin_top: i32,
     pub grid_margin_bottom: i32,

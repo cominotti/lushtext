@@ -195,6 +195,10 @@ pub struct ReplaceApplyCounts {
 /// Every field is a scalar read of live panel state at the resumption, so the
 /// decision stays GTK-free and testable over every combination.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pure policy fact bundle for Replace All admission"
+)]
 pub struct ReplaceAdmissionFacts {
     /// Whether this panel still holds the application's Replace All transaction.
     pub transaction_claimed: bool,

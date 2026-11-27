@@ -139,18 +139,11 @@ pub(super) fn settle_restore_selection(
     if let Some(page) = requested {
         apply_restore_selection(window, &page);
     } else if window.imp().tab_view.n_pages() > 0 {
+        let max_ordinal = window.imp().tab_view.n_pages().saturating_sub(1);
         // The requested ordinal can exceed what actually mounted — a descriptor
         // may have failed to open — so it is clamped rather than trusted.
-        #[expect(
-            clippy::cast_sign_loss,
-            reason = "AdwTabView page counts are non-negative"
-        )]
-        let ordinal = ordinal.min(window.imp().tab_view.n_pages() as usize - 1);
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "Persisted tab counts remain well below i32::MAX"
-        )]
-        let page = window.imp().tab_view.nth_page(ordinal as i32);
+        let clamped = i32::try_from(ordinal).unwrap_or(i32::MAX).min(max_ordinal);
+        let page = window.imp().tab_view.nth_page(clamped);
         apply_restore_selection(window, &page);
     }
 }

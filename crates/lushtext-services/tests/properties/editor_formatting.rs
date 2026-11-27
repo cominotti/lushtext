@@ -7,7 +7,7 @@
 //! trailing whitespace without involving GTK buffers or filesystem writes.
 
 use lushtext_model::document::encoding::{DocumentEncoding, LineEnding};
-use lushtext_model::document::formatting_overrides::FormattingOverrides;
+use lushtext_model::document::formatting_overrides::{FormattingOverrides, IndentWidthSetting};
 use lushtext_services::editor_io::apply_save_formatting_overrides;
 use proptest::prelude::*;
 
@@ -68,7 +68,10 @@ fn formatting_overrides() -> impl Strategy<Value = FormattingOverrides> {
         )
 }
 
-/// Generate the GtkSourceView indent-width domain used by EditorConfig.
-fn indent_width() -> impl Strategy<Value = i32> {
-    prop_oneof![Just(-1), 1i32..=12]
+/// Generate the domain indent-width override used by EditorConfig.
+fn indent_width() -> impl Strategy<Value = IndentWidthSetting> {
+    prop_oneof![
+        Just(IndentWidthSetting::InheritTabWidth),
+        (1u8..=12).prop_map(IndentWidthSetting::Spaces),
+    ]
 }

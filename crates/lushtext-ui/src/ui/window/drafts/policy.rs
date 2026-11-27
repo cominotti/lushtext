@@ -84,6 +84,10 @@ pub(super) const DRAFT_MUTATION_WAIT_POLL_INTERVAL: Duration = Duration::from_mi
 /// modified tab because there is no later pass to catch it.
 /// Eligibility inputs evaluated to decide whether a tab is a draft candidate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pure policy fact bundle for draft recovery"
+)]
 pub struct DraftCandidateFacts {
     /// Whether the editor holds unsaved modifications or held input.
     pub modified: bool,
@@ -171,6 +175,10 @@ pub(super) const fn autosave_admission(lanes: AutosaveLaneState) -> AutosaveAdmi
 
 /// Active draft recovery work that blocks immediate close flushing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pure policy fact bundle for close flush readiness"
+)]
 pub(super) struct CloseFlushWaitFacts {
     pub(super) mutation_inflight: bool,
     pub(super) cleanup_inflight: bool,
@@ -192,6 +200,10 @@ pub(super) const fn close_flush_must_wait(state: CloseFlushWaitFacts) -> bool {
 
 /// In-flight draft recovery/autosave lanes checked for automation readiness.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pure policy fact bundle for draft readiness"
+)]
 pub(super) struct DraftReadinessFacts {
     pub(super) autosave_inflight: bool,
     pub(super) mutation_inflight: bool,

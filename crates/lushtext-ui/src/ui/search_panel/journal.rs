@@ -904,10 +904,7 @@ impl LushtextSearchPanel {
         message: &str,
         severity: lushtext_services::coordination::notifications::NotificationSeverity,
     ) {
-        let callback = self.imp().callbacks.message_callback.borrow().clone();
-        if let Some(callback) = callback {
-            callback(message, severity);
-        }
+        self.emit_message(message, severity);
     }
 
     fn delete_undo_backup_on_disk(
@@ -960,10 +957,7 @@ impl LushtextSearchPanel {
             return;
         };
         self.hide_undo_button();
-        let callback = imp.callbacks.undo_callback.borrow().clone();
-        if let Some(callback) = callback {
-            callback(backup);
-        }
+        self.emit_undo(backup);
     }
 }
 

@@ -88,6 +88,10 @@ fn trace_terminal(
 }
 
 /// The editor projections one replacement suspends, captured for exact restore.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "RAII save/restore snapshot of independent suspended editor toggles"
+)]
 struct ReplacementGuard {
     lock: EditLock,
     cursor_visible: bool,

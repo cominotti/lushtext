@@ -535,13 +535,13 @@ pub(in crate::ui::window) fn sync_properties_breakpoint(window: &super::Lushtext
     let condition =
         libadwaita::BreakpointCondition::parse(&properties_breakpoint_condition(max_width))
             .expect("valid properties breakpoint condition");
-    if let Some(breakpoint) = window
+    let breakpoint = window
         .imp()
         .split_layout
         .properties_breakpoint
         .borrow()
-        .as_ref()
-    {
+        .clone();
+    if let Some(breakpoint) = breakpoint {
         breakpoint.set_condition(Some(&condition));
     }
     window

@@ -338,12 +338,12 @@ impl LushtextEditorPage {
             let minimap = &self.imp().minimap;
             let _ = minimap.reflow.settle.clear();
             minimap.reflow.reveal_pending.set(false);
-            self.imp().overscroll.reflow_pause.borrow_mut().take();
+            self.imp().overscroll.reflow_pause.take();
             // Cancelling the settle cancels its rest-state record too.
             self.record_scroll_from_cancelled_reflow();
             self.sync_projection_geometry();
             self.drop_minimap_reflow_freeze();
-            minimap.projection.marker_bins.borrow_mut().take();
+            minimap.projection.marker_bins.take();
             self.note_marker_change();
             if availability != MinimapAvailability::Visible {
                 self.publish_minimap_unavailable_feedback_if_needed(availability);

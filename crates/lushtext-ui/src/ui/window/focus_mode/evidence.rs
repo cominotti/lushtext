@@ -38,6 +38,10 @@ use super::{chrome, preview_readable_column_applies};
 
 /// Everything a test or probe may observe about Focus Mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct FocusModeEvidence {
     /// Whether Focus Mode is currently active for this window.
     pub active: bool,
