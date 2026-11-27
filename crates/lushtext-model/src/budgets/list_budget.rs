@@ -60,7 +60,7 @@ mod kani_proofs;
 /// measures it.
 ///
 /// Kind: out: time; `B_INTERACT_US / 2`, a time budget (`docs/thresholds.md`).
-pub const LIST_TURN_SLICE_US: u64 = B_INTERACT_US / 2;
+pub const LIST_TURN_SLICE_US: u64 = B_INTERACT_US.as_us() / 2;
 
 /// What [`RetainedBudget::admit`] decided for one item.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

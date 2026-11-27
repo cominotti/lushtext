@@ -642,7 +642,7 @@ impl LushtextMarkdownPreview {
         target: ImageWorkTarget,
         layout: EmbeddedBlockLayout,
     ) {
-        let generation = self.imp().render_session.borrow().generation();
+        let generation = self.imp().render_session.borrow().generation().get();
         if !self.imp().image_admission.borrow_mut().try_admit(
             PREVIEW_IMAGE_WORK_CHARGE_BYTES,
             MAX_PREVIEW_IMAGE_WORK_ITEMS,
@@ -730,7 +730,13 @@ impl LushtextMarkdownPreview {
         imp.image_admission
             .borrow_mut()
             .release(active.charge_bytes);
-        if imp.render_session.borrow().is_current(active.generation) {
+        if imp
+            .render_session
+            .borrow()
+            .is_current(lushtext_model::values::RenderGeneration::new(
+                active.generation,
+            ))
+        {
             imp.current_image_work_count
                 .set(imp.current_image_work_count.get().saturating_sub(1));
             if let Some(container) = active.container.upgrade() {

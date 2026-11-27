@@ -59,7 +59,7 @@ mod kani_proofs;
 pub(crate) use lushtext_model::document::protected_fold::N_INSPECT;
 
 /// [`N_INSPECT`] as the non-zero width the window functions take.
-pub(crate) const N_INSPECT_WIDTH: NonZeroU64 = match NonZeroU64::new(N_INSPECT) {
+pub(crate) const N_INSPECT_WIDTH: NonZeroU64 = match NonZeroU64::new(N_INSPECT.as_chars()) {
     Some(width) => width,
     None => panic!("N_INSPECT must be at least one character"),
 };
@@ -70,7 +70,7 @@ const fn min_u64(a: u64, b: u64) -> u64 {
 
 // An inspector window never shows more than a head may (so it is never a more
 // expensive layout than the main view) and stays within C0's stall basis.
-const _: () = assert!(N_INSPECT <= min_u64(HEAD_CAP, L_PROTECT));
+const _: () = assert!(N_INSPECT.as_chars() <= min_u64(HEAD_CAP.as_chars(), L_PROTECT));
 
 /// The most find results one GTK turn publishes (design D5; initial value,
 /// confirmed by the verdict).
@@ -2097,8 +2097,8 @@ mod tests {
         fn inspector_windows_tile_over_the_whole_range(
             len in 1..=u64::MAX,
             n_raw in proptest::prop_oneof![
-                proptest::strategy::Just(N_INSPECT),
-                1..=N_INSPECT,
+                proptest::strategy::Just(N_INSPECT.as_chars()),
+                1..=N_INSPECT.as_chars(),
             ],
             index_seed in proptest::prelude::any::<u64>(),
             column_seed in proptest::prelude::any::<u64>(),
@@ -2432,7 +2432,7 @@ mod tests {
     #[test]
     fn copy_chunk_holds_at_least_one_scalar() {
         const { assert!(COPY_CHUNK_BYTES >= 4) };
-        assert_eq!(N_INSPECT_WIDTH.get(), N_INSPECT);
-        const { assert!(N_INSPECT <= L_PROTECT) };
+        assert_eq!(N_INSPECT_WIDTH.get(), N_INSPECT.as_chars());
+        const { assert!(N_INSPECT.as_chars() <= L_PROTECT) };
     }
 }

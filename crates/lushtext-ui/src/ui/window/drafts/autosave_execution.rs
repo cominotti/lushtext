@@ -157,9 +157,13 @@ impl LushtextWindow {
                 .map(|candidate| {
                     match draft_service::RegisteredDraft::without_registration(
                         &candidate.draft_id,
-                        candidate.original_path.is_some(),
-                        manifest.find_by_id(&candidate.draft_id).is_some(),
-                        trusted,
+                        journal_core::RegistrationFacts {
+                            file_backed: candidate.original_path.is_some(),
+                            registered_in_known_manifest: manifest
+                                .find_by_id(&candidate.draft_id)
+                                .is_some(),
+                            known_manifest_trusted: trusted,
+                        },
                     ) {
                         // Minted for this candidate's id, so `into_writable`
                         // accepts it; were it ever refused, the candidate
@@ -980,7 +984,15 @@ fn finish_registration(
             }
             StagedDraftCandidate::NeedsRegistration(candidate) => candidate,
         };
-        let token = if journal_core::may_write_after_registration(true, committed) {
+        let commit_status = if committed {
+            journal_core::RegistrationCommit::Committed
+        } else {
+            journal_core::RegistrationCommit::Uncommitted
+        };
+        let token = if journal_core::may_write_after_registration(
+            journal_core::RegistrationRequirement::Required,
+            commit_status,
+        ) {
             tokens
                 .iter()
                 .position(|token| token.draft_id() == candidate.draft_id)

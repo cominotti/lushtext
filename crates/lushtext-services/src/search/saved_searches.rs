@@ -139,10 +139,12 @@ mod tests {
                 lushtext_model::workspace::content_search::SearchQuerySpec::new(
                     "fn main".to_string(),
                     lushtext_model::workspace::content_search::ContentSearchOptions::new(
-                        true,
-                        false,
-                        true,
-                        false,
+                        lushtext_model::workspace::content_search::ContentSearchFlags {
+                            case_sensitive: true,
+                            regex: false,
+                            whole_word: true,
+                            gitignore: false,
+                        },
                         Some("*.rs".to_string()),
                     ),
                 ),

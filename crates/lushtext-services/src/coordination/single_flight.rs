@@ -15,6 +15,8 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use lushtext_model::values::FlightGeneration;
+
 /// Cooperative cancellation token scoped to one active generation.
 #[derive(Clone, Debug, Default)]
 pub struct FlightCancellation {
@@ -62,20 +64,20 @@ impl FlightCancellation {
 /// One request admitted as the coordinator's sole active generation.
 #[derive(Debug)]
 pub struct SingleFlightStart<R> {
-    pub generation: u64,
+    pub generation: FlightGeneration,
     pub request: R,
     pub cancellation: FlightCancellation,
 }
 
 #[derive(Debug)]
 struct ActiveFlight {
-    generation: u64,
+    generation: FlightGeneration,
     cancellation: FlightCancellation,
 }
 
 #[derive(Debug)]
 struct PendingFlight<R> {
-    generation: u64,
+    generation: FlightGeneration,
     request: R,
 }
 
@@ -93,7 +95,7 @@ pub struct SingleFlightSnapshot {
 /// Retain at most one active request and one latest superseding request.
 #[derive(Debug)]
 pub struct SingleFlightCoordinator<R> {
-    current_generation: u64,
+    current_generation: FlightGeneration,
     active: Option<ActiveFlight>,
     pending: Option<PendingFlight<R>>,
     snapshot: SingleFlightSnapshot,
@@ -102,7 +104,7 @@ pub struct SingleFlightCoordinator<R> {
 impl<R> Default for SingleFlightCoordinator<R> {
     fn default() -> Self {
         Self {
-            current_generation: 0,
+            current_generation: FlightGeneration::ZERO,
             active: None,
             pending: None,
             snapshot: SingleFlightSnapshot::default(),
@@ -131,7 +133,7 @@ impl<R> SingleFlightCoordinator<R> {
     }
 
     /// Release one completed active generation and start only the latest request.
-    pub fn finish(&mut self, generation: u64) -> Option<SingleFlightStart<R>> {
+    pub fn finish(&mut self, generation: FlightGeneration) -> Option<SingleFlightStart<R>> {
         if self.active.as_ref().map(|active| active.generation) != Some(generation) {
             return None;
         }
@@ -168,13 +170,13 @@ impl<R> SingleFlightCoordinator<R> {
 
     /// Return the currently active generation, if one owns the worker.
     #[must_use]
-    pub fn active_generation(&self) -> Option<u64> {
+    pub fn active_generation(&self) -> Option<FlightGeneration> {
         self.active.as_ref().map(|active| active.generation)
     }
 
     /// Return whether a completion still belongs to the latest requested generation.
     #[must_use]
-    pub fn is_current(&self, generation: u64) -> bool {
+    pub fn is_current(&self, generation: FlightGeneration) -> bool {
         self.current_generation == generation
     }
 
@@ -188,12 +190,12 @@ impl<R> SingleFlightCoordinator<R> {
         }
     }
 
-    fn advance_generation(&mut self) -> u64 {
-        self.current_generation = self.current_generation.wrapping_add(1);
+    fn advance_generation(&mut self) -> FlightGeneration {
+        self.current_generation = self.current_generation.next();
         self.current_generation
     }
 
-    fn start(&mut self, generation: u64, request: R) -> SingleFlightStart<R> {
+    fn start(&mut self, generation: FlightGeneration, request: R) -> SingleFlightStart<R> {
         let cancellation = FlightCancellation::default();
         self.active = Some(ActiveFlight {
             generation,

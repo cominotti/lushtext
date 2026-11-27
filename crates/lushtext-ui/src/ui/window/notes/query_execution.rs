@@ -79,6 +79,7 @@ fn start_notes_browser_query(
         request,
         cancellation,
     } = start;
+    let generation = generation.get();
     let mode = request.mode;
     let source = Arc::clone(&state.all_entries.borrow());
     let state_weak = Rc::downgrade(state);
@@ -117,12 +118,13 @@ fn finish_notes_browser_query(
     let ticket = NotesBrowserTicket::<QueryFlight>::new(generation, mode);
     let (accepted, next) = {
         let mut runtime = state.query_runtime.borrow_mut();
+        let typed = lushtext_model::values::FlightGeneration::new(ticket.generation());
         let accepted = ticket.may_publish(&NotesBrowserFacts::new(
-            runtime.is_current(ticket.generation()),
+            runtime.is_current(typed),
             state.mode.get(),
             state.disposed.get(),
         ));
-        let next = runtime.finish(ticket.generation());
+        let next = runtime.finish(typed);
         (accepted, next)
     };
     if accepted {

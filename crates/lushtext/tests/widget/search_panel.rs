@@ -48,10 +48,12 @@ fn make_history_entry(
     SearchHistoryEntry::from_spec(SearchQuerySpec::new(
         query.to_string(),
         ContentSearchOptions::new(
-            case_sensitive,
-            regex,
-            whole_word,
-            gitignore,
+            lushtext_model::workspace::content_search::ContentSearchFlags {
+                case_sensitive,
+                regex,
+                whole_word,
+                gitignore,
+            },
             glob.map(ToString::to_string),
         ),
     ))
@@ -2590,7 +2592,15 @@ fn test_restore_from_saved_search_sets_query() {
         "Test",
         SearchQuerySpec::new(
             "fn main",
-            ContentSearchOptions::new(true, true, false, false, Some("*.rs".to_string())),
+            ContentSearchOptions::new(
+                lushtext_model::workspace::content_search::ContentSearchFlags {
+                    case_sensitive: true,
+                    regex: true,
+                    whole_word: false,
+                    gitignore: false,
+                },
+                Some("*.rs".to_string()),
+            ),
         ),
     );
     panel.restore_from_saved_search(&entry);
@@ -2650,7 +2660,15 @@ fn test_saved_search_serialization_roundtrip() {
         "My Search",
         SearchQuerySpec::new(
             "fn main",
-            ContentSearchOptions::new(true, false, true, false, Some("*.rs".to_string())),
+            ContentSearchOptions::new(
+                lushtext_model::workspace::content_search::ContentSearchFlags {
+                    case_sensitive: true,
+                    regex: false,
+                    whole_word: true,
+                    gitignore: false,
+                },
+                Some("*.rs".to_string()),
+            ),
         ),
     );
     let json = serde_json::to_string(&entry).expect("expected operation to succeed");
@@ -4128,7 +4146,7 @@ fn test_search_and_preview_dispatches_fit_the_settle_budget() {
                 ("retirement", retire_worst),
             ] {
                 assert!(
-                    worst.as_micros() <= u128::from(B_SETTLE_US),
+                    worst.as_micros() <= u128::from(B_SETTLE_US.as_us()),
                     "{phase} dispatch {} us exceeds B_SETTLE_US",
                     worst.as_micros()
                 );

@@ -24,6 +24,7 @@ use lushtext_model::persistence::migration_ledger::{
     MigrationEntry, MigrationKind, MigrationKindState, MigrationLedgerDocument,
 };
 use lushtext_model::persistence::sidecar_identity::now_epoch_secs;
+use lushtext_model::values::MigrationGeneration;
 
 /// Stop automatic startup retry after this many failures for one kind.
 ///
@@ -87,7 +88,7 @@ pub enum LedgerUpdateOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationDiagnostic {
     /// Entry generation that produced the diagnostic.
-    pub generation: u64,
+    pub generation: MigrationGeneration,
     /// Data category affected by the diagnostic.
     pub kind: MigrationKind,
     /// Human-readable diagnostic summary.
@@ -138,7 +139,7 @@ pub fn record_pending(
     old_path: &Path,
     new_path: &Path,
     kinds: &[MigrationKind],
-) -> Result<u64> {
+) -> Result<MigrationGeneration> {
     let _guard = ledger_lock()
         .lock()
         .map_err(|_| anyhow::anyhow!("migration-ledger lock poisoned"))?;
@@ -176,7 +177,7 @@ pub fn record_pending(
 /// Returns an error if the ledger cannot be written.
 pub fn mark_kind_completed(
     data_dir: &Path,
-    generation: u64,
+    generation: MigrationGeneration,
     kind: MigrationKind,
 ) -> Result<LedgerUpdateOutcome> {
     update_kind_state(data_dir, generation, kind, |state, now| {
@@ -193,7 +194,7 @@ pub fn mark_kind_completed(
 /// Returns an error if the ledger cannot be written.
 pub fn mark_kind_failed(
     data_dir: &Path,
-    generation: u64,
+    generation: MigrationGeneration,
     kind: MigrationKind,
     error: &anyhow::Error,
 ) -> Result<LedgerUpdateOutcome> {
@@ -215,13 +216,13 @@ pub struct TrackedRename {
     /// Live operation-lock guard. Dropping this ends the rename's exclusivity.
     _guard: MutexGuard<'static, ()>,
     /// Ledger generation `record_pending` allocated for this rename.
-    generation: u64,
+    generation: MigrationGeneration,
 }
 
 impl TrackedRename {
     /// Return the ledger generation this rename's kinds complete against.
     #[must_use]
-    pub const fn generation(&self) -> u64 {
+    pub const fn generation(&self) -> MigrationGeneration {
         self.generation
     }
 
@@ -388,7 +389,7 @@ fn save(data_dir: &Path, ledger: &MigrationLedgerDocument) -> Result<()> {
 
 fn update_kind_state(
     data_dir: &Path,
-    generation: u64,
+    generation: MigrationGeneration,
     kind: MigrationKind,
     update: impl FnOnce(&mut MigrationKindState, u64),
 ) -> Result<LedgerUpdateOutcome> {
@@ -575,7 +576,7 @@ mod tests {
             },
         )
         .expect("tracked rename");
-        assert!(observed > 0, "a generation must have been allocated");
+        assert!(observed.get() > 0, "a generation must have been allocated");
     }
 
     #[test]
@@ -632,8 +633,12 @@ mod tests {
     fn stale_generation_completion_is_ignored() {
         let dir = TempDir::new().expect("tempdir");
 
-        let outcome =
-            mark_kind_completed(dir.path(), 99, MigrationKind::Bookmarks).expect("stale update");
+        let outcome = mark_kind_completed(
+            dir.path(),
+            MigrationGeneration::new(99),
+            MigrationKind::Bookmarks,
+        )
+        .expect("stale update");
 
         assert_eq!(outcome, LedgerUpdateOutcome::EntryMissing);
     }

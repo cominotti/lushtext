@@ -89,20 +89,30 @@ pub struct BodyFacts {
     pub backing_stale: bool,
 }
 
+/// Observable facts from the GTK window's manifest copy and restore hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+pub struct WindowBodyFacts {
+    /// Whether the window's manifest currently records this draft id.
+    pub registered: bool,
+    /// Whether a restore of this body is still queued or reading.
+    pub restore_pending: bool,
+}
+
 impl BodyFacts {
     /// The facts as the GTK window sees them, from its own manifest copy and
     /// restore hold: a body may exist whenever an entry is registered or a
     /// restore is pending, and the window never knows the backing is stale.
     #[must_use]
-    pub const fn from_window_view(registered: bool, restore_pending: bool) -> Self {
+    pub const fn from_window_view(facts: WindowBodyFacts) -> Self {
         Self {
-            body_present: restore_pending || registered,
-            entry: if registered {
+            body_present: facts.restore_pending || facts.registered,
+            entry: if facts.registered {
                 EntryState::Current
             } else {
                 EntryState::Absent
             },
-            restore_pending,
+            restore_pending: facts.restore_pending,
             backing_stale: false,
         }
     }
@@ -155,6 +165,50 @@ pub const fn must_preserve_before_replacing(owner: BodyOwner) -> bool {
 
 // --- 2. registration before a body write ----------------------------------
 
+/// Caller facts deciding whether a draft id must be registered before writing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+pub struct RegistrationFacts {
+    /// Whether the document has a backing file path.
+    pub file_backed: bool,
+    /// Whether the caller's known manifest lists the draft id.
+    pub registered_in_known_manifest: bool,
+    /// Whether the caller's manifest authority is trusted to match disk.
+    pub known_manifest_trusted: bool,
+}
+
+/// Whether an autosave or close pass needed manifest registration for a candidate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+pub enum RegistrationRequirement {
+    NotRequired,
+    Required,
+}
+
+/// Outcome of the registration step for a candidate needing registration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+pub enum RegistrationCommit {
+    Uncommitted,
+    Committed,
+}
+
+/// Whether a reconciliation attempt was restricted to additive entry inserts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+pub enum CommitWriteMode {
+    Reconcile,
+    InsertOnly,
+}
+
+/// Whether persisted recovery evidence allows manifest replacement during an untrusted commit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+pub enum ExistingBodyReplacement {
+    Forbidden,
+    Allowed,
+}
+
 /// Whether a candidate's draft id must be registered in the persisted manifest
 /// before its body may be written.
 ///
@@ -165,22 +219,19 @@ pub const fn must_preserve_before_replacing(owner: BodyOwner) -> bool {
 /// not match disk, so every file-backed candidate is registered; registration
 /// only ever inserts an absent entry, so doing it for a known id is harmless.
 #[must_use]
-pub const fn registration_required(
-    file_backed: bool,
-    registered_in_known_manifest: bool,
-    known_manifest_trusted: bool,
-) -> bool {
-    file_backed && (!registered_in_known_manifest || !known_manifest_trusted)
+pub const fn registration_required(facts: RegistrationFacts) -> bool {
+    facts.file_backed && (!facts.registered_in_known_manifest || !facts.known_manifest_trusted)
 }
 
 /// Whether a candidate may proceed to its body write after the pass's
 /// registration step: only when no registration was needed or it committed.
 #[must_use]
 pub const fn may_write_after_registration(
-    required_registration: bool,
-    registration_committed: bool,
+    required: RegistrationRequirement,
+    committed: RegistrationCommit,
 ) -> bool {
-    !required_registration || registration_committed
+    matches!(required, RegistrationRequirement::NotRequired)
+        || matches!(committed, RegistrationCommit::Committed)
 }
 
 /// What an autosave or close pass does with one candidate's body write.
@@ -224,13 +275,14 @@ pub enum UntrustedCommitDisposition {
 /// Decide an insert-only commit after an incomplete reconciliation.
 #[must_use]
 pub const fn untrusted_commit_disposition(
-    insert_only: bool,
-    replacement_allowed: bool,
+    mode: CommitWriteMode,
+    replacement: ExistingBodyReplacement,
 ) -> UntrustedCommitDisposition {
-    if insert_only && replacement_allowed {
-        UntrustedCommitDisposition::Additive
-    } else {
-        UntrustedCommitDisposition::Refuse
+    match (mode, replacement) {
+        (CommitWriteMode::InsertOnly, ExistingBodyReplacement::Allowed) => {
+            UntrustedCommitDisposition::Additive
+        }
+        _ => UntrustedCommitDisposition::Refuse,
     }
 }
 
@@ -714,30 +766,58 @@ mod tests {
 
     #[test]
     fn registration_is_required_for_unknown_or_untrusted_file_backed_ids() {
-        assert!(!registration_required(true, true, true));
-        assert!(registration_required(true, false, true));
-        assert!(registration_required(true, true, false));
-        assert!(registration_required(true, false, false));
-        assert!(!registration_required(false, false, false));
-        assert!(!registration_required(false, true, false));
-        assert!(may_write_after_registration(false, false));
-        assert!(may_write_after_registration(false, true));
-        assert!(may_write_after_registration(true, true));
-        assert!(!may_write_after_registration(true, false));
+        let req = |file_backed, registered_in_known_manifest, known_manifest_trusted| {
+            registration_required(RegistrationFacts {
+                file_backed,
+                registered_in_known_manifest,
+                known_manifest_trusted,
+            })
+        };
+        assert!(!req(true, true, true));
+        assert!(req(true, false, true));
+        assert!(req(true, true, false));
+        assert!(req(true, false, false));
+        assert!(!req(false, false, false));
+        assert!(!req(false, true, false));
+        assert!(may_write_after_registration(
+            RegistrationRequirement::NotRequired,
+            RegistrationCommit::Uncommitted
+        ));
+        assert!(may_write_after_registration(
+            RegistrationRequirement::NotRequired,
+            RegistrationCommit::Committed
+        ));
+        assert!(may_write_after_registration(
+            RegistrationRequirement::Required,
+            RegistrationCommit::Committed
+        ));
+        assert!(!may_write_after_registration(
+            RegistrationRequirement::Required,
+            RegistrationCommit::Uncommitted
+        ));
     }
 
     #[test]
     fn an_incomplete_reconciliation_admits_only_additive_inserts() {
         assert_eq!(
-            untrusted_commit_disposition(true, true),
+            untrusted_commit_disposition(
+                CommitWriteMode::InsertOnly,
+                ExistingBodyReplacement::Allowed
+            ),
             UntrustedCommitDisposition::Additive
         );
         assert_eq!(
-            untrusted_commit_disposition(true, false),
+            untrusted_commit_disposition(
+                CommitWriteMode::InsertOnly,
+                ExistingBodyReplacement::Forbidden
+            ),
             UntrustedCommitDisposition::Refuse
         );
         assert_eq!(
-            untrusted_commit_disposition(false, true),
+            untrusted_commit_disposition(
+                CommitWriteMode::Reconcile,
+                ExistingBodyReplacement::Allowed
+            ),
             UntrustedCommitDisposition::Refuse
         );
     }

@@ -551,7 +551,7 @@ impl LocalHistoryBrowserState {
     fn start_preview_load(self: &Rc<Self>, start: local_history_service::LocalHistoryPreviewStart) {
         if start.cancellation.is_cancelled() {
             self.finish_preview_load(
-                start.generation,
+                start.generation.get(),
                 Ok(GuardedLocalHistoryPreviewLoadOutcome::Cancelled),
             );
             return;
@@ -585,6 +585,7 @@ impl LocalHistoryBrowserState {
             request,
             cancellation,
         } = start;
+        let generation = generation.get();
         let state_weak = Rc::downgrade(self);
         spawn_blocking_then(
             (),
@@ -630,7 +631,7 @@ impl LocalHistoryBrowserState {
         let start = self.preview_admission.borrow_mut().take();
         if let Some(start) = start {
             self.finish_preview_load(
-                start.generation,
+                start.generation.get(),
                 Ok(GuardedLocalHistoryPreviewLoadOutcome::Cancelled),
             );
         }
@@ -643,8 +644,9 @@ impl LocalHistoryBrowserState {
     ) {
         let (accepted, next) = {
             let mut loads = self.preview_loads.borrow_mut();
-            let accepted = loads.is_current(generation) && !self.disposed.get();
-            let next = loads.finish(generation);
+            let typed = lushtext_model::values::HistoryPreviewGeneration::new(generation);
+            let accepted = loads.is_current(typed) && !self.disposed.get();
+            let next = loads.finish(typed);
             (accepted, next)
         };
         if accepted {
@@ -835,7 +837,11 @@ impl LocalHistoryBrowserState {
             return;
         };
         session.source_id = None;
-        if self.disposed.get() || !self.preview_loads.borrow().is_current(session.generation) {
+        if self.disposed.get()
+            || !self.preview_loads.borrow().is_current(
+                lushtext_model::values::HistoryPreviewGeneration::new(session.generation),
+            )
+        {
             if let Some(snapshot) = session.snapshot.take() {
                 retire_local_history_snapshot(snapshot);
             }

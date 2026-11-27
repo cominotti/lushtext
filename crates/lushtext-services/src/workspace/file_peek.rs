@@ -228,7 +228,7 @@ fn truncate_preview_text(text: &str, truncated_by_bytes: bool) -> (String, usize
     // A line is cut at the Protected View head cap: the sample is laid out
     // like a protected document's visible head, never longer
     // (`protected-view-inspector-and-surfaces` task 3.2).
-    let line_cap = usize::try_from(HEAD_CAP).unwrap_or(usize::MAX);
+    let line_cap = usize::try_from(HEAD_CAP.as_chars()).unwrap_or(usize::MAX);
     let mut rendered = Vec::new();
     let mut truncated_by_line_length = false;
     let mut lines = text.lines();
@@ -453,7 +453,8 @@ mod tests {
         // a giant-line file is laid out like a protected head, so its longest
         // line is cut at `HEAD_CAP` characters (multibyte included).
         let giant = "é".repeat(
-            usize::try_from(lushtext_model::document::protected_fold::HEAD_CAP).expect("fits")
+            usize::try_from(lushtext_model::document::protected_fold::HEAD_CAP.as_chars())
+                .expect("fits")
                 + 500,
         );
         let source = format!("short\n{giant}\nshort\n");
@@ -465,7 +466,7 @@ mod tests {
             .expect("lines");
         assert!(
             u64::try_from(longest).expect("fits")
-                <= lushtext_model::document::protected_fold::HEAD_CAP,
+                <= lushtext_model::document::protected_fold::HEAD_CAP.as_chars(),
             "longest sample line {longest}"
         );
         assert_eq!(lines, 3);

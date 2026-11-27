@@ -374,7 +374,7 @@ pub const SETTLE_QUIET_US: i64 = 100_000;
 /// Kind: wall-clock interval, µs, derived (2 × `REFERENCE_FRAME_US`, 16,666);
 /// no rounding of its own.
 pub const INPUT_QUIET_US: i64 =
-    2 * lushtext_model::budgets::responsiveness_budget::REFERENCE_FRAME_US as i64;
+    2 * lushtext_model::budgets::responsiveness_budget::REFERENCE_FRAME_US.as_us() as i64;
 
 /// The ceiling on that wait, from the editor's first frame: after it the
 /// attach runs at the next low-priority dispatch whatever the input (review R6).

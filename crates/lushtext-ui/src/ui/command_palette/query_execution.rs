@@ -145,7 +145,7 @@ impl LushtextCommandPalette {
 
     /// Query stage 3: hand one admitted request to the worker lane.
     fn dispatch_query_worker(&self, start: palette::PaletteSearchStart<PaletteQueryRequest>) {
-        let generation = start.generation;
+        let generation = start.generation.get();
         let cancellation = start.cancellation;
         let request = start.request;
         gtk_lush_tasks::spawn_blocking_then(
@@ -176,8 +176,9 @@ impl LushtextCommandPalette {
         let imp = self.imp();
         let (is_current, next) = {
             let mut flight = imp.search_flight.borrow_mut();
-            let is_current = flight.is_current(generation);
-            let next = flight.finish(generation);
+            let typed = lushtext_model::values::FlightGeneration::new(generation);
+            let is_current = flight.is_current(typed);
+            let next = flight.finish(typed);
             (is_current, next)
         };
 

@@ -1744,10 +1744,10 @@ pub(crate) mod tests {
             std::hint::black_box(SyntaxLanguage::Css).attach_after_install_threshold() >= 37 * 1024
         );
         assert_eq!(
-            std::hint::black_box(crate::document::protected_fold::N_HEAD),
+            std::hint::black_box(crate::document::protected_fold::N_HEAD).as_chars(),
             10_000
         );
-        assert!(std::hint::black_box(crate::document::protected_fold::N_DENSE) >= 250);
+        assert!(std::hint::black_box(crate::document::protected_fold::N_DENSE).as_chars() >= 250);
     }
 
     /// The paragraph gates of the amendment (`power-of-two-thresholds` D12,

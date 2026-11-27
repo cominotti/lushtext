@@ -572,9 +572,12 @@ pub(crate) fn selection_reaches_hidden_text(
         .iter()
         .take_while(|range| range.paragraph <= end.0)
         .any(|range| {
-            let line_end = range.head_chars + range.tail_chars;
+            let line_end = range
+                .head_chars
+                .as_chars()
+                .saturating_add(range.tail_chars.as_chars());
             let starts_before_end = range.paragraph > start.0 || start.1 < line_end;
-            let ends_past_head = range.paragraph < end.0 || end.1 > range.head_chars;
+            let ends_past_head = range.paragraph < end.0 || end.1 > range.head_chars.as_chars();
             starts_before_end && ends_past_head
         })
 }
@@ -646,8 +649,8 @@ mod tests {
     fn a_selection_reaches_hidden_text_only_past_a_head() {
         let plan = FoldPlan::from_ranges(vec![FoldRange {
             paragraph: 2,
-            head_chars: 10,
-            tail_chars: 90,
+            head_chars: lushtext_model::values::CharCount::new(10),
+            tail_chars: lushtext_model::values::CharCount::new(90),
         }]);
         // Inside the head only.
         assert!(!selection_reaches_hidden_text(&plan, (2, 0), (2, 10)));

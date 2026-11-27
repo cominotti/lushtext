@@ -14,8 +14,9 @@
 //! `core-post-open-settle`).
 
 use super::{
-    ChunkFacts, ChunkGate, ChunkStep, HIGHLIGHT_CHUNK_BYTES, HighlightInstallOrder,
-    MAX_SYNTAX_PARAGRAPH_BYTES, chunk_gate, highlight_install_order_with, next_chunk_step,
+    AnalysisExtent, ChunkFacts, ChunkGate, ChunkStep, ChunkWaitState, HIGHLIGHT_CHUNK_BYTES,
+    HighlightInstallOrder, MAX_SYNTAX_PARAGRAPH_BYTES, chunk_gate, highlight_install_order_with,
+    next_chunk_step,
 };
 use crate::document::buffer_replacement::{PacedSlice, ParagraphLength, SliceBudget};
 use crate::document::document_scale::{MODEL_MARKDOWN_CAP, SyntaxLanguage};
@@ -81,14 +82,17 @@ fn a_chunked_language_is_gated_above_its_attach_threshold_only_by_the_scale() {
 /// A chunk waits at most once, and never waits once analysed.
 #[kani::proof]
 fn a_chunk_waits_at_most_once_and_never_when_analysed() {
-    let analysed: bool = kani::any();
-    let waited: bool = kani::any();
-    let step = next_chunk_step(analysed, waited);
-    if analysed || waited {
+    let extent: AnalysisExtent = kani::any();
+    let wait_state: ChunkWaitState = kani::any();
+    let step = next_chunk_step(extent, wait_state);
+    if matches!(extent, AnalysisExtent::ToEnd) || matches!(wait_state, ChunkWaitState::Waited) {
         assert_eq!(step, ChunkStep::Insert);
     }
     // After one wait the same chunk always inserts.
-    assert_eq!(next_chunk_step(analysed, true), ChunkStep::Insert);
+    assert_eq!(
+        next_chunk_step(extent, ChunkWaitState::Waited),
+        ChunkStep::Insert
+    );
     kani::cover!(step == ChunkStep::AwaitAnalysis);
 }
 

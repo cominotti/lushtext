@@ -51,6 +51,7 @@ use gtk4::prelude::*;
 
 use crate::ui::editor_page::LushtextEditorPage;
 use lushtext_model::document::editor_memory::{EditorMemoryBudgetOutcome, EditorResidency};
+use lushtext_model::values::{AccessGeneration, Bytes, EditorId, PolicyGeneration};
 
 use super::super::LushtextWindow;
 
@@ -95,7 +96,10 @@ pub fn editor_memory_eviction_evidence(window: &LushtextWindow) -> EditorMemoryE
     let observed = live_residency(window);
     let (incremental_total_bytes, ledger_reconciles) = {
         let ledger = memory.ledger.borrow();
-        (ledger.total_bytes(), ledger.snapshot() == observed)
+        (
+            ledger.total_bytes().as_bytes(),
+            ledger.snapshot() == observed,
+        )
     };
 
     EditorMemoryEvictionEvidence {
@@ -131,10 +135,10 @@ fn live_residency(window: &LushtextWindow) -> Vec<EditorResidency> {
                 continue;
             }
             current.push(EditorResidency {
-                editor_id: editor.as_ptr() as usize,
-                estimated_bytes: editor.estimated_live_buffer_bytes(),
-                access_generation: editor.memory_access_generation(),
-                policy_generation: editor.memory_policy_generation(),
+                editor_id: EditorId::new(editor.as_ptr() as usize),
+                estimated_bytes: Bytes::from_bytes(editor.estimated_live_buffer_bytes()),
+                access_generation: AccessGeneration::new(editor.memory_access_generation()),
+                policy_generation: PolicyGeneration::new(editor.memory_policy_generation()),
                 eligible_for_eviction: editor
                     .eligible_for_memory_eviction(selected.as_ref() == Some(&page)),
             });

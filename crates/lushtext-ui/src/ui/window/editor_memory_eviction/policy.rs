@@ -64,7 +64,7 @@ pub fn candidate_is_still_evictable(recheck: EvictionRecheck) -> bool {
 /// is exactly what cannot be trusted in that state.
 #[must_use]
 pub fn aggregate_pass_is_warranted(total_bytes: u64, accounting_uncertain: bool) -> bool {
-    total_bytes > EDITOR_MEMORY_UPPER_BUDGET_BYTES || accounting_uncertain
+    total_bytes > EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes() || accounting_uncertain
 }
 
 /// What removing one editor's record leaves the workflow to do.
@@ -97,7 +97,7 @@ pub fn untrack_disposition(
         return UntrackDisposition::RearmRunningPass;
     }
     let warranted = remaining_total_bytes
-        .is_some_and(|total| total > EDITOR_MEMORY_UPPER_BUDGET_BYTES)
+        .is_some_and(|total| total > EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes())
         || accounting_uncertain;
     if warranted {
         UntrackDisposition::SchedulePass
@@ -132,7 +132,7 @@ impl ContinuationStep {
 /// Decide whether the bounded continuation keeps going.
 #[must_use]
 pub fn continuation_step(projected_bytes: u64, candidates_remaining: bool) -> ContinuationStep {
-    if projected_bytes <= EDITOR_MEMORY_LOWER_WATER_BYTES {
+    if projected_bytes <= EDITOR_MEMORY_LOWER_WATER_BYTES.as_bytes() {
         ContinuationStep::Converged
     } else if candidates_remaining {
         ContinuationStep::Continue
@@ -201,11 +201,11 @@ mod tests {
     fn a_pass_is_warranted_over_budget_or_when_accounting_is_uncertain() {
         assert!(!aggregate_pass_is_warranted(0, false));
         assert!(!aggregate_pass_is_warranted(
-            EDITOR_MEMORY_UPPER_BUDGET_BYTES,
+            EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes(),
             false
         ));
         assert!(aggregate_pass_is_warranted(
-            EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1,
+            EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes() + 1,
             false
         ));
         assert!(
@@ -237,7 +237,7 @@ mod tests {
             untrack_disposition(
                 false,
                 false,
-                Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1),
+                Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes() + 1),
                 false
             ),
             UntrackDisposition::SchedulePass
@@ -260,15 +260,15 @@ mod tests {
     #[test]
     fn the_continuation_converges_at_or_below_the_lower_water_line() {
         assert_eq!(
-            continuation_step(EDITOR_MEMORY_LOWER_WATER_BYTES, true),
+            continuation_step(EDITOR_MEMORY_LOWER_WATER_BYTES.as_bytes(), true),
             ContinuationStep::Converged
         );
         assert_eq!(
-            continuation_step(EDITOR_MEMORY_LOWER_WATER_BYTES + 1, true),
+            continuation_step(EDITOR_MEMORY_LOWER_WATER_BYTES.as_bytes() + 1, true),
             ContinuationStep::Continue
         );
         assert_eq!(
-            continuation_step(EDITOR_MEMORY_LOWER_WATER_BYTES + 1, false),
+            continuation_step(EDITOR_MEMORY_LOWER_WATER_BYTES.as_bytes() + 1, false),
             ContinuationStep::Exhausted
         );
     }

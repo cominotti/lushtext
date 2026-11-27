@@ -28,7 +28,7 @@ use super::policy::{
 };
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::search_bar::{ExternalFindHandler, ExternalFindRequest, SearchOption};
-use lushtext_services::search::regex_query::CompiledFindPattern;
+use lushtext_services::search::regex_query::{CompiledFindPattern, RegexCompileOptions};
 
 /// The tag on the current match while it lies in visible text.
 const CURRENT_MATCH_TAG: &str = "lushtext-protected-find-current";
@@ -112,8 +112,14 @@ impl LushtextEditorPage {
         gtk_lush_tasks::spawn_blocking_then(
             self.clone(),
             move || {
-                let compiled =
-                    CompiledFindPattern::compile(&query, is_regex, whole_word, case_insensitive)?;
+                let compiled = CompiledFindPattern::compile(
+                    &query,
+                    RegexCompileOptions {
+                        is_regex,
+                        whole_word,
+                        case_insensitive,
+                    },
+                )?;
                 Some(
                     compiled
                         .find_paragraph_hits(source.text(), cap, &cancel)
@@ -179,8 +185,9 @@ impl LushtextEditorPage {
         let range = self
             .protected_fold_plan()
             .and_then(|plan| plan.range_of(hit.paragraph));
-        let visible =
-            range.is_none_or(|range| hit.column.saturating_add(hit.chars) <= range.head_chars);
+        let visible = range.is_none_or(|range| {
+            hit.column.saturating_add(hit.chars) <= range.head_chars.as_chars()
+        });
         if visible {
             let buffer = self.buffer();
             let (Ok(column), Ok(chars)) = (i32::try_from(hit.column), i32::try_from(hit.chars))
@@ -199,7 +206,13 @@ impl LushtextEditorPage {
         self.scroll_protected_navigation_mark(hit.paragraph, 0);
         if activated || self.line_inspector_visible() {
             let extent = range.and_then(|range| {
-                ParagraphExtent::new(range.head_chars, range.head_chars + range.tail_chars)
+                ParagraphExtent::new(
+                    range.head_chars.as_chars(),
+                    range
+                        .head_chars
+                        .as_chars()
+                        .saturating_add(range.tail_chars.as_chars()),
+                )
             });
             if let Some(NavigationTarget::Inspect { paragraph, .. }) = extent
                 .map(|extent| navigation_target(hit.paragraph, hit.column, extent, N_INSPECT_WIDTH))

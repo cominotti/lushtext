@@ -557,7 +557,8 @@ impl LushtextEditorPage {
     /// pages report only their fixed bookkeeping estimate.
     pub fn estimated_live_buffer_bytes(&self) -> u64 {
         if self.is_evicted() {
-            return lushtext_model::document::editor_memory::EVICTED_EDITOR_BOOKKEEPING_BYTES;
+            return lushtext_model::document::editor_memory::EVICTED_EDITOR_BOOKKEEPING_BYTES
+                .as_bytes();
         }
         #[cfg(feature = "test-utils")]
         if let Some(bytes) = self.imp().residency.estimate_override.get() {
@@ -574,10 +575,12 @@ impl LushtextEditorPage {
         // A protected document also holds its text source (the installed body
         // or the edit entry's capture), retained beside the buffer.
         lushtext_model::document::editor_memory::estimate_live_editor_bytes(
-            character_count,
-            self.file_size(),
+            lushtext_model::values::CharCount::new(character_count),
+            self.file_size()
+                .map(lushtext_model::values::Bytes::from_bytes),
             self.is_evicted(),
         )
+        .as_bytes()
         .saturating_add(
             self.protected_source()
                 .map_or(0, |source| source.retained_bytes()),
@@ -586,7 +589,8 @@ impl LushtextEditorPage {
         .saturating_add(
             lushtext_model::document::editor_memory::protected_boundary_bytes(
                 self.imp().protected_boundaries.live_boundaries(),
-            ),
+            )
+            .as_bytes(),
         )
     }
 

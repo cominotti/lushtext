@@ -260,7 +260,7 @@ impl LushtextWindow {
     fn start_command_palette_note_refresh(&self, start: NoteSourceRefreshStart) {
         if start.cancellation.is_cancelled() {
             self.finish_command_palette_note_refresh(
-                start.generation,
+                start.generation.get(),
                 GuardedNoteSourceOutcome::Cancelled,
             );
             return;
@@ -307,6 +307,7 @@ impl LushtextWindow {
             request,
             cancellation,
         } = start;
+        let generation = generation.get();
         let window_weak = self.downgrade();
         spawn_blocking_then(
             (),
@@ -365,7 +366,7 @@ impl LushtextWindow {
             .take();
         if let Some(start) = start {
             self.finish_command_palette_note_refresh(
-                start.generation,
+                start.generation.get(),
                 GuardedNoteSourceOutcome::Cancelled,
             );
         }
@@ -378,8 +379,9 @@ impl LushtextWindow {
     ) {
         let (accepted, next) = {
             let mut refreshes = self.imp().command_palette_note_refreshes.borrow_mut();
-            let accepted = refreshes.is_current(generation);
-            let next = refreshes.finish(generation);
+            let typed = lushtext_model::values::FlightGeneration::new(generation);
+            let accepted = refreshes.is_current(typed);
+            let next = refreshes.finish(typed);
             (accepted, next)
         };
 
@@ -460,7 +462,7 @@ pub(super) fn start_notes_browser_source_load(
     if start.cancellation.is_cancelled() {
         finish_notes_browser_source_load(
             state,
-            start.generation,
+            start.generation.get(),
             start.request.mode,
             GuardedNoteSourceOutcome::Cancelled,
         );
@@ -500,6 +502,7 @@ pub(super) fn start_notes_browser_source_load(
         request,
         cancellation,
     } = start;
+    let generation = generation.get();
     let mode = request.mode;
     let state_weak = Rc::downgrade(state);
     spawn_blocking_then(
@@ -545,12 +548,13 @@ fn finish_notes_browser_source_load(
     let ticket = NotesBrowserTicket::<SourceFlight>::new(generation, mode);
     let (accepted, next) = {
         let mut refreshes = state.source_refreshes.borrow_mut();
+        let typed = lushtext_model::values::FlightGeneration::new(ticket.generation());
         let accepted = ticket.may_publish(&NotesBrowserFacts::new(
-            refreshes.is_current(ticket.generation()),
+            refreshes.is_current(typed),
             state.mode.get(),
             state.disposed.get(),
         ));
-        let next = refreshes.finish(ticket.generation());
+        let next = refreshes.finish(typed);
         (accepted, next)
     };
     if accepted {

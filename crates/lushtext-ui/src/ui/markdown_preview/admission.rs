@@ -133,7 +133,9 @@ impl LushtextMarkdownPreview {
                             );
                         }
                         SnapshotMarkdownPlanOutcome::CapacityUnavailable { source_bytes } => {
-                            if preview.imp().render_session.borrow().is_current(generation) {
+                            if preview.imp().render_session.borrow().is_current(
+                                lushtext_model::values::RenderGeneration::new(generation),
+                            ) {
                                 preview.finish_markdown_capacity_pressure(generation, source_bytes);
                             }
                         }
@@ -223,10 +225,10 @@ impl LushtextMarkdownPreview {
     pub(super) fn finish_markdown_capacity_pressure(&self, generation: u64, source_bytes: usize) {
         debug_assert!(source_bytes <= MAX_MARKDOWN_SOURCE_BYTES);
         self.show_markdown_memory_pressure();
-        self.imp()
-            .render_session
-            .borrow_mut()
-            .transition(generation, MarkdownRenderState::Failed);
+        self.imp().render_session.borrow_mut().transition(
+            lushtext_model::values::RenderGeneration::new(generation),
+            MarkdownRenderState::Failed,
+        );
     }
 
     pub(super) fn start_pending_markdown_render(&self, request: PendingMarkdownRender) {
@@ -287,7 +289,7 @@ impl LushtextMarkdownPreview {
             cancel.store(true, Ordering::Release);
         }
         self.cancel_queued_image_work();
-        let generation = imp.render_session.borrow_mut().begin();
+        let generation = imp.render_session.borrow_mut().begin().get();
         imp.render_generation.store(generation, Ordering::Release);
         #[cfg(feature = "test-utils")]
         {

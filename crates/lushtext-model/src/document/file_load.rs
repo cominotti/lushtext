@@ -163,6 +163,17 @@ impl Default for FileLoadAdmissionPolicy {
     }
 }
 
+/// External transient pressure supplied alongside an admission pass.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ExternalLoadPressure {
+    /// Whether protected editor residency currently exceeds the live budget.
+    pub protected_residency_over_budget: bool,
+    /// Total byte weight held by active external workflows.
+    pub active_weight: u64,
+    /// Whether an exclusive external payload currently blocks concurrent loads.
+    pub exclusive_active: bool,
+}
+
 impl FileLoadAdmissionPolicy {
     /// Build a policy with explicit bounds for deterministic tests and tools.
     #[must_use]
@@ -219,31 +230,33 @@ impl FileLoadAdmissionPolicy {
         &mut self,
         protected_residency_over_budget: bool,
     ) -> Option<FileLoadAdmissionGrant> {
-        self.admit_next_with_external(protected_residency_over_budget, 0, false)
+        self.admit_next_with_external(ExternalLoadPressure {
+            protected_residency_over_budget,
+            active_weight: 0,
+            exclusive_active: false,
+        })
     }
 
     /// Admit at most one request while accounting another transient lane.
     pub fn admit_next_with_external(
         &mut self,
-        protected_residency_over_budget: bool,
-        external_active_weight: u64,
-        external_exclusive_active: bool,
+        external: ExternalLoadPressure,
     ) -> Option<FileLoadAdmissionGrant> {
         if self.queued.is_empty()
             || self.max_active == 0
             || self.active.len() >= self.max_active
             || self.exclusive_active
-            || external_exclusive_active
-            || (protected_residency_over_budget
+            || external.exclusive_active
+            || (external.protected_residency_over_budget
                 && (!self.active.is_empty()
                     || !self.installing.is_empty()
-                    || external_active_weight > 0))
+                    || external.active_weight > 0))
         {
             return None;
         }
 
         let (&oldest_key, &oldest_request) = self.queued.first_key_value()?;
-        if !self.request_fits(oldest_request, external_active_weight) {
+        if !self.request_fits(oldest_request, external.active_weight) {
             return None;
         }
         let chosen_key = if oldest_request.priority == FileLoadPriority::Normal
@@ -254,7 +267,7 @@ impl FileLoadAdmissionPolicy {
                 .skip(1)
                 .find(|(_, request)| {
                     request.priority == FileLoadPriority::Active
-                        && self.request_fits(**request, external_active_weight)
+                        && self.request_fits(**request, external.active_weight)
                 })
                 .map_or(oldest_key, |(key, _)| *key)
         } else {
@@ -663,12 +676,36 @@ mod tests {
     fn external_save_pressure_shares_capacity_and_exclusivity() {
         let mut policy = FileLoadAdmissionPolicy::new(10, 8);
         policy.queue(request(1, 1, 1, 6, FileLoadPriority::Active));
-        assert!(policy.admit_next_with_external(false, 5, false).is_none());
-        assert!(policy.admit_next_with_external(false, 4, false).is_some());
+        assert!(
+            policy
+                .admit_next_with_external(ExternalLoadPressure {
+                    protected_residency_over_budget: false,
+                    active_weight: 5,
+                    exclusive_active: false,
+                })
+                .is_none()
+        );
+        assert!(
+            policy
+                .admit_next_with_external(ExternalLoadPressure {
+                    protected_residency_over_budget: false,
+                    active_weight: 4,
+                    exclusive_active: false,
+                })
+                .is_some()
+        );
 
         let mut policy = FileLoadAdmissionPolicy::new(10, 8);
         policy.queue(request(2, 2, 2, 1, FileLoadPriority::Active));
-        assert!(policy.admit_next_with_external(false, 0, true).is_none());
+        assert!(
+            policy
+                .admit_next_with_external(ExternalLoadPressure {
+                    protected_residency_over_budget: false,
+                    active_weight: 0,
+                    exclusive_active: true,
+                })
+                .is_none()
+        );
     }
 
     #[test]

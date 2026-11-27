@@ -210,7 +210,10 @@ impl LushtextWindow {
 
     fn start_file_index_build(&self, start: FileIndexBuildStart) {
         if start.cancellation.is_cancelled() {
-            self.finish_file_index_build(start.generation, GuardedFileIndexBuildOutcome::Cancelled);
+            self.finish_file_index_build(
+                start.generation.get(),
+                GuardedFileIndexBuildOutcome::Cancelled,
+            );
             return;
         }
         let observed_epoch = crate::ui::plain_disposal::disposal_capacity_epoch();
@@ -251,6 +254,7 @@ impl LushtextWindow {
             request,
             cancellation,
         } = start;
+        let generation = generation.get();
         let window_weak = self.downgrade();
         spawn_blocking_then(
             (),
@@ -312,7 +316,10 @@ impl LushtextWindow {
         self.imp().file_index_capacity_wakeup.cancel();
         let start = self.imp().file_index_admission.borrow_mut().take();
         if let Some(start) = start {
-            self.finish_file_index_build(start.generation, GuardedFileIndexBuildOutcome::Cancelled);
+            self.finish_file_index_build(
+                start.generation.get(),
+                GuardedFileIndexBuildOutcome::Cancelled,
+            );
         }
     }
 
@@ -323,8 +330,9 @@ impl LushtextWindow {
         super::attention_refresh::note_attention_refresh_settled();
         let (accepted, next) = {
             let mut builds = self.imp().file_index_builds.borrow_mut();
-            let accepted = builds.is_current(generation);
-            let next = builds.finish(generation);
+            let typed = lushtext_model::values::FlightGeneration::new(generation);
+            let accepted = builds.is_current(typed);
+            let next = builds.finish(typed);
             (accepted, next)
         };
 

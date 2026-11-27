@@ -3,16 +3,21 @@
 use super::*;
 use crate::document::buffer_replacement::next_slice_boundary;
 use crate::document::protected_fold::{FoldThresholds, plan_folds};
+use crate::values::{Bytes, CharCount, Micros};
 
 /// The characters of every paragraph of `text`, as C2's fold reads them.
-fn paragraph_chars(text: &str) -> Vec<u64> {
+fn paragraph_chars(text: &str) -> Vec<CharCount> {
     let mut lengths = Vec::new();
     let mut start = 0;
     while let Some(found) = next_paragraph_break(text, start) {
-        lengths.push(text[start..found.content_end].chars().count() as u64);
+        lengths.push(CharCount::from_usize_saturating(
+            text[start..found.content_end].chars().count(),
+        ));
         start = found.next_start;
     }
-    lengths.push(text[start..].chars().count() as u64);
+    lengths.push(CharCount::from_usize_saturating(
+        text[start..].chars().count(),
+    ));
     lengths
 }
 
@@ -29,7 +34,13 @@ fn paragraph_spans(text: &str) -> Vec<(usize, usize)> {
 }
 
 fn folds(text: &str, head_cap: u64) -> Vec<FoldRange> {
-    let thresholds = FoldThresholds::new(head_cap, 1, u64::MAX / 2, 1).expect("valid thresholds");
+    let thresholds = FoldThresholds::new(
+        CharCount::new(head_cap),
+        CharCount::new(1),
+        CharCount::new(u64::MAX / 2),
+        1,
+    )
+    .expect("valid thresholds");
     plan_folds(&paragraph_chars(text), thresholds)
 }
 
@@ -95,9 +106,15 @@ fn check(text: &str, ranges: &[FoldRange], budget: SliceBudget, limits: Protecte
                 assert!(end <= *tail_end);
                 assert_eq!(slice.last_of_tail, end == *tail_end);
                 // K5.
-                assert!(end - start <= limits.tail_slice_bytes());
+                assert!(
+                    end - start
+                        <= usize::try_from(limits.tail_slice_bytes().as_bytes()).expect("fits")
+                );
                 if !slice.last_of_tail {
-                    assert!(end - start + 3 >= limits.tail_slice_bytes());
+                    assert!(
+                        end - start + 3
+                            >= usize::try_from(limits.tail_slice_bytes().as_bytes()).expect("fits")
+                    );
                 }
                 hidden_run += end - start;
             }
@@ -139,7 +156,10 @@ fn check(text: &str, ranges: &[FoldRange], budget: SliceBudget, limits: Protecte
 }
 
 const fn limits(tail: usize) -> ProtectedInstallLimits {
-    match ProtectedInstallLimits::new(tail, tail) {
+    match ProtectedInstallLimits::new(
+        Bytes::from_bytes(tail as u64),
+        Bytes::from_bytes(tail as u64),
+    ) {
         Some(limits) => limits,
         None => panic!("test limits"),
     }
@@ -161,31 +181,31 @@ fn production_slice_sizes_are_the_capped_derivation() {
     assert_eq!(clear, Ok(MAX_SLICE_BYTES));
     assert_eq!(PROTECTED_TAIL_SLICE_BYTES, MAX_SLICE_BYTES);
     assert_eq!(PROTECTED_CLEAR_SLICE_BYTES, MAX_SLICE_BYTES);
-    assert!(PROTECTED_TAIL_SLICE_BYTES.is_power_of_two());
+    assert!(PROTECTED_TAIL_SLICE_BYTES.as_bytes().is_power_of_two());
     // Below the cap the derivation is the closed form: 16 ms at 104 µs per
     // KiB with no margin is 157,538 bytes (157,539 would cost 16,000,099 ns).
     assert_eq!(
         ProtectedInstallLimits::for_settle_budget(B_SETTLE_US, 104_000, 0),
-        Ok(157_538)
+        Ok(Bytes::from_bytes(157_538))
     );
 }
 
 #[test]
 fn the_derivation_rejects_a_budget_below_one_scalar() {
     assert_eq!(
-        ProtectedInstallLimits::for_settle_budget(0, 1, 0),
+        ProtectedInstallLimits::for_settle_budget(Micros::ZERO, 1, 0),
         Err(SliceBudgetUnattainable)
     );
     assert_eq!(
-        ProtectedInstallLimits::for_settle_budget(1, u64::MAX, u64::MAX),
+        ProtectedInstallLimits::for_settle_budget(Micros::from_us(1), u64::MAX, u64::MAX),
         Err(SliceBudgetUnattainable)
     );
     assert_eq!(
-        ProtectedInstallLimits::for_settle_budget(u64::MAX, 0, u64::MAX),
+        ProtectedInstallLimits::for_settle_budget(Micros::from_us(u64::MAX), 0, u64::MAX),
         Ok(MAX_SLICE_BYTES)
     );
-    assert!(ProtectedInstallLimits::new(3, 4).is_none());
-    assert!(ProtectedInstallLimits::new(4, 3).is_none());
+    assert!(ProtectedInstallLimits::new(Bytes::from_bytes(3), Bytes::from_bytes(4)).is_none());
+    assert!(ProtectedInstallLimits::new(Bytes::from_bytes(4), Bytes::from_bytes(3)).is_none());
 }
 
 #[test]
@@ -297,8 +317,8 @@ fn a_mismatched_plan_never_moves_past_a_delimiter() {
     let text = "abc\ndefghij\n";
     let ranges = [FoldRange {
         paragraph: 0,
-        head_chars: 10,
-        tail_chars: 1,
+        head_chars: CharCount::new(10),
+        tail_chars: CharCount::new(1),
     }];
     let slices = plan_all(text, &ranges, SliceBudget::BYTES_ONLY, limits(4));
     assert_eq!(slices[0].1.end, 3);
@@ -312,12 +332,13 @@ fn a_mismatched_plan_never_moves_past_a_delimiter() {
 #[test]
 fn clear_turns_take_ranges_from_the_start_within_the_budget() {
     let limits = limits(10);
+    let bs = |vals: &[u64]| -> Vec<Bytes> { vals.iter().copied().map(Bytes::from_bytes).collect() };
     assert_eq!(clear_ranges_for_turn(&[], limits), 0);
-    assert_eq!(clear_ranges_for_turn(&[50], limits), 1);
-    assert_eq!(clear_ranges_for_turn(&[4, 4, 4], limits), 2);
-    assert_eq!(clear_ranges_for_turn(&[1, 30, 3, 7], limits), 1);
-    assert_eq!(clear_ranges_for_turn(&[3, 7, 30], limits), 2);
-    assert_eq!(clear_ranges_for_turn(&[11, 9], limits), 1);
+    assert_eq!(clear_ranges_for_turn(&bs(&[50]), limits), 1);
+    assert_eq!(clear_ranges_for_turn(&bs(&[4, 4, 4]), limits), 2);
+    assert_eq!(clear_ranges_for_turn(&bs(&[1, 30, 3, 7]), limits), 1);
+    assert_eq!(clear_ranges_for_turn(&bs(&[3, 7, 30]), limits), 2);
+    assert_eq!(clear_ranges_for_turn(&bs(&[11, 9]), limits), 1);
 }
 
 #[test]
@@ -377,20 +398,20 @@ fn the_content_end_scan_resumes_without_losing_a_straddling_separator() {
 
 #[test]
 fn a_body_needs_slicing_exactly_when_its_hidden_bytes_could_exceed_one_tail_slice() {
-    let per_slice = (PROTECTED_TAIL_SLICE_BYTES / MAX_UTF8_SCALAR_BYTES) as u64;
+    let per_slice = PROTECTED_TAIL_SLICE_BYTES.as_bytes() / MAX_UTF8_SCALAR_BYTES as u64;
     assert_eq!(per_slice, 1 << 16);
-    assert!(!hidden_tail_requires_slicing(0));
-    assert!(!hidden_tail_requires_slicing(per_slice));
-    assert!(hidden_tail_requires_slicing(per_slice + 1));
+    assert!(!hidden_tail_requires_slicing(CharCount::ZERO));
+    assert!(!hidden_tail_requires_slicing(CharCount::new(per_slice)));
+    assert!(hidden_tail_requires_slicing(CharCount::new(per_slice + 1)));
     // Saturating: a count whose bytes overflow `u64` still needs slicing.
-    assert!(hidden_tail_requires_slicing(u64::MAX / 2));
-    assert!(hidden_tail_requires_slicing(u64::MAX));
+    assert!(hidden_tail_requires_slicing(CharCount::new(u64::MAX / 2)));
+    assert!(hidden_tail_requires_slicing(CharCount::new(u64::MAX)));
 }
 
 #[test]
 fn the_tail_scan_window_is_32_mib() {
-    assert_eq!(PROTECTED_TAIL_SCAN_BYTES, 1 << 25);
-    assert!(PROTECTED_TAIL_SCAN_BYTES.is_power_of_two());
+    assert_eq!(PROTECTED_TAIL_SCAN_BYTES.as_bytes(), 1 << 25);
+    assert!(PROTECTED_TAIL_SCAN_BYTES.as_bytes().is_power_of_two());
 }
 
 #[test]
@@ -400,10 +421,11 @@ fn the_cursor_reports_its_offset_and_whether_it_is_inside_a_tail() {
     let text = "ab\ncdefghi";
     let ranges = [FoldRange {
         paragraph: 1,
-        head_chars: 1,
-        tail_chars: 6,
+        head_chars: CharCount::new(1),
+        tail_chars: CharCount::new(6),
     }];
-    let limits = ProtectedInstallLimits::new(4, 4).expect("4 bytes is one scalar");
+    let limits = ProtectedInstallLimits::new(Bytes::from_bytes(4), Bytes::from_bytes(4))
+        .expect("4 bytes is one scalar");
     let mut cursor = ProtectedInstallCursor::default();
     assert_eq!((cursor.offset(), cursor.in_tail()), (0, false));
     let mut seen = Vec::new();

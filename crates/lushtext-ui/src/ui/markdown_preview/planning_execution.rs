@@ -150,7 +150,11 @@ impl LushtextMarkdownPreview {
                 imp.planning_worker_running.set(false);
                 imp.planning_cancel_token.take();
                 if let Some(plan) = plan {
-                    if imp.render_session.borrow().is_current(generation) {
+                    if imp
+                        .render_session
+                        .borrow()
+                        .is_current(lushtext_model::values::RenderGeneration::new(generation))
+                    {
                         preview.start_render_plan(generation, plan, context);
                     } else {
                         preview.retire_guarded_markdown(plan);
@@ -158,7 +162,9 @@ impl LushtextMarkdownPreview {
                 }
                 let queued = imp.queued_plan.take();
                 if let Some(queued) = queued {
-                    if imp.render_session.borrow().is_current(queued.generation) {
+                    if imp.render_session.borrow().is_current(
+                        lushtext_model::values::RenderGeneration::new(queued.generation),
+                    ) {
                         preview.spawn_markdown_plan(queued);
                     } else {
                         preview.retire_guarded_markdown(queued);

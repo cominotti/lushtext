@@ -57,6 +57,7 @@ use super::buffer_replacement::{
 };
 use super::paragraph_boundary::next_paragraph_break;
 use super::protected_fold::{FoldRange, fold_byte_offset};
+use crate::values::{Bytes, CharCount, Micros};
 
 /// The most UTF-8 bytes one scalar takes.
 ///
@@ -67,16 +68,16 @@ pub const MAX_UTF8_SCALAR_BYTES: usize = 4;
 /// one scalar of any length, so every slice advances.
 ///
 /// Kind: external fact (UTF-8's longest scalar), kept exact.
-pub const MIN_TAIL_SLICE_BYTES: usize = MAX_UTF8_SCALAR_BYTES;
+pub const MIN_TAIL_SLICE_BYTES: Bytes = Bytes::from_bytes(MAX_UTF8_SCALAR_BYTES as u64);
 
 /// The largest slice [`ProtectedInstallLimits::for_settle_budget`] derives:
 /// the ordinary install slice, `REPLACEMENT_INSERT_SLICE_BYTES` (256 KiB).
 ///
 /// Kind: cap, a power of two.
-pub const MAX_SLICE_BYTES: usize = REPLACEMENT_INSERT_SLICE_BYTES;
+pub const MAX_SLICE_BYTES: Bytes = Bytes::from_bytes(REPLACEMENT_INSERT_SLICE_BYTES as u64);
 
 /// The settle budget the production slices are derived from: `B_SETTLE_US`.
-pub const B_SETTLE_US: u64 = crate::budgets::responsiveness_budget::B_SETTLE_US;
+pub const B_SETTLE_US: Micros = crate::budgets::responsiveness_budget::B_SETTLE_US;
 
 /// What one KiB of hidden tail costs to insert in one GTK turn with the
 /// accessibility bridge on and a listener attached, in nanoseconds: the
@@ -106,12 +107,12 @@ pub const PROTECTED_SLICE_MARGIN_PERCENT: u64 = 100;
 /// [`PROTECTED_TAIL_COST_NS_PER_KIB`] and a 100 % margin gives 315,076 bytes,
 /// above [`MAX_SLICE_BYTES`], so the cap binds: 256 KiB (a unit test pins it).
 /// Kind: cap, a power of two.
-pub const PROTECTED_TAIL_SLICE_BYTES: usize = 256 * 1024;
+pub const PROTECTED_TAIL_SLICE_BYTES: Bytes = Bytes::kib(256);
 
 /// Bytes of hidden tail one clear turn deletes (derived like
 /// [`PROTECTED_TAIL_SLICE_BYTES`], from [`PROTECTED_CLEAR_COST_NS_PER_KIB`]).
 /// Kind: cap, a power of two.
-pub const PROTECTED_CLEAR_SLICE_BYTES: usize = 256 * 1024;
+pub const PROTECTED_CLEAR_SLICE_BYTES: Bytes = Bytes::kib(256);
 
 /// Bytes of a hidden tail one install turn scans for the paragraph's end
 /// before the tail's first slice goes in (`paragraph_content_end`).
@@ -124,7 +125,7 @@ pub const PROTECTED_CLEAR_SLICE_BYTES: usize = 256 * 1024;
 /// a few milliseconds.
 ///
 /// Kind: cap, a power of two.
-pub const PROTECTED_TAIL_SCAN_BYTES: usize = 32 * 1024 * 1024;
+pub const PROTECTED_TAIL_SCAN_BYTES: Bytes = Bytes::mib(32);
 
 /// Where the paragraph whose content continues at `from` ends: `Ok` with
 /// its content end (the first paragraph delimiter at or after `from`, or the
@@ -157,8 +158,11 @@ pub const PRODUCTION_LIMITS: ProtectedInstallLimits =
 /// could exceed one [`PROTECTED_TAIL_SLICE_BYTES`] slice. A smaller body's
 /// tails fit one tail slice, so a direct install stays within the same bound.
 #[must_use]
-pub const fn hidden_tail_requires_slicing(hidden_chars: u64) -> bool {
-    hidden_chars.saturating_mul(MAX_UTF8_SCALAR_BYTES as u64) > PROTECTED_TAIL_SLICE_BYTES as u64
+pub const fn hidden_tail_requires_slicing(hidden_chars: CharCount) -> bool {
+    hidden_chars
+        .as_chars()
+        .saturating_mul(MAX_UTF8_SCALAR_BYTES as u64)
+        > PROTECTED_TAIL_SLICE_BYTES.as_bytes()
 }
 
 /// No slice size of at least [`MIN_TAIL_SLICE_BYTES`] fits the settle budget
@@ -175,29 +179,39 @@ pub struct ProtectedInstallLimits {
 
 impl ProtectedInstallLimits {
     /// The limits, or `None` when either size is below
-    /// [`MIN_TAIL_SLICE_BYTES`].
+    /// [`MIN_TAIL_SLICE_BYTES`] or exceeds `usize::MAX`.
     #[must_use]
-    pub const fn new(tail_slice_bytes: usize, clear_slice_bytes: usize) -> Option<Self> {
-        if tail_slice_bytes < MIN_TAIL_SLICE_BYTES || clear_slice_bytes < MIN_TAIL_SLICE_BYTES {
+    pub const fn new(tail_slice_bytes: Bytes, clear_slice_bytes: Bytes) -> Option<Self> {
+        let tail = tail_slice_bytes.as_bytes();
+        let clear = clear_slice_bytes.as_bytes();
+        if tail < MIN_TAIL_SLICE_BYTES.as_bytes()
+            || clear < MIN_TAIL_SLICE_BYTES.as_bytes()
+            || tail > usize::MAX as u64
+            || clear > usize::MAX as u64
+        {
             return None;
         }
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "checked <= usize::MAX above; const fn cannot use try_from"
+        )]
         Some(Self {
-            tail_slice_bytes,
-            clear_slice_bytes,
+            tail_slice_bytes: tail as usize,
+            clear_slice_bytes: clear as usize,
         })
     }
 
     /// The most bytes one hidden-tail slice holds.
     #[must_use]
-    pub const fn tail_slice_bytes(self) -> usize {
-        self.tail_slice_bytes
+    pub const fn tail_slice_bytes(self) -> Bytes {
+        Bytes::from_bytes(self.tail_slice_bytes as u64)
     }
 
     /// The most tail bytes one clear turn deletes (at least one recorded
     /// range, whatever its size).
     #[must_use]
-    pub const fn clear_slice_bytes(self) -> usize {
-        self.clear_slice_bytes
+    pub const fn clear_slice_bytes(self) -> Bytes {
+        Bytes::from_bytes(self.clear_slice_bytes as u64)
     }
 
     /// The largest slice, in bytes, whose predicted cost plus
@@ -222,14 +236,14 @@ impl ProtectedInstallLimits {
     /// [`SliceBudgetUnattainable`] when no slice of at least
     /// [`MIN_TAIL_SLICE_BYTES`] fits the budget at this cost.
     pub const fn for_settle_budget(
-        settle_budget_us: u64,
+        settle_budget_us: Micros,
         cost_ns_per_kib: u64,
         margin_percent: u64,
-    ) -> Result<usize, SliceBudgetUnattainable> {
-        let budget_ns = settle_budget_us.saturating_mul(1000) as u128;
+    ) -> Result<Bytes, SliceBudgetUnattainable> {
+        let budget_ns = settle_budget_us.as_us().saturating_mul(1000) as u128;
         // Cost with margin, in ns·KiB⁻¹ scaled by 100: `bytes` fit when
         // `ceil(ceil(bytes · c / 1024) · (100 + m) / 100) ≤ budget`.
-        let cap = MAX_SLICE_BYTES as u128;
+        let cap = MAX_SLICE_BYTES.as_bytes() as u128;
         let c = cost_ns_per_kib as u128;
         let m = 100 + margin_percent as u128;
         // The largest whole ns cost with margin that fits: `x` with
@@ -242,11 +256,15 @@ impl ProtectedInstallLimits {
             Some(candidate) if candidate < cap => candidate,
             _ => cap,
         };
-        if bytes < MIN_TAIL_SLICE_BYTES as u128 {
+        if bytes < MIN_TAIL_SLICE_BYTES.as_bytes() as u128 {
             Err(SliceBudgetUnattainable)
         } else {
-            // `bytes` is at most `cap`, a `usize`.
-            Ok(bytes as usize)
+            // `bytes` is at most `cap`, which fits a `u64`.
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "bytes <= MAX_SLICE_BYTES fits u64; const fn cannot use try_from"
+            )]
+            Ok(Bytes::from_bytes(bytes as u64))
         }
     }
 }
@@ -538,12 +556,12 @@ fn visible_slice(
 /// A76: 6–42 µs per 64 KiB range from the start, against 46 µs growing to
 /// 600 µs from the end of an 8 MiB paragraph).
 #[must_use]
-pub fn clear_ranges_for_turn(ranges: &[u64], limits: ProtectedInstallLimits) -> usize {
-    let budget = limits.clear_slice_bytes as u64;
+pub fn clear_ranges_for_turn(ranges: &[Bytes], limits: ProtectedInstallLimits) -> usize {
+    let budget = limits.clear_slice_bytes();
     let mut taken = 0;
-    let mut bytes = 0u64;
-    for size in ranges {
-        let next = bytes.saturating_add(*size);
+    let mut bytes = Bytes::ZERO;
+    for &size in ranges {
+        let next = bytes.saturating_add(size);
         if taken > 0 && next > budget {
             break;
         }

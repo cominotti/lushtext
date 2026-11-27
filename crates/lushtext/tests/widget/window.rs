@@ -5857,7 +5857,8 @@ fn test_memory_pressure_evicts_background_tab_and_reloads_without_path_corruptio
 
     window.imp().tab_view.set_selected_page(&first_page);
     flush_events();
-    first_editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1));
+    first_editor
+        .set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes() + 1));
 
     window.imp().tab_view.set_selected_page(&second_page);
     flush_events();
@@ -5907,7 +5908,7 @@ fn test_memory_budget_updates_edit_bursts_incrementally_and_keeps_protected_work
     );
     assert!(editor_memory_eviction_evidence(&window).ledger_reconciles);
 
-    editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1));
+    editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes() + 1));
     flush_events();
     assert!(
         !editor.is_evicted(),
@@ -6041,7 +6042,8 @@ fn test_memory_budget_revalidates_an_active_tab_change_before_eviction() {
     window.set_before_editor_memory_eviction_hook_for_test(move || {
         tab_view.set_selected_page(&first_page_for_hook);
     });
-    first_editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1));
+    first_editor
+        .set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes() + 1));
     flush_events();
 
     assert_eq!(window.imp().tab_view.selected_page(), Some(first_page));
@@ -6082,7 +6084,8 @@ fn test_memory_budget_revalidates_save_start_before_eviction() {
     window.set_before_editor_memory_eviction_hook_for_test(move || {
         first_for_hook.save_file_async(|_| {});
     });
-    first_editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1));
+    first_editor
+        .set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes() + 1));
     flush_events();
 
     assert!(first_editor.save_evidence().inflight);
@@ -6316,8 +6319,8 @@ fn test_delayed_session_restore_completions_preserve_active_and_modified_pages()
             .apply_load_result_for_test(stale_second, Ok(result("stale second\n", &second_path)),)
     );
 
-    first_editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES));
-    second_editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES));
+    first_editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes()));
+    second_editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes()));
     flush_events();
     assert!(
         !first_editor.is_evicted(),
@@ -7206,7 +7209,7 @@ fn test_transient_load_budget_is_shared_across_windows_and_honors_protected_resi
     let protected = active_editor(&first_window);
     protected.buffer().set_text("protected unsaved work");
     protected.buffer().set_modified(true);
-    protected.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1));
+    protected.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes() + 1));
 
     let dir = tempfile::tempdir().expect("cross-window load tempdir");
     let first_path = dir.path().join("first.txt");
@@ -13926,14 +13929,15 @@ fn test_switching_local_history_snapshots_clears_a_protected_preview_in_bounded_
     let after = local_history_preview_install_evidence();
     let turns = after.clear_turns - before.clear_turns;
     assert!(
-        turns >= giant / PROTECTED_CLEAR_SLICE_BYTES,
+        turns >= giant / usize::try_from(PROTECTED_CLEAR_SLICE_BYTES.as_bytes()).expect("fits"),
         "the 6 MB preview was cleared in {turns} turns"
     );
     // A ledger turn deletes at most one clear slice of ranges, or one range
     // (a tail slice, at most the clear slice) with the head it carries; an
     // ordinary turn one clear slice of characters to the next line start.
     assert!(
-        after.largest_clear_turn <= 2 * PROTECTED_CLEAR_SLICE_BYTES,
+        after.largest_clear_turn
+            <= 2 * usize::try_from(PROTECTED_CLEAR_SLICE_BYTES.as_bytes()).expect("fits"),
         "one clear turn deleted {}",
         after.largest_clear_turn
     );
@@ -21265,7 +21269,7 @@ fn test_restored_large_draft_marks_every_minimap_row_modified() {
 /// reaches load success without dismissing the tab's alert first, which is
 /// what the two regressions below need.
 fn evict_and_reselect(window: &LushtextWindow, background: &LushtextEditorPage) {
-    background.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1));
+    background.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes() + 1));
     flush_events();
     assert!(
         background.is_evicted(),

@@ -436,7 +436,7 @@ impl ObjectImpl for LushtextMarkdownPreview {
         if let Some(retired) = self.deferred_work.take() {
             self.obj().retire_markdown_work(retired);
         }
-        let generation = self.render_session.borrow_mut().cancel();
+        let generation = self.render_session.borrow_mut().cancel().get();
         self.render_generation
             .store(generation, std::sync::atomic::Ordering::Release);
         if let Some(snapshot) = self.source_snapshot.take() {

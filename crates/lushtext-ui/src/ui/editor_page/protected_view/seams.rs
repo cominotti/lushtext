@@ -498,7 +498,7 @@ mod source_tests {
         let text = format!("head\n{long}\ntail");
         let source = source(&text);
         let chars: Vec<char> = long.chars().collect();
-        let n = usize::try_from(N_INSPECT).expect("fits");
+        let n = usize::try_from(N_INSPECT.as_chars()).expect("fits");
         let stride = CHAR_CHECKPOINT_STRIDE;
         for column in [
             0u64,

@@ -261,7 +261,7 @@ impl LushtextEditorPage {
         let hidden_chars = self
             .protected_fold_plan()
             .and_then(|plan| plan.range_of(read.paragraph))
-            .map_or(0, |range| range.tail_chars);
+            .map_or(0, |range| range.tail_chars.as_chars());
         let presentation = InspectorPresentation {
             line: read.paragraph + 1,
             lines,

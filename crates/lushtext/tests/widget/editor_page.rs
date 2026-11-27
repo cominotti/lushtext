@@ -1984,7 +1984,7 @@ fn test_live_memory_estimate_updates_after_save_and_eviction() {
     page.evict();
     assert_eq!(
         page.estimated_live_buffer_bytes(),
-        EVICTED_EDITOR_BOOKKEEPING_BYTES
+        EVICTED_EDITOR_BOOKKEEPING_BYTES.as_bytes()
     );
 }
 
@@ -2005,7 +2005,7 @@ fn test_document_sized_eviction_releases_residency_only_after_bounded_clear() {
     assert!(!page.accepts_user_edits());
     assert_ne!(
         page.estimated_live_buffer_bytes(),
-        EVICTED_EDITOR_BOOKKEEPING_BYTES
+        EVICTED_EDITOR_BOOKKEEPING_BYTES.as_bytes()
     );
 
     wait_until(Duration::from_secs(10), || page.is_evicted());
@@ -2013,7 +2013,7 @@ fn test_document_sized_eviction_releases_residency_only_after_bounded_clear() {
     assert_eq!(editor_buffer_text(&page), "");
     assert_eq!(
         page.estimated_live_buffer_bytes(),
-        EVICTED_EDITOR_BOOKKEEPING_BYTES
+        EVICTED_EDITOR_BOOKKEEPING_BYTES.as_bytes()
     );
     assert!(page.buffer_replacement_evidence().slice_count > 1);
     assert!(page.accepts_user_edits());
@@ -5628,11 +5628,15 @@ fn test_a_paragraph_larger_than_the_slice_budget_installs_in_hidden_tail_slices(
     );
     assert!(
         single.protected.tail_slices
-            >= u64::try_from(one_line.len() / PROTECTED_TAIL_SLICE_BYTES).expect("fits")
+            >= u64::try_from(
+                one_line.len()
+                    / usize::try_from(PROTECTED_TAIL_SLICE_BYTES.as_bytes()).expect("fits")
+            )
+            .expect("fits")
     );
     assert!(
         usize::try_from(single.protected.largest_tail_slice_bytes).expect("fits")
-            <= PROTECTED_TAIL_SLICE_BYTES
+            <= usize::try_from(PROTECTED_TAIL_SLICE_BYTES.as_bytes()).expect("fits")
     );
 
     let page = LushtextEditorPage::new();

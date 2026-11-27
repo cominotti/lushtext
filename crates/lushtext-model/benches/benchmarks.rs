@@ -17,6 +17,7 @@ use lushtext_model::document::file_load::{
     TRANSIENT_LOAD_SHARED_BUDGET_BYTES, next_install_boundary, transient_load_weight,
 };
 use lushtext_model::document::paragraph_boundary::{DocumentProfile, ProfileSummary};
+use lushtext_model::values::{AccessGeneration, Bytes, CharCount, EditorId, PolicyGeneration};
 
 fn bench_document_scale(c: &mut Criterion) {
     let mut group = c.benchmark_group("document_scale");
@@ -76,16 +77,18 @@ fn bench_editor_memory_policy(c: &mut Criterion) {
     let mut group = c.benchmark_group("editor_memory_policy");
     // One percent makes the 10k-tab clean case traverse many candidates rather
     // than ending after only a handful of evictions.
-    let per_page = EDITOR_MEMORY_UPPER_BUDGET_BYTES / 100;
+    let per_page = Bytes::from_bytes(EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes() / 100);
 
     for tab_count in [1_000usize, 10_000, 100_000] {
         for &(label, eligible) in &[("clean", true), ("protected", false)] {
             let pages = (0..tab_count)
                 .map(|editor_id| EditorResidency {
-                    editor_id,
+                    editor_id: EditorId::new(editor_id),
                     estimated_bytes: per_page,
-                    access_generation: u64::try_from(editor_id).expect("benchmark generation"),
-                    policy_generation: 1,
+                    access_generation: AccessGeneration::new(
+                        u64::try_from(editor_id).expect("benchmark generation"),
+                    ),
+                    policy_generation: PolicyGeneration::new(1),
                     eligible_for_eviction: eligible,
                 })
                 .collect::<Vec<_>>();
@@ -97,18 +100,21 @@ fn bench_editor_memory_policy(c: &mut Criterion) {
 
     let bookkeeping_heavy = (0..10_000usize)
         .map(|editor_id| EditorResidency {
-            editor_id,
+            editor_id: EditorId::new(editor_id),
             estimated_bytes:
-                lushtext_model::document::editor_memory::EVICTED_EDITOR_BOOKKEEPING_BYTES + 1,
-            access_generation: u64::try_from(editor_id).expect("benchmark generation"),
-            policy_generation: 1,
+                lushtext_model::document::editor_memory::EVICTED_EDITOR_BOOKKEEPING_BYTES
+                    .saturating_add(Bytes::from_bytes(1)),
+            access_generation: AccessGeneration::new(
+                u64::try_from(editor_id).expect("benchmark generation"),
+            ),
+            policy_generation: PolicyGeneration::new(1),
             eligible_for_eviction: true,
         })
         .chain(std::iter::once(EditorResidency {
-            editor_id: 10_000,
+            editor_id: EditorId::new(10_000),
             estimated_bytes: EDITOR_MEMORY_UPPER_BUDGET_BYTES,
-            access_generation: 10_000,
-            policy_generation: 1,
+            access_generation: AccessGeneration::new(10_000),
+            policy_generation: PolicyGeneration::new(1),
             eligible_for_eviction: false,
         }))
         .collect::<Vec<_>>();
@@ -118,10 +124,12 @@ fn bench_editor_memory_policy(c: &mut Criterion) {
 
     let incremental_pages = (0..100_000usize)
         .map(|editor_id| EditorResidency {
-            editor_id,
-            estimated_bytes: 1024,
-            access_generation: u64::try_from(editor_id).expect("benchmark generation"),
-            policy_generation: 1,
+            editor_id: EditorId::new(editor_id),
+            estimated_bytes: Bytes::from_bytes(1024),
+            access_generation: AccessGeneration::new(
+                u64::try_from(editor_id).expect("benchmark generation"),
+            ),
+            policy_generation: PolicyGeneration::new(1),
             eligible_for_eviction: false,
         })
         .collect::<Vec<_>>();
@@ -133,10 +141,10 @@ fn bench_editor_memory_policy(c: &mut Criterion) {
             let generation = edited_generation.get().wrapping_add(1);
             edited_generation.set(generation);
             black_box(incremental.upsert(EditorResidency {
-                editor_id: 50_000,
-                estimated_bytes: 1025,
-                access_generation: 50_000,
-                policy_generation: generation,
+                editor_id: EditorId::new(50_000),
+                estimated_bytes: Bytes::from_bytes(1025),
+                access_generation: AccessGeneration::new(50_000),
+                policy_generation: PolicyGeneration::new(generation),
                 eligible_for_eviction: false,
             }))
         });
@@ -148,8 +156,16 @@ fn bench_editor_memory_policy(c: &mut Criterion) {
     );
 
     for &(label, characters, file_bytes) in &[
-        ("ascii_growth", 10_000_000, Some(10_000_000)),
-        ("unicode_growth", 10_000_000, Some(30_000_000)),
+        (
+            "ascii_growth",
+            CharCount::new(10_000_000),
+            Some(Bytes::from_bytes(10_000_000)),
+        ),
+        (
+            "unicode_growth",
+            CharCount::new(10_000_000),
+            Some(Bytes::from_bytes(30_000_000)),
+        ),
     ] {
         group.bench_function(BenchmarkId::new("live_estimate", label), |b| {
             b.iter(|| {

@@ -288,25 +288,42 @@ pub(crate) enum UndoOutcome {
     Current(CurrentContent),
 }
 
+/// Whether the Undo manifest still needs re-arming for a prior-launch run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+pub(crate) enum JournalRearm {
+    NotNeeded,
+    Needed,
+}
+
+/// Whether finishing Undo should retire the entry from the journal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+pub(crate) enum EntryRetirement {
+    Keep,
+    Retire,
+}
+
 /// The Undo protocol for one entry.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ReplaceUndoProtocol {
     action: UndoAction,
     rearm_needed: bool,
     /// Whether to retire the entry from the journal after the restore.
-    retire_entry: bool,
+    retire_entry: EntryRetirement,
 }
 
 impl ReplaceUndoProtocol {
-    /// Start one entry. `rearm_needed` is true until this Undo, running in a
-    /// later launch than the manifest records, has re-armed it; `retire_entry`
-    /// is false for an undo owner with no journal.
+    /// Start one entry. `rearm` stays [`JournalRearm::Needed`] until this
+    /// Undo, running in a later launch than the manifest records, has
+    /// re-armed it; `retire` is [`EntryRetirement::Keep`] for an undo owner
+    /// with no journal.
     #[must_use]
-    pub(crate) fn start(rearm_needed: bool, retire_entry: bool) -> (Self, UndoAction) {
+    pub(crate) fn start(rearm: JournalRearm, retire: EntryRetirement) -> (Self, UndoAction) {
         let protocol = Self {
             action: UndoAction::AcquireTarget,
-            rearm_needed,
-            retire_entry,
+            rearm_needed: matches!(rearm, JournalRearm::Needed),
+            retire_entry: retire,
         };
         (protocol, protocol.action)
     }
@@ -347,10 +364,9 @@ impl ReplaceUndoProtocol {
     }
 
     fn retire(self) -> UndoAction {
-        if self.retire_entry {
-            UndoAction::RemoveEntry
-        } else {
-            UndoAction::Finish(UndoEnd::Restored { retired: false })
+        match self.retire_entry {
+            EntryRetirement::Retire => UndoAction::RemoveEntry,
+            EntryRetirement::Keep => UndoAction::Finish(UndoEnd::Restored { retired: false }),
         }
     }
 }
@@ -405,7 +421,12 @@ mod tests {
     /// replaced bytes; return its actions and whether the next entry must
     /// still re-arm.
     fn undo_one(rearm_needed: bool) -> (Vec<UndoAction>, bool) {
-        let (mut protocol, mut action) = ReplaceUndoProtocol::start(rearm_needed, true);
+        let rearm = if rearm_needed {
+            JournalRearm::Needed
+        } else {
+            JournalRearm::NotNeeded
+        };
+        let (mut protocol, mut action) = ReplaceUndoProtocol::start(rearm, EntryRetirement::Retire);
         let mut actions = vec![action];
         while !matches!(action, UndoAction::Finish(_)) {
             let outcome = match action {

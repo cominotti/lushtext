@@ -63,6 +63,7 @@ use lushtext_model::document::protected_install::{
     PRODUCTION_LIMITS, PROTECTED_TAIL_SCAN_BYTES, ProtectedInstallCursor, SliceKind,
     clear_ranges_for_turn, paragraph_content_end, plan_protected_install,
 };
+use lushtext_model::values::Bytes;
 
 thread_local! {
     static TAIL_INSERTED_THIS_ITERATION: Cell<bool> = const { Cell::new(false) };
@@ -366,7 +367,12 @@ impl BoundaryLedger {
             tails.remove(0);
             return Some(LedgerClearTurn { deleted_bytes: 0 });
         }
-        let count = clear_ranges_for_turn(&tail.bytes[1..], PRODUCTION_LIMITS);
+        let byte_ranges: Vec<Bytes> = tail.bytes[1..]
+            .iter()
+            .copied()
+            .map(Bytes::from_bytes)
+            .collect();
+        let count = clear_ranges_for_turn(&byte_ranges, PRODUCTION_LIMITS);
         let start_mark = tail.marks[0].clone();
         let end_mark = tail.marks[count].clone();
         let deleted_bytes = tail.bytes[1..=count].iter().sum();
@@ -641,7 +647,8 @@ impl FoldedInstall {
                         let content_end = match paragraph_content_end(
                             text,
                             head.scan_from,
-                            PROTECTED_TAIL_SCAN_BYTES,
+                            usize::try_from(PROTECTED_TAIL_SCAN_BYTES.as_bytes())
+                                .unwrap_or(usize::MAX),
                         ) {
                             Ok(end) => end,
                             Err(resume) => {

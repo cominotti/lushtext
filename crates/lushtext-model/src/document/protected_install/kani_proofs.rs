@@ -71,6 +71,7 @@ use crate::document::buffer_replacement::SliceBudget;
 use crate::document::protected_fold::{
     FoldRange, FoldState, FoldThresholds, fold_finish, fold_step,
 };
+use crate::values::{Bytes, CharCount, Micros};
 
 /// K7's recorded ranges.
 const MAX_RANGES: usize = 4;
@@ -81,10 +82,10 @@ fn as_text(bytes: &[u8]) -> &str {
 }
 
 fn any_limits() -> ProtectedInstallLimits {
-    let tail: usize = kani::any();
-    let clear: usize = kani::any();
+    let tail: u64 = kani::any();
+    let clear: u64 = kani::any();
     kani::assume((4..=7).contains(&tail) && (4..=7).contains(&clear));
-    ProtectedInstallLimits::new(tail, clear).unwrap()
+    ProtectedInstallLimits::new(Bytes::from_bytes(tail), Bytes::from_bytes(clear)).unwrap()
 }
 
 /// K7: repeated clear turns over one paragraph's recorded ranges delete them
@@ -94,12 +95,12 @@ fn any_limits() -> ProtectedInstallLimits {
 #[kani::proof]
 #[kani::unwind(6)]
 fn protected_clear_plan_covers_the_buffer_once() {
-    let sizes: [u64; MAX_RANGES] = kani::any();
+    let sizes: [Bytes; MAX_RANGES] = kani::any();
     let count: usize = kani::any();
     kani::assume(count <= MAX_RANGES);
     let mut index = 0;
     while index < count {
-        kani::assume(sizes[index] <= 15);
+        kani::assume(sizes[index].as_bytes() <= 15);
         index += 1;
     }
     let limits = any_limits();
@@ -109,16 +110,18 @@ fn protected_clear_plan_covers_the_buffer_once() {
     while first < count {
         let taken = clear_ranges_for_turn(&sizes[first..count], limits);
         assert!(taken >= 1 && first + taken <= count);
-        let mut bytes = 0;
+        let mut bytes = 0u64;
         let mut range = first;
         while range < first + taken {
-            bytes += sizes[range];
+            bytes += sizes[range].as_bytes();
             range += 1;
         }
-        assert!(taken == 1 || bytes <= limits.clear_slice_bytes() as u64);
+        assert!(taken == 1 || bytes <= limits.clear_slice_bytes().as_bytes());
         // Maximal: the next range would not have fit.
         if first + taken < count {
-            assert!(bytes + sizes[first + taken] > limits.clear_slice_bytes() as u64);
+            assert!(
+                bytes + sizes[first + taken].as_bytes() > limits.clear_slice_bytes().as_bytes()
+            );
         }
         deleted += bytes;
         first += taken;
@@ -128,7 +131,7 @@ fn protected_clear_plan_covers_the_buffer_once() {
     let mut total = 0;
     index = 0;
     while index < count {
-        total += sizes[index];
+        total += sizes[index].as_bytes();
         index += 1;
     }
     assert!(deleted == total && turns <= count);
@@ -144,8 +147,8 @@ fn giant_fold(content: &[u8]) -> ([FoldRange; 1], usize) {
     let chars = scalars_in(content);
     let range = FoldRange {
         paragraph: 0,
-        head_chars: head_cap,
-        tail_chars: chars.saturating_sub(head_cap),
+        head_chars: CharCount::new(head_cap),
+        tail_chars: CharCount::new(chars.saturating_sub(head_cap)),
     };
     ([range], usize::from(chars > head_cap))
 }
@@ -174,7 +177,7 @@ fn scalars_in(bytes: &[u8]) -> u64 {
 /// did not finish in 20 minutes.
 #[kani::proof]
 fn settle_budget_derivation_fits_and_never_overflows() {
-    let budget_us: u64 = kani::any();
+    let budget_us: Micros = kani::any();
     let cost: u64 = kani::any();
     let margin: u64 = kani::any();
     match ProtectedInstallLimits::for_settle_budget(budget_us, cost, margin) {
@@ -274,10 +277,15 @@ fn one_paragraph_fold_shows_its_head_cap() {
     kani::assume(
         v_batch >= head_cap && n_dense.checked_mul(2).is_some_and(|twice| v_batch >= twice),
     );
-    let thresholds = FoldThresholds::new(head_cap, n_dense, v_batch, r_fold);
+    let thresholds = FoldThresholds::new(
+        CharCount::new(head_cap),
+        CharCount::new(n_dense),
+        CharCount::new(v_batch),
+        r_fold,
+    );
     kani::assume(thresholds.is_some());
     let mut state = FoldState::<4>::new(thresholds.unwrap()).unwrap();
-    let mut found = fold_step(&mut state, length);
+    let mut found = fold_step(&mut state, CharCount::new(length));
     for range in fold_finish(state) {
         assert!(found.is_none());
         found = Some(range);
@@ -285,8 +293,8 @@ fn one_paragraph_fold_shows_its_head_cap() {
     match found {
         Some(range) => {
             assert!(length > head_cap);
-            assert!(range.paragraph == 0 && range.head_chars == head_cap);
-            assert!(range.tail_chars == length - head_cap);
+            assert!(range.paragraph == 0 && range.head_chars.as_chars() == head_cap);
+            assert!(range.tail_chars.as_chars() == length - head_cap);
         }
         None => assert!(length <= head_cap),
     }
@@ -508,8 +516,8 @@ fn any_fold_plan() -> ([FoldRange; STEP_RANGES], usize) {
     kani::assume(count <= STEP_RANGES);
     let mut ranges = [FoldRange {
         paragraph: 0,
-        head_chars: 0,
-        tail_chars: 1,
+        head_chars: CharCount::ZERO,
+        tail_chars: CharCount::new(1),
     }; STEP_RANGES];
     let mut index = 0;
     while index < count {
@@ -521,8 +529,8 @@ fn any_fold_plan() -> ([FoldRange; STEP_RANGES], usize) {
         }
         ranges[index] = FoldRange {
             paragraph,
-            head_chars,
-            tail_chars: 1,
+            head_chars: CharCount::new(head_chars),
+            tail_chars: CharCount::new(1),
         };
         index += 1;
     }
@@ -543,9 +551,9 @@ fn any_step_budget() -> SliceBudget {
 
 /// Any tail budget of 4..=7 bytes.
 fn any_tail_limits() -> ProtectedInstallLimits {
-    let tail: usize = kani::any();
+    let tail: u64 = kani::any();
     kani::assume((4..=7).contains(&tail));
-    ProtectedInstallLimits::new(tail, MIN_TAIL_SLICE_BYTES).unwrap()
+    ProtectedInstallLimits::new(Bytes::from_bytes(tail), MIN_TAIL_SLICE_BYTES).unwrap()
 }
 
 /// Design D2: the cursors the induction ranges over.
@@ -590,7 +598,7 @@ fn well_formed(document: &Document, ranges: &[FoldRange], cursor: &ProtectedInst
                 return document.content_end_of(offset) == offset;
             }
             let start = document.paragraph_start_of(offset);
-            offset >= document.head_end(start, ranges[cursor.next_range - 1].head_chars)
+            offset >= document.head_end(start, ranges[cursor.next_range - 1].head_chars.as_chars())
         }
     }
 }
@@ -662,7 +670,7 @@ impl Step {
         let document = &self.document;
         let start = self.cursor.offset;
         let length = slice.end - start;
-        let budget = self.limits.tail_slice_bytes();
+        let budget = self.limits.tail_slice_bytes().as_bytes() as usize;
         assert!(slice.kind == SliceKind::HiddenTail);
         assert!(slice.end > start);
         // K4: no delimiter byte, inside the folded paragraph being finished,
@@ -828,7 +836,7 @@ fn step_head_ends_at_the_fold_point() {
     let document = &step.document;
     let start = step.cursor.offset;
     assert!(slice.kind == SliceKind::Head && !slice.last_of_tail);
-    assert!(slice.end == document.head_end(start, step.ranges[next].head_chars));
+    assert!(slice.end == document.head_end(start, step.ranges[next].head_chars.as_chars()));
     assert!(slice.end <= document.content_end_of(start));
     // K1: an empty head still moves the phase forward.
     assert!(after.phase == Phase::InTail && after.next_range == next + 1);

@@ -514,6 +514,29 @@ def nearest_rank(values: list[int], percent: int) -> int | None:
     return ordered[min(rank, len(ordered)) - 1]
 
 
+def _parse_budget_expr(expr: str, known: dict[str, int]) -> int | None:
+    expr = re.sub(r"\.as_us\(\s*\)", "", expr.strip())
+    m = re.fullmatch(r"Micros::from_us\(\s*(.+)\s*\)", expr)
+    if m:
+        expr = m.group(1).strip()
+    else:
+        m = re.fullmatch(r"Micros::from_ms\(\s*(.+)\s*\)", expr)
+        if m:
+            inner = _parse_budget_expr(m.group(1), known)
+            return None if inner is None else inner * 1_000
+    if re.fullmatch(r"[0-9_]+", expr):
+        return int(expr.replace("_", ""))
+    if expr in known:
+        return known[expr]
+    m = re.fullmatch(r"([A-Za-z0-9_]+)\s*\*\s*([A-Za-z0-9_]+)", expr)
+    if m:
+        lhs = _parse_budget_expr(m.group(1), known)
+        rhs = _parse_budget_expr(m.group(2), known)
+        if lhs is not None and rhs is not None:
+            return lhs * rhs
+    return None
+
+
 def read_budgets(source: Path = BUDGET_SOURCE) -> dict[str, int]:
     budgets = dict(DEFAULT_BUDGETS)
     budgets["source"] = "defaults"  # type: ignore[assignment]
@@ -523,10 +546,12 @@ def read_budgets(source: Path = BUDGET_SOURCE) -> dict[str, int]:
         return budgets
     found = 0
     for name in DEFAULT_BUDGETS:
-        match = re.search(rf"const\s+{name}\s*:\s*\w+\s*=\s*([0-9_]+)\s*;", text)
+        match = re.search(rf"const\s+{name}\s*:\s*[^=]+=\s*([^;]+);", text)
         if match:
-            budgets[name] = int(match.group(1).replace("_", ""))
-            found += 1
+            parsed = _parse_budget_expr(match.group(1), budgets)
+            if parsed is not None:
+                budgets[name] = parsed
+                found += 1
     if found:
         budgets["source"] = str(source.relative_to(REPO_ROOT))  # type: ignore[assignment]
     return budgets

@@ -43,7 +43,12 @@ impl LushtextMarkdownPreview {
         plan: GuardedMarkdownPlan,
         context: MarkdownPreviewRenderContext,
     ) {
-        if !self.imp().render_session.borrow().is_current(generation) {
+        if !self
+            .imp()
+            .render_session
+            .borrow()
+            .is_current(lushtext_model::values::RenderGeneration::new(generation))
+        {
             self.retire_guarded_markdown(plan);
             return;
         }
@@ -57,10 +62,10 @@ impl LushtextMarkdownPreview {
         }
         self.show_content_view();
         self.clear_rendered_state(false);
-        self.imp()
-            .render_session
-            .borrow_mut()
-            .transition(generation, MarkdownRenderState::Projecting);
+        self.imp().render_session.borrow_mut().transition(
+            lushtext_model::values::RenderGeneration::new(generation),
+            MarkdownRenderState::Projecting,
+        );
 
         let user_visible_omissions = plan.user_visible_omissions();
         // One palette per generation instead of one per projection turn. It stays
@@ -118,7 +123,12 @@ impl LushtextMarkdownPreview {
                 drop(projection.take());
                 return glib::ControlFlow::Break;
             };
-            if !preview.imp().render_session.borrow().is_current(generation) {
+            if !preview
+                .imp()
+                .render_session
+                .borrow()
+                .is_current(lushtext_model::values::RenderGeneration::new(generation))
+            {
                 if let Some(retired) = projection.take() {
                     preview.retire_guarded_markdown(retired);
                 }
@@ -176,7 +186,12 @@ impl LushtextMarkdownPreview {
 
     /// Record direct slice evidence before applying a current batch.
     pub(super) fn apply_render_batch(&self, generation: u64, batch: &MarkdownEventBatch) {
-        debug_assert!(self.imp().render_session.borrow().is_current(generation));
+        debug_assert!(
+            self.imp()
+                .render_session
+                .borrow()
+                .is_current(lushtext_model::values::RenderGeneration::new(generation))
+        );
         #[cfg(not(feature = "test-utils"))]
         let _ = batch;
         #[cfg(feature = "test-utils")]
@@ -198,7 +213,8 @@ impl LushtextMarkdownPreview {
     /// each marker as it is projected. Everything else publishes `Complete`.
     pub(super) fn finish_render_plan(&self, generation: u64, terminal: MarkdownProjectionTerminal) {
         let imp = self.imp();
-        if !imp.render_session.borrow().is_current(generation) {
+        let typed = lushtext_model::values::RenderGeneration::new(generation);
+        if !imp.render_session.borrow().is_current(typed) {
             return;
         }
         let (state, description) = match terminal.limit {
@@ -226,16 +242,15 @@ impl LushtextMarkdownPreview {
             }
             None => accessibility::set_description(&*imp.text_view, "Rendered Markdown preview"),
         }
-        imp.render_session
-            .borrow_mut()
-            .transition(generation, state);
+        imp.render_session.borrow_mut().transition(typed, state);
         self.queue_code_block_width_refresh();
     }
 
     /// Publish the explicit terminal for a batch the continuation refused.
     pub(super) fn finish_render_breach(&self, generation: u64, breach: ContinuationBreach) {
         let imp = self.imp();
-        if !imp.render_session.borrow().is_current(generation) {
+        let typed = lushtext_model::values::RenderGeneration::new(generation);
+        if !imp.render_session.borrow().is_current(typed) {
             return;
         }
         let description = breach.description();
@@ -248,7 +263,7 @@ impl LushtextMarkdownPreview {
         accessibility::set_description(&*imp.text_view, description);
         imp.render_session
             .borrow_mut()
-            .transition(generation, MarkdownRenderState::Failed);
+            .transition(typed, MarkdownRenderState::Failed);
         self.queue_code_block_width_refresh();
     }
 
@@ -257,7 +272,7 @@ impl LushtextMarkdownPreview {
         self.cancel_pending_markdown_planning();
         self.cancel_deferred_markdown_work();
         self.cancel_queued_image_work();
-        let generation = self.imp().render_session.borrow_mut().cancel();
+        let generation = self.imp().render_session.borrow_mut().cancel().get();
         self.imp()
             .render_generation
             .store(generation, Ordering::Release);

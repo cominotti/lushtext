@@ -340,8 +340,8 @@ fn drain() {
             }
         }
 
-        let protected_over_budget =
-            protected_residency_bytes(&coordinator.requests) > EDITOR_MEMORY_UPPER_BUDGET_BYTES;
+        let protected_over_budget = protected_residency_bytes(&coordinator.requests)
+            > EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes();
         let pressure = ExternalTransientPressure {
             active_weight: load_weight,
             exclusive_active: load_exclusive,

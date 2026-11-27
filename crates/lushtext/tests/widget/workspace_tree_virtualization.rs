@@ -2429,7 +2429,7 @@ fn test_directory_expansion_dispatches_fit_the_settle_budget() {
         );
         if timing_verdicts_enforced() {
             assert!(
-                worst.as_micros() <= u128::from(B_SETTLE_US),
+                worst.as_micros() <= u128::from(B_SETTLE_US.as_us()),
                 "a dispatch of the {count}-entry expansion took {} us, over B_SETTLE_US",
                 worst.as_micros()
             );

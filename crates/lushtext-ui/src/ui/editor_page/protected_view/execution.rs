@@ -127,7 +127,7 @@ impl LushtextEditorPage {
                     .as_deref()
                     .map_or_else(FoldSummary::default, |plan| FoldSummary {
                         folded_paragraphs: plan.folded_paragraphs(),
-                        hidden_chars: plan.hidden_chars(),
+                        hidden_chars: plan.hidden_chars().as_chars(),
                     }),
             );
         runtime.fold_plan.replace(profile.fold_plan.clone());
@@ -242,7 +242,10 @@ impl LushtextEditorPage {
         let mut summary = FoldSummary::default();
         let mut applied = Vec::new();
         for run in contiguous_runs(lines) {
-            let lengths: Vec<u64> = run.iter().map(|&(_, chars)| chars).collect();
+            let lengths: Vec<lushtext_model::values::CharCount> = run
+                .iter()
+                .map(|&(_, chars)| lushtext_model::values::CharCount::new(chars))
+                .collect();
             for range in plan_folds(&lengths, FoldThresholds::PRODUCTION) {
                 let Some(&(line, _)) = usize::try_from(range.paragraph)
                     .ok()
@@ -250,8 +253,10 @@ impl LushtextEditorPage {
                 else {
                     continue;
                 };
-                let (Ok(line), Ok(head)) = (i32::try_from(line), i32::try_from(range.head_chars))
-                else {
+                let (Ok(line), Ok(head)) = (
+                    i32::try_from(line),
+                    i32::try_from(range.head_chars.as_chars()),
+                ) else {
                     continue;
                 };
                 if let Some(start) = buffer.iter_at_line_offset(line, head) {
@@ -262,7 +267,9 @@ impl LushtextEditorPage {
                     buffer.apply_tag(&tag, &start, &end);
                 }
                 summary.folded_paragraphs = summary.folded_paragraphs.saturating_add(1);
-                summary.hidden_chars = summary.hidden_chars.saturating_add(range.tail_chars);
+                summary.hidden_chars = summary
+                    .hidden_chars
+                    .saturating_add(range.tail_chars.as_chars());
                 applied.push(FoldRange {
                     paragraph: u64::from(line.unsigned_abs()),
                     ..range

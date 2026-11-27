@@ -10,13 +10,14 @@
 
 use super::journal_core::{
     BodyFacts, BodyOwner, BodyWriteDecision, CleanupBodyIdentity, CleanupEntryState, CleanupFacts,
-    DeletionStep, DraftClaim, DraftOpenDecision, EntryState, JournalLaneAdmission,
-    JournalLaneHolder, OrphanBodyDecision, RestoreDisposition, RestoreEnding, SetAsideNameStep,
-    SetAsideSlot, StartupRestore, UntrustedCommitDisposition, body_write_decision,
-    commit_authority, deletion_start, draft_open_decision, journal_lane_admission,
-    may_write_after_registration, must_preserve_before_replacing, next_deletion_step,
-    orphan_body_decision, ownership, registration_required, set_aside_name_step,
-    startup_may_retire_stale, startup_restore, unapplied_restore_disposition,
+    CommitWriteMode, DeletionStep, DraftClaim, DraftOpenDecision, EntryState,
+    ExistingBodyReplacement, JournalLaneAdmission, JournalLaneHolder, OrphanBodyDecision,
+    RegistrationCommit, RegistrationFacts, RegistrationRequirement, RestoreDisposition,
+    RestoreEnding, SetAsideNameStep, SetAsideSlot, StartupRestore, UntrustedCommitDisposition,
+    WindowBodyFacts, body_write_decision, commit_authority, deletion_start, draft_open_decision,
+    journal_lane_admission, may_write_after_registration, must_preserve_before_replacing,
+    next_deletion_step, orphan_body_decision, ownership, registration_required,
+    set_aside_name_step, startup_may_retire_stale, startup_restore, unapplied_restore_disposition,
     untrusted_commit_disposition, window_may_journal_draft,
 };
 use super::journal_model::{
@@ -569,40 +570,48 @@ fn journal_decisions_follow_their_documented_rules() {
         }
     );
 
-    let (registered, pending): (bool, bool) = (kani::any(), kani::any());
+    let window_facts: WindowBodyFacts = kani::any();
     assert_eq!(
-        BodyFacts::from_window_view(registered, pending),
+        BodyFacts::from_window_view(window_facts),
         BodyFacts {
-            body_present: registered || pending,
-            entry: if registered {
+            body_present: window_facts.registered || window_facts.restore_pending,
+            entry: if window_facts.registered {
                 EntryState::Current
             } else {
                 EntryState::Absent
             },
-            restore_pending: pending,
+            restore_pending: window_facts.restore_pending,
             backing_stale: false,
         }
     );
 
-    let (file_backed, known, trusted): (bool, bool, bool) = (kani::any(), kani::any(), kani::any());
+    let reg_facts: RegistrationFacts = kani::any();
     assert_eq!(
-        registration_required(file_backed, known, trusted),
-        file_backed && (!known || !trusted)
+        registration_required(reg_facts),
+        reg_facts.file_backed
+            && (!reg_facts.registered_in_known_manifest || !reg_facts.known_manifest_trusted)
     );
-    let (required, committed): (bool, bool) = (kani::any(), kani::any());
+    let required: RegistrationRequirement = kani::any();
+    let committed: RegistrationCommit = kani::any();
     assert_eq!(
         may_write_after_registration(required, committed),
-        !required || committed
+        matches!(required, RegistrationRequirement::NotRequired)
+            || matches!(committed, RegistrationCommit::Committed)
     );
-    let (insert_only, allowed): (bool, bool) = (kani::any(), kani::any());
+    let mode: CommitWriteMode = kani::any();
+    let replacement: ExistingBodyReplacement = kani::any();
     assert_eq!(
-        untrusted_commit_disposition(insert_only, allowed) == UntrustedCommitDisposition::Additive,
-        insert_only && allowed
+        untrusted_commit_disposition(mode, replacement) == UntrustedCommitDisposition::Additive,
+        matches!(mode, CommitWriteMode::InsertOnly)
+            && matches!(replacement, ExistingBodyReplacement::Allowed)
     );
-    assert_eq!(startup_may_retire_stale(trusted), trusted);
     assert_eq!(
-        startup_restore(trusted) == StartupRestore::StartEmpty,
-        trusted
+        startup_may_retire_stale(reg_facts.known_manifest_trusted),
+        reg_facts.known_manifest_trusted
+    );
+    assert_eq!(
+        startup_restore(reg_facts.known_manifest_trusted) == StartupRestore::StartEmpty,
+        reg_facts.known_manifest_trusted
     );
 
     let step: DeletionStep = kani::any();

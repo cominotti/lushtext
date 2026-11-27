@@ -34,6 +34,7 @@ use super::{
     EditorResidency, EditorResidencyUpdate, ResidencyTotals, estimate_live_editor_bytes,
     evaluate_editor_memory_budget,
 };
+use crate::values::{Bytes, CharCount, EditorId};
 
 /// Pages in the largest modelled snapshot.
 const PAGES: usize = 3;
@@ -43,7 +44,7 @@ const PAGES: usize = 3;
 const LEDGER_OPERATIONS: usize = 3;
 
 /// One page with every scalar arbitrary and the given identity.
-fn any_page(editor_id: usize) -> EditorResidency {
+fn any_page(editor_id: EditorId) -> EditorResidency {
     EditorResidency {
         editor_id,
         estimated_bytes: kani::any(),
@@ -67,7 +68,11 @@ impl Snapshot {
         }
         kani::assume(ids[0] != ids[1] && ids[0] != ids[2] && ids[1] != ids[2]);
         Self {
-            pages: [any_page(ids[0]), any_page(ids[1]), any_page(ids[2])],
+            pages: [
+                any_page(EditorId::new(ids[0])),
+                any_page(EditorId::new(ids[1])),
+                any_page(EditorId::new(ids[2])),
+            ],
         }
     }
 
@@ -82,16 +87,16 @@ fn eligible(page: &EditorResidency) -> bool {
 }
 
 /// The saturating aggregate of `pages`, computed exactly and then clamped.
-fn saturating_total(pages: &[EditorResidency], only_protected: bool) -> u64 {
+fn saturating_total(pages: &[EditorResidency], only_protected: bool) -> Bytes {
     let exact: u128 = pages
         .iter()
         .filter(|page| !only_protected || !page.eligible_for_eviction)
-        .map(|page| u128::from(page.estimated_bytes))
+        .map(|page| u128::from(page.estimated_bytes.as_bytes()))
         .sum();
-    u64::try_from(exact).unwrap_or(u64::MAX)
+    Bytes::from_bytes(u64::try_from(exact).unwrap_or(u64::MAX))
 }
 
-fn selected(decision: &EditorMemoryBudgetDecision, editor_id: usize) -> bool {
+fn selected(decision: &EditorMemoryBudgetDecision, editor_id: EditorId) -> bool {
     decision
         .candidates
         .iter()
@@ -106,23 +111,23 @@ fn selected(decision: &EditorMemoryBudgetDecision, editor_id: usize) -> bool {
 /// harness (`measure-proof-strength-with-mutation`).
 #[kani::proof]
 fn estimate_is_bookkeeping_when_evicted_and_floored_by_file_size_otherwise() {
-    assert_eq!(EDITOR_MEMORY_UPPER_BUDGET_BYTES, 256 * 1024 * 1024);
+    assert_eq!(EDITOR_MEMORY_UPPER_BUDGET_BYTES, Bytes::mib(256));
     assert_eq!(
         EDITOR_MEMORY_LOWER_WATER_BYTES,
-        256 * 1024 * 1024 * 90 / 100
+        Bytes::from_bytes(256 * 1024 * 1024 * 90 / 100)
     );
-    assert_eq!(EVICTED_EDITOR_BOOKKEEPING_BYTES, 4 * 1024);
-    let characters: u64 = kani::any();
-    let known: Option<u64> = kani::any();
+    assert_eq!(EVICTED_EDITOR_BOOKKEEPING_BYTES, Bytes::kib(4));
+    let characters: CharCount = kani::any();
+    let known: Option<Bytes> = kani::any();
     let evicted: bool = kani::any();
     let estimate = estimate_live_editor_bytes(characters, known, evicted);
     if evicted {
         assert!(estimate == EVICTED_EDITOR_BOOKKEEPING_BYTES);
     } else {
-        assert!(estimate >= known.unwrap_or(0));
-        let four_per_character = u128::from(characters) * 4;
-        let expected = four_per_character.max(u128::from(known.unwrap_or(0)));
-        assert!(u128::from(estimate) == expected.min(u128::from(u64::MAX)));
+        assert!(estimate >= known.unwrap_or(Bytes::ZERO));
+        let four_per_character = u128::from(characters.as_chars()) * 4;
+        let expected = four_per_character.max(u128::from(known.unwrap_or(Bytes::ZERO).as_bytes()));
+        assert!(u128::from(estimate.as_bytes()) == expected.min(u128::from(u64::MAX)));
     }
 }
 
@@ -176,8 +181,9 @@ fn budget_stops_at_the_lower_watermark() {
     let decision = evaluate_editor_memory_budget(snapshot.pages());
     if let Some(last) = decision.candidates.last() {
         assert!(
-            u128::from(decision.projected_bytes) + u128::from(last.reclaimable_bytes)
-                > u128::from(EDITOR_MEMORY_LOWER_WATER_BYTES)
+            u128::from(decision.projected_bytes.as_bytes())
+                + u128::from(last.reclaimable_bytes.as_bytes())
+                > u128::from(EDITOR_MEMORY_LOWER_WATER_BYTES.as_bytes())
         );
     }
 }
@@ -196,11 +202,11 @@ fn budget_outcome_matches_the_projected_total() {
     let reclaimed: u128 = decision
         .candidates
         .iter()
-        .map(|candidate| u128::from(candidate.reclaimable_bytes))
+        .map(|candidate| u128::from(candidate.reclaimable_bytes.as_bytes()))
         .sum();
     assert!(
-        u128::from(decision.projected_bytes)
-            == u128::from(decision.total_bytes).saturating_sub(reclaimed)
+        u128::from(decision.projected_bytes.as_bytes())
+            == u128::from(decision.total_bytes.as_bytes()).saturating_sub(reclaimed)
     );
     for candidate in &decision.candidates {
         let page = snapshot
@@ -209,7 +215,10 @@ fn budget_outcome_matches_the_projected_total() {
             .find(|page| page.editor_id == candidate.editor_id)
             .expect("a candidate names a supplied page");
         assert!(
-            candidate.reclaimable_bytes == page.estimated_bytes - EVICTED_EDITOR_BOOKKEEPING_BYTES
+            candidate.reclaimable_bytes
+                == page
+                    .estimated_bytes
+                    .saturating_sub(EVICTED_EDITOR_BOOKKEEPING_BYTES)
         );
         assert!(candidate.access_generation == page.access_generation);
         assert!(candidate.policy_generation == page.policy_generation);
@@ -273,7 +282,7 @@ impl ModelLedger {
 
     /// `EditorResidencyLedger::upsert`, over the slots.
     fn upsert(&mut self, record: EditorResidency) -> EditorResidencyUpdate {
-        let previous = self.slots[record.editor_id].replace(record);
+        let previous = self.slots[record.editor_id.get()].replace(record);
         self.totals.replace(previous.as_ref(), Some(&record))
     }
 
@@ -286,10 +295,10 @@ impl ModelLedger {
     /// `EditorResidencyLedger::snapshot`, over the slots.
     fn records(&self) -> ([EditorResidency; 2], usize) {
         let unused = EditorResidency {
-            editor_id: 0,
-            estimated_bytes: 0,
-            access_generation: 0,
-            policy_generation: 0,
+            editor_id: EditorId::ZERO,
+            estimated_bytes: Bytes::ZERO,
+            access_generation: crate::values::AccessGeneration::ZERO,
+            policy_generation: crate::values::PolicyGeneration::ZERO,
             eligible_for_eviction: false,
         };
         let mut records = [unused; 2];
@@ -306,7 +315,7 @@ impl ModelLedger {
     fn any_operation(&mut self) -> (bool, Option<EditorResidencyUpdate>) {
         let editor_id = usize::from(kani::any::<bool>());
         if kani::any() {
-            (true, Some(self.upsert(any_page(editor_id))))
+            (true, Some(self.upsert(any_page(EditorId::new(editor_id)))))
         } else {
             (false, self.remove(editor_id))
         }

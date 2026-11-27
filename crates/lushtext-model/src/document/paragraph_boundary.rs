@@ -40,6 +40,7 @@ use std::sync::Arc;
 
 use super::document_scale;
 use super::protected_fold::{FoldPlan, FoldPlanner};
+use crate::values::CharCount;
 
 /// UTF-8 encoding of U+2029 PARAGRAPH SEPARATOR, the only multibyte delimiter.
 const PARAGRAPH_SEPARATOR_UTF8: [u8; 3] = [0xE2, 0x80, 0xA9];
@@ -703,7 +704,7 @@ impl ParagraphProfileAccumulator {
     fn close_paragraph(&mut self, start: u64, chars: u64) {
         self.fold.push(start, chars);
         if let Some(planner) = self.planner.as_deref_mut() {
-            planner.push(chars);
+            planner.push(CharCount::new(chars));
         }
     }
 
@@ -856,9 +857,9 @@ mod tests {
             .fold_plan
             .as_deref()
             .expect("a protected body is planned");
-        let lengths: Vec<u64> = body
+        let lengths: Vec<CharCount> = body
             .split('\n')
-            .map(|line| u64::try_from(line.chars().count()).expect("fits"))
+            .map(|line| CharCount::from_usize_saturating(line.chars().count()))
             .collect();
         assert_eq!(
             plan.ranges(),
@@ -866,7 +867,10 @@ mod tests {
         );
         assert_eq!(plan.folded_paragraphs(), 1);
         let range = plan.range_of(1).expect("the giant paragraph is folded");
-        assert_eq!(range.head_chars + range.tail_chars, lengths[1]);
+        assert_eq!(
+            range.head_chars.saturating_add(range.tail_chars),
+            lengths[1]
+        );
         assert_eq!(plan.hidden_chars(), range.tail_chars);
         assert_eq!(plan.range_of(0), None);
     }

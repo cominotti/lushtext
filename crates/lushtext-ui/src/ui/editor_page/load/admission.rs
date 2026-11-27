@@ -40,8 +40,8 @@ use crate::ui::window::LushtextWindow;
 use lushtext_model::document::editor_memory::EDITOR_MEMORY_UPPER_BUDGET_BYTES;
 use lushtext_model::document::encoding::DocumentEncoding;
 use lushtext_model::document::file_load::{
-    FileLoadAdmissionPolicy, FileLoadAdmissionRequest, FileLoadAdmissionSnapshot, FileLoadPriority,
-    decoded_body_reservation_weight,
+    ExternalLoadPressure, FileLoadAdmissionPolicy, FileLoadAdmissionRequest,
+    FileLoadAdmissionSnapshot, FileLoadPriority, decoded_body_reservation_weight,
 };
 use lushtext_services::editor_io::{self, EditorLoadError, FileLoadPlan, LoadMetadata};
 
@@ -527,16 +527,20 @@ fn drain() {
             }
         }
 
-        let protected_over_budget =
-            protected_residency_bytes(&coordinator.requests) > EDITOR_MEMORY_UPPER_BUDGET_BYTES;
+        let protected_over_budget = protected_residency_bytes(&coordinator.requests)
+            > EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes();
         let mut dispatches = Vec::new();
         let mut disposal_blocked_epoch = None;
         if !close_save_pending {
-            while let Some(grant) = coordinator.policy.admit_next_with_external(
-                protected_over_budget,
-                save_weight,
-                save_exclusive,
-            ) {
+            while let Some(grant) =
+                coordinator
+                    .policy
+                    .admit_next_with_external(ExternalLoadPressure {
+                        protected_residency_over_budget: protected_over_budget,
+                        active_weight: save_weight,
+                        exclusive_active: save_exclusive,
+                    })
+            {
                 let Some(request) = coordinator.requests.get(&grant.request_id) else {
                     let _ = coordinator.policy.release(grant.request_id);
                     continue;

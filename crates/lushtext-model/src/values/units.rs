@@ -322,6 +322,24 @@ impl Micros {
     pub const fn saturating_mul(self, factor: u64) -> Self {
         Self(self.0.saturating_mul(factor))
     }
+
+    /// Checked addition returning `None` on overflow.
+    #[must_use]
+    pub const fn checked_add(self, rhs: Self) -> Option<Self> {
+        match self.0.checked_add(rhs.0) {
+            Some(total) => Some(Self(total)),
+            None => None,
+        }
+    }
+
+    /// Checked subtraction returning `None` on underflow.
+    #[must_use]
+    pub const fn checked_sub(self, rhs: Self) -> Option<Self> {
+        match self.0.checked_sub(rhs.0) {
+            Some(diff) => Some(Self(diff)),
+            None => None,
+        }
+    }
 }
 
 impl From<u64> for Micros {

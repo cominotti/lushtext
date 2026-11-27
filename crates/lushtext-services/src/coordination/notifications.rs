@@ -11,6 +11,8 @@
 use std::cell::{Cell, RefCell};
 use std::time::{Duration, Instant};
 
+use lushtext_model::values::NotificationGeneration;
+
 /// Lifetime for transient status and progress messages.
 ///
 /// Ten seconds is long enough for slow search/save feedback to be noticed, but
@@ -153,7 +155,7 @@ pub struct NotificationBus {
     /// Ordered records for visible notification surfaces.
     records: RefCell<Vec<NotificationRecord>>,
     /// Monotonic counter bumped whenever a visible view may have changed.
-    generation: Cell<u64>,
+    generation: Cell<NotificationGeneration>,
 }
 
 impl NotificationBus {
@@ -296,7 +298,7 @@ impl NotificationBus {
     }
 
     /// Return the current store generation for view refresh de-duplication.
-    pub fn generation(&self) -> u64 {
+    pub fn generation(&self) -> NotificationGeneration {
         self.generation.get()
     }
 
@@ -352,7 +354,7 @@ impl NotificationBus {
     }
 
     fn bump_generation(&self) {
-        self.generation.set(self.generation.get().wrapping_add(1));
+        self.generation.set(self.generation.get().next());
     }
 }
 

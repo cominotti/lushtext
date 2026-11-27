@@ -122,12 +122,9 @@ impl LushtextMarkdownPreview {
         let Some(work) = self.imp().deferred_work.take() else {
             return;
         };
-        if !self
-            .imp()
-            .render_session
-            .borrow()
-            .is_current(work.generation())
-        {
+        if !self.imp().render_session.borrow().is_current(
+            lushtext_model::values::RenderGeneration::new(work.generation()),
+        ) {
             self.retire_markdown_work(work);
             return;
         }

@@ -300,8 +300,15 @@ mod tests {
     use super::*;
 
     fn untitled_token(draft_id: &str) -> draft_service::RegisteredDraft {
-        draft_service::RegisteredDraft::without_registration(draft_id, false, false, false)
-            .expect("an untitled id needs no registration")
+        draft_service::RegisteredDraft::without_registration(
+            draft_id,
+            draft_service::journal_core::RegistrationFacts {
+                file_backed: false,
+                registered_in_known_manifest: false,
+                known_manifest_trusted: false,
+            },
+        )
+        .expect("an untitled id needs no registration")
     }
 
     /// The pairing check behind `into_writable` keeps a token only for its

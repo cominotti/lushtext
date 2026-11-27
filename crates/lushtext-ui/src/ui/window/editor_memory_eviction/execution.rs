@@ -21,13 +21,14 @@ use crate::ui::editor_page::LushtextEditorPage;
 use lushtext_model::document::editor_memory::{
     EditorMemoryBudgetDecision, EditorMemoryBudgetOutcome,
 };
+use lushtext_model::values::EditorId;
 
 use super::super::LushtextWindow;
 use super::policy::{self, ContinuationStep, EvictionRecheck};
 
 /// Weak handles to the pages one plan may touch.
 type CandidatePages = HashMap<
-    usize,
+    EditorId,
     (
         glib::WeakRef<libadwaita::TabPage>,
         glib::WeakRef<LushtextEditorPage>,
@@ -44,7 +45,7 @@ pub(super) fn apply_decision(window: &LushtextWindow, decision: EditorMemoryBudg
     // path therefore pays for one scalar tab walk and no hash tables.
     let pages_by_editor = candidate_pages(window, &decision);
     let mut candidates = VecDeque::from(decision.candidates);
-    let mut actual_projected = decision.total_bytes;
+    let mut actual_projected = decision.total_bytes.as_bytes();
     let window_weak = window.downgrade();
 
     glib::idle_add_local(move || {
@@ -81,8 +82,8 @@ pub(super) fn apply_decision(window: &LushtextWindow, decision: EditorMemoryBudg
                 same_child: page.child().as_ptr() == editor.upcast_ref::<gtk4::Widget>().as_ptr(),
                 is_active,
                 generations_unchanged: editor.memory_access_generation()
-                    == candidate.access_generation
-                    && editor.memory_policy_generation() == candidate.policy_generation,
+                    == candidate.access_generation.get()
+                    && editor.memory_policy_generation() == candidate.policy_generation.get(),
                 still_reloadable: editor.eligible_for_memory_eviction(is_active),
             };
 
@@ -156,7 +157,7 @@ fn candidate_pages(
     for index in 0..tab_view.n_pages() {
         let page = tab_view.nth_page(index);
         if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
-            let editor_id = editor.as_ptr() as usize;
+            let editor_id = EditorId::new(editor.as_ptr() as usize);
             if candidate_ids.contains(&editor_id) {
                 pages.insert(editor_id, (page.downgrade(), editor.downgrade()));
             }

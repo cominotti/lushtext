@@ -764,7 +764,7 @@ impl NotesBrowserState {
         start: bookmark_excerpt::BookmarkExcerptPreviewStart,
     ) {
         if start.cancellation.is_cancelled() {
-            Self::finish_bookmark_preview_load(state, start.generation, None);
+            Self::finish_bookmark_preview_load(state, start.generation.get(), None);
             return;
         }
 
@@ -773,6 +773,7 @@ impl NotesBrowserState {
             request,
             cancellation,
         } = start;
+        let generation = generation.get();
         let path = request.path.clone();
         let line = request.line;
         let state_weak = Rc::downgrade(state);
@@ -819,12 +820,13 @@ impl NotesBrowserState {
         let ticket = NotesBrowserTicket::<PreviewFlight>::new(generation, state.mode.get());
         let (accepted, next) = {
             let mut loads = state.preview_loads.borrow_mut();
+            let typed = lushtext_model::values::FlightGeneration::new(ticket.generation());
             let accepted = ticket.may_publish(&NotesBrowserFacts::new(
-                loads.is_current(ticket.generation()),
+                loads.is_current(typed),
                 state.mode.get(),
                 state.disposed.get(),
             ));
-            let next = loads.finish(ticket.generation());
+            let next = loads.finish(typed);
             (accepted, next)
         };
         if accepted && let Some((path, line, result)) = completion {
@@ -955,8 +957,10 @@ fn live_bookmark_excerpt_for_editor(
         first_line,
         target_line,
         lines,
-        first_line > 0,
-        last_line.saturating_add(1) < line_count,
+        bookmark_excerpt::BookmarkContextTruncation {
+            before: first_line > 0,
+            after: last_line.saturating_add(1) < line_count,
+        },
     )
 }
 

@@ -294,12 +294,13 @@ impl WorkspaceSearchFlight {
         let active_generation = self.coordinator.active_generation();
         match self.coordinator.submit(request) {
             Some(start) => WorkspaceSearchSubmission::Start(WorkspaceSearchStart {
-                generation: start.generation,
+                generation: start.generation.get(),
                 request: start.request,
             }),
             None => WorkspaceSearchSubmission::Supersede {
                 active_generation: active_generation
-                    .expect("a superseded submission always has an active generation"),
+                    .expect("a superseded submission always has an active generation")
+                    .get(),
             },
         }
     }
@@ -307,9 +308,9 @@ impl WorkspaceSearchFlight {
     /// Finish only the current generation and admit the retained latest query.
     pub fn finish(&mut self, generation: u64) -> Option<WorkspaceSearchStart> {
         self.coordinator
-            .finish(generation)
+            .finish(lushtext_model::values::FlightGeneration::new(generation))
             .map(|start| WorkspaceSearchStart {
-                generation: start.generation,
+                generation: start.generation.get(),
                 request: start.request,
             })
     }
@@ -325,7 +326,10 @@ impl WorkspaceSearchFlight {
         WorkspaceSearchFlightSnapshot {
             active: snapshot.active,
             pending: snapshot.pending,
-            active_generation: self.coordinator.active_generation(),
+            active_generation: self
+                .coordinator
+                .active_generation()
+                .map(lushtext_model::values::FlightGeneration::get),
         }
     }
 }

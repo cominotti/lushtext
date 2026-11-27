@@ -64,12 +64,14 @@
 
 use super::journal_core::{
     BodyFacts, BodyWriteDecision, CleanupBodyIdentity, CleanupEntryState, CleanupFacts,
-    DeletionStep, DraftClaim, DraftOpenDecision, EntryState, JournalLaneAdmission,
-    JournalLaneHolder, OrphanBodyDecision, RestoreDisposition, RestoreEnding, StartupRestore,
-    UntrustedCommitDisposition, body_write_decision, commit_authority, deletion_start,
-    draft_open_decision, journal_lane_admission, may_write_after_registration, next_deletion_step,
-    orphan_body_decision, ownership, registration_required, startup_may_retire_stale,
-    startup_restore, unapplied_restore_disposition, untrusted_commit_disposition,
+    CommitWriteMode, DeletionStep, DraftClaim, DraftOpenDecision, EntryState,
+    ExistingBodyReplacement, JournalLaneAdmission, JournalLaneHolder, OrphanBodyDecision,
+    RegistrationCommit, RegistrationFacts, RegistrationRequirement, RestoreDisposition,
+    RestoreEnding, StartupRestore, UntrustedCommitDisposition, WindowBodyFacts,
+    body_write_decision, commit_authority, deletion_start, draft_open_decision,
+    journal_lane_admission, may_write_after_registration, next_deletion_step, orphan_body_decision,
+    ownership, registration_required, startup_may_retire_stale, startup_restore,
+    unapplied_restore_disposition, untrusted_commit_disposition,
 };
 use lushtext_model::persistence::draft::DraftManifestCompleteness;
 
@@ -545,7 +547,10 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
     /// window uses rather than a copy of it.
     pub(crate) fn window_body_facts(&self, id: usize) -> BodyFacts {
         let me = self.me();
-        BodyFacts::from_window_view(me.known[id].is_some(), me.editors[id].restore_pending)
+        BodyFacts::from_window_view(WindowBodyFacts {
+            registered: me.known[id].is_some(),
+            restore_pending: me.editors[id].restore_pending,
+        })
     }
 
     fn recompute_preserved(&mut self) {
@@ -829,11 +834,11 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
                 if !editor.open || !editor.dirty || !editor.token {
                     return;
                 }
-                let needed = registration_required(
-                    !self.untitled(id),
-                    self.me().known[id].is_some(),
-                    self.me().trusted,
-                );
+                let needed = registration_required(RegistrationFacts {
+                    file_backed: !self.untitled(id),
+                    registered_in_known_manifest: self.me().known[id].is_some(),
+                    known_manifest_trusted: self.me().trusted,
+                });
                 self.me_mut().editors[id].token = false;
                 if body_write_decision(ownership(self.window_body_facts(id)), needed)
                     == BodyWriteDecision::Hold
@@ -958,8 +963,11 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
             return;
         }
         let trusted = self.me().trusted;
-        let needed =
-            registration_required(!self.untitled(id), self.me().known[id].is_some(), trusted);
+        let needed = registration_required(RegistrationFacts {
+            file_backed: !self.untitled(id),
+            registered_in_known_manifest: self.me().known[id].is_some(),
+            known_manifest_trusted: trusted,
+        });
         match body_write_decision(ownership(self.window_body_facts(id)), needed) {
             BodyWriteDecision::Hold => {}
             BodyWriteDecision::Write | BodyWriteDecision::PreserveThenWrite => {
@@ -1007,7 +1015,10 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
                         }
                     }
                     self.revoke_trust();
-                    self.me_mut().editors[id].token = may_write_after_registration(true, true);
+                    self.me_mut().editors[id].token = may_write_after_registration(
+                        RegistrationRequirement::Required,
+                        RegistrationCommit::Committed,
+                    );
                     return;
                 }
                 self.set_lane(Some(LaneUse::Pass(id as u8)));
@@ -1031,8 +1042,10 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
                 let complete = self.inventory_complete_with(&after);
                 let insert = !after[id].present;
                 let committed = complete
-                    || untrusted_commit_disposition(true, true)
-                        == UntrustedCommitDisposition::Additive;
+                    || untrusted_commit_disposition(
+                        CommitWriteMode::InsertOnly,
+                        ExistingBodyReplacement::Allowed,
+                    ) == UntrustedCommitDisposition::Additive;
                 if !committed {
                     self.release_lane(LaneUse::Pass(id as u8));
                     return;
@@ -1094,7 +1107,10 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
                         self.revoke_trust();
                     }
                 }
-                self.me_mut().editors[id].token = may_write_after_registration(true, true);
+                self.me_mut().editors[id].token = may_write_after_registration(
+                    RegistrationRequirement::Required,
+                    RegistrationCommit::Committed,
+                );
             }
         }
     }
