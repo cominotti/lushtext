@@ -426,7 +426,7 @@ pub fn resolve_document_identity(
     note_storage::resolve_document_identity(path).map_err(|error| {
         LocalHistoryError::ResolveIdentity {
             path: path.to_path_buf(),
-            detail: error.to_string(),
+            source: Box::new(error),
         }
     })
 }
@@ -1200,7 +1200,7 @@ fn save_document_index(
     )
     .map_err(|error| LocalHistoryError::SaveIndex {
         path: index_path,
-        detail: error.to_string(),
+        source: Box::new(error),
     })
 }
 

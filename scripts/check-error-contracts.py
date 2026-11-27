@@ -25,9 +25,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Temporary ratchet during Tasks 2.x; reset to None (strict 0) in Task 3.1.
-MIGRATION_CEILING: int | None = 153
-
 ANYHOW_RE = re.compile(r"\buse\s+anyhow\b|\banyhow::")
 RESULT_START_RE = re.compile(r"\bResult\s*<")
 CFG_TEST_RE = re.compile(r"^\s*#\[cfg\(\s*test\s*\)\]")
@@ -293,14 +290,12 @@ def find_violations(root: Path) -> list[tuple[str, int, str]]:
 
 
 def check(root: Path, *, strict: bool = False) -> list[str]:
+    del strict
     hits = find_violations(root)
-    ceiling = 0 if (strict or MIGRATION_CEILING is None) else MIGRATION_CEILING
-    if len(hits) <= ceiling:
+    if not hits:
         return []
     findings = [f"{rel}:{line_no}: {reason}" for rel, line_no, reason in hits]
-    findings.append(
-        f"error-contract violation count ({len(hits)}) exceeds ceiling ({ceiling})"
-    )
+    findings.append(f"error-contract violation count ({len(hits)}) exceeds ceiling (0)")
     return findings
 
 
@@ -370,8 +365,7 @@ def main() -> int:
         print(f"check-error-contracts: {finding}", file=sys.stderr)
     if findings:
         return 1
-    mode = "strict 0" if (args.strict or MIGRATION_CEILING is None) else f"ratchet <= {MIGRATION_CEILING}"
-    print(f"check-error-contracts passed ({mode})")
+    print("check-error-contracts passed (strict 0)")
     return 0
 
 

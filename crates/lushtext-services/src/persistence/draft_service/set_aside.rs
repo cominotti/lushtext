@@ -28,8 +28,6 @@ use std::collections::BinaryHeap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use anyhow::{Context, Result};
-
 use crate::filesystem::write::DurableWriteError;
 use crate::filesystem::{
     DirectoryScanPolicy, FileKind, WriteLabel, metadata as fs_metadata, mutate as fs_mutate,
@@ -37,6 +35,7 @@ use crate::filesystem::{
 };
 use crate::persistence::app_data_layout::{AppDataLayout, AppDataLocation};
 
+use super::draft_error::DraftSetAsideError;
 use super::journal_core::{SetAsideNameStep, SetAsideSlot, set_aside_name_step};
 use super::set_aside_retention::{SetAsideFingerprint, SetAsideTotals, UserDecision, may_delete};
 use super::{MAX_AUTOMATIC_DRAFT_BYTES, draft_body_path, read_draft_path_bounded};
@@ -116,7 +115,11 @@ fn candidate_path(area: &Path, draft_id: &str, stamp_secs: u64, attempt: u32) ->
 ///
 /// Returns an error when the body cannot be read or no durable copy could be
 /// placed; the caller must then keep the journal body.
-pub fn keep_copy(data_dir: &Path, draft_id: &str, stamp_secs: u64) -> Result<PathBuf> {
+pub fn keep_copy(
+    data_dir: &Path,
+    draft_id: &str,
+    stamp_secs: u64,
+) -> Result<PathBuf, DraftSetAsideError> {
     place(data_dir, draft_id, stamp_secs, Transfer::Copy)
 }
 
@@ -126,7 +129,11 @@ pub fn keep_copy(data_dir: &Path, draft_id: &str, stamp_secs: u64) -> Result<Pat
 ///
 /// Returns an error when no set-aside name could take the body; the body then
 /// stays where it was.
-pub fn move_in(data_dir: &Path, draft_id: &str, stamp_secs: u64) -> Result<PathBuf> {
+pub fn move_in(
+    data_dir: &Path,
+    draft_id: &str,
+    stamp_secs: u64,
+) -> Result<PathBuf, DraftSetAsideError> {
     place(data_dir, draft_id, stamp_secs, Transfer::Move)
 }
 
@@ -146,19 +153,30 @@ pub fn move_in(data_dir: &Path, draft_id: &str, stamp_secs: u64) -> Result<PathB
 /// is returned and the caller keeps the body. A retry finds the same bytes
 /// under that name and keeps them only once the set-aside directory syncs
 /// (`verify-shell-conformance-against-proven-cores` D6).
-fn place(data_dir: &Path, draft_id: &str, stamp_secs: u64, transfer: Transfer) -> Result<PathBuf> {
+fn place(
+    data_dir: &Path,
+    draft_id: &str,
+    stamp_secs: u64,
+    transfer: Transfer,
+) -> Result<PathBuf, DraftSetAsideError> {
     let source = draft_body_path(data_dir, draft_id);
     let dir = dir(data_dir);
-    fs_write::create_dir_all_durable(&dir)
-        .with_context(|| format!("failed to create {}", dir.display()))?;
+    fs_write::create_dir_all_durable(&dir).map_err(|source_err| DraftSetAsideError::CreateDir {
+        path: dir.clone(),
+        source: source_err,
+    })?;
     let copy_bytes = match transfer {
         Transfer::Move => None,
         Transfer::Copy => {
             let limit = usize::try_from(MAX_AUTOMATIC_DRAFT_BYTES)
                 .unwrap_or(usize::MAX)
                 .saturating_add(1);
-            let bytes = fs_read::prefix_bytes(&source, limit)
-                .with_context(|| format!("failed to read {}", source.display()))?;
+            let bytes = fs_read::prefix_bytes(&source, limit).map_err(|source_err| {
+                DraftSetAsideError::ReadSource {
+                    path: source.clone(),
+                    source: source_err,
+                }
+            })?;
             (u64::try_from(bytes.len()).unwrap_or(u64::MAX) <= MAX_AUTOMATIC_DRAFT_BYTES)
                 .then_some(bytes)
         }
@@ -166,7 +184,10 @@ fn place(data_dir: &Path, draft_id: &str, stamp_secs: u64, transfer: Transfer) -
     for attempt in 0..MAX_SET_ASIDE_NAME_ATTEMPTS {
         let target = candidate_path(&dir, draft_id, stamp_secs, attempt);
         let exists = fs_metadata::path_status(&target)
-            .with_context(|| format!("failed to inspect {}", target.display()))?
+            .map_err(|source_err| DraftSetAsideError::InspectTarget {
+                path: target.clone(),
+                source: source_err,
+            })?
             .is_present();
         let slot = if !exists {
             SetAsideSlot::Free
@@ -184,8 +205,11 @@ fn place(data_dir: &Path, draft_id: &str, stamp_secs: u64, transfer: Transfer) -
             SetAsideNameStep::AlreadyKept => {
                 // An earlier copy under this name may be unconfirmed: it is
                 // kept only once its directory entry is durable.
-                fs_write::sync_parent_dir(&target).with_context(|| {
-                    format!("failed to confirm the set-aside copy {}", target.display())
+                fs_write::sync_parent_dir(&target).map_err(|source_err| {
+                    DraftSetAsideError::ConfirmCopy {
+                        path: target.clone(),
+                        source: source_err,
+                    }
                 })?;
                 return Ok(target);
             }
@@ -207,11 +231,11 @@ fn place(data_dir: &Path, draft_id: &str, stamp_secs: u64, transfer: Transfer) -
             Err(DurableWriteError::BeforeRename(error))
                 if copy_bytes.is_none() && error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(DurableWriteError::AfterRename(error)) if copy_bytes.is_some() => {
-                return Err(anyhow::anyhow!(
-                    "the set-aside copy {} of draft {} is not yet durable: {error}",
-                    target.display(),
-                    source.display(),
-                ));
+                return Err(DraftSetAsideError::UnconfirmedCopy {
+                    target,
+                    source_path: source,
+                    source: error,
+                });
             }
             Err(DurableWriteError::AfterRename(error)) => {
                 tracing::warn!(
@@ -223,17 +247,18 @@ fn place(data_dir: &Path, draft_id: &str, stamp_secs: u64, transfer: Transfer) -
                 return Ok(target);
             }
             Err(DurableWriteError::BeforeRename(error)) => {
-                return Err(anyhow::anyhow!(
-                    "failed to set aside draft {} as {}: {error}",
-                    source.display(),
-                    target.display(),
-                ));
+                return Err(DraftSetAsideError::Place {
+                    source_path: source,
+                    target,
+                    source: error,
+                });
             }
         }
     }
-    anyhow::bail!(
-        "no free set-aside name for draft {draft_id} after {MAX_SET_ASIDE_NAME_ATTEMPTS} attempts"
-    )
+    Err(DraftSetAsideError::NameAttemptsExhausted {
+        draft_id: draft_id.to_string(),
+        attempts: MAX_SET_ASIDE_NAME_ATTEMPTS,
+    })
 }
 
 /// Whether an existing set-aside file holds exactly `bytes`.
@@ -346,7 +371,7 @@ fn fingerprint_of(path: &Path, file_name: &str) -> std::io::Result<Option<SetAsi
 /// # Errors
 ///
 /// Returns an error when the area exists but cannot be read.
-pub fn list(data_dir: &Path) -> Result<SetAsideListing> {
+pub fn list(data_dir: &Path) -> Result<SetAsideListing, DraftSetAsideError> {
     scan(data_dir, MAX_LISTED_SET_ASIDE_BODIES)
 }
 
@@ -358,12 +383,12 @@ pub fn list(data_dir: &Path) -> Result<SetAsideListing> {
 /// # Errors
 ///
 /// Returns an error when the area exists but cannot be read.
-pub fn totals(data_dir: &Path) -> Result<SetAsideTotals> {
+pub fn totals(data_dir: &Path) -> Result<SetAsideTotals, DraftSetAsideError> {
     scan(data_dir, 0).map(|listing| listing.totals)
 }
 
 /// One bounded traversal of the area keeping the newest `max_rows` bodies.
-fn scan(data_dir: &Path, max_rows: usize) -> Result<SetAsideListing> {
+fn scan(data_dir: &Path, max_rows: usize) -> Result<SetAsideListing, DraftSetAsideError> {
     let dir = dir(data_dir);
     if !fs_metadata::exists(&dir) {
         return Ok(SetAsideListing {
@@ -421,7 +446,10 @@ fn scan(data_dir: &Path, max_rows: usize) -> Result<SetAsideListing> {
             true
         },
     )
-    .with_context(|| format!("failed to list {}", dir.display()))?;
+    .map_err(|source| DraftSetAsideError::ListDir {
+        path: dir.clone(),
+        source,
+    })?;
     // Ascending `Reverse<Newest>` is newest first.
     let rows = newest
         .into_sorted_vec()
@@ -439,10 +467,13 @@ fn scan(data_dir: &Path, max_rows: usize) -> Result<SetAsideListing> {
 ///
 /// Returns an error when the path is not inside the set-aside area, the body is
 /// larger than the automatic-draft limit, or it is not UTF-8.
-pub fn read(data_dir: &Path, path: &Path) -> Result<String> {
+pub fn read(data_dir: &Path, path: &Path) -> Result<String, DraftSetAsideError> {
     ensure_inside(data_dir, path)?;
-    read_draft_path_bounded(path, MAX_AUTOMATIC_DRAFT_BYTES)?
-        .ok_or_else(|| anyhow::anyhow!("{} no longer exists", path.display()))
+    read_draft_path_bounded(path, MAX_AUTOMATIC_DRAFT_BYTES)?.ok_or_else(|| {
+        DraftSetAsideError::Missing {
+            path: path.to_path_buf(),
+        }
+    })
 }
 
 /// What one confirmed deletion did.
@@ -533,7 +564,7 @@ pub fn delete_confirmed(
 }
 
 /// Refuse any path that is not a direct child of the set-aside area.
-fn ensure_inside(data_dir: &Path, path: &Path) -> Result<()> {
+fn ensure_inside(data_dir: &Path, path: &Path) -> Result<(), DraftSetAsideError> {
     let area = dir(data_dir);
     let is_child = path.parent() == Some(area.as_path())
         && path
@@ -542,7 +573,9 @@ fn ensure_inside(data_dir: &Path, path: &Path) -> Result<()> {
             .and_then(parse_name)
             .is_some();
     if !is_child {
-        anyhow::bail!("{} is not a set-aside draft body", path.display());
+        return Err(DraftSetAsideError::OutsideSetAsideArea {
+            path: path.to_path_buf(),
+        });
     }
     Ok(())
 }
@@ -591,7 +624,7 @@ mod tests {
 
         let unconfirmed = keep_copy(data.path(), "d6-draft", 7);
         assert!(
-            unconfirmed.is_err(),
+            matches!(unconfirmed, Err(DraftSetAsideError::UnconfirmedCopy { .. })),
             "an unconfirmed copy must not count as kept: {unconfirmed:?}"
         );
         fixture::assert_text(&source, "unsaved edits");
@@ -759,11 +792,37 @@ mod tests {
             vec![("bbbb", 20, 5), ("aaaa", 10, 5)]
         );
         assert_eq!(read(data.path(), &listed[0].path).expect("read"), "newer");
-        assert!(read(data.path(), &area.join("notes.txt")).is_err());
-        assert!(read(data.path(), &data.path().join("aaaa.10.draft")).is_err());
+        assert!(matches!(
+            read(data.path(), &area.join("notes.txt")),
+            Err(DraftSetAsideError::OutsideSetAsideArea { .. })
+        ));
+        assert!(matches!(
+            read(data.path(), &data.path().join("aaaa.10.draft")),
+            Err(DraftSetAsideError::OutsideSetAsideArea { .. })
+        ));
+        assert!(matches!(
+            read(data.path(), &area.join("missing.99.draft")),
+            Err(DraftSetAsideError::Missing { .. })
+        ));
         let outcome = delete_confirmed(data.path(), &[listed[1].fingerprint.clone()]);
         assert_eq!(outcome.deleted, 1, "a per-row Delete of the listed body");
         assert!(!fixture::exists(&listed[1].path));
         assert_eq!(list(data.path()).expect("list").rows.len(), 1);
+    }
+
+    #[test]
+    fn blocked_set_aside_directory_returns_structured_errors() {
+        let data = tempfile::tempdir().expect("tempdir");
+        fixture::create_dir_all(&super::super::drafts_dir(data.path()));
+        fixture::write_text(&dir(data.path()), "not a directory");
+
+        assert!(matches!(
+            list(data.path()),
+            Err(DraftSetAsideError::ListDir { .. })
+        ));
+        assert!(matches!(
+            keep_copy(data.path(), "blocked", 1),
+            Err(DraftSetAsideError::CreateDir { .. })
+        ));
     }
 }

@@ -128,6 +128,7 @@ FORBIDDEN_MODEL_DEPS = GTK_CRATES | {
 FORBIDDEN_SERVICES_DEPS = GTK_CRATES | {
     "lushtext-ui",
     "lushtext-core",
+    "anyhow",
 }
 
 # `serde_json` (D-Bus automation / fuzzing) and `crossbeam-channel` (worker
@@ -146,6 +147,7 @@ FORBIDDEN_UI_DEPS = {
     "grep-regex",
     "grep-searcher",
     "grep-matcher",
+    "anyhow",
 }
 
 TEST_ONLY_FILE_PARTS = {
@@ -382,13 +384,13 @@ def self_test() -> None:
             findings = check(root, _fixture_metadata({"lushtext-model": ["serde", bad_dep]}))
             assert any("lushtext-model" in f and bad_dep in f for f in findings), (bad_dep, findings)
 
-        # 2. Services layer forbidden edge (`gtk4`, `lushtext-ui`).
-        for bad_dep in ("gtk4", "lushtext-ui"):
+        # 2. Services layer forbidden edge (`gtk4`, `lushtext-ui`, `anyhow`).
+        for bad_dep in ("gtk4", "lushtext-ui", "anyhow"):
             findings = check(root, _fixture_metadata({"lushtext-services": ["lushtext-model", bad_dep]}))
             assert any("lushtext-services" in f and bad_dep in f for f in findings), (bad_dep, findings)
 
-        # 3. UI layer forbidden infra engine edge (`regex`, `pulldown-cmark`).
-        for bad_dep in ("regex", "pulldown-cmark"):
+        # 3. UI layer forbidden infra engine edge (`regex`, `pulldown-cmark`, `anyhow`).
+        for bad_dep in ("regex", "pulldown-cmark", "anyhow"):
             findings = check(root, _fixture_metadata({"lushtext-ui": ["lushtext-services", bad_dep]}))
             assert any("lushtext-ui" in f and bad_dep in f for f in findings), (bad_dep, findings)
 

@@ -6,4 +6,5 @@ pub mod content_search;
 pub mod regex_query;
 pub mod saved_searches;
 pub mod search_backup;
+mod search_backup_error;
 pub mod search_history;

@@ -68,7 +68,7 @@ enum GuardedReplaceApplyResult {
     Superseded,
     /// Cancelled, and every file it wrote was restored.
     Cancelled,
-    Failed(anyhow::Error),
+    Failed(content_search::ReplaceApplyError),
 }
 
 struct GuardedUndoResult {

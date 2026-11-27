@@ -6,7 +6,6 @@
 //! canonical-path identity, load/save sidecar JSON, migrate records after
 //! in-app renames, and collect bookmark rows for browse surfaces.
 
-use anyhow::{Context, Result};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
@@ -22,8 +21,90 @@ use std::collections::HashMap;
 #[cfg(feature = "test-utils")]
 use std::sync::{Mutex, OnceLock};
 
-use crate::notes::note_storage;
-use crate::persistence::recovery_metadata::{RecoveryDiagnostic, RecoveryMetadataClass};
+use crate::notes::note_storage::{self, NoteStorageError};
+use crate::persistence::recovery_metadata::{
+    RecoveryDiagnostic, RecoveryMetadataClass, RecoveryMetadataError,
+};
+
+/// Typed errors returned by bookmark sidecar persistence and workspace listing operations.
+#[derive(Debug, thiserror::Error)]
+pub enum BookmarkServiceError {
+    /// Resolving the canonical identity for a bookmarked document failed.
+    #[error("failed to canonicalize {}: {source}", path.display())]
+    Canonicalize {
+        /// Saved document path that could not be canonicalized.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// Recovery-aware metadata validation or durable replacement failed.
+    #[error(transparent)]
+    Recovery(#[from] RecoveryMetadataError),
+    /// Deleting an empty or superseded bookmark sidecar failed.
+    #[error("failed to delete bookmark sidecar {}: {source}", path.display())]
+    DeleteSidecar {
+        /// Bookmark sidecar file path that could not be deleted.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// Deleting an obsolete bookmark sidecar after migration failed.
+    #[error("failed to delete obsolete bookmark sidecar {}: {source}", path.display())]
+    DeleteObsoleteSidecar {
+        /// Obsolete sidecar file path that could not be removed.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// Inspecting the bookmark sidecar directory failed.
+    #[error("failed to inspect {}: {source}", path.display())]
+    InspectDir {
+        /// Bookmark sidecar directory path that could not be inspected.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// Scanning the bookmark sidecar directory failed.
+    #[error("failed to read {}: {source}", path.display())]
+    ScanDir {
+        /// Bookmark sidecar directory path that could not be scanned.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// One or more bookmark sidecars could not be migrated during a rename pass.
+    #[error("{failures} bookmark sidecar(s) could not be migrated; {migrated} succeeded")]
+    IncompleteMigration {
+        /// Number of bookmark sidecars that failed migration.
+        failures: usize,
+        /// Number of bookmark sidecars that succeeded.
+        migrated: usize,
+    },
+    /// Injected test-only bookmark persistence failure.
+    #[cfg(feature = "test-utils")]
+    #[error("injected bookmark persistence failure ({remaining} remaining)")]
+    InjectedSaveFailure {
+        /// Remaining injected failures armed for this sidecar path.
+        remaining: u32,
+    },
+}
+
+impl From<NoteStorageError> for BookmarkServiceError {
+    fn from(error: NoteStorageError) -> Self {
+        match error {
+            NoteStorageError::Canonicalize { path, source } => Self::Canonicalize { path, source },
+            NoteStorageError::IncompleteMigration {
+                failures, migrated, ..
+            } => Self::IncompleteMigration { failures, migrated },
+            NoteStorageError::Recovery(source) => Self::Recovery(source),
+        }
+    }
+}
 
 /// Lightweight workspace-facing bookmark row for browse dialogs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,26 +149,28 @@ pub fn bookmarks_dir(data_dir: &Path) -> PathBuf {
 /// # Errors
 ///
 /// Returns an error if the path cannot be canonicalized.
-pub fn resolve_document_identity(path: &Path) -> Result<DocumentSidecarIdentity> {
-    note_storage::resolve_document_identity(path)
+pub fn resolve_document_identity(
+    path: &Path,
+) -> Result<DocumentSidecarIdentity, BookmarkServiceError> {
+    Ok(note_storage::resolve_document_identity(path)?)
 }
 
 /// Load bookmarks for a saved file, returning an empty document if no sidecar exists yet.
 ///
 /// # Errors
 ///
-/// Returns an error if the document identity cannot be resolved or the sidecar
-/// directory cannot be scanned. Malformed or unreadable sidecars are preserved
-/// through recovery diagnostics and treated as absent.
-pub fn load_for_path(data_dir: &Path, path: &Path) -> Result<BookmarkDocument> {
+/// Returns an error if the document identity cannot be resolved. Malformed or
+/// unreadable sidecars are preserved through recovery diagnostics and treated
+/// as absent.
+pub fn load_for_path(
+    data_dir: &Path,
+    path: &Path,
+) -> Result<BookmarkDocument, BookmarkServiceError> {
     let identity = resolve_document_identity(path)?;
-    load_for_identity(data_dir, identity)
+    Ok(load_for_identity(data_dir, identity))
 }
 
-fn load_for_identity(
-    data_dir: &Path,
-    identity: DocumentSidecarIdentity,
-) -> Result<BookmarkDocument> {
+fn load_for_identity(data_dir: &Path, identity: DocumentSidecarIdentity) -> BookmarkDocument {
     let filename = note_storage::sidecar_filename(&identity.sidecar_id);
     let path = bookmarks_dir(data_dir).join(&filename);
     let load = note_storage::load_json_file_recovering::<BookmarkDocument>(
@@ -99,9 +182,9 @@ fn load_for_identity(
     match load.value {
         Some(mut document) => {
             document.sort_stable();
-            Ok(document)
+            document
         }
-        None => Ok(BookmarkDocument::empty(identity)),
+        None => BookmarkDocument::empty(identity),
     }
 }
 
@@ -115,7 +198,7 @@ pub fn save_for_path(
     data_dir: &Path,
     path: &Path,
     bookmarks: &[BookmarkRecord],
-) -> Result<DocumentSidecarIdentity> {
+) -> Result<DocumentSidecarIdentity, BookmarkServiceError> {
     let identity = resolve_document_identity(path)?;
     save_document(
         data_dir,
@@ -220,7 +303,10 @@ pub fn pending_save_failures_for_path_for_test(data_dir: &Path, path: &Path) -> 
 ///
 /// Returns an error when the sidecar cannot be written or, for an empty bookmark
 /// set, cannot be deleted.
-pub fn save_document(data_dir: &Path, mut document: BookmarkDocument) -> Result<()> {
+pub fn save_document(
+    data_dir: &Path,
+    mut document: BookmarkDocument,
+) -> Result<(), BookmarkServiceError> {
     document.sort_stable();
 
     let path = bookmarks_dir(data_dir).join(note_storage::sidecar_filename(
@@ -250,7 +336,7 @@ pub fn save_document(data_dir: &Path, mut document: BookmarkDocument) -> Result<
             *remaining -= 1;
             let left = *remaining;
             drop(faults);
-            anyhow::bail!("injected bookmark persistence failure ({left} remaining)");
+            return Err(BookmarkServiceError::InjectedSaveFailure { remaining: left });
         }
     }
 
@@ -258,12 +344,12 @@ pub fn save_document(data_dir: &Path, mut document: BookmarkDocument) -> Result<
         return delete_sidecar_file(data_dir, &document.identity);
     }
 
-    note_storage::save_json_file_recovering(
+    Ok(note_storage::save_json_file_recovering(
         data_dir,
         &path,
         RecoveryMetadataClass::BookmarkSidecar,
         &document,
-    )
+    )?)
 }
 
 /// Delete the bookmark sidecar for a saved file path if it exists.
@@ -272,21 +358,19 @@ pub fn save_document(data_dir: &Path, mut document: BookmarkDocument) -> Result<
 ///
 /// Returns an error if the document identity cannot be resolved or an existing
 /// sidecar cannot be deleted.
-pub fn delete_for_path(data_dir: &Path, path: &Path) -> Result<()> {
+pub fn delete_for_path(data_dir: &Path, path: &Path) -> Result<(), BookmarkServiceError> {
     let identity = resolve_document_identity(path)?;
     delete_sidecar_file(data_dir, &identity)
 }
 
-fn delete_sidecar_file(data_dir: &Path, identity: &DocumentSidecarIdentity) -> Result<()> {
+fn delete_sidecar_file(
+    data_dir: &Path,
+    identity: &DocumentSidecarIdentity,
+) -> Result<(), BookmarkServiceError> {
     let path = bookmarks_dir(data_dir).join(note_storage::sidecar_filename(&identity.sidecar_id));
-    match fs_mutate::remove_file_if_exists(&path) {
-        Ok(_) => Ok(()),
-        Err(error) => Err(anyhow::anyhow!(
-            "failed to delete bookmark sidecar {}: {}",
-            path.display(),
-            error
-        )),
-    }
+    fs_mutate::remove_file_if_exists(&path)
+        .map_err(|source| BookmarkServiceError::DeleteSidecar { path, source })?;
+    Ok(())
 }
 
 /// Move bookmark sidecars after an in-app rename of a file or directory tree.
@@ -297,16 +381,29 @@ fn delete_sidecar_file(data_dir: &Path, identity: &DocumentSidecarIdentity) -> R
 ///
 /// Returns an error if the sidecar directory cannot be scanned or a migrated
 /// document cannot be read, rewritten, or cleaned up.
-pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Result<usize> {
+pub fn move_path_tree(
+    data_dir: &Path,
+    old_path: &Path,
+    new_path: &Path,
+) -> Result<usize, BookmarkServiceError> {
     let dir = bookmarks_dir(data_dir);
-    if !fs_metadata::path_status(&dir)?.is_present() {
+    let dir_present = fs_metadata::path_status(&dir)
+        .map_err(|source| BookmarkServiceError::InspectDir {
+            path: dir.clone(),
+            source,
+        })?
+        .is_present();
+    if !dir_present {
         return Ok(0);
     }
 
     let mut tally = note_storage::SidecarMigrationTally::new("bookmark");
-    for entry in fs_tree::scan_directory(&dir, DirectoryScanPolicy::visible_workspace())
-        .with_context(|| format!("failed to read {}", dir.display()))?
-    {
+    for entry in fs_tree::scan_directory(&dir, DirectoryScanPolicy::visible_workspace()).map_err(
+        |source| BookmarkServiceError::ScanDir {
+            path: dir.clone(),
+            source,
+        },
+    )? {
         let sidecar_path = entry.path;
         if sidecar_path.extension().and_then(OsStr::to_str) != Some("json") {
             continue;
@@ -331,19 +428,18 @@ pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Resu
         let new_sidecar_path = dir.join(note_storage::sidecar_filename(&new_identity.sidecar_id));
         // Per-item isolation; `SidecarMigrationTally` documents the failure mode
         // this prevents (one poisoned sidecar abandoning every later one).
-        let outcome = merge_bookmark_target(data_dir, &new_sidecar_path, document, new_identity)
-            .and_then(|document| save_document(data_dir, document))
-            .and_then(|()| {
-                if sidecar_path == new_sidecar_path {
-                    Ok(())
-                } else {
-                    remove_obsolete_sidecar(&sidecar_path)
-                }
-            });
+        let merged = merge_bookmark_target(data_dir, &new_sidecar_path, document, new_identity);
+        let outcome = save_document(data_dir, merged).and_then(|()| {
+            if sidecar_path == new_sidecar_path {
+                Ok(())
+            } else {
+                remove_obsolete_sidecar(&sidecar_path)
+            }
+        });
         tally.record(&sidecar_path, outcome);
     }
 
-    tally.finish()
+    Ok(tally.finish()?)
 }
 
 fn merge_bookmark_target(
@@ -351,7 +447,7 @@ fn merge_bookmark_target(
     target_path: &Path,
     mut source: BookmarkDocument,
     target_identity: DocumentSidecarIdentity,
-) -> Result<BookmarkDocument> {
+) -> BookmarkDocument {
     let load = note_storage::load_json_file_recovering::<BookmarkDocument>(
         data_dir,
         target_path,
@@ -360,10 +456,10 @@ fn merge_bookmark_target(
     note_storage::trace_recovery_diagnostics(&load.diagnostics);
     let Some(target) = load.value else {
         source.identity = target_identity;
-        return Ok(source);
+        return source;
     };
 
-    Ok(merge_bookmark_documents(source, target, target_identity))
+    merge_bookmark_documents(source, target, target_identity)
 }
 
 /// Merge a moved sidecar into an existing target sidecar without guessing on conflicts.
@@ -390,15 +486,14 @@ fn merge_bookmark_documents(
     target
 }
 
-fn remove_obsolete_sidecar(path: &Path) -> Result<()> {
-    match fs_mutate::remove_file_if_exists(path) {
-        Ok(_) => Ok(()),
-        Err(error) => Err(anyhow::anyhow!(
-            "failed to delete obsolete bookmark sidecar {}: {}",
-            path.display(),
-            error
-        )),
-    }
+fn remove_obsolete_sidecar(path: &Path) -> Result<(), BookmarkServiceError> {
+    fs_mutate::remove_file_if_exists(path).map_err(|source| {
+        BookmarkServiceError::DeleteObsoleteSidecar {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    Ok(())
 }
 
 /// Collect all bookmarks under the current workspace folders for browse dialogs.
@@ -411,7 +506,7 @@ fn remove_obsolete_sidecar(path: &Path) -> Result<()> {
 pub fn list_workspace_bookmarks(
     data_dir: &Path,
     workspace_folders: &[PathBuf],
-) -> Result<Vec<WorkspaceBookmark>> {
+) -> Result<Vec<WorkspaceBookmark>, BookmarkServiceError> {
     Ok(list_workspace_bookmarks_recovering(data_dir, workspace_folders)?.bookmarks)
 }
 
@@ -424,10 +519,16 @@ pub fn list_workspace_bookmarks(
 pub fn list_workspace_bookmarks_recovering(
     data_dir: &Path,
     workspace_folders: &[PathBuf],
-) -> Result<WorkspaceBookmarkListing> {
+) -> Result<WorkspaceBookmarkListing, BookmarkServiceError> {
     let canonical_folders = note_storage::canonicalize_folders(workspace_folders);
     let dir = bookmarks_dir(data_dir);
-    if !fs_metadata::path_status(&dir)?.is_present() {
+    let dir_present = fs_metadata::path_status(&dir)
+        .map_err(|source| BookmarkServiceError::InspectDir {
+            path: dir.clone(),
+            source,
+        })?
+        .is_present();
+    if !dir_present {
         return Ok(WorkspaceBookmarkListing {
             bookmarks: Vec::new(),
             diagnostics: Vec::new(),
@@ -436,9 +537,12 @@ pub fn list_workspace_bookmarks_recovering(
 
     let mut bookmarks = Vec::new();
     let mut diagnostics = Vec::new();
-    for entry in fs_tree::scan_directory(&dir, DirectoryScanPolicy::visible_workspace())
-        .with_context(|| format!("failed to read {}", dir.display()))?
-    {
+    for entry in fs_tree::scan_directory(&dir, DirectoryScanPolicy::visible_workspace()).map_err(
+        |source| BookmarkServiceError::ScanDir {
+            path: dir.clone(),
+            source,
+        },
+    )? {
         let load = note_storage::load_json_file_recovering::<BookmarkDocument>(
             data_dir,
             &entry.path,
@@ -575,12 +679,55 @@ mod tests {
 
         let error = delete_for_path(dir.path(), &file_path).expect_err("delete directory sidecar");
 
-        assert!(
-            error
-                .to_string()
-                .contains("failed to delete bookmark sidecar"),
-            "unexpected error: {error}"
-        );
+        assert!(matches!(
+            error,
+            BookmarkServiceError::DeleteSidecar { ref path, .. } if path == &sidecar_path
+        ));
+    }
+
+    #[test]
+    fn load_for_path_reports_canonicalize_error_for_missing_file() {
+        let dir = TempDir::new().expect("tempdir");
+        let missing = dir.path().join("missing.rs");
+
+        let error = load_for_path(dir.path(), &missing).expect_err("missing file should fail");
+
+        assert!(matches!(
+            error,
+            BookmarkServiceError::Canonicalize { ref path, .. } if path == &missing
+        ));
+    }
+
+    #[test]
+    fn list_workspace_bookmarks_reports_scan_error_when_bookmarks_dir_is_file() {
+        let dir = TempDir::new().expect("tempdir");
+        let bookmarks_root = bookmarks_dir(dir.path());
+        fixture::write_text(&bookmarks_root, "not a directory");
+
+        let error = list_workspace_bookmarks_recovering(dir.path(), &[])
+            .expect_err("file at bookmarks_dir should fail scan");
+
+        assert!(matches!(
+            error,
+            BookmarkServiceError::ScanDir { ref path, .. } if path == &bookmarks_root
+        ));
+    }
+
+    #[cfg(feature = "test-utils")]
+    #[test]
+    fn save_for_path_returns_injected_save_failure_variant() {
+        let dir = TempDir::new().expect("tempdir");
+        let file_path = dir.path().join("src/main.rs");
+        write_file(&file_path, "fn main() {}\n");
+        let _guard = fail_next_saves_for_path_for_test(dir.path(), &file_path, 1);
+
+        let error = save_for_path(dir.path(), &file_path, &[BookmarkRecord::new(0, None)])
+            .expect_err("armed fault should fail save");
+
+        assert!(matches!(
+            error,
+            BookmarkServiceError::InjectedSaveFailure { remaining: 0 }
+        ));
     }
 
     #[test]

@@ -685,6 +685,63 @@ pub(super) fn build_replaced_text_reference(
     Ok((new_content, edits.len()))
 }
 
+/// Error returned by the property-test streaming and reference helpers when a
+/// file is not replaced.
+#[cfg(feature = "property-tests")]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ReplaceStreamPropertyError {
+    /// No replacement targeted the file.
+    #[error("file unchanged")]
+    Unchanged,
+    /// A targeted line changed or was out of range.
+    #[error("stale line {line_number}")]
+    StaleLine {
+        /// One-based line number that failed validation.
+        line_number: u64,
+    },
+    /// Preview metadata violated an expected invariant.
+    #[error("invalid preview: {reason}")]
+    InvalidPreview {
+        /// Content-free invariant description.
+        reason: &'static str,
+    },
+    /// Output exceeded the configured byte limit.
+    #[error("output limit exceeded")]
+    OutputLimitExceeded,
+    /// Source bytes were not valid UTF-8.
+    #[error("source is not valid UTF-8")]
+    NotUtf8,
+    /// The operation was cancelled.
+    #[error("replacement cancelled")]
+    Cancelled,
+    /// Streaming produced non-UTF-8 output bytes.
+    #[error("output is not UTF-8")]
+    OutputNotUtf8,
+    /// Streaming unexpectedly ended with a `Replaced` outcome on an error path.
+    #[error("unexpected replaced outcome ({replacement_count} replacements)")]
+    UnexpectedReplaced {
+        /// Replacement count reported by the outcome.
+        replacement_count: usize,
+    },
+}
+
+#[cfg(feature = "property-tests")]
+impl From<ReplacementTextOutcome> for ReplaceStreamPropertyError {
+    fn from(outcome: ReplacementTextOutcome) -> Self {
+        match outcome {
+            ReplacementTextOutcome::Replaced { replacement_count } => {
+                Self::UnexpectedReplaced { replacement_count }
+            }
+            ReplacementTextOutcome::Unchanged => Self::Unchanged,
+            ReplacementTextOutcome::StaleLine { line_number } => Self::StaleLine { line_number },
+            ReplacementTextOutcome::InvalidPreview { reason } => Self::InvalidPreview { reason },
+            ReplacementTextOutcome::OutputLimitExceeded => Self::OutputLimitExceeded,
+            ReplacementTextOutcome::NotUtf8 => Self::NotUtf8,
+            ReplacementTextOutcome::Cancelled => Self::Cancelled,
+        }
+    }
+}
+
 /// Run the production streaming engine over whole text in one chunk.
 ///
 /// This feature-only hook lets the property target exercise clipping and
@@ -706,19 +763,21 @@ pub fn apply_replacements_to_text_for_property_test(
 
 /// Run the streaming engine over `original_text` in chunks of `chunk_len` and
 /// return the output, the replacement count and the SHA-256 digests of the
-/// source and the output, or the debug form of the outcome that ended the file.
+/// source and the output, or the typed property error when the file is not replaced.
 ///
 /// # Errors
 ///
-/// The outcome, as `format!("{outcome:?}")`, when the file is not replaced.
+/// Returns [`ReplaceStreamPropertyError`] when planning, streaming, or UTF-8
+/// validation does not produce replaced text.
 #[cfg(feature = "property-tests")]
 pub fn apply_replacements_to_text_in_chunks_for_property_test(
     original_text: &str,
     replacements: &[Replacement],
     chunk_len: usize,
-) -> Result<(String, usize, [u8; 32], [u8; 32]), String> {
+) -> Result<(String, usize, [u8; 32], [u8; 32]), ReplaceStreamPropertyError> {
     let mut file_replacements: Vec<&Replacement> = replacements.iter().collect();
-    let edits = plan_edits(&mut file_replacements, || false).map_err(|o| format!("{o:?}"))?;
+    let edits =
+        plan_edits(&mut file_replacements, || false).map_err(ReplaceStreamPropertyError::from)?;
     let (summary, out) = stream_whole(
         original_text.as_bytes(),
         &edits,
@@ -729,28 +788,29 @@ pub fn apply_replacements_to_text_in_chunks_for_property_test(
     );
     match summary.outcome {
         ReplacementTextOutcome::Replaced { replacement_count } => Ok((
-            String::from_utf8(out).map_err(|_| "output is not UTF-8".to_string())?,
+            String::from_utf8(out).map_err(|_| ReplaceStreamPropertyError::OutputNotUtf8)?,
             replacement_count,
             summary.source_digest.finish(),
             summary.output_digest.finish(),
         )),
-        outcome => Err(format!("{outcome:?}")),
+        outcome => Err(ReplaceStreamPropertyError::from(outcome)),
     }
 }
 
-/// The reference builder's text and count, or the debug form of its outcome.
+/// The reference builder's text and count, or the typed property error when not replaced.
 ///
 /// # Errors
 ///
-/// The outcome, as `format!("{outcome:?}")`, when the file is not replaced.
+/// Returns [`ReplaceStreamPropertyError`] when the reference builder does not
+/// produce replaced text.
 #[cfg(feature = "property-tests")]
 pub fn apply_replacements_to_text_reference_outcome_for_property_test(
     original_text: &str,
     replacements: &[Replacement],
-) -> Result<(String, usize), String> {
+) -> Result<(String, usize), ReplaceStreamPropertyError> {
     let mut file_replacements: Vec<&Replacement> = replacements.iter().collect();
     build_replaced_text_reference(original_text, &mut file_replacements)
-        .map_err(|outcome| format!("{outcome:?}"))
+        .map_err(ReplaceStreamPropertyError::from)
 }
 
 /// Apply preview data through the former whole-file line-index algorithm.
@@ -766,4 +826,56 @@ pub fn apply_replacements_to_text_reference_for_property_test(
 ) -> Option<(String, usize)> {
     let mut file_replacements: Vec<&Replacement> = replacements.iter().collect();
     build_replaced_text_reference(original_text, &mut file_replacements).ok()
+}
+
+#[cfg(all(test, feature = "property-tests"))]
+mod property_error_tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use super::{
+        ReplaceStreamPropertyError, apply_replacements_to_text_in_chunks_for_property_test,
+        apply_replacements_to_text_reference_outcome_for_property_test,
+    };
+    use lushtext_model::workspace::content_search::{Replacement, SearchMatchId};
+
+    fn replacement(line_number: u64, original_line: &str) -> Replacement {
+        Replacement {
+            match_id: SearchMatchId::from_index(0),
+            path: PathBuf::from("/tmp/sample.txt"),
+            line_number,
+            original_line: Arc::from(original_line),
+            replaced_line: "done".to_string(),
+            replacement: Arc::from("done"),
+            match_range: 0..original_line.len(),
+        }
+    }
+
+    #[test]
+    fn property_helpers_return_structured_error_variants() {
+        assert_eq!(
+            apply_replacements_to_text_in_chunks_for_property_test("hello\n", &[], 4),
+            Err(ReplaceStreamPropertyError::Unchanged)
+        );
+        assert_eq!(
+            apply_replacements_to_text_reference_outcome_for_property_test("hello\n", &[]),
+            Err(ReplaceStreamPropertyError::Unchanged)
+        );
+
+        let stale = [replacement(1, "other")];
+        assert_eq!(
+            apply_replacements_to_text_in_chunks_for_property_test("hello\n", &stale, 4),
+            Err(ReplaceStreamPropertyError::StaleLine { line_number: 1 })
+        );
+        assert_eq!(
+            apply_replacements_to_text_reference_outcome_for_property_test("hello\n", &stale),
+            Err(ReplaceStreamPropertyError::StaleLine { line_number: 1 })
+        );
+
+        let zero_line = [replacement(0, "hello")];
+        assert!(matches!(
+            apply_replacements_to_text_in_chunks_for_property_test("hello\n", &zero_line, 4),
+            Err(ReplaceStreamPropertyError::InvalidPreview { .. })
+        ));
+    }
 }

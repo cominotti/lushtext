@@ -11,8 +11,8 @@ use crate::persistence::app_data_layout::{AppDataLayout, AppDataLocation};
 use crate::persistence::json_format::KIND_DRAFT_MANIFEST;
 use crate::persistence::recovery_metadata::{
     RecoveryDiagnostic, RecoveryLoad, RecoveryLoadConfig, RecoveryLoadOutcome,
-    RecoveryMetadataClass, RecoveryRepair, RecoveryRepairContext, load_enveloped_json_or_default,
-    load_enveloped_json_with_repair, save_enveloped_json_path,
+    RecoveryMetadataClass, RecoveryMetadataError, RecoveryRepair, RecoveryRepairContext,
+    load_enveloped_json_or_default, load_enveloped_json_with_repair, save_enveloped_json_path,
 };
 use crate::{
     editor_io,
@@ -24,7 +24,6 @@ use crate::{
     persistence::local_history_service,
     persistence::session_service,
 };
-use anyhow::{Context, Result};
 use lushtext_model::document::document_scale::DocumentScale;
 use lushtext_model::persistence::draft::{
     DraftCleanupContinuation, DraftEntry, DraftManifest, DraftManifestAuthority,
@@ -100,6 +99,7 @@ const MANIFEST_REPAIR_AUXILIARY_ENTRY_ALLOWANCE: usize = 1;
 pub const MAX_ORPHAN_CLEANUP_DRAFT_SCAN: usize = 2048;
 
 mod cleanup_types;
+mod draft_error;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod fixture;
 pub mod journal_core;
@@ -112,6 +112,9 @@ pub mod set_aside_retention;
 #[cfg(test)]
 use cleanup_types::saturating_confirmed_cleanup_count;
 pub use cleanup_types::*;
+pub use draft_error::{
+    DraftBodyWriteError, DraftDeleteError, DraftSetAsideError, PreserveStaleDraftError,
+};
 
 /// Deterministic cleanup failure selected by test builds.
 ///
@@ -306,7 +309,7 @@ impl SetAsideDraftListing {
 /// # Errors
 ///
 /// Returns an error when the set-aside area exists but cannot be read.
-pub fn list_set_aside_drafts(data_dir: &Path) -> Result<SetAsideDraftListing> {
+pub fn list_set_aside_drafts(data_dir: &Path) -> Result<SetAsideDraftListing, DraftSetAsideError> {
     let listing = set_aside::list(data_dir)?;
     let mut result = SetAsideDraftListing {
         drafts: Vec::with_capacity(listing.rows.len()),
@@ -390,7 +393,7 @@ pub fn is_untitled_draft_id(draft_id: &str) -> bool {
 ///
 /// The current recovery-aware implementation does not return `Err`; the
 /// `Result` shape is retained for compatibility with existing callers.
-pub fn load_manifest(data_dir: &Path) -> Result<DraftManifest> {
+pub fn load_manifest(data_dir: &Path) -> Result<DraftManifest, RecoveryMetadataError> {
     Ok(load_manifest_recovering(data_dir).value)
 }
 
@@ -416,7 +419,10 @@ pub fn load_manifest_recovering(data_dir: &Path) -> RecoveryLoad<DraftManifest> 
 ///
 /// Panics if the process-wide manifest write lock is poisoned by an earlier
 /// panic while the lock was held.
-pub fn save_manifest(data_dir: &Path, manifest: &DraftManifest) -> Result<()> {
+pub fn save_manifest(
+    data_dir: &Path,
+    manifest: &DraftManifest,
+) -> Result<(), RecoveryMetadataError> {
     let _guard = manifest_write_lock()
         .lock()
         .expect("draft manifest write lock poisoned");
@@ -424,7 +430,10 @@ pub fn save_manifest(data_dir: &Path, manifest: &DraftManifest) -> Result<()> {
 }
 
 /// Persist while the caller holds the process-wide manifest write lock.
-fn save_manifest_locked(data_dir: &Path, manifest: &DraftManifest) -> Result<()> {
+fn save_manifest_locked(
+    data_dir: &Path,
+    manifest: &DraftManifest,
+) -> Result<(), RecoveryMetadataError> {
     let path = manifest_path(data_dir);
     let config = RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::DraftManifest);
     let diagnostics = save_enveloped_json_path(&config, KIND_DRAFT_MANIFEST, manifest)?;
@@ -1087,7 +1096,7 @@ fn load_manifest_for_restore_with_persist<F>(
     persist: F,
 ) -> DraftManifestLoad
 where
-    F: Fn(&Path, &DraftManifest) -> Result<()>,
+    F: Fn(&Path, &DraftManifest) -> Result<(), RecoveryMetadataError>,
 {
     let path = manifest_path(data_dir);
     let config = RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::DraftManifest);
@@ -1885,7 +1894,7 @@ fn oversized_draft_size(data_dir: &Path, draft_id: &str) -> Option<u64> {
 pub fn resolve_file_draft_restore(
     data_dir: &Path,
     entry: &DraftEntry,
-) -> Result<FileDraftRestoreResolution> {
+) -> Result<FileDraftRestoreResolution, DraftReadError> {
     let Some(path) = entry.original_path.as_deref() else {
         return Ok(FileDraftRestoreResolution::Skip(
             FileDraftRestoreSkip::Unavailable,
@@ -1930,7 +1939,7 @@ pub fn resolve_file_draft_restore(
 pub fn resolve_draft_restore(
     data_dir: &Path,
     entry: &DraftEntry,
-) -> Result<FileDraftRestoreResolution> {
+) -> Result<FileDraftRestoreResolution, DraftReadError> {
     if entry.original_path.is_some() {
         return resolve_file_draft_restore(data_dir, entry);
     }
@@ -2058,10 +2067,13 @@ fn cleanup_stale_restore_entries(
 pub fn preserve_stale_draft_body(
     data_dir: &Path,
     entry: &DraftEntry,
-) -> Result<Option<StaleDraftPreservation>> {
+) -> Result<Option<StaleDraftPreservation>, PreserveStaleDraftError> {
     let body_path = draft_body_path(data_dir, &entry.draft_id);
     if !fs_metadata::path_status(&body_path)
-        .with_context(|| format!("failed to inspect {}", body_path.display()))?
+        .map_err(|source| PreserveStaleDraftError::InspectBody {
+            path: body_path.clone(),
+            source,
+        })?
         .is_present()
     {
         return Ok(None);
@@ -2123,7 +2135,11 @@ fn local_history_accepts_stale_body(path: &Path, text: &str) -> bool {
 ///
 /// Returns an error if the drafts directory cannot be created or the draft file
 /// cannot be written, flushed, synced, or renamed into place.
-pub fn write_draft(data_dir: &Path, registered: &RegisteredDraft, content: &str) -> Result<()> {
+pub fn write_draft(
+    data_dir: &Path,
+    registered: &RegisteredDraft,
+    content: &str,
+) -> Result<(), DraftBodyWriteError> {
     write_body_file(data_dir, &registered.draft_id, content)?;
     crate::instrumentation::kill_point::reach(
         crate::instrumentation::kill_point::KillWindow::DraftBodyBeforeCommit,
@@ -2133,21 +2149,31 @@ pub fn write_draft(data_dir: &Path, registered: &RegisteredDraft, content: &str)
 }
 
 /// The body write itself, shared by [`write_draft`] and the fixture seeder.
-fn write_body_file(data_dir: &Path, draft_id: &str, content: &str) -> Result<()> {
+fn write_body_file(
+    data_dir: &Path,
+    draft_id: &str,
+    content: &str,
+) -> Result<(), DraftBodyWriteError> {
     let dir = drafts_dir(data_dir);
-    fs_write::create_dir_all_durable(&dir)
-        .with_context(|| format!("failed to create drafts dir: {}", dir.display()))?;
+    fs_write::create_dir_all_durable(&dir).map_err(|source| DraftBodyWriteError::CreateDir {
+        path: dir.clone(),
+        source,
+    })?;
 
     let path = dir.join(format!("{draft_id}.draft"));
-    let identity = fs_write::resolve_target_identity(&path)
-        .with_context(|| format!("failed to resolve draft target: {}", path.display()))?;
+    let identity = fs_write::resolve_target_identity(&path).map_err(|source| {
+        DraftBodyWriteError::ResolveTarget {
+            path: path.clone(),
+            source,
+        }
+    })?;
     let write_path = identity.as_path().to_path_buf();
     let _target_guard = fs_write::TargetWriteGuard::from_identity(identity);
     // The shared helper owns the temp-file-then-rename ordering, the full fsync
     // contract, and identity-metadata preservation when overwriting an existing
     // draft file.
     fs_write::atomic_replace(&write_path, WriteLabel::DRAFT, content.as_bytes())
-        .with_context(|| format!("failed to write draft: {}", path.display()))
+        .map_err(|source| DraftBodyWriteError::Write { path, source })
 }
 
 /// Read a draft file's content. Returns `None` if the draft file
@@ -2158,21 +2184,23 @@ fn write_body_file(data_dir: &Path, draft_id: &str, content: &str) -> Result<()>
 /// # Errors
 ///
 /// Returns an error if an existing draft file cannot be read as UTF-8 text.
-pub fn read_draft(data_dir: &Path, draft_id: &str) -> Result<Option<String>> {
+pub fn read_draft(data_dir: &Path, draft_id: &str) -> Result<Option<String>, DraftReadError> {
     let path = drafts_dir(data_dir).join(format!("{draft_id}.draft"));
     if let Some(size) = oversized_draft_size(data_dir, draft_id) {
         return Err(DraftReadError::Oversized {
             path,
             size,
             max: MAX_AUTOMATIC_DRAFT_BYTES,
-        }
-        .into());
+        });
     }
     read_draft_path_bounded(&path, MAX_AUTOMATIC_DRAFT_BYTES)
 }
 
 /// Read one body with an allocation bound that remains valid after metadata races.
-pub(super) fn read_draft_path_bounded(path: &Path, max_bytes: u64) -> Result<Option<String>> {
+pub(super) fn read_draft_path_bounded(
+    path: &Path,
+    max_bytes: u64,
+) -> Result<Option<String>, DraftReadError> {
     // One sentinel byte detects growth after the metadata probe without ever
     // allocating an unbounded body.
     let read_limit = usize::try_from(max_bytes)
@@ -2186,8 +2214,7 @@ pub(super) fn read_draft_path_bounded(path: &Path, max_bytes: u64) -> Result<Opt
                     path: path.to_path_buf(),
                     size: observed_size,
                     max: max_bytes,
-                }
-                .into());
+                });
             }
             let content = simdutf8::basic::from_utf8(&bytes)
                 .map_err(|error| DraftReadError::Read {
@@ -2201,8 +2228,7 @@ pub(super) fn read_draft_path_bounded(path: &Path, max_bytes: u64) -> Result<Opt
         Err(e) => Err(DraftReadError::Read {
             path: path.to_path_buf(),
             detail: e.to_string(),
-        }
-        .into()),
+        }),
     }
 }
 
@@ -2213,15 +2239,11 @@ pub(super) fn read_draft_path_bounded(path: &Path, max_bytes: u64) -> Result<Opt
 /// # Errors
 ///
 /// Returns an error if an existing draft file cannot be deleted.
-pub fn delete_draft_file(data_dir: &Path, draft_id: &str) -> Result<()> {
+pub fn delete_draft_file(data_dir: &Path, draft_id: &str) -> Result<(), DraftDeleteError> {
     let path = drafts_dir(data_dir).join(format!("{draft_id}.draft"));
     match fs_mutate::remove_file_if_exists(&path) {
         Ok(_) => Ok(()),
-        Err(e) => Err(anyhow::anyhow!(
-            "failed to delete draft {}: {}",
-            path.display(),
-            e
-        )),
+        Err(source) => Err(DraftDeleteError::Delete { path, source }),
     }
 }
 
@@ -2817,9 +2839,10 @@ fn execute_orphan_cleanup_impl(
     });
 
     let manifest_result = if faults.fail_manifest {
-        Err(anyhow::anyhow!(
-            "injected orphan cleanup manifest commit failure"
-        ))
+        Err(RecoveryMetadataError::Write {
+            path: manifest_path(data_dir),
+            source: std::io::Error::other("injected orphan cleanup manifest commit failure"),
+        })
     } else {
         save_manifest_locked(data_dir, &latest)
     };
@@ -3080,6 +3103,7 @@ mod tests {
         fixture::create_dir_all(&path);
 
         let error = read_draft(dir.path(), "blocked").expect_err("directory draft should fail");
+        assert!(matches!(error, DraftReadError::Read { .. }));
         assert!(
             error.to_string().contains("failed to read draft"),
             "unexpected error: {error}"
@@ -3094,10 +3118,36 @@ mod tests {
 
         let error =
             delete_draft_file(dir.path(), "blocked").expect_err("directory draft should fail");
+        assert!(matches!(error, DraftDeleteError::Delete { .. }));
         assert!(
             error.to_string().contains("failed to delete draft"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn write_and_preserve_draft_return_structured_errors_on_blocked_dirs() {
+        let dir = TempDir::new().expect("tempdir");
+        fixture::write_text(&drafts_dir(dir.path()), "not a directory");
+        let write_err = super::fixture::write_body(dir.path(), "blocked", "content")
+            .expect_err("file blocking drafts dir should fail");
+        assert!(matches!(write_err, DraftBodyWriteError::CreateDir { .. }));
+
+        let dir2 = TempDir::new().expect("tempdir");
+        super::fixture::write_body(dir2.path(), "stale-id", "edits").expect("seed body");
+        fixture::write_text(&set_aside_dir(dir2.path()), "not a directory");
+        let entry = DraftEntry {
+            draft_id: "stale-id".to_string(),
+            original_path: Some(dir2.path().join("notes.txt")),
+            original_mtime_secs: Some(1),
+            saved_at_secs: 2,
+        };
+        let preserve_err = preserve_stale_draft_body(dir2.path(), &entry)
+            .expect_err("file blocking set-aside dir should fail");
+        assert!(matches!(
+            preserve_err,
+            PreserveStaleDraftError::SetAside(DraftSetAsideError::CreateDir { .. })
+        ));
     }
 
     #[test]
@@ -3377,7 +3427,12 @@ mod tests {
             &SessionData::default(),
             &cancel,
             DraftManifestRepairPolicy::DEFAULT,
-            |_, _| anyhow::bail!("injected repair persistence failure"),
+            |_, _| {
+                Err(RecoveryMetadataError::Write {
+                    path: PathBuf::from("manifest.json"),
+                    source: std::io::Error::other("injected repair persistence failure"),
+                })
+            },
         );
 
         assert_eq!(
@@ -4577,6 +4632,7 @@ mod tests {
 
         let error = read_draft(dir.path(), draft_id).expect_err("oversized draft should not load");
 
+        assert!(matches!(error, DraftReadError::Oversized { .. }));
         assert!(
             error.to_string().contains("too large to restore"),
             "unexpected error: {error}"
@@ -4599,12 +4655,12 @@ mod tests {
         );
         let error = read_draft_path_bounded(&path, 3).expect_err("grown body must be rejected");
         assert!(matches!(
-            error.downcast_ref::<DraftReadError>(),
-            Some(DraftReadError::Oversized {
+            error,
+            DraftReadError::Oversized {
                 size: 4,
                 max: 3,
                 ..
-            })
+            }
         ));
         assert!(fs_metadata::exists(&path));
     }

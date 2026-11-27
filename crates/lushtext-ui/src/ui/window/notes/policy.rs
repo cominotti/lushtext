@@ -601,19 +601,30 @@ impl NotesBrowserModeExt for NotesBrowserMode {
     }
 }
 
+/// Typed syntax error when parsing a user-entered 1-based bookmark line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum BookmarkTargetLineError {
+    /// No line digits were entered.
+    #[error("Enter a line number.")]
+    Empty,
+    /// Input contained characters other than an unsigned integer line number.
+    #[error("Line must be a whole number.")]
+    NotWholeNumber,
+}
+
 /// Parse only the syntax of a user-facing 1-based bookmark line.
 ///
 /// Range and collision checks stay in the editor layer so failed edits leave the
 /// live bookmark projection unchanged.
-pub fn parse_bookmark_target_line(text: &str) -> Result<u32, String> {
+pub fn parse_bookmark_target_line(text: &str) -> Result<u32, BookmarkTargetLineError> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
-        return Err("Enter a line number.".to_string());
+        return Err(BookmarkTargetLineError::Empty);
     }
 
     trimmed
         .parse::<u32>()
-        .map_err(|_| "Line must be a whole number.".to_string())
+        .map_err(|_| BookmarkTargetLineError::NotWholeNumber)
 }
 
 /// Convert editor validation failures into dialog feedback.
@@ -1379,23 +1390,23 @@ mod tests {
         assert_eq!(parse_bookmark_target_line("  12  "), Ok(12));
         assert_eq!(
             parse_bookmark_target_line("   "),
-            Err("Enter a line number.".to_string())
+            Err(BookmarkTargetLineError::Empty)
         );
         assert_eq!(
             parse_bookmark_target_line(""),
-            Err("Enter a line number.".to_string())
+            Err(BookmarkTargetLineError::Empty)
         );
         assert_eq!(
             parse_bookmark_target_line("12.5"),
-            Err("Line must be a whole number.".to_string())
+            Err(BookmarkTargetLineError::NotWholeNumber)
         );
         assert_eq!(
             parse_bookmark_target_line("-1"),
-            Err("Line must be a whole number.".to_string())
+            Err(BookmarkTargetLineError::NotWholeNumber)
         );
         assert_eq!(
             parse_bookmark_target_line("abc"),
-            Err("Line must be a whole number.".to_string())
+            Err(BookmarkTargetLineError::NotWholeNumber)
         );
     }
 

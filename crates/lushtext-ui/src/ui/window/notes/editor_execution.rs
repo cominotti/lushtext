@@ -49,9 +49,17 @@ use super::LushtextWindow;
 use super::policy::FolderNoteOpenTarget;
 use super::policy::folder_note_target_for_workspace;
 
+#[derive(Debug, thiserror::Error)]
+enum NoteWriteError {
+    #[error(transparent)]
+    Document(#[from] document_note_service::DocumentNoteError),
+    #[error(transparent)]
+    Folder(#[from] folder_note_service::FolderNoteError),
+}
+
 /// Outcome of one note write, carrying the user's prose back on failure.
 ///
-/// This is deliberately **not** a `Result<_, anyhow::Error>`. An
+/// This is deliberately **not** a `Result<(), NoteWriteError>`. An
 /// `AdwAlertDialog::choose` callback fires after the dialog has already closed,
 /// so by the time a write fails the editor holding the only copy of the typed
 /// text is gone. A plain error arm therefore loses the prose to a transient
@@ -69,7 +77,7 @@ enum NoteWriteOutcome {
         /// The exact text the user typed, moved back off the worker.
         text: String,
         /// Why the write failed, for the log and the user-facing message.
-        error: anyhow::Error,
+        error: NoteWriteError,
     },
 }
 
@@ -513,7 +521,7 @@ impl LushtextWindow {
                                 // dropped with the error.
                                 Err(error) => NoteWriteOutcome::Failed {
                                     text: note_text,
-                                    error,
+                                    error: error.into(),
                                 },
                             }
                         },
@@ -677,7 +685,7 @@ impl LushtextWindow {
                                 Ok(_) => NoteWriteOutcome::Saved,
                                 Err(error) => NoteWriteOutcome::Failed {
                                     text: note_text,
-                                    error,
+                                    error: error.into(),
                                 },
                             }
                         },

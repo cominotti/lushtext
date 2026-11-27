@@ -27,7 +27,6 @@
 
 use std::collections::HashSet;
 
-use anyhow::Result;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::glib;
@@ -48,7 +47,7 @@ use super::policy::{
     draft_candidate_is_eligible,
 };
 use super::seams::{
-    AcceptedDraft, DirtyDraftCandidate, DirtyDraftCompletion, DraftFlushError,
+    AcceptedDraft, DirtyDraftCandidate, DirtyDraftCompletion, DraftBodyStageError, DraftFlushError,
     DraftManifestFailure, WritableDraftCandidate,
 };
 use super::{
@@ -227,8 +226,8 @@ impl LushtextWindow {
                 };
                 let tokens = match window.apply_draft_registration(result, &registered) {
                     Ok(tokens) => tokens,
-                    Err(detail) => {
-                        tracing::warn!("Failed to register new draft ids: {detail}");
+                    Err(failure) => {
+                        tracing::warn!("Failed to register new draft ids: {}", failure.detail);
                         Vec::new()
                     }
                 };
@@ -402,7 +401,7 @@ impl LushtextWindow {
     }
 
     /// Snapshot and write one close candidate before admitting the next body.
-    fn drive_close_draft_pipeline<F: FnOnce(Result<()>) + 'static>(
+    fn drive_close_draft_pipeline<F: FnOnce(Result<(), DraftFlushError>) + 'static>(
         &self,
         mut candidates: Vec<WritableDraftCandidate>,
         accepted: Vec<AcceptedDraft>,
@@ -468,7 +467,7 @@ impl LushtextWindow {
                             delay_draft_body_for_test();
                             fail_next_draft_body_for_test()?;
                             draft_service::write_draft(&data_dir, &registered, &text)?;
-                            Ok::<_, anyhow::Error>(DraftEntry {
+                            Ok::<_, DraftBodyStageError>(DraftEntry {
                                 draft_id,
                                 original_mtime_secs: original_path
                                     .as_deref()
@@ -530,7 +529,7 @@ impl LushtextWindow {
     }
 
     /// Commit successful close bodies once and report every unconfirmed draft.
-    fn commit_close_draft_pipeline<F: FnOnce(Result<()>) + 'static>(
+    fn commit_close_draft_pipeline<F: FnOnce(Result<(), DraftFlushError>) + 'static>(
         &self,
         accepted: Vec<AcceptedDraft>,
         mut failures: DraftPipelineFailures,
@@ -633,7 +632,7 @@ impl LushtextWindow {
                     window.release_journal_lane();
                     window.drive_pending_draft_mutations();
                     window.wait_for_draft_mutations_then(move || {
-                        on_done(result.map_err(anyhow::Error::from));
+                        on_done(result);
                     });
                 }
             },
@@ -731,7 +730,8 @@ impl LushtextWindow {
                                         .and_then(editor_io::mtime_secs),
                                     original_path,
                                     saved_at_secs: editor_io::now_epoch_secs(),
-                                });
+                                })
+                                .map_err(DraftBodyStageError::from);
                             drop(text);
                             result
                         },
@@ -909,7 +909,12 @@ impl LushtextWindow {
     ///
     /// Copies are serialized on GTK, writes run on workers, and `on_done` runs
     /// back on GTK after every candidate is accepted or classified.
-    pub fn flush_dirty_drafts_async<F: FnOnce(Result<()>) + 'static>(&self, on_done: F) {
+    pub fn flush_dirty_drafts_async<
+        F: FnOnce(std::result::Result<(), DraftFlushError>) + 'static,
+    >(
+        &self,
+        on_done: F,
+    ) {
         if close_flush_must_wait(CloseFlushWaitState {
             mutation_inflight: self.journal_mutation_busy(),
             cleanup_inflight: self.imp().drafts.orphan_cleanup_inflight.get(),
@@ -926,10 +931,9 @@ impl LushtextWindow {
         }
         let (candidates, restore_blocked) = self.collect_close_draft_candidates();
         if restore_blocked > 0 {
-            on_done(Err(anyhow::anyhow!(
-                "{restore_blocked} drafts are still being restored or are owned by another \
-                 window; close remains retryable"
-            )));
+            on_done(Err(DraftFlushError::RestoreBlocked {
+                count: restore_blocked,
+            }));
             return;
         }
         if candidates.is_empty() {

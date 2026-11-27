@@ -45,7 +45,7 @@ const AMPLE_FREE: u64 = 1 << 40;
 fn apply(
     replacements: &[Replacement],
     skip: &HashSet<PathBuf>,
-) -> (anyhow::Result<ApplyReplacementsOutcome>, TempDir) {
+) -> (Result<ApplyReplacementsOutcome, ReplaceApplyError>, TempDir) {
     let journal = tempdir().expect("journal tempdir");
     let _free = fs_metadata::fake_free_space_for_test(AMPLE_FREE);
     let outcome = apply_replacements(replacements, skip, &AtomicBool::new(false), journal.path());
@@ -127,6 +127,13 @@ fn replacement_count_cap_is_rejected_before_any_target_mutation() {
     let replacements = vec![replacement; MAX_REPLACE_PREVIEW_ROWS + 1];
     let (outcome, _journal) = apply(&replacements, &HashSet::new());
     let error = outcome.expect_err("over-cap replacement selections must be rejected");
+    assert!(matches!(
+        error,
+        ReplaceApplyError::SelectionLimitExceeded {
+            count,
+            limit: MAX_REPLACE_PREVIEW_ROWS,
+        } if count == MAX_REPLACE_PREVIEW_ROWS + 1
+    ));
     assert!(error.to_string().contains("replacement limit"));
     assert_eq!(fixture::read_text(&file), "needle\n");
 }
@@ -382,12 +389,9 @@ fn apply_waits_for_the_journal_guard_and_can_be_cancelled_while_waiting() {
         .expect("a cancelled wait returns while the guard is still held");
     worker.join().expect("worker joins");
     drop(recovery_guard);
-    assert!(
-        result
-            .expect_err("cancelled")
-            .to_string()
-            .contains("cancelled")
-    );
+    let error = result.expect_err("cancelled");
+    assert!(matches!(error, ReplaceApplyError::Cancelled));
+    assert!(error.to_string().contains("cancelled"));
     assert_eq!(fixture::read_text(&file), "needle\n");
 }
 
@@ -973,12 +977,9 @@ fn a_cancelled_run_rolls_back_the_files_it_wrote_and_removes_its_journal() {
         &cancel,
         journal.path(),
     );
-    assert!(
-        result
-            .expect_err("cancelled")
-            .to_string()
-            .contains("cancelled")
-    );
+    let error = result.expect_err("cancelled");
+    assert!(matches!(error, ReplaceApplyError::Cancelled));
+    assert!(error.to_string().contains("cancelled"));
     assert_eq!(fixture::read_text(&file_a), "needle\n");
     assert_eq!(fixture::read_text(&file_b), "needle\n");
     assert!(
@@ -1018,12 +1019,9 @@ fn a_rollback_with_less_free_space_than_the_reserve_restores_every_file() {
 
     let result = apply_replacements(&replacements, &HashSet::new(), &cancel, journal.path());
 
-    assert!(
-        result
-            .expect_err("cancelled")
-            .to_string()
-            .contains("cancelled")
-    );
+    let error = result.expect_err("cancelled");
+    assert!(matches!(error, ReplaceApplyError::Cancelled));
+    assert!(error.to_string().contains("cancelled"));
     for file in &files {
         assert_eq!(fixture::read_text(file), "needle\n");
     }
@@ -3013,7 +3011,10 @@ fn a_cancel_before_a_body_write_that_fails_early_cancels_the_run() {
     );
     drop(guard);
     match result {
-        Err(error) => assert!(error.to_string().contains("cancelled"), "{error}"),
+        Err(error) => {
+            assert!(matches!(error, ReplaceApplyError::Cancelled));
+            assert!(error.to_string().contains("cancelled"), "{error}");
+        }
         Ok(outcome) => assert!(
             outcome.cancelled,
             "the raised cancel must cancel the run, not skip the file: {:?}",
@@ -3021,4 +3022,40 @@ fn a_cancel_before_a_body_write_that_fails_early_cancels_the_run() {
         ),
     }
     assert_eq!(fixture::read_text(&file), "needle\n");
+}
+
+#[test]
+fn cancelled_rollback_cleanup_block_returns_cancelled_cleanup_failed() {
+    let dir = tempdir().expect("tempdir");
+    let journal = tempdir().expect("journal");
+    let file_a = dir.path().join("a.txt");
+    let file_b = dir.path().join("b.txt");
+    fixture::write_text(&file_a, "needle\n");
+    fixture::write_text(&file_b, "needle\n");
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let cancel_in_hook = cancel.clone();
+    let retired_backup = journal.path().join("replace-backup.json");
+    register_after_pass_a_hook_for_test(&file_b, move |_| {
+        // Place an unsupported directory at the retired single-file backup path
+        // so post-rollback journal cleanup is blocked by recovery diagnostics.
+        fixture::create_dir(&retired_backup);
+        cancel_in_hook.store(true, Ordering::Relaxed);
+    });
+    let _free = fs_metadata::fake_free_space_for_test(AMPLE_FREE);
+    let error = apply_replacements(
+        &[
+            make_replacement(&file_a, 1, "needle", "replaced", 0..6),
+            make_replacement(&file_b, 1, "needle", "replaced", 0..6),
+        ],
+        &HashSet::new(),
+        &cancel,
+        journal.path(),
+    )
+    .expect_err("blocked cleanup after cancelled rollback must fail with typed variant");
+    assert!(matches!(
+        error,
+        ReplaceApplyError::CancelledCleanupFailed {
+            source: search_backup::SearchBackupError::RetiredBackupUnsafeToDelete,
+        }
+    ));
 }

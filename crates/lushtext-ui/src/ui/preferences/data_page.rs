@@ -35,7 +35,7 @@ enum DataConvertWorkerResult {
     NoConvert(format_upgrade::FormatPlan),
     Applied {
         plan: format_upgrade::FormatPlan,
-        result: Result<format_upgrade::FormatApplyOutcome, String>,
+        result: Result<format_upgrade::FormatApplyOutcome, format_upgrade::FormatApplyError>,
     },
 }
 
@@ -122,8 +122,7 @@ impl LushtextPreferences {
                 if !plan.offers_convert() {
                     return DataConvertWorkerResult::NoConvert(plan);
                 }
-                let result =
-                    format_upgrade::apply_plan(&data_dir, &plan).map_err(|error| error.to_string());
+                let result = format_upgrade::apply_plan(&data_dir, &plan);
                 DataConvertWorkerResult::Applied { plan, result }
             },
             |prefs, result| {
@@ -154,9 +153,9 @@ impl LushtextPreferences {
                     }
                     DataConvertWorkerResult::Applied {
                         plan,
-                        result: Err(detail),
+                        result: Err(error),
                     } => {
-                        prefs.render_data_plan(&plan, Some(&detail));
+                        prefs.render_data_plan(&plan, Some(&error.to_string()));
                     }
                 }
             },

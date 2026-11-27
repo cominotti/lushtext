@@ -96,7 +96,7 @@ proptest! {
     ) {
         let root = tempfile::tempdir().expect("tempdir");
         check_draft_script(root.path(), initial_bits, &ops, FaultDomain::Full)
-            .map_err(TestCaseError::fail)?;
+            .map_err(|error| TestCaseError::fail(error.to_string()))?;
     }
 }
 

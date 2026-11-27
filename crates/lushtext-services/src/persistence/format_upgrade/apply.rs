@@ -5,19 +5,55 @@
 //! Inventory and planning remain read-only. This module is the only part of the
 //! workflow that backs up, converts, removes, or writes app-owned metadata.
 
-use std::path::Path;
+use std::io;
+use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::filesystem::{WriteLabel, write as fs_write};
 use crate::persistence::format_upgrade::backup::{
-    BackupSession, FormatBackupManifest, read_preservable_item_bytes,
+    BackupSession, FormatBackupError, FormatBackupManifest, read_preservable_item_bytes,
     remove_original_after_manifest,
 };
 use crate::persistence::format_upgrade::diagnostics::{FormatClassification, FormatItemPath};
-use crate::persistence::format_upgrade::legacy::ConverterRegistry;
+use crate::persistence::format_upgrade::legacy::{ConverterRegistry, FormatConverterError};
 use crate::persistence::format_upgrade::plan::{FormatPlan, FormatPlanAction};
+
+/// Typed errors returned when applying a format-upgrade plan or Start Fresh action.
+#[derive(Debug, thiserror::Error)]
+pub enum FormatApplyError {
+    /// `apply_plan` was called with a plan that contains no Convert actions.
+    #[error("format-upgrade plan has no supported Convert action")]
+    NoConvertActions,
+    /// `start_fresh` was called with a plan that contains no items requiring preservation.
+    #[error("format-upgrade plan has no item requiring Start Fresh preservation")]
+    NoStartFreshActions,
+    /// Creating or finishing the backup session failed.
+    #[error(transparent)]
+    Backup(#[from] FormatBackupError),
+    /// Writing converted latest-format metadata failed.
+    #[error("failed to write {}: {source}", path.display())]
+    WriteConverted {
+        /// Destination metadata file path.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+}
+
+/// Typed item-level failure while converting a single upgradeable metadata file.
+#[derive(Debug, thiserror::Error)]
+enum FormatItemConvertError {
+    #[error("{kind_label} is not JSON-convertible")]
+    NotJsonConvertible { kind_label: &'static str },
+    #[error("{relative_path} is not upgradeable")]
+    NotUpgradeable { relative_path: String },
+    #[error(transparent)]
+    Backup(#[from] FormatBackupError),
+    #[error(transparent)]
+    Convert(#[from] FormatConverterError),
+}
 
 /// User action being applied to an actionable plan.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -96,7 +132,10 @@ impl FormatApplyFailureSeams {
 ///
 /// Returns an error when the plan has no deterministic Convert action or when a
 /// backup manifest cannot be created or written.
-pub fn apply_plan(data_dir: &Path, plan: &FormatPlan) -> Result<FormatApplyOutcome> {
+pub fn apply_plan(
+    data_dir: &Path,
+    plan: &FormatPlan,
+) -> Result<FormatApplyOutcome, FormatApplyError> {
     let registry = ConverterRegistry::production();
     apply_plan_with_registry(data_dir, plan, &registry)
 }
@@ -111,7 +150,7 @@ pub(crate) fn apply_plan_with_registry(
     data_dir: &Path,
     plan: &FormatPlan,
     registry: &ConverterRegistry,
-) -> Result<FormatApplyOutcome> {
+) -> Result<FormatApplyOutcome, FormatApplyError> {
     apply_convert_with_options(data_dir, plan, registry, &FormatApplyOptions::default())
 }
 
@@ -125,7 +164,10 @@ pub(crate) fn apply_plan_with_registry(
 ///
 /// Returns an error when no item requires preservation or when a backup
 /// manifest cannot be created or written.
-pub fn start_fresh(data_dir: &Path, plan: &FormatPlan) -> Result<FormatApplyOutcome> {
+pub fn start_fresh(
+    data_dir: &Path,
+    plan: &FormatPlan,
+) -> Result<FormatApplyOutcome, FormatApplyError> {
     let registry = ConverterRegistry::production();
     start_fresh_with_registry(data_dir, plan, &registry)
 }
@@ -143,7 +185,7 @@ pub(crate) fn start_fresh_with_registry(
     data_dir: &Path,
     plan: &FormatPlan,
     _registry: &ConverterRegistry,
-) -> Result<FormatApplyOutcome> {
+) -> Result<FormatApplyOutcome, FormatApplyError> {
     apply_start_fresh_with_options(data_dir, plan, &FormatApplyOptions::default())
 }
 
@@ -153,7 +195,7 @@ fn apply_plan_with_failure_seams_for_test(
     plan: &FormatPlan,
     registry: &ConverterRegistry,
     seams: FormatApplyFailureSeams,
-) -> Result<FormatApplyOutcome> {
+) -> Result<FormatApplyOutcome, FormatApplyError> {
     apply_convert_with_options(data_dir, plan, registry, &FormatApplyOptions { seams })
 }
 
@@ -162,7 +204,7 @@ fn start_fresh_with_failure_seams_for_test(
     data_dir: &Path,
     plan: &FormatPlan,
     seams: FormatApplyFailureSeams,
-) -> Result<FormatApplyOutcome> {
+) -> Result<FormatApplyOutcome, FormatApplyError> {
     apply_start_fresh_with_options(data_dir, plan, &FormatApplyOptions { seams })
 }
 
@@ -171,10 +213,10 @@ fn apply_convert_with_options(
     plan: &FormatPlan,
     registry: &ConverterRegistry,
     options: &FormatApplyOptions,
-) -> Result<FormatApplyOutcome> {
+) -> Result<FormatApplyOutcome, FormatApplyError> {
     let items = convert_items(plan);
     if items.is_empty() {
-        bail!("format-upgrade plan has no supported Convert action");
+        return Err(FormatApplyError::NoConvertActions);
     }
 
     let mut backup = BackupSession::create(data_dir, "convert")?;
@@ -251,7 +293,10 @@ fn apply_convert_with_options(
                     &bytes,
                 )
                 .map_err(fs_write::DurableWriteError::into_io_error)
-                .with_context(|| format!("failed to write {}", item.absolute_path.display()))?;
+                .map_err(|source| FormatApplyError::WriteConverted {
+                    path: item.absolute_path.clone(),
+                    source,
+                })?;
                 converted_count += 1;
             }
             Err(error) => failures.push(FormatApplyFailure {
@@ -274,10 +319,10 @@ fn apply_start_fresh_with_options(
     data_dir: &Path,
     plan: &FormatPlan,
     options: &FormatApplyOptions,
-) -> Result<FormatApplyOutcome> {
+) -> Result<FormatApplyOutcome, FormatApplyError> {
     let items = preservation_items(plan);
     if items.is_empty() {
-        bail!("format-upgrade plan has no item requiring Start Fresh preservation");
+        return Err(FormatApplyError::NoStartFreshActions);
     }
 
     let mut backup = BackupSession::create(data_dir, "start-fresh")?;
@@ -377,15 +422,21 @@ fn preservation_items(plan: &FormatPlan) -> Vec<&super::plan::FormatPlannedItem>
 fn convert_item(
     planned: &super::plan::FormatPlannedItem,
     registry: &ConverterRegistry,
-) -> Result<Vec<u8>> {
+) -> Result<Vec<u8>, FormatItemConvertError> {
     let Some(kind) = planned.item.kind.json_kind() else {
-        bail!("{} is not JSON-convertible", planned.item.kind.label());
+        return Err(FormatItemConvertError::NotJsonConvertible {
+            kind_label: planned.item.kind.label(),
+        });
     };
     let FormatClassification::Upgradeable { from_version, .. } = planned.item.classification else {
-        bail!("{} is not upgradeable", planned.item.path.display());
+        return Err(FormatItemConvertError::NotUpgradeable {
+            relative_path: planned.item.path.display(),
+        });
     };
     let bytes = read_preservable_item_bytes(&planned.item)?;
-    registry.convert(kind, from_version, &bytes)
+    registry
+        .convert(kind, from_version, &bytes)
+        .map_err(Into::into)
 }
 
 #[cfg(test)]
@@ -406,7 +457,7 @@ mod tests {
         fixture::write_text(path, &serde_json::to_string_pretty(&value).expect("json"));
     }
 
-    fn convert_session_v0_to_v1(_bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
+    fn convert_session_v0_to_v1(_bytes: &[u8]) -> Result<Vec<u8>, FormatConverterError> {
         Ok(serde_json::to_vec_pretty(
             &json!({"kind": KIND_SESSION, "version": 1, "data": {"tabs": []}}),
         )?)
@@ -601,5 +652,20 @@ mod tests {
             failure.path.relative() == Path::new("drafts/huge.draft")
                 && failure.detail.contains("backup limit")
         }));
+    }
+
+    #[test]
+    fn empty_plans_return_structured_apply_errors() {
+        let dir = TempDir::new().expect("temp dir");
+        let empty = FormatPlan { groups: Vec::new() };
+
+        assert!(matches!(
+            apply_plan(dir.path(), &empty),
+            Err(FormatApplyError::NoConvertActions)
+        ));
+        assert!(matches!(
+            start_fresh(dir.path(), &empty),
+            Err(FormatApplyError::NoStartFreshActions)
+        ));
     }
 }

@@ -171,12 +171,20 @@ fn generated_entries() -> impl Strategy<Value = Vec<(String, String)>> {
     )
 }
 
+#[derive(Debug, thiserror::Error)]
+enum JournalFixtureError {
+    #[error(transparent)]
+    Backup(#[from] search_backup::SearchBackupError),
+    #[error("failed to create temporary directory: {0}")]
+    TempDir(#[from] std::io::Error),
+}
+
 fn write_invalid_state(
     data_dir: &Path,
     state: InvalidJournalState,
     entries: &[(String, String)],
     legacy: bool,
-) -> anyhow::Result<()> {
+) -> Result<(), JournalFixtureError> {
     match state {
         InvalidJournalState::MissingManifest => {
             write_journal(data_dir, entries, legacy)?;
@@ -269,7 +277,7 @@ fn write_journal(
     data_dir: &Path,
     entries: &[(String, String)],
     legacy: bool,
-) -> anyhow::Result<()> {
+) -> Result<(), JournalFixtureError> {
     let paths: Vec<PathBuf> = (0..entries.len()).map(generated_path).collect();
     let files: Vec<(&Path, &[u8], &[u8])> = paths
         .iter()

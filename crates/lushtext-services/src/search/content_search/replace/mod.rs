@@ -753,6 +753,7 @@ impl UndoReplaceOutcome {
 mod admission;
 mod apply;
 mod protocol;
+mod replace_error;
 #[cfg(test)]
 mod sr_measure;
 mod stream;
@@ -766,6 +767,7 @@ pub(crate) use apply::apply_replacements_if_current;
 pub use apply::apply_request_if_current;
 pub use apply::{ReplaceRunRequest, apply_replacements_with};
 pub(crate) use protocol::{ShrinkAction, shrink_step};
+pub use replace_error::ReplaceApplyError;
 pub use stream::REPLACE_STREAM_CHUNK_BYTES;
 #[cfg(feature = "property-tests")]
 pub use stream::{

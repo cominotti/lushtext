@@ -6,15 +6,14 @@
 //! background workers. This service records that follow-up work before it runs
 //! and retries incomplete kinds on later startup without a tight retry loop.
 
-use anyhow::{Context, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use crate::persistence::app_data_layout::{AppDataLayout, AppDataLocation};
 use crate::persistence::json_format::KIND_MIGRATION_LEDGER;
 use crate::persistence::recovery_metadata::{
     RecoveryDiagnostic, RecoveryLoad, RecoveryLoadConfig, RecoveryMetadataClass,
-    load_enveloped_json_or_default, save_enveloped_json_path,
+    RecoveryMetadataError, load_enveloped_json_or_default, save_enveloped_json_path,
 };
 use crate::{
     notes::bookmark_service, notes::document_note_service, notes::folder_note_service,
@@ -25,6 +24,49 @@ use lushtext_model::persistence::migration_ledger::{
 };
 use lushtext_model::persistence::sidecar_identity::now_epoch_secs;
 use lushtext_model::values::MigrationGeneration;
+
+/// Typed errors returned by migration-ledger tracking, update, and reconciliation operations.
+#[derive(Debug, thiserror::Error)]
+pub enum MigrationLedgerError {
+    /// Process-local mutex serializing ledger load/mutate/save cycles was poisoned.
+    #[error("migration-ledger lock poisoned")]
+    LockPoisoned,
+    /// Process-local mutex serializing tracked rename operations was poisoned.
+    #[error("migration-operation lock poisoned")]
+    OperationLockPoisoned,
+    /// Existing migration ledger metadata could not be quarantined or safely replaced.
+    #[error("migration ledger is not safe to replace at {}: {detail}", path.display())]
+    UnsafeReplacement {
+        /// Ledger file path that could not be replaced safely.
+        path: PathBuf,
+        /// Recovery diagnostics preventing replacement.
+        detail: String,
+    },
+    /// Writing the migration ledger file failed.
+    #[error("failed to save {}: {source}", path.display())]
+    Save {
+        /// Ledger file path that could not be written.
+        path: PathBuf,
+        /// Underlying recovery-metadata write error.
+        #[source]
+        source: RecoveryMetadataError,
+    },
+    /// A tracked rename operation or kind migration returned a typed error.
+    #[error(transparent)]
+    Operation(Box<dyn std::error::Error + Send + Sync>),
+}
+
+#[derive(Debug, thiserror::Error)]
+enum ReconcileKindError {
+    #[error(transparent)]
+    Bookmarks(#[from] bookmark_service::BookmarkServiceError),
+    #[error(transparent)]
+    DocumentNotes(#[from] document_note_service::DocumentNoteError),
+    #[error(transparent)]
+    FolderNotes(#[from] folder_note_service::FolderNoteError),
+    #[error(transparent)]
+    LocalHistory(#[from] local_history_service::LocalHistoryError),
+}
 
 /// Stop automatic startup retry after this many failures for one kind.
 ///
@@ -139,10 +181,10 @@ pub fn record_pending(
     old_path: &Path,
     new_path: &Path,
     kinds: &[MigrationKind],
-) -> Result<MigrationGeneration> {
+) -> Result<MigrationGeneration, MigrationLedgerError> {
     let _guard = ledger_lock()
         .lock()
-        .map_err(|_| anyhow::anyhow!("migration-ledger lock poisoned"))?;
+        .map_err(|_| MigrationLedgerError::LockPoisoned)?;
     let now = now_epoch_secs();
     let mut ledger = load_for_update(data_dir)?;
     ledger.remove_completed();
@@ -179,7 +221,7 @@ pub fn mark_kind_completed(
     data_dir: &Path,
     generation: MigrationGeneration,
     kind: MigrationKind,
-) -> Result<LedgerUpdateOutcome> {
+) -> Result<LedgerUpdateOutcome, MigrationLedgerError> {
     update_kind_state(data_dir, generation, kind, |state, now| {
         state.completed = true;
         state.last_attempt_secs = Some(now);
@@ -196,8 +238,8 @@ pub fn mark_kind_failed(
     data_dir: &Path,
     generation: MigrationGeneration,
     kind: MigrationKind,
-    error: &anyhow::Error,
-) -> Result<LedgerUpdateOutcome> {
+    error: &(impl std::fmt::Display + ?Sized),
+) -> Result<LedgerUpdateOutcome, MigrationLedgerError> {
     let detail = error.to_string();
     update_kind_state(data_dir, generation, kind, move |state, now| {
         state.completed = false;
@@ -235,12 +277,12 @@ impl TrackedRename {
     ///
     /// Returns the migration error, or a ledger update error if state
     /// persistence fails after the migration operation succeeds.
-    pub fn run_kind<T>(
+    pub fn run_kind<T, E: std::error::Error + Send + Sync + 'static>(
         &self,
         data_dir: &Path,
         kind: MigrationKind,
-        operation: impl FnOnce() -> Result<T>,
-    ) -> Result<T> {
+        operation: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, MigrationLedgerError> {
         match operation() {
             Ok(value) => {
                 mark_kind_completed(data_dir, self.generation, kind)?;
@@ -254,7 +296,7 @@ impl TrackedRename {
                         kind.label()
                     );
                 }
-                Err(error)
+                Err(MigrationLedgerError::Operation(Box::new(error)))
             }
         }
     }
@@ -271,13 +313,13 @@ impl TrackedRename {
 ///
 /// Returns an error if the ledger entry cannot be recorded, or whatever `body`
 /// returns.
-pub fn run_tracked_rename<T>(
+pub fn run_tracked_rename<T, E: std::error::Error + Send + Sync + 'static>(
     data_dir: &Path,
     old_path: &Path,
     new_path: &Path,
     kinds: &[MigrationKind],
-    body: impl FnOnce(&TrackedRename) -> Result<T>,
-) -> Result<T> {
+    body: impl FnOnce(&TrackedRename) -> Result<T, E>,
+) -> Result<T, MigrationLedgerError> {
     // The guard moves straight into `TrackedRename`, which owns it for the whole
     // rename. It is deliberately not bound to a named local first: a local would
     // be a temporary with a significant `Drop` that Clippy asks to be dropped
@@ -286,10 +328,10 @@ pub fn run_tracked_rename<T>(
     let rename = TrackedRename {
         _guard: migration_operation_lock()
             .lock()
-            .map_err(|_| anyhow::anyhow!("migration-operation lock poisoned"))?,
+            .map_err(|_| MigrationLedgerError::OperationLockPoisoned)?,
         generation: record_pending(data_dir, old_path, new_path, kinds)?,
     };
-    body(&rename)
+    body(&rename).map_err(|error| MigrationLedgerError::Operation(Box::new(error)))
 }
 
 /// Retry all pending migration kinds that are still below the attempt cap.
@@ -298,13 +340,11 @@ pub fn run_tracked_rename<T>(
 ///
 /// Returns an error if the ledger cannot be loaded or updated. Individual
 /// migration failures are reported in the returned diagnostics and left pending.
-pub fn reconcile_pending(data_dir: &Path) -> Result<MigrationReconcileReport> {
+pub fn reconcile_pending(
+    data_dir: &Path,
+) -> Result<MigrationReconcileReport, MigrationLedgerError> {
     let load = load_recovering(data_dir);
-    if !load.replacement_allowed() {
-        return Err(anyhow::anyhow!(
-            "migration ledger is not safe to update after recovery diagnostics"
-        ));
-    }
+    ensure_replacement_allowed(data_dir, &load)?;
 
     let mut report = MigrationReconcileReport::default();
     // Take a ledger snapshot, run filesystem migrations without holding the
@@ -335,7 +375,7 @@ pub fn reconcile_pending(data_dir: &Path) -> Result<MigrationReconcileReport> {
             let migration_result = {
                 let _operation_guard = migration_operation_lock()
                     .lock()
-                    .map_err(|_| anyhow::anyhow!("migration-operation lock poisoned"))?;
+                    .map_err(|_| MigrationLedgerError::OperationLockPoisoned)?;
                 run_migration_kind(data_dir, &entry, state.kind)
             };
             match migration_result {
@@ -360,8 +400,10 @@ pub fn reconcile_pending(data_dir: &Path) -> Result<MigrationReconcileReport> {
     Ok(report)
 }
 
-fn load_for_update(data_dir: &Path) -> Result<MigrationLedgerDocument> {
-    let load = load_recovering(data_dir);
+fn ensure_replacement_allowed(
+    data_dir: &Path,
+    load: &RecoveryLoad<MigrationLedgerDocument>,
+) -> Result<(), MigrationLedgerError> {
     if !load.replacement_allowed() {
         let detail = load
             .diagnostics
@@ -369,18 +411,25 @@ fn load_for_update(data_dir: &Path) -> Result<MigrationLedgerDocument> {
             .map(RecoveryDiagnostic::summary)
             .collect::<Vec<_>>()
             .join("; ");
-        return Err(anyhow::anyhow!(
-            "migration ledger is not safe to replace: {detail}"
-        ));
+        return Err(MigrationLedgerError::UnsafeReplacement {
+            path: ledger_path(data_dir),
+            detail,
+        });
     }
+    Ok(())
+}
+
+fn load_for_update(data_dir: &Path) -> Result<MigrationLedgerDocument, MigrationLedgerError> {
+    let load = load_recovering(data_dir);
+    ensure_replacement_allowed(data_dir, &load)?;
     Ok(load.value)
 }
 
-fn save(data_dir: &Path, ledger: &MigrationLedgerDocument) -> Result<()> {
+fn save(data_dir: &Path, ledger: &MigrationLedgerDocument) -> Result<(), MigrationLedgerError> {
     let path = ledger_path(data_dir);
     let config = RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::MigrationLedger);
     let diagnostics = save_enveloped_json_path(&config, KIND_MIGRATION_LEDGER, ledger)
-        .with_context(|| format!("failed to save {}", path.display()))?;
+        .map_err(|source| MigrationLedgerError::Save { path, source })?;
     for diagnostic in diagnostics {
         tracing::warn!("{}", diagnostic.summary());
     }
@@ -392,10 +441,10 @@ fn update_kind_state(
     generation: MigrationGeneration,
     kind: MigrationKind,
     update: impl FnOnce(&mut MigrationKindState, u64),
-) -> Result<LedgerUpdateOutcome> {
+) -> Result<LedgerUpdateOutcome, MigrationLedgerError> {
     let _guard = ledger_lock()
         .lock()
-        .map_err(|_| anyhow::anyhow!("migration-ledger lock poisoned"))?;
+        .map_err(|_| MigrationLedgerError::LockPoisoned)?;
     let now = now_epoch_secs();
     let mut ledger = load_for_update(data_dir)?;
     let Some(entry) = ledger.entry_mut(generation) else {
@@ -412,7 +461,11 @@ fn update_kind_state(
     Ok(LedgerUpdateOutcome::Updated)
 }
 
-fn run_migration_kind(data_dir: &Path, entry: &MigrationEntry, kind: MigrationKind) -> Result<()> {
+fn run_migration_kind(
+    data_dir: &Path,
+    entry: &MigrationEntry,
+    kind: MigrationKind,
+) -> Result<(), ReconcileKindError> {
     match kind {
         MigrationKind::Bookmarks => {
             bookmark_service::move_path_tree(data_dir, &entry.old_path, &entry.new_path)?;
@@ -525,7 +578,8 @@ mod tests {
                             peer_started_mid_rename.store(true, Ordering::SeqCst);
                         }
                         for (kind_index, kind) in all_kinds.into_iter().enumerate() {
-                            rename.run_kind(&data_dir, kind, || Ok(()))?;
+                            rename
+                                .run_kind(&data_dir, kind, || Ok::<(), MigrationLedgerError>(()))?;
                             if index == 0 && kind_index == 0 {
                                 // The inter-kind gap a per-kind lock would open.
                                 first_rename_between_kinds.store(true, Ordering::SeqCst);
@@ -534,7 +588,7 @@ mod tests {
                             }
                         }
                         renames_active.fetch_sub(1, Ordering::SeqCst);
-                        Ok(())
+                        Ok::<(), MigrationLedgerError>(())
                     },
                 )
             }));
@@ -572,7 +626,7 @@ mod tests {
                     .expect("pending entry visible to the rename body");
                 assert_eq!(entry.kinds.len(), 1);
                 assert!(!entry.kinds[0].completed);
-                Ok(rename.generation())
+                Ok::<_, MigrationLedgerError>(rename.generation())
             },
         )
         .expect("tracked rename");
@@ -656,12 +710,16 @@ mod tests {
         )
         .expect("record pending");
 
+        #[derive(Debug, thiserror::Error)]
+        #[error("simulated failure")]
+        struct SimulatedFailure;
+
         for _ in 0..MAX_MIGRATION_ATTEMPTS {
             mark_kind_failed(
                 dir.path(),
                 generation,
                 MigrationKind::Bookmarks,
-                &anyhow::anyhow!("simulated failure"),
+                &SimulatedFailure,
             )
             .expect("mark failed");
         }
@@ -704,5 +762,70 @@ mod tests {
             bookmark_service::load_for_path(dir.path(), &new_path).expect("load moved bookmarks");
         assert_eq!(migrated.bookmarks.len(), 1);
         assert_eq!(migrated.bookmarks[0].line, 3);
+    }
+
+    #[test]
+    fn record_pending_and_reconcile_report_unsafe_replacement_when_quarantine_blocked() {
+        let dir = TempDir::new().expect("tempdir");
+        let ledger_file = ledger_path(dir.path());
+        fixture::write_text(&ledger_file, "corrupt ledger json");
+        fixture::write_text(
+            &dir.path()
+                .join(crate::persistence::recovery_metadata::QUARANTINE_DIR),
+            "blocks quarantine directory creation",
+        );
+
+        let record_err = record_pending(
+            dir.path(),
+            Path::new("/tmp/old.rs"),
+            Path::new("/tmp/new.rs"),
+            &[MigrationKind::Bookmarks],
+        )
+        .expect_err("corrupt ledger with blocked quarantine must refuse replacement");
+        assert!(matches!(
+            record_err,
+            MigrationLedgerError::UnsafeReplacement { ref path, .. } if path == &ledger_file
+        ));
+
+        let reconcile_err = reconcile_pending(dir.path())
+            .expect_err("reconcile must also refuse unsafe ledger replacement");
+        assert!(matches!(
+            reconcile_err,
+            MigrationLedgerError::UnsafeReplacement { ref path, .. } if path == &ledger_file
+        ));
+    }
+
+    #[test]
+    fn run_tracked_rename_propagates_typed_operation_error_and_marks_kind_failed() {
+        #[derive(Debug, thiserror::Error)]
+        #[error("typed rename failure")]
+        struct TypedRenameFailure;
+
+        let dir = TempDir::new().expect("tempdir");
+        let old_path = dir.path().join("old.rs");
+        let new_path = dir.path().join("new.rs");
+
+        let error = run_tracked_rename(
+            dir.path(),
+            &old_path,
+            &new_path,
+            &[MigrationKind::DocumentNotes],
+            |rename| {
+                rename.run_kind(dir.path(), MigrationKind::DocumentNotes, || {
+                    Err::<(), _>(TypedRenameFailure)
+                })
+            },
+        )
+        .expect_err("failed kind must propagate typed operation error");
+
+        assert!(matches!(error, MigrationLedgerError::Operation(_)));
+        assert_eq!(error.to_string(), "typed rename failure");
+        let ledger = load_recovering(dir.path()).value;
+        assert_eq!(ledger.entries.len(), 1);
+        assert_eq!(ledger.entries[0].kinds[0].attempts, 1);
+        assert_eq!(
+            ledger.entries[0].kinds[0].last_error.as_deref(),
+            Some("typed rename failure")
+        );
     }
 }

@@ -6,6 +6,7 @@ use crate::filesystem::read::BoundedFileReadError;
 use crate::filesystem::{
     DirectoryEntryInfo, DirectoryScanPolicy, metadata as fs_metadata, tree as fs_tree,
 };
+use crate::notes::note_storage::NoteStorageError;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -16,12 +17,13 @@ pub enum LocalHistoryError {
     #[error("local-history lock poisoned")]
     LockPoisoned,
     /// Resolving canonical sidecar identity for a saved document path failed.
-    #[error("failed to resolve local-history identity for {}: {detail}", path.display())]
+    #[error("failed to resolve local-history identity for {}: {source}", path.display())]
     ResolveIdentity {
         /// Saved document path whose identity could not be resolved.
         path: PathBuf,
-        /// Underlying identity resolution detail.
-        detail: String,
+        /// Underlying sidecar identity resolution error.
+        #[source]
+        source: Box<NoteStorageError>,
     },
     /// Inspecting or reading directory or file metadata failed.
     #[error("failed to inspect {}: {source}", path.display())]
@@ -66,12 +68,13 @@ pub enum LocalHistoryError {
         path: PathBuf,
     },
     /// Persisting a local-history JSON index failed.
-    #[error("failed to save local-history index {}: {detail}", path.display())]
+    #[error("failed to save local-history index {}: {source}", path.display())]
     SaveIndex {
         /// Index file path that could not be saved.
         path: PathBuf,
-        /// Underlying sidecar persistence detail.
-        detail: String,
+        /// Underlying sidecar persistence error.
+        #[source]
+        source: Box<NoteStorageError>,
     },
     /// Moving a local-history lineage directory failed.
     #[error("failed to move {} to {}: {source}", from.display(), to.display())]

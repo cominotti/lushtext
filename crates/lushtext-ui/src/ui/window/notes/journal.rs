@@ -36,6 +36,14 @@ use lushtext_services::{
 
 use super::LushtextWindow;
 
+#[derive(Debug, thiserror::Error)]
+enum StartupMigrationReconcileError {
+    #[error(transparent)]
+    Ledger(#[from] migration_ledger::MigrationLedgerError),
+    #[error(transparent)]
+    LocalHistory(#[from] local_history_service::LocalHistoryError),
+}
+
 impl LushtextWindow {
     /// Migrate sidecar documents after an in-app sidebar rename.
     ///
@@ -96,7 +104,11 @@ impl LushtextWindow {
                                     &new_path_for_move,
                                 )
                             })?;
-                        Ok((bookmark_count, document_note_count, folder_note_count))
+                        Ok::<_, migration_ledger::MigrationLedgerError>((
+                            bookmark_count,
+                            document_note_count,
+                            folder_note_count,
+                        ))
                     },
                 )
             },
@@ -136,7 +148,7 @@ impl LushtextWindow {
                 let data_dir = json_store::data_dir();
                 let migration_report = migration_ledger::reconcile_pending(&data_dir)?;
                 let local_history_report = local_history_service::reconcile_lineages(&data_dir)?;
-                Ok::<_, anyhow::Error>((migration_report, local_history_report))
+                Ok::<_, StartupMigrationReconcileError>((migration_report, local_history_report))
             },
             move |(), result| match result {
                 Ok((migration_report, local_history_report)) => {

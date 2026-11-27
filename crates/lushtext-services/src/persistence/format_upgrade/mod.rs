@@ -14,16 +14,20 @@ mod inventory;
 mod legacy;
 mod plan;
 
-pub use apply::{FormatApplyFailure, FormatApplyMode, FormatApplyOutcome, apply_plan, start_fresh};
+pub use apply::{
+    FormatApplyError, FormatApplyFailure, FormatApplyMode, FormatApplyOutcome, apply_plan,
+    start_fresh,
+};
 pub use backup::{
-    FORMAT_UPGRADE_BACKUP_DIR, FORMAT_UPGRADE_BACKUP_ITEMS_DIR, FormatBackupManifest,
-    FormatBackupRecord,
+    FORMAT_UPGRADE_BACKUP_DIR, FORMAT_UPGRADE_BACKUP_ITEMS_DIR, FormatBackupError,
+    FormatBackupManifest, FormatBackupRecord,
 };
 pub use diagnostics::{
     FormatClassification, FormatInventoryDiagnostic, FormatItemPath, FormatMetadataKind,
     FormatScanBounds,
 };
 pub use inventory::{FormatInventory, FormatInventoryItem, scan};
+pub use legacy::FormatConverterError;
 pub use plan::{
     FormatPlan, FormatPlanAction, FormatPlanGroup, FormatPlanGroupKind, FormatPlannedItem,
     build_plan,
@@ -33,5 +37,7 @@ pub use plan::{
 pub mod test_support {
     //! Test-only hooks for exercising synthetic old-format converter paths.
 
-    pub use super::legacy::{ConverterFn, ConverterRegistry, ProductionRegistryOverride};
+    pub use super::legacy::{
+        ConverterFn, ConverterRegistry, FormatConverterError, ProductionRegistryOverride,
+    };
 }

@@ -10,7 +10,7 @@
 
 use std::path::Path;
 
-use anyhow::Result;
+use super::DraftBodyWriteError;
 
 /// Write one draft body with no registration check, for test and benchmark
 /// fixtures only.
@@ -19,6 +19,10 @@ use anyhow::Result;
 ///
 /// Returns an error if the drafts directory cannot be created or the body
 /// cannot be durably written.
-pub fn write_body(data_dir: &Path, draft_id: &str, content: &str) -> Result<()> {
+pub fn write_body(
+    data_dir: &Path,
+    draft_id: &str,
+    content: &str,
+) -> Result<(), DraftBodyWriteError> {
     super::write_body_file(data_dir, draft_id, content)
 }

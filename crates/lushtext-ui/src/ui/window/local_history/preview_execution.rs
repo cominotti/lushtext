@@ -83,9 +83,12 @@ pub(super) enum GuardedLocalHistoryPreviewLoadOutcome {
 /// size is not known until it is read; shrinking here returns the difference to
 /// the lane instead of holding a 64 MiB claim for a 2 KiB snapshot.
 pub(super) fn guard_local_history_preview_on_worker(
-    result: anyhow::Result<local_history_service::LocalHistoryPreviewLoadOutcome>,
+    result: Result<
+        local_history_service::LocalHistoryPreviewLoadOutcome,
+        local_history_service::LocalHistoryError,
+    >,
     reservation: crate::ui::plain_disposal::DisposalReservation,
-) -> anyhow::Result<GuardedLocalHistoryPreviewLoadOutcome> {
+) -> Result<GuardedLocalHistoryPreviewLoadOutcome, local_history_service::LocalHistoryError> {
     match result? {
         local_history_service::LocalHistoryPreviewLoadOutcome::Loaded(snapshot) => {
             let weight = u64::try_from(
@@ -608,8 +611,7 @@ impl LocalHistoryBrowserState {
                         &request.path,
                         &request.snapshot_id,
                         &cancellation,
-                    )
-                    .map_err(anyhow::Error::new),
+                    ),
                     reservation,
                 )
             },
@@ -652,7 +654,10 @@ impl LocalHistoryBrowserState {
     fn finish_preview_load(
         self: &Rc<Self>,
         generation: HistoryPreviewGeneration,
-        result: anyhow::Result<GuardedLocalHistoryPreviewLoadOutcome>,
+        result: Result<
+            GuardedLocalHistoryPreviewLoadOutcome,
+            local_history_service::LocalHistoryError,
+        >,
     ) {
         let (accepted, next) = {
             let mut loads = self.preview_loads.borrow_mut();
@@ -1042,7 +1047,7 @@ fn clear_preview_turn(buffer: &gtk4::TextBuffer, ledger: &BoundaryLedger) -> usi
 }
 
 fn retire_local_history_preview_result(
-    result: anyhow::Result<GuardedLocalHistoryPreviewLoadOutcome>,
+    result: Result<GuardedLocalHistoryPreviewLoadOutcome, local_history_service::LocalHistoryError>,
 ) {
     if let Ok(GuardedLocalHistoryPreviewLoadOutcome::Loaded(snapshot, _)) = result {
         drop(snapshot);

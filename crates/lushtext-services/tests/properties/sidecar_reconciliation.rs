@@ -33,6 +33,20 @@ use tempfile::TempDir;
 
 use crate::support;
 
+#[derive(Debug, thiserror::Error)]
+enum SidecarReconcileError {
+    #[error(transparent)]
+    Bookmark(#[from] bookmark_service::BookmarkServiceError),
+    #[error(transparent)]
+    DocumentNote(#[from] document_note_service::DocumentNoteError),
+    #[error(transparent)]
+    FolderNote(#[from] folder_note_service::FolderNoteError),
+    #[error(transparent)]
+    LocalHistory(#[from] local_history_service::LocalHistoryError),
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+}
+
 #[derive(Debug, Clone, Copy)]
 enum SidecarReconcileCase {
     BookmarkSourceOnly,
@@ -80,7 +94,7 @@ fn run_case(
     case: SidecarReconcileCase,
     source_text: &str,
     target_text: &str,
-) -> anyhow::Result<()> {
+) -> Result<(), SidecarReconcileError> {
     match case {
         SidecarReconcileCase::BookmarkSourceOnly => bookmark_source_only(data_dir),
         SidecarReconcileCase::BookmarkDuplicate => bookmark_duplicate(data_dir),
@@ -99,7 +113,7 @@ fn run_case(
     }
 }
 
-fn bookmark_source_only(data_dir: &Path) -> anyhow::Result<()> {
+fn bookmark_source_only(data_dir: &Path) -> Result<(), SidecarReconcileError> {
     let old_file = seed_file(data_dir, "workspace/old-bookmark.rs");
     let new_file = seed_file(data_dir, "workspace/new-bookmark.rs");
     let old_identity = bookmark_service::save_for_path(
@@ -120,7 +134,7 @@ fn bookmark_source_only(data_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn bookmark_duplicate(data_dir: &Path) -> anyhow::Result<()> {
+fn bookmark_duplicate(data_dir: &Path) -> Result<(), SidecarReconcileError> {
     let old_file = seed_file(data_dir, "workspace/old-bookmark-duplicate.rs");
     let new_file = seed_file(data_dir, "workspace/new-bookmark-duplicate.rs");
     let old_identity = bookmark_service::resolve_document_identity(&old_file)?;
@@ -156,7 +170,7 @@ fn bookmark_duplicate(data_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn document_source_only(data_dir: &Path, text: &str) -> anyhow::Result<()> {
+fn document_source_only(data_dir: &Path, text: &str) -> Result<(), SidecarReconcileError> {
     let old_file = seed_file(data_dir, "workspace/old-document-note.rs");
     let new_file = seed_file(data_dir, "workspace/new-document-note.rs");
     let old_identity =
@@ -170,7 +184,11 @@ fn document_source_only(data_dir: &Path, text: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn document_ambiguous(data_dir: &Path, source_text: &str, target_text: &str) -> anyhow::Result<()> {
+fn document_ambiguous(
+    data_dir: &Path,
+    source_text: &str,
+    target_text: &str,
+) -> Result<(), SidecarReconcileError> {
     let old_file = seed_file(data_dir, "workspace/old-document-conflict.rs");
     let new_file = seed_file(data_dir, "workspace/new-document-conflict.rs");
     let old_identity = bookmark_service::resolve_document_identity(&old_file)?;
@@ -201,7 +219,7 @@ fn document_ambiguous(data_dir: &Path, source_text: &str, target_text: &str) -> 
     Ok(())
 }
 
-fn folder_source_only(data_dir: &Path, text: &str) -> anyhow::Result<()> {
+fn folder_source_only(data_dir: &Path, text: &str) -> Result<(), SidecarReconcileError> {
     let old_folder = seed_dir(data_dir, "old-folder-note");
     let new_folder = seed_dir(data_dir, "new-folder-note");
     let old_identity =
@@ -215,7 +233,11 @@ fn folder_source_only(data_dir: &Path, text: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn folder_ambiguous(data_dir: &Path, source_text: &str, target_text: &str) -> anyhow::Result<()> {
+fn folder_ambiguous(
+    data_dir: &Path,
+    source_text: &str,
+    target_text: &str,
+) -> Result<(), SidecarReconcileError> {
     let old_folder = seed_dir(data_dir, "old-folder-conflict");
     let new_folder = seed_dir(data_dir, "new-folder-conflict");
     let old_identity = folder_note_service::resolve_folder_note_identity(&old_folder)?;
@@ -250,7 +272,7 @@ fn local_history_duplicate(
     data_dir: &Path,
     source_text: &str,
     target_text: &str,
-) -> anyhow::Result<()> {
+) -> Result<(), SidecarReconcileError> {
     let path = seed_file(data_dir, "workspace/local-history-target.rs");
     let target_text = distinct_target_text(source_text, target_text);
     local_history_service::capture_snapshot_for_path(
@@ -283,13 +305,13 @@ fn local_history_duplicate(
                     .text,
             )
         })
-        .collect::<anyhow::Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>, local_history_service::LocalHistoryError>>()?;
     assert!(bodies.iter().any(|body| body == source_text));
     assert!(bodies.iter().any(|body| body == &target_text));
     Ok(())
 }
 
-fn local_history_orphan(data_dir: &Path, text: &str) -> anyhow::Result<()> {
+fn local_history_orphan(data_dir: &Path, text: &str) -> Result<(), SidecarReconcileError> {
     let orphan_dir = local_history_service::local_history_dir(data_dir).join("orphan-generated");
     fixture::create_dir_all(&orphan_dir);
     fixture::write_text(&orphan_dir.join("history-without-index.txt"), text);
@@ -331,7 +353,7 @@ fn seed_local_history_lineage(
     lineage_dir: &Path,
     identity: DocumentSidecarIdentity,
     text: &str,
-) -> anyhow::Result<()> {
+) -> Result<(), SidecarReconcileError> {
     fixture::create_dir_all(lineage_dir);
     let meta = LocalHistorySnapshotMeta {
         snapshot_id: next_record_id("history"),

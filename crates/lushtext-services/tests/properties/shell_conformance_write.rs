@@ -92,7 +92,8 @@ proptest! {
         case.failing_producer = failing_producer && primitive == WritePrimitive::ReplaceStream;
 
         let base_root = tempfile::tempdir().expect("tempdir");
-        let base = check_write_case(base_root.path(), &case).map_err(TestCaseError::fail)?;
+        let base = check_write_case(base_root.path(), &case)
+            .map_err(|error| TestCaseError::fail(error.to_string()))?;
         for generated in faults {
             if let Some(fault) = resolve(generated, &base.actions)
                 && !case.faults.contains(&fault)

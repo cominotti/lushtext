@@ -549,7 +549,12 @@ fn classify_path(
     let file_facts = match item_file_facts(path) {
         Ok(file_facts) => file_facts,
         Err(error) => {
-            return (FormatClassification::Damaged { detail: error }, None);
+            return (
+                FormatClassification::Damaged {
+                    detail: error.to_string(),
+                },
+                None,
+            );
         }
     };
 
@@ -592,13 +597,21 @@ fn classify_path(
     )
 }
 
-fn item_file_facts(path: &Path) -> Result<FormatItemFileFacts, String> {
+/// Typed failure from reading scanned file facts.
+#[derive(Debug, thiserror::Error)]
+#[error("metadata facts could not be read: {source}")]
+struct ItemFileFactsError {
+    #[from]
+    source: std::io::Error,
+}
+
+fn item_file_facts(path: &Path) -> Result<FormatItemFileFacts, ItemFileFactsError> {
     fs_metadata::file_facts(path)
         .map(|facts| FormatItemFileFacts {
             byte_size: facts.byte_size,
             modified_at_secs: facts.modified_at_secs,
         })
-        .map_err(|error| format!("metadata facts could not be read: {error}"))
+        .map_err(ItemFileFactsError::from)
 }
 
 fn has_extension(path: &Path, expected: &str) -> bool {
@@ -651,10 +664,10 @@ fn classify_json_bytes(
     let version = u32::try_from(raw_version).unwrap_or(u32::MAX);
     if version == latest_format_version() {
         if object.contains_key("data") {
-            if let Err(detail) = validate_latest_payload(bytes, kind) {
+            if let Err(error) = validate_latest_payload(bytes, kind) {
                 return FormatClassification::UnsupportedOld {
                     version: Some(version),
-                    detail,
+                    detail: format!("{error:?}"),
                 };
             }
             return FormatClassification::Current {
@@ -685,7 +698,10 @@ fn classify_json_bytes(
 }
 
 /// Re-run latest readers for kinds whose envelope version is not enough to prove compatibility.
-fn validate_latest_payload(bytes: &[u8], kind: FormatMetadataKind) -> Result<(), String> {
+fn validate_latest_payload(
+    bytes: &[u8],
+    kind: FormatMetadataKind,
+) -> Result<(), json_format::JsonFormatError> {
     match kind {
         // Workspace state has a known legacy payload shape that can pass
         // envelope checks; other latest-version readers own their detailed
@@ -694,8 +710,7 @@ fn validate_latest_payload(bytes: &[u8], kind: FormatMetadataKind) -> Result<(),
             bytes,
             json_format::KIND_WORKSPACE_STATE,
         )
-        .map(|_| ())
-        .map_err(|error| format!("{error:?}")),
+        .map(|_| ()),
         _ => Ok(()),
     }
 }
@@ -900,7 +915,9 @@ mod tests {
 
     #[test]
     fn registered_converter_marks_older_version_upgradeable() {
-        fn convert(bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
+        fn convert(
+            bytes: &[u8],
+        ) -> Result<Vec<u8>, crate::persistence::format_upgrade::FormatConverterError> {
             Ok(bytes.to_vec())
         }
 
@@ -929,7 +946,9 @@ mod tests {
 
     #[test]
     fn inventory_query_helpers_report_current_and_upgradeable_items() {
-        fn convert(bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
+        fn convert(
+            bytes: &[u8],
+        ) -> Result<Vec<u8>, crate::persistence::format_upgrade::FormatConverterError> {
             Ok(bytes.to_vec())
         }
 

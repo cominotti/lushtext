@@ -17,11 +17,11 @@ pub use preview::{
 pub use replace::{
     ApplyReplacementsOutcome, ContentDigest, MAIN_MAX_REPLACE_FILE_BYTES, MAIN_REPLACE_FILE_BYTES,
     MAIN_REPLACE_UNDO_BYTES, MAX_REPLACE_FILE_BYTES, MAX_REPLACE_UNDO_RETAINED_BYTES,
-    REPLACE_DISK_RESERVE_BYTES, REPLACE_STREAM_CHUNK_BYTES, ReplaceConstructionMetrics,
-    ReplaceJournalFreshness, ReplacePhase, ReplaceProgress, ReplaceRunRequest, ReplaceUndoBackup,
-    ReplaceUndoEntry, UndoOriginal, UndoReplaceOutcome, apply_replacements,
-    apply_replacements_with, apply_request_if_current, replace_undo_retained_byte_weight,
-    undo_replacements, undo_replacements_for_open_identities,
+    REPLACE_DISK_RESERVE_BYTES, REPLACE_STREAM_CHUNK_BYTES, ReplaceApplyError,
+    ReplaceConstructionMetrics, ReplaceJournalFreshness, ReplacePhase, ReplaceProgress,
+    ReplaceRunRequest, ReplaceUndoBackup, ReplaceUndoEntry, UndoOriginal, UndoReplaceOutcome,
+    apply_replacements, apply_replacements_with, apply_request_if_current,
+    replace_undo_retained_byte_weight, undo_replacements, undo_replacements_for_open_identities,
 };
 #[cfg(feature = "test-utils")]
 pub use replace::{

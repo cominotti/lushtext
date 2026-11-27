@@ -9261,13 +9261,13 @@ fn test_close_draft_snapshot_mutation_blocks_close_and_keeps_retryable_state() {
         .expect("close result")
         .expect_err("mutated close snapshot must block close");
     assert!(matches!(
-        error.downcast_ref::<DraftFlushError>(),
-        Some(DraftFlushError::Unconfirmed {
+        error,
+        DraftFlushError::Unconfirmed {
             cancelled: 1,
             over_limit: 0,
             body_write: 0,
             ..
-        })
+        }
     ));
     assert!(editor.draft_dirty());
     assert_eq!(
@@ -9754,8 +9754,8 @@ fn test_close_flush_registers_a_new_draft_id_before_its_body_write() {
         .expect("close result")
         .expect_err("a close whose registration failed must not confirm");
     assert!(matches!(
-        error.downcast_ref::<DraftFlushError>(),
-        Some(DraftFlushError::Unconfirmed { body_write: 1, .. })
+        error,
+        DraftFlushError::Unconfirmed { body_write: 1, .. }
     ));
     assert!(editor.draft_dirty());
     assert_eq!(
@@ -10126,13 +10126,13 @@ fn test_draft_pipeline_close_blocks_and_preserves_retry_state_over_limit() {
         .expect("close result")
         .expect_err("over-limit recovery must block close");
     assert!(matches!(
-        error.downcast_ref::<DraftFlushError>(),
-        Some(DraftFlushError::Unconfirmed {
+        error,
+        DraftFlushError::Unconfirmed {
             cancelled: 0,
             over_limit: 1,
             body_write: 0,
             ..
-        })
+        }
     ));
     assert!(editor.draft_dirty());
     assert!(
@@ -21166,7 +21166,9 @@ fn test_startup_format_gate_blocks_future_session_and_resumes_after_start_fresh(
 }
 
 /// Test converter used only to make the startup gate exercise its Convert path.
-fn convert_session_v0_fixture_to_v1(bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
+fn convert_session_v0_fixture_to_v1(
+    bytes: &[u8],
+) -> Result<Vec<u8>, format_upgrade::FormatConverterError> {
     let value: serde_json::Value = serde_json::from_slice(bytes)?;
     let data = value
         .get("data")

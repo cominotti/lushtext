@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use super::ReplaceApplyError;
 use super::admission::{MainAdmissionLedger, MainCharge, ReplacePass, disk_admits};
 use super::protocol::{FileAction, FileEnd, FileOutcome, ReplaceFileProtocol, RunJournalState};
 use super::stream::{
@@ -80,7 +81,7 @@ pub fn apply_replacements(
     skip_paths: &HashSet<PathBuf>,
     cancel: &AtomicBool,
     journal_data_dir: &Path,
-) -> anyhow::Result<ApplyReplacementsOutcome> {
+) -> Result<ApplyReplacementsOutcome, ReplaceApplyError> {
     apply_replacements_with(ReplaceRunRequest {
         replacements,
         skip_paths,
@@ -99,10 +100,9 @@ pub fn apply_replacements(
 /// As [`apply_replacements`].
 pub fn apply_replacements_with(
     request: ReplaceRunRequest<'_>,
-) -> anyhow::Result<ApplyReplacementsOutcome> {
-    apply_replacements_inner(request, None).and_then(|outcome| {
-        outcome.ok_or_else(|| anyhow::anyhow!("unguarded Replace All became stale"))
-    })
+) -> Result<ApplyReplacementsOutcome, ReplaceApplyError> {
+    apply_replacements_inner(request, None)
+        .and_then(|outcome| outcome.ok_or(ReplaceApplyError::StaleGeneration))
 }
 
 /// Apply only if the UI reservation is still current after acquiring the journal lock.
@@ -114,7 +114,7 @@ pub(crate) fn apply_replacements_if_current(
     cancel: &AtomicBool,
     journal_data_dir: &Path,
     freshness: &ReplaceJournalFreshness,
-) -> anyhow::Result<Option<ApplyReplacementsOutcome>> {
+) -> Result<Option<ApplyReplacementsOutcome>, ReplaceApplyError> {
     apply_request_if_current(
         ReplaceRunRequest {
             replacements,
@@ -139,7 +139,7 @@ pub(crate) fn apply_replacements_if_current(
 pub fn apply_request_if_current(
     request: ReplaceRunRequest<'_>,
     freshness: &ReplaceJournalFreshness,
-) -> anyhow::Result<Option<ApplyReplacementsOutcome>> {
+) -> Result<Option<ApplyReplacementsOutcome>, ReplaceApplyError> {
     apply_replacements_inner(request, Some(freshness))
 }
 
@@ -185,17 +185,18 @@ struct Run<'a> {
 pub(super) fn apply_replacements_inner(
     request: ReplaceRunRequest<'_>,
     freshness: Option<&ReplaceJournalFreshness>,
-) -> anyhow::Result<Option<ApplyReplacementsOutcome>> {
+) -> Result<Option<ApplyReplacementsOutcome>, ReplaceApplyError> {
     if request.replacements.len() > MAX_REPLACE_PREVIEW_ROWS {
-        anyhow::bail!(
-            "Replace All selection exceeds the {MAX_REPLACE_PREVIEW_ROWS}-replacement limit"
-        );
+        return Err(ReplaceApplyError::SelectionLimitExceeded {
+            count: request.replacements.len(),
+            limit: MAX_REPLACE_PREVIEW_ROWS,
+        });
     }
     let Some(_journal_guard) = search_backup::acquire_journal_guard_cancellable(request.cancel)?
     else {
         // Cancelled while startup recovery or a journal disk job held the
         // guard: nothing was touched (design D3a).
-        anyhow::bail!("Replace cancelled");
+        return Err(ReplaceApplyError::Cancelled);
     };
     // The journal lock serializes this decision with startup recovery and all
     // journal commits. A stale UI generation must exit before preparing a new
@@ -318,10 +319,9 @@ pub(super) fn apply_replacements_inner(
         }
         let rollback = rollback_applied_files(&backup);
         if rollback.remaining.is_empty() {
-            search_backup::delete(run.request.journal_data_dir).map_err(|e| {
-                anyhow::anyhow!("Replace cancelled; undo backup cleanup failed: {e}")
-            })?;
-            anyhow::bail!("Replace cancelled");
+            search_backup::delete(run.request.journal_data_dir)
+                .map_err(|source| ReplaceApplyError::CancelledCleanupFailed { source })?;
+            return Err(ReplaceApplyError::Cancelled);
         }
         // Rollback could not restore every file: the journal keeps exactly
         // those, stays active, and offers Undo for them (design D8).
@@ -372,7 +372,9 @@ pub(super) fn apply_replacements_inner(
         && report.is_empty()
         && run.errors.total_count() > 0
     {
-        return Err(anyhow::anyhow!(run.errors.summary("Replace All failed")));
+        return Err(ReplaceApplyError::AllFilesFailed {
+            summary: run.errors.summary("Replace All failed"),
+        });
     }
 
     run.metrics.undo_live_bytes = run.live_body_bytes;
@@ -872,20 +874,31 @@ fn process_file(
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+enum OwnCleanupError {
+    #[cfg(test)]
+    #[error("injected {kind} removal failure")]
+    Injected { kind: &'static str },
+    #[error(transparent)]
+    Backup(#[from] search_backup::SearchBackupError),
+}
+
 /// Cleanup: remove this file's own entry (tests can fail it, task 4.11).
-fn remove_own_entry(data_dir: &Path, path: &Path) -> anyhow::Result<()> {
+fn remove_own_entry(data_dir: &Path, path: &Path) -> Result<(), OwnCleanupError> {
     if super::fail_cleanup_entry_removal_for_test(path) {
-        anyhow::bail!("injected entry removal failure");
+        #[cfg(test)]
+        return Err(OwnCleanupError::Injected { kind: "entry" });
     }
-    search_backup::delete_entry(data_dir, path)
+    Ok(search_backup::delete_entry(data_dir, path)?)
 }
 
 /// Cleanup: remove this file's own body (tests can fail it, task 4.11).
-fn remove_own_body(data_dir: &Path, path: &Path) -> anyhow::Result<()> {
+fn remove_own_body(data_dir: &Path, path: &Path) -> Result<(), OwnCleanupError> {
     if super::fail_cleanup_body_removal_for_test(path) {
-        anyhow::bail!("injected body removal failure");
+        #[cfg(test)]
+        return Err(OwnCleanupError::Injected { kind: "body" });
     }
-    search_backup::delete_body(data_dir, path)
+    Ok(search_backup::delete_body(data_dir, path)?)
 }
 
 fn skip_detail(reason: ReplaceSkipReason, error: &impl std::fmt::Display) -> String {

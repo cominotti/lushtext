@@ -104,7 +104,7 @@ enum StartupFormatApplyWorkerResult {
     Applied {
         plan: format_upgrade::FormatPlan,
         mode: format_upgrade::FormatApplyMode,
-        result: Result<format_upgrade::FormatApplyOutcome, String>,
+        result: Result<format_upgrade::FormatApplyOutcome, format_upgrade::FormatApplyError>,
     },
 }
 
@@ -287,8 +287,7 @@ impl LushtextWindow {
                     format_upgrade::FormatApplyMode::StartFresh => {
                         format_upgrade::start_fresh(&data_dir, &plan)
                     }
-                }
-                .map_err(|error| error.to_string());
+                };
                 StartupFormatApplyWorkerResult::Applied { plan, mode, result }
             },
             |window, result| match result {
@@ -327,10 +326,10 @@ impl LushtextWindow {
                 }
                 StartupFormatApplyWorkerResult::Applied {
                     plan,
-                    result: Err(detail),
+                    result: Err(error),
                     ..
                 } => {
-                    window.present_startup_format_dialog(&plan, Some(&detail));
+                    window.present_startup_format_dialog(&plan, Some(&error.to_string()));
                 }
             },
         );
