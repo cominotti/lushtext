@@ -159,24 +159,27 @@ impl LushtextWindow {
         Some(tab_in_view(
             whole_px(f64::from(bounds.x())),
             whole_px(f64::from(bounds.width())),
-            scroller.width(),
+            lushtext_model::values::Sp::new(scroller.width()),
         ))
     }
 }
 
-/// `value` rounded to the nearest whole pixel, saturating at the `i32` range.
+/// `value` rounded to the nearest whole pixel ([`Sp`](lushtext_model::values::Sp)),
+/// saturating at the `i32` range.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the value is rounded and clamped to the i32 range first; an adjustment value \
               in pixels never approaches it"
 )]
-pub(super) fn whole_px(value: f64) -> i32 {
+pub(super) fn whole_px(value: f64) -> lushtext_model::values::Sp {
     if value.is_nan() {
-        return 0;
+        return lushtext_model::values::Sp::ZERO;
     }
-    value
-        .round()
-        .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
+    lushtext_model::values::Sp::new(
+        value
+            .round()
+            .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32,
+    )
 }
 
 /// `adjustment` rounded once into whole pixels, its value taken as `value`.
@@ -269,7 +272,7 @@ impl LushtextWindow {
             direction,
             rtl,
         );
-        self.animate_tab_strip_to(&adjustment, adjustment.lower() + f64::from(target));
+        self.animate_tab_strip_to(&adjustment, adjustment.lower() + f64::from(target.as_sp()));
         true
     }
 

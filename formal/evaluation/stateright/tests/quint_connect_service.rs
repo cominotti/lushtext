@@ -46,15 +46,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use lushtext_journal_stateright::env::{CLOSED, Editor, IDS, MAX_EDITS};
 use lushtext_model::persistence::draft::{DraftEntry, DraftManifest, DraftManifestAuthority};
 use lushtext_model::persistence::session::SessionData;
-use lushtext_services::persistence::draft_service::{
-    self, DraftRegistration, RegisteredDraft, journal_core, set_aside,
-};
 use lushtext_services::persistence::draft_service::journal_core::{
     BodyFacts, BodyWriteDecision, DeletionStep, RestoreDisposition, RestoreEnding,
 };
-use lushtext_journal_stateright::env::{CLOSED, Editor, IDS, MAX_EDITS};
+use lushtext_services::persistence::draft_service::{
+    self, DraftRegistration, RegisteredDraft, journal_core, set_aside,
+};
 use quint_connect::{Driver, Result, State, Step, quint_run, switch};
 use serde::Deserialize;
 
@@ -75,7 +75,9 @@ struct DiskView {
 
 impl<'de> Deserialize<'de> for DiskView {
     fn deserialize<D: serde::Deserializer<'de>>(_: D) -> core::result::Result<Self, D::Error> {
-        Err(serde::de::Error::custom("unused: DiskView::from_spec is overridden"))
+        Err(serde::de::Error::custom(
+            "unused: DiskView::from_spec is overridden",
+        ))
     }
 }
 
@@ -223,7 +225,12 @@ impl ServiceDriver {
             .collect();
         DiskView {
             entry: (0..IDS)
-                .map(|id| (id as i64, manifest.find_by_id(&Self::draft_id(id)).is_some()))
+                .map(|id| {
+                    (
+                        id as i64,
+                        manifest.find_by_id(&Self::draft_id(id)).is_some(),
+                    )
+                })
                 .collect(),
             body: (0..IDS)
                 .map(|id| (id as i64, self.body(id).unwrap_or(-1)))
@@ -290,7 +297,10 @@ impl ServiceDriver {
 
     fn window_body_facts(&self, id: usize) -> BodyFacts {
         let e = self.window.editors[id];
-        BodyFacts::from_window_view(e.known_entry, e.restore_pending)
+        BodyFacts::from_window_view(journal_core::WindowBodyFacts {
+            registered: e.known_entry,
+            restore_pending: e.restore_pending,
+        })
     }
 
     fn step(&mut self, a: QAction, id: i64) {
@@ -324,21 +334,21 @@ impl ServiceDriver {
                 if !editor.open || !editor.dirty || editor.token || editor.deletion.is_some() {
                     return;
                 }
-                let needed =
-                    journal_core::registration_required(true, editor.known_entry, self.trusted());
+                let reg_facts = journal_core::RegistrationFacts {
+                    file_backed: true,
+                    registered_in_known_manifest: editor.known_entry,
+                    known_manifest_trusted: self.trusted(),
+                };
+                let needed = journal_core::registration_required(reg_facts);
                 match journal_core::body_write_decision(
                     journal_core::ownership(self.window_body_facts(id)),
                     needed,
                 ) {
                     BodyWriteDecision::Hold => {}
                     BodyWriteDecision::Write | BodyWriteDecision::PreserveThenWrite => {
-                        let token = RegisteredDraft::without_registration(
-                            &Self::draft_id(id),
-                            true,
-                            editor.known_entry,
-                            self.trusted(),
-                        )
-                        .expect("the core said no registration is needed");
+                        let token =
+                            RegisteredDraft::without_registration(&Self::draft_id(id), reg_facts)
+                                .expect("the core said no registration is needed");
                         self.window.tokens[id] = Some(token);
                         self.window.editors[id].token = true;
                     }
@@ -359,7 +369,10 @@ impl ServiceDriver {
                                 self.window.tokens[id] = tokens.pop();
                                 let e = &mut self.window.editors[id];
                                 e.known_entry = true;
-                                e.token = journal_core::may_write_after_registration(true, true);
+                                e.token = journal_core::may_write_after_registration(
+                                    journal_core::RegistrationRequirement::Required,
+                                    journal_core::RegistrationCommit::Committed,
+                                );
                             }
                             Err(error) => {
                                 // Out of scope (fault-free); a divergence will show.
@@ -374,8 +387,11 @@ impl ServiceDriver {
                 if !editor.open || !editor.dirty || !editor.token {
                     return;
                 }
-                let needed =
-                    journal_core::registration_required(true, editor.known_entry, self.trusted());
+                let needed = journal_core::registration_required(journal_core::RegistrationFacts {
+                    file_backed: true,
+                    registered_in_known_manifest: editor.known_entry,
+                    known_manifest_trusted: self.trusted(),
+                });
                 if journal_core::body_write_decision(
                     journal_core::ownership(self.window_body_facts(id)),
                     needed,
@@ -410,8 +426,7 @@ impl ServiceDriver {
                 ) {
                     Ok(commit) => {
                         self.window.authority = commit.authority;
-                        if self.body(id) == Some(i64::from(written)) && editor.content == written
-                        {
+                        if self.body(id) == Some(i64::from(written)) && editor.content == written {
                             self.window.editors[id].dirty = false;
                         }
                     }
@@ -422,8 +437,9 @@ impl ServiceDriver {
                 if !editor.open || editor.deletion.is_some() {
                     return;
                 }
-                let start =
-                    journal_core::deletion_start(journal_core::ownership(self.window_body_facts(id)));
+                let start = journal_core::deletion_start(journal_core::ownership(
+                    self.window_body_facts(id),
+                ));
                 let e = &mut self.window.editors[id];
                 e.dirty = false;
                 e.token = false;

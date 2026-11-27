@@ -18,6 +18,17 @@ pub struct ParagraphRegexHit {
     pub chars: u64,
 }
 
+/// Options governing how a find query is compiled into a regular expression.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RegexCompileOptions {
+    /// Interpret `query` as raw regex syntax instead of escaping literals.
+    pub is_regex: bool,
+    /// Wrap the pattern in word boundaries (`\b(?:...)\b`).
+    pub whole_word: bool,
+    /// Match ASCII/Unicode case insensitively.
+    pub case_insensitive: bool,
+}
+
 /// Compiled regular-expression query for scanning a document on a worker thread.
 #[derive(Clone, Debug)]
 pub struct CompiledFindPattern {
@@ -29,26 +40,21 @@ impl CompiledFindPattern {
     ///
     /// Returns `None` if a regex pattern fails to compile.
     #[must_use]
-    pub fn compile(
-        query: &str,
-        is_regex: bool,
-        whole_word: bool,
-        case_insensitive: bool,
-    ) -> Option<Self> {
+    pub fn compile(query: &str, options: RegexCompileOptions) -> Option<Self> {
         let escaped;
-        let base = if is_regex {
+        let base = if options.is_regex {
             query
         } else {
             escaped = regex::escape(query);
             escaped.as_str()
         };
-        let pattern = if whole_word {
+        let pattern = if options.whole_word {
             format!(r"\b(?:{base})\b")
         } else {
             base.to_string()
         };
         let regex = regex::RegexBuilder::new(&pattern)
-            .case_insensitive(case_insensitive)
+            .case_insensitive(options.case_insensitive)
             .build()
             .ok()?;
         Some(Self { regex })

@@ -18,6 +18,7 @@ use super::{
     HISTOGRAM_BUCKETS, StallVerdict, classify_dispatch, histogram_bucket,
     histogram_bucket_floor_us, nearest_rank_percentile,
 };
+use crate::values::Micros;
 
 /// The largest modelled sample slice.
 const SAMPLES: usize = 4;
@@ -28,16 +29,16 @@ const SAMPLES: usize = 4;
 /// saturation or wrap-around can turn an overflowing bound into a pass.
 #[kani::proof]
 fn classification_is_sound_and_complete() {
-    let lateness: u64 = kani::any();
-    let tick: u64 = kani::any();
-    let slack: u64 = kani::any();
-    let budget: u64 = kani::any();
+    let lateness: Micros = kani::any();
+    let tick: Micros = kani::any();
+    let slack: Micros = kani::any();
+    let budget: Micros = kani::any();
     let verdict = classify_dispatch(lateness, tick, slack, budget);
 
-    let upper = u128::from(lateness) + u128::from(tick);
-    let lower = i128::from(lateness) - i128::from(slack);
-    let within = upper <= u128::from(budget);
-    let over = lower > i128::from(budget);
+    let upper = u128::from(lateness.as_us()) + u128::from(tick.as_us());
+    let lower = i128::from(lateness.as_us()) - i128::from(slack.as_us());
+    let within = upper <= u128::from(budget.as_us());
+    let over = lower > i128::from(budget.as_us());
 
     assert!(!(within && over), "the bounds cannot both decide");
     assert_eq!(verdict == StallVerdict::Within, within);
@@ -56,12 +57,12 @@ fn classification_is_sound_and_complete() {
 /// one does too.
 #[kani::proof]
 fn classification_is_monotone_in_the_lateness() {
-    let shorter: u64 = kani::any();
-    let longer: u64 = kani::any();
+    let shorter: Micros = kani::any();
+    let longer: Micros = kani::any();
     kani::assume(shorter <= longer);
-    let tick: u64 = kani::any();
-    let slack: u64 = kani::any();
-    let budget: u64 = kani::any();
+    let tick: Micros = kani::any();
+    let slack: Micros = kani::any();
+    let budget: Micros = kani::any();
     let short_verdict = classify_dispatch(shorter, tick, slack, budget);
     let long_verdict = classify_dispatch(longer, tick, slack, budget);
     if short_verdict == StallVerdict::Over {
@@ -77,8 +78,8 @@ fn classification_is_monotone_in_the_lateness() {
 /// documented floor.
 #[kani::proof]
 fn buckets_are_monotone_and_in_range() {
-    let small: u64 = kani::any();
-    let large: u64 = kani::any();
+    let small: Micros = kani::any();
+    let large: Micros = kani::any();
     kani::assume(small <= large);
     let small_bucket = histogram_bucket(small);
     let large_bucket = histogram_bucket(large);

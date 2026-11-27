@@ -43,13 +43,25 @@ pub const BETWEEN_WIDTH: i32 = 700;
 /// A bin width inside both conditions.
 pub const BELOW_BOTH_WIDTH: i32 = 450;
 
+#[derive(Clone, Copy)]
+enum SizeRequestMode {
+    Natural,
+    Requested,
+}
+
+#[derive(Clone, Copy)]
+enum BreakpointMode {
+    None,
+    LowerMinimum,
+}
+
 /// Build a window around content whose minimum width is
 /// [`CONTENT_MINIMUM`], optionally with a size request and a breakpoint that
 /// lowers that minimum to [`CONTENT_MINIMUM_NARROW`].
 fn content_window(
     recorder: &mut Recorder,
-    request: bool,
-    breakpoint: bool,
+    request: SizeRequestMode,
+    breakpoint: BreakpointMode,
     width: i32,
 ) -> Result<(libadwaita::Window, gtk4::Label), Stop> {
     let content = gtk4::Label::new(Some("content with a large minimum"));
@@ -59,11 +71,11 @@ fn content_window(
         .default_height(WINDOW_HEIGHT)
         .content(&content)
         .build();
-    if request {
+    if matches!(request, SizeRequestMode::Requested) {
         window.set_width_request(WINDOW_REQUEST);
         window.set_height_request(WINDOW_HEIGHT / 2);
     }
-    if breakpoint {
+    if matches!(breakpoint, BreakpointMode::LowerMinimum) {
         let Some(condition) = max_width_condition(WINDOW_CONDITION_SP) else {
             recorder.control(false, "control: the condition parses")?;
             return Ok((window, content));
@@ -126,11 +138,26 @@ fn below_both(recorder: &mut Recorder, wide_first: bool) -> Result<(String, Stri
 #[must_use]
 pub fn probe_a18() -> Observation {
     Recorder::run(AxiomId::new(18), |recorder| {
-        let (plain, _) = content_window(recorder, false, false, WINDOW_WIDTH)?;
+        let (plain, _) = content_window(
+            recorder,
+            SizeRequestMode::Natural,
+            BreakpointMode::None,
+            WINDOW_WIDTH,
+        )?;
         let plain_minimum = minimum_width(&plain);
-        let (requested, _) = content_window(recorder, true, false, WINDOW_WIDTH)?;
+        let (requested, _) = content_window(
+            recorder,
+            SizeRequestMode::Requested,
+            BreakpointMode::None,
+            WINDOW_WIDTH,
+        )?;
         let requested_minimum = minimum_width(&requested);
-        let (adaptive, adaptive_content) = content_window(recorder, true, true, WINDOW_WIDTH)?;
+        let (adaptive, adaptive_content) = content_window(
+            recorder,
+            SizeRequestMode::Requested,
+            BreakpointMode::LowerMinimum,
+            WINDOW_WIDTH,
+        )?;
         let adaptive_minimum = minimum_width(&adaptive);
         recorder.measure("minimum_without_breakpoints", plain_minimum);
         recorder.measure("minimum_with_request_only", requested_minimum);
@@ -150,7 +177,12 @@ pub fn probe_a18() -> Observation {
             );
             recorder.measure("adaptive_content_width", adaptive_content.width());
         }
-        let (narrow, narrow_content) = content_window(recorder, true, true, BELOW_REQUEST)?;
+        let (narrow, narrow_content) = content_window(
+            recorder,
+            SizeRequestMode::Requested,
+            BreakpointMode::LowerMinimum,
+            BELOW_REQUEST,
+        )?;
         let shown =
             Presented::checked_window(recorder, narrow, "control: the narrow window realizes")?;
         let narrow_width = shown.window().width();

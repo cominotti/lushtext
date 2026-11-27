@@ -1200,7 +1200,7 @@ pub struct AutomationWorkspaceSnapshot {
     /// or one typed failure.
     pub reveal_status: String,
     /// The latest reveal's request generation; `0` before any reveal.
-    pub reveal_generation: u64,
+    pub reveal_generation: crate::values::RevealGeneration,
     /// Tree depth of the latest reveal's target row (`0` for a folder row), once
     /// resolved.
     pub reveal_depth: Option<u32>,
@@ -1369,7 +1369,7 @@ pub struct AutomationNotificationSnapshot {
     /// Severity for the visible status-bar message.
     pub status_severity: Option<String>,
     /// Notification-bus generation for detecting visible-view changes.
-    pub generation: u64,
+    pub generation: crate::values::NotificationGeneration,
     /// Whether the delayed workspace-search progress message is allowed to render.
     pub search_progress_visible: bool,
 }

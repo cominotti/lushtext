@@ -31,6 +31,7 @@ use gtk4::gio;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
+use lushtext_model::values::{MirrorGeneration, TargetGeneration};
 use lushtext_model::workspace::{
     FolderTreeEntry, WorkspaceFolderId, WorkspaceFolderMoveDirection, WorkspaceId,
 };
@@ -367,7 +368,7 @@ pub struct LushtextWorkspaceSection {
     /// Parent directory identity for each retained child-store mirror.
     pub child_store_paths: RefCell<HashMap<usize, PathBuf>>,
     /// Scalar generation advanced with every accepted mirror splice.
-    pub child_row_mirror_generations: RefCell<HashMap<usize, u64>>,
+    pub child_row_mirror_generations: RefCell<HashMap<usize, MirrorGeneration>>,
     /// Scheduled large-reconciliation source owned with its scan token.
     pub child_reconcile_sources: RefCell<HashMap<usize, (Arc<AtomicBool>, glib::SourceId)>>,
     /// Ordered folder paths in the folder ListStore.
@@ -632,7 +633,7 @@ impl WatchRuntimeState {
         &self,
     ) -> (
         Vec<lushtext_services::watch::workspace_watch::WorkspaceWatchTarget>,
-        u64,
+        TargetGeneration,
         usize,
         bool,
         bool,
@@ -642,7 +643,7 @@ impl WatchRuntimeState {
             let mirror = self.targets.borrow();
             (
                 mirror.effective_targets(),
-                mirror.generation().value_for_evidence(),
+                TargetGeneration::new(mirror.generation().value_for_evidence()),
                 {
                     #[cfg(feature = "test-utils")]
                     {

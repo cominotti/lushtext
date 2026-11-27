@@ -45,7 +45,15 @@ fn unrestored_copy_is_kept_when_an_uncommitted_body_shares_the_entry_stamp() {
     manifest.upsert(entry.clone());
     draft_service::save_manifest(data.path(), &manifest).expect("manifest");
     let token = || {
-        RegisteredDraft::without_registration(&id, true, true, true).expect("registered id")
+        RegisteredDraft::without_registration(
+            &id,
+            lushtext_services::persistence::draft_service::journal_core::RegistrationFacts {
+                file_backed: true,
+                registered_in_known_manifest: true,
+                known_manifest_trusted: true,
+            },
+        )
+        .expect("registered id")
     };
     // The previous session's committed body.
     draft_service::write_draft(data.path(), &token(), "c2").expect("body c2");
@@ -73,5 +81,9 @@ fn unrestored_copy_is_kept_when_an_uncommitted_body_shares_the_entry_stamp() {
         .map(|body| std::fs::read_to_string(body.path).expect("read"))
         .collect();
     kept.sort();
-    assert_eq!(kept, vec!["c2".to_string(), "c4".to_string()], "c4 was not preserved");
+    assert_eq!(
+        kept,
+        vec!["c2".to_string(), "c4".to_string()],
+        "c4 was not preserved"
+    );
 }

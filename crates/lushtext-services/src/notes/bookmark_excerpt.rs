@@ -117,6 +117,15 @@ pub struct BookmarkExcerptTruncation {
     pub within_line: bool,
 }
 
+/// External source truncation around a bounded live line slice.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BookmarkContextTruncation {
+    /// Lines exist before `first_line`.
+    pub before: bool,
+    /// Lines exist after the supplied slice or were truncated externally.
+    pub after: bool,
+}
+
 /// Metadata describing the rendered line window and target-line position.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BookmarkExcerptLineWindow {
@@ -252,8 +261,7 @@ pub fn extract_from_context_lines(
     first_line: u32,
     target_line: u32,
     lines: Vec<String>,
-    truncated_before: bool,
-    truncated_after: bool,
+    truncation: BookmarkContextTruncation,
 ) -> BookmarkExcerptState {
     let Some(target_line_index) = target_line
         .checked_sub(first_line)
@@ -288,8 +296,8 @@ pub fn extract_from_context_lines(
             target_line,
             target_line_index,
             truncation: BookmarkExcerptTruncation {
-                before: truncated_before,
-                after: truncated_after,
+                before: truncation.before,
+                after: truncation.after,
                 within_line: truncated_within_line,
             },
         },
@@ -431,8 +439,10 @@ fn extract_from_lines(
         u32::try_from(start).unwrap_or(u32::MAX),
         target_line,
         context_lines,
-        start > 0,
-        end + 1 < lines.len() || truncated_by_external_budget,
+        BookmarkContextTruncation {
+            before: start > 0,
+            after: end + 1 < lines.len() || truncated_by_external_budget,
+        },
     )
 }
 
@@ -699,8 +709,10 @@ mod tests {
             4,
             5,
             vec!["before".to_string(), "target".to_string()],
-            true,
-            true,
+            BookmarkContextTruncation {
+                before: true,
+                after: true,
+            },
         ));
 
         assert_eq!(excerpt.presentation, BookmarkExcerptPresentation::Markdown);
@@ -721,8 +733,7 @@ mod tests {
                 4,
                 6,
                 vec!["line-4".to_string(), "line-5".to_string()],
-                false,
-                false,
+                BookmarkContextTruncation::default(),
             )),
             BookmarkExcerptUnavailableReason::LineOutOfRange
         );

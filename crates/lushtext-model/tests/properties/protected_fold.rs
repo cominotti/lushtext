@@ -13,14 +13,19 @@
 use lushtext_model::document::protected_fold::{
     FoldRange, FoldThresholds, ProductionFoldState, fold_finish, fold_step, plan_folds,
 };
+use lushtext_model::values::CharCount;
 use proptest::prelude::*;
+
+fn c(chars: u64) -> CharCount {
+    CharCount::new(chars)
+}
 
 /// The specification: what each paragraph shows.
 fn reference_visible(lengths: &[u64], thresholds: FoldThresholds) -> Vec<u64> {
-    let capped: Vec<u64> = lengths
-        .iter()
-        .map(|&length| length.min(thresholds.head_cap()))
-        .collect();
+    let head_cap = thresholds.head_cap().as_chars();
+    let n_dense = thresholds.n_dense().as_chars();
+    let v_batch = thresholds.v_batch().as_chars();
+    let capped: Vec<u64> = lengths.iter().map(|&length| length.min(head_cap)).collect();
     let r_fold = thresholds.r_fold();
     let size = r_fold.min(capped.len());
     let mut dense = vec![false; capped.len()];
@@ -30,7 +35,7 @@ fn reference_visible(lengths: &[u64], thresholds: FoldThresholds) -> Vec<u64> {
                 .iter()
                 .map(|&c| u128::from(c))
                 .sum();
-            if sum > u128::from(thresholds.v_batch()) {
+            if sum > u128::from(v_batch) {
                 dense[start..start + size]
                     .iter_mut()
                     .for_each(|member| *member = true);
@@ -40,13 +45,7 @@ fn reference_visible(lengths: &[u64], thresholds: FoldThresholds) -> Vec<u64> {
     capped
         .iter()
         .zip(dense)
-        .map(|(&c, dense)| {
-            if dense {
-                c.min(thresholds.n_dense())
-            } else {
-                c
-            }
-        })
+        .map(|(&c, dense)| if dense { c.min(n_dense) } else { c })
         .collect()
 }
 
@@ -54,13 +53,14 @@ fn visible_of(lengths: &[u64], plan: &[FoldRange]) -> Vec<u64> {
     let mut visible = lengths.to_vec();
     for range in plan {
         visible[usize::try_from(range.paragraph).expect("a planned paragraph index fits")] =
-            range.head_chars;
+            range.head_chars.as_chars();
     }
     visible
 }
 
 fn assert_plan_is_the_specification(lengths: &[u64], thresholds: FoldThresholds) {
-    let plan = plan_folds(lengths, thresholds);
+    let char_lengths: Vec<CharCount> = lengths.iter().copied().map(CharCount::new).collect();
+    let plan = plan_folds(&char_lengths, thresholds);
     for pair in plan.windows(2) {
         assert!(
             pair[0].paragraph < pair[1].paragraph,
@@ -71,21 +71,31 @@ fn assert_plan_is_the_specification(lengths: &[u64], thresholds: FoldThresholds)
         let length =
             lengths[usize::try_from(range.paragraph).expect("a planned paragraph index fits")];
         assert_eq!(
-            range.head_chars + range.tail_chars,
+            range.head_chars.as_chars() + range.tail_chars.as_chars(),
             length,
             "only the paragraph"
         );
-        assert!(range.tail_chars > 0, "only folded paragraphs are planned");
-        assert!(range.head_chars >= length.min(thresholds.n_dense()).max(1));
+        assert!(
+            range.tail_chars.as_chars() > 0,
+            "only folded paragraphs are planned"
+        );
+        assert!(range.head_chars.as_chars() >= length.min(thresholds.n_dense().as_chars()).max(1));
     }
     let visible = visible_of(lengths, &plan);
     assert_eq!(visible, reference_visible(lengths, thresholds));
     let size = thresholds.r_fold().min(visible.len()).max(1);
     for window in visible.windows(size) {
         let sum: u128 = window.iter().map(|&v| u128::from(v)).sum();
-        assert!(sum <= u128::from(thresholds.v_batch()), "window bound");
+        assert!(
+            sum <= u128::from(thresholds.v_batch().as_chars()),
+            "window bound"
+        );
     }
-    assert!(visible.iter().all(|&v| v <= thresholds.head_cap()));
+    assert!(
+        visible
+            .iter()
+            .all(|&v| v <= thresholds.head_cap().as_chars())
+    );
 }
 
 fn small_thresholds() -> impl Strategy<Value = FoldThresholds> {
@@ -93,7 +103,7 @@ fn small_thresholds() -> impl Strategy<Value = FoldThresholds> {
         "valid thresholds",
         |(r_fold, n_dense, head_extra, v_extra)| {
             let v_batch = r_fold as u64 * n_dense + v_extra;
-            FoldThresholds::new(n_dense + head_extra, n_dense, v_batch, r_fold)
+            FoldThresholds::new(c(n_dense + head_extra), c(n_dense), c(v_batch), r_fold)
         },
     )
 }
@@ -128,7 +138,7 @@ fn stream_split(lengths: &[u64], thresholds: FoldThresholds, cuts: &[usize]) -> 
     let mut from = 0;
     for cut in cuts.into_iter().chain([lengths.len()]) {
         for &length in &lengths[from..cut] {
-            plan.extend(fold_step(&mut state, length));
+            plan.extend(fold_step(&mut state, c(length)));
         }
         // An install turn boundary: the state is carried to the next turn.
         state = state.clone();
@@ -136,6 +146,11 @@ fn stream_split(lengths: &[u64], thresholds: FoldThresholds, cuts: &[usize]) -> 
     }
     plan.extend(fold_finish(state));
     plan
+}
+
+fn plan_raw(lengths: &[u64], thresholds: FoldThresholds) -> Vec<FoldRange> {
+    let char_lengths: Vec<CharCount> = lengths.iter().copied().map(CharCount::new).collect();
+    plan_folds(&char_lengths, thresholds)
 }
 
 proptest! {
@@ -160,7 +175,7 @@ proptest! {
     ) {
         prop_assert_eq!(
             stream_split(&lengths, thresholds, &cuts),
-            plan_folds(&lengths, thresholds)
+            plan_raw(&lengths, thresholds)
         );
     }
 
@@ -171,7 +186,7 @@ proptest! {
     ) {
         prop_assert_eq!(
             stream_split(&lengths, FoldThresholds::PRODUCTION, &cuts),
-            plan_folds(&lengths, FoldThresholds::PRODUCTION)
+            plan_raw(&lengths, FoldThresholds::PRODUCTION)
         );
     }
 }

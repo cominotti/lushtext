@@ -165,7 +165,10 @@ fn place(data_dir: &Path, draft_id: &str, stamp_secs: u64, transfer: Transfer) -
     };
     for attempt in 0..MAX_SET_ASIDE_NAME_ATTEMPTS {
         let target = candidate_path(&dir, draft_id, stamp_secs, attempt);
-        let slot = if !fs_metadata::exists(&target) {
+        let exists = fs_metadata::path_status(&target)
+            .with_context(|| format!("failed to inspect {}", target.display()))?
+            .is_present();
+        let slot = if !exists {
             SetAsideSlot::Free
         } else if copy_bytes
             .as_deref()

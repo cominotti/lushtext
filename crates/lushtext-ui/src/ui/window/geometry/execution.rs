@@ -38,6 +38,8 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use libadwaita::prelude::AdwApplicationWindowExt;
 
+use lushtext_model::values::Sp;
+
 use crate::config::keys;
 use crate::ui::sidebar::width_preset::WorkspaceSidebarWidthPreset;
 
@@ -58,13 +60,13 @@ use crate::ui::settings_writes;
 /// The result is finite and in (0, 1] for every share whose width is positive,
 /// which the policy guarantees (`split_fraction_is_finite_and_in_unit_interval`).
 pub(in crate::ui::window) fn split_fraction(share: PaneShare) -> f64 {
-    (f64::from(share.width_sp) / f64::from(share.of_sp.max(1))).min(1.0)
+    (f64::from(share.width_sp.as_sp()) / f64::from(share.of_sp.as_sp().max(1))).min(1.0)
 }
 
 /// The properties pane's window-relative fraction, the value stored in
 /// `properties-sidebar-width-fraction`.
 pub(in crate::ui::window) fn desired_properties_fraction(window_width: i32) -> f64 {
-    split_fraction(policy::desired_properties_share(window_width))
+    split_fraction(policy::desired_properties_share(Sp::new(window_width)))
 }
 
 pub(in crate::ui::window) fn configure_split_views(
@@ -77,8 +79,8 @@ pub(in crate::ui::window) fn configure_split_views(
 ) {
     workspace_split_view.set_sidebar_position(gtk4::PackType::Start);
     workspace_split_view.set_sidebar_width_unit(libadwaita::LengthUnit::Sp);
-    workspace_split_view.set_min_sidebar_width(f64::from(WORKSPACE_SIDEBAR_MIN_WIDTH_SP));
-    workspace_split_view.set_max_sidebar_width(f64::from(WORKSPACE_SIDEBAR_MIN_WIDTH_SP));
+    workspace_split_view.set_min_sidebar_width(f64::from(WORKSPACE_SIDEBAR_MIN_WIDTH_SP.as_sp()));
+    workspace_split_view.set_max_sidebar_width(f64::from(WORKSPACE_SIDEBAR_MIN_WIDTH_SP.as_sp()));
     workspace_split_view.set_pin_sidebar(true);
     workspace_split_view.set_enable_show_gesture(false);
     workspace_split_view.set_enable_hide_gesture(false);
@@ -87,7 +89,7 @@ pub(in crate::ui::window) fn configure_split_views(
 
     properties_split_view.set_sidebar_position(gtk4::PackType::End);
     properties_split_view.set_sidebar_width_unit(libadwaita::LengthUnit::Sp);
-    properties_split_view.set_min_sidebar_width(f64::from(PROPERTIES_SIDEBAR_MIN_WIDTH_SP));
+    properties_split_view.set_min_sidebar_width(f64::from(PROPERTIES_SIDEBAR_MIN_WIDTH_SP.as_sp()));
     properties_split_view.set_pin_sidebar(true);
     properties_split_view.set_enable_show_gesture(false);
     properties_split_view.set_enable_hide_gesture(false);
@@ -95,8 +97,8 @@ pub(in crate::ui::window) fn configure_split_views(
     preview_layout_view.set_layout_name(PREVIEW_LAYOUT_EDITOR);
     preview_split_view.set_sidebar_position(gtk4::PackType::End);
     preview_split_view.set_sidebar_width_unit(libadwaita::LengthUnit::Sp);
-    preview_split_view.set_min_sidebar_width(f64::from(PREVIEW_MIN_WIDTH_SP));
-    preview_split_view.set_max_sidebar_width(f64::from(PREVIEW_MIN_WIDTH_SP));
+    preview_split_view.set_min_sidebar_width(f64::from(PREVIEW_MIN_WIDTH_SP.as_sp()));
+    preview_split_view.set_max_sidebar_width(f64::from(PREVIEW_MIN_WIDTH_SP.as_sp()));
     preview_split_view.set_pin_sidebar(true);
     preview_split_view.set_enable_show_gesture(false);
     preview_split_view.set_enable_hide_gesture(false);
@@ -125,7 +127,7 @@ fn split_view_restore_facts(window: &super::LushtextWindow) -> SplitViewRestoreF
         legacy_sidebar_visible: settings
             .user_value(keys::SIDEBAR_VISIBLE)
             .map(|_| settings.boolean(keys::SIDEBAR_VISIBLE)),
-        current_width: current_window_width(window),
+        current_width: Sp::new(current_window_width(window)),
         stored_workspace_visible: settings.boolean(keys::WORKSPACE_SIDEBAR_VISIBLE),
         stored_properties_visible: settings.boolean(keys::PROPERTIES_SIDEBAR_VISIBLE),
         stored_workspace_preset: WorkspaceSidebarWidthPreset::from_fraction(
@@ -162,7 +164,7 @@ pub(in crate::ui::window) fn plan_split_view_restore(
     }
     settings_writes::set_double(
         keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION,
-        desired_properties_fraction(facts.current_width),
+        desired_properties_fraction(facts.current_width.as_sp()),
     );
     if migrates {
         settings_writes::set_boolean(keys::SPLIT_VIEW_LAYOUT_MIGRATED, true);
@@ -212,7 +214,7 @@ pub(in crate::ui::window) fn install_split_view_breakpoints(window: &super::Lush
     window
         .imp()
         .properties_breakpoint_max_width
-        .set(properties_max_width);
+        .set(properties_max_width.as_sp());
     let properties_bp = libadwaita::Breakpoint::new(
         libadwaita::BreakpointCondition::parse(&properties_breakpoint_condition(
             properties_max_width,
@@ -286,7 +288,7 @@ pub(in crate::ui::window) fn install_split_view_breakpoints(window: &super::Lush
 /// of a magic number so the shell explains *why* it collapses earlier.
 pub(in crate::ui::window) fn properties_breakpoint_max_width_for_window(
     window: &super::LushtextWindow,
-) -> i32 {
+) -> Sp {
     derive_adaptive_shell_layout(adaptive_shell_inputs(window)).properties_breakpoint_max_width
 }
 
@@ -322,7 +324,7 @@ pub(in crate::ui::window) fn adaptive_shell_inputs_for_width(
 ) -> AdaptiveShellInputs {
     let imp = window.imp();
     AdaptiveShellInputs {
-        window_width,
+        window_width: Sp::new(window_width),
         workspace_preset: workspace_sidebar_preset(window),
         workspace_requested_visible: imp.secondary_surfaces.workspace_requested_visible.get(),
         properties_requested_visible: imp.secondary_surfaces.properties_requested_visible.get(),
@@ -339,6 +341,7 @@ pub(in crate::ui::window) fn effective_workspace_sidebar_width_sp(
         window,
         window_width,
     ))
+    .as_sp()
 }
 
 pub(in crate::ui::window) fn effective_workspace_sidebar_fraction(
@@ -442,7 +445,7 @@ fn current_reconciliation(
     let plan = plan_shell_reconciliation(
         rendered,
         layout,
-        window.imp().properties_breakpoint_max_width.get(),
+        Sp::new(window.imp().properties_breakpoint_max_width.get()),
     );
     (rendered, layout, plan)
 }
@@ -494,7 +497,10 @@ pub(in crate::ui::window) fn sync_properties_breakpoint(window: &super::Lushtext
     if let Some(breakpoint) = window.imp().properties_breakpoint.borrow().as_ref() {
         breakpoint.set_condition(Some(&condition));
     }
-    window.imp().properties_breakpoint_max_width.set(max_width);
+    window
+        .imp()
+        .properties_breakpoint_max_width
+        .set(max_width.as_sp());
 }
 
 pub(in crate::ui::window) fn sync_secondary_surfaces(window: &super::LushtextWindow) {
@@ -576,6 +582,8 @@ pub(in crate::ui::window) fn sync_split_view_widths(
 
 #[cfg(test)]
 mod tests {
+    use lushtext_model::values::Sp;
+
     use super::split_fraction;
     use crate::ui::sidebar::width_preset::WorkspaceSidebarWidthPreset;
     use crate::ui::window::geometry::policy::{
@@ -610,13 +618,14 @@ mod tests {
             i32::MAX,
         ];
         for width in widths.into_iter().chain((1..5_000).step_by(7)) {
+            let width_sp = Sp::new(width);
             assert!(
-                in_unit_interval(split_fraction(desired_properties_share(width))),
+                in_unit_interval(split_fraction(desired_properties_share(width_sp))),
                 "{width}"
             );
             for preset in WorkspaceSidebarWidthPreset::ALL {
-                let share = workspace_preset_share(preset, width);
-                assert!(share.width_sp >= 1, "{width} {preset:?}");
+                let share = workspace_preset_share(preset, width_sp);
+                assert!(share.width_sp >= Sp::new(1), "{width} {preset:?}");
                 assert!(
                     in_unit_interval(split_fraction(share)),
                     "{width} {preset:?}"
@@ -626,8 +635,8 @@ mod tests {
         // A pane wider than its split is capped at the whole split.
         assert!(
             (split_fraction(PaneShare {
-                width_sp: 500,
-                of_sp: 100
+                width_sp: Sp::new(500),
+                of_sp: Sp::new(100)
             }) - 1.0)
                 .abs()
                 < f64::EPSILON

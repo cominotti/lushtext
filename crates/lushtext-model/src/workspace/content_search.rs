@@ -214,21 +214,39 @@ impl Default for ContentSearchOptions {
     }
 }
 
+/// Boolean matching and traversal flags for [`ContentSearchOptions::new`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ContentSearchFlags {
+    /// Whether ASCII/Unicode matching is case-sensitive.
+    pub case_sensitive: bool,
+    /// Whether the query is parsed as a regular expression.
+    pub regex: bool,
+    /// Whether matches must align on whole-word boundaries.
+    pub whole_word: bool,
+    /// Whether traversal respects `.gitignore` rules.
+    pub gitignore: bool,
+}
+
+impl Default for ContentSearchFlags {
+    fn default() -> Self {
+        Self {
+            case_sensitive: false,
+            regex: false,
+            whole_word: false,
+            gitignore: true,
+        }
+    }
+}
+
 impl ContentSearchOptions {
     /// Build one search-options value object from the current toggle state.
     #[must_use]
-    pub fn new(
-        case_sensitive: bool,
-        regex: bool,
-        whole_word: bool,
-        gitignore: bool,
-        glob: Option<String>,
-    ) -> Self {
+    pub fn new(flags: ContentSearchFlags, glob: Option<String>) -> Self {
         Self {
-            case_sensitive,
-            regex,
-            whole_word,
-            gitignore,
+            case_sensitive: flags.case_sensitive,
+            regex: flags.regex,
+            whole_word: flags.whole_word,
+            gitignore: flags.gitignore,
             glob,
             hidden: false,
         }
@@ -1076,8 +1094,15 @@ mod tests {
 
     #[test]
     fn toggle_summary_lists_enabled_options_in_display_order() {
-        let options =
-            ContentSearchOptions::new(true, true, true, false, Some("src/**/*.rs".to_string()));
+        let options = ContentSearchOptions::new(
+            ContentSearchFlags {
+                case_sensitive: true,
+                regex: true,
+                whole_word: true,
+                gitignore: false,
+            },
+            Some("src/**/*.rs".to_string()),
+        );
 
         assert_eq!(
             options.toggle_summary(),
@@ -1089,7 +1114,7 @@ mod tests {
     fn toggle_summary_omits_disabled_and_empty_values() {
         assert_eq!(ContentSearchOptions::default().toggle_summary(), "");
 
-        let options = ContentSearchOptions::new(false, false, false, true, Some(String::new()));
+        let options = ContentSearchOptions::new(ContentSearchFlags::default(), Some(String::new()));
         assert_eq!(options.toggle_summary(), "");
     }
 
@@ -1183,7 +1208,13 @@ mod tests {
     fn history_and_saved_search_rows_delegate_to_query_spec() {
         let spec = SearchQuerySpec::new(
             "abcdefghijklmnopqrstuvwxyz",
-            ContentSearchOptions::new(true, false, false, true, None),
+            ContentSearchOptions::new(
+                ContentSearchFlags {
+                    case_sensitive: true,
+                    ..ContentSearchFlags::default()
+                },
+                None,
+            ),
         );
 
         let history = SearchHistoryEntry::from_spec(spec.clone());
@@ -1200,7 +1231,15 @@ mod tests {
     fn search_history_json_remains_flat() {
         let entry = SearchHistoryEntry::from_spec(SearchQuerySpec::new(
             "needle",
-            ContentSearchOptions::new(true, false, true, false, Some("*.rs".to_string())),
+            ContentSearchOptions::new(
+                ContentSearchFlags {
+                    case_sensitive: true,
+                    regex: false,
+                    whole_word: true,
+                    gitignore: false,
+                },
+                Some("*.rs".to_string()),
+            ),
         ));
 
         let json = serde_json::to_value(&entry).expect("expected operation to succeed");
@@ -1239,7 +1278,14 @@ mod tests {
             "Rust files",
             SearchQuerySpec::new(
                 "needle",
-                ContentSearchOptions::new(true, true, false, true, Some("*.rs".to_string())),
+                ContentSearchOptions::new(
+                    ContentSearchFlags {
+                        case_sensitive: true,
+                        regex: true,
+                        ..ContentSearchFlags::default()
+                    },
+                    Some("*.rs".to_string()),
+                ),
             ),
         );
 

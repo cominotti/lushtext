@@ -29,6 +29,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 
 use crate::ui::plain_disposal::DisposalOwned;
+use lushtext_model::values::FlightGeneration;
 use lushtext_model::workspace::palette::{
     PaletteCategory, PaletteFileEntry, PaletteNoteEntry, PaletteSearchRow, SearchMode,
 };
@@ -169,7 +170,7 @@ impl LushtextCommandPalette {
     /// while the worker ran publishes nothing.
     fn settle_query_flight(
         &self,
-        generation: u64,
+        generation: FlightGeneration,
         outcome: PaletteSearchOutcome<PaletteQueryResult>,
         request: &PaletteQueryRequest,
     ) {

@@ -146,16 +146,18 @@ impl LushtextWindow {
         let registered = self.draft_manifest_entry(draft_id).is_some();
         let restore_pending = self.draft_restore_is_pending(draft_id);
         let owner = journal_core::ownership(journal_core::BodyFacts::from_window_view(
-            registered,
-            restore_pending,
+            journal_core::WindowBodyFacts {
+                registered,
+                restore_pending,
+            },
         ));
         journal_core::body_write_decision(
             owner,
-            journal_core::registration_required(
+            journal_core::registration_required(journal_core::RegistrationFacts {
                 file_backed,
-                registered,
-                self.imp().drafts.manifest_authority.get().is_trusted(),
-            ),
+                registered_in_known_manifest: registered,
+                known_manifest_trusted: self.imp().drafts.manifest_authority.get().is_trusted(),
+            }),
         )
     }
 
@@ -324,13 +326,13 @@ impl LushtextWindow {
             // rather than restating the terms is what keeps the
             // `buffer_untrusted` data-safety guard single-sourced: an added
             // term reaches this path, where a missed one is worst, automatically.
-            if !policy::draft_candidate_is_eligible(
-                editor.is_modified(),
-                editor.draft_dirty(),
-                editor.is_evicted(),
-                editor.draft_capture_blocked(),
-                false,
-            ) {
+            if !policy::draft_candidate_is_eligible(policy::DraftCandidateFacts {
+                modified: editor.is_modified(),
+                draft_dirty: editor.draft_dirty(),
+                evicted: editor.is_evicted(),
+                buffer_untrusted: editor.draft_capture_blocked(),
+                require_draft_dirty: false,
+            }) {
                 continue;
             }
             let Some(draft_id) = editor.draft_id() else {
@@ -372,9 +374,11 @@ impl LushtextWindow {
             let authority = self.imp().drafts.manifest_authority.get();
             let mut token = draft_service::RegisteredDraft::without_registration(
                 &draft_id,
-                original_path.is_some(),
-                self.draft_manifest_entry(&draft_id).is_some(),
-                authority.is_trusted(),
+                journal_core::RegistrationFacts {
+                    file_backed: original_path.is_some(),
+                    registered_in_known_manifest: self.draft_manifest_entry(&draft_id).is_some(),
+                    known_manifest_trusted: authority.is_trusted(),
+                },
             );
             // Decided afresh: an earlier tab's registration in this same loop may
             // have changed the window's manifest or authority.
@@ -666,8 +670,10 @@ impl LushtextWindow {
             return;
         }
         let owner = journal_core::ownership(journal_core::BodyFacts::from_window_view(
-            entry.is_some(),
-            restore_pending,
+            journal_core::WindowBodyFacts {
+                registered: entry.is_some(),
+                restore_pending,
+            },
         ));
         if journal_core::deletion_start(owner) == journal_core::DeletionStep::Preserve
             && !preservation_queued

@@ -163,8 +163,11 @@ impl LushtextWindow {
         let child_already_handled = self.imp().transient_child_escape_handled.replace(false);
         let surfaces = surfaces::observed_surface_state(self);
         // Stage 2.
-        let outcome =
-            policy::escape_outcome(child_already_handled, surfaces, self.is_focus_mode_active());
+        let outcome = policy::escape_outcome(
+            policy::ChildEscapeHandling::from_handled(child_already_handled),
+            surfaces,
+            self.is_focus_mode_active(),
+        );
         // Stage 3.
         match outcome {
             EscapeOutcome::ChildAlreadyHandled | EscapeOutcome::Unhandled => {}
@@ -183,7 +186,10 @@ impl LushtextWindow {
         let revealed = surfaces::command_palette_revealed(self);
         let inside = revealed && surfaces::command_palette_contains_window_point(self, x, y);
         // Stage 2.
-        let dismisses = policy::palette_click_away_dismisses(revealed, inside);
+        let dismisses = policy::palette_click_away_dismisses(
+            policy::PaletteRevealState::from_revealed(revealed),
+            inside,
+        );
         // Stage 3. Through the palette's own close path, never the revealer, so
         // saved-focus restoration and cleanup run.
         if dismisses {

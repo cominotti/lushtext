@@ -259,7 +259,7 @@ fn test_palette_category_of_a_million_files_is_cut_at_the_row_cap() {
         to_first.as_micros()
     );
     if crate::common::timing_verdicts_enforced() {
-        let bound = Duration::from_micros(2 * B_INTERACT_US);
+        let bound = Duration::from_micros(2 * B_INTERACT_US.as_us());
         assert!(
             to_last <= bound,
             "far select-and-scroll to the last row: {to_last:?}"
@@ -753,7 +753,7 @@ fn test_palette_note_capture_is_sliced_and_uncounted() {
     assert!(capture.turns > 1, "the capture ran in turns: {capture:?}");
     assert_eq!(capture.rows_counted_not_retained, 0, "4 MiB holds them all");
     assert!(
-        capture.worst_turn_us <= 2 * B_SETTLE_US,
+        capture.worst_turn_us <= 2 * B_SETTLE_US.as_us(),
         "worst capture turn {} µs",
         capture.worst_turn_us
     );
@@ -869,8 +869,8 @@ fn test_palette_category_dispatches_stay_within_their_budgets() {
         leave.layout.as_micros(),
     );
     if crate::common::timing_verdicts_enforced() {
-        let interact = Duration::from_micros(B_INTERACT_US);
-        let settle = Duration::from_micros(B_SETTLE_US);
+        let interact = Duration::from_micros(B_INTERACT_US.as_us());
+        let settle = Duration::from_micros(B_SETTLE_US.as_us());
         assert!(
             enter_input <= interact,
             "Enter on a More row: {enter_input:?}"
@@ -901,7 +901,7 @@ fn test_palette_category_dispatches_stay_within_their_budgets() {
 /// the `B_INTERACT_US` target of task 2.3 under GL. The bound stays the frame
 /// budget because the harness's cairo run reaches that target's edge
 /// (`lighten-notes-browser-rows` design D7).
-const X1_LAYOUT_BOUND: Duration = Duration::from_micros(B_SETTLE_US);
+const X1_LAYOUT_BOUND: Duration = Duration::from_micros(B_SETTLE_US.as_us());
 
 /// BN's crash regression shape on the category model: repeated publishes
 /// that shrink and grow the list while GTK holds realized rows, each emission

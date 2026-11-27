@@ -116,22 +116,22 @@ impl WorkspaceSidebarWidthPreset {
     /// Lower bound, in whole sp, for this preset once the sidebar is
     /// side-by-side on desktop widths.
     #[must_use]
-    pub const fn min_width_sp(self) -> i32 {
+    pub const fn min_width_sp(self) -> lushtext_model::values::Sp {
         match self {
-            Self::Small => 220,
-            Self::Comfy => 280,
-            Self::Large => 340,
+            Self::Small => lushtext_model::values::Sp::new(220),
+            Self::Comfy => lushtext_model::values::Sp::new(280),
+            Self::Large => lushtext_model::values::Sp::new(340),
         }
     }
 
     /// Upper bound, in whole sp, that keeps the sidebar comfortable on wide and
     /// ultrawide windows.
     #[must_use]
-    pub const fn max_width_sp(self) -> i32 {
+    pub const fn max_width_sp(self) -> lushtext_model::values::Sp {
         match self {
-            Self::Small => 280,
-            Self::Comfy => 360,
-            Self::Large => 440,
+            Self::Small => lushtext_model::values::Sp::new(280),
+            Self::Comfy => lushtext_model::values::Sp::new(360),
+            Self::Large => lushtext_model::values::Sp::new(440),
         }
     }
 
@@ -146,13 +146,18 @@ impl WorkspaceSidebarWidthPreset {
     /// formula, lies within the preset's bounds, and never decreases as the
     /// width grows.
     #[must_use]
-    pub fn clamped_width_sp(self, window_width: i32) -> i32 {
-        let hinted = i64::from(window_width.max(1)) * i64::from(self.percent()) / 100;
+    pub fn clamped_width_sp(
+        self,
+        window_width: lushtext_model::values::Sp,
+    ) -> lushtext_model::values::Sp {
+        let hinted = i64::from(window_width.as_sp().max(1)) * i64::from(self.percent()) / 100;
         let clamped = hinted.clamp(
-            i64::from(self.min_width_sp()),
-            i64::from(self.max_width_sp()),
+            i64::from(self.min_width_sp().as_sp()),
+            i64::from(self.max_width_sp().as_sp()),
         );
-        i32::try_from(clamped).unwrap_or_else(|_| self.max_width_sp())
+        lushtext_model::values::Sp::new(
+            i32::try_from(clamped).unwrap_or_else(|_| self.max_width_sp().as_sp()),
+        )
     }
 }
 
@@ -205,12 +210,13 @@ mod tests {
     #[test]
     fn clamped_width_is_the_floored_percentage_within_the_bounds() {
         use WorkspaceSidebarWidthPreset::{Comfy, Large, Small};
-        assert_eq!(Small.clamped_width_sp(900), 220);
-        assert_eq!(Comfy.clamped_width_sp(1001), 300);
-        assert_eq!(Comfy.clamped_width_sp(1200), 360);
-        assert_eq!(Large.clamped_width_sp(1400), 440);
-        assert_eq!(Comfy.clamped_width_sp(i32::MIN), 280);
-        assert_eq!(Large.clamped_width_sp(i32::MAX), 440);
+        use lushtext_model::values::Sp;
+        assert_eq!(Small.clamped_width_sp(Sp::new(900)), Sp::new(220));
+        assert_eq!(Comfy.clamped_width_sp(Sp::new(1001)), Sp::new(300));
+        assert_eq!(Comfy.clamped_width_sp(Sp::new(1200)), Sp::new(360));
+        assert_eq!(Large.clamped_width_sp(Sp::new(1400)), Sp::new(440));
+        assert_eq!(Comfy.clamped_width_sp(Sp::new(i32::MIN)), Sp::new(280));
+        assert_eq!(Large.clamped_width_sp(Sp::new(i32::MAX)), Sp::new(440));
     }
 
     #[test]

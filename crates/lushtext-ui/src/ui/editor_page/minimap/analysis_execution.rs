@@ -23,19 +23,20 @@ use sourceview5::prelude::*;
 
 use super::LushtextEditorPage;
 use super::policy::{MINIMAP_ANALYSIS_CHARS_PER_SLICE, MinimapAnalysisRequest};
+use lushtext_model::values::AnalysisGeneration;
 
 pub(super) use super::policy::{MinimapAnalysisAccumulator, MinimapAnalysisResult};
 
 /// Accepted content evidence reused by layout availability and marker projection.
 pub(crate) struct MinimapAnalysisCache {
-    pub(super) generation: u64,
+    pub(super) generation: AnalysisGeneration,
     pub(super) markers_collected: bool,
     pub(super) result: MinimapAnalysisResult,
 }
 
 /// One bounded GTK iterator cursor owned by the current editor generation.
 pub(crate) struct MinimapAnalysisSession {
-    pub(super) generation: u64,
+    pub(super) generation: AnalysisGeneration,
     pub(super) lifetime: u64,
     pub(super) request: MinimapAnalysisRequest,
     pub(super) buffer: sourceview5::Buffer,
@@ -51,7 +52,7 @@ impl LushtextEditorPage {
     /// editor will ever make. The slice loop re-asks before it starts a turn,
     /// again after the turn, and once more before publishing, so this predicate
     /// is named rather than spelled out at each of those three points.
-    fn minimap_analysis_is_current(&self, generation: u64, lifetime: u64) -> bool {
+    fn minimap_analysis_is_current(&self, generation: AnalysisGeneration, lifetime: u64) -> bool {
         let minimap = &self.imp().minimap;
         minimap.analysis_generation.get() == generation
             && minimap.analysis_lifetime.get() == lifetime
@@ -59,7 +60,7 @@ impl LushtextEditorPage {
 
     pub(super) fn run_minimap_analysis_slice(
         &self,
-        generation: u64,
+        generation: AnalysisGeneration,
         lifetime: u64,
     ) -> glib::ControlFlow {
         let imp = self.imp();

@@ -395,17 +395,36 @@ pub enum CloseDisposition {
     Busy,
 }
 
-/// Decide what a close does with held text. `workflow_owns`: the edit lock
+/// Whether any held typing text is currently queued on an editor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HeldTextPresence {
+    /// No held typing awaits replay.
+    Empty,
+    /// At least one held insertion or rescue awaits replay.
+    Present,
+}
+
+/// Whether a background or sliced workflow currently owns the buffer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BufferWorkflowOwnership {
+    /// No edit lock, load, or replacement suspends buffer mutations.
+    Idle,
+    /// An active workflow still owns the buffer.
+    Owned,
+}
+
+/// Decide what a close does with held text. `ownership`: the edit lock
 /// is held, a load is in flight, or a replacement or install still suspends
 /// the buffer's projections.
 #[must_use]
-pub const fn close_disposition(held: bool, workflow_owns: bool) -> CloseDisposition {
-    if !held {
-        CloseDisposition::Nothing
-    } else if workflow_owns {
-        CloseDisposition::Busy
-    } else {
-        CloseDisposition::Flush
+pub const fn close_disposition(
+    held: HeldTextPresence,
+    ownership: BufferWorkflowOwnership,
+) -> CloseDisposition {
+    match (held, ownership) {
+        (HeldTextPresence::Empty, _) => CloseDisposition::Nothing,
+        (HeldTextPresence::Present, BufferWorkflowOwnership::Owned) => CloseDisposition::Busy,
+        (HeldTextPresence::Present, BufferWorkflowOwnership::Idle) => CloseDisposition::Flush,
     }
 }
 
@@ -607,10 +626,22 @@ mod tests {
 
     #[test]
     fn close_disposition_flushes_or_refuses_held_text() {
-        assert_eq!(close_disposition(false, false), CloseDisposition::Nothing);
-        assert_eq!(close_disposition(false, true), CloseDisposition::Nothing);
-        assert_eq!(close_disposition(true, false), CloseDisposition::Flush);
-        assert_eq!(close_disposition(true, true), CloseDisposition::Busy);
+        assert_eq!(
+            close_disposition(HeldTextPresence::Empty, BufferWorkflowOwnership::Idle),
+            CloseDisposition::Nothing
+        );
+        assert_eq!(
+            close_disposition(HeldTextPresence::Empty, BufferWorkflowOwnership::Owned),
+            CloseDisposition::Nothing
+        );
+        assert_eq!(
+            close_disposition(HeldTextPresence::Present, BufferWorkflowOwnership::Idle),
+            CloseDisposition::Flush
+        );
+        assert_eq!(
+            close_disposition(HeldTextPresence::Present, BufferWorkflowOwnership::Owned),
+            CloseDisposition::Busy
+        );
     }
 
     #[test]

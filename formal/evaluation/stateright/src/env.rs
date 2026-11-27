@@ -25,11 +25,12 @@ use core::hash::{Hash, Hasher};
 use lushtext_model::persistence::draft::DraftManifestCompleteness;
 use lushtext_services::persistence::draft_service::journal_core::{
     BodyFacts, BodyWriteDecision, CleanupBodyIdentity, CleanupEntryState, CleanupFacts,
-    DeletionStep, EntryState, OrphanBodyDecision, RestoreDisposition, RestoreEnding,
-    UntrustedCommitDisposition, body_write_decision, commit_authority, deletion_start,
-    may_write_after_registration, next_deletion_step, orphan_body_decision, ownership,
-    registration_required, startup_may_retire_stale, unapplied_restore_disposition,
-    untrusted_commit_disposition,
+    CommitWriteMode, DeletionStep, EntryState, ExistingBodyReplacement, OrphanBodyDecision,
+    RegistrationCommit, RegistrationFacts, RegistrationRequirement, RestoreDisposition,
+    RestoreEnding, UntrustedCommitDisposition, WindowBodyFacts, body_write_decision,
+    commit_authority, deletion_start, may_write_after_registration, next_deletion_step,
+    orphan_body_decision, ownership, registration_required, startup_may_retire_stale,
+    unapplied_restore_disposition, untrusted_commit_disposition,
 };
 
 /// Draft ids in the model.
@@ -331,7 +332,10 @@ impl Journal {
     /// The production window view.
     fn window_body_facts(&self, id: usize) -> BodyFacts {
         let editor = self.editors[id];
-        BodyFacts::from_window_view(editor.known_entry, editor.restore_pending)
+        BodyFacts::from_window_view(WindowBodyFacts {
+            registered: editor.known_entry,
+            restore_pending: editor.restore_pending,
+        })
     }
 
     fn preserve_body(&mut self, id: usize) {
@@ -363,7 +367,11 @@ impl Journal {
                 if !editor.open || !editor.dirty || editor.token || editor.deletion.is_some() {
                     return;
                 }
-                let needed = registration_required(true, editor.known_entry, self.trusted);
+                let needed = registration_required(RegistrationFacts {
+                    file_backed: true,
+                    registered_in_known_manifest: editor.known_entry,
+                    known_manifest_trusted: self.trusted,
+                });
                 match body_write_decision(ownership(self.window_body_facts(id)), needed) {
                     BodyWriteDecision::Hold => {}
                     BodyWriteDecision::Write | BodyWriteDecision::PreserveThenWrite => {
@@ -397,8 +405,10 @@ impl Journal {
                         let committed = if complete {
                             true
                         } else {
-                            untrusted_commit_disposition(true, true)
-                                == UntrustedCommitDisposition::Additive
+                            untrusted_commit_disposition(
+                                CommitWriteMode::InsertOnly,
+                                ExistingBodyReplacement::Allowed,
+                            ) == UntrustedCommitDisposition::Additive
                         };
                         if !committed {
                             return;
@@ -420,7 +430,10 @@ impl Journal {
                         }
                         let editor = &mut self.editors[id];
                         editor.known_entry = true;
-                        editor.token = may_write_after_registration(true, true);
+                        editor.token = may_write_after_registration(
+                            RegistrationRequirement::Required,
+                            RegistrationCommit::Committed,
+                        );
                     }
                 }
             }
@@ -428,7 +441,11 @@ impl Journal {
                 if !editor.open || !editor.dirty || !editor.token {
                     return;
                 }
-                let needed = registration_required(true, editor.known_entry, self.trusted);
+                let needed = registration_required(RegistrationFacts {
+                    file_backed: true,
+                    registered_in_known_manifest: editor.known_entry,
+                    known_manifest_trusted: self.trusted,
+                });
                 if body_write_decision(ownership(self.window_body_facts(id)), needed)
                     == BodyWriteDecision::Hold
                 {

@@ -11,6 +11,7 @@
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
+use lushtext_model::values::CodeBlockRefreshGeneration;
 use lushtext_services::notes::markdown_render::{MarkdownCodeBlockKind, MarkdownEvent};
 use sourceview5::prelude::*;
 use std::path::Path;
@@ -423,11 +424,7 @@ impl LushtextMarkdownPreview {
 
     /// Refresh code-block widths across the current GTK layout turn.
     pub(super) fn queue_code_block_width_refresh(&self) {
-        let generation = self
-            .imp()
-            .code_block_refresh_generation
-            .get()
-            .wrapping_add(1);
+        let generation = self.imp().code_block_refresh_generation.get().next();
         self.imp().code_block_refresh_generation.set(generation);
         self.refresh_code_block_widths();
         self.replace_deferred_code_block_width_refresh(generation);
@@ -439,11 +436,7 @@ impl LushtextMarkdownPreview {
     /// run: a width request changed from inside an allocation is not
     /// reliably laid out again (ledger A13).
     pub(super) fn queue_code_block_width_refresh_after_allocation(&self) {
-        let generation = self
-            .imp()
-            .code_block_refresh_generation
-            .get()
-            .wrapping_add(1);
+        let generation = self.imp().code_block_refresh_generation.get().next();
         self.imp().code_block_refresh_generation.set(generation);
         self.replace_deferred_code_block_width_refresh(generation);
     }
@@ -458,7 +451,7 @@ impl LushtextMarkdownPreview {
     }
 
     /// Replace any queued deferred refresh with the latest layout generation.
-    fn replace_deferred_code_block_width_refresh(&self, generation: u32) {
+    fn replace_deferred_code_block_width_refresh(&self, generation: CodeBlockRefreshGeneration) {
         if let Some(source_id) = self.imp().code_block_idle_source_id.take() {
             source_id.remove();
         }

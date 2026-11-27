@@ -29,6 +29,7 @@ use lushtext_model::document::protected_install::{
     PRODUCTION_LIMITS, ProtectedInstallCursor, ProtectedInstallLimits, SliceKind,
     clear_ranges_for_turn, plan_protected_install,
 };
+use lushtext_model::values::{Bytes, CharCount, Micros};
 use proptest::prelude::*;
 
 fn spans(text: &str) -> Vec<(usize, usize)> {
@@ -43,9 +44,9 @@ fn spans(text: &str) -> Vec<(usize, usize)> {
 }
 
 fn folds(text: &str, thresholds: FoldThresholds) -> Vec<FoldRange> {
-    let lengths: Vec<u64> = spans(text)
+    let lengths: Vec<CharCount> = spans(text)
         .iter()
-        .map(|(start, end)| text[*start..*end].chars().count() as u64)
+        .map(|(start, end)| CharCount::from_usize_saturating(text[*start..*end].chars().count()))
         .collect();
     plan_folds(&lengths, thresholds)
 }
@@ -62,12 +63,13 @@ fn check(
 ) {
     let bytes = text.as_bytes();
     let spans = spans(text);
+    let tail_slice_bytes = usize::try_from(limits.tail_slice_bytes().as_bytes()).expect("fits");
     // K8, the fold's half: a folded paragraph's head and tail are its whole
     // content (`head_chars + tail_chars` = the paragraph's characters).
     for range in ranges {
         let (start, end) = spans[usize::try_from(range.paragraph).expect("fits")];
         assert_eq!(
-            range.head_chars + range.tail_chars,
+            range.head_chars.as_chars() + range.tail_chars.as_chars(),
             text[start..end].chars().count() as u64,
             "a fold covers its paragraph exactly"
         );
@@ -112,9 +114,9 @@ fn check(
                 let tail_end = tails[index].1;
                 assert!(end <= tail_end);
                 assert_eq!(slice.last_of_tail, end == tail_end);
-                assert!(end - start <= limits.tail_slice_bytes());
+                assert!(end - start <= tail_slice_bytes);
                 if !slice.last_of_tail {
-                    assert!(end - start + 3 >= limits.tail_slice_bytes());
+                    assert!(end - start + 3 >= tail_slice_bytes);
                 }
                 tail_slices[index] += 1;
             }
@@ -165,7 +167,7 @@ fn check(
     }
     assert_eq!(start, bytes.len());
     assert_eq!(rebuilt, bytes);
-    let step = limits.tail_slice_bytes() - 3;
+    let step = tail_slice_bytes - 3;
     for (index, (tail_start, tail_end)) in tails.iter().enumerate() {
         assert!(
             tail_slices[index] <= (tail_end - tail_start).div_ceil(step),
@@ -216,9 +218,9 @@ fn thresholds() -> impl Strategy<Value = FoldThresholds> {
         "valid thresholds",
         |(r_fold, n_dense, head_extra, v_extra)| {
             FoldThresholds::new(
-                n_dense + head_extra,
-                n_dense,
-                r_fold as u64 * n_dense + v_extra,
+                CharCount::new(n_dense + head_extra),
+                CharCount::new(n_dense),
+                CharCount::new(r_fold as u64 * n_dense + v_extra),
                 r_fold,
             )
         },
@@ -242,21 +244,23 @@ proptest! {
         tail in 4usize..=64,
     ) {
         let ranges = folds(&text, thresholds);
-        let limits = ProtectedInstallLimits::new(tail, tail).expect("valid limits");
-        check(&text, &ranges, budget, limits, thresholds.head_cap());
+        let tail_bytes = Bytes::from_bytes(tail as u64);
+        let limits = ProtectedInstallLimits::new(tail_bytes, tail_bytes).expect("valid limits");
+        check(&text, &ranges, budget, limits, thresholds.head_cap().as_chars());
     }
 
     #[test]
     fn clear_turns_cover_every_range_once_from_the_start(
         sizes in prop::collection::vec(0u64..300_000, 0..64),
     ) {
+        let size_bytes: Vec<Bytes> = sizes.iter().copied().map(Bytes::from_bytes).collect();
         let mut first = 0;
         let mut deleted = 0u64;
-        while first < sizes.len() {
-            let taken = clear_ranges_for_turn(&sizes[first..], PRODUCTION_LIMITS);
-            prop_assert!(taken >= 1 && first + taken <= sizes.len());
+        while first < size_bytes.len() {
+            let taken = clear_ranges_for_turn(&size_bytes[first..], PRODUCTION_LIMITS);
+            prop_assert!(taken >= 1 && first + taken <= size_bytes.len());
             let bytes: u64 = sizes[first..first + taken].iter().sum();
-            prop_assert!(taken == 1 || bytes <= PRODUCTION_LIMITS.clear_slice_bytes() as u64);
+            prop_assert!(taken == 1 || bytes <= PRODUCTION_LIMITS.clear_slice_bytes().as_bytes());
             deleted += bytes;
             first += taken;
         }
@@ -278,7 +282,7 @@ proptest! {
         let thresholds = FoldThresholds::PRODUCTION;
         let ranges = folds(&text, thresholds);
         prop_assert!(!ranges.is_empty());
-        check(&text, &ranges, SliceBudget::BYTES_ONLY, PRODUCTION_LIMITS, thresholds.head_cap());
+        check(&text, &ranges, SliceBudget::BYTES_ONLY, PRODUCTION_LIMITS, thresholds.head_cap().as_chars());
     }
 }
 
@@ -316,12 +320,12 @@ proptest! {
         margin in magnitude(),
     ) {
         use lushtext_model::document::protected_install::{MAX_SLICE_BYTES, MIN_TAIL_SLICE_BYTES};
-        match ProtectedInstallLimits::for_settle_budget(budget_us, cost, margin) {
+        match ProtectedInstallLimits::for_settle_budget(Micros::from_us(budget_us), cost, margin) {
             Ok(bytes) => {
-                prop_assert!(fits(bytes as u128, budget_us, cost, margin));
-                prop_assert!(bytes == MAX_SLICE_BYTES || !fits(bytes as u128 + 1, budget_us, cost, margin));
+                prop_assert!(fits(u128::from(bytes.as_bytes()), budget_us, cost, margin));
+                prop_assert!(bytes == MAX_SLICE_BYTES || !fits(u128::from(bytes.as_bytes()) + 1, budget_us, cost, margin));
             }
-            Err(_) => prop_assert!(!fits(MIN_TAIL_SLICE_BYTES as u128, budget_us, cost, margin)),
+            Err(_) => prop_assert!(!fits(u128::from(MIN_TAIL_SLICE_BYTES.as_bytes()), budget_us, cost, margin)),
         }
     }
 }

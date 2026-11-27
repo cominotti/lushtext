@@ -15,6 +15,8 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use lushtext_model::values::DraftGeneration;
+
 // --- timing policy ---------------------------------------------------------
 
 /// First-dirty draft autosave delay after a clean edit cycle.
@@ -80,15 +82,38 @@ pub(super) const DRAFT_MUTATION_WAIT_POLL_INTERVAL: Duration = Duration::from_mi
 /// `require_draft_dirty` is what separates the two collection passes: an autosave
 /// writes only tabs whose draft is behind the buffer, while a close writes every
 /// modified tab because there is no later pass to catch it.
+/// Eligibility inputs evaluated to decide whether a tab is a draft candidate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DraftCandidateFacts {
+    /// Whether the editor holds unsaved modifications or held input.
+    pub modified: bool,
+    /// Whether edits happened after the last accepted draft flush.
+    pub draft_dirty: bool,
+    /// Whether the tab's document has been memory-evicted.
+    pub evicted: bool,
+    /// Whether a partial/cancelled load or replacement leaves the buffer untrusted.
+    pub buffer_untrusted: bool,
+    /// Whether the caller is autosave (requires `draft_dirty`) vs close (takes any modified tab).
+    pub require_draft_dirty: bool,
+}
+
 #[must_use]
-pub const fn draft_candidate_is_eligible(
-    modified: bool,
-    draft_dirty: bool,
-    evicted: bool,
-    buffer_untrusted: bool,
-    require_draft_dirty: bool,
-) -> bool {
-    modified && !evicted && !buffer_untrusted && (draft_dirty || !require_draft_dirty)
+pub const fn draft_candidate_is_eligible(facts: DraftCandidateFacts) -> bool {
+    facts.modified
+        && !facts.evicted
+        && !facts.buffer_untrusted
+        && (facts.draft_dirty || !facts.require_draft_dirty)
+}
+
+/// Live tab safety state re-checked after a chunked buffer snapshot completes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct SnapshotLivenessFacts {
+    /// Whether the editor is still modified.
+    pub(super) modified: bool,
+    /// Whether the tab was evicted while capturing.
+    pub(super) evicted: bool,
+    /// Whether replacement or load invalidation happened while capturing.
+    pub(super) buffer_untrusted: bool,
 }
 
 /// Whether a captured snapshot still describes the editor it came from.
@@ -103,17 +128,15 @@ pub const fn draft_candidate_is_eligible(
 pub(super) fn captured_snapshot_is_current(
     live_draft_id: Option<&str>,
     expected_draft_id: &str,
-    live_dirty_generation: u64,
-    expected_dirty_generation: u64,
-    modified: bool,
-    evicted: bool,
-    buffer_untrusted: bool,
+    live_dirty_generation: DraftGeneration,
+    expected_dirty_generation: DraftGeneration,
+    liveness: SnapshotLivenessFacts,
 ) -> bool {
     live_draft_id == Some(expected_draft_id)
         && live_dirty_generation == expected_dirty_generation
-        && modified
-        && !evicted
-        && !buffer_untrusted
+        && liveness.modified
+        && !liveness.evicted
+        && !liveness.buffer_untrusted
 }
 
 /// What an autosave tick does when the lane is already owned.
@@ -128,18 +151,31 @@ pub(super) enum AutosaveAdmission {
     MarkPending,
 }
 
+/// Active journal/autosave lane owners checked before admitting an autosave pass.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct AutosaveLaneState {
+    pub(super) autosave_inflight: bool,
+    pub(super) mutation_inflight: bool,
+    pub(super) cleanup_inflight: bool,
+}
+
 /// Decide whether an autosave tick may start a pass.
 #[must_use]
-pub(super) const fn autosave_admission(
-    autosave_inflight: bool,
-    mutation_inflight: bool,
-    cleanup_inflight: bool,
-) -> AutosaveAdmission {
-    if autosave_inflight || mutation_inflight || cleanup_inflight {
+pub(super) const fn autosave_admission(lanes: AutosaveLaneState) -> AutosaveAdmission {
+    if lanes.autosave_inflight || lanes.mutation_inflight || lanes.cleanup_inflight {
         AutosaveAdmission::MarkPending
     } else {
         AutosaveAdmission::Start
     }
+}
+
+/// Active draft recovery work that blocks immediate close flushing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct CloseFlushWaitState {
+    pub(super) mutation_inflight: bool,
+    pub(super) cleanup_inflight: bool,
+    pub(super) pending_deletes: bool,
+    pub(super) restores_inflight: bool,
 }
 
 /// Whether close-safety work must wait for the recovery lane to drain.
@@ -147,31 +183,33 @@ pub(super) const fn autosave_admission(
 /// A close that ran while a delete or restore was mid-flight could write a draft
 /// the user had just discarded, or race a restore's own manifest update.
 #[must_use]
-pub(super) const fn close_flush_must_wait(
-    mutation_inflight: bool,
-    cleanup_inflight: bool,
-    pending_deletes: bool,
-    restores_inflight: bool,
-) -> bool {
-    mutation_inflight || cleanup_inflight || pending_deletes || restores_inflight
+pub(super) const fn close_flush_must_wait(state: CloseFlushWaitState) -> bool {
+    state.mutation_inflight
+        || state.cleanup_inflight
+        || state.pending_deletes
+        || state.restores_inflight
+}
+
+/// In-flight draft recovery/autosave lanes checked for automation readiness.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct DraftReadinessState {
+    pub(super) autosave_inflight: bool,
+    pub(super) mutation_inflight: bool,
+    pub(super) pending_deletes: bool,
+    pub(super) restores_inflight: bool,
+    pub(super) lazy_restore_inflight: bool,
+    pub(super) lazy_queue_non_empty: bool,
 }
 
 /// Whether draft persistence or deferred startup restore blocks readiness.
 #[must_use]
-pub(super) const fn draft_workflow_blocks_readiness(
-    autosave_inflight: bool,
-    mutation_inflight: bool,
-    pending_deletes: bool,
-    restores_inflight: bool,
-    lazy_restore_inflight: bool,
-    lazy_queue_non_empty: bool,
-) -> bool {
-    autosave_inflight
-        || mutation_inflight
-        || pending_deletes
-        || restores_inflight
-        || lazy_restore_inflight
-        || lazy_queue_non_empty
+pub(super) const fn draft_workflow_blocks_readiness(state: DraftReadinessState) -> bool {
+    state.autosave_inflight
+        || state.mutation_inflight
+        || state.pending_deletes
+        || state.restores_inflight
+        || state.lazy_restore_inflight
+        || state.lazy_queue_non_empty
 }
 
 // --- write-ahead registration ----------------------------------------------
@@ -321,17 +359,32 @@ pub(super) fn orphan_cleanup_revokes_authority(
 /// does not leave a long backoff behind. A cursorless failure restarts from
 /// offset zero rather than guessing, because a wrong offset would silently skip
 /// entries the pass never inspected.
+/// Whether the orphan-cleanup directory walk has remaining manifest entries.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum OrphanCleanupWork {
+    More,
+    Exhausted,
+}
+
+/// Outcome class of the just-finished orphan-cleanup pass.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum OrphanCleanupFailureKind {
+    Clean,
+    Retryable,
+}
+
 #[must_use]
 pub(super) fn orphan_cleanup_follow_up(
-    has_more_work: bool,
+    work: OrphanCleanupWork,
     next_manifest_offset: Option<usize>,
-    retryable_failure: bool,
+    failure: OrphanCleanupFailureKind,
     failure_streak: u32,
 ) -> OrphanCleanupFollowUp {
-    if !has_more_work {
+    if matches!(work, OrphanCleanupWork::Exhausted) {
         return OrphanCleanupFollowUp::Stop;
     }
 
+    let retryable_failure = matches!(failure, OrphanCleanupFailureKind::Retryable);
     let next_failure_streak = if retryable_failure {
         failure_streak.saturating_add(1)
     } else {
@@ -607,104 +660,147 @@ mod tests {
 
     #[test]
     fn an_incomplete_installation_is_never_an_autosave_candidate() {
+        let base = DraftCandidateFacts {
+            modified: true,
+            draft_dirty: true,
+            evicted: false,
+            buffer_untrusted: true,
+            require_draft_dirty: true,
+        };
         // The data-safety guard. Everything else about the tab says "write me".
-        assert!(!draft_candidate_is_eligible(true, true, false, true, true));
-        assert!(!draft_candidate_is_eligible(true, true, false, true, false));
+        assert!(!draft_candidate_is_eligible(base));
+        assert!(!draft_candidate_is_eligible(DraftCandidateFacts {
+            require_draft_dirty: false,
+            ..base
+        }));
         // And the same tab without that flag is eligible.
-        assert!(draft_candidate_is_eligible(true, true, false, false, true));
+        assert!(draft_candidate_is_eligible(DraftCandidateFacts {
+            buffer_untrusted: false,
+            ..base
+        }));
     }
 
     #[test]
     fn autosave_requires_draft_dirty_while_close_takes_every_modified_tab() {
         // Modified but the draft is already current: autosave skips, close writes.
-        assert!(!draft_candidate_is_eligible(
-            true, false, false, false, true
-        ));
-        assert!(draft_candidate_is_eligible(
-            true, false, false, false, false
-        ));
+        let clean_draft = DraftCandidateFacts {
+            modified: true,
+            draft_dirty: false,
+            evicted: false,
+            buffer_untrusted: false,
+            require_draft_dirty: true,
+        };
+        assert!(!draft_candidate_is_eligible(clean_draft));
+        assert!(draft_candidate_is_eligible(DraftCandidateFacts {
+            require_draft_dirty: false,
+            ..clean_draft
+        }));
     }
 
     #[test]
     fn an_unmodified_or_evicted_tab_is_never_a_candidate() {
-        assert!(!draft_candidate_is_eligible(
-            false, true, false, false, true
-        ));
-        assert!(!draft_candidate_is_eligible(
-            false, true, false, false, false
-        ));
-        assert!(!draft_candidate_is_eligible(true, true, true, false, true));
-        assert!(!draft_candidate_is_eligible(true, true, true, false, false));
+        let unmodified = DraftCandidateFacts {
+            modified: false,
+            draft_dirty: true,
+            evicted: false,
+            buffer_untrusted: false,
+            require_draft_dirty: true,
+        };
+        assert!(!draft_candidate_is_eligible(unmodified));
+        assert!(!draft_candidate_is_eligible(DraftCandidateFacts {
+            require_draft_dirty: false,
+            ..unmodified
+        }));
+        let evicted = DraftCandidateFacts {
+            modified: true,
+            evicted: true,
+            ..unmodified
+        };
+        assert!(!draft_candidate_is_eligible(evicted));
+        assert!(!draft_candidate_is_eligible(DraftCandidateFacts {
+            require_draft_dirty: false,
+            ..evicted
+        }));
     }
 
     #[test]
     fn a_captured_snapshot_is_rejected_on_every_identity_dimension() {
+        let healthy = SnapshotLivenessFacts {
+            modified: true,
+            evicted: false,
+            buffer_untrusted: false,
+        };
         assert!(captured_snapshot_is_current(
             Some("draft-a"),
             "draft-a",
-            7,
-            7,
-            true,
-            false,
-            false
+            DraftGeneration::new(7),
+            DraftGeneration::new(7),
+            healthy,
         ));
         // Identity swapped, or lost entirely.
         assert!(!captured_snapshot_is_current(
             Some("draft-b"),
             "draft-a",
-            7,
-            7,
-            true,
-            false,
-            false
+            DraftGeneration::new(7),
+            DraftGeneration::new(7),
+            healthy,
         ));
         assert!(!captured_snapshot_is_current(
-            None, "draft-a", 7, 7, true, false, false
+            None,
+            "draft-a",
+            DraftGeneration::new(7),
+            DraftGeneration::new(7),
+            healthy,
         ));
         // A newer edit landed during the capture.
         assert!(!captured_snapshot_is_current(
             Some("draft-a"),
             "draft-a",
-            8,
-            7,
-            true,
-            false,
-            false
+            DraftGeneration::new(8),
+            DraftGeneration::new(7),
+            healthy,
         ));
         // Went clean, was evicted, or a load installation was cancelled mid-capture.
         assert!(!captured_snapshot_is_current(
             Some("draft-a"),
             "draft-a",
-            7,
-            7,
-            false,
-            false,
-            false
+            DraftGeneration::new(7),
+            DraftGeneration::new(7),
+            SnapshotLivenessFacts {
+                modified: false,
+                ..healthy
+            },
         ));
         assert!(!captured_snapshot_is_current(
             Some("draft-a"),
             "draft-a",
-            7,
-            7,
-            true,
-            true,
-            false
+            DraftGeneration::new(7),
+            DraftGeneration::new(7),
+            SnapshotLivenessFacts {
+                evicted: true,
+                ..healthy
+            },
         ));
         assert!(!captured_snapshot_is_current(
             Some("draft-a"),
             "draft-a",
-            7,
-            7,
-            true,
-            false,
-            true
+            DraftGeneration::new(7),
+            DraftGeneration::new(7),
+            SnapshotLivenessFacts {
+                buffer_untrusted: true,
+                ..healthy
+            },
         ));
     }
 
     #[test]
     fn an_autosave_tick_marks_pending_rather_than_queueing() {
         assert_eq!(
-            autosave_admission(false, false, false),
+            autosave_admission(AutosaveLaneState {
+                autosave_inflight: false,
+                mutation_inflight: false,
+                cleanup_inflight: false,
+            }),
             AutosaveAdmission::Start
         );
         for (autosave, mutation, cleanup) in [
@@ -714,7 +810,11 @@ mod tests {
             (true, true, true),
         ] {
             assert_eq!(
-                autosave_admission(autosave, mutation, cleanup),
+                autosave_admission(AutosaveLaneState {
+                    autosave_inflight: autosave,
+                    mutation_inflight: mutation,
+                    cleanup_inflight: cleanup,
+                }),
                 AutosaveAdmission::MarkPending
             );
         }
@@ -722,29 +822,49 @@ mod tests {
 
     #[test]
     fn close_flush_waits_for_any_lane_owner() {
-        assert!(!close_flush_must_wait(false, false, false, false));
+        assert!(!close_flush_must_wait(CloseFlushWaitState {
+            mutation_inflight: false,
+            cleanup_inflight: false,
+            pending_deletes: false,
+            restores_inflight: false,
+        }));
         for (m, c, d, r) in [
             (true, false, false, false),
             (false, true, false, false),
             (false, false, true, false),
             (false, false, false, true),
         ] {
-            assert!(close_flush_must_wait(m, c, d, r));
+            assert!(close_flush_must_wait(CloseFlushWaitState {
+                mutation_inflight: m,
+                cleanup_inflight: c,
+                pending_deletes: d,
+                restores_inflight: r,
+            }));
         }
     }
 
     #[test]
     fn readiness_is_blocked_by_every_recovery_lane() {
-        assert!(!draft_workflow_blocks_readiness(
-            false, false, false, false, false, false
-        ));
+        assert!(!draft_workflow_blocks_readiness(DraftReadinessState {
+            autosave_inflight: false,
+            mutation_inflight: false,
+            pending_deletes: false,
+            restores_inflight: false,
+            lazy_restore_inflight: false,
+            lazy_queue_non_empty: false,
+        }));
         for index in 0..6 {
             let mut flags = [false; 6];
             flags[index] = true;
             assert!(
-                draft_workflow_blocks_readiness(
-                    flags[0], flags[1], flags[2], flags[3], flags[4], flags[5]
-                ),
+                draft_workflow_blocks_readiness(DraftReadinessState {
+                    autosave_inflight: flags[0],
+                    mutation_inflight: flags[1],
+                    pending_deletes: flags[2],
+                    restores_inflight: flags[3],
+                    lazy_restore_inflight: flags[4],
+                    lazy_queue_non_empty: flags[5],
+                }),
                 "flag {index} must block readiness"
             );
         }
@@ -776,7 +896,12 @@ mod tests {
     #[test]
     fn cleanup_follow_up_stops_when_there_is_nothing_left() {
         assert_eq!(
-            orphan_cleanup_follow_up(false, Some(9), true, 5),
+            orphan_cleanup_follow_up(
+                OrphanCleanupWork::Exhausted,
+                Some(9),
+                OrphanCleanupFailureKind::Retryable,
+                5
+            ),
             OrphanCleanupFollowUp::Stop
         );
     }
@@ -784,7 +909,12 @@ mod tests {
     #[test]
     fn cleanup_follow_up_resumes_pagination_and_resets_a_clean_streak() {
         assert_eq!(
-            orphan_cleanup_follow_up(true, Some(42), false, 7),
+            orphan_cleanup_follow_up(
+                OrphanCleanupWork::More,
+                Some(42),
+                OrphanCleanupFailureKind::Clean,
+                7
+            ),
             OrphanCleanupFollowUp::Schedule {
                 manifest_offset: 42,
                 delay: ORPHAN_CLEANUP_FOLLOWUP_DELAY,
@@ -796,7 +926,12 @@ mod tests {
     #[test]
     fn a_cursorless_failure_restarts_from_zero_rather_than_guessing() {
         assert_eq!(
-            orphan_cleanup_follow_up(true, None, true, 0),
+            orphan_cleanup_follow_up(
+                OrphanCleanupWork::More,
+                None,
+                OrphanCleanupFailureKind::Retryable,
+                0
+            ),
             OrphanCleanupFollowUp::Schedule {
                 manifest_offset: 0,
                 delay: ORPHAN_CLEANUP_FOLLOWUP_DELAY,
@@ -845,16 +980,22 @@ mod tests {
 
     #[test]
     fn cleanup_backoff_doubles_and_then_caps() {
-        let OrphanCleanupFollowUp::Schedule { delay, .. } =
-            orphan_cleanup_follow_up(true, Some(0), true, 1)
-        else {
+        let OrphanCleanupFollowUp::Schedule { delay, .. } = orphan_cleanup_follow_up(
+            OrphanCleanupWork::More,
+            Some(0),
+            OrphanCleanupFailureKind::Retryable,
+            1,
+        ) else {
             panic!("a retryable failure schedules a follow-up");
         };
         assert_eq!(delay, ORPHAN_CLEANUP_FOLLOWUP_DELAY * 2);
 
-        let OrphanCleanupFollowUp::Schedule { delay, .. } =
-            orphan_cleanup_follow_up(true, Some(0), true, 999)
-        else {
+        let OrphanCleanupFollowUp::Schedule { delay, .. } = orphan_cleanup_follow_up(
+            OrphanCleanupWork::More,
+            Some(0),
+            OrphanCleanupFailureKind::Retryable,
+            999,
+        ) else {
             panic!("a retryable failure schedules a follow-up");
         };
         assert_eq!(delay, ORPHAN_CLEANUP_MAX_FAILURE_BACKOFF);

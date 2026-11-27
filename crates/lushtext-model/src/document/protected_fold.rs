@@ -66,6 +66,7 @@
 mod kani_proofs;
 
 use super::document_scale::{L_PROTECT, N_VISIBLE, R_BATCH, V_BATCH};
+use crate::values::{Bytes, CharCount};
 
 /// The largest visible head whose open and post-open settle dispatches fit
 /// `B_settle` (`long-line-protected-view` task 1.3, measured).
@@ -84,7 +85,7 @@ use super::document_scale::{L_PROTECT, N_VISIBLE, R_BATCH, V_BATCH};
 /// the power of two above failing its bound (16.1 ms at 14,000 wrap off,
 /// 20.7 ms at 20,000 wrap on, so 16,384 exceeds `B_SETTLE_US`), and 8,192
 /// would make every head 1,808 characters shorter than on `main`.
-pub const N_HEAD: u64 = 10_000;
+pub const N_HEAD: CharCount = CharCount::new(10_000);
 
 /// Pango's advance of the view's monospace font at the default zoom, in Pango
 /// units (1/1024 px), as ledger A28 measured it (9011 units per character).
@@ -115,8 +116,8 @@ pub const A28_MAX_ZOOM_PERCENT: u64 = 400;
 /// [`HEAD_CAP`] today ([`N_HEAD`] is).
 ///
 /// Kind: derived; computed from the constants it names, not rounded.
-pub const A28_SAFE_CHARS: u64 =
-    (i32::MAX as u64) / (A28_MEASURED_ADVANCE_UNITS * A28_MAX_ZOOM_PERCENT / 100);
+pub const A28_SAFE_CHARS: CharCount =
+    CharCount::new((i32::MAX as u64) / (A28_MEASURED_ADVANCE_UNITS * A28_MAX_ZOOM_PERCENT / 100));
 
 /// Rows of one 2000 px validation batch the density window covers: C1's
 /// [`R_BATCH`] (256, the 224 below rounded up to a power of two by
@@ -149,13 +150,16 @@ pub const R_FOLD_MIN_ZOOM_PERCENT: u64 = 50;
 ///
 /// Kind: derived; computed from the constants it names, not rounded.
 // `R_BATCH` (256) is a usize that fits a u64, so the cast is lossless.
-pub const N_DENSE: u64 = V_BATCH / (R_BATCH as u64);
+pub const N_DENSE: CharCount = CharCount::new(V_BATCH / (R_BATCH as u64));
 
 /// The most characters any paragraph shows: `min(N_VISIBLE, N_HEAD,
 /// A28_SAFE_CHARS)`.
 ///
 /// Kind: derived; computed from the constants it names, not rounded.
-pub const HEAD_CAP: u64 = min_u64(min_u64(N_VISIBLE, N_HEAD), A28_SAFE_CHARS);
+pub const HEAD_CAP: CharCount = CharCount::new(min_u64(
+    min_u64(N_VISIBLE, N_HEAD.as_chars()),
+    A28_SAFE_CHARS.as_chars(),
+));
 
 /// The Line Inspector's window, in characters: C0's bound
 /// `min(N_visible, L_protect_stall)`, 512 since `power-of-two-thresholds`
@@ -165,7 +169,7 @@ pub const HEAD_CAP: u64 = min_u64(min_u64(N_VISIBLE, N_HEAD), A28_SAFE_CHARS);
 ///
 /// Kind: presentation cap; equal to `L_PROTECT`, 512 (`power-of-two-thresholds` D7), the
 /// bound it must not exceed.
-pub const N_INSPECT: u64 = 512;
+pub const N_INSPECT: CharCount = CharCount::new(512);
 
 /// The ring capacity of [`ProductionFoldState`]: the largest `r_fold`
 /// [`FoldThresholds::new`] accepts.
@@ -177,7 +181,7 @@ pub const MAX_R_FOLD: usize = 256;
 // constant here makes the build fail when a C1 constant, `N_HEAD` or
 // `A28_SAFE_CHARS` breaks them.
 const _: FoldThresholds = FoldThresholds::PRODUCTION;
-const _: () = assert!(N_INSPECT <= min_u64(HEAD_CAP, L_PROTECT));
+const _: () = assert!(N_INSPECT.as_chars() <= min_u64(HEAD_CAP.as_chars(), L_PROTECT));
 const _: () = assert!(R_FOLD <= MAX_R_FOLD);
 
 const fn min_u64(a: u64, b: u64) -> u64 {
@@ -195,9 +199,9 @@ const fn min_u64(a: u64, b: u64) -> u64 {
 /// finish in 24 minutes).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FoldThresholds {
-    head_cap: u64,
-    n_dense: u64,
-    v_batch: u64,
+    head_cap: CharCount,
+    n_dense: CharCount,
+    v_batch: CharCount,
     r_fold: usize,
 }
 
@@ -205,7 +209,8 @@ impl FoldThresholds {
     /// The shipped thresholds: [`HEAD_CAP`], [`N_DENSE`], [`V_BATCH`] and
     /// [`R_FOLD`]. A module-level constant evaluates it, so the build fails
     /// when they break the preconditions.
-    pub const PRODUCTION: Self = match Self::new(HEAD_CAP, N_DENSE, V_BATCH, R_FOLD) {
+    pub const PRODUCTION: Self = match Self::new(HEAD_CAP, N_DENSE, CharCount::new(V_BATCH), R_FOLD)
+    {
         Some(thresholds) => thresholds,
         None => panic!("the production fold thresholds break the fold preconditions"),
     };
@@ -214,16 +219,24 @@ impl FoldThresholds {
     /// `1 ≤ r_fold ≤ MAX_R_FOLD`, `r_fold · n_dense ≤ v_batch` and
     /// `r_fold · head_cap` fits a `u64`, both without overflow.
     #[must_use]
-    pub const fn new(head_cap: u64, n_dense: u64, v_batch: u64, r_fold: usize) -> Option<Self> {
-        if n_dense == 0 || n_dense > head_cap || r_fold == 0 || r_fold > MAX_R_FOLD {
+    pub const fn new(
+        head_cap: CharCount,
+        n_dense: CharCount,
+        v_batch: CharCount,
+        r_fold: usize,
+    ) -> Option<Self> {
+        let h = head_cap.as_chars();
+        let d = n_dense.as_chars();
+        let v = v_batch.as_chars();
+        if d == 0 || d > h || r_fold == 0 || r_fold > MAX_R_FOLD {
             return None;
         }
         // `r_fold` is at most `MAX_R_FOLD`, so the cast is lossless.
-        if (r_fold as u64).checked_mul(head_cap).is_none() {
+        if (r_fold as u64).checked_mul(h).is_none() {
             return None;
         }
-        match (r_fold as u64).checked_mul(n_dense) {
-            Some(dense_window) if dense_window <= v_batch => Some(Self {
+        match (r_fold as u64).checked_mul(d) {
+            Some(dense_window) if dense_window <= v => Some(Self {
                 head_cap,
                 n_dense,
                 v_batch,
@@ -235,19 +248,19 @@ impl FoldThresholds {
 
     /// The most characters any paragraph shows.
     #[must_use]
-    pub const fn head_cap(self) -> u64 {
+    pub const fn head_cap(self) -> CharCount {
         self.head_cap
     }
 
     /// The characters a dense paragraph keeps visible.
     #[must_use]
-    pub const fn n_dense(self) -> u64 {
+    pub const fn n_dense(self) -> CharCount {
         self.n_dense
     }
 
     /// The most visible characters one window may hold.
     #[must_use]
-    pub const fn v_batch(self) -> u64 {
+    pub const fn v_batch(self) -> CharCount {
         self.v_batch
     }
 
@@ -261,29 +274,32 @@ impl FoldThresholds {
 /// Stage 1: the characters a paragraph of `paragraph_chars` may show at all,
 /// `min(paragraph_chars, head_cap)`.
 #[must_use]
-pub const fn length_cap(paragraph_chars: u64, thresholds: FoldThresholds) -> u64 {
-    min_u64(paragraph_chars, thresholds.head_cap)
+pub const fn length_cap(paragraph_chars: CharCount, thresholds: FoldThresholds) -> CharCount {
+    CharCount::new(min_u64(
+        paragraph_chars.as_chars(),
+        thresholds.head_cap.as_chars(),
+    ))
 }
 
 /// Whether a window whose length-capped characters sum to `capped_sum` is over
 /// the batch budget. A window holds at most `r_fold` capped counts, so the sum
 /// fits a `u64` under the `r_fold · head_cap` precondition.
 #[must_use]
-pub const fn window_is_over_budget(capped_sum: u64, v_batch: u64) -> bool {
-    capped_sum > v_batch
+pub const fn window_is_over_budget(capped_sum: CharCount, v_batch: CharCount) -> bool {
+    capped_sum.as_chars() > v_batch.as_chars()
 }
 
 /// The characters a dense paragraph of `capped` length-capped characters
 /// shows: `min(capped, n_dense)`.
 #[must_use]
-pub const fn dense_visible(capped: u64, n_dense: u64) -> u64 {
-    min_u64(capped, n_dense)
+pub const fn dense_visible(capped: CharCount, n_dense: CharCount) -> CharCount {
+    CharCount::new(min_u64(capped.as_chars(), n_dense.as_chars()))
 }
 
 /// Stage 2: the characters a paragraph shows, from its length-capped count and
 /// whether it lies in an over-budget window.
 #[must_use]
-pub const fn density_cap(capped: u64, dense: bool, thresholds: FoldThresholds) -> u64 {
+pub const fn density_cap(capped: CharCount, dense: bool, thresholds: FoldThresholds) -> CharCount {
     if dense {
         dense_visible(capped, thresholds.n_dense)
     } else {
@@ -299,21 +315,21 @@ pub struct FoldRange {
     /// The paragraph's index in the document (GTK line number).
     pub paragraph: u64,
     /// Visible characters at the start of the paragraph.
-    pub head_chars: u64,
+    pub head_chars: CharCount,
     /// Hidden characters after the head; positive in every planned range.
-    pub tail_chars: u64,
+    pub tail_chars: CharCount,
 }
 
 /// Where a column of a folded paragraph lies.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FoldLocation {
     /// A visible column (`column < head_chars`).
-    Visible(u64),
+    Visible(CharCount),
     /// A column `head_chars + offset`, `offset ≤ tail_chars`: inside the
     /// hidden tail, or (`offset == tail_chars`) the paragraph end just before
     /// its delimiter. For a range with no tail, the paragraph end is
-    /// `Hidden(0)`.
-    Hidden(u64),
+    /// `Hidden(CharCount::ZERO)`.
+    Hidden(CharCount),
     /// Beyond the paragraph's end (`column > head_chars + tail_chars`).
     PastEnd,
 }
@@ -323,11 +339,11 @@ impl FoldRange {
     /// transient admission takes for the plan.
     ///
     /// Kind: derived; computed from the constants it names, not rounded.
-    pub const RETAINED_BYTES: u64 = std::mem::size_of::<Self>() as u64;
+    pub const RETAINED_BYTES: Bytes = Bytes::from_bytes(std::mem::size_of::<Self>() as u64);
 
     /// Where `column` (a character offset from the paragraph start) lies.
     ///
-    /// Total over every `u64` column and every range, overflow-free: Kani
+    /// Total over every [`CharCount`] column and every range, overflow-free: Kani
     /// proves (`fold_location_is_total_and_round_trips`), for any range whose
     /// `head_chars + tail_chars` fits a `u64` and any column, that the result
     /// is `Visible` iff `column < head_chars`, that a `Hidden` offset plus the
@@ -335,13 +351,15 @@ impl FoldRange {
     /// every column up to the paragraph length, and `PastEnd` iff the column
     /// is beyond it.
     #[must_use]
-    pub const fn locate(self, column: u64) -> FoldLocation {
-        if column < self.head_chars {
+    pub const fn locate(self, column: CharCount) -> FoldLocation {
+        let col = column.as_chars();
+        let head = self.head_chars.as_chars();
+        if col < head {
             return FoldLocation::Visible(column);
         }
-        let offset = column - self.head_chars;
-        if offset <= self.tail_chars {
-            FoldLocation::Hidden(offset)
+        let offset = col - head;
+        if offset <= self.tail_chars.as_chars() {
+            FoldLocation::Hidden(CharCount::new(offset))
         } else {
             FoldLocation::PastEnd
         }
@@ -353,10 +371,15 @@ impl FoldLocation {
     /// end (or for a hidden offset whose column would overflow a `u64`, which
     /// [`FoldRange::locate`] never returns).
     #[must_use]
-    pub const fn column_of(self, range: FoldRange) -> Option<u64> {
+    pub const fn column_of(self, range: FoldRange) -> Option<CharCount> {
         match self {
             Self::Visible(column) => Some(column),
-            Self::Hidden(offset) => range.head_chars.checked_add(offset),
+            Self::Hidden(offset) => {
+                match range.head_chars.as_chars().checked_add(offset.as_chars()) {
+                    Some(sum) => Some(CharCount::new(sum)),
+                    None => None,
+                }
+            }
             Self::PastEnd => None,
         }
     }
@@ -374,12 +397,12 @@ impl FoldLocation {
 /// `head_chars` characters. Costs at most `4 · head_chars` byte reads, never
 /// the paragraph's length.
 #[must_use]
-pub fn fold_byte_offset(paragraph: &str, head_chars: u64) -> usize {
+pub fn fold_byte_offset(paragraph: &str, head_chars: CharCount) -> usize {
     // A scalar starts at every byte that is not a UTF-8 continuation byte
     // (`10xxxxxx`); counting lead bytes avoids decoding, which also keeps the
     // Kani model small.
     let bytes = paragraph.as_bytes();
-    let mut remaining = head_chars;
+    let mut remaining = head_chars.as_chars();
     let mut offset = 0;
     while offset < bytes.len() {
         if bytes[offset] & 0xC0 != 0x80 {
@@ -474,7 +497,7 @@ impl<const CAPACITY: usize> FoldState<CAPACITY> {
         let mut position = self.oldest;
         let mut taken = 0;
         while taken < self.held {
-            sum += length_cap(self.ring[position], self.thresholds);
+            sum += length_cap(CharCount::new(self.ring[position]), self.thresholds).as_chars();
             position = self.advance(position);
             taken += 1;
         }
@@ -488,7 +511,7 @@ impl<const CAPACITY: usize> FoldState<CAPACITY> {
         let mut sum = 0u64;
         let mut position = self.oldest;
         for _ in 0..self.held {
-            sum += length_cap(self.ring[position], self.thresholds);
+            sum += length_cap(CharCount::new(self.ring[position]), self.thresholds).as_chars();
             position = self.advance(position);
         }
         sum
@@ -510,14 +533,14 @@ impl<const CAPACITY: usize> FoldState<CAPACITY> {
         let paragraph = self.next_index - self.held as u64;
         self.oldest = self.advance(self.oldest);
         self.held -= 1;
-        let capped = length_cap(length, self.thresholds);
-        self.capped_sum -= capped;
+        let capped = length_cap(CharCount::new(length), self.thresholds);
+        self.capped_sum -= capped.as_chars();
         let dense = paragraph < self.dense_until;
         let visible = density_cap(capped, dense, self.thresholds);
-        (visible < length).then_some(FoldRange {
+        (visible.as_chars() < length).then_some(FoldRange {
             paragraph,
             head_chars: visible,
-            tail_chars: length - visible,
+            tail_chars: CharCount::new(length - visible.as_chars()),
         })
     }
 }
@@ -572,21 +595,25 @@ impl ProductionFoldState {
 /// lemma above.
 pub fn fold_step<const CAPACITY: usize>(
     state: &mut FoldState<CAPACITY>,
-    paragraph_chars: u64,
+    paragraph_chars: CharCount,
 ) -> Option<FoldRange> {
     let thresholds = state.thresholds;
-    state.ring[state.write] = paragraph_chars;
+    let raw_len = paragraph_chars.as_chars();
+    state.ring[state.write] = raw_len;
     state.write = state.advance(state.write);
     state.held += 1;
     // At most `r_fold` capped counts, each at most `head_cap`, and
     // `r_fold · head_cap` fits a `u64` (`FoldThresholds::new`).
-    state.capped_sum += length_cap(paragraph_chars, thresholds);
+    state.capped_sum += length_cap(paragraph_chars, thresholds).as_chars();
     state.next_index = state.next_index.saturating_add(1);
     if state.held < thresholds.r_fold {
         return None;
     }
     // A full window: the `r_fold` paragraphs before `next_index`.
-    if window_is_over_budget(state.window_capped_sum(), thresholds.v_batch) {
+    if window_is_over_budget(
+        CharCount::new(state.window_capped_sum()),
+        thresholds.v_batch,
+    ) {
         state.dense_until = state.next_index;
     }
     state.emit_oldest()
@@ -603,7 +630,10 @@ pub fn fold_finish<const CAPACITY: usize>(mut state: FoldState<CAPACITY>) -> Fol
     // last full window, whose capped sum is at least theirs, so when they are
     // over budget that window was too and they are already dense: no
     // shortness test is needed.
-    if window_is_over_budget(state.window_capped_sum(), state.thresholds.v_batch) {
+    if window_is_over_budget(
+        CharCount::new(state.window_capped_sum()),
+        state.thresholds.v_batch,
+    ) {
         state.dense_until = state.next_index;
     }
     FoldFinish { state }
@@ -632,7 +662,7 @@ impl<const CAPACITY: usize> Iterator for FoldFinish<CAPACITY> {
 /// length, then [`fold_finish`]. For tests and callers that already hold every
 /// length; a worker streams instead.
 #[must_use]
-pub fn plan_folds(paragraph_chars: &[u64], thresholds: FoldThresholds) -> Vec<FoldRange> {
+pub fn plan_folds(paragraph_chars: &[CharCount], thresholds: FoldThresholds) -> Vec<FoldRange> {
     let mut state = ProductionFoldState::with_thresholds(thresholds);
     let mut plan: Vec<FoldRange> = paragraph_chars
         .iter()
@@ -652,7 +682,7 @@ pub fn plan_folds(paragraph_chars: &[u64], thresholds: FoldThresholds) -> Vec<Fo
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct FoldPlan {
     ranges: Box<[FoldRange]>,
-    hidden_chars: u64,
+    hidden_chars: CharCount,
 }
 
 impl FoldPlan {
@@ -660,9 +690,9 @@ impl FoldPlan {
     /// entry builds its plan from the ranges it applied).
     #[must_use]
     pub fn from_ranges(ranges: Vec<FoldRange>) -> Self {
-        let hidden_chars = ranges
-            .iter()
-            .fold(0u64, |sum, range| sum.saturating_add(range.tail_chars));
+        let hidden_chars = ranges.iter().fold(CharCount::ZERO, |sum, range| {
+            sum.saturating_add(range.tail_chars)
+        });
         Self {
             ranges: ranges.into_boxed_slice(),
             hidden_chars,
@@ -684,15 +714,14 @@ impl FoldPlan {
 
     /// Characters hidden across every tail (saturating).
     #[must_use]
-    pub const fn hidden_chars(&self) -> u64 {
+    pub const fn hidden_chars(&self) -> CharCount {
         self.hidden_chars
     }
 
     /// Bytes the plan retains, the charge the install's admission takes.
     #[must_use]
-    pub fn retained_bytes(&self) -> u64 {
-        self.folded_paragraphs()
-            .saturating_mul(FoldRange::RETAINED_BYTES)
+    pub fn retained_bytes(&self) -> Bytes {
+        FoldRange::RETAINED_BYTES.saturating_mul(self.folded_paragraphs())
     }
 
     /// The range of `paragraph`, if it is folded (binary search; the ranges
@@ -713,7 +742,7 @@ impl FoldPlan {
 pub struct FoldPlanner {
     state: ProductionFoldState,
     ranges: Vec<FoldRange>,
-    hidden_chars: u64,
+    hidden_chars: CharCount,
 }
 
 impl Default for FoldPlanner {
@@ -729,12 +758,12 @@ impl FoldPlanner {
         Self {
             state: ProductionFoldState::with_thresholds(FoldThresholds::PRODUCTION),
             ranges: Vec::new(),
-            hidden_chars: 0,
+            hidden_chars: CharCount::ZERO,
         }
     }
 
     /// Feed the next paragraph's length in characters (delimiter excluded).
-    pub fn push(&mut self, paragraph_chars: u64) {
+    pub fn push(&mut self, paragraph_chars: CharCount) {
         if let Some(range) = fold_step(&mut self.state, paragraph_chars) {
             keep_folded(&mut self.ranges, &mut self.hidden_chars, range);
         }
@@ -759,7 +788,7 @@ impl FoldPlanner {
 }
 
 /// Record a planned range (the fold emits only ranges with a hidden tail).
-fn keep_folded(ranges: &mut Vec<FoldRange>, hidden_chars: &mut u64, range: FoldRange) {
+fn keep_folded(ranges: &mut Vec<FoldRange>, hidden_chars: &mut CharCount, range: FoldRange) {
     *hidden_chars = hidden_chars.saturating_add(range.tail_chars);
     ranges.push(range);
 }

@@ -435,7 +435,13 @@ mod tests {
 
     #[test]
     fn generate_replacement_preview_regex_expands_backreferences() {
-        let options = ContentSearchOptions::new(false, true, false, true, None);
+        let options = ContentSearchOptions::new(
+            lushtext_model::workspace::content_search::ContentSearchFlags {
+                regex: true,
+                ..Default::default()
+            },
+            None,
+        );
         let matches = vec![match_in_line("name: Ada", 6..9)];
         let previews = generate_replacement_preview(&matches, "([a-z]+)", "<$1>", &options);
 
@@ -559,7 +565,13 @@ mod tests {
             &regex_matches,
             "([a-z]+)",
             "<$1>",
-            &ContentSearchOptions::new(false, true, false, true, None),
+            &ContentSearchOptions::new(
+                lushtext_model::workspace::content_search::ContentSearchFlags {
+                    regex: true,
+                    ..Default::default()
+                },
+                None,
+            ),
         );
         assert_eq!(regex[0].replacement.as_ref(), "<Ada>");
         assert_eq!(regex[1].replacement.as_ref(), "<Bob>");
@@ -577,7 +589,13 @@ mod tests {
             &[truncated, invalid, unicode],
             "([a-z]+)",
             &"界".repeat(1024),
-            &ContentSearchOptions::new(false, true, false, true, None),
+            &ContentSearchOptions::new(
+                lushtext_model::workspace::content_search::ContentSearchFlags {
+                    regex: true,
+                    ..Default::default()
+                },
+                None,
+            ),
             ReplacePreviewBudget {
                 max_rows: 10,
                 max_bytes: 128,
@@ -615,7 +633,14 @@ mod tests {
                 &[invalid],
                 "^(definitely-no-match)$",
                 REPLACEMENT_SENTINEL,
-                &ContentSearchOptions::new(true, true, false, true, None),
+                &ContentSearchOptions::new(
+                    lushtext_model::workspace::content_search::ContentSearchFlags {
+                        case_sensitive: true,
+                        regex: true,
+                        ..Default::default()
+                    },
+                    None,
+                ),
             )
         });
 
@@ -657,7 +682,14 @@ mod tests {
             &[search_match],
             "(a+)",
             &template,
-            &ContentSearchOptions::new(true, true, false, true, None),
+            &ContentSearchOptions::new(
+                lushtext_model::workspace::content_search::ContentSearchFlags {
+                    case_sensitive: true,
+                    regex: true,
+                    ..Default::default()
+                },
+                None,
+            ),
             ReplacePreviewBudget::default(),
         );
 

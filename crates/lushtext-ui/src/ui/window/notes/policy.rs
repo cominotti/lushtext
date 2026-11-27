@@ -19,6 +19,7 @@ use std::path::PathBuf;
 
 use crate::ui::editor_page::BookmarkEditError;
 use lushtext_model::budgets::list_budget::grouped_thousands;
+use lushtext_model::values::{BookmarkGeneration, NotesSourceGeneration};
 use lushtext_model::workspace::WorkspaceConfig;
 use lushtext_model::workspace::palette::PaletteNoteCategory;
 use lushtext_services::notes::bookmark_excerpt;
@@ -291,6 +292,17 @@ pub fn notes_browser_limit_message(
     })
 }
 
+/// Facts describing why a notes-browser query produced zero listed rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NotesEmptyStateFacts {
+    /// Whether the underlying note or bookmark inventory is empty.
+    pub source_is_empty: bool,
+    /// Whether a non-empty search query is active.
+    pub searching: bool,
+    /// Whether rows were truncated by the notes memory budget.
+    pub limited: bool,
+}
+
 /// The empty-state copy of a query that lists nothing.
 ///
 /// An empty source with no query says there is nothing yet, unless a byte
@@ -299,11 +311,9 @@ pub fn notes_browser_limit_message(
 #[must_use]
 pub fn notes_browser_empty_label(
     mode: NotesBrowserMode,
-    source_is_empty: bool,
-    searching: bool,
-    limited: bool,
+    facts: NotesEmptyStateFacts,
 ) -> &'static str {
-    match (source_is_empty && !searching, limited) {
+    match (facts.source_is_empty && !facts.searching, facts.limited) {
         (true, true) => match mode {
             NotesBrowserMode::AllNotes => "No notes fit the memory budget",
             NotesBrowserMode::Bookmarks => "No bookmarks fit the memory budget",
@@ -318,8 +328,8 @@ pub fn notes_browser_empty_label(
 /// queries, selections or re-presents.
 #[must_use]
 pub fn should_announce_limit(
-    announced_generation: Option<u64>,
-    generation: u64,
+    announced_generation: Option<NotesSourceGeneration>,
+    generation: NotesSourceGeneration,
     limited: bool,
 ) -> bool {
     limited && announced_generation != Some(generation)
@@ -340,7 +350,10 @@ pub enum CaptureSliceDecision {
 /// the current one. An editor is never captured in one unbounded unit: a
 /// change restarts it, sliced like the first attempt.
 #[must_use]
-pub fn capture_slice_decision(recorded: Option<u64>, current: u64) -> CaptureSliceDecision {
+pub fn capture_slice_decision(
+    recorded: Option<BookmarkGeneration>,
+    current: BookmarkGeneration,
+) -> CaptureSliceDecision {
     match recorded {
         Some(generation) if generation != current => CaptureSliceDecision::RestartEditor,
         _ => CaptureSliceDecision::Proceed,
@@ -920,19 +933,22 @@ mod tests {
     #[test]
     fn a_capture_restarts_an_editor_on_any_generation_change() {
         assert_eq!(
-            capture_slice_decision(None, 7),
+            capture_slice_decision(None, BookmarkGeneration::new(7)),
             CaptureSliceDecision::Proceed
         );
         assert_eq!(
-            capture_slice_decision(Some(7), 7),
+            capture_slice_decision(Some(BookmarkGeneration::new(7)), BookmarkGeneration::new(7)),
             CaptureSliceDecision::Proceed
         );
         assert_eq!(
-            capture_slice_decision(Some(7), 8),
+            capture_slice_decision(Some(BookmarkGeneration::new(7)), BookmarkGeneration::new(8)),
             CaptureSliceDecision::RestartEditor
         );
         assert_eq!(
-            capture_slice_decision(Some(u64::MAX), 0),
+            capture_slice_decision(
+                Some(BookmarkGeneration::new(u64::MAX)),
+                BookmarkGeneration::ZERO
+            ),
             CaptureSliceDecision::RestartEditor,
             "a wrapped generation is a change"
         );
@@ -1182,27 +1198,69 @@ mod tests {
         let all = NotesBrowserMode::AllNotes;
         let bookmarks = NotesBrowserMode::Bookmarks;
         assert_eq!(
-            notes_browser_empty_label(all, true, false, false),
+            notes_browser_empty_label(
+                all,
+                NotesEmptyStateFacts {
+                    source_is_empty: true,
+                    searching: false,
+                    limited: false,
+                }
+            ),
             "No notes yet"
         );
         assert_eq!(
-            notes_browser_empty_label(bookmarks, true, false, false),
+            notes_browser_empty_label(
+                bookmarks,
+                NotesEmptyStateFacts {
+                    source_is_empty: true,
+                    searching: false,
+                    limited: false,
+                }
+            ),
             "No bookmarks exist in the current workspace"
         );
         assert_eq!(
-            notes_browser_empty_label(all, true, false, true),
+            notes_browser_empty_label(
+                all,
+                NotesEmptyStateFacts {
+                    source_is_empty: true,
+                    searching: false,
+                    limited: true,
+                }
+            ),
             "No notes fit the memory budget"
         );
         assert_eq!(
-            notes_browser_empty_label(bookmarks, true, false, true),
+            notes_browser_empty_label(
+                bookmarks,
+                NotesEmptyStateFacts {
+                    source_is_empty: true,
+                    searching: false,
+                    limited: true,
+                }
+            ),
             "No bookmarks fit the memory budget"
         );
         assert_eq!(
-            notes_browser_empty_label(all, false, true, true),
+            notes_browser_empty_label(
+                all,
+                NotesEmptyStateFacts {
+                    source_is_empty: false,
+                    searching: true,
+                    limited: true,
+                }
+            ),
             "No notes match that search"
         );
         assert_eq!(
-            notes_browser_empty_label(all, true, true, false),
+            notes_browser_empty_label(
+                all,
+                NotesEmptyStateFacts {
+                    source_is_empty: true,
+                    searching: true,
+                    limited: false,
+                }
+            ),
             "No notes match that search"
         );
     }
@@ -1287,16 +1345,32 @@ mod tests {
 
     #[test]
     fn the_limit_is_announced_once_per_limited_source_generation() {
-        assert!(should_announce_limit(None, 4, true));
+        assert!(should_announce_limit(
+            None,
+            NotesSourceGeneration::new(4),
+            true
+        ));
         assert!(
-            !should_announce_limit(Some(4), 4, true),
+            !should_announce_limit(
+                Some(NotesSourceGeneration::new(4)),
+                NotesSourceGeneration::new(4),
+                true
+            ),
             "not again for queries"
         );
         assert!(
-            should_announce_limit(Some(4), 5, true),
+            should_announce_limit(
+                Some(NotesSourceGeneration::new(4)),
+                NotesSourceGeneration::new(5),
+                true
+            ),
             "a mode switch may announce"
         );
-        assert!(!should_announce_limit(None, 4, false));
+        assert!(!should_announce_limit(
+            None,
+            NotesSourceGeneration::new(4),
+            false
+        ));
     }
 
     #[test]
@@ -1367,8 +1441,7 @@ mod tests {
     fn excerpt(
         target_line_index: usize,
         lines: &[(u32, &str)],
-        before: bool,
-        after: bool,
+        truncation: bookmark_excerpt::BookmarkExcerptTruncation,
     ) -> bookmark_excerpt::BookmarkExcerpt {
         bookmark_excerpt::BookmarkExcerpt {
             presentation: bookmark_excerpt::BookmarkExcerptPresentation::PlainText,
@@ -1378,11 +1451,7 @@ mod tests {
                     .get(target_line_index)
                     .map_or(0, |(number, _)| *number),
                 target_line_index,
-                truncation: bookmark_excerpt::BookmarkExcerptTruncation {
-                    before,
-                    after,
-                    within_line: false,
-                },
+                truncation,
             },
             lines: lines
                 .iter()
@@ -1400,8 +1469,11 @@ mod tests {
         let rendered = format_raw_bookmark_excerpt(&excerpt(
             1,
             &[(0, "one"), (1, "two"), (2, "three")],
-            false,
-            false,
+            bookmark_excerpt::BookmarkExcerptTruncation {
+                before: false,
+                after: false,
+                within_line: false,
+            },
         ));
         assert_eq!(
             rendered.text, "   1 | one\n>  2 | two\n   3 | three\n",
@@ -1418,8 +1490,15 @@ mod tests {
 
     #[test]
     fn raw_excerpt_widens_the_number_column_for_large_line_numbers() {
-        let rendered =
-            format_raw_bookmark_excerpt(&excerpt(0, &[(0, "a"), (998, "b")], false, false));
+        let rendered = format_raw_bookmark_excerpt(&excerpt(
+            0,
+            &[(0, "a"), (998, "b")],
+            bookmark_excerpt::BookmarkExcerptTruncation {
+                before: false,
+                after: false,
+                within_line: false,
+            },
+        ));
         // Highest displayed number is 999, so the column is 3 wide, not 2.
         assert!(
             rendered.text.starts_with(">   1 | a\n"),
@@ -1431,7 +1510,15 @@ mod tests {
 
     #[test]
     fn raw_excerpt_reports_omitted_context_on_both_sides() {
-        let rendered = format_raw_bookmark_excerpt(&excerpt(0, &[(5, "x")], true, true));
+        let rendered = format_raw_bookmark_excerpt(&excerpt(
+            0,
+            &[(5, "x")],
+            bookmark_excerpt::BookmarkExcerptTruncation {
+                before: true,
+                after: true,
+                within_line: false,
+            },
+        ));
         assert!(
             rendered
                 .text
@@ -1449,7 +1536,15 @@ mod tests {
 
     #[test]
     fn raw_excerpt_of_no_lines_is_empty_rather_than_panicking() {
-        let rendered = format_raw_bookmark_excerpt(&excerpt(0, &[], false, false));
+        let rendered = format_raw_bookmark_excerpt(&excerpt(
+            0,
+            &[],
+            bookmark_excerpt::BookmarkExcerptTruncation {
+                before: false,
+                after: false,
+                within_line: false,
+            },
+        ));
         assert_eq!(rendered.text, "");
         assert_eq!(rendered.target_start, 0);
         assert_eq!(rendered.target_end, 0);

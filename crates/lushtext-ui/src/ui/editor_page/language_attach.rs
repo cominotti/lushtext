@@ -56,6 +56,7 @@ use std::cell::{Cell, RefCell};
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
+use lushtext_model::values::LanguageAttachGeneration;
 use sourceview5::prelude::*;
 
 use super::LushtextEditorPage;
@@ -98,7 +99,7 @@ pub struct LanguageAttachState {
     pending: Cell<bool>,
     /// Advanced by every request and cancellation; a stage of an older one
     /// does nothing.
-    generation: Cell<u64>,
+    generation: Cell<LanguageAttachGeneration>,
     /// When the editor's first frame after it was mapped was painted.
     first_frame_us: Cell<Option<i64>>,
     /// When the pending stage became eligible to wait for input-quiet: the
@@ -477,7 +478,7 @@ impl LushtextEditorPage {
 
     fn cancel_scheduled_attach(&self) {
         let state = &self.imp().language_attach;
-        state.generation.set(state.generation.get().wrapping_add(1));
+        state.generation.set(state.generation.get().next());
         if let Some(source) = state.source.take() {
             source.remove();
         }
@@ -532,7 +533,7 @@ impl LushtextEditorPage {
         }
     }
 
-    fn first_editor_frame_painted(&self, generation: u64) {
+    fn first_editor_frame_painted(&self, generation: LanguageAttachGeneration) {
         let state = &self.imp().language_attach;
         if let Some((clock, handler)) = state.frame_handler.take() {
             clock.disconnect(handler);
@@ -567,7 +568,7 @@ impl LushtextEditorPage {
         state.source.replace(Some(source));
     }
 
-    fn attach_idle_dispatched(&self, generation: u64) {
+    fn attach_idle_dispatched(&self, generation: LanguageAttachGeneration) {
         let state = &self.imp().language_attach;
         if state.generation.get() != generation || !state.pending.get() {
             return;
@@ -619,7 +620,7 @@ impl LushtextEditorPage {
     }
 
     /// Stage 3: attach, with GtkSourceView's own guess authoritative.
-    fn run_language_attach(&self, generation: u64, past_deadline: bool) {
+    fn run_language_attach(&self, generation: LanguageAttachGeneration, past_deadline: bool) {
         let state = &self.imp().language_attach;
         if state.generation.get() != generation || !state.pending.get() {
             return;

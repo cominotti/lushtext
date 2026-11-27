@@ -36,29 +36,31 @@
 
 #![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]
 
+use lushtext_model::values::Sp;
+
 use crate::ui::sidebar::width_preset::WorkspaceSidebarWidthPreset;
 
 #[cfg(kani)]
 mod kani_proofs;
 
 /// Tiny non-zero floor used before the first real workspace-width sync.
-pub(in crate::ui::window) const WORKSPACE_SIDEBAR_MIN_WIDTH_SP: i32 = 1;
+pub(in crate::ui::window) const WORKSPACE_SIDEBAR_MIN_WIDTH_SP: Sp = Sp::new(1);
 /// Properties sidebar minimum width in scale-independent pixels.
-pub(in crate::ui::window) const PROPERTIES_SIDEBAR_MIN_WIDTH_SP: i32 = 280;
+pub(in crate::ui::window) const PROPERTIES_SIDEBAR_MIN_WIDTH_SP: Sp = Sp::new(280);
 /// Minimum normal-mode height that preserves persistent chrome and an editor.
-pub const NORMAL_MODE_MIN_HEIGHT_SP: i32 = 360;
+pub const NORMAL_MODE_MIN_HEIGHT_SP: Sp = Sp::new(360);
 /// Collapse the left workspace pane on narrower windows.
-pub(in crate::ui::window) const WORKSPACE_BREAKPOINT_MAX_WIDTH_SP: i32 = 860;
+pub(in crate::ui::window) const WORKSPACE_BREAKPOINT_MAX_WIDTH_SP: Sp = Sp::new(860);
 /// GNOME Text Editor switches the header Open control to an icon at 400sp.
-pub(in crate::ui::window) const OPEN_BUTTON_BREAKPOINT_MAX_WIDTH_SP: i32 = 400;
+pub(in crate::ui::window) const OPEN_BUTTON_BREAKPOINT_MAX_WIDTH_SP: Sp = Sp::new(400);
 
 /// The visible right properties pane targets `1 / FIXED_PROPERTIES_SIDEBAR_DIVISOR`
 /// of the total window width: a quarter.
 const FIXED_PROPERTIES_SIDEBAR_DIVISOR: i32 = 4;
 /// Minimum center width that keeps restored-document inline alerts stable.
-const MIN_EDITOR_CONTENT_WIDTH_SP: i32 = 620;
+const MIN_EDITOR_CONTENT_WIDTH_SP: Sp = Sp::new(620);
 /// Width budget for split separators, padding, and rounding noise.
-const DUAL_PANE_LAYOUT_OVERHEAD_SP: i32 = 32;
+const DUAL_PANE_LAYOUT_OVERHEAD_SP: Sp = Sp::new(32);
 /// Wide document-properties presentation in the multi-layout view.
 const PROPERTIES_LAYOUT_PANE: &str = "pane";
 /// Compact document-properties presentation in the multi-layout view.
@@ -104,7 +106,7 @@ impl PropertiesPresentation {
 #[derive(Clone, Copy, Debug)]
 pub(in crate::ui::window) struct AdaptiveShellInputs {
     /// Current allocated or restored window width in scale-independent pixels.
-    pub(super) window_width: i32,
+    pub(super) window_width: Sp,
     /// Workspace width preset selected by the user.
     pub(super) workspace_preset: WorkspaceSidebarWidthPreset,
     /// Whether the user last requested the workspace sidebar open.
@@ -121,7 +123,7 @@ pub(in crate::ui::window) struct AdaptiveShellInputs {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(in crate::ui::window) struct AdaptiveShellLayout {
     /// Document-properties breakpoint threshold for the current intent.
-    pub(super) properties_breakpoint_max_width: i32,
+    pub(super) properties_breakpoint_max_width: Sp,
     /// Whether the workspace consumes side-by-side width in this layout.
     pub(super) workspace_consumes_width: bool,
     /// Resolved document-properties presentation.
@@ -134,8 +136,8 @@ pub(in crate::ui::window) struct AdaptiveShellLayout {
     pub(super) render_properties: bool,
 }
 
-pub(in crate::ui::window) fn properties_breakpoint_condition(max_width_sp: i32) -> String {
-    format!("max-width: {max_width_sp}sp")
+pub(in crate::ui::window) fn properties_breakpoint_condition(max_width_sp: Sp) -> String {
+    format!("max-width: {max_width_sp}")
 }
 
 pub(in crate::ui::window) fn workspace_breakpoint_condition() -> String {
@@ -150,26 +152,26 @@ pub(in crate::ui::window) fn workspace_breakpoint_condition() -> String {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::ui::window) struct PaneShare {
     /// The pane's width.
-    pub(in crate::ui::window) width_sp: i32,
+    pub(in crate::ui::window) width_sp: Sp,
     /// The width the pane is a share of: the window, or the inner split.
-    pub(in crate::ui::window) of_sp: i32,
+    pub(in crate::ui::window) of_sp: Sp,
 }
 
 /// Return the preset-clamped workspace target width for this window.
 pub(in crate::ui::window) fn effective_workspace_sidebar_width_sp(
     input: AdaptiveShellInputs,
-) -> i32 {
+) -> Sp {
     input.workspace_preset.clamped_width_sp(input.window_width)
 }
 
 /// The workspace pane's share of the window for one preset.
 pub(in crate::ui::window) fn workspace_preset_share(
     preset: WorkspaceSidebarWidthPreset,
-    window_width: i32,
+    window_width: Sp,
 ) -> PaneShare {
     PaneShare {
         width_sp: preset.clamped_width_sp(window_width),
-        of_sp: window_width.max(1),
+        of_sp: window_width.max(Sp::new(1)),
     }
 }
 
@@ -190,7 +192,7 @@ pub(in crate::ui::window) fn effective_properties_share(input: AdaptiveShellInpu
     let desired = desired_properties_width_sp(input.window_width);
     if derive_adaptive_shell_layout(input).workspace_consumes_width {
         let inner_width = properties_inner_split_width(
-            input.window_width.max(1),
+            input.window_width.max(Sp::new(1)),
             effective_workspace_sidebar_width_sp(input),
         );
         PaneShare {
@@ -212,28 +214,29 @@ pub(in crate::ui::window) fn effective_properties_share(input: AdaptiveShellInpu
 /// extraction is what made the exclusion unnecessary: a named pure function has a
 /// contract of its own, and that contract is directly testable, which kills the
 /// whole mutant family at once.
-fn properties_inner_split_width(total_width: i32, workspace_width: i32) -> i32 {
-    total_width.saturating_sub(workspace_width).max(1)
+fn properties_inner_split_width(total_width: Sp, workspace_width: Sp) -> Sp {
+    total_width.saturating_sub(workspace_width).max(Sp::new(1))
 }
 
 /// The properties pane's window-relative target width: a quarter of the window
 /// (floored), at least the properties minimum, and never wider than the window.
-pub(in crate::ui::window) fn desired_properties_width_sp(window_width: i32) -> i32 {
-    let width = window_width.max(1);
-    (width / FIXED_PROPERTIES_SIDEBAR_DIVISOR).max(PROPERTIES_SIDEBAR_MIN_WIDTH_SP.min(width))
+pub(in crate::ui::window) fn desired_properties_width_sp(window_width: Sp) -> Sp {
+    let width = window_width.max(Sp::new(1));
+    Sp::new(width.as_sp() / FIXED_PROPERTIES_SIDEBAR_DIVISOR)
+        .max(PROPERTIES_SIDEBAR_MIN_WIDTH_SP.min(width))
 }
 
 /// The properties pane's window-relative share.
-pub(in crate::ui::window) fn desired_properties_share(window_width: i32) -> PaneShare {
+pub(in crate::ui::window) fn desired_properties_share(window_width: Sp) -> PaneShare {
     PaneShare {
         width_sp: desired_properties_width_sp(window_width),
-        of_sp: window_width.max(1),
+        of_sp: window_width.max(Sp::new(1)),
     }
 }
 
 /// Derive which secondary surfaces render, and how, for one stable intent.
 ///
-/// Kani proves (`policy/kani_proofs.rs`), for every `i32` width, preset,
+/// Kani proves (`policy/kani_proofs.rs`), for every [`Sp`] width, preset,
 /// requested visibility, Focus Mode, and compact-surface choice: Focus Mode
 /// renders nothing; an unrequested surface never renders; the sheet
 /// presentation renders at most one surface; the pane presentation above the
@@ -246,7 +249,7 @@ pub(in crate::ui::window) fn derive_adaptive_shell_layout(
     let workspace_width_sp = if workspace_consumes_width {
         effective_workspace_sidebar_width_sp(input)
     } else {
-        0
+        Sp::ZERO
     };
     let properties_breakpoint_max_width = properties_breakpoint_max_width_sp(workspace_width_sp);
     let properties_presentation = if input.window_width <= properties_breakpoint_max_width {
@@ -347,7 +350,7 @@ pub(in crate::ui::window) struct ShellReconciliation {
     /// New sheet `open`.
     pub(in crate::ui::window) sheet_open: Option<bool>,
     /// New breakpoint threshold, when the installed one is stale.
-    pub(in crate::ui::window) reinstall_threshold: Option<i32>,
+    pub(in crate::ui::window) reinstall_threshold: Option<Sp>,
     /// The target presentation, which fixes the order of the two properties writes.
     presentation: PropertiesPresentation,
 }
@@ -394,7 +397,7 @@ impl ShellReconciliation {
 pub(in crate::ui::window) fn plan_shell_reconciliation(
     rendered: RenderedShellState,
     layout: AdaptiveShellLayout,
-    installed_threshold: i32,
+    installed_threshold: Sp,
 ) -> ShellReconciliation {
     let sheet = layout.properties_presentation == PropertiesPresentation::Sheet;
     let changed = |current: bool, target: bool| (current != target).then_some(target);
@@ -452,8 +455,8 @@ fn secondary_surface_requested_for_intent(
 /// workspace (rounded up), and that same sum plus the properties minimum. Kani
 /// proves it never decreases as the workspace width grows over the reachable
 /// range [0, 440] sp, and that it is at least the second guard.
-fn properties_breakpoint_max_width_sp(workspace_width_sp: i32) -> i32 {
-    let center_target = MIN_EDITOR_CONTENT_WIDTH_SP + DUAL_PANE_LAYOUT_OVERHEAD_SP;
+fn properties_breakpoint_max_width_sp(workspace_width_sp: Sp) -> Sp {
+    let center_target = MIN_EDITOR_CONTENT_WIDTH_SP.saturating_add(DUAL_PANE_LAYOUT_OVERHEAD_SP);
     let fraction_guard = dual_sidebar_window_width_for_center(center_target, workspace_width_sp);
     let min_width_guard = center_target
         .saturating_add(workspace_width_sp)
@@ -463,12 +466,12 @@ fn properties_breakpoint_max_width_sp(workspace_width_sp: i32) -> i32 {
 
 /// The smallest window width whose properties quarter leaves `center + workspace`
 /// for the rest: `ceil((center + workspace) * 4 / 3)`.
-fn dual_sidebar_window_width_for_center(center_width_sp: i32, workspace_width_sp: i32) -> i32 {
+fn dual_sidebar_window_width_for_center(center_width_sp: Sp, workspace_width_sp: Sp) -> Sp {
     let rest_parts = i64::from(FIXED_PROPERTIES_SIDEBAR_DIVISOR - 1);
-    let needed = (i64::from(center_width_sp) + i64::from(workspace_width_sp))
+    let needed = (i64::from(center_width_sp.as_sp()) + i64::from(workspace_width_sp.as_sp()))
         * i64::from(FIXED_PROPERTIES_SIDEBAR_DIVISOR);
     let width = (needed + rest_parts - 1).div_euclid(rest_parts);
-    i32::try_from(width).unwrap_or(i32::MAX)
+    Sp::new(i32::try_from(width).unwrap_or(i32::MAX))
 }
 
 /// The stored facts the split-view restore is planned from, all float-free.
@@ -484,7 +487,7 @@ pub(in crate::ui::window) struct SplitViewRestoreFacts {
     /// The legacy `sidebar-visible` value when the user ever stored one.
     pub(in crate::ui::window) legacy_sidebar_visible: Option<bool>,
     /// The window width the restore sizes the panes against.
-    pub(in crate::ui::window) current_width: i32,
+    pub(in crate::ui::window) current_width: Sp,
     /// `workspace-sidebar-visible` as stored.
     pub(in crate::ui::window) stored_workspace_visible: bool,
     /// `properties-sidebar-visible` as stored.
@@ -607,7 +610,7 @@ mod tests {
 
     fn input(window_width: i32) -> AdaptiveShellInputs {
         AdaptiveShellInputs {
-            window_width,
+            window_width: Sp::new(window_width),
             workspace_preset: WorkspaceSidebarWidthPreset::Comfy,
             workspace_requested_visible: true,
             properties_requested_visible: true,
@@ -671,11 +674,14 @@ mod tests {
         // `AdwBreakpoint::set_condition` parses this string; an empty or
         // malformed one installs no breakpoint and the adaptive layout silently
         // stops switching.
-        assert_eq!(properties_breakpoint_condition(1350), "max-width: 1350sp");
-        assert_eq!(properties_breakpoint_condition(0), "max-width: 0sp");
+        assert_eq!(
+            properties_breakpoint_condition(Sp::new(1350)),
+            "max-width: 1350sp"
+        );
+        assert_eq!(properties_breakpoint_condition(Sp::ZERO), "max-width: 0sp");
         assert_eq!(
             workspace_breakpoint_condition(),
-            format!("max-width: {WORKSPACE_BREAKPOINT_MAX_WIDTH_SP}sp")
+            format!("max-width: {WORKSPACE_BREAKPOINT_MAX_WIDTH_SP}")
         );
         assert_eq!(workspace_breakpoint_condition(), "max-width: 860sp");
     }
@@ -688,9 +694,10 @@ mod tests {
             for preset in WorkspaceSidebarWidthPreset::ALL {
                 probe.workspace_preset = preset;
                 let share = workspace_sidebar_share(probe);
-                assert_eq!(share.width_sp, preset.clamped_width_sp(width));
-                assert_eq!(share.of_sp, width);
-                assert!(share.width_sp >= 1 && share.width_sp <= share.of_sp);
+                let width_sp = Sp::new(width);
+                assert_eq!(share.width_sp, preset.clamped_width_sp(width_sp));
+                assert_eq!(share.of_sp, width_sp);
+                assert!(share.width_sp >= Sp::new(1) && share.width_sp <= share.of_sp);
             }
         }
     }
@@ -715,10 +722,10 @@ mod tests {
         assert!(layout.workspace_consumes_width);
 
         let rebased = effective_properties_share(wide);
-        assert_eq!(rebased.width_sp, desired_properties_width_sp(2560));
+        assert_eq!(rebased.width_sp, desired_properties_width_sp(Sp::new(2560)));
         assert_eq!(
             rebased.of_sp,
-            2560 - effective_workspace_sidebar_width_sp(wide)
+            Sp::new(2560).saturating_sub(effective_workspace_sidebar_width_sp(wide))
         );
 
         // With no workspace consuming width, the two agree exactly.
@@ -727,7 +734,7 @@ mod tests {
         assert!(!derive_adaptive_shell_layout(no_workspace).workspace_consumes_width);
         assert_eq!(
             effective_properties_share(no_workspace),
-            desired_properties_share(2560)
+            desired_properties_share(Sp::new(2560))
         );
     }
 
@@ -750,7 +757,7 @@ mod tests {
         // At or below the workspace breakpoint both surfaces cannot fit, so the
         // workspace renders only if it is the chosen compact surface. Replacing
         // the `&&` here with `||` would show both.
-        let mut collapsed = input(WORKSPACE_BREAKPOINT_MAX_WIDTH_SP);
+        let mut collapsed = input(WORKSPACE_BREAKPOINT_MAX_WIDTH_SP.as_sp());
         collapsed.compact_surface = Some(SecondarySurface::Workspace);
         let layout = derive_adaptive_shell_layout(collapsed);
         assert!(layout.render_workspace);
@@ -772,7 +779,7 @@ mod tests {
         // Between the two breakpoints the properties sheet wins the compact slot
         // when requested, and the workspace must yield. `||` in place of `&&`
         // would leave the workspace visible behind the sheet.
-        let compact_width = WORKSPACE_BREAKPOINT_MAX_WIDTH_SP + 1;
+        let compact_width = WORKSPACE_BREAKPOINT_MAX_WIDTH_SP.as_sp() + 1;
         let mut compact = input(compact_width);
         compact.compact_surface = Some(SecondarySurface::DocumentProperties);
         let layout = derive_adaptive_shell_layout(compact);
@@ -853,17 +860,23 @@ mod tests {
         // the workspace exceeds roughly 188sp, so the *sum* in the min-width guard
         // is only observable below that — which is why the monotonicity check
         // above cannot see an arithmetic error there.
-        assert_eq!(properties_breakpoint_max_width_sp(100), 1032);
-        assert_eq!(properties_breakpoint_max_width_sp(0), 932);
+        assert_eq!(
+            properties_breakpoint_max_width_sp(Sp::new(100)),
+            Sp::new(1032)
+        );
+        assert_eq!(properties_breakpoint_max_width_sp(Sp::ZERO), Sp::new(932));
         // 932 == center_target + properties minimum, exactly.
         assert_eq!(
-            properties_breakpoint_max_width_sp(0),
+            properties_breakpoint_max_width_sp(Sp::ZERO),
             MIN_EDITOR_CONTENT_WIDTH_SP
-                + DUAL_PANE_LAYOUT_OVERHEAD_SP
-                + PROPERTIES_SIDEBAR_MIN_WIDTH_SP
+                .saturating_add(DUAL_PANE_LAYOUT_OVERHEAD_SP)
+                .saturating_add(PROPERTIES_SIDEBAR_MIN_WIDTH_SP)
         );
         // And above the crossover the fraction guard takes over.
-        assert_eq!(properties_breakpoint_max_width_sp(400), 1403);
+        assert_eq!(
+            properties_breakpoint_max_width_sp(Sp::new(400)),
+            Sp::new(1403)
+        );
     }
 
     #[test]
@@ -872,16 +885,16 @@ mod tests {
         // floored quarter takes over. The crossover is `minimum * 4`, so
         // changing either constant moves it.
         assert_eq!(
-            PROPERTIES_SIDEBAR_MIN_WIDTH_SP * FIXED_PROPERTIES_SIDEBAR_DIVISOR,
-            1120
+            PROPERTIES_SIDEBAR_MIN_WIDTH_SP.saturating_mul(FIXED_PROPERTIES_SIDEBAR_DIVISOR),
+            Sp::new(1120)
         );
-        assert_eq!(desired_properties_width_sp(1119), 280);
-        assert_eq!(desired_properties_width_sp(1120), 280);
-        assert_eq!(desired_properties_width_sp(1124), 281);
-        assert_eq!(desired_properties_width_sp(1800), 450);
+        assert_eq!(desired_properties_width_sp(Sp::new(1119)), Sp::new(280));
+        assert_eq!(desired_properties_width_sp(Sp::new(1120)), Sp::new(280));
+        assert_eq!(desired_properties_width_sp(Sp::new(1124)), Sp::new(281));
+        assert_eq!(desired_properties_width_sp(Sp::new(1800)), Sp::new(450));
         // Never wider than a narrow window.
-        assert_eq!(desired_properties_width_sp(200), 200);
-        assert_eq!(desired_properties_width_sp(0), 1);
+        assert_eq!(desired_properties_width_sp(Sp::new(200)), Sp::new(200));
+        assert_eq!(desired_properties_width_sp(Sp::ZERO), Sp::new(1));
         // The rebased share keeps the width and only changes its denominator.
         for width in (861..4000).step_by(37) {
             for preset in WorkspaceSidebarWidthPreset::ALL {
@@ -891,7 +904,7 @@ mod tests {
                     continue;
                 }
                 let share = effective_properties_share(probe);
-                assert_eq!(share.width_sp, desired_properties_width_sp(width));
+                assert_eq!(share.width_sp, desired_properties_width_sp(Sp::new(width)));
                 assert!(
                     share.width_sp <= share.of_sp,
                     "width {width} preset {preset:?}"
@@ -905,14 +918,26 @@ mod tests {
         // A named pure function with a contract of its own: asserting it directly
         // kills its mutant family — subtraction swapped for addition or division,
         // and whole-body replacement alike.
-        assert_eq!(properties_inner_split_width(1200, 360), 840);
+        assert_eq!(
+            properties_inner_split_width(Sp::new(1200), Sp::new(360)),
+            Sp::new(840)
+        );
 
         // The floor is load-bearing, not defensive: the width is the properties
         // share's denominator, so a workspace pane that consumes the entire
         // window must still yield a positive one.
-        assert_eq!(properties_inner_split_width(360, 360), 1);
-        assert_eq!(properties_inner_split_width(100, 500), 1);
-        assert_eq!(properties_inner_split_width(i32::MIN, i32::MAX), 1);
+        assert_eq!(
+            properties_inner_split_width(Sp::new(360), Sp::new(360)),
+            Sp::new(1)
+        );
+        assert_eq!(
+            properties_inner_split_width(Sp::new(100), Sp::new(500)),
+            Sp::new(1)
+        );
+        assert_eq!(
+            properties_inner_split_width(Sp::new(i32::MIN), Sp::new(i32::MAX)),
+            Sp::new(1)
+        );
     }
 
     #[test]
@@ -920,17 +945,17 @@ mod tests {
         // The guard is `center + workspace + properties-minimum`, so a wider
         // workspace pushes the breakpoint up. Subtracting instead of adding the
         // properties minimum would let the pane appear below its own floor.
-        let narrow = properties_breakpoint_max_width_sp(0);
-        let wide = properties_breakpoint_max_width_sp(400);
+        let narrow = properties_breakpoint_max_width_sp(Sp::ZERO);
+        let wide = properties_breakpoint_max_width_sp(Sp::new(400));
         assert!(wide > narrow, "{wide} must exceed {narrow}");
         assert!(
-            narrow >= MIN_EDITOR_CONTENT_WIDTH_SP + PROPERTIES_SIDEBAR_MIN_WIDTH_SP,
+            narrow >= MIN_EDITOR_CONTENT_WIDTH_SP.saturating_add(PROPERTIES_SIDEBAR_MIN_WIDTH_SP),
             "the breakpoint must clear the editor floor plus the properties minimum"
         );
         // Monotonic across the whole preset range.
-        let mut previous = 0;
+        let mut previous = Sp::ZERO;
         for workspace in [0, 100, 250, 400, 800] {
-            let value = properties_breakpoint_max_width_sp(workspace);
+            let value = properties_breakpoint_max_width_sp(Sp::new(workspace));
             assert!(value >= previous, "not monotonic at {workspace}");
             previous = value;
         }
@@ -940,16 +965,16 @@ mod tests {
     fn properties_breakpoint_width_accounts_for_workspace_preset() {
         assert_eq!(
             properties_breakpoint_max_width_sp(WorkspaceSidebarWidthPreset::Comfy.max_width_sp()),
-            1350
+            Sp::new(1350)
         );
-        assert_eq!(properties_breakpoint_max_width_sp(0), 932);
+        assert_eq!(properties_breakpoint_max_width_sp(Sp::ZERO), Sp::new(932));
         assert_eq!(
             properties_breakpoint_max_width_sp(WorkspaceSidebarWidthPreset::Small.max_width_sp()),
-            1243
+            Sp::new(1243)
         );
         assert_eq!(
             properties_breakpoint_max_width_sp(WorkspaceSidebarWidthPreset::Large.max_width_sp()),
-            1456
+            Sp::new(1456)
         );
     }
 
@@ -957,7 +982,7 @@ mod tests {
     fn adaptive_layout_budgets_requested_workspace_even_when_compact_suppresses_it() {
         let layout = derive_adaptive_shell_layout(input(1200));
 
-        assert_eq!(layout.properties_breakpoint_max_width, 1350);
+        assert_eq!(layout.properties_breakpoint_max_width, Sp::new(1350));
         assert_eq!(
             layout.properties_presentation,
             PropertiesPresentation::Sheet
@@ -1047,35 +1072,39 @@ mod tests {
     fn dual_sidebar_width_helper_preserves_requested_center_space() {
         // The smallest window whose remaining three quarters hold the center
         // target plus the widest workspace: one sp less would not.
-        let center_target = MIN_EDITOR_CONTENT_WIDTH_SP + DUAL_PANE_LAYOUT_OVERHEAD_SP;
+        let center_target =
+            MIN_EDITOR_CONTENT_WIDTH_SP.saturating_add(DUAL_PANE_LAYOUT_OVERHEAD_SP);
         let workspace = WorkspaceSidebarWidthPreset::Large.max_width_sp();
         let total_width = dual_sidebar_window_width_for_center(center_target, workspace);
-        let rest = |width: i32| i64::from(width) * 75 / 100;
-        assert!(rest(total_width) >= i64::from(center_target + workspace));
-        assert!(i64::from(total_width - 1) * 75 < i64::from(center_target + workspace) * 100);
+        let rest = |width: Sp| i64::from(width.as_sp()) * 75 / 100;
+        assert!(rest(total_width) >= i64::from(center_target.saturating_add(workspace).as_sp()));
+        assert!(
+            i64::from(total_width.as_sp() - 1) * 75
+                < i64::from(center_target.saturating_add(workspace).as_sp()) * 100
+        );
         assert_eq!(
-            dual_sidebar_window_width_for_center(center_target, 100),
-            1003
+            dual_sidebar_window_width_for_center(center_target, Sp::new(100)),
+            Sp::new(1003)
         );
     }
 
     #[test]
     fn workspace_sidebar_target_width_clamps_for_representative_window_sizes() {
         assert_eq!(
-            WorkspaceSidebarWidthPreset::Small.clamped_width_sp(900),
-            220
+            WorkspaceSidebarWidthPreset::Small.clamped_width_sp(Sp::new(900)),
+            Sp::new(220)
         );
         assert_eq!(
-            WorkspaceSidebarWidthPreset::Comfy.clamped_width_sp(1200),
-            360
+            WorkspaceSidebarWidthPreset::Comfy.clamped_width_sp(Sp::new(1200)),
+            Sp::new(360)
         );
         assert_eq!(
-            WorkspaceSidebarWidthPreset::Large.clamped_width_sp(1400),
-            440
+            WorkspaceSidebarWidthPreset::Large.clamped_width_sp(Sp::new(1400)),
+            Sp::new(440)
         );
         assert_eq!(
-            WorkspaceSidebarWidthPreset::Comfy.clamped_width_sp(2000),
-            360
+            WorkspaceSidebarWidthPreset::Comfy.clamped_width_sp(Sp::new(2000)),
+            Sp::new(360)
         );
     }
 
@@ -1085,10 +1114,10 @@ mod tests {
         // taken of the inner split.
         let input = input(1800);
         let share = effective_properties_share(input);
-        assert_eq!(share.width_sp, 1800 / 4);
+        assert_eq!(share.width_sp, Sp::new(1800 / 4));
         assert_eq!(
             share.of_sp,
-            1800 - effective_workspace_sidebar_width_sp(input)
+            Sp::new(1800).saturating_sub(effective_workspace_sidebar_width_sp(input))
         );
     }
 
@@ -1109,7 +1138,7 @@ mod tests {
     use ShellWrite as Write;
 
     /// The plan's threshold decision, checked against the reference.
-    fn reinstall(input: AdaptiveShellInputs, installed: i32) -> Option<i32> {
+    fn reinstall(input: AdaptiveShellInputs, installed: Sp) -> Option<Sp> {
         let rendered = Rendered {
             compact_surface: input.compact_surface,
             ..NOTHING_SHOWN
@@ -1124,7 +1153,7 @@ mod tests {
     /// The plan's ordered surface writes, checked against the reference.
     fn surface_writes(rendered: Rendered, input: AdaptiveShellInputs) -> Vec<Write> {
         let planned: Vec<Write> =
-            plan_shell_reconciliation(rendered, derive_adaptive_shell_layout(input), 0)
+            plan_shell_reconciliation(rendered, derive_adaptive_shell_layout(input), Sp::ZERO)
                 .surface_writes()
                 .into_iter()
                 .flatten()
@@ -1134,7 +1163,7 @@ mod tests {
     }
 
     /// `sync_properties_breakpoint`: reinstall only when the integer threshold moved.
-    fn reference_reinstall(input: AdaptiveShellInputs, installed: i32) -> Option<i32> {
+    fn reference_reinstall(input: AdaptiveShellInputs, installed: Sp) -> Option<Sp> {
         let max_width = derive_adaptive_shell_layout(input).properties_breakpoint_max_width;
         (installed != max_width).then_some(max_width)
     }
@@ -1212,8 +1241,8 @@ mod tests {
             ]
         );
         // The Comfy workspace consumes 360 sp, so the threshold is 1350.
-        assert_eq!(reinstall(wide, 932), Some(1350));
-        assert_eq!(reinstall(wide, 1350), None);
+        assert_eq!(reinstall(wide, Sp::new(932)), Some(Sp::new(1350)));
+        assert_eq!(reinstall(wide, Sp::new(1350)), None);
         // Already rendered: nothing to write.
         assert!(surface_writes(WIDE_BOTH_SHOWN, wide).is_empty());
     }
@@ -1232,7 +1261,7 @@ mod tests {
                 Write::SheetOpen(true),
             ]
         );
-        assert_eq!(reinstall(medium, 1350), None);
+        assert_eq!(reinstall(medium, Sp::new(1350)), None);
         let settled = AdaptiveShellInputs {
             compact_surface: COMPACT_SHEET_OPEN.compact_surface,
             ..medium
@@ -1265,7 +1294,7 @@ mod tests {
         collapsed.compact_surface = Some(SecondarySurface::Workspace);
         // At or below the workspace breakpoint the workspace consumes no width,
         // so the threshold falls to its floor.
-        assert_eq!(reinstall(collapsed, 1350), Some(932));
+        assert_eq!(reinstall(collapsed, Sp::new(1350)), Some(Sp::new(932)));
         // The user has just chosen the workspace for the compact slot while the
         // properties sheet is still open.
         let workspace_chosen = Rendered {
@@ -1301,7 +1330,7 @@ mod tests {
             ]
         );
         // Focus Mode stops the workspace consuming width.
-        assert_eq!(reinstall(focus, 1350), Some(932));
+        assert_eq!(reinstall(focus, Sp::new(1350)), Some(Sp::new(932)));
         // In a compact Focus Mode window the sheet presentation stays but closes.
         let mut compact_focus = input(900);
         compact_focus.focus_mode_active = true;
@@ -1340,7 +1369,7 @@ mod tests {
                         for workspace_preset in WorkspaceSidebarWidthPreset::ALL {
                             for intent in 0u8..8 {
                                 let input = AdaptiveShellInputs {
-                                    window_width,
+                                    window_width: Sp::new(window_width),
                                     workspace_preset,
                                     workspace_requested_visible: intent & 1 != 0,
                                     properties_requested_visible: intent & 2 != 0,
@@ -1351,7 +1380,7 @@ mod tests {
                                 let threshold = derive_adaptive_shell_layout(input)
                                     .properties_breakpoint_max_width;
                                 let _ = reinstall(input, threshold);
-                                let _ = reinstall(input, threshold + 1);
+                                let _ = reinstall(input, threshold.saturating_add(Sp::new(1)));
                                 checked += 1;
                             }
                         }
@@ -1366,24 +1395,26 @@ mod tests {
     fn a_settled_plan_is_empty_and_a_stale_one_is_not() {
         let wide = input(1800);
         let layout = derive_adaptive_shell_layout(wide);
-        let settled = plan_shell_reconciliation(WIDE_BOTH_SHOWN, layout, 1350);
+        let settled = plan_shell_reconciliation(WIDE_BOTH_SHOWN, layout, Sp::new(1350));
         assert!(settled.is_settled());
         assert!(settled.surface_writes().iter().all(Option::is_none));
         // A stale threshold alone makes the plan unsettled.
-        let stale = plan_shell_reconciliation(WIDE_BOTH_SHOWN, layout, 1349);
-        assert_eq!(stale.reinstall_threshold, Some(1350));
+        let stale = plan_shell_reconciliation(WIDE_BOTH_SHOWN, layout, Sp::new(1349));
+        assert_eq!(stale.reinstall_threshold, Some(Sp::new(1350)));
         assert!(!stale.is_settled());
         // So does a single stale surface.
         let hidden = Rendered {
             workspace_shows_sidebar: false,
             ..WIDE_BOTH_SHOWN
         };
-        assert!(!plan_shell_reconciliation(hidden, layout, 1350).is_settled());
+        assert!(!plan_shell_reconciliation(hidden, layout, Sp::new(1350)).is_settled());
     }
 }
 
 #[cfg(test)]
 mod restore_plan_tests {
+    use lushtext_model::values::Sp;
+
     use super::{SplitViewRestoreFacts, legacy_split_view_restore, plan_split_view_restore};
     use crate::ui::sidebar::width_preset::WorkspaceSidebarWidthPreset;
 
@@ -1391,7 +1422,7 @@ mod restore_plan_tests {
         SplitViewRestoreFacts {
             migrated,
             legacy_sidebar_visible: None,
-            current_width: 1280,
+            current_width: Sp::new(1280),
             stored_workspace_visible: true,
             stored_properties_visible: true,
             stored_workspace_preset: WorkspaceSidebarWidthPreset::Large,
@@ -1424,12 +1455,12 @@ mod restore_plan_tests {
                 for preset in WorkspaceSidebarWidthPreset::ALL {
                     for visible in [false, true] {
                         let mut f = facts(migrated);
-                        f.current_width = width;
+                        f.current_width = Sp::new(width);
                         f.stored_workspace_preset = preset;
                         f.stored_workspace_visible = visible;
                         let plan = plan_split_view_restore(f);
                         assert_eq!(plan, legacy_split_view_restore(f));
-                        assert!(plan.properties_share.of_sp >= 1);
+                        assert!(plan.properties_share.of_sp >= Sp::new(1));
                     }
                 }
             }

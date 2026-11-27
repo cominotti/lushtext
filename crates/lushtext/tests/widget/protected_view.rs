@@ -99,8 +99,15 @@ fn assert_installed_folded(body: &str, name: &str) {
     for (line, &shown) in visible.iter().enumerate() {
         let line = u64::try_from(line).expect("fits");
         match plan.range_of(line) {
-            Some(range) => assert_eq!(shown, range.head_chars, "{name}: line {line} head"),
-            None => assert!(shown <= HEAD_CAP, "{name}: line {line} shows {shown}"),
+            Some(range) => assert_eq!(
+                shown,
+                range.head_chars.as_chars(),
+                "{name}: line {line} head"
+            ),
+            None => assert!(
+                shown <= HEAD_CAP.as_chars(),
+                "{name}: line {line} shows {shown}"
+            ),
         }
     }
     assert!(plan.folded_paragraphs() >= 1, "{name}: something is folded");
@@ -243,7 +250,7 @@ fn assert_entered(page: &LushtextEditorPage, grown_line: i32, name: &str) {
     let visible = visible_lengths(page);
     let shown = visible[usize::try_from(grown_line).expect("non-negative")];
     assert!(
-        shown <= HEAD_CAP,
+        shown <= HEAD_CAP.as_chars(),
         "{name}: the grown paragraph shows {shown}"
     );
 }
@@ -311,13 +318,13 @@ fn test_an_edit_that_creates_a_dense_window_folds_it() {
     let visible = visible_lengths(&page);
     for line in [0usize, 5, 9, 11, 20, 100] {
         assert!(
-            visible[line] <= N_DENSE,
+            visible[line] <= N_DENSE.as_chars(),
             "line {line} of the dense edited window shows {}",
             visible[line]
         );
     }
     assert!(
-        visible[10] <= N_DENSE,
+        visible[10] <= N_DENSE.as_chars(),
         "the grown paragraph shows {}",
         visible[10]
     );
@@ -758,7 +765,7 @@ fn test_recovering_a_giant_paragraph_draft_folds_it_and_keeps_it_as_the_source()
     assert!(!editor.source_view().is_editable(), "and is caret-free");
     let last = visible_lengths(&editor).last().copied().expect("lines");
     assert!(
-        last <= HEAD_CAP,
+        last <= HEAD_CAP.as_chars(),
         "the recovered giant paragraph shows {last}, at most HEAD_CAP"
     );
     assert_eq!(
@@ -1028,13 +1035,17 @@ fn test_eviction_releases_the_source_and_the_reload_retains_a_new_one() {
     assert_eq!(
         page.estimated_live_buffer_bytes(),
         lushtext_model::document::editor_memory::estimate_live_editor_bytes(
-            chars,
-            page.file_size(),
+            lushtext_model::values::CharCount::new(chars),
+            page.file_size()
+                .map(lushtext_model::values::Bytes::from_bytes),
             false
-        ) + before.source_bytes.expect("source")
+        )
+        .as_bytes()
+            + before.source_bytes.expect("source")
             + lushtext_model::document::editor_memory::protected_boundary_bytes(
                 page.load_evidence().protected.boundaries_live
-            ),
+            )
+            .as_bytes(),
         "the source and the boundary marks are charged to the live-editor estimate"
     );
     assert!(
@@ -1318,14 +1329,16 @@ fn test_a_protected_tail_goes_in_and_out_in_bounded_slices() {
     assert!(page.is_protected_view());
     assert_eq!(editor_text(&page), body);
     assert!(
-        runs.largest_insert_bytes.get() <= PROTECTED_TAIL_SLICE_BYTES,
+        runs.largest_insert_bytes.get()
+            <= usize::try_from(PROTECTED_TAIL_SLICE_BYTES.as_bytes()).expect("fits"),
         "the largest insertion was {} bytes",
         runs.largest_insert_bytes.get()
     );
 
     load_and_wait(&page, &path);
     assert_eq!(editor_text(&page), body, "the reload is byte-identical");
-    let clear_bound = PROTECTED_CLEAR_SLICE_BYTES + usize_of(HEAD_CAP);
+    let clear_bound = usize::try_from(PROTECTED_CLEAR_SLICE_BYTES.as_bytes()).expect("fits")
+        + usize_of(HEAD_CAP.as_chars());
     assert!(
         usize::try_from(runs.largest_delete_chars.get()).expect("non-negative") <= clear_bound,
         "the largest deletion was {} characters",
@@ -1387,7 +1400,7 @@ fn assert_sliced_install(body: &str, name: &str) -> lushtext_ui::ui::editor_page
             let lines = visible_lengths(&page);
             for range in plan.ranges() {
                 if let Some(&shown) = lines.get(usize_of(range.paragraph))
-                    && shown > range.head_chars
+                    && shown > range.head_chars.as_chars()
                 {
                     overshow.set(Some((range.paragraph, shown)));
                 }
@@ -1408,11 +1421,11 @@ fn assert_sliced_install(body: &str, name: &str) -> lushtext_ui::ui::editor_page
         let line = i32::try_from(range.paragraph).expect("fits");
         assert_eq!(
             visible[usize_of(range.paragraph)],
-            range.head_chars,
+            range.head_chars.as_chars(),
             "{name}: line {line} head"
         );
-        let head = i32::try_from(range.head_chars).expect("fits");
-        let tail = i32::try_from(range.tail_chars).expect("fits");
+        let head = i32::try_from(range.head_chars.as_chars()).expect("fits");
+        let tail = i32::try_from(range.tail_chars.as_chars()).expect("fits");
         assert_eq!(
             fold_tag_runs(&page, line),
             vec![(head, head + tail)],
@@ -1428,7 +1441,8 @@ fn assert_sliced_install(body: &str, name: &str) -> lushtext_ui::ui::editor_page
         "{name}: every planned tail slice"
     );
     assert!(
-        usize_of(protected.largest_tail_slice_bytes) <= PROTECTED_TAIL_SLICE_BYTES,
+        usize_of(protected.largest_tail_slice_bytes)
+            <= usize::try_from(PROTECTED_TAIL_SLICE_BYTES.as_bytes()).expect("fits"),
         "{name}: {protected:?}"
     );
     assert_eq!(
@@ -1446,8 +1460,8 @@ fn assert_sliced_install(body: &str, name: &str) -> lushtext_ui::ui::editor_page
 #[test]
 fn test_sliced_protected_installs_are_byte_identical_and_folded() {
     let giant = |len: usize| "g".repeat(len);
-    let head = usize_of(HEAD_CAP);
-    let budget = PROTECTED_TAIL_SLICE_BYTES;
+    let head = usize_of(HEAD_CAP.as_chars());
+    let budget = usize::try_from(PROTECTED_TAIL_SLICE_BYTES.as_bytes()).expect("fits");
     assert_sliced_install(&format!("a\r{}\rb\r", giant(600_000)), "cr-only");
     assert_sliced_install(&format!("a\u{2029}{}\u{2029}b", giant(600_000)), "u2029");
     // A `\r\n` right at the end of a tail slice's window, and one byte inside.
@@ -1734,8 +1748,11 @@ fn test_recovering_a_protected_draft_inserts_its_tail_in_bounded_slices() {
     let (_window, editor, _path, _dir) = recover_draft(&draft);
     assert_eq!(editor_text(&editor), draft);
     let protected = editor.buffer_replacement_evidence().protected;
-    assert!(protected.tail_slices >= 3_000_000 / PROTECTED_TAIL_SLICE_BYTES as u64);
-    assert!(usize_of(protected.largest_tail_slice_bytes) <= PROTECTED_TAIL_SLICE_BYTES);
+    assert!(protected.tail_slices >= 3_000_000 / PROTECTED_TAIL_SLICE_BYTES.as_bytes());
+    assert!(
+        usize_of(protected.largest_tail_slice_bytes)
+            <= usize::try_from(PROTECTED_TAIL_SLICE_BYTES.as_bytes()).expect("fits")
+    );
     assert_eq!(protected.boundaries_live, protected.tail_slices + 1);
 }
 

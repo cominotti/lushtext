@@ -54,6 +54,7 @@ use crate::ui::responsiveness_probe::PostOpenSpan;
 use lushtext_model::document::buffer_replacement::{SliceBudget, next_slice_boundary};
 use lushtext_model::document::document_scale::DocumentScale;
 use lushtext_model::document::encoding::FileHealthFindingKind;
+use lushtext_model::values::LoadGeneration;
 use lushtext_services::coordination::notifications::{
     InlineActionNotification, InlineNotificationStyle,
 };
@@ -91,7 +92,7 @@ pub(crate) struct ChunkedLoadInstall {
     pub(super) end_mark: Option<gtk4::TextMark>,
     pub(super) loaded: Option<GuardedLoadResult>,
     pub(super) byte_offset: usize,
-    pub(super) generation: u64,
+    pub(super) generation: LoadGeneration,
     pub(super) source_id: Option<glib::SourceId>,
     /// The two slice budgets; a dense document also bounds visible
     /// characters (`bound-post-open-settle`, D6.1).
@@ -231,7 +232,12 @@ fn run_install_slice_now(session: &Rc<RefCell<ChunkedLoadInstall>>) {
         )
     });
 
-    match policy::install_slice_action(terminal, editor.is_some(), phase, installation_current) {
+    match policy::install_slice_action(
+        policy::SliceCompletion::from_terminal(terminal),
+        policy::EditorLifecycle::from_alive(editor.is_some()),
+        phase,
+        installation_current,
+    ) {
         // A terminal session and the finalizing phase both mean "no slice may
         // run": finalization owns the main thread until it publishes.
         InstallSliceAction::Ignore | InstallSliceAction::RunPhase(LoadInstallPhase::Finalizing) => {
@@ -293,7 +299,10 @@ pub(super) fn delete_buffer_slice(
     // GTK text layout validates whole paragraphs, so a deletion that stops
     // inside a line would re-lay-out the shrinking remainder on every turn.
     // Extending to the next line start deletes each paragraph exactly once.
-    if policy::clear_slice_extends_to_paragraph_end(end.is_end(), end.starts_line()) {
+    if policy::clear_slice_extends_to_paragraph_end(
+        end.is_end(),
+        policy::ClearLineBoundary::from_starts_line(end.starts_line()),
+    ) {
         let _ = end.forward_line();
     }
     crate::ui::editor_page::edit_lock::with_own_edit(|| buffer.delete(&mut start, &mut end));
@@ -432,7 +441,11 @@ fn run_text_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
         finish_chunked_install(session);
     } else {
         let paced = budget == SliceBudget::PACED || highlighted;
-        match policy::install_slice_pacing(paced, laid_out, protected) {
+        match policy::install_slice_pacing(policy::InstallPacingFacts {
+            dense: paced,
+            laid_out,
+            protected,
+        }) {
             InstallSlicePacing::BehindValidation => {
                 schedule_paced_insert_slice(session, PACED_SLICE_PRIORITY);
             }
@@ -668,7 +681,7 @@ pub(super) fn accept_admitted_load_outcome(
 /// exercise without a timing race.
 pub(super) fn apply_load_result_if_current(
     editor: &LushtextEditorPage,
-    load_generation: u64,
+    load_generation: LoadGeneration,
     result: Result<editor_io::LoadResult, EditorLoadError>,
     error_state: EditorLoadState,
 ) -> bool {
@@ -706,7 +719,7 @@ pub(super) fn apply_load_result_if_current(
 
 fn install_guarded_load(
     editor: &LushtextEditorPage,
-    load_generation: u64,
+    load_generation: LoadGeneration,
     loaded: GuardedLoadResult,
     permit: Option<TransientLoadPermit>,
 ) {
@@ -717,7 +730,7 @@ fn install_guarded_load(
 
 fn install_guarded_load_now(
     editor: &LushtextEditorPage,
-    load_generation: u64,
+    load_generation: LoadGeneration,
     loaded: GuardedLoadResult,
     permit: Option<TransientLoadPermit>,
 ) {
@@ -739,7 +752,13 @@ fn install_guarded_load_now(
         defer_direct_protected_install(editor, load_generation, loaded, permit);
         return;
     }
-    evidence::record_install_started(editor, chunked, highlight_chunked);
+    evidence::record_install_started(
+        editor,
+        evidence::InstallStartFacts {
+            chunked,
+            highlight_chunked,
+        },
+    );
     if chunked {
         start_chunked_install(editor, load_generation, loaded, permit);
     } else {
@@ -844,7 +863,7 @@ pub(super) fn install_loaded_direct(
 
 fn start_chunked_install(
     editor: &LushtextEditorPage,
-    generation: u64,
+    generation: LoadGeneration,
     loaded: GuardedLoadResult,
     permit: Option<TransientLoadPermit>,
 ) {
@@ -981,7 +1000,7 @@ fn begin_load_installation(
 /// load is still the editor's current one.
 fn defer_direct_protected_install(
     editor: &LushtextEditorPage,
-    load_generation: u64,
+    load_generation: LoadGeneration,
     loaded: GuardedLoadResult,
     permit: Option<TransientLoadPermit>,
 ) {
@@ -1195,7 +1214,7 @@ impl LushtextEditorPage {
     #[must_use]
     pub fn apply_load_result_for_test(
         &self,
-        load_generation: u64,
+        load_generation: LoadGeneration,
         result: Result<editor_io::LoadResult, EditorLoadError>,
     ) -> bool {
         self.refresh_load_token_for_test(load_generation);
@@ -1206,7 +1225,7 @@ impl LushtextEditorPage {
     #[must_use]
     pub fn apply_reload_error_for_test(
         &self,
-        load_generation: u64,
+        load_generation: LoadGeneration,
         error: EditorLoadError,
     ) -> bool {
         self.refresh_load_token_for_test(load_generation);
@@ -1214,7 +1233,7 @@ impl LushtextEditorPage {
     }
 
     /// Clear a cancellation the test's own setup left on the current request.
-    fn refresh_load_token_for_test(&self, load_generation: u64) {
+    fn refresh_load_token_for_test(&self, load_generation: LoadGeneration) {
         if self.imp().load_tracking.generation.get() == load_generation {
             self.imp()
                 .load_tracking
@@ -1240,7 +1259,7 @@ impl LushtextEditorPage {
         let weight = u64::try_from(content.capacity()).unwrap_or(u64::MAX);
         let reservation = crate::ui::plain_disposal::try_reserve_for_gtk(weight)
             .expect("test load body should acquire disposal capacity");
-        evidence::record_install_started(self, false, false);
+        evidence::record_install_started(self, evidence::InstallStartFacts::DIRECT);
         install_loaded_direct(
             self,
             GuardedLoadResult {

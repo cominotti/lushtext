@@ -103,7 +103,7 @@ fn test_the_line_inspector_reads_windows_in_the_middle_of_a_giant_paragraph() {
     let (page, _window) = protected_page(&body, "inspect");
     let insert = insert_offset(&page);
     let columns: Vec<char> = giant.chars().collect();
-    let width = n(N_INSPECT);
+    let width = n(N_INSPECT.as_chars());
 
     page.open_line_inspector(1, 150_123);
     wait_for_window(&page);

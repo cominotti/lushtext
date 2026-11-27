@@ -20,6 +20,8 @@
 //! Compiled only under `cfg(kani)` (`make kani`); ordinary builds and tests
 //! never see this module. The harnesses check the functions that ship.
 
+use lushtext_model::values::Sp;
+
 use super::{
     AdaptiveShellInputs, DUAL_PANE_LAYOUT_OVERHEAD_SP, MIN_EDITOR_CONTENT_WIDTH_SP,
     PROPERTIES_SIDEBAR_MIN_WIDTH_SP, PaneShare, PropertiesPresentation, SplitViewRestoreFacts,
@@ -30,7 +32,7 @@ use super::{
 use crate::ui::sidebar::width_preset::WorkspaceSidebarWidthPreset;
 
 /// The largest workspace width any preset can produce: the `Large` maximum.
-const MAX_WORKSPACE_WIDTH_SP: i32 = WorkspaceSidebarWidthPreset::Large.max_width_sp();
+const MAX_WORKSPACE_WIDTH_SP: Sp = WorkspaceSidebarWidthPreset::Large.max_width_sp();
 
 /// Any input the shell can hand the policy.
 fn any_inputs() -> AdaptiveShellInputs {
@@ -106,15 +108,17 @@ fn sheet_presentation_matches_the_breakpoint() {
 fn breakpoint_is_monotone_and_bounded() {
     let narrow: i32 = kani::any();
     let wide: i32 = kani::any();
-    kani::assume((0..=MAX_WORKSPACE_WIDTH_SP).contains(&narrow));
-    kani::assume((0..=MAX_WORKSPACE_WIDTH_SP).contains(&wide));
+    kani::assume((0..=MAX_WORKSPACE_WIDTH_SP.as_sp()).contains(&narrow));
+    kani::assume((0..=MAX_WORKSPACE_WIDTH_SP.as_sp()).contains(&wide));
     kani::assume(narrow <= wide);
-    let narrow_threshold = properties_breakpoint_max_width_sp(narrow);
-    assert!(narrow_threshold <= properties_breakpoint_max_width_sp(wide));
+    let narrow_sp = Sp::new(narrow);
+    let wide_sp = Sp::new(wide);
+    let narrow_threshold = properties_breakpoint_max_width_sp(narrow_sp);
+    assert!(narrow_threshold <= properties_breakpoint_max_width_sp(wide_sp));
     let floor = MIN_EDITOR_CONTENT_WIDTH_SP
-        + DUAL_PANE_LAYOUT_OVERHEAD_SP
-        + narrow
-        + PROPERTIES_SIDEBAR_MIN_WIDTH_SP;
+        .saturating_add(DUAL_PANE_LAYOUT_OVERHEAD_SP)
+        .saturating_add(narrow_sp)
+        .saturating_add(PROPERTIES_SIDEBAR_MIN_WIDTH_SP);
     assert!(narrow_threshold >= floor);
 }
 
@@ -125,7 +129,7 @@ fn breakpoint_is_monotone_and_bounded() {
 #[kani::proof]
 fn pane_shares_are_positive() {
     let input = any_inputs();
-    let positive = |share: PaneShare| share.width_sp >= 1 && share.of_sp >= 1;
+    let positive = |share: PaneShare| share.width_sp >= Sp::new(1) && share.of_sp >= Sp::new(1);
     assert!(positive(desired_properties_share(input.window_width)));
     assert!(positive(workspace_sidebar_share(input)));
     let properties = effective_properties_share(input);

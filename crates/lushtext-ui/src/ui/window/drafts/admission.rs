@@ -43,6 +43,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use lushtext_model::values::SessionGeneration;
+
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::glib;
@@ -238,14 +240,14 @@ impl LushtextWindow {
     /// comparing them.
     pub(crate) fn draft_workflow_blocks_readiness(&self) -> bool {
         let drafts = &self.imp().drafts;
-        policy::draft_workflow_blocks_readiness(
-            drafts.autosave_inflight.get(),
-            drafts.mutation_inflight.get(),
-            !drafts.pending_deletes.borrow().is_empty(),
-            drafts.restore_inflight_count.get() > 0,
-            drafts.lazy_restore_inflight.get(),
-            !drafts.lazy_restore_queue.borrow().is_empty(),
-        )
+        policy::draft_workflow_blocks_readiness(policy::DraftReadinessState {
+            autosave_inflight: drafts.autosave_inflight.get(),
+            mutation_inflight: drafts.mutation_inflight.get(),
+            pending_deletes: !drafts.pending_deletes.borrow().is_empty(),
+            restores_inflight: drafts.restore_inflight_count.get() > 0,
+            lazy_restore_inflight: drafts.lazy_restore_inflight.get(),
+            lazy_queue_non_empty: !drafts.lazy_restore_queue.borrow().is_empty(),
+        })
     }
 }
 
@@ -274,7 +276,7 @@ pub(crate) struct ProcessDraftJournal {
     /// The window that schedules orphan cleanup for the process.
     cleanup_owner: Cell<Option<JournalWindowKey>>,
     /// Process-wide ordering for session saves from any window.
-    session_generation: Cell<u64>,
+    session_generation: Cell<SessionGeneration>,
 }
 
 thread_local! {
@@ -619,11 +621,11 @@ impl LushtextWindow {
     }
 
     /// The next process-wide session-save generation.
-    pub(in crate::ui::window) fn next_process_session_generation(&self) -> u64 {
+    pub(in crate::ui::window) fn next_process_session_generation(&self) -> SessionGeneration {
         let Some(journal) = self.process_draft_journal() else {
-            return 0;
+            return SessionGeneration::ZERO;
         };
-        let next = journal.session_generation.get().saturating_add(1);
+        let next = SessionGeneration::new(journal.session_generation.get().get().saturating_add(1));
         journal.session_generation.set(next);
         next
     }

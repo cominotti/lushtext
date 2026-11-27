@@ -39,21 +39,12 @@ use std::time::Duration;
 
 fn make_history_entry(
     query: &str,
-    case_sensitive: bool,
-    regex: bool,
-    whole_word: bool,
-    gitignore: bool,
+    flags: lushtext_model::workspace::content_search::ContentSearchFlags,
     glob: Option<&str>,
 ) -> SearchHistoryEntry {
     SearchHistoryEntry::from_spec(SearchQuerySpec::new(
         query.to_string(),
-        ContentSearchOptions::new(
-            case_sensitive,
-            regex,
-            whole_word,
-            gitignore,
-            glob.map(ToString::to_string),
-        ),
+        ContentSearchOptions::new(flags, glob.map(ToString::to_string)),
     ))
 }
 
@@ -2483,10 +2474,20 @@ fn test_history_popover_and_list_exist_on_fresh_panel() {
 fn test_set_search_history_stores_entries() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let default_flags = lushtext_model::workspace::content_search::ContentSearchFlags::default();
 
     let entries = vec![
-        make_history_entry("hello", false, false, false, true, None),
-        make_history_entry("world", true, true, false, false, Some("*.rs")),
+        make_history_entry("hello", default_flags, None),
+        make_history_entry(
+            "world",
+            lushtext_model::workspace::content_search::ContentSearchFlags {
+                case_sensitive: true,
+                regex: true,
+                whole_word: false,
+                gitignore: false,
+            },
+            Some("*.rs"),
+        ),
     ];
     panel.set_search_history(entries);
     let retrieved = panel.search_history();
@@ -2499,7 +2500,11 @@ fn test_set_search_history_stores_entries() {
 fn test_restore_from_history_sets_search_entry_text() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
-    let entry = make_history_entry("restored query", false, false, false, true, None);
+    let entry = make_history_entry(
+        "restored query",
+        lushtext_model::workspace::content_search::ContentSearchFlags::default(),
+        None,
+    );
     panel.restore_from_history(&entry);
     assert_eq!(panel.query(), "restored query");
 }
@@ -2508,7 +2513,16 @@ fn test_restore_from_history_sets_search_entry_text() {
 fn test_restore_from_history_sets_toggle_states() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
-    let entry = make_history_entry("test", true, true, true, false, Some("*.toml"));
+    let entry = make_history_entry(
+        "test",
+        lushtext_model::workspace::content_search::ContentSearchFlags {
+            case_sensitive: true,
+            regex: true,
+            whole_word: true,
+            gitignore: false,
+        },
+        Some("*.toml"),
+    );
     panel.restore_from_history(&entry);
 
     assert!(panel.imp().case_toggle.is_active());
@@ -2521,7 +2535,11 @@ fn test_restore_from_history_sets_toggle_states() {
 fn test_restore_from_history_sets_glob_entry() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
-    let entry = make_history_entry("test", false, false, false, true, Some("*.rs"));
+    let entry = make_history_entry(
+        "test",
+        lushtext_model::workspace::content_search::ContentSearchFlags::default(),
+        Some("*.rs"),
+    );
     panel.restore_from_history(&entry);
     assert_eq!(panel.imp().glob_entry.text().as_str(), "*.rs");
 }
@@ -2533,7 +2551,11 @@ fn test_restore_from_history_with_glob_none_clears_glob_entry() {
     panel.imp().glob_entry.set_text("*.md");
     assert_eq!(panel.imp().glob_entry.text().as_str(), "*.md");
 
-    let entry = make_history_entry("test", false, false, false, true, None);
+    let entry = make_history_entry(
+        "test",
+        lushtext_model::workspace::content_search::ContentSearchFlags::default(),
+        None,
+    );
     panel.restore_from_history(&entry);
     assert!(panel.imp().glob_entry.text().is_empty());
 }
@@ -2542,7 +2564,16 @@ fn test_restore_from_history_with_glob_none_clears_glob_entry() {
 fn test_search_history_entry_serialization_roundtrip() {
     // Pure data test — no GTK needed, but ensure_gtk_init doesn't hurt.
     ensure_gtk_init();
-    let entry = make_history_entry("test query", true, false, true, false, Some("*.rs"));
+    let entry = make_history_entry(
+        "test query",
+        lushtext_model::workspace::content_search::ContentSearchFlags {
+            case_sensitive: true,
+            regex: false,
+            whole_word: true,
+            gitignore: false,
+        },
+        Some("*.rs"),
+    );
     let json = serde_json::to_string(&entry).expect("expected operation to succeed");
     let deserialized: lushtext_model::workspace::content_search::SearchHistoryEntry =
         serde_json::from_str(&json).expect("expected operation to succeed");
@@ -2590,7 +2621,15 @@ fn test_restore_from_saved_search_sets_query() {
         "Test",
         SearchQuerySpec::new(
             "fn main",
-            ContentSearchOptions::new(true, true, false, false, Some("*.rs".to_string())),
+            ContentSearchOptions::new(
+                lushtext_model::workspace::content_search::ContentSearchFlags {
+                    case_sensitive: true,
+                    regex: true,
+                    whole_word: false,
+                    gitignore: false,
+                },
+                Some("*.rs".to_string()),
+            ),
         ),
     );
     panel.restore_from_saved_search(&entry);
@@ -2650,7 +2689,15 @@ fn test_saved_search_serialization_roundtrip() {
         "My Search",
         SearchQuerySpec::new(
             "fn main",
-            ContentSearchOptions::new(true, false, true, false, Some("*.rs".to_string())),
+            ContentSearchOptions::new(
+                lushtext_model::workspace::content_search::ContentSearchFlags {
+                    case_sensitive: true,
+                    regex: false,
+                    whole_word: true,
+                    gitignore: false,
+                },
+                Some("*.rs".to_string()),
+            ),
         ),
     );
     let json = serde_json::to_string(&entry).expect("expected operation to succeed");
@@ -3477,7 +3524,12 @@ fn test_evidence_reports_transaction_state_separately_from_preview_pending() {
         claimed.replace_transaction_pending,
         "the apply transaction must be observable on its own field",
     );
-    assert_eq!(claimed.replace_transaction_generation, Some(reserved));
+    assert_eq!(
+        claimed
+            .replace_transaction_generation
+            .map(lushtext_model::values::ReplaceTransactionGeneration::get),
+        Some(reserved.get())
+    );
     assert_eq!(
         claimed.undo_backup_generation, reserved,
         "claiming the transaction reserves the journal generation it reports",
@@ -4128,7 +4180,7 @@ fn test_search_and_preview_dispatches_fit_the_settle_budget() {
                 ("retirement", retire_worst),
             ] {
                 assert!(
-                    worst.as_micros() <= u128::from(B_SETTLE_US),
+                    worst.as_micros() <= u128::from(B_SETTLE_US.as_us()),
                     "{phase} dispatch {} us exceeds B_SETTLE_US",
                     worst.as_micros()
                 );

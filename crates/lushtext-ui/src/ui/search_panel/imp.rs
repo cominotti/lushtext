@@ -22,6 +22,9 @@ use gtk_lush_settle::Debounce;
 use gtk4::prelude::*;
 use gtk4::{self, CompositeTemplate, gio, glib};
 use libadwaita::subclass::prelude::*;
+use lushtext_model::values::{
+    ReplacePreviewGeneration, ReplaceTransactionGeneration, RetirementGeneration,
+};
 use lushtext_model::workspace::content_search::{
     ReplacePreviewOutcome, SavedSearch, SearchHistoryEntry, SearchMatch, SearchMatchId,
 };
@@ -91,7 +94,7 @@ pub struct SearchRuntimeState {
     /// Whether the one bounded retirement idle callback is armed.
     pub retirement_armed: Cell<bool>,
     /// Monotonic identity for detached result generations.
-    pub retirement_generation: Cell<u64>,
+    pub retirement_generation: Cell<RetirementGeneration>,
     /// High-water rows released by any one bounded retirement turn.
     pub retirement_rows_per_slice_high_water: Cell<usize>,
     /// Test-only before/after ownership evidence from each retirement turn.
@@ -144,7 +147,7 @@ impl Default for SearchRuntimeState {
             retirement: RefCell::new(None),
             deferred_search: RefCell::new(None),
             retirement_armed: Cell::new(false),
-            retirement_generation: Cell::new(0),
+            retirement_generation: Cell::new(RetirementGeneration::ZERO),
             retirement_rows_per_slice_high_water: Cell::new(0),
             #[cfg(feature = "test-utils")]
             retirement_observations: RefCell::new(Vec::new()),
@@ -196,9 +199,9 @@ pub struct SearchPreviewState {
     /// Whether one Replace All apply or undo transaction owns journal mutation.
     pub replace_transaction_pending: Cell<bool>,
     /// Reserved generation awaiting handoff from preview selection to file apply.
-    pub replace_transaction_generation: Cell<Option<u32>>,
+    pub replace_transaction_generation: Cell<Option<ReplaceTransactionGeneration>>,
     /// Generation counter invalidating stale async preview generation results.
-    pub preview_generation: Cell<u32>,
+    pub preview_generation: Cell<ReplacePreviewGeneration>,
     /// Whether pure replacement preview construction is currently running.
     pub preview_pending: Cell<bool>,
     /// Whether this panel currently owns one active preview worker.

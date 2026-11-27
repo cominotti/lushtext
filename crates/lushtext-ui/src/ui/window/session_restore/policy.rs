@@ -18,6 +18,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use lushtext_model::persistence::draft::{PreloadedDraftRestore, PreloadedDraftSkip};
 use lushtext_model::persistence::session::{SessionData, SessionTab};
+use lushtext_model::values::RestoreGeneration;
 use lushtext_services::persistence::recovery_metadata::{
     RecoveryDiagnostic, RecoveryPreservation, RecoveryProblem,
 };
@@ -34,13 +35,13 @@ pub(super) const SESSION_RESTORE_FILE_PLAN_PERMITS: usize = 2;
 /// Generation-bound ownership ticket for one admitted file-planning operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct SessionRestorePlanPermit {
-    generation: u64,
+    generation: RestoreGeneration,
     id: u64,
 }
 
 impl SessionRestorePlanPermit {
     #[must_use]
-    pub(super) const fn generation(self) -> u64 {
+    pub(super) const fn generation(self) -> RestoreGeneration {
         self.generation
     }
 }
@@ -78,7 +79,7 @@ pub(super) struct SessionRestoreTurn {
 /// is retained past the runtime's life as a last-restore outcome record.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionRestoreTurnMetrics {
-    pub(super) generation: u64,
+    pub(super) generation: RestoreGeneration,
     pub(super) total_descriptors: usize,
     pub(super) pages_created: usize,
     pub(super) gtk_turns: usize,
@@ -93,7 +94,7 @@ pub struct SessionRestoreTurnMetrics {
 
 /// Plain-Rust active-plus-pending restore coordinator for one window generation.
 pub(super) struct SessionRestorePolicy {
-    generation: u64,
+    generation: RestoreGeneration,
     pending: VecDeque<SessionTab>,
     next_ordinal: usize,
     active_permits: HashSet<u64>,
@@ -108,7 +109,7 @@ pub(super) struct SessionRestorePolicy {
 
 impl SessionRestorePolicy {
     pub(super) fn new(
-        generation: u64,
+        generation: RestoreGeneration,
         tabs: Vec<SessionTab>,
         requested_active_ordinal: Option<usize>,
     ) -> Self {
@@ -122,7 +123,7 @@ impl SessionRestorePolicy {
     }
 
     fn with_limits(
-        generation: u64,
+        generation: RestoreGeneration,
         tabs: Vec<SessionTab>,
         requested_active_ordinal: Option<usize>,
         pages_per_turn: usize,
@@ -149,7 +150,7 @@ impl SessionRestorePolicy {
     }
 
     #[must_use]
-    pub(super) const fn generation(&self) -> u64 {
+    pub(super) const fn generation(&self) -> RestoreGeneration {
         self.generation
     }
 
@@ -596,21 +597,33 @@ mod tests {
         // permit's generation against the policy's, so both could report the same
         // wrong value and no assertion would notice — which is exactly what makes
         // a stale-generation release look current.
-        let mut policy = SessionRestorePolicy::with_limits(7, vec![tab(Some("/a"))], None, 1, 1);
-        assert_eq!(policy.generation(), 7);
+        let mut policy = SessionRestorePolicy::with_limits(
+            RestoreGeneration::new(7),
+            vec![tab(Some("/a"))],
+            None,
+            1,
+            1,
+        );
+        assert_eq!(policy.generation(), RestoreGeneration::new(7));
 
         let turn = policy.plan_turn();
         let permit = turn.admissions[0].permit.expect("file permit");
-        assert_eq!(permit.generation(), 7);
+        assert_eq!(permit.generation(), RestoreGeneration::new(7));
 
         let metrics = policy.metrics();
-        assert_eq!(metrics.generation, 7);
+        assert_eq!(metrics.generation, RestoreGeneration::new(7));
         assert_eq!(metrics.total_descriptors, 1);
 
         // A different generation is genuinely different, so a permit from one
         // cannot be released against the other.
-        let other = SessionRestorePolicy::with_limits(8, vec![tab(Some("/b"))], None, 1, 1);
-        assert_eq!(other.generation(), 8);
+        let other = SessionRestorePolicy::with_limits(
+            RestoreGeneration::new(8),
+            vec![tab(Some("/b"))],
+            None,
+            1,
+            1,
+        );
+        assert_eq!(other.generation(), RestoreGeneration::new(8));
         assert_ne!(other.generation(), policy.generation());
         assert!(!policy.release_permit(SessionRestorePlanPermit {
             generation: other.generation(),
@@ -623,7 +636,8 @@ mod tests {
         // Separate from the accessor test because it is a different property: the
         // count must survive admission, not merely be reported once.
         let tabs = (0..5).map(|_| tab(None)).collect::<Vec<_>>();
-        let mut policy = SessionRestorePolicy::with_limits(3, tabs, None, 2, 2);
+        let mut policy =
+            SessionRestorePolicy::with_limits(RestoreGeneration::new(3), tabs, None, 2, 2);
         assert_eq!(policy.metrics().total_descriptors, 5);
         while !policy.is_terminal() {
             let _ = policy.plan_turn();
@@ -631,14 +645,15 @@ mod tests {
         let metrics = policy.metrics();
         assert_eq!(metrics.total_descriptors, 5);
         assert_eq!(metrics.pages_created, 5);
-        assert_eq!(metrics.generation, 3);
+        assert_eq!(metrics.generation, RestoreGeneration::new(3));
 
         // An empty generation is terminal immediately and reports zero, not the
         // default of some other field.
-        let empty = SessionRestorePolicy::with_limits(4, Vec::new(), None, 2, 2);
+        let empty =
+            SessionRestorePolicy::with_limits(RestoreGeneration::new(4), Vec::new(), None, 2, 2);
         assert!(empty.is_terminal());
         assert_eq!(empty.metrics().total_descriptors, 0);
-        assert_eq!(empty.metrics().generation, 4);
+        assert_eq!(empty.metrics().generation, RestoreGeneration::new(4));
     }
 
     #[test]
@@ -648,7 +663,8 @@ mod tests {
         // halves of that disjunction are pinned, plus its `<` boundary — at the
         // limit there is no room, one below it there is exactly one.
         let tabs = vec![tab(Some("/a")), tab(Some("/b"))];
-        let mut policy = SessionRestorePolicy::with_limits(1, tabs, None, 1, 1);
+        let mut policy =
+            SessionRestorePolicy::with_limits(RestoreGeneration::new(1), tabs, None, 1, 1);
         assert!(policy.needs_next_turn(), "a fresh generation has work");
 
         let first = policy.plan_turn();
@@ -666,7 +682,8 @@ mod tests {
 
         // An untitled descriptor behind a saturated budget is still admissible.
         let tabs = vec![tab(Some("/a")), tab(None)];
-        let mut policy = SessionRestorePolicy::with_limits(2, tabs, None, 1, 1);
+        let mut policy =
+            SessionRestorePolicy::with_limits(RestoreGeneration::new(2), tabs, None, 1, 1);
         let _ = policy.plan_turn();
         assert!(
             policy.needs_next_turn(),
@@ -676,7 +693,13 @@ mod tests {
         // Terminal and cancelled both refuse, and the invariant the guard relies
         // on — a terminal generation has an empty pending queue — is pinned here
         // rather than left to the `debug_assert!`.
-        let mut cancelled = SessionRestorePolicy::with_limits(3, vec![tab(None)], None, 1, 1);
+        let mut cancelled = SessionRestorePolicy::with_limits(
+            RestoreGeneration::new(3),
+            vec![tab(None)],
+            None,
+            1,
+            1,
+        );
         cancelled.cancel();
         assert!(!cancelled.needs_next_turn());
         assert_eq!(
@@ -684,7 +707,13 @@ mod tests {
             0,
             "cancellation clears the queue, so terminal still implies nothing pending"
         );
-        let mut drained = SessionRestorePolicy::with_limits(4, vec![tab(None)], None, 1, 1);
+        let mut drained = SessionRestorePolicy::with_limits(
+            RestoreGeneration::new(4),
+            vec![tab(None)],
+            None,
+            1,
+            1,
+        );
         let _ = drained.plan_turn();
         assert!(drained.is_terminal());
         assert!(!drained.needs_next_turn());
@@ -697,7 +726,8 @@ mod tests {
         // has *not* mounted, numbered from where admission stopped. Returning an
         // empty vec here would silently drop the rest of the user's session.
         let tabs = (0..4).map(|_| tab(None)).collect::<Vec<_>>();
-        let mut policy = SessionRestorePolicy::with_limits(5, tabs, None, 2, 2);
+        let mut policy =
+            SessionRestorePolicy::with_limits(RestoreGeneration::new(5), tabs, None, 2, 2);
         assert_eq!(policy.pending_descriptors().len(), 4);
         assert_eq!(policy.pending_descriptors()[0].0, 0);
 
@@ -722,14 +752,25 @@ mod tests {
         // Exactly-once, and only for a generation that genuinely finished. All
         // three refusal conditions are pinned separately, because an `&&` here
         // would let a cancelled or still-running generation publish.
-        let mut running =
-            SessionRestorePolicy::with_limits(1, vec![tab(None), tab(None)], None, 1, 1);
+        let mut running = SessionRestorePolicy::with_limits(
+            RestoreGeneration::new(1),
+            vec![tab(None), tab(None)],
+            None,
+            1,
+            1,
+        );
         assert!(
             !running.note_terminal_projection_publication(),
             "a generation with work left must not publish a terminal projection"
         );
 
-        let mut cancelled = SessionRestorePolicy::with_limits(2, vec![tab(None)], None, 1, 1);
+        let mut cancelled = SessionRestorePolicy::with_limits(
+            RestoreGeneration::new(2),
+            vec![tab(None)],
+            None,
+            1,
+            1,
+        );
         cancelled.cancel();
         assert!(cancelled.is_terminal());
         assert!(
@@ -737,7 +778,13 @@ mod tests {
             "a cancelled generation is terminal but must not publish"
         );
 
-        let mut finished = SessionRestorePolicy::with_limits(3, vec![tab(None)], None, 1, 1);
+        let mut finished = SessionRestorePolicy::with_limits(
+            RestoreGeneration::new(3),
+            vec![tab(None)],
+            None,
+            1,
+            1,
+        );
         let _ = finished.plan_turn();
         assert!(finished.note_terminal_projection_publication());
         assert!(
@@ -751,7 +798,8 @@ mod tests {
         // The two live counters are derived at read time, so this pins that they
         // follow admission and release rather than being frozen at construction.
         let tabs = vec![tab(Some("/a")), tab(Some("/b")), tab(None)];
-        let mut policy = SessionRestorePolicy::with_limits(9, tabs, None, 1, 1);
+        let mut policy =
+            SessionRestorePolicy::with_limits(RestoreGeneration::new(9), tabs, None, 1, 1);
         assert_eq!(policy.metrics().pending_descriptors, 3);
         assert_eq!(policy.metrics().active_file_plans, 0);
 
@@ -809,8 +857,13 @@ mod tests {
         // Both halves of the guard, separately: cancellation sets *both* flags, so
         // only a generation that is terminal **without** being cancelled can
         // distinguish them. That case is the ordinary finished restore.
-        let mut cancelled =
-            SessionRestorePolicy::with_limits(1, vec![tab(None), tab(None)], None, 1, 1);
+        let mut cancelled = SessionRestorePolicy::with_limits(
+            RestoreGeneration::new(1),
+            vec![tab(None), tab(None)],
+            None,
+            1,
+            1,
+        );
         cancelled.cancel();
         assert!(cancelled.plan_turn().admissions.is_empty());
         assert_eq!(
@@ -818,7 +871,13 @@ mod tests {
             SessionRestoreTurnState::Terminal
         );
 
-        let mut finished = SessionRestorePolicy::with_limits(2, vec![tab(None)], None, 4, 4);
+        let mut finished = SessionRestorePolicy::with_limits(
+            RestoreGeneration::new(2),
+            vec![tab(None)],
+            None,
+            4,
+            4,
+        );
         let first = finished.plan_turn();
         assert_eq!(first.admissions.len(), 1);
         assert!(finished.is_terminal());
@@ -987,7 +1046,8 @@ mod tests {
     #[test]
     fn high_tab_count_is_admitted_in_order_across_bounded_turns() {
         let tabs = (0..11).map(|_| tab(None)).collect();
-        let mut policy = SessionRestorePolicy::with_limits(7, tabs, Some(9), 3, 2);
+        let mut policy =
+            SessionRestorePolicy::with_limits(RestoreGeneration::new(7), tabs, Some(9), 3, 2);
         let mut ordinals = Vec::new();
 
         while !policy.is_terminal() {
@@ -1009,14 +1069,15 @@ mod tests {
     #[test]
     fn planning_saturation_stops_before_later_descriptors_and_releases_exactly_once() {
         let tabs = vec![tab(Some("/a")), tab(Some("/b")), tab(Some("/c")), tab(None)];
-        let mut policy = SessionRestorePolicy::with_limits(11, tabs, None, 4, 2);
+        let mut policy =
+            SessionRestorePolicy::with_limits(RestoreGeneration::new(11), tabs, None, 4, 2);
 
         let first = policy.plan_turn();
         assert_eq!(first.state, SessionRestoreTurnState::PlanningCapacity);
         assert_eq!(first.admissions.len(), 2);
         let first_permit = first.admissions[0].permit.expect("file permit");
         let stale = SessionRestorePlanPermit {
-            generation: 10,
+            generation: RestoreGeneration::new(10),
             id: first_permit.id,
         };
         assert!(!policy.release_permit(stale));
@@ -1045,7 +1106,8 @@ mod tests {
     #[test]
     fn cancellation_drops_pending_and_active_ownership_once() {
         let tabs = vec![tab(Some("/a")), tab(Some("/b")), tab(None)];
-        let mut policy = SessionRestorePolicy::with_limits(5, tabs, None, 1, 1);
+        let mut policy =
+            SessionRestorePolicy::with_limits(RestoreGeneration::new(5), tabs, None, 1, 1);
         let turn = policy.plan_turn();
         let permit = turn.admissions[0].permit.expect("file permit");
 

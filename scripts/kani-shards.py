@@ -1187,6 +1187,11 @@ NOT_ORACLE_HARNESSES: dict[str, str] = {
 
 # Modules a harness file imports from that are not oracles, each with its reason.
 NOT_ORACLE_MODULES: dict[str, str] = {
+    "crates/lushtext-model/src/values/mod.rs": (
+        "harnesses import only thin domain value newtypes (Bytes, CharCount, Micros, "
+        "EditorId, AccessGeneration, PolicyGeneration) re-exported here; their invariants "
+        "are verified by property tests in tests/properties/values.rs"
+    ),
     "crates/lushtext-model/src/persistence/draft.rs": (
         "the journal harnesses import only the DraftManifestCompleteness enum from it; "
         "no harness checks its behaviour"

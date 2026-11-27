@@ -21,13 +21,17 @@ use lushtext_model::document::buffer_replacement::SYNCHRONOUS_REPLACEMENT_THRESH
 use lushtext_model::persistence::local_history::{
     LocalHistorySnapshotMeta, LocalHistorySnapshotOrigin,
 };
+use lushtext_model::values::{
+    CleanBaselineGeneration, EditGeneration, EditorGeneration, PathGeneration,
+    PeriodicHistoryGeneration, Sp,
+};
 use lushtext_services::persistence::local_history_service::LocalHistoryAvailability;
 
 // --- viewer geometry -------------------------------------------------------
 
 /// Leave a visible gutter around the local-history viewer so it still reads as
 /// a parent-owned secondary surface instead of another primary window.
-pub(super) const VIEWER_PARENT_MARGIN_SP: i32 = 48;
+pub(super) const VIEWER_PARENT_MARGIN_SP: Sp = Sp::new(48);
 /// Wide local-history browsing should use most of the parent width, in
 /// thousandths of it.
 pub(super) const VIEWER_WIDTH_PERMILLE: i32 = 900;
@@ -35,23 +39,23 @@ pub(super) const VIEWER_WIDTH_PERMILLE: i32 = 900;
 /// thousandths of it.
 pub(super) const VIEWER_HEIGHT_PERMILLE: i32 = 880;
 /// Wide local-history browsing should stay comfortably readable on desktops.
-pub(super) const VIEWER_MIN_WIDTH_SP: i32 = 1080;
+pub(super) const VIEWER_MIN_WIDTH_SP: Sp = Sp::new(1080);
 /// Wide local-history browsing should stop growing once it already feels like a viewer.
-pub(super) const VIEWER_MAX_WIDTH_SP: i32 = 1680;
+pub(super) const VIEWER_MAX_WIDTH_SP: Sp = Sp::new(1680);
 /// Wide local-history browsing should keep enough height for reading snapshot text.
-pub(super) const VIEWER_MIN_HEIGHT_SP: i32 = 720;
+pub(super) const VIEWER_MIN_HEIGHT_SP: Sp = Sp::new(720);
 /// Wide local-history browsing should stop growing once the preview has ample height.
-pub(super) const VIEWER_MAX_HEIGHT_SP: i32 = 1080;
+pub(super) const VIEWER_MAX_HEIGHT_SP: Sp = Sp::new(1080);
 /// The snapshot list should stay readable without competing evenly with the preview.
-pub(super) const VIEWER_MIN_SIDEBAR_WIDTH_SP: f64 = 260.0;
+pub(super) const VIEWER_MIN_SIDEBAR_WIDTH_SP: Sp = Sp::new(260);
 /// The snapshot list should behave like a browse rail, not a co-equal pane.
-pub(super) const VIEWER_MAX_SIDEBAR_WIDTH_SP: f64 = 340.0;
+pub(super) const VIEWER_MAX_SIDEBAR_WIDTH_SP: Sp = Sp::new(340);
 /// Compact empty-history width mirrors the Notes empty browser so status pages
 /// have a readable line length instead of collapsing to their natural text size.
-pub(super) const EMPTY_WIDTH_SP: i32 = 640;
+pub(super) const EMPTY_WIDTH_SP: Sp = Sp::new(640);
 /// Compact empty-history height fits the normal status-page icon, title, and
 /// description without introducing a scrollbar.
-pub(super) const EMPTY_HEIGHT_SP: i32 = 480;
+pub(super) const EMPTY_HEIGHT_SP: Sp = Sp::new(480);
 
 /// Maximum preview body installed synchronously in one GTK turn.
 ///
@@ -69,16 +73,22 @@ pub(super) const PREVIEW_RESERVATION_BYTES: u64 = 64 * 1024 * 1024;
 /// parent axis, rounded half up.
 #[must_use]
 pub(super) fn parent_relative_dialog_axis_size(
-    parent_axis: i32,
+    parent_axis: Sp,
     target_permille: i32,
-    min_axis: i32,
-    max_axis: i32,
-) -> i32 {
-    let parent_axis = parent_axis.max(1);
-    let bounded_parent = parent_axis.saturating_sub(VIEWER_PARENT_MARGIN_SP).max(1);
+    min_axis: Sp,
+    max_axis: Sp,
+) -> Sp {
+    let parent_axis = parent_axis.as_sp().max(1);
+    let bounded_parent = parent_axis
+        .saturating_sub(VIEWER_PARENT_MARGIN_SP.as_sp())
+        .max(1);
     let proportional = (i64::from(parent_axis) * i64::from(target_permille) + 500).div_euclid(1000);
     let proportional = i32::try_from(proportional).unwrap_or(i32::MAX);
-    proportional.clamp(min_axis, max_axis).min(bounded_parent)
+    Sp::new(
+        proportional
+            .clamp(min_axis.as_sp(), max_axis.as_sp())
+            .min(bounded_parent),
+    )
 }
 
 /// Resolve one current-vs-default axis without forcing callers to repeat the
@@ -90,20 +100,20 @@ pub(super) fn parent_relative_dialog_axis_size(
 /// `>= 1` and a real off-by-one here would be invisible. `> 0` states the actual
 /// question ("is this a usable size?") and is detectable.
 #[must_use]
-pub(super) const fn current_window_dimension(current_axis: i32, default_axis: i32) -> i32 {
-    if current_axis > 0 {
+pub(super) const fn current_window_dimension(current_axis: Sp, default_axis: Sp) -> Sp {
+    if current_axis.as_sp() > 0 {
         current_axis
-    } else if default_axis > 0 {
+    } else if default_axis.as_sp() > 0 {
         default_axis
     } else {
-        1
+        Sp::new(1)
     }
 }
 
 /// Size the populated local-history browser like a large viewer while keeping
 /// the dialog visibly smaller than its parent window.
 #[must_use]
-pub(super) fn viewer_dialog_size(parent_width: i32, parent_height: i32) -> (i32, i32) {
+pub(super) fn viewer_dialog_size(parent_width: Sp, parent_height: Sp) -> (Sp, Sp) {
     (
         parent_relative_dialog_axis_size(
             parent_width,
@@ -207,18 +217,18 @@ pub(super) const fn preview_install_is_complete(offset: usize, body_len: usize) 
 /// Identity captured before a baseline snapshot's worker starts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BaselineCaptureTicket {
-    pub(crate) editor_generation: u64,
-    pub(crate) path_generation: u64,
-    pub(crate) clean_baseline_generation: u64,
+    pub(crate) editor_generation: EditorGeneration,
+    pub(crate) path_generation: PathGeneration,
+    pub(crate) clean_baseline_generation: CleanBaselineGeneration,
     pub(crate) path: PathBuf,
 }
 
 /// Live editor state observed when a baseline capture reports back.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BaselineCaptureFacts {
-    pub(crate) editor_generation: u64,
-    pub(crate) path_generation: u64,
-    pub(crate) clean_baseline_generation: u64,
+    pub(crate) editor_generation: EditorGeneration,
+    pub(crate) path_generation: PathGeneration,
+    pub(crate) clean_baseline_generation: CleanBaselineGeneration,
     pub(crate) path: Option<PathBuf>,
     pub(crate) modified: bool,
     pub(crate) baseline_slot_empty: bool,
@@ -245,20 +255,20 @@ pub(crate) fn baseline_capture_is_current(
 /// Identity captured before a periodic snapshot's worker starts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PeriodicCaptureTicket {
-    pub(crate) editor_generation: u64,
-    pub(crate) path_generation: u64,
-    pub(crate) periodic_generation: u32,
-    pub(crate) edit_generation: u64,
+    pub(crate) editor_generation: EditorGeneration,
+    pub(crate) path_generation: PathGeneration,
+    pub(crate) periodic_generation: PeriodicHistoryGeneration,
+    pub(crate) edit_generation: EditGeneration,
     pub(crate) path: PathBuf,
 }
 
 /// Live editor state observed when a periodic capture is about to persist.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PeriodicCaptureFacts {
-    pub(crate) editor_generation: u64,
-    pub(crate) path_generation: u64,
-    pub(crate) periodic_generation: u32,
-    pub(crate) edit_generation: u64,
+    pub(crate) editor_generation: EditorGeneration,
+    pub(crate) path_generation: PathGeneration,
+    pub(crate) periodic_generation: PeriodicHistoryGeneration,
+    pub(crate) edit_generation: EditGeneration,
     pub(crate) path: Option<PathBuf>,
     pub(crate) modified: bool,
     pub(crate) availability: LocalHistoryAvailability,
@@ -279,6 +289,24 @@ pub(crate) fn periodic_capture_is_current(
         && facts.availability.allows_automatic_capture()
 }
 
+/// Whether the editor has a backing file path or is still untitled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PeriodicPathBacking {
+    /// Document is backed by a file path.
+    FileBacked,
+    /// Document is untitled (no path).
+    Untitled,
+}
+
+/// Whether automatic local-history periodic capture is currently allowed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PeriodicCaptureAllowance {
+    /// Automatic capture is active.
+    Allowed,
+    /// Automatic capture is suppressed (for example during an explicit save).
+    Suppressed,
+}
+
 /// Whether a finished capture should arm the next periodic timer.
 ///
 /// The suppressed check is what stops a save from re-arming the timer it just
@@ -286,10 +314,12 @@ pub(crate) fn periodic_capture_is_current(
 #[must_use]
 pub(crate) const fn should_reschedule_periodic_capture(
     modified: bool,
-    has_path: bool,
-    automatic_capture_suppressed: bool,
+    path_backing: PeriodicPathBacking,
+    allowance: PeriodicCaptureAllowance,
 ) -> bool {
-    modified && has_path && !automatic_capture_suppressed
+    modified
+        && matches!(path_backing, PeriodicPathBacking::FileBacked)
+        && matches!(allowance, PeriodicCaptureAllowance::Allowed)
 }
 
 // --- presentation ----------------------------------------------------------
@@ -331,35 +361,47 @@ mod tests {
     #[test]
     fn viewer_size_stays_inside_its_parent_and_its_readable_band() {
         // A small parent is bounded by the gutter, not by the readable minimum.
-        let (width, height) = viewer_dialog_size(800, 600);
-        assert!(width <= 800 - VIEWER_PARENT_MARGIN_SP);
-        assert!(height <= 600 - VIEWER_PARENT_MARGIN_SP);
+        let (width, height) = viewer_dialog_size(Sp::new(800), Sp::new(600));
+        assert!(width.as_sp() <= 800 - VIEWER_PARENT_MARGIN_SP.as_sp());
+        assert!(height.as_sp() <= 600 - VIEWER_PARENT_MARGIN_SP.as_sp());
 
         // A large parent is bounded by the maximum, so the viewer stops growing.
-        let (width, height) = viewer_dialog_size(6000, 4000);
+        let (width, height) = viewer_dialog_size(Sp::new(6000), Sp::new(4000));
         assert_eq!(width, VIEWER_MAX_WIDTH_SP);
         assert_eq!(height, VIEWER_MAX_HEIGHT_SP);
 
         // A degenerate parent must still produce a positive size.
-        let (width, height) = viewer_dialog_size(0, -5);
-        assert!(width >= 1);
-        assert!(height >= 1);
+        let (width, height) = viewer_dialog_size(Sp::ZERO, Sp::new(-5));
+        assert!(width >= Sp::new(1));
+        assert!(height >= Sp::new(1));
     }
 
     #[test]
     fn window_dimension_falls_back_only_when_unmapped() {
-        assert_eq!(current_window_dimension(1280, 900), 1280);
-        assert_eq!(current_window_dimension(0, 900), 900);
-        assert_eq!(current_window_dimension(-1, 900), 900);
-        assert_eq!(current_window_dimension(0, 0), 1);
+        assert_eq!(
+            current_window_dimension(Sp::new(1280), Sp::new(900)),
+            Sp::new(1280)
+        );
+        assert_eq!(
+            current_window_dimension(Sp::ZERO, Sp::new(900)),
+            Sp::new(900)
+        );
+        assert_eq!(
+            current_window_dimension(Sp::new(-1), Sp::new(900)),
+            Sp::new(900)
+        );
+        assert_eq!(current_window_dimension(Sp::ZERO, Sp::ZERO), Sp::new(1));
         // The default's own guard, not just the current axis's: a `>=` here would
         // let a degenerate default of 1 be returned as itself, which is the same
         // unusable size the final arm exists to replace.
-        assert_eq!(current_window_dimension(0, 1), 1);
-        assert_eq!(current_window_dimension(0, 2), 2);
-        assert_eq!(current_window_dimension(0, -5), 1);
+        assert_eq!(current_window_dimension(Sp::ZERO, Sp::new(1)), Sp::new(1));
+        assert_eq!(current_window_dimension(Sp::ZERO, Sp::new(2)), Sp::new(2));
+        assert_eq!(current_window_dimension(Sp::ZERO, Sp::new(-5)), Sp::new(1));
         // A current axis of exactly 1 is a real mapped size, not a fallback.
-        assert_eq!(current_window_dimension(1, 900), 1);
+        assert_eq!(
+            current_window_dimension(Sp::new(1), Sp::new(900)),
+            Sp::new(1)
+        );
     }
 
     #[test]
@@ -367,20 +409,29 @@ mod tests {
         // The extremes are covered above, but they hold for *any* fraction. This
         // is the case where the fraction itself decides, so it is what pins the
         // 0.9 / 0.88 policy rather than the clamps.
-        let parent = 1600;
-        let (width, _) = viewer_dialog_size(parent, 4000);
-        assert_eq!(width, 1440, "90% of 1600, inside both clamps");
+        let parent = Sp::new(1600);
+        let (width, _) = viewer_dialog_size(parent, Sp::new(4000));
+        assert_eq!(width, Sp::new(1440), "90% of 1600, inside both clamps");
 
-        let parent = 1000;
-        let (_, height) = viewer_dialog_size(6000, parent);
+        let parent = Sp::new(1000);
+        let (_, height) = viewer_dialog_size(Sp::new(6000), parent);
         // 88% of 1000 is 880, above the 720 minimum, and the gutter bound is 952.
-        assert_eq!(height, 880);
+        assert_eq!(height, Sp::new(880));
 
         // And the raw axis helper, so a fraction change cannot hide behind a clamp.
-        assert_eq!(parent_relative_dialog_axis_size(1000, 500, 1, 100_000), 500);
-        assert_eq!(parent_relative_dialog_axis_size(1000, 250, 1, 100_000), 250);
+        assert_eq!(
+            parent_relative_dialog_axis_size(Sp::new(1000), 500, Sp::new(1), Sp::new(100_000)),
+            Sp::new(500)
+        );
+        assert_eq!(
+            parent_relative_dialog_axis_size(Sp::new(1000), 250, Sp::new(1), Sp::new(100_000)),
+            Sp::new(250)
+        );
         // Half up: 90% of 1005 is 904.5.
-        assert_eq!(parent_relative_dialog_axis_size(1005, 900, 1, 100_000), 905);
+        assert_eq!(
+            parent_relative_dialog_axis_size(Sp::new(1005), 900, Sp::new(1), Sp::new(100_000)),
+            Sp::new(905)
+        );
     }
 
     #[test]
@@ -530,10 +581,10 @@ mod tests {
 
     fn periodic_ticket() -> PeriodicCaptureTicket {
         PeriodicCaptureTicket {
-            editor_generation: 3,
-            path_generation: 5,
-            periodic_generation: 7,
-            edit_generation: 11,
+            editor_generation: EditorGeneration::new(3),
+            path_generation: PathGeneration::new(5),
+            periodic_generation: PeriodicHistoryGeneration::new(7),
+            edit_generation: EditGeneration::new(11),
             path: PathBuf::from("/workspace/current.md"),
         }
     }
@@ -563,10 +614,18 @@ mod tests {
     fn periodic_capture_rejects_close_edit_timer_and_identity_changes() {
         let ticket = periodic_ticket();
         for mutate in [
-            |facts: &mut PeriodicCaptureFacts| facts.editor_generation += 1,
-            |facts: &mut PeriodicCaptureFacts| facts.path_generation += 1,
-            |facts: &mut PeriodicCaptureFacts| facts.periodic_generation += 1,
-            |facts: &mut PeriodicCaptureFacts| facts.edit_generation += 1,
+            |facts: &mut PeriodicCaptureFacts| {
+                facts.editor_generation = facts.editor_generation.next();
+            },
+            |facts: &mut PeriodicCaptureFacts| {
+                facts.path_generation = facts.path_generation.next();
+            },
+            |facts: &mut PeriodicCaptureFacts| {
+                facts.periodic_generation = facts.periodic_generation.next();
+            },
+            |facts: &mut PeriodicCaptureFacts| {
+                facts.edit_generation = facts.edit_generation.next();
+            },
         ] {
             let mut changed = periodic_facts();
             mutate(&mut changed);
@@ -601,24 +660,40 @@ mod tests {
 
     #[test]
     fn modified_file_backed_editors_reschedule_without_tight_retry() {
-        assert!(should_reschedule_periodic_capture(true, true, false));
-        assert!(!should_reschedule_periodic_capture(false, true, false));
-        assert!(!should_reschedule_periodic_capture(true, false, false));
-        assert!(!should_reschedule_periodic_capture(true, true, true));
+        assert!(should_reschedule_periodic_capture(
+            true,
+            PeriodicPathBacking::FileBacked,
+            PeriodicCaptureAllowance::Allowed
+        ));
+        assert!(!should_reschedule_periodic_capture(
+            false,
+            PeriodicPathBacking::FileBacked,
+            PeriodicCaptureAllowance::Allowed
+        ));
+        assert!(!should_reschedule_periodic_capture(
+            true,
+            PeriodicPathBacking::Untitled,
+            PeriodicCaptureAllowance::Allowed
+        ));
+        assert!(!should_reschedule_periodic_capture(
+            true,
+            PeriodicPathBacking::FileBacked,
+            PeriodicCaptureAllowance::Suppressed
+        ));
     }
 
     #[test]
     fn failed_baseline_returns_only_to_its_original_cycle() {
         let ticket = BaselineCaptureTicket {
-            editor_generation: 3,
-            path_generation: 5,
-            clean_baseline_generation: 7,
+            editor_generation: EditorGeneration::new(3),
+            path_generation: PathGeneration::new(5),
+            clean_baseline_generation: CleanBaselineGeneration::new(7),
             path: PathBuf::from("/workspace/current.md"),
         };
         let facts = BaselineCaptureFacts {
-            editor_generation: 3,
-            path_generation: 5,
-            clean_baseline_generation: 7,
+            editor_generation: EditorGeneration::new(3),
+            path_generation: PathGeneration::new(5),
+            clean_baseline_generation: CleanBaselineGeneration::new(7),
             path: Some(ticket.path.clone()),
             modified: true,
             baseline_slot_empty: true,
@@ -626,9 +701,15 @@ mod tests {
         assert!(baseline_capture_is_current(&ticket, &facts));
 
         for mutate in [
-            |facts: &mut BaselineCaptureFacts| facts.editor_generation += 1,
-            |facts: &mut BaselineCaptureFacts| facts.path_generation += 1,
-            |facts: &mut BaselineCaptureFacts| facts.clean_baseline_generation += 1,
+            |facts: &mut BaselineCaptureFacts| {
+                facts.editor_generation = facts.editor_generation.next();
+            },
+            |facts: &mut BaselineCaptureFacts| {
+                facts.path_generation = facts.path_generation.next();
+            },
+            |facts: &mut BaselineCaptureFacts| {
+                facts.clean_baseline_generation = facts.clean_baseline_generation.next();
+            },
         ] {
             let mut stale = facts.clone();
             mutate(&mut stale);

@@ -665,12 +665,29 @@ fn realized_overlay_for_path(
     row_widget.first_child().and_downcast::<gtk4::Overlay>()
 }
 
+#[derive(Clone, Copy)]
+enum WorkspaceRowMarker {
+    Closed,
+    OpenInactive,
+    OpenActive,
+}
+
+impl WorkspaceRowMarker {
+    const fn flags(self) -> (bool, bool) {
+        match self {
+            Self::Closed => (false, false),
+            Self::OpenInactive => (true, false),
+            Self::OpenActive => (true, true),
+        }
+    }
+}
+
 fn assert_workspace_row_state(
     section: &LushtextWorkspaceSection,
     target_path: &Path,
-    expected_open: bool,
-    expected_active: bool,
+    expected: WorkspaceRowMarker,
 ) {
+    let (expected_open, expected_active) = expected.flags();
     wait_until(Duration::from_secs(2), || {
         section
             .file_row_state_for_test(target_path)
@@ -700,9 +717,9 @@ fn assert_workspace_row_state(
 fn realized_workspace_row_state_count(
     section: &LushtextWorkspaceSection,
     target_path: &Path,
-    expected_open: bool,
-    expected_active: bool,
+    expected: WorkspaceRowMarker,
 ) -> usize {
+    let (expected_open, expected_active) = expected.flags();
     let mut count = 0;
     let mut child = section.imp().file_tree_view.first_child();
     while let Some(row_widget) = child {
@@ -2327,7 +2344,7 @@ fn test_workspace_row_state_css_keeps_click_selection_transient() {
         selected_tree_path(&section).as_deref(),
         Some(file.as_path())
     );
-    assert_workspace_row_state(&section, &file, false, false);
+    assert_workspace_row_state(&section, &file, WorkspaceRowMarker::Closed);
 }
 
 #[test]
@@ -2335,24 +2352,56 @@ fn test_workspace_row_state_open_and_active_markers_apply_to_files_only() {
     let fixture = make_peek_fixture();
     let _window = present_section_window(&fixture.section);
 
-    assert_workspace_row_state(&fixture.section, &fixture.text_a, false, false);
-    assert_workspace_row_state(&fixture.section, &fixture.text_b, false, false);
-    assert_workspace_row_state(&fixture.section, &fixture.directory, false, false);
+    assert_workspace_row_state(
+        &fixture.section,
+        &fixture.text_a,
+        WorkspaceRowMarker::Closed,
+    );
+    assert_workspace_row_state(
+        &fixture.section,
+        &fixture.text_b,
+        WorkspaceRowMarker::Closed,
+    );
+    assert_workspace_row_state(
+        &fixture.section,
+        &fixture.directory,
+        WorkspaceRowMarker::Closed,
+    );
 
     fixture.section.set_file_row_state_for_test(
         &[fixture.text_a.as_path(), fixture.text_b.as_path()],
         &[fixture.text_b.as_path()],
     );
 
-    assert_workspace_row_state(&fixture.section, &fixture.text_a, true, false);
-    assert_workspace_row_state(&fixture.section, &fixture.text_b, true, true);
-    assert_workspace_row_state(&fixture.section, &fixture.directory, false, false);
+    assert_workspace_row_state(
+        &fixture.section,
+        &fixture.text_a,
+        WorkspaceRowMarker::OpenInactive,
+    );
+    assert_workspace_row_state(
+        &fixture.section,
+        &fixture.text_b,
+        WorkspaceRowMarker::OpenActive,
+    );
+    assert_workspace_row_state(
+        &fixture.section,
+        &fixture.directory,
+        WorkspaceRowMarker::Closed,
+    );
 
     fixture
         .section
         .set_file_row_state_for_test(&[fixture.text_a.as_path()], &[fixture.text_a.as_path()]);
-    assert_workspace_row_state(&fixture.section, &fixture.text_a, true, true);
-    assert_workspace_row_state(&fixture.section, &fixture.text_b, false, false);
+    assert_workspace_row_state(
+        &fixture.section,
+        &fixture.text_a,
+        WorkspaceRowMarker::OpenActive,
+    );
+    assert_workspace_row_state(
+        &fixture.section,
+        &fixture.text_b,
+        WorkspaceRowMarker::Closed,
+    );
 }
 
 #[test]
@@ -2362,7 +2411,11 @@ fn test_workspace_row_state_keyboard_peek_preserves_selection_without_open_marke
 
     select_path(&fixture.section, &fixture.text_a);
     tree_view(&fixture.section).grab_focus();
-    assert_workspace_row_state(&fixture.section, &fixture.text_a, false, false);
+    assert_workspace_row_state(
+        &fixture.section,
+        &fixture.text_a,
+        WorkspaceRowMarker::Closed,
+    );
 
     emit_key_pressed_on_focus(&window, gtk4::gdk::Key::space);
     wait_until(Duration::from_secs(2), || {
@@ -2375,7 +2428,11 @@ fn test_workspace_row_state_keyboard_peek_preserves_selection_without_open_marke
         selected_tree_path(&fixture.section).as_deref(),
         Some(fixture.text_a.as_path())
     );
-    assert_workspace_row_state(&fixture.section, &fixture.text_a, false, false);
+    assert_workspace_row_state(
+        &fixture.section,
+        &fixture.text_a,
+        WorkspaceRowMarker::Closed,
+    );
     assert_tree_focus(&window, &fixture.section);
 }
 
@@ -2399,7 +2456,7 @@ fn test_workspace_row_state_recycling_clears_stale_marker_after_model_rebuild() 
     let _window = present_section_window(&section);
 
     section.set_file_row_state_for_test(&[first.as_path()], &[first.as_path()]);
-    assert_workspace_row_state(&section, &first, true, true);
+    assert_workspace_row_state(&section, &first, WorkspaceRowMarker::OpenActive);
 
     section.load_folders(&[FolderTreeEntry::File {
         path: replacement.clone(),
@@ -2407,12 +2464,12 @@ fn test_workspace_row_state_recycling_clears_stale_marker_after_model_rebuild() 
     wait_until(Duration::from_secs(2), || {
         section.file_row_state_for_test(&replacement).is_some()
     });
-    assert_workspace_row_state(&section, &replacement, false, false);
+    assert_workspace_row_state(&section, &replacement, WorkspaceRowMarker::Closed);
 
     section.set_file_row_state_for_test(&[replacement.as_path()], &[replacement.as_path()]);
-    assert_workspace_row_state(&section, &replacement, true, true);
+    assert_workspace_row_state(&section, &replacement, WorkspaceRowMarker::OpenActive);
     section.set_file_row_state_for_test(&[], &[]);
-    assert_workspace_row_state(&section, &replacement, false, false);
+    assert_workspace_row_state(&section, &replacement, WorkspaceRowMarker::Closed);
 }
 
 #[test]
@@ -2440,16 +2497,16 @@ fn test_workspace_row_state_overlapping_workspace_folders_mark_duplicate_file_ro
     }
     wait_until(Duration::from_secs(3), || {
         row_count_for_path(&section, &file) >= 2
-            && realized_workspace_row_state_count(&section, &file, false, false) >= 2
+            && realized_workspace_row_state_count(&section, &file, WorkspaceRowMarker::Closed) >= 2
     });
 
     section.set_file_row_state_for_test(&[file.as_path()], &[]);
     wait_until(Duration::from_secs(2), || {
-        realized_workspace_row_state_count(&section, &file, true, false) >= 2
+        realized_workspace_row_state_count(&section, &file, WorkspaceRowMarker::OpenInactive) >= 2
     });
     section.set_file_row_state_for_test(&[file.as_path()], &[file.as_path()]);
     wait_until(Duration::from_secs(2), || {
-        realized_workspace_row_state_count(&section, &file, true, true) >= 2
+        realized_workspace_row_state_count(&section, &file, WorkspaceRowMarker::OpenActive) >= 2
     });
 }
 

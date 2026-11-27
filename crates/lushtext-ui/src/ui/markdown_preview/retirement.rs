@@ -24,6 +24,7 @@ use std::sync::atomic::Ordering;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 
+use lushtext_model::values::RenderGeneration;
 use lushtext_services::notes::markdown_render::MAX_MARKDOWN_SOURCE_BYTES;
 
 use super::imp;
@@ -59,7 +60,7 @@ impl LushtextMarkdownPreview {
     /// Coalesce repeated source updates in the retained latest allocation.
     pub(super) fn defer_markdown_render(
         &self,
-        generation: u64,
+        generation: RenderGeneration,
         markdown: &str,
         context: MarkdownPreviewRenderContext,
     ) {

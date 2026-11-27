@@ -33,6 +33,7 @@ use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
 use crate::ui::{accessibility, buffer_snapshot};
 use lushtext_model::persistence::local_history::{LocalHistorySnapshot, LocalHistorySnapshotMeta};
+use lushtext_model::values::{HistoryPreviewGeneration, Sp};
 use lushtext_services::persistence::local_history_service;
 
 use super::policy;
@@ -40,13 +41,13 @@ use crate::ui::window::LushtextWindow;
 
 /// Current window width, falling back to the configured default before the
 /// window is mapped in widget tests or at startup.
-fn current_window_width(window: &LushtextWindow) -> i32 {
-    policy::current_window_dimension(window.width(), window.default_size().0)
+fn current_window_width(window: &LushtextWindow) -> Sp {
+    policy::current_window_dimension(Sp::new(window.width()), Sp::new(window.default_size().0))
 }
 
 /// Current window height, with the same pre-map fallback.
-fn current_window_height(window: &LushtextWindow) -> i32 {
-    policy::current_window_dimension(window.height(), window.default_size().1)
+fn current_window_height(window: &LushtextWindow) -> Sp {
+    policy::current_window_dimension(Sp::new(window.height()), Sp::new(window.default_size().1))
 }
 
 pub(super) type GuardedLocalHistorySnapshot =
@@ -196,7 +197,7 @@ pub(super) struct LocalHistoryBrowserState {
 }
 
 struct LocalHistoryPreviewInstallSession {
-    generation: u64,
+    generation: HistoryPreviewGeneration,
     snapshot: Option<LoadedSnapshot>,
     offset: usize,
     source_id: Option<glib::SourceId>,
@@ -222,8 +223,8 @@ impl LushtextWindow {
             policy::viewer_dialog_size(current_window_width(self), current_window_height(self));
         let dialog = libadwaita::Dialog::builder()
             .title("Local History")
-            .content_width(dialog_width)
-            .content_height(dialog_height)
+            .content_width(dialog_width.as_sp())
+            .content_height(dialog_height.as_sp())
             // Keep the viewer at the configured desktop-scale size instead of
             // shrinking back down to the child widget's natural request.
             .follows_content_size(false)
@@ -282,7 +283,14 @@ impl LushtextWindow {
             "Local history preview",
             "Read-only preview for the selected local-history snapshot",
         );
-        set_local_history_preview_accessibility(&preview_stack, "Loading snapshot", true, false);
+        set_local_history_preview_accessibility(
+            &preview_stack,
+            "Loading snapshot",
+            PreviewStackAccessibility {
+                busy: true,
+                invalid: false,
+            },
+        );
         preview_stack.add_named(&loading_preview_widget(), Some("loading"));
         preview_stack.add_named(&empty_snapshot_widget(), Some("empty"));
         preview_stack.add_named(&preview_error_widget("Preview unavailable"), Some("error"));
@@ -322,8 +330,8 @@ impl LushtextWindow {
         );
 
         let split_view = libadwaita::NavigationSplitView::new();
-        split_view.set_min_sidebar_width(policy::VIEWER_MIN_SIDEBAR_WIDTH_SP);
-        split_view.set_max_sidebar_width(policy::VIEWER_MAX_SIDEBAR_WIDTH_SP);
+        split_view.set_min_sidebar_width(f64::from(policy::VIEWER_MIN_SIDEBAR_WIDTH_SP.as_sp()));
+        split_view.set_max_sidebar_width(f64::from(policy::VIEWER_MAX_SIDEBAR_WIDTH_SP.as_sp()));
         split_view.set_sidebar(Some(&libadwaita::NavigationPage::new(
             &build_history_sidebar(&path, &sidebar),
             "Snapshots",
@@ -474,8 +482,8 @@ impl LushtextWindow {
     pub(super) fn build_empty_local_history_dialog(path: &Path) -> libadwaita::Dialog {
         let dialog = libadwaita::Dialog::builder()
             .title("Local History")
-            .content_width(policy::EMPTY_WIDTH_SP)
-            .content_height(policy::EMPTY_HEIGHT_SP)
+            .content_width(policy::EMPTY_WIDTH_SP.as_sp())
+            .content_height(policy::EMPTY_HEIGHT_SP.as_sp())
             // `AdwStatusPage` has a narrow natural request; following content size
             // would collapse this empty-state browser instead of using the target.
             .follows_content_size(false)
@@ -522,8 +530,10 @@ impl LocalHistoryBrowserState {
         set_local_history_preview_accessibility(
             &self.preview_stack,
             "Loading snapshot",
-            true,
-            false,
+            PreviewStackAccessibility {
+                busy: true,
+                invalid: false,
+            },
         );
         set_local_history_action_enabled(&self.restore_button, false);
         set_local_history_action_enabled(&self.copy_button, false);
@@ -574,8 +584,10 @@ impl LocalHistoryBrowserState {
             set_local_history_preview_accessibility(
                 &self.preview_stack,
                 "Snapshot preview deferred by memory pressure",
-                true,
-                false,
+                PreviewStackAccessibility {
+                    busy: true,
+                    invalid: false,
+                },
             );
             return;
         };
@@ -638,7 +650,7 @@ impl LocalHistoryBrowserState {
 
     fn finish_preview_load(
         self: &Rc<Self>,
-        generation: u64,
+        generation: HistoryPreviewGeneration,
         result: anyhow::Result<GuardedLocalHistoryPreviewLoadOutcome>,
     ) {
         let (accepted, next) = {
@@ -681,7 +693,14 @@ impl LocalHistoryBrowserState {
         self.preview_title.set_label(title);
         self.preview_meta.set_label("");
         self.preview_stack.set_visible_child_name("error");
-        set_local_history_preview_accessibility(&self.preview_stack, title, false, true);
+        set_local_history_preview_accessibility(
+            &self.preview_stack,
+            title,
+            PreviewStackAccessibility {
+                busy: false,
+                invalid: true,
+            },
+        );
     }
 
     /// Install a snapshot into the preview. A snapshot with a paragraph over
@@ -691,7 +710,7 @@ impl LocalHistoryBrowserState {
     /// paragraphs show only their heads, so no layout reaches a hidden tail.
     fn begin_preview_install(
         self: &Rc<Self>,
-        generation: u64,
+        generation: HistoryPreviewGeneration,
         snapshot: GuardedLocalHistorySnapshot,
         fold_plan: Option<std::sync::Arc<FoldPlan>>,
     ) {
@@ -717,8 +736,7 @@ impl LocalHistoryBrowserState {
                 set_local_history_preview_accessibility(
                     &self.preview_stack,
                     "This snapshot was empty",
-                    false,
-                    false,
+                    PreviewStackAccessibility::default(),
                 );
                 // Copy stays disabled because there is nothing to copy, while
                 // Restore stays enabled: restoring to an empty document is a
@@ -898,8 +916,7 @@ impl LocalHistoryBrowserState {
                 "Snapshot from {}",
                 format_history_time(snapshot.meta.captured_at_millis)
             ),
-            false,
-            false,
+            PreviewStackAccessibility::default(),
         );
         set_local_history_action_enabled(&self.copy_button, true);
         set_local_history_action_enabled(&self.restore_button, true);
@@ -1130,16 +1147,21 @@ pub(super) fn set_local_history_action_enabled(button: &gtk4::Button, enabled: b
     accessibility::set_disabled(button, !enabled);
 }
 
+#[derive(Clone, Copy, Default)]
+struct PreviewStackAccessibility {
+    busy: bool,
+    invalid: bool,
+}
+
 /// Update the preview stack's workflow state after selection or preview loading.
 fn set_local_history_preview_accessibility(
     stack: &gtk4::Stack,
     value_text: &str,
-    busy: bool,
-    invalid: bool,
+    state: PreviewStackAccessibility,
 ) {
     accessibility::set_value_text(stack, value_text);
-    accessibility::set_busy(stack, busy);
-    accessibility::set_invalid(stack, invalid);
+    accessibility::set_busy(stack, state.busy);
+    accessibility::set_invalid(stack, state.invalid);
 }
 
 fn loading_preview_widget() -> gtk4::Widget {

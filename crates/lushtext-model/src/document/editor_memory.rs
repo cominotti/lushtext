@@ -10,6 +10,8 @@
 
 use std::collections::BTreeMap;
 
+use crate::values::{AccessGeneration, Bytes, CharCount, EditorId, PolicyGeneration};
+
 #[cfg(kani)]
 mod kani_proofs;
 
@@ -19,7 +21,7 @@ mod kani_proofs;
 /// residency comfortable on 8 GiB-class systems without ordinary-tab churn.
 ///
 /// Kind: cap; a power of two, rounded down.
-pub const EDITOR_MEMORY_UPPER_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
+pub const EDITOR_MEMORY_UPPER_BUDGET_BYTES: Bytes = Bytes::mib(256);
 
 /// Target residency after an over-budget eviction pass.
 ///
@@ -27,8 +29,12 @@ pub const EDITOR_MEMORY_UPPER_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 /// upper threshold from repeatedly evicting one tab at a time.
 ///
 /// Kind: derived; computed from the constants it names, not rounded.
-pub const EDITOR_MEMORY_LOWER_WATER_BYTES: u64 =
-    EDITOR_MEMORY_UPPER_BUDGET_BYTES.saturating_mul(90) / 100;
+pub const EDITOR_MEMORY_LOWER_WATER_BYTES: Bytes = Bytes::from_bytes(
+    EDITOR_MEMORY_UPPER_BUDGET_BYTES
+        .as_bytes()
+        .saturating_mul(90)
+        / 100,
+);
 
 /// Fixed estimate retained for an evicted tab's scalar bookkeeping.
 ///
@@ -36,7 +42,7 @@ pub const EDITOR_MEMORY_LOWER_WATER_BYTES: u64 =
 /// text is dropped without pretending to measure GTK allocator residency.
 ///
 /// Kind: coverage window; a power of two, rounded up.
-pub const EVICTED_EDITOR_BOOKKEEPING_BYTES: u64 = 4 * 1024;
+pub const EVICTED_EDITOR_BOOKKEEPING_BYTES: Bytes = Bytes::kib(4);
 
 /// Estimate one editor from bounded scalar state without reading its text.
 ///
@@ -45,17 +51,17 @@ pub const EVICTED_EDITOR_BOOKKEEPING_BYTES: u64 = 4 * 1024;
 /// smaller than its last accepted on-disk representation.
 #[must_use]
 pub fn estimate_live_editor_bytes(
-    character_count: u64,
-    known_file_bytes: Option<u64>,
+    character_count: CharCount,
+    known_file_bytes: Option<Bytes>,
     evicted: bool,
-) -> u64 {
+) -> Bytes {
     if evicted {
         return EVICTED_EDITOR_BOOKKEEPING_BYTES;
     }
 
-    character_count
-        .saturating_mul(4)
-        .max(known_file_bytes.unwrap_or(0))
+    let char_estimate = character_count.as_chars().saturating_mul(4);
+    let known = known_file_bytes.map_or(0, Bytes::as_bytes);
+    Bytes::from_bytes(char_estimate.max(known))
 }
 
 /// What one boundary mark of a sliced protected install costs the live
@@ -66,25 +72,25 @@ pub fn estimate_live_editor_bytes(
 ///
 /// Kind: coverage window (a conservative per-object charge), rounded up to a
 /// power of two.
-pub const PROTECTED_BOUNDARY_BYTES: u64 = 128;
+pub const PROTECTED_BOUNDARY_BYTES: Bytes = Bytes::from_bytes(128);
 
 /// The live-editor charge of `boundaries` boundary marks.
 #[must_use]
-pub const fn protected_boundary_bytes(boundaries: u64) -> u64 {
-    boundaries.saturating_mul(PROTECTED_BOUNDARY_BYTES)
+pub const fn protected_boundary_bytes(boundaries: u64) -> Bytes {
+    PROTECTED_BOUNDARY_BYTES.saturating_mul(boundaries)
 }
 
 /// Scalar residency and safety facts for one open editor page.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EditorResidency {
     /// Window-local stable identity used to re-find the page before eviction.
-    pub editor_id: usize,
+    pub editor_id: EditorId,
     /// Conservative current buffer estimate, excluding unrelated process RAM.
-    pub estimated_bytes: u64,
+    pub estimated_bytes: Bytes,
     /// Window-wide recency generation; smaller values are less recently used.
-    pub access_generation: u64,
+    pub access_generation: AccessGeneration,
     /// Page-local generation covering residency and eviction eligibility.
-    pub policy_generation: u64,
+    pub policy_generation: PolicyGeneration,
     /// Whether current content can be discarded and reloaded without data loss.
     pub eligible_for_eviction: bool,
 }
@@ -93,9 +99,9 @@ pub struct EditorResidency {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EditorResidencyUpdate {
     /// Saturating aggregate before the mutation.
-    pub previous_total_bytes: u64,
+    pub previous_total_bytes: Bytes,
     /// Saturating aggregate after the mutation.
-    pub total_bytes: u64,
+    pub total_bytes: Bytes,
     /// Whether the update moved the aggregate across the enforcement threshold.
     pub crossed_upper_threshold: bool,
 }
@@ -119,7 +125,7 @@ pub struct EditorResidencyUpdate {
 /// displaces records exactly as the map does.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EditorResidencyLedger {
-    records: BTreeMap<usize, EditorResidency>,
+    records: BTreeMap<EditorId, EditorResidency>,
     totals: ResidencyTotals,
 }
 
@@ -145,21 +151,21 @@ impl ResidencyTotals {
         if let Some(previous) = previous {
             self.exact_total_bytes = self
                 .exact_total_bytes
-                .saturating_sub(u128::from(previous.estimated_bytes));
+                .saturating_sub(u128::from(previous.estimated_bytes.as_bytes()));
             if !previous.eligible_for_eviction {
                 self.exact_protected_bytes = self
                     .exact_protected_bytes
-                    .saturating_sub(u128::from(previous.estimated_bytes));
+                    .saturating_sub(u128::from(previous.estimated_bytes.as_bytes()));
             }
         }
         if let Some(next) = next {
             self.exact_total_bytes = self
                 .exact_total_bytes
-                .saturating_add(u128::from(next.estimated_bytes));
+                .saturating_add(u128::from(next.estimated_bytes.as_bytes()));
             if !next.eligible_for_eviction {
                 self.exact_protected_bytes = self
                     .exact_protected_bytes
-                    .saturating_add(u128::from(next.estimated_bytes));
+                    .saturating_add(u128::from(next.estimated_bytes.as_bytes()));
             }
         }
         let total_bytes = self.total_bytes();
@@ -173,12 +179,12 @@ impl ResidencyTotals {
         }
     }
 
-    fn total_bytes(&self) -> u64 {
-        u64::try_from(self.exact_total_bytes).unwrap_or(u64::MAX)
+    fn total_bytes(&self) -> Bytes {
+        Bytes::from_bytes(u64::try_from(self.exact_total_bytes).unwrap_or(u64::MAX))
     }
 
-    fn protected_bytes(&self) -> u64 {
-        u64::try_from(self.exact_protected_bytes).unwrap_or(u64::MAX)
+    fn protected_bytes(&self) -> Bytes {
+        Bytes::from_bytes(u64::try_from(self.exact_protected_bytes).unwrap_or(u64::MAX))
     }
 }
 
@@ -190,7 +196,7 @@ impl EditorResidencyLedger {
     }
 
     /// Remove one detached editor record using the same exact delta path.
-    pub fn remove(&mut self, editor_id: usize) -> Option<EditorResidencyUpdate> {
+    pub fn remove(&mut self, editor_id: EditorId) -> Option<EditorResidencyUpdate> {
         let previous = self.records.remove(&editor_id)?;
         Some(self.totals.replace(Some(&previous), None))
     }
@@ -206,19 +212,19 @@ impl EditorResidencyLedger {
 
     /// Return whether a stable editor identity is currently tracked.
     #[must_use]
-    pub fn contains(&self, editor_id: usize) -> bool {
+    pub fn contains(&self, editor_id: EditorId) -> bool {
         self.records.contains_key(&editor_id)
     }
 
     /// Return the saturating aggregate across every tracked editor.
     #[must_use]
-    pub fn total_bytes(&self) -> u64 {
+    pub fn total_bytes(&self) -> Bytes {
         self.totals.total_bytes()
     }
 
     /// Return the saturating aggregate for non-evictable editor residency.
     #[must_use]
-    pub fn protected_bytes(&self) -> u64 {
+    pub fn protected_bytes(&self) -> Bytes {
         self.totals.protected_bytes()
     }
 
@@ -245,13 +251,13 @@ impl EditorResidencyLedger {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EditorEvictionCandidate {
     /// Window-local editor identity captured by the policy pass.
-    pub editor_id: usize,
+    pub editor_id: EditorId,
     /// Estimate actually reclaimed after retained tab bookkeeping is deducted.
-    pub reclaimable_bytes: u64,
+    pub reclaimable_bytes: Bytes,
     /// Captured recency generation used to reject newly accessed pages.
-    pub access_generation: u64,
+    pub access_generation: AccessGeneration,
     /// Captured policy generation used to reject any eligibility transition.
-    pub policy_generation: u64,
+    pub policy_generation: PolicyGeneration,
 }
 
 /// Stable result class for one aggregate policy evaluation.
@@ -270,11 +276,11 @@ pub enum EditorMemoryBudgetOutcome {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EditorMemoryBudgetDecision {
     /// Saturating aggregate estimate across every supplied editor.
-    pub total_bytes: u64,
+    pub total_bytes: Bytes,
     /// Saturating aggregate estimate for protected editors only.
-    pub protected_bytes: u64,
+    pub protected_bytes: Bytes,
     /// Projected total after every selected candidate is evicted.
-    pub projected_bytes: u64,
+    pub projected_bytes: Bytes,
     /// Least-recently-used candidates in application order.
     pub candidates: Vec<EditorEvictionCandidate>,
     /// Whether the pass is already safe, converges, or must remain soft.
@@ -296,13 +302,13 @@ pub struct EditorMemoryBudgetDecision {
 /// below the watermark, `NoProgress` only once every eligible page is chosen).
 #[must_use]
 pub fn evaluate_editor_memory_budget(pages: &[EditorResidency]) -> EditorMemoryBudgetDecision {
-    let total_bytes = pages.iter().fold(0u64, |total, page| {
+    let total_bytes = pages.iter().fold(Bytes::ZERO, |total, page| {
         total.saturating_add(page.estimated_bytes)
     });
     let protected_bytes = pages
         .iter()
         .filter(|page| !page.eligible_for_eviction)
-        .fold(0u64, |total, page| {
+        .fold(Bytes::ZERO, |total, page| {
             total.saturating_add(page.estimated_bytes)
         });
 
@@ -376,23 +382,27 @@ mod tests {
 
     fn page(
         editor_id: usize,
-        estimated_bytes: u64,
+        estimated_bytes: Bytes,
         access_generation: u64,
         eligible_for_eviction: bool,
     ) -> EditorResidency {
         EditorResidency {
-            editor_id,
+            editor_id: EditorId::new(editor_id),
             estimated_bytes,
-            access_generation,
-            policy_generation: 7,
+            access_generation: AccessGeneration::new(access_generation),
+            policy_generation: PolicyGeneration::new(7),
             eligible_for_eviction,
         }
     }
 
+    fn b(bytes: u64) -> Bytes {
+        Bytes::from_bytes(bytes)
+    }
+
     /// The selection the policy used before its least-recently-used loop
     /// replaced the full sort: sort every eligible page, take the prefix.
-    fn sorted_prefix_reference(pages: &[EditorResidency]) -> Vec<usize> {
-        let total = pages.iter().fold(0u64, |total, page| {
+    fn sorted_prefix_reference(pages: &[EditorResidency]) -> Vec<EditorId> {
+        let total = pages.iter().fold(Bytes::ZERO, |total, page| {
             total.saturating_add(page.estimated_bytes)
         });
         if total <= EDITOR_MEMORY_UPPER_BUDGET_BYTES {
@@ -413,8 +423,10 @@ mod tests {
             if projected <= EDITOR_MEMORY_LOWER_WATER_BYTES {
                 break;
             }
-            projected =
-                projected.saturating_sub(page.estimated_bytes - EVICTED_EDITOR_BOOKKEEPING_BYTES);
+            projected = projected.saturating_sub(
+                page.estimated_bytes
+                    .saturating_sub(EVICTED_EDITOR_BOOKKEEPING_BYTES),
+            );
             selected.push(page.editor_id);
         }
         selected
@@ -441,7 +453,7 @@ mod tests {
                 .map(|editor_id| {
                     page(
                         editor_id,
-                        next() % (EDITOR_MEMORY_UPPER_BUDGET_BYTES / 2),
+                        b(next() % (EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes() / 2)),
                         next() % 4,
                         next() % 4 != 0,
                     )
@@ -460,7 +472,7 @@ mod tests {
     fn zero_one_and_exact_threshold_pages_stay_within_budget() {
         for pages in [
             Vec::new(),
-            vec![page(1, 1, 1, true)],
+            vec![page(1, b(1), 1, true)],
             vec![page(1, EDITOR_MEMORY_UPPER_BUDGET_BYTES, 1, true)],
         ] {
             let decision = evaluate_editor_memory_budget(&pages);
@@ -471,7 +483,7 @@ mod tests {
 
     #[test]
     fn many_pages_evict_lru_until_the_lower_watermark() {
-        let quarter = EDITOR_MEMORY_UPPER_BUDGET_BYTES / 4;
+        let quarter = b(EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes() / 4);
         let decision = evaluate_editor_memory_budget(&[
             page(1, quarter, 1, true),
             page(2, quarter, 2, true),
@@ -482,8 +494,8 @@ mod tests {
 
         assert_eq!(decision.outcome, EditorMemoryBudgetOutcome::Converged);
         assert_eq!(decision.candidates.len(), 2);
-        assert_eq!(decision.candidates[0].editor_id, 1);
-        assert_eq!(decision.candidates[1].editor_id, 2);
+        assert_eq!(decision.candidates[0].editor_id, EditorId::new(1));
+        assert_eq!(decision.candidates[1].editor_id, EditorId::new(2));
         assert!(decision.projected_bytes <= EDITOR_MEMORY_LOWER_WATER_BYTES);
     }
 
@@ -491,22 +503,27 @@ mod tests {
     fn recency_ties_use_editor_identity_for_determinism() {
         let decision = evaluate_editor_memory_budget(&[
             page(9, EDITOR_MEMORY_UPPER_BUDGET_BYTES, 4, true),
-            page(3, EVICTED_EDITOR_BOOKKEEPING_BYTES + 1, 4, true),
+            page(
+                3,
+                EVICTED_EDITOR_BOOKKEEPING_BYTES.saturating_add(b(1)),
+                4,
+                true,
+            ),
         ]);
 
-        assert_eq!(decision.candidates[0].editor_id, 3);
-        assert_eq!(decision.candidates[1].editor_id, 9);
+        assert_eq!(decision.candidates[0].editor_id, EditorId::new(3));
+        assert_eq!(decision.candidates[1].editor_id, EditorId::new(9));
     }
 
     #[test]
     fn totals_saturate_instead_of_wrapping() {
         let decision = evaluate_editor_memory_budget(&[
-            page(1, u64::MAX, 1, false),
-            page(2, u64::MAX, 2, false),
+            page(1, Bytes::MAX, 1, false),
+            page(2, Bytes::MAX, 2, false),
         ]);
 
-        assert_eq!(decision.total_bytes, u64::MAX);
-        assert_eq!(decision.protected_bytes, u64::MAX);
+        assert_eq!(decision.total_bytes, Bytes::MAX);
+        assert_eq!(decision.protected_bytes, Bytes::MAX);
         assert_eq!(decision.outcome, EditorMemoryBudgetOutcome::NoProgress);
     }
 
@@ -514,10 +531,10 @@ mod tests {
     fn insufficient_candidates_report_stable_no_progress() {
         let protected = EDITOR_MEMORY_UPPER_BUDGET_BYTES;
         let decision =
-            evaluate_editor_memory_budget(&[page(1, protected, 1, false), page(2, 1, 2, true)]);
+            evaluate_editor_memory_budget(&[page(1, protected, 1, false), page(2, b(1), 2, true)]);
 
         assert!(decision.candidates.is_empty());
-        assert_eq!(decision.projected_bytes, protected + 1);
+        assert_eq!(decision.projected_bytes, protected.saturating_add(b(1)));
         assert_eq!(decision.outcome, EditorMemoryBudgetOutcome::NoProgress);
     }
 
@@ -525,14 +542,24 @@ mod tests {
     fn candidates_must_reclaim_more_than_retained_bookkeeping() {
         let decision = evaluate_editor_memory_budget(&[
             page(1, EDITOR_MEMORY_UPPER_BUDGET_BYTES, 1, false),
-            page(2, EVICTED_EDITOR_BOOKKEEPING_BYTES - 1, 2, true),
+            page(
+                2,
+                EVICTED_EDITOR_BOOKKEEPING_BYTES.saturating_sub(b(1)),
+                2,
+                true,
+            ),
             page(3, EVICTED_EDITOR_BOOKKEEPING_BYTES, 3, true),
-            page(4, EVICTED_EDITOR_BOOKKEEPING_BYTES + 1, 4, true),
+            page(
+                4,
+                EVICTED_EDITOR_BOOKKEEPING_BYTES.saturating_add(b(1)),
+                4,
+                true,
+            ),
         ]);
 
         assert_eq!(decision.candidates.len(), 1);
-        assert_eq!(decision.candidates[0].editor_id, 4);
-        assert_eq!(decision.candidates[0].reclaimable_bytes, 1);
+        assert_eq!(decision.candidates[0].editor_id, EditorId::new(4));
+        assert_eq!(decision.candidates[0].reclaimable_bytes, b(1));
         assert_eq!(decision.outcome, EditorMemoryBudgetOutcome::NoProgress);
     }
 
@@ -540,7 +567,7 @@ mod tests {
     fn protected_over_budget_state_never_selects_user_work() {
         let decision = evaluate_editor_memory_budget(&[page(
             1,
-            EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1,
+            EDITOR_MEMORY_UPPER_BUDGET_BYTES.saturating_add(b(1)),
             1,
             false,
         )]);
@@ -552,12 +579,24 @@ mod tests {
 
     #[test]
     fn live_estimate_covers_untitled_growth_file_floor_and_eviction() {
-        assert_eq!(estimate_live_editor_bytes(3, None, false), 12);
-        assert_eq!(estimate_live_editor_bytes(3, Some(100), false), 100);
-        assert_eq!(estimate_live_editor_bytes(30, Some(100), false), 120);
-        assert_eq!(estimate_live_editor_bytes(u64::MAX, None, false), u64::MAX);
         assert_eq!(
-            estimate_live_editor_bytes(u64::MAX, Some(u64::MAX), true),
+            estimate_live_editor_bytes(CharCount::new(3), None, false),
+            b(12)
+        );
+        assert_eq!(
+            estimate_live_editor_bytes(CharCount::new(3), Some(b(100)), false),
+            b(100)
+        );
+        assert_eq!(
+            estimate_live_editor_bytes(CharCount::new(30), Some(b(100)), false),
+            b(120)
+        );
+        assert_eq!(
+            estimate_live_editor_bytes(CharCount::new(u64::MAX), None, false),
+            Bytes::MAX
+        );
+        assert_eq!(
+            estimate_live_editor_bytes(CharCount::new(u64::MAX), Some(Bytes::MAX), true),
             EVICTED_EDITOR_BOOKKEEPING_BYTES
         );
     }
@@ -565,17 +604,25 @@ mod tests {
     #[test]
     fn incremental_ledger_updates_one_record_and_crosses_once() {
         let mut ledger = EditorResidencyLedger::default();
-        let first = page(1, EDITOR_MEMORY_UPPER_BUDGET_BYTES - 10, 1, false);
-        let second = page(2, 9, 2, true);
+        let first = page(
+            1,
+            EDITOR_MEMORY_UPPER_BUDGET_BYTES.saturating_sub(b(10)),
+            1,
+            false,
+        );
+        let second = page(2, b(9), 2, true);
         assert!(!ledger.upsert(first).crossed_upper_threshold);
         assert!(!ledger.upsert(second).crossed_upper_threshold);
 
-        let crossing = ledger.upsert(page(2, 11, 2, true));
+        let crossing = ledger.upsert(page(2, b(11), 2, true));
         assert!(crossing.crossed_upper_threshold);
-        assert_eq!(crossing.total_bytes, EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1);
+        assert_eq!(
+            crossing.total_bytes,
+            EDITOR_MEMORY_UPPER_BUDGET_BYTES.saturating_add(b(1))
+        );
         assert_eq!(ledger.protected_bytes(), first.estimated_bytes);
 
-        let later = ledger.upsert(page(2, 12, 3, false));
+        let later = ledger.upsert(page(2, b(12), 3, false));
         assert!(!later.crossed_upper_threshold);
         assert_eq!(ledger.protected_bytes(), ledger.total_bytes());
     }
@@ -583,44 +630,52 @@ mod tests {
     #[test]
     fn incremental_ledger_removes_and_reconciles_records() {
         let mut ledger = EditorResidencyLedger::default();
-        ledger.upsert(page(1, 10, 1, false));
-        ledger.upsert(page(2, 20, 2, true));
-        assert_eq!(ledger.remove(1).map(|update| update.total_bytes), Some(20));
-        assert_eq!(ledger.protected_bytes(), 0);
-        assert!(ledger.remove(1).is_none());
+        ledger.upsert(page(1, b(10), 1, false));
+        ledger.upsert(page(2, b(20), 2, true));
+        assert_eq!(
+            ledger
+                .remove(EditorId::new(1))
+                .map(|update| update.total_bytes),
+            Some(b(20))
+        );
+        assert_eq!(ledger.protected_bytes(), Bytes::ZERO);
+        assert!(ledger.remove(EditorId::new(1)).is_none());
 
-        assert!(!ledger.contains(1), "a removed record is no longer tracked");
+        assert!(
+            !ledger.contains(EditorId::new(1)),
+            "a removed record is no longer tracked"
+        );
         assert!(!ledger.is_empty());
 
-        ledger.reconcile([page(7, 30, 3, false), page(9, 40, 4, true)]);
+        ledger.reconcile([page(7, b(30), 3, false), page(9, b(40), 4, true)]);
         assert_eq!(ledger.len(), 2);
-        assert!(ledger.contains(7));
+        assert!(ledger.contains(EditorId::new(7)));
         assert!(
-            !ledger.contains(2),
+            !ledger.contains(EditorId::new(2)),
             "reconciliation drops records it was not given"
         );
         assert_eq!(
             ledger.snapshot(),
-            vec![page(7, 30, 3, false), page(9, 40, 4, true)],
+            vec![page(7, b(30), 3, false), page(9, b(40), 4, true)],
             "the snapshot copies every record, in identity order"
         );
-        assert_eq!(ledger.total_bytes(), 70);
-        assert_eq!(ledger.protected_bytes(), 30);
+        assert_eq!(ledger.total_bytes(), b(70));
+        assert_eq!(ledger.protected_bytes(), b(30));
     }
 
     #[test]
     fn incremental_ledger_recovers_below_u64_saturation_after_removal() {
         let mut ledger = EditorResidencyLedger::default();
-        ledger.upsert(page(1, u64::MAX, 1, false));
-        ledger.upsert(page(2, u64::MAX, 2, true));
-        assert_eq!(ledger.total_bytes(), u64::MAX);
-        assert_eq!(ledger.protected_bytes(), u64::MAX);
+        ledger.upsert(page(1, Bytes::MAX, 1, false));
+        ledger.upsert(page(2, Bytes::MAX, 2, true));
+        assert_eq!(ledger.total_bytes(), Bytes::MAX);
+        assert_eq!(ledger.protected_bytes(), Bytes::MAX);
 
-        ledger.remove(1);
-        assert_eq!(ledger.total_bytes(), u64::MAX);
-        assert_eq!(ledger.protected_bytes(), 0);
-        ledger.remove(2);
-        assert_eq!(ledger.total_bytes(), 0);
+        ledger.remove(EditorId::new(1));
+        assert_eq!(ledger.total_bytes(), Bytes::MAX);
+        assert_eq!(ledger.protected_bytes(), Bytes::ZERO);
+        ledger.remove(EditorId::new(2));
+        assert_eq!(ledger.total_bytes(), Bytes::ZERO);
         assert!(ledger.is_empty());
     }
 }

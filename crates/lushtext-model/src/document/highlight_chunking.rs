@@ -126,6 +126,26 @@ pub enum ChunkStep {
     AwaitAnalysis,
 }
 
+/// How far the context engine has reported analysis after inserting a chunk.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+pub enum AnalysisExtent {
+    /// Analysis has not yet reached the buffer end.
+    Partial,
+    /// Analysis has reached the end of the installed text.
+    ToEnd,
+}
+
+/// Whether the current chunk has already yielded once for background analysis.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+pub enum ChunkWaitState {
+    /// First attempt for this chunk.
+    Initial,
+    /// Already yielded once for the context worker.
+    Waited,
+}
+
 /// The next step, from whether the engine has reported the buffer analysed
 /// to its end (A84) and whether this chunk already waited.
 ///
@@ -133,11 +153,10 @@ pub enum ChunkStep {
 /// so it finds the analysis done unless something outside the engine holds
 /// it back, and the install must make progress regardless.
 #[must_use]
-pub const fn next_chunk_step(analysed_to_end: bool, waited: bool) -> ChunkStep {
-    if analysed_to_end || waited {
-        ChunkStep::Insert
-    } else {
-        ChunkStep::AwaitAnalysis
+pub const fn next_chunk_step(extent: AnalysisExtent, wait_state: ChunkWaitState) -> ChunkStep {
+    match (extent, wait_state) {
+        (AnalysisExtent::ToEnd, _) | (_, ChunkWaitState::Waited) => ChunkStep::Insert,
+        (AnalysisExtent::Partial, ChunkWaitState::Initial) => ChunkStep::AwaitAnalysis,
     }
 }
 
@@ -194,7 +213,17 @@ pub const fn chunk_gate(facts: ChunkFacts) -> ChunkGate {
     if !facts.language_attached {
         return ChunkGate::InsertUnhighlighted;
     }
-    match next_chunk_step(facts.analysed_to_end, facts.waited) {
+    let extent = if facts.analysed_to_end {
+        AnalysisExtent::ToEnd
+    } else {
+        AnalysisExtent::Partial
+    };
+    let wait_state = if facts.waited {
+        ChunkWaitState::Waited
+    } else {
+        ChunkWaitState::Initial
+    };
+    match next_chunk_step(extent, wait_state) {
         ChunkStep::Insert => ChunkGate::Insert,
         ChunkStep::AwaitAnalysis => ChunkGate::AwaitAnalysis,
     }
@@ -274,9 +303,21 @@ mod tests {
 
     #[test]
     fn a_chunk_waits_at_most_once() {
-        assert_eq!(next_chunk_step(true, false), ChunkStep::Insert);
-        assert_eq!(next_chunk_step(false, false), ChunkStep::AwaitAnalysis);
-        assert_eq!(next_chunk_step(false, true), ChunkStep::Insert);
-        assert_eq!(next_chunk_step(true, true), ChunkStep::Insert);
+        assert_eq!(
+            next_chunk_step(AnalysisExtent::ToEnd, ChunkWaitState::Initial),
+            ChunkStep::Insert
+        );
+        assert_eq!(
+            next_chunk_step(AnalysisExtent::Partial, ChunkWaitState::Initial),
+            ChunkStep::AwaitAnalysis
+        );
+        assert_eq!(
+            next_chunk_step(AnalysisExtent::Partial, ChunkWaitState::Waited),
+            ChunkStep::Insert
+        );
+        assert_eq!(
+            next_chunk_step(AnalysisExtent::ToEnd, ChunkWaitState::Waited),
+            ChunkStep::Insert
+        );
     }
 }

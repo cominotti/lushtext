@@ -21,6 +21,7 @@ use std::sync::Arc;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use gtk4::{self, glib};
+use lushtext_model::values::RetirementGeneration;
 
 use super::LushtextSearchPanel;
 use super::item::SearchResultItem;
@@ -90,7 +91,7 @@ impl SearchRetirementOwnership {
 #[cfg(feature = "test-utils")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SearchRetirementSliceObservation {
-    pub generation: u64,
+    pub generation: RetirementGeneration,
     pub before: SearchRetirementOwnership,
     pub after: SearchRetirementOwnership,
     pub released: SearchRetirementOwnership,
@@ -104,7 +105,7 @@ pub struct SearchRetirementSliceObservation {
 
 /// One detached result generation whose GTK-owned references are no longer visible.
 struct RetiredSearchGtkState {
-    generation: u64,
+    generation: RetirementGeneration,
     root_store: gtk4::gio::ListStore,
     file_groups: BTreeMap<std::sync::Arc<std::path::Path>, SearchFileGroup>,
     match_rows: Vec<Option<gtk4::TreeListRow>>,
@@ -250,7 +251,7 @@ impl LushtextSearchPanel {
     /// partially retired generation.
     pub(super) fn detach_visible_results(&self) {
         let imp = self.imp();
-        let retirement_generation = imp.runtime.retirement_generation.get().wrapping_add(1);
+        let retirement_generation = imp.runtime.retirement_generation.get().next();
         imp.runtime.retirement_generation.set(retirement_generation);
         let old_root = imp
             .runtime

@@ -105,6 +105,20 @@ fn elapsed_since(started_us: i64) -> u64 {
     u64::try_from(glib::monotonic_time().saturating_sub(started_us)).unwrap_or(0)
 }
 
+/// Which result chrome remainders stay visible while clearing search state.
+#[derive(Clone, Copy)]
+pub(super) struct ClearResultsPersistence {
+    pub(super) preserve_feedback: bool,
+    pub(super) preserve_results_body: bool,
+}
+
+impl ClearResultsPersistence {
+    pub(super) const RESET: Self = Self {
+        preserve_feedback: false,
+        preserve_results_body: false,
+    };
+}
+
 impl LushtextSearchPanel {
     /// Seed the per-search hidden-files override from the global preference.
     ///
@@ -136,11 +150,13 @@ impl LushtextSearchPanel {
             return;
         }
 
-        let preserve_feedback =
-            !spec.query.is_empty() && imp.results_feedback_revealer.reveals_child();
-        let preserve_results_body =
-            !spec.query.is_empty() && imp.results_body_revealer.reveals_child();
-        self.clear_results(preserve_feedback, preserve_results_body);
+        let persistence = ClearResultsPersistence {
+            preserve_feedback: !spec.query.is_empty()
+                && imp.results_feedback_revealer.reveals_child(),
+            preserve_results_body: !spec.query.is_empty()
+                && imp.results_body_revealer.reveals_child(),
+        };
+        self.clear_results(persistence);
 
         if spec.query.is_empty() {
             self.cancel_active_search();
@@ -477,12 +493,12 @@ impl LushtextSearchPanel {
     }
 
     /// Clear all results and reset state.
-    pub(super) fn clear_results(&self, preserve_feedback: bool, preserve_results_body: bool) {
+    pub(super) fn clear_results(&self, persistence: ClearResultsPersistence) {
         let imp = self.imp();
-        if preserve_feedback {
+        if persistence.preserve_feedback {
             imp.results_feedback_revealer.set_reveal_child(true);
             imp.results_body_revealer
-                .set_reveal_child(preserve_results_body);
+                .set_reveal_child(persistence.preserve_results_body);
         } else {
             self.hide_results_feedback();
         }

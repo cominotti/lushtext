@@ -74,7 +74,10 @@ impl LushtextEditorPage {
 
     pub(super) fn ensure_minimap_analysis(&self, request: MinimapAnalysisRequest) {
         if !request.required() {
-            self.cancel_minimap_analysis(false, false);
+            self.cancel_minimap_analysis(
+                super::retirement::MinimapCacheDisposition::Retain,
+                super::retirement::MinimapMarkersDisposition::Keep,
+            );
             return;
         }
 
@@ -90,7 +93,10 @@ impl LushtextEditorPage {
                     && (!request.long_line_markers || cache.markers_collected)
             });
         if cache_satisfies {
-            self.cancel_minimap_analysis(false, false);
+            self.cancel_minimap_analysis(
+                super::retirement::MinimapCacheDisposition::Retain,
+                super::retirement::MinimapMarkersDisposition::Keep,
+            );
             return;
         }
 
@@ -102,11 +108,14 @@ impl LushtextEditorPage {
         if active_matches {
             return;
         }
-        self.cancel_minimap_analysis(false, false);
+        self.cancel_minimap_analysis(
+            super::retirement::MinimapCacheDisposition::Retain,
+            super::retirement::MinimapMarkersDisposition::Keep,
+        );
 
         // Reserve a fresh generation: cancellation above already advanced it, so
         // read it again rather than incrementing the stale value read on entry.
-        let generation = minimap.analysis_generation.get().wrapping_add(1);
+        let generation = minimap.analysis_generation.get().next();
         minimap.analysis_generation.set(generation);
         let lifetime = minimap.analysis_lifetime.get();
         let buffer = self.buffer();

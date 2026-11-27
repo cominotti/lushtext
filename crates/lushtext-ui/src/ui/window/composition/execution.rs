@@ -392,11 +392,11 @@ impl LushtextWindow {
     #[must_use]
     pub(crate) fn composition_blocks_readiness(&self) -> bool {
         let runtime = self.imp().composition.runtime.borrow();
-        super::policy::composition_blocks_readiness(
-            runtime.plan.is_some(),
-            runtime.complete,
-            runtime.torn_down,
-        )
+        super::policy::composition_blocks_readiness(super::policy::CompositionReadinessFacts {
+            begun: runtime.plan.is_some(),
+            complete: runtime.complete,
+            torn_down: runtime.torn_down,
+        })
     }
 
     /// Queue activation files for their bounded turns, which start once the

@@ -491,16 +491,9 @@ impl RegisteredDraft {
     #[must_use]
     pub fn without_registration(
         draft_id: &str,
-        file_backed: bool,
-        registered_in_known_manifest: bool,
-        known_manifest_trusted: bool,
+        facts: journal_core::RegistrationFacts,
     ) -> Option<Self> {
-        (!journal_core::registration_required(
-            file_backed,
-            registered_in_known_manifest,
-            known_manifest_trusted,
-        ))
-        .then(|| Self {
+        (!journal_core::registration_required(facts)).then(|| Self {
             draft_id: draft_id.to_string(),
         })
     }
@@ -852,8 +845,16 @@ where
         }
     };
     // Replacement was allowed above, under this same lock hold.
+    let commit_mode = if additive_candidate.is_some() {
+        journal_core::CommitWriteMode::InsertOnly
+    } else {
+        journal_core::CommitWriteMode::Reconcile
+    };
     match (
-        journal_core::untrusted_commit_disposition(additive_candidate.is_some(), true),
+        journal_core::untrusted_commit_disposition(
+            commit_mode,
+            journal_core::ExistingBodyReplacement::Allowed,
+        ),
         additive_candidate,
     ) {
         (journal_core::UntrustedCommitDisposition::Additive, Some(candidate)) => {

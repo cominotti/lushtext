@@ -44,6 +44,9 @@ use lushtext_model::persistence::draft::{
     DraftEntry, DraftManifest, DraftManifestAuthority, PreloadedDraftRestore,
 };
 use lushtext_model::persistence::recent_document::RecentDocumentEntry;
+use lushtext_model::values::{
+    FailedRestoreGeneration, RecentDocumentsGeneration, RestoreGeneration, SelectionGeneration,
+};
 use lushtext_model::workspace::WorkspaceScope;
 use lushtext_services::coordination::notifications::NotificationBus;
 use lushtext_services::palette::{
@@ -101,7 +104,7 @@ pub struct EditorMemoryState {
     /// Narrow guard for signals emitted synchronously by `EditorPage::evict`.
     pub applying_eviction: Cell<bool>,
     /// Window-wide generation source used for deterministic least-recent use.
-    pub next_access_generation: Cell<u64>,
+    pub next_access_generation: Cell<lushtext_model::values::AccessGeneration>,
     /// Number of aggregate evaluations, retained for coalescing assertions.
     pub evaluation_count: Cell<u64>,
     /// Full tab scans performed only for enforcement or reconciliation.
@@ -159,7 +162,7 @@ pub struct SessionState {
     /// Active bounded GTK session-restore generation, if any.
     pub(super) restore_runtime: RefCell<Option<SessionRestoreRuntime>>,
     /// Monotonic identity allocated before each bounded restore generation.
-    pub(super) next_restore_generation: Cell<u64>,
+    pub(super) next_restore_generation: Cell<RestoreGeneration>,
     /// Last generation's terminal or cancellation counters, retained after the
     /// runtime that owned them is taken.
     ///
@@ -169,13 +172,13 @@ pub struct SessionState {
     /// Aggregate tab-derived projection rebuilds, retained for boundedness proof.
     pub(super) tab_projection_publications: Cell<u64>,
     /// User/CLI tab-selection intent accepted since window construction.
-    pub(super) selection_generation: Cell<u64>,
+    pub(super) selection_generation: Cell<SelectionGeneration>,
     /// Suppresses generation changes for restore-owned transient selections.
     pub(super) applying_restore_selection: Cell<bool>,
     /// Whether the newest attempted session save failed and still needs retry.
     pub save_failed: Cell<bool>,
     /// Generation of the newest failed session save.
-    pub failed_generation: Cell<u32>,
+    pub failed_generation: Cell<FailedRestoreGeneration>,
     /// Last failure detail kept for close-flow warnings and widget tests.
     pub failure_detail: RefCell<Option<String>>,
     /// Whether draft/session close-safety work is already running.
@@ -352,7 +355,7 @@ pub struct RecentDocumentsState {
     /// Paths removed while the startup load was in flight.
     pub removed_while_loading: RefCell<Vec<PathBuf>>,
     /// Monotonic version advanced by in-memory user mutations.
-    pub generation: Cell<u64>,
+    pub generation: Cell<RecentDocumentsGeneration>,
     /// Whether the popover projection should be rebuilt before the next popup.
     pub rows_dirty: Cell<bool>,
     /// Debounce for coalescing bursts of recent-document persistence writes.
@@ -531,7 +534,7 @@ pub struct LushtextWindow {
     /// Whether the preview-only mode (Alt+P) is active (editor hidden, preview full-width).
     pub preview_mode: Cell<bool>,
     /// Legacy preferred side-by-side preview width from `preview-pane-position`.
-    pub preferred_preview_width: Cell<i32>,
+    pub preferred_preview_width: Cell<lushtext_model::values::Sp>,
     /// Whether showing the side-by-side sidebar waits for its first allocation.
     ///
     /// See `LushtextWindow::show_preview_sidebar_once_allocated`.
@@ -774,7 +777,7 @@ impl ObjectImpl for LushtextWindow {
 
         let w = settings.int(keys::WINDOW_WIDTH);
         let h = settings.int(keys::WINDOW_HEIGHT);
-        obj.set_height_request(NORMAL_MODE_MIN_HEIGHT_SP);
+        obj.set_height_request(NORMAL_MODE_MIN_HEIGHT_SP.as_sp());
         obj.set_default_size(w, h);
         if settings.boolean(keys::WINDOW_MAXIMIZED) {
             obj.maximize();
@@ -806,7 +809,8 @@ impl ObjectImpl for LushtextWindow {
         // The legacy preview-pane-position key now stores a preferred
         // side-by-side preview width. Preview still starts hidden; target-state
         // actions apply this width when the pane is explicitly requested.
-        let preferred_preview_width = settings.int(keys::PREVIEW_PANE_POSITION);
+        let preferred_preview_width =
+            lushtext_model::values::Sp::new(settings.int(keys::PREVIEW_PANE_POSITION));
         self.preferred_preview_width.set(preferred_preview_width);
         obj.sync_preview_width_constraints(w);
         obj.wire_preview_document_alert();
@@ -871,7 +875,9 @@ impl ObjectImpl for LushtextWindow {
             window
                 .imp()
                 .preferred_preview_width
-                .set(s.int(keys::PREVIEW_PANE_POSITION));
+                .set(lushtext_model::values::Sp::new(
+                    s.int(keys::PREVIEW_PANE_POSITION),
+                ));
             window.sync_preview_width_constraints(current_window_width(window));
             window.queue_preview_layout_settle();
         });
@@ -1132,7 +1138,7 @@ impl ObjectImpl for LushtextWindow {
                     if !session.applying_restore_selection.get() {
                         session
                             .selection_generation
-                            .set(session.selection_generation.get().wrapping_add(1));
+                            .set(session.selection_generation.get().next());
                     }
                     window.follow_selection_in_unmapped_window();
                     if window.tab_projection_refresh_deferred() {

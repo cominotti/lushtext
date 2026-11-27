@@ -29,6 +29,7 @@ use super::policy::{N_INSPECT_WIDTH, inspector_window_containing, whole_line_cop
 use super::seams::InspectorWindowText;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::folded_text::SourceTextProvider;
+use lushtext_model::values::LineInspectorGeneration;
 
 /// The window the inspector shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,7 +44,7 @@ struct ShownWindow {
 #[derive(Debug, Default)]
 pub(crate) struct LineInspectorState {
     dialog: RefCell<Option<LushtextLineInspector>>,
-    generation: Cell<u64>,
+    generation: Cell<LineInspectorGeneration>,
     read_pending: Cell<bool>,
     shown: Cell<Option<ShownWindow>>,
     lines: Cell<u64>,
@@ -194,7 +195,7 @@ impl LushtextEditorPage {
         // The first read builds the source's paragraph index on the worker;
         // its completion re-charges the live-editor estimate (task 1.1).
         let index_was_built = source.has_index();
-        let generation = state.generation.get().wrapping_add(1);
+        let generation = state.generation.get().next();
         state.generation.set(generation);
         state.read_pending.set(true);
         // Within the shown paragraph the window is known now: navigation that
@@ -261,7 +262,7 @@ impl LushtextEditorPage {
         let hidden_chars = self
             .protected_fold_plan()
             .and_then(|plan| plan.range_of(read.paragraph))
-            .map_or(0, |range| range.tail_chars);
+            .map_or(0, |range| range.tail_chars.as_chars());
         let presentation = InspectorPresentation {
             line: read.paragraph + 1,
             lines,
@@ -309,7 +310,7 @@ impl LushtextEditorPage {
         let state = self.line_inspector_state();
         state.dialog.replace(None);
         state.shown.set(None);
-        state.generation.set(state.generation.get().wrapping_add(1));
+        state.generation.set(state.generation.get().next());
         state.read_pending.set(false);
     }
 

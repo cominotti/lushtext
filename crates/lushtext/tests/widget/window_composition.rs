@@ -70,18 +70,24 @@ fn lushtext_windows(app: &LushtextApplication) -> Vec<LushtextWindow> {
         .collect()
 }
 
+#[derive(Clone, Copy)]
+struct SplitViewLayoutSeed {
+    workspace: bool,
+    properties: bool,
+}
+
 /// Seed the restored layout and size the next window reads.
-fn seed_layout(workspace: bool, properties: bool, width: i32, height: i32) {
+fn seed_layout(split: SplitViewLayoutSeed, width: i32, height: i32) {
     ensure_gtk_init();
     let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SPLIT_VIEW_LAYOUT_MIGRATED, true)
         .expect("set split-view-layout-migrated");
     settings
-        .set_boolean(keys::WORKSPACE_SIDEBAR_VISIBLE, workspace)
+        .set_boolean(keys::WORKSPACE_SIDEBAR_VISIBLE, split.workspace)
         .expect("set workspace-sidebar-visible");
     settings
-        .set_boolean(keys::PROPERTIES_SIDEBAR_VISIBLE, properties)
+        .set_boolean(keys::PROPERTIES_SIDEBAR_VISIBLE, split.properties)
         .expect("set properties-sidebar-visible");
     crate::common::seed_restored_window_size(width, height);
     // Restored with the window: a previous window's toggle must not leak into
@@ -371,7 +377,14 @@ fn record_frames(window: &LushtextWindow) -> FrameLog {
 
 #[test]
 fn test_every_reveal_runs_in_one_dispatch_after_the_first_frame() {
-    seed_layout(true, true, 1600, 900);
+    seed_layout(
+        SplitViewLayoutSeed {
+            workspace: true,
+            properties: true,
+        },
+        1600,
+        900,
+    );
     let app = app();
     let window = LushtextWindow::new(app.upcast_ref());
     let frames = record_frames(&window);
@@ -437,7 +450,14 @@ fn test_every_reveal_runs_in_one_dispatch_after_the_first_frame() {
 /// itself must be opaque, or the first frame shows what is behind the window.
 #[test]
 fn test_the_content_area_is_opaque_until_the_content_stage_reveals_it() {
-    seed_layout(false, false, 1600, 900);
+    seed_layout(
+        SplitViewLayoutSeed {
+            workspace: false,
+            properties: false,
+        },
+        1600,
+        900,
+    );
     let app = app();
     set_composition_hold_before_for_test(Some(CompositionStage::Content));
     let window = LushtextWindow::new(app.upcast_ref());
@@ -482,7 +502,14 @@ fn test_sidebar_actions_before_the_workspace_stage_reveal_the_sidebar() {
             ),
         ),
     ] {
-        seed_layout(true, true, 1600, 900);
+        seed_layout(
+            SplitViewLayoutSeed {
+                workspace: true,
+                properties: true,
+            },
+            1600,
+            900,
+        );
         set_composition_hold_before_for_test(Some(CompositionStage::Workspace));
         let window = LushtextWindow::new(app.upcast_ref());
         set_composition_hold_before_for_test(None);
@@ -503,7 +530,14 @@ fn test_sidebar_actions_before_the_workspace_stage_reveal_the_sidebar() {
 
 #[test]
 fn test_rails_the_layout_hides_are_revealed_hidden_and_stay_hidden() {
-    seed_layout(false, false, 1600, 900);
+    seed_layout(
+        SplitViewLayoutSeed {
+            workspace: false,
+            properties: false,
+        },
+        1600,
+        900,
+    );
     let app = app();
     let window = LushtextWindow::new(app.upcast_ref());
     window.present();
@@ -605,7 +639,14 @@ fn state_after(
     at: Option<IssuedAt>,
     op: &dyn Fn(&LushtextWindow),
 ) -> ShellState {
-    seed_layout(true, true, 1600, 900);
+    seed_layout(
+        SplitViewLayoutSeed {
+            workspace: true,
+            properties: true,
+        },
+        1600,
+        900,
+    );
     set_composition_collapsed_for_test(at.is_none());
     set_composition_hold_before_for_test(match at {
         Some(IssuedAt::Before(stage)) => Some(stage),
@@ -808,7 +849,14 @@ fn session_with(path: &Path) -> SessionData {
 
 #[test]
 fn test_reads_and_projections_during_composition_force_nothing() {
-    seed_layout(true, true, 1600, 900);
+    seed_layout(
+        SplitViewLayoutSeed {
+            workspace: true,
+            properties: true,
+        },
+        1600,
+        900,
+    );
     let app = app();
     set_composition_hold_before_for_test(Some(CompositionStage::Content));
     let window = LushtextWindow::new(app.upcast_ref());
@@ -899,7 +947,14 @@ fn test_revealing_staged_rails_never_moves_the_rail_or_the_pane() {
         gtk_settings.set_gtk_xft_dpi(dpi * 1024);
         for (preset, fraction) in [("Small", 0.2), ("Comfy", 0.3), ("Large", 0.4)] {
             for (label, width) in [("wide", 1700), ("medium", 1150), ("compact", 760)] {
-                seed_layout(true, true, width, 860);
+                seed_layout(
+                    SplitViewLayoutSeed {
+                        workspace: true,
+                        properties: true,
+                    },
+                    width,
+                    860,
+                );
                 seed_preset(fraction);
                 set_composition_hold_before_for_test(Some(CompositionStage::Workspace));
                 let window = LushtextWindow::new(app.upcast_ref());
@@ -971,7 +1026,14 @@ fn test_the_protected_chrome_is_constant_in_every_frame_of_composition() {
         (192, 700, "Open-button breakpoint"),
     ] {
         gtk_settings.set_gtk_xft_dpi(dpi * 1024);
-        seed_layout(true, true, width, 860);
+        seed_layout(
+            SplitViewLayoutSeed {
+                workspace: true,
+                properties: true,
+            },
+            width,
+            860,
+        );
         let window = LushtextWindow::new(app.upcast_ref());
         let trace = Rc::new(RefCell::new(Vec::<ChromeFrame>::new()));
         let recorder = Rc::clone(&trace);
@@ -1020,7 +1082,14 @@ fn test_the_protected_chrome_is_constant_in_every_frame_of_composition() {
 #[test]
 fn test_a_cli_open_draws_the_tab_strip_from_the_first_frame() {
     let app = app();
-    seed_layout(false, false, 1150, 860);
+    seed_layout(
+        SplitViewLayoutSeed {
+            workspace: false,
+            properties: false,
+        },
+        1150,
+        860,
+    );
     let dir = tempfile::tempdir().expect("activation tempdir");
     let path = dir.path().join("first.txt");
     fixture::write_text(&path, "first\n");
@@ -1086,7 +1155,14 @@ fn test_a_cli_open_draws_the_tab_strip_from_the_first_frame() {
 
 #[test]
 fn test_the_readiness_blocker_covers_composition_and_ends_with_it() {
-    seed_layout(true, false, 1600, 900);
+    seed_layout(
+        SplitViewLayoutSeed {
+            workspace: true,
+            properties: false,
+        },
+        1600,
+        900,
+    );
     let app = app();
     set_composition_hold_before_for_test(Some(CompositionStage::Content));
     let window = LushtextWindow::new(app.upcast_ref());
@@ -1136,7 +1212,14 @@ fn test_the_readiness_blocker_covers_composition_and_ends_with_it() {
 fn test_closing_during_each_stage_stops_composition() {
     let app = app();
     for stage in HOLD_POINTS {
-        seed_layout(true, true, 1600, 900);
+        seed_layout(
+            SplitViewLayoutSeed {
+                workspace: true,
+                properties: true,
+            },
+            1600,
+            900,
+        );
         set_composition_hold_before_for_test(Some(stage));
         let window = LushtextWindow::new(app.upcast_ref());
         set_composition_hold_before_for_test(None);
@@ -1211,7 +1294,14 @@ fn test_closing_before_restore_reaches_the_pages_keeps_unrestored_descriptors() 
         &session_with(&path),
     )
     .expect("seed the session");
-    seed_layout(true, false, 1600, 900);
+    seed_layout(
+        SplitViewLayoutSeed {
+            workspace: true,
+            properties: false,
+        },
+        1600,
+        900,
+    );
     let app = app();
     set_composition_hold_before_for_test(Some(CompositionStage::Content));
     let window = LushtextWindow::new(app.upcast_ref());
@@ -1251,7 +1341,14 @@ fn test_a_cli_open_keeps_priority_over_the_restored_session() {
         &session_with(&restored),
     )
     .expect("seed the session");
-    seed_layout(false, false, 1600, 900);
+    seed_layout(
+        SplitViewLayoutSeed {
+            workspace: false,
+            properties: false,
+        },
+        1600,
+        900,
+    );
     let app = app();
     app.open(&[gio::File::for_path(&cli)], "");
     flush_events();
@@ -1290,7 +1387,14 @@ fn test_a_cli_open_keeps_priority_over_the_restored_session() {
 /// still reach it must not count as tabs to come.
 #[test]
 fn test_activation_files_after_teardown_are_dropped() {
-    seed_layout(false, false, 1600, 900);
+    seed_layout(
+        SplitViewLayoutSeed {
+            workspace: false,
+            properties: false,
+        },
+        1600,
+        900,
+    );
     let app = app();
     let window = LushtextWindow::new(app.upcast_ref());
     window.present();
@@ -1311,7 +1415,14 @@ fn test_activation_files_after_teardown_are_dropped() {
 /// restored tab in the still invisible tab view) it reveals the content first.
 #[test]
 fn test_bookmark_navigation_before_the_content_stage_focuses_the_editor() {
-    seed_layout(false, false, 1600, 900);
+    seed_layout(
+        SplitViewLayoutSeed {
+            workspace: false,
+            properties: false,
+        },
+        1600,
+        900,
+    );
     let app = app();
     let dir = tempfile::tempdir().expect("bookmark tempdir");
     let path = dir.path().join("marked.txt");
@@ -1375,7 +1486,14 @@ fn test_staged_content_is_rooted_and_focusable_in_the_dispatch_that_reveals_it()
     );
     probe.destroy();
 
-    seed_layout(false, false, 1600, 900);
+    seed_layout(
+        SplitViewLayoutSeed {
+            workspace: false,
+            properties: false,
+        },
+        1600,
+        900,
+    );
     let app = app();
     let dir = tempfile::tempdir().expect("root tempdir");
     let path = dir.path().join("rooted.txt");
@@ -1424,7 +1542,14 @@ fn test_a_cli_open_into_an_empty_session_is_saved() {
     let dir = tempfile::tempdir().expect("activation tempdir");
     let cli = dir.path().join("saved.txt");
     fixture::write_text(&cli, "saved\n");
-    seed_layout(false, false, 1600, 900);
+    seed_layout(
+        SplitViewLayoutSeed {
+            workspace: false,
+            properties: false,
+        },
+        1600,
+        900,
+    );
     let app = app();
     app.open(&[gio::File::for_path(&cli)], "");
     flush_events();
@@ -1478,7 +1603,14 @@ fn test_initial_focus_matches_a_composed_window() {
     for files in [vec![], vec![gio::File::for_path(&path)]] {
         let mut regions = Vec::new();
         for collapsed in [true, false] {
-            seed_layout(true, false, 1600, 900);
+            seed_layout(
+                SplitViewLayoutSeed {
+                    workspace: true,
+                    properties: false,
+                },
+                1600,
+                900,
+            );
             let app = app();
             set_composition_collapsed_for_test(collapsed);
             if files.is_empty() {
@@ -1532,7 +1664,14 @@ fn test_an_activation_open_gives_the_opened_editor_keyboard_focus() {
     let path = dir.path().join("typed-after-open.txt");
     fixture::write_text(&path, "type here\n");
     for collapsed in [true, false] {
-        seed_layout(true, false, 1600, 900);
+        seed_layout(
+            SplitViewLayoutSeed {
+                workspace: true,
+                properties: false,
+            },
+            1600,
+            900,
+        );
         let app = app();
         set_composition_collapsed_for_test(collapsed);
         app.open(&[gio::File::for_path(&path)], "");
@@ -1564,7 +1703,14 @@ fn test_a_restored_session_gives_the_selected_editor_keyboard_focus() {
     let data_dir = lushtext_services::persistence::json_store::data_dir();
     lushtext_services::persistence::session_service::save(&data_dir, &session_with(&path))
         .expect("seed the session");
-    seed_layout(true, false, 1600, 900);
+    seed_layout(
+        SplitViewLayoutSeed {
+            workspace: true,
+            properties: false,
+        },
+        1600,
+        900,
+    );
     let app = app();
     app.activate();
     flush_events();
@@ -1620,7 +1766,14 @@ fn test_the_focus_handoff_precedes_a_protected_documents_alert_announcement() {
     fixture::write_text(&path, &format!("short head line\n{giant}\ntail line\n"));
     let data_dir = lushtext_services::persistence::json_store::data_dir();
     for restore in [false, true] {
-        seed_layout(true, false, 1600, 900);
+        seed_layout(
+            SplitViewLayoutSeed {
+                workspace: true,
+                properties: false,
+            },
+            1600,
+            900,
+        );
         if restore {
             lushtext_services::persistence::session_service::save(&data_dir, &session_with(&path))
                 .expect("seed the session");
@@ -1694,7 +1847,14 @@ fn held_restore_focus(
     let dir = tempfile::tempdir().expect("session tempdir");
     let path = dir.path().join("held-restore.txt");
     fixture::write_text(&path, "held restore\n");
-    seed_layout(true, false, 1600, 900);
+    seed_layout(
+        SplitViewLayoutSeed {
+            workspace: true,
+            properties: false,
+        },
+        1600,
+        900,
+    );
     let app = app();
     set_composition_hold_before_for_test(Some(CompositionStage::Properties));
     let window = LushtextWindow::new(app.upcast_ref());
@@ -1887,7 +2047,14 @@ fn emit_user_input_latch_key(window: &LushtextWindow, key: gtk4::gdk::Key) {
 /// activation admission, and teardown.
 #[test]
 fn test_composition_evidence_reads_stay_side_effect_free_across_composition() {
-    seed_layout(false, false, 1600, 900);
+    seed_layout(
+        SplitViewLayoutSeed {
+            workspace: false,
+            properties: false,
+        },
+        1600,
+        900,
+    );
     let app = app();
     set_composition_hold_before_for_test(Some(CompositionStage::Content));
     let window = LushtextWindow::new(app.upcast_ref());
@@ -1927,7 +2094,14 @@ fn test_composition_evidence_reads_stay_side_effect_free_across_composition() {
 /// Proof 2 of 3 — a disposed window answers honestly instead of panicking.
 #[test]
 fn test_composition_evidence_answers_honestly_after_the_window_is_disposed() {
-    seed_layout(true, true, 1600, 900);
+    seed_layout(
+        SplitViewLayoutSeed {
+            workspace: true,
+            properties: true,
+        },
+        1600,
+        900,
+    );
     let app = app();
     let window = LushtextWindow::new(app.upcast_ref());
     present_window(&window);
@@ -1950,7 +2124,14 @@ fn test_composition_evidence_answers_honestly_after_the_window_is_disposed() {
 /// tree's materialized state and the realized sidebar rows unchanged.
 #[test]
 fn test_composition_evidence_reads_materialize_nothing() {
-    seed_layout(true, false, 1600, 900);
+    seed_layout(
+        SplitViewLayoutSeed {
+            workspace: true,
+            properties: false,
+        },
+        1600,
+        900,
+    );
     let app = app();
     let window = LushtextWindow::new(app.upcast_ref());
     present_window(&window);

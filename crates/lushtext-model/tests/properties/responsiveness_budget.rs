@@ -11,6 +11,7 @@
 use lushtext_model::budgets::responsiveness_budget::{
     HISTOGRAM_BUCKETS, StallVerdict, classify_dispatch, histogram_bucket, nearest_rank_percentile,
 };
+use lushtext_model::values::Micros;
 use proptest::prelude::*;
 
 proptest! {
@@ -49,13 +50,21 @@ proptest! {
         } else {
             StallVerdict::Indeterminate
         };
-        prop_assert_eq!(classify_dispatch(lateness, tick, slack, budget), expected);
+        prop_assert_eq!(
+            classify_dispatch(
+                Micros::from_us(lateness),
+                Micros::from_us(tick),
+                Micros::from_us(slack),
+                Micros::from_us(budget),
+            ),
+            expected
+        );
     }
 
     #[test]
     fn buckets_are_monotone_and_in_range(first in any::<u64>(), second in any::<u64>()) {
         let (small, large) = if first <= second { (first, second) } else { (second, first) };
-        prop_assert!(histogram_bucket(large) < HISTOGRAM_BUCKETS);
-        prop_assert!(histogram_bucket(small) <= histogram_bucket(large));
+        prop_assert!(histogram_bucket(Micros::from_us(large)) < HISTOGRAM_BUCKETS);
+        prop_assert!(histogram_bucket(Micros::from_us(small)) <= histogram_bucket(Micros::from_us(large)));
     }
 }

@@ -52,6 +52,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::gio;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
+use lushtext_model::values::DraftGeneration;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -909,12 +910,12 @@ impl super::LushtextWindow {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CloseSafetyEditorFingerprint {
-    owner_id: usize,
-    draft_generation: u64,
+    owner_id: lushtext_model::values::EditorId,
+    draft_generation: DraftGeneration,
     modified: bool,
     /// Typed text held for the editor: a change of it means the user typed
     /// while the close ran, which the close must not drop.
-    held_chars: u64,
+    held_chars: lushtext_model::values::CharCount,
     path: Option<PathBuf>,
 }
 
@@ -947,9 +948,9 @@ fn close_safety_editor_fingerprint_for(
 ) -> CloseSafetyEditorFingerprint {
     CloseSafetyEditorFingerprint {
         owner_id: editor.notification_owner_id(),
-        draft_generation: editor.draft_dirty_generation(),
+        draft_generation: editor.draft_generation(),
         modified: editor.is_modified(),
-        held_chars: editor.held_char_count(),
+        held_chars: lushtext_model::values::CharCount::new(editor.held_char_count()),
         path: editor.file_path(),
     }
 }

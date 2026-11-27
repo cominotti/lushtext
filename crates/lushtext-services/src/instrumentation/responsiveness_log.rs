@@ -35,6 +35,7 @@ use std::thread::JoinHandle;
 
 use crate::filesystem::write::EvidenceAppendLog;
 use lushtext_model::budgets::responsiveness_budget::{HISTOGRAM_BUCKETS, histogram_bucket};
+use lushtext_model::values::Micros;
 
 /// Version of the record schema; the driver refuses a log it does not know.
 pub const PROBE_LOG_VERSION: u32 = 1;
@@ -574,7 +575,10 @@ impl LatenessAggregator {
         let last_top_k = *self.last_top_k_us.get_or_insert(now_us);
         self.ticks += 1;
         self.max_lateness_us = self.max_lateness_us.max(lateness_us);
-        if let Some(bucket) = self.buckets.get_mut(histogram_bucket(lateness_us)) {
+        if let Some(bucket) = self
+            .buckets
+            .get_mut(histogram_bucket(Micros::from_us(lateness_us)))
+        {
             *bucket += 1;
         }
         self.remember_worst(now_us, lateness_us);
@@ -1072,7 +1076,7 @@ mod tests {
         assert_eq!(ticks, 4);
         assert_eq!(max_lateness_us, 1_500);
         assert_eq!(buckets.iter().sum::<u64>(), 4);
-        assert_eq!(buckets[histogram_bucket(1_500)], 1);
+        assert_eq!(buckets[histogram_bucket(Micros::from_us(1_500))], 1);
         let ProbeRecord::TopK { worst, .. } = aggregator.top_k_record(1) else {
             unreachable!("top_k_record returns a topk record");
         };

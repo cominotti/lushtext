@@ -15,6 +15,8 @@
 
 #![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]
 
+use lushtext_model::values::Sp;
+
 /// Pointer distance from the top edge that reveals the Focus Mode affordance.
 ///
 /// Forty-eight pixels is large enough to hit deliberately while staying above
@@ -91,21 +93,30 @@ pub fn timed_hide_hides_affordance(affordance_contains_focus: bool) -> bool {
     !affordance_contains_focus
 }
 
+/// How the Markdown preview surface shares horizontal space with the editor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreviewLayoutMode {
+    /// Preview occupies the full window alongside no visible editor pane.
+    PreviewOnly,
+    /// Preview sits beside the editor in split view.
+    SideBySide,
+}
+
 /// Whether the Markdown preview should take Focus Mode's readable-column margins.
 ///
 /// Only preview-**only** mode gets them. Side-by-side preview keeps its ordinary
 /// padding, because a narrowed column inside an already-narrow pane reads as a
 /// rendering bug rather than as a reading aid.
 #[must_use]
-pub fn preview_takes_readable_column(focus_mode_active: bool, preview_only_mode: bool) -> bool {
-    focus_mode_active && preview_only_mode
+pub fn preview_takes_readable_column(focus_mode_active: bool, layout: PreviewLayoutMode) -> bool {
+    focus_mode_active && matches!(layout, PreviewLayoutMode::PreviewOnly)
 }
 
 /// Smallest inner margin kept while focused.
 ///
 /// Twenty-four pixels gives narrow windows visible breathing room without
 /// stealing enough width to make wrapped prose feel cramped.
-pub const MIN_FOCUS_MARGIN: i32 = 24;
+pub const MIN_FOCUS_MARGIN: Sp = Sp::new(24);
 
 /// Pango units per logical pixel (`pango::SCALE`).
 ///
@@ -126,16 +137,16 @@ pub const PANGO_UNITS_PER_PIXEL: i32 = 1024;
 /// [`MIN_FOCUS_MARGIN`] and a third of the width. A non-positive width or
 /// character width yields the minimum.
 ///
-/// Equal, for every `i32` width, `i32` character width, and `u32` column count,
+/// Equal, for every [`Sp`] width, `i32` character width, and `u32` column count,
 /// to the `f64` form it replaced (which divided the character width by
 /// `pango::SCALE` first); the adapter's tests pin the two together.
 #[must_use]
 pub fn readable_column_margin(
-    allocated_width: i32,
+    allocated_width: Sp,
     approximate_char_width: i32,
     target_columns: u32,
-) -> i32 {
-    let width = allocated_width.max(0);
+) -> Sp {
+    let width = allocated_width.as_sp().max(0);
     if width <= 0 || approximate_char_width <= 0 {
         return MIN_FOCUS_MARGIN;
     }
@@ -144,10 +155,10 @@ pub fn readable_column_margin(
     let target_width = i64::from(approximate_char_width) * i64::from(target_columns.clamp(60, 120));
     // floor((width - target / scale) / 2), all in Pango units.
     let available_margin = (i64::from(width) * scale - target_width).div_euclid(2 * scale);
+    let floor = MIN_FOCUS_MARGIN.as_sp();
     // At most width / 2, so it fits back into `i32`.
-    let margin = i32::try_from(available_margin.max(i64::from(MIN_FOCUS_MARGIN)))
-        .unwrap_or(MIN_FOCUS_MARGIN);
-    margin.min(width.saturating_div(3).max(MIN_FOCUS_MARGIN))
+    let margin = i32::try_from(available_margin.max(i64::from(floor))).unwrap_or(floor);
+    Sp::new(margin.min(width.saturating_div(3).max(floor)))
 }
 
 /// Whether persistent shell chrome is visible for this Focus Mode state.
@@ -260,40 +271,76 @@ mod tests {
 
     #[test]
     fn only_preview_only_mode_takes_the_readable_column() {
-        assert!(preview_takes_readable_column(true, true));
-        assert!(!preview_takes_readable_column(true, false));
-        assert!(!preview_takes_readable_column(false, true));
-        assert!(!preview_takes_readable_column(false, false));
+        assert!(preview_takes_readable_column(
+            true,
+            PreviewLayoutMode::PreviewOnly
+        ));
+        assert!(!preview_takes_readable_column(
+            true,
+            PreviewLayoutMode::SideBySide
+        ));
+        assert!(!preview_takes_readable_column(
+            false,
+            PreviewLayoutMode::PreviewOnly
+        ));
+        assert!(!preview_takes_readable_column(
+            false,
+            PreviewLayoutMode::SideBySide
+        ));
     }
 
     #[test]
     fn the_readable_column_is_half_the_leftover_width_rounded_down() {
         // 8 px characters (8192 Pango units) at 80 columns is a 640 px column.
-        assert_eq!(readable_column_margin(1_000, 8 * 1024, 80), 180);
+        assert_eq!(
+            readable_column_margin(Sp::new(1_000), 8 * 1024, 80),
+            Sp::new(180)
+        );
         // 180.5 rounds down.
-        assert_eq!(readable_column_margin(1_001, 8 * 1024, 80), 180);
+        assert_eq!(
+            readable_column_margin(Sp::new(1_001), 8 * 1024, 80),
+            Sp::new(180)
+        );
         // A fractional character width stays exact: 7.5 px * 80 = 600 px.
-        assert_eq!(readable_column_margin(1_000, 7 * 1024 + 512, 80), 200);
+        assert_eq!(
+            readable_column_margin(Sp::new(1_000), 7 * 1024 + 512, 80),
+            Sp::new(200)
+        );
     }
 
     #[test]
     fn the_readable_column_margin_stays_between_its_floor_and_a_third() {
-        assert_eq!(readable_column_margin(0, 8 * 1024, 80), MIN_FOCUS_MARGIN);
-        assert_eq!(readable_column_margin(-5, 8 * 1024, 80), MIN_FOCUS_MARGIN);
-        assert_eq!(readable_column_margin(1_000, 0, 80), MIN_FOCUS_MARGIN);
-        assert_eq!(readable_column_margin(1_000, -1, 80), MIN_FOCUS_MARGIN);
-        // A column wider than the surface keeps the floor.
-        assert_eq!(readable_column_margin(400, 8 * 1024, 80), MIN_FOCUS_MARGIN);
-        // 1 px characters at 60 columns would leave 120 px, capped at 300 / 3.
-        assert_eq!(readable_column_margin(300, 1024, 60), 100);
-        // Column counts clamp to 60..=120.
         assert_eq!(
-            readable_column_margin(2_000, 8 * 1024, 10),
-            readable_column_margin(2_000, 8 * 1024, 60)
+            readable_column_margin(Sp::new(0), 8 * 1024, 80),
+            MIN_FOCUS_MARGIN
         );
         assert_eq!(
-            readable_column_margin(2_000, 8 * 1024, 500),
-            readable_column_margin(2_000, 8 * 1024, 120)
+            readable_column_margin(Sp::new(-5), 8 * 1024, 80),
+            MIN_FOCUS_MARGIN
+        );
+        assert_eq!(
+            readable_column_margin(Sp::new(1_000), 0, 80),
+            MIN_FOCUS_MARGIN
+        );
+        assert_eq!(
+            readable_column_margin(Sp::new(1_000), -1, 80),
+            MIN_FOCUS_MARGIN
+        );
+        // A column wider than the surface keeps the floor.
+        assert_eq!(
+            readable_column_margin(Sp::new(400), 8 * 1024, 80),
+            MIN_FOCUS_MARGIN
+        );
+        // 1 px characters at 60 columns would leave 120 px, capped at 300 / 3.
+        assert_eq!(readable_column_margin(Sp::new(300), 1024, 60), Sp::new(100));
+        // Column counts clamp to 60..=120.
+        assert_eq!(
+            readable_column_margin(Sp::new(2_000), 8 * 1024, 10),
+            readable_column_margin(Sp::new(2_000), 8 * 1024, 60)
+        );
+        assert_eq!(
+            readable_column_margin(Sp::new(2_000), 8 * 1024, 500),
+            readable_column_margin(Sp::new(2_000), 8 * 1024, 120)
         );
     }
 

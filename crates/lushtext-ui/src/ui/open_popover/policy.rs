@@ -70,14 +70,23 @@ pub fn list_value_text(query: &str, visible_count: usize) -> String {
     }
 }
 
+/// Current visibility state of the Open popover and its trigger button.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OpenPopoverVisibility {
+    /// Whether the header menu button is toggled active.
+    pub menu_button_active: bool,
+    /// Whether the popover widget itself is currently visible.
+    pub popover_visible: bool,
+}
+
 /// Whether the row list is currently worth rebuilding.
 ///
 /// Rebuilding walks the recent entries and the open-document set, so it is
 /// skipped while nothing can see the result. The caller marks the rows dirty
 /// instead, and the next show rebuilds them.
 #[must_use]
-pub fn should_rebuild_rows(menu_button_active: bool, popover_visible: bool) -> bool {
-    menu_button_active || popover_visible
+pub const fn should_rebuild_rows(visibility: OpenPopoverVisibility) -> bool {
+    visibility.menu_button_active || visibility.popover_visible
 }
 
 #[cfg(test)]
@@ -142,11 +151,23 @@ mod tests {
 
     #[test]
     fn a_rebuild_happens_only_while_something_can_see_it() {
-        assert!(should_rebuild_rows(true, false));
-        assert!(should_rebuild_rows(false, true));
-        assert!(should_rebuild_rows(true, true));
+        assert!(should_rebuild_rows(OpenPopoverVisibility {
+            menu_button_active: true,
+            popover_visible: false,
+        }));
+        assert!(should_rebuild_rows(OpenPopoverVisibility {
+            menu_button_active: false,
+            popover_visible: true,
+        }));
+        assert!(should_rebuild_rows(OpenPopoverVisibility {
+            menu_button_active: true,
+            popover_visible: true,
+        }));
         assert!(
-            !should_rebuild_rows(false, false),
+            !should_rebuild_rows(OpenPopoverVisibility {
+                menu_button_active: false,
+                popover_visible: false,
+            }),
             "an invisible popover must defer the walk rather than pay for it"
         );
     }

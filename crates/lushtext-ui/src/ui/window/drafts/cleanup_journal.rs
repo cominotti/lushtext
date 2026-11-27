@@ -22,7 +22,8 @@ use lushtext_services::{persistence::draft_service, persistence::json_store};
 
 use super::policy;
 use super::policy::{
-    OrphanCleanupFollowUp, grouped_orphan_cleanup_failure_message, orphan_cleanup_follow_up,
+    OrphanCleanupFailureKind, OrphanCleanupFollowUp, OrphanCleanupWork,
+    grouped_orphan_cleanup_failure_message, orphan_cleanup_follow_up,
     orphan_cleanup_revokes_authority,
 };
 use super::seams::OrphanCleanupUiResult;
@@ -168,9 +169,17 @@ impl LushtextWindow {
                             OrphanCleanupFollowUp::Stop
                         } else {
                             orphan_cleanup_follow_up(
-                                outcome.has_more_work,
+                                if outcome.has_more_work {
+                                    OrphanCleanupWork::More
+                                } else {
+                                    OrphanCleanupWork::Exhausted
+                                },
                                 outcome.next_manifest_offset,
-                                !outcome.failures.is_empty(),
+                                if outcome.failures.is_empty() {
+                                    OrphanCleanupFailureKind::Clean
+                                } else {
+                                    OrphanCleanupFailureKind::Retryable
+                                },
                                 window.imp().drafts.orphan_cleanup_failure_streak.get(),
                             )
                         }
@@ -180,9 +189,9 @@ impl LushtextWindow {
                         tracing::warn!("{message}");
                         window.publish_status_message(&message, NotificationSeverity::Warning);
                         orphan_cleanup_follow_up(
-                            true,
+                            OrphanCleanupWork::More,
                             None,
-                            true,
+                            OrphanCleanupFailureKind::Retryable,
                             window.imp().drafts.orphan_cleanup_failure_streak.get(),
                         )
                     }

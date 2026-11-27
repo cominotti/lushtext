@@ -232,7 +232,7 @@ impl LushtextWindow {
             return;
         }
         let state = &self.imp().tab_overflow;
-        let generation = state.focus_restore_generation.get().wrapping_add(1);
+        let generation = state.focus_restore_generation.get().next();
         state.focus_restore_generation.set(generation);
         state.focus_restore_pending.set(true);
         let window_weak = self.downgrade();
@@ -302,7 +302,7 @@ impl LushtextWindow {
         let state = &self.imp().tab_overflow;
         state
             .focus_restore_generation
-            .set(state.focus_restore_generation.get().wrapping_add(1));
+            .set(state.focus_restore_generation.get().next());
         state.focus_restore_pending.replace(false)
     }
 

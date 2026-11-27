@@ -84,15 +84,15 @@ use lushtext_ui::ui::preferences::LushtextPreferences;
 use lushtext_ui::ui::search_panel::SearchPanelTestPolicy;
 use lushtext_ui::ui::window::shell_geometry_evidence;
 use lushtext_ui::ui::window::{
-    DraftFlushError, LushtextWindow, PrintEvidence, PrintOutcome, editor_memory_eviction_evidence,
-    fail_next_draft_mutations_for_test, local_history_preview_install_evidence,
-    notification_evidence, print_evidence, set_automatic_draft_limit_for_test,
-    set_bookmark_excerpt_preview_delay_for_test, set_canonical_refresh_delay_for_test,
-    set_close_safety_completion_delay_for_test, set_draft_manifest_completion_delay_for_test,
-    set_draft_mutation_delays_for_test, set_draft_restore_delay_for_test,
-    set_first_dirty_autosave_delay_for_test, set_lazy_draft_read_delay_for_test,
-    set_local_history_baseline_delay_for_test, set_local_history_baseline_failures_for_test,
-    set_local_history_preview_install_delay_for_test,
+    DraftFlushError, DraftMutationFailurePlan, LushtextWindow, PrintEvidence, PrintOutcome,
+    editor_memory_eviction_evidence, fail_next_draft_mutations_for_test,
+    local_history_preview_install_evidence, notification_evidence, print_evidence,
+    set_automatic_draft_limit_for_test, set_bookmark_excerpt_preview_delay_for_test,
+    set_canonical_refresh_delay_for_test, set_close_safety_completion_delay_for_test,
+    set_draft_manifest_completion_delay_for_test, set_draft_mutation_delays_for_test,
+    set_draft_restore_delay_for_test, set_first_dirty_autosave_delay_for_test,
+    set_lazy_draft_read_delay_for_test, set_local_history_baseline_delay_for_test,
+    set_local_history_baseline_failures_for_test, set_local_history_preview_install_delay_for_test,
     set_local_history_preview_read_delay_for_test, set_lossy_encoding_analysis_delay_for_test,
     set_next_draft_body_disposal_probe_for_test, set_note_source_delay_for_test,
     set_notes_browser_budgets_for_test, set_notes_browser_query_delay_for_test,
@@ -280,47 +280,48 @@ const DEFINITION_LIST_CODE_BLOCK_SAMPLE: &str = concat!(
 
 const CODE_BLOCK_HORIZONTAL_PADDING: i32 = 12;
 
-fn test_window_with_split_view_state(
+#[derive(Clone, Copy)]
+pub struct SplitViewSeed {
     workspace_visible: bool,
     workspace_fraction: f64,
     properties_visible: bool,
     properties_fraction: f64,
-) -> LushtextWindow {
+}
+
+fn test_window_with_split_view_state(seed: SplitViewSeed) -> LushtextWindow {
     ensure_gtk_init();
     let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SPLIT_VIEW_LAYOUT_MIGRATED, true)
         .expect("set split-view-layout-migrated");
     settings
-        .set_boolean(keys::WORKSPACE_SIDEBAR_VISIBLE, workspace_visible)
+        .set_boolean(keys::WORKSPACE_SIDEBAR_VISIBLE, seed.workspace_visible)
         .expect("set workspace-sidebar-visible");
     settings
-        .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, workspace_fraction)
+        .set_double(
+            keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION,
+            seed.workspace_fraction,
+        )
         .expect("set workspace-sidebar-width-fraction");
     settings
-        .set_boolean(keys::PROPERTIES_SIDEBAR_VISIBLE, properties_visible)
+        .set_boolean(keys::PROPERTIES_SIDEBAR_VISIBLE, seed.properties_visible)
         .expect("set properties-sidebar-visible");
     settings
-        .set_double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION, properties_fraction)
+        .set_double(
+            keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION,
+            seed.properties_fraction,
+        )
         .expect("set properties-sidebar-width-fraction");
     test_window()
 }
 
 fn test_window_with_split_view_state_and_size(
-    workspace_visible: bool,
-    workspace_fraction: f64,
-    properties_visible: bool,
-    properties_fraction: f64,
+    seed: SplitViewSeed,
     width: i32,
     height: i32,
 ) -> LushtextWindow {
     seed_restored_window_size(width, height);
-    test_window_with_split_view_state(
-        workspace_visible,
-        workspace_fraction,
-        properties_visible,
-        properties_fraction,
-    )
+    test_window_with_split_view_state(seed)
 }
 
 fn test_window_with_legacy_sidebar_state(visible: bool, position: i32) -> LushtextWindow {
@@ -2803,7 +2804,7 @@ fn test_stale_bookmark_sidecar_load_does_not_replace_local_edits() {
     });
 
     let editor = active_editor(&window);
-    let stale_generation = editor.bookmark_change_generation();
+    let stale_generation = editor.bookmark_generation();
     let line_one = editor.buffer().iter_at_line(0).expect("line one");
     editor.buffer().place_cursor(&line_one);
     let _ = editor.toggle_bookmark_at_cursor();
@@ -3070,12 +3071,29 @@ fn first_sidebar_section(window: &LushtextWindow) -> lushtext_ui::ui::sidebar::W
         .expect("sidebar should have at least one section")
 }
 
+#[derive(Clone, Copy)]
+enum WindowRowMarker {
+    Closed,
+    OpenInactive,
+    OpenActive,
+}
+
+impl WindowRowMarker {
+    const fn flags(self) -> (bool, bool) {
+        match self {
+            Self::Closed => (false, false),
+            Self::OpenInactive => (true, false),
+            Self::OpenActive => (true, true),
+        }
+    }
+}
+
 fn assert_window_workspace_row_state(
     section: &lushtext_ui::ui::sidebar::WorkspaceSection,
     target_path: &Path,
-    expected_open: bool,
-    expected_active: bool,
+    expected: WindowRowMarker,
 ) {
+    let (expected_open, expected_active) = expected.flags();
     wait_until(Duration::from_secs(3), || {
         section
             .file_row_state_for_test(target_path)
@@ -3251,7 +3269,16 @@ fn test_workspace_file_sidebar_keeps_list_view_tree_model_rail() {
 #[test]
 fn test_saved_split_view_widths_snap_to_supported_workspace_presets() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state_and_size(true, 0.25, true, 0.6, 1600, 800);
+    let window = test_window_with_split_view_state_and_size(
+        SplitViewSeed {
+            workspace_visible: true,
+            workspace_fraction: 0.25,
+            properties_visible: true,
+            properties_fraction: 0.6,
+        },
+        1600,
+        800,
+    );
     let settings = &window.imp().settings;
 
     assert!((workspace_total_fraction(&window) - 360.0 / 1600.0).abs() < 0.001);
@@ -4756,7 +4783,16 @@ fn test_focus_mode_shortcut_is_separate_from_fullscreen_shortcut() {
 #[test]
 fn test_focus_mode_entry_exit_restores_shell_surfaces() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state_and_size(true, 0.3, true, 0.25, 1400, 900);
+    let window = test_window_with_split_view_state_and_size(
+        SplitViewSeed {
+            workspace_visible: true,
+            workspace_fraction: 0.3,
+            properties_visible: true,
+            properties_fraction: 0.25,
+        },
+        1400,
+        900,
+    );
     window.new_tab();
     present_window(&window);
 
@@ -4871,7 +4907,16 @@ fn test_focus_mode_affordance_stays_visible_while_leave_button_has_focus() {
 #[test]
 fn test_f9_changes_requested_properties_state_while_focus_mode_suppresses_rendering() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state_and_size(true, 0.3, true, 0.25, 1400, 900);
+    let window = test_window_with_split_view_state_and_size(
+        SplitViewSeed {
+            workspace_visible: true,
+            workspace_fraction: 0.3,
+            properties_visible: true,
+            properties_fraction: 0.25,
+        },
+        1400,
+        900,
+    );
     window.new_tab();
     present_window(&window);
     assert!(
@@ -5857,7 +5902,8 @@ fn test_memory_pressure_evicts_background_tab_and_reloads_without_path_corruptio
 
     window.imp().tab_view.set_selected_page(&first_page);
     flush_events();
-    first_editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1));
+    first_editor
+        .set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes() + 1));
 
     window.imp().tab_view.set_selected_page(&second_page);
     flush_events();
@@ -5907,7 +5953,7 @@ fn test_memory_budget_updates_edit_bursts_incrementally_and_keeps_protected_work
     );
     assert!(editor_memory_eviction_evidence(&window).ledger_reconciles);
 
-    editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1));
+    editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes() + 1));
     flush_events();
     assert!(
         !editor.is_evicted(),
@@ -6041,7 +6087,8 @@ fn test_memory_budget_revalidates_an_active_tab_change_before_eviction() {
     window.set_before_editor_memory_eviction_hook_for_test(move || {
         tab_view.set_selected_page(&first_page_for_hook);
     });
-    first_editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1));
+    first_editor
+        .set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes() + 1));
     flush_events();
 
     assert_eq!(window.imp().tab_view.selected_page(), Some(first_page));
@@ -6082,7 +6129,8 @@ fn test_memory_budget_revalidates_save_start_before_eviction() {
     window.set_before_editor_memory_eviction_hook_for_test(move || {
         first_for_hook.save_file_async(|_| {});
     });
-    first_editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1));
+    first_editor
+        .set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes() + 1));
     flush_events();
 
     assert!(first_editor.save_evidence().inflight);
@@ -6316,8 +6364,8 @@ fn test_delayed_session_restore_completions_preserve_active_and_modified_pages()
             .apply_load_result_for_test(stale_second, Ok(result("stale second\n", &second_path)),)
     );
 
-    first_editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES));
-    second_editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES));
+    first_editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes()));
+    second_editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes()));
     flush_events();
     assert!(
         !first_editor.is_evicted(),
@@ -7206,7 +7254,7 @@ fn test_transient_load_budget_is_shared_across_windows_and_honors_protected_resi
     let protected = active_editor(&first_window);
     protected.buffer().set_text("protected unsaved work");
     protected.buffer().set_modified(true);
-    protected.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1));
+    protected.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes() + 1));
 
     let dir = tempfile::tempdir().expect("cross-window load tempdir");
     let first_path = dir.path().join("first.txt");
@@ -7317,7 +7365,12 @@ fn test_workspace_sidebar_width_presets_clamp_across_representative_window_sizes
         (1400, 0.4, 440.0),
         (2000, 0.3, 360.0),
     ] {
-        let window = test_window_with_split_view_state(true, stored_fraction, false, 0.25);
+        let window = test_window_with_split_view_state(SplitViewSeed {
+            workspace_visible: true,
+            workspace_fraction: stored_fraction,
+            properties_visible: false,
+            properties_fraction: 0.25,
+        });
         window.set_default_size(window_width, 900);
         present_window(&window);
 
@@ -7334,7 +7387,12 @@ fn test_workspace_sidebar_width_presets_clamp_across_representative_window_sizes
 #[test]
 fn test_split_view_allocation_sync_does_not_rewrite_persisted_properties_width() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state(true, 0.3, false, 0.25);
+    let window = test_window_with_split_view_state(SplitViewSeed {
+        workspace_visible: true,
+        workspace_fraction: 0.3,
+        properties_visible: false,
+        properties_fraction: 0.25,
+    });
     window.set_default_size(1770, 900);
     present_window(&window);
 
@@ -7362,7 +7420,12 @@ fn test_split_view_allocation_sync_does_not_rewrite_persisted_properties_width()
 #[test]
 fn test_workspace_sidebar_setting_recalculates_properties_breakpoint() {
     ensure_gtk_init();
-    let comfy_window = test_window_with_split_view_state(true, 0.3, false, 0.25);
+    let comfy_window = test_window_with_split_view_state(SplitViewSeed {
+        workspace_visible: true,
+        workspace_fraction: 0.3,
+        properties_visible: false,
+        properties_fraction: 0.25,
+    });
     comfy_window.set_default_size(1400, 900);
     present_window(&comfy_window);
     activate_action(&comfy_window, "toggle-properties");
@@ -7378,7 +7441,12 @@ fn test_workspace_sidebar_setting_recalculates_properties_breakpoint() {
     comfy_window.destroy();
     flush_events();
 
-    let large_window = test_window_with_split_view_state(true, 0.4, false, 0.25);
+    let large_window = test_window_with_split_view_state(SplitViewSeed {
+        workspace_visible: true,
+        workspace_fraction: 0.4,
+        properties_visible: false,
+        properties_fraction: 0.25,
+    });
     large_window.set_default_size(1400, 900);
     present_window(&large_window);
     activate_action(&large_window, "toggle-properties");
@@ -7458,7 +7526,16 @@ fn test_minimap_geometry_tracks_sidebar_width_reflow_with_word_wrap() {
         .set_boolean(keys::WORD_WRAP, true)
         .expect("enable word wrap");
 
-    let window = test_window_with_split_view_state_and_size(false, 0.3, false, 0.25, 1200, 900);
+    let window = test_window_with_split_view_state_and_size(
+        SplitViewSeed {
+            workspace_visible: false,
+            workspace_fraction: 0.3,
+            properties_visible: false,
+            properties_fraction: 0.25,
+        },
+        1200,
+        900,
+    );
     window.new_tab();
     present_window(&window);
     let editor = active_editor(&window);
@@ -7510,7 +7587,24 @@ fn test_minimap_geometry_tracks_sidebar_width_reflow_with_word_wrap() {
     flush_after_delay(Duration::from_millis(50));
 }
 
-fn run_minimap_top_anchor_sidebar_reflow_case(word_wrap: bool, initially_visible: bool) {
+#[derive(Clone, Copy)]
+enum MinimapReflowWrap {
+    Enabled,
+    Disabled,
+}
+
+#[derive(Clone, Copy)]
+enum InitialSidebarVisibility {
+    Visible,
+    Hidden,
+}
+
+fn run_minimap_top_anchor_sidebar_reflow_case(
+    wrap: MinimapReflowWrap,
+    initial_sidebar: InitialSidebarVisibility,
+) {
+    let word_wrap = matches!(wrap, MinimapReflowWrap::Enabled);
+    let initially_visible = matches!(initial_sidebar, InitialSidebarVisibility::Visible);
     let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
@@ -7519,8 +7613,16 @@ fn run_minimap_top_anchor_sidebar_reflow_case(word_wrap: bool, initially_visible
         .set_boolean(keys::WORD_WRAP, word_wrap)
         .expect("set word wrap");
 
-    let window =
-        test_window_with_split_view_state_and_size(initially_visible, 0.3, false, 0.25, 1260, 900);
+    let window = test_window_with_split_view_state_and_size(
+        SplitViewSeed {
+            workspace_visible: initially_visible,
+            workspace_fraction: 0.3,
+            properties_visible: false,
+            properties_fraction: 0.25,
+        },
+        1260,
+        900,
+    );
     window.new_tab();
     present_window(&window);
     let editor = active_editor(&window);
@@ -7617,15 +7719,27 @@ fn run_minimap_top_anchor_sidebar_reflow_case(word_wrap: bool, initially_visible
 #[test]
 fn test_minimap_top_anchor_survives_sidebar_hide_with_wrap_enabled_and_disabled() {
     ensure_gtk_init();
-    run_minimap_top_anchor_sidebar_reflow_case(true, true);
-    run_minimap_top_anchor_sidebar_reflow_case(false, true);
+    run_minimap_top_anchor_sidebar_reflow_case(
+        MinimapReflowWrap::Enabled,
+        InitialSidebarVisibility::Visible,
+    );
+    run_minimap_top_anchor_sidebar_reflow_case(
+        MinimapReflowWrap::Disabled,
+        InitialSidebarVisibility::Visible,
+    );
 }
 
 #[test]
 fn test_minimap_top_anchor_survives_sidebar_show_with_wrap_enabled_and_disabled() {
     ensure_gtk_init();
-    run_minimap_top_anchor_sidebar_reflow_case(true, false);
-    run_minimap_top_anchor_sidebar_reflow_case(false, false);
+    run_minimap_top_anchor_sidebar_reflow_case(
+        MinimapReflowWrap::Enabled,
+        InitialSidebarVisibility::Hidden,
+    );
+    run_minimap_top_anchor_sidebar_reflow_case(
+        MinimapReflowWrap::Disabled,
+        InitialSidebarVisibility::Hidden,
+    );
 }
 
 #[test]
@@ -9437,7 +9551,10 @@ fn test_new_file_backed_drafts_are_registered_before_their_first_body_write() {
 
     // The batch commit fails, as a crash between the body writes and the
     // commit would leave it.
-    fail_next_draft_mutations_for_test(false, true, false, false);
+    fail_next_draft_mutations_for_test(DraftMutationFailurePlan {
+        manifest: true,
+        ..Default::default()
+    });
     window.autosave_tick_for_test();
     wait_until(Duration::from_secs(5), || {
         !window.draft_evidence().autosave_inflight
@@ -9502,7 +9619,10 @@ fn test_a_failed_draft_registration_writes_no_body_and_stays_retryable() {
         edit_new_file_backed_document(&window, dir.path(), "refused.md", "refused edits");
     let draft_id = draft_service::draft_id_for_path(&path);
 
-    fail_next_draft_mutations_for_test(false, false, false, true);
+    fail_next_draft_mutations_for_test(DraftMutationFailurePlan {
+        registration: true,
+        ..Default::default()
+    });
     window.autosave_tick_for_test();
     wait_until(Duration::from_secs(5), || {
         !window.draft_evidence().autosave_inflight
@@ -9563,7 +9683,10 @@ fn test_an_already_registered_draft_id_skips_registration() {
     });
     assert!(window.draft_evidence().manifest_authority_trusted);
 
-    fail_next_draft_mutations_for_test(false, false, false, true);
+    fail_next_draft_mutations_for_test(DraftMutationFailurePlan {
+        registration: true,
+        ..Default::default()
+    });
     editor.buffer().set_text("second edits");
     window.autosave_tick_for_test();
     wait_until(Duration::from_secs(5), || {
@@ -9619,7 +9742,10 @@ fn test_close_flush_registers_a_new_draft_id_before_its_body_write() {
         result
     };
 
-    fail_next_draft_mutations_for_test(false, false, false, true);
+    fail_next_draft_mutations_for_test(DraftMutationFailurePlan {
+        registration: true,
+        ..Default::default()
+    });
     let refused = flush(&window);
     wait_until(Duration::from_secs(10), || refused.borrow().is_some());
     let error = refused
@@ -9743,7 +9869,10 @@ fn test_injected_draft_stage_failures_remain_retryable() {
     editor.buffer().set_text("retry every stage");
     editor.buffer().set_modified(true);
 
-    fail_next_draft_mutations_for_test(true, false, false, false);
+    fail_next_draft_mutations_for_test(DraftMutationFailurePlan {
+        body: true,
+        ..Default::default()
+    });
     window.autosave_tick_for_test();
     wait_until(Duration::from_secs(5), || {
         !window.draft_evidence().autosave_inflight
@@ -9754,7 +9883,10 @@ fn test_injected_draft_stage_failures_remain_retryable() {
         None
     );
 
-    fail_next_draft_mutations_for_test(false, true, false, false);
+    fail_next_draft_mutations_for_test(DraftMutationFailurePlan {
+        manifest: true,
+        ..Default::default()
+    });
     window.autosave_tick_for_test();
     wait_until(Duration::from_secs(5), || {
         !window.draft_evidence().autosave_inflight
@@ -9769,7 +9901,10 @@ fn test_injected_draft_stage_failures_remain_retryable() {
     wait_until(Duration::from_secs(5), || {
         !window.draft_evidence().autosave_inflight && !editor.draft_dirty()
     });
-    fail_next_draft_mutations_for_test(false, false, true, false);
+    fail_next_draft_mutations_for_test(DraftMutationFailurePlan {
+        delete: true,
+        ..Default::default()
+    });
     window.delete_draft_by_id(&draft_id);
     wait_until(Duration::from_secs(5), || {
         !window.draft_evidence().mutation_inflight
@@ -9832,7 +9967,10 @@ fn test_file_backed_draft_body_delete_failure_keeps_an_explicit_retry_tombstone(
         !window.draft_evidence().autosave_inflight && !editor.draft_dirty()
     });
 
-    fail_next_draft_mutations_for_test(false, false, true, false);
+    fail_next_draft_mutations_for_test(DraftMutationFailurePlan {
+        delete: true,
+        ..Default::default()
+    });
     window.delete_draft_by_id(&draft_id);
     wait_until(Duration::from_secs(10), || {
         !window.draft_evidence().mutation_inflight
@@ -10016,7 +10154,12 @@ fn test_properties_pane_collapses_before_workspace_pane() {
     // At a narrow width just below the adaptive Comfy breakpoint (~1350sp),
     // the document-properties surface should re-render as a bottom sheet while
     // the workspace pane stays in layout.
-    let window = test_window_with_split_view_state(true, 0.3, false, 0.25);
+    let window = test_window_with_split_view_state(SplitViewSeed {
+        workspace_visible: true,
+        workspace_fraction: 0.3,
+        properties_visible: false,
+        properties_fraction: 0.25,
+    });
     window.set_default_size(1320, 900);
     present_window(&window);
     activate_action(&window, "toggle-properties");
@@ -10034,7 +10177,12 @@ fn test_properties_pane_collapses_before_workspace_pane() {
 #[test]
 fn test_large_workspace_preset_collapses_properties_pane_earlier() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state(true, 0.4, false, 0.25);
+    let window = test_window_with_split_view_state(SplitViewSeed {
+        workspace_visible: true,
+        workspace_fraction: 0.4,
+        properties_visible: false,
+        properties_fraction: 0.25,
+    });
     window.set_default_size(1400, 900);
     present_window(&window);
     activate_action(&window, "toggle-properties");
@@ -10060,10 +10208,12 @@ fn test_dual_secondary_surfaces_settle_at_all_breakpoint_edges() {
         (true, 0.4, 1440, 1470),
     ] {
         let compact = test_window_with_split_view_state_and_size(
-            workspace_visible,
-            workspace_fraction,
-            true,
-            0.25,
+            SplitViewSeed {
+                workspace_visible,
+                workspace_fraction,
+                properties_visible: true,
+                properties_fraction: 0.25,
+            },
             compact_width,
             900,
         );
@@ -10074,10 +10224,12 @@ fn test_dual_secondary_surfaces_settle_at_all_breakpoint_edges() {
         flush_after_delay(Duration::from_millis(50));
 
         let spacious = test_window_with_split_view_state_and_size(
-            workspace_visible,
-            workspace_fraction,
-            true,
-            0.25,
+            SplitViewSeed {
+                workspace_visible,
+                workspace_fraction,
+                properties_visible: true,
+                properties_fraction: 0.25,
+            },
             spacious_width,
             900,
         );
@@ -10105,7 +10257,16 @@ fn test_dual_secondary_surfaces_settle_at_all_breakpoint_edges() {
 #[test]
 fn test_medium_width_dual_surfaces_do_not_oscillate_after_settling() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state_and_size(true, 0.3, true, 0.25, 1200, 900);
+    let window = test_window_with_split_view_state_and_size(
+        SplitViewSeed {
+            workspace_visible: true,
+            workspace_fraction: 0.3,
+            properties_visible: true,
+            properties_fraction: 0.25,
+        },
+        1200,
+        900,
+    );
     present_window(&window);
     wait_for_properties_surface(&window, PropertiesSurfacePresentation::Sheet, false);
 
@@ -10134,7 +10295,12 @@ fn test_medium_width_dual_surfaces_do_not_oscillate_after_settling() {
 #[test]
 fn test_hiding_workspace_sidebar_relaxes_properties_breakpoint() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state(false, 0.4, false, 0.25);
+    let window = test_window_with_split_view_state(SplitViewSeed {
+        workspace_visible: false,
+        workspace_fraction: 0.4,
+        properties_visible: false,
+        properties_fraction: 0.25,
+    });
     window.set_default_size(1400, 900);
     present_window(&window);
     activate_action(&window, "toggle-properties");
@@ -10150,7 +10316,12 @@ fn test_hiding_workspace_sidebar_relaxes_properties_breakpoint() {
 #[test]
 fn test_compact_layout_mutual_exclusion_switches_secondary_surface() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state(true, 0.3, false, 0.25);
+    let window = test_window_with_split_view_state(SplitViewSeed {
+        workspace_visible: true,
+        workspace_fraction: 0.3,
+        properties_visible: false,
+        properties_fraction: 0.25,
+    });
     window.set_default_size(1320, 900);
     present_window(&window);
 
@@ -10177,7 +10348,12 @@ fn test_compact_layout_mutual_exclusion_switches_secondary_surface() {
 fn test_compact_sidebar_show_with_properties_visible_waits_to_close_sheet_until_transition_settles()
 {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state(true, 0.3, false, 0.25);
+    let window = test_window_with_split_view_state(SplitViewSeed {
+        workspace_visible: true,
+        workspace_fraction: 0.3,
+        properties_visible: false,
+        properties_fraction: 0.25,
+    });
     window.set_default_size(1320, 900);
     present_window(&window);
 
@@ -10226,7 +10402,16 @@ fn test_compact_sidebar_show_with_properties_visible_waits_to_close_sheet_until_
 #[test]
 fn test_wide_sidebar_toggle_with_properties_visible_keeps_properties_pane_through_transition() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state_and_size(true, 0.3, true, 0.25, 1600, 900);
+    let window = test_window_with_split_view_state_and_size(
+        SplitViewSeed {
+            workspace_visible: true,
+            workspace_fraction: 0.3,
+            properties_visible: true,
+            properties_fraction: 0.25,
+        },
+        1600,
+        900,
+    );
     present_window(&window);
     wait_until(Duration::from_secs(2), || {
         workspace_sidebar_visible(&window) && properties_surface_uses_right_pane(&window)
@@ -10273,7 +10458,16 @@ fn test_wide_sidebar_toggle_with_properties_visible_keeps_properties_pane_throug
 #[test]
 fn test_intermediate_sidebar_show_defers_properties_reconciliation_until_transition_settles() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state_and_size(false, 0.3, false, 0.25, 1100, 900);
+    let window = test_window_with_split_view_state_and_size(
+        SplitViewSeed {
+            workspace_visible: false,
+            workspace_fraction: 0.3,
+            properties_visible: false,
+            properties_fraction: 0.25,
+        },
+        1100,
+        900,
+    );
     present_window(&window);
     wait_until(Duration::from_secs(2), || {
         !workspace_sidebar_visible(&window)
@@ -10317,7 +10511,16 @@ fn test_intermediate_sidebar_show_defers_properties_reconciliation_until_transit
 #[test]
 fn test_intermediate_sidebar_hide_defers_properties_reconciliation_until_transition_settles() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state_and_size(true, 0.3, false, 0.25, 1100, 900);
+    let window = test_window_with_split_view_state_and_size(
+        SplitViewSeed {
+            workspace_visible: true,
+            workspace_fraction: 0.3,
+            properties_visible: false,
+            properties_fraction: 0.25,
+        },
+        1100,
+        900,
+    );
     present_window(&window);
     wait_until(Duration::from_secs(2), || {
         workspace_sidebar_visible(&window)
@@ -10365,7 +10568,16 @@ fn test_short_normal_window_preserves_status_bar_with_optional_surfaces() {
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
 
-    let window = test_window_with_split_view_state_and_size(true, 0.3, true, 0.25, 1190, 200);
+    let window = test_window_with_split_view_state_and_size(
+        SplitViewSeed {
+            workspace_visible: true,
+            workspace_fraction: 0.3,
+            properties_visible: true,
+            properties_fraction: 0.25,
+        },
+        1190,
+        200,
+    );
     window.new_tab();
     present_window(&window);
     let editor = active_editor(&window);
@@ -10419,7 +10631,16 @@ fn test_short_normal_window_preserves_status_bar_with_optional_surfaces() {
 fn test_single_tab_strip_preserves_constrained_normal_geometry() {
     ensure_gtk_init();
     let (_dir, files) = seed_named_tab_files(&["one-tab.txt"]);
-    let window = test_window_with_split_view_state_and_size(false, 0.3, false, 0.25, 760, 360);
+    let window = test_window_with_split_view_state_and_size(
+        SplitViewSeed {
+            workspace_visible: false,
+            workspace_fraction: 0.3,
+            properties_visible: false,
+            properties_fraction: 0.25,
+        },
+        760,
+        360,
+    );
     present_window(&window);
     window.open_document(&files[0]);
     wait_until(Duration::from_secs(2), || {
@@ -10480,7 +10701,16 @@ fn test_forced_tiny_window_preserves_status_bar() {
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
 
-    let window = test_window_with_split_view_state_and_size(true, 0.3, false, 0.25, 980, 190);
+    let window = test_window_with_split_view_state_and_size(
+        SplitViewSeed {
+            workspace_visible: true,
+            workspace_fraction: 0.3,
+            properties_visible: false,
+            properties_fraction: 0.25,
+        },
+        980,
+        190,
+    );
     // Some compositors can hand the app less height than the advertised normal
     // floor. The center editor/sidebar region must yield before the status bar.
     window.set_height_request(1);
@@ -10513,7 +10743,16 @@ fn test_forced_tiny_window_preserves_status_bar() {
 #[test]
 fn test_passive_compact_width_does_not_open_workspace_overlay() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state_and_size(true, 0.3, false, 0.25, 837, 902);
+    let window = test_window_with_split_view_state_and_size(
+        SplitViewSeed {
+            workspace_visible: true,
+            workspace_fraction: 0.3,
+            properties_visible: false,
+            properties_fraction: 0.25,
+        },
+        837,
+        902,
+    );
     window.new_tab();
     present_window(&window);
     let editor = active_editor(&window);
@@ -10548,7 +10787,16 @@ fn test_passive_compact_width_does_not_open_workspace_overlay() {
 #[test]
 fn test_explicit_compact_sidebar_toggle_opens_workspace_overlay() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state_and_size(false, 0.3, false, 0.25, 837, 902);
+    let window = test_window_with_split_view_state_and_size(
+        SplitViewSeed {
+            workspace_visible: false,
+            workspace_fraction: 0.3,
+            properties_visible: false,
+            properties_fraction: 0.25,
+        },
+        837,
+        902,
+    );
     window.new_tab();
     present_window(&window);
     wait_until(Duration::from_secs(2), || {
@@ -10571,7 +10819,16 @@ fn test_explicit_compact_sidebar_toggle_opens_workspace_overlay() {
 #[test]
 fn test_widening_restores_both_requested_surfaces_after_compact_suppression() {
     ensure_gtk_init();
-    let wider_window = test_window_with_split_view_state_and_size(true, 0.3, true, 0.25, 1600, 900);
+    let wider_window = test_window_with_split_view_state_and_size(
+        SplitViewSeed {
+            workspace_visible: true,
+            workspace_fraction: 0.3,
+            properties_visible: true,
+            properties_fraction: 0.25,
+        },
+        1600,
+        900,
+    );
     present_window(&wider_window);
     wait_until(Duration::from_secs(2), || {
         workspace_sidebar_visible(&wider_window)
@@ -10585,8 +10842,16 @@ fn test_widening_restores_both_requested_surfaces_after_compact_suppression() {
 #[test]
 fn test_properties_visibility_preference_survives_breakpoint_changes() {
     ensure_gtk_init();
-    let narrow_window =
-        test_window_with_split_view_state_and_size(true, 0.3, false, 0.25, 1300, 900);
+    let narrow_window = test_window_with_split_view_state_and_size(
+        SplitViewSeed {
+            workspace_visible: true,
+            workspace_fraction: 0.3,
+            properties_visible: false,
+            properties_fraction: 0.25,
+        },
+        1300,
+        900,
+    );
     present_window(&narrow_window);
     activate_action(&narrow_window, "toggle-properties");
     wait_until(Duration::from_secs(2), || {
@@ -10630,7 +10895,16 @@ fn test_properties_visibility_preference_survives_breakpoint_changes() {
 #[test]
 fn test_open_properties_right_pane_and_bottom_sheet_keep_active_document_state() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state_and_size(true, 0.3, false, 0.25, 1600, 900);
+    let window = test_window_with_split_view_state_and_size(
+        SplitViewSeed {
+            workspace_visible: true,
+            workspace_fraction: 0.3,
+            properties_visible: false,
+            properties_fraction: 0.25,
+        },
+        1600,
+        900,
+    );
     present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");
     let first_path = dir.path().join("first.txt");
@@ -10681,8 +10955,16 @@ fn test_open_properties_right_pane_and_bottom_sheet_keep_active_document_state()
     window.destroy();
     flush_after_delay(Duration::from_millis(50));
 
-    let narrow_window =
-        test_window_with_split_view_state_and_size(true, 0.3, true, 0.25, 1320, 900);
+    let narrow_window = test_window_with_split_view_state_and_size(
+        SplitViewSeed {
+            workspace_visible: true,
+            workspace_fraction: 0.3,
+            properties_visible: true,
+            properties_fraction: 0.25,
+        },
+        1320,
+        900,
+    );
     present_window(&narrow_window);
     narrow_window.open_document(&second_path);
     wait_until(Duration::from_secs(2), || {
@@ -10710,7 +10992,16 @@ fn test_open_properties_right_pane_and_bottom_sheet_keep_active_document_state()
 #[test]
 fn test_open_properties_bottom_sheet_and_right_pane_keep_active_document_state() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state_and_size(true, 0.3, true, 0.25, 1320, 900);
+    let window = test_window_with_split_view_state_and_size(
+        SplitViewSeed {
+            workspace_visible: true,
+            workspace_fraction: 0.3,
+            properties_visible: true,
+            properties_fraction: 0.25,
+        },
+        1320,
+        900,
+    );
     present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("sheet-to-pane.txt");
@@ -10743,7 +11034,16 @@ fn test_open_properties_bottom_sheet_and_right_pane_keep_active_document_state()
     window.destroy();
     flush_after_delay(Duration::from_millis(50));
 
-    let wide_window = test_window_with_split_view_state_and_size(true, 0.3, true, 0.25, 1600, 900);
+    let wide_window = test_window_with_split_view_state_and_size(
+        SplitViewSeed {
+            workspace_visible: true,
+            workspace_fraction: 0.3,
+            properties_visible: true,
+            properties_fraction: 0.25,
+        },
+        1600,
+        900,
+    );
     present_window(&wide_window);
     wide_window.open_document(&path);
     wait_until(Duration::from_secs(2), || {
@@ -10771,7 +11071,12 @@ fn test_open_properties_bottom_sheet_and_right_pane_keep_active_document_state()
 #[test]
 fn test_closed_properties_state_survives_adaptive_presentation_changes() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state(true, 0.3, false, 0.25);
+    let window = test_window_with_split_view_state(SplitViewSeed {
+        workspace_visible: true,
+        workspace_fraction: 0.3,
+        properties_visible: false,
+        properties_fraction: 0.25,
+    });
     window.set_default_size(1600, 900);
     present_window(&window);
 
@@ -10801,7 +11106,12 @@ fn test_closed_properties_state_survives_adaptive_presentation_changes() {
 #[test]
 fn test_warning_inline_alert_actions_stay_allocated_in_a_narrow_window() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state(true, 0.3, false, 0.25);
+    let window = test_window_with_split_view_state(SplitViewSeed {
+        workspace_visible: true,
+        workspace_fraction: 0.3,
+        properties_visible: false,
+        properties_fraction: 0.25,
+    });
     window.set_default_size(1000, 900);
     window.new_tab();
     present_window(&window);
@@ -10851,7 +11161,12 @@ fn test_warning_inline_alert_actions_stay_allocated_in_a_narrow_window() {
 #[test]
 fn test_access_error_inline_alert_action_stays_allocated_in_a_narrow_window() {
     ensure_gtk_init();
-    let window = test_window_with_split_view_state(true, 0.3, false, 0.25);
+    let window = test_window_with_split_view_state(SplitViewSeed {
+        workspace_visible: true,
+        workspace_fraction: 0.3,
+        properties_visible: false,
+        properties_fraction: 0.25,
+    });
     window.set_default_size(1000, 900);
     window.new_tab();
     present_window(&window);
@@ -10954,7 +11269,12 @@ fn test_dismissing_one_editor_inline_alert_preserves_other_editor_alert() {
 fn test_restored_workspaces_survive_dual_sidebar_shell() {
     ensure_gtk_init();
     let _folders_dir = seed_restored_workspaces();
-    let window = test_window_with_split_view_state(true, 0.3, false, 0.25);
+    let window = test_window_with_split_view_state(SplitViewSeed {
+        workspace_visible: true,
+        workspace_fraction: 0.3,
+        properties_visible: false,
+        properties_fraction: 0.25,
+    });
 
     present_window(&window);
     wait_for_workspace_folders(&window, 3);
@@ -12243,7 +12563,7 @@ fn test_workspace_row_state_window_tracks_open_switch_close_and_failed_load() {
         active_editor(&window).file_size().is_some()
             && active_editor(&window).file_path().as_deref() == Some(alpha.as_path())
     });
-    assert_window_workspace_row_state(&section, &alpha, true, true);
+    assert_window_workspace_row_state(&section, &alpha, WindowRowMarker::OpenActive);
 
     window.open_document(&beta);
     wait_until(Duration::from_secs(10), || {
@@ -12251,24 +12571,24 @@ fn test_workspace_row_state_window_tracks_open_switch_close_and_failed_load() {
             && active_editor(&window).file_path().as_deref() == Some(beta.as_path())
             && active_editor(&window).file_size().is_some()
     });
-    assert_window_workspace_row_state(&section, &alpha, true, false);
-    assert_window_workspace_row_state(&section, &beta, true, true);
+    assert_window_workspace_row_state(&section, &alpha, WindowRowMarker::OpenInactive);
+    assert_window_workspace_row_state(&section, &beta, WindowRowMarker::OpenActive);
 
     window.open_document(&alpha);
     wait_until(Duration::from_secs(10), || {
         window.imp().tab_view.n_pages() == 2
             && active_editor(&window).file_path().as_deref() == Some(alpha.as_path())
     });
-    assert_window_workspace_row_state(&section, &alpha, true, true);
-    assert_window_workspace_row_state(&section, &beta, true, false);
+    assert_window_workspace_row_state(&section, &alpha, WindowRowMarker::OpenActive);
+    assert_window_workspace_row_state(&section, &beta, WindowRowMarker::OpenInactive);
 
     window.close_tab_for_path(&alpha);
     wait_until(Duration::from_secs(10), || {
         window.imp().tab_view.n_pages() == 1
             && active_editor(&window).file_path().as_deref() == Some(beta.as_path())
     });
-    assert_window_workspace_row_state(&section, &alpha, false, false);
-    assert_window_workspace_row_state(&section, &beta, true, true);
+    assert_window_workspace_row_state(&section, &alpha, WindowRowMarker::Closed);
+    assert_window_workspace_row_state(&section, &beta, WindowRowMarker::OpenActive);
 
     fixture::remove_file(&missing);
     window.open_document(&missing);
@@ -12276,8 +12596,8 @@ fn test_workspace_row_state_window_tracks_open_switch_close_and_failed_load() {
         active_editor(&window).load_state() == EditorLoadState::Failed
             && active_editor(&window).file_path().as_deref() == Some(missing.as_path())
     });
-    assert_window_workspace_row_state(&section, &missing, true, true);
-    assert_window_workspace_row_state(&section, &beta, true, false);
+    assert_window_workspace_row_state(&section, &missing, WindowRowMarker::OpenActive);
+    assert_window_workspace_row_state(&section, &beta, WindowRowMarker::OpenInactive);
 }
 
 #[test]
@@ -12305,8 +12625,8 @@ fn test_workspace_row_state_window_updates_save_as_rename_and_delete() {
     wait_until(Duration::from_secs(10), || {
         editor.file_path().as_deref() == Some(alpha.as_path()) && !editor.is_modified()
     });
-    assert_window_workspace_row_state(&section, &alpha, true, true);
-    assert_window_workspace_row_state(&section, &beta, false, false);
+    assert_window_workspace_row_state(&section, &alpha, WindowRowMarker::OpenActive);
+    assert_window_workspace_row_state(&section, &beta, WindowRowMarker::Closed);
 
     editor.buffer().set_text("save as beta\n");
     editor.buffer().set_modified(true);
@@ -12314,21 +12634,21 @@ fn test_workspace_row_state_window_updates_save_as_rename_and_delete() {
     wait_until(Duration::from_secs(10), || {
         editor.file_path().as_deref() == Some(beta.as_path()) && !editor.is_modified()
     });
-    assert_window_workspace_row_state(&section, &alpha, false, false);
-    assert_window_workspace_row_state(&section, &beta, true, true);
+    assert_window_workspace_row_state(&section, &alpha, WindowRowMarker::Closed);
+    assert_window_workspace_row_state(&section, &beta, WindowRowMarker::OpenActive);
 
     window.update_tab_path(&beta, &alpha);
     wait_until(Duration::from_secs(10), || {
         active_editor(&window).file_path().as_deref() == Some(alpha.as_path())
     });
-    assert_window_workspace_row_state(&section, &alpha, true, true);
-    assert_window_workspace_row_state(&section, &beta, false, false);
+    assert_window_workspace_row_state(&section, &alpha, WindowRowMarker::OpenActive);
+    assert_window_workspace_row_state(&section, &beta, WindowRowMarker::Closed);
 
     window.close_tab_for_path(&alpha);
     wait_until(Duration::from_secs(2), || {
         window.imp().tab_view.n_pages() == 0
     });
-    assert_window_workspace_row_state(&section, &alpha, false, false);
+    assert_window_workspace_row_state(&section, &alpha, WindowRowMarker::Closed);
 }
 
 #[test]
@@ -12375,7 +12695,7 @@ fn test_workspace_row_state_window_restores_session_and_hidden_scope_projection(
     });
     right_section.expand_folders();
 
-    assert_window_workspace_row_state(&right_section, &right_file, true, true);
+    assert_window_workspace_row_state(&right_section, &right_file, WindowRowMarker::OpenActive);
 }
 
 #[test]
@@ -13926,14 +14246,15 @@ fn test_switching_local_history_snapshots_clears_a_protected_preview_in_bounded_
     let after = local_history_preview_install_evidence();
     let turns = after.clear_turns - before.clear_turns;
     assert!(
-        turns >= giant / PROTECTED_CLEAR_SLICE_BYTES,
+        turns >= giant / usize::try_from(PROTECTED_CLEAR_SLICE_BYTES.as_bytes()).expect("fits"),
         "the 6 MB preview was cleared in {turns} turns"
     );
     // A ledger turn deletes at most one clear slice of ranges, or one range
     // (a tail slice, at most the clear slice) with the head it carries; an
     // ordinary turn one clear slice of characters to the next line start.
     assert!(
-        after.largest_clear_turn <= 2 * PROTECTED_CLEAR_SLICE_BYTES,
+        after.largest_clear_turn
+            <= 2 * usize::try_from(PROTECTED_CLEAR_SLICE_BYTES.as_bytes()).expect("fits"),
         "one clear turn deleted {}",
         after.largest_clear_turn
     );
@@ -21265,7 +21586,7 @@ fn test_restored_large_draft_marks_every_minimap_row_modified() {
 /// reaches load success without dismissing the tab's alert first, which is
 /// what the two regressions below need.
 fn evict_and_reselect(window: &LushtextWindow, background: &LushtextEditorPage) {
-    background.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1));
+    background.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes() + 1));
     flush_events();
     assert!(
         background.is_evicted(),

@@ -38,6 +38,7 @@ use crate::ui::accessibility;
 use crate::ui::markdown_preview::{LushtextMarkdownPreview, MarkdownPreviewRenderContext};
 use crate::ui::row_text::LushtextRowText;
 use crate::ui::status_bar::MessageKind;
+use lushtext_model::values::NotesSourceGeneration;
 use lushtext_model::workspace::palette::{PaletteNoteEntry, PaletteNoteTarget};
 use lushtext_services::palette as palette_service;
 
@@ -121,11 +122,11 @@ pub(super) struct NotesBrowserState {
         RefCell<Arc<crate::ui::plain_disposal::DisposalOwned<Box<[NotesBrowserEntry]>>>>,
     /// Generation of the published source; rows carry it, so a row of a
     /// replaced source can neither render nor open.
-    pub(super) source_generation: Cell<u64>,
+    pub(super) source_generation: Cell<NotesSourceGeneration>,
     /// Rows listed against rows found for the published source.
     pub(super) listed_count: Cell<NotesBrowserListedCount>,
     /// Source generation whose limit was last announced.
-    pub(super) limit_announced_generation: Cell<Option<u64>>,
+    pub(super) limit_announced_generation: Cell<Option<NotesSourceGeneration>>,
     /// Limit announcements raised by this dialog (evidence).
     pub(super) limit_announcements: Cell<u64>,
     /// True while a query publish selects programmatically, so the selection
@@ -588,7 +589,7 @@ impl LushtextWindow {
             raw_preview_buffer,
             open_button,
             back_button,
-            source_generation: Cell::new(0),
+            source_generation: Cell::new(NotesSourceGeneration::ZERO),
             listed_count: Cell::new(NotesBrowserListedCount::default()),
             limit_announced_generation: Cell::new(None),
             limit_announcements: Cell::new(0),

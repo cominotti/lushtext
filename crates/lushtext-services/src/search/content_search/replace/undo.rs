@@ -14,7 +14,10 @@ use std::path::{Path, PathBuf};
 
 use super::admission::disk_admits;
 use super::apply::digest_file;
-use super::protocol::{CurrentContent, ReplaceUndoProtocol, UndoAction, UndoEnd, UndoOutcome};
+use super::protocol::{
+    CurrentContent, EntryRetirement, JournalRearm, ReplaceUndoProtocol, UndoAction, UndoEnd,
+    UndoOutcome,
+};
 use super::stream::{DigestSink, Sha256Sink, effective_stream_chunk_bytes};
 use super::{
     ContentDigest, ReplaceUndoBackup, ReplaceUndoEntry, UndoOriginal, UndoReplaceOutcome,
@@ -196,8 +199,17 @@ impl<'a> UndoSession<'a> {
     ) -> (UndoEnd, Option<FileFacts>) {
         // A legacy entry belongs to a manifest that lists it, so it is retired
         // by the manifest rewrite of the caller's shrink, never here.
-        let retire = matches!(entry.original_source, UndoOriginal::Body(_));
-        let (mut protocol, first) = ReplaceUndoProtocol::start(self.rearm_needed, retire);
+        let rearm = if self.rearm_needed {
+            JournalRearm::Needed
+        } else {
+            JournalRearm::NotNeeded
+        };
+        let retire = if matches!(entry.original_source, UndoOriginal::Body(_)) {
+            EntryRetirement::Retire
+        } else {
+            EntryRetirement::Keep
+        };
+        let (mut protocol, first) = ReplaceUndoProtocol::start(rearm, retire);
         let mut guard = None;
         let mut facts: Option<FileFacts> = None;
         let end = drive(&mut protocol, first, |action| match action {

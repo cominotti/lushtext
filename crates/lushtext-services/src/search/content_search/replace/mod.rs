@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 #[cfg(any(test, feature = "test-utils"))]
 use std::sync::{Mutex, OnceLock};
 
+use lushtext_model::values::UndoBackupGeneration;
 use lushtext_model::workspace::content_search::{
     BoundedDiagnosticSample, ReplaceResult, ReplaceSkipReport,
 };
@@ -592,12 +593,12 @@ impl ReplaceConstructionMetrics {
 #[derive(Clone)]
 pub struct ReplaceJournalFreshness {
     generation: Arc<AtomicU32>,
-    expected: u32,
+    expected: UndoBackupGeneration,
 }
 
 impl ReplaceJournalFreshness {
     #[must_use]
-    pub fn new(generation: Arc<AtomicU32>, expected: u32) -> Self {
+    pub fn new(generation: Arc<AtomicU32>, expected: UndoBackupGeneration) -> Self {
         Self {
             generation,
             expected,
@@ -605,13 +606,13 @@ impl ReplaceJournalFreshness {
     }
 
     #[must_use]
-    pub fn expected(&self) -> u32 {
+    pub fn expected(&self) -> UndoBackupGeneration {
         self.expected
     }
 
     #[must_use]
     pub fn is_current(&self) -> bool {
-        self.generation.load(Ordering::Acquire) == self.expected
+        self.generation.load(Ordering::Acquire) == self.expected.get()
     }
 }
 

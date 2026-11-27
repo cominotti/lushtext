@@ -176,21 +176,23 @@ impl LushtextEditorPage {
     /// group as slot 4's to own; this is how save keeps reading it without a
     /// field reach.
     #[must_use]
-    pub(crate) fn local_history_editor_generation(&self) -> u64 {
+    pub(crate) fn local_history_editor_generation(
+        &self,
+    ) -> lushtext_model::values::EditorGeneration {
         use glib::subclass::prelude::ObjectSubclassIsExt;
         self.imp().local_history.editor_generation.get()
     }
 
     /// This editor's local-history path generation.
     #[must_use]
-    pub(crate) fn local_history_path_generation(&self) -> u64 {
+    pub(crate) fn local_history_path_generation(&self) -> lushtext_model::values::PathGeneration {
         use glib::subclass::prelude::ObjectSubclassIsExt;
         self.imp().local_history.path_generation.get()
     }
 
     /// This editor's local-history edit generation.
     #[must_use]
-    pub(crate) fn local_history_edit_generation(&self) -> u64 {
+    pub(crate) fn local_history_edit_generation(&self) -> lushtext_model::values::EditGeneration {
         use glib::subclass::prelude::ObjectSubclassIsExt;
         self.imp().local_history.edit_generation.get()
     }

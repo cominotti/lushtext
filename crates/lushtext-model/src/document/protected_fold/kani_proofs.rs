@@ -23,6 +23,11 @@ use super::{
     FoldState, FoldThresholds, HEAD_CAP, L_PROTECT, N_HEAD, N_INSPECT, N_VISIBLE, dense_visible,
     fold_byte_offset, fold_finish, fold_step, length_cap, window_is_over_budget,
 };
+use crate::values::CharCount;
+
+fn c(chars: u64) -> CharCount {
+    CharCount::new(chars)
+}
 
 /// The most paragraphs a sequence harness folds.
 const MAX_PARAGRAPHS: usize = 6;
@@ -61,7 +66,7 @@ fn any_thresholds_for(r_fold: usize) -> FoldThresholds {
     }
     kani::assume(dense_window <= u128::from(v_batch));
     kani::assume(head_window <= u128::from(u64::MAX));
-    let thresholds = FoldThresholds::new(head_cap, n_dense, v_batch, r_fold);
+    let thresholds = FoldThresholds::new(c(head_cap), c(n_dense), c(v_batch), r_fold);
     kani::assume(thresholds.is_some());
     thresholds.unwrap()
 }
@@ -106,18 +111,24 @@ fn fold_run(
                 assert!(range.paragraph > previous);
             }
             let length = lengths[paragraph];
-            assert!(range.head_chars.checked_add(range.tail_chars) == Some(length));
-            assert!(range.tail_chars > 0);
-            assert!(range.head_chars >= length.min(thresholds.n_dense()));
-            assert!(range.head_chars >= 1);
+            assert!(
+                range
+                    .head_chars
+                    .as_chars()
+                    .checked_add(range.tail_chars.as_chars())
+                    == Some(length)
+            );
+            assert!(range.tail_chars.as_chars() > 0);
+            assert!(range.head_chars.as_chars() >= length.min(thresholds.n_dense().as_chars()));
+            assert!(range.head_chars.as_chars() >= 1);
         }
         previous = Some(range.paragraph);
-        shown.visible[paragraph] = range.head_chars;
+        shown.visible[paragraph] = range.head_chars.as_chars();
         shown.folded += 1;
     };
     let mut index = 0;
     while index < count {
-        if let Some(range) = fold_step(&mut state, lengths[index]) {
+        if let Some(range) = fold_step(&mut state, c(lengths[index])) {
             apply(range, &mut shown);
         }
         index += 1;
@@ -161,14 +172,14 @@ fn reference_dense(
     let mut capped = [0u64; MAX_PARAGRAPHS];
     let mut index = 0;
     while index < count {
-        capped[index] = length_cap(lengths[index], thresholds);
+        capped[index] = length_cap(c(lengths[index]), thresholds).as_chars();
         index += 1;
     }
     let mut dense = [false; MAX_PARAGRAPHS];
     let (windows, size) = window_count(count, thresholds.r_fold());
     let mut start = 0;
     while start < windows {
-        if window_sum(&capped, start, size) > thresholds.v_batch() {
+        if window_sum(&capped, start, size) > thresholds.v_batch().as_chars() {
             let mut member = start;
             while member < start + size {
                 dense[member] = true;
@@ -200,17 +211,17 @@ fn check_density_bound(r_fold: usize) {
     let mut capped = [0u64; MAX_PARAGRAPHS];
     let mut index = 0;
     while index < count {
-        capped[index] = length_cap(lengths[index], thresholds);
+        capped[index] = length_cap(c(lengths[index]), thresholds).as_chars();
         assert!(visible[index] <= capped[index]);
         index += 1;
     }
     let (windows, size) = window_count(count, r_fold);
     let mut start = 0;
     while start < windows {
-        if window_is_over_budget(window_sum(&capped, start, size), thresholds.v_batch()) {
+        if window_is_over_budget(c(window_sum(&capped, start, size)), thresholds.v_batch()) {
             let mut member = start;
             while member < start + size {
-                assert!(visible[member] <= thresholds.n_dense());
+                assert!(visible[member] <= thresholds.n_dense().as_chars());
                 member += 1;
             }
         }
@@ -262,27 +273,27 @@ fn an_over_budget_window_fits_once_dense() {
     let mut capped_sum = 0u64;
     let mut index = 0;
     while index < thresholds.r_fold() {
-        kani::assume(capped[index] <= thresholds.head_cap());
+        kani::assume(capped[index] <= thresholds.head_cap().as_chars());
         kani::assume(shown[index] <= capped[index]);
         capped_sum += capped[index];
         index += 1;
     }
-    let over = window_is_over_budget(capped_sum, thresholds.v_batch());
+    let over = window_is_over_budget(c(capped_sum), thresholds.v_batch());
     let mut shown_sum = 0u64;
     let mut index = 0;
     while index < thresholds.r_fold() {
         if over {
-            kani::assume(shown[index] <= thresholds.n_dense());
+            kani::assume(shown[index] <= thresholds.n_dense().as_chars());
         }
         shown_sum += shown[index];
         index += 1;
     }
-    assert!(shown_sum <= thresholds.v_batch());
+    assert!(shown_sum <= thresholds.v_batch().as_chars());
     // The production dense count is one such `v_i`.
     let mut index = 0;
     while index < thresholds.r_fold() {
-        let dense = dense_visible(capped[index], thresholds.n_dense());
-        assert!(dense <= capped[index] && dense <= thresholds.n_dense());
+        let dense = dense_visible(c(capped[index]), thresholds.n_dense()).as_chars();
+        assert!(dense <= capped[index] && dense <= thresholds.n_dense().as_chars());
         index += 1;
     }
     kani::cover!(over, "over budget");
@@ -307,10 +318,14 @@ fn production_thresholds_satisfy_the_preconditions() {
     // A28_SAFE_CHARS is the overflow bound itself at the largest zoom: the
     // last safe character's x position fits an `i32`, the next one's does not.
     let advance = A28_MEASURED_ADVANCE_UNITS * A28_MAX_ZOOM_PERCENT / 100;
-    assert!(A28_SAFE_CHARS * advance <= i32::MAX as u64);
-    assert!((A28_SAFE_CHARS + 1) * advance > i32::MAX as u64);
-    assert!(HEAD_CAP <= N_VISIBLE && HEAD_CAP <= N_HEAD && HEAD_CAP <= A28_SAFE_CHARS);
-    assert!(N_INSPECT <= HEAD_CAP && N_INSPECT <= L_PROTECT);
+    assert!(A28_SAFE_CHARS.as_chars() * advance <= i32::MAX as u64);
+    assert!((A28_SAFE_CHARS.as_chars() + 1) * advance > i32::MAX as u64);
+    assert!(
+        HEAD_CAP.as_chars() <= N_VISIBLE
+            && HEAD_CAP.as_chars() <= N_HEAD.as_chars()
+            && HEAD_CAP.as_chars() <= A28_SAFE_CHARS.as_chars()
+    );
+    assert!(N_INSPECT <= HEAD_CAP && N_INSPECT.as_chars() <= L_PROTECT);
 }
 
 /// H1x (`should_panic`): `length_cap` alone, under H1's window assertion,
@@ -326,13 +341,13 @@ fn density_bound_fails_without_the_density_fold() {
     let mut visible = [0u64; MAX_PARAGRAPHS];
     let mut index = 0;
     while index < count {
-        visible[index] = length_cap(lengths[index], thresholds);
+        visible[index] = length_cap(c(lengths[index]), thresholds).as_chars();
         index += 1;
     }
     let (windows, size) = window_count(count, thresholds.r_fold());
     let mut start = 0;
     while start < windows {
-        assert!(window_sum(&visible, start, size) <= thresholds.v_batch());
+        assert!(window_sum(&visible, start, size) <= thresholds.v_batch().as_chars());
         start += 1;
     }
 }
@@ -353,9 +368,9 @@ fn check_fold_shape(r_fold: usize) {
     let dense = reference_dense(&lengths, count, thresholds);
     let mut paragraph = 0;
     while paragraph < count {
-        let capped = length_cap(lengths[paragraph], thresholds);
+        let capped = length_cap(c(lengths[paragraph]), thresholds).as_chars();
         let expected = if dense[paragraph] {
-            capped.min(thresholds.n_dense())
+            capped.min(thresholds.n_dense().as_chars())
         } else {
             capped
         };
@@ -379,18 +394,18 @@ fn check_fold_shape(r_fold: usize) {
         );
     }
     kani::cover!(
-        count > 0 && !dense[0] && lengths[0] > thresholds.head_cap(),
+        count > 0 && !dense[0] && lengths[0] > thresholds.head_cap().as_chars(),
         "folded by the length cap alone"
     );
     kani::cover!(
         count > 0
             && dense[0]
-            && lengths[0] > thresholds.n_dense()
-            && lengths[0] <= thresholds.head_cap(),
+            && lengths[0] > thresholds.n_dense().as_chars()
+            && lengths[0] <= thresholds.head_cap().as_chars(),
         "folded by the density cap alone"
     );
     kani::cover!(
-        count > 0 && dense[0] && lengths[0] <= thresholds.n_dense(),
+        count > 0 && dense[0] && lengths[0] <= thresholds.n_dense().as_chars(),
         "dense but short enough to stay whole"
     );
 }
@@ -463,7 +478,7 @@ fn fold_byte_offset_never_splits_a_scalar() {
     }
     let head_chars: u64 = kani::any();
     kani::assume(head_chars <= chars);
-    let offset = fold_byte_offset(paragraph, head_chars);
+    let offset = fold_byte_offset(paragraph, c(head_chars));
     assert!(offset <= len);
     assert!(paragraph.is_char_boundary(offset));
     let mut prefix_chars = 0u64;
@@ -495,23 +510,27 @@ fn fold_location_is_total_and_round_trips() {
         head_chars: kani::any(),
         tail_chars: kani::any(),
     };
-    let Some(length) = range.head_chars.checked_add(range.tail_chars) else {
+    let Some(length) = range
+        .head_chars
+        .as_chars()
+        .checked_add(range.tail_chars.as_chars())
+    else {
         kani::assume(false);
         return;
     };
     let column: u64 = kani::any();
-    let location = range.locate(column);
-    assert!(matches!(location, FoldLocation::Visible(_)) == (column < range.head_chars));
+    let location = range.locate(c(column));
+    assert!(matches!(location, FoldLocation::Visible(_)) == (column < range.head_chars.as_chars()));
     if let FoldLocation::Visible(visible) = location {
-        assert!(visible == column);
+        assert!(visible == c(column));
     }
     if let FoldLocation::Hidden(offset) = location {
-        assert!(offset.checked_add(range.head_chars) == Some(column));
+        assert!(offset.as_chars().checked_add(range.head_chars.as_chars()) == Some(column));
         kani::cover!(offset < range.tail_chars, "inside the hidden tail");
     }
     assert!((location == FoldLocation::PastEnd) == (column > length));
     if column <= length {
-        assert!(location.column_of(range) == Some(column));
+        assert!(location.column_of(range) == Some(c(column)));
     } else {
         assert!(location.column_of(range).is_none());
     }
@@ -519,7 +538,7 @@ fn fold_location_is_total_and_round_trips() {
     kani::cover!(matches!(location, FoldLocation::Hidden(_)), "hidden");
     kani::cover!(location == FoldLocation::PastEnd, "past the end");
     kani::cover!(
-        range.tail_chars == 0 && column == length,
+        range.tail_chars == CharCount::ZERO && column == length,
         "end of an unfolded paragraph"
     );
 }
@@ -549,8 +568,8 @@ fn check_slicing_independence(r_fold: usize) {
             drop(sliced);
             sliced = carried;
         }
-        let emitted = fold_step(&mut whole, lengths[index]);
-        assert!(fold_step(&mut sliced, lengths[index]) == emitted);
+        let emitted = fold_step(&mut whole, c(lengths[index]));
+        assert!(fold_step(&mut sliced, c(lengths[index])) == emitted);
         folded |= emitted.is_some();
         index += 1;
     }

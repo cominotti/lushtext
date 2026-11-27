@@ -13,6 +13,7 @@
 #[cfg(kani)]
 mod kani_proofs;
 
+use lushtext_model::values::Sp;
 use lushtext_services::notes::markdown_render::{
     MarkdownPlanLimit, MarkdownPlanMetrics, MarkdownRenderPlan,
 };
@@ -40,17 +41,17 @@ pub(super) fn inline_footnote_limited_plan(source_bytes: usize) -> MarkdownRende
 // `ui/window/geometry/execution.rs`) sizes the end preview pane from these.
 
 /// Tiny non-zero floor used only before the first real preview-width sync.
-pub(crate) const PREVIEW_MIN_WIDTH_SP: i32 = 1;
+pub(crate) const PREVIEW_MIN_WIDTH_SP: Sp = Sp::new(1);
 /// Fallback side-by-side preview width for invalid legacy settings.
-pub(crate) const PREVIEW_DEFAULT_WIDTH_SP: i32 = 300;
+pub(crate) const PREVIEW_DEFAULT_WIDTH_SP: Sp = Sp::new(300);
 /// The side-by-side preview may consume at most one part in this many of the
 /// editor content width.
 pub(super) const PREVIEW_MAX_WIDTH_DIVISOR: i32 = 3;
 
 /// The stored preferred preview width, with zero or less meaning the
 /// [`PREVIEW_DEFAULT_WIDTH_SP`] default.
-pub(crate) fn preferred_preview_width(width: i32) -> i32 {
-    if width > 0 {
+pub(crate) fn preferred_preview_width(width: Sp) -> Sp {
+    if width > Sp::ZERO {
         width
     } else {
         PREVIEW_DEFAULT_WIDTH_SP
@@ -71,23 +72,29 @@ pub(crate) fn preferred_preview_width(width: i32) -> i32 {
 /// The arithmetic is integer-only; the window converts the result to `f64`
 /// once, where it sets the split view's constraints.
 ///
-/// Kani proves all of this over every `i32` preferred and available width,
+/// Kani proves all of this over every [`Sp`] preferred and available width,
 /// and keeps the unconditional "at most one third" form as a `should_panic`
 /// counterexample (`policy/kani_proofs.rs`).
-pub(crate) fn clamped_preview_width(preferred_width: i32, available_width: i32) -> i32 {
-    let max_width = (available_width.max(1) / PREVIEW_MAX_WIDTH_DIVISOR).max(PREVIEW_MIN_WIDTH_SP);
+pub(crate) fn clamped_preview_width(preferred_width: Sp, available_width: Sp) -> Sp {
+    let max_width = Sp::new(
+        (available_width.as_sp().max(1) / PREVIEW_MAX_WIDTH_DIVISOR)
+            .max(PREVIEW_MIN_WIDTH_SP.as_sp()),
+    );
     preferred_width.max(PREVIEW_MIN_WIDTH_SP).min(max_width)
 }
 
 #[cfg(test)]
 mod preview_width_tests {
-    use super::clamped_preview_width;
+    use super::{Sp, clamped_preview_width};
 
     #[test]
     fn preview_width_floor_wins_below_three_sp() {
-        assert_eq!(clamped_preview_width(500, 2), 1);
-        assert!(clamped_preview_width(500, 900) <= 300);
-        assert_eq!(clamped_preview_width(200, 900), 200);
+        assert_eq!(clamped_preview_width(Sp::new(500), Sp::new(2)), Sp::new(1));
+        assert!(clamped_preview_width(Sp::new(500), Sp::new(900)) <= Sp::new(300));
+        assert_eq!(
+            clamped_preview_width(Sp::new(200), Sp::new(900)),
+            Sp::new(200)
+        );
     }
 }
 

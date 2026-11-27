@@ -58,10 +58,11 @@ impl LushtextMarkdownPreview {
         let text_view = self.text_view();
         if active {
             let margin = readable_column_margin(
-                text_view.width(),
+                lushtext_model::values::Sp::new(text_view.width()),
                 approximate_char_width_pango_units(text_view.upcast_ref::<gtk4::Widget>()),
                 target_columns,
-            );
+            )
+            .as_sp();
             text_view.set_left_margin(margin);
             text_view.set_right_margin(margin);
         } else {
@@ -225,7 +226,7 @@ impl LushtextMarkdownPreview {
     pub(super) fn advance_rendered_embed_generation(&self) {
         let imp = self.imp();
         imp.rendered_embed_generation
-            .set(imp.rendered_embed_generation.get().wrapping_add(1));
+            .set(imp.rendered_embed_generation.get().next());
     }
 }
 

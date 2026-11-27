@@ -13,6 +13,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{self, gdk};
+use lushtext_model::values::RenderGeneration;
 use lushtext_services::notes::markdown_render::MarkdownEvent;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -133,7 +134,7 @@ pub(super) struct BufferedImage {
 
 /// Compact queued local-image work owned by one render generation.
 pub(super) struct PendingImageWork {
-    generation: u64,
+    generation: RenderGeneration,
     raw_target: String,
     target: ImageWorkTarget,
     container: glib::WeakRef<gtk4::Box>,
@@ -142,7 +143,7 @@ pub(super) struct PendingImageWork {
 
 /// Scalar completion identity retained while one image worker is active.
 pub(super) struct ActiveImageWork {
-    generation: u64,
+    generation: RenderGeneration,
     container: glib::WeakRef<gtk4::Box>,
     charge_bytes: u64,
     cancel: Arc<AtomicBool>,
@@ -713,7 +714,7 @@ impl LushtextMarkdownPreview {
             move || {
                 let result = first_loadable_ordered_image_cancellable(raw_target, target, || {
                     cancel.load(Ordering::Acquire)
-                        || render_generation.load(Ordering::Acquire) != generation
+                        || render_generation.load(Ordering::Acquire) != generation.get()
                 });
                 reservation.own(result)
             },

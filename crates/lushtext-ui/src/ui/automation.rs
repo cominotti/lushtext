@@ -2377,13 +2377,13 @@ fn surface_snapshot(window: &LushtextWindow) -> AutomationSurfaceSnapshot {
         focus_mode: imp.focus_mode.active.get(),
         minimap_requested: imp.settings.boolean(config::keys::SHOW_MINIMAP),
         status_bar_visible: imp.status_bar.is_visible(),
-        active_transient_surface: active_transient_surface_name(
-            imp.palette_revealer.reveals_child(),
-            imp.search_panel_revealer.reveals_child(),
-            open_popover_visible(window),
-            window.all_tabs_popover_visible(),
-            active_editor_search,
-        ),
+        active_transient_surface: active_transient_surface_name(TransientSurfaceVisibility {
+            command_palette: imp.palette_revealer.reveals_child(),
+            search_panel: imp.search_panel_revealer.reveals_child(),
+            open_popover: open_popover_visible(window),
+            all_tabs_popover: window.all_tabs_popover_visible(),
+            editor_search: active_editor_search,
+        }),
         accessibility_ready,
         accessibility_blocker,
     }
@@ -2480,22 +2480,25 @@ fn bounded_snapshot_text(text: impl AsRef<str>) -> String {
     bounded
 }
 
-fn active_transient_surface_name(
-    command_palette_visible: bool,
-    search_panel_visible: bool,
-    open_popover_visible: bool,
-    all_tabs_popover_visible: bool,
-    editor_search_visible: bool,
-) -> Option<String> {
-    if command_palette_visible {
+#[derive(Clone, Copy)]
+struct TransientSurfaceVisibility {
+    command_palette: bool,
+    search_panel: bool,
+    open_popover: bool,
+    all_tabs_popover: bool,
+    editor_search: bool,
+}
+
+fn active_transient_surface_name(visibility: TransientSurfaceVisibility) -> Option<String> {
+    if visibility.command_palette {
         Some("command-palette".to_string())
-    } else if search_panel_visible {
+    } else if visibility.search_panel {
         Some("workspace-search".to_string())
-    } else if open_popover_visible {
+    } else if visibility.open_popover {
         Some("open-popover".to_string())
-    } else if all_tabs_popover_visible {
+    } else if visibility.all_tabs_popover {
         Some("all-tabs-popover".to_string())
-    } else if editor_search_visible {
+    } else if visibility.editor_search {
         Some("editor-search".to_string())
     } else {
         None

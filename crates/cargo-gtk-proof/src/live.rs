@@ -650,7 +650,7 @@ fn wait_for_case_final_geometry(
         samples.push(final_geometry_sample(
             &snapshot,
             target_visible,
-            matches,
+            GeometryCheckOutcome::from_matched(matches),
             &detail,
         ));
         if samples.len() > 64 {
@@ -2118,11 +2118,38 @@ fn sidebar_target_visible(case: &Value, step: &str) -> Result<bool, String> {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CompactOverlayPolicy {
+    Allowed,
+    Disallowed,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GeometryCheckOutcome {
+    Matched,
+    Mismatch,
+}
+
+impl GeometryCheckOutcome {
+    const fn from_matched(matched: bool) -> Self {
+        if matched {
+            Self::Matched
+        } else {
+            Self::Mismatch
+        }
+    }
+
+    const fn as_bool(self) -> bool {
+        matches!(self, Self::Matched)
+    }
+}
+
 fn sidebar_final_geometry_matches(
     snapshot: &Value,
     target_visible: bool,
-    compact_overlay_allowed: bool,
+    compact_overlay: CompactOverlayPolicy,
 ) -> (bool, String) {
+    let compact_overlay_allowed = compact_overlay == CompactOverlayPolicy::Allowed;
     let sidebar = match surface_rect(snapshot, "workspace-sidebar") {
         Ok(rect) => rect,
         Err(error) => return (false, error),
@@ -2188,10 +2215,16 @@ fn sidebar_final_geometry_matches(
     (true, "workspace sidebar is fully hidden".to_string())
 }
 
-fn compact_overlay_allowed(case: &Value) -> bool {
-    case.pointer("/size/width")
+fn compact_overlay_allowed(case: &Value) -> CompactOverlayPolicy {
+    if case
+        .pointer("/size/width")
         .and_then(Value::as_i64)
         .is_some_and(|width| width <= 860)
+    {
+        CompactOverlayPolicy::Allowed
+    } else {
+        CompactOverlayPolicy::Disallowed
+    }
 }
 
 fn final_geometry_signature(snapshot: &Value) -> String {
@@ -2214,12 +2247,12 @@ fn final_geometry_signature(snapshot: &Value) -> String {
 fn final_geometry_sample(
     snapshot: &Value,
     target_visible: bool,
-    matches: bool,
+    outcome: GeometryCheckOutcome,
     detail: &str,
 ) -> serde_json::Value {
     serde_json::json!({
         "target": if target_visible { "visible" } else { "hidden" },
-        "matches": matches,
+        "matches": outcome.as_bool(),
         "detail": detail,
         "surfaces": snapshot.pointer("/window/visual_geometry/surfaces").cloned().unwrap_or_default(),
         "native_minimap": snapshot.pointer("/window/visual_geometry/native_minimap").cloned().unwrap_or_default(),
@@ -2813,22 +2846,29 @@ mod tests {
         let hidden = geometry_snapshot(-320, 0);
 
         assert_eq!(
-            sidebar_final_geometry_matches(&visible, true, false),
+            sidebar_final_geometry_matches(&visible, true, CompactOverlayPolicy::Disallowed),
             (
                 true,
                 "workspace sidebar is fully visible beside editor".to_string()
             )
         );
         assert_eq!(
-            sidebar_final_geometry_matches(&overlay_visible, true, true),
+            sidebar_final_geometry_matches(&overlay_visible, true, CompactOverlayPolicy::Allowed),
             (
                 true,
                 "workspace sidebar is fully visible as collapsed overlay".to_string()
             )
         );
-        assert!(!sidebar_final_geometry_matches(&overlay_visible, true, false).0);
+        assert!(
+            !sidebar_final_geometry_matches(
+                &overlay_visible,
+                true,
+                CompactOverlayPolicy::Disallowed
+            )
+            .0
+        );
         assert_eq!(
-            sidebar_final_geometry_matches(&hidden, false, false),
+            sidebar_final_geometry_matches(&hidden, false, CompactOverlayPolicy::Disallowed),
             (true, "workspace sidebar is fully hidden".to_string())
         );
     }
@@ -2837,7 +2877,8 @@ mod tests {
     fn sidebar_final_geometry_reports_mismatch_detail() {
         let snapshot = geometry_snapshot(-100, 0);
 
-        let (matches, detail) = sidebar_final_geometry_matches(&snapshot, false, false);
+        let (matches, detail) =
+            sidebar_final_geometry_matches(&snapshot, false, CompactOverlayPolicy::Disallowed);
 
         assert!(!matches);
         assert!(detail.contains("workspace-sidebar x=-100, expected -320"));

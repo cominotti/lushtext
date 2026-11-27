@@ -31,10 +31,12 @@ use lushtext_services::palette as palette_service;
 
 use super::browser::NotesBrowserState;
 use super::policy::{
-    GroupedNoteRows, NOTES_BROWSER_SEARCH_DEBOUNCE_MS, group_note_rows, notes_browser_empty_label,
-    notes_browser_limit_message, should_announce_limit,
+    GroupedNoteRows, NOTES_BROWSER_SEARCH_DEBOUNCE_MS, NotesEmptyStateFacts, group_note_rows,
+    notes_browser_empty_label, notes_browser_limit_message, should_announce_limit,
 };
-use super::seams::{NotesBrowserFacts, NotesBrowserTicket, QueryFlight};
+use super::seams::{
+    BrowserDisposal, CoordinatorCurrency, NotesBrowserFacts, NotesBrowserTicket, QueryFlight,
+};
 
 /// Debounce browser search so large note sets do not rebuild on every keystroke.
 pub(super) fn schedule_notes_browser_search(state: &Rc<NotesBrowserState>, query: String) {
@@ -110,7 +112,7 @@ fn start_notes_browser_query(
 
 fn finish_notes_browser_query(
     state: &Rc<NotesBrowserState>,
-    generation: u64,
+    generation: lushtext_model::values::FlightGeneration,
     mode: palette_service::NotesBrowserMode,
     outcome: palette_service::PaletteSearchOutcome<GroupedNoteRows>,
 ) {
@@ -118,9 +120,9 @@ fn finish_notes_browser_query(
     let (accepted, next) = {
         let mut runtime = state.query_runtime.borrow_mut();
         let accepted = ticket.may_publish(&NotesBrowserFacts::new(
-            runtime.is_current(ticket.generation()),
+            CoordinatorCurrency::from_is_current(runtime.is_current(ticket.generation())),
             state.mode.get(),
-            state.disposed.get(),
+            BrowserDisposal::from_disposed(state.disposed.get()),
         ));
         let next = runtime.finish(ticket.generation());
         (accepted, next)
@@ -156,9 +158,11 @@ fn publish_notes_browser_query(state: &Rc<NotesBrowserState>, grouped: GroupedNo
     let previously_selected = state.selected_source_index();
     let empty_message = notes_browser_empty_label(
         state.mode.get(),
-        state.all_entries.borrow().is_empty(),
-        !state.search_entry.text().is_empty(),
-        state.listed_count.get().is_limited(),
+        NotesEmptyStateFacts {
+            source_is_empty: state.all_entries.borrow().is_empty(),
+            searching: !state.search_entry.text().is_empty(),
+            limited: state.listed_count.get().is_limited(),
+        },
     );
     state.publishing.set(true);
     state.rows.publish(grouped, state.source_generation.get());

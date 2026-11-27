@@ -40,9 +40,10 @@ use crate::ui::window::LushtextWindow;
 use lushtext_model::document::editor_memory::EDITOR_MEMORY_UPPER_BUDGET_BYTES;
 use lushtext_model::document::encoding::DocumentEncoding;
 use lushtext_model::document::file_load::{
-    FileLoadAdmissionPolicy, FileLoadAdmissionRequest, FileLoadAdmissionSnapshot, FileLoadPriority,
-    decoded_body_reservation_weight,
+    ExternalLoadPressure, FileLoadAdmissionPolicy, FileLoadAdmissionRequest,
+    FileLoadAdmissionSnapshot, FileLoadPriority, decoded_body_reservation_weight,
 };
+use lushtext_model::values::EditorId;
 use lushtext_services::editor_io::{self, EditorLoadError, FileLoadPlan, LoadMetadata};
 
 use super::policy::{self, AbortDisposition, LoadOutcome, LoadRequestTicket};
@@ -74,7 +75,7 @@ impl PendingFileLoad {
 
 struct QueuedLoad {
     editor: glib::WeakRef<LushtextEditorPage>,
-    editor_id: usize,
+    editor_id: EditorId,
     ticket: LoadRequestTicket,
     plan: FileLoadPlan,
     reopen_as: Option<DocumentEncoding>,
@@ -415,7 +416,7 @@ fn rotate_load_identity(editor: &LushtextEditorPage) -> LoadRequestTicket {
         .load_tracking
         .cancel_token
         .replace(Arc::clone(&cancel));
-    let load_generation = editor.imp().load_tracking.generation.get().wrapping_add(1);
+    let load_generation = editor.imp().load_tracking.generation.get().next();
     editor.imp().load_tracking.generation.set(load_generation);
     LoadRequestTicket::new(load_generation, cancel)
 }
@@ -429,7 +430,7 @@ pub(super) fn retire_load_identity(editor: &LushtextEditorPage) {
         .imp()
         .load_tracking
         .generation
-        .set(editor.imp().load_tracking.generation.get().wrapping_add(1));
+        .set(editor.imp().load_tracking.generation.get().next());
 }
 
 /// Release the background planning owner, whichever path reached the terminal.
@@ -447,7 +448,7 @@ fn submit(
     reopen_as: Option<DocumentEncoding>,
     error_state: EditorLoadState,
 ) {
-    let editor_id = editor.as_ptr() as usize;
+    let editor_id = EditorId::new(editor.as_ptr() as usize);
     COORDINATOR.with_borrow_mut(|coordinator| {
         coordinator.next_request_id = coordinator.next_request_id.wrapping_add(1);
         coordinator.next_sequence = coordinator.next_sequence.wrapping_add(1);
@@ -455,7 +456,7 @@ fn submit(
         let sequence = coordinator.next_sequence;
         coordinator.policy.queue(FileLoadAdmissionRequest {
             request_id,
-            owner_id: u64::try_from(editor_id).unwrap_or(u64::MAX),
+            owner_id: u64::try_from(editor_id.get()).unwrap_or(u64::MAX),
             sequence,
             weight: plan.transient_weight,
             priority: current_priority(editor),
@@ -478,7 +479,7 @@ fn submit(
 
 /// Drop every queued request this editor owns.
 pub(super) fn cancel_for_editor(editor: &LushtextEditorPage) {
-    let editor_id = editor.as_ptr() as usize;
+    let editor_id = EditorId::new(editor.as_ptr() as usize);
     COORDINATOR.with_borrow_mut(|coordinator| {
         coordinator.retire_queued_where(|request| request.editor_id == editor_id);
     });
@@ -527,16 +528,20 @@ fn drain() {
             }
         }
 
-        let protected_over_budget =
-            protected_residency_bytes(&coordinator.requests) > EDITOR_MEMORY_UPPER_BUDGET_BYTES;
+        let protected_over_budget = protected_residency_bytes(&coordinator.requests)
+            > EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes();
         let mut dispatches = Vec::new();
         let mut disposal_blocked_epoch = None;
         if !close_save_pending {
-            while let Some(grant) = coordinator.policy.admit_next_with_external(
-                protected_over_budget,
-                save_weight,
-                save_exclusive,
-            ) {
+            while let Some(grant) =
+                coordinator
+                    .policy
+                    .admit_next_with_external(ExternalLoadPressure {
+                        protected_residency_over_budget: protected_over_budget,
+                        active_weight: save_weight,
+                        exclusive_active: save_exclusive,
+                    })
+            {
                 let Some(request) = coordinator.requests.get(&grant.request_id) else {
                     let _ = coordinator.policy.release(grant.request_id);
                     continue;
@@ -552,7 +557,7 @@ fn drain() {
                         .map_or(FileLoadPriority::Normal, |editor| current_priority(&editor));
                     let queued = FileLoadAdmissionRequest {
                         request_id: grant.request_id,
-                        owner_id: u64::try_from(request.editor_id).unwrap_or(u64::MAX),
+                        owner_id: u64::try_from(request.editor_id.get()).unwrap_or(u64::MAX),
                         sequence: request.sequence,
                         weight: request.plan.transient_weight,
                         priority,

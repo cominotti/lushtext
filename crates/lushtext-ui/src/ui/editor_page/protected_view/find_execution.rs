@@ -28,7 +28,8 @@ use super::policy::{
 };
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::search_bar::{ExternalFindHandler, ExternalFindRequest, SearchOption};
-use lushtext_services::search::regex_query::CompiledFindPattern;
+use lushtext_model::values::ProtectedFindGeneration;
+use lushtext_services::search::regex_query::{CompiledFindPattern, RegexCompileOptions};
 
 /// The tag on the current match while it lies in visible text.
 const CURRENT_MATCH_TAG: &str = "lushtext-protected-find-current";
@@ -46,7 +47,7 @@ pub(crate) struct FindHit {
 /// The editor's protected find state.
 #[derive(Debug, Default)]
 pub(crate) struct ProtectedFindState {
-    generation: Cell<u64>,
+    generation: Cell<ProtectedFindGeneration>,
     cancel: RefCell<Option<Arc<AtomicBool>>>,
     hits: RefCell<Vec<FindHit>>,
     current: Cell<Option<usize>>,
@@ -83,7 +84,7 @@ impl LushtextEditorPage {
         if let Some(previous) = state.cancel.take() {
             previous.store(true, Ordering::Relaxed);
         }
-        let generation = state.generation.get().wrapping_add(1);
+        let generation = state.generation.get().next();
         state.generation.set(generation);
         state.hits.borrow_mut().clear();
         state.current.set(None);
@@ -112,8 +113,14 @@ impl LushtextEditorPage {
         gtk_lush_tasks::spawn_blocking_then(
             self.clone(),
             move || {
-                let compiled =
-                    CompiledFindPattern::compile(&query, is_regex, whole_word, case_insensitive)?;
+                let compiled = CompiledFindPattern::compile(
+                    &query,
+                    RegexCompileOptions {
+                        is_regex,
+                        whole_word,
+                        case_insensitive,
+                    },
+                )?;
                 Some(
                     compiled
                         .find_paragraph_hits(source.text(), cap, &cancel)
@@ -179,8 +186,9 @@ impl LushtextEditorPage {
         let range = self
             .protected_fold_plan()
             .and_then(|plan| plan.range_of(hit.paragraph));
-        let visible =
-            range.is_none_or(|range| hit.column.saturating_add(hit.chars) <= range.head_chars);
+        let visible = range.is_none_or(|range| {
+            hit.column.saturating_add(hit.chars) <= range.head_chars.as_chars()
+        });
         if visible {
             let buffer = self.buffer();
             let (Ok(column), Ok(chars)) = (i32::try_from(hit.column), i32::try_from(hit.chars))
@@ -199,7 +207,13 @@ impl LushtextEditorPage {
         self.scroll_protected_navigation_mark(hit.paragraph, 0);
         if activated || self.line_inspector_visible() {
             let extent = range.and_then(|range| {
-                ParagraphExtent::new(range.head_chars, range.head_chars + range.tail_chars)
+                ParagraphExtent::new(
+                    range.head_chars.as_chars(),
+                    range
+                        .head_chars
+                        .as_chars()
+                        .saturating_add(range.tail_chars.as_chars()),
+                )
             });
             if let Some(NavigationTarget::Inspect { paragraph, .. }) = extent
                 .map(|extent| navigation_target(hit.paragraph, hit.column, extent, N_INSPECT_WIDTH))
@@ -261,7 +275,7 @@ impl LushtextEditorPage {
         if let Some(previous) = state.cancel.take() {
             previous.store(true, Ordering::Relaxed);
         }
-        state.generation.set(state.generation.get().wrapping_add(1));
+        state.generation.set(state.generation.get().next());
         state.hits.borrow_mut().clear();
         state.current.set(None);
         self.clear_current_match_tag();

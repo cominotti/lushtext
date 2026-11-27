@@ -1984,7 +1984,7 @@ fn test_live_memory_estimate_updates_after_save_and_eviction() {
     page.evict();
     assert_eq!(
         page.estimated_live_buffer_bytes(),
-        EVICTED_EDITOR_BOOKKEEPING_BYTES
+        EVICTED_EDITOR_BOOKKEEPING_BYTES.as_bytes()
     );
 }
 
@@ -2005,7 +2005,7 @@ fn test_document_sized_eviction_releases_residency_only_after_bounded_clear() {
     assert!(!page.accepts_user_edits());
     assert_ne!(
         page.estimated_live_buffer_bytes(),
-        EVICTED_EDITOR_BOOKKEEPING_BYTES
+        EVICTED_EDITOR_BOOKKEEPING_BYTES.as_bytes()
     );
 
     wait_until(Duration::from_secs(10), || page.is_evicted());
@@ -2013,7 +2013,7 @@ fn test_document_sized_eviction_releases_residency_only_after_bounded_clear() {
     assert_eq!(editor_buffer_text(&page), "");
     assert_eq!(
         page.estimated_live_buffer_bytes(),
-        EVICTED_EDITOR_BOOKKEEPING_BYTES
+        EVICTED_EDITOR_BOOKKEEPING_BYTES.as_bytes()
     );
     assert!(page.buffer_replacement_evidence().slice_count > 1);
     assert!(page.accepts_user_edits());
@@ -5024,7 +5024,10 @@ fn test_buffer_replacement_evidence_reads_stay_side_effect_free_across_replaceme
     let started = page.buffer_replacement_evidence();
     assert!(started.in_progress);
     assert!(started.projection_suspended);
-    assert_eq!(started.active_generation, Some(7));
+    assert_eq!(
+        started.active_generation,
+        Some(lushtext_model::values::BufferReplacementGeneration::new(7))
+    );
     assert_eq!(
         started.active_workflow,
         Some(BufferReplacementWorkflow::Test)
@@ -5359,13 +5362,19 @@ fn assert_changed_reentrant_replacement(initial: &str, expected_first_signal: &'
     assert!(!page.buffer_replacement_evidence().projection_suspended);
     let outcomes = outcomes.borrow();
     assert_eq!(outcomes.len(), 2);
-    assert_eq!(outcomes[0].ticket.generation, 30);
+    assert_eq!(
+        outcomes[0].ticket.generation,
+        lushtext_model::values::BufferReplacementGeneration::new(30)
+    );
     assert_eq!(
         outcomes[0].cancel_reason,
         Some(BufferReplacementCancelReason::Superseded)
     );
     assert!(outcomes[0].body.is_none());
-    assert_eq!(outcomes[1].ticket.generation, 31);
+    assert_eq!(
+        outcomes[1].ticket.generation,
+        lushtext_model::values::BufferReplacementGeneration::new(31)
+    );
     assert!(outcomes[1].cancel_reason.is_none());
     assert_eq!(outcomes[1].body.as_deref(), Some(latest.as_str()));
     eprintln!(
@@ -5628,11 +5637,15 @@ fn test_a_paragraph_larger_than_the_slice_budget_installs_in_hidden_tail_slices(
     );
     assert!(
         single.protected.tail_slices
-            >= u64::try_from(one_line.len() / PROTECTED_TAIL_SLICE_BYTES).expect("fits")
+            >= u64::try_from(
+                one_line.len()
+                    / usize::try_from(PROTECTED_TAIL_SLICE_BYTES.as_bytes()).expect("fits")
+            )
+            .expect("fits")
     );
     assert!(
         usize::try_from(single.protected.largest_tail_slice_bytes).expect("fits")
-            <= PROTECTED_TAIL_SLICE_BYTES
+            <= usize::try_from(PROTECTED_TAIL_SLICE_BYTES.as_bytes()).expect("fits")
     );
 
     let page = LushtextEditorPage::new();

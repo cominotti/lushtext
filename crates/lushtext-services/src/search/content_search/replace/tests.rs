@@ -292,7 +292,10 @@ fn stale_reserved_apply_cannot_overwrite_newer_committed_journal_or_file() {
     .expect("commit newer replacement journal");
 
     let generation = std::sync::Arc::new(AtomicU32::new(2));
-    let stale = ReplaceJournalFreshness::new(generation, 1);
+    let stale = ReplaceJournalFreshness::new(
+        generation,
+        lushtext_model::values::UndoBackupGeneration::new(1),
+    );
     let outcome = apply_replacements_if_current(
         &[make_replacement(&file, 1, "needle", "stale", 0..6)],
         &HashSet::new(),

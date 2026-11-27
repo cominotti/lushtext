@@ -14,6 +14,7 @@ use crate::persistence::recovery_metadata::{
 };
 use anyhow::Result;
 use lushtext_model::persistence::session::SessionData;
+use lushtext_model::values::SessionGeneration;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
@@ -23,8 +24,8 @@ fn session_path(data_dir: &std::path::Path) -> std::path::PathBuf {
     AppDataLayout::new(data_dir).path(AppDataLocation::Session)
 }
 
-fn ordered_session_saves() -> &'static Mutex<HashMap<std::path::PathBuf, u64>> {
-    static SAVES: OnceLock<Mutex<HashMap<std::path::PathBuf, u64>>> = OnceLock::new();
+fn ordered_session_saves() -> &'static Mutex<HashMap<std::path::PathBuf, SessionGeneration>> {
+    static SAVES: OnceLock<Mutex<HashMap<std::path::PathBuf, SessionGeneration>>> = OnceLock::new();
     SAVES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -88,9 +89,16 @@ pub fn save(data_dir: &Path, session: &SessionData) -> Result<()> {
 /// # Errors
 ///
 /// Returns an error if the session file cannot be serialized or written.
-pub fn save_ordered(data_dir: &Path, session: &SessionData, generation: u64) -> Result<bool> {
+pub fn save_ordered(
+    data_dir: &Path,
+    session: &SessionData,
+    generation: SessionGeneration,
+) -> Result<bool> {
     let mut generations = lock_unpoisoned(ordered_session_saves());
-    let accepted_generation = generations.get(data_dir).copied().unwrap_or(0);
+    let accepted_generation = generations
+        .get(data_dir)
+        .copied()
+        .unwrap_or(SessionGeneration::ZERO);
     if generation < accepted_generation {
         return Ok(false);
     }
@@ -242,11 +250,13 @@ mod tests {
         };
 
         assert!(
-            save_ordered(dir.path(), &newer, 2).expect("expected operation to succeed"),
+            save_ordered(dir.path(), &newer, SessionGeneration::new(2))
+                .expect("expected operation to succeed"),
             "newer save should be accepted"
         );
         assert!(
-            !save_ordered(dir.path(), &older, 1).expect("expected operation to succeed"),
+            !save_ordered(dir.path(), &older, SessionGeneration::new(1))
+                .expect("expected operation to succeed"),
             "older save should be ignored"
         );
 
@@ -266,9 +276,13 @@ mod tests {
             active_tab_index: Some(0),
         };
 
-        assert!(save_ordered(dir.path(), &first, 7).expect("expected operation to succeed"));
         assert!(
-            save_ordered(dir.path(), &replacement, 7).expect("expected operation to succeed"),
+            save_ordered(dir.path(), &first, SessionGeneration::new(7))
+                .expect("expected operation to succeed")
+        );
+        assert!(
+            save_ordered(dir.path(), &replacement, SessionGeneration::new(7))
+                .expect("expected operation to succeed"),
             "equal generations are accepted because only strictly older snapshots are stale"
         );
 
@@ -307,12 +321,12 @@ mod tests {
         };
 
         assert!(
-            save_ordered(dir.path(), &newer, 2)
+            save_ordered(dir.path(), &newer, SessionGeneration::new(2))
                 .expect("ordered save should complete despite the poisoned lock"),
             "newer save should be accepted after poison recovery"
         );
         assert!(
-            !save_ordered(dir.path(), &older, 1)
+            !save_ordered(dir.path(), &older, SessionGeneration::new(1))
                 .expect("ordered save should complete despite the poisoned lock"),
             "older save should still be ignored after poison recovery"
         );

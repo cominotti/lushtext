@@ -13,6 +13,8 @@
 //! Nothing here touches GTK, so the workflow's freshness, phase, cancellation,
 //! and terminal rules stay inside the default mutation scope.
 
+use lushtext_model::values::BufferReplacementGeneration;
+
 /// Whether a body's fold plan makes the replacement sliced through the
 /// protected executor at any size: a hidden tail that could exceed one tail
 /// slice (`sliced-protected-install`, C3). Calls the shared
@@ -47,7 +49,7 @@ pub enum BufferReplacementWorkflow {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BufferReplacementTicket {
     pub workflow: BufferReplacementWorkflow,
-    pub generation: u64,
+    pub generation: BufferReplacementGeneration,
 }
 
 /// Why one replacement stopped without publishing successful terminal state.
@@ -155,6 +157,15 @@ pub(super) enum CancelDisposition {
     ClearPartialBuffer,
 }
 
+/// Whether a buffer replacement session has begun mutating the buffer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum MutationProgress {
+    /// No buffer deletion or insertion has started yet.
+    NotStarted,
+    /// At least one buffer slice has already mutated.
+    Started,
+}
+
 /// Decide what a cancellation owes the user before it reports a terminal.
 ///
 /// The load-bearing case is the third: a session that already started mutating
@@ -164,13 +175,22 @@ pub(super) enum CancelDisposition {
 #[must_use]
 pub(super) const fn cancel_disposition(
     disposing: bool,
-    mutation_started: bool,
+    mutation: MutationProgress,
 ) -> CancelDisposition {
-    if disposing || !mutation_started {
+    if disposing || matches!(mutation, MutationProgress::NotStarted) {
         CancelDisposition::FinishImmediately
     } else {
         CancelDisposition::ClearPartialBuffer
     }
+}
+
+/// Whether the buffer finished clearing during one replacement turn.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum BufferClearState {
+    /// Characters remain to delete.
+    Remaining,
+    /// The buffer is empty.
+    Emptied,
 }
 
 /// What the session does after one clear turn finishes.
@@ -186,8 +206,11 @@ pub(super) enum ClearProgress {
 
 /// Decide the next step after a clear turn.
 #[must_use]
-pub(super) const fn after_clear_slice(buffer_emptied: bool, body_is_empty: bool) -> ClearProgress {
-    if !buffer_emptied {
+pub(super) const fn after_clear_slice(
+    clear_state: BufferClearState,
+    body_is_empty: bool,
+) -> ClearProgress {
+    if matches!(clear_state, BufferClearState::Remaining) {
         ClearProgress::ContinueClearing
     } else if body_is_empty {
         ClearProgress::Finish
@@ -245,21 +268,21 @@ mod tests {
     #[test]
     fn only_a_started_mutation_owes_the_user_a_clear_pass() {
         assert_eq!(
-            cancel_disposition(false, true),
+            cancel_disposition(false, MutationProgress::Started),
             CancelDisposition::ClearPartialBuffer,
             "a half-installed document must not be left visible"
         );
         assert_eq!(
-            cancel_disposition(false, false),
+            cancel_disposition(false, MutationProgress::NotStarted),
             CancelDisposition::FinishImmediately
         );
         // Disposal wins over a started mutation: nothing visible remains to fix.
         assert_eq!(
-            cancel_disposition(true, true),
+            cancel_disposition(true, MutationProgress::Started),
             CancelDisposition::FinishImmediately
         );
         assert_eq!(
-            cancel_disposition(true, false),
+            cancel_disposition(true, MutationProgress::NotStarted),
             CancelDisposition::FinishImmediately
         );
     }
@@ -267,17 +290,20 @@ mod tests {
     #[test]
     fn clear_progress_distinguishes_a_clear_only_request_from_an_install() {
         assert_eq!(
-            after_clear_slice(false, false),
+            after_clear_slice(BufferClearState::Remaining, false),
             ClearProgress::ContinueClearing
         );
         assert_eq!(
-            after_clear_slice(false, true),
+            after_clear_slice(BufferClearState::Remaining, true),
             ClearProgress::ContinueClearing,
             "an empty body still has to finish emptying the buffer first"
         );
-        assert_eq!(after_clear_slice(true, true), ClearProgress::Finish);
         assert_eq!(
-            after_clear_slice(true, false),
+            after_clear_slice(BufferClearState::Emptied, true),
+            ClearProgress::Finish
+        );
+        assert_eq!(
+            after_clear_slice(BufferClearState::Emptied, false),
             ClearProgress::BeginInstalling
         );
     }

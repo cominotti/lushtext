@@ -56,6 +56,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = "docs/thresholds.md"
 INT_TYPES = "u8|u16|u32|u64|u128|usize|i8|i16|i32|i64|i128|isize"
+UNIT_TYPES = "Bytes|Sp|Micros|CharCount"
+ALL_THRESHOLD_TYPES = rf"(?:{INT_TYPES}|{UNIT_TYPES})"
 TYPE_MAX = {
     "u8": 2**8 - 1,
     "u16": 2**16 - 1,
@@ -177,7 +179,7 @@ TEST_MOD = re.compile(
     r"#\[cfg\(\s*test\s*\)\]\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*(\{|;)"
 )
 CONST_DECL = re.compile(
-    rf"(?<![\w])(?:pub(?:\s*\([^)]*\))?\s+)?(?:const|static)\s+(?:mut\s+)?([A-Z][A-Z0-9_]*)\s*:\s*({INT_TYPES})\s*="
+    rf"(?<![\w])(?:pub(?:\s*\([^)]*\))?\s+)?(?:const|static)\s+(?:mut\s+)?([A-Z][A-Z0-9_]*)\s*:\s*({ALL_THRESHOLD_TYPES})\s*="
 )
 SCOPE_OPEN = re.compile(
     r"(?:\bmod\s+(\w+)|\bimpl\b(?:\s*<[^{;]*?>)?\s+(?:[\w:<>, &']+\s+for\s+)?([\w:]+)[^{;]*|\bfn\s+(\w+)[^{;]*|\btrait\s+(\w+)[^{;]*)$"
@@ -378,8 +380,48 @@ def evaluate(consts: list[Const]) -> None:
             break
 
 
+UNIT_CTORS = {
+    "Bytes::from_bytes": "",
+    "Bytes::new": "",
+    "Bytes::kib": "1024 * ",
+    "Bytes::mib": "1024 * 1024 * ",
+    "Bytes::gib": "1024 * 1024 * 1024 * ",
+    "Sp::new": "",
+    "Micros::from_us": "",
+    "Micros::from_ms": "1000 * ",
+    "CharCount::new": "",
+}
+
+
+def _rewrite_unit_calls(expr: str) -> str:
+    """Replace typed unit constructors like `Bytes::kib(64)` with plain integer arithmetic."""
+    out = expr
+    out = re.sub(r"\.(?:as_bytes|as_sp|as_us|as_chars|get)\(\s*\)", "", out)
+    pattern = re.compile(r"\b(" + "|".join(re.escape(k) for k in UNIT_CTORS) + r")\s*\(")
+    while True:
+        m = pattern.search(out)
+        if not m:
+            break
+        start_args = m.end()
+        depth = 1
+        j = start_args
+        while j < len(out) and depth > 0:
+            if out[j] == "(":
+                depth += 1
+            elif out[j] == ")":
+                depth -= 1
+            j += 1
+        if depth != 0:
+            break
+        inner = out[start_args : j - 1]
+        prefix = UNIT_CTORS[m.group(1)]
+        replacement = f"({prefix}({inner}))"
+        out = out[: m.start()] + replacement + out[j:]
+    return out
+
+
 def eval_expr(expr: str, resolve) -> int | None:
-    x = expr
+    x = _rewrite_unit_calls(expr)
     x = re.sub(r"\b(\w+)::MAX\b", lambda m: str(TYPE_MAX[m.group(1)]) if m.group(1) in TYPE_MAX else m.group(0), x)
     x = re.sub(r"\b(\w+)::MIN\b", lambda m: ("0" if m.group(1).startswith("u") else str(-TYPE_MAX[m.group(1)] - 1)) if m.group(1) in TYPE_MAX else m.group(0), x)
     x = re.sub(r"\b(?:%s)::from\(" % INT_TYPES, "(", x)
@@ -803,6 +845,35 @@ def self_test() -> int:
         FIXTURE_LIB,
         FIXTURE_INVENTORY + "| `crates/demo/src/lib.rs` | `RESULT_CAP` | 16,384 | presentation cap | up from 10,000 |\n",
         "stale row `crates/demo/src/lib.rs` `RESULT_CAP`",
+    )
+    # domain-value-types-and-primitive-boundaries: typed unit constants pass
+    # when classified cleanly and fail on non-power-of-two caps or missing Kind.
+    unit_lib = FIXTURE_LIB + (
+        "/// Kind: cap.\npub const TYPED_CAP: Bytes = Bytes::kib(64);\n"
+        "/// Kind: derived.\npub const TYPED_DERIVED: Bytes = Bytes::from_bytes(TYPED_CAP.as_bytes() / 2);\n"
+        "pub const TYPED_WIDTH: Sp = Sp::new(280);\n"
+        "/// Kind: policy tier; recorded exception.\npub const TYPED_BUDGET: Micros = Micros::from_ms(16);\n"
+        "/// Kind: cap.\npub const TYPED_CHARS: CharCount = CharCount::new(1024);\n"
+    )
+    unit_inv = FIXTURE_INVENTORY + (
+        "| `crates/demo/src/lib.rs` | `TYPED_CAP` | 65,536 | cap | 64 KiB |\n"
+        "| `crates/demo/src/lib.rs` | `TYPED_DERIVED` | 32,768 | derived | half cap |\n"
+        "| `crates/demo/src/lib.rs` | `TYPED_WIDTH` | 280 | out: geometry | min width |\n"
+        "| `crates/demo/src/lib.rs` | `TYPED_BUDGET` | 16,000 | policy tier, exception | 16 ms |\n"
+        "| `crates/demo/src/lib.rs` | `TYPED_CHARS` | 1,024 | cap | 1024 chars |\n"
+    )
+    run("valid typed unit constants", unit_lib, unit_inv, None)
+    run(
+        "non-power-of-two typed Bytes cap",
+        unit_lib.replace("Bytes::kib(64)", "Bytes::from_bytes(10_000)"),
+        unit_inv.replace("| 65,536 |", "| 10,000 |").replace("| 32,768 |", "| 5,000 |"),
+        "`TYPED_CAP` = 10,000 is a cap but not a power of two",
+    )
+    run(
+        "typed unit constant missing Kind line",
+        unit_lib.replace("/// Kind: cap.\npub const TYPED_CHARS", "pub const TYPED_CHARS"),
+        unit_inv,
+        "`TYPED_CHARS` has no `Kind:` line",
     )
     if failures:
         return 1

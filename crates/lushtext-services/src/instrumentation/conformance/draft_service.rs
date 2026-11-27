@@ -22,8 +22,8 @@ use crate::filesystem::{
 };
 use crate::persistence::app_data_layout::AppDataLocation;
 use crate::persistence::draft_service::journal_core::{
-    BodyWriteDecision, DeletionStep, RestoreDisposition, RestoreEnding, body_write_decision,
-    ownership, registration_required, unapplied_restore_disposition,
+    BodyWriteDecision, DeletionStep, RegistrationFacts, RestoreDisposition, RestoreEnding,
+    body_write_decision, ownership, registration_required, unapplied_restore_disposition,
 };
 use crate::persistence::draft_service::journal_model::{
     Action, CONTENTS, Choices, ContentId, Fault, Journal, LaneHolder, LaneUse, MAX_EDITS,
@@ -315,8 +315,11 @@ fn action_enabled_for(
             {
                 return false;
             }
-            let needed =
-                registration_required(!model.untitled(id), me.known[id].is_some(), me.trusted);
+            let needed = registration_required(RegistrationFacts {
+                file_backed: !model.untitled(id),
+                registered_in_known_manifest: me.known[id].is_some(),
+                known_manifest_trusted: me.trusted,
+            });
             body_write_decision(ownership(model.window_body_facts(id)), needed)
                 != BodyWriteDecision::Hold
         }
@@ -324,8 +327,11 @@ fn action_enabled_for(
             if !ed.open || !ed.dirty || !ed.token {
                 return false;
             }
-            let needed =
-                registration_required(!model.untitled(id), me.known[id].is_some(), me.trusted);
+            let needed = registration_required(RegistrationFacts {
+                file_backed: !model.untitled(id),
+                registered_in_known_manifest: me.known[id].is_some(),
+                known_manifest_trusted: me.trusted,
+            });
             body_write_decision(ownership(model.window_body_facts(id)), needed)
                 != BodyWriteDecision::Hold
         }
@@ -1257,11 +1263,12 @@ pub fn check_draft_script(
             }
             Action::Register => {
                 let ed = model.me().editors[id];
-                let needed = registration_required(
-                    !model.untitled(id),
-                    model.me().known[id].is_some(),
-                    model.me().trusted,
-                );
+                let reg_facts = RegistrationFacts {
+                    file_backed: !model.untitled(id),
+                    registered_in_known_manifest: model.me().known[id].is_some(),
+                    known_manifest_trusted: model.me().trusted,
+                };
+                let needed = registration_required(reg_facts);
                 let decision = body_write_decision(ownership(model.window_body_facts(id)), needed);
                 if ed.open
                     && ed.dirty
@@ -1274,9 +1281,7 @@ pub fn check_draft_script(
                         BodyWriteDecision::Write | BodyWriteDecision::PreserveThenWrite => {
                             env.tokens[id] = RegisteredDraft::without_registration(
                                 &env.draft_ids[id],
-                                !model.untitled(id),
-                                model.me().known[id].is_some(),
-                                model.me().trusted,
+                                reg_facts,
                             );
                         }
                         BodyWriteDecision::RegisterFirst => {
@@ -1387,11 +1392,11 @@ pub fn check_draft_script(
             Action::WriteBody => {
                 let ed = model.me().editors[id];
                 if ed.open && ed.dirty && ed.token {
-                    let needed = registration_required(
-                        !model.untitled(id),
-                        model.me().known[id].is_some(),
-                        model.me().trusted,
-                    );
+                    let needed = registration_required(RegistrationFacts {
+                        file_backed: !model.untitled(id),
+                        registered_in_known_manifest: model.me().known[id].is_some(),
+                        known_manifest_trusted: model.me().trusted,
+                    });
                     if body_write_decision(ownership(model.window_body_facts(id)), needed)
                         != BodyWriteDecision::Hold
                     {

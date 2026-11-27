@@ -214,12 +214,14 @@ impl LushtextWindow {
             cleanup_pending_offset: drafts.orphan_cleanup_pending_offset.get(),
             cleanup_failure_streak: drafts.orphan_cleanup_failure_streak.get(),
             blocks_readiness: super::policy::draft_workflow_blocks_readiness(
-                autosave_inflight,
-                mutation_inflight,
-                pending_delete_count > 0,
-                restores_inflight > 0,
-                lazy_restore_inflight,
-                lazy_restore_queued > 0,
+                super::policy::DraftReadinessState {
+                    autosave_inflight,
+                    mutation_inflight,
+                    pending_deletes: pending_delete_count > 0,
+                    restores_inflight: restores_inflight > 0,
+                    lazy_restore_inflight,
+                    lazy_queue_non_empty: lazy_restore_queued > 0,
+                },
             ),
             mounted_pages,
         }

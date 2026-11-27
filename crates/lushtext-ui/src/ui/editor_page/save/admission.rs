@@ -27,6 +27,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use lushtext_model::document::editor_memory::EDITOR_MEMORY_UPPER_BUDGET_BYTES;
+use lushtext_model::values::{EditorId, SaveGeneration};
 use lushtext_services::editor_io::EditorSaveError;
 
 use super::policy::{
@@ -46,7 +47,7 @@ thread_local! {
 /// One queued request: the ticket it was queued under, plus who to tell.
 struct QueuedSave {
     editor: glib::WeakRef<LushtextEditorPage>,
-    editor_id: usize,
+    editor_id: EditorId,
     ticket: QueuedSaveTicket,
     allow_lossy: bool,
     callback: Option<SaveCallback>,
@@ -151,7 +152,7 @@ pub(crate) fn queue_save_request(
     }
     // Publish queued ownership before yielding so duplicate saves and an
     // already-planned eviction pass revalidate this page as protected.
-    let generation = editor.imp().save.generation.get().wrapping_add(1);
+    let generation = editor.imp().save.generation.get().next();
     editor.imp().save.generation.set(generation);
     editor.imp().save.inflight.set(true);
     editor.notify_memory_policy_changed();
@@ -182,7 +183,7 @@ fn submit(
     allow_lossy: bool,
     callback: SaveCallback,
 ) {
-    let editor_id = editor.as_ptr() as usize;
+    let editor_id = EditorId::new(editor.as_ptr() as usize);
     let weight = conservative_save_payload_weight(editor.estimated_live_buffer_bytes());
     let destination_identity = destination_identity(&ticket.path);
 
@@ -192,7 +193,7 @@ fn submit(
         let request_id = coordinator.next_request_id;
         coordinator.policy.queue(SaveAdmissionRequest {
             request_id,
-            owner_id: u64::try_from(editor_id).unwrap_or(u64::MAX),
+            owner_id: u64::try_from(editor_id.get()).unwrap_or(u64::MAX),
             save_generation: ticket.save_generation,
             destination_identity,
             close_session_identity: ticket.close_session_identity,
@@ -273,7 +274,7 @@ fn take_queued(
 
 /// Drop every queued request owned by one editor, telling each caller.
 pub(crate) fn cancel_for_editor(editor: &LushtextEditorPage) {
-    let editor_id = editor.as_ptr() as usize;
+    let editor_id = EditorId::new(editor.as_ptr() as usize);
     let cancelled = COORDINATOR.with_borrow_mut(|coordinator| {
         take_queued(coordinator, |request| request.editor_id == editor_id)
     });
@@ -340,8 +341,8 @@ fn drain() {
             }
         }
 
-        let protected_over_budget =
-            protected_residency_bytes(&coordinator.requests) > EDITOR_MEMORY_UPPER_BUDGET_BYTES;
+        let protected_over_budget = protected_residency_bytes(&coordinator.requests)
+            > EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes();
         let pressure = ExternalTransientPressure {
             active_weight: load_weight,
             exclusive_active: load_exclusive,
@@ -401,7 +402,7 @@ fn drain() {
 /// Release save ownership for a request that never reached admission.
 pub(super) fn finish_queued_save_without_admission(
     editor: &LushtextEditorPage,
-    save_generation: u64,
+    save_generation: SaveGeneration,
 ) {
     if editor.imp().save.generation.get() != save_generation {
         return;

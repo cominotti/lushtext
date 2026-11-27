@@ -46,12 +46,12 @@ use crate::budgets::responsiveness_budget::{B_INTERACT_US, B_SETTLE_US};
 /// first-update slice (`FIRST_UPDATE_TIME_SLICE`, 10 ms) was measured as the
 /// allowance first and rejected: it removed highlighting after flipping keys
 /// that cost 11–12 ms on `main`, within `B_SETTLE_US` (design D2).
-pub const REANALYSIS_ALLOWANCE_US: u64 = B_SETTLE_US;
+pub const REANALYSIS_ALLOWANCE_US: u64 = B_SETTLE_US.as_us();
 
 /// The duration one step is sized towards, µs: a quarter of
 /// `B_INTERACT_US`, so a step that analyses twice as slowly as the one
 /// before it still fits the interaction budget.
-pub const STEP_TARGET_US: u64 = B_INTERACT_US / 4;
+pub const STEP_TARGET_US: u64 = B_INTERACT_US.as_us() / 4;
 
 /// Characters the first step of a session analyses.
 ///
@@ -362,6 +362,6 @@ mod tests {
 
     #[test]
     fn the_step_target_is_a_quarter_of_the_interaction_budget() {
-        assert_eq!(STEP_TARGET_US * 4, B_INTERACT_US);
+        assert_eq!(STEP_TARGET_US * 4, B_INTERACT_US.as_us());
     }
 }

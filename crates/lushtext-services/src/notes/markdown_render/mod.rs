@@ -20,6 +20,7 @@
 //! [`MAX_MARKDOWN_EMBED_DESCRIPTORS`], [`MAX_MARKDOWN_STRUCTURE_DEPTH`]) end
 //! planning early, recorded as a [`MarkdownPlanLimit`].
 
+use lushtext_model::values::RenderGeneration;
 pub mod events;
 pub mod inline_footnotes;
 
@@ -152,22 +153,22 @@ pub enum MarkdownRenderState {
 /// GTK-free generation and readiness state for one Markdown preview adapter.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MarkdownRenderSession {
-    generation: u64,
+    generation: RenderGeneration,
     state: MarkdownRenderState,
     pending: bool,
 }
 
 impl MarkdownRenderSession {
     /// Invalidate older work and begin one pending planning generation.
-    pub fn begin(&mut self) -> u64 {
-        self.generation = self.generation.wrapping_add(1);
+    pub fn begin(&mut self) -> RenderGeneration {
+        self.generation = self.generation.next();
         self.state = MarkdownRenderState::Planning;
         self.pending = true;
         self.generation
     }
 
     /// Transition current work without allowing stale generations to publish.
-    pub fn transition(&mut self, generation: u64, state: MarkdownRenderState) -> bool {
+    pub fn transition(&mut self, generation: RenderGeneration, state: MarkdownRenderState) -> bool {
         if generation != self.generation {
             return false;
         }
@@ -180,15 +181,15 @@ impl MarkdownRenderSession {
     }
 
     /// Invalidate current work and publish the cancelled terminal.
-    pub fn cancel(&mut self) -> u64 {
-        self.generation = self.generation.wrapping_add(1);
+    pub fn cancel(&mut self) -> RenderGeneration {
+        self.generation = self.generation.next();
         self.state = MarkdownRenderState::Cancelled;
         self.pending = false;
         self.generation
     }
 
     #[must_use]
-    pub fn generation(self) -> u64 {
+    pub fn generation(self) -> RenderGeneration {
         self.generation
     }
 
@@ -203,7 +204,7 @@ impl MarkdownRenderSession {
     }
 
     #[must_use]
-    pub fn is_current(self, generation: u64) -> bool {
+    pub fn is_current(self, generation: RenderGeneration) -> bool {
         self.generation == generation
     }
 }

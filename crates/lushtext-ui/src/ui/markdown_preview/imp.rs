@@ -14,6 +14,7 @@ use gtk_lush_signals::SignalBag;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib, pango};
 use libadwaita::prelude::*;
+use lushtext_model::values::{CodeBlockRefreshGeneration, EmbedGeneration};
 use lushtext_services::notes::markdown_render::MarkdownBlockQuoteKind;
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -225,12 +226,12 @@ pub struct LushtextMarkdownPreview {
     /// stale embeds and resize code blocks after later allocations.
     pub(super) rendered_embeds: RefCell<Vec<super::seams::RenderedEmbed>>,
     /// Generation advanced whenever the rendered embed membership changes.
-    pub(super) rendered_embed_generation: Cell<u64>,
+    pub(super) rendered_embed_generation: Cell<EmbedGeneration>,
     /// Last valid text-column width and embed generation fully traversed.
     ///
     /// Hidden or not-yet-allocated previews deliberately leave this untouched
     /// so a later valid allocation still repairs every current code block.
-    pub(super) last_code_block_layout: Cell<Option<(i32, u64)>>,
+    pub(super) last_code_block_layout: Cell<Option<(i32, EmbedGeneration)>>,
     /// Number of full embed traversals, exposed only to performance fixtures.
     #[cfg(feature = "test-utils")]
     pub(super) code_block_width_traversal_count: Cell<u64>,
@@ -251,7 +252,7 @@ pub struct LushtextMarkdownPreview {
     /// before the embedded `GtkTextView` column settles. The counter lets later
     /// refresh requests supersede older idle/timer callbacks so only the most
     /// recent layout pass can resize anchored code blocks.
-    pub(super) code_block_refresh_generation: Cell<u32>,
+    pub(super) code_block_refresh_generation: Cell<CodeBlockRefreshGeneration>,
     /// Pending idle refresh for child-anchor code-block widths.
     ///
     /// Layout and render paths can request many refreshes in one GTK turn. Keep
@@ -436,7 +437,7 @@ impl ObjectImpl for LushtextMarkdownPreview {
         if let Some(retired) = self.deferred_work.take() {
             self.obj().retire_markdown_work(retired);
         }
-        let generation = self.render_session.borrow_mut().cancel();
+        let generation = self.render_session.borrow_mut().cancel().get();
         self.render_generation
             .store(generation, std::sync::atomic::Ordering::Release);
         if let Some(snapshot) = self.source_snapshot.take() {

@@ -39,6 +39,7 @@ use gtk4::prelude::*;
 use crate::ui::accessibility::AnnouncementLane;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
+use lushtext_model::values::FlightGeneration;
 use lushtext_model::workspace::palette::{
     PaletteCategory, PaletteFileEntry, PaletteFileIdentity, PaletteFileIdentityFailure, SearchMode,
 };
@@ -316,7 +317,11 @@ impl LushtextWindow {
         }
     }
 
-    fn finish_file_index_build(&self, generation: u64, outcome: GuardedFileIndexBuildOutcome) {
+    fn finish_file_index_build(
+        &self,
+        generation: FlightGeneration,
+        outcome: GuardedFileIndexBuildOutcome,
+    ) {
         // Timed here rather than at the caller because this is the one terminal
         // every build reaches, accepted or superseded; the adaptive interval
         // must learn from a slow pass even when its result was discarded.

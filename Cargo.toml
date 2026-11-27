@@ -124,6 +124,7 @@ proptest = "1.11.0"
 
 [workspace.lints.clippy]
 # --- API design ---
+fn_params_excessive_bools     = "deny"
 must_use_candidate            = "deny"
 return_self_not_must_use      = "deny"
 needless_pass_by_value        = "deny"

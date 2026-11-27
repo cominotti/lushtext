@@ -38,6 +38,9 @@ use lushtext_model::document::encoding::{
     DocumentEncoding, FileHealthFinding, FileHealthFindingKind, FileHealthSeverity,
 };
 use lushtext_model::document::paragraph_boundary::DocumentProfile;
+use lushtext_model::values::{
+    BufferReplacementGeneration, EditGeneration, LoadGeneration, PathGeneration, SaveGeneration,
+};
 use lushtext_services::{editor_io, filesystem::metadata as fs_metadata};
 
 use super::admission::{self, SavePayloadPermit};
@@ -84,10 +87,10 @@ impl SaveViewInteractivity {
 /// Freshness of one dispatched write, checked before its result may be accepted.
 #[derive(Clone, Copy)]
 pub(super) struct SaveCompletionTicket {
-    save_generation: u64,
-    path_generation: u64,
-    load_generation: u64,
-    edit_generation: u64,
+    save_generation: SaveGeneration,
+    path_generation: PathGeneration,
+    load_generation: LoadGeneration,
+    edit_generation: EditGeneration,
     close_session_identity: Option<u64>,
 }
 
@@ -420,10 +423,12 @@ fn write_snapshot_async(
                 }
             }
 
-            let disposition = classify_saved_text(
-                formatting_changed,
-                history_availability.allows_automatic_capture(),
-            );
+            let history_capture = if history_availability.allows_automatic_capture() {
+                super::policy::HistoryCaptureAvailability::Available
+            } else {
+                super::policy::HistoryCaptureAvailability::Unavailable
+            };
+            let disposition = classify_saved_text(formatting_changed, history_capture);
             let retain_formatted_as_clean = matches!(
                 disposition,
                 SaveTextDisposition::MirrorFormattedIntoBuffer {
@@ -493,7 +498,9 @@ fn write_snapshot_async(
                         BufferReplacementRequest::new_guarded_returning_body_on_complete(
                             BufferReplacementTicket {
                                 workflow: BufferReplacementWorkflow::SaveFormatting,
-                                generation: ticket.save_generation,
+                                generation: BufferReplacementGeneration::new(
+                                    ticket.save_generation.get(),
+                                ),
                             },
                             formatted_text,
                             move |_| {
@@ -513,7 +520,7 @@ fn write_snapshot_async(
                                                 generation,
                                             },
                                         ..
-                                    } if generation == ticket.save_generation
+                                    } if generation.get() == ticket.save_generation.get()
                                         && ticket.is_current(&editor) =>
                                     {
                                         if outcome.retain_formatted_as_clean {

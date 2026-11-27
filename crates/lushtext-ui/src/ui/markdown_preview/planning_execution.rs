@@ -22,6 +22,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
 
+use lushtext_model::values::RenderGeneration;
 use lushtext_services::notes::markdown_render::{
     InlineFootnoteLowering, lower_inline_footnotes_cancellable, plan_markdown_cancellable,
 };
@@ -37,7 +38,7 @@ impl LushtextMarkdownPreview {
     /// Keep one document-sized planner active and one replaceable latest source.
     pub(super) fn enqueue_markdown_plan(
         &self,
-        generation: u64,
+        generation: RenderGeneration,
         markdown: &str,
         context: MarkdownPreviewRenderContext,
     ) {
@@ -123,7 +124,7 @@ impl LushtextMarkdownPreview {
                         }
                         InlineFootnoteLowering::Cancelled => None,
                     };
-                    if generation_counter.load(Ordering::Acquire) == generation {
+                    if generation_counter.load(Ordering::Acquire) == generation.get() {
                         plan
                     } else {
                         if plan.is_some() {

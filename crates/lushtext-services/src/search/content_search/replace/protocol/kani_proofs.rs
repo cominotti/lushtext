@@ -22,8 +22,9 @@
 //! one Undo mutates the journal at a time, so the harnesses drive one.
 
 use super::{
-    CurrentContent, FileAction, FileEnd, FileOutcome, ReplaceFileProtocol, ReplaceUndoProtocol,
-    RunJournalState, ShrinkAction, UndoAction, UndoEnd, UndoOutcome, shrink_step,
+    CurrentContent, EntryRetirement, FileAction, FileEnd, FileOutcome, ReplaceFileProtocol,
+    ReplaceUndoProtocol, RunJournalState, ShrinkAction, UndoAction, UndoEnd, UndoOutcome,
+    shrink_step,
 };
 
 /// Files in one modelled run.
@@ -226,7 +227,7 @@ fn undo_writes_only_to_a_file_holding_the_replaced_bytes() {
         body: true,
         entry: true,
     };
-    let retire = kani::any();
+    let retire: EntryRetirement = kani::any();
     let (mut protocol, mut action) = ReplaceUndoProtocol::start(kani::any(), retire);
     let mut end = None;
     for _ in 0..8 {

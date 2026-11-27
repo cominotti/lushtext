@@ -272,9 +272,11 @@ impl LushtextWindow {
     /// edge rather than a `GtkPaned` divider coordinate.
     pub(super) fn sync_preview_width_constraints(&self, window_width: i32) {
         let imp = self.imp();
-        let available_width = effective_preview_available_width(self, window_width);
+        let available_width =
+            lushtext_model::values::Sp::new(effective_preview_available_width(self, window_width));
         let preferred_width = preferred_preview_width(imp.preferred_preview_width.get());
-        let preview_width = f64::from(clamped_preview_width(preferred_width, available_width));
+        let preview_width =
+            f64::from(clamped_preview_width(preferred_width, available_width).as_sp());
         let changed = set_preview_split_fixed_width(&imp.preview_split_view, preview_width);
 
         if changed && (imp.preview_visible.get() || imp.preview_mode.get()) {
@@ -493,8 +495,8 @@ impl LushtextWindow {
                 ) {
                     let window_weak = self.downgrade();
                     let editor_weak = editor.downgrade();
-                    let expected_dirty_generation = editor.draft_dirty_generation();
-                    let expected_load_generation = editor.load_generation();
+                    let expected_dirty_generation = editor.draft_generation();
+                    let expected_load_generation = editor.typed_load_generation();
                     let expected_path = editor.file_path();
                     preview.show_content_placeholder(PREPARING_MARKDOWN_PREVIEW);
                     let snapshot = buffer_snapshot::snapshot_buffer_text_async_budgeted(
@@ -515,8 +517,8 @@ impl LushtextWindow {
                                 return;
                             }
                             if window.active_editor_for_preview().as_ref() != Some(&editor)
-                                || editor.draft_dirty_generation() != expected_dirty_generation
-                                || editor.load_generation() != expected_load_generation
+                                || editor.draft_generation() != expected_dirty_generation
+                                || editor.typed_load_generation() != expected_load_generation
                                 || editor.file_path() != expected_path
                             {
                                 return;

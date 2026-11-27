@@ -600,11 +600,13 @@ fn test_close_tab_for_path_defers_teardown_until_the_page_detaches() {
     assert!(editor.draft_id().is_some(), "expected a draft identity");
     assert!(
         lushtext_ui::ui::window::draft_candidate_is_eligible(
-            editor.is_modified(),
-            editor.draft_dirty(),
-            editor.is_evicted(),
-            editor.draft_capture_blocked(),
-            false,
+            lushtext_ui::ui::window::DraftCandidateFacts {
+                modified: editor.is_modified(),
+                draft_dirty: editor.draft_dirty(),
+                evicted: editor.is_evicted(),
+                buffer_untrusted: editor.draft_capture_blocked(),
+                require_draft_dirty: false,
+            }
         ),
         "a tab surviving a cancelled close must still be autosaved; this is the \
          contract the premature `cancel_load()` broke"
@@ -775,12 +777,12 @@ fn inertness_probe(sidebar: &LushtextSidebar) -> InertnessProbe {
     let watch_generations: u64 = evidence
         .sections
         .iter()
-        .map(|section| section.watch_target_generation)
+        .map(|section| section.watch_target_generation.get())
         .sum();
     InertnessProbe {
         reveal: (
             evidence.reveal_status,
-            evidence.reveal_generation,
+            evidence.reveal_generation.get(),
             evidence.reveal_pending,
         ),
         expansion_capture_scans: evidence.expansion_capture_scans,
@@ -1136,7 +1138,7 @@ fn test_workspace_tree_evidence_reads_stay_side_effect_free_across_mutation() {
         evidence_without_live_mailbox(&sidebar.workspace_tree_evidence()),
         evidence_without_live_mailbox(&settled)
     );
-    assert!(settled.persistence_durable_generation >= 1);
+    assert!(settled.persistence_durable_generation.get() >= 1);
 }
 
 #[test]

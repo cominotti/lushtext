@@ -108,7 +108,12 @@ impl LushtextWindow {
 
     /// Saturating residency estimate for pages the live-memory policy protects.
     pub(crate) fn protected_editor_residency_bytes(&self) -> u64 {
-        self.imp().editor_memory.ledger.borrow().protected_bytes()
+        self.imp()
+            .editor_memory
+            .ledger
+            .borrow()
+            .protected_bytes()
+            .as_bytes()
     }
 
     /// Speak a bounded workflow milestone through the shared status-bar target.

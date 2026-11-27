@@ -54,6 +54,7 @@ use std::time::{Duration, Instant};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
+use lushtext_model::values::RevealGeneration;
 
 use crate::ui::sidebar::policy::{
     self, REVEAL_SETTLE_FRAME_BUDGET, WorkspaceRevealPlan, WorkspaceRevealRefusal,
@@ -73,7 +74,7 @@ const REVEAL_SETTLE_WALL_BUDGET: Duration = Duration::from_secs(10);
 /// active reveal.
 #[derive(Default)]
 pub(crate) struct RevealState {
-    generation: Cell<u64>,
+    generation: Cell<RevealGeneration>,
     status: Cell<WorkspaceRevealStatus>,
     depth: Cell<Option<u32>>,
     superseded_count: Cell<u64>,
@@ -83,7 +84,7 @@ pub(crate) struct RevealState {
 }
 
 struct ActiveReveal {
-    generation: u64,
+    generation: RevealGeneration,
     section: glib::WeakRef<WorkspaceSection>,
     plan: WorkspaceRevealPlan,
     next_ancestor: usize,
@@ -136,7 +137,7 @@ enum RevealStep {
 /// The latest reveal as evidence reads it.
 pub(crate) struct RevealObservation {
     pub(crate) status: WorkspaceRevealStatus,
-    pub(crate) generation: u64,
+    pub(crate) generation: RevealGeneration,
     pub(crate) depth: Option<u32>,
     pub(crate) superseded_count: u64,
     pub(crate) pending: bool,
@@ -158,7 +159,7 @@ impl LushtextSidebar {
     pub(super) fn begin_workspace_path_reveal(&self, target: &Path) {
         let state = &self.imp().reveal;
         self.supersede_active_reveal();
-        let generation = state.generation.get().saturating_add(1);
+        let generation = state.generation.get().next();
         state.generation.set(generation);
         state.depth.set(None);
         state.revealed.borrow_mut().take();
@@ -282,7 +283,7 @@ impl LushtextSidebar {
     }
 
     /// One poll of the active reveal: the single resumption point for both waits.
-    fn poll_workspace_path_reveal(&self, generation: u64) -> glib::ControlFlow {
+    fn poll_workspace_path_reveal(&self, generation: RevealGeneration) -> glib::ControlFlow {
         let snapshot = {
             let active = self.imp().reveal.active.borrow();
             match active.as_ref() {

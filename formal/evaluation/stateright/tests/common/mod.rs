@@ -126,4 +126,3 @@ pub struct QJournal {
     pub body_without_entry: bool,
     pub cleanup_unsafe: bool,
 }
-

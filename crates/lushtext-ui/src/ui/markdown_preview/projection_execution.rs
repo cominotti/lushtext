@@ -23,6 +23,7 @@ use gtk4::prelude::*;
 use std::collections::VecDeque;
 
 use super::code_blocks::CodeBlockTheme;
+use lushtext_model::values::RenderGeneration;
 use lushtext_services::notes::markdown_render::MarkdownRenderState;
 
 use crate::ui::accessibility;
@@ -39,7 +40,7 @@ impl LushtextMarkdownPreview {
     /// Accept a current immutable plan and project at most one batch per GTK turn.
     pub(super) fn start_render_plan(
         &self,
-        generation: u64,
+        generation: RenderGeneration,
         plan: GuardedMarkdownPlan,
         context: MarkdownPreviewRenderContext,
     ) {
@@ -160,7 +161,7 @@ impl LushtextMarkdownPreview {
     /// rendered content.
     pub(super) fn project_next_batch(
         &self,
-        generation: u64,
+        generation: RenderGeneration,
         projection: Option<&mut GuardedMarkdownProjection>,
         context: &MarkdownPreviewRenderContext,
         code_block_theme: &CodeBlockTheme,
@@ -175,7 +176,11 @@ impl LushtextMarkdownPreview {
     }
 
     /// Record direct slice evidence before applying a current batch.
-    pub(super) fn apply_render_batch(&self, generation: u64, batch: &MarkdownEventBatch) {
+    pub(super) fn apply_render_batch(
+        &self,
+        generation: RenderGeneration,
+        batch: &MarkdownEventBatch,
+    ) {
         debug_assert!(self.imp().render_session.borrow().is_current(generation));
         #[cfg(not(feature = "test-utils"))]
         let _ = batch;
@@ -196,7 +201,11 @@ impl LushtextMarkdownPreview {
     /// reached the end of the document but replaced named units with markers
     /// publishes `Simplified` and reports the count once, rather than announcing
     /// each marker as it is projected. Everything else publishes `Complete`.
-    pub(super) fn finish_render_plan(&self, generation: u64, terminal: MarkdownProjectionTerminal) {
+    pub(super) fn finish_render_plan(
+        &self,
+        generation: RenderGeneration,
+        terminal: MarkdownProjectionTerminal,
+    ) {
         let imp = self.imp();
         if !imp.render_session.borrow().is_current(generation) {
             return;
@@ -233,7 +242,11 @@ impl LushtextMarkdownPreview {
     }
 
     /// Publish the explicit terminal for a batch the continuation refused.
-    pub(super) fn finish_render_breach(&self, generation: u64, breach: ContinuationBreach) {
+    pub(super) fn finish_render_breach(
+        &self,
+        generation: RenderGeneration,
+        breach: ContinuationBreach,
+    ) {
         let imp = self.imp();
         if !imp.render_session.borrow().is_current(generation) {
             return;
@@ -257,7 +270,7 @@ impl LushtextMarkdownPreview {
         self.cancel_pending_markdown_planning();
         self.cancel_deferred_markdown_work();
         self.cancel_queued_image_work();
-        let generation = self.imp().render_session.borrow_mut().cancel();
+        let generation = self.imp().render_session.borrow_mut().cancel().get();
         self.imp()
             .render_generation
             .store(generation, Ordering::Release);

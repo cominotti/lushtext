@@ -261,6 +261,7 @@ fn scroll_value(window: &LushtextWindow) -> i32 {
         .extent
         .expect("an unpinned extent")
         .value_px
+        .as_sp()
 }
 
 fn max_value(window: &LushtextWindow) -> i32 {
@@ -268,6 +269,7 @@ fn max_value(window: &LushtextWindow) -> i32 {
         .extent
         .expect("an unpinned extent")
         .max_value()
+        .as_sp()
 }
 
 #[test]

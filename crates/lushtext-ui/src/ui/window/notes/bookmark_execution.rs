@@ -128,7 +128,7 @@ impl LushtextWindow {
     ) {
         let path = path.to_path_buf();
         let path_for_load = path.clone();
-        let started_at_generation = editor.bookmark_change_generation();
+        let started_at_generation = editor.bookmark_generation();
         let window_weak = self.downgrade();
         spawn_blocking_then(
             editor.clone(),
@@ -189,7 +189,7 @@ impl LushtextWindow {
                         }
                     }
                     Err(error) => {
-                        if editor.bookmark_change_generation() != started_at_generation {
+                        if editor.bookmark_generation() != started_at_generation {
                             return;
                         }
                         tracing::error!("Failed to load notes for {}: {error}", path.display());
@@ -809,7 +809,7 @@ impl NotesBrowserState {
     /// clears exactly once and a retained pending request cannot stall.
     fn finish_bookmark_preview_load(
         state: &Rc<Self>,
-        generation: u64,
+        generation: lushtext_model::values::FlightGeneration,
         completion: Option<(
             std::path::PathBuf,
             u32,
@@ -820,9 +820,11 @@ impl NotesBrowserState {
         let (accepted, next) = {
             let mut loads = state.preview_loads.borrow_mut();
             let accepted = ticket.may_publish(&NotesBrowserFacts::new(
-                loads.is_current(ticket.generation()),
+                super::seams::CoordinatorCurrency::from_is_current(
+                    loads.is_current(ticket.generation()),
+                ),
                 state.mode.get(),
-                state.disposed.get(),
+                super::seams::BrowserDisposal::from_disposed(state.disposed.get()),
             ));
             let next = loads.finish(ticket.generation());
             (accepted, next)
@@ -955,8 +957,10 @@ fn live_bookmark_excerpt_for_editor(
         first_line,
         target_line,
         lines,
-        first_line > 0,
-        last_line.saturating_add(1) < line_count,
+        bookmark_excerpt::BookmarkContextTruncation {
+            before: first_line > 0,
+            after: last_line.saturating_add(1) < line_count,
+        },
     )
 }
 

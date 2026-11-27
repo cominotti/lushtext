@@ -43,6 +43,7 @@
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
+use lushtext_model::values::ReplacePreviewGeneration;
 use lushtext_model::workspace::content_search::{
     ReplacePreviewOutcome, ReplacePreviewSkipReason, SearchMatchId,
 };
@@ -653,12 +654,12 @@ impl LushtextSearchPanel {
         }
     }
 
-    fn open_preview_generation(&self) -> u32 {
+    fn open_preview_generation(&self) -> ReplacePreviewGeneration {
         let imp = self.imp();
         if let Some(cancel) = imp.preview.preview_cancel_token.take() {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         }
-        let generation = imp.preview.preview_generation.get().wrapping_add(1);
+        let generation = imp.preview.preview_generation.get().next();
         imp.preview.preview_generation.set(generation);
         generation
     }

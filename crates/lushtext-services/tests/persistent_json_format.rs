@@ -165,7 +165,10 @@ fn golden_v1_fixtures_parse_supported_payloads() {
         fixture_bytes!("migration-ledger-v1.json"),
         KIND_MIGRATION_LEDGER,
     );
-    assert_eq!(ledger.next_generation, 2);
+    assert_eq!(
+        ledger.next_generation,
+        lushtext_model::values::MigrationGeneration::new(2)
+    );
     assert_eq!(ledger.entries[0].kinds[0].kind, MigrationKind::Bookmarks);
 
     assert_json_value_field(

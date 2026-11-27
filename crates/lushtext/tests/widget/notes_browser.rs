@@ -364,9 +364,9 @@ fn test_browser_dispatches_stay_within_their_measured_bounds() {
         retirement_turn,
     );
     if timing_verdicts_enforced() {
-        let interact = u128::from(B_INTERACT_US);
+        let interact = u128::from(B_INTERACT_US.as_us());
         assert!(
-            open_action.as_micros() < u128::from(B_SETTLE_US),
+            open_action.as_micros() < u128::from(B_SETTLE_US.as_us()),
             "{open_action:?}"
         );
         assert!(until_rows.as_micros() < 40 * MS, "{until_rows:?}");
@@ -389,7 +389,7 @@ fn test_browser_dispatches_stay_within_their_measured_bounds() {
             "the close input dispatch: {close_input:?}"
         );
         assert!(
-            close_frames.layout.as_micros() < u128::from(B_SETTLE_US),
+            close_frames.layout.as_micros() < u128::from(B_SETTLE_US.as_us()),
             "the close frames' layout (the dialog unmapped at the animation's end): {close_frames:?}"
         );
         assert!(
@@ -403,7 +403,7 @@ fn test_browser_dispatches_stay_within_their_measured_bounds() {
 /// first publish lists 32 rows, then 32 more a frame (D5), so each frame
 /// realizes about 32 rows (5–6 ms of layout on the optimized build, where
 /// `main` laid out about 205 in 36–38 ms); bounded by the frame budget.
-const FIRST_FRAME_LAYOUT_BOUND_US: u64 = B_SETTLE_US;
+const FIRST_FRAME_LAYOUT_BOUND_US: u64 = B_SETTLE_US.as_us();
 
 /// D2: a query that still lists the selected row keeps it selected and does
 /// not reload its preview.
@@ -619,7 +619,7 @@ fn test_a_20000_bookmark_editor_is_captured_in_bounded_turns() {
         snapshot.snapshot.turns, snapshot.snapshot.worst_turn_us
     );
     if timing_verdicts_enforced() {
-        assert!(snapshot.snapshot.worst_turn_us < B_SETTLE_US);
+        assert!(snapshot.snapshot.worst_turn_us < B_SETTLE_US.as_us());
     }
     dialog(&window).close();
     flush_events();
@@ -864,7 +864,7 @@ fn test_closing_a_scrolled_browser_retires_its_rows_in_slices() {
     let turn = window.notes_evidence().longest_row_retirement_turn_us;
     println!("list-budget-evidence {{\"case\":\"notes-retire-scrolled\",\"turn_us\":{turn}}}");
     if timing_verdicts_enforced() {
-        assert!(turn < B_INTERACT_US, "a retirement turn: {turn} us");
+        assert!(turn < B_INTERACT_US.as_us(), "a retirement turn: {turn} us");
     }
 }
 

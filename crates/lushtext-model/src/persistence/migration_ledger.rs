@@ -6,6 +6,7 @@
 //! bookmark, note, and local-history sidecars may be migrated afterward, so this
 //! model records what still needs retry if that background work is interrupted.
 
+use crate::values::MigrationGeneration;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -70,7 +71,7 @@ impl MigrationKindState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MigrationEntry {
     /// Monotonic identity for stale completion protection.
-    pub generation: u64,
+    pub generation: MigrationGeneration,
     /// Path before the user-visible rename.
     pub old_path: PathBuf,
     /// Path after the user-visible rename.
@@ -87,7 +88,7 @@ impl MigrationEntry {
     /// Build a new pending migration entry.
     #[must_use]
     pub fn new(
-        generation: u64,
+        generation: MigrationGeneration,
         old_path: PathBuf,
         new_path: PathBuf,
         kinds: &[MigrationKind],
@@ -149,7 +150,7 @@ impl MigrationEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MigrationLedgerDocument {
     /// Next generation to allocate for newly created entries.
-    pub next_generation: u64,
+    pub next_generation: MigrationGeneration,
     /// Pending or recently updated migration entries.
     pub entries: Vec<MigrationEntry>,
 }
@@ -157,7 +158,7 @@ pub struct MigrationLedgerDocument {
 impl Default for MigrationLedgerDocument {
     fn default() -> Self {
         Self {
-            next_generation: 1,
+            next_generation: MigrationGeneration::new(1),
             entries: Vec::new(),
         }
     }
@@ -165,14 +166,14 @@ impl Default for MigrationLedgerDocument {
 
 impl MigrationLedgerDocument {
     /// Allocate a monotonic generation.
-    pub fn allocate_generation(&mut self) -> u64 {
-        let generation = self.next_generation.max(1);
-        self.next_generation = generation.saturating_add(1);
+    pub fn allocate_generation(&mut self) -> MigrationGeneration {
+        let generation = MigrationGeneration::new(self.next_generation.get().max(1));
+        self.next_generation = MigrationGeneration::new(generation.get().saturating_add(1));
         generation
     }
 
     /// Find an entry by generation.
-    pub fn entry_mut(&mut self, generation: u64) -> Option<&mut MigrationEntry> {
+    pub fn entry_mut(&mut self, generation: MigrationGeneration) -> Option<&mut MigrationEntry> {
         self.entries
             .iter_mut()
             .find(|entry| entry.generation == generation)
@@ -199,7 +200,7 @@ mod tests {
     #[test]
     fn migration_entry_matches_both_old_and_new_paths_exactly() {
         let entry = MigrationEntry::new(
-            7,
+            MigrationGeneration::new(7),
             PathBuf::from("/old"),
             PathBuf::from("/new"),
             &[MigrationKind::Bookmarks],
@@ -215,11 +216,11 @@ mod tests {
     fn migration_ledger_allocates_monotonic_nonzero_generations() {
         let mut ledger = MigrationLedgerDocument::default();
 
-        assert_eq!(ledger.allocate_generation(), 1);
-        assert_eq!(ledger.allocate_generation(), 2);
+        assert_eq!(ledger.allocate_generation(), MigrationGeneration::new(1));
+        assert_eq!(ledger.allocate_generation(), MigrationGeneration::new(2));
 
-        ledger.next_generation = 0;
-        assert_eq!(ledger.allocate_generation(), 1);
-        assert_eq!(ledger.next_generation, 2);
+        ledger.next_generation = MigrationGeneration::ZERO;
+        assert_eq!(ledger.allocate_generation(), MigrationGeneration::new(1));
+        assert_eq!(ledger.next_generation, MigrationGeneration::new(2));
     }
 }

@@ -31,6 +31,7 @@ use gtk4::glib;
 
 use super::policy::SessionRestoreTurnMetrics;
 use crate::ui::window::LushtextWindow;
+use lushtext_model::values::{FailedRestoreGeneration, RestoreGeneration, SelectionGeneration};
 
 /// One consistent read of the session-restore workflow.
 ///
@@ -47,7 +48,7 @@ pub struct SessionRestoreEvidence {
     /// save-workflow state.
     pub save_failed: bool,
     /// Generation of the newest failed session save.
-    pub failed_generation: u32,
+    pub failed_generation: FailedRestoreGeneration,
     /// Whether a failure detail is retained for the close-flow warning.
     ///
     /// A bool rather than the string: the detail can contain a filesystem path,
@@ -79,7 +80,7 @@ pub struct SessionRestoreEvidence {
     /// Whether tab-derived projections are deferred by a restore batch.
     pub projection_deferred: bool,
     /// The active generation's identity, or the last one's after it settled.
-    pub generation: u64,
+    pub generation: RestoreGeneration,
     /// Total compact descriptors this generation started with.
     pub total_descriptors: usize,
     /// Pages this generation has created.
@@ -110,7 +111,7 @@ pub struct SessionRestoreEvidence {
     /// Whether the last generation was cancelled rather than completed.
     pub cancelled: bool,
     /// Accepted user or CLI tab-selection intents since construction.
-    pub selection_generation: u64,
+    pub selection_generation: SelectionGeneration,
 
     // --- window shell ---
     /// Mounted tab pages, or `None` when the template child is gone.

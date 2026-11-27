@@ -19,6 +19,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 
 use lushtext_model::persistence::session::SessionData;
+use lushtext_model::values::{RestoreGeneration, SelectionGeneration};
 
 use super::policy::{SessionRestorePlanPermit, SessionRestorePolicy};
 use super::{evidence, execution};
@@ -34,25 +35,40 @@ pub(crate) struct SessionRestoreRuntime {
     pub(super) projection_batch_owned: bool,
     pub(super) cleanup_allowed_on_terminal: bool,
     /// Selection intent generation captured before restore-owned tab mutations begin.
-    pub(super) selection_generation: u64,
+    pub(super) selection_generation: SelectionGeneration,
+}
+
+#[derive(Clone, Copy)]
+enum RestoreSelectionPolicy {
+    PreserveExisting,
+    SelectRestored,
+}
+
+#[derive(Clone, Copy)]
+enum OrphanCleanupPolicy {
+    Allowed,
+    Deferred,
 }
 
 impl SessionRestoreRuntime {
     fn new(
         policy: SessionRestorePolicy,
-        preserve_existing_selection: bool,
+        selection: RestoreSelectionPolicy,
         selected_before: Option<glib::WeakRef<libadwaita::TabPage>>,
-        cleanup_allowed_on_terminal: bool,
-        selection_generation: u64,
+        cleanup: OrphanCleanupPolicy,
+        selection_generation: SelectionGeneration,
     ) -> Self {
         Self {
             policy,
             scheduled_source: None,
-            preserve_existing_selection,
+            preserve_existing_selection: matches!(
+                selection,
+                RestoreSelectionPolicy::PreserveExisting
+            ),
             selected_before,
             requested_page: None,
             projection_batch_owned: true,
-            cleanup_allowed_on_terminal,
+            cleanup_allowed_on_terminal: matches!(cleanup, OrphanCleanupPolicy::Allowed),
             selection_generation,
         }
     }
@@ -76,9 +92,18 @@ impl LushtextWindow {
         }
 
         let state = &self.imp().session;
-        let generation = state.next_restore_generation.get().wrapping_add(1);
+        let generation = state.next_restore_generation.get().next();
         state.next_restore_generation.set(generation);
-        let preserve_existing_selection = self.imp().tab_view.n_pages() > 0;
+        let selection_policy = if self.imp().tab_view.n_pages() > 0 {
+            RestoreSelectionPolicy::PreserveExisting
+        } else {
+            RestoreSelectionPolicy::SelectRestored
+        };
+        let cleanup_policy = if cleanup_allowed {
+            OrphanCleanupPolicy::Allowed
+        } else {
+            OrphanCleanupPolicy::Deferred
+        };
         let selected_before = self
             .imp()
             .tab_view
@@ -93,15 +118,15 @@ impl LushtextWindow {
             .restore_runtime
             .replace(Some(SessionRestoreRuntime::new(
                 policy,
-                preserve_existing_selection,
+                selection_policy,
                 selected_before,
-                cleanup_allowed,
+                cleanup_policy,
                 selection_generation,
             )));
         self.schedule_session_restore_turn(generation);
     }
 
-    pub(super) fn schedule_session_restore_turn(&self, generation: u64) {
+    pub(super) fn schedule_session_restore_turn(&self, generation: RestoreGeneration) {
         let mut runtime = self.imp().session.restore_runtime.borrow_mut();
         let Some(runtime) = runtime.as_mut() else {
             return;
@@ -122,7 +147,7 @@ impl LushtextWindow {
         runtime.scheduled_source = Some(source_id);
     }
 
-    fn run_scheduled_session_restore_turn(&self, generation: u64) {
+    fn run_scheduled_session_restore_turn(&self, generation: RestoreGeneration) {
         let newer_selection = {
             let runtime = self.imp().session.restore_runtime.borrow();
             runtime.as_ref().and_then(|runtime| {
@@ -211,7 +236,7 @@ impl LushtextWindow {
         }
     }
 
-    fn restore_preexisting_selection(&self, generation: u64) {
+    fn restore_preexisting_selection(&self, generation: RestoreGeneration) {
         let selected = {
             let runtime = self.imp().session.restore_runtime.borrow();
             runtime.as_ref().and_then(|runtime| {
@@ -233,7 +258,7 @@ impl LushtextWindow {
         }
     }
 
-    fn finish_session_restore(&self, generation: u64) {
+    fn finish_session_restore(&self, generation: RestoreGeneration) {
         let Some(mut runtime) = self.imp().session.restore_runtime.take() else {
             return;
         };

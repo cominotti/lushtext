@@ -148,7 +148,14 @@ proptest! {
             &[search_match],
             r"([a-z]+)_([a-z]+)",
             "$2-$1",
-            &ContentSearchOptions::new(true, true, false, true, None),
+            &ContentSearchOptions::new(
+                lushtext_model::workspace::content_search::ContentSearchFlags {
+                    case_sensitive: true,
+                    regex: true,
+                    ..Default::default()
+                },
+                None,
+            ),
         );
         let expected = format!("prefix {second}-{first} suffix");
 

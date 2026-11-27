@@ -95,22 +95,30 @@ pub fn set_draft_manifest_completion_delay_for_test(delay_ms: u64) {
         .store(delay_ms, Ordering::Release);
 }
 
+/// Selected draft recovery stages to inject failures into on the next write pass.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DraftMutationFailurePlan {
+    pub body: bool,
+    pub manifest: bool,
+    pub delete: bool,
+    pub registration: bool,
+}
+
 /// Inject one failure at each selected production-routed mutation stage: the
 /// next body write, the next manifest commit, the next delete, and the next
 /// write-ahead registration commit (as a manifest write that did not reach
 /// the disk would leave it).
-pub fn fail_next_draft_mutations_for_test(
-    body: bool,
-    manifest: bool,
-    delete: bool,
-    registration: bool,
-) {
-    POLICY.fail_next_body.store(body, Ordering::Release);
-    POLICY.fail_next_manifest.store(manifest, Ordering::Release);
-    POLICY.fail_next_delete.store(delete, Ordering::Release);
+pub fn fail_next_draft_mutations_for_test(plan: DraftMutationFailurePlan) {
+    POLICY.fail_next_body.store(plan.body, Ordering::Release);
+    POLICY
+        .fail_next_manifest
+        .store(plan.manifest, Ordering::Release);
+    POLICY
+        .fail_next_delete
+        .store(plan.delete, Ordering::Release);
     POLICY
         .fail_next_registration
-        .store(registration, Ordering::Release);
+        .store(plan.registration, Ordering::Release);
 }
 
 /// Configure orphan-cleanup timer and worker delays for deterministic widget tests.

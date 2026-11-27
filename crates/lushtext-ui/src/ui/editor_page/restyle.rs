@@ -52,6 +52,7 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use super::LushtextEditorPage;
 use super::load::policy::{ParagraphSpan, RestyleCursor, next_restyle_range};
 use lushtext_model::document::buffer_replacement::V_SLICE;
+use lushtext_model::values::RestyleGeneration;
 
 /// The most lines a document may have for its reattach to be paced
 /// (`prepare_paced_reattach`): about 6.5 ms of hidden-line validation in the
@@ -67,7 +68,7 @@ pub struct RestyleState {
     cursor: Cell<Option<RestyleCursor>>,
     /// The visible paragraphs when the restyle started: revealed already.
     visible: Cell<ParagraphSpan>,
-    generation: Cell<u64>,
+    generation: Cell<RestyleGeneration>,
     source: RefCell<Option<glib::SourceId>>,
     map_handler: RefCell<Option<glib::SignalHandlerId>>,
     /// Evidence: restyles started, reveal dispatches, and the most visible
@@ -166,7 +167,7 @@ impl LushtextEditorPage {
             return false;
         }
         let state = &self.imp().restyle;
-        state.generation.set(state.generation.get().wrapping_add(1));
+        state.generation.set(state.generation.get().next());
         if let Some(source) = state.source.take() {
             source.remove();
         }
@@ -231,7 +232,7 @@ impl LushtextEditorPage {
     /// Retire the reveal source and handler (from `dispose`).
     pub(crate) fn dispose_restyle(&self) {
         let state = &self.imp().restyle;
-        state.generation.set(state.generation.get().wrapping_add(1));
+        state.generation.set(state.generation.get().next());
         if let Some(source) = state.source.take() {
             source.remove();
         }
@@ -277,7 +278,7 @@ impl LushtextEditorPage {
         if state.cursor.get().is_none() {
             return;
         }
-        state.generation.set(state.generation.get().wrapping_add(1));
+        state.generation.set(state.generation.get().next());
         if let Some(source) = state.source.take() {
             source.remove();
         }
@@ -344,7 +345,7 @@ impl LushtextEditorPage {
 
     /// Queue the next reveal dispatch at `G_PRIORITY_LOW`; it waits for the
     /// frame that shows the latest key first (`input_quiet::paced_idle`).
-    fn queue_reveal(&self, generation: u64) {
+    fn queue_reveal(&self, generation: RestyleGeneration) {
         let (editor, store) = (self.downgrade(), self.downgrade());
         crate::ui::input_quiet::paced_idle(
             glib::Priority::LOW,

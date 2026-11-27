@@ -25,6 +25,7 @@ use crate::ui::editor_page::LushtextEditorPage;
 use lushtext_model::persistence::draft::{
     DraftEntry, DraftManifestAuthority, FileDraftRestoreSkip, PreloadedDraftSkip,
 };
+use lushtext_model::values::{DraftGeneration, LoadGeneration};
 use lushtext_services::persistence::draft_service;
 
 use super::policy::DraftMutationIntent;
@@ -35,7 +36,7 @@ pub(super) struct DirtyDraftCompletion {
     /// Stable identity accepted by the body writer.
     pub(super) draft_id: String,
     /// Dirty generation that may be cleared after manifest acceptance.
-    pub(super) dirty_generation: u64,
+    pub(super) dirty_generation: DraftGeneration,
     /// Weak target so pending work never retains a closed tab.
     pub(super) editor: glib::WeakRef<LushtextEditorPage>,
     /// Main-thread intent assigned before snapshot admission.
@@ -54,7 +55,7 @@ pub(super) struct DirtyDraftCandidate {
     /// Live path used to record file freshness metadata.
     pub(super) original_path: Option<PathBuf>,
     /// Generation that must still match before publishing the snapshot.
-    pub(super) dirty_generation: u64,
+    pub(super) dirty_generation: DraftGeneration,
     /// Weak editor used for freshness checks without extending tab lifetime.
     pub(super) editor: glib::WeakRef<LushtextEditorPage>,
     /// GTK-owned buffer read only by the main-loop snapshot stage.
@@ -191,9 +192,9 @@ pub(crate) struct DraftRestoreTicket {
     /// File identity captured before dispatch for stale rejection.
     pub(super) expected_path: Option<PathBuf>,
     /// Buffer generation that must match before applying recovered text.
-    pub(super) dirty_generation: u64,
+    pub(super) dirty_generation: DraftGeneration,
     /// File-load generation that prevents restore crossing a reopen.
-    pub(super) load_generation: u64,
+    pub(super) load_generation: LoadGeneration,
 }
 
 #[derive(Clone, Copy)]
@@ -226,8 +227,8 @@ pub(super) enum GuardedPreloadedDraftRestore {
 pub(super) struct DraftRestoreFacts {
     pub(super) draft_id: Option<String>,
     pub(super) path: Option<PathBuf>,
-    pub(super) dirty_generation: u64,
-    pub(super) load_generation: u64,
+    pub(super) dirty_generation: DraftGeneration,
+    pub(super) load_generation: LoadGeneration,
     pub(super) manifest_entry: Option<DraftEntry>,
 }
 
@@ -248,8 +249,8 @@ impl DraftRestoreTicket {
             entry,
             editor: editor.downgrade(),
             expected_path: editor.file_path(),
-            dirty_generation: editor.draft_dirty_generation(),
-            load_generation: editor.load_generation(),
+            dirty_generation: editor.draft_generation(),
+            load_generation: editor.typed_load_generation(),
         }
     }
 
@@ -258,8 +259,8 @@ impl DraftRestoreTicket {
         let facts = DraftRestoreFacts {
             draft_id: editor.draft_id(),
             path: editor.file_path(),
-            dirty_generation: editor.draft_dirty_generation(),
-            load_generation: editor.load_generation(),
+            dirty_generation: editor.draft_generation(),
+            load_generation: editor.typed_load_generation(),
             manifest_entry: window
                 .imp()
                 .drafts
@@ -300,8 +301,15 @@ mod tests {
     use super::*;
 
     fn untitled_token(draft_id: &str) -> draft_service::RegisteredDraft {
-        draft_service::RegisteredDraft::without_registration(draft_id, false, false, false)
-            .expect("an untitled id needs no registration")
+        draft_service::RegisteredDraft::without_registration(
+            draft_id,
+            draft_service::journal_core::RegistrationFacts {
+                file_backed: false,
+                registered_in_known_manifest: false,
+                known_manifest_trusted: false,
+            },
+        )
+        .expect("an untitled id needs no registration")
     }
 
     /// The pairing check behind `into_writable` keeps a token only for its
@@ -340,8 +348,8 @@ mod tests {
             entry: entry("restore", 1),
             editor: glib::WeakRef::new(),
             expected_path: Some(PathBuf::from("/restore.rs")),
-            dirty_generation: 3,
-            load_generation: 5,
+            dirty_generation: DraftGeneration::new(3),
+            load_generation: LoadGeneration::new(5),
         }
     }
 
@@ -372,14 +380,14 @@ mod tests {
         );
 
         let mut edited = restore_facts();
-        edited.dirty_generation += 1;
+        edited.dirty_generation = edited.dirty_generation.next();
         assert!(
             !draft_restore_is_current(&ticket, &edited),
             "an edit after dispatch must reject the restore"
         );
 
         let mut reloaded = restore_facts();
-        reloaded.load_generation += 1;
+        reloaded.load_generation = reloaded.load_generation.next();
         assert!(
             !draft_restore_is_current(&ticket, &reloaded),
             "a reopen after dispatch must reject the restore"

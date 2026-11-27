@@ -233,7 +233,7 @@ impl LushtextSearchPanel {
     /// `retirement`, so readiness stays pending until the disposer drains.
     pub fn close(&self) {
         self.cancel_active_search();
-        self.clear_results(false, false);
+        self.clear_results(execution::ClearResultsPersistence::RESET);
         self.refresh_accessibility_state();
     }
 

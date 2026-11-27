@@ -64,7 +64,7 @@ pub fn candidate_is_still_evictable(recheck: EvictionRecheck) -> bool {
 /// is exactly what cannot be trusted in that state.
 #[must_use]
 pub fn aggregate_pass_is_warranted(total_bytes: u64, accounting_uncertain: bool) -> bool {
-    total_bytes > EDITOR_MEMORY_UPPER_BUDGET_BYTES || accounting_uncertain
+    total_bytes > EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes() || accounting_uncertain
 }
 
 /// What removing one editor's record leaves the workflow to do.
@@ -82,23 +82,32 @@ pub enum UntrackDisposition {
     RecordWithinBudget,
 }
 
+/// Facts evaluated when an editor leaves or changes residency in the memory ledger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UntrackFacts {
+    /// Whether an eviction evaluation pass is currently running.
+    pub evaluation_running: bool,
+    /// Whether this removal is an eviction applied by the running pass.
+    pub applying_eviction: bool,
+    /// Updated saturating total across remaining resident editors, if any remain.
+    pub remaining_total_bytes: Option<u64>,
+    /// Whether accounting has missed or uncertain byte measurements.
+    pub accounting_uncertain: bool,
+}
+
 /// Decide what an untracked editor leaves behind.
 #[must_use]
-pub fn untrack_disposition(
-    evaluation_running: bool,
-    applying_eviction: bool,
-    remaining_total_bytes: Option<u64>,
-    accounting_uncertain: bool,
-) -> UntrackDisposition {
-    if evaluation_running {
-        if applying_eviction {
+pub fn untrack_disposition(facts: UntrackFacts) -> UntrackDisposition {
+    if facts.evaluation_running {
+        if facts.applying_eviction {
             return UntrackDisposition::IgnoreOwnEviction;
         }
         return UntrackDisposition::RearmRunningPass;
     }
-    let warranted = remaining_total_bytes
-        .is_some_and(|total| total > EDITOR_MEMORY_UPPER_BUDGET_BYTES)
-        || accounting_uncertain;
+    let warranted = facts
+        .remaining_total_bytes
+        .is_some_and(|total| total > EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes())
+        || facts.accounting_uncertain;
     if warranted {
         UntrackDisposition::SchedulePass
     } else {
@@ -132,7 +141,7 @@ impl ContinuationStep {
 /// Decide whether the bounded continuation keeps going.
 #[must_use]
 pub fn continuation_step(projected_bytes: u64, candidates_remaining: bool) -> ContinuationStep {
-    if projected_bytes <= EDITOR_MEMORY_LOWER_WATER_BYTES {
+    if projected_bytes <= EDITOR_MEMORY_LOWER_WATER_BYTES.as_bytes() {
         ContinuationStep::Converged
     } else if candidates_remaining {
         ContinuationStep::Continue
@@ -201,11 +210,11 @@ mod tests {
     fn a_pass_is_warranted_over_budget_or_when_accounting_is_uncertain() {
         assert!(!aggregate_pass_is_warranted(0, false));
         assert!(!aggregate_pass_is_warranted(
-            EDITOR_MEMORY_UPPER_BUDGET_BYTES,
+            EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes(),
             false
         ));
         assert!(aggregate_pass_is_warranted(
-            EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1,
+            EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes() + 1,
             false
         ));
         assert!(
@@ -217,7 +226,12 @@ mod tests {
     #[test]
     fn an_untrack_during_our_own_eviction_does_not_rearm() {
         assert_eq!(
-            untrack_disposition(true, true, Some(u64::MAX), true),
+            untrack_disposition(UntrackFacts {
+                evaluation_running: true,
+                applying_eviction: true,
+                remaining_total_bytes: Some(u64::MAX),
+                accounting_uncertain: true,
+            }),
             UntrackDisposition::IgnoreOwnEviction
         );
     }
@@ -225,7 +239,12 @@ mod tests {
     #[test]
     fn a_foreign_untrack_during_a_pass_rearms_it() {
         assert_eq!(
-            untrack_disposition(true, false, Some(0), false),
+            untrack_disposition(UntrackFacts {
+                evaluation_running: true,
+                applying_eviction: false,
+                remaining_total_bytes: Some(0),
+                accounting_uncertain: false,
+            }),
             UntrackDisposition::RearmRunningPass,
             "membership changed under a running plan; it must resnapshot"
         );
@@ -234,24 +253,39 @@ mod tests {
     #[test]
     fn an_idle_untrack_schedules_only_when_warranted() {
         assert_eq!(
-            untrack_disposition(
-                false,
-                false,
-                Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1),
-                false
-            ),
+            untrack_disposition(UntrackFacts {
+                evaluation_running: false,
+                applying_eviction: false,
+                remaining_total_bytes: Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES.as_bytes() + 1),
+                accounting_uncertain: false,
+            }),
             UntrackDisposition::SchedulePass
         );
         assert_eq!(
-            untrack_disposition(false, false, Some(0), true),
+            untrack_disposition(UntrackFacts {
+                evaluation_running: false,
+                applying_eviction: false,
+                remaining_total_bytes: Some(0),
+                accounting_uncertain: true,
+            }),
             UntrackDisposition::SchedulePass
         );
         assert_eq!(
-            untrack_disposition(false, false, Some(0), false),
+            untrack_disposition(UntrackFacts {
+                evaluation_running: false,
+                applying_eviction: false,
+                remaining_total_bytes: Some(0),
+                accounting_uncertain: false,
+            }),
             UntrackDisposition::RecordWithinBudget
         );
         assert_eq!(
-            untrack_disposition(false, false, None, false),
+            untrack_disposition(UntrackFacts {
+                evaluation_running: false,
+                applying_eviction: false,
+                remaining_total_bytes: None,
+                accounting_uncertain: false,
+            }),
             UntrackDisposition::RecordWithinBudget,
             "no remaining record and certain accounting needs no pass"
         );
@@ -260,15 +294,15 @@ mod tests {
     #[test]
     fn the_continuation_converges_at_or_below_the_lower_water_line() {
         assert_eq!(
-            continuation_step(EDITOR_MEMORY_LOWER_WATER_BYTES, true),
+            continuation_step(EDITOR_MEMORY_LOWER_WATER_BYTES.as_bytes(), true),
             ContinuationStep::Converged
         );
         assert_eq!(
-            continuation_step(EDITOR_MEMORY_LOWER_WATER_BYTES + 1, true),
+            continuation_step(EDITOR_MEMORY_LOWER_WATER_BYTES.as_bytes() + 1, true),
             ContinuationStep::Continue
         );
         assert_eq!(
-            continuation_step(EDITOR_MEMORY_LOWER_WATER_BYTES + 1, false),
+            continuation_step(EDITOR_MEMORY_LOWER_WATER_BYTES.as_bytes() + 1, false),
             ContinuationStep::Exhausted
         );
     }

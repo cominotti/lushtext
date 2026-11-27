@@ -137,7 +137,7 @@ impl LushtextWindow {
 
     fn mark_recent_documents_changed(&self) {
         let state = &self.imp().recent_documents;
-        state.generation.set(state.generation.get().wrapping_add(1));
+        state.generation.set(state.generation.get().next());
     }
 
     fn schedule_recent_documents_save(&self) {

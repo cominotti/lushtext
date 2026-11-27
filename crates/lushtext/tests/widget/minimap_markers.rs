@@ -564,7 +564,10 @@ fn test_minimap_search_lane_returns_after_an_edit_and_a_scroll() {
     );
     assert!(returned, "the search lane returns once the rescan ends");
     if timing_verdicts_enforced() {
-        assert!(worst.as_micros() < u128::from(B_INTERACT_US), "{worst:?}");
+        assert!(
+            worst.as_micros() < u128::from(B_INTERACT_US.as_us()),
+            "{worst:?}"
+        );
     }
     window.destroy();
 }
@@ -666,7 +669,10 @@ fn test_minimap_search_markers_appear_before_the_scan_completes() {
         line_rows_in_strip(&page, last)
     ));
     if timing_verdicts_enforced() {
-        assert!(worst.as_micros() < u128::from(B_INTERACT_US), "{worst:?}");
+        assert!(
+            worst.as_micros() < u128::from(B_INTERACT_US.as_us()),
+            "{worst:?}"
+        );
     }
     window.destroy();
 }
@@ -845,7 +851,7 @@ fn test_minimap_marker_work_fits_the_budgets_at_131072_markers() {
             page.minimap_evidence().retirement_slices,
         );
         if timing_verdicts_enforced() {
-            let interact = u128::from(B_INTERACT_US);
+            let interact = u128::from(B_INTERACT_US.as_us());
             assert!(bins_worst.as_micros() < interact, "bins {bins_worst:?}");
             assert!(save_us.as_micros() < interact, "save {save_us:?}");
             // A slice's own work is the minimap's; the window it runs in also
@@ -855,11 +861,11 @@ fn test_minimap_marker_work_fits_the_budgets_at_131072_markers() {
                 "slice {slice_worst_us} µs"
             );
             assert!(
-                retire_worst.as_micros() < u128::from(B_SETTLE_US),
+                retire_worst.as_micros() < u128::from(B_SETTLE_US.as_us()),
                 "retirement {retire_worst:?}"
             );
             assert!(
-                frame_worst.as_micros() < u128::from(B_SETTLE_US),
+                frame_worst.as_micros() < u128::from(B_SETTLE_US.as_us()),
                 "frame {frame_worst:?}"
             );
         }

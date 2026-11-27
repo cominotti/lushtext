@@ -42,6 +42,7 @@ use crate::ui::editor_page::LushtextEditorPage;
 /// so a later change that made them differ would compile and pass.
 use crate::ui::plain_disposal::PROGRESS_DISPOSAL_RETAINED_BYTE_CAPACITY as STARTUP_PRELOAD_RESERVATION_BYTES;
 use lushtext_model::persistence::session::{SessionData, SessionTab};
+use lushtext_model::values::FailedRestoreGeneration;
 use lushtext_services::coordination::notifications::NotificationSeverity;
 use lushtext_services::persistence::recovery_metadata::RecoveryDiagnostic;
 use lushtext_services::{
@@ -224,7 +225,7 @@ impl LushtextWindow {
                 {
                     return;
                 }
-                let generation = token.value();
+                let generation = FailedRestoreGeneration::new(token.value());
                 let session = window.process_session(Self::collect_session);
                 let data_dir = json_store::data_dir();
                 // Ordered process-wide: the windows' own debounce generations
@@ -249,7 +250,8 @@ impl LushtextWindow {
 
     /// Synchronous session save for the close-request path.
     pub fn save_session_sync(&self) {
-        let generation = self.imp().session.save_debounce.advance().value();
+        let generation =
+            FailedRestoreGeneration::new(self.imp().session.save_debounce.advance().value());
         let ordered_generation = self.next_process_session_generation();
         let data_dir = json_store::data_dir();
         let session = if self.process_session_descriptors_pending() {
@@ -278,7 +280,8 @@ impl LushtextWindow {
         &self,
         on_done: F,
     ) {
-        let generation = self.imp().session.save_debounce.advance().value();
+        let generation =
+            FailedRestoreGeneration::new(self.imp().session.save_debounce.advance().value());
         let ordered_generation = self.next_process_session_generation();
         let descriptors_pending = self.process_session_descriptors_pending();
         let session = if descriptors_pending {
@@ -434,7 +437,12 @@ impl LushtextWindow {
         self.publish_status_message(&message, NotificationSeverity::Warning);
     }
 
-    fn record_session_save_failure(&self, generation: u32, detail: &str, visible: bool) {
+    fn record_session_save_failure(
+        &self,
+        generation: FailedRestoreGeneration,
+        detail: &str,
+        visible: bool,
+    ) {
         let session = &self.imp().session;
         session.save_failed.set(true);
         session.failed_generation.set(generation);
@@ -447,13 +455,13 @@ impl LushtextWindow {
         }
     }
 
-    fn clear_session_save_failure(&self, generation: u32) {
+    fn clear_session_save_failure(&self, generation: FailedRestoreGeneration) {
         let session = &self.imp().session;
         // A late successful save must not clear a newer failure banner, so only
         // the same or newer generation may mark the session state healthy again.
         if session.save_failed.get() && generation >= session.failed_generation.get() {
             session.save_failed.set(false);
-            session.failed_generation.set(0);
+            session.failed_generation.set(FailedRestoreGeneration::ZERO);
             session.failure_detail.borrow_mut().take();
         }
     }

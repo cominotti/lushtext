@@ -85,6 +85,7 @@ use crate::ui::editor_page::LushtextEditorPage;
 use lushtext_model::document::editor_memory::{
     EditorMemoryBudgetOutcome, EditorResidency, evaluate_editor_memory_budget,
 };
+use lushtext_model::values::{Bytes, EditorId};
 
 use super::LushtextWindow;
 use policy::UntrackDisposition;
@@ -118,7 +119,7 @@ impl LushtextWindow {
 
     /// Remove one detached editor's scalar record without walking remaining tabs.
     pub(super) fn untrack_editor_memory(&self, editor: &LushtextEditorPage) {
-        let editor_id = editor.as_ptr() as usize;
+        let editor_id = EditorId::new(editor.as_ptr() as usize);
         let state = &self.imp().editor_memory;
         let update = state.ledger.borrow_mut().remove(editor_id);
         if state
@@ -131,12 +132,12 @@ impl LushtextWindow {
             state.active_editor.borrow_mut().take();
         }
 
-        match policy::untrack_disposition(
-            state.evaluation_running.get(),
-            state.applying_eviction.get(),
-            update.map(|update| update.total_bytes),
-            state.accounting_uncertain.get(),
-        ) {
+        match policy::untrack_disposition(policy::UntrackFacts {
+            evaluation_running: state.evaluation_running.get(),
+            applying_eviction: state.applying_eviction.get(),
+            remaining_total_bytes: update.map(|update| update.total_bytes.as_bytes()),
+            accounting_uncertain: state.accounting_uncertain.get(),
+        }) {
             UntrackDisposition::RearmRunningPass => state.evaluation_armed.set(true),
             UntrackDisposition::IgnoreOwnEviction => {}
             UntrackDisposition::SchedulePass => self.schedule_editor_memory_evaluation(),
@@ -161,7 +162,7 @@ impl LushtextWindow {
         }
         let active_weak = editor.downgrade();
         state.active_editor.replace(Some(active_weak));
-        let generation = state.next_access_generation.get().wrapping_add(1);
+        let generation = state.next_access_generation.get().next();
         state.next_access_generation.set(generation);
         editor.mark_memory_accessed(generation);
     }
@@ -182,7 +183,7 @@ impl LushtextWindow {
     /// Schedule the same coalesced evaluation used by live editor callbacks.
     pub(super) fn maybe_evict_background_tabs(&self) {
         let memory = &self.imp().editor_memory;
-        let total = memory.ledger.borrow().total_bytes();
+        let total = memory.ledger.borrow().total_bytes().as_bytes();
         if policy::aggregate_pass_is_warranted(total, memory.accounting_uncertain.get()) {
             self.schedule_editor_memory_evaluation();
         }
@@ -191,7 +192,7 @@ impl LushtextWindow {
     /// Stages 1 and 2 — refresh one record and enforce only when needed.
     fn update_editor_memory_record(&self, editor: &LushtextEditorPage) {
         let state = &self.imp().editor_memory;
-        let editor_id = editor.as_ptr() as usize;
+        let editor_id = EditorId::new(editor.as_ptr() as usize);
         if !editor.is_ancestor(&*self.imp().tab_view) {
             // A delayed callback from a detached page must not resurrect its
             // record after the trusted detach delta removed it.
@@ -201,18 +202,18 @@ impl LushtextWindow {
         let active = self.is_selected_editor(editor);
         let update = state.ledger.borrow_mut().upsert(EditorResidency {
             editor_id,
-            estimated_bytes: editor.estimated_live_buffer_bytes(),
+            estimated_bytes: Bytes::from_bytes(editor.estimated_live_buffer_bytes()),
             access_generation: editor.memory_access_generation(),
             policy_generation: editor.memory_policy_generation(),
             eligible_for_eviction: editor.eligible_for_memory_eviction(active),
         });
 
-        match policy::untrack_disposition(
-            state.evaluation_running.get(),
-            state.applying_eviction.get(),
-            Some(update.total_bytes),
-            state.accounting_uncertain.get(),
-        ) {
+        match policy::untrack_disposition(policy::UntrackFacts {
+            evaluation_running: state.evaluation_running.get(),
+            applying_eviction: state.applying_eviction.get(),
+            remaining_total_bytes: Some(update.total_bytes.as_bytes()),
+            accounting_uncertain: state.accounting_uncertain.get(),
+        }) {
             UntrackDisposition::RearmRunningPass => state.evaluation_armed.set(true),
             UntrackDisposition::IgnoreOwnEviction => {}
             UntrackDisposition::SchedulePass => self.schedule_editor_memory_evaluation(),
@@ -301,8 +302,8 @@ impl LushtextWindow {
             if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
                 let active = selected.as_ref() == Some(&page);
                 snapshot.push(EditorResidency {
-                    editor_id: editor.as_ptr() as usize,
-                    estimated_bytes: editor.estimated_live_buffer_bytes(),
+                    editor_id: EditorId::new(editor.as_ptr() as usize),
+                    estimated_bytes: Bytes::from_bytes(editor.estimated_live_buffer_bytes()),
                     access_generation: editor.memory_access_generation(),
                     policy_generation: editor.memory_policy_generation(),
                     // Every uncertain or non-recoverable state stays protected.

@@ -40,6 +40,7 @@ use lushtext_model::persistence::local_history::{
     LocalHistorySnapshotOrigin,
 };
 use lushtext_model::persistence::sidecar_identity::{DocumentSidecarIdentity, stable_bytes_hash};
+use lushtext_model::values::HistoryPreviewGeneration;
 
 /// Snapshot files stay plain UTF-8 text so restore and debugging remain simple.
 const SNAPSHOT_EXTENSION: &str = "txt";
@@ -132,7 +133,7 @@ pub enum LocalHistoryPreviewLoadOutcome {
 #[derive(Debug)]
 pub struct LocalHistoryPreviewStart {
     /// Monotonic selection generation.
-    pub generation: u64,
+    pub generation: HistoryPreviewGeneration,
     /// Compact path and snapshot identity.
     pub request: LocalHistoryPreviewRequest,
     /// Cancellation token shared with the worker.
@@ -141,13 +142,13 @@ pub struct LocalHistoryPreviewStart {
 
 #[derive(Debug)]
 struct ActiveLocalHistoryPreview {
-    generation: u64,
+    generation: HistoryPreviewGeneration,
     cancellation: LocalHistoryPreviewCancellation,
 }
 
 #[derive(Debug)]
 struct PendingLocalHistoryPreview {
-    generation: u64,
+    generation: HistoryPreviewGeneration,
     request: LocalHistoryPreviewRequest,
 }
 
@@ -171,7 +172,7 @@ pub struct LocalHistoryPreviewCoordinatorSnapshot {
 /// Serialize preview loads while retaining only the latest superseding selection.
 #[derive(Debug, Default)]
 pub struct LocalHistoryPreviewCoordinator {
-    current_generation: u64,
+    current_generation: HistoryPreviewGeneration,
     active: Option<ActiveLocalHistoryPreview>,
     pending: Option<PendingLocalHistoryPreview>,
     snapshot: LocalHistoryPreviewCoordinatorSnapshot,
@@ -183,7 +184,7 @@ impl LocalHistoryPreviewCoordinator {
         &mut self,
         request: LocalHistoryPreviewRequest,
     ) -> Option<LocalHistoryPreviewStart> {
-        self.current_generation = self.current_generation.wrapping_add(1);
+        self.current_generation = self.current_generation.next();
         let generation = self.current_generation;
         if let Some(active) = self.active.as_ref() {
             if active.cancellation.cancel() {
@@ -202,7 +203,10 @@ impl LocalHistoryPreviewCoordinator {
     }
 
     /// Finish the active generation and start the latest retained selection.
-    pub fn finish(&mut self, generation: u64) -> Option<LocalHistoryPreviewStart> {
+    pub fn finish(
+        &mut self,
+        generation: HistoryPreviewGeneration,
+    ) -> Option<LocalHistoryPreviewStart> {
         if self.active.as_ref().map(|active| active.generation) != Some(generation) {
             return None;
         }
@@ -214,7 +218,7 @@ impl LocalHistoryPreviewCoordinator {
 
     /// Cancel active work and discard any pending selection.
     pub fn invalidate(&mut self) {
-        self.current_generation = self.current_generation.wrapping_add(1);
+        self.current_generation = self.current_generation.next();
         if let Some(active) = self.active.as_ref()
             && active.cancellation.cancel()
         {
@@ -226,7 +230,7 @@ impl LocalHistoryPreviewCoordinator {
 
     /// Return whether a completion or install still belongs to the latest selection.
     #[must_use]
-    pub fn is_current(&self, generation: u64) -> bool {
+    pub fn is_current(&self, generation: HistoryPreviewGeneration) -> bool {
         self.current_generation == generation
     }
 
@@ -242,7 +246,7 @@ impl LocalHistoryPreviewCoordinator {
 
     fn start(
         &mut self,
-        generation: u64,
+        generation: HistoryPreviewGeneration,
         request: LocalHistoryPreviewRequest,
     ) -> LocalHistoryPreviewStart {
         let cancellation = LocalHistoryPreviewCancellation::default();

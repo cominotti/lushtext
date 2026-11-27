@@ -56,9 +56,10 @@ use crate::ui::signal_connect;
 use crate::ui::status_bar::MessageKind;
 use crate::ui::window::LushtextWindow;
 use lushtext_model::document::held_input::{
-    CloseDisposition, ContentDisposition, HeldEpisode, HeldText, HoldOutcome, InsertDisposition,
-    InsertFacts, NoDocumentCause, RemovalFacts, ReplayAnchor, SettleFacts, SettleVerdict,
-    close_disposition, insert_disposition, removal_disposition, settle_verdict,
+    BufferWorkflowOwnership, CloseDisposition, ContentDisposition, HeldEpisode, HeldText,
+    HeldTextPresence, HoldOutcome, InsertDisposition, InsertFacts, NoDocumentCause, RemovalFacts,
+    ReplayAnchor, SettleFacts, SettleVerdict, close_disposition, insert_disposition,
+    removal_disposition, settle_verdict,
 };
 
 /// How long a waiting settle dispatch sleeps before it decides again: 16 ms
@@ -593,8 +594,17 @@ impl LushtextEditorPage {
     /// and the Save Changes dialog's Save writes the text. Returns `Busy`
     /// when a workflow still owns the buffer and the close must be refused.
     pub(crate) fn flush_held_text_for_close(&self) -> CloseDisposition {
-        let owns = self.workflow_owns_buffer() || self.draft_restore_pending();
-        let disposition = close_disposition(self.has_held_text(), owns);
+        let ownership = if self.workflow_owns_buffer() || self.draft_restore_pending() {
+            BufferWorkflowOwnership::Owned
+        } else {
+            BufferWorkflowOwnership::Idle
+        };
+        let held = if self.has_held_text() {
+            HeldTextPresence::Present
+        } else {
+            HeldTextPresence::Empty
+        };
+        let disposition = close_disposition(held, ownership);
         if disposition == CloseDisposition::Flush {
             if let Some(im) =
                 super::surrounding_text::view_im_context(self.source_view().upcast_ref())
