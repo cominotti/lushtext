@@ -81,6 +81,9 @@ jobs:
       - name: Hexagonal crate boundaries
         run: make check-hexagonal-boundaries
 
+      - name: Domain value types
+        run: make check-domain-value-types
+
       - name: Agent guidance and skill policy
         run: make check-agent-skills
 

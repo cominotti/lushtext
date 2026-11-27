@@ -5,9 +5,9 @@ Timing: `Verdict class: non-inferiority` on smoke cases `eviction/reselect`, `ev
 
 ## 1. Failing-first value-type gate & threshold parser extension
 
-- [ ] 1.1 Write `scripts/check-domain-value-types.py` with `--self-test` (proving failure on a raw `*generation*` / `editor_id` field in `seams.rs`/`policy.rs`/`*State`, and failure on a unit type in `lushtext-model/src/values/` lacking a `const assert!(size_of...)`); verify `--self-test` fails before passing and the real check fails on the current 204 raw `*generation*` / 5 `editor_id` baseline.
-- [ ] 1.2 Add failing-first tests to `scripts/check-threshold-kinds.py --self-test` for typed unit constants (`Bytes`, `Sp`, `Micros`, `CharCount`), then implement typed-constant parsing in `scripts/check-threshold-kinds.py`; verify `make check-thresholds` and `--self-test` pass.
-- [ ] 1.3 Wire `check-domain-value-types` into `Makefile` (`check-policy`) and `.github/workflows/ci.yml`; create a signed commit (`git commit -S`) and push the branch.
+- [x] 1.1 Write `scripts/check-domain-value-types.py` with `--self-test` (proving failure on a raw `*generation*` / `editor_id` field in `seams.rs`/`policy.rs`/`*State`, and failure on a unit type in `lushtext-model/src/values/` lacking a `const assert!(size_of...)`); verify `--self-test` fails before passing and the real check fails on the current 204 raw `*generation*` / 5 `editor_id` baseline.
+- [x] 1.2 Add failing-first tests to `scripts/check-threshold-kinds.py --self-test` for typed unit constants (`Bytes`, `Sp`, `Micros`, `CharCount`), then implement typed-constant parsing in `scripts/check-threshold-kinds.py`; verify `make check-thresholds` and `--self-test` pass.
+- [x] 1.3 Wire `check-domain-value-types` into `Makefile` (`check-policy`) and `.github/workflows/ci.yml`; create a signed commit (`git commit -S`) and push the branch.
 
 ## 2. Core value types in `lushtext-model::values`
 
