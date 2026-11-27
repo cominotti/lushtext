@@ -8,7 +8,7 @@
 //! PARAGRAPH SEPARATOR, and at nothing else: U+2028 LINE SEPARATOR and U+0085
 //! NEXT LINE are ordinary characters to it (ledger A42). Every bounded install
 //! or replacement slicer, the load-time [`DocumentProfile`], the edit-time
-//! paragraph watch (`model/paragraph_profile_watch.rs`) and the minimap's
+//! paragraph watch (`document/paragraph_profile_watch.rs`) and the minimap's
 //! modified-line marks use this module, so they all see the paragraphs GTK
 //! lays out.
 //!
@@ -92,8 +92,8 @@ pub struct ParagraphBreak {
 /// scalar-boundary `from`, that the returned offsets are scalar boundaries,
 /// that exactly one delimiter lies between them, and that the sequence of
 /// breaks equals the reference rule's (`kani_proofs::boundary_*`). The Pango
-/// property test (`tests/properties/paragraph_boundary.rs`) is the evidence
-/// for longer strings.
+/// property test (`crates/lushtext-ui/tests/properties/paragraph_boundary.rs`) is
+/// the evidence for longer strings.
 ///
 /// Outside Kani, `memchr3` skips to the next byte that can start a delimiter
 /// (`\n`, `\r`, or `0xE2`, the lead byte of U+2029) with SIMD; the match arms

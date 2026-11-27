@@ -5,7 +5,7 @@ set -euo pipefail
 
 MODE="${1:-}"
 MUTANTS_TIMEOUT="${MUTANTS_TIMEOUT:-300}"
-MUTANTS_SMOKE_FILE="${MUTANTS_SMOKE_FILE:-crates/lushtext-model/src/document_scale.rs}"
+MUTANTS_SMOKE_FILE="${MUTANTS_SMOKE_FILE:-crates/lushtext-model/src/document/document_scale.rs}"
 # Whether the caller named the diff file. The default one is ours and is
 # regenerated on every run (ensure_diff_file).
 MUTANTS_DIFF_FILE_NAMED="${MUTANTS_DIFF_FILE:+1}"
@@ -572,8 +572,8 @@ STUB
     printf 'fn f() {}\n' >src/lib.rs
     git add src/lib.rs
     git -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false commit -q -m fixture
-    mkdir -p crates/lushtext-model/src
-    printf 'fn g() {}\n' >crates/lushtext-model/src/document_scale.rs
+    mkdir -p crates/lushtext-model/src/document
+    printf 'fn g() {}\n' >crates/lushtext-model/src/document/document_scale.rs
 
     # Two slots: --shard i/N each, --in-place, never --jobs, CARGO_MUTANTS_JOBS unset.
     : >"${STUB_LOG}"
@@ -589,7 +589,7 @@ STUB
     grep -q "wrapper=${LUSHTEXT_BUILD_CACHE}/mutants/rustc-passthrough.sh" "${STUB_LOG}" || self_test_fail "the workspace wrapper is not the slot-stable copy"
     grep -q "pwd=${LUSHTEXT_BUILD_CACHE}/mutants/slot-1/src" "${STUB_LOG}" || self_test_fail "a slot did not run from its src/"
     [[ -f "${dir}/repo/mutants.out/outcomes.json" && ! -e "${dir}/repo/mutants.out.slots" ]] || self_test_fail "the slots' reports were not merged"
-    [[ -f "${LUSHTEXT_BUILD_CACHE}/mutants/slot-1/src/crates/lushtext-model/src/document_scale.rs" ]] \
+    [[ -f "${LUSHTEXT_BUILD_CACHE}/mutants/slot-1/src/crates/lushtext-model/src/document/document_scale.rs" ]] \
         || self_test_fail "an untracked file was not synced into the slot"
 
     # One slot writes the checkout's mutants.out itself (--output <checkout>).

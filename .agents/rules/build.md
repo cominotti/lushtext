@@ -498,11 +498,11 @@ Governance and publication gates are in `crates/gtk-lush/GOVERNANCE.md`.
 
 ## Property Testing
 
-- Framework: `proptest`, wired only for the `lushtext-ui` property-test target
-- Feature: `lushtext-ui/property-tests` (implies `test-utils`, because the suite seeds bodies through the test-only fixture modules)
-- Target: `cargo nextest run -p lushtext-ui --features property-tests --test properties --profile property`
+- Framework: `proptest`, wired for the property-test targets across `lushtext-model`, `lushtext-services`, and `lushtext-ui`
+- Feature: `property-tests` per crate (implies `test-utils` in `lushtext-services` and `lushtext-ui`, because the suite seeds bodies through the test-only fixture modules)
+- Target: `cargo nextest run -p lushtext-model -p lushtext-services -p lushtext-ui --features property-tests --test properties --profile property`
 - Makefile targets: `test-prop` (64 cases per property, the CI-safe default), `test-prop-deep` (`PROPTEST_DEEP_CASES=1024` for a manual or scheduled pass)
-- Regression file: `crates/lushtext-ui/proptest-regressions/properties.txt`
+- Regression files: `crates/lushtext-services/proptest-regressions/properties.txt`, plus module-scoped `.txt`/`.proptest-regressions` files in `crates/lushtext-model` and `crates/lushtext-ui`
 - Docs: `docs/property-testing.md`
 
 The property target is guarded by `required-features = ["property-tests"]` and
@@ -551,7 +551,7 @@ primitive in `sys.rs` goes through `tap::call`, or the pin in
 operations to run, and name neither `proptest` nor `tempfile`; strategies,
 each case's `TempDir`, the 256-iter / 45 s shrink budget (`max_shrink_iters =
 256`, `max_shrink_time = 45_000`), and the deterministic reach-floor test live
-in `crates/lushtext-ui/tests/properties/` (`shell_conformance_write.rs`,
+in `crates/lushtext-services/tests/properties/` (`shell_conformance_write.rs`,
 `shell_conformance_drafts.rs`). Operations are generated **enabled-indexed**:
 an index picks one of the actions the run (or the model) enables, modulo their
 count, so every script is valid and proptest's own shrinking stays sound. A
@@ -1075,8 +1075,8 @@ The release procedure is the `publish-release` skill. Rules:
 ## Benchmarks
 
 - Framework: Criterion.rs (`criterion = "0.8"` with `html_reports`)
-- Benchmark file: `crates/lushtext-ui/benches/benchmarks.rs` (single file, all groups); all benchmarked code is GTK-free
-- Every command passes `--features test-utils`: `cargo bench -p lushtext-ui --features test-utils` (the Makefile `bench*` targets, `scripts/bench-report.sh`, `scripts/run-performance-smoke.sh`, and CI's bench compile already do)
+- Benchmark targets: `crates/lushtext-model/benches/benchmarks.rs`, `crates/lushtext-services/benches/benchmarks.rs`, and `crates/lushtext-ui/benches/benchmarks.rs` (36 Criterion groups across the three crates); all benchmarked code is GTK-free
+- Every command passes `--features test-utils`: `cargo bench -p lushtext-model -p lushtext-services -p lushtext-ui --features test-utils` (the Makefile `bench*` targets, `scripts/bench-report.sh`, `scripts/run-performance-smoke.sh`, and CI's bench compile already do)
 - `[profile.bench]`: `opt-level = 3`, `lto = "thin"`, `codegen-units = 1` (no strip — criterion needs symbols)
 - `FileIndex::from(Vec<OwnedIndexedFile>)` and the streaming `FileIndex::from_paths` (both `test-utils`) build synthetic indexes; a 2^20-file fixture streams through `from_paths`, never a `Vec` of owned paths
 - The 2^20-file groups (`file_index_scale`, `file_index_scale_rebuild`, `palette_pipeline_hardening_1048576`) run only with `LUSHTEXT_BENCH_SCALE=1`, which `make bench` sets: their setup runs before Criterion's filter, so ungated they would build the index and write a million files in every filtered run

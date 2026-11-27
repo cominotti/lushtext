@@ -82,8 +82,12 @@ const SCAN_TARGETS: &[&str] = &[
     "docs",
     "openspec/specs",
     "resources/ui",
+    "crates/lushtext-model/benches",
     "crates/lushtext-model/src",
+    "crates/lushtext-model/tests",
+    "crates/lushtext-services/benches",
     "crates/lushtext-services/src",
+    "crates/lushtext-services/tests",
     "crates/lushtext-ui/benches",
     "crates/lushtext-ui/src",
     "crates/lushtext-ui/tests",
@@ -94,8 +98,12 @@ const SCAN_TARGETS: &[&str] = &[
 const PATH_SCAN_TARGETS: &[&str] = &[
     "data",
     "resources/ui",
+    "crates/lushtext-model/benches",
     "crates/lushtext-model/src",
+    "crates/lushtext-model/tests",
+    "crates/lushtext-services/benches",
     "crates/lushtext-services/src",
+    "crates/lushtext-services/tests",
     "crates/lushtext-ui/benches",
     "crates/lushtext-ui/src",
     "crates/lushtext-ui/tests",
@@ -273,7 +281,7 @@ fn is_current_search_traversal_display_root(relative: &str) -> bool {
     matches!(
         relative,
         "crates/lushtext-model/src/workspace/workspace_search.rs"
-            | "crates/lushtext-ui/benches/benchmarks.rs"
+            | "crates/lushtext-services/benches/benchmarks.rs"
     )
 }
 
@@ -292,8 +300,8 @@ fn is_legacy_folder_note_compatibility(relative: &str, line: &str) -> bool {
             | "crates/lushtext-services/src/persistence/format_upgrade/inventory.rs"
             | "crates/lushtext-services/src/persistence/json_format.rs"
             | "crates/lushtext-services/src/notes/note_storage.rs"
-            | "crates/lushtext-ui/tests/persistent_json_format.rs"
-            | "crates/lushtext-ui/tests/fixtures/persistent_json/legacy-folder-note-sidecar-v1.json"
+            | "crates/lushtext-services/tests/persistent_json_format.rs"
+            | "crates/lushtext-services/tests/fixtures/persistent_json/legacy-folder-note-sidecar-v1.json"
     ) && (line.contains("legacy")
         || line.contains("older")
         || line.contains("workspace-note-sidecar")
@@ -307,7 +315,7 @@ fn is_legacy_folder_note_identity_field(relative: &str) -> bool {
         relative,
         "crates/lushtext-model/src/persistence/folder_note.rs"
             | "crates/lushtext-services/src/notes/folder_note_service.rs"
-            | "crates/lushtext-ui/tests/fixtures/persistent_json/legacy-folder-note-sidecar-v1.json"
+            | "crates/lushtext-services/tests/fixtures/persistent_json/legacy-folder-note-sidecar-v1.json"
     )
 }
 
@@ -315,7 +323,7 @@ fn is_allowed_compatibility_path(relative: &str, needle: &str) -> bool {
     matches!(
         (relative, needle),
         (
-            "crates/lushtext-ui/tests/fixtures/persistent_json/legacy-folder-note-sidecar-v1.json",
+            "crates/lushtext-services/tests/fixtures/persistent_json/legacy-folder-note-sidecar-v1.json",
             "workspace-note" | "workspace_note" | "workspace note" | "workspacenote"
         )
     )

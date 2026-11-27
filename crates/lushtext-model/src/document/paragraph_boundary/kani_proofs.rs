@@ -10,7 +10,7 @@
 //! Eight bytes hold every ordered pair of delimiters, a 4-byte scalar
 //! straddling a budget edge, and a CRLF beside a U+2029; a longer string only
 //! repeats these local situations, which the Pango property test
-//! (`tests/properties/paragraph_boundary.rs`) samples on long strings.
+//! (`crates/lushtext-ui/tests/properties/paragraph_boundary.rs`) samples on long strings.
 //!
 //! **Profile harnesses** (`profile_` prefix, shard `core-paragraph-profile`):
 //! strings of at most [`PROFILE_SYMBOLS`] symbols and [`PROFILE_BYTES`] (6) bytes

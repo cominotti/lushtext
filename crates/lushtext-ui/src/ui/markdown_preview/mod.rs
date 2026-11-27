@@ -73,7 +73,7 @@
 //! | Module | Role |
 //! | --- | --- |
 //! | `mod.rs` (this file) | narrative facade |
-//! | `policy` | pure policy — inline-footnote lowering, the limited-plan shapes, and the fuzz/property entry points |
+//! | `policy` | pure policy — limited-plan sizing and preview width clamps |
 //! | `admission` | coordination — ownership ceilings and the render session generation |
 //! | `planning_execution` | coordination — the parse worker, stage-order-qualified |
 //! | `projection_execution` | coordination — bounded per-turn projection, stage-order-qualified |
@@ -96,8 +96,9 @@
 //! surface, owning the Alt+P shell workflow and the layout-settle path. The note
 //! browser, bookmark, and editor surfaces are a **second independent consumer**
 //! of this same widget, belonging to the migrated `WFR-NOTES-BOOKMARKS` row.
-//! `services/markdown_render.rs` is the shared GTK-free planner; it owns four of
-//! this row's six seam value objects and is not this row's to move.
+//! `services/notes/markdown_render/` is the shared GTK-free planner; it owns
+//! inline-footnote lowering, fuzz/property entry points, and four of this row's
+//! seam value objects, and is not this row's to move.
 
 // Private GObject implementation for the template-backed preview surface.
 mod admission;
@@ -134,15 +135,9 @@ pub use evidence::{
     MarkdownPreviewEvidence, MarkdownProjectionEvidence, MarkdownRetirementEvidence,
 };
 
-// The window shell, note surfaces, and the fuzz targets reach these through
+// The window shell and note surfaces reach these through
 // `crate::ui::markdown_preview::…`, so the facade re-exports them from the role
 // modules that own them.
-#[cfg(feature = "property-tests")]
-pub use lushtext_services::notes::markdown_render::lower_inline_footnotes_for_property_test;
-#[cfg(feature = "fuzzing")]
-pub use lushtext_services::notes::markdown_render::{
-    lowered_markdown_for_fuzzing, preprocess_markdown_for_fuzzing,
-};
 pub(crate) use policy::{
     PREVIEW_DEFAULT_WIDTH_SP, PREVIEW_MIN_WIDTH_SP, clamped_preview_width, preferred_preview_width,
 };

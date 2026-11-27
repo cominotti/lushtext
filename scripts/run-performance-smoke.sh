@@ -181,7 +181,7 @@ for filter in $FILTERS; do
     safe_filter="$(printf '%s' "$filter" | tr -c '[:alnum:]_.-' '_')"
     log_path="$ARTIFACT_DIR/criterion-$safe_filter.log"
     echo "Running performance smoke filter '$filter'..."
-    if ! cargo bench -p lushtext-ui --features test-utils --bench benchmarks -- "$filter" \
+    if ! cargo bench -p lushtext-model -p lushtext-services -p lushtext-ui --features test-utils --bench benchmarks -- "$filter" \
         --sample-size "$SAMPLE_SIZE" \
         --warm-up-time "$WARM_UP_TIME" \
         --measurement-time "$MEASUREMENT_TIME" \
@@ -247,8 +247,8 @@ case " $FILTERS " in
 
         slice_log="$ARTIFACT_DIR/unit-editor-load-slices.log"
         echo "Running bounded editor-load slice cancellation proof..."
-        if ! cargo test -p lushtext-ui --lib \
-            services::editor_io::tests::cancellation_stops_classification_decoding_and_analysis_stages \
+        if ! cargo test -p lushtext-services --lib \
+            editor_io::tests::cancellation_stops_classification_decoding_and_analysis_stages \
             -- --nocapture >"$slice_log" 2>&1; then
             tail -n 120 "$slice_log" >&2 || true
             smoke_fail "editor-load slice cancellation proof failed. Artifacts: $ARTIFACT_DIR"
@@ -266,8 +266,8 @@ case " $FILTERS " in
     *" replace_undo_workflows "*)
         hook_log="$ARTIFACT_DIR/unit-replace-undo-hook-isolation.log"
         echo "Running parallel Undo hook-registry isolation proof..."
-        if ! cargo test -p lushtext-ui --lib \
-            services::content_search::replace::tests::parallel_undo_operations_consume_only_their_own_target_hooks \
+        if ! cargo test -p lushtext-services --lib \
+            search::content_search::replace::tests::parallel_undo_operations_consume_only_their_own_target_hooks \
             -- --nocapture >"$hook_log" 2>&1; then
             tail -n 120 "$hook_log" >&2 || true
             smoke_fail "parallel Undo hook-registry isolation proof failed. Artifacts: $ARTIFACT_DIR"

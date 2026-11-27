@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
 use crate::ui::editor_page::{MinimapAnalysisAccumulator, MinimapAnalysisPolicy};
-use crate::ui::markdown_preview::{lowered_markdown_for_fuzzing, preprocess_markdown_for_fuzzing};
 use lushtext_model::document::encoding::{DocumentEncoding, LineEnding};
 use lushtext_model::document::formatting_overrides::FormattingOverrides;
 use lushtext_model::persistence::draft::{DraftEntry, DraftManifest};
@@ -21,7 +20,9 @@ use lushtext_model::persistence::session::{SessionData, SessionTab};
 use lushtext_model::workspace::content_search::{ContentSearchOptions, SearchMatch};
 use lushtext_services::editor_io::text_scans::reference;
 use lushtext_services::editor_io::{apply_save_formatting_overrides, classify_bytes_for_fuzzing};
-use lushtext_services::notes::markdown_render::plan_markdown_cancellable;
+use lushtext_services::notes::markdown_render::{
+    lowered_markdown_for_fuzzing, plan_markdown_cancellable, preprocess_markdown_for_fuzzing,
+};
 use lushtext_services::search::content_search::generate_replacement_preview;
 
 /// Maximum raw bytes one byte-ingestion or Markdown fuzz case processes.

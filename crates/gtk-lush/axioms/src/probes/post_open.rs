@@ -30,7 +30,7 @@ pub const DENSE_LINES: usize = 160;
 /// The window the dense probes present their view in: the lane's monitor.
 pub const REFERENCE_WINDOW: (i32, i32) = (1280, 800);
 /// Half of LushText's `B_SETTLE_US` (16,000 µs, owned by
-/// `crates/lushtext-model/src/responsiveness_budget.rs`, which this crate
+/// `crates/lushtext-model/src/budgets/responsiveness_budget.rs`, which this crate
 /// cannot depend on): the budget `V_SLICE` is derived against.
 pub const HALF_SETTLE_US: u128 = 8_000;
 /// `GTK_TEXT_VIEW_PRIORITY_VALIDATE` (`GDK_PRIORITY_REDRAW + 5`), the priority

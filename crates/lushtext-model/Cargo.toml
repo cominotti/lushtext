@@ -7,12 +7,13 @@ license = "GPL-3.0-or-later"
 publish = false
 
 [package.metadata.lushtext-agent]
-performance-roots = ["src"]
+performance-roots = ["src", "benches"]
 release-model-roots = ["src"]
 
 [features]
 # Expose unregistered fixture helpers for property tests and test suites.
 test-utils = []
+property-tests = ["test-utils"]
 
 [dependencies]
 gtk-lush-proof-spine = { workspace = true }
@@ -22,9 +23,18 @@ serde                = { workspace = true }
 workspace-hack       = { version = "0.1", path = "../../workspace-hack" }
 
 [dev-dependencies]
+criterion  = { workspace = true }
 proptest   = { workspace = true }
 serde_json = { workspace = true }
-tracing    = { workspace = true }
+
+[[bench]]
+name = "benchmarks"
+harness = false
+
+[[test]]
+name = "properties"
+path = "tests/properties.rs"
+required-features = ["property-tests"]
 
 [lints]
 workspace = true

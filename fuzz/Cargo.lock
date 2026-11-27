@@ -1817,6 +1817,7 @@ dependencies = [
 name = "workspace-hack"
 version = "0.1.0"
 dependencies = [
+ "aho-corasick",
  "bitflags",
  "clap",
  "clap_builder",
@@ -1835,6 +1836,8 @@ dependencies = [
  "pango-sys",
  "proc-macro2",
  "quote",
+ "regex",
+ "regex-automata",
  "serde",
  "serde_core",
  "simdutf8",

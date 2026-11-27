@@ -10,7 +10,7 @@
 //! configured ceiling and position 4 was a disposal job count. The census
 //! recorded this row's evidence surface as
 //! `partial: MarkdownImageAdmissionSnapshot`; that type is declared in
-//! `services/markdown_render.rs`, so the row had **no** evidence type of its own
+//! `services/notes/markdown_render/`, so the row had **no** evidence type of its own
 //! and every observation was positional.
 //!
 //! Positional tuples are the specific failure this surface exists to remove: a

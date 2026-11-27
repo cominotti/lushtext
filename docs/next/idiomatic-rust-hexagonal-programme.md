@@ -19,7 +19,7 @@ Changes land strictly sequentially (`1 -> 2 -> 3 -> 4 -> 5`), each shipping its 
 | `crates/lushtext-core` crate name | 1 crate (`lushtext-core`) | `lushtext-ui` + `scripts/check-hexagonal-boundaries.py` | Change 1 |
 | Top-level `src/` items (`model` / `services`) | 53 / 44 | Bounded-context subtrees (`check-hexagonal-boundaries.py`) | Change 1 |
 | Direct infra leaks (`regex` in `model`/`ui`, `pulldown-cmark` in `ui`) | 3 sites (`content_search.rs`, `protected_view/find_execution.rs`, `search_panel/policy.rs`) + 8 `markdown_preview` files | 0 leaks (`check-hexagonal-boundaries.py`) | Change 1 |
-| Production files `>= 1,000` prod lines (excluding `#[cfg(test)]` & test files) | **30** legacy files | `<= 1,000` lines for all new files; descending ceiling `<= 30` | Change 1 |
+| Production files `>= 1,000` prod lines (excluding `#[cfg(test)]` & test files) | **39** legacy files on `main` (9 masked on pre-fix substring check) | `<= 1,000` lines for all new files; descending ceiling `<= 39` | Change 1 |
 | Raw `*generation*` fields / `editor_id: usize` | 204 / 5 | 0 at boundary seams/policies/states (`check-domain-value-types.py`) | Change 2 |
 | Functions with `>= 2` positional `bool` params | 48 app + 1 axiom helper (`a18.rs`) | 0 (`clippy::fn_params_excessive_bools = "deny"`) | Change 2 |
 | `anyhow` files (`services` / `ui`) & `Result<_, String>` | 22 / 12 & 19 | 0 (`check-error-contracts.py` + dep ban) | Change 3 |
@@ -29,7 +29,7 @@ Changes land strictly sequentially (`1 -> 2 -> 3 -> 4 -> 5`), each shipping its 
 
 ## Production File Size Ratchet Policy
 
-`scripts/check-hexagonal-boundaries.py` counts production lines per `.rs` file in `crates/lushtext-model/src`, `crates/lushtext-services/src`, and `crates/lushtext-ui/src`, stripping any trailing `#[cfg(test)]` module and excluding dedicated test modules (`*/tests.rs`, `*_tests.rs`, `*/tests/**`, `*/kani_proofs.rs`, `*/kani_proofs/**`, `*/conformance/**`, `*/fixture.rs`). Any file outside the recorded 30-file legacy ceiling exceeding 1,000 production lines fails `make check-policy`; shrinking or splitting a legacy file below 1,000 lines lowers the ceiling in subsequent changes.
+`scripts/check-hexagonal-boundaries.py` counts production lines per `.rs` file in `crates/lushtext-model/src`, `crates/lushtext-services/src`, and `crates/lushtext-ui/src`, stripping every `#[cfg(test)]` item/module and excluding dedicated test modules (`*/tests.rs`, `*_tests.rs`, `*/tests/**`, `*/kani_proofs.rs`, `*/kani_proofs/**`, `*/conformance/**`, `*/fixture.rs`). Any file outside the recorded legacy ceiling exceeding 1,000 production lines fails `make check-policy`; shrinking or splitting a legacy file below 1,000 lines lowers the ceiling in subsequent changes.
 
 ## Completion Outcomes
 
@@ -37,7 +37,7 @@ Changes land strictly sequentially (`1 -> 2 -> 3 -> 4 -> 5`), each shipping its 
 
 | Change | PR / Merge SHA | Archive Path | Outcome Summary |
 | --- | --- | --- | --- |
-| 1. `complete-hexagonal-crate-organization` | pending | pending | pending |
+| 1. `complete-hexagonal-crate-organization` | pending (branch `refactor/complete-hexagonal-crate-organization`) | pending | Renamed `crates/lushtext-core` to `crates/lushtext-ui`; retired legacy re-export shims; organized `lushtext-model` into 6 bounded-context subtrees (`values/`, `document/`, `workspace/`, `persistence/`, `budgets/`, `automation/`) and `lushtext-services` into driven adapters (`filesystem/`, `persistence/`, `watch/`) + 7 application-service modules; encapsulated `regex` (`services::search::regex_query`, `preview`) and `pulldown-cmark` (`services::notes::markdown_render`) out of `lushtext-model`/`lushtext-ui`; relocated `persistent_json_format`, `text_scan_allocations`, 10 model + 16 service property modules, and 28 GTK-free Criterion benchmark groups (3 model + 25 service) out of `lushtext-ui`; enforced `scripts/check-hexagonal-boundaries.py` (`0` crate leaks, legacy `> 1,000`-line ratchet `37 <= 39`). |
 | 2. `domain-value-types-and-primitive-boundaries` | pending | pending | pending |
 | 3. `typed-service-error-boundaries` | pending | pending | pending |
 | 4. `idiomatic-rust-state-machines-and-c-ism-removal` | pending | pending | pending |

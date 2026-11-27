@@ -6,7 +6,7 @@
 //! renderer, focusing on protected-region preservation and generated label
 //! collision avoidance.
 
-use lushtext_ui::ui::markdown_preview::lower_inline_footnotes_for_property_test;
+use lushtext_services::notes::markdown_render::lower_inline_footnotes_for_property_test;
 use proptest::prelude::*;
 
 use crate::support;

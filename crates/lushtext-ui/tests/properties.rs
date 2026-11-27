@@ -1,66 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Feature-gated property-test target for deterministic LushText logic.
+//! Feature-gated property-test target for UI-coupled helpers and geometry.
 //!
-//! This integration target is intentionally separate from the default nextest
-//! surface. It exercises pure model/service/helper invariants with bounded
-//! generated inputs and leaves GTK widgets, compositor behavior, and live
-//! session flows to the existing widget harness.
+//! Pure domain-model and GTK-free service properties live in
+//! `lushtext-model` and `lushtext-services` respectively; this target keeps the
+//! remaining UI/viewport/widget-coupled properties.
 
-#[path = "properties/attention_refresh.rs"]
-mod attention_refresh;
-#[path = "properties/draft_orphan_cleanup.rs"]
-mod draft_orphan_cleanup;
-#[path = "properties/durable_write_metadata.rs"]
-mod durable_write_metadata;
-#[path = "properties/editor_formatting.rs"]
-mod editor_formatting;
-#[path = "properties/encoding_analysis.rs"]
-mod encoding_analysis;
-#[path = "properties/encoding_sidecar.rs"]
-mod encoding_sidecar;
-#[path = "properties/file_load.rs"]
-mod file_load;
-#[path = "properties/format_upgrade.rs"]
-mod format_upgrade;
-#[path = "properties/inline_footnotes.rs"]
-mod inline_footnotes;
-#[path = "properties/markdown_plan.rs"]
-mod markdown_plan;
-#[path = "properties/note.rs"]
-mod note;
-#[path = "properties/paced_slices.rs"]
-mod paced_slices;
-#[path = "properties/palette.rs"]
-mod palette;
 #[path = "properties/paragraph_boundary.rs"]
 mod paragraph_boundary;
-#[path = "properties/path_rebasing.rs"]
-mod path_rebasing;
-#[path = "properties/protected_fold.rs"]
-mod protected_fold;
-#[path = "properties/protected_install.rs"]
-mod protected_install;
-#[path = "properties/recovery_metadata.rs"]
-mod recovery_metadata;
-#[path = "properties/replace_journal_recovery.rs"]
-mod replace_journal_recovery;
-#[path = "properties/replace_undo.rs"]
-mod replace_undo;
-#[path = "properties/responsiveness_budget.rs"]
-mod responsiveness_budget;
-#[path = "properties/search_replacement.rs"]
-mod search_replacement;
-#[path = "properties/session_draft_roundtrip.rs"]
-mod session_draft_roundtrip;
-#[path = "properties/settings_write_batch.rs"]
-mod settings_write_batch;
-#[path = "properties/shell_conformance_drafts.rs"]
-mod shell_conformance_drafts;
-#[path = "properties/shell_conformance_write.rs"]
-mod shell_conformance_write;
-#[path = "properties/sidecar_reconciliation.rs"]
-mod sidecar_reconciliation;
 #[path = "properties/support.rs"]
 mod support;
 #[path = "properties/text_scans.rs"]

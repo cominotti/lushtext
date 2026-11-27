@@ -525,7 +525,7 @@ jobs:
           shared-key: fedora-45
 
       - name: Compile-check benchmarks
-        run: cargo bench -p lushtext-ui --features test-utils --no-run
+        run: cargo bench -p lushtext-model -p lushtext-services -p lushtext-ui --features test-utils --no-run
 
   dependency-policy:
     name: Dependency Policy

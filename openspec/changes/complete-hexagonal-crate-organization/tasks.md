@@ -24,6 +24,6 @@ Timing: none (no timed path touched).
 
 ## 4. Relocate GTK-free tests/benches & green full validation
 
-- [ ] 4.1 Move GTK-free tests (`persistent_json_format`, `text_scan_allocations`, non-GTK `properties` modules) and GTK-free Criterion benchmarks from `crates/lushtext-ui` into `crates/lushtext-model` and `crates/lushtext-services`; verify `cargo test -p lushtext-model --all-features`, `cargo test -p lushtext-services --all-features`, and `cargo bench --no-run` build and pass without GTK.
-- [ ] 4.2 Run `python3 scripts/check-hexagonal-boundaries.py` (confirming 0 violations and file-size ratchet at `<= 30` legacy files), `make check`, `make check-policy`, `make test-unit`, and `openspec validate complete-hexagonal-crate-organization --strict`.
-- [ ] 4.3 Update `docs/next/idiomatic-rust-hexagonal-programme.md` with Change 1 completion metrics, create a signed commit (`git commit -S`), and push the branch.
+- [x] 4.1 Move GTK-free tests (`persistent_json_format`, `text_scan_allocations`, non-GTK `properties` modules) and GTK-free Criterion benchmarks from `crates/lushtext-ui` into `crates/lushtext-model` and `crates/lushtext-services`; verify `cargo test -p lushtext-model --all-features`, `cargo test -p lushtext-services --all-features`, and `cargo bench --no-run` build and pass without GTK.
+- [x] 4.2 Run `python3 scripts/check-hexagonal-boundaries.py` (confirming 0 violations and file-size ratchet at `<= 30` legacy files), `make check`, `make check-policy`, `make test-unit`, and `openspec validate complete-hexagonal-crate-organization --strict`.
+- [x] 4.3 Update `docs/next/idiomatic-rust-hexagonal-programme.md` with Change 1 completion metrics, create a signed commit (`git commit -S`), and push the branch.

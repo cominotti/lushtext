@@ -100,7 +100,7 @@ default external handler when activated.
 
 ## Code
 
-Inline code like `cargo test -p lushtext-core markdown_preview --lib` should
+Inline code like `cargo test -p lushtext-ui markdown_preview --lib` should
 stay distinct from surrounding prose.
 
 ```rust

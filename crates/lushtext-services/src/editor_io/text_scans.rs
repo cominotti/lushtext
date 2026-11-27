@@ -15,7 +15,8 @@
 //! and tail.
 //!
 //! The scalar forms the scans replaced live in `reference` (tests, benches,
-//! and fuzzing only); the property tests (`tests/properties/text_scans.rs`)
+//! and fuzzing only); the property tests
+//! (`crates/lushtext-ui/tests/properties/text_scans.rs`)
 //! and the `editor_bytes` fuzz target pin each scan, and the kernel and its
 //! fallback separately, to its reference. No Kani harness compiles this
 //! module, and the kernel is behind `cfg(not(kani))` all the same.

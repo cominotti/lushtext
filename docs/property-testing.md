@@ -24,7 +24,7 @@ The property-test target currently covers:
   the same case makes. Each case runs the real primitive under the conformance
   tap and replays it through the proven core and its shared Kani disk model;
   the exhaustive single-fault and crash enumeration of the same driver runs in
-  the unit tests (`services::conformance::write_shell`). Budget: <= 10 s (0.06 s
+  the unit tests (`services::instrumentation::conformance::write_shell`). Budget: <= 10 s (0.06 s
   measured).
 - Shell conformance of the draft journal
   (`shell_conformance_drafts.rs`, `verify-shell-conformance-against-proven-cores`):
@@ -60,7 +60,7 @@ make test-prop
 That expands to:
 
 ```sh
-cargo nextest run -p lushtext-ui --features property-tests --test properties --profile property
+cargo nextest run -p lushtext-model -p lushtext-services -p lushtext-ui --features property-tests --test properties --profile property
 ```
 
 Run a deeper opt-in pass:
@@ -76,8 +76,11 @@ wrapper do not compile or execute it unless the feature is explicitly enabled.
 
 ## Runtime Policy
 
-The shared property helpers live under
-`crates/lushtext-ui/tests/properties/support.rs`.
+The shared property helpers live under:
+
+- `crates/lushtext-model/tests/properties/support.rs`
+- `crates/lushtext-services/tests/properties/support.rs`
+- `crates/lushtext-ui/tests/properties/support.rs`
 
 - Default pull-request/local case count: 64 cases per property
 - Deep-run knob: `LUSHTEXT_PROPTEST_CASES`
@@ -91,10 +94,13 @@ clear invariant over a compact model, not a broad random end-to-end workflow.
 
 ## Regression Files
 
-Minimized failures are persisted at:
+Minimized failures are persisted per crate under `proptest-regressions/` (for
+example `crates/lushtext-services/proptest-regressions/properties.txt`, plus
+module-scoped regression files under `crates/lushtext-model/proptest-regressions/`
+and `crates/lushtext-ui/proptest-regressions/`):
 
 ```text
-crates/lushtext-ui/proptest-regressions/properties.txt
+crates/lushtext-services/proptest-regressions/properties.txt
 ```
 
 When `properties.txt` appears or changes, review it like any other regression
@@ -110,7 +116,7 @@ tighten the generator and remove the false regression seed.
   lane.
 - `scripts/run-widget-tests.sh --headless --retries 1` remains the display and
   GTK behavior lane.
-- `cargo bench -p lushtext-ui --features test-utils --no-run` still compile-checks benchmark code.
+- `cargo bench -p lushtext-model -p lushtext-services -p lushtext-ui --features test-utils --no-run` still compile-checks benchmark code.
 - Mutation testing stays separate by default so generated property cases are
   not multiplied by every mutant.
 

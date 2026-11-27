@@ -45,9 +45,9 @@ never expose retained filesystem paths.
 Run the focused coverage with:
 
 ```sh
-cargo test -p lushtext-core workspace_watch --lib
+cargo test -p lushtext-services workspace_watch --lib
 scripts/run-widget-tests.sh --headless -- workspace_watch_
-cargo bench -p lushtext-core --features test-utils --bench benchmarks workspace_watch_pressure
+cargo bench -p lushtext-services --features test-utils --bench benchmarks workspace_watch_pressure
 ```
 
 ## Calibration snapshot

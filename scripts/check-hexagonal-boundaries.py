@@ -23,7 +23,7 @@ Checks:
 3. Production file-size ratchet: no new production file under `crates/lushtext-model/src`,
    `crates/lushtext-services/src`, or `crates/lushtext-ui/src` exceeds 1,000
    production lines (excluding `#[cfg(test)]` and dedicated test/fixture/proof
-   files), and the legacy over-limit set stays at or below the 30-file baseline.
+   files), and the legacy over-limit set stays at or below the 39-file baseline.
 
 Usage:
   scripts/check-hexagonal-boundaries.py              # check the real workspace
@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -42,27 +43,37 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 MAX_PRODUCTION_LINES = 1000
-LEGACY_OVERSIZED_CEILING = 28
+LEGACY_OVERSIZED_CEILING = 37
 
 # Legacy production files that still exceed 1,000 production lines after Change 1's
-# module reorganization (28 files total, down from 30 on `main` `ddfb7e2b`).
-# Later changes tighten this ratchet further and may never add new >= 1,000-line files.
+# module reorganization (37 files total, down from 39 on `main` `ddfb7e2b`, after
+# fixing early-`#[cfg(test)]` item masking). Later changes tighten this ratchet
+# further and may never add new >= 1,000-line files.
 LEGACY_OVERSIZED_FILES: dict[str, int] = {
     "crates/lushtext-model/src/automation/mod.rs": 1400,
     "crates/lushtext-model/src/document/document_scale.rs": 1220,
     "crates/lushtext-model/src/workspace/content_search.rs": 1100,
     "crates/lushtext-services/src/editor_io/mod.rs": 1920,
     "crates/lushtext-services/src/palette/index/reference.rs": 1240,
+    "crates/lushtext-services/src/palette/notes.rs": 2150,
+    "crates/lushtext-services/src/persistence/draft_service.rs": 2950,
     "crates/lushtext-services/src/persistence/draft_service/journal_model.rs": 1750,
+    "crates/lushtext-services/src/persistence/local_history_service.rs": 1530,
     "crates/lushtext-services/src/persistence/recovery_metadata.rs": 1270,
+    "crates/lushtext-services/src/search/content_search/replace/apply.rs": 1050,
+    "crates/lushtext-services/src/search/search_backup.rs": 1740,
+    "crates/lushtext-services/src/workspace/action_catalog/mod.rs": 2660,
     "crates/lushtext-ui/src/ui/automation.rs": 2550,
     "crates/lushtext-ui/src/ui/buffer_snapshot.rs": 1230,
     "crates/lushtext-ui/src/ui/editor_page/buffer_replacement/execution.rs": 1450,
     "crates/lushtext-ui/src/ui/editor_page/imp.rs": 1260,
     "crates/lushtext-ui/src/ui/editor_page/load/execution.rs": 1290,
+    "crates/lushtext-ui/src/ui/editor_page/minimap/policy.rs": 1480,
     "crates/lushtext-ui/src/ui/editor_page/minimap/projection_execution.rs": 1210,
     "crates/lushtext-ui/src/ui/editor_page/protected_view/policy.rs": 1310,
     "crates/lushtext-ui/src/ui/markdown_preview/continuation.rs": 1050,
+    "crates/lushtext-ui/src/ui/plain_disposal.rs": 1470,
+    "crates/lushtext-ui/src/ui/responsiveness_probe.rs": 1300,
     "crates/lushtext-ui/src/ui/sidebar/policy.rs": 1170,
     "crates/lushtext-ui/src/ui/sidebar/workspace_section/folder_execution.rs": 1120,
     "crates/lushtext-ui/src/ui/sidebar/workspace_section/scan_execution.rs": 2950,
@@ -153,14 +164,86 @@ def is_excluded_test_or_proof_file(rel: str) -> bool:
     return parts[-1] == "kani_proofs.rs"
 
 
+def _scan_rust_delimiters(line: str, depth: int, seen_brace: bool, in_block_comment: bool) -> tuple[int, bool, bool, bool]:
+    """Advance brace depth and comment state across one line for `#[cfg(test)]` item stripping."""
+    seen_semi_at_zero = False
+    i = 0
+    length = len(line)
+    while i < length:
+        if in_block_comment:
+            end = line.find("*/", i)
+            if end == -1:
+                return depth, seen_brace, seen_semi_at_zero, True
+            i = end + 2
+            in_block_comment = False
+            continue
+        ch = line[i]
+        if ch == "/" and i + 1 < length:
+            nxt = line[i + 1]
+            if nxt == "/":
+                break
+            if nxt == "*":
+                in_block_comment = True
+                i += 2
+                continue
+        if ch == '"':
+            i += 1
+            while i < length:
+                if line[i] == "\\":
+                    i += 2
+                elif line[i] == '"':
+                    i += 1
+                    break
+                else:
+                    i += 1
+            continue
+        if ch == "'":
+            if i + 2 < length and line[i + 1] == "\\":
+                end_q = line.find("'", i + 3)
+                if end_q != -1 and end_q - i <= 8:
+                    i = end_q + 1
+                    continue
+            elif i + 2 < length and line[i + 2] == "'":
+                i += 3
+                continue
+        if ch == "{":
+            depth += 1
+            seen_brace = True
+        elif ch == "}":
+            depth = max(0, depth - 1)
+        elif ch == ";" and depth == 0 and not seen_brace:
+            seen_semi_at_zero = True
+        i += 1
+    return depth, seen_brace, seen_semi_at_zero, in_block_comment
+
+
 def production_line_count(path: Path) -> int:
-    """Count lines before any top-level `#[cfg(test)]` module block."""
-    text = path.read_text(encoding="utf-8", errors="replace")
-    idx = text.find("#[cfg(test)]")
-    prod = text[:idx] if idx != -1 else text
-    if not prod:
-        return 0
-    return prod.count("\n") + (0 if prod.endswith("\n") else 1)
+    """Count lines excluding every `#[cfg(test)]` item (`use ...;`, `mod tests;`, or `{ ... }` block)."""
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    count = 0
+    i = 0
+    in_block_comment = False
+    while i < len(lines):
+        if re.match(r"^\s*#\[cfg\(test\)\]", lines[i]):
+            depth = 0
+            seen_brace = False
+            blk = in_block_comment
+            while i < len(lines):
+                stripped = lines[i].strip()
+                depth, seen_brace, semi0, blk = _scan_rust_delimiters(lines[i], depth, seen_brace, blk)
+                i += 1
+                if not seen_brace and not semi0 and (stripped.startswith("#[") or stripped.startswith("//") or stripped == ""):
+                    continue
+                if semi0:
+                    break
+                if seen_brace and depth == 0:
+                    break
+            in_block_comment = blk
+            continue
+        _, _, _, in_block_comment = _scan_rust_delimiters(lines[i], 0, False, in_block_comment)
+        count += 1
+        i += 1
+    return count
 
 
 def check_metadata_boundaries(metadata: dict) -> list[str]:
@@ -325,6 +408,12 @@ def self_test() -> None:
         test_heavy.write_text(("fn a() {}\n" * 50) + "#[cfg(test)]\nmod tests {\n" + ("fn t() {}\n" * 1200) + "}\n", encoding="utf-8")
         assert check(root, _fixture_metadata()) == [], "lines inside #[cfg(test)] must not count against production limit"
         test_heavy.unlink()
+
+        masked_prod = root / "crates/lushtext-services/src/masked_bloated.rs"
+        masked_prod.write_text("#[cfg(test)]\nuse crate::fake;\n#[cfg(test)]\nmod tests;\n" + ("fn prod() {}\n" * 1005), encoding="utf-8")
+        findings = check(root, _fixture_metadata())
+        assert any("masked_bloated.rs" in f and "1005 production lines" in f for f in findings), findings
+        masked_prod.unlink()
 
     print("check-hexagonal-boundaries self-test passed")
 

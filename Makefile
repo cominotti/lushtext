@@ -161,7 +161,7 @@ WIDGET_PREFLIGHT = ./scripts/with-memory-cap.sh --preflight "$${WIDGET_BUILD_MEM
 endif
 CARGO_TEST_SEARCH_RETIREMENT_RELEASE = CARGO_PROFILE_TEST_DEBUG_ASSERTIONS=false ./scripts/run-widget-tests.sh --headless -- --exact search_panel::test_search_retirement_categories_release_actual_ownership_over_bounded_turns
 CARGO_TEST_WORKSPACE_ROW_STATES = ./scripts/run-widget-tests.sh --headless --retries 1 -- workspace_row_state
-CARGO_TEST_PROP           = $(TEMP_SCOPE) property -- cargo nextest run -p lushtext-ui --features property-tests --test properties --profile property
+CARGO_TEST_PROP           = $(TEMP_SCOPE) property -- cargo nextest run -p lushtext-model -p lushtext-services -p lushtext-ui --features property-tests --test properties --profile property
 CARGO_TEST_FUZZ_CORPUS_REPLAY = $(TEMP_SCOPE) fuzz-replay -- cargo test -p lushtext-ui --features fuzzing --test fuzz_corpus_replay
 PROPTEST_DEEP_CASES ?= 512
 FORMAT_UPGRADE_TEST_HOME ?=
@@ -915,7 +915,7 @@ mutants-list:
 # included (LUSHTEXT_BENCH_SCALE=1)
 bench:
 	@echo "Running benchmarks..."
-	LUSHTEXT_BENCH_SCALE=1 cargo bench -p lushtext-ui --features test-utils
+	LUSHTEXT_BENCH_SCALE=1 cargo bench -p lushtext-model -p lushtext-services -p lushtext-ui --features test-utils
 
 # Run benchmarks and generate markdown report (short sampling)
 bench-report:
@@ -930,12 +930,12 @@ bench-report-full:
 # Save current benchmarks as baseline for comparison
 bench-baseline:
 	@echo "Saving benchmark baseline..."
-	cargo bench -p lushtext-ui --features test-utils --bench benchmarks -- --save-baseline main
+	cargo bench -p lushtext-model -p lushtext-services -p lushtext-ui --features test-utils --bench benchmarks -- --save-baseline main
 
 # Compare current performance against saved baseline while admitting new benchmark IDs
 bench-compare:
 	@echo "Comparing against baseline..."
-	cargo bench -p lushtext-ui --features test-utils --bench benchmarks -- --baseline-lenient main
+	cargo bench -p lushtext-model -p lushtext-services -p lushtext-ui --features test-utils --bench benchmarks -- --baseline-lenient main
 
 # Formatting check
 #

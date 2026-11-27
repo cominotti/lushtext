@@ -2851,8 +2851,8 @@ mod tests {
 
     /// Opt-in near-supported-limit load diagnostic.
     ///
-    /// Run explicitly with `cargo test -p lushtext-ui --lib
-    /// near_supported_limit_load_diagnostic -- --ignored --nocapture`;
+    /// Run explicitly with `cargo test -p lushtext-services --lib
+    /// editor_io::tests::near_supported_limit_load_diagnostic -- --ignored --nocapture`;
     /// `LUSHTEXT_NEAR_LIMIT_LOAD_BYTES` overrides the fixture size for smaller
     /// hosts. It records fixture size, encoding, build profile, environment,
     /// resident-memory context, bounded cancellation progress, and planned

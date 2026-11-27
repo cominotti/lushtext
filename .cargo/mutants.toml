@@ -148,7 +148,7 @@ exclude_re = [
     "impl Debug",
     # Equivalent: deleting the dedicated UTF-8 BOM arm in `encode_text` falls
     # through to the generic BOM-writing branch and produces identical bytes.
-    "crates/lushtext-services/src/editor_io\\.rs:.*delete match arm DocumentEncoding::Utf8Bom in encode_text",
+    "crates/lushtext-services/src/editor_io/mod\\.rs:.*delete match arm DocumentEncoding::Utf8Bom in encode_text",
     # Property-test-only bridge: the default mutation lane intentionally omits
     # `lushtext-ui/property-tests`; the property lane covers this helper.
     "crates/lushtext-services/src/lib\\.rs:.*property_testing::rebase_document_identity_paths",
@@ -157,18 +157,18 @@ exclude_re = [
     # Race-only branches: if metadata says a file exists but it disappears before
     # the read, recovery treats the state as missing. This is intentionally the
     # same user-visible fallback as startup without that metadata file.
-    "crates/lushtext-services/src/recovery_metadata\\.rs:.*replace match guard error\\.kind\\(\\) == io::ErrorKind::NotFound with (true|false) in load_existing_json_file",
-    "crates/lushtext-services/src/recovery_metadata\\.rs:.*replace == with != in load_existing_json_file",
-    "crates/lushtext-services/src/recovery_metadata\\.rs:.*replace match guard error\\.kind\\(\\) == io::ErrorKind::NotFound with (true|false) in load_existing_enveloped_json_file",
-    "crates/lushtext-services/src/recovery_metadata\\.rs:.*replace == with != in load_existing_enveloped_json_file",
-    "crates/lushtext-services/src/recovery_metadata\\.rs:.*replace match guard error\\.kind\\(\\) == io::ErrorKind::NotFound with (true|false) in load_existing_enveloped_json_file_for_replacement",
-    "crates/lushtext-services/src/recovery_metadata\\.rs:.*replace == with != in load_existing_enveloped_json_file_for_replacement",
+    "crates/lushtext-services/src/persistence/recovery_metadata\\.rs:.*replace match guard error\\.kind\\(\\) == io::ErrorKind::NotFound with (true|false) in load_existing_json_file",
+    "crates/lushtext-services/src/persistence/recovery_metadata\\.rs:.*replace == with != in load_existing_json_file",
+    "crates/lushtext-services/src/persistence/recovery_metadata\\.rs:.*replace match guard error\\.kind\\(\\) == io::ErrorKind::NotFound with (true|false) in load_existing_enveloped_json_file",
+    "crates/lushtext-services/src/persistence/recovery_metadata\\.rs:.*replace == with != in load_existing_enveloped_json_file",
+    "crates/lushtext-services/src/persistence/recovery_metadata\\.rs:.*replace match guard error\\.kind\\(\\) == io::ErrorKind::NotFound with (true|false) in load_existing_enveloped_json_file_for_replacement",
+    "crates/lushtext-services/src/persistence/recovery_metadata\\.rs:.*replace == with != in load_existing_enveloped_json_file_for_replacement",
     # Equivalent: missing snapshot files are intentionally ignored during
     # retention cleanup; this mutation only changes whether that no-op logs.
-    "crates/lushtext-services/src/local_history_service\\.rs:.*replace != with == in remove_snapshot_files",
+    "crates/lushtext-services/src/persistence/local_history_service\\.rs:.*replace != with == in remove_snapshot_files",
     # Equivalent for stable directory entries: non-symlink classification is
     # identical whether it uses `DirEntry::file_type()` or follows with metadata.
-    "crates/lushtext-services/src/file_tree\\.rs:.*replace match guard !file_type\\.is_symlink\\(\\) with false in classify_entry",
+    "crates/lushtext-services/src/workspace/file_tree\\.rs:.*replace match guard !file_type\\.is_symlink\\(\\) with false in classify_entry",
     # Equivalent under the workspace persistence state machine's own invariants,
     # confirmed by slot 5b's triage of the seven survivors this module inherited
     # when it relocated out of `model/workspace_persistence.rs`.
@@ -200,12 +200,12 @@ exclude_re = [
     # `reduce-build-disk-writes`' focused rounds). Its `test-utils` twin above
     # it is in scope and killed by the integration test `document_scale`.
     # Line-anchored: re-key this entry if the function moves.
-    "crates/lushtext-model/src/document_scale\\.rs:229:.*replace markdown_chunked_cap -> Option<u64> with Some\\([01]\\)",
+    "crates/lushtext-model/src/document/document_scale\\.rs:229:.*replace markdown_chunked_cap -> Option<u64> with Some\\([01]\\)",
     # Equivalent on LushText's Linux mutation target: this non-Unix metadata
     # shim is cfg-disabled, while the active Unix metadata probe remains in scope.
-    "crates/lushtext-services/src/durable_write\\.rs:801:.*MetadataPlan::probe -> std::io::Result<Self>",
-    "crates/lushtext-services/src/durable_write\\.rs:812:.*MetadataPlan::create_mode -> Option<u32> with Some\\(0\\)",
-    "crates/lushtext-services/src/durable_write\\.rs:812:.*MetadataPlan::create_mode -> Option<u32> with Some\\(1\\)",
+    "crates/lushtext-services/src/persistence/durable_write\\.rs:801:.*MetadataPlan::probe -> std::io::Result<Self>",
+    "crates/lushtext-services/src/persistence/durable_write\\.rs:812:.*MetadataPlan::create_mode -> Option<u32> with Some\\(0\\)",
+    "crates/lushtext-services/src/persistence/durable_write\\.rs:812:.*MetadataPlan::create_mode -> Option<u32> with Some\\(1\\)",
     # Equivalent on LushText's Linux mutation target: these non-Unix raw
     # filesystem fallbacks are cfg-disabled, while the active Unix backend
     # helpers remain mutation-scoped.
@@ -255,7 +255,7 @@ exclude_re = [
     # and read, both paths return an empty recent list; only the warning changes.
     # Keyed on the `NotFound` guard (the function's only `==`), not a line: the
     # former `:252:` anchor had drifted off the function and matched nothing.
-    "crates/lushtext-services/src/recent_documents\\.rs:.*: replace (match guard error\\.kind\\(\\) == std::io::ErrorKind::NotFound with (true|false)|== with !=) in load_recent_file",
+    "crates/lushtext-services/src/persistence/recent_documents\\.rs:.*: replace (match guard error\\.kind\\(\\) == std::io::ErrorKind::NotFound with (true|false)|== with !=) in load_recent_file",
     # Equivalent while the public JSON envelope is still v1.
     "crates/lushtext-services/src/persistence/format_upgrade/diagnostics\\.rs:.*latest_format_version -> u32 with 1",
     # Equivalent after the preceding exact-version branch in
@@ -264,18 +264,18 @@ exclude_re = [
     "crates/lushtext-services/src/persistence/format_upgrade/inventory\\.rs:.*replace > with >= in classify_json_bytes",
     # Equivalent on the Unix paths used by this target: `Path::parent()` does
     # not yield the same root path, so the loop guard behaves identically.
-    "crates/lushtext-services/src/editorconfig\\.rs:.*replace match guard parent != dir with true in resolve_for_path",
+    "crates/lushtext-services/src/workspace/editorconfig\\.rs:.*replace match guard parent != dir with true in resolve_for_path",
     # Equivalent: references emitted by pulldown-cmark also have definitions,
     # so label reservation is already covered by `FootnoteDefinition`, while
     # protected references fall through to the protected-depth catch-all arm.
-    "crates/lushtext-ui/src/ui/markdown_preview/policy\\.rs:.*delete match arm Event::FootnoteReference\\(label\\) in build_scan_plan",
+    "crates/lushtext-services/src/notes/markdown_render/inline_footnotes\\.rs:.*delete match arm MarkdownEvent::FootnoteReference\\(label\\) in build_scan_plan(_cancellable)?",
     # Equivalent: the scan loop may do one extra final-byte check, but a lone
     # trailing byte cannot start a complete `^[...]` marker.
-    "crates/lushtext-ui/src/ui/markdown_preview/policy\\.rs:.*replace < with <= in collect_inline_footnote_replacements",
-    "crates/lushtext-ui/src/ui/markdown_preview/policy\\.rs:.*replace \\+ with \\* in collect_inline_footnote_replacements",
+    "crates/lushtext-services/src/notes/markdown_render/inline_footnotes\\.rs:.*replace < with <= in collect_inline_footnote_replacements(_bounded)?",
+    "crates/lushtext-services/src/notes/markdown_render/inline_footnotes\\.rs:.*replace \\+ with \\* in collect_inline_footnote_replacements(_bounded)?",
     # Equivalent: after a replacement is recorded, restarting at or just before
     # the closing bracket only rechecks bytes that cannot form a new marker.
-    "crates/lushtext-ui/src/ui/markdown_preview/policy\\.rs:.*replace \\+ with - in collect_inline_footnote_replacements",
+    "crates/lushtext-services/src/notes/markdown_render/inline_footnotes\\.rs:.*replace \\+ with - in collect_inline_footnote_replacements(_bounded)?",
     # Equivalent: protected ranges ending at the current index have already been
     # advanced out of consideration by the preceding `end <= index` loop.
     # NOT an equivalence claim -- an unkillable-by-construction claim, which is a
@@ -295,26 +295,26 @@ exclude_re = [
     # production callers, it was mis-filed under the fuzz banner, and its survivor
     # was a genuine gap now killed by
     # `the_inline_footnote_limited_plan_reports_the_source_size_it_refused`.
-    "crates/lushtext-ui/src/ui/markdown_preview/policy\\.rs:.*lower_inline_footnotes_for_generated_test",
-    "crates/lushtext-ui/src/ui/markdown_preview/policy\\.rs:.*lower_inline_footnotes_for_property_test",
-    "crates/lushtext-ui/src/ui/markdown_preview/policy\\.rs:.*lowered_markdown_for_fuzzing",
-    "crates/lushtext-ui/src/ui/markdown_preview/policy\\.rs:.*preprocess_markdown_for_fuzzing",
-    "crates/lushtext-ui/src/ui/markdown_preview/policy\\.rs:.*replace < with <= in find_inline_footnote_close",
+    "crates/lushtext-services/src/notes/markdown_render/inline_footnotes\\.rs:.*lower_inline_footnotes_for_generated_test",
+    "crates/lushtext-services/src/notes/markdown_render/inline_footnotes\\.rs:.*lower_inline_footnotes_for_property_test",
+    "crates/lushtext-services/src/notes/markdown_render/inline_footnotes\\.rs:.*lowered_markdown_for_fuzzing",
+    "crates/lushtext-services/src/notes/markdown_render/inline_footnotes\\.rs:.*preprocess_markdown_for_fuzzing",
+    "crates/lushtext-services/src/notes/markdown_render/inline_footnotes\\.rs:.*replace < with <= in find_inline_footnote_close(_cancellable)?",
     # Equivalent: the byte scanner only branches on ASCII marker bytes and only
     # slices at ASCII delimiter offsets, so byte-by-byte UTF-8 walking is valid.
-    "crates/lushtext-ui/src/ui/markdown_preview/policy\\.rs:.*replace next_char_len -> usize with 1",
+    "crates/lushtext-services/src/notes/markdown_render/inline_footnotes\\.rs:.*replace next_char_len -> usize with 1",
     # Test-only global injector: path-scoped cleanup-failure injection is covered
     # by local-history retry tests; the all-path hook is retained for manual tests.
-    "crates/lushtext-services/src/local_history_service\\.rs:.*fail_next_obsolete_lineage_cleanup_for_test",
+    "crates/lushtext-services/src/persistence/local_history_service\\.rs:.*fail_next_obsolete_lineage_cleanup_for_test",
     # Diagnostics-only logging helper: callers keep and surface recovery
     # diagnostics through returned values; this mutation only suppresses tracing.
-    "crates/lushtext-services/src/note_storage\\.rs:.*trace_recovery_diagnostics",
+    "crates/lushtext-services/src/notes/note_storage\\.rs:.*trace_recovery_diagnostics",
     # Feature-only hooks: widget race tests and fuzz targets own these paths in
     # their dedicated lanes, outside the default deterministic mutation scope.
-    "crates/lushtext-services/src/editor_io\\.rs:.*(set_load_delay_for_test|delay_load_for_test|classify_bytes_for_fuzzing)",
+    "crates/lushtext-services/src/editor_io/mod\\.rs:.*(set_load_delay_for_test|delay_load_for_test|classify_bytes_for_fuzzing)",
     # The `test-utils` benchmark hooks of `simd-line-scans` (`bench_*`): the
     # default-feature build cargo-mutants tests never compiles them.
-    "crates/lushtext-services/src/editor_io\\.rs:.*bench_(load_analysis|load_analysis_fused|health_scan|trim|normalize|crlf_check)",
+    "crates/lushtext-services/src/editor_io/mod\\.rs:.*bench_(load_analysis|load_analysis_fused|health_scan|trim|normalize|crlf_check)",
     # `MinimapAnalysisAccumulator::inspect_str` (simd-line-scans). Only the
     # first entry is line-anchored (re-key it on any edit above line 2804): it is
     # the per-character copy compiled only under `cfg(kani)`, which no test build
@@ -391,16 +391,16 @@ exclude_re = [
     # break end is a scalar boundary and so lies at or below an unfloored
     # budget end exactly when it lies at or below the floored one (and an
     # unfloored end inside a scalar never equals `text.len()`).
-    "crates/lushtext-model/src/paragraph_boundary\\.rs:.*replace > with (>=|<|==) in slice_end_after_paragraph",
-    "crates/lushtext-model/src/paragraph_boundary\\.rs:.*replace > with >= in ProfileConfig::window",
-    "crates/lushtext-model/src/paragraph_boundary\\.rs:.*replace > with >= in ProfileSummary::max",
-    "crates/lushtext-model/src/paragraph_boundary\\.rs:572:19: replace > with >= in ParagraphLengthFold::push",
-    "crates/lushtext-model/src/paragraph_boundary\\.rs:604:26: replace > with >= in ParagraphLengthFold::push",
-    "crates/lushtext-model/src/paragraph_boundary\\.rs:592:26: replace < with (>|==) in ParagraphLengthFold::push",
-    # Equivalent in `model/protected_fold.rs` (long-line-protected-view): a
+    "crates/lushtext-model/src/document/paragraph_boundary\\.rs:.*replace > with (>=|<|==) in slice_end_after_paragraph",
+    "crates/lushtext-model/src/document/paragraph_boundary\\.rs:.*replace > with >= in ProfileConfig::window",
+    "crates/lushtext-model/src/document/paragraph_boundary\\.rs:.*replace > with >= in ProfileSummary::max",
+    "crates/lushtext-model/src/document/paragraph_boundary\\.rs:572:19: replace > with >= in ParagraphLengthFold::push",
+    "crates/lushtext-model/src/document/paragraph_boundary\\.rs:604:26: replace > with >= in ParagraphLengthFold::push",
+    "crates/lushtext-model/src/document/paragraph_boundary\\.rs:592:26: replace < with (>|==) in ParagraphLengthFold::push",
+    # Equivalent in `model/document/protected_fold.rs` (long-line-protected-view): a
     # tie in `min_u64` returns the same value either way.
-    "crates/lushtext-model/src/protected_fold\\.rs:.*replace < with <= in min_u64",
-    # The SIMD fast paths of `model/paragraph_boundary.rs` (document-scale-policy):
+    "crates/lushtext-model/src/document/protected_fold\\.rs:.*replace < with <= in min_u64",
+    # The SIMD fast paths of `model/document/paragraph_boundary.rs` (document-scale-policy):
     # equivalent because they change only which search finds the same byte,
     # or let a loop run once more over an empty tail. In `next_paragraph_break`
     # the loop bound (`<` with `<=`: the empty-tail `memchr3` returns `None`),
@@ -416,25 +416,25 @@ exclude_re = [
     # accepting a separator at `limit` (`<` with `<=`: none can start on a
     # line break or complete past the chunk's two-byte extension), and the
     # chunk size (`*` with `+`) change no result.
-    "crates/lushtext-model/src/paragraph_boundary\\.rs:191:[0-9]+: replace (-|\\+) with (\\+|/|\\*) in next_delimiter_without_lead_stops",
-    "crates/lushtext-model/src/paragraph_boundary\\.rs:195:34: replace < with <= in next_delimiter_without_lead_stops",
-    "crates/lushtext-model/src/paragraph_boundary\\.rs:209:42: replace \\* with \\+",
-    "crates/lushtext-model/src/paragraph_boundary\\.rs:115:17: replace < with <= in next_paragraph_break",
-    "crates/lushtext-model/src/paragraph_boundary\\.rs:118:46: replace < with (>|==|<=) in next_paragraph_break",
-    "crates/lushtext-model/src/paragraph_boundary\\.rs:1(58|60):[0-9]+: replace \\+= with \\*= in next_paragraph_break",
-    "crates/lushtext-model/src/paragraph_boundary\\.rs:273:15: replace > with >= in last_break_end_within",
-    "crates/lushtext-model/src/paragraph_boundary\\.rs:283:[0-9]+: .* in last_break_end_within",
-    "crates/lushtext-model/src/paragraph_boundary\\.rs:751:20: replace < with <= in ParagraphProfileAccumulator::push_str",
-    "crates/lushtext-model/src/paragraph_boundary\\.rs:714:[0-9]+: .*ParagraphProfileAccumulator::push_str",
-    # Equivalent in `model/paragraph_profile_watch.rs`: `>` with `>=` where
+    "crates/lushtext-model/src/document/paragraph_boundary\\.rs:191:[0-9]+: replace (-|\\+) with (\\+|/|\\*) in next_delimiter_without_lead_stops",
+    "crates/lushtext-model/src/document/paragraph_boundary\\.rs:195:34: replace < with <= in next_delimiter_without_lead_stops",
+    "crates/lushtext-model/src/document/paragraph_boundary\\.rs:209:42: replace \\* with \\+",
+    "crates/lushtext-model/src/document/paragraph_boundary\\.rs:115:17: replace < with <= in next_paragraph_break",
+    "crates/lushtext-model/src/document/paragraph_boundary\\.rs:118:46: replace < with (>|==|<=) in next_paragraph_break",
+    "crates/lushtext-model/src/document/paragraph_boundary\\.rs:1(58|60):[0-9]+: replace \\+= with \\*= in next_paragraph_break",
+    "crates/lushtext-model/src/document/paragraph_boundary\\.rs:273:15: replace > with >= in last_break_end_within",
+    "crates/lushtext-model/src/document/paragraph_boundary\\.rs:283:[0-9]+: .* in last_break_end_within",
+    "crates/lushtext-model/src/document/paragraph_boundary\\.rs:751:20: replace < with <= in ParagraphProfileAccumulator::push_str",
+    "crates/lushtext-model/src/document/paragraph_boundary\\.rs:714:[0-9]+: .*ParagraphProfileAccumulator::push_str",
+    # Equivalent in `model/document/paragraph_profile_watch.rs`: `>` with `>=` where
     # the tie picks an equal value (`max`, and the two upper clamps of
     # `window_range`), and `inner_lengths` reading the run when
     # `end_line == start_line`: a run that adds no line has no paragraph
     # delimiter (ledger A42: an insertion splits at its own delimiters), so it
     # yields no inner length either way.
-    "crates/lushtext-model/src/paragraph_profile_watch\\.rs:.*replace > with >= in max",
-    "crates/lushtext-model/src/paragraph_profile_watch\\.rs:.*replace > with >= in WindowPlan<'_>::inner_lengths",
-    "crates/lushtext-model/src/paragraph_profile_watch\\.rs:.*replace > with >= in window_range",
+    "crates/lushtext-model/src/document/paragraph_profile_watch\\.rs:.*replace > with >= in max",
+    "crates/lushtext-model/src/document/paragraph_profile_watch\\.rs:.*replace > with >= in WindowPlan<'_>::inner_lengths",
+    "crates/lushtext-model/src/document/paragraph_profile_watch\\.rs:.*replace > with >= in window_range",
     # Equivalent by construction in the AVX2 file-health kernel
     # (`avx2-health-scan-kernel`, design D5): the kernel and the `memchr3`
     # scan return the same counts for every byte string, so a mutant that

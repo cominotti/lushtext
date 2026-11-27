@@ -15,7 +15,11 @@ scan_roots=(
   AGENTS.md
   crates/lushtext-build-support/src
   crates/lushtext-model/src
+  crates/lushtext-model/tests
+  crates/lushtext-model/benches
   crates/lushtext-services/src
+  crates/lushtext-services/tests
+  crates/lushtext-services/benches
   crates/lushtext/build.rs
   crates/lushtext-ui/AGENTS.md
   crates/lushtext-ui/build.rs
@@ -71,7 +75,11 @@ fi
 
 status_probe_roots=(
   crates/lushtext-model/src
+  crates/lushtext-model/tests
+  crates/lushtext-model/benches
   crates/lushtext-services/src
+  crates/lushtext-services/tests
+  crates/lushtext-services/benches
   crates/lushtext-ui/src
   crates/lushtext-ui/tests
   crates/lushtext-ui/benches
@@ -131,7 +139,9 @@ fi
 leftovers="$(
   {
     rg -n 'FileWriteLock|FilesystemError|filesystem::sidecar|pub mod sidecar;|pub mod error;|pub use error::|pub type FileWriteLock' \
-      crates/lushtext-model/src crates/lushtext-services/src crates/lushtext-ui/src crates/lushtext-ui/tests crates/lushtext-ui/benches \
+      crates/lushtext-model/src crates/lushtext-model/tests crates/lushtext-model/benches \
+      crates/lushtext-services/src crates/lushtext-services/tests crates/lushtext-services/benches \
+      crates/lushtext-ui/src crates/lushtext-ui/tests crates/lushtext-ui/benches \
       crates/lushtext/src crates/lushtext/tests AGENTS.md README.md .agents/rules .agents/skills 2>/dev/null || true
     rg -n 'rename_path' crates/lushtext-services/src/filesystem 2>/dev/null || true
     rg -n 'pub fn (write_bytes|sync_directory|symlink_facts)\b' \

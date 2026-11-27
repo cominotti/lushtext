@@ -57,7 +57,7 @@
 //! the column mapping and slicing independence (`protected_fold/kani_proofs.rs`,
 //! shard `core-protected-fold`), and that `length_cap` alone breaks the
 //! density bound; each harness states its domain. The property tests in
-//! `crates/lushtext-ui/tests/properties/protected_fold.rs` are the evidence
+//! `crates/lushtext-model/tests/properties/protected_fold.rs` are the evidence
 //! at large sizes and at the production thresholds.
 
 #![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]

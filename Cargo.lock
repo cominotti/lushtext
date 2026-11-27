@@ -1330,13 +1330,13 @@ dependencies = [
 name = "lushtext-model"
 version = "0.8.3"
 dependencies = [
+ "criterion",
  "encoding_rs",
  "gtk-lush-proof-spine",
  "memchr",
  "proptest",
  "serde",
  "serde_json",
- "tracing",
  "workspace-hack",
 ]
 
@@ -1345,6 +1345,7 @@ name = "lushtext-services"
 version = "0.8.3"
 dependencies = [
  "anyhow",
+ "criterion",
  "crossbeam-channel",
  "dirs",
  "editorconfig-parser",
@@ -1379,7 +1380,6 @@ dependencies = [
  "anyhow",
  "criterion",
  "crossbeam-channel",
- "encoding_rs",
  "gdk4",
  "gio",
  "glib",
@@ -1397,10 +1397,7 @@ dependencies = [
  "notify-debouncer-full",
  "pango",
  "proptest",
- "serde",
  "serde_json",
- "sha2",
- "simdutf8",
  "sourceview5",
  "tempfile",
  "thiserror",
@@ -2538,6 +2535,7 @@ dependencies = [
 name = "workspace-hack"
 version = "0.1.0"
 dependencies = [
+ "aho-corasick",
  "bitflags",
  "clap",
  "clap_builder",
@@ -2556,6 +2554,8 @@ dependencies = [
  "pango-sys",
  "proc-macro2",
  "quote",
+ "regex",
+ "regex-automata",
  "serde",
  "serde_core",
  "simdutf8",
