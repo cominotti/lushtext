@@ -85,45 +85,53 @@ pub(super) struct PendingChildScan {
     visibility: WorkspaceEntryVisibility,
 }
 
+/// Phase of per-load stale cache purging and capacity reservation before splicing.
+enum ReconcileCacheStep {
+    PurgeStale(Vec<PathBuf>, usize),
+    Reserve(usize),
+    Ready,
+}
+
+/// How one multi-batch reconciliation splices around existing rows.
+enum ReconcileSpliceMode {
+    Replace(usize),
+    AroundKept(usize, usize),
+}
+
+/// Batch cadence for multi-turn reconciliation.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ReconcilePace {
+    WarmUp,
+    Steady,
+}
+
+/// Optional trailing loading placeholder shown while multi-turn batches remain.
+enum ReconcileLoadingRow {
+    None,
+    Active(FileTreeItem, usize),
+}
+
 struct ChildReconcileProgress {
     position: usize,
-    remove_remaining: usize,
     inserted: usize,
     replacement: VecDeque<DirectoryRowState>,
     mirror_generation: MirrorGeneration,
-    /// The loading row that ends the directory while batches remain, and the
-    /// listing's total for its label (`bound-lists-by-budget-not-count` D6).
-    loading_row: Option<(FileTreeItem, usize)>,
-    /// Whether the directory was empty when this load began (or is refilling
-    /// around a kept run). Its first rows make `GtkListView` create row
-    /// widgets, up to its realized-row cap (about 205, A1), and each costs a
-    /// setup, a bind and a first layout: one 256-row batch created about 200
-    /// of them in one dispatch (19 ms, and a 19 ms frame after it, at 10,000
-    /// entries). So the first `CHILD_APPEND_BATCH_SIZE` rows go in batches of
-    /// `FIRST_BATCH_ROWS`, and the load waits past one frame after each small
-    /// warm-up batch so the realized band fills at most one unit per frame (D10).
-    warming_up: bool,
-    /// Rows a previous store of this directory left in the path caches, when
-    /// this load's store took the directory over (a collapse and re-expansion,
-    /// or GTK's discarded `is_expandable()` probe store, A22). They are
-    /// forgotten in time-sliced chunks before the first batch, instead of in
-    /// one dispatch that grows with the previous listing.
-    stale_cache_rows: Vec<PathBuf>,
-    /// Rows to reserve in the caches once `stale_cache_rows` is forgotten.
-    reserve_rows: Option<usize>,
-    /// The plan's kept run (`DirectoryReconciliationPlan::Splice::kept_at`),
-    /// as `(k, rows)`: the store keeps `rows` current rows at `position`, the
-    /// first `k` inserted rows go before them and the rest after them, so no
-    /// row the store still lists is destroyed and created again (A118, P2).
-    kept: Option<(usize, usize)>,
+    loading_row: ReconcileLoadingRow,
+    pace: ReconcilePace,
+    cache_step: ReconcileCacheStep,
+    splice_mode: ReconcileSpliceMode,
 }
 
 impl ChildReconcileProgress {
     /// Store position of the next inserted row: after the kept rows once the
     /// rows before them are in.
     fn insert_position(&self) -> usize {
-        let skip = match self.kept {
-            Some((before, rows)) if self.inserted >= before => rows,
+        let skip = match self.splice_mode {
+            ReconcileSpliceMode::AroundKept(before_kept, kept_rows)
+                if self.inserted >= before_kept =>
+            {
+                kept_rows
+            }
             _ => 0,
         };
         self.position
@@ -134,16 +142,21 @@ impl ChildReconcileProgress {
     /// At most `batch_rows`, and never across the kept rows: a batch ends
     /// where they start.
     fn batch_limit(&self, batch_rows: usize) -> usize {
-        match self.kept {
-            Some((before, _)) if self.inserted < before => batch_rows.min(before - self.inserted),
+        match self.splice_mode {
+            ReconcileSpliceMode::AroundKept(before_kept, _) if self.inserted < before_kept => {
+                batch_rows.min(before_kept - self.inserted)
+            }
             _ => batch_rows,
         }
     }
 
     /// Rows the listing shows so far: the inserted ones plus the kept ones.
     fn listed_rows(&self) -> usize {
-        self.inserted
-            .saturating_add(self.kept.map_or(0, |(_, rows)| rows))
+        let kept = match self.splice_mode {
+            ReconcileSpliceMode::AroundKept(_, kept_rows) => kept_rows,
+            ReconcileSpliceMode::Replace(_) => 0,
+        };
+        self.inserted.saturating_add(kept)
     }
 }
 
@@ -497,29 +510,31 @@ pub(super) fn start_child_scan(
     );
 }
 
-/// Drop cached rows, child stores, and in-flight scans for one directory subtree.
-pub(super) fn clear_dir_state(section: &LushtextWorkspaceSection, dir_path: &Path) {
-    clear_dir_states(section, &HashSet::from([dir_path.to_path_buf()]));
+fn retain_unremoved_keys<V>(map: &RefCell<HashMap<usize, V>>, removed: &HashSet<usize>) {
+    map.borrow_mut().retain(|k, _| !removed.contains(k));
 }
 
-/// Retire any number of removed directory roots with one pass per state map.
-fn clear_dir_states(section: &LushtextWorkspaceSection, roots: &HashSet<PathBuf>) {
+fn retain_unremoved_paths<V>(map: &RefCell<HashMap<PathBuf, V>>, under: impl Fn(&Path) -> bool) {
+    map.borrow_mut().retain(|p, _| !under(p));
+}
+
+/// Retire cached rows, child stores, and in-flight scans for `roots` with one pass per state map.
+pub(super) fn retire_dir_subtrees(section: &LushtextWorkspaceSection, roots: &[PathBuf]) {
     if roots.is_empty() {
         return;
     }
+    let imp = section.imp();
+    let root_set = roots.iter().cloned().collect::<HashSet<_>>();
     let under_removed_root =
-        |path: &Path| path.ancestors().any(|ancestor| roots.contains(ancestor));
-    super::materialization_execution::retire_materializations_under_roots(section, roots);
-    super::folder_execution::cancel_folder_empty_probes_under_roots(section, roots);
+        |path: &Path| path.ancestors().any(|ancestor| root_set.contains(ancestor));
+    super::materialization_execution::retire_materializations_under_roots(section, &root_set);
+    super::folder_execution::cancel_folder_empty_probes_under_roots(section, &root_set);
     // Accepted removals retire expansion intent for the affected subtrees so a
     // later refresh cannot resurrect paths that no longer exist.
-    section
-        .imp()
-        .expanded_paths
+    imp.expanded_paths
         .borrow_mut()
-        .retain(|path| !under_removed_root(path));
-    let removed_store_keys = section
-        .imp()
+        .retain(|p| !under_removed_root(p));
+    let removed_store_keys = imp
         .child_store_paths
         .borrow()
         .iter()
@@ -528,64 +543,29 @@ fn clear_dir_states(section: &LushtextWorkspaceSection, roots: &HashSet<PathBuf>
     for store_key in &removed_store_keys {
         cancel_child_store_runtime(section, *store_key);
     }
-    section
-        .imp()
-        .child_row_mirrors
-        .borrow_mut()
-        .retain(|key, _| !removed_store_keys.contains(key));
-    section
-        .imp()
-        .child_row_mirror_generations
-        .borrow_mut()
-        .retain(|key, _| !removed_store_keys.contains(key));
-    section
-        .imp()
-        .child_store_paths
-        .borrow_mut()
-        .retain(|key, _| !removed_store_keys.contains(key));
-    section
-        .imp()
-        .child_store_refs
-        .borrow_mut()
-        .retain(|key, _| !removed_store_keys.contains(key));
-    let removed_child_paths = section
-        .imp()
+    retain_unremoved_keys(&imp.child_row_mirrors, &removed_store_keys);
+    retain_unremoved_keys(&imp.child_row_mirror_generations, &removed_store_keys);
+    retain_unremoved_keys(&imp.child_store_paths, &removed_store_keys);
+    retain_unremoved_keys(&imp.child_store_refs, &removed_store_keys);
+    let removed_child_paths = imp
         .child_paths
         .borrow()
         .iter()
         .filter(|(path, _)| under_removed_root(path))
         .flat_map(|(_, paths)| paths.clone())
         .collect::<Vec<_>>();
-    section
-        .imp()
-        .child_paths
-        .borrow_mut()
-        .retain(|path, _| !under_removed_root(path));
-    section
-        .imp()
-        .child_cache_owners
-        .borrow_mut()
-        .retain(|path, _| !under_removed_root(path));
+    retain_unremoved_paths(&imp.child_paths, under_removed_root);
+    retain_unremoved_paths(&imp.child_cache_owners, under_removed_root);
     for path in removed_child_paths {
         section.forget_visible_path_occurrence(&path);
     }
 
-    section
-        .imp()
-        .dir_rows
-        .borrow_mut()
-        .retain(|path, _| !under_removed_root(path));
-    section
-        .imp()
-        .dir_stores
-        .borrow_mut()
-        .retain(|path, _| !under_removed_root(path));
+    retain_unremoved_paths(&imp.dir_rows, under_removed_root);
+    retain_unremoved_paths(&imp.dir_stores, under_removed_root);
     section.release_retained_child_stores(under_removed_root);
-    section
-        .imp()
-        .item_locations
+    imp.item_locations
         .borrow_mut()
-        .retain(|path, _| roots.contains(path) || !under_removed_root(path));
+        .retain(|path, _| root_set.contains(path) || !under_removed_root(path));
 
     sync_child_scan_busy_state(section);
 }
@@ -686,58 +666,45 @@ fn drain_retiring_listings(section: &LushtextWorkspaceSection) -> bool {
     }
 }
 
-/// Clear all cached tree-loading state before reloading the workspace folders.
-pub(super) fn clear_all_dir_state(section: &LushtextWorkspaceSection) {
-    section
-        .imp()
-        .child_scan_lifetime
-        .set(section.imp().child_scan_lifetime.get().wrapping_add(1));
+/// Retire all cached tree-loading listings before reloading or disposing the section.
+pub(super) fn retire_all_dir_listings(section: &LushtextWorkspaceSection) {
+    let imp = section.imp();
+    imp.child_scan_lifetime
+        .set(imp.child_scan_lifetime.get().wrapping_add(1));
     super::materialization_execution::retire_all_materializations(section);
-    for active in section.imp().child_active_scans.borrow_mut().drain() {
-        active.1.token.store(true, Ordering::Release);
+    for (_, active) in std::mem::take(&mut *imp.child_active_scans.borrow_mut()) {
+        active.token.store(true, Ordering::Release);
     }
-    for flight in section.imp().child_scan_flights.borrow_mut().values_mut() {
+    for (_, mut flight) in std::mem::take(&mut *imp.child_scan_flights.borrow_mut()) {
         flight.cancel_all();
     }
-    section.imp().child_scan_flights.borrow_mut().clear();
-    section.imp().child_pending_scans.borrow_mut().clear();
-    section.imp().child_admission_scans.borrow_mut().clear();
-    section.imp().folder_empty_active.borrow_mut().clear();
-    section.imp().folder_empty_pending.borrow_mut().clear();
-    section.imp().folder_empty_admission.borrow_mut().clear();
-    if let Some(source) = section.imp().workspace_scan_admission_source.take() {
-        source.remove();
-    }
-    for flight in section.imp().folder_empty_flights.borrow_mut().values_mut() {
+    for (_, mut flight) in std::mem::take(&mut *imp.folder_empty_flights.borrow_mut()) {
         flight.cancel_all();
     }
-    section.imp().folder_empty_flights.borrow_mut().clear();
-    section
-        .imp()
-        .refresh_runtime
-        .scan_dispatch_queue
-        .borrow_mut()
-        .clear();
-    if let Some(source) = section.imp().refresh_runtime.scan_dispatch_source.take() {
+    if let Some(source) = imp.workspace_scan_admission_source.take() {
         source.remove();
     }
+    imp.refresh_runtime.retire_dispatch();
     section.release_retained_child_stores(|_| true);
-    section.imp().dir_rows.borrow_mut().clear();
-    section.imp().dir_stores.borrow_mut().clear();
-    section.imp().child_paths.borrow_mut().clear();
-    section.imp().item_locations.borrow_mut().clear();
-    section.imp().folder_paths.borrow_mut().clear();
-    for (_, (_, source)) in section.imp().child_reconcile_sources.borrow_mut().drain() {
+    for (_, (_, source)) in std::mem::take(&mut *imp.child_reconcile_sources.borrow_mut()) {
         source.remove();
     }
-    section.imp().child_row_mirrors.borrow_mut().clear();
-    section.imp().child_store_paths.borrow_mut().clear();
-    section.imp().child_store_refs.borrow_mut().clear();
-    section
-        .imp()
-        .child_row_mirror_generations
-        .borrow_mut()
-        .clear();
+    let _ = (
+        std::mem::take(&mut *imp.child_pending_scans.borrow_mut()),
+        std::mem::take(&mut *imp.child_admission_scans.borrow_mut()),
+        std::mem::take(&mut *imp.folder_empty_active.borrow_mut()),
+        std::mem::take(&mut *imp.folder_empty_pending.borrow_mut()),
+        std::mem::take(&mut *imp.folder_empty_admission.borrow_mut()),
+        std::mem::take(&mut *imp.dir_rows.borrow_mut()),
+        std::mem::take(&mut *imp.dir_stores.borrow_mut()),
+        std::mem::take(&mut *imp.child_paths.borrow_mut()),
+        std::mem::take(&mut *imp.item_locations.borrow_mut()),
+        std::mem::take(&mut *imp.folder_paths.borrow_mut()),
+        std::mem::take(&mut *imp.child_row_mirrors.borrow_mut()),
+        std::mem::take(&mut *imp.child_store_paths.borrow_mut()),
+        std::mem::take(&mut *imp.child_store_refs.borrow_mut()),
+        std::mem::take(&mut *imp.child_row_mirror_generations.borrow_mut()),
+    );
     sync_child_scan_busy_state(section);
 }
 
@@ -793,13 +760,13 @@ fn finish_child_scan(
 /// Mirror child directory scan activity into the tree's accessible busy state.
 pub(super) fn sync_child_scan_busy_state(section: &LushtextWorkspaceSection) {
     let busy = child_scan_blocks_readiness(section);
+    let refresh = &section.imp().refresh_runtime;
     accessibility::set_busy(&*section.imp().file_tree_view, busy);
     if !busy
-        && section
-            .imp()
-            .refresh_runtime
-            .manual_refresh_announcing
-            .replace(false)
+        && refresh
+            .manual_refresh
+            .replace(super::refresh_execution::RefreshAnnouncement::Silent)
+            == super::refresh_execution::RefreshAnnouncement::ManualPending
     {
         section.emit_message("Workspace folders refreshed", NotificationSeverity::Info);
     }
@@ -820,12 +787,7 @@ pub(super) fn child_scan_blocks_readiness(section: &LushtextWorkspaceSection) ->
             .scan_dispatch_queue
             .borrow()
             .is_empty()
-        || section
-            .imp()
-            .refresh_runtime
-            .scan_dispatch_source
-            .borrow()
-            .is_some()
+        || section.imp().refresh_runtime.is_dispatch_scheduled()
 }
 
 /// Check whether a pending child-scan callback still belongs to the current expanded row.
@@ -986,10 +948,10 @@ fn splice_child_store(
     let mirror = mirrors.entry(store_key).or_default();
     let end = position.saturating_add(removed).min(mirror.len());
     let start = position.min(end);
-    let old_path_rows = mirror.iter().filter(|row| row.path.is_some()).count();
+    let old_path_rows = mirror.iter().filter(|row| row.path().is_some()).count();
     let removed_paths = mirror
         .splice(start..end, rows.iter().cloned())
-        .filter_map(|row| row.path)
+        .filter_map(DirectoryRowState::into_path)
         .collect::<Vec<_>>();
     drop(mirrors);
     // Keep the directory's path caches current per applied batch, so no
@@ -1007,7 +969,7 @@ fn splice_child_store(
     {
         let inserted_paths = rows
             .iter()
-            .filter_map(|row| row.path.clone())
+            .filter_map(|row| row.path().map(Path::to_path_buf))
             .collect::<Vec<_>>();
         section.splice_child_rows_cache(
             store_key,
@@ -1078,7 +1040,7 @@ pub(super) fn record_child_store_path_update(
         .or_default()
         .get_mut(position)
     {
-        row.path = Some(new_path.to_path_buf());
+        row.set_path(new_path.to_path_buf());
         advance_child_mirror_generation(section, store_key);
     }
 }
@@ -1115,11 +1077,19 @@ fn advance_child_mirror_generation(
 }
 
 fn row_state_from_item(item: &FileTreeItem) -> DirectoryRowState {
-    DirectoryRowState {
-        path: item.path(),
-        is_dir: item.is_dir(),
-        is_empty: item.is_empty(),
-        placeholder: item.placeholder(),
+    if let Some(placeholder) = item.placeholder() {
+        DirectoryRowState::Placeholder(placeholder)
+    } else if let Some(path) = item.path() {
+        if item.is_dir() {
+            DirectoryRowState::Directory {
+                path,
+                is_empty: item.is_empty(),
+            }
+        } else {
+            DirectoryRowState::File { path }
+        }
+    } else {
+        DirectoryRowState::Placeholder(DirectoryPlaceholder::Loading)
     }
 }
 
@@ -1249,17 +1219,17 @@ fn apply_scanned_children(section: &LushtextWorkspaceSection, scanned: ScannedCh
             // reconciliation removes it if this one is superseded.
             let total_rows = replacement
                 .iter()
-                .filter(|row| row.path.is_some())
+                .filter(|row| row.path().is_some())
                 .count()
                 .saturating_add(kept.map_or(0, |(_, rows)| rows));
-            let stale_cache_rows = take_over_child_cache(section, &store, &dir_path);
+            let stale_rows = take_over_child_cache(section, &store, &dir_path);
             // Reserving rehashes what the maps hold, so a takeover reserves
             // only once the previous store's rows are forgotten.
-            let reserve_rows = if stale_cache_rows.is_empty() {
+            let cache_step = if stale_rows.is_empty() {
                 reserve_child_cache_capacity(section, &store, &dir_path, total_rows);
-                None
+                ReconcileCacheStep::Ready
             } else {
-                Some(total_rows)
+                ReconcileCacheStep::PurgeStale(stale_rows, total_rows)
             };
             let mirror_generation =
                 append_loading_row(section, &store, total_rows).unwrap_or(mirror_generation);
@@ -1267,20 +1237,29 @@ fn apply_scanned_children(section: &LushtextWorkspaceSection, scanned: ScannedCh
                 .item(store.n_items().saturating_sub(1))
                 .and_downcast::<FileTreeItem>()
                 .filter(|item| item.placeholder() == Some(DirectoryPlaceholder::Loading))
-                .map(|item| (item, total_rows));
+                .map_or(ReconcileLoadingRow::None, |item| {
+                    ReconcileLoadingRow::Active(item, total_rows)
+                });
+            let pace = if mirror_was_empty || kept.is_some() {
+                ReconcilePace::WarmUp
+            } else {
+                ReconcilePace::Steady
+            };
+            let splice_mode = match kept {
+                Some((before_kept, kept_rows)) => {
+                    ReconcileSpliceMode::AroundKept(before_kept, kept_rows)
+                }
+                None => ReconcileSpliceMode::Replace(removed),
+            };
             let progress = Rc::new(RefCell::new(ChildReconcileProgress {
                 position,
-                remove_remaining: if kept.is_some() { 0 } else { removed },
                 inserted: 0,
                 replacement: VecDeque::from(replacement),
                 mirror_generation,
                 loading_row,
-                // Rows around a kept run enter the realized band just as into
-                // an empty store, so they warm up one unit per frame.
-                warming_up: mirror_was_empty || kept.is_some(),
-                stale_cache_rows,
-                reserve_rows,
-                kept,
+                pace,
+                cache_step,
+                splice_mode,
             }));
             apply_next_reconcile_batch(section, store, dir_path, token, ticket, progress);
         }
@@ -1299,7 +1278,7 @@ fn retire_removed_child_subtrees(
     else {
         return;
     };
-    clear_dir_states(section, &removed_directory_roots.iter().cloned().collect());
+    retire_dir_subtrees(section, removed_directory_roots);
 }
 
 fn apply_next_reconcile_batch(
@@ -1323,30 +1302,45 @@ fn apply_next_reconcile_batch(
     let turn_started_us = glib::monotonic_time();
     let mut batches_this_turn = 0usize;
     let mut after_frame = false;
-    while !progress.borrow().stale_cache_rows.is_empty() {
-        let elapsed =
-            u64::try_from(glib::monotonic_time().saturating_sub(turn_started_us)).unwrap_or(0);
-        if !turn_continues(elapsed, batches_this_turn) {
-            break;
-        }
-        let chunk = {
-            let mut progress = progress.borrow_mut();
-            let keep = progress
-                .stale_cache_rows
-                .len()
-                .saturating_sub(STALE_CACHE_ROWS_PER_UNIT);
-            progress.stale_cache_rows.split_off(keep)
+    let mut yield_for_purge = false;
+    loop {
+        let next_chunk = {
+            let mut state = progress.borrow_mut();
+            match &mut state.cache_step {
+                ReconcileCacheStep::PurgeStale(stale_rows, reserve_rows) => {
+                    if stale_rows.is_empty() {
+                        state.cache_step = ReconcileCacheStep::Reserve(*reserve_rows);
+                        None
+                    } else {
+                        let elapsed =
+                            u64::try_from(glib::monotonic_time().saturating_sub(turn_started_us))
+                                .unwrap_or(0);
+                        if !turn_continues(elapsed, batches_this_turn) {
+                            yield_for_purge = true;
+                            break;
+                        }
+                        let keep = stale_rows.len().saturating_sub(STALE_CACHE_ROWS_PER_UNIT);
+                        Some(stale_rows.split_off(keep))
+                    }
+                }
+                ReconcileCacheStep::Reserve(rows) => {
+                    let rows = *rows;
+                    state.cache_step = ReconcileCacheStep::Ready;
+                    drop(state);
+                    reserve_child_cache_capacity(section, &store, &dir_path, rows);
+                    break;
+                }
+                ReconcileCacheStep::Ready => break,
+            }
         };
-        section.forget_stale_child_rows(&dir_path, &chunk);
-        batches_this_turn += 1;
+        if let Some(chunk) = next_chunk {
+            section.forget_stale_child_rows(&dir_path, &chunk);
+            batches_this_turn += 1;
+        }
     }
-    if !progress.borrow().stale_cache_rows.is_empty() {
+    if yield_for_purge {
         schedule_next_reconcile_batch(section, store, dir_path, token, ticket, progress, false);
         return;
-    }
-    let reserve_rows = progress.borrow_mut().reserve_rows.take();
-    if let Some(rows) = reserve_rows {
-        reserve_child_cache_capacity(section, &store, &dir_path, rows);
     }
     loop {
         let elapsed =
@@ -1356,17 +1350,20 @@ fn apply_next_reconcile_batch(
         }
         let (position, removed, rows, small_batch) = {
             let mut progress = progress.borrow_mut();
-            if progress.remove_remaining > 0 {
-                let removed = progress.remove_remaining.min(CHILD_APPEND_BATCH_SIZE);
-                progress.remove_remaining -= removed;
+            if let ReconcileSpliceMode::Replace(remove_remaining) = &mut progress.splice_mode
+                && *remove_remaining > 0
+            {
+                let removed = (*remove_remaining).min(CHILD_APPEND_BATCH_SIZE);
+                *remove_remaining -= removed;
                 (progress.position, removed, Vec::new(), false)
             } else {
-                let batch_rows =
-                    if progress.warming_up && progress.inserted < CHILD_APPEND_BATCH_SIZE {
-                        FIRST_BATCH_ROWS
-                    } else {
-                        CHILD_APPEND_BATCH_SIZE
-                    };
+                let batch_rows = if progress.pace == ReconcilePace::WarmUp
+                    && progress.inserted < CHILD_APPEND_BATCH_SIZE
+                {
+                    FIRST_BATCH_ROWS
+                } else {
+                    CHILD_APPEND_BATCH_SIZE
+                };
                 let take = progress.batch_limit(batch_rows);
                 let mut rows = Vec::with_capacity(take);
                 for _ in 0..take {
@@ -1388,7 +1385,11 @@ fn apply_next_reconcile_batch(
 
         let complete = {
             let progress = progress.borrow();
-            progress.remove_remaining == 0 && progress.replacement.is_empty()
+            let pending_removals = matches!(
+                progress.splice_mode,
+                ReconcileSpliceMode::Replace(remove_remaining) if remove_remaining > 0
+            );
+            !pending_removals && progress.replacement.is_empty()
         };
         if complete {
             retire_loading_row(section, &store, &progress);
@@ -1410,10 +1411,11 @@ fn apply_next_reconcile_batch(
         );
     }
     // The loading row's label moves at most once per turn.
-    if let Some((item, total)) = progress.borrow().loading_row.as_ref() {
-        let listed = progress.borrow().listed_rows().min(*total);
+    if let ReconcileLoadingRow::Active(item, total_rows) = &progress.borrow().loading_row {
+        let listed = progress.borrow().listed_rows().min(*total_rows);
         item.set_placeholder_label(crate::ui::sidebar::policy::loading_row_label(
-            listed, *total,
+            listed,
+            *total_rows,
         ));
         section.refresh_placeholder_row_accessibility(item);
     }
@@ -1581,15 +1583,14 @@ fn placeholder_label(placeholder: DirectoryPlaceholder) -> String {
 /// Convert comparable row state back into GTK row objects for splicing.
 fn build_child_items(rows: &[DirectoryRowState]) -> Vec<FileTreeItem> {
     rows.iter()
-        .map(|row| match (row.path.as_ref(), row.placeholder) {
-            (Some(path), _) => FileTreeItem::new(path.clone(), row.is_dir, row.is_empty),
-            (None, Some(placeholder)) => {
-                FileTreeItem::new_placeholder(placeholder_label(placeholder), placeholder)
+        .map(|row| match row {
+            DirectoryRowState::File { path } => FileTreeItem::new(path.clone(), false, None),
+            DirectoryRowState::Directory { path, is_empty } => {
+                FileTreeItem::new(path.clone(), true, *is_empty)
             }
-            (None, None) => FileTreeItem::new_placeholder(
-                placeholder_label(DirectoryPlaceholder::Loading),
-                DirectoryPlaceholder::Loading,
-            ),
+            DirectoryRowState::Placeholder(placeholder) => {
+                FileTreeItem::new_placeholder(placeholder_label(*placeholder), *placeholder)
+            }
         })
         .collect()
 }
@@ -1668,7 +1669,7 @@ fn take_over_child_cache(
         .borrow()
         .get(&store_key)
         .map_or(0, |rows| {
-            rows.iter().filter(|row| row.path.is_some()).count()
+            rows.iter().filter(|row| row.path().is_some()).count()
         });
     if mirror_paths != 0 {
         // The store already has rows the caches never followed: leave the
@@ -1727,7 +1728,10 @@ fn retire_loading_row(
     store: &gio::ListStore,
     progress: &Rc<RefCell<ChildReconcileProgress>>,
 ) {
-    let Some((item, _)) = progress.borrow_mut().loading_row.take() else {
+    let ReconcileLoadingRow::Active(item, _) = std::mem::replace(
+        &mut progress.borrow_mut().loading_row,
+        ReconcileLoadingRow::None,
+    ) else {
         return;
     };
     let last = store.n_items().checked_sub(1);
@@ -2092,7 +2096,7 @@ impl LushtextWorkspaceSection {
         let new_occurrences = rows
             .iter()
             .enumerate()
-            .filter_map(|(index, row)| row.path.clone().map(|path| (index, path)))
+            .filter_map(|(index, row)| row.path().map(|path| (index, path.to_path_buf())))
             .collect::<Vec<_>>();
         let imp = self.imp();
         let metrics = replace_child_cache(
@@ -2303,7 +2307,7 @@ impl LushtextWorkspaceSection {
     #[must_use]
     pub fn remove_from_model(&self, target_path: &Path) -> bool {
         let imp = self.imp();
-        clear_dir_state(self, target_path);
+        retire_dir_subtrees(self, &[target_path.to_path_buf()]);
         let mut removed_any = false;
         let may_have_multiple_visible_rows = self.visible_path_is_ambiguous(target_path);
 
@@ -2944,11 +2948,14 @@ mod index_tests {
             .truncated
             .then_some((scan.entries.len(), scan.examined_entries));
         let rows = desired_child_rows(scan.entries, limited);
-        let budget = rows.iter().find_map(|row| match row.placeholder {
+        let budget = rows.iter().find_map(|row| match row.placeholder() {
             Some(DirectoryPlaceholder::Budget { shown, total }) => Some((shown, total)),
             _ => None,
         });
-        (rows.iter().filter(|row| row.path.is_some()).count(), budget)
+        (
+            rows.iter().filter(|row| row.path().is_some()).count(),
+            budget,
+        )
     }
 
     /// No count cap (`bound-lists-by-budget-not-count`): a directory past

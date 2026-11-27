@@ -145,30 +145,45 @@ impl LushtextOpenPopover {
 
     /// Stage 5 exit: the compact file-chooser button.
     pub fn connect_open_file_requested(&self, callback: impl Fn() + 'static) {
-        self.imp()
-            .open_file_callback
-            .replace(Some(Box::new(callback)));
+        crate::ui::signal_connect::connect_void(self, "open-file-requested", false, move |_| {
+            callback();
+        });
     }
 
     /// Stage 5 exit: recent-row activation.
     pub fn connect_recent_activated(&self, callback: impl Fn(PathBuf) + 'static) {
-        self.imp()
-            .open_recent_callback
-            .replace(Some(Box::new(callback)));
+        crate::ui::signal_connect::connect_void(self, "recent-activated", false, move |values| {
+            if let Some(path) = values
+                .get(1)
+                .and_then(|value| value.get::<imp::BoxedPath>().ok())
+            {
+                callback(path.0);
+            }
+        });
     }
 
     /// Stage 5 exit: row-level removal.
     pub fn connect_remove_requested(&self, callback: impl Fn(PathBuf) + 'static) {
-        self.imp()
-            .remove_recent_callback
-            .replace(Some(Box::new(callback)));
+        crate::ui::signal_connect::connect_void(self, "remove-requested", false, move |values| {
+            if let Some(path) = values
+                .get(1)
+                .and_then(|value| value.get::<imp::BoxedPath>().ok())
+            {
+                callback(path.0);
+            }
+        });
     }
 
     /// Stage 5 exit: keyboard dismissal focus restoration.
     pub fn connect_dismissed_from_keyboard(&self, callback: impl Fn() + 'static) {
-        self.imp()
-            .dismiss_callback
-            .replace(Some(Box::new(callback)));
+        crate::ui::signal_connect::connect_void(
+            self,
+            "dismissed-from-keyboard",
+            false,
+            move |_| {
+                callback();
+            },
+        );
     }
 
     // --- Actuation seams -----------------------------------------------------
@@ -241,7 +256,7 @@ impl LushtextOpenPopover {
     #[cfg(feature = "test-utils")]
     #[must_use]
     pub fn row_layout_snapshot_for_test() -> evidence::OpenPopoverRowLayoutSnapshot {
-        imp::LushtextOpenPopover::row_layout_snapshot().into()
+        item::row_layout_snapshot().into()
     }
 }
 

@@ -92,7 +92,7 @@ impl LushtextWorkspaceSection {
         self.prepare_workspace_watch_model(folders);
         self.dismiss_peek_for_rebuild();
         self.save_expanded_paths();
-        super::scan_execution::clear_all_dir_state(self);
+        super::scan_execution::retire_all_dir_listings(self);
         self.reset_item_cache();
         let top_level_store = gio::ListStore::new::<FileTreeItem>();
         let visibility = current_entry_visibility();

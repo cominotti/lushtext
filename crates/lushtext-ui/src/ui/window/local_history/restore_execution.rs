@@ -182,7 +182,7 @@ impl LushtextWindow {
             policy::PREVIEW_RESERVATION_BYTES,
         ) else {
             browser.return_loaded_snapshot(snapshot);
-            browser.restore_pending.set(true);
+            browser.set_restore_awaiting_capacity();
             let browser_weak = Rc::downgrade(browser);
             browser
                 .restore_capacity_wakeup
@@ -190,7 +190,7 @@ impl LushtextWindow {
                     let Some(browser) = browser_weak.upgrade() else {
                         return;
                     };
-                    if !browser.restore_pending.replace(false) {
+                    if !browser.take_restore_awaiting_capacity() {
                         return;
                     }
                     browser.with_owned_loaded_snapshot(|browser, snapshot| {
@@ -204,12 +204,12 @@ impl LushtextWindow {
             );
             return;
         };
-        browser.restore_pending.set(false);
+        browser.finish_restore_capture();
         browser.restore_capacity_wakeup.cancel();
         let browser_for_restore = Rc::clone(browser);
         let run_restore = move |outcome: buffer_snapshot::BufferSnapshotOutcome| {
             let browser = browser_for_restore;
-            browser.restore_snapshot.take();
+            browser.finish_restore_capture();
             let buffer_snapshot::BufferSnapshotOutcome::Captured(undo_payload) = outcome else {
                 browser.return_loaded_snapshot(snapshot);
                 set_local_history_action_enabled(&browser.restore_button, true);
@@ -264,12 +264,7 @@ impl LushtextWindow {
                         .restore_snapshot
                         .map_preserving_reservation(|snapshot| snapshot.text);
                     // Profiled by the preview worker that read the snapshot.
-                    let restore_profile = state
-                        .browser
-                        .loaded_profile
-                        .borrow()
-                        .clone()
-                        .unwrap_or(DocumentProfile::EMPTY);
+                    let restore_profile = state.browser.loaded_profile();
                     state.browser.editor.replace_buffer_bounded(
                         BufferReplacementRequest::new_guarded_returning_body_on_cancel(
                             BufferReplacementTicket {
@@ -302,11 +297,7 @@ impl LushtextWindow {
                                     set_local_history_action_enabled(&browser.restore_button, true);
                                     set_local_history_action_enabled(
                                         &browser.copy_button,
-                                        browser
-                                            .loaded_snapshot
-                                            .borrow()
-                                            .as_ref()
-                                            .is_some_and(|snapshot| !snapshot.text.is_empty()),
+                                        browser.has_non_empty_loaded_snapshot(),
                                     );
                                     return;
                                 }
@@ -361,7 +352,7 @@ impl LushtextWindow {
                 admission,
                 run_restore,
             );
-            browser.restore_snapshot.replace(Some(snapshot));
+            browser.set_restore_capturing(snapshot);
         } else {
             run_restore(buffer_snapshot::BufferSnapshotOutcome::Captured(
                 admission.own_direct(buffer_snapshot::snapshot_buffer_text_direct(&buffer)),

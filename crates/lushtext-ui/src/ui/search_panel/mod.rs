@@ -294,7 +294,7 @@ impl LushtextSearchPanel {
         self.imp()
             .callbacks
             .open_file_callback
-            .replace(Some(Box::new(f)));
+            .replace(Some(std::rc::Rc::new(f)));
     }
 
     /// Register a callback invoked when the user presses Escape.
@@ -302,7 +302,7 @@ impl LushtextSearchPanel {
         self.imp()
             .callbacks
             .close_requested_callback
-            .replace(Some(Box::new(f)));
+            .replace(Some(std::rc::Rc::new(f)));
     }
 
     /// Register a callback invoked when F4/Shift+F4 navigates to a match.
@@ -310,7 +310,7 @@ impl LushtextSearchPanel {
         self.imp()
             .callbacks
             .navigate_callback
-            .replace(Some(Box::new(f)));
+            .replace(Some(std::rc::Rc::new(f)));
     }
 
     /// Register a callback invoked on search progress and completion.
@@ -321,7 +321,7 @@ impl LushtextSearchPanel {
         self.imp()
             .callbacks
             .progress_callback
-            .replace(Some(Box::new(f)));
+            .replace(Some(std::rc::Rc::new(f)));
     }
 
     /// Register a callback invoked when "Confirm Replace" is clicked with checked replacements.
@@ -329,7 +329,7 @@ impl LushtextSearchPanel {
         self.imp()
             .callbacks
             .replace_callback
-            .replace(Some(Box::new(f)));
+            .replace(Some(std::rc::Rc::new(f)));
     }
 
     /// Register a callback invoked when "Undo" is clicked with the backup to restore.
@@ -342,7 +342,7 @@ impl LushtextSearchPanel {
         self.imp()
             .callbacks
             .undo_callback
-            .replace(Some(Box::new(f)));
+            .replace(Some(std::rc::Rc::new(f)));
     }
 
     /// Register the raw backup callback used by the external widget harness.
@@ -360,6 +360,6 @@ impl LushtextSearchPanel {
         self.imp()
             .callbacks
             .message_callback
-            .replace(Some(Box::new(f)));
+            .replace(Some(std::rc::Rc::new(f)));
     }
 }

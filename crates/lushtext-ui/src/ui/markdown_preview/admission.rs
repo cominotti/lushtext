@@ -212,7 +212,7 @@ impl LushtextMarkdownPreview {
             == Some(MESSAGE.chars().count())
             && buffer.text(&buffer.start_iter(), &buffer.end_iter(), true) == MESSAGE;
         if !already_visible {
-            self.clear_rendered_state(false);
+            self.detach_rendered_buffer(false);
             self.imp().text_view.buffer().set_text(MESSAGE);
         }
         accessibility::set_description(
@@ -274,7 +274,7 @@ impl LushtextMarkdownPreview {
 
     pub(super) fn show_pending_markdown_plan(&self) {
         self.show_content_view();
-        self.clear_rendered_state(false);
+        self.detach_rendered_buffer(false);
         self.imp()
             .text_view
             .buffer()

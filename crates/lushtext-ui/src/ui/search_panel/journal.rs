@@ -15,15 +15,16 @@
 //!
 //! # Owned state
 //!
-//! Three fields on `imp::SearchPreviewState` are touched by both Replace All
-//! coordination modules, and this module is the single owner of all three. The
-//! preview half never reads them directly; it calls the named crossing
-//! predicates below.
+//! [`JournalState`] owns the Replace All transaction phase
+//! ([`ReplaceTransactionPhase`]), the installed undo journal
+//! ([`UndoBackupSlot`]), the journal generation counter, the disposal capacity
+//! wakeup, and the disk job/apply-count evidence. `replace_execution` reads
+//! the transaction gate only through the named crossing predicates below.
 //!
-//! | Field | Crossing operation `replace_execution` calls |
+//! | State | Crossing operation `replace_execution` calls |
 //! | --- | --- |
-//! | `replace_transaction_pending` | [`LushtextSearchPanel::replace_transaction_claimed`] |
-//! | `replace_transaction_generation` | [`LushtextSearchPanel::replace_transaction_generation_reserved`] |
+//! | `ReplaceTransactionPhase::Claimed` | [`LushtextSearchPanel::replace_transaction_claimed`] |
+//! | `reserved_generation` | [`LushtextSearchPanel::replace_transaction_generation_reserved`] |
 //! | `undo_backup_generation` | none; it crosses only to the window, inside a `ReplaceJournalFreshness` |
 //!
 //! # Control inversions
@@ -56,11 +57,110 @@ use lushtext_services::search::content_search::{
     replace_undo_retained_byte_weight,
 };
 use lushtext_services::{persistence::json_store, search::search_backup};
+use std::cell::{Cell, RefCell};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use super::LushtextSearchPanel;
 use super::policy::{ReplaceApplyCounts, UndoReservationPlan};
+
+/// Transaction-gate phase owned by `journal`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum ReplaceTransactionPhase {
+    #[default]
+    Idle,
+    Claimed {
+        reserved_generation: Option<ReplaceTransactionGeneration>,
+        resume_persisted_load: bool,
+    },
+}
+
+/// In-memory undo backup slot owned by `journal`.
+#[derive(Default)]
+pub enum UndoBackupSlot {
+    #[default]
+    Empty,
+    Installed(Arc<super::GuardedReplaceUndoBackup>),
+}
+
+impl UndoBackupSlot {
+    #[must_use]
+    pub fn is_installed(&self) -> bool {
+        matches!(self, Self::Installed(_))
+    }
+
+    #[must_use]
+    pub fn as_backup(&self) -> Option<&Arc<super::GuardedReplaceUndoBackup>> {
+        match self {
+            Self::Empty => None,
+            Self::Installed(backup) => Some(backup),
+        }
+    }
+
+    fn take_backup(&mut self) -> Option<Arc<super::GuardedReplaceUndoBackup>> {
+        match std::mem::take(self) {
+            Self::Empty => None,
+            Self::Installed(backup) => Some(backup),
+        }
+    }
+}
+
+/// Recorded apply counts from the most recent durable Replace All apply.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum LastApplyCounts {
+    #[default]
+    None,
+    Recorded(ReplaceApplyCounts),
+}
+
+impl LastApplyCounts {
+    pub(super) fn into_option(self) -> Option<ReplaceApplyCounts> {
+        match self {
+            Self::None => None,
+            Self::Recorded(counts) => Some(counts),
+        }
+    }
+}
+
+/// Durable undo journal and transaction-gate state owned by `journal`.
+#[derive(Default)]
+pub struct JournalState {
+    pub(super) transaction: Cell<ReplaceTransactionPhase>,
+    pub(super) undo_backup: RefCell<UndoBackupSlot>,
+    pub(super) undo_backup_generation: Arc<AtomicU32>,
+    pub(super) undo_capacity_wakeup: crate::ui::plain_disposal::DisposalCapacityWakeup,
+    pub(super) disk_jobs: Cell<u64>,
+    pub(super) disk_jobs_in_flight: Cell<usize>,
+    pub(super) last_apply_counts: Cell<LastApplyCounts>,
+}
+
+impl JournalState {
+    fn current_generation(&self) -> UndoBackupGeneration {
+        UndoBackupGeneration::new(self.undo_backup_generation.load(Ordering::Acquire))
+    }
+
+    /// Install or clear the in-memory undo backup directly (used by widget tests).
+    #[cfg(feature = "test-utils")]
+    pub fn replace_undo_backup(&self, backup: Option<Arc<super::GuardedReplaceUndoBackup>>) {
+        let next = backup.map_or(UndoBackupSlot::Empty, UndoBackupSlot::Installed);
+        let retired = self.undo_backup.replace(next).take_backup();
+        release_superseded_undo_journal(retired);
+    }
+
+    /// Clone the currently installed undo backup handle, if any.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn undo_backup(&self) -> Option<Arc<super::GuardedReplaceUndoBackup>> {
+        self.undo_backup.borrow().as_backup().cloned()
+    }
+}
+
+fn generation_is_current(counter: &Arc<AtomicU32>, expected: UndoBackupGeneration) -> bool {
+    super::policy::journal_generation_is_current(
+        UndoBackupGeneration::new(counter.load(Ordering::Acquire)),
+        expected,
+    )
+}
 
 /// Startup-recovery result carried back from the worker to GTK.
 struct PersistedUndoStartupLoad {
@@ -147,24 +247,29 @@ fn release_superseded_undo_journal(retired: Option<Arc<super::GuardedReplaceUndo
 impl LushtextSearchPanel {
     /// Whether one Replace All apply or undo transaction owns journal mutation.
     ///
-    /// The crossing predicate for `replace_transaction_pending`, which this
+    /// The crossing predicate for `transaction`, which this
     /// module owns. `replace_execution` reads the transaction only through here.
     pub(super) fn replace_transaction_claimed(&self) -> bool {
-        self.imp().preview.replace_transaction_pending.get()
+        matches!(
+            self.imp().journal.transaction.get(),
+            ReplaceTransactionPhase::Claimed { .. }
+        )
     }
 
     /// Whether the claimed transaction still holds its reserved journal generation.
     ///
-    /// The crossing predicate for `replace_transaction_generation`. The durable
+    /// The crossing predicate for `reserved_generation`. The durable
     /// apply consumes that generation with [`Self::take_replace_transaction`],
     /// so a still-reserved generation means the window never took the handoff
     /// and the preview half must release the transaction itself.
     pub(super) fn replace_transaction_generation_reserved(&self) -> bool {
-        self.imp()
-            .preview
-            .replace_transaction_generation
-            .get()
-            .is_some()
+        matches!(
+            self.imp().journal.transaction.get(),
+            ReplaceTransactionPhase::Claimed {
+                reserved_generation: Some(_),
+                ..
+            }
+        )
     }
 
     /// Reserve replacement ownership while every superseded guarded input remains installed.
@@ -206,10 +311,10 @@ impl LushtextSearchPanel {
     /// The disposal weight this panel's installed journal holds, if any.
     fn installed_undo_reservation_weight(&self) -> Option<u64> {
         self.imp()
-            .preview
+            .journal
             .undo_backup
             .borrow()
-            .as_ref()
+            .as_backup()
             .and_then(|backup| backup.reservation_weight())
     }
 
@@ -276,7 +381,7 @@ impl LushtextSearchPanel {
     pub(crate) fn reserve_undo_backup_generation(&self) -> UndoBackupGeneration {
         UndoBackupGeneration::new(
             self.imp()
-                .preview
+                .journal
                 .undo_backup_generation
                 .fetch_add(1, Ordering::AcqRel)
                 .wrapping_add(1),
@@ -290,7 +395,7 @@ impl LushtextSearchPanel {
     /// this one is refused, with a status message, and nothing waits.
     pub(crate) fn begin_replace_transaction(&self) -> Option<ReplaceJournalFreshness> {
         let imp = self.imp();
-        if imp.preview.replace_transaction_pending.get() {
+        if self.replace_transaction_claimed() {
             return None;
         }
         if other_application_panels(self).any(|panel| panel.replace_transaction_claimed()) {
@@ -300,16 +405,18 @@ impl LushtextSearchPanel {
             );
             return None;
         }
-        imp.preview.replace_transaction_pending.set(true);
         let generation = self.reserve_undo_backup_generation();
-        imp.preview
-            .replace_transaction_generation
-            .set(Some(ReplaceTransactionGeneration::new(generation.get())));
+        imp.journal
+            .transaction
+            .set(ReplaceTransactionPhase::Claimed {
+                reserved_generation: Some(ReplaceTransactionGeneration::new(generation.get())),
+                resume_persisted_load: false,
+            });
         imp.replace_all_button.set_sensitive(false);
         imp.undo_button.set_sensitive(false);
         self.refresh_accessibility_state();
         Some(ReplaceJournalFreshness::new(
-            imp.preview.undo_backup_generation.clone(),
+            imp.journal.undo_backup_generation.clone(),
             generation,
         ))
     }
@@ -317,18 +424,22 @@ impl LushtextSearchPanel {
     /// Release the serialized transaction after its UI and journal state are published.
     pub(crate) fn finish_replace_transaction(&self) {
         let imp = self.imp();
-        imp.preview.replace_transaction_generation.set(None);
-        imp.preview.replace_transaction_pending.set(false);
+        let previous = imp
+            .journal
+            .transaction
+            .replace(ReplaceTransactionPhase::Idle);
         imp.undo_button.set_sensitive(self.has_undo_backup());
         self.update_replace_button_sensitivity();
         self.refresh_accessibility_state();
         // A startup recovery that stood down for this transaction resumes now;
         // a run's admission would already have retired it.
-        if imp
-            .preview
-            .persisted_undo_load_after_transaction
-            .replace(false)
-        {
+        if matches!(
+            previous,
+            ReplaceTransactionPhase::Claimed {
+                resume_persisted_load: true,
+                ..
+            }
+        ) {
             self.load_persisted_undo_backup();
         }
     }
@@ -336,7 +447,7 @@ impl LushtextSearchPanel {
     /// Release the transaction as the panel is disposed
     /// (`replace-all-confirm-disposal-lane` design D4).
     ///
-    /// Resets only the two transaction fields this module owns and touches no
+    /// Resets only the transaction phase this module owns and touches no
     /// widget: GTK clears template children in `dispose()`, which
     /// [`Self::finish_replace_transaction`]'s button and accessibility updates
     /// would read. A disposed panel the application registry can still reach
@@ -345,20 +456,31 @@ impl LushtextSearchPanel {
     /// reference to its window until its completion has released it, so no live
     /// worker's transaction is released here.
     pub(super) fn release_replace_transaction_on_dispose(&self) {
-        let preview = &self.imp().preview;
-        preview.replace_transaction_generation.set(None);
-        preview.replace_transaction_pending.set(false);
+        let journal = &self.imp().journal;
+        journal.undo_capacity_wakeup.cancel();
+        let retired = journal.undo_backup.take().take_backup();
+        release_superseded_undo_journal(retired);
+        journal.transaction.set(ReplaceTransactionPhase::Idle);
     }
 
     /// Hand the preview selection's reservation to the durable apply workflow.
     pub(crate) fn take_replace_transaction(&self) -> Option<ReplaceJournalFreshness> {
         let imp = self.imp();
-        if !imp.preview.replace_transaction_pending.get() {
+        let ReplaceTransactionPhase::Claimed {
+            reserved_generation: Some(generation),
+            resume_persisted_load,
+        } = imp.journal.transaction.get()
+        else {
             return None;
-        }
-        let generation = imp.preview.replace_transaction_generation.take()?;
+        };
+        imp.journal
+            .transaction
+            .set(ReplaceTransactionPhase::Claimed {
+                reserved_generation: None,
+                resume_persisted_load,
+            });
         Some(ReplaceJournalFreshness::new(
-            imp.preview.undo_backup_generation.clone(),
+            imp.journal.undo_backup_generation.clone(),
             UndoBackupGeneration::new(generation.get()),
         ))
     }
@@ -415,13 +537,13 @@ impl LushtextSearchPanel {
     /// generation, and it dispatches none while its transaction is claimed.
     pub(crate) fn supersede_prior_undo_for_replace(&self) {
         self.cancel_persisted_undo_load();
-        let retired = self.imp().preview.undo_backup.replace(None);
+        let retired = self.imp().journal.undo_backup.take().take_backup();
         self.hide_undo_button();
         release_superseded_undo_journal(retired);
         for panel in other_application_panels(self) {
             panel.cancel_persisted_undo_load();
             panel.reserve_undo_backup_generation();
-            let retired = panel.imp().preview.undo_backup.replace(None);
+            let retired = panel.imp().journal.undo_backup.take().take_backup();
             if retired.is_none() {
                 continue;
             }
@@ -450,7 +572,10 @@ impl LushtextSearchPanel {
     /// from the same result, and this makes that outcome readable from the
     /// workflow's evidence surface instead of only from the status bar.
     pub(crate) fn record_replace_apply_counts(&self, counts: ReplaceApplyCounts) {
-        self.imp().preview.last_apply_counts.set(Some(counts));
+        self.imp()
+            .journal
+            .last_apply_counts
+            .set(LastApplyCounts::Recorded(counts));
     }
 
     /// Publish a service-persisted journal and reveal its undo affordance.
@@ -477,12 +602,7 @@ impl LushtextSearchPanel {
         generation: UndoBackupGeneration,
     ) -> bool {
         if !super::policy::journal_generation_is_current(
-            UndoBackupGeneration::new(
-                self.imp()
-                    .preview
-                    .undo_backup_generation
-                    .load(Ordering::Acquire),
-            ),
+            self.imp().journal.current_generation(),
             generation,
         ) {
             drop(backup);
@@ -490,9 +610,10 @@ impl LushtextSearchPanel {
         }
         let retired = self
             .imp()
-            .preview
+            .journal
             .undo_backup
-            .replace(Some(Arc::new(backup)));
+            .replace(UndoBackupSlot::Installed(Arc::new(backup)))
+            .take_backup();
         release_superseded_undo_journal(retired);
         self.refresh_accessibility_state();
         true
@@ -504,12 +625,7 @@ impl LushtextSearchPanel {
         generation: UndoBackupGeneration,
     ) -> bool {
         if !super::policy::journal_generation_is_current(
-            UndoBackupGeneration::new(
-                self.imp()
-                    .preview
-                    .undo_backup_generation
-                    .load(Ordering::Acquire),
-            ),
+            self.imp().journal.current_generation(),
             generation,
         ) {
             return false;
@@ -528,10 +644,15 @@ impl LushtextSearchPanel {
         self.cancel_persisted_undo_load();
         let previous = self
             .imp()
-            .preview
+            .journal
             .undo_backup_generation
             .fetch_add(1, Ordering::AcqRel);
-        let retired = self.imp().preview.undo_backup.replace(Some(backup));
+        let retired = self
+            .imp()
+            .journal
+            .undo_backup
+            .replace(UndoBackupSlot::Installed(backup))
+            .take_backup();
         self.refresh_accessibility_state();
         (UndoBackupGeneration::new(previous.wrapping_add(1)), retired)
     }
@@ -545,11 +666,18 @@ impl LushtextSearchPanel {
     /// transaction ends ([`Self::finish_replace_transaction`]), unless a run's
     /// admission retired it first.
     pub(crate) fn load_persisted_undo_backup(&self) {
-        if self.replace_transaction_claimed() {
+        if let ReplaceTransactionPhase::Claimed {
+            reserved_generation,
+            ..
+        } = self.imp().journal.transaction.get()
+        {
             self.imp()
-                .preview
-                .persisted_undo_load_after_transaction
-                .set(true);
+                .journal
+                .transaction
+                .set(ReplaceTransactionPhase::Claimed {
+                    reserved_generation,
+                    resume_persisted_load: true,
+                });
             return;
         }
         let observed_epoch = crate::ui::plain_disposal::disposal_capacity_epoch();
@@ -561,23 +689,15 @@ impl LushtextSearchPanel {
             return;
         };
         let data_dir = json_store::data_dir();
-        let generation = UndoBackupGeneration::new(
-            self.imp()
-                .preview
-                .undo_backup_generation
-                .load(Ordering::Acquire),
-        );
-        let generation_counter = self.imp().preview.undo_backup_generation.clone();
+        let generation = self.imp().journal.current_generation();
+        let generation_counter = self.imp().journal.undo_backup_generation.clone();
         let callback_generation_counter = generation_counter.clone();
         self.charge_journal_disk_job();
         gtk_lush_tasks::spawn_blocking_then(
             self.clone(),
             move || {
                 let _disk_guard = search_backup::acquire_journal_guard()?;
-                if !super::policy::journal_generation_is_current(
-                    UndoBackupGeneration::new(generation_counter.load(Ordering::Acquire)),
-                    generation,
-                ) {
+                if !generation_is_current(&generation_counter, generation) {
                     return Ok(PersistedUndoStartupLoad {
                         active_backup: None,
                     });
@@ -605,12 +725,7 @@ impl LushtextSearchPanel {
                 panel.finish_journal_disk_job();
                 match result {
                     Ok(load) => {
-                        if !super::policy::journal_generation_is_current(
-                            UndoBackupGeneration::new(
-                                callback_generation_counter.load(Ordering::Acquire),
-                            ),
-                            generation,
-                        ) {
+                        if !generation_is_current(&callback_generation_counter, generation) {
                             return;
                         }
                         if let Some(backup) = load.active_backup {
@@ -629,15 +744,24 @@ impl LushtextSearchPanel {
     /// Retire a startup recovery that has not dispatched yet: its capacity
     /// wakeup, or its wait for this panel's transaction to end.
     fn cancel_persisted_undo_load(&self) {
-        let preview = &self.imp().preview;
-        preview.undo_capacity_wakeup.cancel();
-        preview.persisted_undo_load_after_transaction.set(false);
+        let journal = &self.imp().journal;
+        journal.undo_capacity_wakeup.cancel();
+        if let ReplaceTransactionPhase::Claimed {
+            reserved_generation,
+            ..
+        } = journal.transaction.get()
+        {
+            journal.transaction.set(ReplaceTransactionPhase::Claimed {
+                reserved_generation,
+                resume_persisted_load: false,
+            });
+        }
     }
 
     fn schedule_persisted_undo_backup_retry(&self, observed_epoch: u64) {
         let panel_weak = self.downgrade();
         self.imp()
-            .preview
+            .journal
             .undo_capacity_wakeup
             .arm(observed_epoch, move || {
                 if let Some(panel) = panel_weak.upgrade() {
@@ -651,12 +775,12 @@ impl LushtextSearchPanel {
         self.cancel_persisted_undo_load();
         let generation = UndoBackupGeneration::new(
             self.imp()
-                .preview
+                .journal
                 .undo_backup_generation
                 .fetch_add(1, Ordering::AcqRel)
                 .wrapping_add(1),
         );
-        let retired = self.imp().preview.undo_backup.replace(None);
+        let retired = self.imp().journal.undo_backup.take().take_backup();
         self.hide_undo_button();
         self.delete_undo_backup_on_disk(generation, retired);
         self.refresh_accessibility_state();
@@ -710,21 +834,21 @@ impl LushtextSearchPanel {
 
     /// Charge one dispatched journal disk job to the evidence counters.
     fn charge_journal_disk_job(&self) {
-        let preview = &self.imp().preview;
-        preview
-            .journal_disk_jobs
-            .set(preview.journal_disk_jobs.get().saturating_add(1));
-        preview
-            .journal_disk_jobs_in_flight
-            .set(preview.journal_disk_jobs_in_flight.get().saturating_add(1));
+        let journal = &self.imp().journal;
+        journal
+            .disk_jobs
+            .set(journal.disk_jobs.get().saturating_add(1));
+        journal
+            .disk_jobs_in_flight
+            .set(journal.disk_jobs_in_flight.get().saturating_add(1));
     }
 
     /// Release one journal disk job as its GTK completion runs.
     fn finish_journal_disk_job(&self) {
-        let preview = &self.imp().preview;
-        preview
-            .journal_disk_jobs_in_flight
-            .set(preview.journal_disk_jobs_in_flight.get().saturating_sub(1));
+        let journal = &self.imp().journal;
+        journal
+            .disk_jobs_in_flight
+            .set(journal.disk_jobs_in_flight.get().saturating_sub(1));
     }
 
     fn save_undo_backup_on_disk(
@@ -734,7 +858,7 @@ impl LushtextSearchPanel {
         generation: UndoBackupGeneration,
     ) {
         let data_dir = json_store::data_dir();
-        let generation_counter = self.imp().preview.undo_backup_generation.clone();
+        let generation_counter = self.imp().journal.undo_backup_generation.clone();
         self.charge_journal_disk_job();
         spawn_blocking_then(
             self.clone(),
@@ -742,14 +866,7 @@ impl LushtextSearchPanel {
                 let _retired = retired;
                 #[cfg(feature = "test-utils")]
                 super::test_policy::delay_undo_backup_disk();
-                // A superseded job returns before it waits, and while it
-                // waits, instead of holding a worker slot (design D3a).
-                let is_current = || {
-                    super::policy::journal_generation_is_current(
-                        UndoBackupGeneration::new(generation_counter.load(Ordering::Acquire)),
-                        generation,
-                    )
-                };
+                let is_current = || generation_is_current(&generation_counter, generation);
                 let Some(_disk_guard) =
                     search_backup::acquire_journal_guard_while_current(is_current)?
                 else {
@@ -787,7 +904,8 @@ impl LushtextSearchPanel {
         message: &str,
         severity: lushtext_services::coordination::notifications::NotificationSeverity,
     ) {
-        if let Some(ref callback) = *self.imp().callbacks.message_callback.borrow() {
+        let callback = self.imp().callbacks.message_callback.borrow().clone();
+        if let Some(callback) = callback {
             callback(message, severity);
         }
     }
@@ -798,7 +916,7 @@ impl LushtextSearchPanel {
         retired: Option<Arc<super::GuardedReplaceUndoBackup>>,
     ) {
         let data_dir = json_store::data_dir();
-        let generation_counter = self.imp().preview.undo_backup_generation.clone();
+        let generation_counter = self.imp().journal.undo_backup_generation.clone();
         self.charge_journal_disk_job();
         spawn_blocking_then(
             self.clone(),
@@ -806,14 +924,7 @@ impl LushtextSearchPanel {
                 let _retired = retired;
                 #[cfg(feature = "test-utils")]
                 super::test_policy::delay_undo_backup_disk();
-                // A superseded job returns before it waits, and while it
-                // waits, instead of holding a worker slot (design D3a).
-                let is_current = || {
-                    super::policy::journal_generation_is_current(
-                        UndoBackupGeneration::new(generation_counter.load(Ordering::Acquire)),
-                        generation,
-                    )
-                };
+                let is_current = || generation_is_current(&generation_counter, generation);
                 let Some(_disk_guard) =
                     search_backup::acquire_journal_guard_while_current(is_current)?
                 else {
@@ -845,11 +956,12 @@ impl LushtextSearchPanel {
         if self.replace_transaction_claimed() {
             return;
         }
-        let Some(backup) = imp.preview.undo_backup.borrow().clone() else {
+        let Some(backup) = imp.journal.undo_backup.borrow().as_backup().cloned() else {
             return;
         };
         self.hide_undo_button();
-        if let Some(ref callback) = *imp.callbacks.undo_callback.borrow() {
+        let callback = imp.callbacks.undo_callback.borrow().clone();
+        if let Some(callback) = callback {
             callback(backup);
         }
     }

@@ -98,14 +98,12 @@ impl imp::LushtextSearchPanel {
                     return;
                 };
                 let imp = panel.imp();
-                let mut checked_ids = imp.preview.checked_match_ids.borrow_mut();
-                if checkbox.is_active() {
-                    checked_ids.insert(match_id);
-                } else {
-                    checked_ids.remove(&match_id);
-                }
-                let has_checked = !checked_ids.is_empty();
-                drop(checked_ids);
+                let Some(has_checked) = imp
+                    .replace_execution
+                    .set_match_checked(match_id, checkbox.is_active())
+                else {
+                    return;
+                };
                 panel.refresh_preview_summary();
                 imp.replace_all_button.set_sensitive(has_checked);
             });
@@ -192,7 +190,8 @@ impl imp::LushtextSearchPanel {
                 if result_item.is_match_item() {
                     let path = PathBuf::from(result_item.file_path());
                     let line = result_item.line_number();
-                    if let Some(ref cb) = *panel.imp().callbacks.open_file_callback.borrow() {
+                    let cb = panel.imp().callbacks.open_file_callback.borrow().clone();
+                    if let Some(cb) = cb {
                         cb(&path, line);
                     }
                 } else {
@@ -297,7 +296,7 @@ fn bind_result_row(
         apply_result_row_accessibility(&expander, &result_item, None);
         let in_preview = bind_panel_weak
             .upgrade()
-            .is_some_and(|p| p.imp().preview.preview_mode.get());
+            .is_some_and(|p| p.is_preview_mode());
 
         if let Some(ref label) = file_label {
             label.set_visible(false);
@@ -314,23 +313,31 @@ fn bind_result_row(
             if let Some(panel) = bind_panel_weak.upgrade() {
                 let imp = panel.imp();
                 let match_id = result_item.match_id();
-                let outcome = imp.preview.preview_outcome.borrow();
-                let match_idx = outcome
-                    .as_ref()
-                    .and_then(|outcome| outcome.preview_index(match_id));
+                let preview_row = {
+                    let phase = imp.replace_execution.preview.borrow();
+                    if let super::replace_execution::PreviewPhase::Active {
+                        outcome,
+                        checked_match_ids,
+                    } = &*phase
+                    {
+                        outcome.preview_index(match_id).map(|idx| {
+                            let r = &outcome.replacements[idx];
+                            let start = r.match_range.start.min(r.original_line.len());
+                            let end = r.match_range.end.min(r.original_line.len());
+                            let markup = render_preview_markup(
+                                &r.original_line,
+                                &r.replaced_line,
+                                start,
+                                end,
+                            );
+                            (r.line_number, markup, checked_match_ids.contains(&match_id))
+                        })
+                    } else {
+                        None
+                    }
+                };
 
-                if let Some(idx) = match_idx {
-                    let r = &outcome.as_ref().expect("preview outcome").replacements[idx];
-                    let replacement_line_number = r.line_number;
-                    let original = &r.original_line;
-                    let replaced = &r.replaced_line;
-                    let start = r.match_range.start.min(original.len());
-                    let end = r.match_range.end.min(original.len());
-
-                    let markup = render_preview_markup(original, replaced, start, end);
-                    let is_checked = imp.preview.checked_match_ids.borrow().contains(&match_id);
-                    drop(outcome);
-
+                if let Some((replacement_line_number, markup, is_checked)) = preview_row {
                     if let Some(ref label) = line_content_label {
                         label.set_markup(&markup);
                         label.set_visible(true);
@@ -348,7 +355,6 @@ fn bind_result_row(
                         checkbox.set_visible(true);
                     }
                 } else {
-                    drop(outcome);
                     if let Some(ref label) = line_content_label {
                         let content = result_item.line_content();
                         let markup = render_match_markup(
@@ -501,17 +507,13 @@ fn preview_match_id_for_checkbox(
     }
 
     let imp = panel.imp();
-    if !imp.preview.preview_mode.get() {
-        return None;
-    }
-
     let match_id = result_item.match_id();
-    imp.preview
-        .preview_outcome
-        .borrow()
-        .as_ref()
-        .and_then(|outcome| outcome.preview_index(match_id))
-        .map(|_| match_id)
+    match &*imp.replace_execution.preview.borrow() {
+        super::replace_execution::PreviewPhase::Active { outcome, .. } => {
+            outcome.preview_index(match_id).map(|_| match_id)
+        }
+        _ => None,
+    }
 }
 
 /// Build markup for a preview row: original line dimmed/struck through and the

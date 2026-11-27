@@ -40,18 +40,18 @@
 //!    disposal lane and resume in a `glib::idle_add_once` callback that drains
 //!    the queued request.
 
+use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
 use lushtext_model::values::ReplacePreviewGeneration;
 use lushtext_model::workspace::content_search::{
-    ReplacePreviewOutcome, ReplacePreviewSkipReason, SearchMatchId,
+    ReplacePreviewOutcome, ReplacePreviewSkipReason, ReplaceSkipReport, SearchMatchId,
 };
-use std::collections::HashSet;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-
-use lushtext_model::workspace::content_search::ReplaceSkipReport;
 use lushtext_services::search::content_search::{
     ReplaceProgress, generate_replacement_preview_with_budget_and_cancel,
 };
@@ -61,6 +61,187 @@ use super::policy::{
     self, ReplacePreviewFacts, ReplacePreviewTicket, completed_preview_reservation_weight,
     preview_reservation_weight,
 };
+
+/// Phase of Replace All preview generation, active selection, and confirmation.
+#[derive(Default)]
+pub enum PreviewPhase {
+    #[default]
+    Idle,
+    Generating {
+        cancel_token: Option<Arc<AtomicBool>>,
+    },
+    Active {
+        outcome: Box<crate::ui::plain_disposal::DisposalOwned<ReplacePreviewOutcome>>,
+        checked_match_ids: HashSet<SearchMatchId>,
+    },
+    PreparingSelection,
+}
+
+/// Single-flight worker phase for Replace All preview and retirement.
+#[derive(Default)]
+pub(super) enum PreviewWorkerPhase {
+    #[default]
+    Idle,
+    Busy {
+        queued_request: Option<ReplacePreviewRequest>,
+    },
+}
+
+/// Phase of an in-flight durable Replace All run.
+#[derive(Default)]
+pub(super) enum ReplaceRunPhase {
+    #[default]
+    Idle,
+    InFlight {
+        control: ReplaceRunControl,
+        intent: Option<super::policy::ReplaceRunIntent>,
+    },
+}
+
+/// Captured request intent from the most recently accepted preview.
+#[derive(Default)]
+pub(super) enum AcceptedPreviewIntent {
+    #[default]
+    None,
+    Captured(super::policy::ReplaceRunIntent),
+}
+
+impl AcceptedPreviewIntent {
+    fn as_intent(&self) -> Option<&super::policy::ReplaceRunIntent> {
+        match self {
+            Self::None => None,
+            Self::Captured(intent) => Some(intent),
+        }
+    }
+}
+
+/// State owned by `replace_execution` for Replace Preview, selection, and run control.
+#[derive(Default)]
+pub struct ReplaceExecutionState {
+    pub(super) preview: RefCell<PreviewPhase>,
+    pub(super) worker: RefCell<PreviewWorkerPhase>,
+    pub(super) run: RefCell<ReplaceRunPhase>,
+    pub(super) accepted_intent: RefCell<AcceptedPreviewIntent>,
+    pub(super) preview_generation: Cell<ReplacePreviewGeneration>,
+    pub(super) preview_capacity_wakeup: crate::ui::plain_disposal::DisposalCapacityWakeup,
+    pub(super) preview_retirement_jobs: Cell<u64>,
+    pub(super) preview_retirement_pending: Arc<AtomicUsize>,
+    pub(super) preview_selection_jobs: Cell<u64>,
+}
+
+impl ReplaceExecutionState {
+    /// Whether pure preview generation or confirmation partitioning is pending.
+    #[must_use]
+    pub fn is_preview_pending(&self) -> bool {
+        matches!(
+            &*self.preview.borrow(),
+            PreviewPhase::Generating { .. } | PreviewPhase::PreparingSelection
+        )
+    }
+
+    /// Whether the panel currently holds an accepted preview selection.
+    #[must_use]
+    pub fn is_preview_mode(&self) -> bool {
+        matches!(&*self.preview.borrow(), PreviewPhase::Active { .. })
+    }
+
+    /// Whether the single-flight preview/retirement worker lane is busy.
+    #[must_use]
+    pub fn is_preview_worker_running(&self) -> bool {
+        matches!(&*self.worker.borrow(), PreviewWorkerPhase::Busy { .. })
+    }
+
+    /// Whether a latest superseding preview request is queued behind the active worker.
+    pub(super) fn has_queued_request(&self) -> bool {
+        matches!(
+            &*self.worker.borrow(),
+            PreviewWorkerPhase::Busy {
+                queued_request: Some(_),
+            }
+        )
+    }
+
+    /// Update the checked status of one generated preview row.
+    ///
+    /// Returns `Some(has_checked)` when an active preview owns the row.
+    pub(super) fn set_match_checked(&self, match_id: SearchMatchId, checked: bool) -> Option<bool> {
+        let mut phase = self.preview.borrow_mut();
+        let PreviewPhase::Active {
+            checked_match_ids, ..
+        } = &mut *phase
+        else {
+            return None;
+        };
+        if checked {
+            checked_match_ids.insert(match_id);
+        } else {
+            checked_match_ids.remove(&match_id);
+        }
+        Some(!checked_match_ids.is_empty())
+    }
+
+    /// Set preview-pending phase directly for widget accessibility tests.
+    #[cfg(feature = "test-utils")]
+    pub fn set_preview_pending(&self, pending: bool) {
+        if pending {
+            if !self.is_preview_pending() {
+                self.preview
+                    .replace(PreviewPhase::Generating { cancel_token: None });
+            }
+        } else if self.is_preview_pending() {
+            self.preview.replace(PreviewPhase::Idle);
+        }
+    }
+
+    /// Clear all checked match IDs in the active preview (used by widget tests).
+    #[cfg(feature = "test-utils")]
+    pub fn clear_checked_matches(&self) {
+        if let PreviewPhase::Active {
+            checked_match_ids, ..
+        } = &mut *self.preview.borrow_mut()
+        {
+            checked_match_ids.clear();
+        }
+    }
+
+    /// Remove one match ID from the active preview selection (used by widget tests).
+    #[cfg(feature = "test-utils")]
+    pub fn uncheck_match(&self, match_id: SearchMatchId) {
+        if let PreviewPhase::Active {
+            checked_match_ids, ..
+        } = &mut *self.preview.borrow_mut()
+        {
+            checked_match_ids.remove(&match_id);
+        }
+    }
+
+    /// Read `(replacement, replaced_line)` for the first active preview row (used by widget tests).
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn first_preview_pair(&self) -> Option<(String, String)> {
+        match &*self.preview.borrow() {
+            PreviewPhase::Active { outcome, .. } => outcome
+                .replacements
+                .first()
+                .map(|r| (r.replacement.to_string(), r.replaced_line.clone())),
+            _ => None,
+        }
+    }
+
+    /// Look up the match ID of the first active preview replacement in `path` (used by widget tests).
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn preview_match_id_for_path(&self, path: &std::path::Path) -> Option<SearchMatchId> {
+        match &*self.preview.borrow() {
+            PreviewPhase::Active { outcome, .. } => outcome
+                .replacements
+                .iter()
+                .find(|replacement| replacement.path == path)
+                .map(|replacement| replacement.match_id),
+            _ => None,
+        }
+    }
+}
 
 /// The cancel flag and progress counters of one Replace All run, shared with
 /// its worker (design D8). The panel holds them from the run's start to its
@@ -97,7 +278,88 @@ impl LushtextSearchPanel {
     /// Whether the panel is in preview mode.
     #[must_use]
     pub fn is_preview_mode(&self) -> bool {
-        self.imp().preview.preview_mode.get()
+        self.imp().replace_execution.is_preview_mode()
+    }
+
+    /// Detach any active preview outcome and checked IDs so `clear_results` can
+    /// retire them after detaching visible search results.
+    pub(super) fn take_active_preview_for_release(
+        &self,
+    ) -> Option<(
+        crate::ui::plain_disposal::DisposalOwned<ReplacePreviewOutcome>,
+        HashSet<SearchMatchId>,
+    )> {
+        let mut phase = self.imp().replace_execution.preview.borrow_mut();
+        match std::mem::take(&mut *phase) {
+            PreviewPhase::Active {
+                outcome,
+                checked_match_ids,
+            } => Some((*outcome, checked_match_ids)),
+            other => {
+                *phase = other;
+                None
+            }
+        }
+    }
+
+    /// Return `PreviewPhase` to `Idle` when clearing search results.
+    pub(super) fn reset_preview_to_idle(&self) {
+        self.imp()
+            .replace_execution
+            .preview
+            .replace(PreviewPhase::Idle);
+    }
+
+    /// Clear run control when a deferred wait ends without starting a worker.
+    pub(super) fn clear_deferred_replace_run_control(&self) {
+        self.imp()
+            .replace_execution
+            .run
+            .replace(ReplaceRunPhase::Idle);
+    }
+
+    /// Wire the Replace All, Skipped Files, Undo, and replacement entry controls.
+    pub(super) fn setup_replace_controls(&self) {
+        let imp = self.imp();
+
+        let panel_weak = self.downgrade();
+        imp.replace_all_button.connect_clicked(move |_| {
+            let Some(panel) = panel_weak.upgrade() else {
+                return;
+            };
+            if panel.replace_run_in_flight() {
+                panel.request_replace_cancel();
+            } else if panel.is_preview_mode() {
+                panel.activate_confirm_replacements();
+            } else {
+                panel.activate_replace_preview();
+            }
+        });
+
+        let panel_weak = self.downgrade();
+        imp.skipped_files_button.connect_clicked(move |_| {
+            let Some(panel) = panel_weak.upgrade() else {
+                return;
+            };
+            panel.show_skipped_files();
+        });
+
+        let panel_weak = self.downgrade();
+        imp.undo_button.connect_clicked(move |_| {
+            let Some(panel) = panel_weak.upgrade() else {
+                return;
+            };
+            panel.activate_undo_replacements();
+        });
+
+        let panel_weak = self.downgrade();
+        imp.replace_entry.connect_changed(move |_| {
+            let Some(panel) = panel_weak.upgrade() else {
+                return;
+            };
+            panel.invalidate_replace_preview_request();
+            panel.update_replace_button_sensitivity();
+        });
     }
 
     /// Reveal the replacement entry and pre-fill it, without starting a preview.
@@ -131,29 +393,33 @@ impl LushtextSearchPanel {
         };
 
         let ticket = self.issue_preview_ticket();
-        let retired_outcome = imp.preview.preview_outcome.take();
-        let retired_checked = std::mem::take(&mut *imp.preview.checked_match_ids.borrow_mut());
-        imp.preview.preview_pending.set(true);
-        imp.preview.preview_mode.set(false);
+        let retired_active = self.take_active_preview_for_release();
+        imp.replace_execution
+            .preview
+            .replace(PreviewPhase::Generating { cancel_token: None });
         imp.replace_all_button.set_label("Preparing Preview…");
         imp.replace_all_button.set_sensitive(false);
         self.refresh_accessibility_state();
 
-        self.release_superseded_preview(retired_outcome, retired_checked);
-        if imp.preview.preview_worker_running.get() {
-            if let Some(queued) = imp.preview.queued_preview_request.borrow_mut().as_mut() {
-                queued.search_matches = search_matches;
-                queued.replacement_text.clear();
-                queued.replacement_text.push_str(replacement_text);
-                queued.ticket.supersede(ticket);
-            } else {
-                imp.preview
-                    .queued_preview_request
-                    .replace(Some(ReplacePreviewRequest {
+        if let Some((retired_outcome, retired_checked)) = retired_active {
+            self.release_superseded_preview(Some(retired_outcome), retired_checked);
+        }
+        if imp.replace_execution.is_preview_worker_running() {
+            if let PreviewWorkerPhase::Busy { queued_request } =
+                &mut *imp.replace_execution.worker.borrow_mut()
+            {
+                if let Some(queued) = queued_request.as_mut() {
+                    queued.search_matches = search_matches;
+                    queued.replacement_text.clear();
+                    queued.replacement_text.push_str(replacement_text);
+                    queued.ticket.supersede(ticket);
+                } else {
+                    *queued_request = Some(ReplacePreviewRequest {
                         search_matches,
                         replacement_text: replacement_text.to_string(),
                         ticket,
-                    }));
+                    });
+                }
             }
             return;
         }
@@ -174,11 +440,17 @@ impl LushtextSearchPanel {
             self.arm_preview_capacity_retry(request, observed_epoch);
             return;
         };
-        imp.preview.preview_worker_running.set(true);
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        imp.preview
-            .preview_cancel_token
-            .replace(Some(cancel.clone()));
+        imp.replace_execution
+            .worker
+            .replace(PreviewWorkerPhase::Busy {
+                queued_request: None,
+            });
+        let cancel = Arc::new(AtomicBool::new(false));
+        if let PreviewPhase::Generating { cancel_token } =
+            &mut *imp.replace_execution.preview.borrow_mut()
+        {
+            *cancel_token = Some(cancel.clone());
+        }
         let ticket = request.ticket.clone();
         // The request a Replace All of this preview applies (design D7): the
         // replacement entry is a single-line GTK field, so the copy is small.
@@ -197,27 +469,32 @@ impl LushtextSearchPanel {
                     &request.replacement_text,
                     &request.ticket.query_spec().options,
                     budget,
-                    || cancel.load(std::sync::atomic::Ordering::Relaxed),
+                    || cancel.load(Ordering::Relaxed),
                 );
                 reservation.shrink_to(completed_preview_reservation_weight(&outcome));
                 reservation.own(outcome)
             },
             move |panel, outcome| {
                 let imp = panel.imp();
-                imp.preview.preview_cancel_token.replace(None);
+                if let PreviewPhase::Generating { cancel_token } =
+                    &mut *imp.replace_execution.preview.borrow_mut()
+                {
+                    *cancel_token = None;
+                }
                 if ticket.is_current(&panel.preview_facts()) {
-                    imp.preview.preview_pending.set(false);
-
                     let checked = outcome
                         .replacements
                         .iter()
                         .map(|replacement| replacement.match_id)
                         .collect();
-                    imp.preview.checked_match_ids.replace(checked);
                     let total = outcome.replacements.len();
-                    imp.preview.preview_outcome.replace(Some(outcome));
-                    imp.preview.accepted_preview_intent.replace(Some(intent));
-                    imp.preview.preview_mode.set(true);
+                    imp.replace_execution
+                        .accepted_intent
+                        .replace(AcceptedPreviewIntent::Captured(intent));
+                    imp.replace_execution.preview.replace(PreviewPhase::Active {
+                        outcome: Box::new(outcome),
+                        checked_match_ids: checked,
+                    });
 
                     panel.refresh_preview_summary();
                     imp.replace_all_button.set_sensitive(total > 0);
@@ -234,17 +511,22 @@ impl LushtextSearchPanel {
 
     fn arm_preview_capacity_retry(&self, request: ReplacePreviewRequest, observed_epoch: u64) {
         let imp = self.imp();
-        imp.preview.preview_worker_running.set(true);
-        imp.preview.queued_preview_request.replace(Some(request));
+        imp.replace_execution
+            .worker
+            .replace(PreviewWorkerPhase::Busy {
+                queued_request: Some(request),
+            });
         let panel_weak = self.downgrade();
-        imp.preview
+        imp.replace_execution
             .preview_capacity_wakeup
             .arm(observed_epoch, move || {
                 let Some(panel) = panel_weak.upgrade() else {
                     return;
                 };
-                let request = panel.imp().preview.queued_preview_request.take();
-                panel.imp().preview.preview_worker_running.set(false);
+                let request = match panel.imp().replace_execution.worker.take() {
+                    PreviewWorkerPhase::Busy { queued_request } => queued_request,
+                    PreviewWorkerPhase::Idle => None,
+                };
                 if let Some(request) = request
                     && request.ticket.may_dispatch(&panel.preview_facts())
                 {
@@ -265,8 +547,17 @@ impl LushtextSearchPanel {
         // only the outcome goes to the disposal lane.
         drop(checked_match_ids);
         if let Some(outcome) = outcome {
-            self.imp().preview.preview_worker_running.set(true);
+            self.mark_preview_worker_busy();
             self.spawn_guarded_preview_retirement(outcome);
+        }
+    }
+
+    fn mark_preview_worker_busy(&self) {
+        let mut worker = self.imp().replace_execution.worker.borrow_mut();
+        if matches!(*worker, PreviewWorkerPhase::Idle) {
+            *worker = PreviewWorkerPhase::Busy {
+                queued_request: None,
+            };
         }
     }
 
@@ -288,7 +579,7 @@ impl LushtextSearchPanel {
     /// Retire a parked Replace All selection whose wait ended before the run
     /// started, through the same bounded path as a superseded preview.
     pub(super) fn retire_superseded_selection(&self, selection: super::GuardedReplacements) {
-        self.imp().preview.preview_worker_running.set(true);
+        self.mark_preview_worker_busy();
         self.spawn_guarded_preview_retirement(selection);
     }
 
@@ -302,11 +593,10 @@ impl LushtextSearchPanel {
         &self,
         payload: crate::ui::plain_disposal::DisposalOwned<T>,
     ) {
-        let imp = self.imp();
-        imp.preview
-            .preview_retirement_jobs
-            .set(imp.preview.preview_retirement_jobs.get().saturating_add(1));
-        let retirement_pending = imp.preview.preview_retirement_pending.clone();
+        let exec = &self.imp().replace_execution;
+        exec.preview_retirement_jobs
+            .set(exec.preview_retirement_jobs.get().saturating_add(1));
+        let retirement_pending = exec.preview_retirement_pending.clone();
         retirement_pending.fetch_add(1, Ordering::AcqRel);
         let terminal = PreviewRetirementTerminal(retirement_pending);
         let panel_weak = glib::thread_guard::ThreadGuard::new(self.downgrade());
@@ -321,18 +611,18 @@ impl LushtextSearchPanel {
     }
 
     fn finish_preview_worker(&self) {
-        let imp = self.imp();
-        if let Some(request) = imp.preview.queued_preview_request.take() {
+        let queued = match self.imp().replace_execution.worker.take() {
+            PreviewWorkerPhase::Busy { queued_request } => queued_request,
+            PreviewWorkerPhase::Idle => None,
+        };
+        if let Some(request) = queued {
             if request.ticket.may_dispatch(&self.preview_facts()) {
-                imp.preview.preview_worker_running.set(false);
                 self.spawn_preview_request(request);
             } else {
                 drop(request);
                 self.finish_preview_worker();
             }
-            return;
         }
-        imp.preview.preview_worker_running.set(false);
     }
 
     /// Commit the user's confirmation of the visible preview selection.
@@ -347,20 +637,23 @@ impl LushtextSearchPanel {
     /// restoring the accepted outcome when the transaction is already claimed.
     pub(super) fn begin_confirmed_replacement(&self) {
         let imp = self.imp();
-        if self.replace_transaction_claimed() || !imp.preview.preview_mode.get() {
+        if self.replace_transaction_claimed() || !self.is_preview_mode() {
             return;
         }
-        let Some(outcome) = imp.preview.preview_outcome.take() else {
+        let Some((outcome, checked)) = self.take_active_preview_for_release() else {
             return;
         };
         if self.begin_replace_transaction().is_none() {
-            imp.preview.preview_outcome.replace(Some(outcome));
+            imp.replace_execution.preview.replace(PreviewPhase::Active {
+                outcome: Box::new(outcome),
+                checked_match_ids: checked,
+            });
             return;
         }
-        let checked = std::mem::take(&mut *imp.preview.checked_match_ids.borrow_mut());
         let ticket = self.issue_preview_ticket();
-        imp.preview.preview_mode.set(false);
-        imp.preview.preview_pending.set(true);
+        imp.replace_execution
+            .preview
+            .replace(PreviewPhase::PreparingSelection);
         imp.replace_all_button.set_label("Preparing Selection…");
         imp.replace_all_button.set_sensitive(false);
         self.restore_search_summary();
@@ -377,12 +670,11 @@ impl LushtextSearchPanel {
         outcome: crate::ui::plain_disposal::DisposalOwned<ReplacePreviewOutcome>,
         checked_match_ids: HashSet<SearchMatchId>,
     ) {
-        let imp = self.imp();
-        debug_assert!(!imp.preview.preview_worker_running.get());
-        imp.preview.preview_worker_running.set(true);
-        imp.preview
-            .preview_selection_jobs
-            .set(imp.preview.preview_selection_jobs.get().saturating_add(1));
+        let exec = &self.imp().replace_execution;
+        debug_assert!(!exec.is_preview_worker_running());
+        self.mark_preview_worker_busy();
+        exec.preview_selection_jobs
+            .set(exec.preview_selection_jobs.get().saturating_add(1));
         spawn_blocking_then(
             self.clone(),
             move || {
@@ -395,13 +687,14 @@ impl LushtextSearchPanel {
             move |panel, selected| {
                 let imp = panel.imp();
                 if ticket.is_current(&panel.preview_facts()) {
-                    imp.preview.preview_pending.set(false);
+                    imp.replace_execution.preview.replace(PreviewPhase::Idle);
                     imp.replace_all_button.set_label("Replace All");
                     panel.update_replace_button_sensitivity();
                     panel.refresh_accessibility_state();
+                    let callback = imp.callbacks.replace_callback.borrow().clone();
                     if selected.is_empty() {
                         panel.finish_replace_transaction();
-                    } else if let Some(ref callback) = *imp.callbacks.replace_callback.borrow() {
+                    } else if let Some(callback) = callback {
                         callback(selected);
                         if panel.replace_transaction_generation_reserved() {
                             panel.finish_replace_transaction();
@@ -428,10 +721,18 @@ impl LushtextSearchPanel {
             cancel: Arc::new(AtomicBool::new(false)),
             progress: Arc::new(ReplaceProgress::default()),
         };
-        imp.preview.replace_run.replace(Some(control.clone()));
-        imp.preview
-            .run_intent
-            .replace(imp.preview.accepted_preview_intent.borrow().clone());
+        let intent = imp
+            .replace_execution
+            .accepted_intent
+            .borrow()
+            .as_intent()
+            .cloned();
+        imp.replace_execution
+            .run
+            .replace(ReplaceRunPhase::InFlight {
+                control: control.clone(),
+                intent,
+            });
         imp.replace_all_button.set_label("Cancel Replace All");
         self.update_replace_button_sensitivity();
         control
@@ -441,45 +742,37 @@ impl LushtextSearchPanel {
     /// for disposal capacity reuses (`replace-all-confirm-disposal-lane`).
     #[must_use]
     pub(crate) fn replace_run_control(&self) -> Option<ReplaceRunControl> {
-        self.imp().preview.replace_run.borrow().clone()
-    }
-
-    /// Replace stage 4 is admitted: the earlier run's skip report, its
-    /// request and Show Skipped Files give way to the run that now starts
-    /// (design D1). A wait that never reaches admission keeps them.
-    pub(crate) fn clear_previous_skip_report(&self) {
-        let imp = self.imp();
-        imp.skipped_files_button.set_visible(false);
-        imp.preview.last_skip_report.replace(None);
-        imp.preview.last_run_intent.replace(None);
+        match &*self.imp().replace_execution.run.borrow() {
+            ReplaceRunPhase::Idle => None,
+            ReplaceRunPhase::InFlight { control, .. } => Some(control.clone()),
+        }
     }
 
     /// Whether a durable Replace All run is in flight.
     #[must_use]
     pub fn replace_run_in_flight(&self) -> bool {
-        self.imp().preview.replace_run.borrow().is_some()
+        matches!(
+            &*self.imp().replace_execution.run.borrow(),
+            ReplaceRunPhase::InFlight { .. }
+        )
     }
 
     /// Whether the run in flight was asked to stop.
     #[must_use]
     pub fn replace_cancel_requested(&self) -> bool {
-        self.imp()
-            .preview
-            .replace_run
-            .borrow()
-            .as_ref()
-            .is_some_and(|run| run.cancel.load(Ordering::Acquire))
+        match &*self.imp().replace_execution.run.borrow() {
+            ReplaceRunPhase::Idle => false,
+            ReplaceRunPhase::InFlight { control, .. } => control.cancel.load(Ordering::Acquire),
+        }
     }
 
     /// The progress counters of the run in flight, for the window's poll.
     #[must_use]
     pub(crate) fn replace_run_progress(&self) -> Option<Arc<ReplaceProgress>> {
-        self.imp()
-            .preview
-            .replace_run
-            .borrow()
-            .as_ref()
-            .map(|run| Arc::clone(&run.progress))
+        match &*self.imp().replace_execution.run.borrow() {
+            ReplaceRunPhase::Idle => None,
+            ReplaceRunPhase::InFlight { control, .. } => Some(Arc::clone(&control.progress)),
+        }
     }
 
     /// Ask the run in flight to stop; it rolls back what it replaced. A run
@@ -490,12 +783,12 @@ impl LushtextSearchPanel {
             return self.cancel_parked_replace_run();
         }
         let imp = self.imp();
-        let requested = imp
-            .preview
-            .replace_run
-            .borrow()
-            .as_ref()
-            .is_some_and(|run| !run.cancel.swap(true, Ordering::AcqRel));
+        let requested = match &*imp.replace_execution.run.borrow() {
+            ReplaceRunPhase::Idle => false,
+            ReplaceRunPhase::InFlight { control, .. } => {
+                !control.cancel.swap(true, Ordering::AcqRel)
+            }
+        };
         if requested {
             imp.replace_all_button.set_label("Cancelling…");
             self.update_replace_button_sensitivity();
@@ -507,21 +800,22 @@ impl LushtextSearchPanel {
     /// behind Show Skipped Files when it lists anything.
     pub(crate) fn finish_replace_run(&self, report: Option<ReplaceSkipReport>) {
         let imp = self.imp();
-        imp.preview.replace_run.replace(None);
+        let run_intent = match imp.replace_execution.run.take() {
+            ReplaceRunPhase::Idle => None,
+            ReplaceRunPhase::InFlight { intent, .. } => intent,
+        };
         imp.replace_all_button.set_label("Replace All");
         let report = report.filter(|report| !report.is_empty()).map(Arc::new);
         // A run that never began (every file unsaved, 5.5a) applies the
         // accepted preview's request in this same turn.
-        let intent = imp
-            .preview
-            .run_intent
-            .take()
-            .or_else(|| imp.preview.accepted_preview_intent.borrow().clone());
-        imp.skipped_files_button.set_visible(report.is_some());
-        imp.preview
-            .last_run_intent
-            .replace(report.as_ref().and(intent).map(Arc::new));
-        imp.preview.last_skip_report.replace(report);
+        let intent = run_intent.or_else(|| {
+            imp.replace_execution
+                .accepted_intent
+                .borrow()
+                .as_intent()
+                .cloned()
+        });
+        self.publish_skip_report(report, intent);
         self.update_replace_button_sensitivity();
     }
 
@@ -533,47 +827,21 @@ impl LushtextSearchPanel {
         }
     }
 
-    /// The last run's skip report, while Show Skipped Files is offered.
-    #[must_use]
-    pub fn last_skip_report(&self) -> Option<Arc<ReplaceSkipReport>> {
-        self.imp().preview.last_skip_report.borrow().clone()
-    }
-
-    /// What Open and Replace in Editor needs for `path` (design D7): its row
-    /// in the last run's skip report and that run's request, or `None` when
-    /// the report does not list it.
-    #[must_use]
-    pub fn replace_in_editor_target(
-        &self,
-        path: &std::path::Path,
-    ) -> Option<(
-        lushtext_model::workspace::content_search::ReplaceSkippedFile,
-        Arc<super::policy::ReplaceRunIntent>,
-    )> {
-        let preview = &self.imp().preview;
-        let intent = preview.last_run_intent.borrow().clone()?;
-        let report = preview.last_skip_report.borrow().clone()?;
-        let file = report
-            .files()
-            .iter()
-            .find(|file| file.path == path)?
-            .clone();
-        Some((file, intent))
-    }
-
     /// Exit preview mode: clear preview state and restore normal result display.
     pub fn exit_preview_mode(&self) {
-        let imp = self.imp();
+        self.retire_visible_preview();
+        self.update_replace_button_sensitivity();
+    }
+
+    fn retire_visible_preview(&self) {
         self.invalidate_active_preview();
-        imp.preview.preview_pending.set(false);
-        imp.preview.preview_mode.set(false);
-        self.release_superseded_preview(
-            imp.preview.preview_outcome.take(),
-            std::mem::take(&mut *imp.preview.checked_match_ids.borrow_mut()),
-        );
+        let retired = self.take_active_preview_for_release();
+        self.reset_preview_to_idle();
+        if let Some((outcome, checked_match_ids)) = retired {
+            self.release_superseded_preview(Some(outcome), checked_match_ids);
+        }
         self.reset_replace_button_label_unless_running();
         self.restore_search_summary();
-        self.update_replace_button_sensitivity();
         self.refresh_results_display();
         self.refresh_accessibility_state();
     }
@@ -585,15 +853,17 @@ impl LushtextSearchPanel {
             // The button is Cancel Replace All until Cancel is requested.
             imp.replace_all_button
                 .set_sensitive(!self.replace_cancel_requested());
-        } else if imp.preview.preview_pending.get() || self.replace_transaction_claimed() {
+        } else if imp.replace_execution.is_preview_pending() || self.replace_transaction_claimed() {
             imp.replace_all_button.set_sensitive(false);
-        } else if imp.preview.preview_mode.get() {
-            imp.replace_all_button
-                .set_sensitive(!imp.preview.checked_match_ids.borrow().is_empty());
         } else {
+            let sensitivity = match &*imp.replace_execution.preview.borrow() {
+                PreviewPhase::Active {
+                    checked_match_ids, ..
+                } => !checked_match_ids.is_empty(),
+                _ => imp.runtime.total_matches.get() > 0,
+            };
             // Empty replacement text is allowed (deletes matches).
-            imp.replace_all_button
-                .set_sensitive(imp.runtime.total_matches.get() > 0);
+            imp.replace_all_button.set_sensitive(sensitivity);
         }
         self.refresh_accessibility_state();
     }
@@ -603,21 +873,11 @@ impl LushtextSearchPanel {
     /// Advancing the generation prevents late background preview results from
     /// restoring stale replacements.
     pub(crate) fn invalidate_replace_preview_request(&self) {
-        let imp = self.imp();
-        if !imp.preview.preview_pending.get() && !imp.preview.preview_mode.get() {
+        let exec = &self.imp().replace_execution;
+        if !exec.is_preview_pending() && !exec.is_preview_mode() {
             return;
         }
-        self.invalidate_active_preview();
-        imp.preview.preview_pending.set(false);
-        imp.preview.preview_mode.set(false);
-        self.release_superseded_preview(
-            imp.preview.preview_outcome.take(),
-            std::mem::take(&mut *imp.preview.checked_match_ids.borrow_mut()),
-        );
-        self.reset_replace_button_label_unless_running();
-        self.restore_search_summary();
-        self.refresh_results_display();
-        self.refresh_accessibility_state();
+        self.retire_visible_preview();
     }
 
     /// Retire the current preview attempt so no in-flight result can publish.
@@ -646,40 +906,50 @@ impl LushtextSearchPanel {
     /// dispatch points, so one string/options clone there is accepted in
     /// exchange for validating the seam as a single value.
     pub(super) fn preview_facts(&self) -> ReplacePreviewFacts {
-        let imp = self.imp();
+        let exec = &self.imp().replace_execution;
         ReplacePreviewFacts {
-            generation: imp.preview.preview_generation.get(),
-            pending: imp.preview.preview_pending.get(),
+            generation: exec.preview_generation.get(),
+            pending: exec.is_preview_pending(),
             query_spec: self.current_query_spec(),
         }
     }
 
     fn open_preview_generation(&self) -> ReplacePreviewGeneration {
-        let imp = self.imp();
-        if let Some(cancel) = imp.preview.preview_cancel_token.take() {
-            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        let exec = &self.imp().replace_execution;
+        if let PreviewPhase::Generating { cancel_token } = &mut *exec.preview.borrow_mut()
+            && let Some(cancel) = cancel_token.take()
+        {
+            cancel.store(true, Ordering::Relaxed);
         }
-        let generation = imp.preview.preview_generation.get().next();
-        imp.preview.preview_generation.set(generation);
+        let generation = exec.preview_generation.get().next();
+        exec.preview_generation.set(generation);
         generation
     }
 
     /// Refresh visible and accessible confirmation feedback from accepted state.
     pub(crate) fn refresh_preview_summary(&self) {
         let imp = self.imp();
-        let checked = imp.preview.checked_match_ids.borrow().len();
-        let outcome = imp.preview.preview_outcome.borrow();
-        let Some(outcome) = outcome.as_ref() else {
-            return;
+        let (checked, generated, omitted, truncated, stale_ranges) = {
+            let phase = imp.replace_execution.preview.borrow();
+            let PreviewPhase::Active {
+                outcome,
+                checked_match_ids,
+            } = &*phase
+            else {
+                return;
+            };
+            (
+                checked_match_ids.len(),
+                outcome.replacements.len(),
+                outcome.omitted_eligible,
+                outcome
+                    .skipped
+                    .count(ReplacePreviewSkipReason::TruncatedSource),
+                outcome
+                    .skipped
+                    .count(ReplacePreviewSkipReason::RegexRangeMismatch),
+            )
         };
-        let generated = outcome.replacements.len();
-        let omitted = outcome.omitted_eligible;
-        let truncated = outcome
-            .skipped
-            .count(ReplacePreviewSkipReason::TruncatedSource);
-        let stale_ranges = outcome
-            .skipped
-            .count(ReplacePreviewSkipReason::RegexRangeMismatch);
         let skipped = truncated.saturating_add(stale_ranges);
         imp.replace_all_button
             .set_label(&format!("Replace {checked} checked"));
@@ -694,7 +964,7 @@ impl LushtextSearchPanel {
         } else {
             format!("{generated} previewed, {checked} checked")
         };
-        let summary = if imp.runtime.result_capped.get()
+        let summary = if imp.runtime.is_result_capped()
             && let Some(clause) = policy::search_limit_clause(
                 imp.runtime.total_matches.get() as usize,
                 imp.runtime.matches_found.get(),
@@ -710,38 +980,6 @@ impl LushtextSearchPanel {
             &summary,
         );
         self.refresh_accessibility_state();
-    }
-
-    pub(super) fn restore_search_summary(&self) {
-        let imp = self.imp();
-        let total = imp.runtime.total_matches.get();
-        let files = imp.runtime.total_files.get();
-        if total == 0 {
-            imp.count_label.set_text("No results found");
-        } else if imp.runtime.result_capped.get() {
-            imp.count_label.set_text(&policy::limited_count_label(
-                total as usize,
-                files as usize,
-                imp.runtime.matches_found.get(),
-            ));
-            imp.count_label.add_css_class("warning");
-        } else {
-            imp.count_label.remove_css_class("warning");
-            imp.count_label
-                .set_text(&policy::count_label(total as usize, files as usize));
-        }
-        // A search that completes while a confirmed run waits for memory keeps
-        // the wait's description on the button (design D6).
-        let description = if self.replace_admission_deferred() {
-            super::accessibility::REPLACE_WAITING_DESCRIPTION
-        } else {
-            super::accessibility::REPLACE_BUTTON_DESCRIPTION
-        };
-        crate::ui::accessibility::set_labelled_description(
-            &*imp.replace_all_button,
-            "Replace all matches",
-            description,
-        );
     }
 }
 

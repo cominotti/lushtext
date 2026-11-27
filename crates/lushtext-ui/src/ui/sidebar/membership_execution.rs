@@ -160,9 +160,7 @@ impl LushtextSidebar {
                 }
                 self.persist();
                 self.notify_workspace_structure_changed();
-                if let Some(ref callback) = *self.imp().message_callback.borrow() {
-                    callback("Folder removed from workspace", NotificationSeverity::Info);
-                }
+                self.emit_message("Folder removed from workspace", NotificationSeverity::Info);
             }
             Err(error) => self.emit_remove_folder_error(error),
         }
@@ -245,27 +243,22 @@ impl LushtextSidebar {
                 }
                 self.persist();
                 self.notify_workspace_structure_changed();
-                if let Some(ref callback) = *self.imp().message_callback.borrow() {
-                    callback("Workspace folder order updated", NotificationSeverity::Info);
-                }
+                self.emit_message("Workspace folder order updated", NotificationSeverity::Info);
             }
             Err(error) => self.emit_reorder_folder_error(error),
         }
     }
 
     fn emit_remove_folder_error(&self, error: WorkspaceFolderRemoveError) {
-        let Some(ref callback) = *self.imp().message_callback.borrow() else {
-            return;
-        };
         match error {
             WorkspaceFolderRemoveError::FolderNotFound => {
-                callback(
+                self.emit_message(
                     "Folder is no longer in this workspace",
                     NotificationSeverity::Warning,
                 );
             }
             WorkspaceFolderRemoveError::WorkspaceNotFound => {
-                callback(
+                self.emit_message(
                     "Workspace is no longer available",
                     NotificationSeverity::Warning,
                 );
@@ -274,24 +267,21 @@ impl LushtextSidebar {
     }
 
     fn emit_reorder_folder_error(&self, error: WorkspaceFolderReorderError) {
-        let Some(ref callback) = *self.imp().message_callback.borrow() else {
-            return;
-        };
         match error {
             WorkspaceFolderReorderError::AlreadyAtBoundary => {
-                callback(
+                self.emit_message(
                     "Folder is already at that edge of the workspace",
                     NotificationSeverity::Info,
                 );
             }
             WorkspaceFolderReorderError::FolderNotFound => {
-                callback(
+                self.emit_message(
                     "Folder is no longer in this workspace",
                     NotificationSeverity::Warning,
                 );
             }
             WorkspaceFolderReorderError::WorkspaceNotFound => {
-                callback(
+                self.emit_message(
                     "Workspace is no longer available",
                     NotificationSeverity::Warning,
                 );
@@ -300,18 +290,15 @@ impl LushtextSidebar {
     }
 
     fn emit_add_folder_error(&self, error: WorkspaceFolderAddError) {
-        let Some(ref callback) = *self.imp().message_callback.borrow() else {
-            return;
-        };
         match error {
             WorkspaceFolderAddError::DuplicateFolder => {
-                callback(
+                self.emit_message(
                     "Folder already belongs to this workspace",
                     NotificationSeverity::Warning,
                 );
             }
             WorkspaceFolderAddError::WorkspaceNotFound => {
-                callback(
+                self.emit_message(
                     "Workspace is no longer available",
                     NotificationSeverity::Warning,
                 );

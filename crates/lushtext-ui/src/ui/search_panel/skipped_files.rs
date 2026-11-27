@@ -47,7 +47,25 @@ use crate::ui::row_text::LushtextRowText;
 use lushtext_model::workspace::content_search::{ReplaceSkipReason, ReplaceSkipReport};
 
 use super::LushtextSearchPanel;
-use super::policy;
+use super::policy::{self, ReplaceRunIntent};
+
+/// Phase of the last run's skip report and open Skipped Files dialog.
+#[derive(Default)]
+pub(super) enum SkipReportPhase {
+    #[default]
+    None,
+    Available {
+        report: Arc<ReplaceSkipReport>,
+        intent: Option<Arc<ReplaceRunIntent>>,
+        dialog_model: Option<glib::WeakRef<SkippedFilesModel>>,
+    },
+}
+
+/// Owned skip-report state for `WFR-SEARCH-REPLACE`.
+#[derive(Default)]
+pub(super) struct SkipReportState {
+    pub(super) phase: RefCell<SkipReportPhase>,
+}
 
 /// Width of the dialog, in sp; it shrinks to the window on narrow layouts.
 const SKIPPED_FILES_WIDTH_SP: i32 = 560;
@@ -375,8 +393,12 @@ impl LushtextSearchPanel {
                 if let Some(dialog) = dialog.upgrade() {
                     dialog.close();
                 }
-                if let Some(ref callback) =
-                    *panel.imp().callbacks.replace_in_editor_callback.borrow()
+                if let Some(callback) = panel
+                    .imp()
+                    .callbacks
+                    .replace_in_editor_callback
+                    .borrow()
+                    .clone()
                 {
                     callback(&path);
                 }
@@ -419,10 +441,7 @@ impl LushtextSearchPanel {
         toolbar.add_top_bar(&libadwaita::HeaderBar::new());
         toolbar.set_content(Some(&content));
         dialog.set_child(Some(&toolbar));
-        self.imp()
-            .preview
-            .skipped_files_model
-            .replace(Some(model.downgrade()));
+        self.record_skipped_files_model(model.downgrade());
         // The dialog moves focus to its own default when it maps, after a
         // `grab_focus` here, so name the list as the widget it focuses.
         dialog.set_focus(Some(&list_view));
@@ -509,18 +528,88 @@ impl LushtextSearchPanel {
         self.imp()
             .callbacks
             .replace_in_editor_callback
-            .replace(Some(Box::new(f)));
+            .replace(Some(std::rc::Rc::new(f)));
+    }
+
+    /// Replace stage 4 is admitted: the earlier run's skip report, its
+    /// request and Show Skipped Files give way to the run that now starts
+    /// (design D1). A wait that never reaches admission keeps them.
+    pub(crate) fn clear_previous_skip_report(&self) {
+        let imp = self.imp();
+        imp.skipped_files_button.set_visible(false);
+        imp.skipped_files.phase.replace(SkipReportPhase::None);
+    }
+
+    /// Publish or clear the last run's skip report after a run ends.
+    pub(super) fn publish_skip_report(
+        &self,
+        report: Option<Arc<ReplaceSkipReport>>,
+        intent: Option<ReplaceRunIntent>,
+    ) {
+        let imp = self.imp();
+        imp.skipped_files_button.set_visible(report.is_some());
+        let next = match report {
+            Some(report) => SkipReportPhase::Available {
+                report,
+                intent: intent.map(Arc::new),
+                dialog_model: None,
+            },
+            None => SkipReportPhase::None,
+        };
+        imp.skipped_files.phase.replace(next);
+    }
+
+    /// The last run's skip report, while Show Skipped Files is offered.
+    #[must_use]
+    pub fn last_skip_report(&self) -> Option<Arc<ReplaceSkipReport>> {
+        match &*self.imp().skipped_files.phase.borrow() {
+            SkipReportPhase::None => None,
+            SkipReportPhase::Available { report, .. } => Some(Arc::clone(report)),
+        }
+    }
+
+    /// What Open and Replace in Editor needs for `path` (design D7): its row
+    /// in the last run's skip report and that run's request, or `None` when
+    /// the report does not list it.
+    #[must_use]
+    pub fn replace_in_editor_target(
+        &self,
+        path: &std::path::Path,
+    ) -> Option<(
+        lushtext_model::workspace::content_search::ReplaceSkippedFile,
+        Arc<ReplaceRunIntent>,
+    )> {
+        let SkipReportPhase::Available { report, intent, .. } =
+            &*self.imp().skipped_files.phase.borrow()
+        else {
+            return None;
+        };
+        let intent = intent.as_ref().map(Arc::clone)?;
+        let file = report
+            .files()
+            .iter()
+            .find(|file| file.path == path)?
+            .clone();
+        Some((file, intent))
+    }
+
+    fn record_skipped_files_model(&self, model: glib::WeakRef<SkippedFilesModel>) {
+        if let SkipReportPhase::Available { dialog_model, .. } =
+            &mut *self.imp().skipped_files.phase.borrow_mut()
+        {
+            *dialog_model = Some(model);
+        }
     }
 
     /// The open dialog's model, read by the evidence surface.
     #[must_use]
     pub(super) fn skipped_files_model(&self) -> Option<SkippedFilesModel> {
-        self.imp()
-            .preview
-            .skipped_files_model
-            .borrow()
-            .as_ref()
-            .and_then(glib::WeakRef::upgrade)
+        match &*self.imp().skipped_files.phase.borrow() {
+            SkipReportPhase::None => None,
+            SkipReportPhase::Available { dialog_model, .. } => {
+                dialog_model.as_ref().and_then(glib::WeakRef::upgrade)
+            }
+        }
     }
 }
 

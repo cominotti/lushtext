@@ -32,6 +32,76 @@ pub(super) const REPLACE_BUTTON_DESCRIPTION: &str = "Preview replacements before
 /// waits for disposal capacity (`replace-all-confirm-disposal-lane` design D6).
 pub(super) const REPLACE_WAITING_DESCRIPTION: &str = "Waiting for memory before Replace All starts";
 
+impl super::imp::LushtextSearchPanel {
+    /// Give the workspace-search controls explicit names that screen readers
+    /// and AT-SPI smoke helpers can target without relying on widget order.
+    pub(super) fn apply_accessibility_metadata(&self) {
+        accessibility::set_labelled_description(
+            &*self.search_entry,
+            "Workspace search query",
+            "Search across workspace files",
+        );
+        accessibility::set_has_popup(&*self.search_entry, true);
+        accessibility::set_role(&*self.results_list, gtk4::AccessibleRole::List);
+        accessibility::set_labelled_description(
+            &*self.results_list,
+            "Workspace search results",
+            "Matching files and lines",
+        );
+        accessibility::set_role(&*self.count_label, gtk4::AccessibleRole::Status);
+        accessibility::set_labelled_description(
+            &*self.count_label,
+            "Workspace search result count",
+            "Current workspace search status and result total",
+        );
+        accessibility::set_role(&*self.error_label, gtk4::AccessibleRole::Alert);
+        accessibility::set_labelled_description(
+            &*self.error_label,
+            "Workspace search error",
+            "Problem reported by the current workspace search",
+        );
+
+        for (toggle, label) in [
+            (&*self.case_toggle, "Match case"),
+            (&*self.regex_toggle, "Use regular expression"),
+            (&*self.word_toggle, "Match whole words"),
+            (&*self.more_toggle, "Search options"),
+            (&*self.gitignore_toggle, "Respect gitignore"),
+            (&*self.hidden_toggle, "Search hidden files"),
+        ] {
+            accessibility::set_label(toggle, label);
+            accessibility::set_pressed(toggle, toggle.is_active());
+            toggle.connect_active_notify(|toggle| {
+                accessibility::set_pressed(toggle, toggle.is_active());
+            });
+        }
+        accessibility::set_controls(
+            &*self.more_toggle,
+            &[self.options_revealer.upcast_ref::<gtk4::Accessible>()],
+        );
+
+        accessibility::set_labelled_description(
+            &*self.glob_entry,
+            "File glob filter",
+            "Limit workspace search to matching paths",
+        );
+        accessibility::set_labelled_description(
+            &*self.replace_entry,
+            "Workspace replacement text",
+            "Replacement text for workspace matches",
+        );
+        accessibility::set_label(&*self.replace_all_button, "Replace all matches");
+        accessibility::set_label(&*self.undo_button, "Undo replacements");
+        accessibility::set_label(&*self.save_button, "Save search");
+        accessibility::set_label(&*self.close_button, "Close workspace search");
+        accessibility::set_key_shortcuts(&*self.close_button, "Escape");
+        accessibility::set_role(&self.saved_searches_list, gtk4::AccessibleRole::List);
+        accessibility::set_label(&self.saved_searches_list, "Saved workspace searches");
+        accessibility::set_role(&self.history_list, gtk4::AccessibleRole::List);
+        accessibility::set_label(&self.history_list, "Recent workspace searches");
+    }
+}
+
 impl LushtextSearchPanel {
     /// Project a wait for disposal capacity onto the Replace All button: its
     /// accessible description and tooltip say what the run waits for while it
@@ -53,9 +123,9 @@ impl LushtextSearchPanel {
     /// Project the panel's live workflow state into GTK accessible metadata.
     pub(crate) fn refresh_accessibility_state(&self) {
         let imp = self.imp();
-        let searching = imp.runtime.searching.get();
-        let preview_pending = imp.preview.preview_pending.get();
-        let replace_transaction_pending = imp.preview.replace_transaction_pending.get();
+        let searching = imp.runtime.is_searching();
+        let preview_pending = imp.replace_execution.is_preview_pending();
+        let replace_transaction_pending = self.replace_transaction_claimed();
         let count_text = imp.count_label.text();
         let count_value = if count_text.is_empty() {
             "No workspace search results".to_string()

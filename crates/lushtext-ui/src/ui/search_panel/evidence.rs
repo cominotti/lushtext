@@ -262,7 +262,8 @@ impl LushtextSearchPanel {
     #[must_use]
     pub fn evidence(&self) -> SearchPanelEvidence {
         let imp = self.imp();
-        let preview = &imp.preview;
+        let journal = &imp.journal;
+        let exec = &imp.replace_execution;
         // Derive everything the installed journal contributes inside one short
         // block, then let the borrow end. The struct literal below calls two
         // dozen accessors, and holding a `RefCell` borrow across them is what
@@ -270,12 +271,12 @@ impl LushtextSearchPanel {
         // than of structure: nothing in that literal can re-borrow a cell this
         // function is no longer holding.
         let (has_undo_backup, undo_backup_entry_count, undo_backup_retained_bytes) = {
-            let installed_journal = preview.undo_backup.borrow();
+            let installed_journal = journal.undo_backup.borrow();
+            let backup = installed_journal.as_backup();
             (
-                installed_journal.is_some(),
-                installed_journal.as_ref().map_or(0, |backup| backup.len()),
-                installed_journal
-                    .as_ref()
+                backup.is_some(),
+                backup.map_or(0, |backup| backup.len()),
+                backup
                     .and_then(|backup| backup.reservation_weight())
                     .unwrap_or(0),
             )
@@ -302,7 +303,23 @@ impl LushtextSearchPanel {
         let skipped_files_listed = skipped_files_model.as_ref().map(SkippedFilesModel::listed);
         // The identity clone is a separate short borrow for the same reason.
         #[cfg(feature = "test-utils")]
-        let undo_backup = preview.undo_backup.borrow().clone();
+        let undo_backup = journal.undo_backup();
+        let replace_transaction_generation = match journal.transaction.get() {
+            super::journal::ReplaceTransactionPhase::Idle => None,
+            super::journal::ReplaceTransactionPhase::Claimed {
+                reserved_generation,
+                ..
+            } => reserved_generation,
+        };
+        #[cfg(feature = "test-utils")]
+        let undo_capacity_retry_pending = journal.undo_capacity_wakeup.is_armed()
+            || matches!(
+                journal.transaction.get(),
+                super::journal::ReplaceTransactionPhase::Claimed {
+                    resume_persisted_load: true,
+                    ..
+                }
+            );
         SearchPanelEvidence {
             query: self.query(),
             case_sensitive: self.case_sensitive(),
@@ -332,16 +349,13 @@ impl LushtextSearchPanel {
             retirement_pending: self.result_retirement_pending(),
             retirement_backlog: self.result_retirement_backlog(),
             retirement_backlog_limit: super::retirement::MAX_SEARCH_RETIREMENT_GENERATIONS + 1,
-            retirement_generations_high_water: imp.runtime.retirement_generations_high_water.get(),
-            retirement_rows_per_slice_high_water: imp
-                .runtime
-                .retirement_rows_per_slice_high_water
-                .get(),
-            deferred_search_pending: imp.runtime.deferred_search.borrow().is_some(),
+            retirement_generations_high_water: imp.retirement.generations_high_water.get(),
+            retirement_rows_per_slice_high_water: imp.retirement.rows_per_slice_high_water.get(),
+            deferred_search_pending: self.deferred_search_pending(),
             shared_snapshot_handoffs: imp.runtime.shared_snapshot_handoffs.get(),
             whole_result_clones: imp.runtime.whole_result_clones.get(),
             #[cfg(feature = "test-utils")]
-            retirement_observations: imp.runtime.retirement_observations.borrow().clone(),
+            retirement_observations: imp.retirement.observations.borrow().clone(),
             #[cfg(feature = "test-utils")]
             event_turn_observations: imp.runtime.event_turn_observations.borrow().clone(),
 
@@ -351,20 +365,20 @@ impl LushtextSearchPanel {
             checked_replacement_count: self.checked_replacement_count(),
             omitted_replacement_count: self.omitted_replacement_count(),
             skipped_replacement_count: self.skipped_replacement_count(),
-            preview_worker_running: preview.preview_worker_running.get(),
-            queued_preview_requests: usize::from(preview.queued_preview_request.borrow().is_some()),
-            preview_retirement_jobs: preview.preview_retirement_jobs.get(),
-            preview_selection_jobs: preview.preview_selection_jobs.get(),
-            preview_retirement_pending: preview
+            preview_worker_running: exec.is_preview_worker_running(),
+            queued_preview_requests: usize::from(exec.has_queued_request()),
+            preview_retirement_jobs: exec.preview_retirement_jobs.get(),
+            preview_selection_jobs: exec.preview_selection_jobs.get(),
+            preview_retirement_pending: exec
                 .preview_retirement_pending
                 .load(std::sync::atomic::Ordering::Acquire),
-            preview_generation: preview.preview_generation.get(),
+            preview_generation: exec.preview_generation.get(),
             #[cfg(feature = "test-utils")]
-            preview_capacity_retry_pending: preview.preview_capacity_wakeup.is_armed(),
+            preview_capacity_retry_pending: exec.preview_capacity_wakeup.is_armed(),
 
             replace_transaction_pending: self.replace_transaction_claimed(),
-            replace_transaction_generation: preview.replace_transaction_generation.get(),
-            last_apply_counts: preview.last_apply_counts.get(),
+            replace_transaction_generation,
+            last_apply_counts: journal.last_apply_counts.get().into_option(),
             replace_in_flight: self.replace_run_in_flight(),
             replace_admission_deferred: self.replace_admission_deferred(),
             replace_cancel_requested: self.replace_cancel_requested(),
@@ -380,17 +394,16 @@ impl LushtextSearchPanel {
 
             has_undo_backup,
             undo_backup_generation: UndoBackupGeneration::new(
-                preview
+                journal
                     .undo_backup_generation
                     .load(std::sync::atomic::Ordering::Acquire),
             ),
             undo_backup_entry_count,
             undo_backup_retained_bytes,
-            journal_disk_jobs: preview.journal_disk_jobs.get(),
-            journal_disk_jobs_in_flight: preview.journal_disk_jobs_in_flight.get(),
+            journal_disk_jobs: journal.disk_jobs.get(),
+            journal_disk_jobs_in_flight: journal.disk_jobs_in_flight.get(),
             #[cfg(feature = "test-utils")]
-            undo_capacity_retry_pending: preview.undo_capacity_wakeup.is_armed()
-                || preview.persisted_undo_load_after_transaction.get(),
+            undo_capacity_retry_pending,
             #[cfg(feature = "test-utils")]
             undo_backup,
 
@@ -418,13 +431,13 @@ impl LushtextSearchPanel {
     /// progress and Replace All waiting text yield to the walk alone.
     #[must_use]
     pub(crate) fn search_worker_running(&self) -> bool {
-        self.imp().runtime.searching.get()
+        self.imp().runtime.is_searching()
     }
 
     /// Return whether worker cancellation/search or result retirement is pending.
     #[must_use]
     pub fn is_searching(&self) -> bool {
-        self.imp().runtime.searching.get() || self.result_retirement_pending()
+        self.imp().runtime.is_searching() || self.result_retirement_pending()
     }
 
     /// Return total matches accumulated for the current workspace search.
@@ -442,7 +455,7 @@ impl LushtextSearchPanel {
     /// Return whether the current workspace search hit its result cap.
     #[must_use]
     pub fn result_capped(&self) -> bool {
-        self.imp().runtime.result_capped.get()
+        self.imp().runtime.is_result_capped()
     }
 
     /// Return whether the case-sensitive option is active.
@@ -509,18 +522,17 @@ impl LushtextSearchPanel {
     /// Return whether the result list is showing Replace All preview rows.
     #[must_use]
     pub fn replace_preview_mode(&self) -> bool {
-        self.imp().preview.preview_mode.get()
+        self.imp().replace_execution.is_preview_mode()
     }
 
     /// Return whether replacement preview generation, selection, or retirement is pending.
     #[must_use]
     pub fn replace_preview_pending(&self) -> bool {
-        let preview = &self.imp().preview;
-        preview.preview_pending.get()
+        let exec = &self.imp().replace_execution;
+        exec.is_preview_pending()
             || self.replace_transaction_claimed()
-            || preview.preview_worker_running.get()
-            || preview.queued_preview_request.borrow().is_some()
-            || preview
+            || exec.is_preview_worker_running()
+            || exec
                 .preview_retirement_pending
                 .load(std::sync::atomic::Ordering::Acquire)
                 > 0
@@ -529,55 +541,55 @@ impl LushtextSearchPanel {
     /// Return the number of replacement preview rows currently held in memory.
     #[must_use]
     pub fn replace_preview_count(&self) -> u32 {
-        let imp = self.imp();
-        u32::try_from(
-            imp.preview
-                .preview_outcome
-                .borrow()
-                .as_ref()
-                .map_or(0, |outcome| outcome.replacements.len()),
-        )
-        .unwrap_or(u32::MAX)
+        let count = match &*self.imp().replace_execution.preview.borrow() {
+            super::replace_execution::PreviewPhase::Active { outcome, .. } => {
+                outcome.replacements.len()
+            }
+            _ => 0,
+        };
+        u32::try_from(count).unwrap_or(u32::MAX)
     }
 
     /// Return the number of replacement preview rows selected for apply.
     #[must_use]
     pub fn checked_replacement_count(&self) -> u32 {
-        u32::try_from(self.imp().preview.checked_match_ids.borrow().len()).unwrap_or(u32::MAX)
+        let count = match &*self.imp().replace_execution.preview.borrow() {
+            super::replace_execution::PreviewPhase::Active {
+                checked_match_ids, ..
+            } => checked_match_ids.len(),
+            _ => 0,
+        };
+        u32::try_from(count).unwrap_or(u32::MAX)
     }
 
     /// Return eligible matches omitted by the current preview resource budget.
     #[must_use]
     pub fn omitted_replacement_count(&self) -> u32 {
-        u32::try_from(
-            self.imp()
-                .preview
-                .preview_outcome
-                .borrow()
-                .as_ref()
-                .map_or(0, |outcome| outcome.omitted_eligible),
-        )
-        .unwrap_or(u32::MAX)
+        let omitted = match &*self.imp().replace_execution.preview.borrow() {
+            super::replace_execution::PreviewPhase::Active { outcome, .. } => {
+                outcome.omitted_eligible
+            }
+            _ => 0,
+        };
+        u32::try_from(omitted).unwrap_or(u32::MAX)
     }
 
     /// Return source-truncated or invalid matches skipped by the current preview.
     #[must_use]
     pub fn skipped_replacement_count(&self) -> u32 {
-        u32::try_from(
-            self.imp()
-                .preview
-                .preview_outcome
-                .borrow()
-                .as_ref()
-                .map_or(0, |outcome| outcome.skipped_source_count()),
-        )
-        .unwrap_or(u32::MAX)
+        let skipped = match &*self.imp().replace_execution.preview.borrow() {
+            super::replace_execution::PreviewPhase::Active { outcome, .. } => {
+                outcome.skipped_source_count()
+            }
+            _ => 0,
+        };
+        u32::try_from(skipped).unwrap_or(u32::MAX)
     }
 
     /// Return whether a Replace All undo backup is currently available.
     #[must_use]
     pub fn has_undo_backup(&self) -> bool {
-        self.imp().preview.undo_backup.borrow().is_some()
+        self.imp().journal.undo_backup.borrow().is_installed()
     }
 
     /// Return the number of recent search-history entries loaded into the panel.

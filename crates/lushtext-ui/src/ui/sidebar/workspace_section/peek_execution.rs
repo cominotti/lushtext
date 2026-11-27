@@ -19,6 +19,7 @@
 //! A completion whose request generation is stale, or whose row has been recycled or
 //! deselected, must not present its popover.
 
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -33,6 +34,52 @@ use lushtext_services::workspace::file_peek::{
 
 use super::super::file_tree_item::FileTreeItem;
 use super::LushtextWorkspaceSection;
+
+/// Runtime widget references for the section-owned peek card.
+#[derive(Default)]
+pub struct PeekWidgets {
+    /// Floating preview card anchored beside the selected file row.
+    pub popover: RefCell<Option<gtk4::Popover>>,
+    /// Preview title showing the file name.
+    pub title_label: RefCell<Option<gtk4::Label>>,
+    /// Subtitle showing the absolute file path.
+    pub path_label: RefCell<Option<gtk4::Label>>,
+    /// Secondary metadata line with file size and modified time.
+    pub meta_label: RefCell<Option<gtk4::Label>>,
+    /// Stack switching between loading, text, and fallback states.
+    pub body_stack: RefCell<Option<gtk4::Stack>>,
+    /// Read-only buffer for the bounded text sample.
+    pub text_buffer: RefCell<Option<gtk4::TextBuffer>>,
+    /// Read-only text view for the bounded text sample.
+    pub text_view: RefCell<Option<gtk4::TextView>>,
+    /// Fallback headline for unsupported and error states.
+    pub fallback_title_label: RefCell<Option<gtk4::Label>>,
+    /// Explanatory fallback body copy.
+    pub fallback_body_label: RefCell<Option<gtk4::Label>>,
+    /// Footer button that promotes the previewed file into a real tab.
+    pub open_button: RefCell<Option<gtk4::Button>>,
+}
+
+/// Active peek preview phase.
+#[derive(Default)]
+pub(super) enum PeekPhase {
+    /// No file peek preview is currently bound.
+    #[default]
+    Closed,
+    /// Preview is open for `path`; `open_allowed` tracks whether promotion is permitted.
+    Open { path: PathBuf, open_allowed: bool },
+}
+
+/// Visible session state for the section-owned peek flow.
+#[derive(Default)]
+pub(super) struct PeekSession {
+    /// Active preview phase and open-promotion flag.
+    pub(super) phase: RefCell<PeekPhase>,
+    /// Latest request token used to drop stale async completions.
+    pub(super) active_generation: Cell<PeekRequestToken>,
+    /// Whether closing the popover should restore focus to the list view.
+    pub(super) restore_focus_on_close: Cell<bool>,
+}
 
 /// Default width for the floating peek card.
 const PEEK_CARD_WIDTH: i32 = 520;
@@ -84,7 +131,10 @@ impl LushtextWorkspaceSection {
     /// Return the path currently shown in the peek card, if any.
     #[must_use]
     pub fn peeked_path(&self) -> Option<PathBuf> {
-        self.imp().peek_session.active_path.borrow().clone()
+        match &*self.imp().peek_session.phase.borrow() {
+            PeekPhase::Open { path, .. } => Some(path.clone()),
+            PeekPhase::Closed => None,
+        }
     }
 
     /// Open or close peek for the current selection.
@@ -111,12 +161,12 @@ impl LushtextWorkspaceSection {
     /// Promote the current preview into the normal open-document flow.
     #[must_use]
     pub fn promote_peeked_file(&self) -> bool {
-        if !self.imp().peek_session.open_allowed.get() {
-            return false;
-        }
-
-        let Some(path) = self.peeked_path() else {
-            return false;
+        let path = match &*self.imp().peek_session.phase.borrow() {
+            PeekPhase::Open {
+                path,
+                open_allowed: true,
+            } => path.clone(),
+            _ => return false,
         };
 
         self.dismiss_peek(false);
@@ -126,7 +176,8 @@ impl LushtextWorkspaceSection {
 
     /// Close the peek card and optionally restore list focus afterward.
     pub fn dismiss_peek(&self, restore_focus: bool) {
-        self.clear_peek_state();
+        self.imp().peek_session.phase.replace(PeekPhase::Closed);
+        self.reset_peek_popover_widgets();
         self.invalidate_peek_requests();
         self.imp()
             .peek_session
@@ -310,8 +361,12 @@ impl LushtextWorkspaceSection {
             let Some(section) = section_weak.upgrade() else {
                 return;
             };
-            if section.peeked_path().is_some() {
-                section.clear_peek_state();
+            if !matches!(
+                *section.imp().peek_session.phase.borrow(),
+                PeekPhase::Closed
+            ) {
+                section.imp().peek_session.phase.replace(PeekPhase::Closed);
+                section.reset_peek_popover_widgets();
                 section.invalidate_peek_requests();
             }
             if section.imp().peek_session.restore_focus_on_close.get() {
@@ -389,10 +444,10 @@ impl LushtextWorkspaceSection {
     fn start_peek_request(&self, target: PeekTarget) {
         let loading = PeekSnapshot::loading(&target.absolute_path, target.display_path.clone());
         let token = self.invalidate_peek_requests();
-        self.imp()
-            .peek_session
-            .active_path
-            .replace(Some(target.absolute_path.clone()));
+        self.imp().peek_session.phase.replace(PeekPhase::Open {
+            path: target.absolute_path.clone(),
+            open_allowed: false,
+        });
         self.render_peek_snapshot(&loading);
         self.reanchor_peek_to_selection();
 
@@ -437,10 +492,11 @@ impl LushtextWorkspaceSection {
                 },
             );
         }
-        self.imp()
-            .peek_session
-            .open_allowed
-            .set(snapshot.open_allowed);
+        if let PeekPhase::Open { open_allowed, .. } =
+            &mut *self.imp().peek_session.phase.borrow_mut()
+        {
+            *open_allowed = snapshot.open_allowed;
+        }
 
         let loading = matches!(snapshot.preview_state, PeekPreviewState::Loading);
         let invalid = matches!(snapshot.preview_state, PeekPreviewState::Unreadable);
@@ -588,10 +644,8 @@ impl LushtextWorkspaceSection {
         next
     }
 
-    /// Clear the transient popover state without changing focus yet.
-    fn clear_peek_state(&self) {
-        self.imp().peek_session.active_path.borrow_mut().take();
-        self.imp().peek_session.open_allowed.set(false);
+    /// Reset transient popover widget presentation after dismissing peek.
+    fn reset_peek_popover_widgets(&self) {
         if let Some(button) = self.peek_open_button() {
             button.set_sensitive(false);
             accessibility::set_disabled(&button, true);

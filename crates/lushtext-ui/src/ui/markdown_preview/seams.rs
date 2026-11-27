@@ -391,7 +391,7 @@ pub(super) struct MarkdownRetirementSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::markdown_preview::imp::list_item_text_margin;
+    use crate::ui::markdown_preview::projection_execution::list_item_text_margin;
     use lushtext_services::notes::markdown_render::{
         MarkdownEvent, MarkdownPlanLimit, MarkdownTag, MarkdownTagEnd, parse_markdown_events,
     };

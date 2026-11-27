@@ -52,7 +52,7 @@
 //! deterministic) and wrong under its intent, and it earned nothing: the row
 //! template is a **class constant**, identical for every popover and every read.
 //! It is now reached directly through
-//! `imp::LushtextOpenPopover::row_layout_snapshot()` by the one test that
+//! `item::row_layout_snapshot()` by the one test that
 //! asserts GNOME source parity, so no per-read cost is paid by the surface's
 //! other eleven readers.
 
@@ -63,8 +63,8 @@ use crate::ui::window::LushtextWindow;
 use lushtext_model::persistence::recent_document::RecentDocumentEntry;
 use lushtext_model::values::RecentDocumentsGeneration;
 
-use super::item::OpenPopoverItem;
-use super::{LushtextOpenPopover, imp};
+use super::LushtextOpenPopover;
+use super::item::{self, OpenPopoverItem};
 
 /// Grid placement of one child inside the GNOME-shaped recent row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,8 +158,8 @@ pub struct OpenPopoverRowLayoutSnapshot {
     pub remove_layout: OpenPopoverRowChildLayoutSnapshot,
 }
 
-impl From<imp::RecentRowChildLayout> for OpenPopoverRowChildLayoutSnapshot {
-    fn from(value: imp::RecentRowChildLayout) -> Self {
+impl From<item::RecentRowChildLayout> for OpenPopoverRowChildLayoutSnapshot {
+    fn from(value: item::RecentRowChildLayout) -> Self {
         Self {
             column: value.column,
             row: value.row,
@@ -169,8 +169,8 @@ impl From<imp::RecentRowChildLayout> for OpenPopoverRowChildLayoutSnapshot {
     }
 }
 
-impl From<imp::RecentRowLayoutSnapshot> for OpenPopoverRowLayoutSnapshot {
-    fn from(value: imp::RecentRowLayoutSnapshot) -> Self {
+impl From<item::RecentRowLayoutSnapshot> for OpenPopoverRowLayoutSnapshot {
+    fn from(value: item::RecentRowLayoutSnapshot) -> Self {
         Self {
             grid_margin_top: value.grid_margin_top,
             grid_margin_bottom: value.grid_margin_bottom,

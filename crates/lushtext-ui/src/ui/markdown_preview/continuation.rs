@@ -32,13 +32,13 @@ use lushtext_services::notes::markdown_render::{
 use super::LushtextMarkdownPreview;
 use super::code_blocks::{ActiveCodeBlock, CodeBlockTheme};
 use super::images::BufferedImage;
-use super::imp::{
+use super::links::resolve_link_target;
+use super::projection_execution::{
     TAG_ALERT_BODY, TAG_BLOCKQUOTE, TAG_BOLD, TAG_CODE, TAG_DEFINITION_DEF, TAG_DEFINITION_TERM,
     TAG_FOOTNOTE_DEF, TAG_FOOTNOTE_DEF_LABEL, TAG_FOOTNOTE_REF, TAG_HRULE, TAG_ITALIC, TAG_LINK,
     TAG_LIST_ITEM, TAG_STRIKETHROUGH, alert_title, alert_title_tag_name,
     ensure_blockquote_depth_tag, ensure_list_item_depth_tag, heading_tag_name,
 };
-use super::links::resolve_link_target;
 use super::seams::{
     ActiveTextLink, DefinitionRenderState, ListFrame, ListItemRenderState, ListMarker,
     MarkdownPreviewRenderContext, RenderedTextLink,

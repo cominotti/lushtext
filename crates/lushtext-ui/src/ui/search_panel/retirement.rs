@@ -15,6 +15,7 @@
 //! also where latest-query backpressure is released: a query deferred because
 //! two generations were still retiring restarts from there.
 
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
@@ -22,6 +23,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use gtk4::{self, glib};
 use lushtext_model::values::RetirementGeneration;
+use lushtext_model::workspace::content_search::SearchQuerySpec;
 
 use super::LushtextSearchPanel;
 use super::item::SearchResultItem;
@@ -227,6 +229,29 @@ pub(super) struct SearchRetirementSession {
     states: VecDeque<RetiredSearchGtkState>,
 }
 
+/// Phase of bounded detached-result disposal.
+#[derive(Default)]
+pub(super) enum SearchRetirementPhase {
+    #[default]
+    Idle,
+    Retiring {
+        session: SearchRetirementSession,
+        idle_armed: bool,
+        deferred_search: Option<SearchQuerySpec>,
+    },
+}
+
+/// State owned by `retirement` for bounded result-generation disposal.
+#[derive(Default)]
+pub(super) struct SearchRetirementState {
+    pub(super) phase: RefCell<SearchRetirementPhase>,
+    pub(super) generation: Cell<RetirementGeneration>,
+    pub(super) rows_per_slice_high_water: Cell<usize>,
+    pub(super) generations_high_water: Cell<usize>,
+    #[cfg(feature = "test-utils")]
+    pub(super) observations: RefCell<Vec<SearchRetirementSliceObservation>>,
+}
+
 impl LushtextSearchPanel {
     /// Whether latest-query backpressure applies because detached generations
     /// are still being released.
@@ -234,12 +259,45 @@ impl LushtextSearchPanel {
     /// The third queue slot is reserved for the immediate close/clear escape
     /// path, so a new non-empty query defers at the second detached generation.
     pub(super) fn result_retirement_saturated(&self) -> bool {
-        self.imp()
-            .runtime
-            .retirement
-            .borrow()
-            .as_ref()
-            .is_some_and(|session| session.states.len() >= MAX_SEARCH_RETIREMENT_GENERATIONS)
+        match &*self.imp().retirement.phase.borrow() {
+            SearchRetirementPhase::Idle => false,
+            SearchRetirementPhase::Retiring { session, .. } => {
+                session.states.len() >= MAX_SEARCH_RETIREMENT_GENERATIONS
+            }
+        }
+    }
+
+    /// Retain the latest non-empty query while result retirement is saturated.
+    pub(super) fn defer_search_during_retirement(&self, spec: SearchQuerySpec) {
+        let mut phase = self.imp().retirement.phase.borrow_mut();
+        if let SearchRetirementPhase::Retiring {
+            deferred_search, ..
+        } = &mut *phase
+        {
+            *deferred_search = Some(spec);
+        }
+    }
+
+    /// Drop any deferred query kept behind retirement backpressure.
+    pub(super) fn clear_deferred_search(&self) {
+        let mut phase = self.imp().retirement.phase.borrow_mut();
+        if let SearchRetirementPhase::Retiring {
+            deferred_search, ..
+        } = &mut *phase
+        {
+            *deferred_search = None;
+        }
+    }
+
+    /// Whether a latest query is deferred by retirement backpressure.
+    pub(super) fn deferred_search_pending(&self) -> bool {
+        matches!(
+            &*self.imp().retirement.phase.borrow(),
+            SearchRetirementPhase::Retiring {
+                deferred_search: Some(_),
+                ..
+            }
+        )
     }
 
     /// Detach the visible result generation and hand it to the bounded disposer.
@@ -251,8 +309,8 @@ impl LushtextSearchPanel {
     /// partially retired generation.
     pub(super) fn detach_visible_results(&self) {
         let imp = self.imp();
-        let retirement_generation = imp.runtime.retirement_generation.get().next();
-        imp.runtime.retirement_generation.set(retirement_generation);
+        let retirement_generation = imp.retirement.generation.get().next();
+        imp.retirement.generation.set(retirement_generation);
         let old_root = imp
             .runtime
             .root_store
@@ -264,7 +322,7 @@ impl LushtextSearchPanel {
             match_rows: std::mem::take(&mut *imp.navigation.match_rows.borrow_mut()),
             file_rows: std::mem::take(&mut *imp.navigation.file_rows.borrow_mut()),
             search_matches: std::mem::take(&mut *imp.runtime.search_matches.borrow_mut()),
-            accepted_matches: imp.runtime.accepted_matches.take(),
+            accepted_matches: imp.runtime.take_accepted_matches(),
             accepted_match_rows: Vec::new(),
             match_positions: std::mem::take(&mut *imp.navigation.match_positions.borrow_mut()),
         };
@@ -275,26 +333,38 @@ impl LushtextSearchPanel {
     /// Coalesce detached generations behind one bounded GTK idle disposer.
     fn retire_detached_results(&self, state: RetiredSearchGtkState) {
         let imp = self.imp();
+        let mut phase = imp.retirement.phase.borrow_mut();
         if !state.is_empty() {
-            let mut retirement = imp.runtime.retirement.borrow_mut();
-            retirement
-                .get_or_insert_with(|| SearchRetirementSession {
-                    states: VecDeque::new(),
-                })
-                .states
-                .push_back(state);
-            let retained = retirement
-                .as_ref()
-                .map_or(0, |session| session.states.len());
-            debug_assert!(retained <= MAX_SEARCH_RETIREMENT_GENERATIONS + 1);
-            imp.runtime.retirement_generations_high_water.set(
-                imp.runtime
-                    .retirement_generations_high_water
-                    .get()
-                    .max(retained),
-            );
+            match &mut *phase {
+                SearchRetirementPhase::Idle => {
+                    let mut states = VecDeque::new();
+                    states.push_back(state);
+                    *phase = SearchRetirementPhase::Retiring {
+                        session: SearchRetirementSession { states },
+                        idle_armed: false,
+                        deferred_search: None,
+                    };
+                }
+                SearchRetirementPhase::Retiring { session, .. } => {
+                    session.states.push_back(state);
+                }
+            }
+            if let SearchRetirementPhase::Retiring { session, .. } = &*phase {
+                let retained = session.states.len();
+                debug_assert!(retained <= MAX_SEARCH_RETIREMENT_GENERATIONS + 1);
+                imp.retirement
+                    .generations_high_water
+                    .set(imp.retirement.generations_high_water.get().max(retained));
+            }
         }
-        if imp.runtime.retirement.borrow().is_none() || imp.runtime.retirement_armed.replace(true) {
+        let should_arm = match &mut *phase {
+            SearchRetirementPhase::Idle => false,
+            SearchRetirementPhase::Retiring { idle_armed, .. } => {
+                !std::mem::replace(idle_armed, true)
+            }
+        };
+        drop(phase);
+        if !should_arm {
             return;
         }
 
@@ -304,18 +374,22 @@ impl LushtextSearchPanel {
                 return glib::ControlFlow::Break;
             };
             let imp = panel.imp();
-            let mut retirement = imp.runtime.retirement.borrow_mut();
-            let Some(session) = retirement.as_mut() else {
-                imp.runtime.retirement_armed.set(false);
+            let mut phase = imp.retirement.phase.borrow_mut();
+            let SearchRetirementPhase::Retiring {
+                session,
+                deferred_search,
+                ..
+            } = &mut *phase
+            else {
                 return glib::ControlFlow::Break;
             };
             let Some(state) = session.states.front_mut() else {
-                retirement.take();
-                imp.runtime.retirement_armed.set(false);
+                *phase = SearchRetirementPhase::Idle;
+                drop(phase);
                 panel.refresh_accessibility_state();
                 return glib::ControlFlow::Break;
             };
-            debug_assert!(state.generation <= imp.runtime.retirement_generation.get());
+            debug_assert!(state.generation <= imp.retirement.generation.get());
             #[cfg(feature = "test-utils")]
             let before = state.ownership();
             #[cfg(feature = "test-utils")]
@@ -328,8 +402,10 @@ impl LushtextSearchPanel {
                 let after = state.ownership();
                 let released = before.released_to(after);
                 debug_assert_eq!(released.total(), retired_rows);
-                imp.runtime.retirement_observations.borrow_mut().push(
-                    SearchRetirementSliceObservation {
+                imp.retirement
+                    .observations
+                    .borrow_mut()
+                    .push(SearchRetirementSliceObservation {
                         generation: state.generation,
                         before,
                         after,
@@ -338,12 +414,11 @@ impl LushtextSearchPanel {
                         pending: !state.is_empty(),
                         terminal_drain: state.is_empty(),
                         duration_us,
-                    },
-                );
+                    });
             }
-            imp.runtime.retirement_rows_per_slice_high_water.set(
-                imp.runtime
-                    .retirement_rows_per_slice_high_water
+            imp.retirement.rows_per_slice_high_water.set(
+                imp.retirement
+                    .rows_per_slice_high_water
                     .get()
                     .max(retired_rows),
             );
@@ -351,19 +426,20 @@ impl LushtextSearchPanel {
                 session.states.pop_front();
             }
             let resume_spec = if session.states.len() < MAX_SEARCH_RETIREMENT_GENERATIONS {
-                imp.runtime.deferred_search.take()
+                deferred_search.take()
             } else {
                 None
             };
             let control = if session.states.is_empty() {
-                retirement.take();
-                imp.runtime.retirement_armed.set(false);
-                panel.refresh_accessibility_state();
+                *phase = SearchRetirementPhase::Idle;
                 glib::ControlFlow::Break
             } else {
                 glib::ControlFlow::Continue
             };
-            drop(retirement);
+            drop(phase);
+            if control == glib::ControlFlow::Break {
+                panel.refresh_accessibility_state();
+            }
             if let Some(spec) = resume_spec {
                 panel.start_search(&spec);
             }
@@ -373,16 +449,17 @@ impl LushtextSearchPanel {
 
     /// Whether detached-generation GTK references still await bounded disposal.
     pub(super) fn result_retirement_pending(&self) -> bool {
-        self.imp().runtime.retirement.borrow().is_some()
+        matches!(
+            &*self.imp().retirement.phase.borrow(),
+            SearchRetirementPhase::Retiring { .. }
+        )
     }
 
     /// Detached generations still queued behind the bounded disposer.
     pub(super) fn result_retirement_backlog(&self) -> usize {
-        self.imp()
-            .runtime
-            .retirement
-            .borrow()
-            .as_ref()
-            .map_or(0, |session| session.states.len())
+        match &*self.imp().retirement.phase.borrow() {
+            SearchRetirementPhase::Idle => 0,
+            SearchRetirementPhase::Retiring { session, .. } => session.states.len(),
+        }
     }
 }

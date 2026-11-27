@@ -22,6 +22,52 @@ use gtk4::{self, glib};
 /// Private object-data key for the current row's expanded-state signal bag.
 const ROW_EXPANDED_ACCESSIBILITY_HOOK: &str = "workspace-row-expanded-accessibility-hook";
 
+/// Apply initial accessible roles, labels, descriptions, and shortcuts to a section's template children.
+pub(super) fn apply_section_accessibility(imp: &super::imp::LushtextWorkspaceSection) {
+    accessibility::set_role(&*imp.header_box, gtk4::AccessibleRole::Group);
+    accessibility::set_labelled_description(
+        &*imp.header_box,
+        "Workspace",
+        "Workspace header with folder actions and collapse control",
+    );
+    accessibility::set_has_popup(&*imp.header_box, true);
+    accessibility::set_key_shortcuts(&*imp.header_box, "Menu, Shift+F10");
+    accessibility::set_labelled_description(
+        &*imp.add_folder_button,
+        "Add folder",
+        "Add a folder to this workspace",
+    );
+    accessibility::set_labelled_description(
+        &*imp.collapse_button,
+        "Collapse Workspace",
+        "Hide this workspace's folder list",
+    );
+    accessibility::set_expanded(&*imp.collapse_button, Some(true));
+    accessibility::set_labelled_description(
+        &*imp.refresh_button,
+        "Refresh Workspace Folders",
+        "Reload the files and folders in this workspace section",
+    );
+    accessibility::set_labelled_description(
+        &*imp.drilldown_back_button,
+        "Back to workspace folders",
+        "Return from the focused folder view to the workspace folder list",
+    );
+    accessibility::set_labelled_description(
+        &*imp.file_tree_view,
+        "Workspace file tree",
+        "Files and folders in this workspace",
+    );
+    accessibility::set_has_popup(&*imp.file_tree_view, true);
+    accessibility::set_key_shortcuts(&*imp.file_tree_view, "Menu, Shift+F10");
+    accessibility::set_role(&*imp.empty_folder_set_label, gtk4::AccessibleRole::Status);
+    accessibility::set_labelled_description(
+        &*imp.empty_folder_set_label,
+        "No folders in this workspace",
+        "Add a folder to show files in this workspace",
+    );
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct FileTreeRowAccessibilityTarget<'a> {
     pub(super) overlay: &'a gtk4::Overlay,

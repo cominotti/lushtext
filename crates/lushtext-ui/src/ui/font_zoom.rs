@@ -71,22 +71,110 @@ impl Generation {
     }
 }
 
+/// Lifecycle phase of the process-wide font-zoom CSS providers and generations.
+#[derive(Default)]
+enum RegistryPhase {
+    #[default]
+    Uninitialized,
+    Installed {
+        providers: [gtk4::CssProvider; 2],
+        active: ActiveFontPhase,
+    },
+}
+
+/// Generation state once the two display providers have been installed.
+enum ActiveFontPhase {
+    AwaitingFirstLoad,
+    Loaded {
+        current: Generation,
+        zoom: u32,
+        swap: SwapPhase,
+    },
+}
+
+/// Pending generation-swap schedule after a base-font or lattice load.
+#[derive(Default)]
+enum SwapPhase {
+    #[default]
+    Idle,
+    WaitingForFrame {
+        generation: Generation,
+        zoom: u32,
+        clocks: Vec<(gtk4::gdk::FrameClock, glib::SignalHandlerId)>,
+        fallback: Option<glib::SourceId>,
+    },
+    IdleQueued {
+        generation: Generation,
+        zoom: u32,
+        idle: glib::SourceId,
+    },
+}
+
+impl SwapPhase {
+    fn pending_generation(&self) -> Option<&Generation> {
+        match self {
+            Self::Idle => None,
+            Self::WaitingForFrame { generation, .. } | Self::IdleQueued { generation, .. } => {
+                Some(generation)
+            }
+        }
+    }
+
+    fn target_zoom_mut(&mut self) -> Option<&mut u32> {
+        match self {
+            Self::Idle => None,
+            Self::WaitingForFrame { zoom, .. } | Self::IdleQueued { zoom, .. } => Some(zoom),
+        }
+    }
+
+    fn cancel(self) {
+        match self {
+            Self::Idle => {}
+            Self::WaitingForFrame {
+                clocks, fallback, ..
+            } => {
+                for (clock, handler) in clocks {
+                    clock.disconnect(handler);
+                }
+                if let Some(source) = fallback {
+                    source.remove();
+                }
+            }
+            Self::IdleQueued { idle, .. } => {
+                idle.remove();
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 struct State {
-    providers: Option<[gtk4::CssProvider; 2]>,
-    /// The generation every registered widget's class belongs to.
-    current: Option<Generation>,
-    /// The zoom of the registered widgets' class.
-    zoom: u32,
-    /// A loaded generation not yet on any widget, and the zoom to swap to.
-    pending: Option<(Generation, u32)>,
-    /// The scheduled swap: after-paint handlers and the fallback timeout.
-    scheduled: Vec<(gtk4::gdk::FrameClock, glib::SignalHandlerId)>,
-    fallback: Option<glib::SourceId>,
-    idle: Option<glib::SourceId>,
+    phase: RegistryPhase,
     widgets: Vec<glib::WeakRef<gtk4::Widget>>,
     pruned_len: usize,
     evidence: FontZoomEvidence,
+}
+
+impl State {
+    fn swap_phase(&self) -> Option<&SwapPhase> {
+        match &self.phase {
+            RegistryPhase::Installed {
+                active: ActiveFontPhase::Loaded { swap, .. },
+                ..
+            } => Some(swap),
+            _ => None,
+        }
+    }
+
+    fn swap_phase_mut(&mut self) -> Option<&mut SwapPhase> {
+        match &mut self.phase {
+            RegistryPhase::Installed {
+                active: ActiveFontPhase::Loaded { swap, .. },
+                ..
+            } => Some(swap),
+            _ => None,
+        }
+    }
 }
 
 thread_local! {
@@ -122,7 +210,7 @@ pub struct FontZoomEvidence {
 pub(crate) fn install(display: &gtk4::gdk::Display) {
     STATE.with(|state| {
         let mut state = state.borrow_mut();
-        if state.providers.is_some() {
+        if matches!(state.phase, RegistryPhase::Installed { .. }) {
             return;
         }
         let providers = [gtk4::CssProvider::new(), gtk4::CssProvider::new()];
@@ -133,8 +221,10 @@ pub(crate) fn install(display: &gtk4::gdk::Display) {
                 gtk4::STYLE_PROVIDER_PRIORITY_USER,
             );
         }
-        state.providers = Some(providers);
-        state.zoom = policy::ZOOM_DEFAULT;
+        state.phase = RegistryPhase::Installed {
+            providers,
+            active: ActiveFontPhase::AwaitingFirstLoad,
+        };
     });
 }
 
@@ -143,12 +233,17 @@ pub(crate) fn install(display: &gtk4::gdk::Display) {
 /// the measurement build's settle sentinel holds back while it is true).
 #[must_use]
 pub fn swap_pending() -> bool {
-    STATE.with(|state| state.borrow().pending.is_some())
+    STATE.with(|state| {
+        state
+            .borrow()
+            .swap_phase()
+            .is_some_and(|swap| !matches!(swap, SwapPhase::Idle))
+    })
 }
 
 /// Whether the providers exist (`install` ran).
 pub(crate) fn is_installed() -> bool {
-    STATE.with(|state| state.borrow().providers.is_some())
+    STATE.with(|state| matches!(state.borrow().phase, RegistryPhase::Installed { .. }))
 }
 
 /// Make `widget` (an editor surface view, carrying
@@ -205,7 +300,10 @@ pub fn evidence() -> FontZoomEvidence {
             .iter()
             .filter(|weak| weak.upgrade().is_some())
             .count();
-        evidence.pending_generation = state.pending.as_ref().map(|(g, _)| g.number);
+        evidence.pending_generation = state
+            .swap_phase()
+            .and_then(SwapPhase::pending_generation)
+            .map(|g| g.number);
         evidence
     })
 }
@@ -214,12 +312,11 @@ pub fn evidence() -> FontZoomEvidence {
 /// none of it.
 #[must_use]
 pub fn provider_texts() -> Vec<String> {
-    STATE.with(|state| {
-        state
-            .borrow()
-            .providers
-            .as_ref()
-            .map_or_default(|providers| providers.iter().map(|p| p.to_str().to_string()).collect())
+    STATE.with(|state| match &state.borrow().phase {
+        RegistryPhase::Uninitialized => Vec::new(),
+        RegistryPhase::Installed { providers, .. } => {
+            providers.iter().map(|p| p.to_str().to_string()).collect()
+        }
     })
 }
 
@@ -235,36 +332,32 @@ pub(crate) fn apply(base: &BaseFont, zoom: u32) {
     }
     let plan = STATE.with(|state| {
         let mut state = state.borrow_mut();
-        if state.providers.is_none() {
+        let from = state.evidence.current_class.clone().unwrap_or_default();
+        let RegistryPhase::Installed { active, .. } = &mut state.phase else {
             return Plan::Nothing;
-        }
-        if let Some((pending, _)) = state.pending.as_ref()
-            && pending.carries(base, zoom)
+        };
+        let ActiveFontPhase::Loaded { current, swap, .. } = active else {
+            return Plan::Load;
+        };
+        if swap
+            .pending_generation()
+            .is_some_and(|pending| pending.carries(base, zoom))
         {
-            if let Some((_, target)) = state.pending.as_mut() {
+            if let Some(target) = swap.target_zoom_mut() {
                 *target = zoom;
             }
             return Plan::RetargetPending;
         }
-        let current_number = state
-            .current
-            .as_ref()
-            .filter(|current| current.carries(base, zoom))
-            .map(|current| current.number);
-        match current_number {
-            Some(number) => {
-                if state.pending.take().is_some() {
-                    cancel_schedule(&mut state);
-                }
-                let from = state.evidence.current_class.clone().unwrap_or_default();
-                let to = policy::zoom_class(number, zoom);
-                if from == to {
-                    Plan::Nothing
-                } else {
-                    Plan::Swap(from, to)
-                }
+        if current.carries(base, zoom) {
+            std::mem::take(swap).cancel();
+            let to = policy::zoom_class(current.number, zoom);
+            if from == to {
+                Plan::Nothing
+            } else {
+                Plan::Swap(from, to)
             }
-            None => Plan::Load,
+        } else {
+            Plan::Load
         }
     });
     match plan {
@@ -281,40 +374,68 @@ fn load(base: &BaseFont, zoom: u32) {
     let _span = crate::ui::responsiveness_probe::PostOpenSpan::begin("post_open_font_load");
     let first = STATE.with(|state| {
         let mut state = state.borrow_mut();
-        let (number, provider) = match state.current.as_ref() {
-            Some(current) => (
-                state
-                    .pending
-                    .as_ref()
-                    .map_or(current.number, |(pending, _)| pending.number)
-                    .next(),
-                1 - current.provider,
-            ),
-            None => (FontZoomGeneration::new(1), 0),
+        let current_class;
+        let current_gen;
+        let first = {
+            let RegistryPhase::Installed { providers, active } = &mut state.phase else {
+                return false;
+            };
+            match active {
+                ActiveFontPhase::AwaitingFirstLoad => {
+                    let number = FontZoomGeneration::new(1);
+                    let generation = Generation {
+                        number,
+                        provider: 0,
+                        base: base.clone(),
+                        lattice: policy::lattice_of(zoom),
+                    };
+                    let text = policy::provider_text(number, base, generation.lattice);
+                    providers[0].load_from_string(&text);
+                    current_gen = Some(number);
+                    current_class = Some(policy::zoom_class(number, zoom));
+                    *active = ActiveFontPhase::Loaded {
+                        current: generation,
+                        zoom,
+                        swap: SwapPhase::Idle,
+                    };
+                    true
+                }
+                ActiveFontPhase::Loaded { current, swap, .. } => {
+                    let number = swap
+                        .pending_generation()
+                        .map_or(current.number, |pending| pending.number)
+                        .next();
+                    let provider = 1 - current.provider;
+                    let generation = Generation {
+                        number,
+                        provider,
+                        base: base.clone(),
+                        lattice: policy::lattice_of(zoom),
+                    };
+                    let text = policy::provider_text(number, base, generation.lattice);
+                    providers[provider].load_from_string(&text);
+                    current_gen = None;
+                    current_class = None;
+                    std::mem::replace(
+                        swap,
+                        SwapPhase::WaitingForFrame {
+                            generation,
+                            zoom,
+                            clocks: Vec::new(),
+                            fallback: None,
+                        },
+                    )
+                    .cancel();
+                    false
+                }
+            }
         };
-        let generation = Generation {
-            number,
-            provider,
-            base: base.clone(),
-            lattice: policy::lattice_of(zoom),
-        };
-        let text = policy::provider_text(number, base, generation.lattice);
-        if let Some(providers) = state.providers.as_ref() {
-            providers[provider].load_from_string(&text);
-        }
         state.evidence.provider_loads = state.evidence.provider_loads.saturating_add(1);
-        if state.current.is_none() {
-            // The first load: nothing carries a class yet, so the class
-            // becomes current at once (registration adds it).
+        if let Some(number) = current_gen {
             state.evidence.generation = number;
-            state.evidence.current_class = Some(policy::zoom_class(number, zoom));
-            state.zoom = zoom;
-            state.current = Some(generation);
-            true
-        } else {
-            state.pending = Some((generation, zoom));
-            false
+            state.evidence.current_class = current_class;
         }
+        first
     });
     if first {
         // Widgets registered before the first load take the class now.
@@ -331,7 +452,6 @@ fn load(base: &BaseFont, zoom: u32) {
 
 /// Swap the pending generation in after the next painted frame.
 fn schedule_swap() {
-    STATE.with(|state| cancel_schedule(&mut state.borrow_mut()));
     let clocks: Vec<gtk4::gdk::FrameClock> = gtk4::Window::list_toplevels()
         .into_iter()
         .filter(WidgetExt::is_mapped)
@@ -343,13 +463,30 @@ fn schedule_swap() {
         scheduled.push((clock, handler));
     }
     let fallback = glib::timeout_add_local_once(SWAP_FRAME_WAIT, || {
-        STATE.with(|state| state.borrow_mut().fallback = None);
+        STATE.with(|state| {
+            if let Some(SwapPhase::WaitingForFrame { fallback, .. }) =
+                state.borrow_mut().swap_phase_mut()
+            {
+                *fallback = None;
+            }
+        });
         painted();
     });
     STATE.with(|state| {
-        let mut state = state.borrow_mut();
-        state.scheduled = scheduled;
-        state.fallback = Some(fallback);
+        if let Some(SwapPhase::WaitingForFrame {
+            clocks,
+            fallback: slot,
+            ..
+        }) = state.borrow_mut().swap_phase_mut()
+        {
+            *clocks = scheduled;
+            *slot = Some(fallback);
+        } else {
+            for (clock, handler) in scheduled {
+                clock.disconnect(handler);
+            }
+            fallback.remove();
+        }
     });
 }
 
@@ -358,46 +495,81 @@ fn schedule_swap() {
 fn painted() {
     STATE.with(|state| {
         let mut state = state.borrow_mut();
-        for (clock, handler) in std::mem::take(&mut state.scheduled) {
+        let Some(swap) = state.swap_phase_mut() else {
+            return;
+        };
+        if !matches!(swap, SwapPhase::WaitingForFrame { .. }) {
+            return;
+        }
+        let SwapPhase::WaitingForFrame {
+            generation,
+            zoom,
+            clocks,
+            fallback,
+        } = std::mem::take(swap)
+        else {
+            return;
+        };
+        for (clock, handler) in clocks {
             clock.disconnect(handler);
         }
-        if let Some(source) = state.fallback.take() {
+        if let Some(source) = fallback {
             source.remove();
         }
-        if state.idle.is_none() && state.pending.is_some() {
-            let idle = glib::idle_add_local_once(|| {
-                STATE.with(|state| state.borrow_mut().idle = None);
-                swap_pending_generation();
-            });
-            state.idle = Some(idle);
-        }
+        let idle = glib::idle_add_local_once(swap_pending_generation);
+        *swap = SwapPhase::IdleQueued {
+            generation,
+            zoom,
+            idle,
+        };
     });
 }
 
 fn swap_pending_generation() {
     let swap_to = STATE.with(|state| {
         let mut state = state.borrow_mut();
-        let (generation, zoom) = state.pending.take()?;
         let from = state.evidence.current_class.clone().unwrap_or_default();
-        let to = policy::zoom_class(generation.number, zoom);
-        state.evidence.generation = generation.number;
-        state.current = Some(generation);
-        Some((from, to, zoom))
+        let RegistryPhase::Installed {
+            active:
+                ActiveFontPhase::Loaded {
+                    current,
+                    zoom: active_zoom,
+                    swap,
+                },
+            ..
+        } = &mut state.phase
+        else {
+            return None;
+        };
+        let (generation, target_zoom) = match std::mem::take(swap) {
+            SwapPhase::Idle => return None,
+            SwapPhase::WaitingForFrame {
+                generation,
+                zoom,
+                clocks,
+                fallback,
+            } => {
+                for (clock, handler) in clocks {
+                    clock.disconnect(handler);
+                }
+                if let Some(source) = fallback {
+                    source.remove();
+                }
+                (generation, zoom)
+            }
+            SwapPhase::IdleQueued {
+                generation, zoom, ..
+            } => (generation, zoom),
+        };
+        let generation_number = generation.number;
+        let to = policy::zoom_class(generation_number, target_zoom);
+        *current = generation;
+        *active_zoom = target_zoom;
+        state.evidence.generation = generation_number;
+        Some((from, to, target_zoom))
     });
     if let Some((from, to, zoom)) = swap_to {
         crate::ui::editor_page::restyle::restyle_everywhere(|| swap(&from, &to, zoom));
-    }
-}
-
-fn cancel_schedule(state: &mut State) {
-    for (clock, handler) in std::mem::take(&mut state.scheduled) {
-        clock.disconnect(handler);
-    }
-    if let Some(source) = state.fallback.take() {
-        source.remove();
-    }
-    if let Some(source) = state.idle.take() {
-        source.remove();
     }
 }
 
@@ -409,7 +581,13 @@ fn swap(from: &str, to: &str, zoom: u32) {
         let mut state = state.borrow_mut();
         prune(&mut state);
         state.evidence.current_class = Some(to.to_owned());
-        state.zoom = zoom;
+        if let RegistryPhase::Installed {
+            active: ActiveFontPhase::Loaded { zoom: active, .. },
+            ..
+        } = &mut state.phase
+        {
+            *active = zoom;
+        }
         state
             .widgets
             .iter()

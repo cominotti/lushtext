@@ -1418,22 +1418,13 @@ fn bench_end_to_end_boundedness(c: &mut Criterion) {
     assert!(page.has_more);
 
     let current_rows = (0..10_000)
-        .map(|index| DirectoryRowState {
-            path: Some(PathBuf::from(format!("row-{index:05}"))),
-            is_dir: false,
-            is_empty: None,
-            placeholder: None,
-        })
+        .map(|index| DirectoryRowState::file(PathBuf::from(format!("row-{index:05}"))))
         .collect::<Vec<_>>();
     let mut desired_rows = current_rows.clone();
     desired_rows.splice(
         2_500..7_500,
-        (0..5_000).map(|index| DirectoryRowState {
-            path: Some(PathBuf::from(format!("changed-{index:05}"))),
-            is_dir: false,
-            is_empty: None,
-            placeholder: None,
-        }),
+        (0..5_000)
+            .map(|index| DirectoryRowState::file(PathBuf::from(format!("changed-{index:05}")))),
     );
     let reconciliation = file_tree::plan_directory_reconciliation(&current_rows, &desired_rows);
     let DirectoryReconciliationPlan::Splice {

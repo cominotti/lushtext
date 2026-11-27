@@ -7,6 +7,7 @@
 //! state stays separate from simple preference rows, and the Preserved Drafts
 //! review surface into `preserved_drafts.rs`.
 
+mod appearance;
 mod data_page;
 mod excluded_names;
 mod preserved_drafts;

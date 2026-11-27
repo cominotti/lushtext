@@ -3270,12 +3270,10 @@ fn test_rename_callback_fires() {
         new_c.set(new.to_path_buf());
     });
 
-    if let Some(ref cb) = *section.imp().rename_callback.borrow() {
-        cb(
-            std::path::Path::new("/tmp/old.txt"),
-            std::path::Path::new("/tmp/new.txt"),
-        );
-    }
+    section.notify_file_renamed(
+        std::path::Path::new("/tmp/old.txt"),
+        std::path::Path::new("/tmp/new.txt"),
+    );
 
     assert!(called.get());
     assert_eq!(old_seen.take(), PathBuf::from("/tmp/old.txt"));
@@ -3297,9 +3295,7 @@ fn test_delete_callback_fires() {
         path_c.set(path.to_path_buf());
     });
 
-    if let Some(ref cb) = *section.imp().delete_callback.borrow() {
-        cb(std::path::Path::new("/tmp/deleted.txt"));
-    }
+    section.notify_file_deleted(std::path::Path::new("/tmp/deleted.txt"));
 
     assert!(called.get());
     assert_eq!(path_seen.take(), PathBuf::from("/tmp/deleted.txt"));
@@ -3320,9 +3316,7 @@ fn test_create_callback_fires() {
         path_c.set(path.to_path_buf());
     });
 
-    if let Some(ref cb) = *section.imp().create_callback.borrow() {
-        cb(std::path::Path::new("/tmp/new_file.txt"));
-    }
+    section.notify_file_created(std::path::Path::new("/tmp/new_file.txt"));
 
     assert!(called.get());
     assert_eq!(path_seen.take(), PathBuf::from("/tmp/new_file.txt"));
@@ -5313,7 +5307,7 @@ fn test_empty_workspace_manual_refresh_noops_without_feedback_or_watchers() {
     section.imp().refresh_button.emit_clicked();
 
     wait_until(Duration::from_secs(2), || {
-        !section.imp().refresh_runtime.pending_full_reload.get()
+        !section.imp().refresh_runtime.is_full_reload_pending()
     });
 
     assert!(messages.borrow().is_empty());
