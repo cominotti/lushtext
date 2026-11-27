@@ -5,8 +5,8 @@ Timing: none (no timed path touched).
 
 ## 1. Programme record & failing-first boundary gate
 
-- [ ] 1.1 Create `docs/next/idiomatic-rust-hexagonal-programme.md` recording the 5-change programme scope, `main` (`3c442112`) baselines, ratchet policy, and ordering rationale; verify `scripts/check-agent-docs.sh` passes.
-- [ ] 1.2 Write `scripts/check-hexagonal-boundaries.py` with `--self-test` (testing forbidden cross-layer Cargo dependencies in `lushtext-model`, `lushtext-services`, and `lushtext-ui`, plus a new `> 1,000`-line production file rejection) and verify `--self-test` fails on the intentional violation fixtures before passing on valid fixtures, and that running the real check on the current pre-refactor tree fails on the known `lushtext-core` leaks (`regex`, `pulldown-cmark`, missing `lushtext-ui`).
+- [x] 1.1 Create `docs/next/idiomatic-rust-hexagonal-programme.md` recording the 5-change programme scope, `main` (`3c442112`) baselines, ratchet policy, and ordering rationale; verify `scripts/check-agent-docs.sh` passes.
+- [x] 1.2 Write `scripts/check-hexagonal-boundaries.py` with `--self-test` (testing forbidden cross-layer Cargo dependencies in `lushtext-model`, `lushtext-services`, and `lushtext-ui`, plus a new `> 1,000`-line production file rejection) and verify `--self-test` fails on the intentional violation fixtures before passing on valid fixtures, and that running the real check on the current pre-refactor tree fails on the known `lushtext-core` leaks (`regex`, `pulldown-cmark`, missing `lushtext-ui`).
 - [ ] 1.3 Wire `check-hexagonal-boundaries` into `Makefile` (`check-policy`) and `.github/workflows/ci.yml`; create a signed commit (`git commit -S`) and push the branch.
 
 ## 2. Rename `crates/lushtext-core` to `crates/lushtext-ui` & re-key all gates
