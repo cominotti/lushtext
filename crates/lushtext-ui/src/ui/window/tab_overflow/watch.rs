@@ -25,6 +25,7 @@ use std::time::Duration;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_settle::SettleBurst;
 use gtk4::prelude::*;
+use lushtext_model::values::FocusRestoreGeneration;
 
 use super::super::LushtextWindow;
 use super::all_tabs_execution::{SET_ALL_TABS_VISIBLE_ACTION, TOGGLE_ALL_TABS_ACTION};
@@ -103,7 +104,7 @@ pub(crate) struct TabOverflowState {
     pub(super) focus_restore_pending: Cell<bool>,
     /// The generation of the latest focus restore; a reopened popover or
     /// disposal advances it, so an older restore's idle does nothing.
-    pub(super) focus_restore_generation: Cell<u32>,
+    pub(super) focus_restore_generation: Cell<FocusRestoreGeneration>,
     /// The re-snapshot of an open popover after a tab change.
     pub(super) resnapshot: gtk_lush_settle::Debounce,
     /// Each tab page's title and pinned handlers, by page address.

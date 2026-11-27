@@ -19,6 +19,7 @@ use std::path::PathBuf;
 
 use crate::ui::editor_page::BookmarkEditError;
 use lushtext_model::budgets::list_budget::grouped_thousands;
+use lushtext_model::values::NotesSourceGeneration;
 use lushtext_model::workspace::WorkspaceConfig;
 use lushtext_model::workspace::palette::PaletteNoteCategory;
 use lushtext_services::notes::bookmark_excerpt;
@@ -318,8 +319,8 @@ pub fn notes_browser_empty_label(
 /// queries, selections or re-presents.
 #[must_use]
 pub fn should_announce_limit(
-    announced_generation: Option<u64>,
-    generation: u64,
+    announced_generation: Option<NotesSourceGeneration>,
+    generation: NotesSourceGeneration,
     limited: bool,
 ) -> bool {
     limited && announced_generation != Some(generation)
@@ -1287,16 +1288,32 @@ mod tests {
 
     #[test]
     fn the_limit_is_announced_once_per_limited_source_generation() {
-        assert!(should_announce_limit(None, 4, true));
+        assert!(should_announce_limit(
+            None,
+            NotesSourceGeneration::new(4),
+            true
+        ));
         assert!(
-            !should_announce_limit(Some(4), 4, true),
+            !should_announce_limit(
+                Some(NotesSourceGeneration::new(4)),
+                NotesSourceGeneration::new(4),
+                true
+            ),
             "not again for queries"
         );
         assert!(
-            should_announce_limit(Some(4), 5, true),
+            should_announce_limit(
+                Some(NotesSourceGeneration::new(4)),
+                NotesSourceGeneration::new(5),
+                true
+            ),
             "a mode switch may announce"
         );
-        assert!(!should_announce_limit(None, 4, false));
+        assert!(!should_announce_limit(
+            None,
+            NotesSourceGeneration::new(4),
+            false
+        ));
     }
 
     #[test]

@@ -61,6 +61,7 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 
 use crate::ui::window::LushtextWindow;
 use lushtext_model::persistence::recent_document::RecentDocumentEntry;
+use lushtext_model::values::RecentDocumentsGeneration;
 
 use super::item::OpenPopoverItem;
 use super::{LushtextOpenPopover, imp};
@@ -361,7 +362,7 @@ pub struct RecentDocumentsJournalEvidence {
     pub removed_while_loading: Vec<std::path::PathBuf>,
     /// Monotonic version advanced by in-memory user mutations. A load whose
     /// generation no longer matches must merge rather than replace.
-    pub generation: u64,
+    pub generation: RecentDocumentsGeneration,
     /// Whether the popover projection is stale and owes a rebuild before popup.
     pub rows_dirty: bool,
     /// Whether a save is running on a worker.

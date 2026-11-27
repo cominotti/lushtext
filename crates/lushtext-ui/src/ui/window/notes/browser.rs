@@ -38,6 +38,7 @@ use crate::ui::accessibility;
 use crate::ui::markdown_preview::{LushtextMarkdownPreview, MarkdownPreviewRenderContext};
 use crate::ui::row_text::LushtextRowText;
 use crate::ui::status_bar::MessageKind;
+use lushtext_model::values::NotesSourceGeneration;
 use lushtext_model::workspace::palette::{PaletteNoteEntry, PaletteNoteTarget};
 use lushtext_services::palette as palette_service;
 
@@ -125,7 +126,7 @@ pub(super) struct NotesBrowserState {
     /// Rows listed against rows found for the published source.
     pub(super) listed_count: Cell<NotesBrowserListedCount>,
     /// Source generation whose limit was last announced.
-    pub(super) limit_announced_generation: Cell<Option<u64>>,
+    pub(super) limit_announced_generation: Cell<Option<NotesSourceGeneration>>,
     /// Limit announcements raised by this dialog (evidence).
     pub(super) limit_announcements: Cell<u64>,
     /// True while a query publish selects programmatically, so the selection
@@ -1183,7 +1184,9 @@ impl NotesBrowserState {
     /// Open the entry a listed row names, if the row still belongs to the
     /// published source (a row of a replaced source opens nothing).
     fn open_listed_row(&self, row: &NotesBrowserRow) {
-        if row.generation() != self.source_generation.get() || self.disposed.get() {
+        if row.generation() != NotesSourceGeneration::new(self.source_generation.get())
+            || self.disposed.get()
+        {
             return;
         }
         if let Ok(index) = usize::try_from(row.source_index()) {
@@ -1376,7 +1379,7 @@ fn bind_notes_row(
     row: &NotesBrowserRow,
     widgets: &NotesRowWidgets,
 ) {
-    if row.generation() != state.source_generation.get() {
+    if row.generation() != NotesSourceGeneration::new(state.source_generation.get()) {
         return;
     }
     let all_entries = state.all_entries.borrow();

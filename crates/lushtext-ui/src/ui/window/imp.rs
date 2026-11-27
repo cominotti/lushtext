@@ -44,6 +44,9 @@ use lushtext_model::persistence::draft::{
     DraftEntry, DraftManifest, DraftManifestAuthority, PreloadedDraftRestore,
 };
 use lushtext_model::persistence::recent_document::RecentDocumentEntry;
+use lushtext_model::values::{
+    FailedRestoreGeneration, RecentDocumentsGeneration, RestoreGeneration, SelectionGeneration,
+};
 use lushtext_model::workspace::WorkspaceScope;
 use lushtext_services::coordination::notifications::NotificationBus;
 use lushtext_services::palette::{
@@ -159,7 +162,7 @@ pub struct SessionState {
     /// Active bounded GTK session-restore generation, if any.
     pub(super) restore_runtime: RefCell<Option<SessionRestoreRuntime>>,
     /// Monotonic identity allocated before each bounded restore generation.
-    pub(super) next_restore_generation: Cell<u64>,
+    pub(super) next_restore_generation: Cell<RestoreGeneration>,
     /// Last generation's terminal or cancellation counters, retained after the
     /// runtime that owned them is taken.
     ///
@@ -169,13 +172,13 @@ pub struct SessionState {
     /// Aggregate tab-derived projection rebuilds, retained for boundedness proof.
     pub(super) tab_projection_publications: Cell<u64>,
     /// User/CLI tab-selection intent accepted since window construction.
-    pub(super) selection_generation: Cell<u64>,
+    pub(super) selection_generation: Cell<SelectionGeneration>,
     /// Suppresses generation changes for restore-owned transient selections.
     pub(super) applying_restore_selection: Cell<bool>,
     /// Whether the newest attempted session save failed and still needs retry.
     pub save_failed: Cell<bool>,
     /// Generation of the newest failed session save.
-    pub failed_generation: Cell<u32>,
+    pub failed_generation: Cell<FailedRestoreGeneration>,
     /// Last failure detail kept for close-flow warnings and widget tests.
     pub failure_detail: RefCell<Option<String>>,
     /// Whether draft/session close-safety work is already running.
@@ -352,7 +355,7 @@ pub struct RecentDocumentsState {
     /// Paths removed while the startup load was in flight.
     pub removed_while_loading: RefCell<Vec<PathBuf>>,
     /// Monotonic version advanced by in-memory user mutations.
-    pub generation: Cell<u64>,
+    pub generation: Cell<RecentDocumentsGeneration>,
     /// Whether the popover projection should be rebuilt before the next popup.
     pub rows_dirty: Cell<bool>,
     /// Debounce for coalescing bursts of recent-document persistence writes.
@@ -1132,7 +1135,7 @@ impl ObjectImpl for LushtextWindow {
                     if !session.applying_restore_selection.get() {
                         session
                             .selection_generation
-                            .set(session.selection_generation.get().wrapping_add(1));
+                            .set(session.selection_generation.get().next());
                     }
                     window.follow_selection_in_unmapped_window();
                     if window.tab_projection_refresh_deferred() {

@@ -27,6 +27,7 @@ use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
 
 use crate::ui::accessibility;
+use lushtext_model::values::NotesSourceGeneration;
 use lushtext_services::palette as palette_service;
 
 use super::browser::NotesBrowserState;
@@ -163,7 +164,10 @@ fn publish_notes_browser_query(state: &Rc<NotesBrowserState>, grouped: GroupedNo
         state.listed_count.get().is_limited(),
     );
     state.publishing.set(true);
-    state.rows.publish(grouped, state.source_generation.get());
+    state.rows.publish(
+        grouped,
+        NotesSourceGeneration::new(state.source_generation.get()),
+    );
     let selected = if state.rows.is_empty() {
         None
     } else {
@@ -208,7 +212,7 @@ pub(super) fn update_notes_browser_limit_label(state: &NotesBrowserState) {
     state.limit_label.set_label(&message);
     accessibility::set_label(&state.limit_label, &message);
     state.limit_label.set_visible(true);
-    let generation = state.source_generation.get();
+    let generation = NotesSourceGeneration::new(state.source_generation.get());
     if should_announce_limit(
         state.limit_announced_generation.get(),
         generation,

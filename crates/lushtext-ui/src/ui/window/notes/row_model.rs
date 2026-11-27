@@ -39,19 +39,20 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
 use crate::ui::signal_connect;
+use lushtext_model::values::NotesSourceGeneration;
 use lushtext_model::workspace::palette::PaletteNoteCategory;
 
 use super::policy::{GroupedNoteRows, NoteSectionBounds};
 
 mod row_imp {
-    use super::{Cell, PaletteNoteCategory, glib};
+    use super::{Cell, NotesSourceGeneration, PaletteNoteCategory, glib};
     use gtk4::subclass::prelude::*;
 
     /// One listed row: a source index, its source generation and its category.
     #[derive(Default)]
     pub struct NotesBrowserRow {
         pub(super) source_index: Cell<u32>,
-        pub(super) generation: Cell<u64>,
+        pub(super) generation: Cell<NotesSourceGeneration>,
         pub(super) category: Cell<Option<PaletteNoteCategory>>,
     }
 
@@ -76,7 +77,11 @@ glib::wrapper! {
 }
 
 impl NotesBrowserRow {
-    fn new(source_index: u32, generation: u64, category: Option<PaletteNoteCategory>) -> Self {
+    fn new(
+        source_index: u32,
+        generation: NotesSourceGeneration,
+        category: Option<PaletteNoteCategory>,
+    ) -> Self {
         let row: Self = glib::Object::new();
         row.imp().source_index.set(source_index);
         row.imp().generation.set(generation);
@@ -92,7 +97,7 @@ impl NotesBrowserRow {
 
     /// Source generation the row was listed under.
     #[must_use]
-    pub fn generation(&self) -> u64 {
+    pub fn generation(&self) -> NotesSourceGeneration {
         self.imp().generation.get()
     }
 
@@ -104,7 +109,12 @@ impl NotesBrowserRow {
 
     /// Point this row at another entry and tell its bound widgets to project
     /// it again (`content-changed`).
-    fn retarget(&self, source_index: u32, generation: u64, category: Option<PaletteNoteCategory>) {
+    fn retarget(
+        &self,
+        source_index: u32,
+        generation: NotesSourceGeneration,
+        category: Option<PaletteNoteCategory>,
+    ) {
         self.imp().source_index.set(source_index);
         self.imp().generation.set(generation);
         self.imp().category.set(category);
@@ -133,7 +143,7 @@ const LIVE_ROW_PRUNE_AT: usize = 1_024;
 struct NotesBrowserProjection {
     rows: Rc<[u32]>,
     sections: NoteSectionBounds,
-    generation: u64,
+    generation: NotesSourceGeneration,
 }
 
 mod model_imp {
@@ -247,7 +257,7 @@ impl NotesBrowserRowModel {
     /// [`NotesBrowserRowModel::grow`] lists the rest over the next frames,
     /// so the frame that first shows the rows realizes the rows on screen
     /// rather than GTK's whole band (A1). Any other publish ends a growth.
-    pub fn publish(&self, grouped: GroupedNoteRows, generation: u64) {
+    pub fn publish(&self, grouped: GroupedNoteRows, generation: NotesSourceGeneration) {
         let new_len = grouped.sections.len();
         let new = NotesBrowserProjection {
             rows: Rc::from(grouped.rows),
@@ -404,7 +414,7 @@ impl NotesBrowserRowModel {
 
     /// Source generation of the listed rows.
     #[must_use]
-    pub fn generation(&self) -> u64 {
+    pub fn generation(&self) -> NotesSourceGeneration {
         self.imp().projection.borrow().generation
     }
 
