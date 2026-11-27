@@ -5368,3 +5368,15 @@ and this section the posture and the evidence.
   cancelled, lists the files it skipped with the reason, and offers to
   finish each of them in the editor with the replacement ready."
 
+## SL `slice-large-directory-collapse` (SHELVED 2026-11-26)
+
+- **Verdict: `SHELVED 2026-11-26`.** Design revision R14 (`24d2ed72`) missed 33 judged Part B timing bars in the quiet-load `slc-pb-branch-{1,2}.log` verdict logs (plus 1 `400:64` outlier), so the full sliced-collapse change did not meet its pre-registered bar.
+- **Branch and worktree posture (`.agents/rules/parallel-agent-work.md:443-445`).** Branch `slice-large-directory-collapse`, worktree `.claude/worktrees/slice-large-directory-collapse` (`24d2ed72`), and PR #109 remain intact with no implementation slot and no measurement lock; the change resumes only through the coordinator.
+- **Standalone proven wins harvested cleanly into `main`.** Rather than holding independent correctness, diagnostic, and responsiveness improvements behind the shelved collapse verdict, the standalone wins were harvested into `main` across focused PRs:
+  - PR #128 (`887d5eb0`) — `scripts/heavy.sh` signal traps immediately under `LOCK` and `scripts/run-mutants.sh` default `git.diff` regeneration.
+  - PR #129 (`ca927377`) — process-once display CSS provider registration (`theme::load_css` / `display_providers_added`), background selection-restore focus preservation (`folder_execution::restore_selection`), and inline-rename `focus_ctl.connect_leave` idle deferral.
+  - PR #130 (`3c442112`) — **D17** on-demand file-tree row decorations (`16 -> 9` widgets per depth-1 file row in `row_factory.rs`, `reorder_execution.rs`, and `row_accessibility.rs`).
+  - PR #132 (`af3b0f21`) — **D20/R4** far-row programmatic expansion/collapse transition recording (`folder_execution::set_row_expanded_and_record`, bind-time `watch::install_expanded_watch_hook`) and GTK axiom **A114**.
+  - PR 5 (`perf/sidebar-expansion-cap-kept-refill-and-a118`) — **D10** empty-store expansion warm-up cap (`FIRST_BATCH_ROWS` = 32 per frame in `scan_execution.rs`), **P2** kept-run refill reconciliation (`kept_at` / `kept_run_offset` in `lushtext-services/src/file_tree.rs` and `scan_execution.rs`), and GTK axiom **A118**.
+
+

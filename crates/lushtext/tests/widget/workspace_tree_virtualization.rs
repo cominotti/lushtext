@@ -3229,3 +3229,338 @@ fn test_the_folder_header_collapses_every_root() {
     drop(window);
     drop(sidebar);
 }
+
+// ---------------------------------------------------------------------------
+// D10 expansion warm-up cap and P2 kept-run refill (`scan_execution.rs`).
+// ---------------------------------------------------------------------------
+
+/// Rows per warm-up batch while an empty directory (or kept-run refill) brings
+/// row widgets into the realized band (`FIRST_BATCH_ROWS` in `scan_execution.rs`).
+const EXPANSION_WARM_UP_UNIT: usize = 32;
+
+/// The tree row each realized row content widget shows, keyed by the widget's
+/// address.
+type BoundRows = std::collections::HashMap<usize, usize>;
+
+#[derive(Clone, Copy, Debug, Default)]
+struct RowChange {
+    shown: usize,
+    destroyed: usize,
+}
+
+/// Record which tree row every realized row content widget (the overlay the
+/// factory's `setup` creates) shows now; return how many widgets are new or
+/// show another row than at the last call (`shown`), and how many were
+/// destroyed (`destroyed`).
+fn mark_new_row_widgets(section: &LushtextWorkspaceSection, seen: &mut BoundRows) -> RowChange {
+    use glib::translate::ToGlibPtr;
+    let mut changed = 0;
+    let mut now = BoundRows::new();
+    let mut child = section.imp().file_tree_view.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        let Some(content) = widget.first_child() else {
+            continue;
+        };
+        let row = find_descendant(&content, glib::object::ObjectExt::is::<gtk4::TreeExpander>)
+            .and_downcast::<gtk4::TreeExpander>()
+            .and_then(|expander| expander.list_row());
+        let key: *mut glib::gobject_ffi::GObject =
+            content.upcast_ref::<glib::Object>().to_glib_none().0;
+        let value = row.as_ref().map_or(0, |row| {
+            let pointer: *mut glib::gobject_ffi::GObject =
+                row.upcast_ref::<glib::Object>().to_glib_none().0;
+            pointer as usize
+        });
+        let key = key as usize;
+        if seen.get(&key) != Some(&value) {
+            changed += 1;
+        }
+        now.insert(key, value);
+    }
+    let destroyed = seen.keys().filter(|key| !now.contains_key(key)).count();
+    *seen = now;
+    RowChange {
+        shown: changed,
+        destroyed,
+    }
+}
+
+/// Run `start` (the input dispatch), then the main loop one dispatch at a
+/// time until `done` holds (or 120 s pass), returning the row widgets GTK
+/// showed anew or destroyed in the input dispatch and in each later one.
+fn row_widgets_changed_per_dispatch(
+    section: &LushtextWorkspaceSection,
+    start: impl FnOnce(),
+    mut done: impl FnMut() -> bool,
+) -> Vec<RowChange> {
+    let context = glib::MainContext::default();
+    let started = std::time::Instant::now();
+    let mut created = Vec::new();
+    let mut seen = BoundRows::new();
+    mark_new_row_widgets(section, &mut seen);
+    start();
+    created.push(mark_new_row_widgets(section, &mut seen));
+    while !done() {
+        assert!(
+            started.elapsed() < Duration::from_secs(120),
+            "reconciliation did not settle within two minutes"
+        );
+        if context.iteration(false) {
+            created.push(mark_new_row_widgets(section, &mut seen));
+        } else {
+            std::thread::sleep(Duration::from_micros(500));
+        }
+    }
+    created
+}
+
+fn activate_tree_row(section: &LushtextWorkspaceSection, path: &Path) {
+    let position = tree_index_for_path(section, path).expect("the row is listed");
+    section
+        .imp()
+        .file_tree_view
+        .emit_by_name::<()>("activate", &[&position]);
+}
+
+fn loaded_and_settled(section: &LushtextWorkspaceSection, path: &Path, count: usize) -> bool {
+    maybe_listing(section, path).is_some_and(|listing| listing.directory_retained_entries == count)
+        && !section
+            .workspace_section_evidence()
+            .refresh_blocks_readiness
+}
+
+fn tree_with_siblings(count: usize, siblings: usize) -> LargeTree {
+    let (dir, root) = seed_workspace(&[("nested", count)]);
+    for index in 0..siblings {
+        fixture::write_text(&root.join(format!("zz-{index:04}.txt")), "x");
+    }
+    let tree = present_single_folder(dir, root, "virtualized", 800);
+    tree.section.expand_folders();
+    tree
+}
+
+fn drawn_entries(section: &LushtextWorkspaceSection) -> BTreeSet<String> {
+    rendered_labels(section)
+        .into_iter()
+        .filter(|label| label.starts_with("row-"))
+        .collect()
+}
+
+/// D10: expanding an empty directory brings at most `FIRST_BATCH_ROWS` (32)
+/// row widgets into the realized band per dispatch/frame during warm-up, and
+/// the first frame after the first batch paints the top of the listing.
+#[test]
+fn test_expanding_a_directory_brings_at_most_one_unit_into_the_band_per_frame() {
+    for (count, siblings) in [(256usize, 0usize), (256, 400), (4096, 0)] {
+        let tree = tree_with_siblings(count, siblings);
+        let nested = tree.root.join("nested");
+        wait_until(Duration::from_secs(10), || {
+            row_for_path(&tree.section, &nested).is_some()
+        });
+        wait_for_refresh_idle(&tree.section);
+        flush_after_delay(Duration::from_millis(300));
+        let clock = tree
+            .section
+            .imp()
+            .file_tree_view
+            .frame_clock()
+            .expect("a mapped list has a frame clock");
+        let frames = std::rc::Rc::new(std::cell::RefCell::new(
+            Vec::<(u32, BTreeSet<String>)>::new(),
+        ));
+        let handler = {
+            let frames = std::rc::Rc::clone(&frames);
+            let section = tree.section.clone();
+            let nested = nested.clone();
+            clock.connect_paint(move |_| {
+                let listed = row_for_path(&section, &nested)
+                    .and_then(|row| row.children())
+                    .map_or(0, |store| store.n_items());
+                frames.borrow_mut().push((listed, drawn_entries(&section)));
+            })
+        };
+        let changed = row_widgets_changed_per_dispatch(
+            &tree.section,
+            || activate_tree_row(&tree.section, &nested),
+            || loaded_and_settled(&tree.section, &nested, count),
+        );
+        clock.disconnect(handler);
+        // Directories above `CHILD_APPEND_BATCH_SIZE` (256) also append one
+        // `Loading` placeholder row in the first dispatch (`32 + 1 = 33`).
+        let first_limit = EXPANSION_WARM_UP_UNIT + usize::from(count > 256);
+        let mut saw_loading_row_dispatch = false;
+        let over = changed.iter().copied().find(|change| {
+            if change.shown > EXPANSION_WARM_UP_UNIT
+                && change.shown <= first_limit
+                && !saw_loading_row_dispatch
+            {
+                saw_loading_row_dispatch = true;
+                return false;
+            }
+            change.shown > EXPANSION_WARM_UP_UNIT
+        });
+        assert!(
+            over.is_none(),
+            "{count} entries / {siblings} siblings: one dispatch showed {over:?} row widgets, \
+             over the warm-up unit of {EXPANSION_WARM_UP_UNIT}: {changed:?}"
+        );
+        flush_after_delay(Duration::from_millis(100));
+        let settled = drawn_entries(&tree.section);
+        assert!(!settled.is_empty(), "the loaded entries are drawn");
+        let frames = frames.borrow().clone();
+        let first = frames
+            .iter()
+            .position(|(listed, _)| *listed > 0)
+            .expect("a frame painted the loaded rows");
+        let first_unit: BTreeSet<String> = (0..EXPANSION_WARM_UP_UNIT).map(file_name).collect();
+        let expected: BTreeSet<String> = settled.intersection(&first_unit).cloned().collect();
+        assert!(
+            !expected.is_empty() && frames[first].1.is_superset(&expected),
+            "{count} entries / {siblings} siblings: the frame after the first batch drew {:?}, \
+             the loaded tree {settled:?}",
+            frames[first].1
+        );
+        drop(tree.window);
+    }
+}
+
+/// P2: refilling a materialized directory around a contiguous interior subset
+/// (`kept_at`) keeps the existing realized/bound row items and widgets alive
+/// without tearing them down, and paces new rows in `<= 32` widget units.
+#[test]
+fn test_refilling_around_a_kept_subset_preserves_kept_widgets_and_paces_new_rows() {
+    use glib::translate::ToGlibPtr;
+    let (dir, root) = seed_workspace(&[]);
+    let nested = root.join("nested");
+    fixture::create_dir_all(&nested);
+    for index in 128..192usize {
+        fixture::write_text(&nested.join(format!("f-{index:04}.txt")), "x");
+    }
+    let tree = present_single_folder(dir, root, "virtualized", 800);
+    tree.section.expand_folders();
+    expand_and_load(&tree, &nested, 64);
+    flush_after_delay(Duration::from_millis(300));
+
+    let child_store = row_for_path(&tree.section, &nested)
+        .and_then(|row| row.children())
+        .and_downcast::<gtk4::gio::ListStore>()
+        .expect("nested child ListStore");
+    assert_eq!(child_store.n_items(), 64);
+
+    // Record the exact FileTreeItem instances for f-0128..f-0192 and the
+    // realized row content widgets currently bound to them.
+    let kept_items: Vec<glib::WeakRef<FileTreeItem>> = (0..64)
+        .map(|i| {
+            child_store
+                .item(i)
+                .and_downcast::<FileTreeItem>()
+                .expect("FileTreeItem")
+                .downgrade()
+        })
+        .collect();
+    let mut kept_widgets_before: std::collections::HashMap<
+        PathBuf,
+        (usize, glib::WeakRef<gtk4::Widget>),
+    > = std::collections::HashMap::new();
+    let mut child = tree.section.imp().file_tree_view.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        let Some(content) = widget.first_child() else {
+            continue;
+        };
+        if let Some(expander) =
+            find_descendant(&content, glib::object::ObjectExt::is::<gtk4::TreeExpander>)
+                .and_downcast::<gtk4::TreeExpander>()
+            && let Some(row) = expander.list_row()
+            && let Some(item) = row.item().and_downcast::<FileTreeItem>()
+            && let Some(path) = item.path()
+            && path.parent() == Some(nested.as_path())
+        {
+            let ptr: *mut glib::gobject_ffi::GObject =
+                content.upcast_ref::<glib::Object>().to_glib_none().0;
+            kept_widgets_before.insert(path, (ptr as usize, content.downgrade()));
+        }
+    }
+    assert_eq!(
+        kept_widgets_before.len(),
+        64,
+        "all 64 initial interior rows should be realized and bound"
+    );
+
+    // Add entries before (0..128) and after (192..256) on disk so `kept_at == Some(128)`.
+    for index in (0..128usize).chain(192..256usize) {
+        fixture::write_text(&nested.join(format!("f-{index:04}.txt")), "x");
+    }
+
+    let changed = row_widgets_changed_per_dispatch(
+        &tree.section,
+        || {
+            tree.section
+                .queue_auto_refresh_for_test(vec![nested.clone()]);
+            tree.section.apply_queued_refresh_for_test();
+        },
+        || loaded_and_settled(&tree.section, &nested, 256),
+    );
+
+    let over = changed
+        .iter()
+        .copied()
+        .find(|change| change.shown > EXPANSION_WARM_UP_UNIT);
+    assert!(
+        over.is_none(),
+        "kept-run refill showed {over:?} row widgets in one dispatch, over {EXPANSION_WARM_UP_UNIT}: {changed:?}"
+    );
+    let total_destroyed: usize = changed.iter().map(|change| change.destroyed).sum();
+    // Every kept item must survive intact at positions 128..192 in the child store.
+    assert_eq!(child_store.n_items(), 256);
+    for (offset, weak) in kept_items.iter().enumerate() {
+        let original = weak.upgrade().unwrap_or_else(|| {
+            panic!(
+                "kept item f-{:04}.txt was dropped instead of kept",
+                128 + offset
+            )
+        });
+        let current = child_store
+            .item(u32::try_from(128 + offset).expect("u32"))
+            .and_downcast::<FileTreeItem>()
+            .expect("FileTreeItem");
+        assert_eq!(
+            original, current,
+            "kept item at offset {offset} must be the exact same FileTreeItem instance"
+        );
+    }
+    // Every kept row still bound in the realized band must keep its exact same
+    // row content widget (never torn down and re-created).
+    let mut kept_still_bound = 0usize;
+    let mut child = tree.section.imp().file_tree_view.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        let Some(content) = widget.first_child() else {
+            continue;
+        };
+        if let Some(expander) =
+            find_descendant(&content, glib::object::ObjectExt::is::<gtk4::TreeExpander>)
+                .and_downcast::<gtk4::TreeExpander>()
+            && let Some(row) = expander.list_row()
+            && let Some(item) = row.item().and_downcast::<FileTreeItem>()
+            && let Some(path) = item.path()
+            && let Some((old_ptr, old_weak)) = kept_widgets_before.get(&path)
+        {
+            kept_still_bound += 1;
+            let new_ptr: *mut glib::gobject_ffi::GObject =
+                content.upcast_ref::<glib::Object>().to_glib_none().0;
+            assert!(
+                old_weak.upgrade().is_some() && *old_ptr == new_ptr as usize,
+                "kept row {} had its widget replaced (old={old_ptr:#x}, new={:#x}, total_destroyed={total_destroyed})",
+                path.display(),
+                new_ptr as usize,
+            );
+        }
+    }
+    assert!(
+        kept_still_bound > 0,
+        "at least part of the kept run must remain inside the realized band (total_destroyed={total_destroyed})"
+    );
+    drop(tree.window);
+}
