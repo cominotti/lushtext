@@ -26,6 +26,7 @@ use super::policy::{
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::plain_disposal::DisposalOwned;
 use lushtext_model::document::paragraph_boundary::next_paragraph_break;
+use lushtext_model::values::ProtectedViewGeneration;
 
 /// Why the editor is in Protected View.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,7 +75,7 @@ pub(crate) struct ProtectedViewFacts {
 #[derive(Clone, Debug)]
 pub(crate) struct ProtectedViewTicket {
     editor: glib::WeakRef<LushtextEditorPage>,
-    generation: u64,
+    generation: ProtectedViewGeneration,
 }
 
 impl ProtectedViewTicket {
@@ -99,7 +100,7 @@ impl ProtectedViewTicket {
 
     /// The protected-session generation the stage was dispatched under.
     #[must_use]
-    pub(crate) const fn generation(&self) -> u64 {
+    pub(crate) const fn generation(&self) -> ProtectedViewGeneration {
         self.generation
     }
 }
@@ -117,7 +118,7 @@ pub(crate) const fn protected_view_is_current(
     ticket: &ProtectedViewTicket,
     facts: &ProtectedViewFacts,
 ) -> bool {
-    facts.session.protected && facts.session.generation == ticket.generation
+    facts.session.protected && facts.session.generation.get() == ticket.generation.get()
 }
 
 #[cfg(test)]

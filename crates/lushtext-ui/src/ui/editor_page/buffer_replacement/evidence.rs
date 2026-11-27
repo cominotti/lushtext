@@ -36,6 +36,7 @@ use super::policy::{
     BufferReplacementMetrics, BufferReplacementTicket, BufferReplacementWorkflow, ReplacementPhase,
 };
 use crate::ui::editor_page::LushtextEditorPage;
+use lushtext_model::values::BufferReplacementGeneration;
 
 /// One consistent read of the bounded buffer-replacement workflow.
 ///
@@ -61,7 +62,7 @@ pub struct BufferReplacementEvidence {
     /// The owning workflow of the active session's ticket.
     pub active_workflow: Option<BufferReplacementWorkflow>,
     /// The active session's caller-owned freshness generation.
-    pub active_generation: Option<u64>,
+    pub active_generation: Option<BufferReplacementGeneration>,
     /// Which bounded turn the active session will run next.
     pub phase: Option<ReplacementPhase>,
     /// Whether the active session has already mutated the buffer.

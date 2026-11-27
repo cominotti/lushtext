@@ -1059,7 +1059,7 @@ fn bench_save_admission_policy(c: &mut Criterion) {
             policy.queue(SaveAdmissionRequest {
                 request_id,
                 owner_id: request_id,
-                save_generation: 1,
+                save_generation: lushtext_model::values::SaveGeneration::new(1),
                 destination_identity: request_id,
                 close_session_identity: None,
                 sequence: request_id,

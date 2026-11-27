@@ -50,6 +50,7 @@ use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
 use lushtext_model::budgets::list_budget::{Admission, RetainedBudget, turn_continues};
 use lushtext_model::persistence::bookmark::BookmarkRecord;
+use lushtext_model::values::{BookmarkGeneration, FlightGeneration};
 use lushtext_model::workspace::palette::{
     PaletteNoteEntry, PaletteOpenEditorNoteSnapshot, PaletteOpenTabSource,
 };
@@ -260,7 +261,7 @@ impl LushtextWindow {
     fn start_command_palette_note_refresh(&self, start: NoteSourceRefreshStart) {
         if start.cancellation.is_cancelled() {
             self.finish_command_palette_note_refresh(
-                start.generation.get(),
+                start.generation,
                 GuardedNoteSourceOutcome::Cancelled,
             );
             return;
@@ -307,7 +308,6 @@ impl LushtextWindow {
             request,
             cancellation,
         } = start;
-        let generation = generation.get();
         let window_weak = self.downgrade();
         spawn_blocking_then(
             (),
@@ -366,7 +366,7 @@ impl LushtextWindow {
             .take();
         if let Some(start) = start {
             self.finish_command_palette_note_refresh(
-                start.generation.get(),
+                start.generation,
                 GuardedNoteSourceOutcome::Cancelled,
             );
         }
@@ -374,14 +374,13 @@ impl LushtextWindow {
 
     fn finish_command_palette_note_refresh(
         &self,
-        generation: u64,
+        generation: FlightGeneration,
         result: GuardedNoteSourceOutcome,
     ) {
         let (accepted, next) = {
             let mut refreshes = self.imp().command_palette_note_refreshes.borrow_mut();
-            let typed = lushtext_model::values::FlightGeneration::new(generation);
-            let accepted = refreshes.is_current(typed);
-            let next = refreshes.finish(typed);
+            let accepted = refreshes.is_current(generation);
+            let next = refreshes.finish(generation);
             (accepted, next)
         };
 
@@ -462,7 +461,7 @@ pub(super) fn start_notes_browser_source_load(
     if start.cancellation.is_cancelled() {
         finish_notes_browser_source_load(
             state,
-            start.generation.get(),
+            start.generation,
             start.request.mode,
             GuardedNoteSourceOutcome::Cancelled,
         );
@@ -502,7 +501,6 @@ pub(super) fn start_notes_browser_source_load(
         request,
         cancellation,
     } = start;
-    let generation = generation.get();
     let mode = request.mode;
     let state_weak = Rc::downgrade(state);
     spawn_blocking_then(
@@ -541,20 +539,19 @@ pub(super) fn retry_notes_browser_source_admission(state: &Rc<NotesBrowserState>
 
 fn finish_notes_browser_source_load(
     state: &Rc<NotesBrowserState>,
-    generation: u64,
+    generation: FlightGeneration,
     mode: palette_service::NotesBrowserMode,
     result: GuardedNoteSourceOutcome,
 ) {
-    let ticket = NotesBrowserTicket::<SourceFlight>::new(generation, mode);
+    let ticket = NotesBrowserTicket::<SourceFlight>::new(generation.get(), mode);
     let (accepted, next) = {
         let mut refreshes = state.source_refreshes.borrow_mut();
-        let typed = lushtext_model::values::FlightGeneration::new(ticket.generation());
         let accepted = ticket.may_publish(&NotesBrowserFacts::new(
-            refreshes.is_current(typed),
+            refreshes.is_current(generation),
             state.mode.get(),
             state.disposed.get(),
         ));
-        let next = refreshes.finish(typed);
+        let next = refreshes.finish(generation);
         (accepted, next)
     };
     if accepted {
@@ -775,7 +772,7 @@ struct EditorCapture {
     path: PathBuf,
     open_tab_source: Option<PaletteOpenTabSource>,
     /// `bookmark_change_generation()` at the editor's first slice.
-    generation: u64,
+    generation: BookmarkGeneration,
     next: usize,
     bookmarks: Vec<BookmarkRecord>,
     /// Whether the editor's path snapshot fit the budget (else its rows are
@@ -863,8 +860,8 @@ fn capture_unit(
     let Some(current) = capture.current.as_mut() else {
         return start_next_editor(capture);
     };
-    let generation = current.editor.bookmark_change_generation();
-    if capture_slice_decision(Some(current.generation), generation)
+    let generation = current.editor.bookmark_generation();
+    if capture_slice_decision(Some(current.generation.get()), generation.get())
         == CaptureSliceDecision::RestartEditor
     {
         // Drop what this editor gave, return its charge, and start it again.
@@ -954,7 +951,7 @@ fn start_next_editor(capture: &mut OpenEditorSnapshotCapture) -> CaptureUnit {
         }
         let charged_before = capture.budget.charged();
         let counting_only_before = capture.counting_only;
-        let generation = editor.bookmark_change_generation();
+        let generation = editor.bookmark_generation();
         capture.current = Some(EditorCapture {
             editor,
             path,

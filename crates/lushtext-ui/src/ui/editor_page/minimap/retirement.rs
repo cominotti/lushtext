@@ -42,6 +42,7 @@ use sourceview5::prelude::*;
 use super::LushtextEditorPage;
 use super::policy::MINIMAP_MODIFIED_TAG_RETIRE_TOGGLES;
 use crate::config::keys;
+use lushtext_model::values::{RetirementGeneration, TagGeneration};
 
 /// Name prefix of the modified-since-save tags; the generation follows.
 const MODIFIED_TAG_PREFIX: &str = "lushtext-minimap-modified-";
@@ -59,13 +60,13 @@ pub(crate) struct MinimapModifiedTracking {
     /// The tag edits apply now, created on the first edit after a swap.
     pub(super) current: RefCell<Option<gtk4::TextTag>>,
     /// Advances at each swap; names the next tag.
-    pub(super) tag_generation: Cell<u64>,
+    pub(super) tag_generation: Cell<TagGeneration>,
     /// Swapped-out tags still holding toggles, oldest first.
     pub(super) retiring: RefCell<VecDeque<RetiringModifiedTag>>,
     /// The sole low-priority source retiring them.
     pub(super) retirement_source: RefCell<Option<glib::SourceId>>,
     /// Invalidates a slice queued before a cancellation.
-    pub(super) retirement_generation: Cell<u64>,
+    pub(super) retirement_generation: Cell<RetirementGeneration>,
     /// Retirement slices run during this editor's lifetime.
     #[cfg(feature = "test-utils")]
     pub(super) retirement_slices: Cell<usize>,
@@ -83,7 +84,7 @@ impl LushtextEditorPage {
         if had_session || had_source || clear_cache {
             imp.minimap
                 .analysis_generation
-                .set(imp.minimap.analysis_generation.get().wrapping_add(1));
+                .set(imp.minimap.analysis_generation.get().next());
         }
         if let Some(source_id) = source_id {
             source_id.remove();
@@ -198,7 +199,7 @@ impl LushtextEditorPage {
         let tracking = &imp.minimap.modified;
         tracking
             .tag_generation
-            .set(tracking.tag_generation.get().wrapping_add(1));
+            .set(tracking.tag_generation.get().next());
         let Some(tag) = tracking.current.take() else {
             return;
         };
@@ -235,7 +236,10 @@ impl LushtextEditorPage {
 
     /// One retirement slice: at most `MINIMAP_MODIFIED_TAG_RETIRE_TOGGLES`
     /// toggles of the oldest retiring tag.
-    fn run_modified_tag_retirement_slice(&self, generation: u64) -> glib::ControlFlow {
+    fn run_modified_tag_retirement_slice(
+        &self,
+        generation: RetirementGeneration,
+    ) -> glib::ControlFlow {
         let tracking = &self.imp().minimap.modified;
         if tracking.retirement_generation.get() != generation {
             return glib::ControlFlow::Break;
@@ -285,7 +289,7 @@ impl LushtextEditorPage {
         let tracking = &self.imp().minimap.modified;
         tracking
             .retirement_generation
-            .set(tracking.retirement_generation.get().wrapping_add(1));
+            .set(tracking.retirement_generation.get().next());
         if let Some(source) = tracking.retirement_source.take() {
             source.remove();
         }

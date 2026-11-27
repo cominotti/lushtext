@@ -43,6 +43,7 @@ use sourceview5::prelude::*;
 use lushtext_model::document::reanalysis_pacing::{
     PacingNext, PacingSession, StepReport, after_step_within, reanalysis_allowance_us,
 };
+use lushtext_model::values::ReanalysisGeneration;
 
 use super::LushtextEditorPage;
 
@@ -58,7 +59,7 @@ pub struct ReanalysisPacingState {
     queued: Cell<bool>,
     /// Advanced when a session is cancelled, so a queued step of an older
     /// session does nothing.
-    generation: Cell<u64>,
+    generation: Cell<ReanalysisGeneration>,
     /// Whether the `highlight-updated` handler records into `report` (only
     /// during a step).
     capturing: Cell<bool>,
@@ -186,11 +187,11 @@ impl LushtextEditorPage {
     pub(crate) fn cancel_reanalysis_pacing(&self) {
         let state = &self.imp().reanalysis_pacing;
         state.session.set(None);
-        state.generation.set(state.generation.get().wrapping_add(1));
+        state.generation.set(state.generation.get().next());
     }
 
     /// Run one step of the session of `generation`; `true` keeps the idle.
-    fn run_reanalysis_step(&self, generation: u64) -> bool {
+    fn run_reanalysis_step(&self, generation: ReanalysisGeneration) -> bool {
         let state = &self.imp().reanalysis_pacing;
         if state.generation.get() != generation {
             return false;

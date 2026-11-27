@@ -38,6 +38,7 @@ use super::policy::{self, LoadInstallPhase, LoadOutcome, SettleFacts, SettleStag
 use crate::ui::editor_page::language_attach::LanguageAttachEvidence;
 use crate::ui::editor_page::restyle::RestyleEvidence;
 use crate::ui::editor_page::{EditorLoadState, LushtextEditorPage};
+use lushtext_model::values::LoadGeneration;
 
 /// One consistent read of the document-load workflow.
 ///
@@ -51,7 +52,7 @@ pub struct LoadEvidence {
     ///
     /// Advanced by every new request and by every cancellation or disposal, so
     /// a worker already in flight cannot publish against it.
-    pub generation: u64,
+    pub generation: LoadGeneration,
     /// Stable identity of the cancellation token the newest request carries.
     ///
     /// A fresh `Arc` per request is what stops a newer load from un-cancelling

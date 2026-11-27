@@ -34,6 +34,7 @@ use crate::ui::window::local_history::policy::{
     baseline_capture_is_current, periodic_capture_is_current, should_reschedule_periodic_capture,
 };
 use lushtext_model::persistence::local_history::LocalHistorySnapshotOrigin;
+use lushtext_model::values::PeriodicHistoryGeneration;
 use lushtext_services::{persistence::json_store, persistence::local_history_service};
 
 use super::LushtextEditorPage;
@@ -156,7 +157,7 @@ impl LushtextEditorPage {
                 }
                 state
                     .edit_generation
-                    .set(state.edit_generation.get().wrapping_add(1));
+                    .set(state.edit_generation.get().next());
             }
         });
         self.imp()
@@ -270,7 +271,7 @@ impl LushtextEditorPage {
         let state = &self.imp().local_history;
         state
             .path_generation
-            .set(state.path_generation.get().wrapping_add(1));
+            .set(state.path_generation.get().next());
     }
 
     fn replace_clean_baseline(
@@ -282,7 +283,7 @@ impl LushtextEditorPage {
         state.last_clean_text.replace(text);
         state
             .clean_baseline_generation
-            .set(state.clean_baseline_generation.get().wrapping_add(1));
+            .set(state.clean_baseline_generation.get().next());
         state.baseline_retry_budget.set(u8::from(has_text));
     }
 
@@ -534,12 +535,7 @@ impl LushtextEditorPage {
     }
 
     fn schedule_local_history_periodic_capture(&self) {
-        let generation = self
-            .imp()
-            .local_history
-            .periodic_generation
-            .get()
-            .wrapping_add(1);
+        let generation = self.imp().local_history.periodic_generation.get().next();
         self.imp().local_history.periodic_generation.set(generation);
 
         let token = self.imp().local_history.periodic_timer.arm(
@@ -564,16 +560,11 @@ impl LushtextEditorPage {
         }
         let _ = self.imp().local_history.periodic_timer.invalidate();
         self.imp().local_history.periodic_timer_token.set(None);
-        let generation = self
-            .imp()
-            .local_history
-            .periodic_generation
-            .get()
-            .wrapping_add(1);
+        let generation = self.imp().local_history.periodic_generation.get().next();
         self.imp().local_history.periodic_generation.set(generation);
     }
 
-    fn run_local_history_periodic_capture(&self, generation: u32) {
+    fn run_local_history_periodic_capture(&self, generation: PeriodicHistoryGeneration) {
         if self.imp().local_history.periodic_generation.get() != generation
             || !self.is_modified()
             || self.file_path().is_none()
@@ -670,12 +661,7 @@ impl LushtextEditorPage {
     pub fn run_local_history_periodic_capture_for_test(&self) {
         let _ = self.imp().local_history.periodic_timer.invalidate();
         self.imp().local_history.periodic_timer_token.set(None);
-        let generation = self
-            .imp()
-            .local_history
-            .periodic_generation
-            .get()
-            .wrapping_add(1);
+        let generation = self.imp().local_history.periodic_generation.get().next();
         self.imp().local_history.periodic_generation.set(generation);
         self.run_local_history_periodic_capture(generation);
     }

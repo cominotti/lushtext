@@ -26,6 +26,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use lushtext_model::document::file_load::TRANSIENT_LOAD_SHARED_BUDGET_BYTES;
+use lushtext_model::values::SaveGeneration;
 
 /// Process-wide ordinary budget shared with transient editor file loads.
 ///
@@ -72,7 +73,7 @@ pub enum SaveAdmissionPriority {
 pub struct SaveAdmissionRequest {
     pub request_id: u64,
     pub owner_id: u64,
-    pub save_generation: u64,
+    pub save_generation: SaveGeneration,
     pub destination_identity: u64,
     pub close_session_identity: Option<u64>,
     pub sequence: u64,
@@ -159,7 +160,7 @@ impl SaveAdmissionPolicy {
     pub(crate) fn refresh_queued(
         &mut self,
         request_id: u64,
-        save_generation: u64,
+        save_generation: SaveGeneration,
         destination_identity: u64,
         weight: u64,
     ) -> bool {
@@ -320,7 +321,7 @@ pub(crate) const fn save_may_preempt_pending_load(explicit_destination: bool) ->
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct QueuedSaveTicket {
     /// The editor's save generation at the moment this request was queued.
-    pub save_generation: u64,
+    pub save_generation: SaveGeneration,
     /// The destination this request was queued to write.
     pub path: PathBuf,
     /// Whether the user named the destination, as Save As does.
@@ -346,7 +347,7 @@ pub(crate) struct QueuedSaveFacts {
     /// Whether the editor still reports an in-flight save.
     pub saving: bool,
     /// The editor's current save generation.
-    pub save_generation: u64,
+    pub save_generation: SaveGeneration,
     /// Whether the buffer is currently modified.
     pub modified: bool,
     /// The editor's current tracked path, if it has one.
@@ -458,7 +459,7 @@ mod tests {
 
     fn ticket() -> QueuedSaveTicket {
         QueuedSaveTicket {
-            save_generation: 7,
+            save_generation: SaveGeneration::new(7),
             path: PathBuf::from("/tmp/current.md"),
             explicit_destination: false,
             required_modified: true,
@@ -469,7 +470,7 @@ mod tests {
     fn facts() -> QueuedSaveFacts {
         QueuedSaveFacts {
             saving: true,
-            save_generation: 7,
+            save_generation: SaveGeneration::new(7),
             modified: true,
             current_path: Some(PathBuf::from("/tmp/current.md")),
             close_session_current: true,
@@ -506,7 +507,7 @@ mod tests {
         let mut ticket = ticket();
         ticket.explicit_destination = true;
         let mut stale_generation = facts();
-        stale_generation.save_generation = 8;
+        stale_generation.save_generation = SaveGeneration::new(8);
         assert!(!queued_save_is_current(&ticket, &stale_generation));
         let mut not_saving = facts();
         not_saving.saving = false;
@@ -616,7 +617,7 @@ mod tests {
         SaveAdmissionRequest {
             request_id,
             owner_id: request_id + 100,
-            save_generation: request_id + 200,
+            save_generation: SaveGeneration::new(request_id + 200),
             destination_identity: request_id + 300,
             close_session_identity: (priority == SaveAdmissionPriority::Close).then_some(9),
             sequence,
@@ -712,7 +713,7 @@ mod tests {
     fn stale_compact_request_can_be_refreshed_or_cancelled_without_payload() {
         let mut policy = SaveAdmissionPolicy::new(10, 1);
         policy.queue(request(1, 1, 4, SaveAdmissionPriority::Ordinary));
-        assert!(policy.refresh_queued(1, 99, 77, 6));
+        assert!(policy.refresh_queued(1, SaveGeneration::new(99), 77, 6));
         assert_eq!(policy.snapshot().queued_count, 1);
         assert_eq!(policy.snapshot().active_weight, 0);
         assert!(policy.cancel_queued(1));
@@ -760,10 +761,10 @@ mod tests {
     #[test]
     fn refreshing_an_unknown_request_reports_no_match() {
         let mut policy = SaveAdmissionPolicy::new(10, 1);
-        assert!(!policy.refresh_queued(404, 1, 1, 1));
+        assert!(!policy.refresh_queued(404, SaveGeneration::new(1), 1, 1));
         policy.queue(request(1, 1, 4, SaveAdmissionPriority::Ordinary));
-        assert!(!policy.refresh_queued(404, 1, 1, 1));
-        assert!(policy.refresh_queued(1, 1, 1, 1));
+        assert!(!policy.refresh_queued(404, SaveGeneration::new(1), 1, 1));
+        assert!(policy.refresh_queued(1, SaveGeneration::new(1), 1, 1));
     }
 
     #[test]

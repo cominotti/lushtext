@@ -272,12 +272,7 @@ impl LushtextEditorPage {
     /// D6.2, the S7 fallback, ledger A73). Every other document keeps the
     /// default-priority idle.
     pub(crate) fn schedule_dynamic_overscroll_update(&self) {
-        let generation = self
-            .imp()
-            .overscroll
-            .update_generation
-            .get()
-            .wrapping_add(1);
+        let generation = self.imp().overscroll.update_generation.get().next();
         self.imp().overscroll.update_generation.set(generation);
 
         let priority = if self.is_dense_document() {

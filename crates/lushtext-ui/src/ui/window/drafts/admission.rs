@@ -43,6 +43,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use lushtext_model::values::SessionGeneration;
+
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::glib;
@@ -274,7 +276,7 @@ pub(crate) struct ProcessDraftJournal {
     /// The window that schedules orphan cleanup for the process.
     cleanup_owner: Cell<Option<JournalWindowKey>>,
     /// Process-wide ordering for session saves from any window.
-    session_generation: Cell<u64>,
+    session_generation: Cell<SessionGeneration>,
 }
 
 thread_local! {
@@ -623,8 +625,8 @@ impl LushtextWindow {
         let Some(journal) = self.process_draft_journal() else {
             return 0;
         };
-        let next = journal.session_generation.get().saturating_add(1);
+        let next = SessionGeneration::new(journal.session_generation.get().get().saturating_add(1));
         journal.session_generation.set(next);
-        next
+        next.get()
     }
 }

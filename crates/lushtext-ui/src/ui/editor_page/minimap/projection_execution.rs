@@ -54,6 +54,7 @@ use super::policy::{
 use crate::config::keys;
 use crate::ui::status_bar::MessageKind;
 use crate::ui::window::LushtextWindow;
+use lushtext_model::values::{MarkerGeneration, SearchGeneration};
 
 /// The marker kinds in drawing order (later kinds paint over earlier ones).
 const DRAW_ORDER: [MinimapMarkerKind; 4] = [
@@ -82,8 +83,8 @@ struct MarkerBinGeometry {
 /// The per-row bins of the last draw (`MinimapState::marker_bins`).
 pub(crate) struct MinimapMarkerBins {
     geometry: MarkerBinGeometry,
-    marker_generation: u64,
-    search_generation: u64,
+    marker_generation: MarkerGeneration,
+    search_generation: SearchGeneration,
     /// Whether the search context reported a completed scan at this
     /// recomputation (part of the reuse key).
     search_complete: bool,
@@ -230,7 +231,7 @@ impl LushtextEditorPage {
     /// Invalidate the bins of every kind and redraw the strip.
     pub(super) fn note_marker_change(&self) {
         let generation = &self.imp().minimap.marker_generation;
-        generation.set(generation.get().wrapping_add(1));
+        generation.set(generation.get().next());
         self.queue_marker_strip_draw();
     }
 
@@ -733,7 +734,11 @@ fn compute_marker_bins(
     editor: &LushtextEditorPage,
     source_map: &sourceview5::Map,
     geometry: MarkerBinGeometry,
-    (marker_generation, search_generation, search_complete): (u64, u64, bool),
+    (marker_generation, search_generation, search_complete): (
+        MarkerGeneration,
+        SearchGeneration,
+        bool,
+    ),
     previous: Option<&MinimapMarkerBins>,
 ) -> MinimapMarkerBins {
     let kept_search_runs = previous

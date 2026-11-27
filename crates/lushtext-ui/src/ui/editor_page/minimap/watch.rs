@@ -154,7 +154,7 @@ impl LushtextEditorPage {
             self.search_bar().connect_search_state_changed(move || {
                 if let Some(editor) = editor_weak.upgrade() {
                     let generation = &editor.imp().minimap.search_generation;
-                    generation.set(generation.get().wrapping_add(1));
+                    generation.set(generation.get().next());
                     editor.watch_search_scan();
                     editor.arm_minimap_refresh();
                 }

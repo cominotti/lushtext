@@ -54,6 +54,7 @@ use crate::ui::responsiveness_probe::PostOpenSpan;
 use lushtext_model::document::buffer_replacement::{SliceBudget, next_slice_boundary};
 use lushtext_model::document::document_scale::DocumentScale;
 use lushtext_model::document::encoding::FileHealthFindingKind;
+use lushtext_model::values::LoadGeneration;
 use lushtext_services::coordination::notifications::{
     InlineActionNotification, InlineNotificationStyle,
 };
@@ -91,7 +92,7 @@ pub(crate) struct ChunkedLoadInstall {
     pub(super) end_mark: Option<gtk4::TextMark>,
     pub(super) loaded: Option<GuardedLoadResult>,
     pub(super) byte_offset: usize,
-    pub(super) generation: u64,
+    pub(super) generation: LoadGeneration,
     pub(super) source_id: Option<glib::SourceId>,
     /// The two slice budgets; a dense document also bounds visible
     /// characters (`bound-post-open-settle`, D6.1).
@@ -668,7 +669,7 @@ pub(super) fn accept_admitted_load_outcome(
 /// exercise without a timing race.
 pub(super) fn apply_load_result_if_current(
     editor: &LushtextEditorPage,
-    load_generation: u64,
+    load_generation: LoadGeneration,
     result: Result<editor_io::LoadResult, EditorLoadError>,
     error_state: EditorLoadState,
 ) -> bool {
@@ -706,7 +707,7 @@ pub(super) fn apply_load_result_if_current(
 
 fn install_guarded_load(
     editor: &LushtextEditorPage,
-    load_generation: u64,
+    load_generation: LoadGeneration,
     loaded: GuardedLoadResult,
     permit: Option<TransientLoadPermit>,
 ) {
@@ -717,7 +718,7 @@ fn install_guarded_load(
 
 fn install_guarded_load_now(
     editor: &LushtextEditorPage,
-    load_generation: u64,
+    load_generation: LoadGeneration,
     loaded: GuardedLoadResult,
     permit: Option<TransientLoadPermit>,
 ) {
@@ -844,7 +845,7 @@ pub(super) fn install_loaded_direct(
 
 fn start_chunked_install(
     editor: &LushtextEditorPage,
-    generation: u64,
+    generation: LoadGeneration,
     loaded: GuardedLoadResult,
     permit: Option<TransientLoadPermit>,
 ) {
@@ -981,7 +982,7 @@ fn begin_load_installation(
 /// load is still the editor's current one.
 fn defer_direct_protected_install(
     editor: &LushtextEditorPage,
-    load_generation: u64,
+    load_generation: LoadGeneration,
     loaded: GuardedLoadResult,
     permit: Option<TransientLoadPermit>,
 ) {
@@ -1195,7 +1196,7 @@ impl LushtextEditorPage {
     #[must_use]
     pub fn apply_load_result_for_test(
         &self,
-        load_generation: u64,
+        load_generation: LoadGeneration,
         result: Result<editor_io::LoadResult, EditorLoadError>,
     ) -> bool {
         self.refresh_load_token_for_test(load_generation);
@@ -1206,7 +1207,7 @@ impl LushtextEditorPage {
     #[must_use]
     pub fn apply_reload_error_for_test(
         &self,
-        load_generation: u64,
+        load_generation: LoadGeneration,
         error: EditorLoadError,
     ) -> bool {
         self.refresh_load_token_for_test(load_generation);
@@ -1214,7 +1215,7 @@ impl LushtextEditorPage {
     }
 
     /// Clear a cancellation the test's own setup left on the current request.
-    fn refresh_load_token_for_test(&self, load_generation: u64) {
+    fn refresh_load_token_for_test(&self, load_generation: LoadGeneration) {
         if self.imp().load_tracking.generation.get() == load_generation {
             self.imp()
                 .load_tracking

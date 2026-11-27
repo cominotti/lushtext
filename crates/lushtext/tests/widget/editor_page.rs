@@ -5024,7 +5024,10 @@ fn test_buffer_replacement_evidence_reads_stay_side_effect_free_across_replaceme
     let started = page.buffer_replacement_evidence();
     assert!(started.in_progress);
     assert!(started.projection_suspended);
-    assert_eq!(started.active_generation, Some(7));
+    assert_eq!(
+        started.active_generation,
+        Some(lushtext_model::values::BufferReplacementGeneration::new(7))
+    );
     assert_eq!(
         started.active_workflow,
         Some(BufferReplacementWorkflow::Test)
@@ -5359,13 +5362,19 @@ fn assert_changed_reentrant_replacement(initial: &str, expected_first_signal: &'
     assert!(!page.buffer_replacement_evidence().projection_suspended);
     let outcomes = outcomes.borrow();
     assert_eq!(outcomes.len(), 2);
-    assert_eq!(outcomes[0].ticket.generation, 30);
+    assert_eq!(
+        outcomes[0].ticket.generation,
+        lushtext_model::values::BufferReplacementGeneration::new(30)
+    );
     assert_eq!(
         outcomes[0].cancel_reason,
         Some(BufferReplacementCancelReason::Superseded)
     );
     assert!(outcomes[0].body.is_none());
-    assert_eq!(outcomes[1].ticket.generation, 31);
+    assert_eq!(
+        outcomes[1].ticket.generation,
+        lushtext_model::values::BufferReplacementGeneration::new(31)
+    );
     assert!(outcomes[1].cancel_reason.is_none());
     assert_eq!(outcomes[1].body.as_deref(), Some(latest.as_str()));
     eprintln!(

@@ -58,6 +58,7 @@ use sourceview5::prelude::*;
 
 use super::LushtextEditorPage;
 use super::policy::MinimapProjectedBounds;
+use lushtext_model::values::AnalysisGeneration;
 
 /// Scalar minimap evidence: analysis lifecycle, pending work, and projection.
 ///
@@ -67,7 +68,7 @@ use super::policy::MinimapProjectedBounds;
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MinimapEvidence {
     /// Current editor-owned analysis generation.
-    pub generation: u64,
+    pub generation: AnalysisGeneration,
     /// Whether one bounded cursor is active.
     pub active: bool,
     /// Whether the sole continuation source is armed.
@@ -75,7 +76,7 @@ pub struct MinimapEvidence {
     /// Whether accepted content evidence is cached.
     pub cache_owned: bool,
     /// Generation that published the accepted cache.
-    pub cache_generation: Option<u64>,
+    pub cache_generation: Option<AnalysisGeneration>,
     /// Whether the accepted cache includes marker identities.
     pub marker_cache_owned: bool,
     /// Characters represented by the accepted cache.
