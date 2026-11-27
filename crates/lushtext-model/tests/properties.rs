@@ -24,3 +24,5 @@ mod session_draft_roundtrip;
 mod settings_write_batch;
 #[path = "properties/support.rs"]
 mod support;
+#[path = "properties/values.rs"]
+mod values;

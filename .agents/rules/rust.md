@@ -506,6 +506,26 @@ so the method reference is `OsStr::to_str`. When fixing one instance, grep the
 file for the rest — this smell arrives in clusters, and a partial fix just
 re-opens the finding.
 
+## Domain Value Types & "No Newtype Soup" Boundary
+
+Zero-cost `#[repr(transparent)]`, `Copy`, `const fn` domain value types live in
+`lushtext_model::values`:
+
+- **Units (`values/units.rs`)**: `Bytes(u64)`, `Sp(i32)`, `Micros(u64)`,
+  `CharCount(u64)`, `LineIndex(u32)` with saturating arithmetic and
+  compile-time `size_of` layout assertions (`const _: () = assert!(...)`).
+- **Generations & IDs (`values/generations.rs`, `values/ids.rs`)**: generated via
+  `define_generation!` (monotonic `.next()` via `wrapping_add(1)`) and
+  `define_id!` (`EditorId`, etc.), with `#[serde(transparent)]` and
+  `#[cfg_attr(kani, derive(kani::Arbitrary))]`.
+
+**No newtype soup rule:** apply unit/generation/ID wrappers strictly at
+module/workflow boundaries (`seams.rs`, `policy.rs`, state structs, and
+unit-carrying threshold constants in `docs/thresholds.md`), leaving local loop
+indices (`usize`), slice indexing, and single-function temporaries as primitives.
+`scripts/check-domain-value-types.py` (in `make check-policy`) gates both the
+layout assertions and boundary field usage.
+
 ## Error Handling
 
 - Services return `anyhow::Result`.

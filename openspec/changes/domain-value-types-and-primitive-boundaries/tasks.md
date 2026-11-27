@@ -11,9 +11,9 @@ Timing: `Verdict class: non-inferiority` on smoke cases `eviction/reselect`, `ev
 
 ## 2. Core value types in `lushtext-model::values`
 
-- [ ] 2.1 Implement `define_generation!`, `define_id!`, `Bytes`, `Sp`, `Micros`, `CharCount`, and `LineIndex` in `crates/lushtext-model/src/values/` with `#[repr(transparent)]`, `Copy`, `const fn`, saturating ops, `#[cfg_attr(kani, derive(kani::Arbitrary))]`, and `const _: () = assert!(size_of...)`.
-- [ ] 2.2 Add unit tests and property tests verifying zero-cost layout, `.next()` wrap behavior, saturating arithmetic, and `size_units` IEC formatting integration; verify `cargo test -p lushtext-model --all-features` passes.
-- [ ] 2.3 Update `.agents/rules/rust.md` and `AGENTS.md` documenting `lushtext-model::values` and the "no newtype soup" boundary criterion, create a signed commit (`git commit -S`), and push the branch.
+- [x] 2.1 Implement `define_generation!`, `define_id!`, `Bytes`, `Sp`, `Micros`, `CharCount`, and `LineIndex` in `crates/lushtext-model/src/values/` with `#[repr(transparent)]`, `Copy`, `const fn`, saturating ops, `#[cfg_attr(kani, derive(kani::Arbitrary))]`, and `const _: () = assert!(size_of...)`.
+- [x] 2.2 Add unit tests and property tests verifying zero-cost layout, `.next()` wrap behavior, saturating arithmetic, and `size_units` IEC formatting integration; verify `cargo test -p lushtext-model --all-features` passes.
+- [x] 2.3 Update `.agents/rules/rust.md` and `AGENTS.md` documenting `lushtext-model::values` and the "no newtype soup" boundary criterion, create a signed commit (`git commit -S`), and push the branch.
 
 ## 3. Migrate generations, IDs, units, and multi-bool signatures
 

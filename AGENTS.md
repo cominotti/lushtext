@@ -106,7 +106,7 @@ A workflow is one user-initiated operation with ordered stages (Ctrl+S, workspac
 | Role | File | Owns |
 | --- | --- | --- |
 | Narrative facade | the workflow's public module surface | ordered stages, intent names, delegation, and each control-flow inversion with its resumption point |
-| Seam value objects | with the workflow | identity/freshness/intent bundles that cross two or more boundaries, constructed once at the entry point and validated as a unit |
+| Seam value objects | with the workflow | identity/freshness/intent bundles that cross two or more boundaries, constructed once at the entry point and validated as a unit; boundary generations, IDs (`EditorId`), and domain units (`Bytes`, `Sp`, `Micros`, `CharCount`, `LineIndex`) use `lushtext_model::values` wrappers while local loop indices remain `usize` |
 | Pure policy | `policy.rs` | pure decisions; no `gtk4`, `glib`, `gio`, `libadwaita`, or `sourceview5` imports |
 | Coordination | `admission`, `execution`, `retirement`, `watch`, `journal`, optionally prefixed with the stage order served (`index_execution`, `replace_execution`) | timers, budgets, generations, dispatch, durable generation-guarded records; a workflow may own more than one |
 | Evidence | `evidence.rs` | one typed surface that is the single source of the workflow's observable state |
