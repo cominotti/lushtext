@@ -17,8 +17,8 @@ use crate::common::{
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::{AdwApplicationWindowExt, AlertDialogExt};
-use lushtext_core::ui::editor_page::{EditorLoadState, LushtextEditorPage};
-use lushtext_core::ui::window::LushtextWindow;
+use lushtext_ui::ui::editor_page::{EditorLoadState, LushtextEditorPage};
+use lushtext_ui::ui::window::LushtextWindow;
 use std::time::Duration;
 
 use crate::post_open_settle::{drop_targets, drop_text};
@@ -28,7 +28,7 @@ const BUDGET: Duration = Duration::from_secs(30);
 
 fn write(dir: &tempfile::TempDir, name: &str, text: &str) -> std::path::PathBuf {
     let path = dir.path().join(name);
-    lushtext_core::services::filesystem::fixture::write_text(&path, text);
+    lushtext_services::filesystem::fixture::write_text(&path, text);
     path
 }
 
@@ -131,7 +131,7 @@ fn test_typing_while_the_file_is_read_is_not_deleted_by_the_install() {
 
 #[test]
 fn test_a_draft_holds_the_replayed_text() {
-    use lushtext_core::services::{draft_service, json_store};
+    use lushtext_services::{persistence::draft_service, persistence::json_store};
     let (window, dir) = presented();
     let text = dense(710, 400);
     let path = write(&dir, "draft-held.txt", &text);
@@ -185,7 +185,7 @@ fn test_an_insertion_over_the_cap_is_refused_whole() {
     let path = write(&dir, "overflow-held.txt", &text);
     let editor = open_until_installing(&window, &path);
     type_keys(&editor, "a");
-    let paste = "p".repeat(lushtext_core::model::held_input::HELD_TEXT_CAP_BYTES);
+    let paste = "p".repeat(lushtext_model::document::held_input::HELD_TEXT_CAP_BYTES);
     editor
         .source_view()
         .emit_by_name::<()>("insert-at-cursor", &[&paste]);
@@ -403,7 +403,7 @@ fn test_closing_a_tab_in_the_release_gap_asks_and_saves_the_held_text() {
     choose_save(&dialog);
     wait_until(BUDGET, || window.imp().tab_view.n_pages() == 0);
     assert_eq!(
-        lushtext_core::services::filesystem::read::text(&path).expect("saved file"),
+        lushtext_services::filesystem::read::text(&path).expect("saved file"),
         format!("typed{body}"),
         "Save wrote the held text"
     );
@@ -423,8 +423,7 @@ fn test_closing_the_window_in_the_release_gap_asks_and_saves_the_held_text() {
     let dialog = wait_for_save_changes_dialog(&window);
     choose_save(&dialog);
     wait_until(BUDGET, || {
-        lushtext_core::services::filesystem::read::text(&path)
-            .is_ok_and(|t| t == format!("typed{body}"))
+        lushtext_services::filesystem::read::text(&path).is_ok_and(|t| t == format!("typed{body}"))
     });
 }
 
@@ -478,7 +477,7 @@ fn test_quit_asks_before_dropping_unsaved_documents() {
     let dialog = wait_for_save_changes_dialog(&window);
     choose_save(&dialog);
     wait_until(BUDGET, || {
-        lushtext_core::services::filesystem::read::text(&path).is_ok_and(|t| t == "xstart\n")
+        lushtext_services::filesystem::read::text(&path).is_ok_and(|t| t == "xstart\n")
     });
 }
 
@@ -595,7 +594,7 @@ fn test_an_overflowing_paste_is_never_partly_held() {
     let editor = open_until_installing(&window, &path);
     type_keys(&editor, "k");
     // One user action, two segments: the second overflows the cap.
-    let half = "p".repeat(lushtext_core::model::held_input::HELD_TEXT_CAP_BYTES / 2 + 1);
+    let half = "p".repeat(lushtext_model::document::held_input::HELD_TEXT_CAP_BYTES / 2 + 1);
     let buffer = editor.buffer();
     buffer.begin_user_action();
     let _ = buffer.insert_interactive_at_cursor(&half, true);
@@ -649,7 +648,7 @@ fn test_an_input_method_sees_and_edits_the_held_text() {
 
 /// The file's bytes, read back.
 fn bytes(path: &std::path::Path) -> String {
-    lushtext_core::services::filesystem::read::text(path).expect("the file")
+    lushtext_services::filesystem::read::text(path).expect("the file")
 }
 
 /// Wait for any save the test started to end and the load to settle.

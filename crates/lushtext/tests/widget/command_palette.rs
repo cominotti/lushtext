@@ -10,23 +10,21 @@ use crate::common::{
 use glib::prelude::ToValue;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_core::model::palette::{
+use lushtext_model::workspace::palette::{
     CommandCategory, CommandDef, FileOrdinal, PaletteFileEntry, PaletteFileIdentity,
     PaletteNoteCategory, PaletteNoteEntry, PaletteNoteTarget, SearchMode,
 };
-use lushtext_core::model::workspace::{
-    WorkspaceConfig, WorkspaceId, WorkspaceScope, WorkspacesFile,
-};
-use lushtext_core::services::palette::{FileIndex, NoteSourceRefreshRequest, OwnedIndexedFile};
-use lushtext_core::services::{json_store, workspace_manager};
-use lushtext_core::ui::accessibility::{self, test_audit::AccessibleAudit};
-use lushtext_core::ui::command_palette::item::PaletteItem;
-use lushtext_core::ui::command_palette::policy::LARGE_INDEX_RETIREMENT_FILES;
-use lushtext_core::ui::command_palette::{
+use lushtext_model::workspace::{WorkspaceConfig, WorkspaceId, WorkspaceScope, WorkspacesFile};
+use lushtext_services::palette::{FileIndex, NoteSourceRefreshRequest, OwnedIndexedFile};
+use lushtext_services::{persistence::json_store, workspace::workspace_manager};
+use lushtext_ui::ui::accessibility::{self, test_audit::AccessibleAudit};
+use lushtext_ui::ui::command_palette::item::PaletteItem;
+use lushtext_ui::ui::command_palette::policy::LARGE_INDEX_RETIREMENT_FILES;
+use lushtext_ui::ui::command_palette::{
     CommandPaletteTestPolicy, LushtextCommandPalette, apply_palette_row_accessibility_for_test,
     file_index_retirement_snapshot_for_test,
 };
-use lushtext_core::ui::plain_disposal::{hold_disposal_capacity_for_test, plain_disposal_evidence};
+use lushtext_ui::ui::plain_disposal::{hold_disposal_capacity_for_test, plain_disposal_evidence};
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -1776,7 +1774,7 @@ fn test_command_palette_connect_escape_consumed_requests_close() {
     palette.imp().search_entry.emit_stop_search();
     assert_eq!(
         outcome.get(),
-        Some(lushtext_core::ui::command_palette::PaletteEscape::CloseRequested),
+        Some(lushtext_ui::ui::command_palette::PaletteEscape::CloseRequested),
         "a grouped-view Escape requests the close"
     );
 }
@@ -1846,10 +1844,10 @@ fn test_command_palette_results_view_single_click_disabled() {
 // ---------------------------------------------------------------------------
 
 use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt};
-use lushtext_core::model::automation::AutomationReadinessPredicate;
-use lushtext_core::ui::automation::{current_idle_blocker, wait_for_ready_for_test};
-use lushtext_core::ui::editor_page::LushtextEditorPage;
-use lushtext_core::ui::window::LushtextWindow;
+use lushtext_model::automation::AutomationReadinessPredicate;
+use lushtext_ui::ui::automation::{current_idle_blocker, wait_for_ready_for_test};
+use lushtext_ui::ui::editor_page::LushtextEditorPage;
+use lushtext_ui::ui::window::LushtextWindow;
 
 fn test_window() -> LushtextWindow {
     crate::common::test_window()
@@ -2031,7 +2029,7 @@ fn test_command_palette_current_query_blocks_search_readiness_until_final_comple
     let app = window
         .application()
         .expect("window application")
-        .downcast::<lushtext_core::app::LushtextApplication>()
+        .downcast::<lushtext_ui::app::LushtextApplication>()
         .expect("LushText application");
 
     assert_eq!(
@@ -2061,7 +2059,7 @@ fn test_command_palette_note_source_refresh_blocks_idle_until_terminal_finish() 
     let app = window
         .application()
         .expect("window application")
-        .downcast::<lushtext_core::app::LushtextApplication>()
+        .downcast::<lushtext_ui::app::LushtextApplication>()
         .expect("LushText application");
     wait_until(Duration::from_secs(5), || {
         current_idle_blocker(&app).is_none()
@@ -2081,8 +2079,8 @@ fn test_command_palette_note_source_refresh_blocks_idle_until_terminal_finish() 
             open_editor_snapshots: Arc::from([]),
             open_editor_snapshots_truncated: false,
             open_editor_rows_not_retained: 0,
-            mode: lushtext_core::services::palette::NotesBrowserMode::AllNotes,
-            limits: lushtext_core::services::palette::PALETTE_NOTE_SOURCE_LIMITS,
+            mode: lushtext_services::palette::NotesBrowserMode::AllNotes,
+            limits: lushtext_services::palette::PALETTE_NOTE_SOURCE_LIMITS,
         })
         .expect("first note-source request starts");
 
@@ -2664,7 +2662,7 @@ fn test_activation_clears_saved_focus() {
 #[test]
 fn test_all_commands_contains_fullscreen() {
     ensure_gtk_init();
-    let commands = lushtext_core::services::palette::all_commands();
+    let commands = lushtext_services::palette::all_commands();
     let fullscreen = commands.iter().find(|c| c.id == "win.toggle-fullscreen");
     assert!(
         fullscreen.is_some(),
@@ -2679,7 +2677,7 @@ fn test_all_commands_contains_fullscreen() {
 #[test]
 fn test_all_commands_new_file_uses_ctrl_n() {
     ensure_gtk_init();
-    let commands = lushtext_core::services::palette::all_commands();
+    let commands = lushtext_services::palette::all_commands();
     let cmd = commands.iter().find(|c| c.id == "win.new-tab");
     assert!(cmd.is_some(), "all_commands() should include New File");
     let cmd = cmd.expect("expected operation to succeed");
@@ -2691,7 +2689,7 @@ fn test_all_commands_new_file_uses_ctrl_n() {
 #[test]
 fn test_all_commands_contains_focus_mode() {
     ensure_gtk_init();
-    let commands = lushtext_core::services::palette::all_commands();
+    let commands = lushtext_services::palette::all_commands();
     let cmd = commands.iter().find(|c| c.id == "win.toggle-focus-mode");
     assert!(cmd.is_some(), "all_commands() should include Focus Mode");
     let cmd = cmd.expect("expected operation to succeed");
@@ -2703,7 +2701,7 @@ fn test_all_commands_contains_focus_mode() {
 #[test]
 fn test_all_commands_contains_zoom_in() {
     ensure_gtk_init();
-    let commands = lushtext_core::services::palette::all_commands();
+    let commands = lushtext_services::palette::all_commands();
     let cmd = commands.iter().find(|c| c.id == "win.zoom-in");
     assert!(cmd.is_some(), "all_commands() should include Zoom In");
     let cmd = cmd.expect("expected operation to succeed");
@@ -2715,7 +2713,7 @@ fn test_all_commands_contains_zoom_in() {
 #[test]
 fn test_all_commands_contains_zoom_out() {
     ensure_gtk_init();
-    let commands = lushtext_core::services::palette::all_commands();
+    let commands = lushtext_services::palette::all_commands();
     let cmd = commands.iter().find(|c| c.id == "win.zoom-out");
     assert!(cmd.is_some(), "all_commands() should include Zoom Out");
     let cmd = cmd.expect("expected operation to succeed");
@@ -2727,7 +2725,7 @@ fn test_all_commands_contains_zoom_out() {
 #[test]
 fn test_all_commands_contains_zoom_reset() {
     ensure_gtk_init();
-    let commands = lushtext_core::services::palette::all_commands();
+    let commands = lushtext_services::palette::all_commands();
     let cmd = commands.iter().find(|c| c.id == "win.zoom-reset");
     assert!(cmd.is_some(), "all_commands() should include Reset Zoom");
     let cmd = cmd.expect("expected operation to succeed");

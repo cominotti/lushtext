@@ -21,8 +21,8 @@ use super::workspace_index_fixture::{self, DEFAULT_SEED, ShapeEntry};
 use super::*;
 use crate::filesystem::fixture;
 use crate::filesystem::metadata::canonical_path;
-use lushtext_model::palette::{PaletteFileIdentity, PaletteFileIdentityFailure};
-use lushtext_model::workspace_visibility::WorkspaceEntryVisibility;
+use lushtext_model::workspace::palette::{PaletteFileIdentity, PaletteFileIdentityFailure};
+use lushtext_model::workspace::workspace_visibility::WorkspaceEntryVisibility;
 
 const SYNTHETIC_ROOT: &str = "/synthetic/scale-file-index/workspace";
 const MIB: u64 = 1024 * 1024;

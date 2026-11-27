@@ -204,7 +204,7 @@ class LensFixture(unittest.TestCase):
         self.root = Path(self.tempdir.name)
         packages = []
         for name, root, roots in (
-            ("lushtext-core", "crates/lushtext-core", ["src/ui", "src/services", "src/model"]),
+            ("lushtext-ui", "crates/lushtext-ui", ["src/ui", "src/services", "src/model"]),
             ("gtk-lush-settle", "crates/gtk-lush/settle", ["src"]),
             ("gtk-lush-tasks", "crates/gtk-lush/tasks", []),
         ):
@@ -247,7 +247,7 @@ class ReviewLensTests(LensFixture):
         return result["data"], result["performance"], result["modules_moved"]
 
     def test_draft_service_edit_is_data_and_performance(self) -> None:
-        result = self.lenses(("M", "crates/lushtext-core/src/services/draft_service.rs"))
+        result = self.lenses(("M", "crates/lushtext-ui/src/services/draft_service.rs"))
         self.assertEqual(self.flags(result), (True, True, False))
 
     def test_extracted_model_crate_edit_is_data_and_performance(self) -> None:
@@ -301,8 +301,8 @@ class ReviewLensTests(LensFixture):
 
     def test_renamed_module_is_a_module_move(self) -> None:
         result = self.lenses(
-            ("R", "crates/lushtext-core/src/model/old_name.rs"),
-            ("R", "crates/lushtext-core/src/model/new_name.rs"),
+            ("R", "crates/lushtext-ui/src/model/old_name.rs"),
+            ("R", "crates/lushtext-ui/src/model/new_name.rs"),
         )
         self.assertEqual(self.flags(result), (True, True, True))
         result = self.lenses(("A", "crates/gtk-lush/settle/tests/new_test.rs"))
@@ -352,7 +352,7 @@ class ReviewLensTests(LensFixture):
     def test_a_policy_without_the_data_safety_table_fails(self) -> None:
         # A branch that predates the [data_safety] table must not read as
         # "no data lens owed" (Fable review M2): the selector refuses instead.
-        change = [TOPOLOGY.ChangedPath("M", "crates/lushtext-core/src/services/draft_service.rs")]
+        change = [TOPOLOGY.ChangedPath("M", "crates/lushtext-ui/src/services/draft_service.rs")]
         for policy in (
             {key: value for key, value in self.POLICY.items() if key != "data_safety"},
             {**self.POLICY, "data_safety": {"skill": "data-safety", "content_patterns": []}},
@@ -393,7 +393,7 @@ class ReviewLensTests(LensFixture):
     def test_flags_only_prints_one_line_with_the_three_flags(self) -> None:
         # The workflow's scope reading copies this line; it must be short.
         line = TOPOLOGY.flags_line(
-            self.lenses(("M", "crates/lushtext-core/src/services/draft_service.rs"))
+            self.lenses(("M", "crates/lushtext-ui/src/services/draft_service.rs"))
         )
         self.assertNotIn("\n", line)
         self.assertEqual(json.loads(line), {"data": True, "modules_moved": False, "performance": True})

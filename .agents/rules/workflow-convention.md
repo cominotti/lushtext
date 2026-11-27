@@ -1,7 +1,7 @@
 ---
 description: The workflow readability convention — roles, homes, seams, policy purity, and evidence surfaces
 paths:
-  - "crates/lushtext-core/src/ui/**"
+  - "crates/lushtext-ui/src/ui/**"
   - "crates/lushtext/tests/widget/**"
   - "docs/workflow-readability-matrix.md"
   - "docs/next/workflow-readability.md"
@@ -235,16 +235,16 @@ and raising one is a reviewed edit to this table and the script together:
 | `ui/editor_page/minimap/policy.rs` | `deny` | 8 |
 | `ui/markdown_preview/policy.rs` | `forbid` | 0 |
 | `ui/sidebar/width_preset.rs` | `forbid` | 0 |
-| `model/editor_memory.rs` | `forbid` | 0 |
+| `model/document/editor_memory.rs` | `forbid` | 0 |
 | `ui/window/local_history/policy.rs` | `forbid` | 0 |
 | `ui/window/focus_mode/policy.rs` | `forbid` | 0 |
-| `model/protected_fold.rs` | `forbid` | 0 |
+| `model/document/protected_fold.rs` | `forbid` | 0 |
 | `ui/editor_page/protected_view/policy.rs` | `forbid` | 0 |
 | `ui/window/tab_overflow/policy.rs` | `forbid` | 0 |
 
 `ui/window/local_history/policy.rs` and `ui/window/focus_mode/policy.rs` apply the rule retroactively to the other migrated workflows whose
 policy holds geometry: the local-history viewer geometry and size display, and
-Focus Mode's reveal band and readable-column margin. `model/protected_fold.rs`
+Focus Mode's reveal band and readable-column margin. `model/document/protected_fold.rs`
 (`long-line-protected-view`) is a budget policy in characters whose window size
 carries the pixel relationship (rows per 2000 px validation batch), so it is
 integer-only by the same rule. `ui/editor_page/protected_view/policy.rs`

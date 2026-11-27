@@ -3,7 +3,7 @@
 //! Tests for the FileTreeItem GObject (sidebar tree model item).
 
 use crate::common::ensure_gtk_init;
-use lushtext_core::ui::sidebar::file_tree_item::FileTreeItem;
+use lushtext_ui::ui::sidebar::file_tree_item::FileTreeItem;
 use std::path::PathBuf;
 
 #[test]

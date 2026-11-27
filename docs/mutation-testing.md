@@ -14,7 +14,7 @@ decided by **convention, not by directory**. The `examine_globs` list covers:
 - Domain model code under `crates/lushtext-model/src/**`
 - Service code under `crates/lushtext-services/src/**`
 - Pure workflow policy modules matching
-  `crates/lushtext-core/src/ui/**/policy.rs`
+  `crates/lushtext-ui/src/ui/**/policy.rs`
 
 The `policy.rs` glob is a naming convention: a workflow's pure decision logic
 lives in a `policy.rs` beside the workflow it serves, so that logic keeps
@@ -189,7 +189,7 @@ make proof-strength PROOF_STRENGTH_ARM=kani PROOF_STRENGTH_SHARD=0/4
   cover became unsatisfiable), timeout, unviable, and survived. Only killed
   counts as a kill.
 - **Tests arm.** cargo-mutants over the same module with
-  `lushtext-core/property-tests` enabled (the default lane omits it, but the
+  `lushtext-ui/property-tests` enabled (the default lane omits it, but the
   property suites are the tests-side counterpart of the proofs), run
   `--in-place` inside the clean worktree, serially and without `--jobs`
   (cargo-mutants refuses it with `--in-place`), with
@@ -342,7 +342,7 @@ Every mutation job uploads `mutants.out` when it exists. Those directories are
 ignored locally because they contain generated diffs, logs, and JSON outcome
 data.
 
-The mutation workflow also intentionally omits `lushtext-core/property-tests`.
+The mutation workflow also intentionally omits `lushtext-ui/property-tests`.
 The separate CI property-test job proves generated-input invariants without
 folding that cost into cargo-mutants.
 
@@ -364,9 +364,9 @@ The largest missed clusters were:
 
 | File | Missed mutants | Ratchet direction |
 |------|----------------|-------------------|
-| `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` (then `ui/editor_page/minimap.rs`) | 215 | Geometry and marker-color helper assertions |
+| `crates/lushtext-ui/src/ui/editor_page/minimap/policy.rs` (then `ui/editor_page/minimap.rs`) | 215 | Geometry and marker-color helper assertions |
 | `crates/lushtext-services/src/editor_io.rs` | 74 | Lossy preview, line ending, file health, and encoding-analysis assertions |
-| `crates/lushtext-core/src/ui/markdown_preview/policy.rs` (then `ui/markdown_preview/inline_footnotes.rs`) | 49 | Scan-plan, delimiter, escape, and lowered-output tests |
+| `crates/lushtext-ui/src/ui/markdown_preview/policy.rs` (then `ui/markdown_preview/inline_footnotes.rs`) | 49 | Scan-plan, delimiter, escape, and lowered-output tests |
 | `crates/lushtext-services/src/file_tree.rs` | 8 | Bounded-scan telemetry assertions: `examined_entries`, `peak_retained_entries`, `peak_retained_bytes`, and `error` on the published `DirectoryScan` |
 | `crates/lushtext-services/src/draft_service.rs` | 5 | Orphan-cleanup continuation assertions: `retained`, `failures`, `next_manifest_offset`, and `directory_wrapped` on the published plan and outcome |
 | `crates/lushtext-services/src/palette/index.rs` | 26 | Index construction, root interning, recursion cap, and path filtering tests |
@@ -375,7 +375,7 @@ The largest missed clusters were:
 | `crates/lushtext-services/src/bookmark_service.rs` | 23 | Sidecar delete, move, root matching, and list-workspace tests |
 | `crates/lushtext-services/src/notifications.rs` | 20 | Progress, expiry, dismiss, and inline-view reducer tests |
 
-Calibration also found that `crates/lushtext-core/src/ui/window/tabs.rs`
+Calibration also found that `crates/lushtext-ui/src/ui/window/tabs.rs`
 produced 40 missed mutants dominated by `LushtextWindow::...` GTK adapter
 methods. That file was removed from the default mutation scope rather than
 excluded by a broad pattern; tab behavior stays in the widget harness until
@@ -402,7 +402,7 @@ modules — not by exclusion, but because the scope is decided by name.
 
 On June 2, 2026, the minimap cluster was ratcheted separately. The
 non-widget-only focused slice for the then-live
-`crates/lushtext-core/src/ui/editor_page/minimap.rs` moved from 215 missed
+`crates/lushtext-ui/src/ui/editor_page/minimap.rs` moved from 215 missed
 mutants to 86 after adding deterministic tests for minimap policy constants,
 availability priority, wrapped-layout size policy, line-budget scanning,
 long-line warning lines, marker bounds, lane widths, lane positioning, and the
@@ -436,7 +436,7 @@ true before the migration read them:
   **retired** rather than moving. It was a path-keyed scope entry that existed
   only because pre-convention pure logic sat outside a naming convention; the
   migration extracted that logic into
-  `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs`, which the default
+  `crates/lushtext-ui/src/ui/editor_page/minimap/policy.rs`, which the default
   scope reaches through `ui/**/policy.rs`. The GTK adapter beside it is now
   legitimately out of scope for not being a policy module — the first and second
   bullets above describe exactly the adapter and drawing mutants that
@@ -679,7 +679,7 @@ documented exclusion last.
 - `make test-prop` runs bounded property tests for pure deterministic invariants.
 - `scripts/run-widget-tests.sh --headless --retries 1` remains the GTK behavior
   gate for display-server-sensitive code.
-- `cargo bench -p lushtext-core --features test-utils --no-run` still compile-checks performance
+- `cargo bench -p lushtext-ui --features test-utils --no-run` still compile-checks performance
   harnesses without requiring a full benchmark run.
 - `cargo fmt`, Clippy, rustdoc lints, and `cargo deny` keep their existing roles.
 

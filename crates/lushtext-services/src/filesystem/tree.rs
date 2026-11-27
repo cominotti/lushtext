@@ -12,7 +12,7 @@ use super::sys;
 use super::types::{
     DirectoryEntryInfo, DirectoryPage, DirectoryPageVisitMetrics, DirectoryScanPolicy,
 };
-use lushtext_model::workspace_visibility::WorkspaceEntryVisibility;
+use lushtext_model::workspace::workspace_visibility::WorkspaceEntryVisibility;
 
 /// Map the `Copy` boundary policy's hidden flag onto the shared visibility rule.
 ///

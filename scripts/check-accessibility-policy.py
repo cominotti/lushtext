@@ -132,7 +132,7 @@ def added_lines_from_diff(diff: str) -> list[AddedLine]:
 
 def is_policy_path(path: str) -> bool:
     return (
-        (path.startswith("crates/lushtext-core/src/ui/") and path.endswith(".rs"))
+        (path.startswith("crates/lushtext-ui/src/ui/") and path.endswith(".rs"))
         or (path.startswith("crates/lushtext/tests/widget/") and path.endswith(".rs"))
         or (path.startswith("resources/ui/") and path.endswith((".blp", ".ui")))
         or path == "scripts/run-accessibility-smoke.sh"
@@ -180,7 +180,7 @@ def check_current_tree() -> list[Finding]:
 def check_current_direct_accessibility_calls(findings: list[Finding]) -> None:
     """Keep app-owned metadata behind the helper in the current production UI."""
 
-    ui_root = REPO_ROOT / "crates/lushtext-core/src/ui"
+    ui_root = REPO_ROOT / "crates/lushtext-ui/src/ui"
     direct_patterns = (
         "set_accessible_role",
         "gtk4::accessible::Property::",
@@ -207,7 +207,7 @@ def check_current_direct_accessibility_calls(findings: list[Finding]) -> None:
 def check_current_row_factory_policy(findings: list[Finding]) -> None:
     """Require recycled GTK row factories to use the shared apply/clear helpers."""
 
-    ui_root = REPO_ROOT / "crates/lushtext-core/src/ui"
+    ui_root = REPO_ROOT / "crates/lushtext-ui/src/ui"
     for path in sorted(ui_root.rglob("*.rs")):
         rel_path = path.relative_to(REPO_ROOT).as_posix()
         text = read_text(path)
@@ -508,7 +508,7 @@ def check_row_factory_policy(
     file_text: str,
     findings: list[Finding],
 ) -> None:
-    if not path.startswith("crates/lushtext-core/src/ui/"):
+    if not path.startswith("crates/lushtext-ui/src/ui/"):
         return
     if "SignalListItemFactory" not in added_text and "connect_bind" not in added_text:
         return
@@ -670,27 +670,27 @@ def run_self_test() -> None:
     cases = [
         (
             "direct label fails",
-            [AddedLine("crates/lushtext-core/src/ui/foo.rs", 10, 'button.update_property(&[gtk4::accessible::Property::Label("Run")]);')],
-            {"crates/lushtext-core/src/ui/foo.rs": ""},
+            [AddedLine("crates/lushtext-ui/src/ui/foo.rs", 10, 'button.update_property(&[gtk4::accessible::Property::Label("Run")]);')],
+            {"crates/lushtext-ui/src/ui/foo.rs": ""},
             1,
         ),
         (
             "helper file may use raw GTK accessible calls",
-            [AddedLine("crates/lushtext-core/src/ui/accessibility.rs", 10, "widget.update_state(&[]);")],
-            {"crates/lushtext-core/src/ui/accessibility.rs": "widget.update_state(&[]);"},
+            [AddedLine("crates/lushtext-ui/src/ui/accessibility.rs", 10, "widget.update_state(&[]);")],
+            {"crates/lushtext-ui/src/ui/accessibility.rs": "widget.update_state(&[]);"},
             0,
         ),
         (
             "row factory without cleanup fails",
-            [AddedLine("crates/lushtext-core/src/ui/foo.rs", 20, "factory.connect_bind(|_, _| {});")],
-            {"crates/lushtext-core/src/ui/foo.rs": "factory.connect_bind(|_, _| {});"},
+            [AddedLine("crates/lushtext-ui/src/ui/foo.rs", 20, "factory.connect_bind(|_, _| {});")],
+            {"crates/lushtext-ui/src/ui/foo.rs": "factory.connect_bind(|_, _| {});"},
             1,
         ),
         (
             "row factory with helper passes",
-            [AddedLine("crates/lushtext-core/src/ui/foo.rs", 20, "factory.connect_bind(|_, _| {});")],
+            [AddedLine("crates/lushtext-ui/src/ui/foo.rs", 20, "factory.connect_bind(|_, _| {});")],
             {
-                "crates/lushtext-core/src/ui/foo.rs": "RowAccessibility::new(\"Row\"); clear_row_accessibility(&row);",
+                "crates/lushtext-ui/src/ui/foo.rs": "RowAccessibility::new(\"Row\"); clear_row_accessibility(&row);",
             },
             0,
         ),

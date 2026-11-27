@@ -7,11 +7,11 @@ use crate::common::{
 };
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_core::model::workspace::{WorkspaceConfig, WorkspaceId, WorkspacesFile};
-use lushtext_core::services::{json_store, workspace_manager};
-use lushtext_core::ui::accessibility::test_audit::AccessibleAudit;
-use lushtext_core::ui::sidebar::LushtextSidebar;
-use lushtext_core::ui::window::LushtextWindow;
+use lushtext_model::workspace::{WorkspaceConfig, WorkspaceId, WorkspacesFile};
+use lushtext_services::{persistence::json_store, workspace::workspace_manager};
+use lushtext_ui::ui::accessibility::test_audit::AccessibleAudit;
+use lushtext_ui::ui::sidebar::LushtextSidebar;
+use lushtext_ui::ui::window::LushtextWindow;
 use std::time::Duration;
 
 const WARNING_BAR_ROW_HEIGHT: i32 = 54;
@@ -427,7 +427,7 @@ fn test_update_tab_path_directory_prefix_rewrite() {
 
     let editor = page
         .child()
-        .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+        .downcast::<lushtext_ui::ui::editor_page::LushtextEditorPage>()
         .expect("expected operation to succeed");
     assert_eq!(
         editor.file_path().expect("expected operation to succeed"),
@@ -510,7 +510,7 @@ fn test_close_tab_for_path_directory_closes_children() {
         .tab_view
         .nth_page(0)
         .child()
-        .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+        .downcast::<lushtext_ui::ui::editor_page::LushtextEditorPage>()
         .expect("expected operation to succeed");
     assert_eq!(
         remaining
@@ -562,7 +562,7 @@ fn test_close_tab_for_path_defers_teardown_until_the_page_detaches() {
         .tab_view
         .nth_page(0)
         .child()
-        .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+        .downcast::<lushtext_ui::ui::editor_page::LushtextEditorPage>()
         .expect("expected operation to succeed");
     wait_until(Duration::from_secs(10), || {
         editor.imp().monitor.file_monitor.borrow().is_some()
@@ -599,7 +599,7 @@ fn test_close_tab_for_path_defers_teardown_until_the_page_detaches() {
     // candidate, evaluated through the production predicate rather than a proxy.
     assert!(editor.draft_id().is_some(), "expected a draft identity");
     assert!(
-        lushtext_core::ui::window::draft_candidate_is_eligible(
+        lushtext_ui::ui::window::draft_candidate_is_eligible(
             editor.is_modified(),
             editor.draft_dirty(),
             editor.is_evicted(),
@@ -628,7 +628,7 @@ fn test_close_tab_for_path_defers_teardown_until_the_page_detaches() {
         .tab_view
         .nth_page(0)
         .child()
-        .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+        .downcast::<lushtext_ui::ui::editor_page::LushtextEditorPage>()
         .expect("expected operation to succeed");
     assert_eq!(
         reselected.as_ptr(),
@@ -664,8 +664,8 @@ fn test_close_tab_for_path_nonexistent_is_noop() {
 /// expansion-capture counters, the scan-admission counters, the expansion sets, the
 /// persistence generations, the watch target generations, and every aggregate.
 fn evidence_without_live_mailbox(
-    evidence: &lushtext_core::ui::sidebar::evidence::WorkspaceTreeEvidence,
-) -> lushtext_core::ui::sidebar::evidence::WorkspaceTreeEvidence {
+    evidence: &lushtext_ui::ui::sidebar::evidence::WorkspaceTreeEvidence,
+) -> lushtext_ui::ui::sidebar::evidence::WorkspaceTreeEvidence {
     let mut normalized = evidence.clone();
     for section in &mut normalized.sections {
         section.watch_mailbox = None;
@@ -810,7 +810,7 @@ fn inertness_probe(sidebar: &LushtextSidebar) -> InertnessProbe {
 struct InertnessProbe {
     /// A read must not advance, finish, or restart a workspace path reveal.
     reveal: (
-        lushtext_core::ui::sidebar::policy::WorkspaceRevealStatus,
+        lushtext_ui::ui::sidebar::policy::WorkspaceRevealStatus,
         u64,
         bool,
     ),
@@ -981,7 +981,7 @@ fn test_workspace_tree_evidence_reads_are_inert_collapsed_and_expanded() {
                 let row = tree_model.item(index).and_downcast::<gtk4::TreeListRow>()?;
                 let item = row
                     .item()
-                    .and_downcast::<lushtext_core::ui::sidebar::file_tree_item::FileTreeItem>()?;
+                    .and_downcast::<lushtext_ui::ui::sidebar::file_tree_item::FileTreeItem>()?;
                 (item.path().as_deref() == Some(nested_path.as_path())).then_some(row)
             })
             .expect("nested row")
@@ -1214,7 +1214,7 @@ fn test_a_workspace_created_during_a_load_is_not_reverted_by_the_load() {
 
     // Hold the load worker open long enough to interpose the mutation. 600ms against a
     // 150ms interposition means the mutation lands while the worker is still sleeping.
-    lushtext_core::ui::sidebar::set_workspace_load_worker_delay_for_test(600);
+    lushtext_ui::ui::sidebar::set_workspace_load_worker_delay_for_test(600);
     sidebar.load_workspaces();
 
     // Create a workspace while the load is still in flight. This is the production
@@ -1238,7 +1238,7 @@ fn test_a_workspace_created_during_a_load_is_not_reverted_by_the_load() {
         !sidebar.workspace_tree_evidence().persistence_pending
     });
     flush_after_delay(Duration::from_millis(400));
-    lushtext_core::ui::sidebar::set_workspace_load_worker_delay_for_test(0);
+    lushtext_ui::ui::sidebar::set_workspace_load_worker_delay_for_test(0);
 
     // The workspace the user created during the load must still exist, in memory and
     // on disk. Without the guard the completed load overwrites it away.
@@ -1285,7 +1285,7 @@ fn test_a_workspace_created_before_the_first_load_completes_merges_instead_of_ov
 
     // Hold the load worker open long enough to interpose the mutation. 600ms against a
     // 150ms interposition means the mutation lands while the worker is still sleeping.
-    lushtext_core::ui::sidebar::set_workspace_load_worker_delay_for_test(600);
+    lushtext_ui::ui::sidebar::set_workspace_load_worker_delay_for_test(600);
     sidebar.load_workspaces();
 
     // Nothing has been adopted yet: this is the state the pre-first-load branch exists
@@ -1333,7 +1333,7 @@ fn test_a_workspace_created_before_the_first_load_completes_merges_instead_of_ov
         !sidebar.workspace_tree_evidence().persistence_pending
     });
     flush_after_delay(Duration::from_millis(400));
-    lushtext_core::ui::sidebar::set_workspace_load_worker_delay_for_test(0);
+    lushtext_ui::ui::sidebar::set_workspace_load_worker_delay_for_test(0);
 
     // All three stored workspaces survive alongside the new one, in memory...
     let settled = sidebar.workspace_tree_evidence();

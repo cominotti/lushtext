@@ -95,10 +95,10 @@ RD_BUS = "org.gnome.Mutter.RemoteDesktop"
 RD_PATH = "/org/gnome/Mutter/RemoteDesktop"
 RD_SESSION_IFACE = "org.gnome.Mutter.RemoteDesktop.Session"
 
-# Budgets mirror crates/lushtext-model/src/responsiveness_budget.rs (the
+# Budgets mirror crates/lushtext-model/src/budgets/responsiveness_budget.rs (the
 # single source of truth; the report re-reads that file so a revised constant
 # is picked up without editing this script).
-BUDGET_SOURCE = REPO_ROOT / "crates/lushtext-model/src/responsiveness_budget.rs"
+BUDGET_SOURCE = REPO_ROOT / "crates/lushtext-model/src/budgets/responsiveness_budget.rs"
 DEFAULT_BUDGETS = {
     "B_INTERACT_US": 8_000,
     "B_SETTLE_US": 16_000,
@@ -306,7 +306,7 @@ REPLACE_ALL_RUN_BYTES = 512 * 1024 * 1024
 REPLACE_ALL_QUERY = "replace-needle"
 REPLACE_ALL_REPLACEMENT = "replace-thread"
 # The spans the measurement build records for the judged quantities of task
-# 9.1 (crates/lushtext-core/src/ui/responsiveness_probe.rs): (a) the
+# 9.1 (crates/lushtext-ui/src/ui/responsiveness_probe.rs): (a) the
 # completion terminal, (b) the Skipped Files opening dispatch, its first frame
 # and the frames of its staged first publish, (c) each progress-poll dispatch.
 REPLACE_COMPLETION_SPAN = "replace_completion"
@@ -1134,7 +1134,7 @@ class IntegrityLedger:
 # (ui/editor_page/load/policy.rs `settle_stage`), so the baseline build, which
 # has the records but not the predicate, is measured identically (review R24).
 
-SETTLE_POLICY_SOURCE = REPO_ROOT / "crates/lushtext-core/src/ui/editor_page/load/policy.rs"
+SETTLE_POLICY_SOURCE = REPO_ROOT / "crates/lushtext-ui/src/ui/editor_page/load/policy.rs"
 # `SETTLE_QUIET_US` when the load policy cannot be read.
 DEFAULT_SETTLE_QUIET_US = 100_000
 POST_OPEN_SPAN_PREFIX = "post_open_"
@@ -1148,7 +1148,7 @@ POST_OPEN_LANGUAGE_ATTACH = "post_open_language_attach"
 # The dispatches that lay a document out: GtkTextView's validation (the
 # vertical upper changing) and the install slices that feed it.
 LAYOUT_ATTRIBUTIONS = ("validation", "post_open_install_slice")
-# `ATTACH_DEADLINE_US` in crates/lushtext-core/src/ui/editor_page/load/policy.rs:
+# `ATTACH_DEADLINE_US` in crates/lushtext-ui/src/ui/editor_page/load/policy.rs:
 # the longest a deferred language attach waits for input quiet. The
 # no-regression rule exempts that wait, and only it, from
 # activation-to-laid-out (`--self-test` checks the two agree).
@@ -6765,7 +6765,7 @@ def post_open_self_test(expect: Callable[[bool, str], None]) -> None:
     expect(activation_to_laid_out(0, [10_000, 30_000, 5_000_000], 4_000_000) == 5_000_000 - ATTACH_DEADLINE_US, "the attach wait exempted is at most ATTACH_DEADLINE_US")
     expect(activation_to_laid_out(0, [10_000, 30_000, 400_000], 300_000) == 400_000 - 270_000, "only the wait from the last layout to the attach is exempt")
     expect(activation_to_laid_out(0, [10_000, 30_000], 300_000) == 30_000, "layout that ends before the attach is not shortened")
-    policy = (REPO_ROOT / "crates/lushtext-core/src/ui/editor_page/load/policy.rs").read_text()
+    policy = (REPO_ROOT / "crates/lushtext-ui/src/ui/editor_page/load/policy.rs").read_text()
     expect(f"pub const ATTACH_DEADLINE_US: i64 = {ATTACH_DEADLINE_US:_};" in policy, "ATTACH_DEADLINE_US agrees with the load policy")
     # A toolkit-floor exception: exempt from B_settle, and the keys that
     # overlap it are exempt from B_interact; every other key is still gated.

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::filesystem::metadata as fs_metadata;
-use lushtext_model::palette::PaletteFileIdentityFailure;
+use lushtext_model::workspace::palette::PaletteFileIdentityFailure;
 
 use super::super::FileIndex;
 use super::super::arena::{

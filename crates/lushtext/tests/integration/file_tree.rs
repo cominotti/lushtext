@@ -3,7 +3,7 @@
 //! Integration tests for file tree scanning with realistic project layouts.
 
 use crate::common::TestContext;
-use lushtext_core::services::file_tree::{self, DirectoryEntry};
+use lushtext_services::workspace::file_tree::{self, DirectoryEntry};
 
 /// Helper: extract file names from scan results.
 fn names(entries: &[DirectoryEntry]) -> Vec<String> {

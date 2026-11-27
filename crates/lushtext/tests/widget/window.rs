@@ -23,64 +23,67 @@ use libadwaita::prelude::{
     ActionRowExt, AdwApplicationWindowExt, AdwDialogExt, AlertDialogExt, AlertDialogExtManual,
     ComboRowExt, PreferencesRowExt,
 };
-use lushtext_core::config::keys;
-use lushtext_core::model::action_catalog::{ActionScope, ActionValueType, ObservedAction};
-use lushtext_core::model::automation::{AutomationReadinessPredicate, AutomationReadinessStatus};
-use lushtext_core::model::content_search::SearchMatch;
-use lushtext_core::model::document_scale::{REFUSE_TO_OPEN, S_MINIMAP, S_SYNTAX, UNDO_TOTAL_BYTES};
-use lushtext_core::model::draft::{
-    DraftEntry, DraftManifest, PreloadedDraftRestore, PreloadedDraftSkip,
+use lushtext_model::automation::action_catalog::{ActionScope, ActionValueType, ObservedAction};
+use lushtext_model::automation::{AutomationReadinessPredicate, AutomationReadinessStatus};
+use lushtext_model::document::document_scale::{
+    REFUSE_TO_OPEN, S_MINIMAP, S_SYNTAX, UNDO_TOTAL_BYTES,
 };
-use lushtext_core::model::editor_memory::{
+use lushtext_model::document::editor_memory::{
     EDITOR_MEMORY_UPPER_BUDGET_BYTES, EditorMemoryBudgetOutcome,
 };
-use lushtext_core::model::encoding::{
+use lushtext_model::document::encoding::{
     DocumentEncoding, DocumentEncodingState, FileHealthFindingKind, InvisibleCharactersMode,
     LineEnding,
 };
-use lushtext_core::model::local_history::LocalHistorySnapshotOrigin;
-use lushtext_core::model::note::RichNoteBody;
-use lushtext_core::model::palette::PaletteFileIdentity;
-use lushtext_core::model::recent_document::RecentDocumentEntry;
-use lushtext_core::model::session::{SessionData, SessionTab};
-use lushtext_core::model::workspace::{
+use lushtext_model::persistence::draft::{
+    DraftEntry, DraftManifest, PreloadedDraftRestore, PreloadedDraftSkip,
+};
+use lushtext_model::persistence::local_history::LocalHistorySnapshotOrigin;
+use lushtext_model::persistence::note::RichNoteBody;
+use lushtext_model::persistence::recent_document::RecentDocumentEntry;
+use lushtext_model::persistence::session::{SessionData, SessionTab};
+use lushtext_model::workspace::content_search::SearchMatch;
+use lushtext_model::workspace::palette::PaletteFileIdentity;
+use lushtext_model::workspace::{
     WorkspaceConfig, WorkspaceFolder, WorkspaceFolderId, WorkspaceFolderMoveDirection, WorkspaceId,
     WorkspaceScope, WorkspacesFile,
 };
-use lushtext_core::services::filesystem::PathStatus;
-use lushtext_core::services::markdown_render::MAX_MARKDOWN_SOURCE_BYTES;
-use lushtext_core::services::notifications::{
+use lushtext_services::coordination::notifications::{
     InlineActionNotification, InlineNotificationStyle, NotificationOwner, NotificationPayload,
     NotificationSeverity, NotificationSurface, StatusMessage,
 };
-use lushtext_core::services::palette::{FileIndex, NotesBrowserMode};
-use lushtext_core::services::{
-    action_catalog, bookmark_service, document_note_service, draft_service, editor_io,
-    folder_note_service, format_upgrade, json_format, json_store, local_history_service,
-    saved_searches, session_service, workspace_manager,
+use lushtext_services::filesystem::PathStatus;
+use lushtext_services::notes::markdown_render::MAX_MARKDOWN_SOURCE_BYTES;
+use lushtext_services::palette::{FileIndex, NotesBrowserMode};
+use lushtext_services::{
+    editor_io, notes::bookmark_service, notes::document_note_service, notes::folder_note_service,
+    persistence::draft_service, persistence::format_upgrade, persistence::json_format,
+    persistence::json_store, persistence::local_history_service, persistence::session_service,
+    search::saved_searches, workspace::action_catalog, workspace::workspace_manager,
 };
-use lushtext_core::ui::accessibility::{AnnouncementLane, test_audit::AccessibleAudit};
-use lushtext_core::ui::automation::{
+use lushtext_ui::config::keys;
+use lushtext_ui::ui::accessibility::{AnnouncementLane, test_audit::AccessibleAudit};
+use lushtext_ui::ui::automation::{
     INTERFACE_VERSION, app_snapshot, current_idle_blocker, wait_for_idle_for_test,
     wait_for_ready_for_test,
 };
-use lushtext_core::ui::editor_page::save::policy::{
+use lushtext_ui::ui::editor_page::save::policy::{
     SAVE_PAYLOAD_SHARED_BUDGET_BYTES, SaveCaptureMode, conservative_save_payload_weight,
 };
-use lushtext_core::ui::editor_page::{
+use lushtext_ui::ui::editor_page::{
     BufferReplacementWorkflow, EditorLoadState, EditorSaveError, InlineAlertLifetime,
     LushtextEditorPage, MinimapAvailability, MinimapMarkerKind, buffer_snapshot_evidence,
 };
-use lushtext_core::ui::markdown_preview::{LushtextMarkdownPreview, MarkdownRenderState};
-use lushtext_core::ui::open_popover::evidence::open_popover_evidence;
-use lushtext_core::ui::plain_disposal::{
+use lushtext_ui::ui::markdown_preview::{LushtextMarkdownPreview, MarkdownRenderState};
+use lushtext_ui::ui::open_popover::evidence::open_popover_evidence;
+use lushtext_ui::ui::plain_disposal::{
     fill_disposal_capacity_for_test, hold_disposal_capacity_for_test,
     hold_progress_disposal_capacity_for_test, plain_disposal_evidence,
 };
-use lushtext_core::ui::preferences::LushtextPreferences;
-use lushtext_core::ui::search_panel::SearchPanelTestPolicy;
-use lushtext_core::ui::window::shell_geometry_evidence;
-use lushtext_core::ui::window::{
+use lushtext_ui::ui::preferences::LushtextPreferences;
+use lushtext_ui::ui::search_panel::SearchPanelTestPolicy;
+use lushtext_ui::ui::window::shell_geometry_evidence;
+use lushtext_ui::ui::window::{
     DraftFlushError, LushtextWindow, PrintEvidence, PrintOutcome, editor_memory_eviction_evidence,
     fail_next_draft_mutations_for_test, local_history_preview_install_evidence,
     notification_evidence, print_evidence, set_automatic_draft_limit_for_test,
@@ -284,7 +287,7 @@ fn test_window_with_split_view_state(
     properties_fraction: f64,
 ) -> LushtextWindow {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SPLIT_VIEW_LAYOUT_MIGRATED, true)
         .expect("set split-view-layout-migrated");
@@ -322,7 +325,7 @@ fn test_window_with_split_view_state_and_size(
 
 fn test_window_with_legacy_sidebar_state(visible: bool, position: i32) -> LushtextWindow {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SPLIT_VIEW_LAYOUT_MIGRATED, false)
         .expect("clear split-view-layout-migrated");
@@ -2684,7 +2687,7 @@ fn assert_top_minimap_reflow_invariants(
 }
 
 fn tab_content_opacity_setting() -> f64 {
-    lushtext_core::ui::settings_writes::shared().double(keys::TAB_CONTENT_OPACITY)
+    lushtext_ui::ui::settings_writes::shared().double(keys::TAB_CONTENT_OPACITY)
 }
 
 fn preview_layout_name(window: &LushtextWindow) -> Option<String> {
@@ -2763,7 +2766,7 @@ fn test_open_document_restores_bookmarks() {
     bookmark_service::save_for_path(
         &data_dir,
         &file_path,
-        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+        &[lushtext_model::persistence::bookmark::BookmarkRecord::new(
             1,
             Some("bookmark".to_string()),
         )],
@@ -2805,7 +2808,7 @@ fn test_stale_bookmark_sidecar_load_does_not_replace_local_edits() {
     editor.buffer().place_cursor(&line_one);
     let _ = editor.toggle_bookmark_at_cursor();
     let local_bookmark = editor.bookmark_at_line(0).expect("local bookmark");
-    let stale_snapshot = [lushtext_core::model::bookmark::BookmarkRecord::new(
+    let stale_snapshot = [lushtext_model::persistence::bookmark::BookmarkRecord::new(
         2,
         Some("stale sidecar".to_string()),
     )];
@@ -3010,11 +3013,8 @@ fn test_bookmark_commands_report_saved_file_and_empty_bookmark_context() {
     });
 }
 
-fn select_sidebar_path(section: &lushtext_core::ui::sidebar::WorkspaceSection, path: &Path) {
-    fn try_select_path(
-        section: &lushtext_core::ui::sidebar::WorkspaceSection,
-        path: &Path,
-    ) -> bool {
+fn select_sidebar_path(section: &lushtext_ui::ui::sidebar::WorkspaceSection, path: &Path) {
+    fn try_select_path(section: &lushtext_ui::ui::sidebar::WorkspaceSection, path: &Path) -> bool {
         let selection = section
             .imp()
             .file_tree_view
@@ -3033,7 +3033,7 @@ fn select_sidebar_path(section: &lushtext_core::ui::sidebar::WorkspaceSection, p
             if let Some(row) = tree_model.item(index).and_downcast::<gtk4::TreeListRow>()
                 && let Some(item) = row
                     .item()
-                    .and_downcast::<lushtext_core::ui::sidebar::FileTreeItem>()
+                    .and_downcast::<lushtext_ui::ui::sidebar::FileTreeItem>()
                 && item.path().as_deref() == Some(path)
             {
                 selection.set_selected(index);
@@ -3058,7 +3058,7 @@ fn select_sidebar_path(section: &lushtext_core::ui::sidebar::WorkspaceSection, p
     wait_until(Duration::from_secs(2), || try_select_path(section, path));
 }
 
-fn first_sidebar_section(window: &LushtextWindow) -> lushtext_core::ui::sidebar::WorkspaceSection {
+fn first_sidebar_section(window: &LushtextWindow) -> lushtext_ui::ui::sidebar::WorkspaceSection {
     window
         .imp()
         .sidebar
@@ -3071,7 +3071,7 @@ fn first_sidebar_section(window: &LushtextWindow) -> lushtext_core::ui::sidebar:
 }
 
 fn assert_window_workspace_row_state(
-    section: &lushtext_core::ui::sidebar::WorkspaceSection,
+    section: &lushtext_ui::ui::sidebar::WorkspaceSection,
     target_path: &Path,
     expected_open: bool,
     expected_active: bool,
@@ -3458,7 +3458,7 @@ fn test_help_overlay_action_is_registered_and_visible_commands_resolve() {
     ));
     assert!(window_ui.contains("win.show-help-overlay"));
     assert!(
-        lushtext_core::services::palette::all_commands()
+        lushtext_services::palette::all_commands()
             .iter()
             .any(|command| command.id == "win.show-help-overlay"
                 && command.label == "Keyboard Shortcuts")
@@ -3680,7 +3680,7 @@ fn test_local_history_browser_controls_expose_accessibility_roles() {
         &json_store::data_dir(),
         &path,
         "snapshot text\n",
-        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Baseline,
+        lushtext_model::persistence::local_history::LocalHistorySnapshotOrigin::Baseline,
         local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
     )
     .expect("seed local history snapshot");
@@ -3875,7 +3875,7 @@ fn test_keyboard_search_workflow_navigates_closes_and_restores_editor_focus() {
 #[test]
 fn test_parameterized_search_action_updates_visible_search_workflow() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -3958,7 +3958,7 @@ fn test_select_tab_action_uses_index_without_tab_strip_coordinates() {
             &window
                 .application()
                 .expect("window should have an application")
-                .downcast::<lushtext_core::app::LushtextApplication>()
+                .downcast::<lushtext_ui::app::LushtextApplication>()
                 .expect("test app should be LushtextApplication")
         )
         .window
@@ -3990,7 +3990,7 @@ fn test_command_palette_target_actions_update_visible_mode_query() {
     let app = window
         .application()
         .expect("window should have an application")
-        .downcast::<lushtext_core::app::LushtextApplication>()
+        .downcast::<lushtext_ui::app::LushtextApplication>()
         .expect("test app should be LushtextApplication");
 
     for action_name in ["set-command-palette-query", "set-command-palette-mode"] {
@@ -4072,7 +4072,7 @@ fn test_command_palette_target_actions_update_visible_mode_query() {
 #[test]
 fn test_target_state_actions_drive_visible_surfaces_without_toggle_parity() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, false)
         .expect("disable minimap");
@@ -4292,7 +4292,7 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
     let app = window
         .application()
         .expect("window should have an application")
-        .downcast::<lushtext_core::app::LushtextApplication>()
+        .downcast::<lushtext_ui::app::LushtextApplication>()
         .expect("test app should be LushtextApplication");
     // Draining minimap work is necessary but not sufficient: a loaded machine can
     // arm another settle burst (or leave a notification/search blocker pending)
@@ -4424,7 +4424,7 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
         .imp()
         .command_palette
         .set_file_index(FileIndex::from(vec![
-            lushtext_core::services::palette::OwnedIndexedFile::new(
+            lushtext_services::palette::OwnedIndexedFile::new(
                 palette_file.clone(),
                 PaletteFileIdentity::canonical(palette_file),
                 Arc::clone(&palette_folder),
@@ -4527,7 +4527,7 @@ fn test_hidden_minimap_refresh_does_not_block_visual_readiness() {
         .expect("window should have an application")
         // GTK stores the application behind the base `gtk::Application` type;
         // downcast it so the automation readiness helpers can read app state.
-        .downcast::<lushtext_core::app::LushtextApplication>()
+        .downcast::<lushtext_ui::app::LushtextApplication>()
         .expect("test app should be LushtextApplication");
     assert_eq!(current_idle_blocker(&app), None);
 
@@ -4557,7 +4557,7 @@ fn test_hidden_minimap_refresh_does_not_block_visual_readiness() {
 #[test]
 fn test_focus_suppressed_minimap_refresh_does_not_block_visual_readiness() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -4583,7 +4583,7 @@ fn test_focus_suppressed_minimap_refresh_does_not_block_visual_readiness() {
         .expect("window should have an application")
         // GTK stores the application behind the base `gtk::Application` type;
         // downcast it so the automation readiness helpers can read app state.
-        .downcast::<lushtext_core::app::LushtextApplication>()
+        .downcast::<lushtext_ui::app::LushtextApplication>()
         .expect("test app should be LushtextApplication");
     assert_eq!(current_idle_blocker(&app), None);
 
@@ -4818,7 +4818,7 @@ fn test_focus_mode_affordance_stays_visible_while_leave_button_has_focus() {
     window.fullscreen();
     wait_until(Duration::from_secs(10), || window.is_fullscreen());
 
-    let reveal_budget = lushtext_core::ui::window::FOCUS_MODE_AFFORDANCE_REVEAL_BUDGET;
+    let reveal_budget = lushtext_ui::ui::window::FOCUS_MODE_AFFORDANCE_REVEAL_BUDGET;
     // Must exceed the reveal budget so the timer has actually fired before the
     // contract is checked.
     let past_reveal_budget = reveal_budget + Duration::from_millis(100);
@@ -4977,7 +4977,7 @@ fn test_focus_mode_readable_editor_margins_restore_after_exit() {
 #[test]
 fn test_focus_mode_text_origin_guide_visibility_and_margin_tracking() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_uint(keys::FOCUS_MODE_TARGET_COLUMNS, 80)
         .expect("reset Focus Mode column width");
@@ -5071,7 +5071,7 @@ fn test_focus_mode_applies_markdown_preview_readable_margins_and_restores() {
 #[test]
 fn test_focus_mode_temporarily_hides_minimap_without_changing_preference() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -5099,7 +5099,7 @@ fn test_focus_mode_temporarily_hides_minimap_without_changing_preference() {
 #[test]
 fn test_focus_mode_typewriter_scrolling_defaults_off_and_tracks_setting() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::FOCUS_MODE_TYPEWRITER_SCROLLING, false)
         .expect("disable typewriter scrolling");
@@ -5512,7 +5512,7 @@ fn test_generic_progress_heartbeat_and_resolve_renders_do_not_pulse() {
 #[test]
 fn test_editor_transparency_uses_derived_scheme_and_keeps_minimap_opaque() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_double(keys::TAB_CONTENT_OPACITY, 0.85)
         .expect("set tab-content-opacity");
@@ -5550,7 +5550,7 @@ fn test_editor_transparency_uses_derived_scheme_and_keeps_minimap_opaque() {
 #[test]
 fn test_minimap_visibility_restores_from_setting_for_long_document() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -5568,7 +5568,7 @@ fn test_minimap_visibility_restores_from_setting_for_long_document() {
 #[test]
 fn test_minimap_stays_visible_when_document_fits_viewport() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -5590,7 +5590,7 @@ fn test_minimap_stays_visible_when_document_fits_viewport() {
 #[test]
 fn test_large_document_disables_minimap_and_surfaces_feedback() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -5635,7 +5635,7 @@ fn test_large_document_disables_minimap_and_surfaces_feedback() {
 #[test]
 fn test_large_file_load_disables_syntax_through_ui_state() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -6276,7 +6276,7 @@ fn test_delayed_session_restore_completions_preserve_active_and_modified_pages()
     let result = |content: &str, path: &Path| editor_io::LoadResult {
         metadata: editor_io::LoadMetadata {
             size: u64::try_from(content.len()).expect("fixture length"),
-            profile: lushtext_core::model::paragraph_boundary::DocumentProfile::EMPTY,
+            profile: lushtext_model::document::paragraph_boundary::DocumentProfile::EMPTY,
             canonical_path: Some(
                 fs_metadata::canonical_path(path).expect("canonical restore path"),
             ),
@@ -6811,7 +6811,7 @@ fn test_close_aborts_when_pending_session_evidence_cannot_be_preserved() {
     let malformed_session = "not valid session json";
     fixture::write_text(&session_path, malformed_session);
     fixture::write_text(
-        &data_dir.join(lushtext_core::services::recovery_metadata::QUARANTINE_DIR),
+        &data_dir.join(lushtext_services::persistence::recovery_metadata::QUARANTINE_DIR),
         "blocks quarantine directory creation",
     );
     let progress_hold = hold_progress_disposal_capacity_for_test();
@@ -7245,7 +7245,7 @@ fn test_transient_load_budget_is_shared_across_windows_and_honors_protected_resi
 #[test]
 fn test_both_sidebars_can_be_visible_together_on_wide_window() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_int(keys::WINDOW_WIDTH, 2200)
         .expect("set window width");
@@ -7393,7 +7393,7 @@ fn test_workspace_sidebar_setting_recalculates_properties_breakpoint() {
 #[test]
 fn test_bookmark_markers_follow_toggle_state() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -7422,7 +7422,7 @@ fn test_bookmark_markers_follow_toggle_state() {
 #[test]
 fn test_search_markers_clear_when_search_closes() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -7450,7 +7450,7 @@ fn test_search_markers_clear_when_search_closes() {
 #[test]
 fn test_minimap_geometry_tracks_sidebar_width_reflow_with_word_wrap() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -7511,7 +7511,7 @@ fn test_minimap_geometry_tracks_sidebar_width_reflow_with_word_wrap() {
 }
 
 fn run_minimap_top_anchor_sidebar_reflow_case(word_wrap: bool, initially_visible: bool) {
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -7631,7 +7631,7 @@ fn test_minimap_top_anchor_survives_sidebar_show_with_wrap_enabled_and_disabled(
 #[test]
 fn test_modified_markers_clear_after_save() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -7665,7 +7665,7 @@ fn test_modified_markers_clear_after_save() {
 #[test]
 fn test_long_line_markers_hidden_by_default_when_minimap_is_enabled() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings.reset(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE);
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
@@ -7687,7 +7687,7 @@ fn test_long_line_markers_hidden_by_default_when_minimap_is_enabled() {
 #[test]
 fn test_long_line_markers_appear_when_preference_is_enabled() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -7710,7 +7710,7 @@ fn test_long_line_markers_appear_when_preference_is_enabled() {
 #[test]
 fn test_disabling_long_line_markers_preserves_other_minimap_markers() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -8388,7 +8388,7 @@ fn test_ordinary_restore_blocks_readiness_and_empty_candidate_close() {
     let app = window
         .application()
         .expect("window application")
-        .downcast::<lushtext_core::app::LushtextApplication>()
+        .downcast::<lushtext_ui::app::LushtextApplication>()
         .expect("LushText application");
 
     window.check_draft_by_id(&editor, &draft_id);
@@ -9458,7 +9458,7 @@ fn test_new_file_backed_drafts_are_registered_before_their_first_body_write() {
             .expect("name");
         assert_eq!(
             draft_service::resolve_file_draft_restore(&data_dir, entry).expect("resolve"),
-            lushtext_core::model::draft::FileDraftRestoreResolution::restore(format!(
+            lushtext_model::persistence::draft::FileDraftRestoreResolution::restore(format!(
                 "unsaved edits in {name}"
             ))
         );
@@ -10360,7 +10360,7 @@ fn test_intermediate_sidebar_hide_defers_properties_reconciliation_until_transit
 #[test]
 fn test_short_normal_window_preserves_status_bar_with_optional_surfaces() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -10475,7 +10475,7 @@ fn test_single_tab_strip_preserves_constrained_normal_geometry() {
 #[test]
 fn test_forced_tiny_window_preserves_status_bar() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -10603,7 +10603,7 @@ fn test_properties_visibility_preference_survives_breakpoint_changes() {
     narrow_window.destroy();
     flush_after_delay(Duration::from_millis(50));
 
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_int(keys::WINDOW_WIDTH, 1600)
         .expect("set window width");
@@ -10988,7 +10988,7 @@ fn test_restored_folder_set_workspace_uses_one_section_with_ordered_folder_rows(
         .filter_map(|index| {
             top_level_store
                 .item(index)
-                .and_downcast::<lushtext_core::ui::sidebar::FileTreeItem>()
+                .and_downcast::<lushtext_ui::ui::sidebar::FileTreeItem>()
         })
         .filter_map(|item| item.path())
         .collect::<Vec<_>>();
@@ -11489,7 +11489,7 @@ fn test_workspace_close_flush_failure_aborts_and_later_close_recovers() {
     let app = window
         .application()
         .expect("window application")
-        .downcast::<lushtext_core::app::LushtextApplication>()
+        .downcast::<lushtext_ui::app::LushtextApplication>()
         .expect("LushText application");
 
     window
@@ -11561,7 +11561,7 @@ fn test_workspace_persistence_retry_resolves_feedback_and_readiness() {
     let app = window
         .application()
         .expect("window application")
-        .downcast::<lushtext_core::app::LushtextApplication>()
+        .downcast::<lushtext_ui::app::LushtextApplication>()
         .expect("LushText application");
 
     let _fault_guard = workspace_manager::fail_next_save_for_data_dir_for_test(&data_dir);
@@ -11795,7 +11795,7 @@ fn test_flush_dirty_drafts_fails_when_manifest_cannot_be_saved() {
     let drafts_dir = draft_service::drafts_dir(&data_dir);
     let manifest_path = drafts_dir.join("manifest.json");
     if fs_metadata::path_status(&manifest_path)
-        .is_ok_and(lushtext_core::services::filesystem::PathStatus::is_directory)
+        .is_ok_and(lushtext_services::filesystem::PathStatus::is_directory)
     {
         fixture::remove_dir_all(&manifest_path);
     } else {
@@ -12643,7 +12643,7 @@ fn test_local_history_browser_explains_empty_snapshot_and_disables_copy() {
         &data_dir,
         &path,
         "",
-        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Baseline,
+        lushtext_model::persistence::local_history::LocalHistorySnapshotOrigin::Baseline,
         local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
     )
     .expect("seed empty baseline");
@@ -12730,7 +12730,7 @@ fn test_local_history_browser_warns_and_shows_repaired_snapshot() {
         &data_dir,
         &path,
         body,
-        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Save,
+        lushtext_model::persistence::local_history::LocalHistorySnapshotOrigin::Save,
         local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
     )
     .expect("seed recoverable snapshot");
@@ -12784,7 +12784,7 @@ fn test_local_history_browser_hides_legacy_empty_baseline_noise() {
         &data_dir,
         &path,
         "",
-        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Baseline,
+        lushtext_model::persistence::local_history::LocalHistorySnapshotOrigin::Baseline,
         local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
     )
     .expect("seed oldest empty baseline");
@@ -12793,7 +12793,7 @@ fn test_local_history_browser_hides_legacy_empty_baseline_noise() {
         &data_dir,
         &path,
         "draft content",
-        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Periodic,
+        lushtext_model::persistence::local_history::LocalHistorySnapshotOrigin::Periodic,
         local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
     )
     .expect("seed first periodic");
@@ -12802,7 +12802,7 @@ fn test_local_history_browser_hides_legacy_empty_baseline_noise() {
         &data_dir,
         &path,
         "",
-        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Baseline,
+        lushtext_model::persistence::local_history::LocalHistorySnapshotOrigin::Baseline,
         local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
     )
     .expect("seed second empty baseline");
@@ -12811,7 +12811,7 @@ fn test_local_history_browser_hides_legacy_empty_baseline_noise() {
         &data_dir,
         &path,
         "draft content",
-        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Periodic,
+        lushtext_model::persistence::local_history::LocalHistorySnapshotOrigin::Periodic,
         local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
     )
     .expect("seed second periodic");
@@ -12820,7 +12820,7 @@ fn test_local_history_browser_hides_legacy_empty_baseline_noise() {
         &data_dir,
         &path,
         "",
-        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Baseline,
+        lushtext_model::persistence::local_history::LocalHistorySnapshotOrigin::Baseline,
         local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
     )
     .expect("seed newest empty baseline");
@@ -12881,7 +12881,7 @@ fn test_local_history_dialog_scales_from_parent_and_keeps_preview_dominant() {
         &data_dir,
         &path,
         "version one\n",
-        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Save,
+        lushtext_model::persistence::local_history::LocalHistorySnapshotOrigin::Save,
         local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
     )
     .expect("seed version one");
@@ -12890,7 +12890,7 @@ fn test_local_history_dialog_scales_from_parent_and_keeps_preview_dominant() {
         &data_dir,
         &path,
         "version two\n",
-        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Save,
+        lushtext_model::persistence::local_history::LocalHistorySnapshotOrigin::Save,
         local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
     )
     .expect("seed version two");
@@ -13030,7 +13030,7 @@ fn test_local_history_browser_collapses_and_restore_can_be_undone() {
         &data_dir,
         &path,
         "version one\n",
-        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Save,
+        lushtext_model::persistence::local_history::LocalHistorySnapshotOrigin::Save,
         local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
     )
     .expect("seed version one");
@@ -13039,7 +13039,7 @@ fn test_local_history_browser_collapses_and_restore_can_be_undone() {
         &data_dir,
         &path,
         "version two\n",
-        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Save,
+        lushtext_model::persistence::local_history::LocalHistorySnapshotOrigin::Save,
         local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
     )
     .expect("seed version two");
@@ -13361,7 +13361,7 @@ fn test_autosave_during_a_local_history_restore_keeps_the_previous_draft() {
     ensure_gtk_init();
     let _policy = DraftPipelinePolicyReset;
     let _first_dirty = FirstDirtyAutosaveDelayReset;
-    lushtext_core::ui::window::set_first_dirty_autosave_delay_for_test(60_000);
+    lushtext_ui::ui::window::set_first_dirty_autosave_delay_for_test(60_000);
     let window = test_window_with_restored_size(1400, 900);
     present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");
@@ -13595,7 +13595,7 @@ fn test_a_restore_after_the_draft_settled_owes_a_draft() {
     ensure_gtk_init();
     let _policy = DraftPipelinePolicyReset;
     let _first_dirty = FirstDirtyAutosaveDelayReset;
-    lushtext_core::ui::window::set_first_dirty_autosave_delay_for_test(60_000);
+    lushtext_ui::ui::window::set_first_dirty_autosave_delay_for_test(60_000);
     let (restore_target, working_copy) = large_history_restore_bodies();
     let fixture = HistoryRestoreDraftFixture::open("current\n", &restore_target);
     let editor = &fixture.editor;
@@ -13622,7 +13622,7 @@ fn test_a_pass_captured_before_a_restore_cannot_clear_its_draft_owed() {
     ensure_gtk_init();
     let _policy = DraftPipelinePolicyReset;
     let _first_dirty = FirstDirtyAutosaveDelayReset;
-    lushtext_core::ui::window::set_first_dirty_autosave_delay_for_test(60_000);
+    lushtext_ui::ui::window::set_first_dirty_autosave_delay_for_test(60_000);
     let (restore_target, working_copy) = large_history_restore_bodies();
     let fixture = HistoryRestoreDraftFixture::open("current\n", &restore_target);
     let editor = &fixture.editor;
@@ -13635,7 +13635,7 @@ fn test_a_pass_captured_before_a_restore_cannot_clear_its_draft_owed() {
     let restore_button = fixture.open_restore(&restore_target);
     // Edits newer than the draft, as the pass below captures them.
     editor.set_draft_dirty(true);
-    lushtext_core::ui::window::set_draft_mutation_delays_for_test(0, 1_500, 0);
+    lushtext_ui::ui::window::set_draft_mutation_delays_for_test(0, 1_500, 0);
     fixture.window.autosave_tick_for_test();
     assert!(
         fixture.window.draft_evidence().autosave_inflight,
@@ -13658,7 +13658,7 @@ fn test_a_pass_captured_before_a_restore_cannot_clear_its_draft_owed() {
         "the restored text is still owed a draft: {}",
         fixture.draft_state(&restore_target)
     );
-    lushtext_core::ui::window::set_draft_mutation_delays_for_test(0, 0, 0);
+    lushtext_ui::ui::window::set_draft_mutation_delays_for_test(0, 0, 0);
     fixture.settle_draft(&restore_target);
 }
 
@@ -13666,11 +13666,13 @@ fn test_a_pass_captured_before_a_restore_cannot_clear_its_draft_owed() {
 /// the direct replacement suspends the buffer handlers too.
 #[test]
 fn test_a_small_restore_after_the_draft_settled_owes_a_draft() {
-    use lushtext_core::model::buffer_replacement::{BufferReplacementMode, BufferReplacementPlan};
+    use lushtext_model::document::buffer_replacement::{
+        BufferReplacementMode, BufferReplacementPlan,
+    };
     ensure_gtk_init();
     let _policy = DraftPipelinePolicyReset;
     let _first_dirty = FirstDirtyAutosaveDelayReset;
-    lushtext_core::ui::window::set_first_dirty_autosave_delay_for_test(60_000);
+    lushtext_ui::ui::window::set_first_dirty_autosave_delay_for_test(60_000);
     let restore_target = "restored small\n".repeat(64);
     let working_copy = "working small\n".repeat(64);
     let fixture = HistoryRestoreDraftFixture::open("current\n", &restore_target);
@@ -13702,7 +13704,7 @@ fn test_an_undo_restore_owes_a_draft() {
     ensure_gtk_init();
     let _policy = DraftPipelinePolicyReset;
     let _first_dirty = FirstDirtyAutosaveDelayReset;
-    lushtext_core::ui::window::set_first_dirty_autosave_delay_for_test(60_000);
+    lushtext_ui::ui::window::set_first_dirty_autosave_delay_for_test(60_000);
     let (restore_target, working_copy) = large_history_restore_bodies();
     let fixture = HistoryRestoreDraftFixture::open("current\n", &restore_target);
     let editor = &fixture.editor;
@@ -13747,7 +13749,7 @@ fn test_a_restore_into_a_clean_tab_owes_a_draft() {
     ensure_gtk_init();
     let _policy = DraftPipelinePolicyReset;
     let _first_dirty = FirstDirtyAutosaveDelayReset;
-    lushtext_core::ui::window::set_first_dirty_autosave_delay_for_test(60_000);
+    lushtext_ui::ui::window::set_first_dirty_autosave_delay_for_test(60_000);
     let restore_target = "restored into a clean tab\n".repeat(64);
     let fixture = HistoryRestoreDraftFixture::open("current\n", &restore_target);
     let editor = &fixture.editor;
@@ -13774,11 +13776,11 @@ fn test_a_save_formatting_mirror_back_owes_no_draft() {
     ensure_gtk_init();
     let _policy = DraftPipelinePolicyReset;
     let _first_dirty = FirstDirtyAutosaveDelayReset;
-    lushtext_core::ui::window::set_first_dirty_autosave_delay_for_test(60_000);
+    lushtext_ui::ui::window::set_first_dirty_autosave_delay_for_test(60_000);
     let fixture = HistoryRestoreDraftFixture::open("current\n", "unused snapshot\n");
     let editor = &fixture.editor;
     editor.apply_editorconfig_overrides(
-        lushtext_core::model::formatting_overrides::FormattingOverrides {
+        lushtext_model::document::formatting_overrides::FormattingOverrides {
             trim_trailing_whitespace: Some(true),
             ..Default::default()
         },
@@ -13884,7 +13886,7 @@ fn test_a_recovered_draft_is_not_rewritten_before_an_edit() {
 /// slices; the next snapshot installs only once the buffer is empty.
 #[test]
 fn test_switching_local_history_snapshots_clears_a_protected_preview_in_bounded_turns() {
-    use lushtext_core::model::protected_install::PROTECTED_CLEAR_SLICE_BYTES;
+    use lushtext_model::document::protected_install::PROTECTED_CLEAR_SLICE_BYTES;
     ensure_gtk_init();
     let window = test_window_with_restored_size(1400, 900);
     present_window(&window);
@@ -14121,7 +14123,7 @@ fn test_local_history_restore_discards_mutated_chunked_safety_snapshot() {
         &data_dir,
         &path,
         "restore target\n",
-        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Save,
+        lushtext_model::persistence::local_history::LocalHistorySnapshotOrigin::Save,
         local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
     )
     .expect("seed restore target");
@@ -16387,7 +16389,7 @@ fn test_print_failure_reports_feedback_and_preserves_document_state() {
 #[test]
 fn test_zoom_actions_and_menu_controls_update_setting_bounds() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_uint(keys::ZOOM_LEVEL, 100)
         .expect("reset zoom");
@@ -16434,7 +16436,7 @@ fn test_zoom_actions_and_menu_controls_update_setting_bounds() {
 #[test]
 fn test_zoom_level_remains_global_across_tab_switches() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_uint(keys::ZOOM_LEVEL, 100)
         .expect("reset zoom");
@@ -16465,7 +16467,7 @@ fn test_zoom_level_remains_global_across_tab_switches() {
 #[test]
 fn test_style_scheme_setting_updates_current_and_new_editors() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_string(keys::STYLE_SCHEME, "Adwaita")
         .expect("set initial style scheme");
@@ -16495,7 +16497,7 @@ fn test_style_scheme_setting_updates_current_and_new_editors() {
 #[test]
 fn test_invalid_style_scheme_falls_back_to_bundled_adwaita_scheme() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_double(keys::TAB_CONTENT_OPACITY, 1.0)
         .expect("set opaque tab content");
@@ -16521,7 +16523,7 @@ fn test_invalid_style_scheme_falls_back_to_bundled_adwaita_scheme() {
 #[test]
 fn test_cycle_invisible_characters_updates_active_editor_and_default_for_new_tabs() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_string(
             keys::INVISIBLE_CHARACTERS_MODE,
@@ -16572,7 +16574,7 @@ fn test_cycle_invisible_characters_updates_active_editor_and_default_for_new_tab
 #[test]
 fn test_narrow_window_keeps_quick_encoding_controls_visible() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_int(keys::WINDOW_WIDTH, 820)
         .expect("set window width");
@@ -16854,7 +16856,7 @@ fn test_preview_only_definition_list_code_block_uses_live_column() {
 #[test]
 fn test_side_by_side_definition_list_code_block_uses_live_column() {
     ensure_gtk_init();
-    lushtext_core::ui::settings_writes::shared()
+    lushtext_ui::ui::settings_writes::shared()
         .set_int(keys::PREVIEW_PANE_POSITION, 520)
         .expect("set wide preview pane for definition-list code block regression");
     let (window, _dir) =
@@ -16973,7 +16975,7 @@ fn test_preview_only_shell_renders_a_carried_table_as_one_widget() {
 #[test]
 fn test_side_by_side_shell_renders_a_carried_table_as_one_widget() {
     ensure_gtk_init();
-    lushtext_core::ui::settings_writes::shared()
+    lushtext_ui::ui::settings_writes::shared()
         .set_int(keys::PREVIEW_PANE_POSITION, 520)
         .expect("set wide preview pane for carried-table continuation proof");
     let (window, _dir) = prepare_markdown_preview_window(&oversized_table_markdown(), 1800, 720);
@@ -17255,7 +17257,7 @@ fn test_notes_menu_popup_opens_for_add_and_remove_bookmark_states() {
     bookmark_service::save_for_path(
         &data_dir,
         &path,
-        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+        &[lushtext_model::persistence::bookmark::BookmarkRecord::new(
             0,
             Some("bookmark".to_string()),
         )],
@@ -18146,11 +18148,13 @@ fn test_startup_migration_reconcile_re_resolves_open_editor_notes() {
     bookmark_service::save_for_path(
         &json_store::data_dir(),
         &old_path,
-        &[lushtext_core::model::bookmark::BookmarkRecord::new(1, None)],
+        &[lushtext_model::persistence::bookmark::BookmarkRecord::new(
+            1, None,
+        )],
     )
     .expect("seed old-path bookmark sidecar");
     fixture::write_text(&new_path, "one\ntwo\nthree\n");
-    lushtext_core::services::filesystem::mutate::remove_file_if_exists(&old_path)
+    lushtext_services::filesystem::mutate::remove_file_if_exists(&old_path)
         .expect("remove the pre-rename file");
 
     let window = test_window();
@@ -18611,7 +18615,7 @@ fn test_notes_browser_switches_modes_on_one_live_source_owner() {
     bookmark_service::save_for_path(
         &json_store::data_dir(),
         &path,
-        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+        &[lushtext_model::persistence::bookmark::BookmarkRecord::new(
             1,
             Some("mode bookmark".to_string()),
         )],
@@ -18772,8 +18776,8 @@ fn test_notes_browser_open_editor_snapshot_is_bounded_by_bytes_not_rows() {
             active_editor(&window).file_path().as_deref() == Some(path.as_path())
         });
         active_editor(&window).load_bookmarks(&[
-            lushtext_core::model::bookmark::BookmarkRecord::new(0, None),
-            lushtext_core::model::bookmark::BookmarkRecord::new(1, None),
+            lushtext_model::persistence::bookmark::BookmarkRecord::new(0, None),
+            lushtext_model::persistence::bookmark::BookmarkRecord::new(1, None),
         ]);
     }
 
@@ -18812,7 +18816,7 @@ fn test_notes_browser_open_editor_snapshot_caps_oversized_labels_before_admissio
     bookmark_service::save_for_path(
         &json_store::data_dir(),
         &path,
-        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+        &[lushtext_model::persistence::bookmark::BookmarkRecord::new(
             0,
             Some("x".repeat(5 * 1024 * 1024)),
         )],
@@ -18931,7 +18935,7 @@ fn test_browse_notes_opens_bookmark_for_selected_row() {
     bookmark_service::save_for_path(
         &data_dir,
         &path,
-        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+        &[lushtext_model::persistence::bookmark::BookmarkRecord::new(
             1,
             Some("jump here".to_string()),
         )],
@@ -19000,7 +19004,7 @@ fn test_notes_browser_renders_markdown_bookmark_excerpt() {
     bookmark_service::save_for_path(
         &json_store::data_dir(),
         &path,
-        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+        &[lushtext_model::persistence::bookmark::BookmarkRecord::new(
             2,
             Some("markdown preview".to_string()),
         )],
@@ -19050,7 +19054,7 @@ fn test_notes_browser_renders_raw_bookmark_excerpt_with_target_marker() {
     bookmark_service::save_for_path(
         &json_store::data_dir(),
         &path,
-        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+        &[lushtext_model::persistence::bookmark::BookmarkRecord::new(
             2,
             Some("raw preview".to_string()),
         )],
@@ -19121,10 +19125,12 @@ fn test_notes_browser_bookmark_preview_uses_live_open_editor_buffer() {
     editor
         .buffer()
         .set_text("live before\nlive target unsaved\nlive after\n");
-    editor.load_bookmarks(&[lushtext_core::model::bookmark::BookmarkRecord::new(
-        1,
-        Some("live preview".to_string()),
-    )]);
+    editor.load_bookmarks(
+        &[lushtext_model::persistence::bookmark::BookmarkRecord::new(
+            1,
+            Some("live preview".to_string()),
+        )],
+    );
 
     activate_action(&window, "show-notes");
     wait_until(Duration::from_secs(5), || {
@@ -19158,7 +19164,7 @@ fn test_notes_browser_ignores_stale_bookmark_excerpt_completion() {
     bookmark_service::save_for_path(
         &json_store::data_dir(),
         &slow_path,
-        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+        &[lushtext_model::persistence::bookmark::BookmarkRecord::new(
             1,
             Some("aaa slow preview".to_string()),
         )],
@@ -19167,7 +19173,7 @@ fn test_notes_browser_ignores_stale_bookmark_excerpt_completion() {
     bookmark_service::save_for_path(
         &json_store::data_dir(),
         &fast_path,
-        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+        &[lushtext_model::persistence::bookmark::BookmarkRecord::new(
             1,
             Some("zzz fast preview".to_string()),
         )],
@@ -19222,7 +19228,7 @@ fn test_notes_browser_rapid_selection_keeps_one_active_and_one_latest_preview() 
         bookmark_service::save_for_path(
             &json_store::data_dir(),
             &path,
-            &[lushtext_core::model::bookmark::BookmarkRecord::new(
+            &[lushtext_model::persistence::bookmark::BookmarkRecord::new(
                 1,
                 Some(label.to_string()),
             )],
@@ -19315,7 +19321,7 @@ fn test_notes_browser_close_cancels_active_and_pending_preview_work() {
         bookmark_service::save_for_path(
             &json_store::data_dir(),
             &path,
-            &[lushtext_core::model::bookmark::BookmarkRecord::new(
+            &[lushtext_model::persistence::bookmark::BookmarkRecord::new(
                 1,
                 Some(label.to_string()),
             )],
@@ -19373,7 +19379,7 @@ fn test_notes_browser_mode_switch_cancels_closed_file_preview_work() {
     bookmark_service::save_for_path(
         &json_store::data_dir(),
         &path,
-        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+        &[lushtext_model::persistence::bookmark::BookmarkRecord::new(
             1,
             Some("alpha mode switch".to_string()),
         )],
@@ -19431,7 +19437,7 @@ fn test_notes_browser_search_ignores_bookmark_excerpt_text() {
     bookmark_service::save_for_path(
         &json_store::data_dir(),
         &path,
-        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+        &[lushtext_model::persistence::bookmark::BookmarkRecord::new(
             1,
             Some("metadata label".to_string()),
         )],
@@ -19509,7 +19515,7 @@ fn test_browse_notes_prefers_open_editor_bookmarks_over_stale_sidecar() {
     bookmark_service::save_for_path(
         &data_dir,
         &path,
-        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+        &[lushtext_model::persistence::bookmark::BookmarkRecord::new(
             0,
             Some("stale persisted".to_string()),
         )],
@@ -19525,8 +19531,10 @@ fn test_browse_notes_prefers_open_editor_bookmarks_over_stale_sidecar() {
         active_editor(&window).bookmark_records().len() == 1
     });
 
-    let live_bookmark =
-        lushtext_core::model::bookmark::BookmarkRecord::new(2, Some("live current".to_string()));
+    let live_bookmark = lushtext_model::persistence::bookmark::BookmarkRecord::new(
+        2,
+        Some("live current".to_string()),
+    );
     active_editor(&window).load_bookmarks(&[live_bookmark]);
 
     activate_action(&window, "show-notes");
@@ -19673,7 +19681,7 @@ fn test_browse_notes_keeps_scope_rows_strict_and_lists_other_open_workspace_tab(
     bookmark_service::save_for_path(
         &json_store::data_dir(),
         &left_path,
-        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+        &[lushtext_model::persistence::bookmark::BookmarkRecord::new(
             0,
             Some("left scoped".to_string()),
         )],
@@ -19689,10 +19697,12 @@ fn test_browse_notes_keeps_scope_rows_strict_and_lists_other_open_workspace_tab(
         active_editor(&window).file_path() == Some(right_path.clone())
             && active_editor(&window).file_size().is_some()
     });
-    active_editor(&window).load_bookmarks(&[lushtext_core::model::bookmark::BookmarkRecord::new(
-        0,
-        Some("right open".to_string()),
-    )]);
+    active_editor(&window).load_bookmarks(&[
+        lushtext_model::persistence::bookmark::BookmarkRecord::new(
+            0,
+            Some("right open".to_string()),
+        ),
+    ]);
 
     activate_action(&window, "show-notes");
     wait_until(Duration::from_secs(5), || {
@@ -19725,7 +19735,7 @@ fn test_notes_browser_uses_folder_order_for_overlapping_primary_context() {
     bookmark_service::save_for_path(
         &json_store::data_dir(),
         &path,
-        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+        &[lushtext_model::persistence::bookmark::BookmarkRecord::new(
             1,
             Some("overlap bookmark".to_string()),
         )],
@@ -19854,7 +19864,7 @@ fn test_bookmark_browser_warns_and_keeps_valid_rows_with_corrupt_sidecar() {
     bookmark_service::save_for_path(
         &data_dir,
         &valid_path,
-        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+        &[lushtext_model::persistence::bookmark::BookmarkRecord::new(
             1,
             Some("valid bookmark".to_string()),
         )],
@@ -20119,7 +20129,7 @@ fn test_browse_notes_filters_bookmarks_to_current_workspace_scope() {
     bookmark_service::save_for_path(
         &data_dir,
         &left_path,
-        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+        &[lushtext_model::persistence::bookmark::BookmarkRecord::new(
             0,
             Some("left only".to_string()),
         )],
@@ -20128,7 +20138,7 @@ fn test_browse_notes_filters_bookmarks_to_current_workspace_scope() {
     bookmark_service::save_for_path(
         &data_dir,
         &right_path,
-        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+        &[lushtext_model::persistence::bookmark::BookmarkRecord::new(
             0,
             Some("right hidden".to_string()),
         )],
@@ -20174,7 +20184,7 @@ fn test_notes_browser_uses_a_sectioned_list_and_filters_note_body() {
     bookmark_service::save_for_path(
         &data_dir,
         &path,
-        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+        &[lushtext_model::persistence::bookmark::BookmarkRecord::new(
             1,
             Some("bookmark needle".to_string()),
         )],
@@ -20357,7 +20367,7 @@ fn test_notes_browser_lists_every_match_without_a_refine_notice() {
 
     let bookmarks = (0..520)
         .map(|line| {
-            lushtext_core::model::bookmark::BookmarkRecord::new(
+            lushtext_model::persistence::bookmark::BookmarkRecord::new(
                 line,
                 Some(format!("bookmark {line}")),
             )
@@ -20475,7 +20485,7 @@ fn test_notes_menu_cursor_specific_actions_follow_active_note_context() {
     bookmark_service::save_for_path(
         &data_dir,
         &path,
-        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+        &[lushtext_model::persistence::bookmark::BookmarkRecord::new(
             0,
             Some("bookmark".to_string()),
         )],
@@ -21067,7 +21077,7 @@ fn test_local_history_startup_restore_uses_restored_draft_as_baseline() {
     assert_eq!(snapshots.len(), 1);
     assert_eq!(
         snapshots[0].origin,
-        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Baseline
+        lushtext_model::persistence::local_history::LocalHistorySnapshotOrigin::Baseline
     );
     assert_eq!(snapshots[0].byte_len, draft_content.len() as u64);
 
@@ -21168,7 +21178,7 @@ fn test_startup_restore_applies_matching_file_backed_draft() {
 #[test]
 fn test_restored_large_draft_marks_every_minimap_row_modified() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -21880,7 +21890,8 @@ fn test_lazily_opened_stale_draft_is_kept_in_local_history_before_retirement() {
     let preserved = snapshots
         .iter()
         .find(|meta| {
-            meta.origin == lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Periodic
+            meta.origin
+                == lushtext_model::persistence::local_history::LocalHistorySnapshotOrigin::Periodic
         })
         .expect("stale edits kept as a while-editing snapshot");
     assert_eq!(preserved.captured_at_millis, 1_700_000_030_000);
@@ -22084,7 +22095,7 @@ fn test_preview_mode_toggle_uses_full_content_layout() {
 #[test]
 fn test_side_by_side_preview_width_clamps_legacy_preference_without_rewriting_it() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_int(keys::PREVIEW_PANE_POSITION, 520)
         .expect("set legacy preview width preference");
@@ -22236,7 +22247,7 @@ fn test_a_bookmark_opens_in_a_never_shown_tab_in_preview_only_mode() {
     bookmark_service::save_for_path(
         &json_store::data_dir(),
         &path,
-        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+        &[lushtext_model::persistence::bookmark::BookmarkRecord::new(
             300,
             Some("deep line".to_string()),
         )],
@@ -22316,9 +22327,9 @@ fn test_local_history_restore_of_a_large_markdown_body_installs_it_highlighted_i
     // then attaches it to the first chunk and inserts the rest chunk by
     // chunk; attaching it to the whole body at the terminal would analyse it
     // in 30 ms worker slices (ledger A69).
-    use lushtext_core::model::highlight_chunking::HIGHLIGHT_CHUNK_BYTES;
+    use lushtext_model::document::highlight_chunking::HIGHLIGHT_CHUNK_BYTES;
     ensure_gtk_init();
-    let _cap = lushtext_core::model::document_scale::override_markdown_chunked_cap_for_test();
+    let _cap = lushtext_model::document::document_scale::override_markdown_chunked_cap_for_test();
     let window = test_window_with_restored_size(1400, 900);
     present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");

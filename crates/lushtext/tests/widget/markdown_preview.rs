@@ -9,16 +9,16 @@ use crate::common::{
 use gio::prelude::ListModelExt;
 use glib::prelude::{Cast, IsA};
 use gtk4::prelude::*;
-use lushtext_core::config::keys;
-use lushtext_core::services::markdown_render::{
+use lushtext_services::notes::markdown_render::{
     MARKDOWN_EVENTS_PER_PROJECTION_SLICE, MAX_MARKDOWN_PLACEHOLDER_WIDGETS,
     MAX_MARKDOWN_SOURCE_BYTES,
 };
-use lushtext_core::ui::accessibility::test_audit::AccessibleAudit;
-use lushtext_core::ui::markdown_preview::{
+use lushtext_ui::config::keys;
+use lushtext_ui::ui::accessibility::test_audit::AccessibleAudit;
+use lushtext_ui::ui::markdown_preview::{
     LushtextMarkdownPreview, MarkdownPreviewRenderContext, MarkdownRenderState,
 };
-use lushtext_core::ui::plain_disposal::{hold_disposal_capacity_for_test, plain_disposal_evidence};
+use lushtext_ui::ui::plain_disposal::{hold_disposal_capacity_for_test, plain_disposal_evidence};
 use sourceview5::prelude::*;
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -242,7 +242,7 @@ fn test_preview_surface_exposes_read_only_accessibility_metadata() {
 #[test]
 fn test_preview_background_opacity_tracks_setting() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_double(keys::TAB_CONTENT_OPACITY, 0.7)
         .expect("set tab-content-opacity");

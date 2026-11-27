@@ -10,7 +10,7 @@
 
 use std::borrow::Cow;
 
-use lushtext_model::encoding::LineEnding;
+use lushtext_model::document::encoding::LineEnding;
 
 /// Count the non-breaking spaces and zero-width characters of one slice, one
 /// character at a time.

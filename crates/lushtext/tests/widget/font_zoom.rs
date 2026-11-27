@@ -16,11 +16,11 @@ use crate::common::{
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::gio::prelude::SettingsExt;
 use gtk4::prelude::*;
-use lushtext_core::config::keys;
-use lushtext_core::ui::editor_page::{EditorLoadState, LushtextEditorPage};
-use lushtext_core::ui::font_zoom::{self, FontZoomEvidence};
-use lushtext_core::ui::settings_writes;
-use lushtext_core::ui::window::LushtextWindow;
+use lushtext_ui::config::keys;
+use lushtext_ui::ui::editor_page::{EditorLoadState, LushtextEditorPage};
+use lushtext_ui::ui::font_zoom::{self, FontZoomEvidence};
+use lushtext_ui::ui::settings_writes;
+use lushtext_ui::ui::window::LushtextWindow;
 
 /// The editor surface's line-height guard (as `ui/font_zoom/policy.rs`).
 const LINE_HEIGHT: f64 = 1.18;

@@ -1919,7 +1919,7 @@ const CATALOGUE: &[Axiom] = &[
                     GtkATContext gives it no default; with GTK_A11Y=none the same call returns, \
                     because GTK creates no AT context",
         dependent_designs: &[
-            "quiet-headless-session-services D5: lushtext-core's one announcement helper \
+            "quiet-headless-session-services D5: lushtext-ui's one announcement helper \
              (ui::accessibility::announce) skips the call when the widget's AT context is a \
              GtkTestATContext, the backend the widget profile selects and GTK's fallback when \
              no backend builds a context; under GTK_A11Y=none it never asks for the context, \

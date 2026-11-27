@@ -74,7 +74,7 @@ under widget-lane load produces timeouts that read as survivors.
 
 ## Smoke lanes, last and from clean roots
 
-**Any edit under `crates/lushtext-core/src/ui/`, `crates/lushtext/tests/widget/`,
+**Any edit under `crates/lushtext-ui/src/ui/`, `crates/lushtext/tests/widget/`,
 `resources/ui/` or `resources/style/` voids the accessibility, visual, and
 visual-geometry summaries.** Those gates key on the **directory prefix**, not on
 `*.rs`, so even a module-layout `AGENTS.md` under `ui/` invalidates all three.

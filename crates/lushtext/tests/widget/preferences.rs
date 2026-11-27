@@ -6,15 +6,15 @@ use crate::common::{ensure_gtk_init, fixture, fs_metadata, isolated_data_dir, wa
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
-use lushtext_core::config::keys;
-use lushtext_core::services::format_upgrade::{
+use lushtext_services::persistence::format_upgrade::{
     FORMAT_UPGRADE_BACKUP_DIR, test_support::ConverterRegistry,
 };
-use lushtext_core::services::json_format::{
+use lushtext_services::persistence::json_format::{
     KIND_BOOKMARK_SIDECAR, KIND_SESSION, SUPPORTED_JSON_VERSION,
 };
-use lushtext_core::ui::accessibility::{AnnouncementLane, test_audit::AccessibleAudit};
-use lushtext_core::ui::preferences::LushtextPreferences;
+use lushtext_ui::config::keys;
+use lushtext_ui::ui::accessibility::{AnnouncementLane, test_audit::AccessibleAudit};
+use lushtext_ui::ui::preferences::LushtextPreferences;
 use serde_json::json;
 use std::time::{Duration, Instant};
 
@@ -172,7 +172,7 @@ fn test_show_minimap_row_bound_to_settings() {
 #[test]
 fn test_minimap_long_line_markers_row_defaults_off_and_updates_setting() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings.reset(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE);
 
     let prefs = LushtextPreferences::new();
@@ -278,7 +278,7 @@ fn test_color_scheme_row_populated() {
 #[test]
 fn test_background_opacity_row_is_visible_with_default_percentage() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_double(keys::TAB_CONTENT_OPACITY, 1.0)
         .expect("reset tab-content-opacity");
@@ -302,7 +302,7 @@ fn test_background_opacity_row_is_visible_with_default_percentage() {
 #[test]
 fn test_background_opacity_row_updates_setting_and_label() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_double(keys::TAB_CONTENT_OPACITY, 1.0)
         .expect("reset tab-content-opacity");
@@ -328,7 +328,7 @@ fn test_background_opacity_row_updates_setting_and_label() {
 #[test]
 fn test_background_opacity_row_restores_persisted_percentage() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_double(keys::TAB_CONTENT_OPACITY, 0.65)
         .expect("set tab-content-opacity");
@@ -343,7 +343,7 @@ fn test_background_opacity_row_restores_persisted_percentage() {
 #[test]
 fn test_workspace_sidebar_width_row_lists_all_presets() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, 0.3)
         .expect("set comfy preset");
@@ -366,7 +366,7 @@ fn test_workspace_sidebar_width_row_lists_all_presets() {
 #[test]
 fn test_workspace_sidebar_width_row_updates_setting() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, 0.3)
         .expect("set comfy preset");
@@ -690,7 +690,7 @@ fn set_aside_rows(prefs: &LushtextPreferences) -> Vec<libadwaita::ActionRow> {
 fn listed_fingerprint(
     prefs: &LushtextPreferences,
     path: &std::path::Path,
-) -> lushtext_core::services::draft_service::set_aside_retention::SetAsideFingerprint {
+) -> lushtext_services::persistence::draft_service::set_aside_retention::SetAsideFingerprint {
     prefs
         .imp()
         .data_set_aside_listing
@@ -707,7 +707,7 @@ fn listed_fingerprint(
 }
 
 fn seed_set_aside(data_dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
-    let area = lushtext_core::services::draft_service::set_aside_dir(data_dir);
+    let area = lushtext_services::persistence::draft_service::set_aside_dir(data_dir);
     fixture::create_dir_all(&area);
     let path = area.join(name);
     fixture::write_text(&path, body);
@@ -813,7 +813,7 @@ fn test_data_page_opens_a_preserved_draft_in_a_new_untitled_tab_and_keeps_it() {
         (pages > pages_before).then(|| {
             let child = window.imp().tab_view.nth_page(pages - 1).child();
             let editor = child
-                .downcast_ref::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+                .downcast_ref::<lushtext_ui::ui::editor_page::LushtextEditorPage>()
                 .expect("an editor page")
                 .clone();
             let buffer = editor.buffer();
@@ -844,7 +844,7 @@ fn test_data_page_opens_a_preserved_draft_in_a_new_untitled_tab_and_keeps_it() {
     let pages = window.imp().tab_view.n_pages();
     let child = window.imp().tab_view.nth_page(pages - 1).child();
     let editor = child
-        .downcast_ref::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+        .downcast_ref::<lushtext_ui::ui::editor_page::LushtextEditorPage>()
         .expect("an editor page")
         .clone();
     assert!(
@@ -861,7 +861,7 @@ fn test_data_page_opens_a_preserved_draft_in_a_new_untitled_tab_and_keeps_it() {
     let draft_id = editor.draft_id().expect("the new tab has a draft id");
     window.autosave_tick_for_test();
     wait_until(Duration::from_secs(10), || {
-        lushtext_core::services::draft_service::read_draft(data_dir.path(), &draft_id)
+        lushtext_services::persistence::draft_service::read_draft(data_dir.path(), &draft_id)
             .ok()
             .flatten()
             .as_deref()
@@ -889,9 +889,9 @@ fn set_aside_summary(prefs: &LushtextPreferences) -> Option<(String, String)> {
 }
 
 fn set_aside_names(data_dir: &std::path::Path) -> Vec<String> {
-    let mut names = fixture::entry_names(&lushtext_core::services::draft_service::set_aside_dir(
-        data_dir,
-    ));
+    let mut names = fixture::entry_names(
+        &lushtext_services::persistence::draft_service::set_aside_dir(data_dir),
+    );
     names.sort();
     names
 }
@@ -1055,7 +1055,7 @@ fn test_delete_all_preserved_drafts_removes_exactly_the_confirmed_set() {
     // While the dialog is open: a new body is set aside, and one listed body
     // is replaced by different content under its name.
     seed_set_aside(data_dir.path(), "aaaa000000000004.4.draft", "four");
-    let changed = lushtext_core::services::draft_service::set_aside_dir(data_dir.path())
+    let changed = lushtext_services::persistence::draft_service::set_aside_dir(data_dir.path())
         .join("aaaa000000000002.2.draft");
     fixture::remove_file(&changed);
     fixture::write_text(&changed, "two, rewritten after the confirmation");
@@ -1098,14 +1098,14 @@ fn app_data_files(root: &std::path::Path) -> Vec<(std::path::PathBuf, u64)> {
 
 #[test]
 fn test_preserved_drafts_over_the_bound_notify_once_and_the_review_action_opens_them() {
-    use lushtext_core::services::draft_service;
+    use lushtext_services::persistence::draft_service;
     let data_dir = isolated_data_dir();
     seed_set_aside_bodies(data_dir.path(), 129);
     let window = crate::common::test_window();
     crate::common::present_window(&window);
     let app = window
         .application()
-        .and_downcast::<lushtext_core::app::LushtextApplication>()
+        .and_downcast::<lushtext_ui::app::LushtextApplication>()
         .expect("a LushText application");
 
     window.load_session_and_drafts();

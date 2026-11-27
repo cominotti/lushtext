@@ -2,19 +2,22 @@
 
 //! Integration tests for bookmark and note sidecar services.
 
-use lushtext_core::model::bookmark::BookmarkRecord;
-use lushtext_core::model::document_note::DocumentNoteDocument;
-use lushtext_core::model::folder_note::FolderNoteDocument;
-use lushtext_core::model::migration_ledger::MigrationKind;
-use lushtext_core::model::note::RichNoteBody;
-use lushtext_core::model::workspace::{
+use lushtext_model::persistence::bookmark::BookmarkRecord;
+use lushtext_model::persistence::document_note::DocumentNoteDocument;
+use lushtext_model::persistence::folder_note::FolderNoteDocument;
+use lushtext_model::persistence::migration_ledger::MigrationKind;
+use lushtext_model::persistence::note::RichNoteBody;
+use lushtext_model::workspace::{
     WorkspaceConfig, WorkspaceFolder, WorkspaceFolderId, WorkspaceId, WorkspaceScope,
     WorkspacesFile,
 };
-use lushtext_core::services::{
-    bookmark_service, document_note_service,
+use lushtext_services::{
     filesystem::{fixture, metadata as fs_metadata},
-    folder_note_service, migration_ledger, workspace_manager,
+    notes::bookmark_service,
+    notes::document_note_service,
+    notes::folder_note_service,
+    persistence::migration_ledger,
+    workspace::workspace_manager,
 };
 
 use crate::common::TestContext;

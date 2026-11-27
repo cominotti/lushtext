@@ -5,7 +5,7 @@
 //! watch, the minimap's retire-and-rebuild, and the reduced-features notice.
 //!
 //! Every fixture is synthetic. Thresholds are read from
-//! `lushtext_core::model::document_scale`, never restated.
+//! `lushtext_model::document::document_scale`, never restated.
 
 use crate::common::{
     LogCapture, editor_text, ensure_gtk_init, fixture, flush_events, present_window,
@@ -14,19 +14,21 @@ use crate::common::{
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
-use lushtext_core::config::keys;
-use lushtext_core::model::document_scale::{
+use lushtext_model::document::document_scale::{
     DocumentScale, L_INVISIBLES, L_MINIMAP, L_PROTECT_EDIT, L_SEARCH_HIGHLIGHT, L_SYNTAX,
     L_WRAP_EDIT, LocalHistoryAvailability, R_BATCH, ReducedFeatures, V_BATCH,
 };
-use lushtext_core::model::paragraph_boundary::DocumentProfile;
-use lushtext_core::model::paragraph_wrap::REWRAP_MARGIN;
-use lushtext_core::model::surrounding_text::SURROUNDING_WINDOW_CHARS;
-use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
-use lushtext_core::ui::editor_page::{
+use lushtext_model::document::paragraph_boundary::DocumentProfile;
+use lushtext_model::document::paragraph_wrap::REWRAP_MARGIN;
+use lushtext_model::document::surrounding_text::SURROUNDING_WINDOW_CHARS;
+use lushtext_services::coordination::notifications::{
+    InlineActionNotification, InlineNotificationStyle,
+};
+use lushtext_ui::config::keys;
+use lushtext_ui::ui::editor_page::{
     EditorLoadState, InlineAlertLifetime, LushtextEditorPage, MinimapAvailability, NO_WRAP_TAG,
 };
-use lushtext_core::ui::window::LushtextWindow;
+use lushtext_ui::ui::window::LushtextWindow;
 use sourceview5::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -51,7 +53,7 @@ fn line_has_modified_tag(buffer: &sourceview5::Buffer, line: i32) -> bool {
 }
 
 fn enable_minimap(enabled: bool) -> gio::Settings {
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, enabled)
         .expect("set minimap preference");
@@ -349,7 +351,7 @@ fn test_invisibles_are_forced_off_for_gated_documents() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
     page.set_invisible_characters_mode(
-        lushtext_core::model::encoding::InvisibleCharactersMode::All,
+        lushtext_model::document::encoding::InvisibleCharactersMode::All,
     );
     page.buffer()
         .set_text(&format!("{}\n", "z".repeat(n(L_INVISIBLES) + 1)));
@@ -358,7 +360,7 @@ fn test_invisibles_are_forced_off_for_gated_documents() {
     // The per-document mode is kept for the other documents.
     assert_eq!(
         page.invisible_characters_mode(),
-        lushtext_core::model::encoding::InvisibleCharactersMode::All
+        lushtext_model::document::encoding::InvisibleCharactersMode::All
     );
 }
 
@@ -716,7 +718,7 @@ fn test_a_dense_short_line_document_stays_editable() {
         !evidence
             .scale
             .reduced
-            .contains(lushtext_core::model::document_scale::ScaleFeature::ProtectedView)
+            .contains(lushtext_model::document::document_scale::ScaleFeature::ProtectedView)
     );
 }
 
@@ -1032,7 +1034,7 @@ fn test_only_the_long_paragraph_is_unwrapped() {
     assert!(!paragraph_unwrapped(&page, 2));
     assert_eq!(page.source_view().wrap_mode(), gtk4::WrapMode::Word);
     assert!(
-        lushtext_core::ui::settings_writes::shared().boolean(keys::WORD_WRAP),
+        lushtext_ui::ui::settings_writes::shared().boolean(keys::WORD_WRAP),
         "the word-wrap preference is never written"
     );
     assert!(!page.document_scale().wrap_allowed);
@@ -1318,7 +1320,7 @@ fn test_notice_is_announced_again_only_for_an_additional_downgrade() {
         status_text(&window).contains("because of very long lines")
     });
     // The same reductions do not announce again.
-    window.publish_status_message("marker", lushtext_core::ui::status_bar::MessageKind::Info);
+    window.publish_status_message("marker", lushtext_ui::ui::status_bar::MessageKind::Info);
     insert_at_end(&page, "more");
     drain_frames(&page, 2);
     flush_events();

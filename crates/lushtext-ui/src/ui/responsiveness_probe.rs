@@ -1,0 +1,1346 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! In-process responsiveness instrumentation for the measurement build.
+//!
+//! **cross-cutting instrumentation with no workflow role and no `WFR-*` row**,
+//! like `services::kill_point`. It exists so `make responsiveness-smoke` can
+//! measure what the user feels in the real binary: how long the GTK main loop
+//! goes without returning to poll, when frames are presented, how long an
+//! input event waits for its first presented frame, and what an input method
+//! that asks for the surrounding text costs.
+//!
+//! Without the `responsiveness-probes` Cargo feature — every release, Meson,
+//! Flatpak, and Snap build — [`install`] is an empty inline function: no
+//! source, handler, controller, input-method type, or environment read exists
+//! in the binary. With the feature, [`install`] does nothing unless
+//! `LUSHTEXT_RESPONSIVENESS_LOG` names a file; then it installs:
+//!
+//! 1. **The lateness watchdog** (`LatenessWatchdog`): a custom `GSource` at
+//!    `G_PRIORITY_HIGH` whose ready time is set in microseconds
+//!    (`g_source_set_ready_time`) every tick `T`
+//!    (`LUSHTEXT_RESPONSIVENESS_TICK_US`, default 2,000 µs). Each dispatch
+//!    records `L = now − ready time` and re-arms from that same `now`. GLib
+//!    cannot preempt a dispatch and dispatches every ready source of the
+//!    winning priority back to back, so the largest `L` bounds the longest
+//!    main-loop stall `S` as `S − T ≤ L ≤ S + ε`, with `ε` the poll wake-up
+//!    slack (GLib rounds the poll timeout to whole milliseconds). A plain
+//!    `timeout_source_new` is not used: it has millisecond granularity and
+//!    re-arms from the iteration's cached time.
+//! 2. **Frame timing**: each window's `GdkFrameClock` `after-paint` queues the
+//!    frame, and once its `GdkFrameTimings` are final the probe records the
+//!    frame time, the presentation time when the compositor reported one, and
+//!    the refresh interval. `services::responsiveness_log::FrameTimingsQueue`
+//!    decides when a frame is final, so one frame that never receives
+//!    presentation feedback cannot hold back the frames painted after it.
+//! 3. **Input stamps**: a capture-phase `GtkEventControllerLegacy` on each
+//!    window records, for key, scroll, and button events, both the handler's
+//!    monotonic time and the event's own compositor timestamp, so latency can
+//!    be measured from the injection or the event time rather than from a
+//!    handler that runs only after a stall ends.
+//! 4. **The probe input method** (`LUSHTEXT_PROBE_IM=1`): a `GtkIMContext`
+//!    registered on the `gtk-im-module` extension point as `lushtext-probe`
+//!    (selected with `GTK_IM_MODULE=lushtext-probe`). On focus-in,
+//!    `set_cursor_location`, `filter_keypress`, and `reset` it emits
+//!    `retrieve-surrounding`, as an IBus engine with the surrounding-text
+//!    capability does, and records the call and the surrounding text's byte
+//!    length, never the text. It commits printable keys itself so typing
+//!    still inserts text.
+//!
+//! Every observation becomes a `services::responsiveness_log::ProbeRecord` and
+//! travels over a bounded channel to one writer thread; a full channel drops
+//! and counts records, never blocking the GTK thread.
+//!
+//! The watchdog compiles under `cfg(any(test, feature = "responsiveness-probes"))`
+//! so the default unit-test lane tests it on a private main context; only
+//! [`install`] and its toolkit hooks are feature-only.
+
+// Only the feature-gated installer names it from outside `watchdog`; the unit
+// tests live inside, so a `cfg(test)` re-export was an unused import there.
+#[cfg(feature = "responsiveness-probes")]
+pub(crate) use watchdog::LatenessWatchdog;
+
+/// Install the responsiveness probes into `app` when the measurement build
+/// was asked to (`LUSHTEXT_RESPONSIVENESS_LOG`); see the module docs.
+///
+/// Without the `responsiveness-probes` feature this is an empty function.
+#[cfg(not(feature = "responsiveness-probes"))]
+#[inline]
+pub fn install(_app: &impl gtk4::prelude::IsA<gtk4::Application>) {}
+
+/// Install the responsiveness probes into `app` when the measurement build
+/// was asked to (`LUSHTEXT_RESPONSIVENESS_LOG`); see the module docs.
+#[cfg(feature = "responsiveness-probes")]
+pub fn install(app: &impl gtk4::prelude::IsA<gtk4::Application>) {
+    measurement::install(app.as_ref());
+}
+
+/// Record one startup or window-construction span in the probe's evidence
+/// stream (`bound-window-construction-dispatch`).
+///
+/// Without the `responsiveness-probes` feature this is an empty function.
+#[cfg(not(feature = "responsiveness-probes"))]
+#[inline]
+pub(crate) fn record_span(_name: &'static str, _start_us: i64, _end_us: i64) {}
+
+/// The span every `spawn_blocking_then` completion is recorded as in the
+/// measurement build (`gtk_lush_tasks::set_completion_observer`).
+#[cfg_attr(not(feature = "responsiveness-probes"), allow(dead_code))]
+pub(crate) const TASK_COMPLETION_SPAN: &str = "task_completion";
+
+/// The span an admission drain or a payload-permit release scheduled at
+/// `gtk_lush_tasks::completion_priority()` is recorded as: those hand-offs
+/// co-dispatch with the completion source in one main-loop iteration (ledger
+/// A81), so the lane measures the iteration around both.
+pub(crate) const TASK_HANDOFF_SPAN: &str = "task_handoff";
+
+/// The span of Replace All's completion terminal on GTK (`stream-replace-all`
+/// task 9.1, bar (a): `B_SETTLE_US`).
+pub(crate) const REPLACE_COMPLETION_SPAN: &str = "replace_completion";
+
+/// The span of one dispatch of the Replace All progress poll (task 9.1,
+/// bar (c): `B_INTERACT_US`).
+pub(crate) const REPLACE_PROGRESS_HEARTBEAT_SPAN: &str = "replace_progress_heartbeat";
+
+/// The span of the dispatch that opens the Skipped Files dialog (task 9.1,
+/// bar (b): `B_SETTLE_US`).
+pub(crate) const SKIPPED_FILES_OPEN_SPAN: &str = "skipped_files_open";
+
+/// The span over the layout and paint of the Skipped Files list's first
+/// frame after it maps (task 9.1, bar (b): `B_SETTLE_US`).
+pub(crate) const SKIPPED_FILES_FIRST_FRAME_SPAN: &str = "skipped_files_first_frame";
+
+/// The span from the Skipped Files dialog's opening to the end of its staged
+/// first publish (every file listed).
+pub(crate) const SKIPPED_FILES_GROWTH_SPAN: &str = "skipped_files_growth";
+
+/// The span of one growth step of the Skipped Files list's staged first
+/// publish: the lane judges the frame that lays out its rows.
+pub(crate) const SKIPPED_FILES_GROWTH_STEP_SPAN: &str = "skipped_files_growth_step";
+
+/// Run `work` and record it as one span named `name` in the measurement
+/// build, so the lane can attribute a long dispatch to the work inside it.
+/// Without the `responsiveness-probes` feature it only runs `work`.
+#[inline]
+pub(crate) fn span<R>(name: &'static str, work: impl FnOnce() -> R) -> R {
+    #[cfg(feature = "responsiveness-probes")]
+    {
+        let started_us = glib::monotonic_time();
+        let result = work();
+        record_span(name, started_us, glib::monotonic_time());
+        result
+    }
+    #[cfg(not(feature = "responsiveness-probes"))]
+    {
+        let _ = name;
+        work()
+    }
+}
+
+/// Record one startup or window-construction span in the probe's evidence
+/// stream (`bound-window-construction-dispatch`).
+#[cfg(feature = "responsiveness-probes")]
+pub(crate) fn record_span(name: &'static str, start_us: i64, end_us: i64) {
+    measurement::record(
+        lushtext_services::instrumentation::responsiveness_log::ProbeRecord::Span {
+            t_us: glib::monotonic_time(),
+            name,
+            start_us,
+            end_us,
+        },
+    );
+    if lushtext_services::instrumentation::responsiveness_log::arms_settle_sentinel(name) {
+        measurement::arm_settle_sentinel();
+    }
+}
+
+/// One post-open stage span (`bound-post-open-settle`, design D1): created at
+/// the start of the stage, recorded when dropped. The name is one of
+/// `services::responsiveness_log::POST_OPEN_SPANS`.
+///
+/// Without the `responsiveness-probes` feature it is a zero-sized value with
+/// no drop glue, and [`PostOpenSpan::begin`] reads no clock.
+#[cfg(not(feature = "responsiveness-probes"))]
+#[must_use = "a post-open span records when it is dropped"]
+pub(crate) struct PostOpenSpan;
+
+#[cfg(not(feature = "responsiveness-probes"))]
+impl PostOpenSpan {
+    /// Start the span `_name`.
+    #[inline]
+    pub(crate) fn begin(_name: &'static str) -> Self {
+        Self
+    }
+}
+
+/// One post-open stage span (`bound-post-open-settle`, design D1): created at
+/// the start of the stage, recorded when dropped.
+#[cfg(feature = "responsiveness-probes")]
+#[must_use = "a post-open span records when it is dropped"]
+pub(crate) struct PostOpenSpan {
+    name: &'static str,
+    start_us: i64,
+}
+
+#[cfg(feature = "responsiveness-probes")]
+impl PostOpenSpan {
+    /// Start the span `name`.
+    pub(crate) fn begin(name: &'static str) -> Self {
+        debug_assert!(
+            lushtext_services::instrumentation::responsiveness_log::POST_OPEN_SPANS.contains(&name),
+            "{name} is not a post-open span"
+        );
+        Self {
+            name,
+            start_us: glib::monotonic_time(),
+        }
+    }
+}
+
+#[cfg(feature = "responsiveness-probes")]
+impl Drop for PostOpenSpan {
+    fn drop(&mut self) {
+        record_span(self.name, self.start_us, glib::monotonic_time());
+    }
+}
+
+/// Observe one editor's post-open toolkit work: a mark on every
+/// `highlight-updated` of its buffer and on every change of its vertical
+/// adjustment's `upper`, and the `post_open_first_editor_frame` span over the
+/// layout and paint of the first frame after the view is mapped.
+///
+/// Without the `responsiveness-probes` feature this is an empty function.
+#[cfg(not(feature = "responsiveness-probes"))]
+#[inline]
+pub(crate) fn observe_editor(_view: &sourceview5::View) {}
+
+/// Observe one editor's post-open toolkit work: a mark on every
+/// `highlight-updated` of its buffer and on every change of its vertical
+/// adjustment's `upper`, and the `post_open_first_editor_frame` span over the
+/// layout and paint of the first frame after the view is mapped.
+#[cfg(feature = "responsiveness-probes")]
+pub(crate) fn observe_editor(view: &sourceview5::View) {
+    measurement::observe_editor(view);
+}
+
+/// Record the layout and paint of the first frame after `widget` maps as one
+/// span named `name` (the shape of `post_open_first_editor_frame`).
+///
+/// Without the `responsiveness-probes` feature this is an empty function.
+#[cfg(not(feature = "responsiveness-probes"))]
+#[inline]
+pub(crate) fn observe_first_frame(
+    _widget: &impl gtk4::prelude::IsA<gtk4::Widget>,
+    _name: &'static str,
+) {
+}
+
+/// Record the layout and paint of the first frame after `widget` maps as one
+/// span named `name` (the shape of `post_open_first_editor_frame`).
+#[cfg(feature = "responsiveness-probes")]
+pub(crate) fn observe_first_frame(
+    widget: &impl gtk4::prelude::IsA<gtk4::Widget>,
+    name: &'static str,
+) {
+    measurement::observe_first_frame(widget.as_ref(), name);
+}
+
+/// The largest watchdog lateness observed since the probe was installed, which
+/// bounds the longest main-loop dispatch so far (module docs). `None` when no
+/// watchdog runs: without the `responsiveness-probes` feature, or when the
+/// measurement build was not asked to record.
+#[cfg(not(feature = "responsiveness-probes"))]
+#[inline]
+pub(crate) fn largest_dispatch_so_far_us() -> Option<u64> {
+    None
+}
+
+/// The largest watchdog lateness observed since the probe was installed, which
+/// bounds the longest main-loop dispatch so far (module docs). `None` when the
+/// measurement build was not asked to record.
+#[cfg(feature = "responsiveness-probes")]
+pub(crate) fn largest_dispatch_so_far_us() -> Option<u64> {
+    measurement::largest_lateness_so_far_us()
+}
+
+/// The largest watchdog lateness observed at or after `since_us` (monotonic
+/// microseconds), which bounds the longest dispatch that ended in that window.
+/// `None` when no watchdog runs.
+#[cfg(not(feature = "responsiveness-probes"))]
+#[inline]
+pub(crate) fn largest_dispatch_since_us(_since_us: i64) -> Option<u64> {
+    None
+}
+
+/// The largest watchdog lateness observed at or after `since_us` (monotonic
+/// microseconds), which bounds the longest dispatch that ended in that window.
+/// `None` when the measurement build was not asked to record.
+#[cfg(feature = "responsiveness-probes")]
+pub(crate) fn largest_dispatch_since_us(since_us: i64) -> Option<u64> {
+    measurement::largest_lateness_since_us(since_us)
+}
+
+#[cfg(any(test, feature = "responsiveness-probes"))]
+mod watchdog {
+    //! The custom `GSource` behind the lateness watchdog.
+
+    use std::ffi::c_uint;
+    use std::ptr;
+
+    use glib::ffi;
+    use glib::translate::{FromGlibPtrFull, ToGlibPtr};
+
+    /// What the watchdog calls on each dispatch: `(now_us, ready_us)`.
+    type TickSink = Box<dyn FnMut(i64, i64)>;
+
+    /// The source's private block: GLib allocates `struct_size` bytes with
+    /// the `GSource` first, so the state pointer travels with the source.
+    #[repr(C)]
+    struct WatchdogSource {
+        source: ffi::GSource,
+        state: *mut WatchdogState,
+    }
+
+    struct WatchdogState {
+        tick_us: i64,
+        sink: TickSink,
+    }
+
+    static WATCHDOG_FUNCS: ffi::GSourceFuncs = ffi::GSourceFuncs {
+        prepare: None,
+        check: None,
+        dispatch: Some(dispatch),
+        finalize: Some(finalize),
+        closure_callback: None,
+        closure_marshal: None,
+    };
+
+    unsafe extern "C" fn dispatch(
+        source: *mut ffi::GSource,
+        _callback: ffi::GSourceFunc,
+        _user_data: ffi::gpointer,
+    ) -> ffi::gboolean {
+        // SAFETY: GLib calls `dispatch` only for sources created by
+        // `LatenessWatchdog::attach`, whose block is a `WatchdogSource` with
+        // a live `state` until `finalize` runs, and only on the thread that
+        // iterates the source's context, which owns the non-`Send` sink.
+        unsafe {
+            let block = source.cast::<WatchdogSource>();
+            let ready_us = ffi::g_source_get_ready_time(source);
+            let now_us = ffi::g_get_monotonic_time();
+            let state = &mut *(*block).state;
+            ffi::g_source_set_ready_time(source, now_us.saturating_add(state.tick_us));
+            // A panic must not unwind into GLib's C frames.
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                (state.sink)(now_us, ready_us);
+            }))
+            .is_err()
+            {
+                std::process::abort();
+            }
+        }
+        ffi::GTRUE
+    }
+
+    unsafe extern "C" fn finalize(source: *mut ffi::GSource) {
+        // SAFETY: as in `dispatch`; `finalize` runs once, after which GLib
+        // frees the block, so the state is reclaimed exactly once.
+        unsafe {
+            let block = source.cast::<WatchdogSource>();
+            let state = (*block).state;
+            if !state.is_null() {
+                (*block).state = ptr::null_mut();
+                drop(Box::from_raw(state));
+            }
+        }
+    }
+
+    /// A `G_PRIORITY_HIGH` source dispatched every tick, re-armed from each
+    /// dispatch's own monotonic time; destroyed when dropped.
+    pub(crate) struct LatenessWatchdog {
+        source: glib::Source,
+    }
+
+    impl LatenessWatchdog {
+        /// Attach a watchdog with tick `tick_us` to `context`, calling `sink`
+        /// with `(now_us, ready_us)` on every dispatch.
+        pub(crate) fn attach(
+            context: &glib::MainContext,
+            tick_us: i64,
+            sink: impl FnMut(i64, i64) + 'static,
+        ) -> Self {
+            let tick_us = tick_us.max(1);
+            let state = Box::into_raw(Box::new(WatchdogState {
+                tick_us,
+                sink: Box::new(sink),
+            }));
+            // SAFETY: `g_source_new` allocates a zeroed block of
+            // `struct_size` bytes beginning with a `GSource`; the static funcs
+            // outlive every source. The block is ours until attached, and
+            // `from_glib_full` adopts the one reference `g_source_new` returned.
+            unsafe {
+                let size = c_uint::try_from(size_of::<WatchdogSource>())
+                    .expect("the source block fits a c_uint");
+                let raw = ffi::g_source_new(ptr::from_ref(&WATCHDOG_FUNCS).cast_mut(), size);
+                (*raw.cast::<WatchdogSource>()).state = state;
+                ffi::g_source_set_priority(raw, ffi::G_PRIORITY_HIGH);
+                ffi::g_source_set_ready_time(
+                    raw,
+                    ffi::g_get_monotonic_time().saturating_add(tick_us),
+                );
+                ffi::g_source_attach(raw, context.to_glib_none().0);
+                Self {
+                    source: glib::Source::from_glib_full(raw),
+                }
+            }
+        }
+    }
+
+    impl Drop for LatenessWatchdog {
+        fn drop(&mut self) {
+            self.source.destroy();
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::{Duration, Instant};
+
+        use super::LatenessWatchdog;
+
+        /// The watchdog tick under test.
+        const TICK_US: i64 = 2_000;
+        /// How long the blocking source runs.
+        const STALL: Duration = Duration::from_millis(40);
+        /// Scheduling slack allowed above the stall: generous, because the
+        /// lower bound is what the physics guarantees and a loaded runner can
+        /// delay the dispatch that follows the stall.
+        const SLACK_US: i64 = 30_000;
+
+        #[test]
+        fn a_blocking_dispatch_is_recorded_between_its_bounds() {
+            let context = glib::MainContext::new();
+            let latenesses = Rc::new(RefCell::new(Vec::<i64>::new()));
+            let recorder = Rc::clone(&latenesses);
+            let watchdog = LatenessWatchdog::attach(&context, TICK_US, move |now, ready| {
+                recorder.borrow_mut().push(now - ready);
+            });
+            // Let the watchdog tick a few times before the stall.
+            let warm_up = Instant::now();
+            while warm_up.elapsed() < Duration::from_millis(20) {
+                context.iteration(true);
+            }
+            let stalled = Arc::new(AtomicBool::new(false));
+            let stall_flag = Arc::clone(&stalled);
+            let blocker = glib::idle_source_new(None, glib::Priority::DEFAULT, move || {
+                std::thread::sleep(STALL);
+                stall_flag.store(true, Ordering::SeqCst);
+                glib::ControlFlow::Break
+            });
+            blocker.attach(Some(&context));
+            // Iterate until the watchdog has dispatched once after the stall:
+            // that dispatch is the one that records it. A fixed window was
+            // flaky under load: while every iteration took longer than a tick,
+            // the watchdog (G_PRIORITY_HIGH) was ready at every prepare and
+            // starved the idle, which could then run in the window's last
+            // iteration, leaving no later tick to record the stall.
+            let started = Instant::now();
+            let mut ticks_at_stall = None;
+            while started.elapsed() < Duration::from_secs(10) {
+                context.iteration(true);
+                let ticks = latenesses.borrow().len();
+                match ticks_at_stall {
+                    None if stalled.load(Ordering::SeqCst) => ticks_at_stall = Some(ticks),
+                    Some(at_stall) if ticks > at_stall => break,
+                    _ => {}
+                }
+            }
+            drop(watchdog);
+            assert!(stalled.load(Ordering::SeqCst), "the blocking source ran");
+            let stall_us = i64::try_from(STALL.as_micros()).expect("fits");
+            let worst = latenesses.borrow().iter().copied().max().unwrap_or(0);
+            assert!(
+                worst >= stall_us - TICK_US,
+                "lateness {worst} µs below the lower bound {} µs",
+                stall_us - TICK_US
+            );
+            assert!(
+                worst <= stall_us + SLACK_US,
+                "lateness {worst} µs above the upper bound {} µs",
+                stall_us + SLACK_US
+            );
+        }
+
+        #[test]
+        fn an_idle_context_ticks_on_time() {
+            let context = glib::MainContext::new();
+            let ticks = Rc::new(RefCell::new(0u32));
+            let counter = Rc::clone(&ticks);
+            let _watchdog = LatenessWatchdog::attach(&context, TICK_US, move |now, ready| {
+                assert!(now >= ready, "never dispatched before its ready time");
+                *counter.borrow_mut() += 1;
+            });
+            let started = Instant::now();
+            while started.elapsed() < Duration::from_millis(50) {
+                context.iteration(true);
+            }
+            assert!(*ticks.borrow() >= 5, "{} ticks in 50 ms", ticks.borrow());
+        }
+    }
+}
+
+#[cfg(feature = "responsiveness-probes")]
+mod measurement {
+    //! The feature-only half: environment, toolkit hooks, and the probe IM.
+
+    use std::cell::{Cell, RefCell};
+    use std::collections::VecDeque;
+    use std::path::PathBuf;
+    use std::rc::Rc;
+
+    use gtk4::prelude::*;
+
+    use super::LatenessWatchdog;
+    use crate::ui::signal_connect;
+    use lushtext_services::instrumentation::responsiveness_log::{
+        ADJUSTMENT_UPPER_MARK, ADJUSTMENT_VALUE_MARK, DEFAULT_FRAME_PHASE_FRAMES,
+        DEFAULT_LATE_THRESHOLD_US, EDITOR_USER_INSERT_MARK, EVIDENCE_CHANNEL_CAPACITY,
+        EvidenceWriter, FRAME_PHASES_ENV, FrameTimingsQueue, FrameTimingsState,
+        HIGHLIGHT_UPDATED_MARK, LatenessAggregator, ProbeImTrigger, ProbeInputKind,
+        ProbeInputTarget, ProbeRecord, SETTLE_SENTINEL_MARK, arms_settle_sentinel,
+        frame_phase_frames,
+    };
+
+    const LOG_ENV: &str = "LUSHTEXT_RESPONSIVENESS_LOG";
+    const TICK_ENV: &str = "LUSHTEXT_RESPONSIVENESS_TICK_US";
+    const PROBE_IM_ENV: &str = "LUSHTEXT_PROBE_IM";
+    const DEFAULT_TICK_US: i64 = 2_000;
+    /// The input-method module id the lane selects with `GTK_IM_MODULE`.
+    pub(super) const PROBE_IM_ID: &str = "lushtext-probe";
+    /// Frames a window may have queued before the oldest is written without
+    /// its presentation time.
+    ///
+    /// Kind: cap; a power of two, rounded down.
+    const MAX_PENDING_FRAMES: usize = 64;
+    /// The smallest lateness kept with its time for windowed maxima: below it a
+    /// dispatch is far inside every budget the lane judges.
+    const RECENT_LATE_FLOOR_US: u64 = 1_000;
+    /// How many recent late dispatches are kept, oldest dropped first.
+    ///
+    /// Kind: cap; a power of two, rounded down.
+    const RECENT_LATE_CAPACITY: usize = 1_024;
+
+    /// The process-wide probe, owned by the GTK thread.
+    struct Probe {
+        writer: EvidenceWriter,
+        aggregator: RefCell<LatenessAggregator>,
+        /// The largest lateness since install (`largest_lateness_so_far_us`).
+        largest_lateness_us: Cell<u64>,
+        /// Recent late dispatches as (observed at, lateness), bounded
+        /// (`largest_lateness_since_us`).
+        recent_late: RefCell<VecDeque<(i64, u64)>>,
+        next_window: Cell<u32>,
+        /// How many of each window's first frames record their phase spans
+        /// (`FRAME_PHASES_ENV`, default 4).
+        frame_phase_frames: u32,
+        /// The armed `G_PRIORITY_LOW` settle sentinel, if any.
+        sentinel: RefCell<Option<glib::SourceId>>,
+        /// The last input event recorded: a window and the dialog it hosts
+        /// both stamp the same event, which is recorded once.
+        last_input: RefCell<Option<gtk4::gdk::Event>>,
+        /// Windows and dialogs already hooked (weakly held).
+        hooked: RefCell<Vec<glib::WeakRef<gtk4::Widget>>>,
+        _watchdog: RefCell<Option<LatenessWatchdog>>,
+    }
+
+    thread_local! {
+        static PROBE: RefCell<Option<Rc<Probe>>> = const { RefCell::new(None) };
+    }
+
+    fn probe() -> Option<Rc<Probe>> {
+        PROBE.with(|probe| probe.borrow().clone())
+    }
+
+    /// Send one record if the probe is installed.
+    pub(super) fn record(record: ProbeRecord) {
+        if let Some(probe) = probe() {
+            probe.writer.send(record);
+        }
+    }
+
+    /// Record one mark; any mark but the sentinel's own arms the sentinel.
+    pub(super) fn record_mark(name: &'static str) {
+        record(ProbeRecord::Mark {
+            t_us: glib::monotonic_time(),
+            name,
+        });
+        if arms_settle_sentinel(name) {
+            arm_settle_sentinel();
+        }
+    }
+
+    /// Arm the settle sentinel: a `G_PRIORITY_LOW` idle that records
+    /// [`SETTLE_SENTINEL_MARK`] when it dispatches. Arming an armed sentinel
+    /// keeps it: it has not dispatched yet, so it still dispatches after the
+    /// span or mark that asked. GTK's validation idles and GtkSourceView's
+    /// update idles run at higher priorities, so the sentinel dispatches only
+    /// in a main-loop iteration where none of them was ready.
+    pub(super) fn arm_settle_sentinel() {
+        let Some(probe) = probe() else {
+            return;
+        };
+        if probe.sentinel.borrow().is_some() {
+            return;
+        }
+        let weak = Rc::downgrade(&probe);
+        let source = glib::idle_add_local_full(glib::Priority::LOW, move || {
+            if let Some(probe) = weak.upgrade() {
+                probe.sentinel.borrow_mut().take();
+            }
+            // A base-font change is not settled until its zoom classes are
+            // swapped in (`scope-font-zoom-restyle`, D4): the swap's
+            // `post_open_font_swap` span arms the next sentinel.
+            if crate::ui::font_zoom::swap_pending() {
+                return glib::ControlFlow::Break;
+            }
+            record_mark(SETTLE_SENTINEL_MARK);
+            glib::ControlFlow::Break
+        });
+        probe.sentinel.replace(Some(source));
+    }
+
+    /// See `super::observe_editor`.
+    pub(super) fn observe_editor(view: &sourceview5::View) {
+        if probe().is_none() {
+            return;
+        }
+        if let Ok(buffer) = view.buffer().downcast::<sourceview5::Buffer>() {
+            signal_connect::connect_void(&buffer, "highlight-updated", false, |_| {
+                record_mark(HIGHLIGHT_UPDATED_MARK);
+            });
+            // Typed text arrives inside a user action (GtkTextView's
+            // `gtk_text_buffer_insert_interactive_at_cursor`); load and
+            // replacement installs never open one.
+            let user_action = Rc::new(Cell::new(0u32));
+            let depth = Rc::clone(&user_action);
+            buffer.connect_begin_user_action(move |_| depth.set(depth.get().saturating_add(1)));
+            let depth = Rc::clone(&user_action);
+            buffer.connect_end_user_action(move |_| depth.set(depth.get().saturating_sub(1)));
+            // One mark per inserted character: the replay of held text
+            // (`keep-keystrokes-during-install`) is one insertion of many.
+            buffer.connect_insert_text(move |_, _, text| {
+                if user_action.get() > 0 {
+                    for _ in text.chars() {
+                        record_mark(EDITOR_USER_INSERT_MARK);
+                    }
+                }
+            });
+        }
+        let observed_upper = Rc::new(Cell::new(false));
+        let first_frame = Rc::new(Cell::new(false));
+        view.connect_map(move |view| {
+            if !observed_upper.replace(true)
+                && let Some(adjustment) = view.vadjustment()
+            {
+                adjustment.connect_upper_notify(|_| record_mark(ADJUSTMENT_UPPER_MARK));
+                adjustment.connect_value_changed(|_| record_mark(ADJUSTMENT_VALUE_MARK));
+            }
+            if first_frame.replace(true) {
+                return;
+            }
+            let Some(clock) = view.frame_clock() else {
+                return;
+            };
+            let start = Rc::new(Cell::new(None::<i64>));
+            let handlers = Rc::new(RefCell::new(Vec::new()));
+            let stamp = Rc::clone(&start);
+            handlers
+                .borrow_mut()
+                .push(clock.connect_before_paint(move |_| {
+                    if stamp.get().is_none() {
+                        stamp.set(Some(glib::monotonic_time()));
+                    }
+                }));
+            let own = Rc::clone(&handlers);
+            handlers
+                .borrow_mut()
+                .push(clock.connect_after_paint(move |clock| {
+                    let Some(start_us) = start.get() else {
+                        return;
+                    };
+                    super::record_span(
+                        "post_open_first_editor_frame",
+                        start_us,
+                        glib::monotonic_time(),
+                    );
+                    for handler in own.borrow_mut().drain(..) {
+                        clock.disconnect(handler);
+                    }
+                }));
+        });
+    }
+
+    /// See `super::observe_first_frame`: one span from the `before-paint` of
+    /// the first frame after `widget` maps to that frame's `after-paint`.
+    pub(super) fn observe_first_frame(widget: &gtk4::Widget, name: &'static str) {
+        if probe().is_none() {
+            return;
+        }
+        let first_frame = Rc::new(Cell::new(false));
+        widget.connect_map(move |widget| {
+            if first_frame.replace(true) {
+                return;
+            }
+            let Some(clock) = widget.frame_clock() else {
+                return;
+            };
+            let start = Rc::new(Cell::new(None::<i64>));
+            let handlers = Rc::new(RefCell::new(Vec::new()));
+            let stamp = Rc::clone(&start);
+            handlers
+                .borrow_mut()
+                .push(clock.connect_before_paint(move |_| {
+                    if stamp.get().is_none() {
+                        stamp.set(Some(glib::monotonic_time()));
+                    }
+                }));
+            let own = Rc::clone(&handlers);
+            handlers
+                .borrow_mut()
+                .push(clock.connect_after_paint(move |clock| {
+                    let Some(start_us) = start.get() else {
+                        return;
+                    };
+                    super::record_span(name, start_us, glib::monotonic_time());
+                    for handler in own.borrow_mut().drain(..) {
+                        clock.disconnect(handler);
+                    }
+                }));
+        });
+    }
+
+    /// The largest watchdog lateness since install, `None` when the probe is
+    /// not installed.
+    pub(super) fn largest_lateness_so_far_us() -> Option<u64> {
+        probe().map(|probe| probe.largest_lateness_us.get())
+    }
+
+    /// The largest watchdog lateness observed at or after `since_us`, `None`
+    /// when the probe is not installed. Dispatches later than
+    /// `RECENT_LATE_FLOOR_US` are kept with their time, the newest
+    /// `RECENT_LATE_CAPACITY` of them.
+    pub(super) fn largest_lateness_since_us(since_us: i64) -> Option<u64> {
+        probe().map(|probe| {
+            probe
+                .recent_late
+                .borrow()
+                .iter()
+                .filter(|(observed_us, _)| *observed_us >= since_us)
+                .map(|(_, lateness)| *lateness)
+                .max()
+                .unwrap_or(0)
+        })
+    }
+
+    /// The lane's in-process restyle triggers (`bound-post-open-settle`,
+    /// review S4): `app.probe-set-word-wrap(b)` and `app.probe-set-font(s)`
+    /// write the setting through the coalescing writer, whose shared instance
+    /// every reader uses, so the restyle runs in the action's own dispatch,
+    /// the way a Preferences switch does. An external keyfile write instead
+    /// reached the app through GIO's file monitor, whose writability check
+    /// (about 5-8.5 ms, mount-table parsing) the lane then charged to the
+    /// restyle. Measurement build only, never in the action catalog.
+    fn install_restyle_triggers(app: &gtk4::Application) {
+        use gtk4::gio;
+        use gtk4::prelude::*;
+        let wrap = gio::SimpleAction::new("probe-set-word-wrap", Some(glib::VariantTy::BOOLEAN));
+        wrap.connect_activate(|_, value| {
+            if let Some(on) = value.and_then(glib::Variant::get::<bool>) {
+                crate::ui::settings_writes::set_boolean(crate::config::keys::WORD_WRAP, on);
+            }
+        });
+        app.add_action(&wrap);
+        let font = gio::SimpleAction::new("probe-set-font", Some(glib::VariantTy::STRING));
+        font.connect_activate(|_, value| {
+            if let Some(name) = value.and_then(glib::Variant::get::<String>) {
+                crate::ui::settings_writes::set_boolean(
+                    crate::config::keys::USE_SYSTEM_FONT,
+                    false,
+                );
+                crate::ui::settings_writes::set_string(crate::config::keys::CUSTOM_FONT, &name);
+            }
+        });
+        app.add_action(&font);
+        // Save As without the file chooser (`sliced-protected-install` task
+        // 7.6): `app.probe-save-as(s)` saves the active window's document to
+        // the given path through the chooser's own completion.
+        let save_as = gio::SimpleAction::new("probe-save-as", Some(glib::VariantTy::STRING));
+        let app_weak = app.downgrade();
+        save_as.connect_activate(move |_, value| {
+            let Some(path) = value.and_then(glib::Variant::get::<String>) else {
+                return;
+            };
+            if let Some(window) = app_weak
+                .upgrade()
+                .and_then(|app| app.active_window())
+                .and_then(|window| window.downcast::<crate::ui::window::LushtextWindow>().ok())
+            {
+                window.save_active_as_for_probe(std::path::Path::new(&path));
+            }
+        });
+        app.add_action(&save_as);
+    }
+
+    pub(super) fn install(app: &gtk4::Application) {
+        if probe().is_some() {
+            return;
+        }
+        let Some(path) = std::env::var_os(LOG_ENV).map(PathBuf::from) else {
+            return;
+        };
+        let tick_us = std::env::var(TICK_ENV)
+            .ok()
+            .and_then(|value| value.parse::<i64>().ok())
+            .filter(|tick| *tick > 0)
+            .unwrap_or(DEFAULT_TICK_US);
+        let writer = match EvidenceWriter::to_path(&path, EVIDENCE_CHANNEL_CAPACITY) {
+            Ok(writer) => writer,
+            Err(error) => {
+                tracing::error!(
+                    "responsiveness probe: cannot open {}: {error}",
+                    path.display()
+                );
+                return;
+            }
+        };
+        let probe_im = std::env::var(PROBE_IM_ENV).as_deref() == Ok("1");
+        if probe_im {
+            probe_im::register();
+        }
+        let probe = Rc::new(Probe {
+            writer,
+            aggregator: RefCell::new(LatenessAggregator::new(DEFAULT_LATE_THRESHOLD_US)),
+            largest_lateness_us: Cell::new(0),
+            recent_late: RefCell::new(VecDeque::with_capacity(RECENT_LATE_CAPACITY)),
+            next_window: Cell::new(1),
+            frame_phase_frames: frame_phase_frames(std::env::var(FRAME_PHASES_ENV).ok().as_deref()),
+            sentinel: RefCell::new(None),
+            last_input: RefCell::new(None),
+            hooked: RefCell::new(Vec::new()),
+            _watchdog: RefCell::new(None),
+        });
+        PROBE.with(|slot| slot.replace(Some(Rc::clone(&probe))));
+        install_restyle_triggers(app);
+        // Every `spawn_blocking_then` completion as one `task_completion`
+        // span (`spawn-completion-priority`), so the lane measures each
+        // hand-off dispatch against B_settle and attributes a long one to it.
+        gtk_lush_tasks::set_completion_observer(|start_us, end_us| {
+            super::record_span(super::TASK_COMPLETION_SPAN, start_us, end_us);
+        });
+        probe.writer.send(ProbeRecord::Start {
+            t_us: glib::monotonic_time(),
+            pid: std::process::id(),
+            tick_us: u64::try_from(tick_us).unwrap_or(0),
+            late_threshold_us: DEFAULT_LATE_THRESHOLD_US,
+            probe_im,
+        });
+        let weak = Rc::downgrade(&probe);
+        let watchdog = LatenessWatchdog::attach(
+            &glib::MainContext::default(),
+            tick_us,
+            move |now_us, ready_us| {
+                let Some(probe) = weak.upgrade() else {
+                    return;
+                };
+                let lateness = u64::try_from(now_us.saturating_sub(ready_us)).unwrap_or(0);
+                probe
+                    .largest_lateness_us
+                    .set(probe.largest_lateness_us.get().max(lateness));
+                if lateness >= RECENT_LATE_FLOOR_US {
+                    let mut recent = probe.recent_late.borrow_mut();
+                    if recent.len() == RECENT_LATE_CAPACITY {
+                        recent.pop_front();
+                    }
+                    recent.push_back((now_us, lateness));
+                }
+                let records = probe.aggregator.borrow_mut().tick(now_us, ready_us);
+                for record in records {
+                    probe.writer.send(record);
+                }
+            },
+        );
+        probe._watchdog.replace(Some(watchdog));
+        for window in app.windows() {
+            hook_window(&window);
+        }
+        app.connect_window_added(|_, window| hook_window(window));
+    }
+
+    fn next_window_id() -> u32 {
+        probe().map_or(0, |probe| {
+            let id = probe.next_window.get();
+            probe.next_window.set(id.saturating_add(1));
+            id
+        })
+    }
+
+    /// Whether `widget` is hooked for the first time now (and remember it).
+    fn first_hook(widget: &gtk4::Widget) -> bool {
+        let Some(probe) = probe() else { return false };
+        let mut hooked = probe.hooked.borrow_mut();
+        hooked.retain(|weak| weak.upgrade().is_some());
+        if hooked
+            .iter()
+            .any(|weak| weak.upgrade().as_ref() == Some(widget))
+        {
+            return false;
+        }
+        hooked.push(widget.downgrade());
+        true
+    }
+
+    /// Stamp `event` once, however many hooked widgets see it. `host` is the
+    /// toplevel the event arrived in (for a hosted dialog, the window hosting
+    /// it): its focus widget is a key's target and its surface the frame a
+    /// button's or a motion's position is read in.
+    fn stamp_input(window: u32, host: &gtk4::Window, event: &gtk4::gdk::Event) {
+        let kind = match event.event_type() {
+            gtk4::gdk::EventType::KeyPress => ProbeInputKind::KeyPress,
+            gtk4::gdk::EventType::KeyRelease => ProbeInputKind::KeyRelease,
+            gtk4::gdk::EventType::Scroll => ProbeInputKind::Scroll,
+            gtk4::gdk::EventType::ButtonPress => ProbeInputKind::ButtonPress,
+            gtk4::gdk::EventType::ButtonRelease => ProbeInputKind::ButtonRelease,
+            gtk4::gdk::EventType::MotionNotify => ProbeInputKind::Motion,
+            _ => return,
+        };
+        let Some(probe) = probe() else { return };
+        // The same event object (held, so its address is not reused).
+        if probe
+            .last_input
+            .borrow()
+            .as_ref()
+            .is_some_and(|last| last.as_ptr() == event.as_ptr())
+        {
+            return;
+        }
+        probe.last_input.replace(Some(event.clone()));
+        let t_us = glib::monotonic_time();
+        let (target, position) = input_target(host, kind, event);
+        probe.writer.send(ProbeRecord::Input {
+            t_us,
+            window,
+            event: kind,
+            event_time_ms: event.time(),
+            target,
+            position,
+        });
+    }
+
+    /// A capture-phase input stamp on `widget` (a window, or a dialog it
+    /// hosts), whose events arrive in the toplevel `host`.
+    fn add_input_stamp(widget: &impl IsA<gtk4::Widget>, window: u32, host: &gtk4::Window) {
+        let input = gtk4::EventControllerLegacy::new();
+        input.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        // Weak: the controller lives on `host` or one of its descendants.
+        let host = host.downgrade();
+        input.connect_event(move |_, event| {
+            if let Some(host) = host.upgrade() {
+                stamp_input(window, &host, event);
+            }
+            glib::Propagation::Proceed
+        });
+        widget.add_controller(input);
+    }
+
+    /// Stamp the input of every `AdwDialog` the window presents (the Line
+    /// Inspector, the history browser): a hosted dialog's events reach it
+    /// through the window, a floating one is its own toplevel, which is hooked
+    /// as a window. Each dialog is hooked once.
+    fn hook_dialogs(window: &gtk4::Window, id: u32) {
+        use libadwaita::prelude::AdwApplicationWindowExt;
+        let Some(adw_window) = window.downcast_ref::<libadwaita::ApplicationWindow>() else {
+            return;
+        };
+        adw_window.connect_visible_dialog_notify(move |window| {
+            let Some(dialog) = window.visible_dialog() else {
+                return;
+            };
+            if !first_hook(dialog.upcast_ref()) {
+                return;
+            }
+            let host = window.upcast_ref::<gtk4::Window>();
+            match dialog.root().and_downcast::<gtk4::Window>() {
+                Some(root) if root != *host => {
+                    add_input_stamp(&dialog, id, &root);
+                    hook_window(&root);
+                }
+                _ => add_input_stamp(&dialog, id, host),
+            }
+        });
+    }
+
+    fn hook_window(window: &gtk4::Window) {
+        if !first_hook(window.upcast_ref()) {
+            return;
+        }
+        let id = next_window_id();
+        add_input_stamp(window, id, window);
+        hook_dialogs(window, id);
+        let hooked = Rc::new(Cell::new(false));
+        let hook_clock = move |widget: &gtk4::Window| {
+            if hooked.get() {
+                return;
+            }
+            if let Some(clock) = widget.frame_clock() {
+                hooked.set(true);
+                hook_frame_phases(&clock);
+                let pending = Rc::new(RefCell::new(FrameTimingsQueue::new(MAX_PENDING_FRAMES)));
+                // When each frame began on the main loop: GDK emits
+                // `before-paint` for every frame it runs. From GTK 4.24 the
+                // frame time is aligned to the refresh grid (ledger A105) and
+                // no longer says when the frame started.
+                let began = Rc::new(Cell::new(None::<i64>));
+                let began_for_paint = Rc::clone(&began);
+                clock.connect_before_paint(move |_| {
+                    began_for_paint.set(Some(glib::monotonic_time()));
+                });
+                clock.connect_after_paint(move |clock| {
+                    record_frames(clock, id, &pending, began.take());
+                });
+            }
+        };
+        if window.is_realized() {
+            hook_clock(window);
+        }
+        window.connect_realize(move |window| hook_clock(window));
+    }
+
+    /// Where an input event is headed (`ProbeInputTarget`): a key goes to the
+    /// window's focus widget, a button to the widget under the pointer. A
+    /// scroll records neither.
+    fn input_target(
+        window: &gtk4::Window,
+        kind: ProbeInputKind,
+        event: &gtk4::gdk::Event,
+    ) -> (Option<ProbeInputTarget>, Option<(i32, i32)>) {
+        match kind {
+            ProbeInputKind::KeyPress | ProbeInputKind::KeyRelease => {
+                let focus = GtkWindowExt::focus(window);
+                (Some(classify_target(focus.as_ref())), None)
+            }
+            ProbeInputKind::ButtonPress
+            | ProbeInputKind::ButtonRelease
+            | ProbeInputKind::Motion => {
+                let Some((x, y)) = event.position() else {
+                    return (Some(ProbeInputTarget::Nothing), None);
+                };
+                // The event is in surface coordinates; the window's own
+                // coordinates are offset by its CSD shadow and border.
+                let (x, y) = window.native().map_or((x, y), |native| {
+                    let (dx, dy) = native.surface_transform();
+                    (x - dx, y - dy)
+                });
+                let picked = window.pick(x, y, gtk4::PickFlags::DEFAULT);
+                // Whole pixels: enough to place a click, and `Eq` records.
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "window coordinates are far inside i32; `as` saturates"
+                )]
+                let position = (x.round() as i32, y.round() as i32);
+                (Some(classify_target(picked.as_ref())), Some(position))
+            }
+            ProbeInputKind::Scroll => (None, None),
+        }
+    }
+
+    /// `Editor` (or `ReadOnlyEditor`) when `widget` is, or is inside, an
+    /// editor page's text view; a minimap or a preview code block is `Other`.
+    fn classify_target(widget: Option<&gtk4::Widget>) -> ProbeInputTarget {
+        let Some(widget) = widget else {
+            return ProbeInputTarget::Nothing;
+        };
+        let mut current = Some(widget.clone());
+        while let Some(candidate) = current {
+            if let Some(editor) =
+                candidate.downcast_ref::<crate::ui::editor_page::LushtextEditorPage>()
+            {
+                let view = editor.source_view();
+                return if widget == view.upcast_ref::<gtk4::Widget>() || widget.is_ancestor(view) {
+                    if view.is_editable() && editor.holds_typed_input() {
+                        ProbeInputTarget::HeldEditor
+                    } else if view.is_editable() {
+                        ProbeInputTarget::Editor
+                    } else {
+                        ProbeInputTarget::ReadOnlyEditor
+                    }
+                } else {
+                    ProbeInputTarget::Other
+                };
+            }
+            current = candidate.parent();
+        }
+        ProbeInputTarget::Other
+    }
+
+    /// Record the layout and paint phases of a window's first frames as
+    /// `frame_layout` and `frame_paint` spans (`first-frame-window-shell`,
+    /// design D7): `DEFAULT_FRAME_PHASE_FRAMES` frames, or as many as
+    /// `FRAME_PHASES_ENV` asks for (`bound-post-open-settle`, design D1).
+    ///
+    /// A phase's work runs in GDK's own handler of the frame clock's signal,
+    /// which the surface connected when it was created, before this probe
+    /// could: so this probe's handler of each signal runs after that phase's
+    /// work, and a phase spans from the previous phase's stamp to its own.
+    /// The layout phase therefore starts at the end of `update` (GTK's tick
+    /// callbacks), and the paint phase at the end of `layout`.
+    fn hook_frame_phases(clock: &gtk4::gdk::FrameClock) {
+        let limit = probe().map_or(DEFAULT_FRAME_PHASE_FRAMES, |probe| probe.frame_phase_frames);
+        let frames = Rc::new(Cell::new(0u32));
+        let last = Rc::new(Cell::new(None::<i64>));
+        let stamp = |frames: &Rc<Cell<u32>>, last: &Rc<Cell<Option<i64>>>| {
+            let frames = Rc::clone(frames);
+            let last = Rc::clone(last);
+            move |name: Option<&'static str>| {
+                if frames.get() >= limit {
+                    return;
+                }
+                let now = glib::monotonic_time();
+                if let (Some(name), Some(start)) = (name, last.get()) {
+                    super::record_span(name, start, now);
+                }
+                last.set(Some(now));
+            }
+        };
+        // GDK emits `before-paint` for every frame it runs (`gdkframeclockidle.c`:
+        // "We always emit ::before-paint and ::after-paint"), but `update` only
+        // when that phase was requested, which a first frame without tick
+        // callbacks never does. So the frame starts at `before-paint`, and
+        // `update` restamps it, keeping tick work out of `frame_layout`.
+        let on_before_paint = stamp(&frames, &last);
+        let on_update = stamp(&frames, &last);
+        let on_layout = stamp(&frames, &last);
+        let on_paint = stamp(&frames, &last);
+        let handlers = Rc::new(RefCell::new(vec![
+            clock.connect_before_paint(move |_| on_before_paint(None)),
+            clock.connect_update(move |_| on_update(None)),
+            clock.connect_layout(move |_| on_layout(Some("frame_layout"))),
+            clock.connect_paint(move |_| on_paint(Some("frame_paint"))),
+        ]));
+        // Once the first frames are recorded, leave the clock: the handlers
+        // would otherwise run on every later frame of the measured session.
+        let own_handlers = Rc::clone(&handlers);
+        let after_paint = clock.connect_after_paint(move |clock| {
+            last.set(None);
+            frames.set(frames.get().saturating_add(1));
+            if frames.get() >= limit {
+                for handler in own_handlers.borrow_mut().drain(..) {
+                    clock.disconnect(handler);
+                }
+            }
+        });
+        handlers.borrow_mut().push(after_paint);
+    }
+
+    /// Queue the frame that just painted and write every queued frame whose
+    /// timings are now final, oldest first (`FrameTimingsQueue` owns the rule).
+    fn record_frames(
+        clock: &gtk4::gdk::FrameClock,
+        window: u32,
+        pending: &RefCell<FrameTimingsQueue>,
+        began_us: Option<i64>,
+    ) {
+        let mut pending = pending.borrow_mut();
+        if let Some(current) = clock.current_timings() {
+            pending.painted_at(current.frame_counter(), current.frame_time(), began_us);
+        }
+        let records = pending.take_final(window, glib::monotonic_time(), |counter| {
+            match clock.timings(counter) {
+                None => FrameTimingsState::Missing,
+                Some(timings) if timings.is_complete() => FrameTimingsState::Complete {
+                    presentation_us: Some(timings.presentation_time()).filter(|time| *time > 0),
+                    refresh_interval_us: Some(timings.refresh_interval())
+                        .filter(|interval| *interval > 0),
+                },
+                Some(_) => FrameTimingsState::Incomplete,
+            }
+        });
+        drop(pending);
+        for frame in records {
+            record(frame);
+        }
+    }
+
+    pub(super) fn record_im(
+        trigger: ProbeImTrigger,
+        surrounding: Option<(u64, i64)>,
+        handled: bool,
+    ) {
+        record(ProbeRecord::Im {
+            t_us: glib::monotonic_time(),
+            trigger,
+            surrounding_bytes: surrounding.map(|(bytes, _)| bytes),
+            cursor_index: surrounding.map_or(-1, |(_, cursor)| cursor),
+            handled,
+        });
+    }
+
+    mod probe_im {
+        //! The deterministic probe input method.
+
+        use gtk4::gio;
+        use gtk4::prelude::*;
+
+        use super::PROBE_IM_ID;
+
+        mod imp {
+            use std::cell::Cell;
+
+            use gtk4::subclass::prelude::*;
+
+            use lushtext_services::instrumentation::responsiveness_log::ProbeImTrigger;
+
+            #[derive(Default)]
+            pub struct ProbeImContext {
+                /// What the client supplied in answer to the last request:
+                /// `(byte length, cursor byte index)`.
+                surrounding: Cell<Option<(u64, i64)>>,
+                /// Whether the client widget has focus. Requests are made only
+                /// then: an IBus engine asks while it serves a focused client,
+                /// and GTK resets a context during text-view construction and
+                /// teardown, when the view has no buffer to answer from.
+                focused: Cell<bool>,
+            }
+
+            #[glib::object_subclass]
+            impl ObjectSubclass for ProbeImContext {
+                const NAME: &str = "LushtextProbeImContext";
+                type Type = super::ProbeImContext;
+                type ParentType = gtk4::IMContext;
+
+                fn class_init(klass: &mut Self::Class) {
+                    // gtk4-rs installs a `get_preedit_string` trampoline that
+                    // writes all three out-parameters unconditionally, but
+                    // GTK callers may pass NULL for some of them (GtkText
+                    // does while it realizes), which segfaulted the measurement
+                    // build. The probe has no preedit, so restore GTK's own
+                    // `GtkIMContext` implementation, which checks each
+                    // pointer.
+                    let parent = Self::type_data();
+                    // SAFETY: both pointers are `GtkIMContextClass` structs
+                    // for this type and its parent, valid for the program's
+                    // lifetime once the type is registered; this runs inside
+                    // class initialization, before any instance exists.
+                    unsafe {
+                        let parent_class =
+                            parent.as_ref().parent_class() as *const gtk4::ffi::GtkIMContextClass;
+                        let class =
+                            std::ptr::from_mut(klass).cast::<gtk4::ffi::GtkIMContextClass>();
+                        (*class).get_preedit_string = (*parent_class).get_preedit_string;
+                        // GtkTextView answers `retrieve-surrounding` through
+                        // `gtk_im_context_set_surrounding_with_selection`,
+                        // which calls the class's `set_surrounding_with_selection`
+                        // when set (GtkIMContext's own, which only stores the
+                        // text privately) and falls back to `set_surrounding`
+                        // otherwise. gtk4-rs exposes only the latter here, so
+                        // clear the former to route the answer to the probe.
+                        (*class).set_surrounding_with_selection = None;
+                    }
+                }
+            }
+
+            impl ObjectImpl for ProbeImContext {}
+
+            impl ProbeImContext {
+                fn request_surrounding(&self, trigger: ProbeImTrigger) {
+                    if !self.focused.get() {
+                        return;
+                    }
+                    self.surrounding.set(None);
+                    let handled: bool = crate::ui::signal_connect::emit_returning(
+                        &*self.obj(),
+                        "retrieve-surrounding",
+                        &[],
+                    );
+                    super::super::record_im(trigger, self.surrounding.take(), handled);
+                }
+
+                fn remember(&self, text: &str, cursor_index: i32) {
+                    let bytes = u64::try_from(text.len()).unwrap_or(u64::MAX);
+                    self.surrounding.set(Some((bytes, i64::from(cursor_index))));
+                }
+            }
+
+            impl IMContextImpl for ProbeImContext {
+                fn focus_in(&self) {
+                    self.focused.set(true);
+                    self.request_surrounding(ProbeImTrigger::FocusIn);
+                }
+
+                fn focus_out(&self) {
+                    self.focused.set(false);
+                }
+
+                fn set_cursor_location(&self, _area: &gtk4::gdk::Rectangle) {
+                    self.request_surrounding(ProbeImTrigger::CursorLocation);
+                }
+
+                fn reset(&self) {
+                    self.request_surrounding(ProbeImTrigger::Reset);
+                }
+
+                fn set_surrounding(&self, text: &str, cursor_index: i32) {
+                    self.remember(text, cursor_index);
+                }
+
+                fn filter_keypress(&self, event: &gtk4::gdk::Event) -> bool {
+                    if event.event_type() != gtk4::gdk::EventType::KeyPress {
+                        return false;
+                    }
+                    self.request_surrounding(ProbeImTrigger::FilterKeypress);
+                    let Some(key) = event.downcast_ref::<gtk4::gdk::KeyEvent>() else {
+                        return false;
+                    };
+                    let blocking = gtk4::gdk::ModifierType::CONTROL_MASK
+                        | gtk4::gdk::ModifierType::ALT_MASK
+                        | gtk4::gdk::ModifierType::SUPER_MASK
+                        | gtk4::gdk::ModifierType::META_MASK;
+                    if key.modifier_state().intersects(blocking) {
+                        return false;
+                    }
+                    match key.keyval().to_unicode() {
+                        Some(character) if !character.is_control() => {
+                            crate::ui::signal_connect::emit_void(
+                                &*self.obj(),
+                                "commit",
+                                &[&character.to_string()],
+                            );
+                            true
+                        }
+                        _ => false,
+                    }
+                }
+            }
+        }
+
+        glib::wrapper! {
+            /// A `GtkIMContext` that asks for the surrounding text at every
+            /// entry point an IBus engine with that capability would.
+            pub struct ProbeImContext(ObjectSubclass<imp::ProbeImContext>)
+                @extends gtk4::IMContext;
+        }
+
+        /// Register the probe input method on GTK's `gtk-im-module`
+        /// extension point under [`PROBE_IM_ID`].
+        pub(super) fn register() {
+            let _ = gio::IOExtensionPoint::implement(
+                "gtk-im-module",
+                ProbeImContext::static_type(),
+                PROBE_IM_ID,
+                0,
+            );
+        }
+    }
+}

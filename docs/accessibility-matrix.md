@@ -108,10 +108,10 @@ closed before the row can count as release-grade proof.
 Current tree audit command:
 
 ```sh
-rg -n "set_accessible_role|update_property|update_state|update_relation|announce" crates/lushtext-core/src/ui -g '*.rs'
+rg -n "set_accessible_role|update_property|update_state|update_relation|announce" crates/lushtext-ui/src/ui -g '*.rs'
 ```
 
-Calls inside `crates/lushtext-core/src/ui/accessibility.rs` are the helper
+Calls inside `crates/lushtext-ui/src/ui/accessibility.rs` are the helper
 implementation and are allowed. The remaining direct-call baseline is:
 
 | Location | Current direct call | Decision |
@@ -134,7 +134,7 @@ expiry review date.
 Current row factory audit command:
 
 ```sh
-rg -n "SignalListItemFactory|connect_bind|connect_unbind|RowAccessibility|clear_row_accessibility|apply_row_accessibility" crates/lushtext-core/src/ui crates/lushtext/tests/widget -g '*.rs'
+rg -n "SignalListItemFactory|connect_bind|connect_unbind|RowAccessibility|clear_row_accessibility|apply_row_accessibility" crates/lushtext-ui/src/ui crates/lushtext/tests/widget -g '*.rs'
 ```
 
 | Surface | Current state | Required follow-up |

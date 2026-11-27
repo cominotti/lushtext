@@ -10,7 +10,7 @@ files per directory, depth up to ten), with one symlinked directory and one
 symlinked file. Everything is synthetic: no user file is ever read or copied.
 
 The algorithm is shared, step for step, with the Rust fixture
-`lushtext_core::services::palette::workspace_index_fixture`, so a Criterion
+`lushtext_services::palette::workspace_index_fixture`, so a Criterion
 bench, a unit test and the responsiveness lane index the same tree for the
 same `--files` and `--seed`. `--self-test` checks the determinism, the counts
 and the shape, and runs from `make check-responsiveness-lane`.

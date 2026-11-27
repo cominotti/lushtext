@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use lushtext_model::palette::PaletteFileIdentity;
+use lushtext_model::workspace::palette::PaletteFileIdentity;
 
 use super::{FileIndex, FileIndexMutationLedger, MAX_INDEXED_FILES};
 
@@ -58,7 +58,7 @@ impl OwnedIndexedFile {
 
 fn identity_result(
     identity: PaletteFileIdentity,
-) -> Result<PathBuf, lushtext_model::palette::PaletteFileIdentityFailure> {
+) -> Result<PathBuf, lushtext_model::workspace::palette::PaletteFileIdentityFailure> {
     match identity {
         PaletteFileIdentity::Canonical(path) => Ok(path),
         PaletteFileIdentity::Unavailable(failure) => Err(failure),

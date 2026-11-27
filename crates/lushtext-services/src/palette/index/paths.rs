@@ -13,7 +13,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use lushtext_model::palette::{PaletteFileIdentity, PaletteFileIdentityFailure};
+use lushtext_model::workspace::palette::{PaletteFileIdentity, PaletteFileIdentityFailure};
 
 use super::FileIndex;
 use super::arena::{

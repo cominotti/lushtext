@@ -14,14 +14,14 @@ Use Criterion benchmarks to answer a concrete performance question. The checkout
 Read:
 
 - workspace `Cargo.toml` for the current Criterion version;
-- `crates/lushtext-core/Cargo.toml` for bench target configuration;
-- `crates/lushtext-core/benches/benchmarks.rs` for registered groups and fixtures.
+- `crates/lushtext-ui/Cargo.toml` for bench target configuration;
+- `crates/lushtext-ui/benches/benchmarks.rs` for registered groups and fixtures.
 
 Useful discovery commands:
 
 ```bash
-rg -n 'fn bench_|criterion_group!|criterion_main!' crates/lushtext-core/benches/benchmarks.rs
-cargo bench --package lushtext-core --features test-utils --no-run
+rg -n 'fn bench_|criterion_group!|criterion_main!' crates/lushtext-ui/benches/benchmarks.rs
+cargo bench --package lushtext-ui --features test-utils --no-run
 ```
 
 The benchmark file evolves. Do not paste a static “current coverage” table into a finding.

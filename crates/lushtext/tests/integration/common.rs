@@ -5,7 +5,7 @@
 //! The primary primitive is [`TestContext`], which creates an isolated temporary
 //! directory with helpers for writing fixture files.
 
-use lushtext_core::services::filesystem::fixture;
+use lushtext_services::filesystem::fixture;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 

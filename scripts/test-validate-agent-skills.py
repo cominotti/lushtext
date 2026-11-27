@@ -348,7 +348,7 @@ class RuleFrontmatterTests(unittest.TestCase):
     # Injected rather than read from git, so the fixtures assert the glob
     # semantics instead of the repository's current file list.
     TRACKED = (
-        "crates/lushtext-core/src/ui/window/mod.rs",
+        "crates/lushtext-ui/src/ui/window/mod.rs",
         "crates/lushtext/tests/widget/window.rs",
         "resources/ui/window.blp",
         "scripts/check-workflow-boundaries.py",

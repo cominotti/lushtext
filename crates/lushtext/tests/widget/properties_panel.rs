@@ -4,8 +4,8 @@
 
 use crate::common::ensure_gtk_init;
 use glib::subclass::prelude::ObjectSubclassIsExt;
-use lushtext_core::ui::accessibility::test_audit::AccessibleAudit;
-use lushtext_core::ui::properties_panel::LushtextPropertiesPanel;
+use lushtext_ui::ui::accessibility::test_audit::AccessibleAudit;
+use lushtext_ui::ui::properties_panel::LushtextPropertiesPanel;
 
 #[test]
 fn test_properties_panel_exposes_document_metadata_accessibility() {

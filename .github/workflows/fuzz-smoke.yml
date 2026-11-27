@@ -55,5 +55,5 @@ jobs:
       - name: Run bounded fuzz smoke
         # `make fuzz-smoke` supplies target, run, time, and max-input bounds.
         # The operation-script target also caps script length and operation
-        # count in `lushtext-core::fuzzing` so scheduled discovery stays small.
+        # count in `lushtext-ui::fuzzing` so scheduled discovery stays small.
         run: make fuzz-smoke

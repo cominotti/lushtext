@@ -28,8 +28,9 @@
 //! run time (the standard library caches the answer) and returns `None`
 //! without them, and the caller then runs the `memchr3` scan. Verification:
 //! the exhaustive lane test below (every byte triple at every seam shape), the
-//! property tests in `tests/properties/text_scans.rs`, the `editor_bytes` fuzz
-//! target, and the counting-allocator test in `tests/text_scan_allocations.rs`.
+//! property tests in `crates/lushtext-ui/tests/properties/text_scans.rs`, the
+//! `editor_bytes` fuzz target, and the counting-allocator test in
+//! `crates/lushtext-services/tests/text_scan_allocations.rs`.
 //! Measured in `docs/benchmarks/transient-file-load.md`, "AVX2 file-health
 //! kernel".
 

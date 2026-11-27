@@ -3,10 +3,10 @@
 //! Palette search metrics/outcomes over the shared single-flight coordinator.
 //!
 //! The generic one-active/one-latest coordinator and its cancellation token now
-//! live in [`crate::single_flight`]; the palette-named aliases below
+//! live in [`crate::coordination::single_flight`]; the palette-named aliases below
 //! keep palette call sites reading in palette vocabulary.
 
-use crate::single_flight::{
+use crate::coordination::single_flight::{
     FlightCancellation, SingleFlightCoordinator, SingleFlightSnapshot, SingleFlightStart,
 };
 

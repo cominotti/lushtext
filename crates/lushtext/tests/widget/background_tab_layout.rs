@@ -13,8 +13,8 @@ use crate::common::{
 };
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_core::ui::editor_page::{EditorLoadState, LushtextEditorPage};
-use lushtext_core::ui::window::LushtextWindow;
+use lushtext_ui::ui::editor_page::{EditorLoadState, LushtextEditorPage};
+use lushtext_ui::ui::window::LushtextWindow;
 use sourceview5::prelude::*;
 
 /// Lines in a probe document: about 150 validation batches of 2000 px
@@ -300,8 +300,8 @@ fn test_a_detached_tab_at_its_first_line_reattaches_at_the_top() {
 #[test]
 fn test_a_detached_tab_inside_its_wrapped_first_paragraph_reattaches_there() {
     ensure_gtk_init();
-    lushtext_core::ui::settings_writes::shared()
-        .set_boolean(lushtext_core::config::keys::WORD_WRAP, true)
+    lushtext_ui::ui::settings_writes::shared()
+        .set_boolean(lushtext_ui::config::keys::WORD_WRAP, true)
         .expect("enable word wrap");
     let dir = tempfile::tempdir().expect("tempdir");
     let big = dir.path().join("wrapped.txt");
@@ -368,12 +368,12 @@ fn test_a_detached_tab_inside_its_wrapped_first_paragraph_reattaches_there() {
 #[test]
 fn test_a_file_opened_in_a_window_rests_at_the_top() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
-        .set_boolean(lushtext_core::config::keys::SHOW_MINIMAP, true)
+        .set_boolean(lushtext_ui::config::keys::SHOW_MINIMAP, true)
         .expect("show the minimap");
     settings
-        .set_boolean(lushtext_core::config::keys::WORD_WRAP, false)
+        .set_boolean(lushtext_ui::config::keys::WORD_WRAP, false)
         .expect("disable word wrap");
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("lines.txt");
@@ -416,7 +416,7 @@ fn test_a_protected_tab_detaches_and_reattaches_without_primary_selection_critic
     let protected = dir.path().join("protected.txt");
     let small = dir.path().join("small.txt");
     let giant = "giant ".repeat(
-        usize::try_from(lushtext_core::model::document_scale::L_PROTECT_EDIT / 6 + 2)
+        usize::try_from(lushtext_model::document::document_scale::L_PROTECT_EDIT / 6 + 2)
             .expect("a small length"),
     );
     fixture::write_text(&protected, &format!("head\n{giant}\ntail\n"));
@@ -448,7 +448,7 @@ fn test_a_protected_tab_detaches_and_reattaches_without_primary_selection_critic
 
 fn giant_paragraph() -> String {
     "giant ".repeat(
-        usize::try_from(lushtext_core::model::document_scale::L_PROTECT_EDIT / 6 + 2)
+        usize::try_from(lushtext_model::document::document_scale::L_PROTECT_EDIT / 6 + 2)
             .expect("a small length"),
     )
 }
@@ -574,7 +574,7 @@ fn test_detaching_a_hidden_view_keeps_the_users_primary_selection() {
 /// as soon as a listener appears.
 #[test]
 fn test_no_view_is_detached_while_an_assistive_technology_listens() {
-    use lushtext_core::ui::at_listeners;
+    use lushtext_ui::ui::at_listeners;
     ensure_gtk_init();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("doc.txt");
@@ -719,7 +719,7 @@ fn test_a_detached_view_comes_back_inside_a_long_wrapped_paragraph() {
 /// stored source still cancels it.
 #[test]
 fn test_a_background_slice_ages_into_the_paced_priority() {
-    use lushtext_core::ui::input_quiet::paced_idle_aging;
+    use lushtext_ui::ui::input_quiet::paced_idle_aging;
     ensure_gtk_init();
     let busy = glib::idle_add_local_full(glib::Priority::DEFAULT_IDLE, || {
         std::thread::sleep(Duration::from_millis(1));
@@ -824,7 +824,7 @@ fn test_showing_a_never_shown_dense_tab_reveals_it_in_paced_ranges() {
 /// listener leaves.
 #[test]
 fn test_detached_editors_attach_one_per_dispatch_when_a_listener_appears() {
-    use lushtext_core::ui::at_listeners;
+    use lushtext_ui::ui::at_listeners;
     ensure_gtk_init();
     let dir = tempfile::tempdir().expect("tempdir");
     let paths: Vec<_> = (0..3)

@@ -35,7 +35,7 @@ Important repo facts:
   the first statement of `main` in `widget.rs` points `LUSHTEXT_DATA_DIR` and
   `XDG_{DATA,CONFIG,CACHE,STATE}_HOME` at a root inside the process's
   `TMPDIR` (the per-attempt directory in a child), using
-  `lushtext_core::services::test_isolation::isolated_environment`.
+  `lushtext_services::test_isolation::isolated_environment`.
   `ensure_gtk_init()` only asserts it. A test may therefore save sessions,
   drafts, or any app data before initializing GTK (rule:
   `.agents/rules/testing.md`, "Test Isolation From Real App Data"). In test

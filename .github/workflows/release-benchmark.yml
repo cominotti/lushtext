@@ -63,7 +63,7 @@ jobs:
           set -euo pipefail
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git fetch origin "$RECOVERY_SHA"
-          git checkout "$RECOVERY_SHA" -- scripts/bench-report.sh crates/lushtext-core/benches/benchmarks.rs
+          git checkout "$RECOVERY_SHA" -- scripts/bench-report.sh crates/lushtext-model/benches/benchmarks.rs crates/lushtext-services/benches/benchmarks.rs crates/lushtext-ui/benches/benchmarks.rs
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.98.0

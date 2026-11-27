@@ -23,7 +23,7 @@ Recovery:
 - If release-generated files were changed and the release is abandoned, revert only the known release files:
   - `meson.build`
   - `crates/lushtext/Cargo.toml`
-  - `crates/lushtext-core/Cargo.toml`
+  - `crates/lushtext-ui/Cargo.toml`
   - `Cargo.lock`
   - `data/dev.cominotti.lushtext.metainfo.xml.in`
   - `build-aux/cargo-sources.json`

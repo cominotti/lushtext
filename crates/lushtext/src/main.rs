@@ -10,5 +10,5 @@ fn main() -> glib::ExitCode {
         )
         .init();
 
-    lushtext_core::run()
+    lushtext_ui::run()
 }

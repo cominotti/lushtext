@@ -13,4 +13,5 @@ build = "build.rs"
 [workspace]
 
 [dependencies]
-lushtext-core = { path = "../../../../crates/lushtext-core" }
+lushtext-model = { path = "../../../../crates/lushtext-model" }
+lushtext-services = { path = "../../../../crates/lushtext-services" }

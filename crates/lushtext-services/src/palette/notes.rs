@@ -16,25 +16,30 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::filesystem::metadata as fs_metadata;
-use crate::fuzzy::FuzzyQuery;
-use crate::recovery_metadata::{RecoveryDiagnostic, RecoveryMetadataClass};
+use crate::palette::fuzzy_query::FuzzyQuery;
+use crate::persistence::recovery_metadata::{RecoveryDiagnostic, RecoveryMetadataClass};
 use crate::{
-    bookmark_service, document_note_service, file_tree, folder_note_service, note_storage,
+    notes::bookmark_service, notes::document_note_service, notes::folder_note_service,
+    notes::note_storage, workspace::file_tree,
 };
-use lushtext_model::note::{RichNoteBody, note_preview_line};
-use lushtext_model::palette::{
+use lushtext_model::persistence::note::{RichNoteBody, note_preview_line};
+use lushtext_model::persistence::{
+    bookmark::BookmarkDocument, document_note::DocumentNoteDocument,
+};
+use lushtext_model::workspace::palette::{
     PaletteNoteCategory, PaletteNoteEntry, PaletteNoteTarget, PaletteOpenEditorNoteSnapshot,
     PaletteOpenTabSource,
 };
+use lushtext_model::workspace::workspace_visibility::WorkspaceEntryVisibility;
 use lushtext_model::workspace::{WorkspaceConfig, WorkspaceScopeSnapshot};
-use lushtext_model::workspace_visibility::WorkspaceEntryVisibility;
-use lushtext_model::{bookmark::BookmarkDocument, document_note::DocumentNoteDocument};
 
 use super::charge_scope::{ChargeOutcome, try_with_charge, with_charge};
 use super::fuzzy::search_items_cancellable;
 #[cfg(any(test, feature = "property-tests"))]
 use super::fuzzy::search_items_full_sort_reference;
-use crate::single_flight::{SingleFlightCoordinator, SingleFlightSnapshot, SingleFlightStart};
+use crate::coordination::single_flight::{
+    SingleFlightCoordinator, SingleFlightSnapshot, SingleFlightStart,
+};
 
 use super::runtime::{
     PaletteSearchCancellation, PaletteSearchCoordinator, PaletteSearchMetrics, PaletteSearchOutcome,
@@ -688,7 +693,7 @@ pub fn load_note_entries_bounded_for_scope(
                 );
                 let document_bytes = load.document.as_ref().map_or(
                     0,
-                    lushtext_model::folder_note::FolderNoteDocument::retained_heap_byte_weight,
+                    lushtext_model::persistence::folder_note::FolderNoteDocument::retained_heap_byte_weight,
                 );
                 if !admit_parsed_sidecar(&parse, document_bytes, &load.diagnostics, &mut admission)
                 {
@@ -903,7 +908,7 @@ fn reserve_sidecar_parse(
     paths: &[PathBuf],
     admission: &mut NoteSourceAdmission,
 ) -> Result<Option<SidecarParseReservation>> {
-    let default_max = crate::recovery_metadata::DEFAULT_MAX_METADATA_BYTES;
+    let default_max = crate::persistence::recovery_metadata::DEFAULT_MAX_METADATA_BYTES;
     let mut readable_bytes = 0u64;
     let mut has_oversized = false;
     for path in paths {
@@ -1386,7 +1391,7 @@ impl NoteSourceAdmission {
         entries.extend(self.open_tab_entries);
         entries.shrink_to_fit();
         self.metrics.retained_bytes =
-            lushtext_model::palette::palette_note_entries_retained_byte_weight(&entries);
+            lushtext_model::workspace::palette::palette_note_entries_retained_byte_weight(&entries);
         self.metrics.current_sidecar_path_bytes = 0;
         self.metrics.current_construction_bytes = 0;
         debug_assert!(self.metrics.retained_bytes <= self.retained_byte_limit);
@@ -1643,7 +1648,7 @@ pub(super) fn search_note_entries_cancellable<'a>(
     query: &str,
     max: usize,
     cancellation: &PaletteSearchCancellation,
-) -> PaletteSearchOutcome<Vec<lushtext_model::palette::ScoredResult<'a>>> {
+) -> PaletteSearchOutcome<Vec<lushtext_model::workspace::palette::ScoredResult<'a>>> {
     let query = query.trim();
     let text_query = PaletteNoteTextQuery::new(query);
     let mut scoring_work = NoteScoringWork::default();
@@ -1662,7 +1667,7 @@ pub(super) fn search_note_entries_cancellable<'a>(
                 )
             })
         },
-        lushtext_model::palette::SearchResultItem::Note,
+        lushtext_model::workspace::palette::SearchResultItem::Note,
         query,
         max,
         cancellation,
@@ -1733,12 +1738,12 @@ pub fn note_scoring_equivalence_for_property_test(
                 )
             })
         },
-        lushtext_model::palette::SearchResultItem::Note,
+        lushtext_model::workspace::palette::SearchResultItem::Note,
         query,
         max,
     );
 
-    let ranks = |results: Vec<lushtext_model::palette::ScoredResult<'_>>| {
+    let ranks = |results: Vec<lushtext_model::workspace::palette::ScoredResult<'_>>| {
         results
             .into_iter()
             .map(|result| NoteScoredIdentity {
@@ -1756,7 +1761,7 @@ pub fn note_scoring_equivalence_for_property_test(
 }
 
 fn completed_note_refs(
-    outcome: PaletteSearchOutcome<Vec<lushtext_model::palette::ScoredResult<'_>>>,
+    outcome: PaletteSearchOutcome<Vec<lushtext_model::workspace::palette::ScoredResult<'_>>>,
 ) -> Vec<&PaletteNoteEntry> {
     let PaletteSearchOutcome::Complete { value, .. } = outcome else {
         unreachable!("fresh token cannot cancel");
@@ -1764,10 +1769,10 @@ fn completed_note_refs(
     value
         .into_iter()
         .filter_map(|result| match result.item {
-            lushtext_model::palette::SearchResultItem::Note(entry) => Some(entry),
-            lushtext_model::palette::SearchResultItem::OpenFile(_)
-            | lushtext_model::palette::SearchResultItem::File(_)
-            | lushtext_model::palette::SearchResultItem::Command(_) => None,
+            lushtext_model::workspace::palette::SearchResultItem::Note(entry) => Some(entry),
+            lushtext_model::workspace::palette::SearchResultItem::OpenFile(_)
+            | lushtext_model::workspace::palette::SearchResultItem::File(_)
+            | lushtext_model::workspace::palette::SearchResultItem::Command(_) => None,
         })
         .collect()
 }
@@ -2234,7 +2239,7 @@ mod tests {
 
     use super::*;
     use crate::filesystem::fixture;
-    use lushtext_model::bookmark::BookmarkRecord;
+    use lushtext_model::persistence::bookmark::BookmarkRecord;
     use lushtext_model::workspace::{WorkspaceFolder, WorkspaceId, WorkspaceScope, WorkspacesFile};
     use tempfile::TempDir;
 
@@ -2927,7 +2932,7 @@ mod tests {
             [diagnostic]
                 if matches!(
                     diagnostic.problem,
-                    crate::recovery_metadata::RecoveryProblem::Unreadable { .. }
+                    crate::persistence::recovery_metadata::RecoveryProblem::Unreadable { .. }
                 )
         ));
         assert!(admit_parsed_sidecar(
@@ -2946,10 +2951,11 @@ mod tests {
 
     #[test]
     fn bookmark_model_expansion_stays_within_parse_reservation_factor() {
-        let identity = lushtext_model::sidecar_identity::DocumentSidecarIdentity::from_paths(
-            PathBuf::from("/workspace/main.rs"),
-            PathBuf::from("/workspace/main.rs"),
-        );
+        let identity =
+            lushtext_model::persistence::sidecar_identity::DocumentSidecarIdentity::from_paths(
+                PathBuf::from("/workspace/main.rs"),
+                PathBuf::from("/workspace/main.rs"),
+            );
         let document = BookmarkDocument {
             identity,
             bookmarks: (0..1_000)
@@ -3211,7 +3217,9 @@ mod tests {
             &workspaces,
             vec![bookmark_service::WorkspaceBookmark {
                 path: file.clone(),
-                bookmark_id: lushtext_model::bookmark::BookmarkId("bookmark-a".to_string()),
+                bookmark_id: lushtext_model::persistence::bookmark::BookmarkId(
+                    "bookmark-a".to_string(),
+                ),
                 line: 6,
                 label: Some("Important bookmark".to_string()),
             }],
@@ -3253,7 +3261,9 @@ mod tests {
             &workspaces,
             vec![bookmark_service::WorkspaceBookmark {
                 path: file.clone(),
-                bookmark_id: lushtext_model::bookmark::BookmarkId("bookmark-a".to_string()),
+                bookmark_id: lushtext_model::persistence::bookmark::BookmarkId(
+                    "bookmark-a".to_string(),
+                ),
                 line: 12,
                 label: Some("Launch checklist".to_string()),
             }],
@@ -3474,7 +3484,9 @@ mod tests {
             &workspaces,
             vec![bookmark_service::WorkspaceBookmark {
                 path: file,
-                bookmark_id: lushtext_model::bookmark::BookmarkId("bookmark-a".to_string()),
+                bookmark_id: lushtext_model::persistence::bookmark::BookmarkId(
+                    "bookmark-a".to_string(),
+                ),
                 line: 0,
                 label: Some("Bookmark label".to_string()),
             }],
@@ -3629,7 +3641,9 @@ mod tests {
             &visible,
             vec![bookmark_service::WorkspaceBookmark {
                 path: scoped_file.clone(),
-                bookmark_id: lushtext_model::bookmark::BookmarkId("bookmark-scoped".to_string()),
+                bookmark_id: lushtext_model::persistence::bookmark::BookmarkId(
+                    "bookmark-scoped".to_string(),
+                ),
                 line: 0,
                 label: Some("Scoped bookmark".to_string()),
             }],

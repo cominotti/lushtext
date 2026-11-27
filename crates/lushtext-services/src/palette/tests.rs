@@ -3,7 +3,7 @@
 //! Tests for the GTK-free command palette service: fuzzy scoring, command
 //! filtering, and file-index maintenance.
 
-use lushtext_model::workspace_visibility::WorkspaceEntryVisibility;
+use lushtext_model::workspace::workspace_visibility::WorkspaceEntryVisibility;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -11,7 +11,7 @@ use tempfile::TempDir;
 
 use super::*;
 use crate::filesystem::fixture;
-use lushtext_model::palette::{
+use lushtext_model::workspace::palette::{
     CommandCategory, PaletteCategory, PaletteFileEntry, PaletteFileIdentity,
     PaletteFileIdentityFailure, PaletteNoteCategory, PaletteNoteEntry, PaletteSearchRow,
     SearchMode, SearchResultItem,
@@ -91,7 +91,7 @@ fn all_commands_cover_expected_categories() {
     );
 }
 
-fn command_by_id(id: &str) -> &'static lushtext_model::palette::CommandDef {
+fn command_by_id(id: &str) -> &'static lushtext_model::workspace::palette::CommandDef {
     all_commands()
         .iter()
         .find(|command| command.id == id)
@@ -1408,7 +1408,7 @@ fn open_tabs_and_note_groups_end_with_more_rows_when_forced() {
             subtitle: String::new(),
             detail: None,
             note_text: None,
-            target: lushtext_model::palette::PaletteNoteTarget::FolderNote {
+            target: lushtext_model::workspace::palette::PaletteNoteTarget::FolderNote {
                 workspace_name: "w".into(),
                 folder: PathBuf::from("/workspace"),
             },
@@ -1512,7 +1512,7 @@ proptest::proptest! {
             .take(64)
             .map(|ordinal| {
                 index
-                    .file(lushtext_model::palette::FileOrdinal(*ordinal))
+                    .file(lushtext_model::workspace::palette::FileOrdinal(*ordinal))
                     .expect("a ranked ordinal names a file")
                     .path()
             })

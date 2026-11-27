@@ -33,9 +33,13 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::single_flight::{SingleFlightCoordinator, SingleFlightSnapshot, SingleFlightStart};
-use lushtext_model::palette::{FileOrdinal, PaletteFileIdentity, ScoredResult, SearchResultItem};
-use lushtext_model::workspace_visibility::WorkspaceEntryVisibility;
+use crate::coordination::single_flight::{
+    SingleFlightCoordinator, SingleFlightSnapshot, SingleFlightStart,
+};
+use lushtext_model::workspace::palette::{
+    FileOrdinal, PaletteFileIdentity, ScoredResult, SearchResultItem,
+};
+use lushtext_model::workspace::workspace_visibility::WorkspaceEntryVisibility;
 
 use self::arena::{
     DirRecord, FileExtra, FileRecord, FolderRecord, NO_DIR, folder_bytes, path_bytes, retained,

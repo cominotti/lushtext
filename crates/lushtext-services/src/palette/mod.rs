@@ -10,6 +10,7 @@ mod category;
 mod charge_scope;
 mod commands;
 mod fuzzy;
+pub mod fuzzy_query;
 mod grouped;
 mod index;
 mod notes;

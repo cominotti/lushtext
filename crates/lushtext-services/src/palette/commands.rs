@@ -10,7 +10,7 @@ use std::collections::HashSet;
 #[cfg(feature = "property-tests")]
 use std::path::PathBuf;
 
-use lushtext_model::palette::{
+use lushtext_model::workspace::palette::{
     CommandCategory, CommandDef, PaletteFileEntry, ScoredResult, SearchMode, SearchResultItem,
 };
 

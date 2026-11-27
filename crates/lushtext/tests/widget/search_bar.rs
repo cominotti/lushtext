@@ -5,8 +5,8 @@
 use crate::common::{ensure_gtk_init, wait_until};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_core::ui::accessibility::test_audit::AccessibleAudit;
-use lushtext_core::ui::search_bar::LushtextSearchBar;
+use lushtext_ui::ui::accessibility::test_audit::AccessibleAudit;
+use lushtext_ui::ui::search_bar::LushtextSearchBar;
 use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;

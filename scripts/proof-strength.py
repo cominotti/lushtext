@@ -91,7 +91,7 @@ WORKTREE = Path(os.environ["PROOF_STRENGTH_WORKTREE"]).resolve() if os.environ.g
 RESULTS = STATE / "results"
 # `touch target/proof-strength/STOP` stops a run cleanly between mutants.
 STOP_FILE = STATE / "STOP"
-FEATURES = "lushtext-core/property-tests"
+FEATURES = "lushtext-ui/property-tests"
 # Harnesses whose recorded seconds sum to at most this share one `cargo kani`
 # invocation (one compile) with `--fail-fast`; each costlier harness runs alone,
 # so the list stays cheapest first where it matters.
@@ -836,7 +836,7 @@ def run_module(worktree: Path, rev: str, module: str, tier: str, shard: str | No
 def test_scope(package: str) -> list[str]:
     """cargo-mutants builds the mutated package alone before testing, and cargo
     rejects `--features pkg/feature` for a build that does not select `pkg`.
-    Every package `FEATURES` names other than the mutated one (lushtext-core,
+    Every package `FEATURES` names other than the mutated one (lushtext-ui,
     whose property suites hold the viewport-slice tests-side evidence, for a
     gtk-lush-widgets module) is therefore added to every cargo invocation; the
     test phase still runs the whole workspace."""
@@ -1199,7 +1199,7 @@ def self_test() -> None:
     assert classify("x", [(None, [], "", 0)], covers).klass == "timeout"
     later_kill = classify("x", [(1, timed_out, "", 0), (1, failed, "", 0)], covers)
     assert later_kill.klass == "killed", later_kill
-    compile_error = "error[E0308]: mismatched types\nerror: could not compile `lushtext-core`\n"
+    compile_error = "error[E0308]: mismatched types\nerror: could not compile `lushtext-ui`\n"
     assert classify("x", [(101, [], compile_error, 0)], covers).klass == "unviable"
     vacuous = out(
         "Checking harness m::kani_proofs::h...",
@@ -1250,8 +1250,8 @@ def self_test() -> None:
         assert current_result(path, "h") is None
 
     # The tests arm selects every feature package other than the mutated one.
-    assert test_scope("lushtext-core") == ["--test-workspace=true"]
-    assert test_scope("gtk-lush-widgets") == ["--test-workspace=true", "--cargo-arg=--package=lushtext-core"]
+    assert test_scope("lushtext-ui") == ["--test-workspace=true"]
+    assert test_scope("gtk-lush-widgets") == ["--test-workspace=true", "--cargo-arg=--package=lushtext-ui"]
 
     # The join refuses mismatched revisions and tool versions.
     kani = {"n": {"name": "n", "rev": "r1", "cargo_mutants_version": "cargo-mutants 27.0.0"}}

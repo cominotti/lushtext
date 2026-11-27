@@ -11,14 +11,17 @@ use glib::prelude::ObjectExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::{GtkApplicationExt, TextBufferExt};
 use gtk4::{IconTheme, gdk};
-use lushtext_core::app::LushtextApplication;
-use lushtext_core::config;
-use lushtext_core::model::session::{SessionData, SessionTab};
-use lushtext_core::services::{editor_io, json_store, session_service, test_isolation};
-use lushtext_core::ui::automation::app_snapshot;
-use lushtext_core::ui::editor_page::{EditorLoadState, LushtextEditorPage};
-use lushtext_core::ui::open_popover::evidence::recent_documents_journal_evidence;
-use lushtext_core::ui::window::LushtextWindow;
+use lushtext_model::persistence::session::{SessionData, SessionTab};
+use lushtext_services::{
+    editor_io, instrumentation::test_isolation, persistence::json_store,
+    persistence::session_service,
+};
+use lushtext_ui::app::LushtextApplication;
+use lushtext_ui::config;
+use lushtext_ui::ui::automation::app_snapshot;
+use lushtext_ui::ui::editor_page::{EditorLoadState, LushtextEditorPage};
+use lushtext_ui::ui::open_popover::evidence::recent_documents_journal_evidence;
+use lushtext_ui::ui::window::LushtextWindow;
 use sourceview5::StyleSchemeManager;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -113,7 +116,7 @@ fn test_startup_registers_bundled_sourceview_scheme_path() {
 fn test_a_second_startup_adds_no_display_css_provider() {
     ensure_gtk_init();
     let first = test_lushtext_application();
-    let after_first = lushtext_core::ui::theme::display_providers_added();
+    let after_first = lushtext_ui::ui::theme::display_providers_added();
     assert!(
         after_first > 0,
         "the first startup adds the application CSS for the display"
@@ -121,7 +124,7 @@ fn test_a_second_startup_adds_no_display_css_provider() {
     let second = test_lushtext_application();
     let third = test_lushtext_application();
     assert_eq!(
-        lushtext_core::ui::theme::display_providers_added(),
+        lushtext_ui::ui::theme::display_providers_added(),
         after_first,
         "later startups in the same process add no display provider"
     );
@@ -199,9 +202,9 @@ fn status_text_contains(window: &LushtextWindow, needle: &str) -> bool {
 
 /// Fetch a named Open popover surface from the automation snapshot.
 fn open_recent_surface<'a>(
-    snapshot: &'a lushtext_core::model::automation::AutomationVisualGeometrySnapshot,
+    snapshot: &'a lushtext_model::automation::AutomationVisualGeometrySnapshot,
     name: &str,
-) -> &'a lushtext_core::model::automation::AutomationVisualSurfaceSnapshot {
+) -> &'a lushtext_model::automation::AutomationVisualSurfaceSnapshot {
     snapshot
         .surfaces
         .iter()

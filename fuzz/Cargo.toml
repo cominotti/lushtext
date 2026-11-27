@@ -18,7 +18,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-lushtext-core = { path = "../crates/lushtext-core", features = ["fuzzing"] }
+lushtext-ui = { path = "../crates/lushtext-ui", features = ["fuzzing"] }
 
 [[bin]]
 name = "editor_bytes"

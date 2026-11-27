@@ -29,11 +29,11 @@ use crate::common::{
 use gio::prelude::*;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_core::app::LushtextApplication;
-use lushtext_core::config::keys;
-use lushtext_core::model::session::{SessionData, SessionTab};
-use lushtext_core::ui::automation::current_idle_blocker;
-use lushtext_core::ui::window::{
+use lushtext_model::persistence::session::{SessionData, SessionTab};
+use lushtext_ui::app::LushtextApplication;
+use lushtext_ui::config::keys;
+use lushtext_ui::ui::automation::current_idle_blocker;
+use lushtext_ui::ui::window::{
     CompositionEvidence, CompositionStage, LushtextWindow, set_composition_collapsed_for_test,
     set_composition_hold_before_for_test, shell_geometry_evidence,
 };
@@ -73,7 +73,7 @@ fn lushtext_windows(app: &LushtextApplication) -> Vec<LushtextWindow> {
 /// Seed the restored layout and size the next window reads.
 fn seed_layout(workspace: bool, properties: bool, width: i32, height: i32) {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SPLIT_VIEW_LAYOUT_MIGRATED, true)
         .expect("set split-view-layout-migrated");
@@ -92,7 +92,7 @@ fn seed_layout(workspace: bool, properties: bool, width: i32, height: i32) {
 }
 
 fn seed_preset(fraction: f64) {
-    lushtext_core::ui::settings_writes::shared()
+    lushtext_ui::ui::settings_writes::shared()
         .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, fraction)
         .expect("set workspace-sidebar-width-fraction");
 }
@@ -582,7 +582,7 @@ fn shell_state(window: &LushtextWindow) -> ShellState {
             .selected_page()
             .and_then(|page| {
                 page.child()
-                    .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+                    .downcast::<lushtext_ui::ui::editor_page::LushtextEditorPage>()
                     .ok()
             })
             .is_some_and(|editor| editor.is_search_visible()),
@@ -665,9 +665,9 @@ fn no_tab_is_loading(window: &LushtextWindow) -> bool {
         tab_view
             .nth_page(index)
             .child()
-            .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+            .downcast::<lushtext_ui::ui::editor_page::LushtextEditorPage>()
             .is_ok_and(|editor| {
-                editor.load_state() != lushtext_core::ui::editor_page::EditorLoadState::Loading
+                editor.load_state() != lushtext_ui::ui::editor_page::EditorLoadState::Loading
             })
     })
 }
@@ -823,7 +823,7 @@ fn test_reads_and_projections_during_composition_force_nothing() {
     // A status message renders the notification and the status bar.
     window.publish_status_message(
         "composition projection probe",
-        lushtext_core::services::notifications::NotificationSeverity::Info,
+        lushtext_services::coordination::notifications::NotificationSeverity::Info,
     );
     // Session-restored pages run the tab projections (content stack, sidebar
     // row states, Open popover rows, status bar) on the invisible tab view.
@@ -835,7 +835,7 @@ fn test_reads_and_projections_during_composition_force_nothing() {
     flush_after_delay(Duration::from_millis(100));
     // Evidence and snapshot reads.
     let _ = shell_geometry_evidence(&window);
-    let _ = lushtext_core::ui::automation::app_snapshot(&app);
+    let _ = lushtext_ui::ui::automation::app_snapshot(&app);
 
     let held = evidence(&window);
     assert_eq!(
@@ -1098,13 +1098,13 @@ fn test_the_readiness_blocker_covers_composition_and_ends_with_it() {
         Some("window-composition"),
         "idle waits for composition"
     );
-    let actions =
-        glib::MainContext::default()
-            .block_on(lushtext_core::ui::automation::wait_for_ready_for_test(
+    let actions = glib::MainContext::default().block_on(
+        lushtext_ui::ui::automation::wait_for_ready_for_test(
             app.clone(),
-            lushtext_core::model::automation::AutomationReadinessPredicate::WindowActionsExported,
+            lushtext_model::automation::AutomationReadinessPredicate::WindowActionsExported,
             100,
-        ));
+        ),
+    );
     assert!(
         actions.ok,
         "window-actions-exported does not wait for composition"
@@ -1206,8 +1206,8 @@ fn test_closing_before_restore_reaches_the_pages_keeps_unrestored_descriptors() 
     let dir = tempfile::tempdir().expect("session tempdir");
     let path = dir.path().join("kept.txt");
     fixture::write_text(&path, "kept\n");
-    lushtext_core::services::session_service::save(
-        &lushtext_core::services::json_store::data_dir(),
+    lushtext_services::persistence::session_service::save(
+        &lushtext_services::persistence::json_store::data_dir(),
         &session_with(&path),
     )
     .expect("seed the session");
@@ -1221,8 +1221,8 @@ fn test_closing_before_restore_reaches_the_pages_keeps_unrestored_descriptors() 
     crate::common::wait_for_startup_data_flow(&window);
     window.close();
     wait_until(COMPOSED, || !app.windows().contains(window.upcast_ref()));
-    let session = lushtext_core::services::session_service::load(
-        &lushtext_core::services::json_store::data_dir(),
+    let session = lushtext_services::persistence::session_service::load(
+        &lushtext_services::persistence::json_store::data_dir(),
     )
     .expect("load the session");
     assert!(
@@ -1246,8 +1246,8 @@ fn test_a_cli_open_keeps_priority_over_the_restored_session() {
     let cli = dir.path().join("cli.txt");
     fixture::write_text(&restored, "restored\n");
     fixture::write_text(&cli, "cli\n");
-    lushtext_core::services::session_service::save(
-        &lushtext_core::services::json_store::data_dir(),
+    lushtext_services::persistence::session_service::save(
+        &lushtext_services::persistence::json_store::data_dir(),
         &session_with(&restored),
     )
     .expect("seed the session");
@@ -1266,7 +1266,7 @@ fn test_a_cli_open_keeps_priority_over_the_restored_session() {
             .tab_view
             .nth_page(index)
             .child()
-            .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+            .downcast::<lushtext_ui::ui::editor_page::LushtextEditorPage>()
             .ok()
             .and_then(|editor| editor.file_path())
     };
@@ -1277,7 +1277,7 @@ fn test_a_cli_open_keeps_priority_over_the_restored_session() {
         .selected_page()
         .and_then(|page| {
             page.child()
-                .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+                .downcast::<lushtext_ui::ui::editor_page::LushtextEditorPage>()
                 .ok()
         })
         .and_then(|editor| editor.file_path());
@@ -1332,7 +1332,7 @@ fn test_bookmark_navigation_before_the_content_stage_focuses_the_editor() {
         .tab_view
         .nth_page(0)
         .child()
-        .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+        .downcast::<lushtext_ui::ui::editor_page::LushtextEditorPage>()
         .expect("the restored editor");
     assert!(
         evidence(&window).content_visible,
@@ -1392,7 +1392,7 @@ fn test_staged_content_is_rooted_and_focusable_in_the_dispatch_that_reveals_it()
         .tab_view
         .nth_page(0)
         .child()
-        .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+        .downcast::<lushtext_ui::ui::editor_page::LushtextEditorPage>()
         .expect("the restored editor");
     assert!(
         !evidence(&window).content_visible,
@@ -1418,8 +1418,8 @@ fn test_staged_content_is_rooted_and_focusable_in_the_dispatch_that_reveals_it()
 #[test]
 fn test_a_cli_open_into_an_empty_session_is_saved() {
     ensure_gtk_init();
-    let data_dir = lushtext_core::services::json_store::data_dir();
-    lushtext_core::services::session_service::save(&data_dir, &SessionData::default())
+    let data_dir = lushtext_services::persistence::json_store::data_dir();
+    lushtext_services::persistence::session_service::save(&data_dir, &SessionData::default())
         .expect("seed an empty session");
     let dir = tempfile::tempdir().expect("activation tempdir");
     let cli = dir.path().join("saved.txt");
@@ -1434,7 +1434,7 @@ fn test_a_cli_open_into_an_empty_session_is_saved() {
         window.imp().tab_view.n_pages() == 1 && !window.session_restore_evidence().restoring
     });
     let saved = || {
-        lushtext_core::services::session_service::load(&data_dir).is_ok_and(|session| {
+        lushtext_services::persistence::session_service::load(&data_dir).is_ok_and(|session| {
             session
                 .tabs
                 .iter()
@@ -1511,7 +1511,7 @@ fn test_initial_focus_matches_a_composed_window() {
 fn selected_editor_has_focus(window: &LushtextWindow) -> bool {
     let Some(editor) = window.imp().tab_view.selected_page().and_then(|page| {
         page.child()
-            .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+            .downcast::<lushtext_ui::ui::editor_page::LushtextEditorPage>()
             .ok()
     }) else {
         return false;
@@ -1561,8 +1561,8 @@ fn test_a_restored_session_gives_the_selected_editor_keyboard_focus() {
     let dir = tempfile::tempdir().expect("session tempdir");
     let path = dir.path().join("restored-typing.txt");
     fixture::write_text(&path, "restored\n");
-    let data_dir = lushtext_core::services::json_store::data_dir();
-    lushtext_core::services::session_service::save(&data_dir, &session_with(&path))
+    let data_dir = lushtext_services::persistence::json_store::data_dir();
+    lushtext_services::persistence::session_service::save(&data_dir, &session_with(&path))
         .expect("seed the session");
     seed_layout(true, false, 1600, 900);
     let app = app();
@@ -1579,7 +1579,7 @@ fn test_a_restored_session_gives_the_selected_editor_keyboard_focus() {
     let region = focus_region(&window);
     window.destroy();
     flush_events();
-    lushtext_core::services::session_service::save(&data_dir, &SessionData::default())
+    lushtext_services::persistence::session_service::save(&data_dir, &SessionData::default())
         .expect("reset the session");
     assert!(
         focused,
@@ -1595,7 +1595,7 @@ fn alert_announcements_at_focus(window: &LushtextWindow) -> Rc<std::cell::Cell<O
     window.connect_notify_local(Some("focus-widget"), move |window, _| {
         if seen.get().is_none() && selected_editor_has_focus(window) {
             seen.set(Some(
-                lushtext_core::ui::window::notification_evidence(window)
+                lushtext_ui::ui::window::notification_evidence(window)
                     .announcements
                     .editor_info_bar,
             ));
@@ -1614,15 +1614,15 @@ fn test_the_focus_handoff_precedes_a_protected_documents_alert_announcement() {
     let dir = tempfile::tempdir().expect("protected tempdir");
     let path = dir.path().join("protected-focus.txt");
     let giant = "giant ".repeat(
-        usize::try_from(lushtext_core::model::document_scale::L_PROTECT_EDIT / 6 + 2)
+        usize::try_from(lushtext_model::document::document_scale::L_PROTECT_EDIT / 6 + 2)
             .expect("a small length"),
     );
     fixture::write_text(&path, &format!("short head line\n{giant}\ntail line\n"));
-    let data_dir = lushtext_core::services::json_store::data_dir();
+    let data_dir = lushtext_services::persistence::json_store::data_dir();
     for restore in [false, true] {
         seed_layout(true, false, 1600, 900);
         if restore {
-            lushtext_core::services::session_service::save(&data_dir, &session_with(&path))
+            lushtext_services::persistence::session_service::save(&data_dir, &session_with(&path))
                 .expect("seed the session");
         }
         let app = app();
@@ -1642,7 +1642,7 @@ fn test_the_focus_handoff_precedes_a_protected_documents_alert_announcement() {
         window.release_composition_hold_for_test();
         wait_composed(&window);
         let announced = crate::common::wait_until_or_false(Duration::from_secs(60), || {
-            lushtext_core::ui::window::notification_evidence(&window)
+            lushtext_ui::ui::window::notification_evidence(&window)
                 .announcements
                 .editor_info_bar
                 >= 1
@@ -1652,8 +1652,11 @@ fn test_the_focus_handoff_precedes_a_protected_documents_alert_announcement() {
         window.destroy();
         flush_events();
         if restore {
-            lushtext_core::services::session_service::save(&data_dir, &SessionData::default())
-                .expect("reset the session");
+            lushtext_services::persistence::session_service::save(
+                &data_dir,
+                &SessionData::default(),
+            )
+            .expect("reset the session");
         }
         assert!(
             announced,

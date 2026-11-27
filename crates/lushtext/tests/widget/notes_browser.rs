@@ -16,17 +16,16 @@ use glib::prelude::{Cast, CastNone, ToVariant};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::{AdwApplicationWindowExt, AdwDialogExt};
-use lushtext_core::model::bookmark::BookmarkRecord;
-use lushtext_core::model::note::RichNoteBody;
-use lushtext_core::model::responsiveness_budget::{B_INTERACT_US, B_SETTLE_US};
-use lushtext_core::model::workspace::{
-    WorkspaceConfig, WorkspaceId, WorkspaceScope, WorkspacesFile,
+use lushtext_model::budgets::responsiveness_budget::{B_INTERACT_US, B_SETTLE_US};
+use lushtext_model::persistence::bookmark::BookmarkRecord;
+use lushtext_model::persistence::note::RichNoteBody;
+use lushtext_model::workspace::{WorkspaceConfig, WorkspaceId, WorkspaceScope, WorkspacesFile};
+use lushtext_services::{
+    notes::bookmark_service, notes::document_note_service, notes::folder_note_service,
+    persistence::json_store, workspace::workspace_manager,
 };
-use lushtext_core::services::{
-    bookmark_service, document_note_service, folder_note_service, json_store, workspace_manager,
-};
-use lushtext_core::ui::editor_page::LushtextEditorPage;
-use lushtext_core::ui::window::{
+use lushtext_ui::ui::editor_page::LushtextEditorPage;
+use lushtext_ui::ui::window::{
     LushtextWindow, NotesBrowserRuntimeSnapshot, set_notes_browser_budgets_for_test,
 };
 use std::path::{Path, PathBuf};
@@ -560,19 +559,16 @@ fn test_a_text_cut_says_showing_x_of_y_and_announces_once() {
             .is_some_and(|label| label.text().starts_with("Showing "))
     })
     .expect("limit label");
-    lushtext_core::ui::accessibility::test_audit::AccessibleAudit::new()
+    lushtext_ui::ui::accessibility::test_audit::AccessibleAudit::new()
         .role(gtk4::AccessibleRole::Status)
         .properties(&[gtk4::AccessibleProperty::Label])
         .assert_on(&limit_label);
     // The automation snapshot projects the same facts (D9).
     let app = window
         .application()
-        .and_then(|app| {
-            app.downcast::<lushtext_core::app::LushtextApplication>()
-                .ok()
-        })
+        .and_then(|app| app.downcast::<lushtext_ui::app::LushtextApplication>().ok())
         .expect("lushtext application");
-    let notes = lushtext_core::ui::automation::app_snapshot(&app)
+    let notes = lushtext_ui::ui::automation::app_snapshot(&app)
         .window
         .expect("window snapshot")
         .notes;
@@ -877,7 +873,7 @@ fn test_closing_a_scrolled_browser_retires_its_rows_in_slices() {
 /// retargets the row replaces it, and the section header keeps `heading`.
 #[test]
 fn test_notes_row_text_is_a_label_carrying_the_row_text() {
-    use lushtext_core::ui::row_text::LushtextRowText;
+    use lushtext_ui::ui::row_text::LushtextRowText;
     let (_folders, folder) = seed_workspace();
     seed_closed_bookmarks(&folder, 2, 2);
     let window = new_window();
@@ -905,7 +901,7 @@ fn test_notes_row_text_is_a_label_carrying_the_row_text() {
     let row_texts = texts(&row);
     assert_eq!(row_texts.len(), 2, "a title and a subtitle");
     for text in &row_texts {
-        lushtext_core::ui::accessibility::test_audit::AccessibleAudit::new()
+        lushtext_ui::ui::accessibility::test_audit::AccessibleAudit::new()
             .role(gtk4::AccessibleRole::Label)
             .assert_on(text);
         assert!(
@@ -945,7 +941,7 @@ fn test_notes_row_text_is_a_label_carrying_the_row_text() {
                 .first_child()
                 .and_downcast::<LushtextRowText>()
                 .expect("the header's title");
-            lushtext_core::ui::accessibility::test_audit::AccessibleAudit::new()
+            lushtext_ui::ui::accessibility::test_audit::AccessibleAudit::new()
                 .role(gtk4::AccessibleRole::Heading)
                 .assert_on(&title);
             assert_eq!(title.text(), "Bookmarks");
@@ -967,7 +963,7 @@ fn test_notes_row_text_is_a_label_carrying_the_row_text() {
 /// that the isolated `row_text.rs` comparison did not.
 #[test]
 fn test_notes_row_text_measures_like_a_label_in_the_browser() {
-    use lushtext_core::ui::row_text::LushtextRowText;
+    use lushtext_ui::ui::row_text::LushtextRowText;
     let (_folders, folder) = seed_workspace();
     seed_closed_bookmarks(&folder, 2, 2);
     let window = new_window();

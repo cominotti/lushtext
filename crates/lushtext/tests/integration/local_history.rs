@@ -2,11 +2,12 @@
 
 //! Integration tests for local-history recovery and migration retry behavior.
 
-use lushtext_core::model::local_history::LocalHistorySnapshotOrigin;
-use lushtext_core::model::migration_ledger::MigrationKind;
-use lushtext_core::services::{
+use lushtext_model::persistence::local_history::LocalHistorySnapshotOrigin;
+use lushtext_model::persistence::migration_ledger::MigrationKind;
+use lushtext_services::{
     filesystem::{fixture, metadata as fs_metadata, mutate as fs_mutate},
-    local_history_service, migration_ledger,
+    persistence::local_history_service,
+    persistence::migration_ledger,
 };
 
 use crate::common::TestContext;

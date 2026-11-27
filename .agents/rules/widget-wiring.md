@@ -1,9 +1,9 @@
 ---
 description: GTK widget composition, signal wiring, and widget-test rules
 paths:
-  - "crates/lushtext-core/src/ui/**"
+  - "crates/lushtext-ui/src/ui/**"
   - "crates/lushtext/tests/widget/**"
-  - "crates/lushtext-services/src/action_catalog/**"
+  - "crates/lushtext-services/src/workspace/action_catalog/**"
   - "resources/ui/**"
   - "crates/gtk-lush/widgets/**"
 ---
@@ -144,7 +144,7 @@ the panic aborts the process: a `gboolean` handler that answered `None`
 aborted LushText on every double click (`fix-extend-selection-abort`, ledger
 A122). `connect`, `connect_local`, `connect_closure`, `connect_unsafe` (and
 their `_id` forms) and the `emit_by_name` family are banned in
-`crates/lushtext-core/src` outside `ui/signal_connect.rs`
+`crates/lushtext-ui/src` outside `ui/signal_connect.rs`
 (`make check-signal-connections`, in `make check-policy`). Widget tests under
 `crates/lushtext/tests/**` and the GTK axiom probes under
 `crates/gtk-lush/axioms/**` are outside that gate: they connect and emit by

@@ -6,7 +6,7 @@
 (*                                                                         *)
 (* DISPOSABLE EVALUATION MODEL, NOT A MAINTAINED PROPERTY. The maintained  *)
 (* proof is the Kani harness set in                                        *)
-(* crates/lushtext-core/src/services/filesystem/write_protocol/kani_proofs.rs *)
+(* crates/lushtext-services/src/filesystem/write_protocol/kani_proofs.rs *)
 (* over the real WriteProtocol::step (write_protocol.rs). `Step` below is  *)
 (* that function arm for arm; the PlusCal process is the harness's model   *)
 (* disk and crash point. Report:                                           *)

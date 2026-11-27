@@ -1,0 +1,948 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Editor page widget — one tab's content: GtkSourceView, minimap, and search bar.
+//!
+//! The public wrapper type and its small facade stay here, while file I/O,
+//! search-bar choreography, and external file monitoring live in dedicated
+//! sibling modules to keep this driving adapter easier to navigate.
+
+mod accessibility;
+mod bookmarks;
+mod buffer_replacement;
+mod cursor_steps;
+mod document_identity;
+pub mod document_scale;
+pub(crate) mod edit_lock;
+mod focus_mode;
+mod frame_validation;
+mod held_input;
+// Private implementation module. GTK's GObject bindings split custom widgets
+// into an `imp` struct for instance data/lifecycle hooks and this public wrapper
+// module for the type-safe API.
+mod imp;
+mod invisibles;
+pub mod language_attach;
+pub mod load;
+pub(crate) mod local_history;
+mod minimap;
+mod monitor;
+mod overscroll;
+mod paragraph_wrap;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the pure Protected View policy and seams land before their executor (long-line-protected-view tasks 4.3-6.x), which wires them"
+    )
+)]
+mod protected_view;
+pub mod reanalysis_pacing;
+mod restore_position;
+pub mod restyle;
+pub mod save;
+mod search;
+pub(crate) use search::search_prefill_text;
+mod style_scheme;
+mod surrounding_text;
+mod view_attachment;
+
+use crate::ui::info_bar::LushtextInfoBar;
+use glib::Object;
+use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk4::prelude::*;
+use lushtext_model::document::encoding::{
+    DocumentEncoding, DocumentEncodingState, FileHealthFinding, InvisibleCharactersMode, LineEnding,
+};
+use lushtext_model::document::formatting_overrides::FormattingOverrides;
+use lushtext_model::persistence::bookmark::BookmarkRecord;
+use lushtext_services::coordination::notifications::InlineActionNotification;
+
+#[cfg(feature = "test-utils")]
+pub use crate::ui::buffer_snapshot::{
+    BufferSnapshotCancelReason, BufferSnapshotCaptureMetrics, BufferSnapshotEvidence,
+    BufferSnapshotHandle, BufferSnapshotHandoffCounters, BufferSnapshotOutcome,
+    BufferSnapshotSessionEvidence, BufferSnapshotTestEdit, BufferSnapshotTestMutation,
+    BufferSnapshotTestTrigger, buffer_snapshot_evidence, coalesce_snapshot_payload_for_test,
+    snapshot_buffer_text_async_for_test,
+};
+/// Copy Whole Line's clipboard provider (the shared source-text provider).
+pub use crate::ui::folded_text::SourceTextProvider as WholeLineProvider;
+pub use bookmarks::{
+    BookmarkEditError, BookmarkEditOutcome, BookmarkNavigationDirection, BookmarkToggleState,
+};
+pub use buffer_replacement::{
+    BufferReplacementCancelReason, BufferReplacementMetrics, BufferReplacementTerminalDiagnostic,
+    BufferReplacementTicket, BufferReplacementWorkflow, ReplacementPhase,
+};
+#[cfg(feature = "test-utils")]
+pub use buffer_replacement::{BufferReplacementEvidence, BufferReplacementTestOutcome};
+pub(crate) use buffer_replacement::{BufferReplacementOutcome, BufferReplacementRequest};
+pub(crate) use focus_mode::approximate_char_width_pango_units;
+pub use held_input::HeldInputEvidence;
+pub use imp::{EditorLoadState, InlineAlertLifetime, PendingWarningAction};
+pub use load::{LoadEvidence, LoadInstallPhase, LoadOutcome};
+#[cfg(feature = "test-utils")]
+pub use load::{
+    set_next_load_body_disposal_probe_for_test, set_next_load_disposal_reservation_weight_for_test,
+};
+pub use lushtext_services::editor_io::EditorSaveError;
+#[cfg(feature = "test-utils")]
+pub use minimap::MinimapEvidence;
+pub(crate) use minimap::{
+    MinimapAdjustmentDiagnostics, MinimapNativeSliderDiagnostics, MinimapTextViewRect,
+};
+pub use paragraph_wrap::NO_WRAP_TAG;
+pub use protected_view::ProtectedViewEvidence;
+pub use protected_view::inspector::{InspectorRequest, LushtextLineInspector};
+/// The most bytes Copy Whole Line writes to a reader per main-loop dispatch.
+pub use protected_view::policy::COPY_CHUNK_BYTES as WHOLE_LINE_CHUNK_BYTES;
+pub use protected_view::policy::classifies_toolkit_binding;
+pub(crate) use protected_view::policy::{ProtectedAction, ProtectedNotice};
+// `mod minimap;` stays private, matching the `load/`, `save/`, and
+// `buffer_replacement/` role homes in this directory. The three content-analysis
+// types are re-exported here as a precisely scoped subset because
+// `crates/lushtext-ui/benches/benchmarks.rs` measures the accumulator directly;
+// widening the module to `pub` to obtain reach for three types would invert the
+// posture of every other role home here.
+pub use minimap::{
+    MinimapAnalysisAccumulator, MinimapAnalysisPolicy, MinimapAnalysisResult, MinimapAvailability,
+    MinimapMarkerBounds, MinimapMarkerKind, MinimapProjectedBounds,
+};
+
+glib::wrapper! {
+    // Generate the public GObject wrapper for `LushtextEditorPage`.
+    // `ObjectSubclass` links to the private implementation, `@extends` declares
+    // the GTK class chain, and `@implements` lists the GTK interfaces.
+    /// Public GTK widget for one editor tab.
+    ///
+    /// The wrapper exposes the type-safe facade around the private GObject
+    /// implementation so window workflows can reach editor, search, minimap,
+    /// file, draft, and bookmark state without depending on template internals.
+    pub struct LushtextEditorPage(ObjectSubclass<imp::LushtextEditorPage>)
+        @extends gtk4::Box, gtk4::Widget,
+        @implements gtk4::Accessible, gtk4::Buildable, gtk4::ConstraintTarget, gtk4::Orientable;
+}
+
+impl LushtextEditorPage {
+    /// The editor's scrolling viewport widget, or `None` once it is gone.
+    ///
+    /// A named operation rather than a template-child reach-through, because the
+    /// Automation1 visual surface reads it from a different workflow. `try_get()`
+    /// for the same reason the minimap accessors use it: GTK4 clears template
+    /// children in `dispose()` before Rust's `Drop`, so the panicking accessor
+    /// would turn a teardown-time snapshot into a crash.
+    pub(crate) fn editor_viewport_widget(&self) -> Option<gtk4::ScrolledWindow> {
+        self.imp().scrolled_window.try_get()
+    }
+
+    #[must_use]
+    pub fn new() -> Self {
+        Object::builder().build()
+    }
+
+    #[must_use]
+    ///
+    /// # Panics
+    ///
+    /// Panics if the template wiring ever swaps the editor buffer away from
+    /// the expected `sourceview5::Buffer` type.
+    pub fn buffer(&self) -> sourceview5::Buffer {
+        // GtkSourceView exposes the generic GtkTextBuffer API. This checked
+        // GObject cast confirms source-specific behavior is available.
+        // The document buffer, whatever the view shows: a hidden tab's view
+        // holds an empty placeholder (`view_attachment`).
+        if let Some(document) = self.imp().view_attachment.document.get() {
+            return document.clone();
+        }
+        self.source_view()
+            .buffer()
+            .downcast::<sourceview5::Buffer>()
+            .expect("source view buffer is always a sourceview5::Buffer")
+    }
+
+    #[must_use]
+    pub fn source_view(&self) -> &sourceview5::View {
+        self.imp().source_view.as_ref()
+    }
+
+    /// Whether this page's template children have already been cleared.
+    ///
+    /// GTK4 clears template children in `dispose()`, before Rust's `Drop`, so a
+    /// page can still be reachable from a collection while
+    /// [`source_view`](Self::source_view) — and therefore [`buffer`](Self::buffer)
+    /// and everything derived from it — would panic. Evidence surfaces that walk
+    /// a page collection use this to **skip** a disposed page rather than
+    /// panicking on it, which is the bounded-child half of the disposal rule in
+    /// `.agents/rules/workflow-convention.md`.
+    ///
+    /// Production code does not need this: it only ever reaches a live page,
+    /// which is why the gate matches its only consumer, the `test-utils`-gated
+    /// evidence surface. Gating it more widely would reproduce the dead-code
+    /// gate mismatch this change fixed in `services/content_search/replace.rs`.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub(crate) fn is_disposed(&self) -> bool {
+        self.imp().source_view.try_get().is_none()
+    }
+
+    /// Return the style-scheme ID currently applied to this editor buffer.
+    ///
+    /// Widget tests use this to verify that transparency swaps the buffer onto
+    /// the derived opacity-aware scheme instead of fading the whole widget.
+    #[must_use]
+    pub fn applied_style_scheme_id(&self) -> Option<String> {
+        self.imp().applied_style_scheme_id.borrow().clone()
+    }
+
+    /// Return the current document-surface opacity used by this editor tab.
+    ///
+    /// The minimap intentionally stays opaque, so this value only describes
+    /// the main editor surface.
+    #[must_use]
+    pub fn content_background_opacity(&self) -> f64 {
+        self.imp().document_surface_opacity.get()
+    }
+
+    /// Return the opacity used for the minimap surface.
+    ///
+    /// The minimap remains on an explicitly opaque path even when the editor
+    /// document surface becomes translucent.
+    #[must_use]
+    pub fn minimap_background_opacity(&self) -> f64 {
+        1.0
+    }
+
+    #[must_use]
+    pub fn info_bar(&self) -> &LushtextInfoBar {
+        self.imp().info_bar.as_ref()
+    }
+
+    #[must_use]
+    pub fn file_path(&self) -> Option<std::path::PathBuf> {
+        self.imp().file_path.borrow().clone()
+    }
+
+    /// Background-resolved canonical path for duplicate-tab reconciliation.
+    #[must_use]
+    pub(crate) fn canonical_file_path(&self) -> Option<std::path::PathBuf> {
+        self.imp().canonical_file_path.borrow().clone()
+    }
+
+    /// On-disk size in bytes, populated after async load completes.
+    #[must_use]
+    pub fn file_size(&self) -> Option<u64> {
+        self.imp().file_size.get()
+    }
+
+    /// Current file-load lifecycle state for this tab.
+    #[must_use]
+    pub fn load_state(&self) -> EditorLoadState {
+        self.imp().load_state.get()
+    }
+
+    /// Whether the newest accepted load attempt failed for this visible buffer.
+    #[must_use]
+    pub(crate) fn latest_load_failed(&self) -> bool {
+        self.imp().latest_load_failed.get()
+    }
+
+    /// Current encoding and line-ending facts for this tab.
+    #[must_use]
+    pub fn document_encoding_state(&self) -> DocumentEncodingState {
+        self.imp().document_metadata.encoding_state.get()
+    }
+
+    /// Replace the current encoding and line-ending facts for this tab.
+    pub fn set_document_encoding_state(&self, state: DocumentEncodingState) {
+        self.imp().document_metadata.encoding_state.set(state);
+    }
+
+    /// Current "opened as" encoding for the active buffer content.
+    #[must_use]
+    pub fn opened_encoding(&self) -> DocumentEncoding {
+        self.document_encoding_state().opened_encoding
+    }
+
+    /// Current save encoding policy for the next write.
+    #[must_use]
+    pub fn save_encoding(&self) -> DocumentEncoding {
+        self.document_encoding_state().save_encoding
+    }
+
+    /// Update the save encoding policy while keeping the current open facts.
+    pub fn set_save_encoding(&self, save_encoding: DocumentEncoding) {
+        let mut state = self.document_encoding_state();
+        state.save_encoding = save_encoding;
+        self.set_document_encoding_state(state);
+    }
+
+    /// Advance the per-editor lossy-encoding request generation.
+    pub(crate) fn advance_lossy_analysis_generation(&self) -> u32 {
+        if let Some(snapshot) = self.imp().document_metadata.lossy_analysis_snapshot.take() {
+            snapshot.dispose();
+        }
+        let generation = self
+            .imp()
+            .document_metadata
+            .lossy_analysis_generation
+            .get()
+            .wrapping_add(1);
+        self.imp()
+            .document_metadata
+            .lossy_analysis_generation
+            .set(generation);
+        generation
+    }
+
+    /// Current generation for lossy-encoding analysis requests.
+    #[must_use]
+    pub(crate) fn lossy_analysis_generation(&self) -> u32 {
+        self.imp().document_metadata.lossy_analysis_generation.get()
+    }
+
+    /// Current line-ending state detected during the last load.
+    #[must_use]
+    pub fn detected_line_ending(&self) -> LineEnding {
+        self.document_encoding_state().detected_line_ending
+    }
+
+    /// Current line-ending style selected for the next save.
+    #[must_use]
+    pub fn save_line_ending(&self) -> LineEnding {
+        self.document_encoding_state().save_line_ending
+    }
+
+    /// Update the next-save line-ending policy while keeping other metadata.
+    pub fn set_save_line_ending(&self, save_line_ending: LineEnding) {
+        let mut state = self.document_encoding_state();
+        state.save_line_ending = save_line_ending;
+        self.set_document_encoding_state(state);
+    }
+
+    /// Whether the loaded on-disk representation carried a byte-order mark.
+    #[must_use]
+    pub fn has_bom(&self) -> bool {
+        self.imp().document_metadata.has_bom.get()
+    }
+
+    /// Record whether the active on-disk representation carries a byte-order mark.
+    pub fn set_has_bom(&self, has_bom: bool) {
+        self.imp().document_metadata.has_bom.set(has_bom);
+    }
+
+    /// Whether saving the document unmodified would not write back the bytes
+    /// it was loaded from (`LoadMetadata::decode_round_trips`).
+    #[must_use]
+    pub fn decode_is_inexact(&self) -> bool {
+        self.imp().document_metadata.decode_inexact.get()
+    }
+
+    /// The file the document was last loaded from or saved to, with that
+    /// file's size and modification time then: what a byte-exact Save As copy
+    /// checks before it copies.
+    #[must_use]
+    pub(crate) fn loaded_file_identity(
+        &self,
+    ) -> Option<lushtext_services::editor_io::LoadedFileIdentity> {
+        Some(lushtext_services::editor_io::LoadedFileIdentity {
+            path: self.file_path()?,
+            byte_size: self.imp().file_size.get()?,
+            modified_at_secs: self.imp().monitor.last_known_mtime.get(),
+        })
+    }
+
+    /// Current encoding-adjacent file-health findings for this tab.
+    #[must_use]
+    pub fn file_health(&self) -> Vec<FileHealthFinding> {
+        self.imp().document_metadata.file_health.borrow().clone()
+    }
+
+    /// Replace the current file-health findings for this tab.
+    pub fn set_file_health(&self, findings: Vec<FileHealthFinding>) {
+        *self.imp().document_metadata.file_health.borrow_mut() = findings;
+    }
+
+    /// Current invisible-character visibility mode for this tab.
+    #[must_use]
+    pub fn invisible_characters_mode(&self) -> InvisibleCharactersMode {
+        self.imp().document_metadata.invisible_mode.get()
+    }
+
+    /// Update the per-tab invisible-character visibility mode.
+    pub fn set_invisible_characters_mode(&self, mode: InvisibleCharactersMode) {
+        self.imp().document_metadata.invisible_mode.set(mode);
+    }
+
+    /// Allow exactly one lossy save attempt to proceed for this tab.
+    pub fn arm_lossy_save_once(&self) {
+        self.imp().document_metadata.allow_lossy_save_once.set(true);
+    }
+
+    /// Consume the one-shot lossy-save permission for this tab.
+    #[must_use]
+    pub fn take_lossy_save_once(&self) -> bool {
+        self.imp()
+            .document_metadata
+            .allow_lossy_save_once
+            .replace(false)
+    }
+
+    /// Route the shared warning-bar primary action to one editor-specific workflow.
+    pub fn set_pending_warning_action(&self, action: Option<imp::PendingWarningAction>) {
+        self.imp().document_metadata.warning_action.set(action);
+    }
+
+    /// The warning-bar action bound to this editor's current alert, if any.
+    ///
+    /// Read, never consumed: every emit sets or resets it, so it always belongs
+    /// to the editor's latest alert. Consuming it on click turned a cancelled
+    /// "Normalize…" dialog into a silent reload on the next click of the same
+    /// button, which dropped unsaved edits.
+    #[must_use]
+    pub fn pending_warning_action(&self) -> Option<imp::PendingWarningAction> {
+        self.imp().document_metadata.warning_action.get()
+    }
+
+    #[must_use]
+    pub fn title(&self) -> String {
+        self.imp()
+            .file_path
+            .borrow()
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .map_or_else(
+                || "Untitled".to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            )
+    }
+
+    /// Whether the user changed the document since it was last loaded or
+    /// saved.
+    ///
+    /// Not GtkTextBuffer's modified flag alone: a live sliced load
+    /// installation (its cancelled clear included) and a memory eviction change
+    /// the buffer too, and a tab mid-install holds part of the file, not an
+    /// edit. Such a tab is not modified: its close asks nothing, and no save
+    /// may write its buffer (`buffer_holds_no_whole_document`). Text typed
+    /// meanwhile is held, not in the buffer (`has_unsaved_changes`). Both
+    /// terminals clear the flag (the publish and the cancelled clear), so
+    /// whatever the user types afterwards is modified again.
+    #[must_use]
+    pub fn is_modified(&self) -> bool {
+        self.buffer().is_modified() && !self.buffer_is_being_replaced_by_a_workflow()
+    }
+
+    /// Whether a load installation or a memory eviction is changing the
+    /// buffer right now, so its changes are not the user's.
+    fn buffer_is_being_replaced_by_a_workflow(&self) -> bool {
+        self.imp().load.installation.borrow().is_some() || self.memory_eviction_in_progress()
+    }
+
+    /// Whether the buffer cannot be written as the document: a load
+    /// installation owns it or left it partial (`install_owns_changes`,
+    /// `installation_incomplete`), a memory eviction is emptying it or emptied
+    /// it, or a cancelled replacement emptied it and the user has not typed
+    /// since. Every save refuses while it holds.
+    #[must_use]
+    pub(crate) fn buffer_holds_no_whole_document(&self) -> bool {
+        let load = &self.imp().load;
+        load.install_owns_changes.get()
+            || load.installation_incomplete.get()
+            || self.buffer_is_being_replaced_by_a_workflow()
+            || self.is_evicted()
+            || (self.replacement_left_buffer_partial() && !self.buffer().is_modified())
+    }
+
+    /// Evict buffer content to free memory. The tab reloads from disk when re-focused.
+    pub fn evict(&self) {
+        let generation = self.imp().residency.policy_generation.get();
+        let editor_weak = self.downgrade();
+        self.replace_buffer_bounded(BufferReplacementRequest::new(
+            BufferReplacementTicket {
+                workflow: BufferReplacementWorkflow::MemoryEviction,
+                generation,
+            },
+            String::new(),
+            move |editor| {
+                // Held text is the user's: a page holding it is never evicted.
+                // (`has_held_text`, not `holds_typed_input`: this eviction's
+                // own edit lock is held while the check runs between turns.)
+                editor.imp().residency.policy_generation.get() == generation
+                    && !editor.has_held_text()
+                    && !editor.is_evicted()
+                    && !editor.is_saving()
+                    && editor.load_state() == EditorLoadState::Loaded
+                    && !editor.imp().latest_load_failed.get()
+            },
+            move |outcome| {
+                let Some(editor) = editor_weak.upgrade() else {
+                    return;
+                };
+                let completed = matches!(
+                    outcome,
+                    BufferReplacementOutcome::Complete {
+                        ticket: BufferReplacementTicket {
+                            workflow: BufferReplacementWorkflow::MemoryEviction,
+                            generation: current_generation,
+                        },
+                        ..
+                    } if current_generation == generation
+                );
+                // An eviction that went stale after its first clear turn
+                // (an access, any policy change) still empties the buffer:
+                // the document is out of memory either way, so it is evicted
+                // and reloads, instead of an emptied, "modified" tab whose
+                // save would truncate the file.
+                let emptied = matches!(outcome, BufferReplacementOutcome::Cancelled { .. })
+                    && editor.replacement_left_buffer_partial();
+                if !completed && !emptied {
+                    return;
+                }
+                editor.imp().residency.evicted.set(true);
+                editor.buffer().set_modified(false);
+                editor.release_local_history_residency_for_eviction();
+                editor.release_protected_source_for_eviction();
+                editor.clear_modified_line_marks();
+                editor.refresh_minimap();
+                editor.notify_memory_policy_changed();
+                editor.refresh_accessibility_metadata();
+                if emptied {
+                    editor.reload_emptied_eviction_if_shown();
+                }
+            },
+        ));
+    }
+
+    /// A stale eviction emptied a page the user may already be looking at
+    /// (the access that made it stale is usually the tab's selection, whose
+    /// reload check ran while the page was not yet evicted): reload it now if
+    /// it is shown. A hidden page reloads when it is selected.
+    fn reload_emptied_eviction_if_shown(&self) {
+        let editor = self.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(editor) = editor.upgrade()
+                && editor.is_evicted()
+                && editor.is_mapped()
+                && editor.load_state() != EditorLoadState::Loading
+                && let Some(path) = editor.file_path()
+            {
+                editor.load_file_async(&path);
+            }
+        });
+    }
+
+    #[must_use]
+    pub fn is_evicted(&self) -> bool {
+        self.imp().residency.evicted.get()
+    }
+
+    /// Whether current content can be dropped and reconstructed from disk.
+    #[must_use]
+    pub(crate) fn eligible_for_memory_eviction(&self, active: bool) -> bool {
+        !active
+            && !self.is_evicted()
+            && !self.is_modified()
+            && !self.holds_typed_input()
+            && !self.is_saving()
+            && self.load_state() == EditorLoadState::Loaded
+            && !self.latest_load_failed()
+            && self.file_path().is_some()
+    }
+
+    #[must_use]
+    /// Return a conservative O(1) estimate of this editor's live buffer residency.
+    ///
+    /// This GTK-main-thread query reads only scalar buffer metadata, never
+    /// copies document text, and uses accepted file bytes as a floor. Evicted
+    /// pages report only their fixed bookkeeping estimate.
+    pub fn estimated_live_buffer_bytes(&self) -> u64 {
+        if self.is_evicted() {
+            return lushtext_model::document::editor_memory::EVICTED_EDITOR_BOOKKEEPING_BYTES;
+        }
+        #[cfg(feature = "test-utils")]
+        if let Some(bytes) = self.imp().residency.estimate_override.get() {
+            return bytes;
+        }
+
+        // GtkTextBuffer maintains char_count as scalar metadata. Reading it is
+        // O(1), so accounting never copies or scans document text on edits.
+        // The stand-in terminator after a folded last paragraph is not text.
+        let character_count = u64::try_from(crate::ui::protected_fold::document_char_count(
+            self.buffer().upcast_ref(),
+        ))
+        .unwrap_or(0);
+        // A protected document also holds its text source (the installed body
+        // or the edit entry's capture), retained beside the buffer.
+        lushtext_model::document::editor_memory::estimate_live_editor_bytes(
+            character_count,
+            self.file_size(),
+            self.is_evicted(),
+        )
+        .saturating_add(
+            self.protected_source()
+                .map_or(0, |source| source.retained_bytes()),
+        )
+        // The boundary marks a sliced protected install left (C3, task 4.7).
+        .saturating_add(
+            lushtext_model::document::editor_memory::protected_boundary_bytes(
+                self.imp().protected_boundaries.live_boundaries(),
+            ),
+        )
+    }
+
+    /// Current least-recently-used generation assigned by the owning window.
+    #[must_use]
+    pub(crate) fn memory_access_generation(&self) -> u64 {
+        self.imp().residency.access_generation.get()
+    }
+
+    /// Current residency and eviction-eligibility generation.
+    #[must_use]
+    pub(crate) fn memory_policy_generation(&self) -> u64 {
+        self.imp().residency.policy_generation.get()
+    }
+
+    /// Assign a window-wide access generation and invalidate stale decisions.
+    pub(crate) fn mark_memory_accessed(&self, generation: u64) {
+        self.imp().residency.access_generation.set(generation);
+        self.notify_memory_policy_changed();
+    }
+
+    /// Install the page-to-window callback for residency or safety changes.
+    ///
+    /// It runs on the GTK main thread after edits, modified-state changes,
+    /// load/save transitions, eviction, or access updates. A new callback
+    /// replaces the previous window observer.
+    pub fn connect_memory_policy_changed<F: Fn() + 'static>(&self, f: F) {
+        *self.imp().memory_changed_callback.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn connect_inline_notification<F: Fn(InlineActionNotification) + 'static>(&self, f: F) {
+        *self.imp().notification_callback.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Advance policy freshness and notify the window without copying text.
+    pub(crate) fn notify_memory_policy_changed(&self) {
+        self.imp()
+            .residency
+            .policy_generation
+            .set(self.imp().residency.policy_generation.get().wrapping_add(1));
+        if let Some(ref callback) = *self.imp().memory_changed_callback.borrow() {
+            callback();
+        }
+    }
+
+    /// Override scalar residency for deterministic window-policy tests.
+    #[cfg(feature = "test-utils")]
+    pub fn set_memory_estimate_for_test(&self, bytes: Option<u64>) {
+        self.imp().residency.estimate_override.set(bytes);
+        self.notify_memory_policy_changed();
+    }
+
+    /// Surface one document-state inline alert for this editor.
+    ///
+    /// `lifetime` states whether the next successful load resolves it (see
+    /// `InlineAlertLifetime`); every producer picks one explicitly.
+    pub fn emit_inline_notification(
+        &self,
+        notification: InlineActionNotification,
+        lifetime: imp::InlineAlertLifetime,
+    ) {
+        self.set_pending_warning_action(None);
+        self.publish_inline_notification(notification, lifetime);
+    }
+
+    /// Emit one inline notification while keeping a specific warning action wired.
+    pub fn emit_inline_notification_with_warning_action(
+        &self,
+        notification: InlineActionNotification,
+        action: imp::PendingWarningAction,
+        lifetime: imp::InlineAlertLifetime,
+    ) {
+        self.set_pending_warning_action(Some(action));
+        self.publish_inline_notification(notification, lifetime);
+    }
+
+    fn publish_inline_notification(
+        &self,
+        notification: InlineActionNotification,
+        lifetime: imp::InlineAlertLifetime,
+    ) {
+        self.imp().document_metadata.alert_lifetime.set(lifetime);
+        if let Some(ref callback) = *self.imp().notification_callback.borrow() {
+            callback(notification);
+        } else {
+            let info_bar = self.info_bar();
+            info_bar.render_notification(Some(&notification));
+            info_bar.announce_throttled(&notification);
+        }
+    }
+
+    /// Install the window callback that settles the current alert after a
+    /// successful load.
+    ///
+    /// The callback receives whether the load superseded the alert, resolves
+    /// it on the notification bus if so, and returns whether an alert is still
+    /// shown for this editor afterwards.
+    pub fn connect_inline_notification_load_settled<F: Fn(bool) -> bool + 'static>(&self, f: F) {
+        *self.imp().notification_load_settled_callback.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Settle the current alert for a successful load.
+    ///
+    /// Called from the load terminal. An alert emitted as
+    /// `InlineAlertLifetime::SupersededByLoad` is resolved — on the
+    /// notification bus with a window, so no later projection can bring it
+    /// back, or on this editor's own bar without one. An
+    /// `InlineAlertLifetime::OutlivesLoad` alert is left alone, and the return
+    /// value says whether one is still shown: the bus keeps one alert per
+    /// editor, so the terminal must not publish its own warning over it.
+    pub(crate) fn settle_inline_notification_after_load(&self) -> bool {
+        let superseded = self.imp().document_metadata.alert_lifetime.get()
+            == imp::InlineAlertLifetime::SupersededByLoad;
+        if let Some(ref callback) = *self.imp().notification_load_settled_callback.borrow() {
+            return callback(superseded);
+        }
+        if superseded {
+            self.info_bar().render_notification(None);
+            return false;
+        }
+        self.info_bar().property::<bool>("visible")
+    }
+
+    #[must_use]
+    pub fn notification_owner_id(&self) -> usize {
+        self.as_ptr() as usize
+    }
+
+    #[must_use]
+    pub fn draft_dirty(&self) -> bool {
+        self.imp().draft.draft_dirty.get()
+    }
+
+    pub fn set_draft_dirty(&self, dirty: bool) {
+        if dirty {
+            self.imp()
+                .draft
+                .dirty_generation
+                .set(self.imp().draft.dirty_generation.get().wrapping_add(1));
+        }
+        self.imp().draft.draft_dirty.set(dirty);
+    }
+
+    #[must_use]
+    pub(crate) fn draft_dirty_generation(&self) -> u64 {
+        self.imp().draft.dirty_generation.get()
+    }
+
+    #[must_use]
+    pub fn draft_id(&self) -> Option<String> {
+        self.imp().draft.draft_id.borrow().clone()
+    }
+
+    /// Whether this editor's draft id is `draft_id`, without cloning it.
+    #[must_use]
+    pub(crate) fn has_draft_id(&self, draft_id: &str) -> bool {
+        self.imp().draft.draft_id.borrow().as_deref() == Some(draft_id)
+    }
+
+    pub fn set_draft_id(&self, id: String) {
+        *self.imp().draft.draft_id.borrow_mut() = Some(id);
+    }
+
+    #[must_use]
+    pub fn is_draft_restored(&self) -> bool {
+        self.imp().draft.draft_restored.get()
+    }
+
+    pub fn set_draft_restored(&self, restored: bool) {
+        self.imp().draft.draft_restored.set(restored);
+    }
+
+    /// Whether automatic crash recovery is currently behind this dirty buffer.
+    #[must_use]
+    pub(crate) fn automatic_recovery_limited(&self) -> bool {
+        self.imp().draft.automatic_recovery_limited.get()
+    }
+
+    /// Track the document-scoped automatic-recovery limit warning state.
+    pub(crate) fn set_automatic_recovery_limited(&self, limited: bool) {
+        self.imp().draft.automatic_recovery_limited.set(limited);
+    }
+
+    /// Current file-load generation used to reject stale lazy draft completions.
+    #[must_use]
+    pub(crate) fn load_generation(&self) -> u64 {
+        self.imp().load_tracking.generation.get()
+    }
+
+    /// Apply EditorConfig formatting overrides and update the view.
+    pub fn apply_editorconfig_overrides(&self, overrides: FormattingOverrides) {
+        if let Some(line_ending) = overrides.line_ending {
+            self.set_save_line_ending(line_ending);
+        }
+        if let Some(save_encoding) = overrides.save_encoding {
+            self.set_save_encoding(save_encoding);
+        }
+        self.imp().formatting_overrides.set(overrides);
+        // After an install, a re-resolution (Save As, rename, the
+        // `use-editorconfig` toggle) is paced on a dense document
+        // (`bound-post-open-settle`, D6.2 and D9); during an install the
+        // buffer holds no line yet, so it applies directly.
+        self.restyle_paced(|editor| {
+            imp::apply_formatting_settings(
+                &editor.imp().source_view,
+                &editor.imp().settings,
+                overrides,
+            );
+        });
+    }
+
+    /// Clear all EditorConfig overrides and fall back to GSettings values.
+    pub fn clear_editorconfig_overrides(&self) {
+        self.apply_editorconfig_overrides(FormattingOverrides::default());
+    }
+
+    /// Current formatting overrides (for status-bar indicator).
+    #[must_use]
+    pub fn formatting_overrides(&self) -> FormattingOverrides {
+        self.imp().formatting_overrides.get()
+    }
+
+    /// Register a callback fired when bookmark state changes and should be persisted.
+    pub fn connect_bookmarks_changed<F: Fn() + 'static>(&self, f: F) {
+        *self.imp().bookmarks.changed_callback.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Register a callback fired when the user activates a bookmark gutter mark.
+    pub fn connect_bookmark_activated<F: Fn(BookmarkRecord) + 'static>(&self, f: F) {
+        bookmarks::connect_bookmark_activated(self, f);
+    }
+
+    /// Snapshot the current live bookmark projection into pure model records.
+    #[must_use]
+    pub fn bookmark_records(&self) -> Vec<BookmarkRecord> {
+        bookmarks::bookmark_records(self)
+    }
+
+    /// Visit one bounded slice of the live bookmarks (see
+    /// `bookmarks::bookmark_record_slice`).
+    pub(crate) fn bookmark_record_slice(
+        &self,
+        start: usize,
+        max: usize,
+        admit: impl FnMut(u64) -> bool,
+        out: Option<&mut Vec<BookmarkRecord>>,
+    ) -> bookmarks::BookmarkSliceProgress {
+        bookmarks::bookmark_record_slice(self, start, max, admit, out)
+    }
+
+    /// Live bookmark entries the projection holds.
+    #[must_use]
+    pub(crate) fn bookmark_entry_count(&self) -> usize {
+        bookmarks::bookmark_entry_count(self)
+    }
+
+    /// Snapshot the live bookmark projection generation for async race guards.
+    #[must_use]
+    pub fn bookmark_change_generation(&self) -> u64 {
+        bookmarks::bookmark_change_generation(self)
+    }
+
+    /// Replace the live bookmark projection with freshly loaded sidecar records.
+    pub fn load_bookmarks(&self, bookmarks: &[BookmarkRecord]) {
+        bookmarks::load_bookmarks(self, bookmarks);
+    }
+
+    /// Apply loaded sidecar bookmarks only when the live projection stayed unchanged.
+    #[must_use]
+    pub fn load_bookmarks_if_generation_matches(
+        &self,
+        bookmarks: &[BookmarkRecord],
+        expected_generation: u64,
+    ) -> bool {
+        bookmarks::load_bookmarks_if_generation_matches(self, bookmarks, expected_generation)
+    }
+
+    /// Clear all live bookmark marks for the current file identity.
+    pub fn clear_bookmarks(&self) {
+        bookmarks::clear_bookmarks(self);
+    }
+
+    /// Toggle the bookmark on the active cursor line.
+    #[must_use]
+    pub fn toggle_bookmark_at_cursor(&self) -> BookmarkToggleState {
+        bookmarks::toggle_bookmark_at_cursor(self)
+    }
+
+    /// Update the label for the bookmark on the active cursor line.
+    #[must_use]
+    pub fn set_bookmark_label_at_cursor(&self, label: Option<String>) -> Option<BookmarkRecord> {
+        bookmarks::set_bookmark_label_at_cursor(self, label)
+    }
+
+    /// Update an existing bookmark by stable ID using a user-facing 1-based line.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation error if the bookmark ID no longer exists, the
+    /// target line is outside the buffer, or another bookmark already owns the
+    /// target line.
+    pub fn update_bookmark(
+        &self,
+        id: &lushtext_model::persistence::bookmark::BookmarkId,
+        label: Option<String>,
+        target_line: u32,
+    ) -> Result<BookmarkEditOutcome, BookmarkEditError> {
+        bookmarks::update_bookmark(self, id, label, target_line)
+    }
+
+    /// Return the bookmark on the active cursor line, if one exists.
+    #[must_use]
+    pub fn current_bookmark(&self) -> Option<BookmarkRecord> {
+        bookmarks::current_bookmark(self)
+    }
+
+    /// Return the bookmark whose live mark currently occupies a zero-based buffer line.
+    #[must_use]
+    pub fn bookmark_at_line(&self, line: u32) -> Option<BookmarkRecord> {
+        bookmarks::bookmark_at_line(self, line)
+    }
+
+    /// Activate a bookmark by zero-based live buffer line and notify listeners.
+    #[must_use]
+    pub fn activate_bookmark_at_line(&self, line: u32) -> Option<BookmarkRecord> {
+        bookmarks::activate_bookmark_at_line(self, line)
+    }
+
+    /// Jump to the next or previous bookmark in the active file, wrapping around.
+    #[must_use]
+    pub fn navigate_bookmark(
+        &self,
+        direction: BookmarkNavigationDirection,
+    ) -> Option<BookmarkRecord> {
+        bookmarks::navigate_bookmark(self, direction)
+    }
+
+    /// Notify persistence listeners that bookmark state changed.
+    pub(crate) fn emit_bookmarks_changed(&self) {
+        bookmarks::emit_bookmarks_changed(self);
+    }
+
+    /// Reconcile bookmark line numbers after the user edits the buffer.
+    #[must_use]
+    pub(crate) fn reconcile_bookmarks_after_edit(&self) -> bool {
+        bookmarks::reconcile_bookmarks_after_edit(self)
+    }
+
+    /// Install bookmark gutter attributes on the source view.
+    pub(crate) fn setup_bookmark_projection(&self) {
+        bookmarks::setup_bookmark_projection(self);
+    }
+}
+
+impl Default for LushtextEditorPage {
+    fn default() -> Self {
+        Self::new()
+    }
+}

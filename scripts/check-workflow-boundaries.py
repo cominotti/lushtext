@@ -8,7 +8,7 @@ Ten mechanical guarantees, all derived from
 `openspec/specs/mutation-testing/spec.md`, and the completion rule in
 `docs/workflow-readability-matrix.md`:
 
-1. Purity: a workflow `policy.rs` under `crates/lushtext-core/src/` must not
+1. Purity: a workflow `policy.rs` under `crates/lushtext-ui/src/` must not
    import or reference `gtk4`, `glib`, `gio`, `libadwaita`, or `sourceview5`.
 2. Mutation reach: every such `policy.rs` must be matched by an `examine_globs`
    entry in `.cargo/mutants.toml`, so relocating pure policy beside its workflow
@@ -52,7 +52,7 @@ Ten mechanical guarantees, all derived from
    machine-readable: a bare stem or a brace expansion classifies a file for a
    human reader while leaving this check blind.
 8. Test-seam ratchet: the count of externally reachable `*_for_test`
-   declarations under the governed crates (`crates/lushtext-core/src`,
+   declarations under the governed crates (`crates/lushtext-ui/src`,
    `crates/lushtext-model/src`, `crates/lushtext-services/src`) must not exceed
    the ceiling the
    matrix records. Only excess fails. A count below the ceiling passes without a
@@ -108,7 +108,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 MATRIX_PATH = REPO_ROOT / "docs/workflow-readability-matrix.md"
 RECORD_PATH = REPO_ROOT / "docs/next/workflow-readability.md"
 MUTANTS_CONFIG_PATH = REPO_ROOT / ".cargo/mutants.toml"
-CORE_SRC = Path("crates/lushtext-core/src")
+CORE_SRC = Path("crates/lushtext-ui/src")
 MODEL_SRC = Path("crates/lushtext-model/src")
 SERVICES_SRC = Path("crates/lushtext-services/src")
 
@@ -526,7 +526,7 @@ def kani_harness_findings(root: Path) -> list[str]:
 # and this rule holds the compiler to every module that must carry it. See the
 # "Whole-pixel geometry policy" section of `.agents/rules/workflow-convention.md`.
 #
-# Each entry maps a module (relative to `crates/lushtext-core/src`) to its
+# Each entry maps a module (relative to `crates/lushtext-ui/src`) to its
 # ceiling of function-level admissions: the number of
 # `#[expect(clippy::float_arithmetic | clippy::disallowed_methods, ...)]`
 # attributes it and its child files may carry. A ceiling of 0 means the module
@@ -546,10 +546,10 @@ WHOLE_PIXEL_POLICY_MODULES: dict[str, int] = {
     "ui/editor_page/minimap/policy.rs": 8,
     "ui/markdown_preview/policy.rs": 0,
     "ui/sidebar/width_preset.rs": 0,
-    "model/editor_memory.rs": 0,
+    "model/document/editor_memory.rs": 0,
     "ui/window/local_history/policy.rs": 0,
     "ui/window/focus_mode/policy.rs": 0,
-    "model/protected_fold.rs": 0,
+    "model/document/protected_fold.rs": 0,
     "ui/editor_page/protected_view/policy.rs": 0,
     "ui/window/tab_overflow/policy.rs": 0,
 }
@@ -968,7 +968,7 @@ def gtk_free_ui_modules(root: Path) -> list[Path]:
 # than only in the module's own comment. A prose-classified module that is *not*
 # listed is a finding: the escape must be explicit somewhere a reviewer reads.
 PROSE_CLASSIFIED_UNMUTATED = {
-    "crates/lushtext-core/src/ui/sidebar/width_preset.rs": (
+    "crates/lushtext-ui/src/ui/sidebar/width_preset.rs": (
         "cross-cutting value owned by WFR-SHELL-GEOMETRY (WFR-SHELL-LAYOUT until "
         "slot 7b superseded it) and consumed by Preferences and the window shell. "
         "That row is now migrated and its own policy is mutation-covered at "
@@ -980,7 +980,7 @@ PROSE_CLASSIFIED_UNMUTATED = {
         "mutation scope because moving it into the role home would put a "
         "Preferences-facing type behind a workflow directory"
     ),
-    "crates/lushtext-core/src/ui/sidebar/workspace_section/watch_targets.rs": (
+    "crates/lushtext-ui/src/ui/sidebar/workspace_section/watch_targets.rs": (
         "stateful data structure owned by WFR-WORKSPACE-TREE's `watch` role, "
         "recorded in that row's Migrated Workflow Roles subsection as neither a "
         "role nor a called presentation surface"
@@ -1943,7 +1943,7 @@ test_tool = "nextest"
 examine_globs = [
     "crates/lushtext-model/src/**/*.rs",
     "crates/lushtext-services/src/**/*.rs",
-    "crates/lushtext-core/src/ui/**/policy.rs",
+    "crates/lushtext-ui/src/ui/**/policy.rs",
 ]
 """.lstrip()
 
@@ -1989,7 +1989,7 @@ def build_fixture(
 #
 # One table so every escape the rule closes is named once, and so the same
 # fixtures can be replayed against an older revision of this script to show
-# each case failing first. `files` maps paths under `crates/lushtext-core/src`
+# each case failing first. `files` maps paths under `crates/lushtext-ui/src`
 # to contents; `finding` is whether rule 10 must report it.
 
 WHOLE_PIXEL_FORBID = "#![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]\n"

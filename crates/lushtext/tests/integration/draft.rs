@@ -6,13 +6,16 @@
 //! and orphan cleanup through `draft_service` and `DraftManifest`.
 
 use super::common::TestContext;
-use lushtext_core::model::draft::{
+use lushtext_model::persistence::draft::{
     DraftEntry, DraftManifest, DraftManifestAuthority, PreloadedDraftRestore,
 };
-use lushtext_core::model::local_history::LocalHistorySnapshotOrigin;
-use lushtext_core::model::session::{SessionData, SessionTab};
-use lushtext_core::services::filesystem::fixture;
-use lushtext_core::services::{draft_service, editor_io, local_history_service, session_service};
+use lushtext_model::persistence::local_history::LocalHistorySnapshotOrigin;
+use lushtext_model::persistence::session::{SessionData, SessionTab};
+use lushtext_services::filesystem::fixture;
+use lushtext_services::{
+    editor_io, persistence::draft_service, persistence::local_history_service,
+    persistence::session_service,
+};
 use std::path::{Path, PathBuf};
 
 // --- Draft ID generation ---
@@ -769,7 +772,7 @@ fn unregistered_path_hash_body_is_attributed_from_session_and_journal_stays_trus
     assert_eq!(entry.original_path.as_deref(), Some(file_path.as_path()));
     assert_eq!(
         entry.original_mtime_secs,
-        Some(lushtext_core::model::draft::UNPROVEN_BACKING_MTIME_SECS)
+        Some(lushtext_model::persistence::draft::UNPROVEN_BACKING_MTIME_SECS)
     );
 
     // Unprovable freshness never restores over the file; the edits are kept in
@@ -915,7 +918,7 @@ fn stale_draft_for_file_outside_local_history_policy_is_set_aside() {
     let file_path = ctx.path().join("huge.log");
     fixture::create_sparse_file(
         &file_path,
-        lushtext_core::model::document_scale::HISTORY_UNAVAILABLE_BYTES + 1,
+        lushtext_model::document::document_scale::HISTORY_UNAVAILABLE_BYTES + 1,
     );
     let draft_id = draft_service::draft_id_for_path(&file_path);
     let body = "edits to a very large file";

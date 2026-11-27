@@ -11,15 +11,15 @@ use glib::prelude::Cast;
 use glib::prelude::ToValue;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_core::model::recent_document::{RecentDocumentEntry, RecentDocumentRow};
-use lushtext_core::services::recent_documents;
-use lushtext_core::ui::accessibility::test_audit::AccessibleAudit;
-use lushtext_core::ui::open_popover::LushtextOpenPopover;
-use lushtext_core::ui::open_popover::evidence::{
+use lushtext_model::persistence::recent_document::{RecentDocumentEntry, RecentDocumentRow};
+use lushtext_services::persistence::recent_documents;
+use lushtext_ui::ui::accessibility::test_audit::AccessibleAudit;
+use lushtext_ui::ui::open_popover::LushtextOpenPopover;
+use lushtext_ui::ui::open_popover::evidence::{
     OpenPopoverEvidence, RecentDocumentsJournalEvidence, open_popover_evidence,
     recent_documents_journal_evidence,
 };
-use lushtext_core::ui::window::LushtextWindow;
+use lushtext_ui::ui::window::LushtextWindow;
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -162,17 +162,17 @@ fn active_file_path(window: &LushtextWindow) -> Option<PathBuf> {
 
 fn active_editor(
     window: &LushtextWindow,
-) -> Option<lushtext_core::ui::editor_page::LushtextEditorPage> {
+) -> Option<lushtext_ui::ui::editor_page::LushtextEditorPage> {
     window.imp().tab_view.selected_page().and_then(|page| {
         page.child()
-            .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+            .downcast::<lushtext_ui::ui::editor_page::LushtextEditorPage>()
             .ok()
     })
 }
 
 fn active_editor_has_focus(
     window: &LushtextWindow,
-    editor: &lushtext_core::ui::editor_page::LushtextEditorPage,
+    editor: &lushtext_ui::ui::editor_page::LushtextEditorPage,
 ) -> bool {
     let Some(focus) = gtk4::prelude::GtkWindowExt::focus(window) else {
         return false;

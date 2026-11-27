@@ -9,7 +9,7 @@ Use this reference when changing the root Meson graph, Cargo wrapper, resources,
 - `flatpak-builder` invokes the current Meson graph in an offline sandbox.
 - `build-aux/cargo.sh` bridges Meson paths/profile data into Cargo. Inspect its actual argument contract before changing either side.
 
-Do not copy a generic dual-resource strategy or wrapper. Confirm how `crates/lushtext-core/build.rs`, runtime resource registration, `resources/meson.build`, and the installed `pkgdatadir` work together in the current tree.
+Do not copy a generic dual-resource strategy or wrapper. Confirm how `crates/lushtext-ui/build.rs`, runtime resource registration, `resources/meson.build`, and the installed `pkgdatadir` work together in the current tree.
 
 ## Dependency vendoring
 

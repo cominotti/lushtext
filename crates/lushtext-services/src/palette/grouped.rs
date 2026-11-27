@@ -10,7 +10,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use lushtext_model::palette::{
+use lushtext_model::workspace::palette::{
     PaletteCategory, PaletteFileEntry, PaletteNoteCategory, PaletteNoteEntry, PaletteSearchRow,
     SearchMode, SearchResultItem,
 };
@@ -291,7 +291,7 @@ pub(super) fn open_tab_canonical_paths(open_tabs: &[PaletteFileEntry]) -> HashSe
 }
 
 fn note_rows_from_results(
-    results: Vec<lushtext_model::palette::ScoredResult<'_>>,
+    results: Vec<lushtext_model::workspace::palette::ScoredResult<'_>>,
 ) -> Vec<PaletteSearchRow> {
     results
         .into_iter()
@@ -309,7 +309,7 @@ fn note_rows_from_results(
 }
 
 fn command_rows_from_results(
-    results: Vec<lushtext_model::palette::ScoredResult<'static>>,
+    results: Vec<lushtext_model::workspace::palette::ScoredResult<'static>>,
 ) -> Vec<PaletteSearchRow> {
     results
         .into_iter()

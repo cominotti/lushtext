@@ -15,11 +15,11 @@ use crate::common::{
 };
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_core::model::document_scale::{ReductionReason, ScaleFeature};
-use lushtext_core::model::reanalysis_pacing::override_reanalysis_allowance_for_test;
-use lushtext_core::ui::editor_page::load::policy::SettleStage;
-use lushtext_core::ui::editor_page::{EditorLoadState, LushtextEditorPage};
-use lushtext_core::ui::window::LushtextWindow;
+use lushtext_model::document::document_scale::{ReductionReason, ScaleFeature};
+use lushtext_model::document::reanalysis_pacing::override_reanalysis_allowance_for_test;
+use lushtext_ui::ui::editor_page::load::policy::SettleStage;
+use lushtext_ui::ui::editor_page::{EditorLoadState, LushtextEditorPage};
+use lushtext_ui::ui::window::LushtextWindow;
 use sourceview5::prelude::BufferExt as _;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -30,7 +30,7 @@ const SETTLE_BUDGET: Duration = Duration::from_secs(10);
 
 fn write(dir: &tempfile::TempDir, name: &str, text: &str) -> std::path::PathBuf {
     let path = dir.path().join(name);
-    lushtext_core::services::filesystem::fixture::write_text(&path, text);
+    lushtext_services::filesystem::fixture::write_text(&path, text);
     path
 }
 

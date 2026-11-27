@@ -8,7 +8,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use crate::durable_write;
+use crate::persistence::durable_write;
 
 use super::{sys, types::WriteLabel};
 

@@ -3,7 +3,7 @@
 //! Headless GTK responsiveness evidence for weighted plain-data disposal.
 
 use crate::common::{ensure_gtk_init, wait_until};
-use lushtext_core::ui::plain_disposal::{
+use lushtext_ui::ui::plain_disposal::{
     aggregate_pressure_evidence_for_test, hold_disposal_capacity_for_test,
     hold_progress_disposal_capacity_for_test, plain_disposal_evidence,
 };

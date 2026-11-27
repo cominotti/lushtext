@@ -11,8 +11,8 @@
 Calibration catalog for data-safety subagents. Each entry documents a confirmed or calibration-relevant data loss pattern with its location, the specific code that causes it, the user scenario, and a safe counterexample where one exists. Subagents use this to distinguish genuinely dangerous code from similar-looking safe patterns.
 
 All paths are written as normalized suffixes relative to any `*/src/` root.
-- `/repo/crates/lushtext-core/src/ui/window/drafts/journal.rs` → `ui/window/drafts/journal.rs`
-- `/repo/crates/lushtext-core/src/ui/window/session_restore/journal.rs` → `ui/window/session_restore/journal.rs`
+- `/repo/crates/lushtext-ui/src/ui/window/drafts/journal.rs` → `ui/window/drafts/journal.rs`
+- `/repo/crates/lushtext-ui/src/ui/window/session_restore/journal.rs` → `ui/window/session_restore/journal.rs`
 - `packages/editor-core/src/services/session_service.rs` → `services/session_service.rs`
 
 ---

@@ -6,7 +6,7 @@
 (*                                                                         *)
 (* DISPOSABLE EVALUATION MODEL, NOT A MAINTAINED PROPERTY. The maintained  *)
 (* proofs are the Kani harnesses in                                        *)
-(* crates/lushtext-core/src/services/draft_service/kani_proofs.rs over the *)
+(* crates/lushtext-services/src/draft_service/kani_proofs.rs over the *)
 (* real decision core journal_core.rs. Part 1 transliterates each          *)
 (* journal_core decision the harness calls; part 2 transliterates the      *)
 (* harness environment (Journal, step, step_as, startup, invariants) as    *)

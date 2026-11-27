@@ -44,8 +44,8 @@ shape:
 |-------|------|----------|---------|---------|
 | Unit | Domain invariants and small pure helpers | crate-local `#[cfg(test)]` modules | No | `make test-unit` |
 | Service | Filesystem and persistence logic in lib tests | crate-local `#[cfg(test)]` modules | No | `make test-unit` |
-| Property | Pure or tiny deterministic tempdir-backed invariants over bounded generated inputs | `crates/lushtext-core/tests/properties.rs` and `crates/lushtext-core/tests/properties/*.rs` | No | `make test-prop` |
-| Fuzz replay | Committed fuzz corpus seeds through narrow non-GTK helpers | `crates/lushtext-core/tests/fuzz_corpus_replay.rs` and `fuzz/corpus/**` | No | `make fuzz-corpus-replay` |
+| Property | Pure or tiny deterministic tempdir-backed invariants over bounded generated inputs | `crates/lushtext-ui/tests/properties.rs` and `crates/lushtext-ui/tests/properties/*.rs` | No | `make test-prop` |
+| Fuzz replay | Committed fuzz corpus seeds through narrow non-GTK helpers | `crates/lushtext-ui/tests/fuzz_corpus_replay.rs` and `fuzz/corpus/**` | No | `make fuzz-corpus-replay` |
 | Fuzz | Hostile byte ingestion and bounded operation scripts through narrow non-GTK helpers | `fuzz/fuzz_targets/*.rs` and `fuzz/corpus/**` | No | `make fuzz-smoke` |
 | Integration | Cross-service workflows with real temp directories | `crates/lushtext/tests/integration.rs` and `crates/lushtext/tests/integration/*.rs` | No | `make test-int` |
 | Widget | Widget and real-window behavior, including workflow-level UI regressions | `crates/lushtext/tests/widget.rs` and `crates/lushtext/tests/widget/*.rs` | Private headless Mutter only | `make test-widget` |
@@ -132,7 +132,7 @@ skill:
    - `crates/lushtext/tests/widget/common.rs` for `ensure_gtk_init()`, `test_application()`, and `test_window()`
 3. Wait on a visible predicate with the shared helpers, **≥5–10 s for async waits** (`spawn_blocking_then`, realization, file I/O) and short budgets only for synchronous UI-state flips; never sleep for an animation's nominal duration.
 4. Run the smallest relevant command before broadening to the full suite.
-5. When refactoring a large widget or window into sibling modules without changing behavior, still run the widget target for that surface and its adjacent orchestration surface. Visibility and wiring regressions often show up only from the external `crates/lushtext` test crate, not from `lushtext-core` alone.
+5. When refactoring a large widget or window into sibling modules without changing behavior, still run the widget target for that surface and its adjacent orchestration surface. Visibility and wiring regressions often show up only from the external `crates/lushtext` test crate, not from `lushtext-ui` alone.
 
 The widget-test obligations live in the rules, which load only for `ui/**` and
 widget-test paths; read them before writing a widget test: `widget-wiring.md`,

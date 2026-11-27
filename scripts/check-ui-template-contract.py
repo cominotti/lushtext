@@ -17,7 +17,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 UI_DIR = ROOT / "resources" / "ui"
 GRESOURCE_XML = ROOT / "resources" / "dev.cominotti.lushtext.gresource.xml"
-RUST_UI_DIR = ROOT / "crates" / "lushtext-core" / "src" / "ui"
+RUST_UI_DIR = ROOT / "crates" / "lushtext-ui" / "src" / "ui"
 RESOURCE_PREFIX = "/dev/cominotti/lushtext/"
 
 CHECKED_PROPERTIES = {

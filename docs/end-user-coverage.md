@@ -335,7 +335,7 @@ they are not default PR gates:
   encoding, build profile, environment, resident-memory context, bounded
   cancellation progress, and planned transient ownership without adding a
   default-CI timing or memory gate. Run it explicitly with
-  `cargo test -p lushtext-core --lib near_supported_limit_load_diagnostic --
+  `cargo test -p lushtext-ui --lib near_supported_limit_load_diagnostic --
   --ignored --nocapture`; `LUSHTEXT_NEAR_LIMIT_LOAD_BYTES` bounds the fixture
   for smaller hosts.
 - Full fuzz smoke, deep property runs, full mutation, and full benchmark reports

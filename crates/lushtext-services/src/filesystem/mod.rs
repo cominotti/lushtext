@@ -528,7 +528,7 @@ mod tests {
 
     #[test]
     fn visibility_scan_applies_excluded_names_and_hidden_mode() {
-        use lushtext_model::workspace_visibility::WorkspaceEntryVisibility;
+        use lushtext_model::workspace::workspace_visibility::WorkspaceEntryVisibility;
         let dir = TempDir::new().expect("temp dir");
         fixture::write_text(&dir.path().join("visible.txt"), "");
         fixture::write_text(&dir.path().join(".env"), "");

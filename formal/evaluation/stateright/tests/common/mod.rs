@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use lushtext_core::services::draft_service::journal_core::RestoreEnding;
+use lushtext_services::persistence::draft_service::journal_core::RestoreEnding;
 use serde::Deserialize;
 
 // --- The Quint shapes ----------------------------------------------------------

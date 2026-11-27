@@ -588,7 +588,7 @@ Cargo workspace:
 - `crates/lushtext-build-support` - build-script helper crate.
 - `crates/lushtext-model` - pure GTK-free domain types and verified policy.
 - `crates/lushtext-services` - GTK-free application services and I/O adapters.
-- `crates/lushtext-core` - GTK widgets plus `model` and `services` re-exports. Its main-window adapter keeps pure responsive policy in
+- `crates/lushtext-ui` - GTK widgets consuming `lushtext-model` and `lushtext-services`. Its main-window adapter keeps pure responsive policy in
   `ui/window/geometry/policy.rs`, keeps draft intent epochs in
   `ui/window/drafts/`, bounds progressive tab restoration in
   `ui/window/session_restore/`, composes each window in bounded stages
@@ -610,7 +610,7 @@ Cargo workspace:
   `folder_execution.rs`, `file_execution.rs`, `peek_execution.rs`,
   `reorder_execution.rs`, `watch.rs`) live in `workspace_section/`. Plain policy
   for weighted disposal and workspace search lives in
-  `model/{workspace_search,plain_disposal}.rs`, while the
+  `crates/lushtext-model/src/{workspace/workspace_search.rs,document/plain_disposal.rs}`, while the
   workspace tree workflow's own pure policy — per-store scan ownership,
   workspace-save generations, inline-rename intent, and the confirmed-delete
   identity verdict — lives beside that workflow in `ui/sidebar/policy.rs`.
@@ -620,7 +620,7 @@ Cargo workspace:
   outside the input dispatch through `ui/list_retirement.rs`, and the notes
   browser lists a large first result in a few frames through
   `ui/list_growth.rs`; the pure planning behind both is in
-  `model/list_budget.rs`.
+  `crates/lushtext-model/src/budgets/list_budget.rs`.
 - `crates/lushtext` - thin binary entry point plus integration tests.
 - `crates/gtk-lush/` - governed `0.0.0` GTK Lush family crates for extracting
   reusable GTK4/Libadwaita patterns. These are functional in-tree APIs, not
@@ -658,7 +658,7 @@ role so its whole story stays in one place:
   tests read it, and the read-only D-Bus automation snapshots project from it
   without changing the exported contract.
 
-`crates/lushtext-core/src/ui/search_panel/` is the first workflow arranged this
+`crates/lushtext-ui/src/ui/search_panel/` is the first workflow arranged this
 way, the reference example, and the first migrated end to end: `mod.rs` narrates
 the search and Replace All stages, `policy.rs` holds the pure single-flight,
 retirement-budget, preview-freshness, and Replace All admission policy (plus
@@ -668,7 +668,7 @@ are its coordination jobs — `journal.rs` owning the durable, generation-guarde
 record that Undo restores from — and `evidence.rs` is the surface its widget
 tests and the `window.content_search` automation snapshot both read.
 
-`crates/lushtext-core/src/ui/command_palette/` is the second: `mod.rs` narrates
+`crates/lushtext-ui/src/ui/command_palette/` is the second: `mod.rs` narrates
 *two* stage orders — the query flight and the incremental file-index mutation —
 with all eight of their control-flow inversions named,
 `query_execution.rs`/`index_admission.rs`/`index_execution.rs`/`retirement.rs`
@@ -676,7 +676,7 @@ are its coordination jobs, and `evidence.rs` backs both its widget tests and the
 `window.command_palette` automation snapshot. It is also where the facade line
 budget became normative, at 370 physical lines.
 
-`crates/lushtext-core/src/ui/editor_page/save/` is the third, and the first
+`crates/lushtext-ui/src/ui/editor_page/save/` is the third, and the first
 migrated on a path that replaces the user's file bytes: `mod.rs` narrates Ctrl+S,
 Save As, and close-with-changes with all five of their control-flow inversions
 named, `admission.rs` owns the compact queue and its shared byte budget,
@@ -688,18 +688,18 @@ hosts eight workflows and the `policy.rs` and `evidence.rs` names are fixed at
 one each per workflow; a workflow-prefixed policy file would leave the
 `ui/**/policy.rs` mutation scope.
 
-`crates/lushtext-core/src/ui/editor_page/load/` and
-`crates/lushtext-core/src/ui/editor_page/buffer_replacement/` follow the same
+`crates/lushtext-ui/src/ui/editor_page/load/` and
+`crates/lushtext-ui/src/ui/editor_page/buffer_replacement/` follow the same
 shape as the second and third adopters of that per-workflow subdirectory. The
 buffer-replacement one is worth reading for the smallest complete example: a
 168-line facade narrating one stage order, one `execution.rs`, and a `policy.rs`
 holding the decisions that keep a half-replaced document from ever being visible.
 The direct-versus-sliced threshold and the paragraph-boundary arithmetic it
-depends on stay cross-cutting in `model/buffer_replacement.rs`, called by three
+depends on stay cross-cutting in `crates/lushtext-model/src/document/buffer_replacement.rs`, called by three
 owning workflows and copied by none — a forked shared limit can drift while both
 copies still read as correct.
 
-`crates/lushtext-core/src/ui/window/notes/` is worth reading for the two things
+`crates/lushtext-ui/src/ui/window/notes/` is worth reading for the two things
 it adds. It is the first migrated workflow whose roles sit **flat** in a
 directory under `ui/window/` — the migrated siblings there all took per-workflow
 subdirectories, which left the `policy.rs` and `evidence.rs` names free — and it
@@ -715,15 +715,15 @@ cannot be validated against another's state.
 
 Four smaller workflows are worth reading together, because they show what the
 convention looks like when a workflow is *simple*.
-`crates/lushtext-core/src/ui/window/print/` narrates one stage order with **no
+`crates/lushtext-ui/src/ui/window/print/` narrates one stage order with **no
 inversion at all** in 105 lines — `PrintOperation::run` blocks on the native
 dialog and returns to the same call, so nothing resumes elsewhere and no
-generation counter is needed. `crates/lushtext-core/src/ui/search_bar/` has
+generation counter is needed. `crates/lushtext-ui/src/ui/search_bar/` has
 exactly **one** inversion, GtkSourceView's asynchronous match scan, and a
 `policy.rs` that owns every word the match counter and the screen reader say.
-`crates/lushtext-core/src/ui/window/notifications/` is the workflow every *other*
+`crates/lushtext-ui/src/ui/window/notifications/` is the workflow every *other*
 workflow finishes in, with `ui/status_bar/` and `ui/info_bar/` as called
-presentation surfaces. `crates/lushtext-core/src/ui/window/encoding/` is the
+presentation surfaces. `crates/lushtext-ui/src/ui/window/encoding/` is the
 opposite extreme for a "simple" row: three stage orders, one of which leaves the
 GTK thread twice and rechecks the same freshness triple at all three of its
 resumption points, including inside a confirmation dialog the user can leave open
@@ -775,7 +775,7 @@ in `formal/evaluation/`.
 Kani proves the pure cores; shell conformance checks that the imperative code
 driving them obeys them. A test-only tap at the one protocol loop and at every
 fallible filesystem call records each action and injects faults and crashes,
-and `crates/lushtext-services/src/conformance/` replays both the real
+and `crates/lushtext-services/src/instrumentation/conformance/` replays both the real
 durable-write primitives (`write_shell.rs`) and the draft journal (`draft_service.rs`)
 through their proven cores and the same models the Kani harnesses run, after
 every action (an exhaustive enumeration in `make test`, generated properties
@@ -853,7 +853,7 @@ measurement binary with the smoke-only `responsiveness-probes` feature into
 `target/responsiveness/` (`make responsiveness-build`), runs it headless on
 synthetic fixtures from `scripts/generate-long-line-fixtures.py`, and reports
 main-loop stalls, frame gaps and input-to-frame latency against the budgets in
-`model/responsiveness_budget.rs`. It runs nightly and on demand, never as a
+`crates/lushtext-model/src/budgets/responsiveness_budget.rs`. It runs nightly and on demand, never as a
 pull-request gate, and is not part of `make end-user-smoke`; the measured
 values live in [`docs/next/long-line-documents.md`](docs/next/long-line-documents.md).
 
@@ -885,7 +885,7 @@ make bench-report
 ```
 
 Benchmarks seed their data through test-only fixture helpers, so a direct
-Cargo invocation needs the feature: `cargo bench -p lushtext-core --features test-utils`.
+Cargo invocation needs the feature: `cargo bench -p lushtext-ui --features test-utils`.
 
 ## Tech Stack
 

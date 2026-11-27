@@ -7,7 +7,7 @@ license = "GPL-3.0-or-later"
 publish = false
 
 [package.metadata.lushtext-agent]
-performance-roots = ["src"]
+performance-roots = ["src", "benches"]
 release-service-roots = ["src"]
 
 [features]
@@ -22,7 +22,7 @@ smoke-read-faults = []
 smoke-list-budgets = []
 responsiveness-probes = []
 fuzzing = []
-property-tests = ["test-utils"]
+property-tests = ["test-utils", "lushtext-model/property-tests"]
 test-utils = ["lushtext-model/test-utils"]
 
 [dependencies]
@@ -48,11 +48,27 @@ encoding_rs           = { workspace = true }
 unicase               = { workspace = true }
 editorconfig-parser   = { workspace = true }
 pulldown-cmark        = { workspace = true }
+regex                 = { workspace = true }
 workspace-hack        = { version = "0.1", path = "../../workspace-hack" }
 
 [dev-dependencies]
-tempfile = { workspace = true }
-proptest = { workspace = true }
+criterion = { workspace = true }
+tempfile  = { workspace = true }
+proptest  = { workspace = true }
+
+[[bench]]
+name = "benchmarks"
+harness = false
+
+[[test]]
+name = "properties"
+path = "tests/properties.rs"
+required-features = ["property-tests"]
+
+[[test]]
+name = "persistent_json_format"
+path = "tests/persistent_json_format.rs"
+required-features = ["test-utils"]
 
 [lints]
 workspace = true
