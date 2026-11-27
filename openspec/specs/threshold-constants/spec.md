@@ -125,33 +125,7 @@ of it.
 - **THEN** every stored snapshot and search remains after the first save and the first new search
 
 ### Requirement: A committed inventory gates every integer constant
-The repository SHALL commit a threshold inventory, `docs/thresholds.md`. It
-SHALL have one row for every integer `const` and `static` in the production
-crates' `src/` trees, excluding:
-
-- `#[cfg(test)]` modules;
-- `kani_proofs.rs` files;
-- the `gtk-lush-axioms` probe parameters.
-
-Each row SHALL give the constant's path, module-qualified name, value, kind
-or out-of-scope class, and its rounding or reason. The check SHALL read
-declarations that span several lines.
-
-`make check-thresholds`, run by `make check-policy`, SHALL fail on any of
-these:
-
-- a constant with no row;
-- a row with no constant;
-- a value that differs from its row;
-- an in-scope constant that is not a power of two and whose kind is not
-  derived, external fact, measurement record or recorded exception;
-- a presentation cap whose value is not the power of two at or above the
-  former value its row records, or, for a recorded exception, not that
-  former value;
-- an in-scope constant whose rustdoc `Kind:` line is missing or disagrees
-  with its row.
-
-The check SHALL have a self-test that fails first on a fixture tree.
+`docs/thresholds.md` SHALL inventory every integer or zero-cost unit (`Bytes`, `Sp`, `Micros`, `CharCount`) `const` and `static` in production `src/` trees (excluding `#[cfg(test)]`, `kani_proofs.rs`, and `gtk-lush-axioms` probe parameters). `make check-thresholds` SHALL fail on missing/stale rows, mismatched values, invalid non-powers-of-two, lowered presentation caps, or missing/disagreeing `Kind:` rustdoc, proved by `--self-test`.
 
 #### Scenario: A new threshold must be classified
 - **WHEN** a change adds `const MAX_THINGS: usize = 1000;` to a production module without an inventory row
@@ -172,6 +146,10 @@ The check SHALL have a self-test that fails first on a fixture tree.
 #### Scenario: An out-of-scope constant needs only its class
 - **WHEN** a constant is UI geometry, a percentage, a GLib priority or a fixture size
 - **THEN** its row names that class and the check accepts any value
+
+#### Scenario: A typed unit constant is verified identically to a bare integer
+- **WHEN** a module declares `pub const CAP: Bytes = Bytes::kib(64);` or `pub const MIN_W: Sp = Sp::new(280);`
+- **THEN** `make check-thresholds` extracts its underlying integer value (`65536` / `280`) and enforces the same `docs/thresholds.md` and `Kind:` rules
 
 ### Requirement: User-visible size tiers are shown in IEC units
 Every message, notice and accessible text that names a size tier SHALL print
