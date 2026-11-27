@@ -1299,7 +1299,7 @@ fn notification_snapshot(window: &LushtextWindow) -> AutomationNotificationSnaps
         status_severity: status
             .map(|message| notification_severity_name(message.severity).to_string()),
         generation: imp.notification_bus.generation(),
-        search_progress_visible: imp.search_progress.visible.get(),
+        search_progress_visible: imp.search_progress.is_visible(),
     }
 }
 
@@ -2374,7 +2374,7 @@ fn surface_snapshot(window: &LushtextWindow) -> AutomationSurfaceSnapshot {
         preview_mode: imp.preview_mode.get(),
         preview_document_alert_visible: notification_evidence(window)
             .preview_document_alert_visible,
-        focus_mode: imp.focus_mode.active.get(),
+        focus_mode: imp.focus_mode.is_active(),
         minimap_requested: imp.settings.boolean(config::keys::SHOW_MINIMAP),
         status_bar_visible: imp.status_bar.is_visible(),
         active_transient_surface: active_transient_surface_name(TransientSurfaceVisibility {

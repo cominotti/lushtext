@@ -34,12 +34,12 @@ IMP_MAX_PRODUCTION_LINES = 500
 IMP_MAX_BOX_CALLBACKS = 2
 STATE_BAG_MIN_FIELDS = 4
 
-# Temporary migration ceilings matching the 135c1c3f baseline.
-# Ratchet down at each batch and remove to 0 in Change 4 Task 4.
+# Temporary migration ceilings ratcheted down after Batch A.
+# Ratchet down at Batch B and remove to 0 in Change 4 Step 4.
 ACTIVE_CEILINGS: dict[str, int] = {
-    "oversized_imp": 9,
-    "imp_callback_farm": 5,
-    "flat_state_bag": 33,
+    "oversized_imp": 7,
+    "imp_callback_farm": 4,
+    "flat_state_bag": 9,
     "manual_reset_fn": 4,
     "sentinel_outside_ffi": 2,
 }

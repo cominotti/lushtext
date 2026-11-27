@@ -226,12 +226,12 @@ fn begin_load_request_now(
     reopen_as: Option<DocumentEncoding>,
     planning_terminal: Option<Box<dyn FnOnce()>>,
 ) {
-    if editor.imp().load.finalizing.get() {
+    if editor.imp().load.is_finalizing() {
         park_pending_request(editor, path, reopen_as, planning_terminal);
         retirement::cancel_noninstall_load_resources(editor);
         return;
     }
-    let installation = editor.imp().load.installation.borrow().clone();
+    let installation = editor.imp().load.installation();
     if let Some(session) = installation {
         park_pending_request(editor, path, reopen_as, planning_terminal);
         editor
@@ -251,7 +251,8 @@ fn begin_load_request_now(
     editor
         .imp()
         .load
-        .planning_terminal_callback
+        .callbacks
+        .planning_terminal
         .replace(planning_terminal);
     editor.imp().file_path.replace(Some(file_path.clone()));
     editor.imp().canonical_file_path.borrow_mut().take();
@@ -348,7 +349,14 @@ impl PlanningJoin {
         if let Some(guess) = self.language_guess {
             editor.set_requested_language_guess(guess.as_deref());
         }
-        editor.imp().load.pending_formatting.set(self.editorconfig);
+        editor
+            .imp()
+            .load
+            .pending_formatting
+            .set(self.editorconfig.map_or(
+                super::watch::PendingEditorConfig::None,
+                super::watch::PendingEditorConfig::Overrides,
+            ));
     }
 }
 
@@ -359,23 +367,28 @@ fn park_pending_request(
     reopen_as: Option<DocumentEncoding>,
     planning_terminal: Option<Box<dyn FnOnce()>>,
 ) {
-    if let Some(replaced) = editor
+    let previous = editor
         .imp()
         .load
         .pending_load
-        .replace(Some(PendingFileLoad {
-            path: path.to_path_buf(),
-            reopen_as,
-            planning_terminal,
-        }))
-    {
+        .replace(super::watch::PendingReloadSlot::Parked(Box::new(
+            PendingFileLoad {
+                path: path.to_path_buf(),
+                reopen_as,
+                planning_terminal,
+            },
+        )));
+    if let super::watch::PendingReloadSlot::Parked(replaced) = previous {
         replaced.finish_planning();
     }
 }
 
 /// Take the parked request, if the workflow left one behind.
 pub(super) fn take_pending_request(editor: &LushtextEditorPage) -> Option<PendingFileLoad> {
-    editor.imp().load.pending_load.take()
+    match editor.imp().load.pending_load.take() {
+        super::watch::PendingReloadSlot::Empty => None,
+        super::watch::PendingReloadSlot::Parked(pending) => Some(*pending),
+    }
 }
 
 /// Drop the parked request, releasing its background planning owner.
@@ -435,7 +448,7 @@ pub(super) fn retire_load_identity(editor: &LushtextEditorPage) {
 
 /// Release the background planning owner, whichever path reached the terminal.
 pub(super) fn finish_load_planning(editor: &LushtextEditorPage) {
-    if let Some(callback) = editor.imp().load.planning_terminal_callback.take() {
+    if let Some(callback) = editor.imp().load.callbacks.planning_terminal.take() {
         callback();
     }
 }

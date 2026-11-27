@@ -383,14 +383,14 @@ pub fn recent_documents_journal_evidence(
 ) -> RecentDocumentsJournalEvidence {
     let state = &window.imp().recent_documents;
     let entries = state.entries.borrow().clone();
-    let removed_while_loading = state.removed_while_loading.borrow().clone();
+    let removed_while_loading = state.removed_while_loading();
     RecentDocumentsJournalEvidence {
         entries,
-        loading: state.loading.get(),
+        loading: state.is_loading(),
         removed_while_loading,
         generation: state.generation.get(),
         rows_dirty: state.rows_dirty.get(),
-        save_inflight: state.save_inflight.get(),
-        save_pending: state.save_pending.get(),
+        save_inflight: state.is_save_inflight(),
+        save_pending: state.is_save_pending(),
     }
 }

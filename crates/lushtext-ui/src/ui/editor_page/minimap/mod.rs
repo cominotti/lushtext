@@ -61,12 +61,9 @@
 //!
 //! ## Stages
 //!
-//! 1. **Install.** [`LushtextEditorPage::install_minimap`] is the only way the
-//!    workflow starts. `watch` builds the native `GtkSourceMap`, the marker
-//!    strip, and the render-hold overlay, then wires observation of the buffer's
-//!    insert/delete/modified/changed signals, both vertical adjustments, and the
-//!    in-tab search session. Every registration that can outlive its closure is
-//!    tracked so `dispose()` can disconnect it.
+//! 1. **Install.** [`LushtextEditorPage::install_minimap`] builds the native
+//!    `GtkSourceMap`, strip, and render-hold overlay, wiring buffer, scroll,
+//!    and search signals so `dispose()` can disconnect every registration.
 //!
 //! 2. **Decide whether the minimap may run.** `admission` classifies
 //!    availability from the user preference, Focus Mode, buffer eviction, and
@@ -185,7 +182,8 @@ mod widgets;
 
 use super::LushtextEditorPage;
 
-pub(crate) use analysis_execution::{MinimapAnalysisCache, MinimapAnalysisSession};
+pub(crate) use admission::MinimapState;
+pub(crate) use analysis_execution::MinimapAnalysisCache;
 #[cfg(feature = "test-utils")]
 pub use evidence::MinimapEvidence;
 pub(crate) use policy::{
@@ -197,7 +195,6 @@ pub use policy::{
 };
 pub(crate) use projection_execution::MinimapMarkerBins;
 pub(crate) use retirement::MinimapModifiedTracking;
-
 impl LushtextEditorPage {
     /// Stage 1 — install the minimap widgets and observation for this tab.
     pub(crate) fn setup_minimap(&self) {

@@ -26,17 +26,103 @@
 //! Its observable state is read through
 //! `ui::open_popover::evidence::recent_documents_journal_evidence`.
 
-use glib::subclass::prelude::ObjectSubclassIsExt;
-use gtk_lush_tasks::spawn_blocking_then;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk_lush_settle::Debounce;
+use gtk_lush_tasks::spawn_blocking_then;
+
 use crate::ui::editor_page::LushtextEditorPage;
 use lushtext_model::persistence::recent_document::RecentDocumentEntry;
+use lushtext_model::values::RecentDocumentsGeneration;
 use lushtext_services::persistence::json_store;
 use lushtext_services::persistence::recent_documents;
 
 use super::LushtextWindow;
+
+/// Startup load lifecycle for the recent-documents journal.
+#[derive(Debug, Default)]
+pub(crate) enum RecentDocumentsLoadPhase {
+    #[default]
+    Idle,
+    /// Startup recent-document loading is in flight; tracks paths removed meanwhile.
+    Loading { removed_while_loading: Vec<PathBuf> },
+    /// Widget tests seeded recents before the async startup load returned.
+    #[cfg(feature = "test-utils")]
+    TestSeeded,
+}
+
+/// Debounced save lifecycle for the recent-documents journal.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum RecentDocumentsSavePhase {
+    #[default]
+    Idle,
+    /// A recent-document save is running on a worker; `pending` owes another save after.
+    Inflight { pending: bool },
+}
+
+/// Recent-document state owned by the window and projected into the Open popover.
+#[derive(Default)]
+pub struct RecentDocumentsState {
+    /// Newest-first persisted recent-document entries.
+    pub(crate) entries: RefCell<Vec<RecentDocumentEntry>>,
+    /// Startup load phase (`Idle`, `Loading`, or `TestSeeded`).
+    pub(crate) load: RefCell<RecentDocumentsLoadPhase>,
+    /// Monotonic version advanced by in-memory user mutations.
+    pub(crate) generation: Cell<RecentDocumentsGeneration>,
+    /// Whether the popover projection should be rebuilt before the next popup.
+    pub(crate) rows_dirty: Cell<bool>,
+    /// Debounce for coalescing bursts of recent-document persistence writes.
+    pub(crate) save_debounce: Debounce,
+    /// Worker save lifecycle (`Idle` or `Inflight { pending }`).
+    pub(crate) save: Cell<RecentDocumentsSavePhase>,
+}
+
+impl RecentDocumentsState {
+    /// Whether the startup recent-document load is currently in flight.
+    #[must_use]
+    pub fn is_loading(&self) -> bool {
+        matches!(
+            *self.load.borrow(),
+            RecentDocumentsLoadPhase::Loading { .. }
+        )
+    }
+
+    /// Snapshot of paths removed while the startup load was in flight.
+    #[must_use]
+    pub fn removed_while_loading(&self) -> Vec<PathBuf> {
+        match &*self.load.borrow() {
+            RecentDocumentsLoadPhase::Loading {
+                removed_while_loading,
+            } => removed_while_loading.clone(),
+            RecentDocumentsLoadPhase::Idle => Vec::new(),
+            #[cfg(feature = "test-utils")]
+            RecentDocumentsLoadPhase::TestSeeded => Vec::new(),
+        }
+    }
+
+    /// Whether a worker save is currently in flight.
+    #[must_use]
+    pub fn is_save_inflight(&self) -> bool {
+        matches!(self.save.get(), RecentDocumentsSavePhase::Inflight { .. })
+    }
+
+    /// Whether another worker save is owed once the active one completes.
+    #[must_use]
+    pub fn is_save_pending(&self) -> bool {
+        matches!(
+            self.save.get(),
+            RecentDocumentsSavePhase::Inflight { pending: true }
+        )
+    }
+
+    #[cfg(feature = "test-utils")]
+    pub(super) fn is_test_seeded(&self) -> bool {
+        matches!(*self.load.borrow(), RecentDocumentsLoadPhase::TestSeeded)
+    }
+}
 
 /// Quiet window before a burst of recent-document mutations is written to disk.
 ///
@@ -49,8 +135,9 @@ impl LushtextWindow {
     /// Stage 1: recover the durable record without blocking startup.
     pub(super) fn load_recent_documents_async(&self) {
         let state = &self.imp().recent_documents;
-        state.loading.set(true);
-        state.removed_while_loading.borrow_mut().clear();
+        state.load.replace(RecentDocumentsLoadPhase::Loading {
+            removed_while_loading: Vec::new(),
+        });
         let load_generation = state.generation.get();
         spawn_blocking_then(
             self.clone(),
@@ -62,12 +149,20 @@ impl LushtextWindow {
             },
             move |window, (loaded, should_save)| {
                 let state = &window.imp().recent_documents;
-                state.loading.set(false);
-                let removed_while_loading = state.removed_while_loading.take();
-                #[cfg(feature = "test-utils")]
-                if state.test_seeded.get() {
-                    return;
-                }
+                let removed_while_loading = {
+                    let mut load = state.load.borrow_mut();
+                    match std::mem::take(&mut *load) {
+                        RecentDocumentsLoadPhase::Loading {
+                            removed_while_loading,
+                        } => removed_while_loading,
+                        #[cfg(feature = "test-utils")]
+                        RecentDocumentsLoadPhase::TestSeeded => {
+                            *load = RecentDocumentsLoadPhase::TestSeeded;
+                            return;
+                        }
+                        RecentDocumentsLoadPhase::Idle => Vec::new(),
+                    }
+                };
                 for diagnostic in &loaded.diagnostics {
                     tracing::warn!("{diagnostic}");
                 }
@@ -120,11 +215,11 @@ impl LushtextWindow {
     /// in flight so the completion cannot bring it back.
     pub(super) fn remove_recent_document(&self, path: &Path) {
         let state = &self.imp().recent_documents;
-        if state.loading.get() {
-            state
-                .removed_while_loading
-                .borrow_mut()
-                .push(path.to_path_buf());
+        if let RecentDocumentsLoadPhase::Loading {
+            removed_while_loading,
+        } = &mut *state.load.borrow_mut()
+        {
+            removed_while_loading.push(path.to_path_buf());
         }
         {
             let mut entries = state.entries.borrow_mut();
@@ -152,11 +247,15 @@ impl LushtextWindow {
 
     fn start_recent_documents_save(&self) {
         let state = &self.imp().recent_documents;
-        if state.save_inflight.get() {
-            state.save_pending.set(true);
+        if state.is_save_inflight() {
+            state
+                .save
+                .set(RecentDocumentsSavePhase::Inflight { pending: true });
             return;
         }
-        state.save_inflight.set(true);
+        state
+            .save
+            .set(RecentDocumentsSavePhase::Inflight { pending: false });
         let data_dir = json_store::data_dir();
         let snapshot: Vec<RecentDocumentEntry> =
             self.imp().recent_documents.entries.borrow().clone();
@@ -165,11 +264,14 @@ impl LushtextWindow {
             move || recent_documents::save(&data_dir, &snapshot).map_err(|error| error.to_string()),
             |window, result| {
                 let state = &window.imp().recent_documents;
-                state.save_inflight.set(false);
+                let was_pending = matches!(
+                    state.save.replace(RecentDocumentsSavePhase::Idle),
+                    RecentDocumentsSavePhase::Inflight { pending: true }
+                );
                 if let Err(error) = result {
                     tracing::warn!("failed to save recent documents: {error}");
                 }
-                if state.save_pending.replace(false) {
+                if was_pending {
                     window.schedule_recent_documents_save();
                 }
             },
@@ -208,7 +310,10 @@ impl LushtextWindow {
     /// that state goes through the evidence surface instead.
     #[cfg(feature = "test-utils")]
     pub fn set_recent_documents_for_test(&self, entries: Vec<RecentDocumentEntry>) {
-        self.imp().recent_documents.test_seeded.set(true);
+        self.imp()
+            .recent_documents
+            .load
+            .replace(RecentDocumentsLoadPhase::TestSeeded);
         self.imp().recent_documents.entries.replace(entries);
         self.refresh_open_popover_rows();
     }

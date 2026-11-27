@@ -2,51 +2,44 @@
 
 //! Private implementation for the main application window.
 //!
-//! This module owns the composite-template wiring, long-lived window state,
-//! split-view persistence, and the callback glue that binds the sidebar,
-//! command palette, session restore, and notifications into one shell.
+//! This module owns the composite-template struct, `Default`, `ObjectSubclass`,
+//! `constructed()` geometry hooks, `dispose()`, `WidgetImpl` (`measure` /
+//! `size_allocate`), and `WindowImpl::close_request`.
 
-use super::drafts::{DraftMutationIntent, DraftMutationOrder};
-use super::drafts::{DraftRestoreTicket, PendingPreservation};
+use super::drafts::DraftState;
+use super::editor_memory_eviction::EditorMemoryState;
+use super::focus_mode::FocusModeState;
 use super::geometry::execution::{
-    configure_split_views, current_window_width, effective_properties_fraction,
-    effective_workspace_sidebar_fraction, install_split_view_breakpoints, plan_split_view_restore,
-    restore_properties_split_view, restore_workspace_split_view, set_workspace_sidebar_preset,
-    sync_properties_breakpoint, sync_properties_split_view, sync_secondary_surfaces,
+    configure_split_views, install_split_view_breakpoints, plan_split_view_restore,
+    restore_properties_split_view, restore_workspace_split_view,
     sync_split_view_widths_for_allocation,
 };
 use super::geometry::policy::NORMAL_MODE_MIN_HEIGHT_SP;
 pub use super::geometry::policy::SecondarySurface;
+use super::geometry::{SecondarySurfaceState, SplitLayoutHandles};
 use super::notes::ActiveNotesBrowser;
-use super::session_restore::SessionRestoreRuntime;
-use super::session_restore::policy::SessionRestoreTurnMetrics;
+use super::recent_documents_journal::RecentDocumentsState;
+use super::search_progress_execution::SearchProgressState;
+use super::session_restore::SessionState;
+use super::startup_data::StartupDataFlowState;
+use super::tab_strip::TabManagementState;
 use crate::config::keys;
-use crate::ui::accessibility;
 use crate::ui::buffer_snapshot::BufferSnapshotHandle;
 use crate::ui::command_palette::LushtextCommandPalette;
 use crate::ui::construction_spans;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::info_bar::LushtextInfoBar;
-use crate::ui::markdown_preview::{LushtextMarkdownPreview, PREVIEW_DEFAULT_WIDTH_SP};
+use crate::ui::markdown_preview::LushtextMarkdownPreview;
 use crate::ui::open_popover::LushtextOpenPopover;
 use crate::ui::properties_panel::LushtextPropertiesPanel;
 use crate::ui::search_panel::LushtextSearchPanel;
-use crate::ui::settings_writes;
 use crate::ui::sidebar::LushtextSidebar;
-use crate::ui::sidebar::width_preset::WorkspaceSidebarWidthPreset;
 use crate::ui::status_bar::{LushtextStatusBar, MessageKind};
-use gtk_lush_settle::{Debounce, SettleBurst, SupersedingTimer};
+use gtk_lush_settle::{Debounce, SettleBurst};
 use gtk_lush_widgets::ClipBin;
 use gtk4::prelude::*;
 use gtk4::{self, CompositeTemplate, gio, glib};
 use libadwaita::subclass::prelude::*;
-use lushtext_model::persistence::draft::{
-    DraftEntry, DraftManifest, DraftManifestAuthority, PreloadedDraftRestore,
-};
-use lushtext_model::persistence::recent_document::RecentDocumentEntry;
-use lushtext_model::values::{
-    FailedRestoreGeneration, RecentDocumentsGeneration, RestoreGeneration, SelectionGeneration,
-};
 use lushtext_model::workspace::WorkspaceScope;
 use lushtext_services::coordination::notifications::NotificationBus;
 use lushtext_services::palette::{
@@ -54,357 +47,8 @@ use lushtext_services::palette::{
     NoteSourceRefreshStart,
 };
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
-
-/// Normal preview presentation: editor content with optional end preview pane.
-pub(super) const PREVIEW_LAYOUT_EDITOR: &str = "editor";
-/// Focused preview presentation: Markdown preview fills the editor content area.
-pub(super) const PREVIEW_LAYOUT_PREVIEW: &str = "preview";
-/// Short delay for Adwaita layout and embedded preview children to settle.
-pub(super) const PREVIEW_SETTLE_DELAY_MS: u64 = 16;
-/// Delay before final secondary-surface reconciliation after a sidebar toggle.
-///
-/// Adwaita drives `OverlaySplitView:show-sidebar` with its own animated
-/// transition. Holding unrelated breakpoint/presentation changes for about one
-/// transition budget prevents those changes from forcing the sidebar to the
-/// endpoint in the same visible frame.
-pub(super) const WORKSPACE_SIDEBAR_TRANSITION_SETTLE_DELAY_MS: u64 = 260;
-
-// GObject subclass methods receive `&self` while GTK owns the instance, so
-// window state uses `Cell`/`RefCell` for single-threaded interior mutability.
-/// Requested-versus-rendered visibility state for compact secondary-surface arbitration.
-#[derive(Default)]
-pub struct SecondarySurfaceState {
-    /// Whether the user last explicitly left the workspace sidebar open.
-    pub workspace_requested_visible: Cell<bool>,
-    /// Whether the user last explicitly left document properties open.
-    pub properties_requested_visible: Cell<bool>,
-    /// Which secondary surface currently owns the compact-width slot, if any.
-    pub compact_surface: Cell<Option<SecondarySurface>>,
-}
-
-/// Editor-memory accounting shared by the eviction helpers.
-#[derive(Default)]
-pub struct EditorMemoryState {
-    /// Constant-work per-editor residency records and saturating aggregates.
-    pub ledger: RefCell<lushtext_model::document::editor_memory::EditorResidencyLedger>,
-    /// Previously selected editor, retained weakly for O(1) eligibility refresh.
-    pub active_editor: RefCell<Option<glib::WeakRef<LushtextEditorPage>>>,
-    /// Exceptional lifecycle state requiring a current full reconciliation.
-    pub accounting_uncertain: Cell<bool>,
-    /// Whether a next-main-loop aggregate evaluation is already queued.
-    pub evaluation_armed: Cell<bool>,
-    /// Guard that prevents overlapping aggregate evaluations.
-    pub evaluation_running: Cell<bool>,
-    /// Narrow guard for signals emitted synchronously by `EditorPage::evict`.
-    pub applying_eviction: Cell<bool>,
-    /// Window-wide generation source used for deterministic least-recent use.
-    pub next_access_generation: Cell<lushtext_model::values::AccessGeneration>,
-    /// Number of aggregate evaluations, retained for coalescing assertions.
-    pub evaluation_count: Cell<u64>,
-    /// Full tab scans performed only for enforcement or reconciliation.
-    pub full_scan_count: Cell<u64>,
-    /// Stable result of the most recently completed aggregate policy pass.
-    pub last_outcome: Cell<lushtext_model::document::editor_memory::EditorMemoryBudgetOutcome>,
-    /// Idle dispatches used to prove that candidate application stays bounded.
-    #[cfg(feature = "test-utils")]
-    pub eviction_dispatch_count: Cell<u64>,
-    /// One-shot race injector run after planning and before candidate rechecks.
-    #[cfg(feature = "test-utils")]
-    pub before_eviction_hook: RefCell<Option<Box<dyn FnOnce()>>>,
-    /// One-shot between-turn transition injector for stale-plan tests.
-    #[cfg(feature = "test-utils")]
-    pub after_eviction_hook: RefCell<Option<Box<dyn FnOnce()>>>,
-}
-
-/// Search-progress lease state used by the status-bar heartbeat flow.
-#[derive(Default)]
-pub struct SearchProgressState {
-    /// Periodic lease renewal for active search progress notifications.
-    pub heartbeat_source_id: RefCell<Option<glib::SourceId>>,
-    /// Superseding delay before progress is allowed to appear in the status bar.
-    pub visibility_timer: SupersedingTimer,
-    /// Whether search progress is allowed to render after the initial delay.
-    pub visible: Cell<bool>,
-    /// Poll of the Replace All run in flight (design D8).
-    pub replace_poll_source_id: RefCell<Option<glib::SourceId>>,
-    /// Keepalive of the waiting text while a confirmed Replace All waits for
-    /// disposal capacity (`replace-all-confirm-disposal-lane` design D6).
-    pub replace_wait_keepalive_source_id: RefCell<Option<glib::SourceId>>,
-    /// A close waits for the Replace All run in flight (design D8).
-    pub close_after_replace_run: Cell<bool>,
-    /// Open and Replace in Editor waiting for its tab's load to settle
-    /// (stream-replace-all design D7): the editor, weakly, and the prefill.
-    pub pending_editor_replace: RefCell<
-        Option<(
-            glib::WeakRef<crate::ui::editor_page::LushtextEditorPage>,
-            crate::ui::search_bar::policy::EditorReplacePrefill,
-        )>,
-    >,
-}
-
-/// Session-persistence state for the main window shell.
-#[derive(Default)]
-pub struct SessionState {
-    /// Debounce for session saves (500ms) and ordered-save freshness.
-    pub save_debounce: Debounce,
-    /// Guard flag while restoring session state from disk.
-    pub restoring: Cell<bool>,
-    /// Cooperative cancellation for startup manifest/session recovery work.
-    pub restore_cancel: RefCell<Option<Arc<AtomicBool>>>,
-    /// One paced admission wakeup before startup recovery I/O begins.
-    pub(super) restore_capacity_wakeup: crate::ui::plain_disposal::ProgressDisposalCapacityWakeup,
-    /// Active bounded GTK session-restore generation, if any.
-    pub(super) restore_runtime: RefCell<Option<SessionRestoreRuntime>>,
-    /// Monotonic identity allocated before each bounded restore generation.
-    pub(super) next_restore_generation: Cell<RestoreGeneration>,
-    /// Last generation's terminal or cancellation counters, retained after the
-    /// runtime that owned them is taken.
-    ///
-    /// A **last-restore outcome record**, not a cached evidence surface: the
-    /// surface projects this field rather than reading a cache of itself.
-    pub(super) last_restore_outcome: Cell<Option<SessionRestoreTurnMetrics>>,
-    /// Aggregate tab-derived projection rebuilds, retained for boundedness proof.
-    pub(super) tab_projection_publications: Cell<u64>,
-    /// User/CLI tab-selection intent accepted since window construction.
-    pub(super) selection_generation: Cell<SelectionGeneration>,
-    /// Suppresses generation changes for restore-owned transient selections.
-    pub(super) applying_restore_selection: Cell<bool>,
-    /// Whether the newest attempted session save failed and still needs retry.
-    pub save_failed: Cell<bool>,
-    /// Generation of the newest failed session save.
-    pub failed_generation: Cell<FailedRestoreGeneration>,
-    /// Last failure detail kept for close-flow warnings and widget tests.
-    pub failure_detail: RefCell<Option<String>>,
-    /// Whether draft/session close-safety work is already running.
-    pub close_safety_inflight: Cell<bool>,
-    /// One-shot bypass for the final close after async safety work succeeds.
-    pub close_safety_bypass: Cell<bool>,
-    /// Monotonic identity source for sequential multi-editor close saves.
-    pub next_close_save_identity: Cell<u64>,
-    /// Current close-save batch allowed to admit and publish completion.
-    pub active_close_save_identity: Cell<Option<u64>>,
-}
-
-/// Reversible shell state owned by Focus Mode.
-#[derive(Default)]
-pub struct FocusModeState {
-    /// Whether Focus Mode is currently active for this window.
-    pub active: Cell<bool>,
-    /// Whether the window was already fullscreen when Focus Mode was entered.
-    pub was_fullscreen_on_entry: Cell<bool>,
-    /// Whether side-by-side Markdown preview should be restored on exit.
-    pub restore_side_by_side_preview: Cell<bool>,
-    /// Whether the user changed preview state while focused.
-    pub preview_changed_while_focused: Cell<bool>,
-    /// Superseding timer for delayed affordance hiding.
-    pub affordance_timer: SupersedingTimer,
-}
-
-/// Draft lifecycle state owned by the main window shell.
-#[derive(Default)]
-pub struct DraftState {
-    /// Source ID for the global autosave timer. Removed on dispose.
-    pub autosave_source_id: RefCell<Option<glib::SourceId>>,
-    /// Periodic autosave ticks run so far: the clock unrestored-copy retries
-    /// are scheduled on. Only the 5 s timer (`periodic_autosave_tick`)
-    /// advances it; first-dirty and rerun passes do not. Never persisted.
-    pub(super) autosave_timer_ticks: Cell<u64>,
-    /// Superseding one-shot for the first dirty draft after a clean cycle.
-    pub first_dirty_autosave_timer: SupersedingTimer,
-    /// Whether the first-dirty timer currently has a callback armed.
-    ///
-    /// `SupersedingTimer` exposes no armed query, and the draft evidence surface
-    /// owes an honest answer, so the workflow tracks it beside the timer it
-    /// describes — the same shape `orphan_cleanup_timer_pending` already uses.
-    pub(super) first_dirty_autosave_pending: Cell<bool>,
-    /// Superseding startup/follow-up timer for bounded orphan cleanup.
-    pub orphan_cleanup_timer: SupersedingTimer,
-    /// Whether one orphan-cleanup inspect/execute worker is active.
-    pub orphan_cleanup_inflight: Cell<bool>,
-    /// Latest manifest offset requested while an older cleanup worker was active.
-    pub orphan_cleanup_pending_offset: Cell<Option<usize>>,
-    /// Consecutive retryable cleanup failures used for bounded backoff.
-    pub orphan_cleanup_failure_streak: Cell<u32>,
-    /// Whether the owned orphan-cleanup timer currently has a callback armed.
-    pub orphan_cleanup_timer_pending: Cell<bool>,
-    /// Number of orphan-cleanup workers started by this window.
-    ///
-    /// Always compiled for the same reason as the retained-body counters: the
-    /// draft evidence surface reports them, and the invariant the high-water mark
-    /// proves — never two concurrent cleanup passes, either of which could delete
-    /// a body the other had just re-validated — is a production invariant.
-    pub(super) orphan_cleanup_workers_started: Cell<usize>,
-    /// Peak simultaneous orphan-cleanup workers observed by this window.
-    pub(super) orphan_cleanup_workers_high_water: Cell<usize>,
-    /// In-memory draft manifest kept in sync with disk.
-    pub manifest: RefCell<DraftManifest>,
-    /// Completeness and durable replacement authority for the in-memory manifest.
-    pub manifest_authority: Cell<DraftManifestAuthority>,
-    /// Draft restore outcomes preloaded during session restore and consumed once.
-    pub preloaded:
-        RefCell<crate::ui::plain_disposal::DisposalOwned<HashMap<String, PreloadedDraftRestore>>>,
-    /// Whether a draft autosave batch is currently writing draft files/manifest state.
-    pub autosave_inflight: Cell<bool>,
-    /// Whether another autosave pass is needed after the in-flight batch finishes.
-    pub autosave_pending: Cell<bool>,
-    /// Main-thread intent allocator shared by autosave and deletion workflows.
-    pub(super) mutation_order: RefCell<DraftMutationOrder>,
-    /// Whether one autosave batch or delete command currently owns mutation execution.
-    pub(super) mutation_inflight: Cell<bool>,
-    /// Compact deletes waiting behind an earlier draft mutation.
-    pub(super) pending_deletes: RefCell<VecDeque<DraftMutationIntent>>,
-    /// IDs represented in `pending_deletes`, keeping common admission O(1).
-    pub(super) pending_delete_ids: RefCell<HashSet<String>>,
-    /// Current deletion intents whose durable manifest removal may outlive a
-    /// failed body deletion and must remain explicit on a later retry.
-    pub(super) delete_tombstones: RefCell<HashMap<String, DraftMutationIntent>>,
-    /// Stale file-backed drafts whose queued delete must first preserve the
-    /// body (set-aside copy, plus local history when it accepts it). A failed
-    /// preservation leaves the body and its persisted entry in place.
-    pub(super) stale_preservations: RefCell<HashMap<String, PendingPreservation>>,
-    /// Draft ids whose recovery body is queued or being read for restore,
-    /// with how many restore tickets for each are still outstanding.
-    ///
-    /// Autosave must not write a body for such an id: the new buffer would
-    /// overwrite the recovery body before restore could apply or preserve it.
-    pub(super) restore_pending_ids: RefCell<HashMap<String, usize>>,
-    /// Unrestored recovery bodies whose set-aside copy failed. Their restore
-    /// hold is kept — the body exists nowhere else — and the periodic
-    /// autosave tick retries the copy with exponential backoff; the value
-    /// holds the entry, the failed attempts, and the `autosave_timer_ticks`
-    /// value at which the next attempt is due. An attempt in flight is not in
-    /// the map. Never persisted.
-    pub(super) unrestored_copy_retries: RefCell<HashMap<String, (DraftEntry, u32, u64)>>,
-    /// Cancellation token for the current autosave buffer copy, if any.
-    pub(crate) autosave_snapshot: RefCell<Option<BufferSnapshotHandle>>,
-    /// Cancellation token for the current close-time buffer copy, if any.
-    pub(crate) close_snapshot: RefCell<Option<BufferSnapshotHandle>>,
-    /// Draft IDs explicitly discarded during an in-progress close flow.
-    /// These must not be re-written by `flush_dirty_drafts()` right before the
-    /// window is destroyed.
-    pub close_discard_ids: RefCell<HashSet<String>>,
-    /// Serialized non-preloaded recovery reads, including startup budget skips.
-    pub(super) lazy_restore_queue: RefCell<VecDeque<DraftRestoreTicket>>,
-    /// Whether one lazy draft body is currently crossing the worker boundary.
-    pub(super) lazy_restore_inflight: Cell<bool>,
-    /// One paced progress-lane wakeup retained while a lazy ticket stays compact.
-    pub(super) lazy_restore_capacity_wakeup:
-        crate::ui::plain_disposal::ProgressDisposalCapacityWakeup,
-    /// Number of asynchronous draft resolutions not yet delivered to GTK.
-    pub(super) restore_inflight_count: Cell<usize>,
-    /// Number of complete autosave bodies currently held across a worker handoff.
-    ///
-    /// Always compiled, not test-gated: the draft evidence surface reports it, and
-    /// an evidence surface must be readable in a production build. Two `usize`
-    /// cells per window, and the invariant they prove — the pipeline never holds
-    /// more than one complete document-sized body — is a production invariant.
-    pub(super) retained_complete_bodies: Cell<usize>,
-    /// Peak complete-body count observed by this window.
-    pub(super) max_retained_complete_bodies: Cell<usize>,
-    /// This window's identity inside its application's draft journal.
-    pub(super) journal_key: Cell<u64>,
-    /// The draft journal every window of the application shares: the one
-    /// journal lane, draft-id claims, and once-per-process startup restore.
-    /// `None` after dispose left it.
-    pub(super) journal: RefCell<Option<std::rc::Rc<super::drafts::ProcessDraftJournal>>>,
-    /// Draft ids whose autosave this window holds because another window owns
-    /// them, already reported to the user once.
-    pub(super) claim_holds_reported: RefCell<HashSet<String>>,
-}
-
-impl DraftState {
-    /// Cancel owned orphan-cleanup scheduling: window teardown, lost manifest
-    /// authority, or a pass that has nothing left to do.
-    pub(super) fn dispose_orphan_cleanup(&self) {
-        self.orphan_cleanup_timer_pending.set(false);
-        self.orphan_cleanup_pending_offset.set(None);
-        let _ = self.orphan_cleanup_timer.invalidate();
-    }
-}
-
-/// Startup data-flow gate state owned by the window shell.
-#[derive(Default)]
-pub struct StartupDataFlowState {
-    /// Whether format preflight and any required user decision have resolved.
-    pub completed: Cell<bool>,
-    /// Whether a preflight task is already running for this window.
-    pub running: Cell<bool>,
-    /// External activation paths queued while startup metadata consumers are paused.
-    ///
-    /// Bounded by `MAX_PENDING_ACTIVATION_OPENS`; see
-    /// `startup_data::queue_activation_open_if_startup_pending` for why the
-    /// overflow is dropped rather than opened immediately.
-    pub pending_activation_paths: RefCell<Vec<PathBuf>>,
-    /// How many activation opens were refused because the queue was full.
-    pub dropped_activation_opens: Cell<usize>,
-}
-
-/// Recent-document state owned by the window and projected into the Open popover.
-#[derive(Default)]
-pub struct RecentDocumentsState {
-    /// Newest-first persisted recent-document entries.
-    pub entries: RefCell<Vec<RecentDocumentEntry>>,
-    /// Whether startup recent-document loading is still in flight.
-    pub loading: Cell<bool>,
-    /// Paths removed while the startup load was in flight.
-    pub removed_while_loading: RefCell<Vec<PathBuf>>,
-    /// Monotonic version advanced by in-memory user mutations.
-    pub generation: Cell<RecentDocumentsGeneration>,
-    /// Whether the popover projection should be rebuilt before the next popup.
-    pub rows_dirty: Cell<bool>,
-    /// Debounce for coalescing bursts of recent-document persistence writes.
-    pub save_debounce: Debounce,
-    /// Whether a recent-document save is currently running on a worker.
-    pub save_inflight: Cell<bool>,
-    /// Whether another save should run after the in-flight save completes.
-    pub save_pending: Cell<bool>,
-    /// Widget tests may seed recents before the async startup load returns.
-    #[cfg(feature = "test-utils")]
-    pub test_seeded: Cell<bool>,
-}
-
-/// Tab-strip menu and close-authorization state owned by the window shell.
-pub struct TabManagementState {
-    /// Shared `GMenu` model reused for the Adwaita tab context menu.
-    pub context_menu: gio::Menu,
-    /// The tab page whose context menu is currently being prepared or shown.
-    /// A weak handle prevents menu state from retaining a detached tab.
-    pub target_page: RefCell<Option<glib::WeakRef<libadwaita::TabPage>>>,
-    /// Pages already confirmed through the combined bulk-close dialog.
-    ///
-    /// The `connect_close_page` signal checks this set so a bulk close can
-    /// reuse the existing close machinery without spawning one dialog per tab.
-    pub preconfirmed_close_pages: RefCell<HashSet<usize>>,
-    /// Tracks which tab pages already have pinned-state signal wiring attached.
-    ///
-    /// Pages can be created during session restore before the explicit tab
-    /// workflow setup runs, so this guard prevents duplicate signal hookups.
-    pub configured_pages: RefCell<HashSet<usize>>,
-    /// Pages whose close this window confirmed (`close_page_finish(.., true)`).
-    ///
-    /// `AdwTabView` reports a close and a transfer to another window with the
-    /// same `page-detached`; only a page in this set is torn down, so a
-    /// transferred tab keeps its load, its file monitor and its held text.
-    pub closing_pages: RefCell<HashSet<usize>>,
-}
-
-impl Default for TabManagementState {
-    fn default() -> Self {
-        Self {
-            context_menu: gio::Menu::new(),
-            target_page: RefCell::new(None),
-            preconfirmed_close_pages: RefCell::new(HashSet::new()),
-            configured_pages: RefCell::new(HashSet::new()),
-            closing_pages: RefCell::new(HashSet::new()),
-        }
-    }
-}
 
 /// Private template implementation for the main application window.
 ///
@@ -526,7 +170,7 @@ pub struct LushtextWindow {
     pub(crate) composition: super::composition::CompositionState,
     /// Measure and allocation spans recorded so far by the measurement build.
     #[cfg(feature = "responsiveness-probes")]
-    layout_probe_spans: Cell<u32>,
+    pub(super) layout_probe_spans: Cell<u32>,
     /// Requested-versus-rendered state for the workspace sidebar and document properties.
     pub secondary_surfaces: SecondarySurfaceState,
     /// Whether the side-by-side preview pane is currently visible.
@@ -541,8 +185,6 @@ pub struct LushtextWindow {
     pub preview_sidebar_show_deferred: Cell<bool>,
     /// Settle burst while preview layout switching or embedded widget repair is pending.
     pub preview_transition_settle: SettleBurst,
-    /// Settle burst while Adwaita's workspace sidebar transition is in flight.
-    pub workspace_sidebar_transition_settle: SettleBurst,
     /// Debounce for preview renders (300ms).
     pub preview_render_debounce: Debounce,
     /// Debounce for command-palette file index rebuilds (300ms).
@@ -622,112 +264,14 @@ pub struct LushtextWindow {
     pub search_progress: SearchProgressState,
     /// Shared app-wide workspace scope mirrored from the sidebar selector.
     pub workspace_scope: RefCell<WorkspaceScope>,
-    /// Stored so the properties breakpoint condition can track the selected
-    /// workspace preset and whether the left pane currently consumes width.
-    pub properties_breakpoint: RefCell<Option<libadwaita::Breakpoint>>,
-    /// Guards split-width synchronization against reentrant allocations caused
-    /// by programmatic `OverlaySplitView` fraction updates.
-    pub split_width_syncing: Cell<bool>,
+    /// Split-view breakpoint and width-sync coordination handles.
+    pub(super) split_layout: SplitLayoutHandles,
     /// Last window width whose split-view constraints were synced from allocation.
     ///
     /// `size_allocate()` runs for animation frames as well as real resizes, so
     /// this keeps the handler to cheap width-change work instead of repeating
     /// GSettings and breakpoint churn while Adwaita is animating panes.
     pub split_width_synced_for_width: Cell<i32>,
-    /// Last parsed properties breakpoint width installed on the Adwaita breakpoint.
-    pub properties_breakpoint_max_width: Cell<i32>,
-}
-
-impl Default for LushtextWindow {
-    fn default() -> Self {
-        Self {
-            header_bar: TemplateChild::default(),
-            title_widget: TemplateChild::default(),
-            new_tab_button: TemplateChild::default(),
-            open_menu_button: TemplateChild::default(),
-            open_button_stack: TemplateChild::default(),
-            open_popover: TemplateChild::default(),
-            document_properties_toggle_button: TemplateChild::default(),
-            tab_bar: TemplateChild::default(),
-            window_overlay: TemplateChild::default(),
-            workspace_split_view: TemplateChild::default(),
-            properties_layout_view: TemplateChild::default(),
-            properties_bottom_sheet: TemplateChild::default(),
-            properties_split_view: TemplateChild::default(),
-            tab_view: TemplateChild::default(),
-            content_stack: TemplateChild::default(),
-            sidebar: TemplateChild::default(),
-            properties_panel: TemplateChild::default(),
-            status_bar: TemplateChild::default(),
-            palette_revealer: TemplateChild::default(),
-            command_palette: TemplateChild::default(),
-            focus_mode_revealer: TemplateChild::default(),
-            focus_mode_affordance: TemplateChild::default(),
-            leave_focus_mode_button: TemplateChild::default(),
-            notes_menu_button: TemplateChild::default(),
-            primary_menu_button: TemplateChild::default(),
-            preview_layout_view: TemplateChild::default(),
-            preview_split_view: TemplateChild::default(),
-            editor_box: TemplateChild::default(),
-            markdown_preview: TemplateChild::default(),
-            preview_document_alert: TemplateChild::default(),
-            content_box: TemplateChild::default(),
-            search_panel_revealer: TemplateChild::default(),
-            search_panel: TemplateChild::default(),
-            settings: crate::ui::settings_writes::shared(),
-            construction: RefCell::default(),
-            composition: super::composition::CompositionState::default(),
-            #[cfg(feature = "responsiveness-probes")]
-            layout_probe_spans: Cell::new(0),
-            secondary_surfaces: SecondarySurfaceState::default(),
-            preview_visible: Cell::new(false),
-            preview_mode: Cell::new(false),
-            preferred_preview_width: Cell::new(PREVIEW_DEFAULT_WIDTH_SP),
-            preview_sidebar_show_deferred: Cell::new(false),
-            preview_transition_settle: SettleBurst::default(),
-            workspace_sidebar_transition_settle: SettleBurst::default(),
-            preview_render_debounce: Debounce::default(),
-            index_rebuild_debounce: Debounce::default(),
-            file_index_builds: RefCell::default(),
-            file_index_admission: RefCell::default(),
-            file_index_capacity_wakeup: crate::ui::plain_disposal::DisposalCapacityWakeup::default(
-            ),
-            command_palette_notes_refresh_debounce: Debounce::default(),
-            command_palette_note_refreshes: RefCell::default(),
-            command_palette_note_admission: RefCell::default(),
-            command_palette_note_capacity_wakeup:
-                crate::ui::plain_disposal::DisposalCapacityWakeup::default(),
-            command_palette_note_capture: std::rc::Rc::default(),
-            saved_focus: RefCell::new(None),
-            transient_child_escape_handled: Cell::new(false),
-            user_input_since_map: Cell::new(false),
-            opened_document_handoff_pending: Cell::new(false),
-            open_paths: RefCell::new(HashSet::new()),
-            tab_projection_refresh_defer_depth: Cell::new(0),
-            editor_memory: EditorMemoryState::default(),
-            disposing: Cell::new(false),
-            session: SessionState::default(),
-            focus_mode: FocusModeState::default(),
-            drafts: DraftState::default(),
-            startup_data_flow: StartupDataFlowState::default(),
-            recent_documents: RecentDocumentsState::default(),
-            tab_management: TabManagementState::default(),
-            tab_overflow: super::tab_overflow::TabOverflowState::default(),
-            active_notes_browser: RefCell::new(None),
-            notes_row_retirements: RefCell::new(Vec::new()),
-            note_save_snapshots: RefCell::new(Vec::new()),
-            search_saved_focus: RefCell::new(None),
-            notification_bus: NotificationBus::default(),
-            notification_sweep_source_id: RefCell::new(None),
-            notification_projection: super::notifications::NotificationProjectionState::default(),
-            search_progress: SearchProgressState::default(),
-            workspace_scope: RefCell::new(WorkspaceScope::All),
-            properties_breakpoint: RefCell::new(None),
-            split_width_syncing: Cell::new(false),
-            split_width_synced_for_width: Cell::new(0),
-            properties_breakpoint_max_width: Cell::new(0),
-        }
-    }
 }
 
 // `ObjectSubclass` registers this Rust type with GLib's runtime type system so
@@ -772,7 +316,7 @@ impl ObjectImpl for LushtextWindow {
         let stage_start = construction_spans::now_us();
 
         self.open_button_stack.set_visible_child_name("wide");
-        self.apply_accessibility_metadata();
+        obj.apply_accessibility_metadata();
         obj.setup_open_popover_callbacks();
 
         let w = settings.int(keys::WINDOW_WIDTH);
@@ -817,361 +361,7 @@ impl ObjectImpl for LushtextWindow {
         obj.apply_preview_shell_state();
         let stage_start = obj.record_construction_stage("preview_restore", stage_start);
 
-        // GObject property notifications fire on the main thread here; the
-        // `_local` variant lets the closures capture GTK objects that are not
-        // `Send`. The values go to the coalescing settings writer, which keeps
-        // them in memory and persists the latest once per persistence window,
-        // so a resize burst never writes the backend per notification.
-        obj.connect_notify_local(Some("default-width"), move |window, _| {
-            if !window.is_maximized() {
-                let (w, _) = window.default_size();
-                settings_writes::set_int(keys::WINDOW_WIDTH, w);
-            }
-        });
-        obj.connect_notify_local(Some("default-height"), move |window, _| {
-            if !window.is_maximized() {
-                let (_, h) = window.default_size();
-                settings_writes::set_int(keys::WINDOW_HEIGHT, h);
-            }
-        });
-        obj.connect_notify_local(Some("maximized"), move |window, _| {
-            settings_writes::set_boolean(keys::WINDOW_MAXIMIZED, window.is_maximized());
-        });
-
-        {
-            // Returning to the window is the attention moment that matters:
-            // external changes happen while the application is *not* focused,
-            // by construction, so this trigger is correlated with the cause
-            // rather than merely with elapsed time. The throttle and the
-            // yield-to-user-work guard live in `window/attention_refresh.rs`.
-            obj.connect_notify_local(Some("is-active"), |window, _| {
-                if gtk4::prelude::GtkWindowExt::is_active(window) {
-                    let _admission = window.refresh_workspace_surfaces_on_attention(
-                        crate::ui::window::AttentionSurfaces::IndexAndTree,
-                    );
-                }
-            });
-        }
-
-        {
-            // Both visibility keys invalidate the palette file index; the sidebar
-            // owns its own subscription for the tree.
-            // The window and its settings object share one lifetime, so the
-            // handler ids need no bag.
-            let window_weak = obj.downgrade();
-            let _ =
-                crate::ui::workspace_visibility::connect_visibility_changed(settings, move || {
-                    if let Some(window) = window_weak.upgrade() {
-                        window.rebuild_file_index();
-                    }
-                });
-        }
-
-        settings_writes::connect_changed_for(&*obj, keys::USE_EDITORCONFIG, |window, s| {
-            window.on_use_editorconfig_changed(s.boolean(keys::USE_EDITORCONFIG));
-        });
-
-        settings_writes::connect_changed_for(&*obj, keys::PREVIEW_PANE_POSITION, |window, s| {
-            window
-                .imp()
-                .preferred_preview_width
-                .set(lushtext_model::values::Sp::new(
-                    s.int(keys::PREVIEW_PANE_POSITION),
-                ));
-            window.sync_preview_width_constraints(current_window_width(window));
-            window.queue_preview_layout_settle();
-        });
-
-        settings_writes::connect_changed_for(
-            &*obj,
-            keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION,
-            |window, s| {
-                let preset = WorkspaceSidebarWidthPreset::from_fraction(
-                    s.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION),
-                );
-                set_workspace_sidebar_preset(window, preset);
-            },
-        );
-
-        {
-            let window_weak = obj.downgrade();
-            self.workspace_split_view.connect_notify_local(
-                Some("sidebar-width-fraction"),
-                move |split, _| {
-                    let Some(window) = window_weak.upgrade() else {
-                        return;
-                    };
-                    let width = current_window_width(&window);
-                    let fixed = effective_workspace_sidebar_fraction(&window, width);
-                    if (fixed - split.sidebar_width_fraction()).abs() > f64::EPSILON {
-                        split.set_sidebar_width_fraction(fixed);
-                        return;
-                    }
-                    if window.imp().workspace_sidebar_transition_settle.pending() {
-                        return;
-                    }
-                    sync_properties_breakpoint(&window);
-                    sync_properties_split_view(&window, width);
-                },
-            );
-        }
-
-        {
-            let window_weak = obj.downgrade();
-            self.workspace_split_view
-                .connect_notify_local(Some("collapsed"), move |_split, _| {
-                    let Some(window) = window_weak.upgrade() else {
-                        return;
-                    };
-                    if window.imp().workspace_sidebar_transition_settle.pending() {
-                        return;
-                    }
-                    let width = current_window_width(&window);
-                    sync_properties_breakpoint(&window);
-                    sync_properties_split_view(&window, width);
-                });
-        }
-
-        {
-            let window_weak = obj.downgrade();
-            self.workspace_split_view.connect_notify_local(
-                Some("show-sidebar"),
-                move |_split, _| {
-                    let Some(window) = window_weak.upgrade() else {
-                        return;
-                    };
-                    if window.imp().workspace_sidebar_transition_settle.pending() {
-                        return;
-                    }
-                    let width = current_window_width(&window);
-                    sync_properties_breakpoint(&window);
-                    sync_properties_split_view(&window, width);
-                },
-            );
-        }
-
-        {
-            let window_weak = obj.downgrade();
-            self.properties_split_view.connect_notify_local(
-                Some("sidebar-width-fraction"),
-                move |split, _| {
-                    let Some(window) = window_weak.upgrade() else {
-                        return;
-                    };
-                    let width = current_window_width(&window);
-                    let fixed = effective_properties_fraction(&window, width);
-                    if (fixed - split.sidebar_width_fraction()).abs() > f64::EPSILON {
-                        split.set_sidebar_width_fraction(fixed);
-                    }
-                },
-            );
-        }
-
-        {
-            let window_weak = obj.downgrade();
-            self.properties_layout_view.connect_notify_local(
-                Some("layout-name"),
-                move |_layout_view, _| {
-                    let Some(window) = window_weak.upgrade() else {
-                        return;
-                    };
-                    sync_secondary_surfaces(&window);
-                    if window.rendered_document_properties_visible() {
-                        window.restore_focus_after_breakpoint_collapse();
-                    }
-                },
-            );
-        }
-
-        let window_weak = obj.downgrade();
-        self.sidebar.connect_file_activated(move |path| {
-            if let Some(window) = window_weak.upgrade() {
-                window.open_document(path);
-            }
-        });
-
-        let window_weak = obj.downgrade();
-        self.sidebar.connect_local_history_requested(move |path| {
-            if let Some(window) = window_weak.upgrade() {
-                window.show_local_history_for_path(path);
-            }
-        });
-
-        let window_weak = obj.downgrade();
-        self.sidebar.connect_document_note_requested(move |path| {
-            if let Some(window) = window_weak.upgrade() {
-                window.open_document_note_for_path(path);
-            }
-        });
-
-        let window_weak = obj.downgrade();
-        self.sidebar
-            .connect_file_renamed(move |old_path, new_path| {
-                if let Some(window) = window_weak.upgrade() {
-                    window.handle_sidebar_file_renamed(old_path, new_path);
-                }
-            });
-
-        let window_weak = obj.downgrade();
-        self.sidebar.connect_file_deleted(move |path| {
-            if let Some(window) = window_weak.upgrade() {
-                window.handle_sidebar_file_deleted(path);
-            }
-        });
-
-        let window_weak = obj.downgrade();
-        self.sidebar.connect_file_created(move |path| {
-            if let Some(window) = window_weak.upgrade() {
-                window.handle_sidebar_file_created(path);
-            }
-        });
-
-        let window_weak = obj.downgrade();
-        self.sidebar.connect_message(move |text, severity| {
-            if let Some(window) = window_weak.upgrade() {
-                window.publish_status_message(text, severity);
-                if matches!(severity, MessageKind::Info) {
-                    window.announce_workflow_update(
-                        accessibility::AnnouncementLane::StatusUpdate,
-                        &format!("sidebar:{text}"),
-                        text,
-                    );
-                }
-            }
-        });
-
-        let window_weak = obj.downgrade();
-        self.sidebar
-            .connect_folder_note_requested(move |workspace_id| {
-                if let Some(window) = window_weak.upgrade() {
-                    window.open_folder_note_for_id(&workspace_id);
-                }
-            });
-
-        let window_weak = obj.downgrade();
-        self.sidebar
-            .connect_folder_note_for_folder_requested(move |workspace_id, folder| {
-                if let Some(window) = window_weak.upgrade() {
-                    window.open_folder_note_for_workspace_folder(&workspace_id, &folder);
-                }
-            });
-
-        let window_weak = obj.downgrade();
-        self.sidebar.connect_workspace_structure_changed(move || {
-            if let Some(window) = window_weak.upgrade() {
-                window.refresh_workspace_scope_consumers();
-            }
-        });
-
-        let window_weak = obj.downgrade();
-        self.sidebar.connect_workspace_scope_changed(move |scope| {
-            if let Some(window) = window_weak.upgrade() {
-                window.set_workspace_scope(scope);
-            }
-        });
-
-        let window_weak = obj.downgrade();
-        self.command_palette.connect_item_activated(move |item| {
-            let Some(window) = window_weak.upgrade() else {
-                return;
-            };
-            if item.is_file() {
-                if let Some(path) = item.file_path() {
-                    window.open_document(&path);
-                }
-            } else if item.is_note() {
-                if let Some(target) = item.note_target() {
-                    window.activate_palette_note_target(&target);
-                }
-            } else if item.is_command() {
-                let action_id = item.action_id();
-                if let Some(stripped) = action_id.strip_prefix("win.") {
-                    gtk4::prelude::ActionGroupExt::activate_action(&window, stripped, None);
-                } else if let Some(stripped) = action_id.strip_prefix("app.")
-                    && let Some(app) = window.application()
-                {
-                    gtk4::prelude::ActionGroupExt::activate_action(&app, stripped, None);
-                }
-            }
-            window.close_command_palette();
-        });
-
-        let window_weak = obj.downgrade();
-        self.command_palette
-            .connect_escape_consumed(move |outcome| {
-                if let Some(window) = window_weak.upgrade() {
-                    // Latch every Escape the palette consumed, a category leave as
-                    // much as a close: the window's Bubble controller sees the same
-                    // key press after `stop-search`, and would otherwise give up one
-                    // more level (`drill-down-palette-categories` D5).
-                    window.mark_child_transient_escape_handled();
-                    if outcome == crate::ui::command_palette::PaletteEscape::CloseRequested {
-                        window.close_command_palette();
-                    }
-                }
-            });
-
-        let window_weak = obj.downgrade();
-        self.tab_view
-            .connect_notify_local(Some("n-pages"), move |_, _| {
-                if let Some(window) = window_weak.upgrade() {
-                    if window.tab_projection_refresh_deferred() {
-                        return;
-                    }
-                    window.update_content_stack();
-                    window.reconcile_open_paths_from_tabs();
-                    window.refresh_sidebar_file_row_states();
-                    window.refresh_open_popover_rows();
-                }
-            });
-
-        let window_weak = obj.downgrade();
-        self.tab_view
-            .connect_notify_local(Some("selected-page"), move |_, _| {
-                if let Some(window) = window_weak.upgrade() {
-                    // The tab-overflow reveal re-announces an unchanged
-                    // selection so the strip scrolls to it: nothing to project.
-                    if window.tab_overflow_reveals_selection() {
-                        return;
-                    }
-                    let session = &window.imp().session;
-                    if !session.applying_restore_selection.get() {
-                        session
-                            .selection_generation
-                            .set(session.selection_generation.get().next());
-                    }
-                    window.follow_selection_in_unmapped_window();
-                    if window.tab_projection_refresh_deferred() {
-                        return;
-                    }
-                    window.refresh_selected_tab_model_projections();
-                }
-            });
-
-        let window_weak = obj.downgrade();
-        self.tab_view.connect_close_page(move |tab_view, page| {
-            let window = window_weak.upgrade();
-            super::LushtextWindow::handle_tab_close_request(window.as_ref(), tab_view, page)
-        });
-
-        let window_weak = obj.downgrade();
-        self.tab_view.connect_page_attached(move |_, page, _| {
-            if let Some(window) = window_weak.upgrade()
-                && !window.imp().disposing.get()
-            {
-                window.handle_tab_attached(page);
-            }
-        });
-
-        let window_weak = obj.downgrade();
-        self.tab_view.connect_page_detached(move |_, page, _| {
-            if let Some(window) = window_weak.upgrade()
-                && !window.imp().disposing.get()
-            {
-                window.handle_tab_detached(page);
-            }
-        });
-
+        obj.wire_window_signals();
         obj.install_tab_overflow();
         obj.update_content_stack();
         obj.record_construction_stage("constructed_wiring", stage_start);
@@ -1180,117 +370,7 @@ impl ObjectImpl for LushtextWindow {
     fn dispose(&self) {
         self.disposing.set(true);
         self.obj().dispose_tab_overflow();
-        // A retirement holds its browser state, which holds this window:
-        // release it here, outside the borrow (the rest of its rows go now).
-        let retirements = self.notes_row_retirements.take();
-        drop(retirements);
-        // Normally already done when the window left its application
-        // (`window-removed`); idempotent either way.
-        self.obj().tear_down_composition();
-        if let Some(cancel) = self.session.restore_cancel.take() {
-            cancel.store(true, Ordering::Release);
-        }
-        self.session.restore_capacity_wakeup.cancel();
-        self.drafts.lazy_restore_capacity_wakeup.cancel();
-        self.obj().cancel_session_restore_for_dispose();
-        self.file_index_builds.borrow_mut().invalidate();
-        self.file_index_admission.borrow_mut().take();
-        self.file_index_capacity_wakeup.cancel();
-        self.command_palette_note_refreshes
-            .borrow_mut()
-            .invalidate();
-        self.command_palette_note_admission.borrow_mut().take();
-        self.command_palette_note_capacity_wakeup.cancel();
-        self.command_palette_note_capture.stop();
-        if let Some(source_id) = self.drafts.autosave_source_id.take() {
-            source_id.remove();
-        }
-        // The first-dirty timer needs the same explicit teardown its
-        // orphan-cleanup sibling gets below: `dispose()` runs before `Drop`, so
-        // relying on the timer's own drop would leave a window in which it can
-        // still fire against torn-down workflow state. Clearing the flag in the
-        // same place keeps the evidence surface honest for a disposed window,
-        // which would otherwise keep reporting `first_dirty_timer_pending: true`.
-        self.drafts.first_dirty_autosave_pending.set(false);
-        let _ = self.drafts.first_dirty_autosave_timer.invalidate();
-        self.drafts.dispose_orphan_cleanup();
-        // Release the journal lane and this window's draft claims so the
-        // application's other windows are not left waiting on a window that
-        // no longer exists. Normally already done when the window left its
-        // application (`window-removed`); idempotent either way.
-        self.obj().leave_process_draft_journal();
-        // Chunked snapshots have later GTK slices queued. Cancel before the
-        // window's workflow state is torn down so none can resume after dispose.
-        if let Some(snapshot) = self.drafts.autosave_snapshot.take() {
-            snapshot.dispose();
-        }
-        if let Some(snapshot) = self.drafts.close_snapshot.take() {
-            snapshot.dispose();
-        }
-        for snapshot in self.note_save_snapshots.take() {
-            snapshot.dispose();
-        }
-        if let Some(source_id) = self.notification_sweep_source_id.take() {
-            source_id.remove();
-        }
-        if let Some(source_id) = self.search_progress.heartbeat_source_id.take() {
-            source_id.remove();
-        }
-    }
-}
-
-impl LushtextWindow {
-    /// Assign stable labels to compact shell controls whose visible content is
-    /// mostly symbolic. Assistive technology reads these labels through GTK's
-    /// accessibility layer, and the smoke lane uses them as durable anchors.
-    fn apply_accessibility_metadata(&self) {
-        accessibility::set_label(&*self.new_tab_button, "New file");
-        accessibility::set_key_shortcuts(&*self.new_tab_button, "<Control>n");
-        accessibility::set_labelled_description(
-            &*self.open_menu_button,
-            "Open recent documents",
-            "Search recent documents or open the file chooser",
-        );
-        accessibility::set_key_shortcuts(&*self.open_menu_button, "<Control>k");
-        accessibility::set_has_popup(&*self.open_menu_button, true);
-        accessibility::set_controls(
-            &*self.open_menu_button,
-            &[self.open_popover.upcast_ref::<gtk4::Accessible>()],
-        );
-        accessibility::set_labelled_description(
-            &*self.document_properties_toggle_button,
-            "Toggle document properties",
-            "Show or hide metadata and formatting controls for the active document",
-        );
-        accessibility::set_key_shortcuts(&*self.document_properties_toggle_button, "F9");
-        accessibility::set_pressed(&*self.document_properties_toggle_button, false);
-        accessibility::set_controls(
-            &*self.document_properties_toggle_button,
-            &[self.properties_panel.upcast_ref::<gtk4::Accessible>()],
-        );
-        accessibility::set_label(&*self.primary_menu_button, "Main menu");
-        accessibility::set_has_popup(&*self.primary_menu_button, true);
-        accessibility::set_label(&*self.notes_menu_button, "Notes menu");
-        accessibility::set_has_popup(&*self.notes_menu_button, true);
-        accessibility::set_role(&*self.tab_bar, gtk4::AccessibleRole::TabList);
-        accessibility::set_labelled_description(
-            &*self.tab_bar,
-            "Open document tabs",
-            "Switch between open documents",
-        );
-        accessibility::set_labelled_description(
-            &*self.tab_view,
-            "Editor tab content",
-            "Content for the selected document tab",
-        );
-        accessibility::set_labelled_description(
-            &*self.focus_mode_affordance,
-            "Focus mode controls",
-            "Shows that focus mode is active",
-        );
-        accessibility::set_hidden(&*self.focus_mode_affordance, true);
-        accessibility::set_label(&*self.leave_focus_mode_button, "Leave focus mode");
-        accessibility::set_key_shortcuts(&*self.leave_focus_mode_button, "Escape");
+        self.obj().dispose_window_workflows();
     }
 }
 
@@ -1358,42 +438,14 @@ impl WindowImpl for LushtextWindow {
         // GTK asks for a synchronous close decision. We stop the first request,
         // finish draft/session persistence asynchronously, then re-enter the
         // normal close path with this bypass flag once it is safe to destroy.
-        if self.session.close_safety_bypass.replace(false) {
+        if self.session.take_close_safety_bypass() {
             return self.parent_close_request();
         }
-        if self.session.close_safety_inflight.get() {
+        if self.session.is_close_safety_inflight() {
             window.publish_status_message("Finishing close safety checks…", MessageKind::Info);
             return glib::Propagation::Stop;
         }
-        window.clear_close_discard_drafts();
-        if window.has_saving_editors() {
-            window.publish_save_in_progress_warning();
-            return glib::Propagation::Stop;
-        }
-        if self.search_panel.replace_run_in_flight() {
-            window.request_close_during_replace_run();
-            return glib::Propagation::Stop;
-        }
-        // Held typed text is settled into its document (or a new tab) before
-        // the unsaved documents are collected; a close is refused while a
-        // workflow still owns a buffer that has text held for it.
-        if !window.settle_held_text_for_close(&window.all_editors()) {
-            return glib::Propagation::Stop;
-        }
-        let modified = window.modified_editors();
-
-        if modified.is_empty() {
-            window.begin_async_close_safety();
-            return glib::Propagation::Stop;
-        }
-
-        let window_for_close = window.clone();
-        window.show_save_changes_dialog(&modified, move |confirmed| {
-            if confirmed {
-                window_for_close.begin_async_close_safety();
-            }
-        });
-        glib::Propagation::Stop
+        window.handle_window_close_request()
     }
 }
 

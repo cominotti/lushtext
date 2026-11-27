@@ -72,7 +72,7 @@ impl LushtextEditorPage {
         self.watch_source_map_adjustment(&source_map);
         *imp.minimap.source_map.borrow_mut() = Some(source_map);
         *imp.minimap.render_hold.borrow_mut() = Some(render_hold);
-        *imp.minimap.marker_strip.borrow_mut() = Some(marker_strip);
+        *imp.minimap.projection.marker_strip.borrow_mut() = Some(marker_strip);
 
         let buffer = self.buffer();
         {
@@ -153,7 +153,7 @@ impl LushtextEditorPage {
             let editor_weak = self.downgrade();
             self.search_bar().connect_search_state_changed(move || {
                 if let Some(editor) = editor_weak.upgrade() {
-                    let generation = &editor.imp().minimap.search_generation;
+                    let generation = &editor.imp().minimap.projection.search_generation;
                     generation.set(generation.get().next());
                     editor.watch_search_scan();
                     editor.arm_minimap_refresh();
@@ -213,14 +213,22 @@ impl LushtextEditorPage {
                     editor.guard_fitting_source_map_adjustment();
                 }
             });
-            self.imp().minimap.map_signals.track(&vadj, handler_id);
+            self.imp()
+                .minimap
+                .projection
+                .map_signals
+                .track(&vadj, handler_id);
             let editor_weak = self.downgrade();
             let handler_id = vadj.connect_value_changed(move |_| {
                 if let Some(editor) = editor_weak.upgrade() {
                     editor.queue_marker_strip_draw();
                 }
             });
-            self.imp().minimap.map_signals.track(&vadj, handler_id);
+            self.imp()
+                .minimap
+                .projection
+                .map_signals
+                .track(&vadj, handler_id);
         }
     }
 
@@ -238,6 +246,7 @@ impl LushtextEditorPage {
         let context = self.search_bar().search_context();
         let watched = imp
             .minimap
+            .projection
             .watched_search_context
             .borrow()
             .as_ref()
@@ -245,8 +254,8 @@ impl LushtextEditorPage {
         if watched == context {
             return;
         }
-        imp.minimap.search_signals.clear();
-        imp.minimap.watched_search_context.replace(None);
+        imp.minimap.projection.search_signals.clear();
+        imp.minimap.projection.watched_search_context.replace(None);
         let Some(context) = context else {
             return;
         };
@@ -256,8 +265,12 @@ impl LushtextEditorPage {
                 editor.note_marker_change();
             }
         });
-        imp.minimap.search_signals.track(&context, handler_id);
         imp.minimap
+            .projection
+            .search_signals
+            .track(&context, handler_id);
+        imp.minimap
+            .projection
             .watched_search_context
             .replace(Some(context.downgrade()));
     }
@@ -300,7 +313,7 @@ impl LushtextEditorPage {
     /// instead of restyling or drawing over the upstream effect.
     fn create_native_source_map(&self) -> sourceview5::Map {
         let source_map = sourceview5::Map::new();
-        let built = &self.imp().minimap.maps_built;
+        let built = &self.imp().minimap.projection.maps_built;
         built.set(built.get().saturating_add(1));
         source_map.set_view(self.source_view());
         source_map.set_editable(false);

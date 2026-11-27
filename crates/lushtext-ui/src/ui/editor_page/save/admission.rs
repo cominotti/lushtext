@@ -17,7 +17,7 @@
 //! [`policy::queued_save_is_current`](super::policy::queued_save_is_current),
 //! validated here against one [`QueuedSaveTicket`] rather than clause by clause.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -36,8 +36,101 @@ use super::policy::{
     conservative_save_payload_weight, queued_save_is_current, save_may_preempt_pending_load,
 };
 use super::{SaveCallback, execution};
+use crate::ui::buffer_snapshot::BufferSnapshotHandle;
 use crate::ui::editor_page::load;
 use crate::ui::editor_page::{EditorLoadState, LushtextEditorPage};
+
+/// Lifecycle phase of the editor's active save request.
+#[derive(Default)]
+pub(crate) enum SaveFlightPhase {
+    #[default]
+    Idle,
+    Queued,
+    Admitted(QueuedSaveTicket),
+}
+
+/// Format-on-save rewrite and mirror-back state for the active save.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum SaveMirrorStatus {
+    #[default]
+    Unrewritten,
+    RewrotePendingMirror,
+    Mirrored {
+        rewrote: bool,
+    },
+}
+
+impl SaveMirrorStatus {
+    pub(crate) fn rewrote_buffer(self) -> bool {
+        matches!(
+            self,
+            Self::RewrotePendingMirror | Self::Mirrored { rewrote: true }
+        )
+    }
+
+    pub(crate) fn mirror_back_completed(self) -> bool {
+        matches!(self, Self::Mirrored { .. })
+    }
+}
+
+/// Save lifecycle state for one editor tab.
+#[derive(Default)]
+pub struct SaveState {
+    pub(crate) flight: RefCell<SaveFlightPhase>,
+    /// Lifecycle handle for a save snapshot yielding between chunks.
+    pub snapshot: RefCell<Option<BufferSnapshotHandle>>,
+    /// Monotonic identity for the active save and any formatting installation.
+    pub(crate) generation: Cell<SaveGeneration>,
+    /// How the last durable write for this editor ended.
+    pub(crate) write_classification: Cell<super::policy::SaveWriteClassification>,
+    pub(crate) mirror: Cell<SaveMirrorStatus>,
+    /// One-shot deterministic slice action consumed by the widget-test save path.
+    #[cfg(feature = "test-utils")]
+    pub(crate) snapshot_test_mutation:
+        Cell<Option<crate::ui::buffer_snapshot::BufferSnapshotTestMutation>>,
+}
+
+impl SaveState {
+    pub(crate) fn is_inflight(&self) -> bool {
+        !matches!(*self.flight.borrow(), SaveFlightPhase::Idle)
+    }
+
+    pub(crate) fn has_snapshot(&self) -> bool {
+        self.snapshot.borrow().is_some()
+    }
+
+    pub(crate) fn take_snapshot(&self) -> Option<BufferSnapshotHandle> {
+        self.snapshot.borrow_mut().take()
+    }
+
+    pub(crate) fn set_snapshot(&self, handle: BufferSnapshotHandle) {
+        if matches!(*self.flight.borrow(), SaveFlightPhase::Admitted(_)) {
+            if let Some(old) = self.snapshot.replace(Some(handle)) {
+                old.dispose();
+            }
+        } else {
+            handle.dispose();
+        }
+    }
+
+    pub(crate) fn dispose_snapshot(&self) {
+        if let Some(snapshot) = self.take_snapshot() {
+            snapshot.dispose();
+        }
+    }
+
+    #[cfg(feature = "test-utils")]
+    pub(crate) fn resume_snapshot(&self) {
+        if let Some(snapshot) = self.snapshot.borrow().as_ref() {
+            snapshot.resume_for_test();
+        }
+    }
+
+    pub(crate) fn clear_flight(&self) {
+        *self.flight.borrow_mut() = SaveFlightPhase::Idle;
+        self.dispose_snapshot();
+    }
+}
 
 thread_local! {
     static COORDINATOR: RefCell<SaveAdmissionCoordinator> =
@@ -96,9 +189,10 @@ impl Drop for SavePayloadPermit {
 /// live load installation, or a document out of memory. Checked at the queue
 /// and again at admission, after `cancel_load`.
 pub(super) fn whole_document_refusal(editor: &LushtextEditorPage) -> Option<EditorSaveError> {
-    if editor.imp().load.installation_incomplete.get()
-        || editor.imp().load.install_owns_changes.get()
-    {
+    if !matches!(
+        editor.imp().load.buffer_status.get(),
+        super::super::load::watch::LoadBufferStatus::Whole
+    ) {
         Some(EditorSaveError::IncompleteLoadInstallation)
     } else if editor.buffer_holds_no_whole_document() {
         Some(EditorSaveError::DocumentNotInMemory)
@@ -139,7 +233,7 @@ pub(crate) fn queue_save_request(
         callback(Err(EditorSaveError::LoadInProgress));
         return;
     }
-    if editor.imp().save.inflight.get() {
+    if editor.imp().save.is_inflight() {
         callback(Err(EditorSaveError::SaveInProgress));
         return;
     }
@@ -154,7 +248,7 @@ pub(crate) fn queue_save_request(
     // already-planned eviction pass revalidate this page as protected.
     let generation = editor.imp().save.generation.get().next();
     editor.imp().save.generation.set(generation);
-    editor.imp().save.inflight.set(true);
+    *editor.imp().save.flight.borrow_mut() = SaveFlightPhase::Queued;
     editor.notify_memory_policy_changed();
 
     // Consent belongs to this generation: cancellation must discard it
@@ -407,7 +501,7 @@ pub(super) fn finish_queued_save_without_admission(
     if editor.imp().save.generation.get() != save_generation {
         return;
     }
-    editor.imp().save.inflight.set(false);
+    editor.imp().save.clear_flight();
     editor.notify_memory_policy_changed();
     editor.refresh_accessibility_metadata();
 }

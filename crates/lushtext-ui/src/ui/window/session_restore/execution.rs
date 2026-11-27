@@ -77,13 +77,13 @@ impl LushtextWindow {
                     self.check_draft_by_id(editor, draft_id);
                 }
             }
-            let mut runtime = self.imp().session.restore_runtime.borrow_mut();
-            if let Some(runtime) = runtime.as_mut()
-                && runtime.policy.generation() == generation
-                && runtime.policy.requested_active_ordinal() == Some(ordinal)
-            {
-                runtime.requested_page = Some(page.downgrade());
-            }
+            self.imp().session.with_restore_runtime_mut(|runtime| {
+                if runtime.policy.generation() == generation
+                    && runtime.policy.requested_active_ordinal() == Some(ordinal)
+                {
+                    runtime.requested_page = Some(page.downgrade());
+                }
+            });
         }
 
         inline_release

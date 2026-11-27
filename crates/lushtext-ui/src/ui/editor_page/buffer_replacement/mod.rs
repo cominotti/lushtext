@@ -112,6 +112,7 @@
 //! | the search bar's search context | detached and re-attached by the guard; owned by `WFR-EDITOR-FIND` |
 //! | `ui::plain_disposal` and the `DisposalOwned` bodies callers hand in | cross-cutting (slot 7). This workflow moves guarded bodies and never releases their reservations itself |
 
+mod admission;
 pub mod evidence;
 mod execution;
 pub mod policy;
@@ -121,18 +122,18 @@ use gtk4::glib;
 
 use super::LushtextEditorPage;
 
+pub(crate) use admission::BufferReplacementRequest;
+pub(crate) use admission::BufferReplacementState;
 #[cfg(feature = "test-utils")]
 pub use evidence::BufferReplacementEvidence;
-pub(crate) use execution::BufferReplacementState;
-pub use execution::BufferReplacementTerminalDiagnostic;
-pub use execution::{BufferReplacementOutcome, BufferReplacementRequest};
+pub use evidence::BufferReplacementTerminalDiagnostic;
 pub use policy::{
-    BufferReplacementCancelReason, BufferReplacementMetrics, BufferReplacementTicket,
-    BufferReplacementWorkflow, ReplacementPhase,
+    BufferReplacementCancelReason, BufferReplacementMetrics, BufferReplacementOutcome,
+    BufferReplacementTicket, BufferReplacementWorkflow, ReplacementPhase,
 };
 
 #[cfg(feature = "test-utils")]
-pub use execution::BufferReplacementTestOutcome;
+pub use policy::BufferReplacementTestOutcome;
 
 impl LushtextEditorPage {
     /// Replace this editor's whole buffer, superseding any live replacement.
@@ -144,7 +145,7 @@ impl LushtextEditorPage {
     /// lifetime, the projection guard, body ownership, bounded turns, and exact
     /// cleanup — belongs here.
     pub(crate) fn replace_buffer_bounded(&self, request: BufferReplacementRequest) {
-        execution::accept_request(self, request);
+        admission::accept_request(self, request);
     }
 
     /// Release every replacement this editor owns, without publishing widgets.
@@ -153,7 +154,7 @@ impl LushtextEditorPage {
     /// must not restore the guard: the page is leaving the hierarchy and touching
     /// its projections would resurrect them against a dying buffer.
     pub(crate) fn cancel_buffer_replacement_for_dispose(&self) {
-        execution::dispose(self);
+        admission::dispose(self);
     }
 
     /// Whether a replacement currently owns this editor's buffer.
@@ -164,7 +165,7 @@ impl LushtextEditorPage {
     /// identical by construction because both read the same slot.
     #[must_use]
     pub(crate) fn buffer_replacement_in_progress(&self) -> bool {
-        self.imp().replacement.active.borrow().is_some()
+        self.imp().replacement.has_active()
     }
 
     /// Whether editor projections are suspended for a replacement.
@@ -182,9 +183,7 @@ impl LushtextEditorPage {
     pub(crate) fn memory_eviction_in_progress(&self) -> bool {
         self.imp()
             .replacement
-            .active
-            .borrow()
-            .as_ref()
+            .active_session()
             .is_some_and(|session| {
                 session.borrow().ticket.workflow == BufferReplacementWorkflow::MemoryEviction
             })

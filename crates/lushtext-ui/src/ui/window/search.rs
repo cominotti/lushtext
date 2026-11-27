@@ -153,7 +153,7 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                     );
                 }
                 SearchProgressUpdate::Cancelled { files_searched } => {
-                    let was_visible = window.imp().search_progress.visible.get();
+                    let was_visible = window.imp().search_progress.is_visible();
                     window.finish_search_progress_tracking();
                     if was_visible {
                         window.announce_workflow_update(
@@ -183,7 +183,7 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                 SearchProgressUpdate::Progress { files_searched } => {
                     // Only show progress after the 500ms delay has elapsed
                     // and while the search panel is still visible.
-                    if !window.imp().search_progress.visible.get()
+                    if !window.imp().search_progress.is_visible()
                         || !window.imp().search_panel_revealer.reveals_child()
                     {
                         return;

@@ -22,7 +22,7 @@
 //! control consumes it.
 //!
 //! 1. **Observe.** Read the live visibility of every dismissible surface into one
-//!    `policy::TransientSurfaceState`. The evidence surface calls the same
+//!    `policy::TransientSurfaceSnapshot`. The evidence surface calls the same
 //!    observer, so a probe sees exactly what the ladder will act on.
 //! 2. **Decide.** `policy` resolves the observation, the child-handled latch, and
 //!    Focus Mode into one `EscapeOutcome`; or resolves a pointer press into a
@@ -64,7 +64,7 @@
 //!   the five bounded role names describes it.
 //! * **No `test_policy.rs`.** The row has no timing or limit override: its single
 //!   timer is a bare one-turn idle with nothing to tune.
-//! * **No seam value object beyond `TransientSurfaceState`.** That bundle is the
+//! * **No seam value object beyond `TransientSurfaceSnapshot`.** That bundle is the
 //!   seam — it crosses the observer → `escape_outcome` → `topmost_dismissible`
 //!   boundary and is reconstructed by the evidence surface, which is why it is
 //!   reified instead of passed as five same-typed booleans.

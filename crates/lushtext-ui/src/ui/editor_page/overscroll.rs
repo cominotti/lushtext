@@ -8,11 +8,27 @@
 //! tail room near EOF" behavior easier to reason about without mixing it into
 //! template wiring or minimap marker logic.
 
+use std::cell::{Cell, RefCell};
+
 use glib::subclass::prelude::ObjectSubclassIsExt;
-use gtk_lush_viewport::{ViewportAxis, ViewportObserver};
+use gtk_lush_signals::SignalBag;
+use gtk_lush_viewport::{RestPause, RestState, ViewportAxis, ViewportObserver};
 use gtk4::prelude::*;
+use lushtext_model::values::OverscrollGeneration;
 
 use super::LushtextEditorPage;
+
+/// Coalesced end-of-document overscroll updates for one editor tab.
+#[derive(Default)]
+pub struct OverscrollState {
+    pub update_generation: Cell<OverscrollGeneration>,
+    pub observer: RefCell<Option<ViewportObserver>>,
+    pub rest_state: RestState,
+    pub reflow_pause: RefCell<Option<RestPause>>,
+    pub vertical_value_at_bounds_change: Cell<f64>,
+    pub reflow_scrolled: Cell<bool>,
+    pub scroll_source_signals: SignalBag,
+}
 
 /// Smallest bottom margin kept even before the view has a useful visible rect.
 ///

@@ -9,11 +9,13 @@
 mod accessibility;
 mod bookmarks;
 mod buffer_replacement;
+mod callbacks;
 mod cursor_steps;
 mod document_identity;
 pub mod document_scale;
 pub(crate) mod edit_lock;
 mod focus_mode;
+mod formatting;
 mod frame_validation;
 mod held_input;
 // Private implementation module. GTK's GObject bindings split custom widgets
@@ -81,10 +83,10 @@ pub use buffer_replacement::{
 #[cfg(feature = "test-utils")]
 pub use buffer_replacement::{BufferReplacementEvidence, BufferReplacementTestOutcome};
 pub(crate) use buffer_replacement::{BufferReplacementOutcome, BufferReplacementRequest};
+pub use document_identity::{InlineAlertLifetime, PendingWarningAction};
 pub(crate) use focus_mode::approximate_char_width_pango_units;
 pub use held_input::HeldInputEvidence;
-pub use imp::{EditorLoadState, InlineAlertLifetime, PendingWarningAction};
-pub use load::{LoadEvidence, LoadInstallPhase, LoadOutcome};
+pub use load::{EditorLoadState, LoadEvidence, LoadInstallPhase, LoadOutcome};
 #[cfg(feature = "test-utils")]
 pub use load::{
     set_next_load_body_disposal_probe_for_test, set_next_load_disposal_reservation_weight_for_test,
@@ -338,7 +340,7 @@ impl LushtextEditorPage {
     /// it was loaded from (`LoadMetadata::decode_round_trips`).
     #[must_use]
     pub fn decode_is_inexact(&self) -> bool {
-        self.imp().document_metadata.decode_inexact.get()
+        self.imp().document_metadata.decode_is_inexact()
     }
 
     /// The file the document was last loaded from or saved to, with that
@@ -392,8 +394,10 @@ impl LushtextEditorPage {
     }
 
     /// Route the shared warning-bar primary action to one editor-specific workflow.
-    pub fn set_pending_warning_action(&self, action: Option<imp::PendingWarningAction>) {
-        self.imp().document_metadata.warning_action.set(action);
+    pub fn set_pending_warning_action(&self, action: Option<PendingWarningAction>) {
+        self.imp()
+            .document_metadata
+            .update_alert(|route| route.warning_action = action);
     }
 
     /// The warning-bar action bound to this editor's current alert, if any.
@@ -403,8 +407,8 @@ impl LushtextEditorPage {
     /// "Normalize…" dialog into a silent reload on the next click of the same
     /// button, which dropped unsaved edits.
     #[must_use]
-    pub fn pending_warning_action(&self) -> Option<imp::PendingWarningAction> {
-        self.imp().document_metadata.warning_action.get()
+    pub fn pending_warning_action(&self) -> Option<PendingWarningAction> {
+        self.imp().document_metadata.alert.get().warning_action
     }
 
     #[must_use]
@@ -439,20 +443,19 @@ impl LushtextEditorPage {
     /// Whether a load installation or a memory eviction is changing the
     /// buffer right now, so its changes are not the user's.
     fn buffer_is_being_replaced_by_a_workflow(&self) -> bool {
-        self.imp().load.installation.borrow().is_some() || self.memory_eviction_in_progress()
+        self.imp().load.installation().is_some() || self.memory_eviction_in_progress()
     }
 
     /// Whether the buffer cannot be written as the document: a load
-    /// installation owns it or left it partial (`install_owns_changes`,
-    /// `installation_incomplete`), a memory eviction is emptying it or emptied
-    /// it, or a cancelled replacement emptied it and the user has not typed
-    /// since. Every save refuses while it holds.
+    /// installation owns it or left it partial, a memory eviction is emptying
+    /// it or emptied it, or a cancelled replacement emptied it and the user has
+    /// not typed since. Every save refuses while it holds.
     #[must_use]
     pub(crate) fn buffer_holds_no_whole_document(&self) -> bool {
-        let load = &self.imp().load;
-        load.install_owns_changes.get()
-            || load.installation_incomplete.get()
-            || self.buffer_is_being_replaced_by_a_workflow()
+        !matches!(
+            self.imp().load.buffer_status.get(),
+            load::LoadBufferStatus::Whole
+        ) || self.buffer_is_being_replaced_by_a_workflow()
             || self.is_evicted()
             || (self.replacement_left_buffer_partial() && !self.buffer().is_modified())
     }
@@ -616,30 +619,6 @@ impl LushtextEditorPage {
         self.notify_memory_policy_changed();
     }
 
-    /// Install the page-to-window callback for residency or safety changes.
-    ///
-    /// It runs on the GTK main thread after edits, modified-state changes,
-    /// load/save transitions, eviction, or access updates. A new callback
-    /// replaces the previous window observer.
-    pub fn connect_memory_policy_changed<F: Fn() + 'static>(&self, f: F) {
-        *self.imp().memory_changed_callback.borrow_mut() = Some(Box::new(f));
-    }
-
-    pub fn connect_inline_notification<F: Fn(InlineActionNotification) + 'static>(&self, f: F) {
-        *self.imp().notification_callback.borrow_mut() = Some(Box::new(f));
-    }
-
-    /// Advance policy freshness and notify the window without copying text.
-    pub(crate) fn notify_memory_policy_changed(&self) {
-        self.imp()
-            .residency
-            .policy_generation
-            .set(self.imp().residency.policy_generation.get().next());
-        if let Some(ref callback) = *self.imp().memory_changed_callback.borrow() {
-            callback();
-        }
-    }
-
     /// Override scalar residency for deterministic window-policy tests.
     #[cfg(feature = "test-utils")]
     pub fn set_memory_estimate_for_test(&self, bytes: Option<u64>) {
@@ -654,7 +633,7 @@ impl LushtextEditorPage {
     pub fn emit_inline_notification(
         &self,
         notification: InlineActionNotification,
-        lifetime: imp::InlineAlertLifetime,
+        lifetime: InlineAlertLifetime,
     ) {
         self.set_pending_warning_action(None);
         self.publish_inline_notification(notification, lifetime);
@@ -664,8 +643,8 @@ impl LushtextEditorPage {
     pub fn emit_inline_notification_with_warning_action(
         &self,
         notification: InlineActionNotification,
-        action: imp::PendingWarningAction,
-        lifetime: imp::InlineAlertLifetime,
+        action: PendingWarningAction,
+        lifetime: InlineAlertLifetime,
     ) {
         self.set_pending_warning_action(Some(action));
         self.publish_inline_notification(notification, lifetime);
@@ -674,48 +653,12 @@ impl LushtextEditorPage {
     fn publish_inline_notification(
         &self,
         notification: InlineActionNotification,
-        lifetime: imp::InlineAlertLifetime,
+        lifetime: InlineAlertLifetime,
     ) {
-        self.imp().document_metadata.alert_lifetime.set(lifetime);
-        if let Some(ref callback) = *self.imp().notification_callback.borrow() {
-            callback(notification);
-        } else {
-            let info_bar = self.info_bar();
-            info_bar.render_notification(Some(&notification));
-            info_bar.announce_throttled(&notification);
-        }
-    }
-
-    /// Install the window callback that settles the current alert after a
-    /// successful load.
-    ///
-    /// The callback receives whether the load superseded the alert, resolves
-    /// it on the notification bus if so, and returns whether an alert is still
-    /// shown for this editor afterwards.
-    pub fn connect_inline_notification_load_settled<F: Fn(bool) -> bool + 'static>(&self, f: F) {
-        *self.imp().notification_load_settled_callback.borrow_mut() = Some(Box::new(f));
-    }
-
-    /// Settle the current alert for a successful load.
-    ///
-    /// Called from the load terminal. An alert emitted as
-    /// `InlineAlertLifetime::SupersededByLoad` is resolved — on the
-    /// notification bus with a window, so no later projection can bring it
-    /// back, or on this editor's own bar without one. An
-    /// `InlineAlertLifetime::OutlivesLoad` alert is left alone, and the return
-    /// value says whether one is still shown: the bus keeps one alert per
-    /// editor, so the terminal must not publish its own warning over it.
-    pub(crate) fn settle_inline_notification_after_load(&self) -> bool {
-        let superseded = self.imp().document_metadata.alert_lifetime.get()
-            == imp::InlineAlertLifetime::SupersededByLoad;
-        if let Some(ref callback) = *self.imp().notification_load_settled_callback.borrow() {
-            return callback(superseded);
-        }
-        if superseded {
-            self.info_bar().render_notification(None);
-            return false;
-        }
-        self.info_bar().property::<bool>("visible")
+        self.imp()
+            .document_metadata
+            .update_alert(|route| route.lifetime = lifetime);
+        self.invoke_notification_or_render(notification);
     }
 
     #[must_use]
@@ -770,12 +713,17 @@ impl LushtextEditorPage {
     /// Whether automatic crash recovery is currently behind this dirty buffer.
     #[must_use]
     pub(crate) fn automatic_recovery_limited(&self) -> bool {
-        self.imp().draft.automatic_recovery_limited.get()
+        self.imp().draft.recovery_status.get()
+            == document_identity::DraftRecoveryStatus::AutomaticLimited
     }
 
     /// Track the document-scoped automatic-recovery limit warning state.
     pub(crate) fn set_automatic_recovery_limited(&self, limited: bool) {
-        self.imp().draft.automatic_recovery_limited.set(limited);
+        self.imp().draft.recovery_status.set(if limited {
+            document_identity::DraftRecoveryStatus::AutomaticLimited
+        } else {
+            document_identity::DraftRecoveryStatus::Normal
+        });
     }
 
     /// Typed file-load generation for window-owned draft and preview seams.
@@ -798,7 +746,7 @@ impl LushtextEditorPage {
         // (`bound-post-open-settle`, D6.2 and D9); during an install the
         // buffer holds no line yet, so it applies directly.
         self.restyle_paced(|editor| {
-            imp::apply_formatting_settings(
+            formatting::apply_formatting_settings(
                 &editor.imp().source_view,
                 &editor.imp().settings,
                 overrides,

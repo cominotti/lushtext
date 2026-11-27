@@ -65,6 +65,7 @@ use lushtext_services::{
     persistence::draft_service, persistence::json_store, persistence::session_service,
 };
 
+use super::admission::{SessionRestorePhase, SessionSaveFailurePhase};
 use super::policy;
 use crate::ui::window::LushtextWindow;
 
@@ -88,8 +89,7 @@ impl LushtextWindow {
     /// persisted file rather than overwrite it.
     pub(super) fn startup_session_descriptors_pending(&self) -> bool {
         !self.imp().startup_data_flow.completed.get()
-            || (self.imp().session.restoring.get()
-                && self.imp().session.restore_runtime.borrow().is_none())
+            || self.imp().session.startup_descriptors_pending()
     }
 
     /// Snapshot current tab state into one persisted `SessionData` value object.
@@ -184,21 +184,21 @@ impl LushtextWindow {
     /// Snapshot mounted pages plus descriptors not yet admitted by progressive restore.
     fn collect_session_for_close(&self) -> SessionData {
         let mut session = self.collect_session();
-        let (pending, requested_ordinal, requested_page, preserve_existing, intent_changed) = {
-            let runtime = self.imp().session.restore_runtime.borrow();
-            let Some(runtime) = runtime.as_ref() else {
-                return session;
-            };
-            (
-                runtime.policy.pending_descriptors(),
-                runtime.policy.requested_active_ordinal(),
-                runtime
-                    .requested_page
-                    .as_ref()
-                    .and_then(glib::WeakRef::upgrade),
-                runtime.preserve_existing_selection,
-                runtime.selection_generation != self.imp().session.selection_generation.get(),
-            )
+        let Some((pending, requested_ordinal, requested_page, preserve_existing, intent_changed)) =
+            self.imp().session.with_restore_runtime(|runtime| {
+                (
+                    runtime.policy.pending_descriptors(),
+                    runtime.policy.requested_active_ordinal(),
+                    runtime
+                        .requested_page
+                        .as_ref()
+                        .and_then(glib::WeakRef::upgrade),
+                    runtime.preserve_existing_selection,
+                    runtime.selection_generation != self.imp().session.selection_generation.get(),
+                )
+            })
+        else {
+            return session;
         };
 
         let requested_page_index = requested_page.as_ref().and_then(|requested| {
@@ -228,7 +228,7 @@ impl LushtextWindow {
 
     /// Save session with a 500ms debounce. No-op during session restore.
     pub fn save_session_debounced(&self) {
-        if self.imp().session.restoring.get() {
+        if self.imp().session.is_restoring() {
             return;
         }
 
@@ -236,7 +236,7 @@ impl LushtextWindow {
             self,
             Duration::from_millis(500),
             move |window, token| {
-                if window.imp().session.restoring.get()
+                if window.imp().session.is_restoring()
                     || window.process_session_descriptors_pending()
                 {
                     return;
@@ -343,13 +343,15 @@ impl LushtextWindow {
     /// the draft manifest have to agree: a descriptor whose draft is gone must
     /// not restore as if its content still existed.
     pub fn load_session_and_drafts(&self) {
-        self.imp().session.restoring.set(true);
-        self.imp().session.restore_capacity_wakeup.cancel();
-        if let Some(previous) = self.imp().session.restore_cancel.take() {
-            previous.store(true, Ordering::Release);
-        }
+        self.cancel_session_restore_runtime(false);
+        self.imp().session.cancel_startup_read_for_dispose();
         let cancel = Arc::new(AtomicBool::new(false));
-        *self.imp().session.restore_cancel.borrow_mut() = Some(cancel.clone());
+        self.imp()
+            .session
+            .restore_phase
+            .replace(SessionRestorePhase::ReadingStartup {
+                cancel: cancel.clone(),
+            });
         self.start_startup_journal_read(cancel);
     }
 
@@ -362,13 +364,10 @@ impl LushtextWindow {
     /// `Arc`, meaning a newer read took ownership.
     fn startup_journal_read_superseded(&self, cancel: &Arc<AtomicBool>) -> bool {
         cancel.load(Ordering::Acquire)
-            || !self
-                .imp()
-                .session
-                .restore_cancel
-                .borrow()
-                .as_ref()
-                .is_some_and(|current| Arc::ptr_eq(current, cancel))
+            || !matches!(
+                &*self.imp().session.restore_phase.borrow(),
+                SessionRestorePhase::ReadingStartup { cancel: current } if Arc::ptr_eq(current, cancel)
+            )
     }
 
     fn start_startup_journal_read(&self, cancel: Arc<AtomicBool>) {
@@ -415,7 +414,11 @@ impl LushtextWindow {
                 if window.startup_journal_read_superseded(&cancel) {
                     return;
                 }
-                window.imp().session.restore_cancel.borrow_mut().take();
+                window
+                    .imp()
+                    .session
+                    .restore_phase
+                    .replace(SessionRestorePhase::AwaitingActivationOpens);
                 let GuardedStartupRestore { loaded, preloaded } = guarded;
                 let cleanup_allowed = loaded.manifest_authority.is_trusted();
                 // The draft records belong to the draft-recovery workflow, so
@@ -438,7 +441,10 @@ impl LushtextWindow {
                 window.after_activation_opens(move |window| {
                     // A newer startup read replaced this one while the restore
                     // waited; that read begins its own restore.
-                    if window.imp().session.restore_cancel.borrow().is_none() {
+                    if matches!(
+                        *window.imp().session.restore_phase.borrow(),
+                        SessionRestorePhase::AwaitingActivationOpens
+                    ) {
                         window.begin_session_restore(session, cleanup_allowed);
                     }
                 });
@@ -461,10 +467,13 @@ impl LushtextWindow {
         detail: &str,
         visible: bool,
     ) {
-        let session = &self.imp().session;
-        session.save_failed.set(true);
-        session.failed_generation.set(generation);
-        *session.failure_detail.borrow_mut() = Some(detail.to_string());
+        self.imp()
+            .session
+            .save_failure
+            .replace(SessionSaveFailurePhase::Failed {
+                generation,
+                detail: detail.to_string(),
+            });
         if visible {
             self.publish_status_message(
                 &format!("Session layout may not restore: {detail}"),
@@ -474,13 +483,16 @@ impl LushtextWindow {
     }
 
     fn clear_session_save_failure(&self, generation: FailedRestoreGeneration) {
-        let session = &self.imp().session;
+        let mut failure = self.imp().session.save_failure.borrow_mut();
         // A late successful save must not clear a newer failure banner, so only
         // the same or newer generation may mark the session state healthy again.
-        if session.save_failed.get() && generation >= session.failed_generation.get() {
-            session.save_failed.set(false);
-            session.failed_generation.set(FailedRestoreGeneration::ZERO);
-            session.failure_detail.borrow_mut().take();
+        if let SessionSaveFailurePhase::Failed {
+            generation: failed_generation,
+            ..
+        } = *failure
+            && generation >= failed_generation
+        {
+            *failure = SessionSaveFailurePhase::Healthy;
         }
     }
 }

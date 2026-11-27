@@ -124,6 +124,60 @@ pub enum ReplacementPhase {
     Finalizing,
 }
 
+/// Exact terminal result delivered once to the workflow owner.
+#[derive(Debug)]
+pub enum BufferReplacementOutcome {
+    Complete {
+        ticket: BufferReplacementTicket,
+        #[cfg(feature = "test-utils")]
+        body: String,
+        metrics: BufferReplacementMetrics,
+    },
+    Cancelled {
+        ticket: BufferReplacementTicket,
+        reason: BufferReplacementCancelReason,
+        metrics: BufferReplacementMetrics,
+    },
+}
+
+/// Stable terminal projection used by the headless editor replacement harness.
+#[cfg(feature = "test-utils")]
+#[derive(Debug, Eq, PartialEq)]
+pub struct BufferReplacementTestOutcome {
+    pub ticket: BufferReplacementTicket,
+    pub body: Option<String>,
+    pub cancel_reason: Option<BufferReplacementCancelReason>,
+    pub metrics: BufferReplacementMetrics,
+}
+
+#[cfg(feature = "test-utils")]
+impl BufferReplacementOutcome {
+    pub(super) fn into_test_outcome(self) -> BufferReplacementTestOutcome {
+        match self {
+            Self::Complete {
+                ticket,
+                body,
+                metrics,
+            } => BufferReplacementTestOutcome {
+                ticket,
+                body: Some(body),
+                cancel_reason: None,
+                metrics,
+            },
+            Self::Cancelled {
+                ticket,
+                reason,
+                metrics,
+            } => BufferReplacementTestOutcome {
+                ticket,
+                body: None,
+                cancel_reason: Some(reason),
+                metrics,
+            },
+        }
+    }
+}
+
 /// Whether a new request may start immediately or must wait its turn.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum StartDisposition {

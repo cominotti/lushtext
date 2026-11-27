@@ -18,26 +18,134 @@
 //! `ui/window/local_history/policy.rs` and **called** from here. Named in that
 //! workflow's matrix row.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use gtk_lush_settle::{SupersedingTimer, TimerToken};
+use gtk_lush_signals::SignalBag;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::gio;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 
-use crate::ui::buffer_snapshot;
+use crate::ui::buffer_snapshot::{self, BufferSnapshotHandle};
 use crate::ui::window::local_history::policy::{
     BaselineCaptureFacts, BaselineCaptureTicket, PeriodicCaptureFacts, PeriodicCaptureTicket,
     baseline_capture_is_current, periodic_capture_is_current, should_reschedule_periodic_capture,
 };
 use lushtext_model::persistence::local_history::LocalHistorySnapshotOrigin;
-use lushtext_model::values::PeriodicHistoryGeneration;
+use lushtext_model::values::{
+    CleanBaselineGeneration, EditGeneration, EditorGeneration, PathGeneration,
+    PeriodicHistoryGeneration,
+};
 use lushtext_services::{persistence::json_store, persistence::local_history_service};
 
 use super::LushtextEditorPage;
+
+/// Last clean saved text retained for capturing the "before edits" baseline.
+#[derive(Default)]
+pub(crate) enum CleanBaselinePayload {
+    #[default]
+    Empty,
+    Retained(crate::ui::plain_disposal::DisposalOwned<String>),
+}
+
+impl CleanBaselinePayload {
+    pub(crate) fn is_some(&self) -> bool {
+        matches!(self, Self::Retained(_))
+    }
+
+    pub(crate) fn take(&mut self) -> Option<crate::ui::plain_disposal::DisposalOwned<String>> {
+        match std::mem::take(self) {
+            Self::Empty => None,
+            Self::Retained(text) => Some(text),
+        }
+    }
+}
+
+/// Active chunked periodic snapshot owned by local history, if any.
+#[derive(Default)]
+pub(crate) enum PeriodicSnapshotCapture {
+    #[default]
+    Idle,
+    Capturing(BufferSnapshotHandle),
+}
+
+impl PeriodicSnapshotCapture {
+    pub(crate) fn is_some(&self) -> bool {
+        matches!(self, Self::Capturing(_))
+    }
+
+    pub(crate) fn take(&mut self) -> Option<BufferSnapshotHandle> {
+        match std::mem::take(self) {
+            Self::Idle => None,
+            Self::Capturing(handle) => Some(handle),
+        }
+    }
+}
+
+/// Guarded body and worker-computed profile for Undo Restore.
+#[derive(Default)]
+pub(crate) enum RestoreUndoPayload {
+    #[default]
+    Empty,
+    Retained(
+        Box<(
+            crate::ui::plain_disposal::DisposalOwned<String>,
+            lushtext_model::document::paragraph_boundary::DocumentProfile,
+        )>,
+    ),
+}
+
+impl RestoreUndoPayload {
+    pub(crate) fn is_some(&self) -> bool {
+        matches!(self, Self::Retained(_))
+    }
+
+    pub(crate) fn take(
+        &mut self,
+    ) -> Option<(
+        crate::ui::plain_disposal::DisposalOwned<String>,
+        lushtext_model::document::paragraph_boundary::DocumentProfile,
+    )> {
+        match std::mem::take(self) {
+            Self::Empty => None,
+            Self::Retained(pair) => Some(*pair),
+        }
+    }
+}
+
+/// Test-only local-history availability override without large buffers.
+#[cfg(feature = "test-utils")]
+#[derive(Clone, Copy, Default)]
+pub(crate) enum LocalHistoryAvailabilityOverride {
+    #[default]
+    DefaultPolicy,
+    Forced(local_history_service::LocalHistoryAvailability),
+}
+
+/// Automatic local-history capture state scoped to one editor tab.
+#[derive(Default)]
+pub struct LocalHistoryState {
+    pub(crate) last_clean_text: RefCell<CleanBaselinePayload>,
+    pub clean_baseline_generation: Cell<CleanBaselineGeneration>,
+    pub baseline_retry_budget: Cell<u8>,
+    pub periodic_generation: Cell<PeriodicHistoryGeneration>,
+    pub periodic_timer: SupersedingTimer,
+    pub periodic_timer_token: Cell<Option<TimerToken>>,
+    pub editor_generation: Cell<EditorGeneration>,
+    pub path_generation: Cell<PathGeneration>,
+    pub edit_generation: Cell<EditGeneration>,
+    pub(crate) periodic_snapshot: RefCell<PeriodicSnapshotCapture>,
+    pub(crate) baseline_retry_pending: Cell<bool>,
+    pub automatic_capture_suppressed: Cell<bool>,
+    pub(crate) restore_undo_text: RefCell<RestoreUndoPayload>,
+    pub buffer_signals: SignalBag,
+    #[cfg(feature = "test-utils")]
+    pub(crate) availability_override: Cell<LocalHistoryAvailabilityOverride>,
+}
 
 /// Default interval between automatic periodic snapshots while a document stays modified.
 const DEFAULT_PERIODIC_CAPTURE_INTERVAL_MS: u64 = 5 * 60 * 1000;
@@ -152,7 +260,9 @@ impl LushtextEditorPage {
                     return;
                 }
                 let state = &editor.imp().local_history;
-                if let Some(snapshot) = state.periodic_snapshot.borrow().as_ref() {
+                if let PeriodicSnapshotCapture::Capturing(snapshot) =
+                    &*state.periodic_snapshot.borrow()
+                {
                     snapshot.cancel();
                 }
                 state
@@ -246,7 +356,9 @@ impl LushtextEditorPage {
         char_count: i32,
     ) -> local_history_service::LocalHistoryAvailability {
         #[cfg(feature = "test-utils")]
-        if let Some(availability) = self.imp().local_history.availability_override.get() {
+        if let LocalHistoryAvailabilityOverride::Forced(availability) =
+            self.imp().local_history.availability_override.get()
+        {
             return availability;
         }
 
@@ -263,7 +375,7 @@ impl LushtextEditorPage {
         self.imp()
             .local_history
             .availability_override
-            .set(Some(availability));
+            .set(LocalHistoryAvailabilityOverride::Forced(availability));
     }
 
     pub(crate) fn advance_local_history_path_generation(&self) {
@@ -280,7 +392,9 @@ impl LushtextEditorPage {
     ) {
         let state = &self.imp().local_history;
         let has_text = text.is_some();
-        state.last_clean_text.replace(text);
+        state
+            .last_clean_text
+            .replace(text.map_or(CleanBaselinePayload::Empty, CleanBaselinePayload::Retained));
         state
             .clean_baseline_generation
             .set(state.clean_baseline_generation.get().next());
@@ -431,7 +545,10 @@ impl LushtextEditorPage {
             lushtext_model::document::paragraph_boundary::DocumentProfile,
         )>,
     ) {
-        self.imp().local_history.restore_undo_text.replace(text);
+        let payload = text.map_or(RestoreUndoPayload::Empty, |pair| {
+            RestoreUndoPayload::Retained(Box::new(pair))
+        });
+        self.imp().local_history.restore_undo_text.replace(payload);
     }
 
     /// Consume the pending undo-restore body without releasing its worker-drop guard.
@@ -512,12 +629,14 @@ impl LushtextEditorPage {
                     clean_baseline_generation: state.clean_baseline_generation.get(),
                     path: editor.file_path(),
                     modified: editor.is_modified(),
-                    baseline_slot_empty: state.last_clean_text.borrow().is_none(),
+                    baseline_slot_empty: !state.last_clean_text.borrow().is_some(),
                 };
                 if !baseline_capture_is_current(&ticket, &facts) {
                     return;
                 }
-                state.last_clean_text.replace(Some(text));
+                state
+                    .last_clean_text
+                    .replace(CleanBaselinePayload::Retained(text));
                 if retry_allowed && state.baseline_retry_budget.get() > 0 {
                     state
                         .baseline_retry_budget
@@ -555,7 +674,13 @@ impl LushtextEditorPage {
     }
 
     pub(crate) fn cancel_local_history_periodic_capture(&self) {
-        if let Some(snapshot) = self.imp().local_history.periodic_snapshot.take() {
+        if let Some(snapshot) = self
+            .imp()
+            .local_history
+            .periodic_snapshot
+            .borrow_mut()
+            .take()
+        {
             snapshot.dispose();
         }
         let _ = self.imp().local_history.periodic_timer.invalidate();
@@ -647,7 +772,7 @@ impl LushtextEditorPage {
             self.imp()
                 .local_history
                 .periodic_snapshot
-                .replace(Some(snapshot));
+                .replace(PeriodicSnapshotCapture::Capturing(snapshot));
         } else {
             finish(buffer_snapshot::snapshot_buffer_text_direct_budgeted(
                 &buffer,

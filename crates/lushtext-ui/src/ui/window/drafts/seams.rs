@@ -14,22 +14,29 @@
 //! validates them as a unit so no positional scalar can arrive in the wrong
 //! parameter.
 
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use glib::prelude::ObjectExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk_lush_settle::SupersedingTimer;
 use gtk4::glib;
 
+use crate::ui::buffer_snapshot::BufferSnapshotHandle;
 use crate::ui::editor_page::LushtextEditorPage;
+use crate::ui::plain_disposal::{DisposalOwned, ProgressDisposalCapacityWakeup};
 use lushtext_model::persistence::draft::{
-    DraftEntry, DraftManifestAuthority, FileDraftRestoreSkip, PreloadedDraftSkip,
+    DraftEntry, DraftManifest, DraftManifestAuthority, FileDraftRestoreSkip, PreloadedDraftRestore,
+    PreloadedDraftSkip,
 };
 use lushtext_model::values::{DraftGeneration, LoadGeneration};
 use lushtext_services::persistence::draft_service;
 
 use super::InjectedDraftTestError;
-use super::policy::DraftMutationIntent;
+use super::admission::ProcessDraftJournal;
+use super::policy::{DraftMutationIntent, DraftMutationOrder};
 use crate::ui::window::LushtextWindow;
 
 /// Main-thread editor token paired with one accepted autosave snapshot.
@@ -336,6 +343,433 @@ pub(crate) struct PendingPreservation {
     pub(crate) entry: lushtext_model::persistence::draft::DraftEntry,
     /// Whether the outcome is announced as a stale-draft inline warning.
     pub(crate) announce_as_stale: bool,
+}
+
+/// One-shot timer armed state for the first dirty draft after a clean cycle.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum FirstDirtyTimerPhase {
+    #[default]
+    Disarmed,
+    Armed,
+}
+
+/// Orphan-cleanup timer armed state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum OrphanCleanupTimerPhase {
+    #[default]
+    Idle,
+    Armed,
+}
+
+/// Orphan-cleanup worker lifecycle and any coalesced follow-up manifest offset.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum OrphanCleanupWorkerPhase {
+    #[default]
+    Idle,
+    Inflight {
+        pending_offset: Option<usize>,
+    },
+}
+
+/// Window-local draft mutation and autosave execution lifecycle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DraftMutationPhase {
+    Idle {
+        autosave_pending: bool,
+    },
+    AutosaveInflight {
+        mutation_active: bool,
+        autosave_pending: bool,
+    },
+    MutationInflight {
+        autosave_pending: bool,
+    },
+}
+
+impl Default for DraftMutationPhase {
+    fn default() -> Self {
+        Self::Idle {
+            autosave_pending: false,
+        }
+    }
+}
+
+/// Cancellation handle for whichever chunked draft buffer capture is active.
+#[derive(Default)]
+pub(super) enum ActiveDraftSnapshot {
+    #[default]
+    None,
+    Autosave(BufferSnapshotHandle),
+    Close(BufferSnapshotHandle),
+}
+
+/// Bounded lazy draft recovery read across the worker boundary.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum LazyRestorePhase {
+    #[default]
+    Idle,
+    Inflight,
+}
+
+/// This window's membership in its application's shared draft journal.
+#[derive(Default)]
+pub(super) enum DraftJournalMembership {
+    #[default]
+    Unjoined,
+    Joined {
+        key: u64,
+        journal: Rc<ProcessDraftJournal>,
+    },
+}
+
+/// Draft persistence and autosave state owned by the window shell.
+#[derive(Default)]
+pub struct DraftState {
+    /// Source ID for the global autosave timer. Removed on dispose.
+    pub autosave_source_id: RefCell<Option<glib::SourceId>>,
+    /// Periodic autosave ticks run so far: the clock unrestored-copy retries
+    /// are scheduled on. Never persisted.
+    pub(super) autosave_timer_ticks: Cell<u64>,
+    /// Superseding one-shot for the first dirty draft after a clean cycle.
+    pub first_dirty_autosave_timer: SupersedingTimer,
+    /// Whether the first-dirty timer currently has a callback armed.
+    pub(super) first_dirty_timer_phase: Cell<FirstDirtyTimerPhase>,
+    /// Superseding startup/follow-up timer for bounded orphan cleanup.
+    pub orphan_cleanup_timer: SupersedingTimer,
+    /// Whether the owned orphan-cleanup timer currently has a callback armed.
+    orphan_cleanup_timer_phase: Cell<OrphanCleanupTimerPhase>,
+    /// Active orphan-cleanup worker and latest requested manifest offset.
+    orphan_cleanup_worker: Cell<OrphanCleanupWorkerPhase>,
+    /// Consecutive retryable cleanup failures used for bounded backoff.
+    pub orphan_cleanup_failure_streak: Cell<u32>,
+    /// Number of orphan-cleanup workers started by this window.
+    pub(super) orphan_cleanup_workers_started: Cell<usize>,
+    /// Peak simultaneous orphan-cleanup workers observed by this window.
+    pub(super) orphan_cleanup_workers_high_water: Cell<usize>,
+    /// In-memory draft manifest kept in sync with disk.
+    pub manifest: RefCell<DraftManifest>,
+    /// Completeness and durable replacement authority for the in-memory manifest.
+    pub manifest_authority: Cell<DraftManifestAuthority>,
+    /// Draft restore outcomes preloaded during session restore and consumed once.
+    pub preloaded: RefCell<DisposalOwned<HashMap<String, PreloadedDraftRestore>>>,
+    /// Autosave / mutation execution lane and coalesced autosave rerun flag.
+    mutation: Cell<DraftMutationPhase>,
+    /// Main-thread intent allocator shared by autosave and deletion workflows.
+    pub(super) mutation_order: RefCell<DraftMutationOrder>,
+    /// Compact deletes waiting behind an earlier draft mutation.
+    pub(super) pending_deletes: RefCell<VecDeque<DraftMutationIntent>>,
+    /// IDs represented in `pending_deletes`, keeping common admission O(1).
+    pub(super) pending_delete_ids: RefCell<HashSet<String>>,
+    /// Current deletion intents whose durable manifest removal may outlive a
+    /// failed body deletion and must remain explicit on a later retry.
+    pub(super) delete_tombstones: RefCell<HashMap<String, DraftMutationIntent>>,
+    /// Stale file-backed drafts whose queued delete must first preserve the body.
+    pub(super) stale_preservations: RefCell<HashMap<String, PendingPreservation>>,
+    /// Draft ids whose recovery body is queued or being read for restore.
+    pub(super) restore_pending_ids: RefCell<HashMap<String, usize>>,
+    /// Unrestored recovery bodies whose set-aside copy failed.
+    pub(super) unrestored_copy_retries: RefCell<HashMap<String, (DraftEntry, u32, u64)>>,
+    /// Cancellation token for the active chunked autosave or close buffer copy.
+    active_snapshot: RefCell<ActiveDraftSnapshot>,
+    /// Draft IDs explicitly discarded during an in-progress close flow.
+    pub close_discard_ids: RefCell<HashSet<String>>,
+    /// Serialized non-preloaded recovery reads, including startup budget skips.
+    pub(super) lazy_restore_queue: RefCell<VecDeque<DraftRestoreTicket>>,
+    /// Whether one lazy draft body is currently crossing the worker boundary.
+    lazy_restore: Cell<LazyRestorePhase>,
+    /// One paced progress-lane wakeup retained while a lazy ticket stays compact.
+    pub(in crate::ui::window) lazy_restore_capacity_wakeup: ProgressDisposalCapacityWakeup,
+    /// Number of asynchronous draft resolutions not yet delivered to GTK.
+    pub(super) restore_inflight_count: Cell<usize>,
+    /// Number of complete autosave bodies currently held across a worker handoff.
+    pub(super) retained_complete_bodies: Cell<usize>,
+    /// Peak complete-body count observed by this window.
+    pub(super) max_retained_complete_bodies: Cell<usize>,
+    /// This window's membership in the application's shared draft journal.
+    pub(super) journal_membership: RefCell<DraftJournalMembership>,
+    /// Draft ids whose autosave this window holds because another window owns them.
+    pub(super) claim_holds_reported: RefCell<HashSet<String>>,
+}
+
+impl DraftState {
+    pub(in crate::ui::window) fn is_autosave_inflight(&self) -> bool {
+        matches!(
+            self.mutation.get(),
+            DraftMutationPhase::AutosaveInflight { .. }
+        )
+    }
+
+    pub(in crate::ui::window) fn is_mutation_inflight(&self) -> bool {
+        matches!(
+            self.mutation.get(),
+            DraftMutationPhase::AutosaveInflight {
+                mutation_active: true,
+                ..
+            } | DraftMutationPhase::MutationInflight { .. }
+        )
+    }
+
+    pub fn is_autosave_pending(&self) -> bool {
+        matches!(
+            self.mutation.get(),
+            DraftMutationPhase::Idle {
+                autosave_pending: true
+            } | DraftMutationPhase::AutosaveInflight {
+                autosave_pending: true,
+                ..
+            } | DraftMutationPhase::MutationInflight {
+                autosave_pending: true
+            }
+        )
+    }
+
+    pub fn set_autosave_pending(&self, pending: bool) {
+        let next = match self.mutation.get() {
+            DraftMutationPhase::Idle { .. } => DraftMutationPhase::Idle {
+                autosave_pending: pending,
+            },
+            DraftMutationPhase::AutosaveInflight {
+                mutation_active, ..
+            } => DraftMutationPhase::AutosaveInflight {
+                mutation_active,
+                autosave_pending: pending,
+            },
+            DraftMutationPhase::MutationInflight { .. } => DraftMutationPhase::MutationInflight {
+                autosave_pending: pending,
+            },
+        };
+        self.mutation.set(next);
+    }
+
+    pub(super) fn replace_autosave_pending(&self, pending: bool) -> bool {
+        let previous = self.is_autosave_pending();
+        self.set_autosave_pending(pending);
+        previous
+    }
+
+    pub(super) fn begin_autosave_run(&self) {
+        let autosave_pending = self.is_autosave_pending();
+        self.mutation.set(DraftMutationPhase::AutosaveInflight {
+            mutation_active: true,
+            autosave_pending,
+        });
+    }
+
+    pub(super) fn finish_autosave_run(&self) {
+        let autosave_pending = self.is_autosave_pending();
+        self.mutation
+            .set(DraftMutationPhase::Idle { autosave_pending });
+    }
+
+    pub(super) fn begin_mutation_run(&self) {
+        let autosave_pending = self.is_autosave_pending();
+        let next = match self.mutation.get() {
+            DraftMutationPhase::AutosaveInflight { .. } => DraftMutationPhase::AutosaveInflight {
+                mutation_active: true,
+                autosave_pending,
+            },
+            _ => DraftMutationPhase::MutationInflight { autosave_pending },
+        };
+        self.mutation.set(next);
+    }
+
+    pub(super) fn finish_mutation_run(&self) {
+        let autosave_pending = self.is_autosave_pending();
+        let next = match self.mutation.get() {
+            DraftMutationPhase::AutosaveInflight { .. } => DraftMutationPhase::AutosaveInflight {
+                mutation_active: false,
+                autosave_pending,
+            },
+            _ => DraftMutationPhase::Idle { autosave_pending },
+        };
+        self.mutation.set(next);
+    }
+
+    pub(super) fn finish_close_flush_run(&self) {
+        self.mutation.set(DraftMutationPhase::Idle {
+            autosave_pending: false,
+        });
+    }
+
+    #[cfg(feature = "test-utils")]
+    pub fn set_autosave_inflight(&self, inflight: bool) {
+        let autosave_pending = self.is_autosave_pending();
+        let next = match (inflight, self.mutation.get()) {
+            (
+                true,
+                DraftMutationPhase::AutosaveInflight {
+                    mutation_active, ..
+                },
+            ) => DraftMutationPhase::AutosaveInflight {
+                mutation_active,
+                autosave_pending,
+            },
+            (true, DraftMutationPhase::MutationInflight { .. }) => {
+                DraftMutationPhase::AutosaveInflight {
+                    mutation_active: true,
+                    autosave_pending,
+                }
+            }
+            (true, DraftMutationPhase::Idle { .. }) => DraftMutationPhase::AutosaveInflight {
+                mutation_active: false,
+                autosave_pending,
+            },
+            (
+                false,
+                DraftMutationPhase::AutosaveInflight {
+                    mutation_active: true,
+                    ..
+                },
+            ) => DraftMutationPhase::MutationInflight { autosave_pending },
+            (false, _) => DraftMutationPhase::Idle { autosave_pending },
+        };
+        self.mutation.set(next);
+    }
+
+    pub(in crate::ui::window) fn is_first_dirty_autosave_pending(&self) -> bool {
+        self.first_dirty_timer_phase.get() == FirstDirtyTimerPhase::Armed
+    }
+
+    pub(super) fn set_first_dirty_autosave_pending(&self, pending: bool) {
+        self.first_dirty_timer_phase.set(if pending {
+            FirstDirtyTimerPhase::Armed
+        } else {
+            FirstDirtyTimerPhase::Disarmed
+        });
+    }
+
+    pub(super) fn is_orphan_cleanup_inflight(&self) -> bool {
+        matches!(
+            self.orphan_cleanup_worker.get(),
+            OrphanCleanupWorkerPhase::Inflight { .. }
+        )
+    }
+
+    pub(super) fn is_orphan_cleanup_timer_pending(&self) -> bool {
+        self.orphan_cleanup_timer_phase.get() == OrphanCleanupTimerPhase::Armed
+    }
+
+    pub(super) fn set_orphan_cleanup_timer_pending(&self, pending: bool) {
+        self.orphan_cleanup_timer_phase.set(if pending {
+            OrphanCleanupTimerPhase::Armed
+        } else {
+            OrphanCleanupTimerPhase::Idle
+        });
+    }
+
+    pub(super) fn begin_orphan_cleanup_worker(&self) {
+        self.orphan_cleanup_worker
+            .set(OrphanCleanupWorkerPhase::Inflight {
+                pending_offset: None,
+            });
+    }
+
+    pub(super) fn set_orphan_cleanup_pending_offset(&self, offset: usize) {
+        if self.is_orphan_cleanup_inflight() {
+            self.orphan_cleanup_worker
+                .set(OrphanCleanupWorkerPhase::Inflight {
+                    pending_offset: Some(offset),
+                });
+        }
+    }
+
+    pub(super) fn clear_orphan_cleanup_pending_offset(&self) {
+        if self.is_orphan_cleanup_inflight() {
+            self.orphan_cleanup_worker
+                .set(OrphanCleanupWorkerPhase::Inflight {
+                    pending_offset: None,
+                });
+        }
+    }
+
+    pub(super) fn finish_orphan_cleanup_worker(&self) -> Option<usize> {
+        let pending_offset = match self.orphan_cleanup_worker.get() {
+            OrphanCleanupWorkerPhase::Idle => None,
+            OrphanCleanupWorkerPhase::Inflight { pending_offset } => pending_offset,
+        };
+        self.orphan_cleanup_worker
+            .set(OrphanCleanupWorkerPhase::Idle);
+        pending_offset
+    }
+
+    pub(super) fn orphan_cleanup_pending_offset(&self) -> Option<usize> {
+        match self.orphan_cleanup_worker.get() {
+            OrphanCleanupWorkerPhase::Idle => None,
+            OrphanCleanupWorkerPhase::Inflight { pending_offset } => pending_offset,
+        }
+    }
+
+    pub(super) fn set_autosave_snapshot(&self, snapshot: BufferSnapshotHandle) {
+        *self.active_snapshot.borrow_mut() = ActiveDraftSnapshot::Autosave(snapshot);
+    }
+
+    pub(super) fn take_autosave_snapshot(&self) -> Option<BufferSnapshotHandle> {
+        let mut slot = self.active_snapshot.borrow_mut();
+        if matches!(*slot, ActiveDraftSnapshot::Autosave(_)) {
+            match std::mem::take(&mut *slot) {
+                ActiveDraftSnapshot::Autosave(handle) => Some(handle),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }
+
+    pub(super) fn set_close_snapshot(&self, snapshot: BufferSnapshotHandle) {
+        *self.active_snapshot.borrow_mut() = ActiveDraftSnapshot::Close(snapshot);
+    }
+
+    pub(super) fn take_close_snapshot(&self) -> Option<BufferSnapshotHandle> {
+        let mut slot = self.active_snapshot.borrow_mut();
+        if matches!(*slot, ActiveDraftSnapshot::Close(_)) {
+            match std::mem::take(&mut *slot) {
+                ActiveDraftSnapshot::Close(handle) => Some(handle),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }
+
+    pub(super) fn is_lazy_restore_inflight(&self) -> bool {
+        self.lazy_restore.get() == LazyRestorePhase::Inflight
+    }
+
+    pub(super) fn set_lazy_restore_inflight(&self, inflight: bool) {
+        self.lazy_restore.set(if inflight {
+            LazyRestorePhase::Inflight
+        } else {
+            LazyRestorePhase::Idle
+        });
+    }
+
+    /// Cancel owned orphan-cleanup scheduling: window teardown, lost manifest
+    /// authority, or a pass that has nothing left to do.
+    pub(super) fn dispose_orphan_cleanup(&self) {
+        self.set_orphan_cleanup_timer_pending(false);
+        self.clear_orphan_cleanup_pending_offset();
+        let _ = self.orphan_cleanup_timer.invalidate();
+    }
+
+    /// Cancel owned timers on window teardown.
+    pub(in crate::ui::window) fn dispose_timers(&self) {
+        if let Some(source_id) = self.autosave_source_id.take() {
+            source_id.remove();
+        }
+        self.set_first_dirty_autosave_pending(false);
+        let _ = self.first_dirty_autosave_timer.invalidate();
+        self.dispose_orphan_cleanup();
+    }
+
+    /// Cancel any active chunked draft snapshot on window teardown.
+    pub(in crate::ui::window) fn dispose_snapshots(&self) {
+        match std::mem::take(&mut *self.active_snapshot.borrow_mut()) {
+            ActiveDraftSnapshot::None => {}
+            ActiveDraftSnapshot::Autosave(snapshot) | ActiveDraftSnapshot::Close(snapshot) => {
+                snapshot.dispose();
+            }
+        }
+    }
 }
 
 #[cfg(test)]

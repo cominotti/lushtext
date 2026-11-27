@@ -49,7 +49,8 @@ impl LushtextEditorPage {
     pub fn set_after_minimap_analysis_slice_hook_for_test<F: FnOnce() + 'static>(&self, hook: F) {
         self.imp()
             .minimap
-            .analysis_after_slice_hook
+            .analysis
+            .after_slice_hook
             .replace(Some(Box::new(hook)));
     }
 }

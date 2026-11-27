@@ -46,10 +46,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(kani)]
 mod kani_proofs;
 
-use crate::ui::editor_page::EditorLoadState;
 use lushtext_model::document::file_load::SYNCHRONOUS_INSTALL_THRESHOLD_BYTES;
 use lushtext_model::document::highlight_chunking::HighlightInstallOrder;
 use lushtext_model::values::LoadGeneration;
+
+/// User-visible file-load lifecycle for one editor tab.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum EditorLoadState {
+    #[default]
+    Untitled,
+    Loading,
+    Loaded,
+    Failed,
+}
 
 /// Bound deletion work by characters so even four-byte Unicode stays within the
 /// byte-oriented installation slice policy.

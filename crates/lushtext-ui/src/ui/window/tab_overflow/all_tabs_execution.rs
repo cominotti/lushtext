@@ -25,7 +25,7 @@ use gtk4::prelude::*;
 use super::super::LushtextWindow;
 use super::all_tabs_popover::AllTabsRow;
 use super::policy::all_tabs_folder_label;
-use super::watch::release_page_watch;
+use super::watch::{AllTabsFocusPhase, release_page_watch};
 use crate::ui::editor_page::LushtextEditorPage;
 
 /// `win.toggle-all-tabs`; `actions.rs` registers it under this name.
@@ -212,8 +212,10 @@ impl LushtextWindow {
             let focus = gtk4::prelude::GtkWindowExt::focus(self);
             self.imp()
                 .tab_overflow
-                .saved_focus
-                .replace(focus.map(|widget| widget.downgrade()));
+                .all_tabs_focus
+                .replace(AllTabsFocusPhase::Saved {
+                    widget: focus.map(|widget| widget.downgrade()),
+                });
         }
         if let Some(controls) = self.imp().tab_overflow.controls() {
             controls.popover.prepare_to_show(self.all_tabs_snapshot());
@@ -234,20 +236,39 @@ impl LushtextWindow {
         let state = &self.imp().tab_overflow;
         let generation = state.focus_restore_generation.get().next();
         state.focus_restore_generation.set(generation);
-        state.focus_restore_pending.set(true);
+        {
+            let mut focus_phase = state.all_tabs_focus.borrow_mut();
+            let widget = match std::mem::take(&mut *focus_phase) {
+                AllTabsFocusPhase::Saved { widget }
+                | AllTabsFocusPhase::RestorePending { widget, .. } => widget,
+                AllTabsFocusPhase::Idle => None,
+            };
+            *focus_phase = AllTabsFocusPhase::RestorePending { widget, generation };
+        }
         let window_weak = self.downgrade();
         glib::idle_add_local_once(move || {
             let Some(window) = window_weak.upgrade() else {
                 return;
             };
-            let state = &window.imp().tab_overflow;
-            if state.focus_restore_generation.get() != generation
-                || !state.focus_restore_pending.replace(false)
-                || window.imp().disposing.get()
-            {
-                return;
-            }
-            let saved = state.saved_focus.take();
+            let saved = {
+                let state = &window.imp().tab_overflow;
+                if state.focus_restore_generation.get() != generation
+                    || window.imp().disposing.get()
+                {
+                    return;
+                }
+                let mut focus_phase = state.all_tabs_focus.borrow_mut();
+                match std::mem::take(&mut *focus_phase) {
+                    AllTabsFocusPhase::RestorePending {
+                        widget,
+                        generation: active_gen,
+                    } if active_gen == generation => widget,
+                    other => {
+                        *focus_phase = other;
+                        return;
+                    }
+                }
+            };
             let target = saved
                 .as_ref()
                 .and_then(glib::WeakRef::upgrade)
@@ -272,8 +293,8 @@ impl LushtextWindow {
         });
     }
 
-    /// Stage: an activated row. The popover has closed. A tab that closed
-    /// meanwhile only closes the popover (its focus comes back as on Escape);
+    /// Stage: an activated row. The popup has closed. A tab that closed
+    /// meanwhile only closes the popup (its focus comes back as on Escape);
     /// otherwise the tab is selected, the strip scrolls it into view (ledger
     /// A133, after D3's guard cancelled any step of ours; the already
     /// selected tab through the selection reveal), and its editor takes the
@@ -286,7 +307,10 @@ impl LushtextWindow {
             self.restore_focus_after_all_tabs();
             return;
         };
-        self.imp().tab_overflow.saved_focus.replace(None);
+        self.imp()
+            .tab_overflow
+            .all_tabs_focus
+            .replace(AllTabsFocusPhase::Idle);
         if tab_view.selected_page().as_ref() == Some(&page) {
             // No selection change would scroll the strip to it.
             self.reveal_selected_tab();
@@ -303,10 +327,20 @@ impl LushtextWindow {
         state
             .focus_restore_generation
             .set(state.focus_restore_generation.get().next());
-        state.focus_restore_pending.replace(false)
+        let mut focus_phase = state.all_tabs_focus.borrow_mut();
+        match std::mem::take(&mut *focus_phase) {
+            AllTabsFocusPhase::RestorePending { widget, .. } => {
+                *focus_phase = AllTabsFocusPhase::Saved { widget };
+                true
+            }
+            other => {
+                *focus_phase = other;
+                false
+            }
+        }
     }
 
-    /// Whether the All Tabs popover shows.
+    /// Whether the All Tabs popup shows.
     pub(crate) fn all_tabs_popover_visible(&self) -> bool {
         self.imp()
             .tab_overflow
@@ -314,7 +348,7 @@ impl LushtextWindow {
             .is_some_and(|controls| controls.popover.is_visible())
     }
 
-    /// `win.toggle-all-tabs`: open the popover, or close it when open.
+    /// `win.toggle-all-tabs`: open the popup, or close it when open.
     pub(super) fn toggle_all_tabs(&self) {
         self.set_all_tabs_visible(!self.all_tabs_popover_visible());
     }
@@ -326,7 +360,9 @@ impl LushtextWindow {
             return;
         };
         if visible {
-            if self.imp().tab_overflow.all_tabs_visible.get() && !controls.popover.is_visible() {
+            if self.imp().tab_overflow.published().all_tabs_visible
+                && !controls.popover.is_visible()
+            {
                 controls.all_tabs.popup();
             }
         } else if controls.popover.is_visible() {

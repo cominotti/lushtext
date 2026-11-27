@@ -220,9 +220,9 @@ impl LushtextWindow {
         let imp = self.imp();
         OPEN_MODAL_SURFACES.with(Cell::get) > 0
             || self.has_saving_editors()
-            || imp.session.close_safety_inflight.get()
-            || imp.drafts.autosave_pending.get()
-            || imp.drafts.first_dirty_autosave_pending.get()
+            || imp.session.is_close_safety_inflight()
+            || imp.drafts.is_autosave_pending()
+            || imp.drafts.is_first_dirty_autosave_pending()
     }
 }
 

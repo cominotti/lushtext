@@ -13,14 +13,53 @@
 //! *touch GTK*, and keeping them here is what lets the facade narrate the
 //! stages without interleaving widget mutation with the story.
 
+use std::cell::RefCell;
+use std::collections::HashSet;
+
 use glib::subclass::prelude::ObjectSubclassIsExt;
-use gtk4::gio;
-use gtk4::prelude::*;
+use gtk4::{gio, glib, prelude::*};
 
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::window::LushtextWindow;
 
 use super::policy::{self, TabLayoutEntry};
+
+/// Tab-strip menu and close-authorization state owned by the window shell.
+pub struct TabManagementState {
+    /// Shared `GMenu` model reused for the Adwaita tab context menu.
+    pub context_menu: gio::Menu,
+    /// The tab page whose context menu is currently being prepared or shown.
+    /// A weak handle prevents menu state from retaining a detached tab.
+    pub target_page: RefCell<Option<glib::WeakRef<libadwaita::TabPage>>>,
+    /// Pages already confirmed through the combined bulk-close dialog.
+    ///
+    /// The `connect_close_page` signal checks this set so a bulk close can
+    /// reuse the existing close machinery without spawning one dialog per tab.
+    pub preconfirmed_close_pages: RefCell<HashSet<usize>>,
+    /// Tracks which tab pages already have pinned-state signal wiring attached.
+    ///
+    /// Pages can be created during session restore before the explicit tab
+    /// workflow setup runs, so this guard prevents duplicate signal hookups.
+    pub configured_pages: RefCell<HashSet<usize>>,
+    /// Pages whose close this window confirmed (`close_page_finish(.., true)`).
+    ///
+    /// `AdwTabView` reports a close and a transfer to another window with the
+    /// same `page-detached`; only a page in this set is torn down, so a
+    /// transferred tab keeps its load, its file monitor and its held text.
+    pub closing_pages: RefCell<HashSet<usize>>,
+}
+
+impl Default for TabManagementState {
+    fn default() -> Self {
+        Self {
+            context_menu: gio::Menu::new(),
+            target_page: RefCell::new(None),
+            preconfirmed_close_pages: RefCell::new(HashSet::new()),
+            configured_pages: RefCell::new(HashSet::new()),
+            closing_pages: RefCell::new(HashSet::new()),
+        }
+    }
+}
 
 /// Symbolic icon shown on pinned tabs so the leading segment is explicit.
 const PIN_INDICATOR_ICON_NAME: &str = "pin-symbolic";

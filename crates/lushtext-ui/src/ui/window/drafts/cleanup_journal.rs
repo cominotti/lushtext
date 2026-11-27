@@ -45,8 +45,8 @@ impl LushtextWindow {
         }
         let drafts = &self.imp().drafts;
         drafts.orphan_cleanup_failure_streak.set(0);
-        drafts.orphan_cleanup_pending_offset.set(None);
-        drafts.orphan_cleanup_timer_pending.set(true);
+        drafts.clear_orphan_cleanup_pending_offset();
+        drafts.set_orphan_cleanup_timer_pending(true);
         drafts.orphan_cleanup_timer.arm(
             self,
             orphan_cleanup_start_delay(),
@@ -54,8 +54,7 @@ impl LushtextWindow {
                 window
                     .imp()
                     .drafts
-                    .orphan_cleanup_timer_pending
-                    .set(false);
+                    .set_orphan_cleanup_timer_pending(false);
                 // Eager strings can be released after the ordinary restore window,
                 // but compact lazy markers must survive slow file loads so they
                 // cannot bypass the serialized admission queue.
@@ -88,10 +87,8 @@ impl LushtextWindow {
             );
             return;
         }
-        if drafts.orphan_cleanup_inflight.get() {
-            drafts
-                .orphan_cleanup_pending_offset
-                .set(Some(manifest_offset));
+        if drafts.is_orphan_cleanup_inflight() {
+            drafts.set_orphan_cleanup_pending_offset(manifest_offset);
             return;
         }
         if !self.take_journal_lane() {
@@ -101,7 +98,7 @@ impl LushtextWindow {
             );
             return;
         }
-        drafts.orphan_cleanup_inflight.set(true);
+        drafts.begin_orphan_cleanup_worker();
         {
             drafts.orphan_cleanup_workers_started.set(
                 drafts
@@ -139,7 +136,7 @@ impl LushtextWindow {
                     })
             },
             move |window, result| {
-                window.imp().drafts.orphan_cleanup_inflight.set(false);
+                let pending_offset = window.imp().drafts.finish_orphan_cleanup_worker();
                 window.release_journal_lane();
                 let follow_up = match result {
                     Ok(result) => {
@@ -196,14 +193,18 @@ impl LushtextWindow {
                         )
                     }
                 };
-                window.finish_orphan_cleanup_pass(follow_up);
+                window.finish_orphan_cleanup_pass(follow_up, pending_offset);
                 window.drive_pending_draft_mutations();
             },
         );
     }
 
-    pub(super) fn finish_orphan_cleanup_pass(&self, follow_up: OrphanCleanupFollowUp) {
-        if let Some(manifest_offset) = self.imp().drafts.orphan_cleanup_pending_offset.take() {
+    pub(super) fn finish_orphan_cleanup_pass(
+        &self,
+        follow_up: OrphanCleanupFollowUp,
+        pending_offset: Option<usize>,
+    ) {
+        if let Some(manifest_offset) = pending_offset {
             self.imp().drafts.orphan_cleanup_failure_streak.set(0);
             self.arm_orphan_cleanup_follow_up(
                 manifest_offset,
@@ -215,7 +216,7 @@ impl LushtextWindow {
         match follow_up {
             OrphanCleanupFollowUp::Stop => {
                 self.imp().drafts.orphan_cleanup_failure_streak.set(0);
-                // The pending offset was taken above, so this only stops the timer.
+                // Any pending offset was drained above, so this only stops the timer.
                 self.imp().drafts.dispose_orphan_cleanup();
             }
             OrphanCleanupFollowUp::Schedule {
@@ -236,12 +237,12 @@ impl LushtextWindow {
     }
 
     pub(super) fn arm_orphan_cleanup_follow_up(&self, manifest_offset: usize, delay: Duration) {
-        self.imp().drafts.orphan_cleanup_timer_pending.set(true);
+        self.imp().drafts.set_orphan_cleanup_timer_pending(true);
         self.imp()
             .drafts
             .orphan_cleanup_timer
             .arm(self, delay, move |window, _| {
-                window.imp().drafts.orphan_cleanup_timer_pending.set(false);
+                window.imp().drafts.set_orphan_cleanup_timer_pending(false);
                 window.run_orphan_cleanup_pass(manifest_offset);
             });
     }

@@ -1230,13 +1230,23 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-ui/src/ui/window/geometry/policy.rs` | `MIN_EDITOR_CONTENT_WIDTH_SP` | 620 | out: geometry | UI geometry in sp or px (D1) |
 | `crates/lushtext-ui/src/ui/window/geometry/policy.rs` | `DUAL_PANE_LAYOUT_OVERHEAD_SP` | 32 | out: geometry | UI geometry in sp or px (D1) |
 
+### `crates/lushtext-ui/src/ui/window/geometry/mod.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-ui/src/ui/window/geometry/mod.rs` | `WORKSPACE_SIDEBAR_TRANSITION_SETTLE_DELAY_MS` | 260 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+
 ### `crates/lushtext-ui/src/ui/window/imp.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-ui/src/ui/window/imp.rs` | `PREVIEW_SETTLE_DELAY_MS` | 16 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-ui/src/ui/window/imp.rs` | `WORKSPACE_SIDEBAR_TRANSITION_SETTLE_DELAY_MS` | 260 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
 | `crates/lushtext-ui/src/ui/window/imp.rs` | `LushtextWindow::record_layout_probe_span::LAYOUT_PROBE_SPANS` | 16 | out: structural | enum length, bucket or worker count, or capacity hint (D1) |
+
+### `crates/lushtext-ui/src/ui/window/preview.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-ui/src/ui/window/preview.rs` | `PREVIEW_SETTLE_DELAY_MS` | 16 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
 
 ### `crates/lushtext-ui/src/ui/window/local_history/policy.rs`
 

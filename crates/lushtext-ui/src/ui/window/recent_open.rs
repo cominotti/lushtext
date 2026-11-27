@@ -118,7 +118,7 @@ impl LushtextWindow {
         let seeded = {
             #[cfg(feature = "test-utils")]
             {
-                self.imp().recent_documents.test_seeded.get()
+                self.imp().recent_documents.is_test_seeded()
             }
             #[cfg(not(feature = "test-utils"))]
             {

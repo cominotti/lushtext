@@ -141,11 +141,11 @@ impl LushtextWindow {
 
     /// The strip's overflow flags the automation snapshot reports.
     pub(crate) fn tab_strip_overflow_facts(&self) -> TabStripOverflowFacts {
-        let state = &self.imp().tab_overflow;
+        let published = self.imp().tab_overflow.published();
         TabStripOverflowFacts {
-            overflowing: state.unpinned_overflowing.get(),
-            scroll_back_enabled: state.can_scroll_back.get(),
-            scroll_forward_enabled: state.can_scroll_forward.get(),
+            overflowing: published.unpinned_overflowing,
+            scroll_back_enabled: published.can_scroll_back,
+            scroll_forward_enabled: published.can_scroll_forward,
             selected_tab_in_view: self.selected_tab_in_view(),
         }
     }
@@ -153,18 +153,17 @@ impl LushtextWindow {
     /// The strip's controls as they show, for the visual-geometry surfaces.
     pub(crate) fn visible_tab_overflow_controls(&self) -> VisibleTabOverflowControls {
         let state = &self.imp().tab_overflow;
+        let published = state.published();
         let controls = state.controls();
-        let Some(controls) = controls.filter(|_| state.group_attached.get()) else {
+        let Some(controls) = controls.filter(|_| published.group_attached) else {
             return VisibleTabOverflowControls::default();
         };
         VisibleTabOverflowControls {
-            scroll_buttons: state
+            scroll_buttons: published
                 .controls_visible
-                .get()
                 .then(|| (controls.back.clone(), controls.forward.clone())),
-            all_tabs: state
+            all_tabs: published
                 .all_tabs_visible
-                .get()
                 .then(|| controls.all_tabs.clone()),
             popover: controls
                 .popover

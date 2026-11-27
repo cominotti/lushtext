@@ -57,9 +57,9 @@ impl LushtextEditorPage {
     /// first allocation frame; passive allocation observers only schedule the
     /// later repair so they never capture an unpainted or partially realized map.
     pub(super) fn schedule_minimap_reflow_settle_impl(&self, freeze_rendered_map: bool) {
-        let minimap = &self.imp().minimap;
-        if !minimap.reflow_settle.pending() {
-            minimap.reflow_reveal_pending.set(false);
+        let reflow = &self.imp().minimap.reflow;
+        if !reflow.settle.pending() {
+            reflow.reveal_pending.set(false);
             self.imp().overscroll.reflow_scrolled.set(false);
             *self.imp().overscroll.reflow_pause.borrow_mut() =
                 Some(self.imp().overscroll.rest_state.pause());
@@ -68,7 +68,7 @@ impl LushtextEditorPage {
             self.freeze_native_minimap_for_reflow();
         }
 
-        minimap.reflow_settle.schedule(
+        reflow.settle.schedule(
             self,
             MINIMAP_REFLOW_SETTLE_DEBOUNCE,
             move |editor, handle| {
@@ -126,16 +126,16 @@ impl LushtextEditorPage {
         self.queue_marker_strip_draw();
         if self.minimap_reflow_freeze_visible() {
             self.warm_live_minimap_under_reflow_freeze();
-            self.imp().minimap.reflow_reveal_pending.set(true);
+            self.imp().minimap.reflow.reveal_pending.set(true);
         } else {
             // Passive adjustment-driven bursts never captured a cover, so there
             // is no reveal window to protect after the settled repair runs.
-            self.imp().minimap.reflow_reveal_pending.set(false);
+            self.imp().minimap.reflow.reveal_pending.set(false);
             self.drop_minimap_reflow_freeze();
             return;
         }
         handle.schedule_follow_up(self, MINIMAP_REFLOW_REVEAL_DELAY, move |editor| {
-            if !editor.imp().minimap.reflow_reveal_pending.replace(false) {
+            if !editor.imp().minimap.reflow.reveal_pending.replace(false) {
                 return;
             }
             editor.drop_minimap_reflow_freeze();
@@ -225,12 +225,12 @@ impl LushtextEditorPage {
     /// cover, the live map is ready underneath it, so user-driven scroll
     /// should trade the conservative delay for immediate responsiveness.
     pub(super) fn reveal_repaired_minimap_early(&self) {
-        let minimap = &self.imp().minimap;
-        if minimap.reflow_settle.pending() || !minimap.reflow_reveal_pending.get() {
+        let reflow = &self.imp().minimap.reflow;
+        if reflow.settle.pending() || !reflow.reveal_pending.get() {
             return;
         }
 
-        minimap.reflow_reveal_pending.set(false);
+        reflow.reveal_pending.set(false);
         self.drop_minimap_reflow_freeze();
     }
 

@@ -53,9 +53,8 @@ impl LushtextEditorPage {
     /// again after the turn, and once more before publishing, so this predicate
     /// is named rather than spelled out at each of those three points.
     fn minimap_analysis_is_current(&self, generation: AnalysisGeneration, lifetime: u64) -> bool {
-        let minimap = &self.imp().minimap;
-        minimap.analysis_generation.get() == generation
-            && minimap.analysis_lifetime.get() == lifetime
+        let analysis = &self.imp().minimap.analysis;
+        analysis.generation.get() == generation && analysis.lifetime.get() == lifetime
     }
 
     pub(super) fn run_minimap_analysis_slice(
@@ -64,11 +63,16 @@ impl LushtextEditorPage {
         lifetime: u64,
     ) -> glib::ControlFlow {
         let imp = self.imp();
+        let analysis = &imp.minimap.analysis;
         if !self.minimap_analysis_is_current(generation, lifetime) {
             return glib::ControlFlow::Break;
         }
-        let Some(mut session) = imp.minimap.analysis_session.take() else {
-            imp.minimap.analysis_source_id.take();
+        let took = match &mut *analysis.run.borrow_mut() {
+            super::admission::MinimapAnalysisRun::Active { session, .. } => session.take(),
+            super::admission::MinimapAnalysisRun::Idle => None,
+        };
+        let Some(mut session) = took else {
+            *analysis.run.borrow_mut() = super::admission::MinimapAnalysisRun::Idle;
             return glib::ControlFlow::Break;
         };
         if session.generation != generation
@@ -76,7 +80,7 @@ impl LushtextEditorPage {
             || session.buffer != self.buffer()
         {
             session.buffer.delete_mark(&session.cursor_mark);
-            imp.minimap.analysis_source_id.take();
+            *analysis.run.borrow_mut() = super::admission::MinimapAnalysisRun::Idle;
             return glib::ControlFlow::Break;
         }
 
@@ -93,22 +97,17 @@ impl LushtextEditorPage {
         session.buffer.move_mark(&session.cursor_mark, &iter);
         #[cfg(feature = "test-utils")]
         {
-            imp.minimap
-                .analysis_slices
-                .set(imp.minimap.analysis_slices.get().saturating_add(1));
-            imp.minimap.analysis_chars_per_slice_high_water.set(
-                imp.minimap
-                    .analysis_chars_per_slice_high_water
-                    .get()
-                    .max(inspected),
-            );
-            if let Some(hook) = imp.minimap.analysis_after_slice_hook.take() {
+            analysis.slices.set(analysis.slices.get().saturating_add(1));
+            analysis
+                .chars_per_slice_high_water
+                .set(analysis.chars_per_slice_high_water.get().max(inspected));
+            if let Some(hook) = analysis.after_slice_hook.take() {
                 hook();
             }
         }
         if !self.minimap_analysis_is_current(generation, lifetime) {
             session.buffer.delete_mark(&session.cursor_mark);
-            imp.minimap.analysis_source_id.take();
+            *analysis.run.borrow_mut() = super::admission::MinimapAnalysisRun::Idle;
             return glib::ControlFlow::Break;
         }
 
@@ -117,26 +116,30 @@ impl LushtextEditorPage {
                 && !session.request.long_line_markers
                 && session.accumulator.wrapped_layout_too_large());
         if !complete {
-            imp.minimap.analysis_session.replace(Some(session));
-            return glib::ControlFlow::Continue;
+            let mut run = analysis.run.borrow_mut();
+            if let super::admission::MinimapAnalysisRun::Active { session: slot, .. } = &mut *run {
+                *slot = Some(session);
+                return glib::ControlFlow::Continue;
+            }
+            drop(run);
+            session.buffer.delete_mark(&session.cursor_mark);
+            return glib::ControlFlow::Break;
         }
 
         session.buffer.delete_mark(&session.cursor_mark);
-        imp.minimap.analysis_source_id.take();
+        *analysis.run.borrow_mut() = super::admission::MinimapAnalysisRun::Idle;
         if !self.minimap_analysis_is_current(generation, lifetime) {
             return glib::ControlFlow::Break;
         }
-        imp.minimap
-            .analysis_cache
-            .replace(Some(MinimapAnalysisCache {
-                generation,
-                markers_collected: session.request.long_line_markers,
-                result: session.accumulator.finish(),
-            }));
+        analysis.cache.replace(Some(MinimapAnalysisCache {
+            generation,
+            markers_collected: session.request.long_line_markers,
+            result: session.accumulator.finish(),
+        }));
         #[cfg(feature = "test-utils")]
-        imp.minimap
-            .analysis_terminals
-            .set(imp.minimap.analysis_terminals.get().saturating_add(1));
+        analysis
+            .terminals
+            .set(analysis.terminals.get().saturating_add(1));
         self.run_minimap_refresh();
         glib::ControlFlow::Break
     }

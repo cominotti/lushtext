@@ -102,7 +102,7 @@ use lushtext_model::values::Sp;
 
 use super::policy::{
     AdaptiveShellInputs, AdaptiveShellLayout, OPEN_BUTTON_BREAKPOINT_MAX_WIDTH_SP,
-    PropertiesPresentation, RenderedShellState, SecondarySurface, ShellWrite,
+    PropertiesPresentation, RenderedShellSnapshot, SecondarySurface, ShellWrite,
     WORKSPACE_BREAKPOINT_MAX_WIDTH_SP, derive_adaptive_shell_layout, plan_shell_reconciliation,
 };
 use crate::ui::sidebar::width_preset::WorkspaceSidebarWidthPreset;
@@ -208,7 +208,7 @@ struct Shell {
     scale: TextScale,
     intent: Intent,
     /// `imp.secondary_surfaces` and the widgets, as the plan reads them.
-    rendered: RenderedShellState,
+    rendered: RenderedShellSnapshot,
     /// `imp.properties_breakpoint_max_width`.
     installed_threshold: Sp,
     /// `window.width()`.
@@ -232,7 +232,7 @@ struct Shell {
 /// What must not change once the shell is at rest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct RestState {
-    rendered: RenderedShellState,
+    rendered: RenderedShellSnapshot,
     installed_threshold: Sp,
     adwaita: Adwaita,
     synced_for_width: i32,
@@ -297,7 +297,7 @@ impl Shell {
         shell.settle_pending = false;
         let layout = shell.layout();
         let sheet = layout.properties_presentation == PropertiesPresentation::Sheet;
-        shell.rendered = RenderedShellState {
+        shell.rendered = RenderedShellSnapshot {
             presentation: layout.properties_presentation,
             compact_surface: layout.compact_surface,
             workspace_shows_sidebar: layout.render_workspace,

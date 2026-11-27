@@ -2443,6 +2443,7 @@ drive their bytes through it, so its boundary had to be settled before anything
 was built on it.
 
 - facade: `crates/lushtext-ui/src/ui/editor_page/buffer_replacement/mod.rs` — **169** physical lines of the 370 budget (168 until `fix-markdown-preview-stale-after-load` added one stage-7 narration line naming the content republish), the programme's smallest facade so far (re-measured by slot 5a; the figure recorded at slot 4 was stale by one line)
+- coordination: `crates/lushtext-ui/src/ui/editor_page/buffer_replacement/admission.rs` — extracted in Change 4 Batch A to hold `BufferReplacementState` (active/parked `ReplacementSlot`, callbacks, and admission/disposal entry points) alongside `execution.rs`
 - coordination: `crates/lushtext-ui/src/ui/editor_page/buffer_replacement/execution.rs`
 - policy: `crates/lushtext-ui/src/ui/editor_page/buffer_replacement/policy.rs`
 - evidence: `crates/lushtext-ui/src/ui/editor_page/buffer_replacement/evidence.rs`

@@ -75,8 +75,17 @@ use gtk4::prelude::*;
 
 use super::LushtextWindow;
 use super::editor_focus::{EDITOR_FOCUS_MAX_ATTEMPTS, EDITOR_FOCUS_RETRY_INTERVAL};
-use super::imp::WORKSPACE_SIDEBAR_TRANSITION_SETTLE_DELAY_MS;
 use crate::ui::window::StagedSurface;
+
+/// Delay before final secondary-surface reconciliation after a sidebar toggle.
+///
+/// Adwaita drives `OverlaySplitView:show-sidebar` with its own animated
+/// transition. Holding unrelated breakpoint/presentation changes for about one
+/// transition budget prevents those changes from forcing the sidebar to the
+/// endpoint in the same visible frame.
+pub(super) const WORKSPACE_SIDEBAR_TRANSITION_SETTLE_DELAY_MS: u64 = 260;
+
+pub(in crate::ui::window) use execution::{SecondarySurfaceState, SplitLayoutHandles};
 use execution::{
     adaptive_shell_inputs_for_width, current_window_width, properties_surface_is_compact,
     sync_properties_breakpoint, sync_properties_split_view, sync_secondary_surfaces,
@@ -198,7 +207,12 @@ impl LushtextWindow {
 
     /// Recompute the adaptive properties host after any explicit visibility change.
     pub(super) fn sync_secondary_surface_layout(&self) {
-        if self.imp().workspace_sidebar_transition_settle.pending() {
+        if self
+            .imp()
+            .split_layout
+            .workspace_sidebar_transition_settle
+            .pending()
+        {
             return;
         }
         self.sync_secondary_surface_layout_now();
@@ -212,14 +226,17 @@ impl LushtextWindow {
         let sidebar_will_change =
             self.imp().workspace_split_view.shows_sidebar() != layout.render_workspace;
         if sidebar_will_change {
-            self.imp().workspace_sidebar_transition_settle.schedule(
-                self,
-                std::time::Duration::from_millis(WORKSPACE_SIDEBAR_TRANSITION_SETTLE_DELAY_MS),
-                |window, handle| {
-                    window.sync_secondary_surface_layout_now();
-                    handle.finish_if_current();
-                },
-            );
+            self.imp()
+                .split_layout
+                .workspace_sidebar_transition_settle
+                .schedule(
+                    self,
+                    std::time::Duration::from_millis(WORKSPACE_SIDEBAR_TRANSITION_SETTLE_DELAY_MS),
+                    |window, handle| {
+                        window.sync_secondary_surface_layout_now();
+                        handle.finish_if_current();
+                    },
+                );
             self.imp()
                 .workspace_split_view
                 .set_show_sidebar(layout.render_workspace);
@@ -228,13 +245,20 @@ impl LushtextWindow {
 
         if !sidebar_will_change {
             self.sync_secondary_surface_layout_now();
-            let _ = self.imp().workspace_sidebar_transition_settle.clear();
+            let _ = self
+                .imp()
+                .split_layout
+                .workspace_sidebar_transition_settle
+                .clear();
         }
     }
 
     /// Return whether the sidebar transition is still blocking geometry readiness.
     pub(crate) fn workspace_sidebar_transition_pending(&self) -> bool {
-        self.imp().workspace_sidebar_transition_settle.pending()
+        self.imp()
+            .split_layout
+            .workspace_sidebar_transition_settle
+            .pending()
     }
 
     /// Recompute the adaptive properties host after any explicit visibility change.

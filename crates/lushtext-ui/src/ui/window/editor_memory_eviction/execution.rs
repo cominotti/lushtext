@@ -12,6 +12,7 @@
 //! handshake, the projected-byte running total. It owns **no decisions**: every
 //! branch below asks `super::policy`.
 
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -19,12 +20,135 @@ use gtk4::prelude::*;
 
 use crate::ui::editor_page::LushtextEditorPage;
 use lushtext_model::document::editor_memory::{
-    EditorMemoryBudgetDecision, EditorMemoryBudgetOutcome,
+    EditorMemoryBudgetDecision, EditorMemoryBudgetOutcome, EditorResidencyLedger,
 };
-use lushtext_model::values::EditorId;
+use lushtext_model::values::{AccessGeneration, EditorId};
 
 use super::super::LushtextWindow;
 use super::policy::{self, ContinuationStep, EvictionRecheck};
+
+/// Evaluation pass lifecycle for editor-memory eviction.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum EditorMemoryEvaluationPhase {
+    #[default]
+    Idle,
+    /// A coalesced next-idle aggregate evaluation pass is queued.
+    Scheduled,
+    /// An aggregate evaluation and/or bounded candidate eviction pass is active.
+    Running {
+        /// A foreign residency transition arrived and requires a fresh pass.
+        rearm_after: bool,
+        /// `EditorPage::evict` is running synchronously right now.
+        applying_eviction: bool,
+    },
+}
+
+/// One-shot race injectors used by `test-utils` stale-plan widget tests.
+#[cfg(feature = "test-utils")]
+#[derive(Default)]
+pub(super) struct EditorMemoryTestHooks {
+    pub(super) before_eviction: Option<Box<dyn FnOnce()>>,
+    pub(super) after_eviction: Option<Box<dyn FnOnce()>>,
+}
+
+/// Editor-memory accounting shared by the eviction helpers.
+#[derive(Default)]
+pub struct EditorMemoryState {
+    /// Algebraic pass lifecycle (`Idle`, `Scheduled`, or `Running`).
+    pub(super) phase: Cell<EditorMemoryEvaluationPhase>,
+    /// Constant-work per-editor residency records and saturating aggregates.
+    pub(in crate::ui::window) ledger: RefCell<EditorResidencyLedger>,
+    /// Previously selected editor, retained weakly for O(1) eligibility refresh.
+    pub(super) active_editor: RefCell<Option<glib::WeakRef<LushtextEditorPage>>>,
+    /// Exceptional lifecycle state requiring a current full reconciliation.
+    pub(super) accounting_uncertain: Cell<bool>,
+    /// Window-wide generation source used for deterministic least-recent use.
+    pub(super) next_access_generation: Cell<AccessGeneration>,
+    /// Number of aggregate evaluations, retained for coalescing assertions.
+    pub(super) evaluation_count: Cell<u64>,
+    /// Full tab scans performed only for enforcement or reconciliation.
+    pub(super) full_scan_count: Cell<u64>,
+    /// Stable result of the most recently completed aggregate policy pass.
+    pub(super) last_outcome: Cell<EditorMemoryBudgetOutcome>,
+    /// Idle dispatches used to prove that candidate application stays bounded.
+    #[cfg(feature = "test-utils")]
+    pub(super) eviction_dispatch_count: Cell<u64>,
+    /// One-shot race injectors for stale-plan tests.
+    #[cfg(feature = "test-utils")]
+    pub(super) hooks: RefCell<EditorMemoryTestHooks>,
+}
+
+impl EditorMemoryState {
+    pub(super) fn evaluation_running(&self) -> bool {
+        matches!(
+            self.phase.get(),
+            EditorMemoryEvaluationPhase::Running { .. }
+        )
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(super) fn evaluation_armed(&self) -> bool {
+        matches!(
+            self.phase.get(),
+            EditorMemoryEvaluationPhase::Scheduled
+                | EditorMemoryEvaluationPhase::Running {
+                    rearm_after: true,
+                    ..
+                }
+        )
+    }
+
+    pub(super) fn applying_eviction(&self) -> bool {
+        matches!(
+            self.phase.get(),
+            EditorMemoryEvaluationPhase::Running {
+                applying_eviction: true,
+                ..
+            }
+        )
+    }
+
+    pub(super) fn set_rearm_after(&self) {
+        if let EditorMemoryEvaluationPhase::Running {
+            applying_eviction, ..
+        } = self.phase.get()
+        {
+            self.phase.set(EditorMemoryEvaluationPhase::Running {
+                rearm_after: true,
+                applying_eviction,
+            });
+        }
+    }
+
+    pub(super) fn set_applying_eviction(&self, applying: bool) {
+        if let EditorMemoryEvaluationPhase::Running { rearm_after, .. } = self.phase.get() {
+            self.phase.set(EditorMemoryEvaluationPhase::Running {
+                rearm_after,
+                applying_eviction: applying,
+            });
+        }
+    }
+
+    pub(super) fn take_rearm_after(&self) -> bool {
+        match self.phase.get() {
+            EditorMemoryEvaluationPhase::Running {
+                rearm_after: true,
+                applying_eviction,
+            } => {
+                self.phase.set(EditorMemoryEvaluationPhase::Running {
+                    rearm_after: false,
+                    applying_eviction,
+                });
+                true
+            }
+            EditorMemoryEvaluationPhase::Scheduled => {
+                self.phase.set(EditorMemoryEvaluationPhase::Idle);
+                true
+            }
+            _ => false,
+        }
+    }
+}
 
 /// Weak handles to the pages one plan may touch.
 type CandidatePages = HashMap<
@@ -60,7 +184,7 @@ pub(super) fn apply_decision(window: &LushtextWindow, decision: EditorMemoryBudg
 
         // Any transition outside `evict()` invalidates aggregate totals and
         // candidate ordering. Resnapshot instead of applying a stale plan.
-        if memory.evaluation_armed.replace(false) {
+        if memory.take_rearm_after() {
             finish(&window, EditorMemoryBudgetOutcome::NoProgress);
             window.schedule_editor_memory_evaluation();
             return glib::ControlFlow::Break;
@@ -90,9 +214,9 @@ pub(super) fn apply_decision(window: &LushtextWindow, decision: EditorMemoryBudg
             if policy::candidate_is_still_evictable(recheck) {
                 tracing::info!("Evicting tab to free memory: {}", editor.title());
                 let before = editor.estimated_live_buffer_bytes();
-                memory.applying_eviction.set(true);
+                memory.set_applying_eviction(true);
                 editor.evict();
-                memory.applying_eviction.set(false);
+                memory.set_applying_eviction(false);
 
                 if editor.buffer_replacement_in_progress() {
                     // A document-sized clear owns later GTK slices. Stop this
@@ -103,8 +227,11 @@ pub(super) fn apply_decision(window: &LushtextWindow, decision: EditorMemoryBudg
                 }
 
                 #[cfg(feature = "test-utils")]
-                if let Some(hook) = memory.after_eviction_hook.borrow_mut().take() {
-                    hook();
+                {
+                    let hook = memory.hooks.borrow_mut().after_eviction.take();
+                    if let Some(hook) = hook {
+                        hook();
+                    }
                 }
 
                 let reclaimed = before.saturating_sub(editor.estimated_live_buffer_bytes());
@@ -118,10 +245,10 @@ pub(super) fn apply_decision(window: &LushtextWindow, decision: EditorMemoryBudg
                 let outcome = step
                     .outcome()
                     .unwrap_or(EditorMemoryBudgetOutcome::NoProgress);
-                finish(&window, outcome);
+                let rearm = finish(&window, outcome);
                 // A transition that arrived while this pass ran gets its own
                 // pass rather than being folded into a plan built before it.
-                if memory.evaluation_armed.replace(false) {
+                if rearm {
                     window.schedule_editor_memory_evaluation();
                 }
                 glib::ControlFlow::Break
@@ -130,15 +257,18 @@ pub(super) fn apply_decision(window: &LushtextWindow, decision: EditorMemoryBudg
     });
 }
 
-/// Record a pass outcome and release the overlap guard.
+/// Record a pass outcome and release the overlap guard. Returns whether a
+/// foreign transition arrived while the pass was running.
 ///
 /// Written once because every exit path owes both, and a path that recorded the
 /// outcome without releasing the guard would wedge the workflow: no later
 /// residency change could ever start another pass.
-fn finish(window: &LushtextWindow, outcome: EditorMemoryBudgetOutcome) {
+fn finish(window: &LushtextWindow, outcome: EditorMemoryBudgetOutcome) -> bool {
     let memory = &window.imp().editor_memory;
     memory.last_outcome.set(outcome);
-    memory.evaluation_running.set(false);
+    let rearm = memory.take_rearm_after();
+    memory.phase.set(EditorMemoryEvaluationPhase::Idle);
+    rearm
 }
 
 /// Weak page and editor handles for exactly the planned candidates.

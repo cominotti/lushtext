@@ -1,751 +1,99 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Private implementation for the editor page widget.
-//!
-//! Each tab in the editor is an `EditorPage` containing a GtkSourceView,
-//! a minimap, a search bar, and per-tab state (file path, size, eviction status).
-//! GSettings bindings keep all editor pages in sync with user preferences.
+//! Private GObject implementation for `LushtextEditorPage`.
 
-use crate::config::keys;
-use crate::ui::buffer_snapshot::BufferSnapshotHandle;
-use crate::ui::info_bar::LushtextInfoBar;
-use crate::ui::search_bar::LushtextSearchBar;
-use glib::value::ToValue;
-use gtk_lush_settle::{Debounce, SettleBurst, SupersedingTimer, TimerToken};
+use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
+
 use gtk_lush_signals::SignalBag;
-use gtk_lush_viewport::{RestPause, RestState, ViewportObserver};
-use gtk_lush_widgets::RenderHoldOverlay;
 use gtk4::gio;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
-use lushtext_model::document::encoding::{
-    DocumentEncodingState, FileHealthFinding, InvisibleCharactersMode,
-};
 use lushtext_model::document::formatting_overrides::FormattingOverrides;
-use lushtext_model::persistence::bookmark::BookmarkRecord;
-use lushtext_model::values::{
-    AccessGeneration, AnalysisGeneration, BookmarkGeneration, CleanBaselineGeneration,
-    DraftGeneration, EditGeneration, EditorGeneration, LoadGeneration, LossyAnalysisGeneration,
-    MarkerGeneration, OverscrollGeneration, PathGeneration, PeriodicHistoryGeneration,
-    PolicyGeneration, SaveGeneration, SearchGeneration,
-};
-use lushtext_services::coordination::notifications::InlineActionNotification;
 use sourceview5::prelude::*;
-use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
-use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 
+use crate::ui::info_bar::LushtextInfoBar;
+use crate::ui::search_bar::LushtextSearchBar;
+
+use super::bookmarks::BookmarkState;
 use super::buffer_replacement::BufferReplacementState;
+use super::callbacks::EditorCallbacks;
+use super::document_identity::{DocumentMetadataState, DraftState, MemoryResidencyState};
 use super::document_scale::DocumentScaleState;
+use super::focus_mode::FocusModeEditorState;
+use super::formatting::PreferenceBindingState;
 use super::frame_validation::FrameValidationState;
 use super::language_attach::LanguageAttachState;
-use super::minimap::{
-    MinimapAnalysisCache, MinimapAnalysisSession, MinimapAvailability, MinimapMarkerBins,
-    MinimapModifiedTracking,
-};
-use super::style_scheme::apply_color_scheme_to_editor;
-
-/// Callback for notifying the window when residency or eviction safety changes.
-type MemoryChangedCallback = Box<dyn Fn()>;
-type NotificationCallback = Box<dyn Fn(InlineActionNotification)>;
-/// Settles the current alert after a successful load; see
-/// `LushtextEditorPage::connect_inline_notification_load_settled`.
-type LoadSettledNotificationCallback = Box<dyn Fn(bool) -> bool>;
-type LoadCompletedCallback = Box<dyn FnOnce()>;
-type LoadFailedCallback = Box<dyn FnOnce(String)>;
-/// Recurring editor-lifecycle listener; see `load::execution::invoke_reentrant_callbacks`.
-pub(in crate::ui::editor_page) type EditorCallback = Box<dyn Fn()>;
-type LoadPlanningTerminalCallback = Box<dyn FnOnce()>;
-type NotesChangedCallback = Box<dyn Fn()>;
-type BookmarkActivatedCallback = Box<dyn Fn(BookmarkRecord)>;
-
-// GTK callbacks receive shared `&self` references because several widget-tree
-// owners may reference one object. State groups use `Cell` for Copy values and
-// `RefCell` for runtime-checked mutation of owned values.
-
-/// Coalesced end-of-document overscroll updates for one editor tab.
-///
-/// `LushtextEditorPage` is a `GtkBox` subclass, and GTK4 never invokes the
-/// `size_allocate` vfunc on widgets whose class installs a layout manager, so
-/// allocation hooks on the page itself are silently dead. Viewport geometry is
-/// observed through the text view's scroll adjustments instead: their page
-/// size tracks the editor viewport on every allocation, including each frame
-/// of the sidebar show/hide animation.
-#[derive(Default)]
-pub struct OverscrollState {
-    /// Generation counter used to collapse bursts of GTK allocations into one
-    /// idle overscroll recomputation after the layout settles.
-    pub update_generation: Cell<OverscrollGeneration>,
-    /// Drop-owned adjustment observers for viewport page-size and value changes.
-    pub observer: RefCell<Option<ViewportObserver>>,
-    /// Shared lower-edge rest state for horizontal and vertical editor axes.
-    pub rest_state: RestState,
-    /// Active pause that excludes transient adjustment values during reflow repair.
-    pub reflow_pause: RefCell<Option<RestPause>>,
-    /// The vertical value the adjustment held at its last `changed` emission.
-    ///
-    /// A reallocation reconfigures the adjustment, and GTK sets the new value
-    /// before it emits `changed` and then `value-changed` (ledger A112), so a
-    /// `value-changed` to this value came with a bounds change. Any other value
-    /// moved on its own: a scroll, whoever made it.
-    pub vertical_value_at_bounds_change: Cell<f64>,
-    /// Whether the view scrolled vertically while the pending reflow burst
-    /// paused the rest state, so the settle keeps the scroll instead of
-    /// restoring the top anchor (`restore-main-ci` D2).
-    pub reflow_scrolled: Cell<bool>,
-    /// The raw vertical `changed` handler that records
-    /// `vertical_value_at_bounds_change` (the viewport observer reports
-    /// page-size changes only).
-    pub scroll_source_signals: SignalBag,
-}
-
-/// Signal handlers connected to application-global preference/theme objects.
-#[derive(Default)]
-pub struct PreferenceBindingState {
-    /// Grouped global signal lifetimes for Settings and StyleManager.
-    ///
-    /// These sources outlive an editor tab, so they must be disconnected when
-    /// the page is disposed to avoid stale closures retaining editor state.
-    pub signals: SignalBag,
-}
-
-/// File-monitor state for external change detection.
-#[derive(Default)]
-pub struct MonitorState {
-    /// File monitor for detecting external modifications. Created on file load,
-    /// cancelled on tab close.
-    pub file_monitor: RefCell<Option<gio::FileMonitor>>,
-    /// Debounce for file monitor events (500ms).
-    pub monitor_debounce: Debounce,
-    /// File mtime (seconds since epoch) at last load or save.
-    pub last_known_mtime: Cell<Option<u64>>,
-}
-
-/// Draft-recovery state scoped to one editor tab.
-#[derive(Default)]
-pub struct DraftState {
-    /// Whether the buffer has been modified since the last draft save.
-    pub draft_dirty: Cell<bool>,
-    /// Monotonic counter used to reject stale autosave completions.
-    ///
-    /// Every user edit bumps this value. Draft autosave captures the counter with
-    /// the text snapshot and clears `draft_dirty` only if the background write
-    /// succeeds for the same generation.
-    pub dirty_generation: Cell<DraftGeneration>,
-    /// Stable draft identifier for this tab across autosave cycles.
-    pub draft_id: RefCell<Option<String>>,
-    /// Whether this tab is currently showing draft-restored content.
-    pub draft_restored: Cell<bool>,
-    /// Whether automatic recovery is paused after a snapshot exceeded policy.
-    ///
-    /// The warning stays set until a later matching generation is accepted by
-    /// both the body writer and manifest commit.
-    pub automatic_recovery_limited: Cell<bool>,
-}
-
-/// Save lifecycle state for one editor tab.
-#[derive(Default)]
-pub struct SaveState {
-    /// Whether a background save is currently writing this editor's snapshot.
-    ///
-    /// The modified flag stays true while this is set so close flows cannot treat
-    /// an in-flight durable write as already safe.
-    pub inflight: Cell<bool>,
-    /// Monotonic identity for the active save and any formatting installation.
-    pub generation: Cell<SaveGeneration>,
-    /// Lifecycle handle for a save snapshot that is yielding between chunks.
-    pub snapshot: RefCell<Option<BufferSnapshotHandle>>,
-    /// The request the save workflow admitted, while one is in flight.
-    ///
-    /// Built once at the workflow entry point and cleared at every terminal, so
-    /// it is also what the save evidence surface reports as the in-flight
-    /// request's identity.
-    pub(crate) admitted: RefCell<Option<super::save::policy::QueuedSaveTicket>>,
-    /// How the last durable write for this editor ended.
-    pub write_classification: Cell<super::save::policy::SaveWriteClassification>,
-    /// Whether save formatting rewrote the text the worker wrote.
-    pub formatting_rewrote_buffer: Cell<bool>,
-    /// Whether that formatted text finished installing back into the buffer.
-    pub mirror_back_completed: Cell<bool>,
-    /// One-shot deterministic slice action consumed by the widget-test save path.
-    #[cfg(feature = "test-utils")]
-    pub snapshot_test_mutation:
-        Cell<Option<crate::ui::buffer_snapshot::BufferSnapshotTestMutation>>,
-}
-
-/// One editor-scoped warning action routed through the shared inline alert buttons.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PendingWarningAction {
-    /// Open the line-ending chooser so mixed endings can be normalized.
-    NormalizeLineEndings,
-    /// Restore the buffer state that existed before a local-history restore.
-    UndoLocalHistoryRestore,
-    /// Open the local-history browser, where a stale draft's edits were kept.
-    ShowLocalHistory,
-    /// Open the Line Inspector (the Protected View alert).
-    InspectLine,
-    /// Run the Protected View entry undo (the Protected View alert).
-    UndoProtectedEntry,
-}
-
-/// Whether the editor's current inline alert survives the next successful load.
-///
-/// Every producer picks one explicitly when it emits. A load installs the
-/// current bytes, so an alert that describes the previous bytes or buffer is
-/// resolved by it; a recovery alert that points at a preserved draft is still
-/// true after the reload and must stay.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum InlineAlertLifetime {
-    /// The next successful load resolves the alert: load failures and
-    /// cancellations, external-change and line-ending warnings, restored-draft
-    /// and local-history-restore alerts, and the recovery-limit warning.
-    SupersededByLoad,
-    /// The alert outlives a load: "Draft Not Restored" and "Draft Restore
-    /// Failed", which name where the user's unsaved edits were kept.
-    #[default]
-    OutlivesLoad,
-}
-
-/// Encoding, line-ending, health, and save-confirmation state for one tab.
-#[derive(Default)]
-pub struct DocumentMetadataState {
-    /// Current open/save encoding and line-ending facts for this tab.
-    pub encoding_state: Cell<DocumentEncodingState>,
-    /// Whether the current on-disk representation carried a byte-order mark.
-    pub has_bom: Cell<bool>,
-    /// Whether the loaded bytes would not come back from saving the decoded
-    /// text in its encoding and BOM state (`LoadMetadata::decode_round_trips`
-    /// negated, so the default is "exact"). A successful save clears it: the
-    /// file then holds exactly what a save writes.
-    pub decode_inexact: Cell<bool>,
-    /// Encoding-adjacent health findings surfaced for the current content.
-    pub file_health: RefCell<Vec<FileHealthFinding>>,
-    /// Per-tab invisible-character visibility mode.
-    pub invisible_mode: Cell<InvisibleCharactersMode>,
-    /// Shared info-bar action currently routed to this editor.
-    pub warning_action: Cell<Option<PendingWarningAction>>,
-    /// Whether the next successful load resolves the current inline alert.
-    pub alert_lifetime: Cell<InlineAlertLifetime>,
-    /// One-shot guard that allows the next save to proceed even if the current
-    /// encoding conversion is known to be lossy.
-    pub allow_lossy_save_once: Cell<bool>,
-    /// Monotonic request counter for async lossy-encoding analysis.
-    ///
-    /// Save-encoding choices can be made from a dialog while the user keeps
-    /// editing or switches tabs. Capturing this counter with the request lets
-    /// the window ignore stale worker results instead of showing an outdated
-    /// lossy-conversion confirmation.
-    pub lossy_analysis_generation: Cell<LossyAnalysisGeneration>,
-    /// Active large-buffer capture for the newest lossy-analysis request.
-    pub lossy_analysis_snapshot: RefCell<Option<BufferSnapshotHandle>>,
-}
-
-/// File-load lifecycle callbacks that need to survive repeated reloads.
-#[derive(Default)]
-pub struct LoadState {
-    /// One-shot owner callback released when file planning reaches any terminal path.
-    pub planning_terminal_callback: RefCell<Option<LoadPlanningTerminalCallback>>,
-    /// One-shot callback fired after the first successful file load.
-    pub load_completed_callback: RefCell<Option<LoadCompletedCallback>>,
-    /// One-shot callback fired after the first failed file load.
-    ///
-    /// Window-level open flows use this to undo provisional tab/path state only
-    /// after the background load has actually failed.
-    pub load_failed_callback: RefCell<Option<LoadFailedCallback>>,
-    /// Recurring callbacks fired after every successful file load or reload.
-    ///
-    /// Notes, local history, and future tab-local workflows all need the same
-    /// "a real file just finished loading" hook, so this stays fan-out friendly.
-    pub file_loaded_callbacks: RefCell<Vec<EditorCallback>>,
-    /// Recurring content-republished listeners; the fire sites are listed on
-    /// `LushtextEditorPage::connect_content_republished`.
-    pub content_republished_callbacks: RefCell<Vec<EditorCallback>>,
-    /// Whether load installation is suppressing document-amplifying projections.
-    pub projection_suspended: Cell<bool>,
-    /// Current generation-bound chunked install session, if any.
-    pub(crate) installation: RefCell<Option<Rc<RefCell<super::load::ChunkedLoadInstall>>>>,
-    /// Whether signal-emitting final projection work owns the editor lifecycle.
-    ///
-    /// Reload requests are reduced to one latest pending intent while this is
-    /// set, so synchronous GTK signals cannot start a replacement halfway
-    /// through finalization or strand it behind a terminal install session.
-    pub finalizing: Cell<bool>,
-    /// Whether widget disposal interrupted signal-emitting finalization.
-    pub dispose_during_finalization: Cell<bool>,
-    /// Latest replacement request waiting for bounded cancellation cleanup.
-    pub(crate) pending_load: RefCell<Option<super::load::PendingFileLoad>>,
-    /// Whether cancellation discarded a partially installed file payload.
-    ///
-    /// The buffer is intentionally cleared on that path, so saving must remain
-    /// blocked until a retry installs one exact payload successfully.
-    pub installation_incomplete: Cell<bool>,
-    /// Whether the buffer's changes since the last published document are a
-    /// sliced load installation's, not the user's: set when a chunked install
-    /// starts touching the buffer, cleared when a load publishes or a
-    /// cancelled install has emptied the buffer. While it holds no save may
-    /// write the buffer (`is_modified()` is false while the session is live).
-    pub install_owns_changes: Cell<bool>,
-    /// Whether bounded cleanup must publish the user-cancelled terminal state.
-    pub user_cancel_pending: Cell<bool>,
-    /// Completed main-loop slices for the newest installation.
-    pub installation_slice_count: Cell<u64>,
-    /// Whether the newest installation took the bounded slicing path.
-    pub installation_chunked: Cell<bool>,
-    /// Whether the newest installation was the chunked highlighted one
-    /// (`chunked-highlight-attach`).
-    pub installation_highlight_chunked: Cell<bool>,
-    /// The newest load's sliced protected install counts (C3).
-    pub protected_install: Cell<crate::ui::protected_fold::FoldedInstallMetrics>,
-    /// Ledger clear turns the newest load's clears ran (C3).
-    pub protected_clear_turns: Cell<u64>,
-    /// EditorConfig overrides the planning worker resolved, applied by the
-    /// install after any clear and before the first insert
-    /// (`bound-post-open-settle`, D6.2, review R17).
-    pub pending_formatting:
-        Cell<Option<lushtext_model::document::formatting_overrides::FormattingOverrides>>,
-    /// Whether the newest install applied EditorConfig before its first
-    /// insert (evidence).
-    pub formatting_applied_before_insert: Cell<bool>,
-    /// The settle watch's marks and sentinel (`bound-post-open-settle`, D1).
-    pub settle: super::load::watch::SettleWatchState,
-    /// How the newest load for this editor ended.
-    pub outcome: Cell<super::load::LoadOutcome>,
-    /// Whether the token the previous request carried was already cancelled
-    /// when this editor's newest request rotated load identity.
-    pub previous_request_cancelled: Cell<Option<bool>>,
-}
-
-/// User-visible file-load lifecycle for one editor tab.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum EditorLoadState {
-    /// An untitled tab with no saved-file identity.
-    #[default]
-    Untitled,
-    /// A file-backed tab whose background read has not settled yet.
-    Loading,
-    /// A file-backed tab whose content has loaded successfully.
-    Loaded,
-    /// A tab showing a failed load placeholder or recoverable user edits.
-    Failed,
-}
-
-/// Deferred cursor and scroll restoration applied after async file load.
-#[derive(Default)]
-pub struct RestoreState {
-    /// Deferred cursor line to apply after async file load completes.
-    pub cursor_line: Cell<Option<u32>>,
-    /// Deferred cursor column to apply after async file load completes.
-    pub cursor_col: Cell<Option<u32>>,
-    /// Deferred scroll-to line to apply after async file load completes.
-    pub scroll_line: Cell<Option<u32>>,
-    /// The cursor a restore asked for in a Protected View document, where no
-    /// caret is placed: session saves persist it instead of the unmoved insert
-    /// mark (`protected-view-inspector-and-surfaces` task 3.4).
-    pub protected_cursor: Cell<Option<(u32, u32)>>,
-}
-
-/// Debounced persistence state shared by note-sidecar projections.
-#[derive(Default)]
-pub struct NotesPersistenceState {
-    /// Debounce used to schedule background sidecar saves.
-    pub save_debounce: Debounce,
-    /// Guard preventing overlapping saves for the same note projection.
-    pub save_inflight: Cell<bool>,
-    /// Dirty flag meaning the live projection is not on disk.
-    pub save_dirty: Cell<bool>,
-    /// Supersession token for whole-sidecar bookmark writes.
-    ///
-    /// A bookmark write replaces the **entire** sidecar, so an older snapshot
-    /// landing after a newer one silently reverts the newer one. The close-time
-    /// flush is synchronous on the GTK thread while ordinary persistence runs on a
-    /// worker, so that inversion is reachable: the flush would lose exactly the
-    /// bookmark it exists to save. Every write captures this token at dispatch and
-    /// re-checks it **on the worker, inside the target write guard**, so a
-    /// superseded write skips instead of reverting. `Arc<AtomicU64>` rather than
-    /// `Cell` because the worker must read it off the GTK thread.
-    pub save_generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    /// Consecutive failed sidecar writes for this editor.
-    ///
-    /// Bounds the retry so a persistently unwritable sidecar cannot spin the
-    /// worker pool or repeat its warning every debounce window. Workspace
-    /// persistence has the same shape: bounded backoff, then await explicit
-    /// intent. Here "explicit intent" is the user's next bookmark edit.
-    pub save_failure_streak: Cell<u32>,
-    /// Whether this editor's sidecar has been read back at least once.
-    ///
-    /// Bookmark persistence writes the **whole** sidecar and deletes it when the
-    /// live set is empty, so writing before the sidecar has been read would
-    /// destroy it. That window is real: a restored tab whose file was renamed in
-    /// a previous session reads a sidecar the startup migration has not moved
-    /// yet, and reports zero bookmarks.
-    pub sidecar_resolved: Cell<bool>,
-}
-
-/// One live bookmark projected into a `GtkSourceMark`.
-#[derive(Clone)]
-pub struct LiveBookmark {
-    /// Current persisted bookmark fields mirrored from the sidecar model.
-    pub record: BookmarkRecord,
-    /// Source-view mark that moves with the buffer while the file is open.
-    pub mark: sourceview5::Mark,
-}
-
-/// Live bookmark projection state scoped to one editor tab.
-#[derive(Default)]
-pub struct BookmarkState {
-    /// Current bookmark marks projected into the source buffer.
-    pub entries: RefCell<Vec<LiveBookmark>>,
-    /// Monotonic token used to reject stale async sidecar loads.
-    ///
-    /// Bookmark sidecar I/O finishes later on the GTK main loop. If the user
-    /// edits bookmarks before that completion lands, the stale load must not
-    /// replace the newer live projection.
-    pub change_generation: Cell<BookmarkGeneration>,
-    /// Callback invoked when bookmark state changes and should be persisted.
-    pub changed_callback: RefCell<Option<NotesChangedCallback>>,
-    /// Window callback installed after editor construction to route gutter activation
-    /// into bookmark editing UI.
-    ///
-    /// Stored in a `RefCell` because GObject-style methods receive `&self`, so
-    /// callback wiring mutates implementation state through interior mutability.
-    pub activated_callback: RefCell<Option<BookmarkActivatedCallback>>,
-    /// Debounced sidecar persistence state for bookmark saves.
-    pub persistence: NotesPersistenceState,
-}
-
-/// Minimap widgets, marker state, and signal lifetimes for one editor tab.
-///
-/// This is the minimap workflow's **called presentation surface, not a role** of
-/// it. `ui/editor_page/minimap/` is that workflow's role home, and this struct
-/// deliberately stays here: `dispose()` tears it down in an order interleaved
-/// with the editor page's other subsystems, and `minimap_overlay` is a
-/// `TemplateChild` bound by the Blueprint template that cannot leave `imp.rs` at
-/// all. Being a presentation surface, it owns no `policy.rs` and no
-/// `evidence.rs`. Recorded here as well as in the `WFR-MINIMAP` row of
-/// `docs/workflow-readability-matrix.md`, because the convention requires both
-/// places.
-#[derive(Default)]
-pub struct MinimapState {
-    /// Programmatically created `GtkSourceMap` bound to the main source view,
-    /// `None` while retired (installation, scale policy, hidden states).
-    pub source_map: RefCell<Option<sourceview5::Map>>,
-    /// Handlers on the current map instance (its adjustment guard), released
-    /// with the map when it is retired.
-    pub map_signals: SignalBag,
-    /// Native maps built for this tab (construction plus every rebuild after
-    /// a retirement); evidence that a retirement rebuilt rather than re-bound.
-    pub maps_built: Cell<u64>,
-    /// Weak references to the maps this tab retired that are still alive,
-    /// pruned at each retirement. A retired map must be finalized: one kept
-    /// alive stays bound to the document buffer and re-lays out every edited
-    /// paragraph from its validation idle. Evidence only; never upgraded to
-    /// act on a map.
-    pub retired_maps: RefCell<Vec<glib::WeakRef<sourceview5::Map>>>,
-    /// Narrow drawing layer that paints semantic markers over the map edge.
-    pub marker_strip: RefCell<Option<gtk4::DrawingArea>>,
-    /// Per-row marker bins of the last strip draw, reused while its draw
-    /// inputs (map scroll, layout height, strip height, band, generations)
-    /// hold.
-    pub(super) marker_bins: RefCell<Option<MinimapMarkerBins>>,
-    /// Advances whenever any marker kind may have changed (refresh, tag swap,
-    /// scan completion), invalidating `marker_bins`.
-    pub marker_generation: Cell<MarkerGeneration>,
-    /// Advances when the in-tab search query or session changes, so search
-    /// bins kept across a rescan are never another query's.
-    pub search_generation: Cell<SearchGeneration>,
-    /// The search context whose `notify::occurrences-count` re-arms the
-    /// refresh, held weakly, and its handler.
-    pub(super) watched_search_context: RefCell<Option<glib::WeakRef<sourceview5::SearchContext>>>,
-    /// Handler on `watched_search_context`.
-    pub search_signals: SignalBag,
-    /// Modified-since-save tracking: the current property-less tag and the
-    /// FIFO of swapped-out tags retiring in slices.
-    pub(super) modified: MinimapModifiedTracking,
-    /// Current availability state for the minimap on this tab.
-    pub availability: Cell<MinimapAvailability>,
-    /// Monotonic identity invalidating every stale minimap analysis slice.
-    pub analysis_generation: Cell<AnalysisGeneration>,
-    /// Editor lifetime identity checked before another analysis slice or publication.
-    pub analysis_lifetime: Cell<u64>,
-    /// Current bounded GTK-buffer cursor, when content analysis is required.
-    pub(super) analysis_session: RefCell<Option<MinimapAnalysisSession>>,
-    /// Accepted content evidence shared by wrapped layout and long-line markers.
-    pub(super) analysis_cache: RefCell<Option<MinimapAnalysisCache>>,
-    /// Sole idle source allowed to resume the current analysis generation.
-    pub analysis_source_id: RefCell<Option<glib::SourceId>>,
-    /// Number of bounded analysis slices dispatched by this editor.
-    #[cfg(feature = "test-utils")]
-    pub analysis_slices: Cell<usize>,
-    /// Largest character count inspected by any one analysis slice.
-    #[cfg(feature = "test-utils")]
-    pub analysis_chars_per_slice_high_water: Cell<usize>,
-    /// Analysis generations cancelled by edits, preferences, or teardown.
-    #[cfg(feature = "test-utils")]
-    pub analysis_cancellations: Cell<usize>,
-    /// Current generations that published accepted cache evidence.
-    #[cfg(feature = "test-utils")]
-    pub analysis_terminals: Cell<usize>,
-    /// One transition injected after a bounded slice for stale-generation tests.
-    #[cfg(feature = "test-utils")]
-    pub analysis_after_slice_hook: RefCell<Option<Box<dyn FnOnce()>>>,
-    /// Debounce for coalescing expensive marker refresh work.
-    pub refresh_debounce: Debounce,
-    /// Whether a debounced minimap refresh callback is still waiting to run.
-    pub refresh_pending: Cell<bool>,
-    /// Reusable render-hold owner for frozen minimap pixels during width reflow.
-    pub render_hold: RefCell<Option<RenderHoldOverlay>>,
-    /// Settle burst while a width-reflow repair waits for a stable width.
-    pub reflow_settle: SettleBurst,
-    /// Whether repaired live map pixels are warming underneath the frozen cover.
-    ///
-    /// This is separate from `reflow_settle` so user scrolling can reveal
-    /// the already-repaired live map without pretending the width burst itself is
-    /// still unresolved.
-    pub reflow_reveal_pending: Cell<bool>,
-    /// Prevents programmatic loads and evictions from being recorded as user edits.
-    pub tracking_suspended: Cell<bool>,
-    /// One-shot guard so the "minimap reduced" message does not repeat on each edit.
-    pub reduced_feedback_shown: Cell<bool>,
-    /// Handler ID for the buffer's `insert-text` signal. Disconnected in dispose.
-    pub buffer_signals: SignalBag,
-}
-
-/// Temporary editor presentation state while the window is in Focus Mode.
-#[derive(Default)]
-pub struct FocusModeEditorState {
-    /// Whether Focus Mode is currently shaping this editor page.
-    pub active: Cell<bool>,
-    /// Left margin to restore when Focus Mode exits.
-    pub normal_left_margin: Cell<i32>,
-    /// Right margin to restore when Focus Mode exits.
-    pub normal_right_margin: Cell<i32>,
-    /// Target readable-column width in characters.
-    pub target_columns: Cell<u32>,
-    /// Whether typewriter scrolling is enabled for source editing.
-    pub typewriter_scrolling: Cell<bool>,
-    /// Gentle overlay line that marks the source editor's column-zero text origin while focused.
-    pub text_origin_guide: RefCell<Option<gtk4::DrawingArea>>,
-    /// Buffer signal lifetimes that drive typewriter scrolling and cursor centering.
-    pub buffer_signals: SignalBag,
-}
-
-/// Automatic local-history capture state scoped to one editor tab.
-#[derive(Default)]
-pub struct LocalHistoryState {
-    /// Last clean saved text used to capture the "before edits" baseline snapshot.
-    pub last_clean_text: RefCell<Option<crate::ui::plain_disposal::DisposalOwned<String>>>,
-    /// Generation of the clean baseline currently owned by this editor/path cycle.
-    pub clean_baseline_generation: Cell<CleanBaselineGeneration>,
-    /// One automatic retry admission for the current clean baseline generation.
-    pub baseline_retry_budget: Cell<u8>,
-    /// Generation counter used to cancel or replace pending periodic capture timers.
-    pub periodic_generation: Cell<PeriodicHistoryGeneration>,
-    /// One physically superseding five-minute callback owned by this tab.
-    pub periodic_timer: SupersedingTimer,
-    /// Current timer token for readiness and deterministic lifecycle tests.
-    pub periodic_timer_token: Cell<Option<TimerToken>>,
-    /// Generation advanced when disposal invalidates every in-flight capture.
-    pub editor_generation: Cell<EditorGeneration>,
-    /// Generation advanced whenever the saved-file identity changes.
-    pub path_generation: Cell<PathGeneration>,
-    /// Generation advanced on every buffer content change.
-    pub edit_generation: Cell<EditGeneration>,
-    /// Cancellation for the current chunked periodic snapshot, if any.
-    pub(crate) periodic_snapshot: RefCell<Option<BufferSnapshotHandle>>,
-    /// Whether this editor already has one weak baseline waiter in the global FIFO.
-    pub(crate) baseline_retry_pending: Cell<bool>,
-    /// Suppresses automatic capture while save or restore changes the buffer programmatically.
-    pub automatic_capture_suppressed: Cell<bool>,
-    /// One-shot undo body whose final destruction is pre-admitted off GTK.
-    /// The body Undo Restore installs and its worker-computed profile, which
-    /// carries the Protected View fold plan (`long-line-protected-view`).
-    pub restore_undo_text: RefCell<
-        Option<(
-            crate::ui::plain_disposal::DisposalOwned<String>,
-            lushtext_model::document::paragraph_boundary::DocumentProfile,
-        )>,
-    >,
-    /// Buffer signal lifetimes that drive automatic local-history capture.
-    pub buffer_signals: SignalBag,
-    /// Deterministic policy seam for widget tests without allocating huge buffers.
-    #[cfg(feature = "test-utils")]
-    pub availability_override: Cell<
-        Option<lushtext_services::persistence::local_history_service::LocalHistoryAvailability>,
-    >,
-}
-
-/// Window-wide memory-residency and eviction bookkeeping for one editor tab.
-#[derive(Default)]
-pub struct MemoryResidencyState {
-    /// Whether this tab's buffer was evicted to free memory. Evicted tabs
-    /// reload from disk when re-focused.
-    pub evicted: Cell<bool>,
-    /// Window-wide least-recently-used generation assigned on load or activation.
-    pub access_generation: Cell<AccessGeneration>,
-    /// Page-local generation advanced whenever residency or eligibility changes.
-    pub policy_generation: Cell<PolicyGeneration>,
-    /// Synthetic estimate used by deterministic budget widget tests.
-    #[cfg(feature = "test-utils")]
-    pub estimate_override: Cell<Option<u64>>,
-}
-
-/// Background file-load freshness primitives that advance together per load.
-#[derive(Default)]
-pub struct LoadTrackingState {
-    /// Monotonic identity for file loads so stale background completions cannot
-    /// apply after a newer open or reopen starts for the same editor tab.
-    pub generation: Cell<LoadGeneration>,
-    /// Cooperative cancellation token for the current background file load.
-    /// A fresh `Arc<AtomicBool>` per load prevents a newer request from
-    /// uncancelling an older background worker.
-    pub cancel_token: RefCell<Arc<AtomicBool>>,
-}
+use super::load::{EditorLoadState, LoadState, LoadTrackingState};
+use super::local_history::LocalHistoryState;
+use super::minimap::MinimapState;
+use super::monitor::MonitorState;
+use super::overscroll::OverscrollState;
+use super::restore_position::RestoreState;
+use super::save::SaveState;
 
 /// Private template implementation for one editor tab.
-///
-/// Owns the GtkSourceView, minimap overlay, search bar, and per-tab state that
-/// must stay adjacent to the template children. GObject methods always take
-/// `&self` because multiple parts of the widget tree hold references
-/// simultaneously; `Cell` and `RefCell` provide the required interior
-/// mutability.
-// `CompositeTemplate` loads the compiled XML resource; `TemplateChild` fields
-// are populated automatically from matching widget IDs during initialization.
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/editor-page.ui")]
 pub struct LushtextEditorPage {
-    /// Inline notification bar rendered above the text editor surface.
     #[template_child]
     pub info_bar: TemplateChild<LushtextInfoBar>,
-    /// Root overlay that hosts the editor and transient overlay children.
     #[template_child]
     pub overlay: TemplateChild<gtk4::Overlay>,
-    /// Overlay layer used for the minimap and its hold/projection chrome.
     #[template_child]
     pub minimap_overlay: TemplateChild<gtk4::Overlay>,
-    /// Primary GtkSourceView buffer and editing surface.
     #[template_child]
     pub source_view: TemplateChild<sourceview5::View>,
-    /// Scroller that owns editor viewport geometry and adjustment signals.
     #[template_child]
     pub scrolled_window: TemplateChild<gtk4::ScrolledWindow>,
-    /// Visibility container that shows or hides the in-tab find/replace bar.
     #[template_child]
     pub search_revealer: TemplateChild<gtk4::Revealer>,
-    /// In-tab find/replace control bound to this editor's buffer.
     #[template_child]
     pub search_bar: TemplateChild<LushtextSearchBar>,
-
-    /// Absolute path of the file being edited. `None` for untitled tabs.
     pub file_path: RefCell<Option<PathBuf>>,
-    /// Canonical file identity resolved by the background load path.
-    ///
-    /// Duplicate-tab reconciliation uses this after load completion so the GTK
-    /// thread never has to call `Path::canonicalize()` while opening files.
     pub canonical_file_path: RefCell<Option<PathBuf>>,
-    /// On-disk file size in bytes, populated after async load completes.
-    /// Used for memory estimation and status bar display.
     pub file_size: Cell<Option<u64>>,
-    /// Explicit file-load lifecycle state for duplicate ownership decisions.
     pub load_state: Cell<EditorLoadState>,
-    /// Whether the newest accepted load attempt failed while content remained visible.
-    ///
-    /// A failed reload may preserve the prior buffer and `Loaded` state, so
-    /// eviction safety cannot be inferred from `load_state` alone.
     pub latest_load_failed: Cell<bool>,
-    /// The document scale policy as this tab applies it: the effective
-    /// scale (session floor), the edit-time paragraph watch, and the
-    /// reduced-features notice.
     pub document_scale: DocumentScaleState,
-    /// The deferred language attach stage (`bound-post-open-settle`, D2).
     pub language_attach: LanguageAttachState,
-    /// The paced re-analysis of edits (`bound-context-flip-keystrokes`).
     pub reanalysis_pacing: super::reanalysis_pacing::ReanalysisPacingState,
-    /// The paced restyle of a dense document (`bound-post-open-settle`, D9).
     pub restyle: super::restyle::RestyleState,
-    /// The buffer-level edit lock (`edit_lock.rs`).
     pub edit_lock: super::edit_lock::EditLockState,
-    /// Text typed while a workflow owns the buffer (`held_input.rs`).
     pub held_input: super::held_input::HeldInputState,
-    /// The boundary marks a sliced protected install left in the buffer,
-    /// which the next clear consumes (`ui::protected_fold`, C3).
     pub(crate) protected_boundaries: crate::ui::protected_fold::BoundaryLedger,
-    /// The Protected View session (`long-line-protected-view`).
     pub(crate) protected_view: super::protected_view::execution::ProtectedViewRuntime,
-    /// The view's drop targets while Protected View has them off (A63).
     pub(crate) protected_drop_targets:
         super::protected_view::interaction_execution::DetachedDropTargets,
-    /// Protected View's worker find (design D5).
     pub(crate) protected_find: super::protected_view::find_execution::ProtectedFindState,
     pub(crate) protected_source_capture:
         super::protected_view::capture_execution::SourceCaptureState,
-    /// The fold-marker gutter renderer while Protected View has one.
     pub(crate) protected_fold_gutter: RefCell<Option<sourceview5::GutterRendererText>>,
-    /// The Protected View alert and notices.
     pub(crate) protected_notice: super::protected_view::notice_execution::ProtectedNoticeState,
-    /// The Line Inspector (`protected-view-inspector-and-surfaces`).
     pub(crate) line_inspector: super::protected_view::inspector_execution::LineInspectorState,
-    /// Memory-residency and eviction bookkeeping for this tab.
     pub residency: MemoryResidencyState,
-    /// Background file-load freshness primitives (generation + cancel token).
     pub load_tracking: LoadTrackingState,
-    /// Last style-scheme ID actually applied to this buffer.
     pub applied_style_scheme_id: RefCell<Option<String>>,
-    /// Current document-surface opacity for the main editor text area.
     pub document_surface_opacity: Cell<f64>,
-    /// Application-wide GSettings instance for editor preference bindings.
     pub settings: gio::Settings,
-    /// Grouped signal-handler IDs for application-global settings/theme wiring.
     pub preference_bindings: PreferenceBindingState,
-    /// Per-file formatting overrides from EditorConfig. Empty for untitled tabs
-    /// or files without a matching `.editorconfig`.
     pub formatting_overrides: Cell<FormattingOverrides>,
-    /// Buffer signals wired by the owning window for tab title, draft, and preview state.
     pub document_buffer_signals: SignalBag,
-    /// Editor-local buffer signals for user edit actions.
     pub editing_buffer_signals: SignalBag,
-    /// Page-to-window callback invoked when residency or eviction safety changes.
-    ///
-    /// The `RefCell` permits replacing the single GTK-main-thread observer
-    /// through the wrapper's shared `&self` API.
-    pub memory_changed_callback: RefCell<Option<MemoryChangedCallback>>,
-    /// Callback invoked when the editor needs to surface an inline notification.
-    pub notification_callback: RefCell<Option<NotificationCallback>>,
-    /// Callback invoked when a successful load settles the current alert.
-    ///
-    /// The window installs it to resolve a superseded alert through the
-    /// notification bus and report whether an alert is still shown; without a
-    /// window the editor settles its own bar directly.
-    pub notification_load_settled_callback: RefCell<Option<LoadSettledNotificationCallback>>,
-    /// External file-monitor state.
+    pub(crate) callbacks: EditorCallbacks,
     pub monitor: MonitorState,
-    /// Draft lifecycle state.
     pub draft: DraftState,
-    /// Background save lifecycle state.
     pub save: SaveState,
-    /// Per-document encoding, line-ending, and health metadata.
     pub document_metadata: DocumentMetadataState,
-    /// File-load lifecycle callbacks.
     pub load: LoadState,
-    /// Single active/latest whole-buffer mutation owner shared by workflows.
     pub replacement: BufferReplacementState,
-    /// Deferred cursor/scroll restoration state.
     pub restore: RestoreState,
-    /// Dynamic editor overscroll scheduling state.
     pub overscroll: OverscrollState,
-    /// Live bookmark mark projection and persistence state.
     pub bookmarks: BookmarkState,
-    /// Automatic local-history capture lifecycle state.
     pub local_history: LocalHistoryState,
-    /// Minimap widget state, marker projections, and refresh bookkeeping.
     pub minimap: MinimapState,
-    /// Focus Mode presentation state scoped to this tab.
     pub focus_mode: FocusModeEditorState,
-    /// Frame-clock wiring that keeps line validation out of the snapshot.
     pub frame_validation: FrameValidationState,
-    /// Which buffer the view shows: the document, or an empty placeholder
-    /// while the tab is hidden (`defer-background-tab-layout`).
     pub(crate) view_attachment: super::view_attachment::ViewAttachmentState,
 }
 
@@ -791,9 +139,7 @@ impl Default for LushtextEditorPage {
             formatting_overrides: Cell::new(FormattingOverrides::default()),
             document_buffer_signals: SignalBag::new(),
             editing_buffer_signals: SignalBag::new(),
-            memory_changed_callback: RefCell::default(),
-            notification_callback: RefCell::default(),
-            notification_load_settled_callback: RefCell::default(),
+            callbacks: EditorCallbacks::default(),
             monitor: MonitorState::default(),
             draft: DraftState::default(),
             save: SaveState::default(),
@@ -812,8 +158,6 @@ impl Default for LushtextEditorPage {
     }
 }
 
-// ObjectSubclass registers this struct with GLib's runtime type system.
-// NAME must match the `class` attribute in the UI template XML.
 #[glib::object_subclass]
 impl ObjectSubclass for LushtextEditorPage {
     const NAME: &str = "LushtextEditorPage";
@@ -821,7 +165,6 @@ impl ObjectSubclass for LushtextEditorPage {
     type ParentType = gtk4::Box;
 
     fn class_init(klass: &mut Self::Class) {
-        // Register child widget types BEFORE parsing the template.
         LushtextInfoBar::ensure_type();
         LushtextSearchBar::ensure_type();
         sourceview5::View::ensure_type();
@@ -834,10 +177,6 @@ impl ObjectSubclass for LushtextEditorPage {
 }
 
 impl ObjectImpl for LushtextEditorPage {
-    // Disconnect the buffer's modified-changed handler here rather than in
-    // Rust's Drop. GTK4's dispose() runs BEFORE Drop and clears all template
-    // children — accessing `self.source_view` in Drop panics because the
-    // TemplateChild's OnceCell is already empty.
     fn dispose(&self) {
         self.obj().close_line_inspector();
         super::save::admission::cancel_for_editor(&self.obj());
@@ -845,27 +184,15 @@ impl ObjectImpl for LushtextEditorPage {
         self.obj().dispose_load_resources();
         self.obj().dispose_language_attach();
         self.obj().dispose_restyle();
-        if let Some(snapshot) = self.save.snapshot.take() {
-            snapshot.dispose();
-        }
+        self.save.dispose_snapshot();
         if let Some(snapshot) = self.document_metadata.lossy_analysis_snapshot.take() {
             snapshot.dispose();
         }
-        if let Some(snapshot) = self.local_history.periodic_snapshot.take() {
+        if let Some(snapshot) = self.local_history.periodic_snapshot.borrow_mut().take() {
             snapshot.dispose();
         }
         self.obj().dispose_minimap_analysis();
-        // Cancel the minimap's two timers before their template children go
-        // away. Both capture the page weakly, so a live callback would normally
-        // no-op — but a `run_dispose`-style teardown leaves a strong reference
-        // alive, and both callbacks reach panicking `TemplateChild` accessors:
-        // `refresh_minimap` reads `minimap_overlay`, and the settle repair reads
-        // `source_view()`. A disposed widget is an observation stage, so the
-        // timers are retired here rather than left armed over cleared children.
-        let _ = self.minimap.refresh_debounce.invalidate();
-        let _ = self.minimap.reflow_settle.clear();
-        self.minimap.refresh_pending.set(false);
-        self.minimap.reflow_reveal_pending.set(false);
+        self.minimap.dispose();
         let _ = self.local_history.periodic_timer.invalidate();
         self.local_history.periodic_timer_token.set(None);
         self.local_history
@@ -875,22 +202,14 @@ impl ObjectImpl for LushtextEditorPage {
         self.document_buffer_signals.clear();
         self.editing_buffer_signals.clear();
         self.local_history.buffer_signals.clear();
-        self.minimap.buffer_signals.clear();
-        self.minimap.map_signals.clear();
         self.focus_mode.buffer_signals.clear();
         self.frame_validation.clear();
         self.document_scale.signals.clear();
         self.overscroll.observer.borrow_mut().take();
         self.overscroll.reflow_pause.borrow_mut().take();
         self.overscroll.scroll_source_signals.clear();
-        self.minimap.source_map.borrow_mut().take();
-        self.minimap.marker_strip.borrow_mut().take();
-        self.minimap.render_hold.borrow_mut().take();
         self.focus_mode.text_origin_guide.borrow_mut().take();
-        self.minimap.search_signals.clear();
         self.obj().cancel_modified_tag_retirement();
-        self.minimap.marker_bins.borrow_mut().take();
-        // Cancel file monitor to stop receiving events for this tab.
         if let Some(monitor) = self.monitor.file_monitor.take() {
             monitor.cancel();
         }
@@ -898,9 +217,6 @@ impl ObjectImpl for LushtextEditorPage {
 
     fn constructed(&self) {
         self.parent_constructed();
-
-        // GtkSourceView's View.buffer() returns a generic GtkTextBuffer.
-        // Downcast to sourceview5::Buffer for syntax highlighting methods.
         let buffer = self
             .source_view
             .buffer()
@@ -908,258 +224,11 @@ impl ObjectImpl for LushtextEditorPage {
             .expect("GtkSourceView buffer");
         let _ = self.view_attachment.document.set(buffer.clone());
         buffer.set_highlight_syntax(true);
-        // First buffer handlers, so a refused edit reaches no other one.
         self.obj().setup_edit_lock();
         crate::ui::responsiveness_probe::observe_editor(&self.source_view);
         self.obj().setup_settle_watch();
-        // The editor surface follows the editor font and zoom through its
-        // zoom class (`ui/font_zoom.rs`).
         crate::ui::font_zoom::follow_editor_font(&*self.source_view);
-
-        let settings = &self.settings;
-        let invisible_mode = lushtext_model::document::encoding::InvisibleCharactersMode::from_id(
-            settings.string(keys::INVISIBLE_CHARACTERS_MODE).as_str(),
-        )
-        .unwrap_or_default();
-        self.document_metadata.invisible_mode.set(invisible_mode);
-
-        // GSettings bind() creates a live sync between the settings key and
-        // the widget property. GET flag = one-way: setting changes update the
-        // widget, but widget changes don't write back to settings.
-        // Two-way binding (DEFAULT flag) is used in the preferences dialog.
-        settings
-            .bind(
-                keys::SHOW_LINE_NUMBERS,
-                &*self.source_view,
-                "show-line-numbers",
-            )
-            .flags(gio::SettingsBindFlags::GET)
-            .build();
-        settings
-            .bind(
-                keys::BOOKMARK_GUTTER_VISIBLE,
-                &*self.source_view,
-                "show-line-marks",
-            )
-            .flags(gio::SettingsBindFlags::GET)
-            .build();
-        settings
-            .bind(
-                keys::HIGHLIGHT_CURRENT_LINE,
-                &*self.source_view,
-                "highlight-current-line",
-            )
-            .flags(gio::SettingsBindFlags::GET)
-            .build();
-        // Formatting settings (tab-width, insert-spaces, indent-width) use
-        // manual handlers instead of Settings::bind(GET) so that EditorConfig
-        // overrides can take priority. The handler reads the current overrides
-        // and only falls back to GSettings when no override is active.
-        apply_formatting_settings(&self.source_view, settings, FormattingOverrides::default());
-        for key in [keys::TAB_WIDTH, keys::INSERT_SPACES] {
-            let editor_weak = self.obj().downgrade();
-            let id = settings.connect_changed(Some(key), move |_, _| {
-                if let Some(editor) = editor_weak.upgrade() {
-                    let overrides = editor.imp().formatting_overrides.get();
-                    // A tab-width change re-lays out every line: paced on a
-                    // dense document (`bound-post-open-settle`, D9).
-                    editor.restyle_paced(|editor| {
-                        apply_formatting_settings(
-                            &editor.imp().source_view,
-                            &editor.imp().settings,
-                            overrides,
-                        );
-                    });
-                }
-            });
-            self.preference_bindings.signals.track(settings, id);
-        }
-
-        // One-way from settings to the view. On a dense document the wrap
-        // change is paced (`bound-post-open-settle`, D9: hide around the
-        // visible paragraphs, then reveal outward), so it is a handler, not a
-        // binding; the same handler refreshes minimap geometry.
-        self.source_view
-            .set_wrap_mode(word_wrap_mode(settings.boolean(keys::WORD_WRAP)));
-        let editor_weak: glib::WeakRef<super::LushtextEditorPage> = self.obj().downgrade();
-        let id = settings.connect_changed(Some(keys::WORD_WRAP), move |settings, _| {
-            if let Some(editor) = editor_weak.upgrade() {
-                let mode = word_wrap_mode(settings.boolean(keys::WORD_WRAP));
-                editor.restyle_paced(|editor| editor.source_view().set_wrap_mode(mode));
-                editor.invalidate_minimap_analysis_request(false);
-                editor.sync_minimap_wrap_mode();
-                editor.schedule_minimap_refresh();
-            }
-        });
-        self.preference_bindings.signals.track(settings, id);
-
-        apply_color_scheme_to_editor(&self.obj());
-        self.document_surface_opacity
-            .set(settings.double(keys::TAB_CONTENT_OPACITY).clamp(0.0, 1.0));
-        {
-            let editor_weak = self.obj().downgrade();
-            let id = settings.connect_changed(Some(keys::STYLE_SCHEME), move |_, _| {
-                if let Some(editor) = editor_weak.upgrade() {
-                    apply_color_scheme_to_editor(&editor);
-                }
-            });
-            self.preference_bindings.signals.track(settings, id);
-        }
-        {
-            let editor_weak = self.obj().downgrade();
-            let id = settings.connect_changed(Some(keys::TAB_CONTENT_OPACITY), move |_, _| {
-                if let Some(editor) = editor_weak.upgrade() {
-                    apply_color_scheme_to_editor(&editor);
-                }
-            });
-            self.preference_bindings.signals.track(settings, id);
-        }
-        {
-            let editor_weak = self.obj().downgrade();
-            let style_manager = libadwaita::StyleManager::default();
-            let handler_id = style_manager.connect_dark_notify(move |_| {
-                if let Some(editor) = editor_weak.upgrade() {
-                    apply_color_scheme_to_editor(&editor);
-                }
-            });
-            self.preference_bindings
-                .signals
-                .track(&style_manager, handler_id);
-        }
-
-        {
-            let editor_weak = self.obj().downgrade();
-            let id = settings.connect_changed(Some(keys::SHOW_MINIMAP), move |_, _| {
-                if let Some(editor) = editor_weak.upgrade() {
-                    editor.invalidate_minimap_analysis_request(false);
-                    editor.schedule_minimap_refresh();
-                }
-            });
-            self.preference_bindings.signals.track(settings, id);
-        }
-        {
-            let editor_weak = self.obj().downgrade();
-            let id = settings.connect_changed(
-                Some(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE),
-                move |_, _| {
-                    if let Some(editor) = editor_weak.upgrade() {
-                        editor.invalidate_minimap_analysis_request(true);
-                        editor.schedule_minimap_refresh();
-                    }
-                },
-            );
-            self.preference_bindings.signals.track(settings, id);
-        }
-        {
-            // Keep the overlay width one-way from settings. The mapping clamps
-            // the stored integer for `width-request`; the handler below only
-            // schedules marker and geometry redraw work.
-            settings
-                .bind(keys::MINIMAP_WIDTH, &*self.minimap_overlay, "width-request")
-                .get_only()
-                .mapping(|variant, _| {
-                    let width = variant.get::<i32>()?.clamp(64, 160);
-                    Some(width.to_value())
-                })
-                .build();
-            let editor_weak = self.obj().downgrade();
-            let id = settings.connect_changed(Some(keys::MINIMAP_WIDTH), move |_, _| {
-                if let Some(editor) = editor_weak.upgrade() {
-                    editor.schedule_minimap_refresh();
-                }
-            });
-            self.preference_bindings.signals.track(settings, id);
-        }
-        {
-            let editor_weak = self.obj().downgrade();
-            let id =
-                settings.connect_changed(Some(keys::FOCUS_MODE_TARGET_COLUMNS), move |s, _| {
-                    if let Some(editor) = editor_weak.upgrade() {
-                        editor
-                            .set_focus_mode_target_columns(s.uint(keys::FOCUS_MODE_TARGET_COLUMNS));
-                    }
-                });
-            self.preference_bindings.signals.track(settings, id);
-        }
-        {
-            let editor_weak = self.obj().downgrade();
-            let id = settings.connect_changed(
-                Some(keys::FOCUS_MODE_TYPEWRITER_SCROLLING),
-                move |s, _| {
-                    if let Some(editor) = editor_weak.upgrade() {
-                        editor.set_focus_mode_typewriter_scrolling(
-                            s.boolean(keys::FOCUS_MODE_TYPEWRITER_SCROLLING),
-                        );
-                    }
-                },
-            );
-            self.preference_bindings.signals.track(settings, id);
-        }
-
-        self.obj().setup_bookmark_projection();
-        self.obj().setup_local_history_context_menu();
-        self.obj().setup_local_history_tracking();
-
-        {
-            let editor_weak = self.obj().downgrade();
-            let handler_id = buffer.connect_end_user_action(move |_| {
-                if let Some(editor) = editor_weak.upgrade() {
-                    if editor.reconcile_bookmarks_after_edit() {
-                        editor.emit_bookmarks_changed();
-                    }
-                    editor.schedule_minimap_refresh();
-                }
-            });
-            self.editing_buffer_signals.track(&buffer, handler_id);
-        }
-
-        // Text changes update residency, while modified-state changes alter
-        // eviction safety independently. The window coalesces both at idle.
-        {
-            let editor_weak = self.obj().downgrade();
-            let handler_id = buffer.connect_changed(move |_| {
-                if let Some(editor) = editor_weak.upgrade() {
-                    if editor.load_projection_suspended() {
-                        return;
-                    }
-                    editor.notify_memory_policy_changed();
-                }
-            });
-            self.editing_buffer_signals.track(&buffer, handler_id);
-        }
-
-        {
-            let editor_weak = self.obj().downgrade();
-            let handler_id = buffer.connect_modified_changed(move |_| {
-                if let Some(editor) = editor_weak.upgrade() {
-                    if editor.load_projection_suspended() {
-                        return;
-                    }
-                    editor.notify_memory_policy_changed();
-                }
-            });
-            self.editing_buffer_signals.track(&buffer, handler_id);
-        }
-
-        // Search bar close: hide_search restores cursor and detaches the
-        // SearchContext. The close handler fires on both the close button
-        // and Escape key press in the search entry.
-        let editor_weak = self.obj().downgrade();
-        self.search_bar.connect_close(move || {
-            if let Some(editor) = editor_weak.upgrade() {
-                editor.hide_search();
-            }
-        });
-
-        {
-            let editor_weak = self.obj().downgrade();
-            self.source_view.connect_map(move |_| {
-                if let Some(editor) = editor_weak.upgrade() {
-                    editor.schedule_dynamic_overscroll_update();
-                }
-            });
-        }
-
+        self.obj().setup_editor_preferences_and_signals(&buffer);
         self.obj().setup_minimap();
         self.obj().setup_allocation_reflow_observers();
         self.obj().setup_focus_mode_text_origin_guide();
@@ -1174,21 +243,12 @@ impl ObjectImpl for LushtextEditorPage {
         self.obj().install_fold_gutter();
         self.obj().apply_invisible_characters_mode();
         self.obj().refresh_accessibility_metadata();
-        // Last: every handler above connected to the document buffer; from
-        // here until the tab is shown the view lays out an empty placeholder.
         self.obj().setup_view_attachment();
     }
 }
 
-// No `size_allocate` override here on purpose: GTK4 skips that vfunc for
-// widgets whose class installs a layout manager, and `GtkBox` uses
-// `GtkBoxLayout`, so such an override would be silently dead code. Passive
-// viewport geometry changes are observed through the text view's scroll
-// adjustments in `overscroll.rs` instead.
 impl WidgetImpl for LushtextEditorPage {
     fn map(&self) {
-        // The tab is shown: the view lays out the document from its first
-        // frame (`view_attachment`), before the children map.
         self.obj().attach_view();
         self.parent_map();
     }
@@ -1199,42 +259,9 @@ impl WidgetImpl for LushtextEditorPage {
     }
 
     fn unroot(&self) {
-        // A closed or detached tab takes its Line Inspector with it: the
-        // dialog lives in the window's dialog host, not under this page.
         self.obj().close_line_inspector();
         self.parent_unroot();
     }
 }
+
 impl BoxImpl for LushtextEditorPage {}
-
-/// Apply formatting settings to the source view, resolving EditorConfig
-/// overrides against GSettings fallbacks. Called on initial construction,
-/// GSettings change, and EditorConfig resolution.
-pub(super) fn apply_formatting_settings(
-    view: &sourceview5::View,
-    settings: &gio::Settings,
-    overrides: FormattingOverrides,
-) {
-    let tab_width = overrides
-        .tab_width
-        .unwrap_or_else(|| settings.uint(keys::TAB_WIDTH));
-    view.set_tab_width(tab_width);
-
-    let insert_spaces = overrides
-        .insert_spaces
-        .unwrap_or_else(|| settings.boolean(keys::INSERT_SPACES));
-    view.set_insert_spaces_instead_of_tabs(insert_spaces);
-
-    // indent-width has no GSettings key — only settable via EditorConfig.
-    // GtkSourceView default: -1 means "inherit from tab-width".
-    let indent_width = overrides.indent_width.unwrap_or(-1);
-    view.set_indent_width(indent_width);
-}
-
-fn word_wrap_mode(enabled: bool) -> gtk4::WrapMode {
-    if enabled {
-        gtk4::WrapMode::Word
-    } else {
-        gtk4::WrapMode::None
-    }
-}

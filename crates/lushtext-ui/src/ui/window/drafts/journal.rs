@@ -300,7 +300,7 @@ impl LushtextWindow {
     /// Returns an error when any dirty draft file cannot be written or when
     /// the draft manifest cannot be updated after successful draft writes.
     pub fn flush_dirty_drafts(&self) -> Result<(), super::seams::DraftSyncFlushError> {
-        if self.journal_mutation_busy() || self.imp().drafts.orphan_cleanup_inflight.get() {
+        if self.journal_mutation_busy() || self.imp().drafts.is_orphan_cleanup_inflight() {
             return Err(super::seams::DraftSyncFlushError::AlreadyInProgress);
         }
         let tab_view = &self.imp().tab_view;
@@ -725,12 +725,12 @@ impl LushtextWindow {
 
     /// Run queued compact deletes only after every earlier body/manifest command.
     pub(super) fn drive_pending_draft_mutations(&self) {
-        if self.journal_mutation_busy() || self.imp().drafts.orphan_cleanup_inflight.get() {
+        if self.journal_mutation_busy() || self.imp().drafts.is_orphan_cleanup_inflight() {
             // Another window holds the lane: its release wakes this window.
             return;
         }
         if self.imp().drafts.pending_deletes.borrow().is_empty() {
-            let rerun = self.imp().drafts.autosave_pending.replace(false);
+            let rerun = self.imp().drafts.replace_autosave_pending(false);
             if rerun {
                 self.autosave_tick();
             }
@@ -748,7 +748,7 @@ impl LushtextWindow {
             .pending_delete_ids
             .borrow_mut()
             .remove(&intent.draft_id);
-        self.imp().drafts.mutation_inflight.set(true);
+        self.imp().drafts.begin_mutation_run();
 
         let data_dir = json_store::data_dir();
         let draft_id = intent.draft_id.clone();
@@ -896,7 +896,7 @@ impl LushtextWindow {
                                 .retire_if_current(&intent);
                         }
                     }
-                    window.imp().drafts.mutation_inflight.set(false);
+                    window.imp().drafts.finish_mutation_run();
                     window.release_journal_lane();
                     window.drive_pending_draft_mutations();
                 }

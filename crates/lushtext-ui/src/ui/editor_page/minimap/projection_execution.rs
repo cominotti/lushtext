@@ -177,15 +177,15 @@ impl LushtextEditorPage {
         &self,
         read: impl FnOnce(&MinimapMarkerBins) -> T,
     ) -> Option<T> {
-        let imp = self.imp();
-        let source_map = imp.minimap.source_map.borrow().as_ref().cloned()?;
-        let marker_strip = imp.minimap.marker_strip.borrow().as_ref().cloned()?;
+        let minimap = &self.imp().minimap;
+        let projection = &minimap.projection;
+        let source_map = minimap.source_map.borrow().as_ref().cloned()?;
+        let marker_strip = projection.marker_strip.borrow().as_ref().cloned()?;
         let geometry = marker_bin_geometry(&source_map, &marker_strip)?;
-        let marker_generation = imp.minimap.marker_generation.get();
-        let search_generation = imp.minimap.search_generation.get();
+        let marker_generation = projection.marker_generation.get();
+        let search_generation = projection.search_generation.get();
         let search_complete = self.search_scan_complete();
-        let reusable = imp
-            .minimap
+        let reusable = projection
             .marker_bins
             .borrow()
             .as_ref()
@@ -196,7 +196,7 @@ impl LushtextEditorPage {
                     && bins.search_complete == search_complete
             });
         if !reusable {
-            let previous = imp.minimap.marker_bins.borrow_mut().take();
+            let previous = projection.marker_bins.borrow_mut().take();
             let bins = compute_marker_bins(
                 self,
                 &source_map,
@@ -204,9 +204,9 @@ impl LushtextEditorPage {
                 (marker_generation, search_generation, search_complete),
                 previous.as_ref(),
             );
-            imp.minimap.marker_bins.replace(Some(bins));
+            projection.marker_bins.replace(Some(bins));
         }
-        let bins = imp.minimap.marker_bins.borrow();
+        let bins = projection.marker_bins.borrow();
         bins.as_ref().map(read)
     }
 
@@ -230,7 +230,7 @@ impl LushtextEditorPage {
 
     /// Invalidate the bins of every kind and redraw the strip.
     pub(super) fn note_marker_change(&self) {
-        let generation = &self.imp().minimap.marker_generation;
+        let generation = &self.imp().minimap.projection.marker_generation;
         generation.set(generation.get().next());
         self.queue_marker_strip_draw();
     }
@@ -284,7 +284,7 @@ impl LushtextEditorPage {
     /// because the minimap shell has its own border/padding and a flush first
     /// line is easy to clip by one pixel after adaptive shell reallocation.
     pub(super) fn sync_projection_geometry(&self) {
-        if self.imp().minimap.reflow_settle.pending() {
+        if self.imp().minimap.reflow.settle.pending() {
             // A width-reflow burst is still in flight, so wrapped document
             // heights are transient estimates. Any margin derived from them
             // would move the native slider by whole pixels mid-animation. The
@@ -299,7 +299,7 @@ impl LushtextEditorPage {
 
     /// Refresh minimap visibility, markers, and any one-shot availability feedback.
     pub(super) fn run_minimap_refresh(&self) {
-        self.imp().minimap.refresh_pending.set(false);
+        self.imp().minimap.refresh.pending.set(false);
         let request = minimap_analysis_request(self);
         if cheap_minimap_availability(self) == MinimapAvailability::Visible {
             self.ensure_minimap_analysis(request);
@@ -310,9 +310,9 @@ impl LushtextEditorPage {
             );
         }
         let availability = current_availability(self);
-        self.imp().minimap.availability.set(availability);
+        self.imp().minimap.projection.availability.set(availability);
         if availability != MinimapAvailability::Reduced {
-            self.imp().minimap.reduced_feedback_shown.set(false);
+            self.imp().minimap.refresh.reduced_feedback_shown.set(false);
         }
 
         // Visibility and native projection are one lifecycle decision. A
@@ -336,14 +336,14 @@ impl LushtextEditorPage {
             // visible layout. Cancel pending timers first, then sync once so
             // the next visible frame cannot inherit old geometry.
             let minimap = &self.imp().minimap;
-            let _ = minimap.reflow_settle.clear();
-            minimap.reflow_reveal_pending.set(false);
+            let _ = minimap.reflow.settle.clear();
+            minimap.reflow.reveal_pending.set(false);
             self.imp().overscroll.reflow_pause.borrow_mut().take();
             // Cancelling the settle cancels its rest-state record too.
             self.record_scroll_from_cancelled_reflow();
             self.sync_projection_geometry();
             self.drop_minimap_reflow_freeze();
-            self.imp().minimap.marker_bins.borrow_mut().take();
+            minimap.projection.marker_bins.borrow_mut().take();
             self.note_marker_change();
             if availability != MinimapAvailability::Visible {
                 self.publish_minimap_unavailable_feedback_if_needed(availability);
@@ -358,9 +358,9 @@ impl LushtextEditorPage {
 
     /// Debounce marker recomputation after search, edits, or viewport changes.
     pub(super) fn arm_minimap_refresh(&self) {
-        self.imp().minimap.refresh_pending.set(true);
+        self.imp().minimap.refresh.pending.set(true);
 
-        self.imp().minimap.refresh_debounce.schedule(
+        self.imp().minimap.refresh.debounce.schedule(
             self,
             MINIMAP_REFRESH_DEBOUNCE,
             move |editor, _| {
@@ -371,7 +371,7 @@ impl LushtextEditorPage {
 
     /// Queue a redraw of the semantic marker strip when it exists.
     pub(super) fn queue_marker_strip_draw(&self) {
-        if let Some(strip) = self.imp().minimap.marker_strip.borrow().as_ref() {
+        if let Some(strip) = self.imp().minimap.projection.marker_strip.borrow().as_ref() {
             strip.queue_draw();
         }
     }
@@ -418,7 +418,7 @@ impl LushtextEditorPage {
     /// Publish the one-shot "too large" message when this page is the active tab.
     fn publish_minimap_unavailable_feedback_if_needed(&self, availability: MinimapAvailability) {
         if availability != MinimapAvailability::Reduced
-            || self.imp().minimap.reduced_feedback_shown.get()
+            || self.imp().minimap.refresh.reduced_feedback_shown.get()
             || !self.imp().settings.boolean(keys::SHOW_MINIMAP)
         {
             return;
@@ -439,7 +439,7 @@ impl LushtextEditorPage {
             minimap_unavailable_message(self.document_scale().reduced),
             MessageKind::Warning,
         );
-        self.imp().minimap.reduced_feedback_shown.set(true);
+        self.imp().minimap.refresh.reduced_feedback_shown.set(true);
     }
 }
 
@@ -810,12 +810,12 @@ fn compute_marker_bins(
                     .settings
                     .boolean(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE)
                 {
-                    let cache = imp.minimap.analysis_cache.borrow();
+                    let analysis = &imp.minimap.analysis;
+                    let cache = analysis.cache.borrow();
                     cache
                         .as_ref()
                         .filter(|cache| {
-                            cache.generation == imp.minimap.analysis_generation.get()
-                                && cache.markers_collected
+                            cache.generation == analysis.generation.get() && cache.markers_collected
                         })
                         .map(|cache| {
                             mark_row_groups(&groups, |line| {

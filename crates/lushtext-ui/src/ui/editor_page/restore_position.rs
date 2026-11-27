@@ -19,17 +19,49 @@
 //! and left it in place; slot 3b moved it here only because the file it used to
 //! share, `load_save.rs`, no longer exists.
 
+use std::cell::Cell;
+
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 
 use super::LushtextEditorPage;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum PendingScrollRestore {
+    #[default]
+    None,
+    Target {
+        cursor_line: u32,
+        cursor_col: u32,
+        scroll_line: u32,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum ProtectedCursorPosition {
+    #[default]
+    Unplaced,
+    Placed(u32, u32),
+}
+
+/// Deferred cursor and scroll restoration applied after async file load.
+#[derive(Default)]
+pub struct RestoreState {
+    pending: Cell<PendingScrollRestore>,
+    protected_cursor: Cell<ProtectedCursorPosition>,
+}
+
 impl LushtextEditorPage {
     /// Store a cursor and scroll position to apply after the next async load.
     pub fn set_restore_position(&self, cursor_line: u32, cursor_col: u32, scroll_line: u32) {
-        self.imp().restore.cursor_line.set(Some(cursor_line));
-        self.imp().restore.cursor_col.set(Some(cursor_col));
-        self.imp().restore.scroll_line.set(Some(scroll_line));
+        self.imp()
+            .restore
+            .pending
+            .set(PendingScrollRestore::Target {
+                cursor_line,
+                cursor_col,
+                scroll_line,
+            });
     }
 
     /// Reload `path` into this editor keeping the caret's line and column and
@@ -51,9 +83,10 @@ impl LushtextEditorPage {
     )]
     pub fn cursor_position(&self) -> (u32, u32) {
         if self.is_protected_view()
-            && let Some(position) = self.imp().restore.protected_cursor.get()
+            && let ProtectedCursorPosition::Placed(line, col) =
+                self.imp().restore.protected_cursor.get()
         {
-            return position;
+            return (line, col);
         }
         let buffer = self.buffer();
         let iter = buffer.iter_at_mark(&buffer.get_insert());
@@ -87,9 +120,22 @@ impl LushtextEditorPage {
     /// stored values is what makes the restoration one-shot: a later load with
     /// no stored position must not resurrect an old one.
     pub(crate) fn apply_restore_position(&self) {
-        let line = self.imp().restore.cursor_line.take();
-        let col = self.imp().restore.cursor_col.take();
-        let scroll_line = self.imp().restore.scroll_line.take();
+        let PendingScrollRestore::Target {
+            cursor_line,
+            cursor_col,
+            scroll_line,
+        } = self
+            .imp()
+            .restore
+            .pending
+            .replace(PendingScrollRestore::None)
+        else {
+            self.imp()
+                .restore
+                .protected_cursor
+                .set(ProtectedCursorPosition::Unplaced);
+            return;
+        };
 
         let buffer = self.buffer();
 
@@ -97,31 +143,24 @@ impl LushtextEditorPage {
         // later session saves and scrolls the navigation mark, never
         // positioning an iterator inside a hidden tail (ledger A66).
         if self.is_protected_view() {
-            if let Some(line) = line {
-                self.imp()
-                    .restore
-                    .protected_cursor
-                    .set(Some((line, col.unwrap_or(0))));
-            }
-            if let Some(scroll_line) = scroll_line.or(line) {
-                self.scroll_protected_navigation_to_top(u64::from(scroll_line));
-            }
+            self.imp()
+                .restore
+                .protected_cursor
+                .set(ProtectedCursorPosition::Placed(cursor_line, cursor_col));
+            self.scroll_protected_navigation_to_top(u64::from(scroll_line));
             return;
         }
-        self.imp().restore.protected_cursor.set(None);
+        self.imp()
+            .restore
+            .protected_cursor
+            .set(ProtectedCursorPosition::Unplaced);
 
-        if let Some(line) = line
-            && let Some(mut iter) = buffer.iter_at_line(line as i32)
-        {
-            if let Some(col) = col {
-                iter.forward_chars(col as i32);
-            }
+        if let Some(mut iter) = buffer.iter_at_line(cursor_line as i32) {
+            iter.forward_chars(cursor_col as i32);
             buffer.place_cursor(&iter);
         }
 
-        if let Some(scroll_line) = scroll_line
-            && let Some(iter) = buffer.iter_at_line(scroll_line as i32)
-        {
+        if let Some(iter) = buffer.iter_at_line(scroll_line as i32) {
             self.scroll_to_document_iter(&iter, 0.0, true, 0.0, 0.0);
         }
     }

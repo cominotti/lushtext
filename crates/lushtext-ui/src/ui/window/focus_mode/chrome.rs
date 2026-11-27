@@ -13,7 +13,10 @@
 //! locally, so the chrome the user sees and the chrome the evidence surface
 //! reports cannot disagree.
 
+use std::cell::Cell;
+
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk_lush_settle::SupersedingTimer;
 use gtk4::prelude::*;
 
 use crate::config::keys;
@@ -22,7 +25,46 @@ use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::settings_writes;
 
 use super::super::LushtextWindow;
-use super::policy;
+use super::policy::{self, FocusModeEntry};
+
+/// Algebraic lifecycle phase for Focus Mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum FocusModePhase {
+    Inactive {
+        /// Retained last session's entry capture so `FocusModeEvidence` can audit it after exit.
+        last_entry: FocusModeEntry,
+        last_preview_changed_while_focused: bool,
+    },
+    Active {
+        entry: FocusModeEntry,
+        preview_changed_while_focused: bool,
+    },
+}
+
+impl Default for FocusModePhase {
+    fn default() -> Self {
+        Self::Inactive {
+            last_entry: FocusModeEntry::default(),
+            last_preview_changed_while_focused: false,
+        }
+    }
+}
+
+/// Reversible shell state owned by Focus Mode.
+#[derive(Default)]
+pub struct FocusModeState {
+    pub(super) phase: Cell<FocusModePhase>,
+    /// Superseding timer for delayed affordance hiding.
+    pub(super) affordance_timer: SupersedingTimer,
+}
+
+impl FocusModeState {
+    /// Whether Focus Mode is currently active for this window.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        matches!(self.phase.get(), FocusModePhase::Active { .. })
+    }
+}
 
 /// Hide or restore persistent chrome for the current Focus Mode state.
 pub(super) fn apply_chrome(window: &LushtextWindow) {

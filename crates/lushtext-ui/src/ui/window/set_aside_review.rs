@@ -32,21 +32,78 @@ use lushtext_services::persistence::json_store;
 
 use super::LushtextWindow;
 
+/// Lifecycle phase of the process's in-memory set-aside retention notice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SetAsideReviewPhase {
+    /// The once-per-process startup evaluation has not yet run.
+    #[default]
+    Unstarted,
+    /// Startup evaluation ran and no background scan is currently running.
+    Idle {
+        /// Totals the most recent notice named, if any.
+        last_notified: Option<SetAsideTotals>,
+    },
+    /// A background scan of the set-aside area is currently running.
+    Evaluating {
+        /// Totals the most recent notice named, if any.
+        last_notified: Option<SetAsideTotals>,
+    },
+}
+
+impl SetAsideReviewPhase {
+    #[must_use]
+    const fn startup_evaluated(self) -> bool {
+        !matches!(self, Self::Unstarted)
+    }
+
+    #[must_use]
+    const fn last_notified(self) -> Option<SetAsideTotals> {
+        match self {
+            Self::Unstarted => None,
+            Self::Idle { last_notified } | Self::Evaluating { last_notified } => last_notified,
+        }
+    }
+}
+
 /// The process's in-memory set-aside review state, owned by the application.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SetAsideReviewState {
-    /// The once-per-process evaluation after the first startup restore ran.
-    pub startup_evaluated: bool,
+    /// Algebraic lifecycle phase (startup evaluation, idle, or scanning).
+    pub phase: SetAsideReviewPhase,
     /// `set_aside::placements()` when the last evaluation started.
     pub placements_seen: u64,
-    /// An evaluation is running off GTK.
+    /// An evaluation is running off GTK (mirrored from `phase` for observers).
     pub evaluation_inflight: bool,
-    /// The totals the last notice named.
-    pub last_notified: Option<SetAsideTotals>,
     /// The user ran the review action in this process.
     pub reviewed: bool,
     /// Notices published in this process (evidence for tests and diagnostics).
     pub notices_published: u64,
+}
+
+impl SetAsideReviewState {
+    fn begin_startup(&mut self) {
+        if matches!(self.phase, SetAsideReviewPhase::Unstarted) {
+            self.phase = SetAsideReviewPhase::Idle {
+                last_notified: None,
+            };
+        }
+    }
+
+    fn start_evaluation(&mut self, placements_seen: u64) {
+        let last_notified = self.phase.last_notified();
+        self.phase = SetAsideReviewPhase::Evaluating { last_notified };
+        self.evaluation_inflight = true;
+        self.placements_seen = placements_seen;
+    }
+
+    fn finish_evaluation(&mut self, notified: Option<SetAsideTotals>) {
+        let last_notified = notified.or_else(|| self.phase.last_notified());
+        self.phase = SetAsideReviewPhase::Idle { last_notified };
+        self.evaluation_inflight = false;
+        if notified.is_some() {
+            self.notices_published = self.notices_published.saturating_add(1);
+        }
+    }
 }
 
 /// The review notice: names the count and size and the review action, in the
@@ -71,10 +128,10 @@ impl LushtextWindow {
         let Some(app) = self.lushtext_application() else {
             return;
         };
-        if app.set_aside_review_state().startup_evaluated {
+        if app.set_aside_review_state().phase.startup_evaluated() {
             return;
         }
-        app.update_set_aside_review_state(|state| state.startup_evaluated = true);
+        app.update_set_aside_review_state(SetAsideReviewState::begin_startup);
         self.evaluate_preserved_drafts();
     }
 
@@ -86,7 +143,7 @@ impl LushtextWindow {
             return;
         };
         let state = app.set_aside_review_state();
-        if state.startup_evaluated
+        if state.phase.startup_evaluated()
             && !state.reviewed
             && set_aside::placements() != state.placements_seen
         {
@@ -99,12 +156,14 @@ impl LushtextWindow {
         let Some(app) = self.lushtext_application() else {
             return;
         };
-        if app.set_aside_review_state().evaluation_inflight {
+        if matches!(
+            app.set_aside_review_state().phase,
+            SetAsideReviewPhase::Evaluating { .. }
+        ) {
             return;
         }
         app.update_set_aside_review_state(|state| {
-            state.evaluation_inflight = true;
-            state.placements_seen = set_aside::placements();
+            state.start_evaluation(set_aside::placements());
         });
         // The application, not this window, receives the result: the window
         // may close first, and the in-flight flag must still clear.
@@ -119,14 +178,11 @@ impl LushtextWindow {
                 let state = app.set_aside_review_state();
                 let window = app.active_window().and_downcast::<LushtextWindow>();
                 let notice = totals
-                    .filter(|_| notice_due(totals, state.last_notified, state.reviewed))
+                    .filter(|_| notice_due(totals, state.phase.last_notified(), state.reviewed))
                     .zip(window);
+                let notified = notice.as_ref().map(|(totals, _)| *totals);
                 app.update_set_aside_review_state(|state| {
-                    state.evaluation_inflight = false;
-                    if let Some((totals, _)) = &notice {
-                        state.last_notified = Some(*totals);
-                        state.notices_published = state.notices_published.saturating_add(1);
-                    }
+                    state.finish_evaluation(notified);
                 });
                 if let Some((totals, window)) = notice {
                     window.publish_status_message(

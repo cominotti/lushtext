@@ -302,7 +302,7 @@ pub(in crate::ui::window) fn derive_adaptive_shell_layout(
 /// layout was derived from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(kani, derive(kani::Arbitrary))]
-pub(in crate::ui::window) struct RenderedShellState {
+pub(in crate::ui::window) struct RenderedShellSnapshot {
     /// `properties_layout_view.layout-name`.
     pub(in crate::ui::window) presentation: PropertiesPresentation,
     /// The surface currently holding the compact slot.
@@ -395,7 +395,7 @@ impl ShellReconciliation {
 /// restoration is not decided here: it reads the focus chain, so it stays in
 /// execution.
 pub(in crate::ui::window) fn plan_shell_reconciliation(
-    rendered: RenderedShellState,
+    rendered: RenderedShellSnapshot,
     layout: AdaptiveShellLayout,
     installed_threshold: Sp,
 ) -> ShellReconciliation {
@@ -1134,7 +1134,7 @@ mod tests {
     // write, clearing the compact slot outside the sheet, set a `Cell` and had no
     // effect when the slot was already clear).
 
-    type Rendered = RenderedShellState;
+    type Rendered = RenderedShellSnapshot;
     use ShellWrite as Write;
 
     /// The plan's threshold decision, checked against the reference.

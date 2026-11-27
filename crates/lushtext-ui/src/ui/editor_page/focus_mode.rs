@@ -6,13 +6,28 @@
 //! temporary shell state affects its GtkSourceView margins, minimap rendering,
 //! and optional typewriter scrolling.
 
+use std::cell::{Cell, RefCell};
+
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk_lush_signals::SignalBag;
 use gtk4::prelude::*;
 
 use crate::config::keys;
 use crate::ui::window::focus_mode::policy::readable_column_margin;
 
 use super::LushtextEditorPage;
+
+/// Temporary editor presentation state while the window is in Focus Mode.
+#[derive(Default)]
+pub struct FocusModeEditorState {
+    pub active: Cell<bool>,
+    pub normal_left_margin: Cell<i32>,
+    pub normal_right_margin: Cell<i32>,
+    pub target_columns: Cell<u32>,
+    pub typewriter_scrolling: Cell<bool>,
+    pub text_origin_guide: RefCell<Option<gtk4::DrawingArea>>,
+    pub buffer_signals: SignalBag,
+}
 
 /// Opacity for the text-origin guide.
 ///

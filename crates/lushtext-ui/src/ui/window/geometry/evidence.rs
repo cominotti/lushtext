@@ -108,7 +108,7 @@ pub fn shell_geometry_evidence(window: &LushtextWindow) -> ShellGeometryEvidence
     let settings = &imp.settings;
 
     // Scoped so the borrow is released before the struct literal below.
-    let properties_breakpoint_installed = imp.properties_breakpoint.borrow().is_some();
+    let properties_breakpoint_installed = imp.split_layout.properties_breakpoint.borrow().is_some();
 
     let workspace_split = imp.workspace_split_view.try_get();
     let properties_split = imp.properties_split_view.try_get();
@@ -151,10 +151,10 @@ pub fn shell_geometry_evidence(window: &LushtextWindow) -> ShellGeometryEvidence
         properties_fraction,
         persisted_workspace_fraction: settings.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION),
         persisted_properties_fraction: settings.double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION),
-        properties_breakpoint_max_width: imp.properties_breakpoint_max_width.get(),
+        properties_breakpoint_max_width: imp.split_layout.properties_breakpoint_max_width.get(),
         properties_breakpoint_installed,
         split_width_synced_for_width: imp.split_width_synced_for_width.get(),
-        split_width_syncing: imp.split_width_syncing.get(),
+        split_width_syncing: imp.split_layout.split_width_syncing.get(),
         workspace_sidebar_transition_pending: window.workspace_sidebar_transition_pending(),
         window_width: execution::current_window_width(window),
         window_construction: window.window_construction_evidence(),

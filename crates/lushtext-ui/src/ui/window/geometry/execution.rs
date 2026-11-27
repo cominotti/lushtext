@@ -33,7 +33,10 @@
 //! imports no toolkit crate; this module supplies live inputs and applies the
 //! returned decision.
 
+use std::cell::{Cell, RefCell};
+
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk_lush_settle::SettleBurst;
 use gtk4::glib;
 use gtk4::prelude::*;
 use libadwaita::prelude::AdwApplicationWindowExt;
@@ -43,16 +46,42 @@ use lushtext_model::values::Sp;
 use crate::config::keys;
 use crate::ui::sidebar::width_preset::WorkspaceSidebarWidthPreset;
 
-use super::super::imp::PREVIEW_LAYOUT_EDITOR;
+use super::super::preview::PREVIEW_LAYOUT_EDITOR;
 use super::policy::{
     self, AdaptiveShellInputs, AdaptiveShellLayout, OPEN_BUTTON_BREAKPOINT_MAX_WIDTH_SP,
-    PROPERTIES_SIDEBAR_MIN_WIDTH_SP, PaneShare, PropertiesPresentation, RenderedShellState,
-    ShellReconciliation, ShellWrite, SplitViewRestoreFacts, SplitViewRestorePlan,
+    PROPERTIES_SIDEBAR_MIN_WIDTH_SP, PaneShare, PropertiesPresentation, RenderedShellSnapshot,
+    SecondarySurface, ShellReconciliation, ShellWrite, SplitViewRestoreFacts, SplitViewRestorePlan,
     WORKSPACE_SIDEBAR_MIN_WIDTH_SP, derive_adaptive_shell_layout, plan_shell_reconciliation,
     properties_breakpoint_condition, workspace_breakpoint_condition,
 };
 use crate::ui::markdown_preview::PREVIEW_MIN_WIDTH_SP;
 use crate::ui::settings_writes;
+
+/// Requested-versus-rendered visibility state for compact secondary-surface arbitration.
+#[derive(Default)]
+pub struct SecondarySurfaceState {
+    /// Whether the user last explicitly left the workspace sidebar open.
+    pub workspace_requested_visible: Cell<bool>,
+    /// Whether the user last explicitly left document properties open.
+    pub properties_requested_visible: Cell<bool>,
+    /// Which secondary surface currently owns the compact-width slot, if any.
+    pub compact_surface: Cell<Option<SecondarySurface>>,
+}
+
+/// Split-view breakpoint and width-sync coordination handles owned by the window shell.
+#[derive(Default)]
+pub(in crate::ui::window) struct SplitLayoutHandles {
+    /// Settle burst while Adwaita's workspace sidebar transition is in flight.
+    pub(in crate::ui::window) workspace_sidebar_transition_settle: SettleBurst,
+    /// Stored so the properties breakpoint condition can track the selected
+    /// workspace preset and whether the left pane currently consumes width.
+    pub(in crate::ui::window) properties_breakpoint: RefCell<Option<libadwaita::Breakpoint>>,
+    /// Guards split-width synchronization against reentrant allocations caused
+    /// by programmatic `OverlaySplitView` fraction updates.
+    pub(in crate::ui::window) split_width_syncing: Cell<bool>,
+    /// Last parsed properties breakpoint width installed on the Adwaita breakpoint.
+    pub(in crate::ui::window) properties_breakpoint_max_width: Cell<i32>,
+}
 
 /// Turn a pane's whole-sp share into the fraction an `AdwOverlaySplitView`
 /// takes. The one place the shell geometry becomes `f64`: the policy decides
@@ -213,6 +242,7 @@ pub(in crate::ui::window) fn install_split_view_breakpoints(window: &super::Lush
     let properties_max_width = properties_breakpoint_max_width_for_window(window);
     window
         .imp()
+        .split_layout
         .properties_breakpoint_max_width
         .set(properties_max_width.as_sp());
     let properties_bp = libadwaita::Breakpoint::new(
@@ -239,6 +269,7 @@ pub(in crate::ui::window) fn install_split_view_breakpoints(window: &super::Lush
     properties_bp.connect_unapply(reconcile(window.downgrade()));
     window
         .imp()
+        .split_layout
         .properties_breakpoint
         .replace(Some(properties_bp.clone()));
     window.add_breakpoint(properties_bp);
@@ -329,7 +360,7 @@ pub(in crate::ui::window) fn adaptive_shell_inputs_for_width(
         workspace_requested_visible: imp.secondary_surfaces.workspace_requested_visible.get(),
         properties_requested_visible: imp.secondary_surfaces.properties_requested_visible.get(),
         compact_surface: imp.secondary_surfaces.compact_surface.get(),
-        focus_mode_active: imp.focus_mode.active.get(),
+        focus_mode_active: imp.focus_mode.is_active(),
     }
 }
 
@@ -424,9 +455,9 @@ pub(in crate::ui::window) fn set_workspace_sidebar_preset(
 }
 
 /// Read what the shell renders now, for the reconciliation plan.
-fn rendered_shell_state(window: &super::LushtextWindow) -> RenderedShellState {
+fn rendered_shell_state(window: &super::LushtextWindow) -> RenderedShellSnapshot {
     let imp = window.imp();
-    RenderedShellState {
+    RenderedShellSnapshot {
         presentation: properties_presentation(window),
         compact_surface: imp.secondary_surfaces.compact_surface.get(),
         workspace_shows_sidebar: imp.workspace_split_view.shows_sidebar(),
@@ -439,13 +470,23 @@ fn rendered_shell_state(window: &super::LushtextWindow) -> RenderedShellState {
 /// alongside the rendered state and layout the plan was derived from.
 fn current_reconciliation(
     window: &super::LushtextWindow,
-) -> (RenderedShellState, AdaptiveShellLayout, ShellReconciliation) {
+) -> (
+    RenderedShellSnapshot,
+    AdaptiveShellLayout,
+    ShellReconciliation,
+) {
     let rendered = rendered_shell_state(window);
     let layout = derive_adaptive_shell_layout(adaptive_shell_inputs(window));
     let plan = plan_shell_reconciliation(
         rendered,
         layout,
-        Sp::new(window.imp().properties_breakpoint_max_width.get()),
+        Sp::new(
+            window
+                .imp()
+                .split_layout
+                .properties_breakpoint_max_width
+                .get(),
+        ),
     );
     (rendered, layout, plan)
 }
@@ -494,11 +535,18 @@ pub(in crate::ui::window) fn sync_properties_breakpoint(window: &super::Lushtext
     let condition =
         libadwaita::BreakpointCondition::parse(&properties_breakpoint_condition(max_width))
             .expect("valid properties breakpoint condition");
-    if let Some(breakpoint) = window.imp().properties_breakpoint.borrow().as_ref() {
+    if let Some(breakpoint) = window
+        .imp()
+        .split_layout
+        .properties_breakpoint
+        .borrow()
+        .as_ref()
+    {
         breakpoint.set_condition(Some(&condition));
     }
     window
         .imp()
+        .split_layout
         .properties_breakpoint_max_width
         .set(max_width.as_sp());
 }
@@ -555,7 +603,7 @@ pub(in crate::ui::window) fn sync_split_view_widths(
     window: &super::LushtextWindow,
     window_width: i32,
 ) {
-    if window.imp().split_width_syncing.replace(true) {
+    if window.imp().split_layout.split_width_syncing.replace(true) {
         return;
     }
 
@@ -570,14 +618,19 @@ pub(in crate::ui::window) fn sync_split_view_widths(
             .set_sidebar_width_fraction(workspace_fraction);
     }
     window.sync_preview_width_constraints(window_width);
-    if !window.imp().workspace_sidebar_transition_settle.pending() {
+    if !window
+        .imp()
+        .split_layout
+        .workspace_sidebar_transition_settle
+        .pending()
+    {
         sync_properties_breakpoint(window);
         sync_properties_split_view(window, window_width);
         sync_secondary_surfaces(window);
     }
 
     window.imp().split_width_synced_for_width.set(window_width);
-    window.imp().split_width_syncing.set(false);
+    window.imp().split_layout.split_width_syncing.set(false);
 }
 
 #[cfg(test)]

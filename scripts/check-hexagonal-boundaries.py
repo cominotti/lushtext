@@ -43,12 +43,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 MAX_PRODUCTION_LINES = 1000
-LEGACY_OVERSIZED_CEILING = 37
+LEGACY_OVERSIZED_CEILING = 35
 
-# Legacy production files that still exceed 1,000 production lines after Change 1's
-# module reorganization (37 files total, down from 39 on `main` `ddfb7e2b`, after
-# fixing early-`#[cfg(test)]` item masking). Later changes tighten this ratchet
-# further and may never add new >= 1,000-line files.
+# Legacy production files that still exceed 1,000 production lines after Change 4
+# Batch A slimmed `editor_page/imp.rs` and `window/imp.rs` below 500 lines (35 files
+# total, down from 37). Later changes tighten this ratchet further and may never
+# add new >= 1,000-line files.
 LEGACY_OVERSIZED_FILES: dict[str, int] = {
     "crates/lushtext-model/src/automation/mod.rs": 1400,
     "crates/lushtext-model/src/document/document_scale.rs": 1220,
@@ -66,7 +66,6 @@ LEGACY_OVERSIZED_FILES: dict[str, int] = {
     "crates/lushtext-ui/src/ui/automation.rs": 2550,
     "crates/lushtext-ui/src/ui/buffer_snapshot.rs": 1230,
     "crates/lushtext-ui/src/ui/editor_page/buffer_replacement/execution.rs": 1450,
-    "crates/lushtext-ui/src/ui/editor_page/imp.rs": 1260,
     "crates/lushtext-ui/src/ui/editor_page/load/execution.rs": 1290,
     "crates/lushtext-ui/src/ui/editor_page/minimap/policy.rs": 1480,
     "crates/lushtext-ui/src/ui/editor_page/minimap/projection_execution.rs": 1210,
@@ -80,7 +79,6 @@ LEGACY_OVERSIZED_FILES: dict[str, int] = {
     "crates/lushtext-ui/src/ui/window/dialogs.rs": 1040,
     "crates/lushtext-ui/src/ui/window/documents.rs": 1410,
     "crates/lushtext-ui/src/ui/window/drafts/autosave_execution.rs": 1030,
-    "crates/lushtext-ui/src/ui/window/imp.rs": 1420,
     "crates/lushtext-ui/src/ui/window/local_history/preview_execution.rs": 1230,
     "crates/lushtext-ui/src/ui/window/notes/bookmark_execution.rs": 1090,
     "crates/lushtext-ui/src/ui/window/notes/browser.rs": 1530,

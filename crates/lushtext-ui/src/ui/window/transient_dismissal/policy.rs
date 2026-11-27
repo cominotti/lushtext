@@ -9,7 +9,7 @@
 //! is the part that gets mutation coverage.
 //!
 //! The adapter observes live widget state, hands it over as one
-//! `TransientSurfaceState`, and applies whatever this module decides. No decision
+//! `TransientSurfaceSnapshot`, and applies whatever this module decides. No decision
 //! here reads or writes a widget.
 
 /// The one transient surface an Escape press gives up.
@@ -44,7 +44,7 @@ pub enum TransientDismissal {
 /// at a call site would be invisible to review and to every test that only
 /// asserts *something* was dismissed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct TransientSurfaceState {
+pub struct TransientSurfaceSnapshot {
     /// Whether the palette revealer currently reveals its child.
     pub command_palette_revealed: bool,
     /// Whether the palette shows a category view rather than grouped results.
@@ -90,7 +90,7 @@ impl EscapeOutcome {
 /// this ladder declines, so a palette open above Focus Mode takes the first
 /// Escape and Focus Mode takes the next.
 #[must_use]
-pub fn topmost_dismissible(state: TransientSurfaceState) -> Option<TransientDismissal> {
+pub fn topmost_dismissible(state: TransientSurfaceSnapshot) -> Option<TransientDismissal> {
     if state.command_palette_revealed {
         // The palette gives up one level per Escape: its category view first.
         return Some(if state.command_palette_category_shown {
@@ -150,7 +150,7 @@ impl ChildEscapeHandling {
 #[must_use]
 pub fn escape_outcome(
     child_handling: ChildEscapeHandling,
-    state: TransientSurfaceState,
+    state: TransientSurfaceSnapshot,
     focus_mode_active: bool,
 ) -> EscapeOutcome {
     if matches!(child_handling, ChildEscapeHandling::Handled) {
@@ -203,15 +203,15 @@ pub fn palette_click_away_dismisses(
 mod tests {
     use super::*;
 
-    fn state_with(mutate: impl FnOnce(&mut TransientSurfaceState)) -> TransientSurfaceState {
-        let mut state = TransientSurfaceState::default();
+    fn state_with(mutate: impl FnOnce(&mut TransientSurfaceSnapshot)) -> TransientSurfaceSnapshot {
+        let mut state = TransientSurfaceSnapshot::default();
         mutate(&mut state);
         state
     }
 
     #[test]
     fn no_visible_surface_yields_no_dismissal() {
-        let state = TransientSurfaceState::default();
+        let state = TransientSurfaceSnapshot::default();
         assert_eq!(topmost_dismissible(state), None);
     }
 
@@ -219,13 +219,13 @@ mod tests {
     fn ladder_order_is_palette_then_editor_then_panel_then_menus() {
         // Every surface visible at once: each step of the ladder must be the
         // one that wins, checked by removing them from the top down.
-        let mut state = TransientSurfaceState {
+        let mut state = TransientSurfaceSnapshot {
             command_palette_revealed: true,
             editor_search_visible: true,
             search_panel_revealed: true,
             primary_menu_active: true,
             notes_menu_active: true,
-            ..TransientSurfaceState::default()
+            ..TransientSurfaceSnapshot::default()
         };
         assert_eq!(
             topmost_dismissible(state),
@@ -259,24 +259,24 @@ mod tests {
     fn each_surface_alone_dismisses_itself() {
         for (mutate, expected) in [
             (
-                Box::new(|s: &mut TransientSurfaceState| s.command_palette_revealed = true)
-                    as Box<dyn FnOnce(&mut TransientSurfaceState)>,
+                Box::new(|s: &mut TransientSurfaceSnapshot| s.command_palette_revealed = true)
+                    as Box<dyn FnOnce(&mut TransientSurfaceSnapshot)>,
                 TransientDismissal::CommandPalette,
             ),
             (
-                Box::new(|s: &mut TransientSurfaceState| s.editor_search_visible = true),
+                Box::new(|s: &mut TransientSurfaceSnapshot| s.editor_search_visible = true),
                 TransientDismissal::EditorSearch,
             ),
             (
-                Box::new(|s: &mut TransientSurfaceState| s.search_panel_revealed = true),
+                Box::new(|s: &mut TransientSurfaceSnapshot| s.search_panel_revealed = true),
                 TransientDismissal::SearchPanel,
             ),
             (
-                Box::new(|s: &mut TransientSurfaceState| s.primary_menu_active = true),
+                Box::new(|s: &mut TransientSurfaceSnapshot| s.primary_menu_active = true),
                 TransientDismissal::PrimaryMenu,
             ),
             (
-                Box::new(|s: &mut TransientSurfaceState| s.notes_menu_active = true),
+                Box::new(|s: &mut TransientSurfaceSnapshot| s.notes_menu_active = true),
                 TransientDismissal::NotesMenu,
             ),
         ] {
@@ -307,7 +307,7 @@ mod tests {
         assert_eq!(
             escape_outcome(
                 ChildEscapeHandling::Unhandled,
-                TransientSurfaceState::default(),
+                TransientSurfaceSnapshot::default(),
                 true
             ),
             EscapeOutcome::ExitFocusMode
@@ -318,7 +318,7 @@ mod tests {
     fn nothing_visible_and_no_focus_mode_leaves_the_event_alone() {
         let outcome = escape_outcome(
             ChildEscapeHandling::Unhandled,
-            TransientSurfaceState::default(),
+            TransientSurfaceSnapshot::default(),
             false,
         );
         assert_eq!(outcome, EscapeOutcome::Unhandled);
@@ -347,11 +347,11 @@ mod tests {
 
     #[test]
     fn a_palette_category_view_is_left_before_the_palette_closes() {
-        let state = TransientSurfaceState {
+        let state = TransientSurfaceSnapshot {
             command_palette_revealed: true,
             command_palette_category_shown: true,
             search_panel_revealed: true,
-            ..TransientSurfaceState::default()
+            ..TransientSurfaceSnapshot::default()
         };
         assert_eq!(
             topmost_dismissible(state),
@@ -366,7 +366,7 @@ mod tests {
             EscapeOutcome::ChildAlreadyHandled,
             "the entry's own leave latched this Escape"
         );
-        let grouped = TransientSurfaceState {
+        let grouped = TransientSurfaceSnapshot {
             command_palette_category_shown: false,
             ..state
         };
@@ -374,7 +374,7 @@ mod tests {
             topmost_dismissible(grouped),
             Some(TransientDismissal::CommandPalette)
         );
-        let hidden = TransientSurfaceState {
+        let hidden = TransientSurfaceSnapshot {
             command_palette_revealed: false,
             ..state
         };

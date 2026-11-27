@@ -6,8 +6,10 @@
 //! signals and the GTK-thread debounce logic that translates them into inline
 //! editor notifications.
 
+use std::cell::{Cell, RefCell};
 use std::time::Duration;
 
+use gtk_lush_settle::Debounce;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::gio;
 use gtk4::prelude::*;
@@ -19,6 +21,14 @@ use lushtext_services::coordination::notifications::{
 use lushtext_services::editor_io;
 
 use super::{InlineAlertLifetime, LushtextEditorPage};
+
+/// External file-monitor state for one editor tab.
+#[derive(Default)]
+pub struct MonitorState {
+    pub file_monitor: RefCell<Option<gio::FileMonitor>>,
+    pub monitor_debounce: Debounce,
+    pub last_known_mtime: Cell<Option<u64>>,
+}
 
 impl LushtextEditorPage {
     /// Start watching the file for external modifications.

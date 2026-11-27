@@ -171,7 +171,7 @@ pub(super) const fn autosave_admission(lanes: AutosaveLaneState) -> AutosaveAdmi
 
 /// Active draft recovery work that blocks immediate close flushing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct CloseFlushWaitState {
+pub(super) struct CloseFlushWaitFacts {
     pub(super) mutation_inflight: bool,
     pub(super) cleanup_inflight: bool,
     pub(super) pending_deletes: bool,
@@ -183,7 +183,7 @@ pub(super) struct CloseFlushWaitState {
 /// A close that ran while a delete or restore was mid-flight could write a draft
 /// the user had just discarded, or race a restore's own manifest update.
 #[must_use]
-pub(super) const fn close_flush_must_wait(state: CloseFlushWaitState) -> bool {
+pub(super) const fn close_flush_must_wait(state: CloseFlushWaitFacts) -> bool {
     state.mutation_inflight
         || state.cleanup_inflight
         || state.pending_deletes
@@ -192,7 +192,7 @@ pub(super) const fn close_flush_must_wait(state: CloseFlushWaitState) -> bool {
 
 /// In-flight draft recovery/autosave lanes checked for automation readiness.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct DraftReadinessState {
+pub(super) struct DraftReadinessFacts {
     pub(super) autosave_inflight: bool,
     pub(super) mutation_inflight: bool,
     pub(super) pending_deletes: bool,
@@ -203,7 +203,7 @@ pub(super) struct DraftReadinessState {
 
 /// Whether draft persistence or deferred startup restore blocks readiness.
 #[must_use]
-pub(super) const fn draft_workflow_blocks_readiness(state: DraftReadinessState) -> bool {
+pub(super) const fn draft_workflow_blocks_readiness(state: DraftReadinessFacts) -> bool {
     state.autosave_inflight
         || state.mutation_inflight
         || state.pending_deletes
@@ -822,7 +822,7 @@ mod tests {
 
     #[test]
     fn close_flush_waits_for_any_lane_owner() {
-        assert!(!close_flush_must_wait(CloseFlushWaitState {
+        assert!(!close_flush_must_wait(CloseFlushWaitFacts {
             mutation_inflight: false,
             cleanup_inflight: false,
             pending_deletes: false,
@@ -834,7 +834,7 @@ mod tests {
             (false, false, true, false),
             (false, false, false, true),
         ] {
-            assert!(close_flush_must_wait(CloseFlushWaitState {
+            assert!(close_flush_must_wait(CloseFlushWaitFacts {
                 mutation_inflight: m,
                 cleanup_inflight: c,
                 pending_deletes: d,
@@ -845,7 +845,7 @@ mod tests {
 
     #[test]
     fn readiness_is_blocked_by_every_recovery_lane() {
-        assert!(!draft_workflow_blocks_readiness(DraftReadinessState {
+        assert!(!draft_workflow_blocks_readiness(DraftReadinessFacts {
             autosave_inflight: false,
             mutation_inflight: false,
             pending_deletes: false,
@@ -857,7 +857,7 @@ mod tests {
             let mut flags = [false; 6];
             flags[index] = true;
             assert!(
-                draft_workflow_blocks_readiness(DraftReadinessState {
+                draft_workflow_blocks_readiness(DraftReadinessFacts {
                     autosave_inflight: flags[0],
                     mutation_inflight: flags[1],
                     pending_deletes: flags[2],

@@ -91,38 +91,77 @@ impl RequestedLanguage {
     }
 }
 
+#[derive(Default)]
+enum AttachWaitStep {
+    #[default]
+    Idle,
+    AwaitingMap,
+    AwaitingFirstFrame(Option<(gtk4::gdk::FrameClock, glib::SignalHandlerId)>),
+    AwaitingQuiet {
+        armed_since_us: i64,
+        source: Option<glib::SourceId>,
+    },
+}
+
+impl AttachWaitStep {
+    fn retire(self) {
+        match self {
+            Self::AwaitingFirstFrame(Some((clock, handler))) => clock.disconnect(handler),
+            Self::AwaitingQuiet {
+                source: Some(source),
+                ..
+            } => source.remove(),
+            Self::Idle
+            | Self::AwaitingMap
+            | Self::AwaitingFirstFrame(None)
+            | Self::AwaitingQuiet { source: None, .. } => {}
+        }
+    }
+}
+
+#[derive(Default)]
+enum AttachStagePhase {
+    #[default]
+    Idle,
+    Pending {
+        for_install: bool,
+        step: AttachWaitStep,
+        waiters: Vec<Box<dyn FnOnce()>>,
+    },
+}
+
+#[derive(Clone, Copy, Default)]
+enum HighlightCoverage {
+    #[default]
+    Unwatched,
+    Watched {
+        covered_to: i32,
+    },
+}
+
+#[derive(Clone, Copy, Default)]
+struct ChunkedHighlightOwners {
+    load: bool,
+    replacement: bool,
+}
+
 /// One editor's attach-stage state.
 #[derive(Default)]
 pub struct LanguageAttachState {
     requested: RefCell<RequestedLanguage>,
-    /// Whether an attach stage is scheduled and has not run.
-    pending: Cell<bool>,
     /// Advanced by every request and cancellation; a stage of an older one
     /// does nothing.
     generation: Cell<LanguageAttachGeneration>,
     /// When the editor's first frame after it was mapped was painted.
     first_frame_us: Cell<Option<i64>>,
-    /// When the pending stage became eligible to wait for input-quiet: the
-    /// later of the first frame and the request.
-    armed_since_us: Cell<Option<i64>>,
-    source: RefCell<Option<glib::SourceId>>,
-    frame_handler: RefCell<Option<(gtk4::gdk::FrameClock, glib::SignalHandlerId)>>,
+    phase: RefCell<AttachStagePhase>,
     map_handler: RefCell<Option<glib::SignalHandlerId>>,
     /// Evidence: attach stages that ran, and of those how many ran past the
     /// deadline rather than after input-quiet.
     stages_run: Cell<u64>,
     deadline_runs: Cell<u64>,
-    /// Whether the pending stage was requested by a chunked highlighted
-    /// install (`chunked-highlight-attach`): it runs whatever the session
-    /// scale says (the install decided from the incoming one) and does not
-    /// wait for an unmapped editor to be mapped.
-    for_install: Cell<bool>,
-    /// Woken, in order, when the pending stage resolves: it ran, or it was
-    /// withdrawn or settled without running.
-    waiters: RefCell<Vec<Box<dyn FnOnce()>>>,
     /// The largest `highlight-updated` end since the last reset (ledger A84).
-    covered_to: Cell<i32>,
-    coverage_watched: Cell<bool>,
+    coverage: Cell<HighlightCoverage>,
     /// Evidence: attach stages a chunked install requested.
     install_requests: Cell<u64>,
     /// Evidence: chunks let in because the engine reported the buffer
@@ -133,8 +172,7 @@ pub struct LanguageAttachState {
     /// load or the replacement when it starts one, cleared at its terminal or
     /// when it drops the highlight (review S-c: an explicit fact, never
     /// inferred from a borrowed session).
-    load_chunked_owner: Cell<bool>,
-    replacement_chunked_owner: Cell<bool>,
+    owners: Cell<ChunkedHighlightOwners>,
 }
 
 /// Observable attach-stage state, projected into the load evidence.
@@ -295,8 +333,7 @@ impl LushtextEditorPage {
             self.cancel_language_attach();
             return;
         }
-        self.imp().language_attach.for_install.set(install);
-        self.request_language_attach_now();
+        self.request_language_attach_now(install);
     }
 
     /// Whether the pending stage is a chunked install's in the editor the
@@ -304,29 +341,32 @@ impl LushtextEditorPage {
     /// holding the keyboard focus. `has_focus`, not `is_focus`: the input
     /// clock is process-wide, and a focus child of an inactive window is
     /// not where the keys go (re-review of the re-review, fix 2).
-    fn install_attach_skips_input_quiet(&self) -> bool {
+    fn install_attach_skips_input_quiet(&self, for_install: bool) -> bool {
         let view = self.imp().source_view.get();
-        self.imp().language_attach.for_install.get() && view.is_mapped() && view.has_focus()
+        for_install && view.is_mapped() && view.has_focus()
     }
 
     /// Whether a chunked highlighted install (the load's or a whole-buffer
     /// replacement's) owns the buffer now.
     fn chunked_highlight_install_active(&self) -> bool {
-        let state = &self.imp().language_attach;
-        state.load_chunked_owner.get() || state.replacement_chunked_owner.get()
+        let owners = self.imp().language_attach.owners.get();
+        owners.load || owners.replacement
     }
 
     /// Record whether the load's installation is a chunked highlighted one.
     pub(crate) fn set_load_chunked_owner(&self, owns: bool) {
-        self.imp().language_attach.load_chunked_owner.set(owns);
+        let owners_cell = &self.imp().language_attach.owners;
+        let mut owners = owners_cell.get();
+        owners.load = owns;
+        owners_cell.set(owners);
     }
 
     /// Record whether the replacement's session is a chunked highlighted one.
     pub(crate) fn set_replacement_chunked_owner(&self, owns: bool) {
-        self.imp()
-            .language_attach
-            .replacement_chunked_owner
-            .set(owns);
+        let owners_cell = &self.imp().language_attach.owners;
+        let mut owners = owners_cell.get();
+        owners.replacement = owns;
+        owners_cell.set(owners);
     }
 
     /// Ask for the attach on behalf of a chunked highlighted install
@@ -337,17 +377,15 @@ impl LushtextEditorPage {
     /// stage at once (it still waits for input-quiet or the deadline).
     pub(crate) fn request_language_attach_for_install(&self) {
         let state = &self.imp().language_attach;
-        state.for_install.set(true);
         state
             .install_requests
             .set(state.install_requests.get().saturating_add(1));
-        self.request_language_attach_now();
+        self.request_language_attach_now(true);
     }
 
-    fn request_language_attach_now(&self) {
+    fn request_language_attach_now(&self, for_install: bool) {
         let Some(path) = self.imp().file_path.borrow().clone() else {
-            self.imp().language_attach.for_install.set(false);
-            self.wake_attach_waiters();
+            self.cancel_language_attach();
             return;
         };
         // The glob table answers in microseconds once the catalog is ready;
@@ -369,65 +407,85 @@ impl LushtextEditorPage {
         // tab claiming to be Markdown.
         if !settled && *state.requested.borrow() == RequestedLanguage::Plain {
             self.buffer().set_language(None::<&sourceview5::Language>);
-            state.pending.set(false);
-            state.for_install.set(false);
-            self.wake_attach_waiters();
+            self.resolve_pending_attach_to_idle();
             return;
         }
         if settled {
-            state.pending.set(false);
-            state.for_install.set(false);
-            self.wake_attach_waiters();
+            self.resolve_pending_attach_to_idle();
             return;
         }
-        state.pending.set(true);
-        state.armed_since_us.set(None);
+        {
+            let mut phase = state.phase.borrow_mut();
+            let waiters = match std::mem::take(&mut *phase) {
+                AttachStagePhase::Idle => Vec::new(),
+                AttachStagePhase::Pending { step, waiters, .. } => {
+                    drop(step);
+                    waiters
+                }
+            };
+            *phase = AttachStagePhase::Pending {
+                for_install,
+                step: AttachWaitStep::Idle,
+                waiters,
+            };
+        }
         self.schedule_attach_after_first_frame();
     }
 
     /// Drop any pending attach stage.
     pub(crate) fn cancel_language_attach(&self) {
         self.cancel_scheduled_attach();
-        let state = &self.imp().language_attach;
-        state.pending.set(false);
-        state.for_install.set(false);
-        self.wake_attach_waiters();
+        self.resolve_pending_attach_to_idle();
+    }
+
+    fn resolve_pending_attach_to_idle(&self) {
+        let old = std::mem::take(&mut *self.imp().language_attach.phase.borrow_mut());
+        if let AttachStagePhase::Pending { step, waiters, .. } = old {
+            step.retire();
+            for waiter in waiters {
+                waiter();
+            }
+        }
     }
 
     /// Run `resume` once the pending attach stage resolves (it ran, or was
     /// withdrawn or settled without running), or now when none is pending.
     pub(crate) fn when_language_attach_resolves(&self, resume: impl FnOnce() + 'static) {
-        if self.language_attach_pending() {
-            self.imp()
-                .language_attach
-                .waiters
-                .borrow_mut()
-                .push(Box::new(resume));
-        } else {
+        let enqueued = {
+            let mut phase = self.imp().language_attach.phase.borrow_mut();
+            match &mut *phase {
+                AttachStagePhase::Pending { waiters, .. } => {
+                    waiters.push(Box::new(resume));
+                    return;
+                }
+                AttachStagePhase::Idle => false,
+            }
+        };
+        if !enqueued {
             resume();
-        }
-    }
-
-    fn wake_attach_waiters(&self) {
-        let waiters = std::mem::take(&mut *self.imp().language_attach.waiters.borrow_mut());
-        for waiter in waiters {
-            waiter();
         }
     }
 
     /// Forget what the engine reported, before a chunk goes in (ledger A84).
     pub(crate) fn reset_highlight_coverage(&self) {
         let state = &self.imp().language_attach;
-        if !state.coverage_watched.replace(true) {
+        let watched = matches!(state.coverage.get(), HighlightCoverage::Watched { .. });
+        state
+            .coverage
+            .set(HighlightCoverage::Watched { covered_to: 0 });
+        if !watched {
             let editor = self.downgrade();
             self.buffer().connect_highlight_updated(move |_, _, end| {
                 if let Some(editor) = editor.upgrade() {
-                    let covered = &editor.imp().language_attach.covered_to;
-                    covered.set(covered.get().max(end.offset()));
+                    let coverage = &editor.imp().language_attach.coverage;
+                    if let HighlightCoverage::Watched { covered_to } = coverage.get() {
+                        coverage.set(HighlightCoverage::Watched {
+                            covered_to: covered_to.max(end.offset()),
+                        });
+                    }
                 }
             });
         }
-        state.covered_to.set(0);
     }
 
     /// Whether the engine has reported the buffer analysed to the end of its
@@ -446,19 +504,25 @@ impl LushtextEditorPage {
             }
             iter.offset()
         };
-        self.imp().language_attach.covered_to.get() >= target
+        match self.imp().language_attach.coverage.get() {
+            HighlightCoverage::Unwatched => 0 >= target,
+            HighlightCoverage::Watched { covered_to } => covered_to >= target,
+        }
     }
 
     /// Whether an attach stage is pending.
     pub(crate) fn language_attach_pending(&self) -> bool {
-        self.imp().language_attach.pending.get()
+        matches!(
+            *self.imp().language_attach.phase.borrow(),
+            AttachStagePhase::Pending { .. }
+        )
     }
 
     /// Observable attach-stage state.
     pub(crate) fn language_attach_evidence(&self) -> LanguageAttachEvidence {
         let state = &self.imp().language_attach;
         LanguageAttachEvidence {
-            pending: state.pending.get(),
+            pending: self.language_attach_pending(),
             first_frame_seen: state.first_frame_us.get().is_some(),
             stages_run: state.stages_run.get(),
             deadline_runs: state.deadline_runs.get(),
@@ -479,11 +543,15 @@ impl LushtextEditorPage {
     fn cancel_scheduled_attach(&self) {
         let state = &self.imp().language_attach;
         state.generation.set(state.generation.get().next());
-        if let Some(source) = state.source.take() {
-            source.remove();
-        }
-        if let Some((clock, handler)) = state.frame_handler.take() {
-            clock.disconnect(handler);
+        let retired = {
+            let mut phase = state.phase.borrow_mut();
+            match &mut *phase {
+                AttachStagePhase::Pending { step, .. } => Some(std::mem::take(step)),
+                AttachStagePhase::Idle => None,
+            }
+        };
+        if let Some(step) = retired {
+            step.retire();
         }
     }
 
@@ -495,14 +563,30 @@ impl LushtextEditorPage {
     /// mapping queues, because frames dispatch at a higher priority.
     fn schedule_attach_after_first_frame(&self) {
         let state = &self.imp().language_attach;
+        let for_install = match *state.phase.borrow() {
+            AttachStagePhase::Pending { for_install, .. } => for_install,
+            AttachStagePhase::Idle => return,
+        };
         let view = self.imp().source_view.get();
-        if !view.is_mapped() && state.for_install.get() {
+        if !view.is_mapped() && for_install {
             // A background install waits for the attach; the tab may never
             // be shown (`chunked-highlight-attach`).
             self.arm_attach_idle();
             return;
         }
         if !view.is_mapped() {
+            let old = {
+                let mut phase = state.phase.borrow_mut();
+                match &mut *phase {
+                    AttachStagePhase::Pending { step, .. } => {
+                        Some(std::mem::replace(step, AttachWaitStep::AwaitingMap))
+                    }
+                    AttachStagePhase::Idle => None,
+                }
+            };
+            if let Some(step) = old {
+                step.retire();
+            }
             if state.map_handler.borrow().is_none() {
                 let editor = self.downgrade();
                 let handler = view.connect_map(move |_| {
@@ -529,19 +613,45 @@ impl LushtextEditorPage {
                     editor.first_editor_frame_painted(generation);
                 }
             });
-            state.frame_handler.replace(Some((clock, handler)));
+            let new_step = AttachWaitStep::AwaitingFirstFrame(Some((clock, handler)));
+            let old = {
+                let mut phase = state.phase.borrow_mut();
+                match &mut *phase {
+                    AttachStagePhase::Pending { step, .. }
+                        if state.generation.get() == generation =>
+                    {
+                        Ok(std::mem::replace(step, new_step))
+                    }
+                    _ => Err(new_step),
+                }
+            };
+            match old {
+                Ok(step) => step.retire(),
+                Err(unused) => unused.retire(),
+            }
         }
     }
 
     fn first_editor_frame_painted(&self, generation: LanguageAttachGeneration) {
         let state = &self.imp().language_attach;
-        if let Some((clock, handler)) = state.frame_handler.take() {
-            clock.disconnect(handler);
+        let frame_step = {
+            let mut phase = state.phase.borrow_mut();
+            match &mut *phase {
+                AttachStagePhase::Pending { step, .. }
+                    if matches!(step, AttachWaitStep::AwaitingFirstFrame(_)) =>
+                {
+                    Some(std::mem::take(step))
+                }
+                _ => None,
+            }
+        };
+        if let Some(step) = frame_step {
+            step.retire();
         }
         if state.first_frame_us.get().is_none() {
             state.first_frame_us.set(Some(glib::monotonic_time()));
         }
-        if state.generation.get() == generation && state.pending.get() {
+        if state.generation.get() == generation && self.language_attach_pending() {
             self.arm_attach_idle();
         }
     }
@@ -551,30 +661,88 @@ impl LushtextEditorPage {
     fn arm_attach_idle(&self) {
         let state = &self.imp().language_attach;
         let now = glib::monotonic_time();
-        let armed_since = match (state.armed_since_us.get(), state.first_frame_us.get()) {
-            (Some(armed), _) => armed,
-            (None, first) => first.map_or(now, |first| first.max(now)),
+        let (generation, armed_since_us) = {
+            let phase = state.phase.borrow();
+            let AttachStagePhase::Pending { step, .. } = &*phase else {
+                return;
+            };
+            let armed = match step {
+                AttachWaitStep::AwaitingQuiet { armed_since_us, .. } => *armed_since_us,
+                AttachWaitStep::Idle
+                | AttachWaitStep::AwaitingMap
+                | AttachWaitStep::AwaitingFirstFrame(_) => state
+                    .first_frame_us
+                    .get()
+                    .map_or(now, |first| first.max(now)),
+            };
+            (state.generation.get(), armed)
         };
-        state.armed_since_us.set(Some(armed_since));
-        let generation = state.generation.get();
         let editor = self.downgrade();
         let source = glib::idle_add_local_full(glib::Priority::LOW, move || {
             if let Some(editor) = editor.upgrade() {
-                editor.imp().language_attach.source.borrow_mut().take();
+                editor.clear_attach_quiet_source(generation);
                 editor.attach_idle_dispatched(generation);
             }
             glib::ControlFlow::Break
         });
-        state.source.replace(Some(source));
+        self.store_attach_quiet_source(generation, armed_since_us, source);
+    }
+
+    fn clear_attach_quiet_source(&self, generation: LanguageAttachGeneration) {
+        let state = &self.imp().language_attach;
+        if state.generation.get() != generation {
+            return;
+        }
+        if let AttachStagePhase::Pending {
+            step: AttachWaitStep::AwaitingQuiet { source, .. },
+            ..
+        } = &mut *state.phase.borrow_mut()
+        {
+            *source = None;
+        }
+    }
+
+    fn store_attach_quiet_source(
+        &self,
+        generation: LanguageAttachGeneration,
+        armed_since_us: i64,
+        source_id: glib::SourceId,
+    ) {
+        let state = &self.imp().language_attach;
+        let new_step = AttachWaitStep::AwaitingQuiet {
+            armed_since_us,
+            source: Some(source_id),
+        };
+        let replaced = {
+            let mut phase = state.phase.borrow_mut();
+            match &mut *phase {
+                AttachStagePhase::Pending { step, .. } if state.generation.get() == generation => {
+                    Ok(std::mem::replace(step, new_step))
+                }
+                _ => Err(new_step),
+            }
+        };
+        match replaced {
+            Ok(old) => old.retire(),
+            Err(unused) => unused.retire(),
+        }
     }
 
     fn attach_idle_dispatched(&self, generation: LanguageAttachGeneration) {
         let state = &self.imp().language_attach;
-        if state.generation.get() != generation || !state.pending.get() {
+        if state.generation.get() != generation {
             return;
         }
+        let (for_install, armed_since) = match &*state.phase.borrow() {
+            AttachStagePhase::Pending {
+                for_install,
+                step: AttachWaitStep::AwaitingQuiet { armed_since_us, .. },
+                ..
+            } => (*for_install, Some(*armed_since_us)),
+            AttachStagePhase::Pending { for_install, .. } => (*for_install, None),
+            AttachStagePhase::Idle => return,
+        };
         let now = glib::monotonic_time();
-        let armed_since = state.armed_since_us.get();
         let last_input = crate::ui::input_quiet::last_input_us();
         // A chunked install holds the keys typed into its own editor until
         // its terminal, so when that editor is the one receiving keys (shown
@@ -584,7 +752,7 @@ impl LushtextEditorPage {
         // `ATTACH_DEADLINE_US`. Any other install, a background tab's above
         // all, keeps waiting for input-quiet or the deadline, so the parse
         // never lands while the user types elsewhere.
-        if !self.install_attach_skips_input_quiet()
+        if !self.install_attach_skips_input_quiet(for_install)
             && !deferred_attach_may_run(now, armed_since, last_input)
         {
             // Come back when the quiet interval or the deadline can have
@@ -600,13 +768,14 @@ impl LushtextEditorPage {
                 glib::Priority::LOW,
                 move || {
                     if let Some(editor) = editor.upgrade() {
-                        editor.imp().language_attach.source.borrow_mut().take();
+                        editor.clear_attach_quiet_source(generation);
                         editor.attach_idle_dispatched(generation);
                     }
                     glib::ControlFlow::Break
                 },
             );
-            state.source.replace(Some(source));
+            let armed = armed_since.unwrap_or(now);
+            self.store_attach_quiet_source(generation, armed, source);
             return;
         }
         let past_deadline =
@@ -622,10 +791,23 @@ impl LushtextEditorPage {
     /// Stage 3: attach, with GtkSourceView's own guess authoritative.
     fn run_language_attach(&self, generation: LanguageAttachGeneration, past_deadline: bool) {
         let state = &self.imp().language_attach;
-        if state.generation.get() != generation || !state.pending.get() {
-            return;
-        }
-        state.pending.set(false);
+        let (for_install, waiters) = {
+            if state.generation.get() != generation {
+                return;
+            }
+            let old = std::mem::take(&mut *state.phase.borrow_mut());
+            match old {
+                AttachStagePhase::Pending {
+                    for_install,
+                    step,
+                    waiters,
+                } => {
+                    step.retire();
+                    (for_install, waiters)
+                }
+                AttachStagePhase::Idle => return,
+            }
+        };
         state
             .stages_run
             .set(state.stages_run.get().saturating_add(1));
@@ -634,15 +816,15 @@ impl LushtextEditorPage {
                 .deadline_runs
                 .set(state.deadline_runs.get().saturating_add(1));
         }
-        self.attach_language_now();
-        // The install's exemptions end with its stage (review S2).
-        state.for_install.set(false);
-        self.wake_attach_waiters();
+        self.attach_language_now(for_install);
+        for waiter in waiters {
+            waiter();
+        }
     }
 
-    fn attach_language_now(&self) {
+    fn attach_language_now(&self, for_install: bool) {
         let state = &self.imp().language_attach;
-        if !state.for_install.get() && !self.document_scale().syntax_enabled {
+        if !for_install && !self.document_scale().syntax_enabled {
             return;
         }
         let Some(path) = self.imp().file_path.borrow().clone() else {

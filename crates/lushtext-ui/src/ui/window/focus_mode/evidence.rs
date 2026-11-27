@@ -32,6 +32,7 @@
 use glib::subclass::prelude::ObjectSubclassIsExt;
 
 use super::super::LushtextWindow;
+use super::chrome::FocusModePhase;
 use super::policy::{FocusModeEntry, FocusModeRestore, exit_restoration};
 use super::{chrome, preview_readable_column_applies};
 
@@ -75,16 +76,20 @@ pub struct FocusModeEvidence {
 pub fn focus_mode_evidence(window: &LushtextWindow) -> FocusModeEvidence {
     // Every scalar is computed before the struct literal, so no read outlives a
     // borrow it produced.
-    let state = &window.imp().focus_mode;
-    let entry = FocusModeEntry {
-        was_fullscreen: state.was_fullscreen_on_entry.get(),
-        had_side_by_side_preview: state.restore_side_by_side_preview.get(),
+    let (active, entry, preview_changed_while_focused) = match window.imp().focus_mode.phase.get() {
+        FocusModePhase::Active {
+            entry,
+            preview_changed_while_focused,
+        } => (true, entry, preview_changed_while_focused),
+        FocusModePhase::Inactive {
+            last_entry,
+            last_preview_changed_while_focused,
+        } => (false, last_entry, last_preview_changed_while_focused),
     };
-    let preview_changed_while_focused = state.preview_changed_while_focused.get();
     let (header_bar_visible, status_bar_visible) = chrome::chrome_visibility(window);
 
     FocusModeEvidence {
-        active: state.active.get(),
+        active,
         entry,
         preview_changed_while_focused,
         exit_restores: exit_restoration(entry, preview_changed_while_focused),

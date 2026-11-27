@@ -53,6 +53,8 @@ pub mod policy;
 mod close_execution;
 mod surfaces;
 
+pub(in crate::ui::window) use surfaces::TabManagementState;
+
 #[cfg(feature = "test-utils")]
 pub mod evidence;
 

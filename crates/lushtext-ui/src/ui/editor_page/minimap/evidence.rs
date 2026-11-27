@@ -162,13 +162,19 @@ impl LushtextEditorPage {
     pub fn minimap_evidence(&self) -> MinimapEvidence {
         let imp = self.imp();
         let minimap = &imp.minimap;
+        let analysis = &minimap.analysis;
+        let projection = &minimap.projection;
 
-        let generation = minimap.analysis_generation.get();
-        let active = minimap.analysis_session.borrow().is_some();
-        let source_armed = minimap.analysis_source_id.borrow().is_some();
+        let generation = analysis.generation.get();
+        let (active, source_armed) = match &*analysis.run.borrow() {
+            super::admission::MinimapAnalysisRun::Idle => (false, false),
+            super::admission::MinimapAnalysisRun::Active { session, source_id } => {
+                (session.is_some(), source_id.is_some())
+            }
+        };
 
         let (cache_owned, cache_generation, marker_cache_owned, cached_characters, long_lines) = {
-            let cache = minimap.analysis_cache.borrow();
+            let cache = analysis.cache.borrow();
             let entry = cache.as_ref();
             (
                 entry.is_some(),
@@ -181,14 +187,14 @@ impl LushtextEditorPage {
             )
         };
 
-        let slices = minimap.analysis_slices.get();
-        let chars_per_slice_high_water = minimap.analysis_chars_per_slice_high_water.get();
-        let cancellations = minimap.analysis_cancellations.get();
-        let terminals = minimap.analysis_terminals.get();
+        let slices = analysis.slices.get();
+        let chars_per_slice_high_water = analysis.chars_per_slice_high_water.get();
+        let cancellations = analysis.cancellations.get();
+        let terminals = analysis.terminals.get();
 
-        let reflow_settle_pending = minimap.reflow_settle.pending();
+        let reflow_settle_pending = minimap.reflow.settle.pending();
         let work_pending = self.minimap_work_outstanding();
-        let (binned_rows, row_groups, queries, search_waiting_for_scan) = minimap
+        let (binned_rows, row_groups, queries, search_waiting_for_scan) = projection
             .marker_bins
             .borrow()
             .as_ref()
@@ -255,8 +261,8 @@ impl LushtextEditorPage {
             wrapped_layout_analysis_required,
             projection_attached,
             map_present: source_map.is_some(),
-            maps_built: minimap.maps_built.get(),
-            retired_maps_alive: minimap
+            maps_built: projection.maps_built.get(),
+            retired_maps_alive: projection
                 .retired_maps
                 .borrow()
                 .iter()
