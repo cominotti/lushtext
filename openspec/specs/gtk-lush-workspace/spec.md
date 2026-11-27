@@ -8,13 +8,7 @@ keeps the family independently adoptable.
 
 ## Requirements
 ### Requirement: Family workspace layout
-The repository SHALL host the family under `crates/gtk-lush/<member>` with
-package names `gtk-lush-<member>`, wired into the root Cargo workspace,
-cargo-hakari (`workspace-hack`), the nextest configuration, the curated
-workspace lint table, and cargo-deny. Family members SHALL NOT depend on
-LushText crates or on each other; LushText consumes family crates via
-workspace path dependencies unless a future explicit publication/graduation
-change migrates that source.
+The repository SHALL host family crates at `crates/gtk-lush/<member>` (`gtk-lush-<member>`), wired into the workspace, `workspace-hack`, nextest, workspace lints, and cargo-deny. Family crates MUST NOT depend on LushText crates or each other; LushText consumes them via workspace path dependencies.
 
 #### Scenario: Workspace integration
 - **WHEN** `cargo hakari generate`, `make check`, and the non-widget test lane
@@ -23,7 +17,7 @@ change migrates that source.
   workspace member
 
 #### Scenario: Dependency direction enforced
-- **WHEN** a family crate adds a dependency on `lushtext-core` or another
+- **WHEN** a family crate adds a dependency on `lushtext-ui`, `lushtext-services`, `lushtext-model`, or another
   `gtk-lush-*` crate
 - **THEN** the workspace policy check fails the build until the dependency is
   removed
@@ -241,7 +235,7 @@ LushText GSettings schemas, or another GTK Lush family crate.
 - **WHEN** the stock adoption fixture check runs
 - **THEN** each checked fixture declares exactly one `gtk-lush-*` path
   dependency
-- **AND** it does not import `lushtext`, `lushtext-core`, or another family
+- **AND** it does not import `lushtext`, `lushtext-ui`, `lushtext-services`, `lushtext-model`, or another family
   crate
 
 #### Scenario: Fixture check is deterministic

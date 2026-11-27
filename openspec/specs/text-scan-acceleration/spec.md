@@ -129,30 +129,7 @@ implementation and the measurement SHALL be recorded.
 - **THEN** the scalar implementation stays in production and the result is recorded with the run
 
 ### Requirement: Hand-written SIMD kernels are admitted only by measured need
-A hand-written SIMD kernel SHALL be added only for a loop that remains at least
-10 % of its enclosing workflow's measured cost after its library-based
-rewrite. Such a kernel SHALL be selected at run time
-(`#[target_feature(enable = "avx2")]` with cached `is_x86_feature_detected!`
-dispatch), SHALL fall back to the library-based path, and both paths SHALL be
-measured on the interleaved benchmark. NEON parity SHALL be decided for each
-kernel, either with a NEON kernel measured on aarch64 or by keeping aarch64 on
-the library path with that recorded as unmeasured. No build SHALL require a
-CPU feature beyond the target's baseline at build time.
-
-The policy SHALL be enforced mechanically by a policy check in `make check-policy`.
-The check SHALL fail on any of these:
-- a use of `#[target_feature]`, `std::arch`, `core::arch` or a runtime
-  feature-detection macro under `crates/` outside a file the allowlist names;
-- a `target-cpu` or `target-feature` flag in the Cargo, toolchain, Meson, Flatpak or
-  Snap build configuration;
-- a SIMD-dispatch dependency without an allowlist entry;
-- `memchr` resolved without its `std` feature, which carries its runtime AVX2
-  detection.
-
-The allowlist SHALL record, for each kernel, its file and function, its measurement
-record and its NEON decision. The workspace's Clippy configuration SHALL also
-disallow the feature-detection macros except where an admitted kernel's site
-expects the lint with a reason.
+A hand-written SIMD kernel SHALL be added only when a loop remains >=10% of its workflow's measured cost after library rewrite, using runtime dispatch (`is_x86_feature_detected!`) with library fallback, interleaved benchmarks, explicit NEON status, and no build-time CPU requirements. `make check-policy` SHALL enforce the kernel/crate allowlist, build flags, and `memchr`'s `std` feature.
 
 #### Scenario: Baseline x86-64 still runs the shipped binary
 - **WHEN** the release, Meson, Flatpak, or Snap build is inspected
@@ -163,7 +140,7 @@ expects the lint with a reason.
 - **THEN** `make check-policy` fails and names the file
 
 #### Scenario: memchr loses its runtime dispatch
-- **WHEN** the dependency graph resolves `memchr` for `lushtext-core` without its `std` feature
+- **WHEN** the dependency graph resolves `memchr` for `lushtext-ui`, `lushtext-services`, or `lushtext-model` without its `std` feature
 - **THEN** `make check-policy` fails, because the accelerated scans would silently fall back to SSE2
 
 #### Scenario: A kernel without a measured need is rejected
