@@ -22,9 +22,9 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::translate::IntoGlib;
 use gtk4::gio;
 use gtk4::prelude::*;
-use lushtext_core::model::session::{SessionData, SessionTab};
-use lushtext_core::services::filesystem::fixture;
-use lushtext_core::ui::window::{
+use lushtext_model::session::{SessionData, SessionTab};
+use lushtext_services::filesystem::fixture;
+use lushtext_ui::ui::window::{
     LushtextAllTabsPopover, LushtextWindow, TabOverflowEvidence, TabOverflowTestTiming,
     find_tab_scroller, set_tab_overflow_test_timing, tab_overflow_evidence,
 };
@@ -965,10 +965,10 @@ fn open_files(window: &LushtextWindow, dir: &std::path::Path, names: &[&str]) {
                 tab_view
                     .nth_page(index)
                     .child()
-                    .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+                    .downcast::<lushtext_ui::ui::editor_page::LushtextEditorPage>()
                     .is_ok_and(|editor| {
                         editor.load_state()
-                            != lushtext_core::ui::editor_page::EditorLoadState::Loading
+                            != lushtext_ui::ui::editor_page::EditorLoadState::Loading
                     })
             })
     }));
@@ -1091,7 +1091,7 @@ fn test_all_tabs_popover_lists_pinned_modified_and_untitled_rows_in_strip_order(
     let modified = tab_view
         .nth_page(1)
         .child()
-        .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+        .downcast::<lushtext_ui::ui::editor_page::LushtextEditorPage>()
         .expect("an editor");
     let buffer = modified.buffer();
     buffer.insert(&mut buffer.end_iter(), "changed");
@@ -1137,7 +1137,7 @@ fn test_all_tabs_row_text_measures_like_a_label_in_situ() {
     while let Some(widget) = child {
         let row_text = widget
             .clone()
-            .downcast::<lushtext_core::ui::row_text::LushtextRowText>()
+            .downcast::<lushtext_ui::ui::row_text::LushtextRowText>()
             .expect("row text");
         let label = gtk4::Label::new(Some(&row_text.text()));
         for class in row_text.css_classes() {

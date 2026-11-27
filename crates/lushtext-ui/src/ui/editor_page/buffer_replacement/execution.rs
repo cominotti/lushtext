@@ -1,0 +1,1464 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Coordination for one bounded whole-buffer replacement session.
+//!
+//! This module owns everything the pure policy beside it deliberately does not:
+//! GTK source lifetime, the projection/editability guard, body ownership across
+//! the worker boundary, the scheduled clear and install turns, supersession, and
+//! exactly-once terminal cleanup. Every decision it makes about *what* to do
+//! next is delegated to [`super::policy`]; what remains here is *how*.
+
+use crate::ui::editor_page::edit_lock::EditLock;
+use crate::ui::editor_page::protected_view::execution::ProtectedInstallSource;
+use crate::ui::editor_page::protected_view::policy::WholeContentInstall;
+use std::cell::RefCell;
+use std::ops::Deref;
+use std::rc::Rc;
+use std::time::Duration;
+
+use gtk4::glib;
+use gtk4::subclass::prelude::ObjectSubclassIsExt;
+use sourceview5::prelude::*;
+
+use crate::ui::editor_page::LushtextEditorPage;
+use crate::ui::protected_fold::FoldedInstall;
+use lushtext_model::buffer_replacement::{
+    BufferReplacementMode, BufferReplacementPlan, SliceBudget, next_clear_char_count,
+    next_slice_boundary,
+};
+use lushtext_model::paragraph_boundary::DocumentProfile;
+
+use super::evidence;
+use super::policy::{
+    BufferReplacementCancelReason, BufferReplacementMetrics, BufferReplacementTicket,
+    CancelDisposition, ClearProgress, ReplacementPhase, StartDisposition, after_clear_slice,
+    cancel_disposition, guard_restores_on_terminal, insertion_is_complete, start_disposition,
+    turn_may_run,
+};
+// The Protected View install mapping and the test-only actuation seams name
+// the workflow family; every caller supplies its own variant in its ticket.
+use super::policy::BufferReplacementWorkflow;
+
+/// Delay between scheduled turns. One millisecond, not an idle source: an idle
+/// source can starve behind higher-priority work while the buffer is still
+/// half-mutated.
+const SLICE_TURN_DELAY: Duration = Duration::from_millis(1);
+
+type FreshnessCheck = Box<dyn Fn(&LushtextEditorPage) -> bool>;
+type TerminalCallback = Box<dyn FnOnce(BufferReplacementOutcome)>;
+/// Callback that receives a guarded (disposal-owned) source body back.
+type GuardedBodyCallback = Box<dyn FnOnce(crate::ui::plain_disposal::DisposalOwned<String>)>;
+/// Callback that receives a plain source body back (test-only cancel probe).
+#[cfg(feature = "test-utils")]
+type PlainBodyCallback = Box<dyn FnOnce(String)>;
+
+/// The uninstalled source body paired with the workflow callbacks matched to
+/// its kind.
+///
+/// Keeping each callback *inside* the body variant it belongs to makes a
+/// guarded cancellation callback structurally impossible to attach to a plain
+/// body (and a plain callback impossible to attach to a guarded body): the only
+/// constructors that accept a guarded callback also demand a guarded body. As a
+/// result terminal teardown matches every legal pairing exhaustively with no
+/// runtime panic arm for an unrepresentable mismatch.
+enum ReplacementBody {
+    Plain {
+        body: String,
+        /// Test-only probe returning the uninstalled plain body on cancel.
+        #[cfg(feature = "test-utils")]
+        on_cancel: Option<PlainBodyCallback>,
+    },
+    Guarded {
+        body: crate::ui::plain_disposal::DisposalOwned<String>,
+        /// Returns the uninstalled guarded body on cancel/supersede, keeping its
+        /// disposal reservation intact.
+        on_cancel: Option<GuardedBodyCallback>,
+        /// Preserves the installed guarded source for an accepted workflow cache.
+        on_complete: Option<GuardedBodyCallback>,
+    },
+}
+
+impl ReplacementBody {
+    /// At a completed install into a protected editor, a guarded body nobody
+    /// else keeps becomes the Protected View text source (design D4); a body
+    /// with an `on_complete` consumer goes there, which decides (draft
+    /// recovery retains it through its local-history seeding).
+    fn retain_for_protected_view(self, editor: &LushtextEditorPage) -> Self {
+        match self {
+            Self::Guarded {
+                body,
+                on_cancel,
+                on_complete: None,
+            } if editor.is_protected_view() => match editor.retain_protected_source(body) {
+                None => Self::default(),
+                Some(body) => Self::Guarded {
+                    body,
+                    on_cancel,
+                    on_complete: None,
+                },
+            },
+            other => other,
+        }
+    }
+}
+
+impl Default for ReplacementBody {
+    fn default() -> Self {
+        Self::Plain {
+            body: String::new(),
+            #[cfg(feature = "test-utils")]
+            on_cancel: None,
+        }
+    }
+}
+
+impl Deref for ReplacementBody {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Plain { body, .. } => body,
+            Self::Guarded { body, .. } => body,
+        }
+    }
+}
+
+impl ReplacementBody {
+    /// Return this uninstalled body to its workflow owner on cancel/supersede.
+    ///
+    /// A guarded completion callback is intentionally dropped uncalled here; a
+    /// guarded body with no cancel callback disposes itself through
+    /// `DisposalOwned`.
+    fn return_on_cancel(self) {
+        match self {
+            #[cfg(feature = "test-utils")]
+            Self::Plain { body, on_cancel } => {
+                if let Some(callback) = on_cancel {
+                    callback(body);
+                }
+            }
+            #[cfg(not(feature = "test-utils"))]
+            Self::Plain { body } => drop(body),
+            Self::Guarded {
+                body,
+                on_cancel,
+                on_complete: _,
+            } => match on_cancel {
+                Some(callback) => callback(body),
+                None => drop(body),
+            },
+        }
+    }
+
+    /// Finalize an accepted replacement: route a guarded body to its completion
+    /// callback and yield the retained plain body for terminal evidence.
+    fn into_completed_body(self) -> String {
+        match self {
+            #[cfg(feature = "test-utils")]
+            Self::Plain { body, on_cancel: _ } => body,
+            #[cfg(not(feature = "test-utils"))]
+            Self::Plain { body } => body,
+            Self::Guarded {
+                body,
+                on_cancel: _,
+                on_complete,
+            } => {
+                match on_complete {
+                    Some(callback) => callback(body),
+                    None => drop(body),
+                }
+                String::new()
+            }
+        }
+    }
+}
+
+/// Exact terminal result delivered once to the workflow owner.
+#[derive(Debug)]
+pub enum BufferReplacementOutcome {
+    Complete {
+        ticket: BufferReplacementTicket,
+        #[cfg(feature = "test-utils")]
+        body: String,
+        metrics: BufferReplacementMetrics,
+    },
+    Cancelled {
+        ticket: BufferReplacementTicket,
+        reason: BufferReplacementCancelReason,
+        metrics: BufferReplacementMetrics,
+    },
+}
+
+impl BufferReplacementOutcome {
+    fn trace_terminal(&self, source_released: bool, guard_released: bool) {
+        let (ticket, cancel_reason, metrics) = match self {
+            Self::Complete {
+                ticket, metrics, ..
+            } => (*ticket, None, *metrics),
+            Self::Cancelled {
+                ticket,
+                reason,
+                metrics,
+            } => (*ticket, Some(*reason), *metrics),
+        };
+        tracing::debug!(
+            workflow = ?ticket.workflow,
+            generation = ticket.generation,
+            cancel_reason = ?cancel_reason,
+            slice_count = metrics.slice_count,
+            cleared_characters = metrics.cleared_characters,
+            inserted_bytes = metrics.inserted_bytes,
+            peak_retained_bodies = metrics.peak_retained_bodies,
+            source_released,
+            guard_released,
+            "buffer replacement reached terminal cleanup"
+        );
+    }
+}
+
+/// One complete replacement request; pending ownership never contains GTK objects.
+///
+/// The body kind and its cancellation/completion callbacks are paired by
+/// construction: every constructor that accepts a guarded callback also demands
+/// a guarded body, so a guarded callback cannot reach a plain body (or the
+/// reverse). There is no builder that could later cross those kinds.
+pub struct BufferReplacementRequest {
+    ticket: BufferReplacementTicket,
+    body: ReplacementBody,
+    is_current: FreshnessCheck,
+    callback: TerminalCallback,
+    /// The body's paragraph profile, computed by the worker that prepared it;
+    /// joined into the editor's document scale at a `Complete` terminal.
+    profile: Option<DocumentProfile>,
+}
+
+impl BufferReplacementRequest {
+    /// Plain-body replacement with no body-return callback (e.g. eviction).
+    pub fn new(
+        ticket: BufferReplacementTicket,
+        body: String,
+        is_current: impl Fn(&LushtextEditorPage) -> bool + 'static,
+        callback: impl FnOnce(BufferReplacementOutcome) + 'static,
+    ) -> Self {
+        Self {
+            ticket,
+            body: ReplacementBody::Plain {
+                body,
+                #[cfg(feature = "test-utils")]
+                on_cancel: None,
+            },
+            is_current: Box::new(is_current),
+            callback: Box::new(callback),
+            profile: None,
+        }
+    }
+
+    /// Plain-body replacement that returns the uninstalled body when cancelled.
+    #[cfg(feature = "test-utils")]
+    pub fn new_returning_body_on_cancel(
+        ticket: BufferReplacementTicket,
+        body: String,
+        is_current: impl Fn(&LushtextEditorPage) -> bool + 'static,
+        callback: impl FnOnce(BufferReplacementOutcome) + 'static,
+        on_cancel: impl FnOnce(String) + 'static,
+    ) -> Self {
+        Self {
+            ticket,
+            body: ReplacementBody::Plain {
+                body,
+                on_cancel: Some(Box::new(on_cancel)),
+            },
+            is_current: Box::new(is_current),
+            callback: Box::new(callback),
+            profile: None,
+        }
+    }
+
+    /// Guarded-body replacement that returns the uninstalled guarded body on
+    /// cancel without releasing its disposal reservation.
+    pub(crate) fn new_guarded_returning_body_on_cancel(
+        ticket: BufferReplacementTicket,
+        body: crate::ui::plain_disposal::DisposalOwned<String>,
+        is_current: impl Fn(&LushtextEditorPage) -> bool + 'static,
+        callback: impl FnOnce(BufferReplacementOutcome) + 'static,
+        on_cancel: impl FnOnce(crate::ui::plain_disposal::DisposalOwned<String>) + 'static,
+    ) -> Self {
+        Self {
+            ticket,
+            body: ReplacementBody::Guarded {
+                body,
+                on_cancel: Some(Box::new(on_cancel)),
+                on_complete: None,
+            },
+            is_current: Box::new(is_current),
+            callback: Box::new(callback),
+            profile: None,
+        }
+    }
+
+    /// Guarded-body replacement that preserves the installed guarded source for
+    /// an accepted workflow cache when the replacement completes.
+    pub(crate) fn new_guarded_returning_body_on_complete(
+        ticket: BufferReplacementTicket,
+        body: crate::ui::plain_disposal::DisposalOwned<String>,
+        is_current: impl Fn(&LushtextEditorPage) -> bool + 'static,
+        callback: impl FnOnce(BufferReplacementOutcome) + 'static,
+        on_complete: impl FnOnce(crate::ui::plain_disposal::DisposalOwned<String>) + 'static,
+    ) -> Self {
+        Self {
+            ticket,
+            body: ReplacementBody::Guarded {
+                body,
+                on_cancel: None,
+                on_complete: Some(Box::new(on_complete)),
+            },
+            is_current: Box::new(is_current),
+            callback: Box::new(callback),
+            profile: None,
+        }
+    }
+}
+
+impl BufferReplacementRequest {
+    /// Attach the body's worker-computed paragraph profile: before the first
+    /// byte enters the buffer the editor gates what the body may not meet
+    /// (the context engine, a `GtkSourceMap`), and a completed replacement
+    /// joins the profile into the document scale.
+    #[must_use]
+    pub(crate) fn with_profile(mut self, profile: DocumentProfile) -> Self {
+        self.profile = Some(profile);
+        self
+    }
+}
+
+/// The editor projections one replacement suspends, captured for exact restore.
+struct ReplacementGuard {
+    lock: EditLock,
+    cursor_visible: bool,
+    highlight_syntax: bool,
+    minimap_tracking_suspended: bool,
+    history_capture_suppressed: bool,
+    projection_suspended: bool,
+    monitor_active: bool,
+}
+
+/// One live replacement's GTK-owned state.
+pub(crate) struct BufferReplacementSession {
+    editor: glib::WeakRef<LushtextEditorPage>,
+    buffer: sourceview5::Buffer,
+    pub(super) ticket: BufferReplacementTicket,
+    body: Option<ReplacementBody>,
+    byte_offset: usize,
+    is_current: FreshnessCheck,
+    callback: Option<TerminalCallback>,
+    source_id: Option<glib::SourceId>,
+    guard: Option<ReplacementGuard>,
+    pub(super) phase: ReplacementPhase,
+    cancel_reason: Option<BufferReplacementCancelReason>,
+    pub(super) mutation_started: bool,
+    terminal: bool,
+    pub(super) metrics: BufferReplacementMetrics,
+    profile: Option<DocumentProfile>,
+    /// The two slice budgets of this body.
+    budget: SliceBudget,
+    /// The body's Protected View fold plan, shared with `profile`, which a
+    /// direct replacement applies at insertion (`ui::protected_fold`).
+    fold_plan: Option<std::sync::Arc<lushtext_model::protected_fold::FoldPlan>>,
+    /// The sliced install of a protected body (C3), which the install turns
+    /// step; `None` for an ordinary body.
+    folded: Option<FoldedInstall>,
+    /// The chunked highlighted install's progress (`chunked-highlight-attach`,
+    /// C6b); `None` for every other body.
+    highlight: Option<crate::ui::editor_page::language_attach::HighlightChunks>,
+    /// Insertion turns that put text in (the chunk gate's count).
+    inserted_turns: u64,
+    /// Whether the first clear turn must take the language off first.
+    language_off_pending: bool,
+}
+
+/// Content-free terminal evidence retained by one editor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BufferReplacementTerminalDiagnostic {
+    pub ticket: BufferReplacementTicket,
+    pub cancel_reason: Option<BufferReplacementCancelReason>,
+    pub metrics: BufferReplacementMetrics,
+    pub source_released: bool,
+    pub guard_released: bool,
+}
+
+/// Editor-owned active/latest state for all whole-buffer replacement workflows.
+#[derive(Default)]
+pub struct BufferReplacementState {
+    pub(super) active: RefCell<Option<Rc<RefCell<BufferReplacementSession>>>>,
+    pub(super) pending: RefCell<Option<BufferReplacementRequest>>,
+    pub projection_suspended: std::cell::Cell<bool>,
+    /// Whether the newest session was cancelled after it started mutating, so
+    /// its bounded clear emptied the buffer and nothing published a whole
+    /// document since: the buffer holds neither the old text nor the new.
+    /// Cleared by a completed replacement or a published load. While it holds
+    /// and the user has not typed since, no save may write the buffer.
+    pub left_partial: std::cell::Cell<bool>,
+    pub(super) slice_count: std::cell::Cell<u64>,
+    /// The newest session's sliced protected install counts (C3).
+    pub(super) protected_install: std::cell::Cell<crate::ui::protected_fold::FoldedInstallMetrics>,
+    /// Ledger clear turns the newest session ran (C3).
+    pub(super) protected_clear_turns: std::cell::Cell<u64>,
+    #[cfg(feature = "test-utils")]
+    stale_after_slices: std::cell::Cell<Option<u64>>,
+    /// Last terminal reached, for the evidence surface to report.
+    ///
+    /// Deliberately **not** `#[cfg(feature = "test-utils")]`, unlike its
+    /// `stale_after_slices` sibling above. That one is a test-only actuation
+    /// seam and must not compile into a release build; this one is read by
+    /// `evidence::BufferReplacementEvidence`, which is a production observation
+    /// surface that widget tests happen to be the main consumer of. Gating it
+    /// would make the evidence surface's shape depend on the feature set.
+    pub(super) last_terminal: RefCell<Option<BufferReplacementTerminalDiagnostic>>,
+}
+
+/// Stable terminal projection used by the headless editor replacement harness.
+#[cfg(feature = "test-utils")]
+#[derive(Debug, Eq, PartialEq)]
+pub struct BufferReplacementTestOutcome {
+    pub ticket: BufferReplacementTicket,
+    pub body: Option<String>,
+    pub cancel_reason: Option<BufferReplacementCancelReason>,
+    pub metrics: BufferReplacementMetrics,
+}
+
+// --- stage 1: accept or supersede -------------------------------------------
+
+/// Take ownership of the editor for `request`, superseding any live session.
+pub(super) fn accept_request(editor: &LushtextEditorPage, request: BufferReplacementRequest) {
+    let active = { editor.imp().replacement.active.borrow().clone() };
+    let Some(active) = active else {
+        begin(editor, request);
+        return;
+    };
+
+    cancel_session(&active, BufferReplacementCancelReason::Superseded, false);
+    // Read ownership into a local **before** the match: a `match` scrutinee's
+    // temporaries live for the whole match, so borrowing inline would hold a
+    // shared `Ref` on `active` while the `Immediately` arm's `begin` takes
+    // `borrow_mut()` on the same cell — a `BorrowMutError` panic on exactly the
+    // path where a superseded session terminated in its own turn.
+    let still_owned = editor.imp().replacement.active.borrow().is_some();
+    match start_disposition(still_owned) {
+        StartDisposition::Immediately => begin(editor, request),
+        StartDisposition::ParkAsPending => {
+            if let Some(replaced) = editor.imp().replacement.pending.replace(Some(request)) {
+                // Only the newest intent survives, and the request it displaces
+                // gets its terminal now rather than waiting for one that will
+                // never come.
+                replaced.body.return_on_cancel();
+                (replaced.callback)(BufferReplacementOutcome::Cancelled {
+                    ticket: replaced.ticket,
+                    reason: BufferReplacementCancelReason::Superseded,
+                    metrics: BufferReplacementMetrics::default(),
+                });
+            }
+        }
+    }
+}
+
+/// Release every request this editor owns without publishing widget state.
+pub(super) fn dispose(editor: &LushtextEditorPage) {
+    if let Some(pending) = editor.imp().replacement.pending.take() {
+        pending.body.return_on_cancel();
+        (pending.callback)(BufferReplacementOutcome::Cancelled {
+            ticket: pending.ticket,
+            reason: BufferReplacementCancelReason::Disposed,
+            metrics: BufferReplacementMetrics::default(),
+        });
+    }
+    let active = { editor.imp().replacement.active.borrow().clone() };
+    if let Some(active) = active {
+        cancel_session(&active, BufferReplacementCancelReason::Disposed, true);
+    }
+}
+
+/// The Protected View install kind of a replacement workflow: the
+/// whole-content installs of a document body. Save formatting never runs on a
+/// protected buffer (design D9) and eviction only clears.
+fn protected_install_kind(workflow: BufferReplacementWorkflow) -> Option<WholeContentInstall> {
+    match workflow {
+        BufferReplacementWorkflow::DraftRecovery => Some(WholeContentInstall::DraftRecovery),
+        BufferReplacementWorkflow::LocalHistoryRestore => {
+            Some(WholeContentInstall::LocalHistoryRestore)
+        }
+        BufferReplacementWorkflow::LocalHistoryUndo => Some(WholeContentInstall::UndoRestore),
+        BufferReplacementWorkflow::MemoryEviction | BufferReplacementWorkflow::SaveFormatting => {
+            None
+        }
+        #[cfg(feature = "test-utils")]
+        BufferReplacementWorkflow::Test => None,
+    }
+}
+
+// --- stage 2: begin ---------------------------------------------------------
+
+fn begin(editor: &LushtextEditorPage, request: BufferReplacementRequest) {
+    // A dense body is sliced at any size, each slice bounded by visible
+    // characters too (`bound-post-open-settle`, D6.1).
+    let budget = request
+        .profile
+        .as_ref()
+        .map_or(SliceBudget::BYTES_ONLY, |profile| {
+            SliceBudget::for_profile(profile.summary())
+        });
+    let fold_plan = request
+        .profile
+        .as_ref()
+        .and_then(|profile| profile.fold_plan.clone());
+    // A highlighted body above its language's attach-after-install threshold
+    // goes in chunk by chunk with its language attached
+    // (`chunked-highlight-attach`): attaching it to the whole body at the
+    // terminal would analyse it in 30 ms worker slices (A69).
+    let highlight = request.profile.as_ref().and_then(|profile| {
+        lushtext_model::highlight_chunking::highlight_install_order_with(
+            editor.syntax_language(),
+            profile.summary().total_bytes,
+            editor.scale_for_incoming_profile(profile).syntax_enabled,
+            lushtext_model::document_scale::markdown_chunked_cap(),
+        )
+        .is_chunked()
+        .then(|| crate::ui::editor_page::language_attach::HighlightChunks::new(budget))
+    });
+    let plan = BufferReplacementPlan::for_text(
+        editor.buffer().char_count(),
+        request.body.len(),
+        budget == SliceBudget::PACED
+            || highlight.is_some()
+            || super::policy::protected_install_is_sliced(fold_plan.as_deref()),
+    );
+    let budget = if highlight.is_some() {
+        budget.with_highlight_cut()
+    } else {
+        budget
+    };
+    // A chunked body keeps the old text's highlighting until the first clear
+    // turn (review S3): a session cancelled before it mutates anything then
+    // leaves the language and its analysis exactly as they were.
+    let guard = begin_guard(editor, highlight.is_some());
+    // A sliced clear deletes from the start, and an attached language would
+    // re-analyse the remainder after every slice: the first clear turn takes
+    // it off (removing one costs nothing, A27).
+    let language_off_pending =
+        highlight.is_some() || (plan.clear_only && plan.mode == BufferReplacementMode::Sliced);
+    if let Some(profile) = &request.profile {
+        editor.prepare_for_incoming_profile(profile);
+        if let Some(kind) = protected_install_kind(request.ticket.workflow) {
+            editor.begin_protected_install(profile, ProtectedInstallSource::Replacement(kind));
+        }
+    }
+    let buffer = editor.buffer();
+    buffer.begin_irreversible_action();
+    let folded = fold_plan
+        .clone()
+        .map(|plan| FoldedInstall::new(plan, buffer.upcast_ref(), true));
+    let session = Rc::new(RefCell::new(BufferReplacementSession {
+        editor: editor.downgrade(),
+        buffer,
+        ticket: request.ticket,
+        body: Some(request.body),
+        byte_offset: 0,
+        is_current: request.is_current,
+        callback: Some(request.callback),
+        source_id: None,
+        guard: Some(guard),
+        phase: ReplacementPhase::Clearing,
+        cancel_reason: None,
+        mutation_started: false,
+        terminal: false,
+        metrics: BufferReplacementMetrics::for_one_retained_body(),
+        fold_plan,
+        folded,
+        profile: request.profile,
+        budget,
+        highlight,
+        inserted_turns: 0,
+        language_off_pending,
+    }));
+    editor
+        .imp()
+        .replacement
+        .active
+        .replace(Some(Rc::clone(&session)));
+    editor.set_replacement_chunked_owner(session.borrow().highlight.is_some());
+    editor.imp().replacement.slice_count.set(0);
+    editor
+        .imp()
+        .replacement
+        .protected_install
+        .set(crate::ui::protected_fold::FoldedInstallMetrics::default());
+    editor.imp().replacement.protected_clear_turns.set(0);
+    match plan.mode {
+        BufferReplacementMode::Direct => run_direct(&session),
+        BufferReplacementMode::Sliced => schedule_turn(&session),
+    }
+}
+
+fn begin_guard(editor: &LushtextEditorPage, keep_highlight: bool) -> ReplacementGuard {
+    let imp = editor.imp();
+    let view = editor.source_view();
+    let buffer = editor.buffer();
+    let guard = ReplacementGuard {
+        // The buffer-level lock, not `set_editable(false)`: restoring
+        // `editable` would invalidate every line of the replaced document
+        // (edit_lock.rs).
+        lock: editor.lock_edits(),
+        cursor_visible: view.is_cursor_visible(),
+        highlight_syntax: buffer.is_highlight_syntax(),
+        minimap_tracking_suspended: imp.minimap.tracking_suspended.replace(true),
+        history_capture_suppressed: editor.suspend_local_history_capture(),
+        projection_suspended: imp.replacement.projection_suspended.replace(true),
+        monitor_active: imp.monitor.file_monitor.borrow().is_some(),
+    };
+    editor.stop_file_monitor();
+    editor.suspend_minimap_projection();
+    if editor.search_bar().search_context().is_some() {
+        editor.search_bar().detach();
+    }
+    // The old text's modified-line marks would collapse onto the first line
+    // as it is cleared, and GtkSourceView sorts every mark of a line in each
+    // frame's gutter and background paint: up to 2,000 marks made each frame
+    // of a dense replacement cost hundreds of milliseconds. The new text gets
+    // its own marks from its workflow's terminal.
+    editor.clear_modified_line_marks();
+    view.set_cursor_visible(false);
+    if !keep_highlight {
+        buffer.set_highlight_syntax(false);
+    }
+    editor.refresh_accessibility_metadata();
+    guard
+}
+
+fn restore_guard(
+    editor: &LushtextEditorPage,
+    guard: ReplacementGuard,
+    release: lushtext_model::held_input::ContentDisposition,
+) {
+    let imp = editor.imp();
+    imp.replacement
+        .projection_suspended
+        .set(guard.projection_suspended);
+    editor.set_local_history_capture_suppressed(guard.history_capture_suppressed);
+    editor.set_minimap_tracking_suspended(guard.minimap_tracking_suspended);
+    editor.unlock_edits(guard.lock, release);
+    editor
+        .source_view()
+        .set_cursor_visible(guard.cursor_visible);
+    editor.reassert_protected_view_properties();
+    let syntax_enabled = editor.document_scale().syntax_enabled;
+    {
+        let _span =
+            crate::ui::responsiveness_probe::PostOpenSpan::begin("post_open_highlight_attach");
+        editor
+            .buffer()
+            .set_highlight_syntax(guard.highlight_syntax && syntax_enabled);
+    }
+    if editor.buffer().language().is_none() {
+        // A cancelled install of a gated body cleared the language up front;
+        // if the session still allows syntax, the path's language comes back.
+        editor.request_language_attach();
+    }
+    if editor.is_search_visible() && editor.search_bar().search_context().is_none() {
+        editor.attach_search_context();
+    }
+    if guard.monitor_active
+        && editor.load_state() == crate::ui::editor_page::EditorLoadState::Loaded
+        && !editor.is_evicted()
+    {
+        editor.start_file_monitor();
+    }
+    editor.refresh_minimap();
+    editor.refresh_accessibility_metadata();
+}
+
+// --- stages 3-5: the bounded turns ------------------------------------------
+
+fn schedule_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
+    let session_for_source = Rc::clone(session);
+    let source_id = glib::timeout_add_local_once(SLICE_TURN_DELAY, move || {
+        run_turn(&session_for_source);
+    });
+    session.borrow_mut().source_id = Some(source_id);
+}
+
+fn run_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
+    crate::ui::responsiveness_probe::span("replacement_turn", || run_turn_now(session));
+}
+
+fn run_turn_now(session: &Rc<RefCell<BufferReplacementSession>>) {
+    let (editor, phase, current) = {
+        let mut state = session.borrow_mut();
+        state.source_id.take();
+        if state.terminal {
+            return;
+        }
+        let editor = state.editor.upgrade();
+        let current = editor
+            .as_ref()
+            .is_some_and(|editor| (state.is_current)(editor));
+        #[cfg(feature = "test-utils")]
+        let current = if let Some(editor) = editor.as_ref()
+            && editor
+                .imp()
+                .replacement
+                .stale_after_slices
+                .get()
+                .is_some_and(|limit| state.metrics.slice_count >= limit)
+        {
+            editor.imp().replacement.stale_after_slices.set(None);
+            false
+        } else {
+            current
+        };
+        (editor, state.phase, current)
+    };
+    let Some(_editor) = editor else {
+        cancel_session(session, BufferReplacementCancelReason::Disposed, true);
+        return;
+    };
+    if !turn_may_run(phase, current) {
+        cancel_session(session, BufferReplacementCancelReason::Stale, false);
+        return;
+    }
+
+    match phase {
+        ReplacementPhase::Clearing => run_clear_turn(session),
+        ReplacementPhase::Installing
+            if session.borrow().fold_plan.is_some()
+                && !crate::ui::protected_fold::tail_insert_admitted() =>
+        {
+            // Another document inserted a hidden tail in this iteration.
+            schedule_turn(session);
+        }
+        ReplacementPhase::Installing => {
+            if replacement_chunk_may_go_in(session) {
+                run_install_turn(session);
+            }
+        }
+        ReplacementPhase::ClearingCancelled => run_cancelled_clear_turn(session),
+        ReplacementPhase::Finalizing => {}
+    }
+}
+
+/// Delete one bounded slice: the last recorded ranges of a protected tail
+/// while the editor's boundary ledger holds any (C3, design D4), then a slice
+/// ending on a paragraph boundary. Returns whether the buffer is now empty
+/// and the characters (or, for a ledger turn, bytes) deleted.
+fn delete_one_slice(
+    editor: Option<&LushtextEditorPage>,
+    buffer: &sourceview5::Buffer,
+    count: i32,
+) -> (bool, u64) {
+    if let Some(editor) = editor {
+        let ledger = &editor.imp().protected_boundaries;
+        let turn = crate::ui::editor_page::edit_lock::with_own_edit(|| {
+            ledger.clear_turn(buffer.upcast_ref())
+        });
+        if let Some(turn) = turn {
+            editor.imp().replacement.protected_clear_turns.set(
+                editor
+                    .imp()
+                    .replacement
+                    .protected_clear_turns
+                    .get()
+                    .saturating_add(1),
+            );
+            return (
+                buffer.char_count() == 0 && ledger.is_empty(),
+                turn.deleted_bytes,
+            );
+        }
+    }
+    if count == 0 {
+        return (true, 0);
+    }
+    let mut start = buffer.start_iter();
+    let mut end = start;
+    let _ = end.forward_chars(count);
+    // GTK text layout validates whole paragraphs, so a deletion that stops
+    // inside a line would re-lay-out the shrinking remainder on every turn.
+    // Extending to the next line start deletes each paragraph exactly once.
+    if !end.is_end() && !end.starts_line() {
+        let _ = end.forward_line();
+    }
+    let deleted = u64::try_from(end.offset()).unwrap_or(0);
+    crate::ui::editor_page::edit_lock::with_own_edit(|| buffer.delete(&mut start, &mut end));
+    (buffer.char_count() == 0, deleted)
+}
+
+/// Take the language off before the first deleted slice (review S3): a
+/// chunked body also turns highlighting on for its attach and keeps it on at
+/// the terminal.
+fn take_language_off_before_clearing(session: &Rc<RefCell<BufferReplacementSession>>) {
+    let (editor, chunked) = {
+        let mut state = session.borrow_mut();
+        if !std::mem::take(&mut state.language_off_pending) {
+            return;
+        }
+        let chunked = state.highlight.is_some();
+        if chunked && let Some(guard) = state.guard.as_mut() {
+            guard.highlight_syntax = true;
+        }
+        (state.editor.upgrade(), chunked)
+    };
+    let Some(editor) = editor else {
+        return;
+    };
+    if chunked {
+        editor.begin_chunked_highlight();
+    } else {
+        editor.cancel_language_attach();
+        if editor.buffer().language().is_some() {
+            editor.buffer().set_language(None::<&sourceview5::Language>);
+        }
+    }
+}
+
+fn run_clear_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
+    take_language_off_before_clearing(session);
+    let (editor, buffer, count) = {
+        let mut state = session.borrow_mut();
+        let count = next_clear_char_count(state.buffer.char_count());
+        if count > 0 {
+            // GtkTextBuffer emits `changed` synchronously. Establish ownership
+            // before the call so a reentrant superseding request takes the
+            // partial-mutation cleanup path.
+            state.mutation_started = true;
+        }
+        (state.editor.upgrade(), state.buffer.clone(), count)
+    };
+    let (cleared, deleted) = delete_one_slice(editor.as_ref(), &buffer, count);
+    let body_is_empty = {
+        let mut state = session.borrow_mut();
+        if state.terminal {
+            return;
+        }
+        state.metrics.record_cleared_slice(deleted);
+        if state.phase != ReplacementPhase::Clearing {
+            return;
+        }
+        state.body.as_deref().is_none_or(str::is_empty)
+    };
+    match after_clear_slice(cleared, body_is_empty) {
+        ClearProgress::ContinueClearing => schedule_turn(session),
+        ClearProgress::Finish => finish_session(session, None),
+        ClearProgress::BeginInstalling => {
+            session.borrow_mut().phase = ReplacementPhase::Installing;
+            schedule_turn(session);
+        }
+    }
+}
+
+fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
+    let (editor, buffer, start, body, mut folded) = {
+        let mut state = session.borrow_mut();
+        if state.folded.is_some() && state.editor.upgrade().is_none() {
+            // A protected body goes in folded only, through the editor's
+            // boundary ledger: with the editor gone, end the session rather
+            // than insert its hidden tails as plain visible text.
+            drop(state);
+            cancel_session(session, BufferReplacementCancelReason::Disposed, true);
+            return;
+        }
+        let Some(body) = state.body.take() else {
+            drop(state);
+            cancel_session(session, BufferReplacementCancelReason::Stale, false);
+            return;
+        };
+        state.mutation_started = true;
+        (
+            state.editor.upgrade(),
+            state.buffer.clone(),
+            state.byte_offset,
+            body,
+            state.folded.take(),
+        )
+    };
+    let budget = session.borrow().budget;
+    let highlighted = session.borrow().highlight.is_some();
+    if highlighted && let Some(editor) = editor.as_ref() {
+        editor.reset_highlight_coverage();
+    }
+    let body_len = body.len();
+    let end = crate::ui::editor_page::edit_lock::with_own_edit(|| {
+        if let (Some(install), Some(editor)) = (folded.as_mut(), editor.as_ref()) {
+            let append = || buffer.end_iter();
+            let end = install.step(&append, &body, budget, &editor.imp().protected_boundaries);
+            editor
+                .imp()
+                .replacement
+                .protected_install
+                .set(install.metrics());
+            end.ok()
+        } else {
+            let end = next_slice_boundary(&body, start, budget);
+            buffer.insert(&mut buffer.end_iter(), &body[start..end]);
+            Some(end)
+        }
+    });
+    let Some(end) = end else {
+        // The sliced protected install broke (`FoldedInstallBroken`): cancel
+        // the session, which clears the partial buffer and hands the body back
+        // to its caller, rather than finish with a document that is not it.
+        {
+            let mut state = session.borrow_mut();
+            state.folded = folded;
+            state.body = Some(body);
+        }
+        cancel_session(session, BufferReplacementCancelReason::Stale, false);
+        return;
+    };
+    let protected = folded.is_some();
+    session.borrow_mut().folded = folded;
+
+    {
+        let mut state = session.borrow_mut();
+        // A terminal session's metrics were already copied out and reported, so
+        // this turn must not append to them; a merely superseded one is still
+        // live and its insertion is real work that boundedness evidence owes.
+        if state.terminal {
+            drop(state);
+            body.return_on_cancel();
+            return;
+        }
+        state.metrics.record_inserted_slice(end);
+        if state.phase != ReplacementPhase::Installing {
+            drop(state);
+            body.return_on_cancel();
+            return;
+        }
+        state.byte_offset = end;
+        state.inserted_turns = state.inserted_turns.saturating_add(1);
+        state.body = Some(body);
+    }
+    if insertion_is_complete(end, body_len) {
+        finish_session(session, None);
+    } else {
+        use crate::ui::editor_page::load::policy::{InstallSlicePacing, install_slice_pacing};
+        let laid_out = editor
+            .as_ref()
+            .is_some_and(LushtextEditorPage::install_follows_layout);
+        let paced = budget == SliceBudget::PACED || highlighted;
+        match install_slice_pacing(paced, laid_out, protected) {
+            InstallSlicePacing::BehindValidation => {
+                schedule_paced_turn(session, crate::ui::editor_page::load::PACED_SLICE_PRIORITY);
+            }
+            InstallSlicePacing::BehindVisibleWork => {
+                schedule_paced_turn(
+                    session,
+                    crate::ui::editor_page::load::background_slice_priority(),
+                );
+            }
+            InstallSlicePacing::Timeout => schedule_turn(session),
+        }
+    }
+}
+
+/// The chunked highlighted install's gate before an insertion turn
+/// (`model::highlight_chunking::chunk_gate`, shared with the load through
+/// `LushtextEditorPage::decide_highlight_chunk`): `true` when the turn may
+/// insert now; otherwise the session is parked until the attach resolves or
+/// queued once at `G_PRIORITY_LOW + 1` behind the engine's worker.
+fn replacement_chunk_may_go_in(session: &Rc<RefCell<BufferReplacementSession>>) -> bool {
+    use crate::ui::editor_page::language_attach::{ChunkDecision, analysis_wait_priority};
+    let Some(editor) = session.borrow().editor.upgrade() else {
+        return true;
+    };
+    // Decide outside the borrow (review N1).
+    let (Some(mut highlight), inserted) = ({
+        let state = session.borrow();
+        (state.highlight, state.inserted_turns)
+    }) else {
+        return true;
+    };
+    let decision = editor.decide_highlight_chunk(&mut highlight, inserted);
+    if let Some(slot) = session.borrow_mut().highlight.as_mut() {
+        *slot = highlight;
+    }
+    match decision {
+        ChunkDecision::Insert => true,
+        ChunkDecision::Unhighlighted(base) => {
+            let mut state = session.borrow_mut();
+            state.budget = base;
+            state.highlight = None;
+            drop(state);
+            editor.set_replacement_chunked_owner(false);
+            true
+        }
+        ChunkDecision::AwaitAttach => {
+            let weak = Rc::downgrade(session);
+            editor.when_language_attach_resolves(move || {
+                if let Some(session) = weak.upgrade() {
+                    resume_parked_turn(
+                        &session,
+                        crate::ui::editor_page::load::PACED_SLICE_PRIORITY,
+                    );
+                }
+            });
+            false
+        }
+        ChunkDecision::AwaitAnalysis => {
+            resume_parked_turn(session, analysis_wait_priority());
+            false
+        }
+    }
+}
+
+/// Queue a parked chunked session's next turn, unless it ended or was
+/// rescheduled meanwhile.
+fn resume_parked_turn(session: &Rc<RefCell<BufferReplacementSession>>, priority: glib::Priority) {
+    let resumable = {
+        let state = session.borrow();
+        !state.terminal && state.phase == ReplacementPhase::Installing && state.source_id.is_none()
+    };
+    if resumable {
+        schedule_paced_turn(session, priority);
+    }
+}
+
+/// Schedule a dense body's next insertion turn from an idle below
+/// `GTK_TEXT_VIEW_PRIORITY_VALIDATE`, so GtkTextView's validation idle lays
+/// out the previous slice first and each validation holds one slice's lines
+/// (`bound-post-open-settle`, review R14, ledger A70). A turn waits for the
+/// frame that shows the latest key first (`input_quiet::paced_idle`).
+///
+/// A background tab's view lays nothing out (`defer-background-tab-layout`),
+/// so its turns wait at `load::background_slice_priority`, behind the visible
+/// tab's (`load::policy::install_slice_pacing`).
+fn schedule_paced_turn(session: &Rc<RefCell<BufferReplacementSession>>, priority: glib::Priority) {
+    let (session_for_step, session_for_store) = (Rc::clone(session), Rc::downgrade(session));
+    crate::ui::editor_page::load::queue_paced_slice(
+        priority,
+        move || run_turn(&session_for_step),
+        move |source_id| {
+            if let Some(session) = session_for_store.upgrade() {
+                session.borrow_mut().source_id = Some(source_id);
+            }
+        },
+    );
+}
+
+fn run_direct(session: &Rc<RefCell<BufferReplacementSession>>) {
+    let (editor, buffer, body, current) = {
+        let mut state = session.borrow_mut();
+        let editor = state.editor.upgrade();
+        let current = editor
+            .as_ref()
+            .is_some_and(|editor| (state.is_current)(editor));
+        let body = state.body.take().unwrap_or_default();
+        (editor, state.buffer.clone(), body, current)
+    };
+    if editor.is_none() {
+        session.borrow_mut().body = Some(body);
+        cancel_session(session, BufferReplacementCancelReason::Disposed, true);
+        return;
+    }
+    if !current {
+        session.borrow_mut().body = Some(body);
+        cancel_session(session, BufferReplacementCancelReason::Stale, false);
+        return;
+    }
+    let old_chars = buffer.char_count();
+    let fold_plan = {
+        let mut state = session.borrow_mut();
+        state.mutation_started = true;
+        state.fold_plan.clone()
+    };
+    crate::ui::editor_page::edit_lock::with_own_edit(|| match fold_plan.as_deref() {
+        // A protected body: every folded tail goes in hidden, in this same
+        // dispatch as its head (design D1).
+        Some(plan) => {
+            buffer.set_text("");
+            let mut start = buffer.start_iter();
+            crate::ui::protected_fold::insert_folded_document(
+                buffer.upcast_ref(),
+                &mut start,
+                &body,
+                plan,
+            );
+        }
+        None => buffer.set_text(&body),
+    });
+    if let Some(editor) = editor.as_ref() {
+        // The old text is gone, so the marks a sliced protected install left
+        // are collapsed and go without merging anything (C3).
+        editor
+            .imp()
+            .protected_boundaries
+            .forget(buffer.upcast_ref());
+    }
+    let mut state = session.borrow_mut();
+    if state.terminal || state.phase != ReplacementPhase::Clearing {
+        drop(state);
+        body.return_on_cancel();
+        return;
+    }
+    state.mutation_started = true;
+    state
+        .metrics
+        .record_direct_replacement(u64::try_from(old_chars.max(0)).unwrap_or(0), body.len());
+    state.body = Some(body);
+    drop(state);
+    finish_session(session, None);
+}
+
+// --- stage 6: cancellation --------------------------------------------------
+
+fn cancel_session(
+    session: &Rc<RefCell<BufferReplacementSession>>,
+    reason: BufferReplacementCancelReason,
+    disposing: bool,
+) {
+    let (source, mutation_started, body) = {
+        let mut state = session.borrow_mut();
+        if state.terminal || state.phase == ReplacementPhase::Finalizing {
+            return;
+        }
+        let source = state.source_id.take();
+        state.cancel_reason = Some(reason);
+        let body = state.body.take();
+        (source, state.mutation_started, body)
+    };
+    if let Some(body) = body {
+        body.return_on_cancel();
+    }
+    if let Some(source) = source {
+        source.remove();
+    }
+    let highlighted = session.borrow_mut().highlight.take().is_some();
+    if highlighted && let Some(editor) = session.borrow().editor.upgrade() {
+        editor.set_replacement_chunked_owner(false);
+        // Only partial chunks need the language off before their clear: a
+        // session that mutated nothing leaves the old text's language as
+        // it was (review S3).
+        if mutation_started {
+            editor.begin_chunked_highlight();
+        }
+    }
+    match cancel_disposition(disposing, mutation_started) {
+        CancelDisposition::FinishImmediately => finish_session(session, Some(reason)),
+        CancelDisposition::ClearPartialBuffer => {
+            session.borrow_mut().phase = ReplacementPhase::ClearingCancelled;
+            schedule_turn(session);
+        }
+    }
+}
+
+fn run_cancelled_clear_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
+    let (editor, buffer) = {
+        let state = session.borrow();
+        (state.editor.upgrade(), state.buffer.clone())
+    };
+    let count = next_clear_char_count(buffer.char_count());
+    let (cleared, deleted) = delete_one_slice(editor.as_ref(), &buffer, count);
+    {
+        let mut state = session.borrow_mut();
+        if state.terminal || state.phase != ReplacementPhase::ClearingCancelled {
+            return;
+        }
+        state.metrics.record_cleared_slice(deleted);
+    }
+    if cleared {
+        let reason = session
+            .borrow()
+            .cancel_reason
+            .unwrap_or(BufferReplacementCancelReason::Stale);
+        finish_session(session, Some(reason));
+    } else {
+        schedule_turn(session);
+    }
+}
+
+// --- stage 7: terminal ------------------------------------------------------
+
+fn finish_session(
+    session: &Rc<RefCell<BufferReplacementSession>>,
+    cancellation: Option<BufferReplacementCancelReason>,
+) {
+    let (editor, buffer, source, guard, ticket, body, callback, metrics, profile, mutated) = {
+        let mut state = session.borrow_mut();
+        if state.terminal {
+            return;
+        }
+        state.terminal = true;
+        state.phase = ReplacementPhase::Finalizing;
+        (
+            state.editor.upgrade(),
+            state.buffer.clone(),
+            state.source_id.take(),
+            state.guard.take(),
+            state.ticket,
+            state.body.take(),
+            state.callback.take(),
+            state.metrics,
+            state.profile.take(),
+            state.mutation_started,
+        )
+    };
+    if let Some(source) = source {
+        source.remove();
+    }
+    buffer.end_irreversible_action();
+    // What the buffer holds now, for text typed meanwhile (`held_input.rs`):
+    // a whole new body, the untouched old one, or a cleared one.
+    let release = match (cancellation, mutated) {
+        (None, _) => lushtext_model::held_input::ContentDisposition::WholeContent,
+        (Some(_), true) => lushtext_model::held_input::ContentDisposition::Unpublished,
+        (Some(_), false) => lushtext_model::held_input::ContentDisposition::Unchanged,
+    };
+    let outcome = match cancellation {
+        None => {
+            let body = body
+                .map_or_default(|body| match &editor {
+                    Some(editor) => body.retain_for_protected_view(editor),
+                    None => body,
+                })
+                .into_completed_body();
+            #[cfg(not(feature = "test-utils"))]
+            drop(body);
+            BufferReplacementOutcome::Complete {
+                ticket,
+                #[cfg(feature = "test-utils")]
+                body,
+                metrics,
+            }
+        }
+        Some(reason) => {
+            drop(body);
+            BufferReplacementOutcome::Cancelled {
+                ticket,
+                reason,
+                metrics,
+            }
+        }
+    };
+    outcome.trace_terminal(true, guard.is_some());
+    let Some(editor) = editor else {
+        if let Some(callback) = callback {
+            callback(outcome);
+        }
+        return;
+    };
+    editor.set_replacement_chunked_owner(false);
+    evidence::record_terminal(
+        &editor,
+        BufferReplacementTerminalDiagnostic {
+            ticket,
+            cancel_reason: cancellation,
+            metrics,
+            source_released: true,
+            guard_released: guard.is_some(),
+        },
+    );
+    if cancellation.is_none()
+        && let Some(profile) = &profile
+    {
+        // The installed body's profile joins the session before the guard
+        // restores highlighting, so a gated feature is never switched back on.
+        editor.join_installed_profile(profile);
+    }
+    match cancellation {
+        None => editor.imp().replacement.left_partial.set(false),
+        Some(reason) if mutated && reason != BufferReplacementCancelReason::Disposed => {
+            // The cancelled clear emptied the buffer: the emptiness is the
+            // workflow's, not an edit of the user's, so the tab is not
+            // modified, and a save may not write it over the file.
+            buffer.set_modified(false);
+            editor.imp().replacement.left_partial.set(true);
+        }
+        Some(_) => {}
+    }
+    if guard_restores_on_terminal(cancellation)
+        && let Some(guard) = guard
+    {
+        restore_guard(&editor, guard, release);
+        // The buffer is renderable again. A cancelled session with a parked
+        // superseding request stays quiet: that request fires at its own
+        // terminal, so rendering the cleared buffer now would be wasted.
+        let superseded =
+            cancellation.is_some() && editor.imp().replacement.pending.borrow().is_some();
+        if !superseded {
+            editor.fire_content_republished();
+        }
+    }
+    if let Some(callback) = callback {
+        callback(outcome);
+    }
+    editor
+        .imp()
+        .replacement
+        .slice_count
+        .set(metrics.slice_count);
+    release_owner_and_start_pending(&editor, session);
+}
+
+fn release_owner_and_start_pending(
+    editor: &LushtextEditorPage,
+    session: &Rc<RefCell<BufferReplacementSession>>,
+) {
+    let is_current = editor
+        .imp()
+        .replacement
+        .active
+        .borrow()
+        .as_ref()
+        .is_some_and(|current| Rc::ptr_eq(current, session));
+    if !is_current {
+        return;
+    }
+    editor.imp().replacement.active.take();
+    if let Some(pending) = editor.imp().replacement.pending.take() {
+        begin(editor, pending);
+    }
+}
+
+// --- test-only actuation seams ---------------------------------------------
+//
+// Each drives a step reachable only through a caller workflow or a resumed
+// slice turn, which is the programme-level deferred seam category. Counted, not
+// grown.
+
+#[cfg(feature = "test-utils")]
+impl LushtextEditorPage {
+    /// Drive one replacement through the production admission path.
+    pub fn replace_buffer_for_test(
+        &self,
+        body: String,
+        generation: u64,
+        current: Rc<std::cell::Cell<bool>>,
+        outcomes: Rc<RefCell<Vec<BufferReplacementTestOutcome>>>,
+    ) {
+        self.replace_buffer_bounded(BufferReplacementRequest::new(
+            BufferReplacementTicket {
+                workflow: BufferReplacementWorkflow::Test,
+                generation,
+            },
+            body,
+            move |_| current.get(),
+            move |outcome| outcomes.borrow_mut().push(test_outcome(outcome)),
+        ));
+    }
+
+    /// Drive one replacement that hands its uninstalled body back on cancel.
+    pub fn replace_buffer_returning_cancelled_body_for_test(
+        &self,
+        body: String,
+        generation: u64,
+        current: Rc<std::cell::Cell<bool>>,
+        outcomes: Rc<RefCell<Vec<BufferReplacementTestOutcome>>>,
+        cancelled_bodies: Rc<RefCell<Vec<String>>>,
+        profile_body: bool,
+    ) {
+        // `profile_body` carries the body's paragraph profile, as every
+        // production body-installing replacement does (draft recovery, local
+        // history, mirror-back), so the chunked highlighted install applies.
+        let profile = profile_body
+            .then(|| lushtext_model::paragraph_boundary::DocumentProfile::of_text(&body));
+        let request = BufferReplacementRequest::new_returning_body_on_cancel(
+            BufferReplacementTicket {
+                workflow: BufferReplacementWorkflow::Test,
+                generation,
+            },
+            body,
+            move |_| current.get(),
+            move |outcome| outcomes.borrow_mut().push(test_outcome(outcome)),
+            move |body| cancelled_bodies.borrow_mut().push(body),
+        );
+        self.replace_buffer_bounded(match profile {
+            Some(profile) => request.with_profile(profile),
+            None => request,
+        });
+    }
+
+    /// Exercise the same teardown path window disposal uses.
+    pub fn dispose_buffer_replacement_for_test(&self) {
+        self.cancel_buffer_replacement_for_dispose();
+    }
+
+    /// Make the caller's freshness check fail after `slices` completed turns.
+    pub fn make_buffer_replacement_stale_after_slices_for_test(&self, slices: u64) {
+        self.imp().replacement.stale_after_slices.set(Some(slices));
+    }
+}
+
+#[cfg(feature = "test-utils")]
+fn test_outcome(outcome: BufferReplacementOutcome) -> BufferReplacementTestOutcome {
+    match outcome {
+        BufferReplacementOutcome::Complete {
+            ticket,
+            body,
+            metrics,
+        } => BufferReplacementTestOutcome {
+            ticket,
+            body: Some(body),
+            cancel_reason: None,
+            metrics,
+        },
+        BufferReplacementOutcome::Cancelled {
+            ticket,
+            reason,
+            metrics,
+        } => BufferReplacementTestOutcome {
+            ticket,
+            body: None,
+            cancel_reason: Some(reason),
+            metrics,
+        },
+    }
+}
+
+#[cfg(test)]
+mod pairing_tests {
+    //! Correct-by-construction proof for body-kind / callback-kind pairing.
+    //!
+    //! The illegal pairings — a guarded cancellation/completion callback with a
+    //! plain body, or a plain callback with a guarded body — are
+    //! *unconstructible*: every constructor that accepts a guarded callback
+    //! (`new_guarded_returning_body_on_{cancel,complete}`) also requires a
+    //! `DisposalOwned<String>` body, and the only plain constructors (`new`,
+    //! `new_returning_body_on_cancel`) accept no guarded callback. No
+    //! `BufferReplacementRequest` value can therefore pair a guarded callback
+    //! with a plain body, which is why `ReplacementBody::return_on_cancel` and
+    //! `ReplacementBody::into_completed_body` match every legal pairing
+    //! exhaustively with no runtime panic arm. These tests exercise the plain
+    //! routing (guarded routing needs the GTK disposal lane and is covered by
+    //! the replacement widget tests).
+
+    use super::*;
+
+    #[cfg(feature = "test-utils")]
+    #[test]
+    fn plain_body_returns_through_its_matched_cancel_callback() {
+        let returned = Rc::new(RefCell::new(None));
+        let sink = Rc::clone(&returned);
+        let body = ReplacementBody::Plain {
+            body: "abc".to_string(),
+            on_cancel: Some(Box::new(move |body| *sink.borrow_mut() = Some(body))),
+        };
+        body.return_on_cancel();
+        assert_eq!(returned.borrow().as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn plain_body_completion_yields_the_retained_body() {
+        let body = ReplacementBody::Plain {
+            body: "done".to_string(),
+            #[cfg(feature = "test-utils")]
+            on_cancel: None,
+        };
+        assert_eq!(body.into_completed_body(), "done");
+    }
+
+    #[test]
+    fn default_body_is_an_empty_plain_placeholder() {
+        // `Default`/`mem::take`/`unwrap_or_default` placeholder values must stay
+        // representable without weakening the pairing guarantee.
+        let body = ReplacementBody::default();
+        assert!(body.is_empty());
+        assert_eq!(body.into_completed_body(), "");
+    }
+}

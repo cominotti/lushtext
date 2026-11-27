@@ -3,12 +3,10 @@
 //! Integration tests for workspace persistence and clean-break recovery.
 
 use crate::common::TestContext;
-use lushtext_core::model::workspace::{
-    WorkspaceConfig, WorkspaceId, WorkspaceScope, WorkspacesFile,
-};
-use lushtext_core::services::filesystem::fixture;
-use lushtext_core::services::recovery_metadata::RecoveryProblem;
-use lushtext_core::services::workspace_manager;
+use lushtext_model::workspace::{WorkspaceConfig, WorkspaceId, WorkspaceScope, WorkspacesFile};
+use lushtext_services::filesystem::fixture;
+use lushtext_services::recovery_metadata::RecoveryProblem;
+use lushtext_services::workspace_manager;
 
 #[test]
 fn test_missing_workspace_file_restores_empty_shell_state() {

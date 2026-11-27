@@ -11,18 +11,18 @@ use crate::common::{
 use glib::prelude::ToValue;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_core::model::bookmark::BookmarkRecord;
-use lushtext_core::model::palette::{
+use lushtext_model::bookmark::BookmarkRecord;
+use lushtext_model::palette::{
     FileOrdinal, PaletteCategory, PaletteFileEntry, PaletteFileIdentity, PaletteNoteCategory,
     PaletteNoteEntry, PaletteNoteTarget, SearchMode,
 };
-use lushtext_core::model::responsiveness_budget::B_SETTLE_US;
-use lushtext_core::services::palette::{FileIndex, MAX_INDEXED_FILES};
-use lushtext_core::ui::command_palette::item::PaletteItem;
-use lushtext_core::ui::command_palette::policy::MAX_CATEGORY_VIEW_ROWS;
-use lushtext_core::ui::command_palette::{CommandPaletteTestPolicy, LushtextCommandPalette};
-use lushtext_core::ui::editor_page::LushtextEditorPage;
-use lushtext_core::ui::window::LushtextWindow;
+use lushtext_model::responsiveness_budget::B_SETTLE_US;
+use lushtext_services::palette::{FileIndex, MAX_INDEXED_FILES};
+use lushtext_ui::ui::command_palette::item::PaletteItem;
+use lushtext_ui::ui::command_palette::policy::MAX_CATEGORY_VIEW_ROWS;
+use lushtext_ui::ui::command_palette::{CommandPaletteTestPolicy, LushtextCommandPalette};
+use lushtext_ui::ui::editor_page::LushtextEditorPage;
+use lushtext_ui::ui::window::LushtextWindow;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -38,7 +38,7 @@ struct PolicyReset;
 impl Drop for PolicyReset {
     fn drop(&mut self) {
         CommandPaletteTestPolicy::reset();
-        lushtext_core::ui::window::set_notes_browser_budgets_for_test(0, 0);
+        lushtext_ui::ui::window::set_notes_browser_budgets_for_test(0, 0);
     }
 }
 
@@ -213,7 +213,7 @@ fn quiet(palette: &LushtextCommandPalette) {
 /// lane case "End in the category view" (design D10).
 #[test]
 fn test_palette_category_of_a_million_files_is_cut_at_the_row_cap() {
-    use lushtext_core::model::responsiveness_budget::B_INTERACT_US;
+    use lushtext_model::responsiveness_budget::B_INTERACT_US;
     ensure_gtk_init();
     let palette = LushtextCommandPalette::new();
     let window = gtk4::Window::new();
@@ -615,10 +615,10 @@ fn test_palette_category_accessibility_names_and_announcements() {
         .expect("More row");
     assert_eq!(more.display_name(), "36 more…");
     let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-    lushtext_core::ui::command_palette::apply_palette_row_accessibility_for_test(
+    lushtext_ui::ui::command_palette::apply_palette_row_accessibility_for_test(
         &row, &more, true, 66, 66,
     );
-    lushtext_core::ui::accessibility::test_audit::AccessibleAudit::new()
+    lushtext_ui::ui::accessibility::test_audit::AccessibleAudit::new()
         .properties(&[
             gtk4::AccessibleProperty::Label,
             gtk4::AccessibleProperty::Description,
@@ -647,11 +647,11 @@ fn test_palette_category_accessibility_names_and_announcements() {
         evidence.category_notice_announcements, 1,
         "the unchanged cut is announced once"
     );
-    lushtext_core::ui::accessibility::test_audit::AccessibleAudit::new()
+    lushtext_ui::ui::accessibility::test_audit::AccessibleAudit::new()
         .role(gtk4::AccessibleRole::List)
         .properties(&[gtk4::AccessibleProperty::Label])
         .assert_on(&*palette.imp().category_view);
-    lushtext_core::ui::accessibility::test_audit::AccessibleAudit::new()
+    lushtext_ui::ui::accessibility::test_audit::AccessibleAudit::new()
         .properties(&[gtk4::AccessibleProperty::Label])
         .assert_on(&*palette.imp().category_back_button);
 }
@@ -728,14 +728,14 @@ fn test_palette_note_capture_is_sliced_and_uncounted() {
     wait_until(Duration::from_secs(10), || {
         active_editor(&window).file_path().as_deref() == Some(path.as_path())
             && active_editor(&window).load_state()
-                == lushtext_core::ui::editor_page::EditorLoadState::Loaded
+                == lushtext_ui::ui::editor_page::EditorLoadState::Loaded
     });
     let bookmarks: Vec<_> = (0..20_000)
         .map(|line| BookmarkRecord::new(line, None))
         .collect();
     active_editor(&window).load_bookmarks(&bookmarks);
     // Four slices a turn: the capture of 20,000 bookmarks takes many turns.
-    lushtext_core::ui::window::set_notes_browser_budgets_for_test(0, 4);
+    lushtext_ui::ui::window::set_notes_browser_budgets_for_test(0, 4);
 
     activate_action(&window, "toggle-command-palette");
     let palette = window.imp().command_palette.clone();
@@ -820,7 +820,7 @@ fn test_palette_category_bar_and_list_fit_a_narrow_overlay() {
 /// Whole-frame worst values are printed only.
 #[test]
 fn test_palette_category_dispatches_stay_within_their_budgets() {
-    use lushtext_core::model::responsiveness_budget::B_INTERACT_US;
+    use lushtext_model::responsiveness_budget::B_INTERACT_US;
     ensure_gtk_init();
     let palette = LushtextCommandPalette::new();
     let window = gtk4::Window::new();
@@ -1052,7 +1052,7 @@ fn test_palette_reentry_during_a_retirement_acts_on_no_stale_row() {
 /// `notes_browser::test_notes_row_text_measures_like_a_label_in_the_browser`).
 #[test]
 fn test_palette_row_text_measures_like_a_label_in_the_palette() {
-    use lushtext_core::ui::row_text::LushtextRowText;
+    use lushtext_ui::ui::row_text::LushtextRowText;
     struct SchemeReset;
     impl Drop for SchemeReset {
         fn drop(&mut self) {
@@ -1134,7 +1134,7 @@ fn test_palette_row_text_measures_like_a_label_in_the_palette() {
 /// publish retargets the row.
 #[test]
 fn test_palette_row_text_is_a_label_carrying_the_row_text() {
-    use lushtext_core::ui::row_text::LushtextRowText;
+    use lushtext_ui::ui::row_text::LushtextRowText;
     ensure_gtk_init();
     let palette = LushtextCommandPalette::new();
     let window = gtk4::Window::new();
@@ -1168,7 +1168,7 @@ fn test_palette_row_text_is_a_label_carrying_the_row_text() {
     };
     let before = row_texts(&palette);
     for (part, text) in &before {
-        lushtext_core::ui::accessibility::test_audit::AccessibleAudit::new()
+        lushtext_ui::ui::accessibility::test_audit::AccessibleAudit::new()
             .role(gtk4::AccessibleRole::Label)
             .assert_on(text);
         assert!(!text.text().is_empty(), "{part}");

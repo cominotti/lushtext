@@ -5,8 +5,8 @@
 //
 // DISPOSABLE EVALUATION MODEL, NOT A MAINTAINED PROPERTY. The maintained
 // proofs are the Kani harnesses in
-// crates/lushtext-core/src/services/draft_service/kani_proofs.rs, which drive
-// the real decision core crates/lushtext-core/src/services/draft_service/journal_core.rs.
+// crates/lushtext-services/src/draft_service/kani_proofs.rs, which drive
+// the real decision core crates/lushtext-services/src/draft_service/journal_core.rs.
 // Section 1 transliterates every journal_core decision the harness calls;
 // section 2 transliterates the harness's environment (`Journal`, `step`,
 // `step_as`, `startup`, the invariants) function for function, as pure

@@ -17,11 +17,11 @@ its own `Cargo.lock`, and the root `Cargo.toml` lists it in `exclude`, so
 
 Target T2, the two-process draft journal (the Kani K8 scenario).
 `src/env.rs` ports the harness **environment** of
-`crates/lushtext-core/src/services/draft_service/kani_proofs.rs`: `Journal`,
+`crates/lushtext-services/src/draft_service/kani_proofs.rs`: `Journal`,
 `Editor`, `Window`, `DiskEntry`, `Action`, `previous_session`, `step`,
 `step_as`, `startup`, `run_deletion_step`, and the invariants S1 to S4. Every
 **decision** is a call to the real
-`lushtext_core::services::draft_service::journal_core`, which is compiled from
+`lushtext_services::draft_service::journal_core`, which is compiled from
 the repository through a path dependency. There is no second specification
 language, so there is no bridge to keep in sync.
 
@@ -57,7 +57,7 @@ Run these from this directory. `.cargo/config.toml` points the target
 directory at the gitignored `build/formal-evaluation/target-rust`. Nothing in
 the repository's gates formats or lints this package; run `cargo fmt` and
 `cargo clippy` here by hand if you change it. Its own `Cargo.lock` resolves
-`lushtext-core`'s dependencies separately from the root lockfile, so the two
+`lushtext-ui`'s dependencies separately from the root lockfile, so the two
 can drift.
 
 ```sh

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! E1 part B: Quint Connect replay of `../quint/journal.qnt`'s `k3_service`
-//! instance against the REAL `lushtext_core::services::draft_service` over a
+//! instance against the REAL `lushtext_services::draft_service` over a
 //! fresh tempdir per trace.
 //!
 //! Scope: one process, fault-free, and only `Edit`, `Register`, `WriteBody`,
@@ -46,12 +46,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use lushtext_core::model::draft::{DraftEntry, DraftManifest, DraftManifestAuthority};
-use lushtext_core::model::session::SessionData;
-use lushtext_core::services::draft_service::{
+use lushtext_model::draft::{DraftEntry, DraftManifest, DraftManifestAuthority};
+use lushtext_model::session::SessionData;
+use lushtext_services::draft_service::{
     self, DraftRegistration, RegisteredDraft, journal_core, set_aside,
 };
-use lushtext_core::services::draft_service::journal_core::{
+use lushtext_services::draft_service::journal_core::{
     BodyFacts, BodyWriteDecision, DeletionStep, RestoreDisposition, RestoreEnding,
 };
 use lushtext_journal_stateright::env::{CLOSED, Editor, IDS, MAX_EDITS};

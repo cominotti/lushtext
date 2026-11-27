@@ -14,7 +14,7 @@ members = [
     "crates/lushtext-build-support",
     "crates/lushtext-model",
     "crates/lushtext-services",
-    "crates/lushtext-core",
+    "crates/lushtext-ui",
     "crates/lushtext",
     "workspace-hack",
 ]
@@ -41,7 +41,7 @@ gtk-lush-proof-spine = { path = "crates/gtk-lush/proof-spine" }
 lushtext-build-support = { path = "crates/lushtext-build-support" }
 lushtext-model = { path = "crates/lushtext-model" }
 lushtext-services = { path = "crates/lushtext-services" }
-lushtext-core = { path = "crates/lushtext-core" }
+lushtext-ui = { path = "crates/lushtext-ui" }
 
 # GTK / GNOME stack
 gtk4        = { version = "0.11", features = ["gnome_50"] }

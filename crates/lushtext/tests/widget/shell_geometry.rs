@@ -8,7 +8,7 @@ use crate::common::{ensure_gtk_init, flush_events, present_window, test_window, 
 use gio::prelude::SettingsExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_core::ui::window::{LushtextWindow, ShellGeometryEvidence, shell_geometry_evidence};
+use lushtext_ui::ui::window::{LushtextWindow, ShellGeometryEvidence, shell_geometry_evidence};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
@@ -327,14 +327,14 @@ fn test_large_text_breakpoint_never_flips_the_pane_to_the_sheet() {
     let gtk_settings = gtk4::Settings::default().expect("default GTK settings");
     // 1.25 x 96 dpi, in the 1/1024 units `gtk-xft-dpi` takes.
     gtk_settings.set_gtk_xft_dpi(120 * 1024);
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     // Construct at the width it will be allocated at, so the restore-time
     // reconciliation already renders the pane.
     settings
-        .set_int(lushtext_core::config::keys::WINDOW_WIDTH, 1500)
+        .set_int(lushtext_ui::config::keys::WINDOW_WIDTH, 1500)
         .expect("set window width");
     settings
-        .set_int(lushtext_core::config::keys::WINDOW_HEIGHT, 900)
+        .set_int(lushtext_ui::config::keys::WINDOW_HEIGHT, 900)
         .expect("set window height");
     let window = test_window();
     let layout_view = window.imp().properties_layout_view.clone();
@@ -381,12 +381,12 @@ fn test_doubled_text_scale_keeps_the_workspace_collapsed_at_the_minimum_width() 
     ensure_gtk_init();
     let gtk_settings = gtk4::Settings::default().expect("default GTK settings");
     gtk_settings.set_gtk_xft_dpi(192 * 1024);
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
-        .set_int(lushtext_core::config::keys::WINDOW_WIDTH, 700)
+        .set_int(lushtext_ui::config::keys::WINDOW_WIDTH, 700)
         .expect("set window width");
     settings
-        .set_int(lushtext_core::config::keys::WINDOW_HEIGHT, 700)
+        .set_int(lushtext_ui::config::keys::WINDOW_HEIGHT, 700)
         .expect("set window height");
     let window = test_window();
     present_window(&window);

@@ -1,7 +1,7 @@
 ---
 description: The workflow readability convention — roles, homes, seams, policy purity, and evidence surfaces
 paths:
-  - "crates/lushtext-core/src/ui/**"
+  - "crates/lushtext-ui/src/ui/**"
   - "crates/lushtext/tests/widget/**"
   - "docs/workflow-readability-matrix.md"
   - "docs/next/workflow-readability.md"

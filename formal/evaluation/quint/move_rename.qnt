@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // T1, second half: the copy fallback (`MoveProtocol`) and `RenameProtocol`
-// from crates/lushtext-core/src/services/filesystem/write_protocol.rs, with
+// from crates/lushtext-services/src/filesystem/write_protocol.rs, with
 // the two Kani harnesses `a_move_removes_its_source_only_after_the_copy_is_durable`
 // and `a_completed_rename_synced_every_directory_it_mutated`.
 //

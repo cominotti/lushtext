@@ -11,7 +11,7 @@
 use crate::common::{ensure_gtk_init, flush_events, present_window, test_window};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_core::ui::window::{
+use lushtext_ui::ui::window::{
     EditorMemoryEvictionEvidence, LushtextWindow, editor_memory_eviction_evidence,
 };
 
@@ -63,7 +63,7 @@ fn test_editor_memory_eviction_evidence_reads_stay_side_effect_free_across_ledge
         .selected_page()
         .and_then(|page| {
             page.child()
-                .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+                .downcast::<lushtext_ui::ui::editor_page::LushtextEditorPage>()
                 .ok()
         })
         .expect("an active editor");
@@ -219,7 +219,7 @@ fn test_editor_memory_eviction_never_reclaims_the_selected_page() {
         flush_events();
         if let Some(editor) = window.imp().tab_view.selected_page().and_then(|page| {
             page.child()
-                .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+                .downcast::<lushtext_ui::ui::editor_page::LushtextEditorPage>()
                 .ok()
         }) {
             editor.buffer().set_text(&format!("tab {index}\n"));
@@ -259,7 +259,7 @@ fn test_editor_memory_eviction_never_reclaims_the_selected_page() {
         .selected_page()
         .and_then(|page| {
             page.child()
-                .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+                .downcast::<lushtext_ui::ui::editor_page::LushtextEditorPage>()
                 .ok()
         })
         .expect("a selected editor");

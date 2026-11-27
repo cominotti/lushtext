@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! A port of the Kani harness ENVIRONMENT in
-//! `crates/lushtext-core/src/services/draft_service/kani_proofs.rs`.
+//! `crates/lushtext-services/src/draft_service/kani_proofs.rs`.
 //!
 //! Every journal DECISION is a call to the real
-//! `lushtext_core::services::draft_service::journal_core`, at exactly the
+//! `lushtext_services::draft_service::journal_core`, at exactly the
 //! points `kani_proofs.rs` calls it. The differences from the Kani harness are
 //! mechanical and listed here so a reviewer can check them one by one:
 //!
@@ -22,8 +22,8 @@
 
 use core::hash::{Hash, Hasher};
 
-use lushtext_core::model::draft::DraftManifestCompleteness;
-use lushtext_core::services::draft_service::journal_core::{
+use lushtext_model::draft::DraftManifestCompleteness;
+use lushtext_services::draft_service::journal_core::{
     BodyFacts, BodyWriteDecision, CleanupBodyIdentity, CleanupEntryState, CleanupFacts,
     DeletionStep, EntryState, OrphanBodyDecision, RestoreDisposition, RestoreEnding,
     UntrustedCommitDisposition, body_write_decision, commit_authority, deletion_start,

@@ -13,8 +13,8 @@
 
 use std::process::ExitCode;
 
-use lushtext_core::services::filesystem::fixture;
-use lushtext_core::services::test_isolation;
+use lushtext_services::filesystem::fixture;
+use lushtext_services::test_isolation;
 
 use gtk_lush_proof_harness::{HarnessConfig, RegisteredTest, run_registered_tests};
 

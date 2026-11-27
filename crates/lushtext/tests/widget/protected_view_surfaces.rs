@@ -5,7 +5,7 @@
 //! Line, the fold gutter, the alert and notice, and navigation and restore
 //! through the navigation mark.
 //!
-//! Every fixture is synthetic. Thresholds come from `lushtext_core::model`,
+//! Every fixture is synthetic. Thresholds come from `lushtext_model`,
 //! never restated.
 
 use crate::common::{
@@ -14,9 +14,9 @@ use crate::common::{
 };
 use gtk4::prelude::*;
 use libadwaita::prelude::{AdwApplicationWindowExt, AdwDialogExt, AlertDialogExt};
-use lushtext_core::model::document_scale::L_PROTECT_EDIT;
-use lushtext_core::model::protected_fold::N_INSPECT;
-use lushtext_core::ui::editor_page::{
+use lushtext_model::document_scale::L_PROTECT_EDIT;
+use lushtext_model::protected_fold::N_INSPECT;
+use lushtext_ui::ui::editor_page::{
     EditorLoadState, InspectorRequest, LushtextEditorPage, WholeLineProvider,
 };
 use sourceview5::prelude::ViewExt as _;
@@ -181,7 +181,7 @@ fn test_copy_whole_line_writes_the_exact_paragraph_in_bounded_chunks() {
         .and_downcast::<WholeLineProvider>()
         .expect("the lazy whole-line provider is on the clipboard");
     assert_eq!(provider.byte_len(), giant.len());
-    let chunk = lushtext_core::ui::editor_page::WHOLE_LINE_CHUNK_BYTES;
+    let chunk = lushtext_ui::ui::editor_page::WHOLE_LINE_CHUNK_BYTES;
     let one_read = u64::try_from(giant.len().div_ceil(chunk)).expect("fits");
     // The provider writes only to answer a read. The compositor may read it
     // too: Mutter's clipboard manager copies a new text selection so it
@@ -329,9 +329,9 @@ fn test_the_alert_appears_once_and_blocked_requests_are_rate_limited() {
     let app = window
         .application()
         .expect("window application")
-        .downcast::<lushtext_core::app::LushtextApplication>()
+        .downcast::<lushtext_ui::app::LushtextApplication>()
         .expect("LushtextApplication");
-    let snapshot = lushtext_core::ui::automation::app_snapshot(&app);
+    let snapshot = lushtext_ui::ui::automation::app_snapshot(&app);
     assert!(
         snapshot
             .window
@@ -388,7 +388,7 @@ fn test_the_alert_undo_returns_a_paste_grown_document_to_editable() {
 fn open_inexact_shift_jis(
     name: &str,
 ) -> (
-    lushtext_core::ui::window::LushtextWindow,
+    lushtext_ui::ui::window::LushtextWindow,
     LushtextEditorPage,
     std::path::PathBuf,
     Vec<u8>,
@@ -410,12 +410,12 @@ fn open_inexact_shift_jis(
     });
     page.load_file_async_with_encoding(
         &path,
-        Some(lushtext_core::model::encoding::DocumentEncoding::ShiftJis),
+        Some(lushtext_model::encoding::DocumentEncoding::ShiftJis),
     );
     wait_until(Duration::from_secs(60), || {
         page.load_evidence().load_state == EditorLoadState::Loaded
             && page.document_encoding_state().opened_encoding
-                == lushtext_core::model::encoding::DocumentEncoding::ShiftJis
+                == lushtext_model::encoding::DocumentEncoding::ShiftJis
     });
     assert!(page.is_protected_view());
     assert!(page.decode_is_inexact());
@@ -500,7 +500,7 @@ fn test_every_toolkit_binding_of_the_protected_view_is_classified() {
     );
     let unclassified: Vec<&String> = names
         .iter()
-        .filter(|name| !lushtext_core::ui::editor_page::classifies_toolkit_binding(name))
+        .filter(|name| !lushtext_ui::ui::editor_page::classifies_toolkit_binding(name))
         .collect();
     assert!(
         unclassified.is_empty(),
@@ -535,7 +535,7 @@ fn test_a_protected_head_stays_under_the_paragraph_wrap_gate() {
     let buffer = page.buffer();
     let tag = buffer
         .tag_table()
-        .lookup(lushtext_core::ui::editor_page::NO_WRAP_TAG)
+        .lookup(lushtext_ui::ui::editor_page::NO_WRAP_TAG)
         .expect("the wrap gate tagged the long paragraph");
     assert!(buffer.iter_at_line(1).expect("line 1").has_tag(&tag));
     assert!(!buffer.iter_at_line(0).expect("line 0").has_tag(&tag));
@@ -564,7 +564,7 @@ struct BaselineDelayReset;
 
 impl Drop for BaselineDelayReset {
     fn drop(&mut self) {
-        lushtext_core::ui::window::set_local_history_baseline_delay_for_test(0);
+        lushtext_ui::ui::window::set_local_history_baseline_delay_for_test(0);
     }
 }
 
@@ -574,7 +574,7 @@ fn assert_protected_periodic_capture_reads_the_source(baseline_delay_ms: u64) {
     // chunked GTK snapshot of the protected buffer, ledger A66).
     ensure_gtk_init();
     let _reset = BaselineDelayReset;
-    lushtext_core::ui::window::set_local_history_baseline_delay_for_test(baseline_delay_ms);
+    lushtext_ui::ui::window::set_local_history_baseline_delay_for_test(baseline_delay_ms);
     let data_dir = crate::common::isolated_data_dir();
     let document = data_dir.path().join("periodic-protected.txt");
     fixture::write_text(&document, "first line\nsecond line\n");
@@ -590,7 +590,7 @@ fn assert_protected_periodic_capture_reads_the_source(baseline_delay_ms: u64) {
         page.protected_view_evidence().source_bytes.is_some()
     });
     let expected = editor_text(&page);
-    use lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Periodic;
+    use lushtext_model::local_history::LocalHistorySnapshotOrigin::Periodic;
 
     // The periodic capture needs the automatic-capture admission, which the
     // edit's baseline capture may still hold.
@@ -603,13 +603,13 @@ fn assert_protected_periodic_capture_reads_the_source(baseline_delay_ms: u64) {
         "no chunked buffer snapshot runs for a protected document"
     );
     wait_until(Duration::from_secs(30), || {
-        lushtext_core::services::local_history_service::list_snapshots_for_path(
+        lushtext_services::local_history_service::list_snapshots_for_path(
             data_dir.path(),
             &document,
         )
         .is_ok_and(|snapshots| snapshots.iter().any(|meta| meta.origin == Periodic))
     });
-    let snapshots = lushtext_core::services::local_history_service::list_snapshots_for_path(
+    let snapshots = lushtext_services::local_history_service::list_snapshots_for_path(
         data_dir.path(),
         &document,
     )
@@ -618,7 +618,7 @@ fn assert_protected_periodic_capture_reads_the_source(baseline_delay_ms: u64) {
         .iter()
         .find(|meta| meta.origin == Periodic)
         .expect("a periodic snapshot");
-    let loaded = lushtext_core::services::local_history_service::load_snapshot_for_path(
+    let loaded = lushtext_services::local_history_service::load_snapshot_for_path(
         data_dir.path(),
         &document,
         &latest.snapshot_id,
@@ -649,7 +649,7 @@ fn text_views_under(root: &gtk4::Widget) -> Vec<gtk4::TextView> {
 fn buffer_is_folded(buffer: &gtk4::TextBuffer) -> bool {
     buffer
         .tag_table()
-        .lookup(lushtext_core::ui::protected_fold::FOLD_TAG_NAME)
+        .lookup(lushtext_ui::ui::protected_fold::FOLD_TAG_NAME)
         .is_some()
 }
 
@@ -693,12 +693,12 @@ fn test_copy_across_a_folded_paragraph_in_the_history_preview_copies_the_full_te
     let path = dir.path().join("history-folded.txt");
     fixture::write_text(&path, "current\n");
     let (body, _) = giant_body(n(L_PROTECT_EDIT) + 5_000);
-    lushtext_core::services::local_history_service::capture_snapshot_for_path(
-        &lushtext_core::services::json_store::data_dir(),
+    lushtext_services::local_history_service::capture_snapshot_for_path(
+        &lushtext_services::json_store::data_dir(),
         &path,
         &body,
-        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Save,
-        lushtext_core::services::local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
+        lushtext_model::local_history::LocalHistorySnapshotOrigin::Save,
+        lushtext_services::local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
     )
     .expect("seed a folded snapshot");
     window.open_document(&path);
@@ -755,11 +755,11 @@ fn test_a_long_line_note_installs_folded_in_bounded_turns_and_copies_from_its_te
         "{}{giant}\nlast line\n",
         "ordinary note line\n".repeat(40_000)
     );
-    let note = lushtext_core::model::note::RichNoteBody::new(&raw);
+    let note = lushtext_model::note::RichNoteBody::new(&raw);
     // The stored body is the normalized text the editor opens with.
     let note_text = note.text.clone();
-    lushtext_core::services::document_note_service::save_for_path(
-        &lushtext_core::services::json_store::data_dir(),
+    lushtext_services::document_note_service::save_for_path(
+        &lushtext_services::json_store::data_dir(),
         &path,
         &note,
     )
@@ -848,7 +848,7 @@ fn test_copy_whole_line_says_which_line_it_copied() {
 
 #[test]
 fn test_a_paste_longer_than_the_entry_cap_is_cut_with_a_notice() {
-    use lushtext_core::ui::entry_paste_cap::{ENTRY_INSERT_CAP_BYTES, ENTRY_INSERT_CAPPED_NOTICE};
+    use lushtext_ui::ui::entry_paste_cap::{ENTRY_INSERT_CAP_BYTES, ENTRY_INSERT_CAPPED_NOTICE};
     ensure_gtk_init();
     let window = test_window();
     present_window(&window);
@@ -943,7 +943,7 @@ fn test_the_inspector_moves_between_folded_lines_and_states_what_is_hidden() {
 }
 
 /// The status bar's current message, from the window's notification bus.
-fn status_message_text(window: &lushtext_core::ui::window::LushtextWindow) -> Option<String> {
+fn status_message_text(window: &lushtext_ui::ui::window::LushtextWindow) -> Option<String> {
     use glib::subclass::prelude::ObjectSubclassIsExt;
     window
         .imp()

@@ -5,7 +5,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use lushtext_core::fuzzing::exercise_operation_script_for_fuzzing;
+use lushtext_ui::fuzzing::exercise_operation_script_for_fuzzing;
 
 fuzz_target!(|data: &[u8]| {
     let report = exercise_operation_script_for_fuzzing(data);

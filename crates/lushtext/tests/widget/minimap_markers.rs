@@ -15,9 +15,9 @@ use crate::common::{
     worst_dispatch_until,
 };
 use gtk4::prelude::*;
-use lushtext_core::config::keys;
-use lushtext_core::model::responsiveness_budget::{B_INTERACT_US, B_SETTLE_US};
-use lushtext_core::ui::editor_page::{LushtextEditorPage, MinimapMarkerKind};
+use lushtext_model::responsiveness_budget::{B_INTERACT_US, B_SETTLE_US};
+use lushtext_ui::config::keys;
+use lushtext_ui::ui::editor_page::{LushtextEditorPage, MinimapMarkerKind};
 use sourceview5::prelude::SearchSettingsExt;
 use std::time::{Duration, Instant};
 
@@ -34,7 +34,7 @@ const KINDS: [MinimapMarkerKind; 4] = [
 ];
 
 fn enable_minimap(long_line_markers: bool) {
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -163,7 +163,7 @@ fn line_rows_in_strip(page: &LushtextEditorPage, line: i32) -> (f64, f64) {
 /// laid out yet (or a hidden one) has zero height and belongs to the row group
 /// above it (ledger A99), so it is matched against the row just above.
 fn overlaps(
-    bounds: &[lushtext_core::ui::editor_page::MinimapMarkerBounds],
+    bounds: &[lushtext_ui::ui::editor_page::MinimapMarkerBounds],
     rows: (f64, f64),
 ) -> bool {
     let rows = if rows.1 > rows.0 {
@@ -443,12 +443,12 @@ fn test_minimap_modified_tracking_leaves_no_trace_in_the_document() {
     let page = LushtextEditorPage::new();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("tracked.txt");
-    lushtext_core::services::filesystem::fixture::write_text(&path, "alpha\nbeta\ngamma\n");
+    lushtext_services::filesystem::fixture::write_text(&path, "alpha\nbeta\ngamma\n");
     let window = present(&page, 800);
     page.set_file_path(&path);
     page.load_file_async(&path);
     wait_until(Duration::from_secs(5), || {
-        page.load_state() == lushtext_core::ui::editor_page::EditorLoadState::Loaded
+        page.load_state() == lushtext_ui::ui::editor_page::EditorLoadState::Loaded
     });
     flush_events();
     assert_eq!(
@@ -484,7 +484,7 @@ fn test_minimap_modified_tracking_leaves_no_trace_in_the_document() {
     wait_until(Duration::from_secs(5), || done.get());
     let (start, end) = buffer.bounds();
     assert_eq!(
-        lushtext_core::services::filesystem::fixture::read_text(&path),
+        lushtext_services::filesystem::fixture::read_text(&path),
         buffer.text(&start, &end, true).to_string(),
         "the saved bytes are exactly the buffer text"
     );

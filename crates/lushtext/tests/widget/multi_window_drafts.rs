@@ -17,8 +17,8 @@ use crate::common::{
 };
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_core::services::{draft_service, json_store};
-use lushtext_core::ui::window::{
+use lushtext_services::{draft_service, json_store};
+use lushtext_ui::ui::window::{
     LushtextWindow, set_draft_mutation_delays_for_test, set_first_dirty_autosave_delay_for_test,
     set_orphan_cleanup_delays_for_test,
 };
@@ -258,9 +258,9 @@ fn test_the_same_file_opened_in_two_windows_keeps_one_editor() {
 }
 
 fn seed_manifest_and_session(data_dir: &Path, path: &Path, draft_id: &str) {
-    use lushtext_core::model::draft::{DraftEntry, DraftManifest};
-    use lushtext_core::model::session::{SessionData, SessionTab};
-    use lushtext_core::services::{editor_io, session_service};
+    use lushtext_model::draft::{DraftEntry, DraftManifest};
+    use lushtext_model::session::{SessionData, SessionTab};
+    use lushtext_services::{editor_io, session_service};
     draft_service::save_manifest(
         data_dir,
         &DraftManifest {
@@ -295,7 +295,7 @@ fn seed_manifest_and_session(data_dir: &Path, path: &Path, draft_id: &str) {
 /// otherwise the next startup never offers the other window's untitled draft.
 #[test]
 fn test_a_session_save_from_one_window_keeps_the_other_windows_tabs() {
-    use lushtext_core::services::session_service;
+    use lushtext_services::session_service;
     let process = one_process(|_, _| {});
     process.first.new_tab();
     edit_active(&process.first, "untitled work in window A\n");

@@ -15,7 +15,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ACTION_CATALOG = REPO_ROOT / "crates/lushtext-services/src/action_catalog/mod.rs"
-AUTOMATION_UI = REPO_ROOT / "crates/lushtext-core/src/ui/automation.rs"
+AUTOMATION_UI = REPO_ROOT / "crates/lushtext-ui/src/ui/automation.rs"
 AUTOMATION_MODEL = REPO_ROOT / "crates/lushtext-model/src/automation.rs"
 AUTOMATION_SMOKE_DRIVER = REPO_ROOT / "scripts/automation-smoke-driver.py"
 AUTOMATION_CLIENT = REPO_ROOT / "scripts/lushtext-automation.py"
@@ -84,38 +84,38 @@ EVIDENCE_PROJECTIONS = (
     EvidenceProjection(
         "window.content_search",
         "SearchPanelEvidence",
-        REPO_ROOT / "crates/lushtext-core/src/ui/search_panel/evidence.rs",
+        REPO_ROOT / "crates/lushtext-ui/src/ui/search_panel/evidence.rs",
         "content_search_snapshot",
     ),
     EvidenceProjection(
         "window.command_palette",
         "CommandPaletteEvidence",
-        REPO_ROOT / "crates/lushtext-core/src/ui/command_palette/evidence.rs",
+        REPO_ROOT / "crates/lushtext-ui/src/ui/command_palette/evidence.rs",
         "command_palette_snapshot",
     ),
     EvidenceProjection(
         "window.tabs",
         "SaveEvidence",
-        REPO_ROOT / "crates/lushtext-core/src/ui/editor_page/save/evidence.rs",
+        REPO_ROOT / "crates/lushtext-ui/src/ui/editor_page/save/evidence.rs",
         "tab_snapshot",
     ),
     EvidenceProjection(
         "window.tabs",
         "LoadEvidence",
-        REPO_ROOT / "crates/lushtext-core/src/ui/editor_page/load/evidence.rs",
+        REPO_ROOT / "crates/lushtext-ui/src/ui/editor_page/load/evidence.rs",
         "tab_snapshot",
         binding="load",
     ),
     EvidenceProjection(
         "window.local_history",
         "LocalHistoryEvidence",
-        REPO_ROOT / "crates/lushtext-core/src/ui/window/local_history/evidence.rs",
+        REPO_ROOT / "crates/lushtext-ui/src/ui/window/local_history/evidence.rs",
         "local_history_snapshot",
     ),
     EvidenceProjection(
         "window.notes",
         "NotesEvidence",
-        REPO_ROOT / "crates/lushtext-core/src/ui/window/notes/evidence.rs",
+        REPO_ROOT / "crates/lushtext-ui/src/ui/window/notes/evidence.rs",
         "notes_snapshot",
     ),
     # `window.workspace` projects the ten scalars of the workspace tree
@@ -128,7 +128,7 @@ EVIDENCE_PROJECTIONS = (
     EvidenceProjection(
         "window.workspace",
         "WorkspaceTreeEvidence",
-        REPO_ROOT / "crates/lushtext-core/src/ui/sidebar/evidence.rs",
+        REPO_ROOT / "crates/lushtext-ui/src/ui/sidebar/evidence.rs",
         "workspace_snapshot",
     ),
 )
@@ -921,7 +921,7 @@ def run_evidence_projection_self_tests() -> None:
     """
     reference = REFERENCE_DOC.read_text(encoding="utf-8")
     automation_source = AUTOMATION_UI.read_text(encoding="utf-8")
-    palette_source_path = REPO_ROOT / "crates/lushtext-core/src/ui/command_palette/evidence.rs"
+    palette_source_path = REPO_ROOT / "crates/lushtext-ui/src/ui/command_palette/evidence.rs"
     palette_source = palette_source_path.read_text(encoding="utf-8")
 
     def findings_with(
@@ -1120,7 +1120,7 @@ def run_evidence_projection_self_tests() -> None:
                     "window.tabs",
                     "LoadEvidence",
                     REPO_ROOT
-                    / "crates/lushtext-core/src/ui/editor_page/load/evidence.rs",
+                    / "crates/lushtext-ui/src/ui/editor_page/load/evidence.rs",
                     "tab_snapshot",
                     binding="evidence",
                 ),
@@ -1145,7 +1145,7 @@ def run_evidence_projection_self_tests() -> None:
                     "window.tabs",
                     "SaveEvidence",
                     REPO_ROOT
-                    / "crates/lushtext-core/src/ui/editor_page/save/evidence.rs",
+                    / "crates/lushtext-ui/src/ui/editor_page/save/evidence.rs",
                     "tab_snapshot",
                     binding="load",
                 ),

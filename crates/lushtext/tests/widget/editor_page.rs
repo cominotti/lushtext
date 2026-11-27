@@ -11,19 +11,19 @@ use gio::prelude::ListModelExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
-use lushtext_core::config::keys;
-use lushtext_core::model::document_scale::LocalHistoryAvailability;
-use lushtext_core::model::editor_memory::EVICTED_EDITOR_BOOKKEEPING_BYTES;
-use lushtext_core::model::encoding::{DocumentEncoding, DocumentEncodingState};
-use lushtext_core::model::formatting_overrides::FormattingOverrides;
-use lushtext_core::model::paragraph_boundary::DocumentProfile;
-use lushtext_core::model::protected_install::PROTECTED_TAIL_SLICE_BYTES;
-use lushtext_core::services::editor_io::{self, EditorLoadError, LoadResult};
-use lushtext_core::services::local_history_service;
-use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
-use lushtext_core::ui::accessibility::{AnnouncementLane, test_audit::AccessibleAudit};
-use lushtext_core::ui::editor_page::save::policy::{SaveCaptureMode, SaveWriteClassification};
-use lushtext_core::ui::editor_page::{
+use lushtext_model::document_scale::LocalHistoryAvailability;
+use lushtext_model::editor_memory::EVICTED_EDITOR_BOOKKEEPING_BYTES;
+use lushtext_model::encoding::{DocumentEncoding, DocumentEncodingState};
+use lushtext_model::formatting_overrides::FormattingOverrides;
+use lushtext_model::paragraph_boundary::DocumentProfile;
+use lushtext_model::protected_install::PROTECTED_TAIL_SLICE_BYTES;
+use lushtext_services::editor_io::{self, EditorLoadError, LoadResult};
+use lushtext_services::local_history_service;
+use lushtext_services::notifications::{InlineActionNotification, InlineNotificationStyle};
+use lushtext_ui::config::keys;
+use lushtext_ui::ui::accessibility::{AnnouncementLane, test_audit::AccessibleAudit};
+use lushtext_ui::ui::editor_page::save::policy::{SaveCaptureMode, SaveWriteClassification};
+use lushtext_ui::ui::editor_page::{
     BookmarkEditError, BookmarkNavigationDirection, BookmarkToggleState,
     BufferReplacementCancelReason, BufferReplacementWorkflow, BufferSnapshotCancelReason,
     BufferSnapshotOutcome, BufferSnapshotTestEdit, BufferSnapshotTestMutation,
@@ -34,8 +34,8 @@ use lushtext_core::ui::editor_page::{
 };
 // The row's only test seam retired: the throttling key is production pure
 // policy now, so the test reads the same function production reads.
-use lushtext_core::ui::plain_disposal::{hold_disposal_capacity_for_test, plain_disposal_evidence};
-use lushtext_core::ui::window::inline_alert_announcement_key;
+use lushtext_ui::ui::plain_disposal::{hold_disposal_capacity_for_test, plain_disposal_evidence};
+use lushtext_ui::ui::window::inline_alert_announcement_key;
 use sourceview5::prelude::*;
 use std::assert_matches;
 use std::cell::{Cell, RefCell};
@@ -244,7 +244,7 @@ fn expected_source_map_bottom_margin(
 }
 
 fn enable_minimap_for_tests(long_line_markers: bool) -> gio::Settings {
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -498,7 +498,7 @@ fn source_map_content_bottom(page: &LushtextEditorPage) -> f64 {
 fn assert_marker_bounds_within_source_content(
     page: &LushtextEditorPage,
     kind: MinimapMarkerKind,
-) -> Vec<lushtext_core::ui::editor_page::MinimapMarkerBounds> {
+) -> Vec<lushtext_ui::ui::editor_page::MinimapMarkerBounds> {
     let bounds = page.minimap_marker_bounds(kind);
     assert!(
         !bounds.is_empty(),
@@ -878,7 +878,7 @@ fn test_save_file_no_path_returns_error() {
     let page = LushtextEditorPage::new();
     // save_file_async calls callback synchronously when no path is set
     let result: std::rc::Rc<
-        std::cell::RefCell<Option<Result<(), lushtext_core::ui::editor_page::EditorSaveError>>>,
+        std::cell::RefCell<Option<Result<(), lushtext_ui::ui::editor_page::EditorSaveError>>>,
     > = std::rc::Rc::new(std::cell::RefCell::new(None));
     let result_clone = result.clone();
     page.save_file_async(move |r| {
@@ -890,7 +890,7 @@ fn test_save_file_no_path_returns_error() {
         .expect("expected operation to succeed");
     assert_matches!(
         result,
-        Err(lushtext_core::ui::editor_page::EditorSaveError::NoPath)
+        Err(lushtext_ui::ui::editor_page::EditorSaveError::NoPath)
     );
 }
 
@@ -1758,7 +1758,7 @@ fn test_chunked_load_cancellation_clears_partial_text_and_releases_admission() {
     page.save_file_async(move |result| {
         assert_matches!(
             result,
-            Err(lushtext_core::ui::editor_page::EditorSaveError::IncompleteLoadInstallation)
+            Err(lushtext_ui::ui::editor_page::EditorSaveError::IncompleteLoadInstallation)
         );
         save_was_blocked_for_callback.set(true);
     });
@@ -2218,7 +2218,7 @@ fn test_stale_save_formatting_never_publishes_a_partial_save() {
     wait_until(Duration::from_secs(15), || result.borrow().is_some());
     assert_matches!(
         result.borrow_mut().take().expect("save callback result"),
-        Err(lushtext_core::ui::editor_page::EditorSaveError::SnapshotCancelled)
+        Err(lushtext_ui::ui::editor_page::EditorSaveError::SnapshotCancelled)
     );
     assert!(!page.is_saving());
     assert!(page.is_modified());
@@ -2305,7 +2305,7 @@ fn test_save_rejects_duplicate_while_first_save_is_in_progress() {
     ));
 
     let duplicate_result: std::rc::Rc<
-        std::cell::RefCell<Option<Result<(), lushtext_core::ui::editor_page::EditorSaveError>>>,
+        std::cell::RefCell<Option<Result<(), lushtext_ui::ui::editor_page::EditorSaveError>>>,
     > = std::rc::Rc::new(std::cell::RefCell::new(None));
     let duplicate_result_clone = duplicate_result.clone();
     page.save_file_async(move |r| {
@@ -2318,7 +2318,7 @@ fn test_save_rejects_duplicate_while_first_save_is_in_progress() {
         .expect("duplicate save should finish synchronously");
     assert_matches!(
         duplicate_result,
-        Err(lushtext_core::ui::editor_page::EditorSaveError::SaveInProgress)
+        Err(lushtext_ui::ui::editor_page::EditorSaveError::SaveInProgress)
     );
 
     wait_until(std::time::Duration::from_secs(2), || first_done.get());
@@ -3124,7 +3124,7 @@ fn test_minimap_pending_refresh_marks_work_pending() {
 #[test]
 fn test_minimap_source_map_stays_unwrapped_across_editor_wrap_mode_changes() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::WORD_WRAP, true)
         .expect("enable word wrap");
@@ -4769,7 +4769,7 @@ fn test_settings_word_wrap_default_enabled() {
 #[test]
 fn test_settings_minimap_width_bounds_overlay_width_request() {
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     let original_width = settings.int(keys::MINIMAP_WIDTH);
     settings
         .set_int(keys::MINIMAP_WIDTH, 88)
@@ -6092,7 +6092,7 @@ fn test_save_failing_before_rename_keeps_previous_bytes_and_leaves_the_tab_modif
     assert!(
         !matches!(
             error,
-            lushtext_core::ui::editor_page::EditorSaveError::DurabilityUnconfirmed { .. }
+            lushtext_ui::ui::editor_page::EditorSaveError::DurabilityUnconfirmed { .. }
         ),
         "a failure before the rename must not be reported as durability unconfirmed: {error}"
     );
@@ -6142,7 +6142,7 @@ fn test_save_failing_after_rename_reports_durability_unconfirmed_not_a_lost_save
             .take()
             .expect("after-rename save result")
             .expect_err("after-rename save must report a failure"),
-        lushtext_core::ui::editor_page::EditorSaveError::DurabilityUnconfirmed { .. }
+        lushtext_ui::ui::editor_page::EditorSaveError::DurabilityUnconfirmed { .. }
     );
     assert_eq!(
         fs_read::text(&path).expect("renamed bytes must be on disk"),
@@ -6279,7 +6279,7 @@ fn change_in_frames(
 /// minimap off, presented with the caret and the horizontal scroll at the
 /// start of the line, which is wider than the viewport.
 fn present_long_line_page() -> (LushtextEditorPage, gtk4::ApplicationWindow) {
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
         .set_boolean(keys::WORD_WRAP, false)
         .expect("wrapping off");

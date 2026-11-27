@@ -14,7 +14,7 @@ use crate::common::{
 use glib::object::ObjectExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_core::ui::window::{LushtextWindow, TabStripEvidence, tab_strip_evidence};
+use lushtext_ui::ui::window::{LushtextWindow, TabStripEvidence, tab_strip_evidence};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -51,7 +51,7 @@ fn aim_menu_at(window: &LushtextWindow, title: &str) -> libadwaita::TabPage {
         .map(|index| tab_view.nth_page(index))
         .find(|page| {
             page.child()
-                .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+                .downcast::<lushtext_ui::ui::editor_page::LushtextEditorPage>()
                 .is_ok_and(|editor| editor.title() == title)
         })
         .unwrap_or_else(|| panic!("tab '{title}' not found"));

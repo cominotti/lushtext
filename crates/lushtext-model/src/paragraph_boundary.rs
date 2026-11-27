@@ -23,7 +23,7 @@
 //! string of at most 8 bytes for the boundary functions, and strings of at
 //! most 6 bytes over `a`, `é`, `\r`, `\n`, U+2028, U+2029 and U+0085 cut into
 //! at most 3 slices for the profile. The property tests in
-//! `crates/lushtext-core/tests/properties/paragraph_boundary.rs` are the
+//! `crates/lushtext-ui/tests/properties/paragraph_boundary.rs` are the
 //! evidence beyond that domain: they compare the splits with
 //! `pango::find_paragraph_boundary` and the profile's slice independence with
 //! the production configuration on long strings.

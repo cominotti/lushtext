@@ -4,7 +4,7 @@
 
 use crate::common::{ensure_gtk_init, present_window};
 use gtk4::prelude::*;
-use lushtext_core::ui::accessibility::{
+use lushtext_ui::ui::accessibility::{
     self, AnnouncementLane, AnnouncementThrottler, RowAccessibility, test_audit::AccessibleAudit,
 };
 use std::time::{Duration, Instant};

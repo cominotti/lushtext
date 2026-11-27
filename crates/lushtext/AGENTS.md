@@ -4,9 +4,9 @@ This crate is the thin binary entry point plus integration and widget tests.
 
 ## Boundaries
 
-- Keep application logic in `crates/lushtext-core`. Do not migrate editor behavior, persistence rules, or GTK workflow logic into this crate for convenience.
+- Keep application logic in `crates/lushtext-ui`. Do not migrate editor behavior, persistence rules, or GTK workflow logic into this crate for convenience.
 - Keep `src/` focused on application startup and binary-specific glue.
-- Prefer testing GTK-free behavior in `lushtext-core` unit tests when possible; reserve this crate for integration and real widget flows.
+- Prefer testing GTK-free behavior in `lushtext-ui` unit tests when possible; reserve this crate for integration and real widget flows.
 
 ## Tests
 

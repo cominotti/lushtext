@@ -38,16 +38,16 @@ Keep this index in sync with `.agents/rules/*.md` (`scripts/check-agent-docs.sh`
 Cargo workspace:
 
 - `crates/lushtext-build-support` — tiny build-script helper crate, including the build-only filesystem boundary used by `build.rs` files that cannot depend on runtime services
-- `crates/lushtext-model` — pure domain types and pure policy (no GTK, GLib, GIO, Adwaita, or GtkSourceView), re-exported as `lushtext_core::model`
-- `crates/lushtext-services` — GTK-free application services and I/O adapters (`filesystem/`, persistence, search, file index, drafts), re-exported as `lushtext_core::services`
-- `crates/lushtext-core` — GTK4/Libadwaita UI widgets and app shell (`ui/`, `app.rs`, `config.rs`, re-exports `lushtext_model as model` and `lushtext_services as services`)
+- `crates/lushtext-model` — pure domain types and pure policy (no GTK, GLib, GIO, Adwaita, or GtkSourceView), re-exported as `lushtext_ui::model`
+- `crates/lushtext-services` — GTK-free application services and I/O adapters (`filesystem/`, persistence, search, file index, drafts), re-exported as `lushtext_ui::services`
+- `crates/lushtext-ui` — GTK4/Libadwaita UI widgets and app shell (`ui/`, `app.rs`, `config.rs`, re-exports `lushtext_model as model` and `lushtext_services as services`)
 - `crates/lushtext` — thin binary entry point plus integration and widget tests
 - `crates/gtk-lush/` — GTK Lush family crates (`signals`, `settle`, `tasks`, `viewport`, `widgets` with `ClipBin`, `ViewportSliceBin` and `RenderHoldOverlay`, `proof-harness`, `proof-spine`, `axioms`): stable in-tree platform APIs consumed through workspace path dependencies; governance in `crates/gtk-lush/GOVERNANCE.md`. `axioms` holds the isolated probe and one interactive/`--check` sample per GTK axiom ledger entry
 - `crates/gtk-lush-adoption-lab` — second-consumer GTK application for adoption validation; it may depend on several GTK Lush crates but is not a family crate and must stay outside `crates/gtk-lush/`. Its `tests/axiom_probes.rs` (`harness = false`) runs every axiom probe headless; nextest excludes `binary(=axiom_probes)` and `make gtk-lush-adoption-lab` runs `--bins`
 - `crates/cargo-gtk-proof` — workspace visual proof tool outside the GTK Lush family: schema validation, corpus replay, PNG/policy proof logic, and the same-session live visual runner
 - `workspace-hack` — generated cargo-hakari crate for unified dependency features
 
-### Module Layout (lushtext-core)
+### Module Layout (lushtext-ui)
 
 One line per module. Per-workflow file lists, roles and sizes are in `docs/workflow-readability-matrix.md`; a module marked *cross-cutting* carries no workflow role and names its owning rows in its module doc.
 
@@ -119,7 +119,7 @@ src/
     └── construction_spans.rs, responsiveness_probe.rs  # span clock; smoke-only responsiveness probe
 ```
 
-Benchmarks live in `crates/lushtext-core/benches/benchmarks.rs`. The minimap and geometry visual-proof invariants are keyed on the `ui/editor_page/minimap/` and `ui/window/geometry/` directory prefixes in both `scripts/check-visual-proof-policy.py` and `crates/cargo-gtk-proof/src/policy.rs` (see `testing.md`, "Path-keyed gates").
+Benchmarks live in `crates/lushtext-ui/benches/benchmarks.rs`. The minimap and geometry visual-proof invariants are keyed on the `ui/editor_page/minimap/` and `ui/window/geometry/` directory prefixes in both `scripts/check-visual-proof-policy.py` and `crates/cargo-gtk-proof/src/policy.rs` (see `testing.md`, "Path-keyed gates").
 
 ### Workflow Role Convention
 
@@ -147,13 +147,13 @@ Use nested `AGENTS.md` files only when a subtree has stable local contracts that
 
 Current nested files:
 
-- `crates/lushtext-core/AGENTS.md` — crate-level layering and ownership for core app logic
+- `crates/lushtext-ui/AGENTS.md` — crate-level layering and ownership for core app logic
 - `crates/lushtext/AGENTS.md` — binary crate and test-harness boundaries
-- `crates/lushtext-core/src/ui/AGENTS.md` — common GTK driving-adapter rules
-- `crates/lushtext-core/src/ui/window/AGENTS.md` — shell/window workflow contracts
-- `crates/lushtext-core/src/ui/sidebar/AGENTS.md` — workspace sidebar and section contracts
-- `crates/lushtext-core/src/ui/editor_page/AGENTS.md` — per-tab editor, save/load, monitor, and draft-sensitive rules
-- `crates/lushtext-core/src/ui/search_panel/AGENTS.md` — workspace search/replace panel contracts
+- `crates/lushtext-ui/src/ui/AGENTS.md` — common GTK driving-adapter rules
+- `crates/lushtext-ui/src/ui/window/AGENTS.md` — shell/window workflow contracts
+- `crates/lushtext-ui/src/ui/sidebar/AGENTS.md` — workspace sidebar and section contracts
+- `crates/lushtext-ui/src/ui/editor_page/AGENTS.md` — per-tab editor, save/load, monitor, and draft-sensitive rules
+- `crates/lushtext-ui/src/ui/search_panel/AGENTS.md` — workspace search/replace panel contracts
 
 If you add another nested `AGENTS.md`, keep it local, non-duplicative, and worth its maintenance cost, add its `CLAUDE.md -> AGENTS.md` symlink, and update this list in the same change.
 

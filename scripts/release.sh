@@ -25,7 +25,7 @@ release_files=(
     crates/lushtext/Cargo.toml
     crates/lushtext-model/Cargo.toml
     crates/lushtext-services/Cargo.toml
-    crates/lushtext-core/Cargo.toml
+    crates/lushtext-ui/Cargo.toml
     Cargo.lock
     "$metainfo_file"
     "$cargo_sources_file"
@@ -344,16 +344,16 @@ verify_version_surfaces() {
         die "crates/lushtext-model/Cargo.toml does not contain release version '$plain'"
     grep -Fq "version = \"$plain\"" crates/lushtext-services/Cargo.toml ||
         die "crates/lushtext-services/Cargo.toml does not contain release version '$plain'"
-    grep -Fq "version = \"$plain\"" crates/lushtext-core/Cargo.toml ||
-        die "crates/lushtext-core/Cargo.toml does not contain release version '$plain'"
+    grep -Fq "version = \"$plain\"" crates/lushtext-ui/Cargo.toml ||
+        die "crates/lushtext-ui/Cargo.toml does not contain release version '$plain'"
     [[ "$(cargo_lock_version_for lushtext)" == "$plain" ]] ||
         die "Cargo.lock does not contain lushtext version '$plain'"
     [[ "$(cargo_lock_version_for lushtext-model)" == "$plain" ]] ||
         die "Cargo.lock does not contain lushtext-model version '$plain'"
     [[ "$(cargo_lock_version_for lushtext-services)" == "$plain" ]] ||
         die "Cargo.lock does not contain lushtext-services version '$plain'"
-    [[ "$(cargo_lock_version_for lushtext-core)" == "$plain" ]] ||
-        die "Cargo.lock does not contain lushtext-core version '$plain'"
+    [[ "$(cargo_lock_version_for lushtext-ui)" == "$plain" ]] ||
+        die "Cargo.lock does not contain lushtext-ui version '$plain'"
     grep -Fq "<release version=\"$plain\"" "$metainfo_file" ||
         die "$metainfo_file does not contain AppStream release '$plain'"
 }
@@ -473,7 +473,7 @@ prepare_release_files() {
     set_first_toml_package_version crates/lushtext/Cargo.toml "$plain"
     set_first_toml_package_version crates/lushtext-model/Cargo.toml "$plain"
     set_first_toml_package_version crates/lushtext-services/Cargo.toml "$plain"
-    set_first_toml_package_version crates/lushtext-core/Cargo.toml "$plain"
+    set_first_toml_package_version crates/lushtext-ui/Cargo.toml "$plain"
     refresh_cargo_lock
     upsert_appstream_release "$plain" "$notes_file"
     refresh_cargo_sources

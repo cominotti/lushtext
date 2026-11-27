@@ -76,7 +76,7 @@ gitignore = true
 examine_globs = [
     "crates/lushtext-model/src/**/*.rs",
     "crates/lushtext-services/src/**/*.rs",
-    "crates/lushtext-core/src/ui/**/policy.rs",
+    "crates/lushtext-ui/src/ui/**/policy.rs",
 ]
 
 exclude_globs = [
@@ -150,7 +150,7 @@ exclude_re = [
     # through to the generic BOM-writing branch and produces identical bytes.
     "crates/lushtext-services/src/editor_io\\.rs:.*delete match arm DocumentEncoding::Utf8Bom in encode_text",
     # Property-test-only bridge: the default mutation lane intentionally omits
-    # `lushtext-core/property-tests`; the property lane covers this helper.
+    # `lushtext-ui/property-tests`; the property lane covers this helper.
     "crates/lushtext-services/src/lib\\.rs:.*property_testing::rebase_document_identity_paths",
     "crates/lushtext-services/src/content_search/replace/stream\\.rs:.*apply_replacements_to_text_for_property_test",
     "crates/lushtext-services/src/palette/commands\\.rs:.*merge_sorted_for_property_test",
@@ -190,12 +190,12 @@ exclude_re = [
     # this exclusion must be removed rather than widened. Scoped to this one
     # operator in this one function: the first `||`, the `!=`, and the function's
     # return value all still mutate and are all killed.
-    "crates/lushtext-core/src/ui/sidebar/policy\\.rs:.*:68: replace \\|\\| with && in WorkspacePersistenceState::has_pending_work",
+    "crates/lushtext-ui/src/ui/sidebar/policy\\.rs:.*:68: replace \\|\\| with && in WorkspacePersistenceState::has_pending_work",
     # Never compiled by the mutation lane: `markdown_chunked_cap`'s
     # `cfg(not(feature = "test-utils"))` arm. Unlike the cfg-disabled stubs
     # around it, this is the arm that ships (a `const fn` returning `None`),
     # but the lane's one workspace test build always has `test-utils`, which
-    # the `lushtext` crate's dev-dependency enables on `lushtext-core`, so a
+    # the `lushtext` crate's dev-dependency enables on `lushtext-ui`, so a
     # mutant here builds unchanged code and can only be missed (found in
     # `reduce-build-disk-writes`' focused rounds). Its `test-utils` twin above
     # it is in scope and killed by the integration test `document_scale`.
@@ -268,14 +268,14 @@ exclude_re = [
     # Equivalent: references emitted by pulldown-cmark also have definitions,
     # so label reservation is already covered by `FootnoteDefinition`, while
     # protected references fall through to the protected-depth catch-all arm.
-    "crates/lushtext-core/src/ui/markdown_preview/policy\\.rs:.*delete match arm Event::FootnoteReference\\(label\\) in build_scan_plan",
+    "crates/lushtext-ui/src/ui/markdown_preview/policy\\.rs:.*delete match arm Event::FootnoteReference\\(label\\) in build_scan_plan",
     # Equivalent: the scan loop may do one extra final-byte check, but a lone
     # trailing byte cannot start a complete `^[...]` marker.
-    "crates/lushtext-core/src/ui/markdown_preview/policy\\.rs:.*replace < with <= in collect_inline_footnote_replacements",
-    "crates/lushtext-core/src/ui/markdown_preview/policy\\.rs:.*replace \\+ with \\* in collect_inline_footnote_replacements",
+    "crates/lushtext-ui/src/ui/markdown_preview/policy\\.rs:.*replace < with <= in collect_inline_footnote_replacements",
+    "crates/lushtext-ui/src/ui/markdown_preview/policy\\.rs:.*replace \\+ with \\* in collect_inline_footnote_replacements",
     # Equivalent: after a replacement is recorded, restarting at or just before
     # the closing bracket only rechecks bytes that cannot form a new marker.
-    "crates/lushtext-core/src/ui/markdown_preview/policy\\.rs:.*replace \\+ with - in collect_inline_footnote_replacements",
+    "crates/lushtext-ui/src/ui/markdown_preview/policy\\.rs:.*replace \\+ with - in collect_inline_footnote_replacements",
     # Equivalent: protected ranges ending at the current index have already been
     # advanced out of consideration by the preceding `end <= index` loop.
     # NOT an equivalence claim -- an unkillable-by-construction claim, which is a
@@ -295,14 +295,14 @@ exclude_re = [
     # production callers, it was mis-filed under the fuzz banner, and its survivor
     # was a genuine gap now killed by
     # `the_inline_footnote_limited_plan_reports_the_source_size_it_refused`.
-    "crates/lushtext-core/src/ui/markdown_preview/policy\\.rs:.*lower_inline_footnotes_for_generated_test",
-    "crates/lushtext-core/src/ui/markdown_preview/policy\\.rs:.*lower_inline_footnotes_for_property_test",
-    "crates/lushtext-core/src/ui/markdown_preview/policy\\.rs:.*lowered_markdown_for_fuzzing",
-    "crates/lushtext-core/src/ui/markdown_preview/policy\\.rs:.*preprocess_markdown_for_fuzzing",
-    "crates/lushtext-core/src/ui/markdown_preview/policy\\.rs:.*replace < with <= in find_inline_footnote_close",
+    "crates/lushtext-ui/src/ui/markdown_preview/policy\\.rs:.*lower_inline_footnotes_for_generated_test",
+    "crates/lushtext-ui/src/ui/markdown_preview/policy\\.rs:.*lower_inline_footnotes_for_property_test",
+    "crates/lushtext-ui/src/ui/markdown_preview/policy\\.rs:.*lowered_markdown_for_fuzzing",
+    "crates/lushtext-ui/src/ui/markdown_preview/policy\\.rs:.*preprocess_markdown_for_fuzzing",
+    "crates/lushtext-ui/src/ui/markdown_preview/policy\\.rs:.*replace < with <= in find_inline_footnote_close",
     # Equivalent: the byte scanner only branches on ASCII marker bytes and only
     # slices at ASCII delimiter offsets, so byte-by-byte UTF-8 walking is valid.
-    "crates/lushtext-core/src/ui/markdown_preview/policy\\.rs:.*replace next_char_len -> usize with 1",
+    "crates/lushtext-ui/src/ui/markdown_preview/policy\\.rs:.*replace next_char_len -> usize with 1",
     # Test-only global injector: path-scoped cleanup-failure injection is covered
     # by local-history retry tests; the all-path hook is retained for manual tests.
     "crates/lushtext-services/src/local_history_service\\.rs:.*fail_next_obsolete_lineage_cleanup_for_test",
@@ -324,15 +324,15 @@ exclude_re = [
     # ignores; in `paragraph_may_cross` and `thresholds_in_play`, `>` with `>=`
     # and `&&` with `||` only count more lines exactly, never fewer, and an
     # exact count yields the same state.
-    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:2804:9: replace MinimapAnalysisAccumulator::inspect_str with \\(\\)",
-    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:.*replace < with <= in MinimapAnalysisAccumulator::inspect_str",
-    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:.*replace > with >= in paragraph_may_cross",
-    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:.*replace && with \\|\\| in MinimapAnalysisAccumulator::thresholds_in_play",
+    "crates/lushtext-ui/src/ui/editor_page/minimap/policy\\.rs:2804:9: replace MinimapAnalysisAccumulator::inspect_str with \\(\\)",
+    "crates/lushtext-ui/src/ui/editor_page/minimap/policy\\.rs:.*replace < with <= in MinimapAnalysisAccumulator::inspect_str",
+    "crates/lushtext-ui/src/ui/editor_page/minimap/policy\\.rs:.*replace > with >= in paragraph_may_cross",
+    "crates/lushtext-ui/src/ui/editor_page/minimap/policy\\.rs:.*replace && with \\|\\| in MinimapAnalysisAccumulator::thresholds_in_play",
     # Equivalent in `fit_native_slider_to_source_map_bounds`: equality at the
     # lower or upper edge only applies a zero-sized adjustment and preserves the
     # same final fitted bounds; strict outside-edge behavior remains covered.
-    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:.*replace < with <= in fit_native_slider_to_source_map_bounds",
-    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:.*replace > with >= in fit_native_slider_to_source_map_bounds",
+    "crates/lushtext-ui/src/ui/editor_page/minimap/policy\\.rs:.*replace < with <= in fit_native_slider_to_source_map_bounds",
+    "crates/lushtext-ui/src/ui/editor_page/minimap/policy\\.rs:.*replace > with >= in fit_native_slider_to_source_map_bounds",
     # Equivalent in `expanded_to_min_height`, the shared min-height expansion:
     # at `top == lower` the block adds a zero offset and re-assigns `lower`, and
     # at `bottom == upper` it subtracts a zero offset and re-assigns `upper`, so
@@ -363,10 +363,10 @@ exclude_re = [
     # `native_slider_fit_rejects_a_source_map_whose_bottom_overflows`. The early
     # checks stay even so: without them `-inf + inf` computes a NaN sum, which
     # the Kani no-panic harness `native_slider_fit_never_panics` rejects.
-    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:513:9: replace \\|\\| with && in fit_native_slider_to_source_map_bounds",
-    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:514:9: replace \\|\\| with && in fit_native_slider_to_source_map_bounds",
-    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:.*replace < with <= in expanded_to_min_height",
-    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:.*replace > with >= in expanded_to_min_height",
+    "crates/lushtext-ui/src/ui/editor_page/minimap/policy\\.rs:513:9: replace \\|\\| with && in fit_native_slider_to_source_map_bounds",
+    "crates/lushtext-ui/src/ui/editor_page/minimap/policy\\.rs:514:9: replace \\|\\| with && in fit_native_slider_to_source_map_bounds",
+    "crates/lushtext-ui/src/ui/editor_page/minimap/policy\\.rs:.*replace < with <= in expanded_to_min_height",
+    "crates/lushtext-ui/src/ui/editor_page/minimap/policy\\.rs:.*replace > with >= in expanded_to_min_height",
     # Equivalent in `expanded_run`, the integer twin of `expanded_to_min_height`
     # (`bin-minimap-markers-per-row`), for the same reasons: at `top ==
     # band.lower` the block adds a zero offset and re-assigns `lower`, at
@@ -376,8 +376,8 @@ exclude_re = [
     # a run inside the band (`marker_row_runs` clamps each group to it, and a
     # merge of in-band runs stays in it). The `<` entry matches exactly those
     # two mutants (lines 1072 and 1076 when written).
-    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:.*replace < with <= in expanded_run",
-    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:.*replace > with >= in expanded_run",
+    "crates/lushtext-ui/src/ui/editor_page/minimap/policy\\.rs:.*replace < with <= in expanded_run",
+    "crates/lushtext-ui/src/ui/editor_page/minimap/policy\\.rs:.*replace > with >= in expanded_run",
     # Equivalent in `model/paragraph_boundary.rs` (document-scale-policy's
     # mutation smoke): `>` with `>=` where the tie picks an equal value (the
     # window clamp at exactly the ring capacity, the componentwise maxima, the

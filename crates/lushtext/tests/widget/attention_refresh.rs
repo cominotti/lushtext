@@ -18,14 +18,12 @@ use crate::common::{
 };
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_core::model::attention_refresh::AttentionRefreshAdmission;
-use lushtext_core::model::workspace::{
-    WorkspaceConfig, WorkspaceId, WorkspaceScope, WorkspacesFile,
-};
-use lushtext_core::services::{json_store, workspace_manager};
-use lushtext_core::ui::command_palette::item::PaletteItem;
-use lushtext_core::ui::sidebar::file_tree_item::FileTreeItem;
-use lushtext_core::ui::window::{AttentionSurfaces, LushtextWindow, ModalSurfaceGuard};
+use lushtext_model::attention_refresh::AttentionRefreshAdmission;
+use lushtext_model::workspace::{WorkspaceConfig, WorkspaceId, WorkspaceScope, WorkspacesFile};
+use lushtext_services::{json_store, workspace_manager};
+use lushtext_ui::ui::command_palette::item::PaletteItem;
+use lushtext_ui::ui::sidebar::file_tree_item::FileTreeItem;
+use lushtext_ui::ui::window::{AttentionSurfaces, LushtextWindow, ModalSurfaceGuard};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 

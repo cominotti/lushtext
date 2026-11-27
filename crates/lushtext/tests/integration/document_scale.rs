@@ -5,14 +5,14 @@
 //! `markdown_chunked_cap` is what every runtime caller of the `_with` scale
 //! functions passes. Only the widget tests drove it before, and the mutation
 //! lane does not run them, so its body could be replaced without any test in
-//! the lane failing. This binary always builds `lushtext-core` with
+//! the lane failing. This binary always builds `lushtext-ui` with
 //! `test-utils`, the only build in which the override exists.
 //!
 //! The override is process-wide, so this is the binary's only test that sets
 //! it. No other test here reads the cap: its callers are the GTK editor
 //! adapters, which only the widget harness builds.
 
-use lushtext_core::model::document_scale::{
+use lushtext_model::document_scale::{
     MODEL_MARKDOWN_CAP, markdown_chunked_cap, override_markdown_chunked_cap_for_test,
 };
 

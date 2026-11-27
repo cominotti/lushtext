@@ -579,7 +579,7 @@ copy_fn_without_spec() { # file signature-regex
 
 cmd_verus_drift() {
   require_verus
-  local dir="$EVAL_DIR/verus-drift" rev policy="crates/lushtext-core/src/ui/markdown_preview/policy.rs"
+  local dir="$EVAL_DIR/verus-drift" rev policy="crates/lushtext-ui/src/ui/markdown_preview/policy.rs"
   local sig='^pub\(crate\) fn clamped_preview_width\(' tree ok=0 copy="$VERUS_MODELS/proofs"
   # VERUS_DRIFT_MUTANT=<mutants/NAME.patch> checks a deliberately changed copy
   # instead: the failing-first proof that the exchange sees a one-line change.

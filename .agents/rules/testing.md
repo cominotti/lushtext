@@ -112,7 +112,7 @@ a helper a test must remember to call first
 - **Widget tests.** The first statement of `main` in
   `crates/lushtext/tests/widget.rs` points `LUSHTEXT_DATA_DIR` and
   `XDG_{DATA,CONFIG,CACHE,STATE}_HOME` at a root inside the process's own
-  `TMPDIR`, from `lushtext_core::services::test_isolation::isolated_environment`,
+  `TMPDIR`, from `lushtext_services::test_isolation::isolated_environment`,
   before GTK starts (GLib caches the XDG variables on first use). A child
   re-roots the values it inherits from the parent, and a hand-launched child
   isolates itself the same way. `ensure_gtk_init()` asserts the isolation;
@@ -216,7 +216,7 @@ a helper a test must remember to call first
   the current relevant-file contents.
 - **Files under the UI prefixes need the three smokes.** The visual-sensitive
   and accessibility-relevant sets are selected by **prefix**
-  (`crates/lushtext-core/src/ui/`, `crates/lushtext/tests/widget/`,
+  (`crates/lushtext-ui/src/ui/`, `crates/lushtext/tests/widget/`,
   `resources/ui/`, `resources/style/`), so any file there, documentation
   included, makes a commit need `make visual-geometry-smoke`,
   `make accessibility-smoke` and `make visual-smoke` current. The proofs digest

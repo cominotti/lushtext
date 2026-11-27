@@ -3,14 +3,14 @@
 //! Integration tests for session persistence.
 
 use crate::common::TestContext;
-use lushtext_core::model::draft::{
+use lushtext_model::draft::{
     DraftEntry, DraftManifest, PreloadedDraftRestore, PreloadedDraftSkip, StaleDraftPreservation,
 };
-use lushtext_core::model::session::{SessionData, SessionTab};
-use lushtext_core::services::filesystem::fixture;
-use lushtext_core::services::recovery_metadata::{RecoveryMetadataClass, RecoveryProblem};
-use lushtext_core::services::session_service;
-use lushtext_core::services::{draft_service, editor_io};
+use lushtext_model::session::{SessionData, SessionTab};
+use lushtext_services::filesystem::fixture;
+use lushtext_services::recovery_metadata::{RecoveryMetadataClass, RecoveryProblem};
+use lushtext_services::session_service;
+use lushtext_services::{draft_service, editor_io};
 
 /// Create a file-backed session tab with cursor/scroll state.
 fn tab(path: impl Into<std::path::PathBuf>, cursor_line: u32) -> SessionTab {

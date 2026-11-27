@@ -38,7 +38,7 @@ the shared workstation, and which verification runs a change makes, is in
 Use `make` targets for development; `make help` prints the catalogue. For
 fast single-package feedback loops during local editing, `make clippy-pkg`,
 `make check-pkg`, and `make test-pkg` accept `PKG=<crate>` (defaulting to
-`lushtext-core`, with `FILTER=<substring>` on `test-pkg`), keeping the shared
+`lushtext-ui`, with `FILTER=<substring>` on `test-pkg`), keeping the shared
 `target/` debug fingerprints intact; `make build-fast` and `make test-fast`
 provide an opt-in Cranelift backend (`CRANELIFT_TOOLCHAIN`, defaulting to
 `nightly-2026-08-21`) in each checkout's isolated build-cache directory while
@@ -150,7 +150,7 @@ from `check-tools --json` instead; see its docstring for the exempt contexts.
 `make check-signal-connections` (in `make check-policy`) fails on a
 string-named signal connection or emission (`connect`, `connect_local`,
 `connect_closure`, `connect_unsafe`, their `_id` forms, and the
-`emit_by_name` family) anywhere in `crates/lushtext-core/src` outside
+`emit_by_name` family) anywhere in `crates/lushtext-ui/src` outside
 `ui/signal_connect.rs`, whose helpers check the signal's declared return type
 when the handler is connected; tests and the GTK axiom probes are outside its
 scope. Its `--self-test` seeds each form, including a call split over lines.
@@ -421,7 +421,7 @@ It fails with a clear message when the 1.100.0 toolchain is missing.
   outside cargo-deny's graph for the configured targets; `cargo-sources.json`
   still vendors it, which is accepted: `Zlib` is GPL-compatible, and a
   vendored but unbuilt crate is not distributed in the binary.)
-- **Side lockfiles.** `fuzz/Cargo.lock` depends on `lushtext-core` by path and
+- **Side lockfiles.** `fuzz/Cargo.lock` depends on `lushtext-ui` by path and
   inherits the workspace's manifest floors, so it is refreshed with step 1's
   command in `fuzz/` in the same change (before any floor moves past what the
   cooldown allows), checked with
@@ -498,11 +498,11 @@ Governance and publication gates are in `crates/gtk-lush/GOVERNANCE.md`.
 
 ## Property Testing
 
-- Framework: `proptest`, wired only for the `lushtext-core` property-test target
-- Feature: `lushtext-core/property-tests` (implies `test-utils`, because the suite seeds bodies through the test-only fixture modules)
-- Target: `cargo nextest run -p lushtext-core --features property-tests --test properties --profile property`
+- Framework: `proptest`, wired only for the `lushtext-ui` property-test target
+- Feature: `lushtext-ui/property-tests` (implies `test-utils`, because the suite seeds bodies through the test-only fixture modules)
+- Target: `cargo nextest run -p lushtext-ui --features property-tests --test properties --profile property`
 - Makefile targets: `test-prop` (64 cases per property, the CI-safe default), `test-prop-deep` (`PROPTEST_DEEP_CASES=1024` for a manual or scheduled pass)
-- Regression file: `crates/lushtext-core/proptest-regressions/properties.txt`
+- Regression file: `crates/lushtext-ui/proptest-regressions/properties.txt`
 - Docs: `docs/property-testing.md`
 
 The property target is guarded by `required-features = ["property-tests"]` and
@@ -551,7 +551,7 @@ primitive in `sys.rs` goes through `tap::call`, or the pin in
 operations to run, and name neither `proptest` nor `tempfile`; strategies,
 each case's `TempDir`, the 256-iter / 45 s shrink budget (`max_shrink_iters =
 256`, `max_shrink_time = 45_000`), and the deterministic reach-floor test live
-in `crates/lushtext-core/tests/properties/` (`shell_conformance_write.rs`,
+in `crates/lushtext-ui/tests/properties/` (`shell_conformance_write.rs`,
 `shell_conformance_drafts.rs`). Operations are generated **enabled-indexed**:
 an index picks one of the actions the run (or the model) enables, modulo their
 count, so every script is valid and proptest's own shrinking stays sound. A
@@ -590,7 +590,7 @@ are in [`testing.md`](./testing.md). This section covers the lane.
   directory. It runs with `CARGO_INCREMENTAL=0`: Kani's units sit in the
   build dir's own target-triple tree, which no other build shares, and an
   incremental cache there (22 MB per `gtk-lush-widgets` compile, 355 MB per
-  `lushtext-core` one) bought a 12% faster rebuild (design D3 of
+  `lushtext-ui` one) bought a 12% faster rebuild (design D3 of
   `reduce-build-disk-writes`).
 - **Memory.** The run executes inside a memory-capped systemd user scope
   (`scripts/with-memory-cap.sh`, `KANI_MEMORY_MAX`, default `16G`, no swap,
@@ -772,7 +772,7 @@ linking policy` line and `pw-dump-not-ready.json` in its log directory.
 ## Fuzzing
 
 - Framework: `cargo-fuzz`, isolated under `fuzz/`
-- Feature: `lushtext-core/fuzzing`
+- Feature: `lushtext-ui/fuzzing`
 - Targets: `editor_bytes`, `markdown_preprocess`, `operation_script`
 - Makefile targets: `fuzz-list`, `fuzz-corpus-replay`, `fuzz-smoke`, `fuzz-operation-smoke`
 - Default tool: `cargo +nightly fuzz` (override with `CARGO_FUZZ=...`)
@@ -803,14 +803,14 @@ reviewed rationale for why no durable seed is appropriate.
 
 ## GResources
 
-- **Dev builds**: `build.rs` in `lushtext-core` compiles resources via `glib-build-tools`, embedded through `include_bytes!` in `lib.rs`.
+- **Dev builds**: `build.rs` in `lushtext-ui` compiles resources via `glib-build-tools`, embedded through `include_bytes!` in `lib.rs`.
 - **Installed/Flatpak builds**: `resources/meson.build` compiles resources via `gnome.compile_resources()` and installs them to `$(pkgdatadir)/`. `lib.rs` loads the `.gresource` file from `LUSHTEXT_PKGDATADIR` at runtime, falling back to `include_bytes!`.
 - **UI templates**: edit `resources/ui/*.blp`, then run `make blueprint-generate` and `make check-blueprint`. The generated `resources/ui/*.ui` files stay committed because every runtime, Meson, Flatpak, and Snap resource build consumes GtkBuilder XML; `blueprint-compiler` is a contributor and CI tool only. Unknown compile warnings are blocking. `make lint-blueprint` is curated advisory triage: promoted diagnostics stay clean and accepted findings are bounded by rule/file ceilings.
 
 ## GSettings Schemas
 
 - Schema XML: `data/dev.cominotti.lushtext.gschema.xml`
-- `build.rs` in `lushtext-core` runs `glib-compile-schemas data/` to produce `data/gschemas.compiled` (gitignored), and skips it when `LUSHTEXT_PKGDATADIR` is set (the source tree may be read-only in Flatpak).
+- `build.rs` in `lushtext-ui` runs `glib-compile-schemas data/` to produce `data/gschemas.compiled` (gitignored), and skips it when `LUSHTEXT_PKGDATADIR` is set (the source tree may be read-only in Flatpak).
 - `lib.rs::init_schema_dir()` sets `GSETTINGS_SCHEMA_DIR` to `data/` for dev builds. Installed builds use the system schema directory.
 - Requires `glib-compile-schemas` on the build machine (from `glib2-devel` / `libglib2.0-dev`).
 
@@ -829,7 +829,7 @@ a re-enable template whose jobs are gated by the repository variable
 
 The default scope is deterministic and decided by **convention, not
 directory**: `examine_globs` covers `model/**`, `services/**`, and
-`crates/lushtext-core/src/ui/**/policy.rs`. A `policy.rs` module must contain no
+`crates/lushtext-ui/src/ui/**/policy.rs`. A `policy.rs` module must contain no
 `gtk4`, `glib`, `gio`, `libadwaita`, or `sourceview5` import; that purity is
 what makes it eligible. Do not add GTK widget construction, live signal wiring,
 file dialogs, or display-server-dependent code to the scope. The remaining
@@ -839,7 +839,7 @@ widened. When pure policy relocates, mutation-coverage parity is required
 evidence: record the generated and killed counts before and after the move via
 `make mutants-diff`.
 
-Default mutation runs omit `lushtext-core/property-tests`. For survivor
+Default mutation runs omit `lushtext-ui/property-tests`. For survivor
 triage `scripts/run-mutants.sh` accepts `MUTANTS_RE`, `MUTANTS_EXCLUDE` and
 `MUTANTS_EXCLUDE_RE`. Keep `MUTANTS_LOCAL_JOBS=1` and small per-job thread caps
 when the user has asked to keep Rust build pressure low.
@@ -1056,7 +1056,7 @@ The release procedure is the `publish-release` skill. Rules:
 - Commands: `make release VERSION=vX.Y.Z RELEASE_NOTES_FILE=...` or `make release-bump TYPE=major|minor|patch`; use `DRY_RUN=1` first. `PRERELEASE=alpha|beta|rc` starts or continues a prerelease stream, and `PROMOTE=1` is required to promote one to stable.
 - Real releases run from a clean `main`. The helper stages only intended release files, commits `chore(release): vX.Y.Z`, creates a signed tag, and pushes `main` plus the tag only after validation passes.
 - `RELEASE_NOTES_FILE` is mandatory for real releases: the notes become the AppStream release description in `data/dev.cominotti.lushtext.metainfo.xml.in`.
-- Version surfaces that move together: `meson.build`, `crates/lushtext/Cargo.toml`, `crates/lushtext-core/Cargo.toml`, `crates/lushtext-services/Cargo.toml`, `crates/lushtext-model/Cargo.toml`, `Cargo.lock`, AppStream releases, and `build-aux/cargo-sources.json`.
+- Version surfaces that move together: `meson.build`, `crates/lushtext/Cargo.toml`, `crates/lushtext-ui/Cargo.toml`, `crates/lushtext-services/Cargo.toml`, `crates/lushtext-model/Cargo.toml`, `Cargo.lock`, AppStream releases, and `build-aux/cargo-sources.json`.
 - The Flatpak publication channel is the Cominotti-owned remote at `https://flatpak.cominotti.dev/` (`make cominotti-flatpak-repo`, then always `make verify-cominotti-flatpak-repo` and `make verify-cominotti-pages-limits`). Cloudflare Pages is the default backend, `COMINOTTI_FLATPAK_DEPLOY_COMMAND` an override, and Cloudflare R2 the first fallback when Pages limits are exceeded.
 - Public Cominotti install instructions keep GPG verification enabled; never publish `flatpak remote-add --no-gpg-verify` for the Cominotti remote except in clearly private local-testing notes.
 - **Flathub publication is not planned, and this is a standing decision rather than a deferral.** A skipped Flathub PR is expected output: do not report it as an outstanding action, do not treat absent `FLATHUB_TOKEN` / `FLATHUB_REPOSITORY` as configuration to complete, and do not propose work to enable it. The dormant `make flathub-manifest`, `make verify-flathub-manifest` and `make verify-flathub-domain` tooling stays covered by `scripts/test-flathub-manifest.sh`. The Flathub *remote* remains the source of the GNOME runtime and SDK.
@@ -1075,8 +1075,8 @@ The release procedure is the `publish-release` skill. Rules:
 ## Benchmarks
 
 - Framework: Criterion.rs (`criterion = "0.8"` with `html_reports`)
-- Benchmark file: `crates/lushtext-core/benches/benchmarks.rs` (single file, all groups); all benchmarked code is GTK-free
-- Every command passes `--features test-utils`: `cargo bench -p lushtext-core --features test-utils` (the Makefile `bench*` targets, `scripts/bench-report.sh`, `scripts/run-performance-smoke.sh`, and CI's bench compile already do)
+- Benchmark file: `crates/lushtext-ui/benches/benchmarks.rs` (single file, all groups); all benchmarked code is GTK-free
+- Every command passes `--features test-utils`: `cargo bench -p lushtext-ui --features test-utils` (the Makefile `bench*` targets, `scripts/bench-report.sh`, `scripts/run-performance-smoke.sh`, and CI's bench compile already do)
 - `[profile.bench]`: `opt-level = 3`, `lto = "thin"`, `codegen-units = 1` (no strip — criterion needs symbols)
 - `FileIndex::from(Vec<OwnedIndexedFile>)` and the streaming `FileIndex::from_paths` (both `test-utils`) build synthetic indexes; a 2^20-file fixture streams through `from_paths`, never a `Vec` of owned paths
 - The 2^20-file groups (`file_index_scale`, `file_index_scale_rebuild`, `palette_pipeline_hardening_1048576`) run only with `LUSHTEXT_BENCH_SCALE=1`, which `make bench` sets: their setup runs before Criterion's filter, so ungated they would build the index and write a million files in every filtered run

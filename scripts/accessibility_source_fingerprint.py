@@ -38,7 +38,7 @@ RELEVANT_EXACT_PATHS = (
 )
 
 RELEVANT_PREFIXES = (
-    "crates/lushtext-core/src/ui/",
+    "crates/lushtext-ui/src/ui/",
     "crates/lushtext/tests/widget/",
     "resources/style/",
     "resources/ui/",

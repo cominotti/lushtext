@@ -14,7 +14,7 @@
 #   make clear-lushtext-xdg - Remove LushText-owned XDG data/config/cache/state and reset app settings
 #   make test        - Run all tests (unit + integration + widget)
 #   make test-unit   - Unit tests only (fast)
-#   make test-pkg    - Scoped unit tests for PKG (default: lushtext-core) and optional FILTER
+#   make test-pkg    - Scoped unit tests for PKG (default: lushtext-ui) and optional FILTER
 #   make test-fast   - Opt-in local fast unit tests via nightly Cranelift for PKG / FILTER
 #   make test-int    - Integration tests only
 #   make test-prop   - Bounded property tests for pure deterministic logic
@@ -53,7 +53,7 @@
 #   make build-cache-status - Show disk usage breakdown under the build cache root
 #   make fmt         - apply rustfmt everywhere, including the widget tests cargo fmt cannot reach
 #   make check       - fmt + all-feature clippy + fast policy audits
-#   make clippy-pkg  - Scoped clippy on PKG (default: lushtext-core)
+#   make clippy-pkg  - Scoped clippy on PKG (default: lushtext-ui)
 #   make check-pkg   - fmt + clippy-pkg fast daily check loop
 #   make blueprint-generate - Regenerate generated GtkBuilder .ui files from Blueprint .blp sources
 #   make check-blueprint - Validate Blueprint drift and generated UI template contract
@@ -161,8 +161,8 @@ WIDGET_PREFLIGHT = ./scripts/with-memory-cap.sh --preflight "$${WIDGET_BUILD_MEM
 endif
 CARGO_TEST_SEARCH_RETIREMENT_RELEASE = CARGO_PROFILE_TEST_DEBUG_ASSERTIONS=false ./scripts/run-widget-tests.sh --headless -- --exact search_panel::test_search_retirement_categories_release_actual_ownership_over_bounded_turns
 CARGO_TEST_WORKSPACE_ROW_STATES = ./scripts/run-widget-tests.sh --headless --retries 1 -- workspace_row_state
-CARGO_TEST_PROP           = $(TEMP_SCOPE) property -- cargo nextest run -p lushtext-core --features property-tests --test properties --profile property
-CARGO_TEST_FUZZ_CORPUS_REPLAY = $(TEMP_SCOPE) fuzz-replay -- cargo test -p lushtext-core --features fuzzing --test fuzz_corpus_replay
+CARGO_TEST_PROP           = $(TEMP_SCOPE) property -- cargo nextest run -p lushtext-ui --features property-tests --test properties --profile property
+CARGO_TEST_FUZZ_CORPUS_REPLAY = $(TEMP_SCOPE) fuzz-replay -- cargo test -p lushtext-ui --features fuzzing --test fuzz_corpus_replay
 PROPTEST_DEEP_CASES ?= 512
 FORMAT_UPGRADE_TEST_HOME ?=
 FORMAT_UPGRADE_TEST_VERSION ?= 999
@@ -274,7 +274,7 @@ MUTANTS_MEMORY_MAX ?= 36G
 # D5), for the mirror slots and the proof-strength tests arm: twice the
 # smallest power-of-two GiB at which the unmutated baselines pass, at least
 # 4 GiB. Measured 2026-11-15 in a slot: `cargo nextest run --workspace` (2462
-# tests) and the same with lushtext-core/property-tests (2557) both pass at
+# tests) and the same with lushtext-ui/property-tests (2557) both pass at
 # 2 GiB, the first size tried, so the default is 4G; a 64M limit fails the
 # listing pass, proving the runner is applied. It stops the recorded 15 GB
 # list_budget runaway. Details: evidence/address-space.md of
@@ -328,7 +328,7 @@ run: build-debug
 	LUSHTEXT_DEV_RUN_FORCE_RESTART=1 ./scripts/run-dev-app.sh
 
 # Package / filter defaults for scoped daily-loop and Cranelift targets.
-PKG ?= lushtext-core
+PKG ?= lushtext-ui
 FILTER ?=
 
 # Opt-in fast local dev loop using nightly Cranelift in this checkout's isolated
@@ -476,7 +476,7 @@ fuzz-smoke:
 # documented counterexample. Kani's units live in the build dir's own
 # target-triple tree, which no other build uses, so incremental compilation is
 # off for them (design D3 of reduce-build-disk-writes: 22 MB of incremental
-# cache per gtk-lush-widgets compile, 355 MB per lushtext-core one, for a
+# cache per gtk-lush-widgets compile, 355 MB per lushtext-ui one, for a
 # 12% faster rebuild).
 kani:
 	@set -eu; ./scripts/with-memory-cap.sh --preflight "$(KANI_MEMORY_MAX)"; $(KANI_VERSION_GUARD); \
@@ -571,7 +571,7 @@ check-font-zoom-registration:
 	./scripts/check-font-zoom-registration.py --self-test
 	./scripts/check-font-zoom-registration.py
 
-# Every string-named signal connect or emit in lushtext-core goes through
+# Every string-named signal connect or emit in lushtext-ui goes through
 # ui/signal_connect.rs, which checks the declared return type when the
 # handler is connected (`fix-extend-selection-abort`). Tests and GTK axiom
 # probes are outside its scope.
@@ -915,7 +915,7 @@ mutants-list:
 # included (LUSHTEXT_BENCH_SCALE=1)
 bench:
 	@echo "Running benchmarks..."
-	LUSHTEXT_BENCH_SCALE=1 cargo bench -p lushtext-core --features test-utils
+	LUSHTEXT_BENCH_SCALE=1 cargo bench -p lushtext-ui --features test-utils
 
 # Run benchmarks and generate markdown report (short sampling)
 bench-report:
@@ -930,12 +930,12 @@ bench-report-full:
 # Save current benchmarks as baseline for comparison
 bench-baseline:
 	@echo "Saving benchmark baseline..."
-	cargo bench -p lushtext-core --features test-utils --bench benchmarks -- --save-baseline main
+	cargo bench -p lushtext-ui --features test-utils --bench benchmarks -- --save-baseline main
 
 # Compare current performance against saved baseline while admitting new benchmark IDs
 bench-compare:
 	@echo "Comparing against baseline..."
-	cargo bench -p lushtext-core --features test-utils --bench benchmarks -- --baseline-lenient main
+	cargo bench -p lushtext-ui --features test-utils --bench benchmarks -- --baseline-lenient main
 
 # Formatting check
 #
@@ -1184,7 +1184,7 @@ check-kill-point-gating:
 # after the offending commit is already on main.
 check-terminology:
 	@echo "Checking workspace folder terminology..."
-	cargo test -p lushtext-core --test workspace_terminology
+	cargo test -p lushtext-ui --test workspace_terminology
 
 # Advisory lint discovery; fails if a finding category has no checked-in policy.
 lint-advisory:
@@ -1485,7 +1485,7 @@ help:
 	@echo "Test targets:"
 	@echo "  test         All tests (unit + integration + widget)"
 	@echo "  test-unit    Unit tests only (fast)"
-	@echo "  test-pkg     Scoped unit tests for PKG (default: lushtext-core) and optional FILTER"
+	@echo "  test-pkg     Scoped unit tests for PKG (default: lushtext-ui) and optional FILTER"
 	@echo "  test-fast    Opt-in fast Cranelift unit tests for PKG and optional FILTER"
 	@echo "  test-int     Integration tests only"
 	@echo "  test-prop    Bounded property tests for pure deterministic logic"
@@ -1613,7 +1613,7 @@ help:
 	@echo "Other targets:"
 	@echo "  check-fmt    rustfmt --check"
 	@echo "  check-clippy clippy -D warnings"
-	@echo "  clippy-pkg   Scoped clippy on PKG (default: lushtext-core)"
+	@echo "  clippy-pkg   Scoped clippy on PKG (default: lushtext-ui)"
 	@echo "  check-pkg    check-fmt + clippy-pkg fast daily check loop"
 	@echo "  gtk-lush-doctests Run GTK Lush family doctests"
 	@echo "  gtk-lush-examples Compile GTK Lush standalone examples"

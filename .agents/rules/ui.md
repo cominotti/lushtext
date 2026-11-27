@@ -1,7 +1,7 @@
 ---
 description: UI and GTK widget design rules
 paths:
-  - "crates/lushtext-core/src/ui/**"
+  - "crates/lushtext-ui/src/ui/**"
   - "crates/lushtext/tests/widget/**"
   - "resources/**"
   - "**/*.blp"
@@ -9,8 +9,8 @@ paths:
   - "**/*.css"
   - "crates/gtk-lush/**"
   - "crates/gtk-lush-adoption-lab/**"
-  - "crates/lushtext-core/src/app.rs"
-  - "crates/lushtext-core/src/lib.rs"
+  - "crates/lushtext-ui/src/app.rs"
+  - "crates/lushtext-ui/src/lib.rs"
 ---
 
 # UI Design Rules

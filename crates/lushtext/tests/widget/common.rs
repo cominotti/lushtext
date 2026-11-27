@@ -12,10 +12,10 @@ use glib::prelude::IsA;
 use glib::prelude::ToValue;
 pub use gtk_lush_proof_harness::{flush_after_delay, flush_events, wait_until};
 use gtk4::prelude::{AdjustmentExt, GtkWindowExt, WidgetExt};
-use lushtext_core::config::APP_ID;
-pub use lushtext_core::services::filesystem::{
+pub use lushtext_services::filesystem::{
     fixture, metadata as fs_metadata, mutate as fs_mutate, read as fs_read,
 };
+use lushtext_ui::config::APP_ID;
 use std::ffi::OsString;
 use std::path::Path;
 use std::sync::Once;
@@ -51,12 +51,12 @@ pub fn ensure_gtk_init() {
         // directories on first use, which is why they must be set before GTK
         // starts; this only checks that they were.
         assert!(
-            lushtext_core::services::test_isolation::environment_is_isolated_within(
+            lushtext_services::test_isolation::environment_is_isolated_within(
                 &std::env::temp_dir()
             ),
             "widget test started without private app data; run it through the widget harness"
         );
-        lushtext_core::init_schema_dir();
+        lushtext_ui::init_schema_dir();
         gtk4::init()
             .expect("GTK4 init failed — is a display server available? Try mutter --headless.");
         // Initialize libadwaita so widget templates can instantiate Adw widgets
@@ -65,7 +65,7 @@ pub fn ensure_gtk_init() {
         // idempotent, so later AdwApplication startups remain safe.
         libadwaita::init().expect("libadwaita init failed");
         sourceview5::init();
-        lushtext_core::register_resources();
+        lushtext_ui::register_resources();
     });
 }
 
@@ -100,7 +100,7 @@ pub fn test_application() -> libadwaita::Application {
         APP_COUNTER.fetch_add(1, Ordering::Relaxed)
     );
     let app: libadwaita::Application =
-        lushtext_core::app::LushtextApplication::new_with_application_id(&app_id).upcast();
+        lushtext_ui::app::LushtextApplication::new_with_application_id(&app_id).upcast();
     app.register(gio::Cancellable::NONE)
         .expect("test application registration");
     app.emit_by_name::<()>("startup", &[]);
@@ -108,20 +108,20 @@ pub fn test_application() -> libadwaita::Application {
     app
 }
 
-pub fn test_window() -> lushtext_core::ui::window::LushtextWindow {
+pub fn test_window() -> lushtext_ui::ui::window::LushtextWindow {
     let app = test_application();
     // Until the AT-listener mirror has the registry's answer it reads as
     // listening and no editor view is detached (`defer-background-tab-layout`).
     // Whether the harness's private session can activate a registry depends
     // on the host, so tests simulate an answer with no listener, which also
     // stops a real answer from replacing what a test simulates later.
-    lushtext_core::ui::at_listeners::simulate_registry_answer();
-    lushtext_core::ui::window::LushtextWindow::new(&app)
+    lushtext_ui::ui::at_listeners::simulate_registry_answer();
+    lushtext_ui::ui::window::LushtextWindow::new(&app)
 }
 
 /// Wait until the window's startup data flow (draft and session recovery) has
 /// completed, so a close runs the ordinary confirmed close transaction.
-pub fn wait_for_startup_data_flow(window: &lushtext_core::ui::window::LushtextWindow) {
+pub fn wait_for_startup_data_flow(window: &lushtext_ui::ui::window::LushtextWindow) {
     use glib::subclass::prelude::ObjectSubclassIsExt;
     wait_until(Duration::from_secs(10), || {
         window.imp().startup_data_flow.completed.get()
@@ -147,7 +147,7 @@ pub fn present_window(window: &(impl IsA<gtk4::Window> + IsA<gtk4::Widget>)) {
     // A test of composition itself presents with `window.present()` instead.
     if let Some(window) = window
         .upcast_ref::<gtk4::Window>()
-        .downcast_ref::<lushtext_core::ui::window::LushtextWindow>()
+        .downcast_ref::<lushtext_ui::ui::window::LushtextWindow>()
     {
         wait_until(Duration::from_secs(10), || {
             window.composition_evidence().complete
@@ -338,8 +338,8 @@ pub fn observed_between_dispatches(budget: Duration, mut predicate: impl FnMut()
 /// Promoted here after a fifth copy appeared; `window.rs`, `app.rs`,
 /// `command_palette.rs`, and `open_popover.rs` each grew their own.
 pub fn active_editor(
-    window: &lushtext_core::ui::window::LushtextWindow,
-) -> lushtext_core::ui::editor_page::LushtextEditorPage {
+    window: &lushtext_ui::ui::window::LushtextWindow,
+) -> lushtext_ui::ui::editor_page::LushtextEditorPage {
     use glib::subclass::prelude::ObjectSubclassIsExt;
     use gtk4::prelude::Cast;
     window
@@ -348,12 +348,12 @@ pub fn active_editor(
         .selected_page()
         .expect("selected tab page")
         .child()
-        .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+        .downcast::<lushtext_ui::ui::editor_page::LushtextEditorPage>()
         .expect("editor page child")
 }
 
 pub fn wait_for_palette_index(
-    window: &lushtext_core::ui::window::LushtextWindow,
+    window: &lushtext_ui::ui::window::LushtextWindow,
     expected_index: usize,
 ) {
     use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -561,7 +561,7 @@ pub struct EditorLoadDelayReset;
 
 impl Drop for EditorLoadDelayReset {
     fn drop(&mut self) {
-        use lushtext_core::services::editor_io;
+        use lushtext_services::editor_io;
         editor_io::set_load_delay_for_test(0);
         editor_io::set_payload_load_delay_for_test(0);
         editor_io::set_transient_weight_override_for_test(None);
@@ -569,7 +569,7 @@ impl Drop for EditorLoadDelayReset {
 }
 
 /// The boolean state of a stateful window action.
-pub fn action_state_bool(window: &lushtext_core::ui::window::LushtextWindow, name: &str) -> bool {
+pub fn action_state_bool(window: &lushtext_ui::ui::window::LushtextWindow, name: &str) -> bool {
     use gio::prelude::{ActionExt, ActionMapExt};
     window
         .lookup_action(name)
@@ -583,7 +583,7 @@ pub fn action_state_bool(window: &lushtext_core::ui::window::LushtextWindow, nam
 /// Activate `win.reveal-workspace-path` for `target`, without draining events:
 /// callers observe the reveal's own wait stages.
 pub fn activate_reveal_workspace_path(
-    window: &lushtext_core::ui::window::LushtextWindow,
+    window: &lushtext_ui::ui::window::LushtextWindow,
     target: &Path,
 ) {
     use glib::prelude::ToVariant;
@@ -598,7 +598,7 @@ pub fn activate_reveal_workspace_path(
 ///
 /// Promoted here after the second copy, in `workspace_tree_virtualization.rs`.
 pub fn selected_tree_path(
-    section: &lushtext_core::ui::sidebar::workspace_section::LushtextWorkspaceSection,
+    section: &lushtext_ui::ui::sidebar::workspace_section::LushtextWorkspaceSection,
 ) -> Option<std::path::PathBuf> {
     use glib::subclass::prelude::ObjectSubclassIsExt;
     section
@@ -609,12 +609,12 @@ pub fn selected_tree_path(
         .and_then(|selection| selection.selected_item())
         .and_downcast::<gtk4::TreeListRow>()
         .and_then(|row| row.item())
-        .and_downcast::<lushtext_core::ui::sidebar::file_tree_item::FileTreeItem>()
+        .and_downcast::<lushtext_ui::ui::sidebar::file_tree_item::FileTreeItem>()
         .and_then(|item| item.path())
 }
 
 /// Activate a parameterless window action and drain the resulting events.
-pub fn activate_action(window: &lushtext_core::ui::window::LushtextWindow, name: &str) {
+pub fn activate_action(window: &lushtext_ui::ui::window::LushtextWindow, name: &str) {
     gio::prelude::ActionGroupExt::activate_action(window, name, None);
     flush_events();
 }
@@ -623,7 +623,7 @@ pub fn activate_action(window: &lushtext_core::ui::window::LushtextWindow, name:
 /// included, up to the stand-in terminator a protected install may put after
 /// an undelimited last paragraph (`ui::protected_fold`, ledger A79), which is
 /// not document text.
-pub fn editor_text(editor: &lushtext_core::ui::editor_page::LushtextEditorPage) -> String {
+pub fn editor_text(editor: &lushtext_ui::ui::editor_page::LushtextEditorPage) -> String {
     use gtk4::prelude::TextBufferExt;
     let buffer = editor.buffer();
     let mut end = buffer.end_iter();
@@ -631,7 +631,7 @@ pub fn editor_text(editor: &lushtext_core::ui::editor_page::LushtextEditorPage) 
     if last.backward_char()
         && let Some(tag) = buffer
             .tag_table()
-            .lookup(lushtext_core::ui::protected_fold::TERMINATOR_TAG_NAME)
+            .lookup(lushtext_ui::ui::protected_fold::TERMINATOR_TAG_NAME)
         && last.has_tag(&tag)
     {
         end = last;
@@ -676,7 +676,7 @@ pub struct FirstDirtyAutosaveDelayReset;
 
 impl Drop for FirstDirtyAutosaveDelayReset {
     fn drop(&mut self) {
-        lushtext_core::ui::window::set_first_dirty_autosave_delay_for_test(750);
+        lushtext_ui::ui::window::set_first_dirty_autosave_delay_for_test(750);
     }
 }
 
@@ -686,13 +686,13 @@ pub struct DraftPipelinePolicyReset;
 
 impl Drop for DraftPipelinePolicyReset {
     fn drop(&mut self) {
-        use lushtext_core::ui::window::{
+        use lushtext_ui::ui::window::{
             fail_next_draft_mutations_for_test, set_automatic_draft_limit_for_test,
             set_draft_manifest_completion_delay_for_test, set_draft_mutation_delays_for_test,
             set_lazy_draft_read_delay_for_test,
         };
         set_automatic_draft_limit_for_test(
-            lushtext_core::services::draft_service::MAX_AUTOMATIC_DRAFT_BYTES,
+            lushtext_services::draft_service::MAX_AUTOMATIC_DRAFT_BYTES,
         );
         set_lazy_draft_read_delay_for_test(0);
         set_draft_mutation_delays_for_test(0, 0, 0);
@@ -706,7 +706,7 @@ pub struct OrphanCleanupPolicyReset;
 
 impl Drop for OrphanCleanupPolicyReset {
     fn drop(&mut self) {
-        lushtext_core::ui::window::set_orphan_cleanup_delays_for_test(2_000, 30_000, 0);
+        lushtext_ui::ui::window::set_orphan_cleanup_delays_for_test(2_000, 30_000, 0);
     }
 }
 
@@ -717,7 +717,7 @@ impl Drop for OrphanCleanupPolicyReset {
 /// second collapse to the same observed timestamp.
 pub fn write_external_change_after_mtime_tick(
     path: &std::path::Path,
-    editor: &lushtext_core::ui::editor_page::LushtextEditorPage,
+    editor: &lushtext_ui::ui::editor_page::LushtextEditorPage,
     contents: &str,
 ) {
     use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -731,9 +731,7 @@ pub fn write_external_change_after_mtime_tick(
 
     for _ in 0..5 {
         fixture::write_text(path, contents);
-        if lushtext_core::services::editor_io::mtime_secs(path)
-            .is_some_and(|mtime| mtime != last_known)
-        {
+        if lushtext_services::editor_io::mtime_secs(path).is_some_and(|mtime| mtime != last_known) {
             return;
         }
         std::thread::sleep(Duration::from_millis(1100));
@@ -753,9 +751,9 @@ pub fn rect_within(
 }
 
 /// The shared test application as a `LushtextApplication`.
-pub fn test_lushtext_application() -> lushtext_core::app::LushtextApplication {
+pub fn test_lushtext_application() -> lushtext_ui::app::LushtextApplication {
     test_application()
-        .downcast::<lushtext_core::app::LushtextApplication>()
+        .downcast::<lushtext_ui::app::LushtextApplication>()
         .expect("the test application is a LushtextApplication")
 }
 
@@ -764,12 +762,12 @@ pub fn seed_restored_window_size(width: i32, height: i32) {
     use gio::prelude::SettingsExt;
 
     ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     settings
-        .set_int(lushtext_core::config::keys::WINDOW_WIDTH, width)
+        .set_int(lushtext_ui::config::keys::WINDOW_WIDTH, width)
         .expect("set window width");
     settings
-        .set_int(lushtext_core::config::keys::WINDOW_HEIGHT, height)
+        .set_int(lushtext_ui::config::keys::WINDOW_HEIGHT, height)
         .expect("set window height");
 }
 
@@ -778,7 +776,7 @@ pub fn seed_restored_window_size(width: i32, height: i32) {
 pub fn test_window_with_restored_size(
     width: i32,
     height: i32,
-) -> lushtext_core::ui::window::LushtextWindow {
+) -> lushtext_ui::ui::window::LushtextWindow {
     seed_restored_window_size(width, height);
     test_window()
 }
@@ -1038,7 +1036,7 @@ pub fn assert_monospace_widgets_registered(context: &str) -> usize {
         if monospace {
             seen += 1;
             assert!(
-                lushtext_core::ui::font_zoom::is_registered(&widget),
+                lushtext_ui::ui::font_zoom::is_registered(&widget),
                 "{context}: an unregistered monospace {} ({:?}) does not follow the editor zoom",
                 widget.type_().name(),
                 widget.css_classes(),
@@ -1407,8 +1405,8 @@ pub fn visible_text_of(widget: &gtk4::Widget) -> Option<String> {
         return Some(label.text().to_string());
     }
     widget
-        .downcast_ref::<lushtext_core::ui::row_text::LushtextRowText>()
-        .map(lushtext_core::ui::row_text::LushtextRowText::text)
+        .downcast_ref::<lushtext_ui::ui::row_text::LushtextRowText>()
+        .map(lushtext_ui::ui::row_text::LushtextRowText::text)
 }
 
 /// Every visible label's or row text's text under `root`, in depth-first

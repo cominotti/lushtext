@@ -7,7 +7,7 @@
 
 use crate::common::{ensure_gtk_init, flush_after_delay, present_window};
 use gtk4::prelude::*;
-use lushtext_core::ui::row_text::LushtextRowText;
+use lushtext_ui::ui::row_text::LushtextRowText;
 use std::time::Duration;
 
 /// Latin, CJK, Arabic, Devanagari and emoji titles: the first takes the

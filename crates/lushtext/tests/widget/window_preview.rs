@@ -22,18 +22,18 @@ use crate::common::{
 use glib::prelude::ToVariant;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_core::services::editor_io;
-use lushtext_core::services::notifications::{
+use lushtext_services::editor_io;
+use lushtext_services::notifications::{
     InlineActionNotification, InlineNotificationStyle, NotificationSeverity,
 };
-use lushtext_core::ui::accessibility::test_audit::AccessibleAudit;
-use lushtext_core::ui::editor_page::{
+use lushtext_ui::ui::accessibility::test_audit::AccessibleAudit;
+use lushtext_ui::ui::editor_page::{
     BufferReplacementCancelReason, EditorLoadState, InlineAlertLifetime, LushtextEditorPage,
 };
-use lushtext_core::ui::info_bar::LushtextInfoBar;
-use lushtext_core::ui::markdown_preview::LushtextMarkdownPreview;
-use lushtext_core::ui::window::LushtextWindow;
-use lushtext_core::ui::window::notification_evidence;
+use lushtext_ui::ui::info_bar::LushtextInfoBar;
+use lushtext_ui::ui::markdown_preview::LushtextMarkdownPreview;
+use lushtext_ui::ui::window::LushtextWindow;
+use lushtext_ui::ui::window::notification_evidence;
 use sourceview5::prelude::BufferExt as _;
 use std::cell::{Cell, RefCell};
 use std::path::Path;

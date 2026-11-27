@@ -181,7 +181,7 @@ for filter in $FILTERS; do
     safe_filter="$(printf '%s' "$filter" | tr -c '[:alnum:]_.-' '_')"
     log_path="$ARTIFACT_DIR/criterion-$safe_filter.log"
     echo "Running performance smoke filter '$filter'..."
-    if ! cargo bench -p lushtext-core --features test-utils --bench benchmarks -- "$filter" \
+    if ! cargo bench -p lushtext-ui --features test-utils --bench benchmarks -- "$filter" \
         --sample-size "$SAMPLE_SIZE" \
         --warm-up-time "$WARM_UP_TIME" \
         --measurement-time "$MEASUREMENT_TIME" \
@@ -247,7 +247,7 @@ case " $FILTERS " in
 
         slice_log="$ARTIFACT_DIR/unit-editor-load-slices.log"
         echo "Running bounded editor-load slice cancellation proof..."
-        if ! cargo test -p lushtext-core --lib \
+        if ! cargo test -p lushtext-ui --lib \
             services::editor_io::tests::cancellation_stops_classification_decoding_and_analysis_stages \
             -- --nocapture >"$slice_log" 2>&1; then
             tail -n 120 "$slice_log" >&2 || true
@@ -266,7 +266,7 @@ case " $FILTERS " in
     *" replace_undo_workflows "*)
         hook_log="$ARTIFACT_DIR/unit-replace-undo-hook-isolation.log"
         echo "Running parallel Undo hook-registry isolation proof..."
-        if ! cargo test -p lushtext-core --lib \
+        if ! cargo test -p lushtext-ui --lib \
             services::content_search::replace::tests::parallel_undo_operations_consume_only_their_own_target_hooks \
             -- --nocapture >"$hook_log" 2>&1; then
             tail -n 120 "$hook_log" >&2 || true
@@ -338,7 +338,7 @@ case " $FILTERS " in
         # `ui/search_panel/runtime.rs` became `execution.rs` in the search-replace
         # migration and this key was not moved with it, so the proof below had
         # not run since 2026-08-25. See `smoke_assert_ran`.
-        if ! cargo test -p lushtext-core ui::search_panel::execution::tests::mixed_non_match_events_share_one_budget --lib -- --nocapture \
+        if ! cargo test -p lushtext-ui ui::search_panel::execution::tests::mixed_non_match_events_share_one_budget --lib -- --nocapture \
             >"$unit_log" 2>&1; then
             tail -n 120 "$unit_log" >&2 || true
             smoke_fail "mixed search-event budget proof failed. Artifacts: $ARTIFACT_DIR"

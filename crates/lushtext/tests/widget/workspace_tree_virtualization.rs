@@ -20,16 +20,14 @@ use crate::common::{
 };
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_core::model::workspace::{
-    WorkspaceConfig, WorkspaceFolder, WorkspaceId, WorkspacesFile,
-};
-use lushtext_core::services::{json_store, workspace_manager};
-use lushtext_core::ui::accessibility::test_audit::AccessibleAudit;
-use lushtext_core::ui::sidebar::LushtextSidebar;
-use lushtext_core::ui::sidebar::file_tree_item::FileTreeItem;
-use lushtext_core::ui::sidebar::policy::WorkspaceRevealStatus;
-use lushtext_core::ui::sidebar::workspace_section::LushtextWorkspaceSection;
-use lushtext_core::ui::window::LushtextWindow;
+use lushtext_model::workspace::{WorkspaceConfig, WorkspaceFolder, WorkspaceId, WorkspacesFile};
+use lushtext_services::{json_store, workspace_manager};
+use lushtext_ui::ui::accessibility::test_audit::AccessibleAudit;
+use lushtext_ui::ui::sidebar::LushtextSidebar;
+use lushtext_ui::ui::sidebar::file_tree_item::FileTreeItem;
+use lushtext_ui::ui::sidebar::policy::WorkspaceRevealStatus;
+use lushtext_ui::ui::sidebar::workspace_section::LushtextWorkspaceSection;
+use lushtext_ui::ui::window::LushtextWindow;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -748,9 +746,9 @@ fn test_continuous_outer_scrolling_stays_stable() {
 
 /// Run `test` with the sidebar's directory budget lowered to `bytes`.
 fn with_directory_budget(bytes: u64, test: impl FnOnce()) {
-    lushtext_core::ui::sidebar::set_sidebar_directory_retained_bytes_for_test(bytes);
+    lushtext_ui::ui::sidebar::set_sidebar_directory_retained_bytes_for_test(bytes);
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(test));
-    lushtext_core::ui::sidebar::set_sidebar_directory_retained_bytes_for_test(0);
+    lushtext_ui::ui::sidebar::set_sidebar_directory_retained_bytes_for_test(0);
     if let Err(panic) = outcome {
         std::panic::resume_unwind(panic);
     }
@@ -760,7 +758,7 @@ fn with_directory_budget(bytes: u64, test: impl FnOnce()) {
 fn maybe_listing(
     section: &LushtextWorkspaceSection,
     directory: &Path,
-) -> Option<lushtext_core::ui::sidebar::evidence::DirectoryListingEvidence> {
+) -> Option<lushtext_ui::ui::sidebar::evidence::DirectoryListingEvidence> {
     section
         .workspace_section_evidence()
         .directory_listings
@@ -772,7 +770,7 @@ fn maybe_listing(
 fn listing(
     section: &LushtextWorkspaceSection,
     directory: &Path,
-) -> lushtext_core::ui::sidebar::evidence::DirectoryListingEvidence {
+) -> lushtext_ui::ui::sidebar::evidence::DirectoryListingEvidence {
     maybe_listing(section, directory).expect("the directory is materialized")
 }
 
@@ -1273,12 +1271,12 @@ fn test_workspace_header_survives_toggling_hidden_files() {
     // v0.7.0's other sidebar feature changes the tree's height from a settings
     // key, through the automatic refresh path rather than a user scroll.
     let tree = tall_workspace(800);
-    let settings = lushtext_core::ui::settings_writes::shared();
-    settings.reset(lushtext_core::config::keys::WORKSPACE_SHOW_HIDDEN_FILES);
+    let settings = lushtext_ui::ui::settings_writes::shared();
+    settings.reset(lushtext_ui::config::keys::WORKSPACE_SHOW_HIDDEN_FILES);
     for show_hidden in [true, false] {
         settings
             .set_boolean(
-                lushtext_core::config::keys::WORKSPACE_SHOW_HIDDEN_FILES,
+                lushtext_ui::config::keys::WORKSPACE_SHOW_HIDDEN_FILES,
                 show_hidden,
             )
             .expect("set show-hidden key");
@@ -1287,7 +1285,7 @@ fn test_workspace_header_survives_toggling_hidden_files() {
         assert_sidebar_rests_at_top(&tree.sidebar, "after toggling hidden files");
         assert_header_visible(&tree.sidebar, &tree.section, "after toggling hidden files");
     }
-    settings.reset(lushtext_core::config::keys::WORKSPACE_SHOW_HIDDEN_FILES);
+    settings.reset(lushtext_ui::config::keys::WORKSPACE_SHOW_HIDDEN_FILES);
     flush_events();
     drop(tree.window);
 }
@@ -1593,18 +1591,18 @@ fn test_rendered_rows_settle_after_model_changes() {
         "after collapsing and re-expanding the section body",
     );
 
-    let settings = lushtext_core::ui::settings_writes::shared();
-    settings.reset(lushtext_core::config::keys::WORKSPACE_SHOW_HIDDEN_FILES);
+    let settings = lushtext_ui::ui::settings_writes::shared();
+    settings.reset(lushtext_ui::config::keys::WORKSPACE_SHOW_HIDDEN_FILES);
     for show_hidden in [true, false] {
         settings
             .set_boolean(
-                lushtext_core::config::keys::WORKSPACE_SHOW_HIDDEN_FILES,
+                lushtext_ui::config::keys::WORKSPACE_SHOW_HIDDEN_FILES,
                 show_hidden,
             )
             .expect("set show-hidden key");
         assert_rows_settle(&tree.section, "after toggling hidden files");
     }
-    settings.reset(lushtext_core::config::keys::WORKSPACE_SHOW_HIDDEN_FILES);
+    settings.reset(lushtext_ui::config::keys::WORKSPACE_SHOW_HIDDEN_FILES);
     flush_events();
     drop(tree.window);
 }
@@ -2031,14 +2029,14 @@ fn test_reveal_of_a_row_clipped_by_its_margin_scrolls_the_chrome_away() {
 struct SidebarRestState {
     selected: Vec<u32>,
     outer: f64,
-    scope: lushtext_core::model::workspace::WorkspaceScope,
+    scope: lushtext_model::workspace::WorkspaceScope,
     show_hidden: bool,
     expanded: Vec<std::collections::HashSet<PathBuf>>,
 }
 
 fn rest_state(sidebar: &LushtextSidebar) -> SidebarRestState {
     let sections = sidebar.imp().sections.borrow().clone();
-    let settings = lushtext_core::ui::settings_writes::shared();
+    let settings = lushtext_ui::ui::settings_writes::shared();
     SidebarRestState {
         selected: sections
             .iter()
@@ -2046,7 +2044,7 @@ fn rest_state(sidebar: &LushtextSidebar) -> SidebarRestState {
             .collect(),
         outer: outer_adjustment(sidebar).value(),
         scope: sidebar.current_scope(),
-        show_hidden: settings.boolean(lushtext_core::config::keys::WORKSPACE_SHOW_HIDDEN_FILES),
+        show_hidden: settings.boolean(lushtext_ui::config::keys::WORKSPACE_SHOW_HIDDEN_FILES),
         expanded: sections
             .iter()
             .map(|section| section.workspace_section_evidence().expanded_paths)
@@ -2140,8 +2138,8 @@ fn test_reveal_of_a_missing_middle_component_fails_as_not_found() {
 #[test]
 fn test_reveal_through_a_hidden_component_fails_without_changing_visibility() {
     let tree = collapsed_tree(&[(".secret", 3)], 800);
-    let settings = lushtext_core::ui::settings_writes::shared();
-    settings.reset(lushtext_core::config::keys::WORKSPACE_SHOW_HIDDEN_FILES);
+    let settings = lushtext_ui::ui::settings_writes::shared();
+    settings.reset(lushtext_ui::config::keys::WORKSPACE_SHOW_HIDDEN_FILES);
     flush_events();
     assert_reveal_fails_without_side_effects(
         &tree.window,
@@ -2300,9 +2298,9 @@ fn test_reveal_geometry_snapshot_is_bounded_and_unlabelled() {
     let app = tree
         .window
         .application()
-        .and_downcast::<lushtext_core::app::LushtextApplication>()
+        .and_downcast::<lushtext_ui::app::LushtextApplication>()
         .expect("test window belongs to a LushtextApplication");
-    let surface = |snapshot: &lushtext_core::model::automation::AutomationSnapshot, name: &str| {
+    let surface = |snapshot: &lushtext_model::automation::AutomationSnapshot, name: &str| {
         snapshot
             .window
             .as_ref()
@@ -2315,7 +2313,7 @@ fn test_reveal_geometry_snapshot_is_bounded_and_unlabelled() {
     };
 
     // Before any reveal the named surfaces are present, absent, and explained.
-    let before = lushtext_core::ui::automation::app_snapshot(&app);
+    let before = lushtext_ui::ui::automation::app_snapshot(&app);
     for name in [
         "workspace-sidebar-viewport",
         "workspace-revealed-row",
@@ -2340,7 +2338,7 @@ fn test_reveal_geometry_snapshot_is_bounded_and_unlabelled() {
         reveal_and_settle(&tree.window, &tree.sidebar, &target),
         WorkspaceRevealStatus::Revealed
     );
-    let after = lushtext_core::ui::automation::app_snapshot(&app);
+    let after = lushtext_ui::ui::automation::app_snapshot(&app);
     let window_snapshot = after.window.as_ref().expect("window snapshot");
     assert_eq!(window_snapshot.workspace.reveal_status, "revealed");
     assert_eq!(window_snapshot.workspace.reveal_depth, Some(1));
@@ -2398,7 +2396,7 @@ fn test_reveal_geometry_snapshot_is_bounded_and_unlabelled() {
 #[test]
 fn test_directory_expansion_dispatches_fit_the_settle_budget() {
     use crate::common::{timing_verdicts_enforced, worst_dispatch_until};
-    use lushtext_core::model::responsiveness_budget::B_SETTLE_US;
+    use lushtext_model::responsiveness_budget::B_SETTLE_US;
     let mut terminals = Vec::new();
     for count in [10_000usize, 16 * 1024 + 1, 128 * 1024] {
         let tree = large_tree(&[("nested", count)], 800);
@@ -2508,7 +2506,7 @@ fn test_directory_expansion_dispatches_fit_the_settle_budget() {
 #[test]
 fn test_directory_retention_stays_within_its_charge() {
     use crate::common::{proc_status_kib, reset_vm_hwm};
-    use lushtext_core::ui::sidebar::policy::{
+    use lushtext_ui::ui::sidebar::policy::{
         SIDEBAR_PATH_GRAPH_OVERHEAD, SIDEBAR_ROW_FIXED_CHARGE, SIDEBAR_ROW_PATH_COPIES,
     };
     const ROWS: usize = 32 * 1024;
@@ -3038,7 +3036,7 @@ fn test_a_reorder_drag_gives_every_realized_row_a_shield() {
         0,
         "no shield is targetable outside a drag"
     );
-    let folder_id = lushtext_core::model::workspace::WorkspaceFolderId::new("drag-start");
+    let folder_id = lushtext_model::workspace::WorkspaceFolderId::new("drag-start");
     let started = std::time::Instant::now();
     let during = tree
         .section
@@ -3068,7 +3066,7 @@ fn test_a_reorder_drag_gives_every_realized_row_a_shield() {
 /// deferred restore expanded it again.
 #[test]
 fn test_the_folder_header_collapses_every_root() {
-    use lushtext_core::services::workspace_watch::WorkspaceWatchTarget;
+    use lushtext_services::workspace_watch::WorkspaceWatchTarget;
     ensure_gtk_init();
     let dir = tempfile::tempdir().expect("two roots tempdir");
     let first = dir.path().join("first");

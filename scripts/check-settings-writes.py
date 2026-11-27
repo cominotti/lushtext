@@ -10,7 +10,7 @@ would put that cost back on window construction or an interaction dispatch,
 and a second `gio::Settings` instance would neither see unflushed values nor
 notify its subscribers when they are written (A39, A41).
 
-Outside `crates/lushtext-core/src/ui/settings_writes.rs`, this check fails on:
+Outside `crates/lushtext-ui/src/ui/settings_writes.rs`, this check fails on:
 
 - `Settings::new(...APP_ID...)`: a second instance of the application schema
   (use `settings_writes::shared()`);
@@ -32,8 +32,8 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SCAN_ROOTS = ("crates/lushtext-core/src", "crates/lushtext/src")
-WRITER = "crates/lushtext-core/src/ui/settings_writes.rs"
+SCAN_ROOTS = ("crates/lushtext-ui/src", "crates/lushtext/src")
+WRITER = "crates/lushtext-ui/src/ui/settings_writes.rs"
 
 SECOND_INSTANCE = re.compile(r"Settings::new\(\s*(?:crate::)?(?:config::)?APP_ID\s*\)", re.S)
 DIRECT_WRITE = re.compile(
@@ -74,15 +74,15 @@ def scan() -> list[str]:
 
 def self_test() -> int:
     cases = [
-        ("crates/lushtext-core/src/ui/x.rs", "let s = gio::Settings::new(config::APP_ID);", 1),
-        ("crates/lushtext-core/src/ui/x.rs", "let s = gtk4::gio::Settings::new(crate::config::APP_ID);", 1),
-        ("crates/lushtext-core/src/ui/x.rs", "let _ = settings.set_boolean(keys::WINDOW_MAXIMIZED, true);", 1),
-        ("crates/lushtext-core/src/ui/x.rs", "window\n    .imp()\n    .settings\n    .set_double(\n        keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, 0.3);", 1),
-        ("crates/lushtext-core/src/ui/x.rs", "prefs.imp().settings.reset(keys::WORKSPACE_EXCLUDED_NAMES);", 1),
-        ("crates/lushtext-core/src/ui/x.rs", "settings_writes::set_boolean(keys::WINDOW_MAXIMIZED, true);", 0),
-        ("crates/lushtext-core/src/ui/x.rs", "settings.bind(keys::WORD_WRAP, &row, \"active\").build();", 0),
-        ("crates/lushtext-core/src/ui/x.rs", "// gio::Settings::new(config::APP_ID) in prose", 0),
-        ("crates/lushtext-core/src/ui/x.rs", "adjustment.set_value(lower);", 0),
+        ("crates/lushtext-ui/src/ui/x.rs", "let s = gio::Settings::new(config::APP_ID);", 1),
+        ("crates/lushtext-ui/src/ui/x.rs", "let s = gtk4::gio::Settings::new(crate::config::APP_ID);", 1),
+        ("crates/lushtext-ui/src/ui/x.rs", "let _ = settings.set_boolean(keys::WINDOW_MAXIMIZED, true);", 1),
+        ("crates/lushtext-ui/src/ui/x.rs", "window\n    .imp()\n    .settings\n    .set_double(\n        keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, 0.3);", 1),
+        ("crates/lushtext-ui/src/ui/x.rs", "prefs.imp().settings.reset(keys::WORKSPACE_EXCLUDED_NAMES);", 1),
+        ("crates/lushtext-ui/src/ui/x.rs", "settings_writes::set_boolean(keys::WINDOW_MAXIMIZED, true);", 0),
+        ("crates/lushtext-ui/src/ui/x.rs", "settings.bind(keys::WORD_WRAP, &row, \"active\").build();", 0),
+        ("crates/lushtext-ui/src/ui/x.rs", "// gio::Settings::new(config::APP_ID) in prose", 0),
+        ("crates/lushtext-ui/src/ui/x.rs", "adjustment.set_value(lower);", 0),
         (WRITER, "let s = gio::Settings::new(config::APP_ID); s.set_value(key, v);", 0),
     ]
     failures = []

@@ -129,7 +129,7 @@ The helper should:
 
 - update `meson.build`;
 - update `crates/lushtext/Cargo.toml`;
-- update `crates/lushtext-core/Cargo.toml`;
+- update `crates/lushtext-ui/Cargo.toml`;
 - refresh `Cargo.lock`;
 - insert AppStream release notes in `data/dev.cominotti.lushtext.metainfo.xml.in`;
 - regenerate `build-aux/cargo-sources.json`;

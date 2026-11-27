@@ -32,9 +32,9 @@ use crate::common::{
 };
 use gio::prelude::*;
 use gtk4::prelude::*;
-use lushtext_core::config::{APP_ID, keys};
-use lushtext_core::ui::settings_writes;
-use lushtext_core::ui::window::{LushtextWindow, shell_geometry_evidence};
+use lushtext_ui::config::{APP_ID, keys};
+use lushtext_ui::ui::settings_writes;
+use lushtext_ui::ui::window::{LushtextWindow, shell_geometry_evidence};
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -166,7 +166,7 @@ fn test_a_flush_waits_for_input_quiet() {
     );
     // Steady typing: one input every 100 ms, for twice the persistence window.
     for _ in 0..10 {
-        lushtext_core::ui::input_quiet::simulate_user_input();
+        lushtext_ui::ui::input_quiet::simulate_user_input();
         flush_after_delay(Duration::from_millis(100));
     }
     assert_eq!(

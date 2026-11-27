@@ -8,11 +8,11 @@ carries `.monospace` without registering keeps GTK's default font and stops
 following the zoom and the custom font (design D2, D3). This check fails on
 any way of adding `.monospace` outside the registering helper:
 
-- Rust, under `crates/lushtext-core/src` (comments stripped):
+- Rust, under `crates/lushtext-ui/src` (comments stripped):
   `add_css_class("monospace")`, `set_monospace(true)`, a builder's
   `.monospace(true)`, `set_property("monospace", true)`, and a
   `css_classes([...])` list naming `"monospace"`, except inside
-  `crates/lushtext-core/src/ui/font_zoom.rs`;
+  `crates/lushtext-ui/src/ui/font_zoom.rs`;
 - Blueprint, under `resources/ui` (comments stripped): `monospace: true` and a
   `styles [...]` list naming `"monospace"`, except for a widget listed in
   `BLUEPRINT_SITES` whose Rust construction site calls `follow_editor_font`
@@ -30,14 +30,14 @@ import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-RUST_ROOT = "crates/lushtext-core/src"
+RUST_ROOT = "crates/lushtext-ui/src"
 BLUEPRINT_ROOT = "resources/ui"
-REGISTRY = "crates/lushtext-core/src/ui/font_zoom.rs"
+REGISTRY = "crates/lushtext-ui/src/ui/font_zoom.rs"
 
 # (Blueprint file, widget id) -> the Rust file that registers it.
 BLUEPRINT_SITES = {
     ("resources/ui/line-inspector.blp", "window_view"): (
-        "crates/lushtext-core/src/ui/editor_page/protected_view/inspector.rs"
+        "crates/lushtext-ui/src/ui/editor_page/protected_view/inspector.rs"
     ),
 }
 

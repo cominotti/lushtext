@@ -32,7 +32,7 @@ def warning_line_is_allowlisted(line: str) -> bool:
     # Classify on plain text because session logs can carry ANSI style
     # sequences.
     line = _ANSI_STYLE_SEQUENCES.sub("", line)
-    return "ERROR lushtext_core::ui::editor_page::load::execution: Failed to read " in line and (
+    return "ERROR lushtext_ui::ui::editor_page::load::execution: Failed to read " in line and (
         "unreadable-load-target.txt: Permission denied" in line
         or "unreadable-load-target.md: Permission denied" in line
     )

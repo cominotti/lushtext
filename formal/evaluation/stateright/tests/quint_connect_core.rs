@@ -28,7 +28,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use lushtext_core::services::draft_service::journal_core::{DeletionStep, RestoreEnding};
+use lushtext_services::draft_service::journal_core::{DeletionStep, RestoreEnding};
 use lushtext_journal_stateright::env::{
     Action, CONTENTS, ContentSet, Editor, IDS, Journal, PreviousId, Window,
 };

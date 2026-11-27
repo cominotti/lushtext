@@ -187,17 +187,17 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/gtk-lush/tasks/src/lib.rs` | `COMPLETION_PRIORITY_VALUE` | 124 | out: priority | GLib, CSS, mark or gutter priority (D1) |
 | `crates/gtk-lush/tasks/src/lib.rs` | `COMPLETIONS_BEFORE_YIELD` | 8 | cap | power of two |
 
-### `crates/lushtext-core/src/fuzzing.rs`
+### `crates/lushtext-ui/src/fuzzing.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/fuzzing.rs` | `FUZZ_MAX_INPUT_LEN` | 4,096 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
-| `crates/lushtext-core/src/fuzzing.rs` | `MARKDOWN_FUZZ_MAX_INPUT_LEN` | 131,072 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
-| `crates/lushtext-core/src/fuzzing.rs` | `OPERATION_SCRIPT_MAX_INPUT_LEN` | 4,096 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
-| `crates/lushtext-core/src/fuzzing.rs` | `OPERATION_SCRIPT_MAX_OPERATIONS` | 32 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
-| `crates/lushtext-core/src/fuzzing.rs` | `OPERATION_SCRIPT_MAX_TEXT_BYTES` | 256 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
-| `crates/lushtext-core/src/fuzzing.rs` | `OPERATION_SCRIPT_MAX_PATH_BYTES` | 64 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
-| `crates/lushtext-core/src/fuzzing.rs` | `OPERATION_SCRIPT_MAX_FILES` | 3 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
+| `crates/lushtext-ui/src/fuzzing.rs` | `FUZZ_MAX_INPUT_LEN` | 4,096 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
+| `crates/lushtext-ui/src/fuzzing.rs` | `MARKDOWN_FUZZ_MAX_INPUT_LEN` | 131,072 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
+| `crates/lushtext-ui/src/fuzzing.rs` | `OPERATION_SCRIPT_MAX_INPUT_LEN` | 4,096 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
+| `crates/lushtext-ui/src/fuzzing.rs` | `OPERATION_SCRIPT_MAX_OPERATIONS` | 32 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
+| `crates/lushtext-ui/src/fuzzing.rs` | `OPERATION_SCRIPT_MAX_TEXT_BYTES` | 256 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
+| `crates/lushtext-ui/src/fuzzing.rs` | `OPERATION_SCRIPT_MAX_PATH_BYTES` | 64 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
+| `crates/lushtext-ui/src/fuzzing.rs` | `OPERATION_SCRIPT_MAX_FILES` | 3 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
 
 ### `crates/lushtext-model/src/attention_refresh.rs`
 
@@ -747,625 +747,625 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-services/src/workspace_watch.rs` | `WORKSPACE_WATCH_PATH_CAP` | 1,024 | cap | power of two |
 | `crates/lushtext-services/src/workspace_watch.rs` | `WATCH_ERROR_MESSAGE_CAP_BYTES` | 1,024 | presentation cap | up from 1,024: error text a user reads (D12) |
 
-### `crates/lushtext-core/src/ui/accessibility.rs`
+### `crates/lushtext-ui/src/ui/accessibility.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/accessibility.rs` | `DEFAULT_ANNOUNCEMENT_LIMIT` | 256 | presentation cap | up from 240: characters announced (D12) |
+| `crates/lushtext-ui/src/ui/accessibility.rs` | `DEFAULT_ANNOUNCEMENT_LIMIT` | 256 | presentation cap | up from 240: characters announced (D12) |
 
-### `crates/lushtext-core/src/ui/automation.rs`
+### `crates/lushtext-ui/src/ui/automation.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/automation.rs` | `INTERFACE_VERSION` | 2 | out: identifier | format version, discriminant or sentinel (D1) |
-| `crates/lushtext-core/src/ui/automation.rs` | `SNAPSHOT_TEXT_MAX_BYTES` | 4,096 | presentation cap | up from 4,096: text an automation snapshot carries (D12) |
+| `crates/lushtext-ui/src/ui/automation.rs` | `INTERFACE_VERSION` | 2 | out: identifier | format version, discriminant or sentinel (D1) |
+| `crates/lushtext-ui/src/ui/automation.rs` | `SNAPSHOT_TEXT_MAX_BYTES` | 4,096 | presentation cap | up from 4,096: text an automation snapshot carries (D12) |
 
-### `crates/lushtext-core/src/ui/buffer_snapshot.rs`
+### `crates/lushtext-ui/src/ui/buffer_snapshot.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/buffer_snapshot.rs` | `BUFFER_SNAPSHOT_SYNC_BYTE_THRESHOLD` | 8,388,608 | cap | 8 MiB (D3) |
-| `crates/lushtext-core/src/ui/buffer_snapshot.rs` | `BUFFER_SNAPSHOT_CHUNK_CHARS` | 65,536 | cap | power of two |
-| `crates/lushtext-core/src/ui/buffer_snapshot.rs` | `BUFFER_SNAPSHOT_CHUNK_MAX_BYTES` | 262,144 | cap | power of two |
+| `crates/lushtext-ui/src/ui/buffer_snapshot.rs` | `BUFFER_SNAPSHOT_SYNC_BYTE_THRESHOLD` | 8,388,608 | cap | 8 MiB (D3) |
+| `crates/lushtext-ui/src/ui/buffer_snapshot.rs` | `BUFFER_SNAPSHOT_CHUNK_CHARS` | 65,536 | cap | power of two |
+| `crates/lushtext-ui/src/ui/buffer_snapshot.rs` | `BUFFER_SNAPSHOT_CHUNK_MAX_BYTES` | 262,144 | cap | power of two |
 
-### `crates/lushtext-core/src/ui/command_palette/category_model.rs`
+### `crates/lushtext-ui/src/ui/command_palette/category_model.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/command_palette/category_model.rs` | `CATEGORY_LIVE_ROW_PRUNE_AT` | 1,024 | cap | map entries of handed-out row objects before dead ones are pruned; GTK holds about 205 rows (A1) plus the selection (`drill-down-palette-categories` D2) |
+| `crates/lushtext-ui/src/ui/command_palette/category_model.rs` | `CATEGORY_LIVE_ROW_PRUNE_AT` | 1,024 | cap | map entries of handed-out row objects before dead ones are pruned; GTK holds about 205 rows (A1) plus the selection (`drill-down-palette-categories` D2) |
 
-### `crates/lushtext-core/src/ui/command_palette/item.rs`
+### `crates/lushtext-ui/src/ui/command_palette/item.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/command_palette/item.rs` | `KIND_FILE` | 0 | out: identifier | format version, discriminant or sentinel (D1) |
-| `crates/lushtext-core/src/ui/command_palette/item.rs` | `KIND_COMMAND` | 1 | out: identifier | format version, discriminant or sentinel (D1) |
-| `crates/lushtext-core/src/ui/command_palette/item.rs` | `KIND_HEADER` | 2 | out: identifier | format version, discriminant or sentinel (D1) |
-| `crates/lushtext-core/src/ui/command_palette/item.rs` | `KIND_NOTE` | 3 | out: identifier | format version, discriminant or sentinel (D1) |
-| `crates/lushtext-core/src/ui/command_palette/item.rs` | `KIND_MORE` | 4 | out: identifier | format version, discriminant or sentinel (D1) |
+| `crates/lushtext-ui/src/ui/command_palette/item.rs` | `KIND_FILE` | 0 | out: identifier | format version, discriminant or sentinel (D1) |
+| `crates/lushtext-ui/src/ui/command_palette/item.rs` | `KIND_COMMAND` | 1 | out: identifier | format version, discriminant or sentinel (D1) |
+| `crates/lushtext-ui/src/ui/command_palette/item.rs` | `KIND_HEADER` | 2 | out: identifier | format version, discriminant or sentinel (D1) |
+| `crates/lushtext-ui/src/ui/command_palette/item.rs` | `KIND_NOTE` | 3 | out: identifier | format version, discriminant or sentinel (D1) |
+| `crates/lushtext-ui/src/ui/command_palette/item.rs` | `KIND_MORE` | 4 | out: identifier | format version, discriminant or sentinel (D1) |
 
-### `crates/lushtext-core/src/ui/command_palette/policy.rs`
+### `crates/lushtext-ui/src/ui/command_palette/policy.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/command_palette/policy.rs` | `INDEX_UPDATE_DEBOUNCE_MS` | 75 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-core/src/ui/command_palette/policy.rs` | `SEARCH_DEBOUNCE_MS` | 150 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-core/src/ui/command_palette/policy.rs` | `MAX_RESULTS_PER_SOURCE` | 64 | presentation cap | up from 50: M1, settle worst 6.4-7.9 ms within B_interact (main 5.0-5.7 ms) (D12) |
-| `crates/lushtext-core/src/ui/command_palette/policy.rs` | `RESULT_PAGE_ROWS` | 16 | out: presentation | presentation shape: rows Page Up and Page Down move (`drill-down-palette-categories` D6) |
-| `crates/lushtext-core/src/ui/command_palette/policy.rs` | `PALETTE_CATEGORY_RETAINED_BYTES` | 8,388,608 | presentation cap | up from PALETTE_CATEGORY_FLOOR_RETENTION: a category view's retained-byte budget, the power of two at or above the ranking peak of the row cap (`drill-down-palette-categories` D3, `scale-file-index` D8) |
-| `crates/lushtext-core/src/ui/command_palette/policy.rs` | `MAX_CATEGORY_VIEW_ROWS` | 131,072 | presentation cap, exception | up from 131,072: the rows a workspace category listed at most before the index cap moved; a far select-and-scroll grows with the rows (A95), 2.2-6.9 ms at 131,072 in the application (`drill-down-palette-categories`), so a 2^20-row category would exceed `B_INTERACT_US`; note categories of 131,073-233,016 rows are cut, the recorded loss (`scale-file-index` D8) |
-| `crates/lushtext-core/src/ui/command_palette/policy.rs` | `PALETTE_CATEGORY_FLOOR_RETENTION` | 4,718,592 | derived | the ranking peak of the row cap, `MAX_CATEGORY_VIEW_ROWS * PALETTE_CATEGORY_CANDIDATE_BYTES` (`drill-down-palette-categories` D3, `scale-file-index` D8) |
-| `crates/lushtext-core/src/ui/command_palette/policy.rs` | `MAX_PENDING_INDEX_UPDATES` | 1,024 | cap | power of two |
-| `crates/lushtext-core/src/ui/command_palette/policy.rs` | `MAX_PENDING_INDEX_UPDATE_BYTES` | 4,194,304 | cap | power of two |
-| `crates/lushtext-core/src/ui/command_palette/policy.rs` | `PENDING_QUEUE_MIN_CAPACITY` | 4 | cap | power of two |
-| `crates/lushtext-core/src/ui/command_palette/policy.rs` | `LARGE_INDEX_RETIREMENT_FILES` | 131,072 | out: tool | test evidence: the size at which a released index's retirement is recorded (`scale-file-index` D3) |
+| `crates/lushtext-ui/src/ui/command_palette/policy.rs` | `INDEX_UPDATE_DEBOUNCE_MS` | 75 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-ui/src/ui/command_palette/policy.rs` | `SEARCH_DEBOUNCE_MS` | 150 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-ui/src/ui/command_palette/policy.rs` | `MAX_RESULTS_PER_SOURCE` | 64 | presentation cap | up from 50: M1, settle worst 6.4-7.9 ms within B_interact (main 5.0-5.7 ms) (D12) |
+| `crates/lushtext-ui/src/ui/command_palette/policy.rs` | `RESULT_PAGE_ROWS` | 16 | out: presentation | presentation shape: rows Page Up and Page Down move (`drill-down-palette-categories` D6) |
+| `crates/lushtext-ui/src/ui/command_palette/policy.rs` | `PALETTE_CATEGORY_RETAINED_BYTES` | 8,388,608 | presentation cap | up from PALETTE_CATEGORY_FLOOR_RETENTION: a category view's retained-byte budget, the power of two at or above the ranking peak of the row cap (`drill-down-palette-categories` D3, `scale-file-index` D8) |
+| `crates/lushtext-ui/src/ui/command_palette/policy.rs` | `MAX_CATEGORY_VIEW_ROWS` | 131,072 | presentation cap, exception | up from 131,072: the rows a workspace category listed at most before the index cap moved; a far select-and-scroll grows with the rows (A95), 2.2-6.9 ms at 131,072 in the application (`drill-down-palette-categories`), so a 2^20-row category would exceed `B_INTERACT_US`; note categories of 131,073-233,016 rows are cut, the recorded loss (`scale-file-index` D8) |
+| `crates/lushtext-ui/src/ui/command_palette/policy.rs` | `PALETTE_CATEGORY_FLOOR_RETENTION` | 4,718,592 | derived | the ranking peak of the row cap, `MAX_CATEGORY_VIEW_ROWS * PALETTE_CATEGORY_CANDIDATE_BYTES` (`drill-down-palette-categories` D3, `scale-file-index` D8) |
+| `crates/lushtext-ui/src/ui/command_palette/policy.rs` | `MAX_PENDING_INDEX_UPDATES` | 1,024 | cap | power of two |
+| `crates/lushtext-ui/src/ui/command_palette/policy.rs` | `MAX_PENDING_INDEX_UPDATE_BYTES` | 4,194,304 | cap | power of two |
+| `crates/lushtext-ui/src/ui/command_palette/policy.rs` | `PENDING_QUEUE_MIN_CAPACITY` | 4 | cap | power of two |
+| `crates/lushtext-ui/src/ui/command_palette/policy.rs` | `LARGE_INDEX_RETIREMENT_FILES` | 131,072 | out: tool | test evidence: the size at which a released index's retirement is recorded (`scale-file-index` D3) |
 
-### `crates/lushtext-core/src/ui/editor_page/accessibility.rs`
+### `crates/lushtext-ui/src/ui/editor_page/accessibility.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/editor_page/accessibility.rs` | `EDITOR_IDENTITY_LIMIT` | 128 | presentation cap | up from 96: characters of a file name announced (D12) |
+| `crates/lushtext-ui/src/ui/editor_page/accessibility.rs` | `EDITOR_IDENTITY_LIMIT` | 128 | presentation cap | up from 96: characters of a file name announced (D12) |
 
-### `crates/lushtext-core/src/ui/editor_page/bookmarks.rs`
+### `crates/lushtext-ui/src/ui/editor_page/bookmarks.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/editor_page/bookmarks.rs` | `BOOKMARK_MARK_PRIORITY` | 150 | out: priority | GLib, CSS, mark or gutter priority (D1) |
+| `crates/lushtext-ui/src/ui/editor_page/bookmarks.rs` | `BOOKMARK_MARK_PRIORITY` | 150 | out: priority | GLib, CSS, mark or gutter priority (D1) |
 
-### `crates/lushtext-core/src/ui/editor_page/document_scale.rs`
+### `crates/lushtext-ui/src/ui/editor_page/document_scale.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/editor_page/document_scale.rs` | `REDUCED_FEATURES_NOTICE_LIMIT` | 512 | presentation cap | up from 320: AT text; the longest shipped notice is 229 characters (D12, task 9.4) |
+| `crates/lushtext-ui/src/ui/editor_page/document_scale.rs` | `REDUCED_FEATURES_NOTICE_LIMIT` | 512 | presentation cap | up from 320: AT text; the longest shipped notice is 229 characters (D12, task 9.4) |
 
-### `crates/lushtext-core/src/ui/editor_page/held_input.rs`
+### `crates/lushtext-ui/src/ui/editor_page/held_input.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/editor_page/held_input.rs` | `SETTLE_RETRY_INTERVAL_MS` | 16 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-core/src/ui/editor_page/held_input.rs` | `PREEDIT_DEADLINE_MS` | 1,024 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-ui/src/ui/editor_page/held_input.rs` | `SETTLE_RETRY_INTERVAL_MS` | 16 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-ui/src/ui/editor_page/held_input.rs` | `PREEDIT_DEADLINE_MS` | 1,024 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
 
-### `crates/lushtext-core/src/ui/editor_page/load/policy.rs`
+### `crates/lushtext-ui/src/ui/editor_page/load/policy.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/editor_page/load/policy.rs` | `CLEAR_SLICE_CHARS` | 65,536 | cap | power of two |
-| `crates/lushtext-core/src/ui/editor_page/load/policy.rs` | `MAX_UTF8_BYTES_PER_CHAR` | 4 | external fact | exact, cited from its source |
-| `crates/lushtext-core/src/ui/editor_page/load/policy.rs` | `SETTLE_QUIET_US` | 100,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-core/src/ui/editor_page/load/policy.rs` | `INPUT_QUIET_US` | 16,666 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-core/src/ui/editor_page/load/policy.rs` | `ATTACH_DEADLINE_US` | 2,048,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-ui/src/ui/editor_page/load/policy.rs` | `CLEAR_SLICE_CHARS` | 65,536 | cap | power of two |
+| `crates/lushtext-ui/src/ui/editor_page/load/policy.rs` | `MAX_UTF8_BYTES_PER_CHAR` | 4 | external fact | exact, cited from its source |
+| `crates/lushtext-ui/src/ui/editor_page/load/policy.rs` | `SETTLE_QUIET_US` | 100,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-ui/src/ui/editor_page/load/policy.rs` | `INPUT_QUIET_US` | 16,666 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-ui/src/ui/editor_page/load/policy.rs` | `ATTACH_DEADLINE_US` | 2,048,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
 
-### `crates/lushtext-core/src/ui/editor_page/local_history.rs`
+### `crates/lushtext-ui/src/ui/editor_page/local_history.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/editor_page/local_history.rs` | `DEFAULT_PERIODIC_CAPTURE_INTERVAL_MS` | 300,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-ui/src/ui/editor_page/local_history.rs` | `DEFAULT_PERIODIC_CAPTURE_INTERVAL_MS` | 300,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
 
-### `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs`
+### `crates/lushtext-ui/src/ui/editor_page/minimap/policy.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_MARKER_STRIP_WIDTH` | 8 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_TOP_CONTENT_MARGIN` | 5 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_WIDE_EDITOR_RATIO_DENOMINATOR` | 5 | out: factor | factor, divisor or unit (D1) |
-| `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_LONG_LINE_WARNING_THRESHOLD` | 120 | external fact | the 120-column style convention; bounds no work, kept exact (stage 4) |
-| `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET` | 2,097,152 | presentation cap | up from 2,097,152: past it markers follow the unwrapped projection (D12) |
-| `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET` | 8,192 | presentation cap | up from 8,000: M7 (D12) |
-| `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_ANALYSIS_CHARS_PER_SLICE` | 32,768 | cap | power of two |
-| `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_MARKER_MIN_HEIGHT` | 2 | out: geometry | UI geometry in whole strip rows; an `i32` since `bin-minimap-markers-per-row` D3 (was `f64` 2.0) |
-| `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_MODIFIED_TAG_RETIRE_TOGGLES` | 4,096 | cap | power of two, rounded down: 16,384 toggles measured 6.9–9.1 ms per slice in a presented editor (over `B_INTERACT_US`); 4,096 is about a quarter of that (`bin-minimap-markers-per-row` D4; measured in its design, "Measured verdicts") |
-| `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_INTERIM_SEARCH_CHARS` | 32,768 | cap | power of two, rounded down: the band's own text searched for interim search markers while the scan runs; past it the search lane waits for the scan (`bin-minimap-markers-per-row` D5) |
-| `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_VIEWPORT_HORIZONTAL_OUTSET` | 13 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_MARKER_STRIP_WIDTH` | 8 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_TOP_CONTENT_MARGIN` | 5 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_WIDE_EDITOR_RATIO_DENOMINATOR` | 5 | out: factor | factor, divisor or unit (D1) |
+| `crates/lushtext-ui/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_LONG_LINE_WARNING_THRESHOLD` | 120 | external fact | the 120-column style convention; bounds no work, kept exact (stage 4) |
+| `crates/lushtext-ui/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET` | 2,097,152 | presentation cap | up from 2,097,152: past it markers follow the unwrapped projection (D12) |
+| `crates/lushtext-ui/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET` | 8,192 | presentation cap | up from 8,000: M7 (D12) |
+| `crates/lushtext-ui/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_ANALYSIS_CHARS_PER_SLICE` | 32,768 | cap | power of two |
+| `crates/lushtext-ui/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_MARKER_MIN_HEIGHT` | 2 | out: geometry | UI geometry in whole strip rows; an `i32` since `bin-minimap-markers-per-row` D3 (was `f64` 2.0) |
+| `crates/lushtext-ui/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_MODIFIED_TAG_RETIRE_TOGGLES` | 4,096 | cap | power of two, rounded down: 16,384 toggles measured 6.9–9.1 ms per slice in a presented editor (over `B_INTERACT_US`); 4,096 is about a quarter of that (`bin-minimap-markers-per-row` D4; measured in its design, "Measured verdicts") |
+| `crates/lushtext-ui/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_INTERIM_SEARCH_CHARS` | 32,768 | cap | power of two, rounded down: the band's own text searched for interim search markers while the scan runs; past it the search lane waits for the scan (`bin-minimap-markers-per-row` D5) |
+| `crates/lushtext-ui/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_VIEWPORT_HORIZONTAL_OUTSET` | 13 | out: geometry | UI geometry in sp or px (D1) |
 
-### `crates/lushtext-core/src/ui/editor_page/overscroll.rs`
+### `crates/lushtext-ui/src/ui/editor_page/overscroll.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/editor_page/overscroll.rs` | `MIN_EDITOR_BOTTOM_MARGIN` | 6 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/editor_page/overscroll.rs` | `MIN_EDITOR_BOTTOM_MARGIN` | 6 | out: geometry | UI geometry in sp or px (D1) |
 
-### `crates/lushtext-core/src/ui/editor_page/protected_view/fold_gutter.rs`
+### `crates/lushtext-ui/src/ui/editor_page/protected_view/fold_gutter.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/editor_page/protected_view/fold_gutter.rs` | `FOLD_GUTTER_POSITION` | 8 | out: priority | GLib, CSS, mark or gutter priority (D1) |
-| `crates/lushtext-core/src/ui/editor_page/protected_view/fold_gutter.rs` | `FOLD_GUTTER_XPAD` | 4 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/editor_page/protected_view/fold_gutter.rs` | `FOLD_GUTTER_POSITION` | 8 | out: priority | GLib, CSS, mark or gutter priority (D1) |
+| `crates/lushtext-ui/src/ui/editor_page/protected_view/fold_gutter.rs` | `FOLD_GUTTER_XPAD` | 4 | out: geometry | UI geometry in sp or px (D1) |
 
-### `crates/lushtext-core/src/ui/editor_page/protected_view/policy.rs`
+### `crates/lushtext-ui/src/ui/editor_page/protected_view/policy.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/editor_page/protected_view/policy.rs` | `FIND_RESULTS_PER_TURN` | 256 | cap | power of two |
-| `crates/lushtext-core/src/ui/editor_page/protected_view/policy.rs` | `FIND_BYTES_PER_TURN` | 65,536 | cap | power of two |
-| `crates/lushtext-core/src/ui/editor_page/protected_view/policy.rs` | `FIND_RESULT_CAP` | 16,384 | presentation cap | up from 10,000: M4, delivery worst 7.0-7.6 ms (main 7.2-8.1); records <= 8 MiB (D12) |
-| `crates/lushtext-core/src/ui/editor_page/protected_view/policy.rs` | `MAX_FIND_RECORD_BYTES` | 512 | presentation cap | up from 512: characters of a find result's preview (task 9.1) (D12) |
-| `crates/lushtext-core/src/ui/editor_page/protected_view/policy.rs` | `COPY_CHUNK_BYTES` | 65,536 | cap | power of two |
-| `crates/lushtext-core/src/ui/editor_page/protected_view/policy.rs` | `SOURCE_CAPTURE_CHUNK_CHARS` | 65,536 | cap | power of two |
-| `crates/lushtext-core/src/ui/editor_page/protected_view/policy.rs` | `SOURCE_CAPTURE_STEP_CHARS` | 128 | cap | power of two |
-| `crates/lushtext-core/src/ui/editor_page/protected_view/policy.rs` | `NOTICE_QUIET_US` | 4,000,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-core/src/ui/editor_page/protected_view/policy.rs` | `NOTICE_REASONS` | 7 | out: structural | enum length, bucket or worker count, or capacity hint (D1) |
+| `crates/lushtext-ui/src/ui/editor_page/protected_view/policy.rs` | `FIND_RESULTS_PER_TURN` | 256 | cap | power of two |
+| `crates/lushtext-ui/src/ui/editor_page/protected_view/policy.rs` | `FIND_BYTES_PER_TURN` | 65,536 | cap | power of two |
+| `crates/lushtext-ui/src/ui/editor_page/protected_view/policy.rs` | `FIND_RESULT_CAP` | 16,384 | presentation cap | up from 10,000: M4, delivery worst 7.0-7.6 ms (main 7.2-8.1); records <= 8 MiB (D12) |
+| `crates/lushtext-ui/src/ui/editor_page/protected_view/policy.rs` | `MAX_FIND_RECORD_BYTES` | 512 | presentation cap | up from 512: characters of a find result's preview (task 9.1) (D12) |
+| `crates/lushtext-ui/src/ui/editor_page/protected_view/policy.rs` | `COPY_CHUNK_BYTES` | 65,536 | cap | power of two |
+| `crates/lushtext-ui/src/ui/editor_page/protected_view/policy.rs` | `SOURCE_CAPTURE_CHUNK_CHARS` | 65,536 | cap | power of two |
+| `crates/lushtext-ui/src/ui/editor_page/protected_view/policy.rs` | `SOURCE_CAPTURE_STEP_CHARS` | 128 | cap | power of two |
+| `crates/lushtext-ui/src/ui/editor_page/protected_view/policy.rs` | `NOTICE_QUIET_US` | 4,000,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-ui/src/ui/editor_page/protected_view/policy.rs` | `NOTICE_REASONS` | 7 | out: structural | enum length, bucket or worker count, or capacity hint (D1) |
 
-### `crates/lushtext-core/src/ui/editor_page/protected_view/seams.rs`
+### `crates/lushtext-ui/src/ui/editor_page/protected_view/seams.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/editor_page/protected_view/seams.rs` | `PARAGRAPH_CHECKPOINT_STRIDE` | 1,024 | cap | power of two |
-| `crates/lushtext-core/src/ui/editor_page/protected_view/seams.rs` | `CHAR_CHECKPOINT_STRIDE` | 65,536 | cap | power of two |
+| `crates/lushtext-ui/src/ui/editor_page/protected_view/seams.rs` | `PARAGRAPH_CHECKPOINT_STRIDE` | 1,024 | cap | power of two |
+| `crates/lushtext-ui/src/ui/editor_page/protected_view/seams.rs` | `CHAR_CHECKPOINT_STRIDE` | 65,536 | cap | power of two |
 
-### `crates/lushtext-core/src/ui/editor_page/restyle.rs`
+### `crates/lushtext-ui/src/ui/editor_page/restyle.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/editor_page/restyle.rs` | `PACED_REATTACH_MAX_LINES` | 16,384 | cap | power of two |
+| `crates/lushtext-ui/src/ui/editor_page/restyle.rs` | `PACED_REATTACH_MAX_LINES` | 16,384 | cap | power of two |
 
-### `crates/lushtext-core/src/ui/editor_page/save/policy.rs`
+### `crates/lushtext-ui/src/ui/editor_page/save/policy.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/editor_page/save/policy.rs` | `SAVE_PAYLOAD_SHARED_BUDGET_BYTES` | 268,435,456 | cap | power of two |
-| `crates/lushtext-core/src/ui/editor_page/save/policy.rs` | `SAVE_PAYLOAD_FIXED_OVERHEAD_BYTES` | 1,048,576 | cap | power of two |
-| `crates/lushtext-core/src/ui/editor_page/save/policy.rs` | `SAVE_PAYLOAD_RESIDENCY_MULTIPLIER` | 8 | out: factor | factor, divisor or unit (D1) |
-| `crates/lushtext-core/src/ui/editor_page/save/policy.rs` | `MAX_ADMITTED_SAVE_PAYLOADS` | 8 | cap | power of two |
+| `crates/lushtext-ui/src/ui/editor_page/save/policy.rs` | `SAVE_PAYLOAD_SHARED_BUDGET_BYTES` | 268,435,456 | cap | power of two |
+| `crates/lushtext-ui/src/ui/editor_page/save/policy.rs` | `SAVE_PAYLOAD_FIXED_OVERHEAD_BYTES` | 1,048,576 | cap | power of two |
+| `crates/lushtext-ui/src/ui/editor_page/save/policy.rs` | `SAVE_PAYLOAD_RESIDENCY_MULTIPLIER` | 8 | out: factor | factor, divisor or unit (D1) |
+| `crates/lushtext-ui/src/ui/editor_page/save/policy.rs` | `MAX_ADMITTED_SAVE_PAYLOADS` | 8 | cap | power of two |
 
-### `crates/lushtext-core/src/ui/editor_page/search.rs`
+### `crates/lushtext-ui/src/ui/editor_page/search.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/editor_page/search.rs` | `MAX_SEARCH_SELECTION_PREFILL_CHARS` | 1,024 | presentation cap | up from 1,024: selection text prefilled into find (D12) |
+| `crates/lushtext-ui/src/ui/editor_page/search.rs` | `MAX_SEARCH_SELECTION_PREFILL_CHARS` | 1,024 | presentation cap | up from 1,024: selection text prefilled into find (D12) |
 
-### `crates/lushtext-core/src/ui/editor_page/view_attachment.rs`
+### `crates/lushtext-ui/src/ui/editor_page/view_attachment.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/editor_page/view_attachment.rs` | `VIEW_DETACH_MAX_LINES` | 262,144 | cap | power of two |
-| `crates/lushtext-core/src/ui/editor_page/view_attachment.rs` | `AT_ATTACH_MAX_CHARS` | 1,048,576 | presentation cap | up from 1,048,576: a larger detached document reaches an AT only when shown (D12) |
-| `crates/lushtext-core/src/ui/editor_page/view_attachment.rs` | `MAX_DISPLAY_LINE_STEPS` | 8,192 | coverage window | power of two, rounded up |
+| `crates/lushtext-ui/src/ui/editor_page/view_attachment.rs` | `VIEW_DETACH_MAX_LINES` | 262,144 | cap | power of two |
+| `crates/lushtext-ui/src/ui/editor_page/view_attachment.rs` | `AT_ATTACH_MAX_CHARS` | 1,048,576 | presentation cap | up from 1,048,576: a larger detached document reaches an AT only when shown (D12) |
+| `crates/lushtext-ui/src/ui/editor_page/view_attachment.rs` | `MAX_DISPLAY_LINE_STEPS` | 8,192 | coverage window | power of two, rounded up |
 
-### `crates/lushtext-core/src/ui/entry_paste_cap.rs`
+### `crates/lushtext-ui/src/ui/entry_paste_cap.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/entry_paste_cap.rs` | `ENTRY_INSERT_CAP_BYTES` | 16,384 | presentation cap | up from 16,384: pasted text an entry keeps (D12) |
+| `crates/lushtext-ui/src/ui/entry_paste_cap.rs` | `ENTRY_INSERT_CAP_BYTES` | 16,384 | presentation cap | up from 16,384: pasted text an entry keeps (D12) |
 
-### `crates/lushtext-core/src/ui/font_zoom.rs`
+### `crates/lushtext-ui/src/ui/font_zoom.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/font_zoom.rs` | `PRUNE_FLOOR` | 64 | cap | power of two |
+| `crates/lushtext-ui/src/ui/font_zoom.rs` | `PRUNE_FLOOR` | 64 | cap | power of two |
 
-### `crates/lushtext-core/src/ui/font_zoom/policy.rs`
+### `crates/lushtext-ui/src/ui/font_zoom/policy.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/font_zoom/policy.rs` | `ZOOM_MIN` | 50 | out: percent | zoom grid (D1) |
-| `crates/lushtext-core/src/ui/font_zoom/policy.rs` | `ZOOM_MAX` | 400 | out: percent | zoom grid (D1) |
-| `crates/lushtext-core/src/ui/font_zoom/policy.rs` | `ZOOM_STEP` | 10 | out: percent | zoom grid (D1) |
-| `crates/lushtext-core/src/ui/font_zoom/policy.rs` | `ZOOM_DEFAULT` | 100 | out: percent | zoom grid (D1) |
+| `crates/lushtext-ui/src/ui/font_zoom/policy.rs` | `ZOOM_MIN` | 50 | out: percent | zoom grid (D1) |
+| `crates/lushtext-ui/src/ui/font_zoom/policy.rs` | `ZOOM_MAX` | 400 | out: percent | zoom grid (D1) |
+| `crates/lushtext-ui/src/ui/font_zoom/policy.rs` | `ZOOM_STEP` | 10 | out: percent | zoom grid (D1) |
+| `crates/lushtext-ui/src/ui/font_zoom/policy.rs` | `ZOOM_DEFAULT` | 100 | out: percent | zoom grid (D1) |
 
-### `crates/lushtext-core/src/ui/input_quiet.rs`
+### `crates/lushtext-ui/src/ui/input_quiet.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/input_quiet.rs` | `INPUT_FRAME_WAIT_US` | 128,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-ui/src/ui/input_quiet.rs` | `INPUT_FRAME_WAIT_US` | 128,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
 
-### `crates/lushtext-core/src/ui/language_catalog.rs`
+### `crates/lushtext-ui/src/ui/language_catalog.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/language_catalog.rs` | `CATALOG_BUILD_PRIORITY` | 198 | out: priority | GLib, CSS, mark or gutter priority (D1) |
+| `crates/lushtext-ui/src/ui/language_catalog.rs` | `CATALOG_BUILD_PRIORITY` | 198 | out: priority | GLib, CSS, mark or gutter priority (D1) |
 
-### `crates/lushtext-core/src/ui/markdown_preview/imp.rs`
+### `crates/lushtext-ui/src/ui/markdown_preview/imp.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/markdown_preview/imp.rs` | `LIST_ITEM_MARKER_MARGIN` | 24 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/markdown_preview/imp.rs` | `LIST_ITEM_MARKER_SLOT` | 36 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/markdown_preview/imp.rs` | `LIST_ITEM_DEPTH_STEP` | 28 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/markdown_preview/imp.rs` | `BLOCKQUOTE_BASE_MARGIN` | 18 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/markdown_preview/imp.rs` | `BLOCKQUOTE_DEPTH_STEP` | 20 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/markdown_preview/imp.rs` | `ALERT_BODY_LEFT_MARGIN` | 24 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/markdown_preview/imp.rs` | `ALERT_BODY_RIGHT_MARGIN` | 16 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/markdown_preview/imp.rs` | `FOOTNOTE_DEF_LEFT_MARGIN` | 32 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/markdown_preview/imp.rs` | `FOOTNOTE_DEF_RIGHT_MARGIN` | 16 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/markdown_preview/imp.rs` | `DEFINITION_DEF_LEFT_MARGIN` | 32 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/markdown_preview/imp.rs` | `DEFINITION_DEF_RIGHT_MARGIN` | 16 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/imp.rs` | `LIST_ITEM_MARKER_MARGIN` | 24 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/imp.rs` | `LIST_ITEM_MARKER_SLOT` | 36 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/imp.rs` | `LIST_ITEM_DEPTH_STEP` | 28 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/imp.rs` | `BLOCKQUOTE_BASE_MARGIN` | 18 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/imp.rs` | `BLOCKQUOTE_DEPTH_STEP` | 20 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/imp.rs` | `ALERT_BODY_LEFT_MARGIN` | 24 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/imp.rs` | `ALERT_BODY_RIGHT_MARGIN` | 16 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/imp.rs` | `FOOTNOTE_DEF_LEFT_MARGIN` | 32 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/imp.rs` | `FOOTNOTE_DEF_RIGHT_MARGIN` | 16 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/imp.rs` | `DEFINITION_DEF_LEFT_MARGIN` | 32 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/imp.rs` | `DEFINITION_DEF_RIGHT_MARGIN` | 16 | out: geometry | UI geometry in sp or px (D1) |
 
-### `crates/lushtext-core/src/ui/markdown_preview/mod.rs`
+### `crates/lushtext-ui/src/ui/markdown_preview/mod.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/markdown_preview/mod.rs` | `MAX_PREVIEW_IMAGE_WIDTH` | 640 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/markdown_preview/mod.rs` | `MIN_PREVIEW_IMAGE_SIZE` | 72 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/markdown_preview/mod.rs` | `CODE_BLOCK_HORIZONTAL_PADDING` | 12 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/markdown_preview/mod.rs` | `CODE_BLOCK_VERTICAL_PADDING` | 8 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/markdown_preview/mod.rs` | `CODE_BLOCK_BACKGROUND_CSS_PRIORITY` | `expr: gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION + 2` | out: priority | GLib, CSS, mark or gutter priority (D1) |
-| `crates/lushtext-core/src/ui/markdown_preview/mod.rs` | `MAX_PREVIEW_IMAGE_SOURCE_BYTES` | 33,554,432 | presentation cap | up from 33,554,432: a larger image is not shown (D12) |
-| `crates/lushtext-core/src/ui/markdown_preview/mod.rs` | `MAX_PREVIEW_IMAGE_SOURCE_PIXELS` | 67,108,864 | presentation cap | up from 64,000,000: M16, decode peak 297.4-298.0 MiB vs main 285.2-286.1 (D12) |
-| `crates/lushtext-core/src/ui/markdown_preview/mod.rs` | `MAX_PREVIEW_IMAGE_WORK_ITEMS` | 4 | cap | power of two |
-| `crates/lushtext-core/src/ui/markdown_preview/mod.rs` | `PREVIEW_IMAGE_WORK_CHARGE_BYTES` | `expr: MAX_PREVIEW_IMAGE_SOURCE_BYTES.saturating_add( (MAX_PREVIEW_IMAGE_WIDTH as u64) .saturating_pow(2) .saturating_mul(4), )` | derived | computed from named inputs; not rounded (D2) |
-| `crates/lushtext-core/src/ui/markdown_preview/mod.rs` | `MAX_PREVIEW_IMAGE_WORK_BYTES` | `expr: PREVIEW_IMAGE_WORK_CHARGE_BYTES.saturating_mul(MAX_PREVIEW_IMAGE_WORK_ITEMS as u64)` | derived | computed from named inputs; not rounded (D2) |
-| `crates/lushtext-core/src/ui/markdown_preview/mod.rs` | `MAX_PREVIEW_CODE_BLOCK_BYTES` | 65,536 | presentation cap | up from 65,536: a larger code block falls back (D12) |
-| `crates/lushtext-core/src/ui/markdown_preview/mod.rs` | `MARKDOWN_BACKGROUND_PLAN_THRESHOLD_BYTES` | 65,536 | cap | power of two |
-| `crates/lushtext-core/src/ui/markdown_preview/mod.rs` | `MARKDOWN_RETIREMENT_CHARS_PER_TURN` | 65,536 | cap | power of two |
-| `crates/lushtext-core/src/ui/markdown_preview/mod.rs` | `MARKDOWN_RETIREMENT_ITEMS_PER_TURN` | 64 | cap | power of two |
-| `crates/lushtext-core/src/ui/markdown_preview/mod.rs` | `MAX_MARKDOWN_RETIREMENT_GENERATIONS` | 2 | cap | power of two |
+| `crates/lushtext-ui/src/ui/markdown_preview/mod.rs` | `MAX_PREVIEW_IMAGE_WIDTH` | 640 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/mod.rs` | `MIN_PREVIEW_IMAGE_SIZE` | 72 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/mod.rs` | `CODE_BLOCK_HORIZONTAL_PADDING` | 12 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/mod.rs` | `CODE_BLOCK_VERTICAL_PADDING` | 8 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/mod.rs` | `CODE_BLOCK_BACKGROUND_CSS_PRIORITY` | `expr: gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION + 2` | out: priority | GLib, CSS, mark or gutter priority (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/mod.rs` | `MAX_PREVIEW_IMAGE_SOURCE_BYTES` | 33,554,432 | presentation cap | up from 33,554,432: a larger image is not shown (D12) |
+| `crates/lushtext-ui/src/ui/markdown_preview/mod.rs` | `MAX_PREVIEW_IMAGE_SOURCE_PIXELS` | 67,108,864 | presentation cap | up from 64,000,000: M16, decode peak 297.4-298.0 MiB vs main 285.2-286.1 (D12) |
+| `crates/lushtext-ui/src/ui/markdown_preview/mod.rs` | `MAX_PREVIEW_IMAGE_WORK_ITEMS` | 4 | cap | power of two |
+| `crates/lushtext-ui/src/ui/markdown_preview/mod.rs` | `PREVIEW_IMAGE_WORK_CHARGE_BYTES` | `expr: MAX_PREVIEW_IMAGE_SOURCE_BYTES.saturating_add( (MAX_PREVIEW_IMAGE_WIDTH as u64) .saturating_pow(2) .saturating_mul(4), )` | derived | computed from named inputs; not rounded (D2) |
+| `crates/lushtext-ui/src/ui/markdown_preview/mod.rs` | `MAX_PREVIEW_IMAGE_WORK_BYTES` | `expr: PREVIEW_IMAGE_WORK_CHARGE_BYTES.saturating_mul(MAX_PREVIEW_IMAGE_WORK_ITEMS as u64)` | derived | computed from named inputs; not rounded (D2) |
+| `crates/lushtext-ui/src/ui/markdown_preview/mod.rs` | `MAX_PREVIEW_CODE_BLOCK_BYTES` | 65,536 | presentation cap | up from 65,536: a larger code block falls back (D12) |
+| `crates/lushtext-ui/src/ui/markdown_preview/mod.rs` | `MARKDOWN_BACKGROUND_PLAN_THRESHOLD_BYTES` | 65,536 | cap | power of two |
+| `crates/lushtext-ui/src/ui/markdown_preview/mod.rs` | `MARKDOWN_RETIREMENT_CHARS_PER_TURN` | 65,536 | cap | power of two |
+| `crates/lushtext-ui/src/ui/markdown_preview/mod.rs` | `MARKDOWN_RETIREMENT_ITEMS_PER_TURN` | 64 | cap | power of two |
+| `crates/lushtext-ui/src/ui/markdown_preview/mod.rs` | `MAX_MARKDOWN_RETIREMENT_GENERATIONS` | 2 | cap | power of two |
 
-### `crates/lushtext-core/src/ui/markdown_preview/policy.rs`
+### `crates/lushtext-ui/src/ui/markdown_preview/policy.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/markdown_preview/policy.rs` | `MAX_INLINE_FOOTNOTE_REPLACEMENTS` | 16,384 | derived | computed from named inputs; not rounded (D2) |
-| `crates/lushtext-core/src/ui/markdown_preview/policy.rs` | `LOWERING_CANCEL_CHECK_BYTES` | 4,096 | cap | power of two |
-| `crates/lushtext-core/src/ui/markdown_preview/policy.rs` | `PREVIEW_MIN_WIDTH_SP` | 1 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/markdown_preview/policy.rs` | `PREVIEW_DEFAULT_WIDTH_SP` | 300 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/markdown_preview/policy.rs` | `PREVIEW_MAX_WIDTH_DIVISOR` | 3 | out: factor | factor, divisor or unit (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/policy.rs` | `MAX_INLINE_FOOTNOTE_REPLACEMENTS` | 16,384 | derived | computed from named inputs; not rounded (D2) |
+| `crates/lushtext-ui/src/ui/markdown_preview/policy.rs` | `LOWERING_CANCEL_CHECK_BYTES` | 4,096 | cap | power of two |
+| `crates/lushtext-ui/src/ui/markdown_preview/policy.rs` | `PREVIEW_MIN_WIDTH_SP` | 1 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/policy.rs` | `PREVIEW_DEFAULT_WIDTH_SP` | 300 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/policy.rs` | `PREVIEW_MAX_WIDTH_DIVISOR` | 3 | out: factor | factor, divisor or unit (D1) |
 
-### `crates/lushtext-core/src/ui/markdown_preview/seams.rs`
+### `crates/lushtext-ui/src/ui/markdown_preview/seams.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/markdown_preview/seams.rs` | `MARKDOWN_PLAN_RESERVATION_BYTES` | 12,582,912 | derived | computed from named inputs; not rounded (D2) |
+| `crates/lushtext-ui/src/ui/markdown_preview/seams.rs` | `MARKDOWN_PLAN_RESERVATION_BYTES` | 12,582,912 | derived | computed from named inputs; not rounded (D2) |
 
-### `crates/lushtext-core/src/ui/markdown_preview/tables.rs`
+### `crates/lushtext-ui/src/ui/markdown_preview/tables.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/markdown_preview/tables.rs` | `MAX_PREVIEW_TABLE_CELLS` | 1,024 | presentation cap | up from 1,000: M13 (D12) |
+| `crates/lushtext-ui/src/ui/markdown_preview/tables.rs` | `MAX_PREVIEW_TABLE_CELLS` | 1,024 | presentation cap | up from 1,000: M13 (D12) |
 
-### `crates/lushtext-core/src/ui/open_popover/imp.rs`
+### `crates/lushtext-ui/src/ui/open_popover/imp.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/open_popover/imp.rs` | `RECENT_SCROLLER_MAX_HEIGHT` | 600 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/open_popover/imp.rs` | `RECENT_SCROLLER_CONTENT_WIDTH` | 250 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/open_popover/imp.rs` | `RECENT_SCROLLER_MAX_HEIGHT` | 600 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/open_popover/imp.rs` | `RECENT_SCROLLER_CONTENT_WIDTH` | 250 | out: geometry | UI geometry in sp or px (D1) |
 
-### `crates/lushtext-core/src/ui/plain_disposal.rs`
+### `crates/lushtext-ui/src/ui/plain_disposal.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/plain_disposal.rs` | `DISPOSAL_WORKERS` | 2 | out: structural | enum length, bucket or worker count, or capacity hint (D1) |
-| `crates/lushtext-core/src/ui/plain_disposal.rs` | `DISPOSAL_QUEUE_CAPACITY` | 8 | cap | power of two |
-| `crates/lushtext-core/src/ui/plain_disposal.rs` | `DISPOSAL_RETAINED_BYTE_CAPACITY` | 134,217,728 | cap | power of two |
-| `crates/lushtext-core/src/ui/plain_disposal.rs` | `FILE_LOAD_OVERWEIGHT_PROGRESS_CAPACITY` | `expr: crate::model::document_scale::REFUSE_TO_OPEN .saturating_mul(crate::model::file_load::DECODED_BODY_SOURCE_MULTIPLIER)` | derived | computed from named inputs; not rounded (D2) |
-| `crates/lushtext-core/src/ui/plain_disposal.rs` | `PROGRESS_DISPOSAL_RETAINED_BYTE_CAPACITY` | 75,497,472 | derived | computed from named inputs; not rounded (D2) |
-| `crates/lushtext-core/src/ui/plain_disposal.rs` | `MAX_SMALL_PENDING_DISPOSAL_BYTES #[cfg(feature="test-utils")]` | 65,536 | cap | power of two |
-| `crates/lushtext-core/src/ui/plain_disposal.rs` | `aggregate_pressure_evidence_for_test::MIB` | 1,048,576 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
-| `crates/lushtext-core/src/ui/plain_disposal.rs` | `aggregate_pressure_evidence_for_test::PRODUCER_COUNT` | 4 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
-| `crates/lushtext-core/src/ui/plain_disposal.rs` | `aggregate_pressure_evidence_for_test::SUBMISSIONS_PER_PRODUCER` | 3 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
+| `crates/lushtext-ui/src/ui/plain_disposal.rs` | `DISPOSAL_WORKERS` | 2 | out: structural | enum length, bucket or worker count, or capacity hint (D1) |
+| `crates/lushtext-ui/src/ui/plain_disposal.rs` | `DISPOSAL_QUEUE_CAPACITY` | 8 | cap | power of two |
+| `crates/lushtext-ui/src/ui/plain_disposal.rs` | `DISPOSAL_RETAINED_BYTE_CAPACITY` | 134,217,728 | cap | power of two |
+| `crates/lushtext-ui/src/ui/plain_disposal.rs` | `FILE_LOAD_OVERWEIGHT_PROGRESS_CAPACITY` | `expr: lushtext_model::document_scale::REFUSE_TO_OPEN .saturating_mul(lushtext_model::file_load::DECODED_BODY_SOURCE_MULTIPLIER)` | derived | computed from named inputs; not rounded (D2) |
+| `crates/lushtext-ui/src/ui/plain_disposal.rs` | `PROGRESS_DISPOSAL_RETAINED_BYTE_CAPACITY` | 75,497,472 | derived | computed from named inputs; not rounded (D2) |
+| `crates/lushtext-ui/src/ui/plain_disposal.rs` | `MAX_SMALL_PENDING_DISPOSAL_BYTES #[cfg(feature="test-utils")]` | 65,536 | cap | power of two |
+| `crates/lushtext-ui/src/ui/plain_disposal.rs` | `aggregate_pressure_evidence_for_test::MIB` | 1,048,576 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
+| `crates/lushtext-ui/src/ui/plain_disposal.rs` | `aggregate_pressure_evidence_for_test::PRODUCER_COUNT` | 4 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
+| `crates/lushtext-ui/src/ui/plain_disposal.rs` | `aggregate_pressure_evidence_for_test::SUBMISSIONS_PER_PRODUCER` | 3 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
 
-### `crates/lushtext-core/src/ui/preferences/data_page.rs`
+### `crates/lushtext-ui/src/ui/preferences/data_page.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/preferences/data_page.rs` | `DATA_DETAILS_MAX_ROWS_PER_GROUP` | 32 | presentation cap | up from 32: rows listed before the omitted-count row (D12) |
+| `crates/lushtext-ui/src/ui/preferences/data_page.rs` | `DATA_DETAILS_MAX_ROWS_PER_GROUP` | 32 | presentation cap | up from 32: rows listed before the omitted-count row (D12) |
 
-### `crates/lushtext-core/src/ui/preferences/preserved_drafts.rs`
+### `crates/lushtext-ui/src/ui/preferences/preserved_drafts.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/preferences/preserved_drafts.rs` | `SET_ASIDE_LIST_MAX_HEIGHT` | 320 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/preferences/preserved_drafts.rs` | `SET_ASIDE_LIST_MAX_HEIGHT` | 320 | out: geometry | UI geometry in sp or px (D1) |
 
-### `crates/lushtext-core/src/ui/responsiveness_probe.rs`
+### `crates/lushtext-ui/src/ui/responsiveness_probe.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/responsiveness_probe.rs` | `measurement::DEFAULT_TICK_US` | 2,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-core/src/ui/responsiveness_probe.rs` | `measurement::MAX_PENDING_FRAMES` | 64 | cap | power of two |
-| `crates/lushtext-core/src/ui/responsiveness_probe.rs` | `measurement::RECENT_LATE_FLOOR_US` | 1,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-core/src/ui/responsiveness_probe.rs` | `measurement::RECENT_LATE_CAPACITY` | 1,024 | cap | power of two |
+| `crates/lushtext-ui/src/ui/responsiveness_probe.rs` | `measurement::DEFAULT_TICK_US` | 2,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-ui/src/ui/responsiveness_probe.rs` | `measurement::MAX_PENDING_FRAMES` | 64 | cap | power of two |
+| `crates/lushtext-ui/src/ui/responsiveness_probe.rs` | `measurement::RECENT_LATE_FLOOR_US` | 1,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-ui/src/ui/responsiveness_probe.rs` | `measurement::RECENT_LATE_CAPACITY` | 1,024 | cap | power of two |
 
-### `crates/lushtext-core/src/ui/row_text/imp.rs`
+### `crates/lushtext-ui/src/ui/row_text/imp.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/row_text/imp.rs` | `FONT_METRICS_CACHE_ENTRIES` | 64 | cap | power of two; distinct primary fonts and class sets whose line metrics, CSS text attributes and measuring layout one thread keeps (`lighten-notes-browser-rows` D2) |
+| `crates/lushtext-ui/src/ui/row_text/imp.rs` | `FONT_METRICS_CACHE_ENTRIES` | 64 | cap | power of two; distinct primary fonts and class sets whose line metrics, CSS text attributes and measuring layout one thread keeps (`lighten-notes-browser-rows` D2) |
 
-### `crates/lushtext-core/src/ui/search_panel/execution.rs`
+### `crates/lushtext-ui/src/ui/search_panel/execution.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/search_panel/execution.rs` | `MAX_SEARCH_EVENTS_PER_TICK` | 256 | cap | 256: a full turn stays within B_settle (D8, task 5.4) |
+| `crates/lushtext-ui/src/ui/search_panel/execution.rs` | `MAX_SEARCH_EVENTS_PER_TICK` | 256 | cap | 256: a full turn stays within B_settle (D8, task 5.4) |
 
-### `crates/lushtext-core/src/ui/search_panel/imp.rs`
+### `crates/lushtext-ui/src/ui/search_panel/imp.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/search_panel/imp.rs` | `SEARCH_INPUT_DEBOUNCE_MS` | 300 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-ui/src/ui/search_panel/imp.rs` | `SEARCH_INPUT_DEBOUNCE_MS` | 300 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
 
-### `crates/lushtext-core/src/ui/search_panel/item.rs`
+### `crates/lushtext-ui/src/ui/search_panel/item.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/search_panel/item.rs` | `imp::KIND_FILE` | 0 | out: identifier | format version, discriminant or sentinel (D1) |
-| `crates/lushtext-core/src/ui/search_panel/item.rs` | `imp::KIND_MATCH` | 1 | out: identifier | format version, discriminant or sentinel (D1) |
-| `crates/lushtext-core/src/ui/search_panel/item.rs` | `imp::SearchResultItem::KIND_FILE` | `expr: KIND_FILE` | out: identifier | format version, discriminant or sentinel (D1) |
-| `crates/lushtext-core/src/ui/search_panel/item.rs` | `imp::SearchResultItem::KIND_MATCH` | `expr: KIND_MATCH` | out: identifier | format version, discriminant or sentinel (D1) |
+| `crates/lushtext-ui/src/ui/search_panel/item.rs` | `imp::KIND_FILE` | 0 | out: identifier | format version, discriminant or sentinel (D1) |
+| `crates/lushtext-ui/src/ui/search_panel/item.rs` | `imp::KIND_MATCH` | 1 | out: identifier | format version, discriminant or sentinel (D1) |
+| `crates/lushtext-ui/src/ui/search_panel/item.rs` | `imp::SearchResultItem::KIND_FILE` | `expr: KIND_FILE` | out: identifier | format version, discriminant or sentinel (D1) |
+| `crates/lushtext-ui/src/ui/search_panel/item.rs` | `imp::SearchResultItem::KIND_MATCH` | `expr: KIND_MATCH` | out: identifier | format version, discriminant or sentinel (D1) |
 
-### `crates/lushtext-core/src/ui/search_panel/journal.rs`
+### `crates/lushtext-ui/src/ui/search_panel/journal.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/search_panel/journal.rs` | `report_startup_diagnostics::DETAIL_LIMIT` | 8 | out: presentation | presentation shape: rows or lines a surface shows (D1) |
+| `crates/lushtext-ui/src/ui/search_panel/journal.rs` | `report_startup_diagnostics::DETAIL_LIMIT` | 8 | out: presentation | presentation shape: rows or lines a surface shows (D1) |
 
-### `crates/lushtext-core/src/ui/search_panel/policy.rs`
+### `crates/lushtext-ui/src/ui/search_panel/policy.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/search_panel/policy.rs` | `PREVIEW_ROW_RETAINED_BYTES` | `expr: std::mem::size_of::<Replacement>() .saturating_add(std::mem::size_of::<Option<usize>>()) .saturating_add(std::mem::size_of::<SearchMatchId>())` | derived | computed from named inputs; not rounded (D2) |
-| `crates/lushtext-core/src/ui/search_panel/policy.rs` | `SEARCH_MATCH_FIXED_CHARGE` | 2,048 | coverage window | per-match retention measured and rounded up to a power of two (`bound-lists-by-budget-not-count` task 2.4) |
-| `crates/lushtext-core/src/ui/search_panel/policy.rs` | `MAIN_SEARCH_WORST_RETENTION` | 234,881,024 | derived | 16,384 x (4,096-byte line + 2 x 4,096-byte path + fixed charge): main's worst case under RESULT_CAP (D3) |
-| `crates/lushtext-core/src/ui/search_panel/policy.rs` | `MAIN_SEARCH_CAP_MATCHES` | 16,384 | external fact | the retired RESULT_CAP the budget must not lose against (D3) |
-| `crates/lushtext-core/src/ui/search_panel/policy.rs` | `LINUX_PATH_MAX_BYTES` | 4,096 | external fact | Linux PATH_MAX (`<linux/limits.h>`) |
-| `crates/lushtext-core/src/ui/search_panel/policy.rs` | `SEARCH_RESULTS_RETAINED_BYTES` | 268,435,456 | presentation cap | up from MAIN_SEARCH_WORST_RETENTION: the search's retained-byte budget, replacing RESULT_CAP (D3) |
-| `crates/lushtext-core/src/ui/search_panel/policy.rs` | `REVEAL_TURN_MAX_EVENTS` | 32 | cap | power of two; the reveal turn and those after it until 256 matches carry small batches (D4 b) |
+| `crates/lushtext-ui/src/ui/search_panel/policy.rs` | `PREVIEW_ROW_RETAINED_BYTES` | `expr: std::mem::size_of::<Replacement>() .saturating_add(std::mem::size_of::<Option<usize>>()) .saturating_add(std::mem::size_of::<SearchMatchId>())` | derived | computed from named inputs; not rounded (D2) |
+| `crates/lushtext-ui/src/ui/search_panel/policy.rs` | `SEARCH_MATCH_FIXED_CHARGE` | 2,048 | coverage window | per-match retention measured and rounded up to a power of two (`bound-lists-by-budget-not-count` task 2.4) |
+| `crates/lushtext-ui/src/ui/search_panel/policy.rs` | `MAIN_SEARCH_WORST_RETENTION` | 234,881,024 | derived | 16,384 x (4,096-byte line + 2 x 4,096-byte path + fixed charge): main's worst case under RESULT_CAP (D3) |
+| `crates/lushtext-ui/src/ui/search_panel/policy.rs` | `MAIN_SEARCH_CAP_MATCHES` | 16,384 | external fact | the retired RESULT_CAP the budget must not lose against (D3) |
+| `crates/lushtext-ui/src/ui/search_panel/policy.rs` | `LINUX_PATH_MAX_BYTES` | 4,096 | external fact | Linux PATH_MAX (`<linux/limits.h>`) |
+| `crates/lushtext-ui/src/ui/search_panel/policy.rs` | `SEARCH_RESULTS_RETAINED_BYTES` | 268,435,456 | presentation cap | up from MAIN_SEARCH_WORST_RETENTION: the search's retained-byte budget, replacing RESULT_CAP (D3) |
+| `crates/lushtext-ui/src/ui/search_panel/policy.rs` | `REVEAL_TURN_MAX_EVENTS` | 32 | cap | power of two; the reveal turn and those after it until 256 matches carry small batches (D4 b) |
 
-### `crates/lushtext-core/src/ui/search_panel/retirement.rs`
+### `crates/lushtext-ui/src/ui/search_panel/retirement.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/search_panel/retirement.rs` | `SEARCH_RETIREMENT_ROWS_PER_SLICE` | 256 | cap | 256: a full turn stays within B_settle (D8, task 5.4) |
-| `crates/lushtext-core/src/ui/search_panel/retirement.rs` | `MAX_SEARCH_RETIREMENT_GENERATIONS` | 2 | cap | power of two |
+| `crates/lushtext-ui/src/ui/search_panel/retirement.rs` | `SEARCH_RETIREMENT_ROWS_PER_SLICE` | 256 | cap | 256: a full turn stays within B_settle (D8, task 5.4) |
+| `crates/lushtext-ui/src/ui/search_panel/retirement.rs` | `MAX_SEARCH_RETIREMENT_GENERATIONS` | 2 | cap | power of two |
 
-### `crates/lushtext-core/src/ui/search_panel/skipped_files.rs`
+### `crates/lushtext-ui/src/ui/search_panel/skipped_files.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/search_panel/skipped_files.rs` | `SKIPPED_FILES_WIDTH_SP` | 560 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/search_panel/skipped_files.rs` | `SKIPPED_FILES_HEIGHT_SP` | 520 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/search_panel/skipped_files.rs` | `SKIPPED_FILES_WIDTH_SP` | 560 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/search_panel/skipped_files.rs` | `SKIPPED_FILES_HEIGHT_SP` | 520 | out: geometry | UI geometry in sp or px (D1) |
 
-### `crates/lushtext-core/src/ui/settings_writes.rs`
+### `crates/lushtext-ui/src/ui/settings_writes.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/settings_writes.rs` | `SCHEMA_KEYS_HINT` | 64 | out: structural | enum length, bucket or worker count, or capacity hint (D1) |
+| `crates/lushtext-ui/src/ui/settings_writes.rs` | `SCHEMA_KEYS_HINT` | 64 | out: structural | enum length, bucket or worker count, or capacity hint (D1) |
 
-### `crates/lushtext-core/src/ui/sidebar/policy.rs`
+### `crates/lushtext-ui/src/ui/sidebar/policy.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/sidebar/policy.rs` | `MAX_UNIQUE_NAME_ATTEMPTS` | 1,024 | retry budget | rounded up (D6) |
-| `crates/lushtext-core/src/ui/sidebar/policy.rs` | `SIDEBAR_ROW_PATH_COPIES` | 8 | coverage window | path copies a row retains, rounded up (`bound-lists-by-budget-not-count` D3) |
-| `crates/lushtext-core/src/ui/sidebar/policy.rs` | `SIDEBAR_ROW_FIXED_CHARGE` | 1,024 | coverage window | per-row retention measured and rounded up to a power of two (task 2.4) |
-| `crates/lushtext-core/src/ui/sidebar/policy.rs` | `SIDEBAR_PATH_GRAPH_OVERHEAD` | 16 | external fact | two `usize` words, the scanner's per-path graph overhead |
-| `crates/lushtext-core/src/ui/sidebar/policy.rs` | `MAIN_SIDEBAR_CAP_ENTRIES` | 10,000 | external fact | the retired MAX_DIR_ENTRIES the budget must not lose against (D3) |
-| `crates/lushtext-core/src/ui/sidebar/policy.rs` | `MAIN_SIDEBAR_WORST_RETENTION` | 339,200,000 | derived | 10,000 rows of PATH_MAX paths (D3) |
-| `crates/lushtext-core/src/ui/sidebar/policy.rs` | `SIDEBAR_TYPICAL_FLOOR_RETENTION` | 454,033,408 | derived | 131,072 rows of 32-byte names under a 256-byte parent (D3) |
-| `crates/lushtext-core/src/ui/sidebar/policy.rs` | `SIDEBAR_DIRECTORY_RETAINED_BYTES` | 536,870,912 | presentation cap | up from SIDEBAR_TYPICAL_FLOOR_RETENTION, the larger floor: a directory's retained-byte budget, replacing MAX_DIR_ENTRIES (D3) |
-| `crates/lushtext-core/src/ui/sidebar/policy.rs` | `PERSIST_DEBOUNCE_MS` | 150 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-core/src/ui/sidebar/policy.rs` | `MATERIALIZATION_DRAIN_BATCH` | 256 | cap | power of two, rounded down; bounded pending child-store materializations per `Priority::HIGH` drain dispatch |
-| `crates/lushtext-core/src/ui/sidebar/policy.rs` | `REVEAL_SETTLE_FRAME_BUDGET` | 64 | coverage window | rounded up (D5) |
+| `crates/lushtext-ui/src/ui/sidebar/policy.rs` | `MAX_UNIQUE_NAME_ATTEMPTS` | 1,024 | retry budget | rounded up (D6) |
+| `crates/lushtext-ui/src/ui/sidebar/policy.rs` | `SIDEBAR_ROW_PATH_COPIES` | 8 | coverage window | path copies a row retains, rounded up (`bound-lists-by-budget-not-count` D3) |
+| `crates/lushtext-ui/src/ui/sidebar/policy.rs` | `SIDEBAR_ROW_FIXED_CHARGE` | 1,024 | coverage window | per-row retention measured and rounded up to a power of two (task 2.4) |
+| `crates/lushtext-ui/src/ui/sidebar/policy.rs` | `SIDEBAR_PATH_GRAPH_OVERHEAD` | 16 | external fact | two `usize` words, the scanner's per-path graph overhead |
+| `crates/lushtext-ui/src/ui/sidebar/policy.rs` | `MAIN_SIDEBAR_CAP_ENTRIES` | 10,000 | external fact | the retired MAX_DIR_ENTRIES the budget must not lose against (D3) |
+| `crates/lushtext-ui/src/ui/sidebar/policy.rs` | `MAIN_SIDEBAR_WORST_RETENTION` | 339,200,000 | derived | 10,000 rows of PATH_MAX paths (D3) |
+| `crates/lushtext-ui/src/ui/sidebar/policy.rs` | `SIDEBAR_TYPICAL_FLOOR_RETENTION` | 454,033,408 | derived | 131,072 rows of 32-byte names under a 256-byte parent (D3) |
+| `crates/lushtext-ui/src/ui/sidebar/policy.rs` | `SIDEBAR_DIRECTORY_RETAINED_BYTES` | 536,870,912 | presentation cap | up from SIDEBAR_TYPICAL_FLOOR_RETENTION, the larger floor: a directory's retained-byte budget, replacing MAX_DIR_ENTRIES (D3) |
+| `crates/lushtext-ui/src/ui/sidebar/policy.rs` | `PERSIST_DEBOUNCE_MS` | 150 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-ui/src/ui/sidebar/policy.rs` | `MATERIALIZATION_DRAIN_BATCH` | 256 | cap | power of two, rounded down; bounded pending child-store materializations per `Priority::HIGH` drain dispatch |
+| `crates/lushtext-ui/src/ui/sidebar/policy.rs` | `REVEAL_SETTLE_FRAME_BUDGET` | 64 | coverage window | rounded up (D5) |
 
-### `crates/lushtext-core/src/ui/sidebar/reveal_execution.rs`
+### `crates/lushtext-ui/src/ui/sidebar/reveal_execution.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/sidebar/reveal_execution.rs` | `REVEAL_RESCROLL_BUDGET` | 2 | retry budget | power of two; re-issued scrolls once a clipped target row is realized (`bound-lists-by-budget-not-count`) |
-| `crates/lushtext-core/src/ui/sidebar/reveal_execution.rs` | `REVEAL_NEIGHBOURS_PER_SIDE` | 4 | out: presentation | presentation shape: rows or lines a surface shows (D1) |
+| `crates/lushtext-ui/src/ui/sidebar/reveal_execution.rs` | `REVEAL_RESCROLL_BUDGET` | 2 | retry budget | power of two; re-issued scrolls once a clipped target row is realized (`bound-lists-by-budget-not-count`) |
+| `crates/lushtext-ui/src/ui/sidebar/reveal_execution.rs` | `REVEAL_NEIGHBOURS_PER_SIDE` | 4 | out: presentation | presentation shape: rows or lines a surface shows (D1) |
 
-### `crates/lushtext-core/src/ui/sidebar/workspace_section/peek_execution.rs`
+### `crates/lushtext-ui/src/ui/sidebar/workspace_section/peek_execution.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/sidebar/workspace_section/peek_execution.rs` | `PEEK_CARD_WIDTH` | 520 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/sidebar/workspace_section/peek_execution.rs` | `PEEK_CARD_HEIGHT` | 420 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/sidebar/workspace_section/peek_execution.rs` | `PEEK_CARD_X_OFFSET` | 15 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/sidebar/workspace_section/peek_execution.rs` | `PEEK_CARD_WIDTH` | 520 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/sidebar/workspace_section/peek_execution.rs` | `PEEK_CARD_HEIGHT` | 420 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/sidebar/workspace_section/peek_execution.rs` | `PEEK_CARD_X_OFFSET` | 15 | out: geometry | UI geometry in sp or px (D1) |
 
-### `crates/lushtext-core/src/ui/sidebar/workspace_section/refresh_execution.rs`
+### `crates/lushtext-ui/src/ui/sidebar/workspace_section/refresh_execution.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/sidebar/workspace_section/refresh_execution.rs` | `AUTO_REFRESH_DEBOUNCE_MS` | 120 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-core/src/ui/sidebar/workspace_section/refresh_execution.rs` | `MANUAL_REFRESH_DEBOUNCE_MS` | 1 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-core/src/ui/sidebar/workspace_section/refresh_execution.rs` | `REFRESH_SCAN_DISPATCH_BATCH` | 32 | cap | power of two |
+| `crates/lushtext-ui/src/ui/sidebar/workspace_section/refresh_execution.rs` | `AUTO_REFRESH_DEBOUNCE_MS` | 120 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-ui/src/ui/sidebar/workspace_section/refresh_execution.rs` | `MANUAL_REFRESH_DEBOUNCE_MS` | 1 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-ui/src/ui/sidebar/workspace_section/refresh_execution.rs` | `REFRESH_SCAN_DISPATCH_BATCH` | 32 | cap | power of two |
 
-### `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_admission.rs`
+### `crates/lushtext-ui/src/ui/sidebar/workspace_section/scan_admission.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_admission.rs` | `WORKSPACE_SCAN_TASK_LIMIT` | 4 | cap | power of two |
+| `crates/lushtext-ui/src/ui/sidebar/workspace_section/scan_admission.rs` | `WORKSPACE_SCAN_TASK_LIMIT` | 4 | cap | power of two |
 
-### `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs`
+### `crates/lushtext-ui/src/ui/sidebar/workspace_section/scan_execution.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `CHILD_APPEND_BATCH_SIZE` | 256 | cap | power of two |
-| `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `STALE_CACHE_ROWS_PER_UNIT` | 4,096 | cap | power of two; a superseded store's cached rows forgotten per unit of a load (`bound-lists-by-budget-not-count`) |
-| `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `RETIRED_LISTING_ROWS_PER_UNIT` | 4,096 | cap | power of two; a collapsed directory's retired store items or mirror rows dropped per unit of a low-priority retirement turn (`bound-lists-by-budget-not-count`, stage 4 review) |
-| `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `FIRST_BATCH_ROWS` | 32 | cap | power of two; the first rows of an empty directory, while the list creates its row widgets (`bound-lists-by-budget-not-count`) |
-| `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `CHILD_RECONCILE_DIRECT_ROWS` | 256 | cap | power of two |
+| `crates/lushtext-ui/src/ui/sidebar/workspace_section/scan_execution.rs` | `CHILD_APPEND_BATCH_SIZE` | 256 | cap | power of two |
+| `crates/lushtext-ui/src/ui/sidebar/workspace_section/scan_execution.rs` | `STALE_CACHE_ROWS_PER_UNIT` | 4,096 | cap | power of two; a superseded store's cached rows forgotten per unit of a load (`bound-lists-by-budget-not-count`) |
+| `crates/lushtext-ui/src/ui/sidebar/workspace_section/scan_execution.rs` | `RETIRED_LISTING_ROWS_PER_UNIT` | 4,096 | cap | power of two; a collapsed directory's retired store items or mirror rows dropped per unit of a low-priority retirement turn (`bound-lists-by-budget-not-count`, stage 4 review) |
+| `crates/lushtext-ui/src/ui/sidebar/workspace_section/scan_execution.rs` | `FIRST_BATCH_ROWS` | 32 | cap | power of two; the first rows of an empty directory, while the list creates its row widgets (`bound-lists-by-budget-not-count`) |
+| `crates/lushtext-ui/src/ui/sidebar/workspace_section/scan_execution.rs` | `CHILD_RECONCILE_DIRECT_ROWS` | 256 | cap | power of two |
 
-### `crates/lushtext-core/src/ui/sidebar/workspace_section/watch.rs`
+### `crates/lushtext-ui/src/ui/sidebar/workspace_section/watch.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/sidebar/workspace_section/watch.rs` | `WATCH_POLL_MS` | 100 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-core/src/ui/sidebar/workspace_section/watch.rs` | `WATCH_RESTART_SETTLE_MS` | 25 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-ui/src/ui/sidebar/workspace_section/watch.rs` | `WATCH_POLL_MS` | 100 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-ui/src/ui/sidebar/workspace_section/watch.rs` | `WATCH_RESTART_SETTLE_MS` | 25 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
 
-### `crates/lushtext-core/src/ui/window/composition/execution.rs`
+### `crates/lushtext-ui/src/ui/window/composition/execution.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/window/composition/execution.rs` | `FIRST_FRAME_ICON_SIZE` | 16 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/composition/execution.rs` | `FIRST_FRAME_ICON_SIZE` | 16 | out: geometry | UI geometry in sp or px (D1) |
 
-### `crates/lushtext-core/src/ui/window/drafts/mod.rs`
+### `crates/lushtext-ui/src/ui/window/drafts/mod.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/window/drafts/mod.rs` | `DRAFT_RESTORE_DISPOSAL_RESERVATION_BYTES` | `expr: draft_service::MAX_AUTOMATIC_DRAFT_BYTES.saturating_add(1024 * 1024)` | derived | computed from named inputs; not rounded (D2) |
+| `crates/lushtext-ui/src/ui/window/drafts/mod.rs` | `DRAFT_RESTORE_DISPOSAL_RESERVATION_BYTES` | `expr: draft_service::MAX_AUTOMATIC_DRAFT_BYTES.saturating_add(1024 * 1024)` | derived | computed from named inputs; not rounded (D2) |
 
-### `crates/lushtext-core/src/ui/window/drafts/policy.rs`
+### `crates/lushtext-ui/src/ui/window/drafts/policy.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/window/drafts/policy.rs` | `FIRST_DIRTY_AUTOSAVE_DEBOUNCE_MS` | 750 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-core/src/ui/window/drafts/policy.rs` | `UNRESTORED_COPY_MAX_RETRY_TICKS` | 12 | out: time | one minute of 5 s autosave ticks (`apply-verification-altitude-redesigns` design G3) |
+| `crates/lushtext-ui/src/ui/window/drafts/policy.rs` | `FIRST_DIRTY_AUTOSAVE_DEBOUNCE_MS` | 750 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-ui/src/ui/window/drafts/policy.rs` | `UNRESTORED_COPY_MAX_RETRY_TICKS` | 12 | out: time | one minute of 5 s autosave ticks (`apply-verification-altitude-redesigns` design G3) |
 
-### `crates/lushtext-core/src/ui/window/editor_focus/mod.rs`
+### `crates/lushtext-ui/src/ui/window/editor_focus/mod.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/window/editor_focus/mod.rs` | `EDITOR_FOCUS_MAX_ATTEMPTS` | 8 | retry budget | rounded up (D6) |
+| `crates/lushtext-ui/src/ui/window/editor_focus/mod.rs` | `EDITOR_FOCUS_MAX_ATTEMPTS` | 8 | retry budget | rounded up (D6) |
 
-### `crates/lushtext-core/src/ui/window/focus_mode/policy.rs`
+### `crates/lushtext-ui/src/ui/window/focus_mode/policy.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/window/focus_mode/policy.rs` | `MIN_FOCUS_MARGIN` | 24 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/window/focus_mode/policy.rs` | `PANGO_UNITS_PER_PIXEL` | 1,024 | external fact | exact, cited from its source |
+| `crates/lushtext-ui/src/ui/window/focus_mode/policy.rs` | `MIN_FOCUS_MARGIN` | 24 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/focus_mode/policy.rs` | `PANGO_UNITS_PER_PIXEL` | 1,024 | external fact | exact, cited from its source |
 
-### `crates/lushtext-core/src/ui/window/geometry/policy.rs`
+### `crates/lushtext-ui/src/ui/window/geometry/policy.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/window/geometry/policy.rs` | `WORKSPACE_SIDEBAR_MIN_WIDTH_SP` | 1 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/window/geometry/policy.rs` | `PROPERTIES_SIDEBAR_MIN_WIDTH_SP` | 280 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/window/geometry/policy.rs` | `NORMAL_MODE_MIN_HEIGHT_SP` | 360 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/window/geometry/policy.rs` | `WORKSPACE_BREAKPOINT_MAX_WIDTH_SP` | 860 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/window/geometry/policy.rs` | `OPEN_BUTTON_BREAKPOINT_MAX_WIDTH_SP` | 400 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/window/geometry/policy.rs` | `FIXED_PROPERTIES_SIDEBAR_DIVISOR` | 4 | out: factor | factor, divisor or unit (D1) |
-| `crates/lushtext-core/src/ui/window/geometry/policy.rs` | `MIN_EDITOR_CONTENT_WIDTH_SP` | 620 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/window/geometry/policy.rs` | `DUAL_PANE_LAYOUT_OVERHEAD_SP` | 32 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/geometry/policy.rs` | `WORKSPACE_SIDEBAR_MIN_WIDTH_SP` | 1 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/geometry/policy.rs` | `PROPERTIES_SIDEBAR_MIN_WIDTH_SP` | 280 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/geometry/policy.rs` | `NORMAL_MODE_MIN_HEIGHT_SP` | 360 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/geometry/policy.rs` | `WORKSPACE_BREAKPOINT_MAX_WIDTH_SP` | 860 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/geometry/policy.rs` | `OPEN_BUTTON_BREAKPOINT_MAX_WIDTH_SP` | 400 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/geometry/policy.rs` | `FIXED_PROPERTIES_SIDEBAR_DIVISOR` | 4 | out: factor | factor, divisor or unit (D1) |
+| `crates/lushtext-ui/src/ui/window/geometry/policy.rs` | `MIN_EDITOR_CONTENT_WIDTH_SP` | 620 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/geometry/policy.rs` | `DUAL_PANE_LAYOUT_OVERHEAD_SP` | 32 | out: geometry | UI geometry in sp or px (D1) |
 
-### `crates/lushtext-core/src/ui/window/imp.rs`
+### `crates/lushtext-ui/src/ui/window/imp.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/window/imp.rs` | `PREVIEW_SETTLE_DELAY_MS` | 16 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-core/src/ui/window/imp.rs` | `WORKSPACE_SIDEBAR_TRANSITION_SETTLE_DELAY_MS` | 260 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-core/src/ui/window/imp.rs` | `LushtextWindow::record_layout_probe_span::LAYOUT_PROBE_SPANS` | 16 | out: structural | enum length, bucket or worker count, or capacity hint (D1) |
+| `crates/lushtext-ui/src/ui/window/imp.rs` | `PREVIEW_SETTLE_DELAY_MS` | 16 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-ui/src/ui/window/imp.rs` | `WORKSPACE_SIDEBAR_TRANSITION_SETTLE_DELAY_MS` | 260 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-ui/src/ui/window/imp.rs` | `LushtextWindow::record_layout_probe_span::LAYOUT_PROBE_SPANS` | 16 | out: structural | enum length, bucket or worker count, or capacity hint (D1) |
 
-### `crates/lushtext-core/src/ui/window/local_history/policy.rs`
+### `crates/lushtext-ui/src/ui/window/local_history/policy.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/window/local_history/policy.rs` | `VIEWER_PARENT_MARGIN_SP` | 48 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/window/local_history/policy.rs` | `VIEWER_WIDTH_PERMILLE` | 900 | out: percent | percentage, permille or zoom percent (D1) |
-| `crates/lushtext-core/src/ui/window/local_history/policy.rs` | `VIEWER_HEIGHT_PERMILLE` | 880 | out: percent | percentage, permille or zoom percent (D1) |
-| `crates/lushtext-core/src/ui/window/local_history/policy.rs` | `VIEWER_MIN_WIDTH_SP` | 1,080 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/window/local_history/policy.rs` | `VIEWER_MAX_WIDTH_SP` | 1,680 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/window/local_history/policy.rs` | `VIEWER_MIN_HEIGHT_SP` | 720 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/window/local_history/policy.rs` | `VIEWER_MAX_HEIGHT_SP` | 1,080 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/window/local_history/policy.rs` | `EMPTY_WIDTH_SP` | 640 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/window/local_history/policy.rs` | `EMPTY_HEIGHT_SP` | 480 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/window/local_history/policy.rs` | `PREVIEW_DIRECT_THRESHOLD_BYTES` | 524,288 | derived | computed from named inputs; not rounded (D2) |
-| `crates/lushtext-core/src/ui/window/local_history/policy.rs` | `PREVIEW_RESERVATION_BYTES` | 67,108,864 | presentation cap | up from 67,108,864: past it a history preview is refused (D12) |
+| `crates/lushtext-ui/src/ui/window/local_history/policy.rs` | `VIEWER_PARENT_MARGIN_SP` | 48 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/local_history/policy.rs` | `VIEWER_WIDTH_PERMILLE` | 900 | out: percent | percentage, permille or zoom percent (D1) |
+| `crates/lushtext-ui/src/ui/window/local_history/policy.rs` | `VIEWER_HEIGHT_PERMILLE` | 880 | out: percent | percentage, permille or zoom percent (D1) |
+| `crates/lushtext-ui/src/ui/window/local_history/policy.rs` | `VIEWER_MIN_WIDTH_SP` | 1,080 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/local_history/policy.rs` | `VIEWER_MAX_WIDTH_SP` | 1,680 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/local_history/policy.rs` | `VIEWER_MIN_HEIGHT_SP` | 720 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/local_history/policy.rs` | `VIEWER_MAX_HEIGHT_SP` | 1,080 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/local_history/policy.rs` | `EMPTY_WIDTH_SP` | 640 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/local_history/policy.rs` | `EMPTY_HEIGHT_SP` | 480 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/local_history/policy.rs` | `PREVIEW_DIRECT_THRESHOLD_BYTES` | 524,288 | derived | computed from named inputs; not rounded (D2) |
+| `crates/lushtext-ui/src/ui/window/local_history/policy.rs` | `PREVIEW_RESERVATION_BYTES` | 67,108,864 | presentation cap | up from 67,108,864: past it a history preview is refused (D12) |
 
-### `crates/lushtext-core/src/ui/window/local_history/preview_execution.rs`
+### `crates/lushtext-ui/src/ui/window/local_history/preview_execution.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/window/local_history/preview_execution.rs` | `OWNED_SNAPSHOT_RETRY_MS` | 4 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-core/src/ui/window/local_history/preview_execution.rs` | `PREVIEW_DIRECT_CLEAR_CHARS` | 65,536 | cap | power of two |
+| `crates/lushtext-ui/src/ui/window/local_history/preview_execution.rs` | `OWNED_SNAPSHOT_RETRY_MS` | 4 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-ui/src/ui/window/local_history/preview_execution.rs` | `PREVIEW_DIRECT_CLEAR_CHARS` | 65,536 | cap | power of two |
 
-### `crates/lushtext-core/src/ui/window/notes/browser.rs`
+### `crates/lushtext-ui/src/ui/window/notes/browser.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/window/notes/browser.rs` | `NOTES_RAW_PREVIEW_TEXT_MARGIN_HORIZONTAL_SP` | 12 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/window/notes/browser.rs` | `NOTES_RAW_PREVIEW_TEXT_MARGIN_VERTICAL_SP` | 10 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/window/notes/browser.rs` | `NOTES_ROW_SPACING_SP` | 12 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/window/notes/browser.rs` | `NOTES_ROW_MARGIN_VERTICAL_SP` | 3 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/window/notes/browser.rs` | `NOTES_ROW_MARGIN_START_SP` | 6 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/window/notes/browser.rs` | `NOTES_HEADER_MARGIN_START_SP` | 10 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/window/notes/browser.rs` | `NOTES_BROWSER_WIDTH_SP` | 980 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/window/notes/browser.rs` | `NOTES_BROWSER_HEIGHT_SP` | 700 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/notes/browser.rs` | `NOTES_RAW_PREVIEW_TEXT_MARGIN_HORIZONTAL_SP` | 12 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/notes/browser.rs` | `NOTES_RAW_PREVIEW_TEXT_MARGIN_VERTICAL_SP` | 10 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/notes/browser.rs` | `NOTES_ROW_SPACING_SP` | 12 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/notes/browser.rs` | `NOTES_ROW_MARGIN_VERTICAL_SP` | 3 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/notes/browser.rs` | `NOTES_ROW_MARGIN_START_SP` | 6 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/notes/browser.rs` | `NOTES_HEADER_MARGIN_START_SP` | 10 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/notes/browser.rs` | `NOTES_BROWSER_WIDTH_SP` | 980 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/notes/browser.rs` | `NOTES_BROWSER_HEIGHT_SP` | 700 | out: geometry | UI geometry in sp or px (D1) |
 
-### `crates/lushtext-core/src/ui/window/notes/editor_execution.rs`
+### `crates/lushtext-ui/src/ui/window/notes/editor_execution.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/window/notes/editor_execution.rs` | `NOTE_EDITOR_SURFACE_WIDTH_SP` | 520 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/window/notes/editor_execution.rs` | `NOTE_EDITOR_SURFACE_HEIGHT_SP` | 300 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/window/notes/editor_execution.rs` | `NOTE_EDITOR_TEXT_MARGIN_HORIZONTAL_SP` | 12 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/window/notes/editor_execution.rs` | `NOTE_EDITOR_TEXT_MARGIN_VERTICAL_SP` | 10 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/notes/editor_execution.rs` | `NOTE_EDITOR_SURFACE_WIDTH_SP` | 520 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/notes/editor_execution.rs` | `NOTE_EDITOR_SURFACE_HEIGHT_SP` | 300 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/notes/editor_execution.rs` | `NOTE_EDITOR_TEXT_MARGIN_HORIZONTAL_SP` | 12 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/window/notes/editor_execution.rs` | `NOTE_EDITOR_TEXT_MARGIN_VERTICAL_SP` | 10 | out: geometry | UI geometry in sp or px (D1) |
 
-### `crates/lushtext-core/src/ui/window/notes/policy.rs`
+### `crates/lushtext-ui/src/ui/window/notes/policy.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/window/notes/policy.rs` | `NOTES_BROWSER_SOURCE_TEXT_LIMIT` | 67,108,864 | presentation cap | up from 67,108,864: past it the browser source is truncated (D12); the browser's only text bound, no row count (`bound-notes-browser-by-budget` D3) |
-| `crates/lushtext-core/src/ui/window/notes/policy.rs` | `NOTES_BROWSER_DIAGNOSTIC_LIMIT` | 1,024 | presentation cap | up from 1,024: diagnostics the user is shown (D12) |
-| `crates/lushtext-core/src/ui/window/notes/policy.rs` | `NOTES_OPEN_EDITOR_SNAPSHOT_RETAINED_BYTE_LIMIT` | 4,194,304 | presentation cap | up from 4,194,304: past it open-editor notes are dropped (D12); admitted by `RetainedBudget` in sliced turns, no count (`bound-notes-browser-by-budget` D4) |
-| `crates/lushtext-core/src/ui/window/notes/policy.rs` | `NOTES_SAVE_DEBOUNCE_MS` | 200 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-core/src/ui/window/notes/policy.rs` | `MAX_BOOKMARK_SAVE_ATTEMPTS` | 4 | retry budget | rounded up (D6) |
-| `crates/lushtext-core/src/ui/window/notes/policy.rs` | `NOTE_SAVE_RESPONSE_REFRESH_DEBOUNCE_MS` | 80 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-core/src/ui/window/notes/policy.rs` | `COMMAND_PALETTE_NOTES_REFRESH_DEBOUNCE_MS` | 150 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-core/src/ui/window/notes/policy.rs` | `NOTES_BROWSER_SEARCH_DEBOUNCE_MS` | 150 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-core/src/ui/window/notes/policy.rs` | `OPEN_EDITOR_SNAPSHOT_SLICE_ROWS` | 256 | cap | bookmark records per capture unit before the turn clock is read; a 20,000-bookmark capture took 2.0–4.9 ms in one dispatch on `main` (0.10–0.25 µs per bookmark), so 256 is far inside the 4 ms slice (`bound-notes-browser-by-budget` D4, D10) |
+| `crates/lushtext-ui/src/ui/window/notes/policy.rs` | `NOTES_BROWSER_SOURCE_TEXT_LIMIT` | 67,108,864 | presentation cap | up from 67,108,864: past it the browser source is truncated (D12); the browser's only text bound, no row count (`bound-notes-browser-by-budget` D3) |
+| `crates/lushtext-ui/src/ui/window/notes/policy.rs` | `NOTES_BROWSER_DIAGNOSTIC_LIMIT` | 1,024 | presentation cap | up from 1,024: diagnostics the user is shown (D12) |
+| `crates/lushtext-ui/src/ui/window/notes/policy.rs` | `NOTES_OPEN_EDITOR_SNAPSHOT_RETAINED_BYTE_LIMIT` | 4,194,304 | presentation cap | up from 4,194,304: past it open-editor notes are dropped (D12); admitted by `RetainedBudget` in sliced turns, no count (`bound-notes-browser-by-budget` D4) |
+| `crates/lushtext-ui/src/ui/window/notes/policy.rs` | `NOTES_SAVE_DEBOUNCE_MS` | 200 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-ui/src/ui/window/notes/policy.rs` | `MAX_BOOKMARK_SAVE_ATTEMPTS` | 4 | retry budget | rounded up (D6) |
+| `crates/lushtext-ui/src/ui/window/notes/policy.rs` | `NOTE_SAVE_RESPONSE_REFRESH_DEBOUNCE_MS` | 80 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-ui/src/ui/window/notes/policy.rs` | `COMMAND_PALETTE_NOTES_REFRESH_DEBOUNCE_MS` | 150 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-ui/src/ui/window/notes/policy.rs` | `NOTES_BROWSER_SEARCH_DEBOUNCE_MS` | 150 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-ui/src/ui/window/notes/policy.rs` | `OPEN_EDITOR_SNAPSHOT_SLICE_ROWS` | 256 | cap | bookmark records per capture unit before the turn clock is read; a 20,000-bookmark capture took 2.0–4.9 ms in one dispatch on `main` (0.10–0.25 µs per bookmark), so 256 is far inside the 4 ms slice (`bound-notes-browser-by-budget` D4, D10) |
 
-### `crates/lushtext-core/src/ui/window/notes/row_model.rs`
+### `crates/lushtext-ui/src/ui/window/notes/row_model.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/window/notes/row_model.rs` | `LIVE_ROW_PRUNE_AT` | 1,024 | cap | map entries of handed-out row objects before dead ones are pruned; GTK holds about 205 rows (A1) plus the selection (`bound-notes-browser-by-budget`, Implementation decisions) |
+| `crates/lushtext-ui/src/ui/window/notes/row_model.rs` | `LIVE_ROW_PRUNE_AT` | 1,024 | cap | map entries of handed-out row objects before dead ones are pruned; GTK holds about 205 rows (A1) plus the selection (`bound-notes-browser-by-budget`, Implementation decisions) |
 
-### `crates/lushtext-core/src/ui/window/preview.rs`
+### `crates/lushtext-ui/src/ui/window/preview.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/window/preview.rs` | `PREVIEW_SIDEBAR_ALLOCATION_MAX_FRAMES` | 8 | coverage window | power of two, rounded up |
+| `crates/lushtext-ui/src/ui/window/preview.rs` | `PREVIEW_SIDEBAR_ALLOCATION_MAX_FRAMES` | 8 | coverage window | power of two, rounded up |
 
-### `crates/lushtext-core/src/ui/window/recent_documents_journal.rs`
+### `crates/lushtext-ui/src/ui/window/recent_documents_journal.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/window/recent_documents_journal.rs` | `RECENT_DOCUMENTS_SAVE_DEBOUNCE_MS` | 250 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-ui/src/ui/window/recent_documents_journal.rs` | `RECENT_DOCUMENTS_SAVE_DEBOUNCE_MS` | 250 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
 
-### `crates/lushtext-core/src/ui/window/search.rs`
+### `crates/lushtext-ui/src/ui/window/search.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/window/search.rs` | `SEARCH_PANEL_TRANSITION_DELAY_MS` | 260 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-ui/src/ui/window/search.rs` | `SEARCH_PANEL_TRANSITION_DELAY_MS` | 260 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
 
-### `crates/lushtext-core/src/ui/window/session_restore/policy.rs`
+### `crates/lushtext-ui/src/ui/window/session_restore/policy.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/window/session_restore/policy.rs` | `SESSION_RESTORE_PAGES_PER_TURN` | 4 | cap | power of two |
-| `crates/lushtext-core/src/ui/window/session_restore/policy.rs` | `SESSION_RESTORE_FILE_PLAN_PERMITS` | 2 | cap | power of two |
+| `crates/lushtext-ui/src/ui/window/session_restore/policy.rs` | `SESSION_RESTORE_PAGES_PER_TURN` | 4 | cap | power of two |
+| `crates/lushtext-ui/src/ui/window/session_restore/policy.rs` | `SESSION_RESTORE_FILE_PLAN_PERMITS` | 2 | cap | power of two |
 
-### `crates/lushtext-core/src/ui/window/startup_data.rs`
+### `crates/lushtext-ui/src/ui/window/startup_data.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/window/startup_data.rs` | `MAX_PENDING_ACTIVATION_OPENS` | 64 | presentation cap | up from 64: files a CLI open admits (D12) |
+| `crates/lushtext-ui/src/ui/window/startup_data.rs` | `MAX_PENDING_ACTIVATION_OPENS` | 64 | presentation cap | up from 64: files a CLI open admits (D12) |
 
-### `crates/lushtext-core/src/ui/window/tab_overflow/all_tabs_popover/imp.rs`
+### `crates/lushtext-ui/src/ui/window/tab_overflow/all_tabs_popover/imp.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/window/tab_overflow/all_tabs_popover/imp.rs` | `ROW_SPACING_SP` | 6 | out: geometry | UI geometry in sp: space between an All Tabs row's dot, text and state icons (`tab-strip-overflow-navigation` D6) |
-| `crates/lushtext-core/src/ui/window/tab_overflow/all_tabs_popover/imp.rs` | `ROW_MARGIN_VERTICAL_SP` | 3 | out: geometry | UI geometry in sp: an All Tabs row's vertical inset (D6) |
+| `crates/lushtext-ui/src/ui/window/tab_overflow/all_tabs_popover/imp.rs` | `ROW_SPACING_SP` | 6 | out: geometry | UI geometry in sp: space between an All Tabs row's dot, text and state icons (`tab-strip-overflow-navigation` D6) |
+| `crates/lushtext-ui/src/ui/window/tab_overflow/all_tabs_popover/imp.rs` | `ROW_MARGIN_VERTICAL_SP` | 3 | out: geometry | UI geometry in sp: an All Tabs row's vertical inset (D6) |
 
-### `crates/lushtext-core/src/ui/window/tab_overflow/all_tabs_popover/item.rs`
+### `crates/lushtext-ui/src/ui/window/tab_overflow/all_tabs_popover/item.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/window/tab_overflow/all_tabs_popover/item.rs` | `LIVE_ROW_PRUNE_AT` | 1,024 | cap | map entries of handed-out row objects before dead ones are pruned; GTK holds about 205 rows (A1) plus the selection (`tab-strip-overflow-navigation` D6) |
+| `crates/lushtext-ui/src/ui/window/tab_overflow/all_tabs_popover/item.rs` | `LIVE_ROW_PRUNE_AT` | 1,024 | cap | map entries of handed-out row objects before dead ones are pruned; GTK holds about 205 rows (A1) plus the selection (`tab-strip-overflow-navigation` D6) |
 
-### `crates/lushtext-core/src/ui/window/tab_overflow/policy.rs`
+### `crates/lushtext-ui/src/ui/window/tab_overflow/policy.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/window/tab_overflow/policy.rs` | `TAB_SCROLL_ANIMATION_MS` | 200 | out: time | one scroll step's animation length, Libadwaita's own tab-strip scroll (`SCROLL_ANIMATION_DURATION`, `tab-strip-overflow-navigation` D3) |
-| `crates/lushtext-core/src/ui/window/tab_overflow/policy.rs` | `TAB_SCROLL_REPEAT_DELAY_MS` | 400 | out: time | press-and-hold delay before a scroll button repeats (D3) |
-| `crates/lushtext-core/src/ui/window/tab_overflow/policy.rs` | `TAB_SCROLL_REPEAT_INTERVAL_MS` | 200 | out: time | repeat cadence of a held scroll button, one animation per step (D3) |
-| `crates/lushtext-core/src/ui/window/tab_overflow/policy.rs` | `ALL_TABS_ANNOUNCE_DELAY_MS` | 500 | out: time | how long the All Tabs query rests before its match count is announced, the debounced-results lane's cooldown (D6) |
-| `crates/lushtext-core/src/ui/window/tab_overflow/policy.rs` | `ALL_TABS_ROW_NAME_MAX_CHARS` | 512 | presentation cap | up from 512: characters of an All Tabs row's accessible name, at or above the longest the app builds (a 255-byte file name and its states; unit-tested) (D6) |
-| `crates/lushtext-core/src/ui/window/tab_overflow/policy.rs` | `SELECTION_REVEAL_MAX_FRAMES` | 256 | coverage window | rounded up: frames the selection reveal may observe before it ends wherever the strip is, so it must span the allocation wait, the attach scrolls and the scroll window, about 45 frames at 120 Hz and 90 at 240 Hz; a smaller value leaves the selected tab out of view (`tab-strip-overflow-navigation` D12, D15) |
-| `crates/lushtext-core/src/ui/window/tab_overflow/policy.rs` | `SELECTION_REVEAL_SCROLL_WINDOW_US` | 256000 | out: time | how long the selection reveal waits after its one announcement before a still frame may end it: the strip's own 200 ms scroll animation keeps one whole pixel for several frames in its eased tail (`tab-strip-overflow-navigation` D12) |
-| `crates/lushtext-core/src/ui/window/tab_overflow/policy.rs` | `SELECTION_REVEAL_READINESS_US` | 8000000 | out: time | how long a running selection reveal holds the `tab-overflow` readiness blocker, above its 256 frames at 60 Hz (about 4.3 s), so a window that paints no frame cannot hold readiness indefinitely (`tab-strip-overflow-navigation` D15) |
+| `crates/lushtext-ui/src/ui/window/tab_overflow/policy.rs` | `TAB_SCROLL_ANIMATION_MS` | 200 | out: time | one scroll step's animation length, Libadwaita's own tab-strip scroll (`SCROLL_ANIMATION_DURATION`, `tab-strip-overflow-navigation` D3) |
+| `crates/lushtext-ui/src/ui/window/tab_overflow/policy.rs` | `TAB_SCROLL_REPEAT_DELAY_MS` | 400 | out: time | press-and-hold delay before a scroll button repeats (D3) |
+| `crates/lushtext-ui/src/ui/window/tab_overflow/policy.rs` | `TAB_SCROLL_REPEAT_INTERVAL_MS` | 200 | out: time | repeat cadence of a held scroll button, one animation per step (D3) |
+| `crates/lushtext-ui/src/ui/window/tab_overflow/policy.rs` | `ALL_TABS_ANNOUNCE_DELAY_MS` | 500 | out: time | how long the All Tabs query rests before its match count is announced, the debounced-results lane's cooldown (D6) |
+| `crates/lushtext-ui/src/ui/window/tab_overflow/policy.rs` | `ALL_TABS_ROW_NAME_MAX_CHARS` | 512 | presentation cap | up from 512: characters of an All Tabs row's accessible name, at or above the longest the app builds (a 255-byte file name and its states; unit-tested) (D6) |
+| `crates/lushtext-ui/src/ui/window/tab_overflow/policy.rs` | `SELECTION_REVEAL_MAX_FRAMES` | 256 | coverage window | rounded up: frames the selection reveal may observe before it ends wherever the strip is, so it must span the allocation wait, the attach scrolls and the scroll window, about 45 frames at 120 Hz and 90 at 240 Hz; a smaller value leaves the selected tab out of view (`tab-strip-overflow-navigation` D12, D15) |
+| `crates/lushtext-ui/src/ui/window/tab_overflow/policy.rs` | `SELECTION_REVEAL_SCROLL_WINDOW_US` | 256000 | out: time | how long the selection reveal waits after its one announcement before a still frame may end it: the strip's own 200 ms scroll animation keeps one whole pixel for several frames in its eased tail (`tab-strip-overflow-navigation` D12) |
+| `crates/lushtext-ui/src/ui/window/tab_overflow/policy.rs` | `SELECTION_REVEAL_READINESS_US` | 8000000 | out: time | how long a running selection reveal holds the `tab-overflow` readiness blocker, above its 256 frames at 60 Hz (about 4.3 s), so a window that paints no frame cannot hold readiness indefinitely (`tab-strip-overflow-navigation` D15) |
 
-### `crates/lushtext-core/src/ui/window/tab_overflow/scroll_execution.rs`
+### `crates/lushtext-ui/src/ui/window/tab_overflow/scroll_execution.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/window/tab_overflow/scroll_execution.rs` | `TAB_SCROLLER_LOOKUP_DEPTH` | 3 | external fact | the depth of Libadwaita's `AdwTabBar` template (bar → revealer → box → scrolled window), ledger A132 |
+| `crates/lushtext-ui/src/ui/window/tab_overflow/scroll_execution.rs` | `TAB_SCROLLER_LOOKUP_DEPTH` | 3 | external fact | the depth of Libadwaita's `AdwTabBar` template (bar → revealer → box → scrolled window), ledger A132 |
 
-### `crates/lushtext-core/src/ui/window/zoom.rs`
+### `crates/lushtext-ui/src/ui/window/zoom.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/window/zoom.rs` | `ZOOM_MIN` | 50 | out: percent | zoom grid (D1) |
-| `crates/lushtext-core/src/ui/window/zoom.rs` | `ZOOM_MAX` | 400 | out: percent | zoom grid (D1) |
-| `crates/lushtext-core/src/ui/window/zoom.rs` | `ZOOM_STEP` | 10 | out: percent | zoom grid (D1) |
-| `crates/lushtext-core/src/ui/window/zoom.rs` | `ZOOM_DEFAULT` | 100 | out: percent | zoom grid (D1) |
+| `crates/lushtext-ui/src/ui/window/zoom.rs` | `ZOOM_MIN` | 50 | out: percent | zoom grid (D1) |
+| `crates/lushtext-ui/src/ui/window/zoom.rs` | `ZOOM_MAX` | 400 | out: percent | zoom grid (D1) |
+| `crates/lushtext-ui/src/ui/window/zoom.rs` | `ZOOM_STEP` | 10 | out: percent | zoom grid (D1) |
+| `crates/lushtext-ui/src/ui/window/zoom.rs` | `ZOOM_DEFAULT` | 100 | out: percent | zoom grid (D1) |

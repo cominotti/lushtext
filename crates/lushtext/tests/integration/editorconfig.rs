@@ -6,8 +6,8 @@
 //! file parsing, section matching, and multi-level override merging.
 
 use super::common::TestContext;
-use lushtext_core::model::encoding::{DocumentEncoding, LineEnding};
-use lushtext_core::services::editorconfig;
+use lushtext_model::encoding::{DocumentEncoding, LineEnding};
+use lushtext_services::editorconfig;
 
 #[test]
 fn single_editorconfig_with_root() {

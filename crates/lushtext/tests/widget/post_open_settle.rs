@@ -14,11 +14,11 @@ use crate::common::{
 };
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_core::model::buffer_replacement::V_SLICE;
-use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
-use lushtext_core::ui::editor_page::load::policy::{ATTACH_DEADLINE_US, SettleStage};
-use lushtext_core::ui::editor_page::{EditorLoadState, InlineAlertLifetime, LushtextEditorPage};
-use lushtext_core::ui::window::LushtextWindow;
+use lushtext_model::buffer_replacement::V_SLICE;
+use lushtext_services::notifications::{InlineActionNotification, InlineNotificationStyle};
+use lushtext_ui::ui::editor_page::load::policy::{ATTACH_DEADLINE_US, SettleStage};
+use lushtext_ui::ui::editor_page::{EditorLoadState, InlineAlertLifetime, LushtextEditorPage};
+use lushtext_ui::ui::window::LushtextWindow;
 use sourceview5::prelude::{BufferExt as _, ViewExt as _};
 use std::time::Duration;
 
@@ -27,7 +27,7 @@ const SETTLE_BUDGET: Duration = Duration::from_secs(10);
 
 fn write(dir: &tempfile::TempDir, name: &str, text: &str) -> std::path::PathBuf {
     let path = dir.path().join(name);
-    lushtext_core::services::filesystem::fixture::write_text(&path, text);
+    lushtext_services::filesystem::fixture::write_text(&path, text);
     path
 }
 
@@ -167,12 +167,12 @@ fn test_the_attach_waits_for_input_quiet_until_its_deadline() {
     // then ran (FLAKY under load, 2026-11-02).
     let feeding = std::rc::Rc::new(std::cell::Cell::new(true));
     let feed = feeding.clone();
-    lushtext_core::ui::input_quiet::simulate_user_input();
+    lushtext_ui::ui::input_quiet::simulate_user_input();
     glib::timeout_add_local_full(Duration::from_millis(1), glib::Priority::HIGH, move || {
         if !feed.get() {
             return glib::ControlFlow::Break;
         }
-        lushtext_core::ui::input_quiet::simulate_user_input();
+        lushtext_ui::ui::input_quiet::simulate_user_input();
         glib::ControlFlow::Continue
     });
     let started = std::time::Instant::now();
@@ -335,10 +335,10 @@ fn test_editorconfig_is_applied_before_the_first_insert() {
 #[test]
 fn test_the_glob_table_guesses_exactly_like_gtksourceview() {
     ensure_gtk_init();
-    lushtext_core::ui::language_catalog::start();
-    wait_until(SETTLE_BUDGET, lushtext_core::ui::language_catalog::is_ready);
-    let table = lushtext_core::ui::language_catalog::glob_table().expect("catalog ready");
-    let manager = lushtext_core::ui::language_catalog::manager();
+    lushtext_ui::ui::language_catalog::start();
+    wait_until(SETTLE_BUDGET, lushtext_ui::ui::language_catalog::is_ready);
+    let table = lushtext_ui::ui::language_catalog::glob_table().expect("catalog ready");
+    let manager = lushtext_ui::ui::language_catalog::manager();
     // A name for every glob of every shipped language, as a full path the
     // way LushText passes it (review R4), plus names that overlap globs.
     let mut names: Vec<String> = table
@@ -394,7 +394,7 @@ fn test_a_wrap_toggle_on_a_dense_document_is_paced() {
     let (_window, editor, _dir) = dense_window("dense-wrap.txt");
     let before = editor.load_evidence().restyle;
     let wrap = editor.source_view().wrap_mode() != gtk4::WrapMode::None;
-    lushtext_core::ui::settings_writes::set_boolean("word-wrap", !wrap);
+    lushtext_ui::ui::settings_writes::set_boolean("word-wrap", !wrap);
     let after_interaction = editor.load_evidence().restyle;
     assert_eq!(
         after_interaction.restyles,
@@ -411,7 +411,7 @@ fn test_a_wrap_toggle_on_a_dense_document_is_paced() {
         done.largest_reveal_chars
     );
     assert_eq!(crate::common::editor_text(&editor), dense(710, 400));
-    lushtext_core::ui::settings_writes::set_boolean("word-wrap", wrap);
+    lushtext_ui::ui::settings_writes::set_boolean("word-wrap", wrap);
 }
 
 #[test]
@@ -420,7 +420,7 @@ fn test_a_selection_during_a_paced_reveal_reveals_everything_before_a_copy() {
     // of hidden paragraphs would lose them.
     let (_window, editor, _dir) = dense_window("dense-select.txt");
     let wrap = editor.source_view().wrap_mode() != gtk4::WrapMode::None;
-    lushtext_core::ui::settings_writes::set_boolean("word-wrap", !wrap);
+    lushtext_ui::ui::settings_writes::set_boolean("word-wrap", !wrap);
     assert!(editor.load_evidence().restyle.pending);
     let buffer = editor.buffer();
     let (start, end) = buffer.bounds();
@@ -435,7 +435,7 @@ fn test_a_selection_during_a_paced_reveal_reveals_everything_before_a_copy() {
         dense(710, 400),
         "every paragraph is visible to the clipboard"
     );
-    lushtext_core::ui::settings_writes::set_boolean("word-wrap", wrap);
+    lushtext_ui::ui::settings_writes::set_boolean("word-wrap", wrap);
 }
 
 #[test]
@@ -446,13 +446,13 @@ fn test_a_document_that_is_not_dense_restyles_directly() {
     let dir = tempfile::tempdir().expect("tempdir");
     let editor = opened(&window, &write(&dir, "short.txt", &dense(40, 400)));
     let wrap = editor.source_view().wrap_mode() != gtk4::WrapMode::None;
-    lushtext_core::ui::settings_writes::set_boolean("word-wrap", !wrap);
+    lushtext_ui::ui::settings_writes::set_boolean("word-wrap", !wrap);
     assert_eq!(editor.load_evidence().restyle.restyles, 0);
     assert_eq!(
         editor.source_view().wrap_mode() != gtk4::WrapMode::None,
         !wrap
     );
-    lushtext_core::ui::settings_writes::set_boolean("word-wrap", wrap);
+    lushtext_ui::ui::settings_writes::set_boolean("word-wrap", wrap);
 }
 
 #[test]
@@ -460,9 +460,9 @@ fn test_a_restyle_paces_the_selected_dense_editor_first_and_the_other_when_shown
     let (window, background, dir) = dense_window("first.txt");
     let selected = opened(&window, &write(&dir, "second.txt", &dense(710, 400)));
     assert!(!background.source_view().is_mapped());
-    let paced = lushtext_core::ui::editor_page::restyle::prepare_paced_restyle_everywhere();
+    let paced = lushtext_ui::ui::editor_page::restyle::prepare_paced_restyle_everywhere();
     assert_eq!(paced.len(), 2);
-    lushtext_core::ui::editor_page::restyle::start_paced_reveal_everywhere(&paced);
+    lushtext_ui::ui::editor_page::restyle::start_paced_reveal_everywhere(&paced);
     wait_until(SETTLE_BUDGET, || !selected.load_evidence().restyle.pending);
     flush_after_delay(Duration::from_millis(300));
     let waiting = background.load_evidence().restyle;
@@ -630,7 +630,7 @@ fn test_every_edit_route_is_held_or_refused_while_a_save_owns_the_buffer() {
     // The save wrote what the buffer held when it took the buffer; the typed
     // routes went in at the caret after it, leaving the document modified.
     assert_eq!(
-        lushtext_core::services::filesystem::read::text(&path).expect("saved file"),
+        lushtext_services::filesystem::read::text(&path).expect("saved file"),
         expected
     );
     assert_eq!(
@@ -865,7 +865,7 @@ fn test_a_paced_reveal_never_removes_its_tag_beyond_what_it_hid() {
     // buffer: that re-laid out the whole dense document after every reveal.
     let (_window, editor, _dir) = dense_window("dense-reveal-cleanup.txt");
     let wrap = editor.source_view().wrap_mode() != gtk4::WrapMode::None;
-    lushtext_core::ui::settings_writes::set_boolean("word-wrap", !wrap);
+    lushtext_ui::ui::settings_writes::set_boolean("word-wrap", !wrap);
     assert!(editor.load_evidence().restyle.pending);
     let widest = std::rc::Rc::new(std::cell::Cell::new(0i32));
     let handler = {
@@ -876,7 +876,7 @@ fn test_a_paced_reveal_never_removes_its_tag_beyond_what_it_hid() {
     };
     wait_until(SETTLE_BUDGET, || !editor.load_evidence().restyle.pending);
     editor.buffer().disconnect(handler);
-    lushtext_core::ui::settings_writes::set_boolean("word-wrap", wrap);
+    lushtext_ui::ui::settings_writes::set_boolean("word-wrap", wrap);
     let bound = i32::try_from(2 * V_SLICE).unwrap_or(i32::MAX);
     assert!(
         widest.get() <= bound,
@@ -914,8 +914,8 @@ const LARGE_MARKDOWN: usize = 400 * 1024;
 
 /// Give Markdown the model's chunked cap for one test: no shipped language
 /// has one (`document_scale::chunked_threshold`, re-review F1).
-fn chunked_markdown_cap() -> lushtext_core::model::document_scale::MarkdownChunkedCapGuard {
-    lushtext_core::model::document_scale::override_markdown_chunked_cap_for_test()
+fn chunked_markdown_cap() -> lushtext_model::document_scale::MarkdownChunkedCapGuard {
+    lushtext_model::document_scale::override_markdown_chunked_cap_for_test()
 }
 
 /// Record the buffer's character count every time a language is set on it.
@@ -934,7 +934,7 @@ fn chars_at_attach(editor: &LushtextEditorPage) -> std::rc::Rc<std::cell::RefCel
 
 #[test]
 fn test_a_large_markdown_document_installs_highlighted_chunk_by_chunk() {
-    use lushtext_core::model::highlight_chunking::HIGHLIGHT_CHUNK_BYTES;
+    use lushtext_model::highlight_chunking::HIGHLIGHT_CHUNK_BYTES;
     ensure_gtk_init();
     let _cap = chunked_markdown_cap();
     let window = test_window();
@@ -1000,7 +1000,7 @@ fn test_a_shipped_markdown_document_above_its_gate_is_reduced_and_not_chunked() 
     // No shipped language has a chunked cap (re-review F1): a 400 KiB
     // Markdown document, above the 320 KiB gate and below the model cap,
     // loses highlighting for its size and takes no chunked install.
-    use lushtext_core::model::document_scale::{ReductionReason, ScaleFeature};
+    use lushtext_model::document_scale::{ReductionReason, ScaleFeature};
     ensure_gtk_init();
     let window = test_window();
     present_window(&window);
@@ -1347,7 +1347,7 @@ fn test_an_evicted_large_markdown_reloads_highlighted_without_a_language_during_
 
 #[test]
 fn test_a_save_formatting_mirror_back_installs_a_large_markdown_in_chunks() {
-    use lushtext_core::model::highlight_chunking::HIGHLIGHT_CHUNK_BYTES;
+    use lushtext_model::highlight_chunking::HIGHLIGHT_CHUNK_BYTES;
     ensure_gtk_init();
     let _cap = chunked_markdown_cap();
     let window = test_window();
@@ -1498,12 +1498,12 @@ fn test_a_background_chunked_install_attaches_only_after_input_quiet() {
             done_typing.clone(),
         );
         let (weak, shown) = (background.downgrade(), foreground.downgrade());
-        lushtext_core::ui::input_quiet::simulate_user_input_on(&typing_window);
+        lushtext_ui::ui::input_quiet::simulate_user_input_on(&typing_window);
         glib::timeout_add_local_full(Duration::from_millis(4), glib::Priority::HIGH, move || {
             let (Some(editor), Some(shown)) = (weak.upgrade(), shown.upgrade()) else {
                 return glib::ControlFlow::Break;
             };
-            lushtext_core::ui::input_quiet::simulate_user_input_on(&typing_window);
+            lushtext_ui::ui::input_quiet::simulate_user_input_on(&typing_window);
             shown.source_view().queue_draw();
             let evidence = editor.load_evidence().language_attach;
             if evidence.install_requests > 0 {
@@ -1564,12 +1564,12 @@ fn test_a_focus_child_in_an_inactive_window_waits_for_input_quiet() {
         let (attached, done) = (attached_while_typing.clone(), done_typing.clone());
         let mut typed_since = None::<std::time::Instant>;
         let weak = editor.downgrade();
-        lushtext_core::ui::input_quiet::simulate_user_input_on(&typing_window);
+        lushtext_ui::ui::input_quiet::simulate_user_input_on(&typing_window);
         glib::timeout_add_local_full(Duration::from_millis(4), glib::Priority::HIGH, move || {
             let Some(editor) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            lushtext_core::ui::input_quiet::simulate_user_input_on(&typing_window);
+            lushtext_ui::ui::input_quiet::simulate_user_input_on(&typing_window);
             typing_window.queue_draw();
             if editor.load_evidence().language_attach.install_requests > 0 {
                 let since = *typed_since.get_or_insert_with(std::time::Instant::now);
@@ -1618,7 +1618,7 @@ fn test_the_focused_editors_chunked_install_attaches_while_keys_arrive() {
         "a real press made the window active"
     );
     let typing_window: gtk4::Window = window.upcast();
-    lushtext_core::ui::input_quiet::simulate_user_input_on(&typing_window);
+    lushtext_ui::ui::input_quiet::simulate_user_input_on(&typing_window);
     let started = std::time::Instant::now();
     let attached_after = std::rc::Rc::new(std::cell::Cell::new(None));
     {
@@ -1627,7 +1627,7 @@ fn test_the_focused_editors_chunked_install_attaches_while_keys_arrive() {
             let Some(editor) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            lushtext_core::ui::input_quiet::simulate_user_input_on(&typing_window);
+            lushtext_ui::ui::input_quiet::simulate_user_input_on(&typing_window);
             editor.source_view().queue_draw();
             if editor.load_evidence().language_attach.install_requests > 0
                 && editor.buffer().language().is_some()

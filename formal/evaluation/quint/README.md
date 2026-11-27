@@ -13,7 +13,7 @@ alone.
 
 | File | Target | Re-expresses | Kani counterpart |
 |---|---|---|---|
-| `write_protocol.qnt` | T1 | `WriteProtocol::step` (`crates/lushtext-core/src/services/filesystem/write_protocol.rs`) and the model disk of `write_protocol/kani_proofs.rs` | `a_crash_never_tears_the_destination`, `every_classification_describes_the_destination`, `skipping_the_temp_sync_tears_the_destination` |
+| `write_protocol.qnt` | T1 | `WriteProtocol::step` (`crates/lushtext-services/src/filesystem/write_protocol.rs`) and the model disk of `write_protocol/kani_proofs.rs` | `a_crash_never_tears_the_destination`, `every_classification_describes_the_destination`, `skipping_the_temp_sync_tears_the_destination` |
 | `move_rename.qnt` | T1 | `MoveProtocol::step`, `RenameProtocol::step` | `a_move_removes_its_source_only_after_the_copy_is_durable`, `a_completed_rename_synced_every_directory_it_mutated` |
 | `journal.qnt` | T2 | every `journal_core.rs` decision the harness calls, plus the environment of `draft_service/kani_proofs.rs` (`Journal`, `step`, `step_as`, `startup`, S1–S4) | `journal_invariants_hold_under_crashes`, `a_second_writer_breaks_the_journal_invariants` |
 | `journal.qnt`, modules `k8_traces_connect` and `k3_service` | E1 | Quint Connect replays against the Rust port and the real `draft_service` (`formal/evaluation/stateright/tests/`) | — |

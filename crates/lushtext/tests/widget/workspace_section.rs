@@ -9,14 +9,14 @@ use crate::common::{
 use glib::prelude::ToValue;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_core::model::workspace::{
+use lushtext_model::workspace::{
     FolderTreeEntry, WorkspaceFolder, WorkspaceFolderId, WorkspaceFolderMoveDirection, WorkspaceId,
 };
-use lushtext_core::services::filesystem::metadata as fs_metadata;
-use lushtext_core::services::workspace_watch::{WORKSPACE_WATCH_PATH_CAP, WorkspaceWatchTarget};
-use lushtext_core::ui::accessibility::test_audit::AccessibleAudit;
-use lushtext_core::ui::sidebar::file_tree_item::FileTreeItem;
-use lushtext_core::ui::sidebar::workspace_section::LushtextWorkspaceSection;
+use lushtext_services::filesystem::metadata as fs_metadata;
+use lushtext_services::workspace_watch::{WORKSPACE_WATCH_PATH_CAP, WorkspaceWatchTarget};
+use lushtext_ui::ui::accessibility::test_audit::AccessibleAudit;
+use lushtext_ui::ui::sidebar::file_tree_item::FileTreeItem;
+use lushtext_ui::ui::sidebar::workspace_section::LushtextWorkspaceSection;
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::path::Path;
@@ -3796,14 +3796,14 @@ fn test_inline_rename_completion_ignores_a_row_retargeted_mid_flight() {
         inline_rename_entry_for_path(&section, &source).expect("rename entry should be visible");
     flush_after_delay(Duration::from_millis(100));
     // Hold the rename worker so the retarget below genuinely lands mid-flight.
-    lushtext_core::ui::sidebar::set_workspace_rename_worker_delay_for_test(400);
+    lushtext_ui::ui::sidebar::set_workspace_rename_worker_delay_for_test(400);
     entry.set_text("subject-renamed.txt");
     entry.emit_by_name::<()>("activate", &[]);
 
     // Retarget the live context cell at an unrelated row while the rename
     // worker is still running. The completion must use its captured ticket.
     prepare_context_menu_for_path(&section, &bystander);
-    lushtext_core::ui::sidebar::set_workspace_rename_worker_delay_for_test(0);
+    lushtext_ui::ui::sidebar::set_workspace_rename_worker_delay_for_test(0);
 
     wait_until(Duration::from_secs(10), || fixture::exists(&renamed));
     wait_until(Duration::from_secs(10), || {
@@ -3865,12 +3865,12 @@ fn test_cancelled_new_item_cleanup_never_deletes_a_replacement_file() {
         .expect("new-item entry should be visible");
 
     let placeholder_inode =
-        lushtext_core::services::filesystem::metadata::inode(&placeholder).expect("inode");
+        lushtext_services::filesystem::metadata::inode(&placeholder).expect("inode");
 
     // Hold the cleanup worker long enough to interpose the competing rename.
     // Without this the cleanup always wins the race in a headless run and the
     // test cannot distinguish the fixed code from the broken code.
-    lushtext_core::ui::sidebar::set_workspace_placeholder_cleanup_delay_for_test(400);
+    lushtext_ui::ui::sidebar::set_workspace_placeholder_cleanup_delay_for_test(400);
 
     // Committing the unchanged name is the production cancel path for a new
     // item, and it is what schedules the placeholder cleanup.
@@ -3882,10 +3882,10 @@ fn test_cancelled_new_item_cleanup_never_deletes_a_replacement_file() {
     // guaranteed to differ — this is the race the old path-only cleanup lost,
     // and it is deterministic in a way that rewriting the same path is not
     // (an atomic replace can reuse a just-freed inode number).
-    lushtext_core::services::filesystem::write::rename_durable(&precious, &placeholder)
+    lushtext_services::filesystem::write::rename_durable(&precious, &placeholder)
         .expect("move the real file onto the placeholder name");
     let replacement_inode =
-        lushtext_core::services::filesystem::metadata::inode(&placeholder).expect("inode");
+        lushtext_services::filesystem::metadata::inode(&placeholder).expect("inode");
     assert_ne!(
         placeholder_inode, replacement_inode,
         "a renamed-in file always has a different identity from the placeholder"
@@ -3893,7 +3893,7 @@ fn test_cancelled_new_item_cleanup_never_deletes_a_replacement_file() {
 
     // Give the guarded, inode-checked cleanup every chance to run.
     flush_after_delay(Duration::from_millis(1_200));
-    lushtext_core::ui::sidebar::set_workspace_placeholder_cleanup_delay_for_test(0);
+    lushtext_ui::ui::sidebar::set_workspace_placeholder_cleanup_delay_for_test(0);
     assert!(
         fixture::exists(&placeholder),
         "placeholder cleanup must not delete a replacement file at the same path"
@@ -4166,7 +4166,7 @@ fn test_rapid_successful_watcher_generations_install_only_the_latest() {
             .watcher
             .borrow()
             .as_ref()
-            .map(lushtext_core::services::workspace_watch::WorkspaceWatcher::watched_target_count),
+            .map(lushtext_services::workspace_watch::WorkspaceWatcher::watched_target_count),
         Some(1)
     );
     assert_eq!(
@@ -6593,8 +6593,8 @@ fn test_file_peek_selecting_directory_dismisses_preview() {
 #[test]
 fn test_scrolling_and_collapsing_300_directories_starts_no_bind_time_child_scans() {
     ensure_gtk_init();
-    lushtext_core::ui::settings_writes::set_uint(
-        lushtext_core::config::keys::WORKSPACE_EMPTY_FOLDER_LOOKAHEAD_CAP,
+    lushtext_ui::ui::settings_writes::set_uint(
+        lushtext_ui::config::keys::WORKSPACE_EMPTY_FOLDER_LOOKAHEAD_CAP,
         100,
     );
 
@@ -6616,15 +6616,15 @@ fn test_scrolling_and_collapsing_300_directories_starts_no_bind_time_child_scans
     present_window(&window);
     crate::common::wait_for_startup_data_flow(&window);
 
-    let mut workspaces = lushtext_core::model::workspace::WorkspacesFile::default();
-    workspaces.workspaces.push(
-        lushtext_core::model::workspace::WorkspaceConfig::with_one_folder(
+    let mut workspaces = lushtext_model::workspace::WorkspacesFile::default();
+    workspaces
+        .workspaces
+        .push(lushtext_model::workspace::WorkspaceConfig::with_one_folder(
             WorkspaceId::new("ws-300-dirs"),
             "300-dirs",
             root.clone(),
-        ),
-    );
-    lushtext_core::services::workspace_manager::save(iso.path(), &workspaces)
+        ));
+    lushtext_services::workspace_manager::save(iso.path(), &workspaces)
         .expect("save workspaces.json");
     sidebar.load_workspaces();
     wait_until(Duration::from_secs(10), || {
@@ -6996,8 +6996,8 @@ fn realized_row_label_and_focus_button(
 fn test_emptiness_hints_watch_deltas_and_same_turn_refresh_under_deferred_materialization() {
     ensure_gtk_init();
     let _iso = crate::common::isolated_data_dir();
-    lushtext_core::ui::settings_writes::set_uint(
-        lushtext_core::config::keys::WORKSPACE_EMPTY_FOLDER_LOOKAHEAD_CAP,
+    lushtext_ui::ui::settings_writes::set_uint(
+        lushtext_ui::config::keys::WORKSPACE_EMPTY_FOLDER_LOOKAHEAD_CAP,
         100,
     );
 

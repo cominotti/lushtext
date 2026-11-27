@@ -10,11 +10,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use lushtext_core::model::content_search::{
+use lushtext_model::content_search::{
     ContentSearchOptions, ReplacePreviewSkipReason, ReplaceSkipReason, Replacement, SearchMatch,
     SearchMatchId, generate_replacement_preview,
 };
-use lushtext_core::services::{
+use lushtext_services::{
     content_search::{self, ReplaceUndoBackup},
     filesystem::{fixture, metadata as fs_metadata},
     search_backup,

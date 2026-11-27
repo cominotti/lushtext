@@ -12,7 +12,7 @@
 use crate::common::{ensure_gtk_init, flush_events, present_window, test_window};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_core::ui::window::{
+use lushtext_ui::ui::window::{
     EscapeOutcome, LushtextWindow, TransientDismissal, TransientDismissalEvidence,
     transient_dismissal_evidence,
 };

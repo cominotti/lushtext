@@ -390,21 +390,21 @@ rationale = "The nested branch keeps the first-frame and automation capture path
 [[rules]]
 code = "clippy::needless_pass_by_ref_mut"
 classification = "accepted_advisory"
-path_globs = ["crates/lushtext-core/src/ui/window/session_restore/execution.rs"]
+path_globs = ["crates/lushtext-ui/src/ui/window/session_restore/execution.rs"]
 max_count = 1
 rationale = "`settle_restore_selection` takes the restore runtime mutably as the coordination owner of the selection settle; scoped to the one site."
 
 [[rules]]
 code = "clippy::used_underscore_binding"
 classification = "accepted_advisory"
-path_globs = ["crates/lushtext-core/src/ui/responsiveness_probe.rs"]
+path_globs = ["crates/lushtext-ui/src/ui/responsiveness_probe.rs"]
 max_count = 1
 rationale = "`_watchdog` is the smoke-only probe's owned watchdog source, held for its lifetime and replaced once at install; scoped to the one site."
 
 [[rules]]
 code = "clippy::option_option"
 classification = "accepted_advisory"
-path_globs = ["crates/lushtext-core/src/ui/window/geometry/policy.rs"]
+path_globs = ["crates/lushtext-ui/src/ui/window/geometry/policy.rs"]
 max_count = 1
 rationale = "`ShellReconciliation::compact_surface` is `Option<Option<SecondarySurface>>` because the outer `None` means the compact slot is unchanged and the inner `None` means the plan clears it; the Kani-proved shell reconciliation plan depends on telling those apart."
 
@@ -451,7 +451,7 @@ rationale = "One rustdoc range written as two intra-doc links around a code `..=
 [[rules]]
 code = "clippy::option_option"
 classification = "accepted_advisory"
-path_globs = ["crates/lushtext-core/src/ui/editor_page/load/admission.rs"]
+path_globs = ["crates/lushtext-ui/src/ui/editor_page/load/admission.rs"]
 max_count = 1
 rationale = "`PlanningJoin::language_guess` is `Option<Option<String>>` on purpose: the outer `None` means the language catalog was not ready, the inner `None` that the catalog guesses no language. The field doc states it; flattening would make an unready catalog read as plain text."
 
@@ -460,7 +460,7 @@ code = "clippy::tuple_array_conversions"
 classification = "accepted_advisory"
 path_globs = [
   "crates/gtk-lush/axioms/src/probes/a72.rs",
-  "crates/lushtext-core/src/ui/editor_page/minimap/policy.rs",
+  "crates/lushtext-ui/src/ui/editor_page/minimap/policy.rs",
 ]
 max_count = 2
 rationale = "A probe that extends its measurement vector with a destructured `(h, v)` pair, and a minimap-policy unit test that passes `split_at`'s `(head, tail)` as a two-slice input; naming the halves is the point. `minimap/policy.rs` is read by the pull-request-gated `core-minimap-fit` Kani shard."

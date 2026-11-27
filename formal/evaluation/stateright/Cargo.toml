@@ -11,7 +11,8 @@ publish = false
 [workspace]
 
 [dependencies]
-lushtext-core = { path = "../../../crates/lushtext-core" }
+lushtext-model = { path = "../../../crates/lushtext-model", features = ["test-utils"] }
+lushtext-services = { path = "../../../crates/lushtext-services", features = ["test-utils"] }
 stateright = "0.31.0"
 
 [profile.release]

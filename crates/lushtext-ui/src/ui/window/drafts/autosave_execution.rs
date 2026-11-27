@@ -1,0 +1,1001 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Writing dirty buffers to their drafts, on a timer and at close.
+//!
+//! Stage-order-qualified `autosave_execution`, the sibling of
+//! `restore_execution`. Two stage orders share this module because they share
+//! their shape exactly: collect candidates, snapshot **one at a time**, write each
+//! body on a worker, then commit every accepted entry to the manifest in one
+//! pass. What differs is only their admission rule and their terminal — an
+//! autosave re-arms, a close reports to its caller — which is why they are one
+//! module rather than two.
+//!
+//! ## One body at a time, and why the pipeline is recursive
+//!
+//! Each candidate's snapshot, worker write, and completion are chained: the next
+//! candidate is admitted **from inside** the previous one's completion. That is
+//! what bounds the lane to one complete document-sized body regardless of how
+//! many tabs are dirty. A loop would hold them all.
+//!
+//! ## The close path's deliberate exception
+//!
+//! `flush_dirty_drafts` (in `journal`) blocks, on the reasoning that the process
+//! is about to exit and the last recoverable buffer state matters more than the
+//! stall. Every other path here yields. Note that **no production path currently
+//! reaches it**: window close goes through `flush_dirty_drafts_async` below, and
+//! the synchronous variant is exercised only by widget tests.
+
+use std::collections::HashSet;
+
+use anyhow::Result;
+use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk_lush_tasks::spawn_blocking_then;
+use gtk4::glib;
+use gtk4::prelude::*;
+
+use crate::ui::buffer_snapshot;
+use crate::ui::editor_page::LushtextEditorPage;
+use lushtext_model::draft::{DraftEntry, DraftManifestAuthority};
+use lushtext_services::draft_service::journal_core;
+use lushtext_services::notifications::NotificationSeverity;
+use lushtext_services::{draft_service, editor_io, json_store};
+
+use super::policy;
+use super::policy::DraftPipelineFailures;
+use super::policy::{
+    AutosaveAdmission, autosave_admission, captured_snapshot_is_current, close_flush_must_wait,
+    draft_candidate_is_eligible,
+};
+use super::seams::{
+    AcceptedDraft, DirtyDraftCandidate, DirtyDraftCompletion, DraftFlushError,
+    DraftManifestFailure, WritableDraftCandidate,
+};
+use super::{
+    automatic_draft_limit, delay_draft_body_for_test, delay_draft_manifest_completion_for_test,
+    delay_draft_manifest_for_test, fail_next_draft_body_for_test,
+    fail_next_draft_manifest_for_test, first_dirty_autosave_debounce,
+    injected_draft_registration_failure_for_test,
+};
+use crate::ui::window::LushtextWindow;
+
+impl LushtextWindow {
+    /// Start the global 5-second autosave timer.
+    pub fn start_autosave_timer(&self) {
+        let window_weak = self.downgrade();
+        let source_id = glib::timeout_add_local(policy::AUTOSAVE_TICK_INTERVAL, move || {
+            let Some(window) = window_weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            window.periodic_autosave_tick();
+            glib::ControlFlow::Continue
+        });
+        *self.imp().drafts.autosave_source_id.borrow_mut() = Some(source_id);
+    }
+
+    /// One tick of the 5 s timer: count it, retry the unrestored copies whose
+    /// backoff has elapsed, then run the autosave pass.
+    ///
+    /// Only this tick retries a failed copy; the first-dirty debounce and the
+    /// pending rerun call `autosave_tick` directly, because neither has
+    /// anything to do with the copy's failure cause.
+    fn periodic_autosave_tick(&self) {
+        let ticks = &self.imp().drafts.autosave_timer_ticks;
+        ticks.set(ticks.get().saturating_add(1));
+        self.retry_unrestored_copies();
+        self.autosave_tick();
+    }
+
+    /// Single autosave pass: collect dirty tabs and write drafts.
+    pub(super) fn autosave_tick(&self) {
+        self.cancel_first_dirty_draft_autosave();
+        self.evaluate_preserved_drafts_if_placed();
+        let drafts = &self.imp().drafts;
+        // Another window's journal work counts as a mutation in flight: the
+        // lane is process-wide, and a pass started now would race it.
+        if autosave_admission(
+            drafts.autosave_inflight.get(),
+            self.journal_mutation_busy(),
+            drafts.orphan_cleanup_inflight.get(),
+        ) == AutosaveAdmission::MarkPending
+        {
+            drafts.autosave_pending.set(true);
+            return;
+        }
+
+        // Take the lane before collecting: collection assigns each candidate
+        // its mutation intent, which must not be minted for a pass that then
+        // does not run.
+        if !self.take_journal_lane() {
+            self.imp().drafts.autosave_pending.set(true);
+            return;
+        }
+        let dirty_tabs = self.collect_dirty_draft_candidates();
+        if dirty_tabs.is_empty() {
+            self.return_unused_journal_lane();
+            return;
+        }
+
+        self.imp().drafts.autosave_inflight.set(true);
+        self.imp().drafts.mutation_inflight.set(true);
+        self.register_new_draft_ids_then(dirty_tabs, |window, candidates, refused| {
+            window.drive_dirty_draft_pipeline(
+                candidates,
+                Vec::new(),
+                DraftPipelineFailures {
+                    body_write: refused,
+                    ..DraftPipelineFailures::default()
+                },
+            );
+        });
+    }
+
+    /// Register every file-backed candidate id the persisted manifest lacks,
+    /// in one batched commit, before any of their bodies is written.
+    ///
+    /// Stage 3½ of both pipelines. Without it a crash between a first body
+    /// write and the pass's single commit left a body no manifest entry
+    /// described — the leftover that used to wedge the journal. A candidate
+    /// whose registration did not commit is not written at all; it stays
+    /// dirty and retryable. Ids already registered skip the step, so a
+    /// steady-state pass costs nothing extra.
+    ///
+    /// `then` receives the candidates that hold their body-write token, as
+    /// [`WritableDraftCandidate`]s, and the ids of every other candidate,
+    /// refused.
+    fn register_new_draft_ids_then<F>(&self, candidates: Vec<DirtyDraftCandidate>, then: F)
+    where
+        F: FnOnce(&Self, Vec<WritableDraftCandidate>, Vec<String>) + 'static,
+    {
+        let trusted = self.imp().drafts.manifest_authority.get().is_trusted();
+        // The journal core mints the body-write token directly when no
+        // registration is needed; otherwise only a committed registration
+        // below may. Candidates keep their collection order.
+        let staged: Vec<StagedDraftCandidate> = {
+            let manifest = self.imp().drafts.manifest.borrow();
+            candidates
+                .into_iter()
+                .map(|candidate| {
+                    match draft_service::RegisteredDraft::without_registration(
+                        &candidate.draft_id,
+                        candidate.original_path.is_some(),
+                        manifest.find_by_id(&candidate.draft_id).is_some(),
+                        trusted,
+                    ) {
+                        // Minted for this candidate's id, so `into_writable`
+                        // accepts it; were it ever refused, the candidate
+                        // would take the registration path, never be dropped.
+                        Some(token) => match candidate.into_writable(token) {
+                            Ok(writable) => StagedDraftCandidate::Writable(writable),
+                            Err((candidate, _)) => {
+                                StagedDraftCandidate::NeedsRegistration(candidate)
+                            }
+                        },
+                        None => StagedDraftCandidate::NeedsRegistration(candidate),
+                    }
+                })
+                .collect()
+        };
+        let registrations: Vec<(String, Option<std::path::PathBuf>)> = staged
+            .iter()
+            .filter_map(|staged| match staged {
+                StagedDraftCandidate::NeedsRegistration(candidate) => {
+                    Some((candidate.draft_id.clone(), candidate.original_path.clone()))
+                }
+                StagedDraftCandidate::Writable(_) => None,
+            })
+            .collect();
+        if registrations.is_empty() {
+            let (writable, refused) = finish_registration(staged, Vec::new(), false);
+            then(self, writable, refused);
+            return;
+        }
+        let data_dir = json_store::data_dir();
+        let session = self.collect_session_for_draft_reconciliation();
+        let authority = self.imp().drafts.manifest_authority.get();
+        let window_weak = self.downgrade();
+        spawn_blocking_then(
+            (),
+            move || {
+                let entries = registrations
+                    .into_iter()
+                    .map(|(draft_id, original_path)| DraftEntry {
+                        draft_id,
+                        original_mtime_secs: original_path
+                            .as_deref()
+                            .and_then(editor_io::mtime_secs),
+                        original_path,
+                        saved_at_secs: editor_io::now_epoch_secs(),
+                    })
+                    .collect::<Vec<_>>();
+                let result = match injected_draft_registration_failure_for_test() {
+                    Err(error) => Err(DraftManifestFailure::injected(&error)),
+                    Ok(()) => draft_service::register_draft_entries(
+                        &data_dir, &session, authority, &entries,
+                    )
+                    .map_err(DraftManifestFailure::from),
+                };
+                (result, entries)
+            },
+            move |(), (result, registered)| {
+                let Some(window) = window_weak.upgrade() else {
+                    return;
+                };
+                let tokens = match window.apply_draft_registration(result, &registered) {
+                    Ok(tokens) => tokens,
+                    Err(detail) => {
+                        tracing::warn!("Failed to register new draft ids: {detail}");
+                        Vec::new()
+                    }
+                };
+                let committed = !tokens.is_empty();
+                let (writable, refused) = finish_registration(staged, tokens, committed);
+                then(&window, writable, refused);
+            },
+        );
+    }
+
+    /// Drive one periodic timer tick (the tick count, due unrestored-copy
+    /// retries, then the autosave pass) without waiting for the timer.
+    #[cfg(feature = "test-utils")]
+    pub fn autosave_tick_for_test(&self) {
+        self.periodic_autosave_tick();
+    }
+
+    /// Record that `editor` holds text its draft does not: the one draft-owed
+    /// operation.
+    ///
+    /// Marks the tab draft-dirty, which advances its dirty generation, so a
+    /// pass that captured the older text cannot clear the flag when it commits
+    /// (its completion compares generations). Then schedules the first-dirty
+    /// autosave when the tab was not owed a draft yet, or marks a running pass
+    /// pending when it was. The buffer `changed` and `modified-changed`
+    /// handlers call it for an edit; a whole-buffer replacement suspends those
+    /// handlers, so each replacement terminal that installs text the draft
+    /// does not hold calls it too: Restore and Undo Restore from local
+    /// history, and opening a set-aside draft. Startup draft recovery does
+    /// not: the installed body is the draft (`restore-main-ci` design D1).
+    pub(crate) fn note_draft_owed(&self, editor: &LushtextEditorPage) {
+        let became_owed = !editor.draft_dirty();
+        editor.set_draft_dirty(true);
+        if became_owed {
+            self.schedule_first_dirty_draft_autosave();
+        } else {
+            self.mark_draft_autosave_pending_if_inflight();
+        }
+    }
+
+    /// Schedule a short autosave after the first dirty edit in a clean cycle.
+    pub(crate) fn schedule_first_dirty_draft_autosave(&self) {
+        let drafts = &self.imp().drafts;
+        if autosave_admission(
+            drafts.autosave_inflight.get(),
+            self.journal_mutation_busy(),
+            false,
+        ) == AutosaveAdmission::MarkPending
+        {
+            drafts.autosave_pending.set(true);
+            return;
+        }
+        drafts.first_dirty_autosave_pending.set(true);
+        self.imp().drafts.first_dirty_autosave_timer.arm(
+            self,
+            first_dirty_autosave_debounce(),
+            move |window, _| {
+                window.imp().drafts.first_dirty_autosave_pending.set(false);
+                window.autosave_tick();
+            },
+        );
+    }
+
+    pub(super) fn cancel_first_dirty_draft_autosave(&self) {
+        self.imp().drafts.first_dirty_autosave_pending.set(false);
+        let _ = self.imp().drafts.first_dirty_autosave_timer.invalidate();
+    }
+
+    /// Capture retry-eligible autosave candidates, excluding clean generations.
+    ///
+    /// A tab whose load installation is incomplete is **skipped, not deferred**.
+    /// A cancelled installation leaves the buffer holding neither the old
+    /// document nor the new one, and it clears `modified` without clearing
+    /// `draft_dirty` — so one keystroke afterwards would otherwise make a
+    /// near-empty buffer look like a normal dirty candidate and write it over a
+    /// draft that still holds real unsaved work. Skipping keeps that draft as the
+    /// best available recovery record; deferring through `autosave_pending` would
+    /// spin for as long as the installation stays incomplete. A retry install
+    /// clears the flag, and the next edit re-arms the first-dirty autosave
+    /// through the ordinary path.
+    pub(super) fn collect_dirty_draft_candidates(&self) -> Vec<DirtyDraftCandidate> {
+        let (candidates, restore_blocked) = self.collect_draft_candidates(true, &HashSet::new());
+        if restore_blocked > 0 {
+            // Retried by a later tick once the pending restore has resolved.
+            self.imp().drafts.autosave_pending.set(true);
+        }
+        candidates
+    }
+
+    /// Capture every modified close candidate except explicit discards.
+    ///
+    /// Also returns how many tabs were held back by a pending draft restore;
+    /// the close reports them as unconfirmed so it stays retryable.
+    pub(super) fn collect_close_draft_candidates(&self) -> (Vec<DirtyDraftCandidate>, usize) {
+        let discarded_draft_ids = self.imp().drafts.close_discard_ids.borrow().clone();
+        self.collect_draft_candidates(false, &discarded_draft_ids)
+    }
+
+    /// Walk the tab list once and capture every eligible draft candidate.
+    ///
+    /// Shared by both admission passes above, because the walk, the eligibility
+    /// question, and the candidate record are the same for both. Exactly two
+    /// things differ, and both are parameters: `require_draft_dirty` is the policy
+    /// term that separates an autosave from a close, and `discarded_draft_ids` is
+    /// the close path's explicit discard set — empty for autosave, which has none.
+    ///
+    /// The step order is load-bearing and matches both original passes exactly:
+    /// eligibility, then the draft id, then the discard check, and only then
+    /// `advance`, so a tab that is skipped for any reason never consumes a
+    /// mutation epoch.
+    fn collect_draft_candidates(
+        &self,
+        require_draft_dirty: bool,
+        discarded_draft_ids: &HashSet<String>,
+    ) -> (Vec<DirtyDraftCandidate>, usize) {
+        let tab_view = &self.imp().tab_view;
+        let mut dirty_tabs = Vec::new();
+        let mut restore_blocked = 0usize;
+        for i in 0..tab_view.n_pages() {
+            let page = tab_view.nth_page(i);
+            let child = page.child();
+            let Some(editor) = child.downcast_ref::<LushtextEditorPage>() else {
+                continue;
+            };
+            if !draft_candidate_is_eligible(
+                editor.is_modified(),
+                editor.draft_dirty(),
+                editor.is_evicted(),
+                editor.draft_capture_blocked(),
+                require_draft_dirty,
+            ) {
+                continue;
+            }
+            let Some(draft_id) = editor.draft_id() else {
+                continue;
+            };
+            if discarded_draft_ids.contains(&draft_id) {
+                continue;
+            }
+            // The claim backstop: another window of the process owns this
+            // id's draft, so writing here would replace that window's body.
+            if !journal_core::window_may_journal_draft(self.claim_draft_id(&draft_id)) {
+                self.report_draft_claim_hold(&draft_id, editor);
+                restore_blocked += 1;
+                continue;
+            }
+            // The recovery body for this id has not been restored or
+            // preserved yet; writing the buffer now would destroy it.
+            if self.draft_body_write_decision(&draft_id, editor.file_path().is_some())
+                == journal_core::BodyWriteDecision::Hold
+            {
+                restore_blocked += 1;
+                continue;
+            }
+            let intent = self
+                .imp()
+                .drafts
+                .mutation_order
+                .borrow_mut()
+                .advance(&draft_id);
+            dirty_tabs.push(DirtyDraftCandidate {
+                draft_id,
+                original_path: editor.file_path(),
+                dirty_generation: editor.draft_dirty_generation(),
+                editor: editor.downgrade(),
+                buffer: editor.buffer(),
+                intent,
+            });
+        }
+        (dirty_tabs, restore_blocked)
+    }
+
+    /// Snapshot and write one close candidate before admitting the next body.
+    fn drive_close_draft_pipeline<F: FnOnce(Result<()>) + 'static>(
+        &self,
+        mut candidates: Vec<WritableDraftCandidate>,
+        accepted: Vec<AcceptedDraft>,
+        failures: DraftPipelineFailures,
+        on_done: F,
+    ) {
+        let Some(candidate) = candidates.pop() else {
+            self.commit_close_draft_pipeline(accepted, failures, on_done);
+            return;
+        };
+        let (candidate, registered) = candidate.into_parts();
+
+        let window_weak = self.downgrade();
+        // Every terminal outcome clears this capture's token before the next
+        // candidate starts, preventing stale disposal cancellation.
+        let finish_snapshot = move |outcome: buffer_snapshot::BufferSnapshotOutcome| {
+            let Some(window) = window_weak.upgrade() else {
+                return;
+            };
+            match outcome {
+                buffer_snapshot::BufferSnapshotOutcome::Captured(text) => {
+                    window.imp().drafts.close_snapshot.take();
+                    let Some(editor) = candidate.editor.upgrade() else {
+                        let mut failures = failures;
+                        failures.snapshot_cancelled += 1;
+                        window.drive_close_draft_pipeline(candidates, accepted, failures, on_done);
+                        return;
+                    };
+                    // Chunked capture yields to GTK. A mismatch is unconfirmed and
+                    // must block close rather than publish stale text.
+                    if !captured_snapshot_is_current(
+                        editor.draft_id().as_deref(),
+                        candidate.draft_id.as_str(),
+                        editor.draft_dirty_generation(),
+                        candidate.dirty_generation,
+                        editor.is_modified(),
+                        editor.is_evicted(),
+                        editor.draft_capture_blocked(),
+                    ) {
+                        let mut failures = failures;
+                        failures.snapshot_cancelled += 1;
+                        window.drive_close_draft_pipeline(candidates, accepted, failures, on_done);
+                        return;
+                    }
+                    let data_dir = json_store::data_dir();
+                    let draft_id = candidate.draft_id.clone();
+                    let original_path = candidate.original_path;
+                    let completion = DirtyDraftCompletion {
+                        draft_id: candidate.draft_id,
+                        dirty_generation: candidate.dirty_generation,
+                        editor: candidate.editor,
+                        intent: candidate.intent,
+                    };
+                    let window_weak = window.downgrade();
+                    // Move the only complete body to the worker and admit the next
+                    // candidate only after this durable write releases it.
+                    spawn_blocking_then(
+                        (),
+                        move || {
+                            let text = text.into_string_on_worker();
+                            delay_draft_body_for_test();
+                            fail_next_draft_body_for_test()?;
+                            draft_service::write_draft(&data_dir, &registered, &text)?;
+                            Ok::<_, anyhow::Error>(DraftEntry {
+                                draft_id,
+                                original_mtime_secs: original_path
+                                    .as_deref()
+                                    .and_then(editor_io::mtime_secs),
+                                original_path,
+                                saved_at_secs: editor_io::now_epoch_secs(),
+                            })
+                        },
+                        move |(), result| {
+                            let Some(window) = window_weak.upgrade() else {
+                                return;
+                            };
+                            let mut accepted = accepted;
+                            let mut failures = failures;
+                            match result {
+                                Ok(entry) => accepted.push(AcceptedDraft { entry, completion }),
+                                Err(error) => {
+                                    tracing::error!("Failed to write draft on close: {error}");
+                                    failures.body_write.push(error.to_string());
+                                }
+                            }
+                            window.drive_close_draft_pipeline(
+                                candidates, accepted, failures, on_done,
+                            );
+                        },
+                    );
+                }
+                buffer_snapshot::BufferSnapshotOutcome::ExceededLimit { .. } => {
+                    window.imp().drafts.close_snapshot.take();
+                    let mut failures = failures;
+                    failures.over_limit += 1;
+                    if let Some(editor) = candidate.editor.upgrade() {
+                        Self::show_automatic_recovery_limit(&editor);
+                    }
+                    window.drive_close_draft_pipeline(candidates, accepted, failures, on_done);
+                }
+                buffer_snapshot::BufferSnapshotOutcome::Cancelled(_) => {
+                    window.imp().drafts.close_snapshot.take();
+                    let mut failures = failures;
+                    failures.snapshot_cancelled += 1;
+                    window.drive_close_draft_pipeline(candidates, accepted, failures, on_done);
+                }
+            }
+        };
+
+        if buffer_snapshot::buffer_requires_chunked_snapshot(&candidate.buffer) {
+            let snapshot = buffer_snapshot::snapshot_buffer_text_async_budgeted(
+                candidate.buffer,
+                automatic_draft_limit(),
+                finish_snapshot,
+            );
+            *self.imp().drafts.close_snapshot.borrow_mut() = Some(snapshot);
+        } else {
+            finish_snapshot(buffer_snapshot::snapshot_buffer_text_direct_budgeted(
+                &candidate.buffer,
+                automatic_draft_limit(),
+            ));
+        }
+    }
+
+    /// Commit successful close bodies once and report every unconfirmed draft.
+    fn commit_close_draft_pipeline<F: FnOnce(Result<()>) + 'static>(
+        &self,
+        accepted: Vec<AcceptedDraft>,
+        mut failures: DraftPipelineFailures,
+        on_done: F,
+    ) {
+        let mut accepted_entries = Vec::new();
+        for accepted in accepted {
+            let completion = accepted.completion;
+            let Some(editor) = completion.editor.upgrade() else {
+                failures.snapshot_cancelled += 1;
+                continue;
+            };
+            if editor.draft_id().as_deref() == Some(completion.draft_id.as_str())
+                && editor.draft_dirty_generation() == completion.dirty_generation
+                && editor.is_modified()
+                && !editor.is_evicted()
+                && self
+                    .imp()
+                    .drafts
+                    .mutation_order
+                    .borrow()
+                    .is_current(&completion.intent)
+            {
+                accepted_entries.push(accepted.entry);
+            } else {
+                failures.snapshot_cancelled += 1;
+            }
+        }
+        let data_dir = json_store::data_dir();
+        let session = self.collect_session_for_draft_reconciliation();
+        let authority = self.imp().drafts.manifest_authority.get();
+        let window_weak = self.downgrade();
+
+        spawn_blocking_then(
+            (),
+            move || {
+                delay_draft_manifest_for_test();
+                if let Err(error) = fail_next_draft_manifest_for_test() {
+                    return (
+                        None,
+                        Err(DraftFlushError::Manifest {
+                            authority: DraftManifestAuthority::default(),
+                            detail: error.to_string(),
+                        }),
+                    );
+                }
+                let commit = if accepted_entries.is_empty() {
+                    None
+                } else {
+                    match draft_service::update_manifest(
+                        &data_dir,
+                        &session,
+                        authority,
+                        |manifest| {
+                            for entry in accepted_entries {
+                                manifest.upsert(entry);
+                            }
+                        },
+                    ) {
+                        Ok(commit) => Some(commit),
+                        Err(error) => {
+                            return (
+                                None,
+                                Err(DraftFlushError::Manifest {
+                                    authority: error.authority(),
+                                    detail: error.to_string(),
+                                }),
+                            );
+                        }
+                    }
+                };
+                let result = if failures.all_confirmed() {
+                    Ok(())
+                } else {
+                    Err(DraftFlushError::Unconfirmed {
+                        total: failures.total(),
+                        cancelled: failures.snapshot_cancelled,
+                        over_limit: failures.over_limit,
+                        body_write: failures.body_write.len(),
+                    })
+                };
+                (commit, result)
+            },
+            move |(), (commit, result)| {
+                if let Some(window) = window_weak.upgrade() {
+                    if let Some(commit) = commit {
+                        window.accept_draft_manifest_commit(commit);
+                    }
+                    if let Err(DraftFlushError::Manifest { authority, .. }) = &result {
+                        window.reject_draft_manifest_authority(*authority);
+                    }
+                    if result.is_ok() {
+                        window.clear_close_discard_drafts();
+                    }
+                    // Close flush owns this transaction's acceptance result.
+                    // Do not let an edit-coalesced regular tick clear retry state
+                    // before the close caller observes success or failure.
+                    window.imp().drafts.autosave_pending.set(false);
+                    window.imp().drafts.mutation_inflight.set(false);
+                    window.release_journal_lane();
+                    window.drive_pending_draft_mutations();
+                    window.wait_for_draft_mutations_then(move || {
+                        on_done(result.map_err(anyhow::Error::from));
+                    });
+                }
+            },
+        );
+    }
+
+    /// Run a close continuation only after queued draft mutations have drained.
+    fn wait_for_draft_mutations_then<F: FnOnce() + 'static>(&self, on_done: F) {
+        if close_flush_must_wait(
+            self.imp().drafts.mutation_inflight.get(),
+            false,
+            !self.imp().drafts.pending_deletes.borrow().is_empty(),
+            self.imp().drafts.restore_inflight_count.get() > 0,
+        ) {
+            let window_weak = self.downgrade();
+            glib::timeout_add_local_once(policy::DRAFT_MUTATION_WAIT_POLL_INTERVAL, move || {
+                if let Some(window) = window_weak.upgrade() {
+                    window.wait_for_draft_mutations_then(on_done);
+                }
+            });
+            return;
+        }
+        on_done();
+    }
+
+    /// Snapshot and durably write one autosave candidate at a time.
+    pub(super) fn drive_dirty_draft_pipeline(
+        &self,
+        mut candidates: Vec<WritableDraftCandidate>,
+        accepted: Vec<AcceptedDraft>,
+        failures: DraftPipelineFailures,
+    ) {
+        let Some(candidate) = candidates.pop() else {
+            self.commit_dirty_draft_pipeline(accepted, failures);
+            return;
+        };
+        let (candidate, registered) = candidate.into_parts();
+
+        let window_weak = self.downgrade();
+        // Every terminal outcome clears this capture's token before the next
+        // candidate starts, preventing stale disposal cancellation.
+        let finish_snapshot = move |outcome: buffer_snapshot::BufferSnapshotOutcome| {
+            let Some(window) = window_weak.upgrade() else {
+                return;
+            };
+            match outcome {
+                buffer_snapshot::BufferSnapshotOutcome::Captured(text) => {
+                    window.imp().drafts.autosave_snapshot.take();
+                    let Some(editor) = candidate.editor.upgrade() else {
+                        window.drive_dirty_draft_pipeline(candidates, accepted, failures);
+                        return;
+                    };
+                    // Capture spans main-loop turns. Discard stale text and
+                    // request a new pass when identity or generation changed.
+                    if !captured_snapshot_is_current(
+                        editor.draft_id().as_deref(),
+                        candidate.draft_id.as_str(),
+                        editor.draft_dirty_generation(),
+                        candidate.dirty_generation,
+                        editor.is_modified(),
+                        editor.is_evicted(),
+                        editor.draft_capture_blocked(),
+                    ) {
+                        window.imp().drafts.autosave_pending.set(true);
+                        window.drive_dirty_draft_pipeline(candidates, accepted, failures);
+                        return;
+                    }
+
+                    let data_dir = json_store::data_dir();
+                    let draft_id = candidate.draft_id.clone();
+                    let original_path = candidate.original_path.clone();
+                    let completion = DirtyDraftCompletion {
+                        draft_id: candidate.draft_id,
+                        dirty_generation: candidate.dirty_generation,
+                        editor: candidate.editor,
+                        intent: candidate.intent,
+                    };
+                    let window_weak = window.downgrade();
+                    window.note_complete_draft_body_admitted();
+                    // The worker owns the only complete body and drops it as
+                    // soon as the durable write finishes.
+                    spawn_blocking_then(
+                        (),
+                        move || {
+                            let text = text.into_string_on_worker();
+                            delay_draft_body_for_test();
+                            fail_next_draft_body_for_test()?;
+                            let result = draft_service::write_draft(&data_dir, &registered, &text)
+                                .map(|()| DraftEntry {
+                                    draft_id,
+                                    original_mtime_secs: original_path
+                                        .as_deref()
+                                        .and_then(editor_io::mtime_secs),
+                                    original_path,
+                                    saved_at_secs: editor_io::now_epoch_secs(),
+                                });
+                            drop(text);
+                            result
+                        },
+                        move |(), result| {
+                            let Some(window) = window_weak.upgrade() else {
+                                return;
+                            };
+                            window.note_complete_draft_body_released();
+                            let mut accepted = accepted;
+                            let mut failures = failures;
+                            match result {
+                                Ok(entry) => accepted.push(AcceptedDraft { entry, completion }),
+                                Err(error) => {
+                                    tracing::warn!("Failed to write draft: {error}");
+                                    failures.body_write.push(completion.draft_id);
+                                }
+                            }
+                            window.drive_dirty_draft_pipeline(candidates, accepted, failures);
+                        },
+                    );
+                }
+                buffer_snapshot::BufferSnapshotOutcome::ExceededLimit { .. } => {
+                    window.imp().drafts.autosave_snapshot.take();
+                    let mut failures = failures;
+                    failures.over_limit += 1;
+                    if let Some(editor) = candidate.editor.upgrade()
+                        && editor.draft_id().as_deref() == Some(candidate.draft_id.as_str())
+                        && editor.draft_dirty_generation() == candidate.dirty_generation
+                    {
+                        Self::show_automatic_recovery_limit(&editor);
+                    }
+                    window.drive_dirty_draft_pipeline(candidates, accepted, failures);
+                }
+                buffer_snapshot::BufferSnapshotOutcome::Cancelled(_) => {
+                    window.imp().drafts.autosave_snapshot.take();
+                    let mut failures = failures;
+                    failures.snapshot_cancelled += 1;
+                    window.imp().drafts.autosave_pending.set(true);
+                    window.drive_dirty_draft_pipeline(candidates, accepted, failures);
+                }
+            }
+        };
+
+        if buffer_snapshot::buffer_requires_chunked_snapshot(&candidate.buffer) {
+            let snapshot = buffer_snapshot::snapshot_buffer_text_async_budgeted(
+                candidate.buffer,
+                automatic_draft_limit(),
+                finish_snapshot,
+            );
+            *self.imp().drafts.autosave_snapshot.borrow_mut() = Some(snapshot);
+        } else {
+            finish_snapshot(buffer_snapshot::snapshot_buffer_text_direct_budgeted(
+                &candidate.buffer,
+                automatic_draft_limit(),
+            ));
+        }
+    }
+
+    /// Commit compact successful entries once, then accept matching generations.
+    pub(super) fn commit_dirty_draft_pipeline(
+        &self,
+        accepted: Vec<AcceptedDraft>,
+        failures: DraftPipelineFailures,
+    ) {
+        if accepted.is_empty() {
+            self.finish_autosave_pipeline(&failures);
+            return;
+        }
+        let data_dir = json_store::data_dir();
+        let window_weak = self.downgrade();
+        let entries: Vec<DraftEntry> = accepted.iter().map(|item| item.entry.clone()).collect();
+        let session = self.collect_session_for_draft_reconciliation();
+        let authority = self.imp().drafts.manifest_authority.get();
+
+        spawn_blocking_then(
+            (),
+            move || {
+                delay_draft_manifest_for_test();
+                if let Err(error) = fail_next_draft_manifest_for_test() {
+                    return Err(DraftManifestFailure::injected(&error));
+                }
+                let result =
+                    draft_service::update_manifest(&data_dir, &session, authority, |manifest| {
+                        for entry in entries {
+                            manifest.upsert(entry);
+                        }
+                    })
+                    .map_err(DraftManifestFailure::from);
+                delay_draft_manifest_completion_for_test();
+                result
+            },
+            move |(), result| {
+                if let Some(window) = window_weak.upgrade() {
+                    match result {
+                        Ok(commit) => {
+                            window.accept_draft_manifest_commit(commit);
+                            for accepted in accepted {
+                                let completion = accepted.completion;
+                                let Some(editor) = completion.editor.upgrade() else {
+                                    continue;
+                                };
+                                // Durability covers only this captured generation;
+                                // a newer edit must remain dirty for a later pass.
+                                if editor.draft_id().as_deref()
+                                    == Some(completion.draft_id.as_str())
+                                    && editor.draft_dirty_generation()
+                                        == completion.dirty_generation
+                                    && window
+                                        .imp()
+                                        .drafts
+                                        .mutation_order
+                                        .borrow()
+                                        .is_current(&completion.intent)
+                                {
+                                    editor.set_draft_dirty(false);
+                                    window.clear_automatic_recovery_limit(&editor);
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            window.reject_draft_manifest_authority(error.authority);
+                            tracing::warn!("Failed to save draft manifest: {}", error.detail);
+                            window.publish_status_message(
+                                "Draft autosave could not confirm recovery metadata; changes remain retryable.",
+                                NotificationSeverity::Warning,
+                            );
+                        }
+                    }
+                    window.finish_autosave_pipeline(&failures);
+                }
+            },
+        );
+    }
+
+    /// Release the in-flight gate and run one coalesced follow-up when needed.
+    pub(super) fn finish_autosave_pipeline(&self, failures: &DraftPipelineFailures) {
+        if let Some(message) = failures.retryable_status_message() {
+            self.publish_status_message(&message, NotificationSeverity::Warning);
+        }
+        self.imp().drafts.autosave_inflight.set(false);
+        self.imp().drafts.mutation_inflight.set(false);
+        self.release_journal_lane();
+        self.drive_pending_draft_mutations();
+    }
+
+    /// Record that the worker now owns the one complete draft body.
+    ///
+    /// Always compiled: the draft evidence surface reports the retained count and
+    /// its high-water mark, and the boundedness invariant they prove — never more
+    /// than one complete body in flight — holds in production too.
+    pub(super) fn note_complete_draft_body_admitted(&self) {
+        let retained = self.imp().drafts.retained_complete_bodies.get() + 1;
+        self.imp().drafts.retained_complete_bodies.set(retained);
+        self.imp().drafts.max_retained_complete_bodies.set(
+            self.imp()
+                .drafts
+                .max_retained_complete_bodies
+                .get()
+                .max(retained),
+        );
+    }
+
+    /// Record that the worker released the complete draft body.
+    pub(super) fn note_complete_draft_body_released(&self) {
+        self.imp().drafts.retained_complete_bodies.set(0);
+    }
+
+    /// Remember that a fresh autosave pass is needed after the active batch.
+    pub(crate) fn mark_draft_autosave_pending_if_inflight(&self) {
+        if self.imp().drafts.autosave_inflight.get() || self.imp().drafts.mutation_inflight.get() {
+            self.imp().drafts.autosave_pending.set(true);
+        }
+    }
+
+    /// Flush dirty drafts for close without monopolizing a GTK main-loop turn.
+    ///
+    /// Copies are serialized on GTK, writes run on workers, and `on_done` runs
+    /// back on GTK after every candidate is accepted or classified.
+    pub fn flush_dirty_drafts_async<F: FnOnce(Result<()>) + 'static>(&self, on_done: F) {
+        if close_flush_must_wait(
+            self.journal_mutation_busy(),
+            self.imp().drafts.orphan_cleanup_inflight.get(),
+            !self.imp().drafts.pending_deletes.borrow().is_empty(),
+            self.imp().drafts.restore_inflight_count.get() > 0,
+        ) {
+            let window_weak = self.downgrade();
+            glib::timeout_add_local_once(policy::DRAFT_MUTATION_WAIT_POLL_INTERVAL, move || {
+                if let Some(window) = window_weak.upgrade() {
+                    window.flush_dirty_drafts_async(on_done);
+                }
+            });
+            return;
+        }
+        let (candidates, restore_blocked) = self.collect_close_draft_candidates();
+        if restore_blocked > 0 {
+            on_done(Err(anyhow::anyhow!(
+                "{restore_blocked} drafts are still being restored or are owned by another \
+                 window; close remains retryable"
+            )));
+            return;
+        }
+        if candidates.is_empty() {
+            self.clear_close_discard_drafts();
+            on_done(Ok(()));
+            return;
+        }
+        // Free a moment ago (`close_flush_must_wait`), and nothing ran since.
+        let taken = self.take_journal_lane();
+        debug_assert!(taken, "the journal lane was checked free just above");
+        self.imp().drafts.mutation_inflight.set(true);
+        self.register_new_draft_ids_then(candidates, move |window, candidates, refused| {
+            window.drive_close_draft_pipeline(
+                candidates,
+                Vec::new(),
+                DraftPipelineFailures {
+                    body_write: refused
+                        .into_iter()
+                        .map(|draft_id| format!("{draft_id}: recovery metadata was not registered"))
+                        .collect(),
+                    ..DraftPipelineFailures::default()
+                },
+                on_done,
+            );
+        });
+    }
+}
+
+/// A candidate between token minting and the pass's registration commit.
+enum StagedDraftCandidate {
+    /// Its token was minted without registration.
+    Writable(WritableDraftCandidate),
+    /// Its id must be registered before its body is written.
+    NeedsRegistration(DirtyDraftCandidate),
+}
+
+/// Partition one pass's candidates after its registration step, in
+/// collection order.
+///
+/// `journal_core::may_write_after_registration` is the gate: a candidate that
+/// needed registration is writable only when the registration committed, and
+/// then only with the token minted for its own id. Every other candidate is
+/// refused, by id, and stays draft-dirty for the next pass.
+fn finish_registration(
+    staged: Vec<StagedDraftCandidate>,
+    mut tokens: Vec<draft_service::RegisteredDraft>,
+    committed: bool,
+) -> (Vec<WritableDraftCandidate>, Vec<String>) {
+    let mut writable = Vec::new();
+    let mut refused = Vec::new();
+    for staged in staged {
+        let candidate = match staged {
+            StagedDraftCandidate::Writable(candidate) => {
+                writable.push(candidate);
+                continue;
+            }
+            StagedDraftCandidate::NeedsRegistration(candidate) => candidate,
+        };
+        let token = if journal_core::may_write_after_registration(true, committed) {
+            tokens
+                .iter()
+                .position(|token| token.draft_id() == candidate.draft_id)
+                .map(|index| tokens.swap_remove(index))
+        } else {
+            None
+        };
+        let Some(token) = token else {
+            refused.push(candidate.draft_id);
+            continue;
+        };
+        match candidate.into_writable(token) {
+            Ok(candidate) => writable.push(candidate),
+            Err((candidate, _)) => refused.push(candidate.draft_id),
+        }
+    }
+    (writable, refused)
+}

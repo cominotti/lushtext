@@ -8,8 +8,8 @@
 /// The production journal decisions, plus the one type they take from
 /// `model::draft`.
 mod jc {
-    pub use lushtext_core::model::draft::DraftManifestCompleteness;
-    pub use lushtext_core::services::draft_service::journal_core::*;
+    pub use lushtext_model::draft::DraftManifestCompleteness;
+    pub use lushtext_services::draft_service::journal_core::*;
 }
 
 /// `clamped_preview_width` and the constants it reads, as extracted.

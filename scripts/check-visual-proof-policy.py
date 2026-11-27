@@ -22,7 +22,7 @@ DEFAULT_ARTIFACT_DIR = REPO_ROOT / "build/smoke/visual-geometry"
 WORKSPACE_TREE_SLICE_BIN_PREFIX = "crates/gtk-lush/widgets/src/viewport_slice_bin/"
 VISUAL_SENSITIVE_PREFIXES = (
     "crates/cargo-gtk-proof/src/",
-    "crates/lushtext-core/src/ui/",
+    "crates/lushtext-ui/src/ui/",
     "crates/lushtext/tests/widget/",
     "resources/ui/",
     "resources/style/",
@@ -49,18 +49,18 @@ VISUAL_SENSITIVE_SUFFIXES = (
 # the moment that file is renamed, and it keeps exiting 0 while it does.
 # `crates/cargo-gtk-proof/src/policy.rs` implements the same predicate and must
 # stay keyed identically; both sides carry a self-test asserting it.
-NATIVE_MINIMAP_ROLE_HOME_PREFIX = "crates/lushtext-core/src/ui/editor_page/minimap/"
+NATIVE_MINIMAP_ROLE_HOME_PREFIX = "crates/lushtext-ui/src/ui/editor_page/minimap/"
 # `WFR-SHELL-GEOMETRY`'s role home, added by slot 7b's §E3 re-key.
 #
 # The geometry code that drives the workspace-sidebar and document-properties
 # transitions used to live in `ui/window/imp.rs` and `ui/window/actions.rs`,
 # which are still keys below because both retain protected code. This prefix is
 # the narrowest key that also selects the code that moved. A
-# `crates/lushtext-core/src/ui/window/` prefix is deliberately not used: it
+# `crates/lushtext-ui/src/ui/window/` prefix is deliberately not used: it
 # would demand two pixel invariants and the sidebar animation matrix of seven
 # subdirectories, four of them migrated role homes no predicate has ever
 # protected.
-SHELL_GEOMETRY_ROLE_HOME_PREFIX = "crates/lushtext-core/src/ui/window/geometry/"
+SHELL_GEOMETRY_ROLE_HOME_PREFIX = "crates/lushtext-ui/src/ui/window/geometry/"
 # Invariant proving the workspace sidebar's rendered rows against screenshot
 # anchors after a `win.reveal-workspace-path` reveal. The path set below mirrors
 # `crates/cargo-gtk-proof/src/policy.rs` exactly; both self-tests assert the
@@ -71,10 +71,10 @@ WORKSPACE_TREE_REVEAL_SCENARIO_PREFIX = "scripts/visual-geometry-scenarios/works
 WORKSPACE_TREE_ROW_ANCHOR_EXACT = (
     "crates/gtk-lush/widgets/src/scroll_request.rs",
     "crates/gtk-lush/widgets/src/slice_geometry.rs",
-    "crates/lushtext-core/src/ui/sidebar/reveal_execution.rs",
-    "crates/lushtext-core/src/ui/sidebar/workspace_section/folder_execution.rs",
-    "crates/lushtext-core/src/ui/sidebar/workspace_section/imp.rs",
-    "crates/lushtext-core/src/ui/sidebar/workspace_section/row_factory.rs",
+    "crates/lushtext-ui/src/ui/sidebar/reveal_execution.rs",
+    "crates/lushtext-ui/src/ui/sidebar/workspace_section/folder_execution.rs",
+    "crates/lushtext-ui/src/ui/sidebar/workspace_section/imp.rs",
+    "crates/lushtext-ui/src/ui/sidebar/workspace_section/row_factory.rs",
     "resources/ui/workspace-section.blp",
     "resources/ui/workspace-section.ui",
 )
@@ -82,7 +82,7 @@ WORKSPACE_TREE_ROW_ANCHOR_EXACT = (
 # (`first-frame-window-shell`). Mirrors `crates/cargo-gtk-proof/src/policy.rs`
 # exactly; both self-tests assert the same required and not-required paths.
 FIRST_FRAME_SHELL_INVARIANT = "first-frame-shell-chrome"
-WINDOW_COMPOSITION_ROLE_HOME_PREFIX = "crates/lushtext-core/src/ui/window/composition/"
+WINDOW_COMPOSITION_ROLE_HOME_PREFIX = "crates/lushtext-ui/src/ui/window/composition/"
 FIRST_FRAME_SHELL_SCENARIO_PREFIX = "scripts/visual-geometry-scenarios/first-frame-shell"
 FIRST_FRAME_SHELL_EXACT = ("resources/ui/window.blp", "resources/ui/window.ui")
 NATIVE_MINIMAP_HIGHLIGHT_INVARIANT = "native-minimap-highlight-anchors"
@@ -202,10 +202,10 @@ def required_invariants_for_changes(paths: list[str]) -> list[str]:
     for path in (item.replace("\\", "/") for item in paths):
         if (
             path.startswith(NATIVE_MINIMAP_ROLE_HOME_PREFIX)
-            or path == "crates/lushtext-core/src/ui/window/actions.rs"
+            or path == "crates/lushtext-ui/src/ui/window/actions.rs"
             or path.startswith(SHELL_GEOMETRY_ROLE_HOME_PREFIX)
-            or path == "crates/lushtext-core/src/ui/window/imp.rs"
-            or path == "crates/lushtext-core/src/ui/automation.rs"
+            or path == "crates/lushtext-ui/src/ui/window/imp.rs"
+            or path == "crates/lushtext-ui/src/ui/automation.rs"
             or path == "crates/lushtext-model/src/automation.rs"
             or path == "resources/style/style.css"
             or path == "scripts/check-visual-proof-policy.py"
@@ -251,13 +251,13 @@ def required_animation_invariants_for_changes(paths: list[str]) -> list[str]:
     required: set[str] = set()
     for path in (item.replace("\\", "/") for item in paths):
         if (
-            path == "crates/lushtext-core/src/ui/editor_page/imp.rs"
+            path == "crates/lushtext-ui/src/ui/editor_page/imp.rs"
             or path.startswith(NATIVE_MINIMAP_ROLE_HOME_PREFIX)
-            or path == "crates/lushtext-core/src/ui/editor_page/overscroll.rs"
-            or path == "crates/lushtext-core/src/ui/window/actions.rs"
+            or path == "crates/lushtext-ui/src/ui/editor_page/overscroll.rs"
+            or path == "crates/lushtext-ui/src/ui/window/actions.rs"
             or path.startswith(SHELL_GEOMETRY_ROLE_HOME_PREFIX)
-            or path == "crates/lushtext-core/src/ui/window/imp.rs"
-            or path == "crates/lushtext-core/src/ui/automation.rs"
+            or path == "crates/lushtext-ui/src/ui/window/imp.rs"
+            or path == "crates/lushtext-ui/src/ui/automation.rs"
             or path == "crates/lushtext-model/src/automation.rs"
             or path == "scripts/check-visual-proof-policy.py"
             or path == "scripts/lushtext-automation.py"
@@ -275,8 +275,8 @@ def workspace_sidebar_animation_matrix_required(paths: list[str]) -> bool:
     return any(
         path.startswith(SHELL_GEOMETRY_ROLE_HOME_PREFIX)
         or path in {
-            "crates/lushtext-core/src/ui/window/actions.rs",
-            "crates/lushtext-core/src/ui/window/imp.rs",
+            "crates/lushtext-ui/src/ui/window/actions.rs",
+            "crates/lushtext-ui/src/ui/window/imp.rs",
             "scripts/check-visual-proof-policy.py",
             "scripts/test-visual-geometry.py",
             "scripts/visual-geometry-smoke.py",
@@ -668,7 +668,7 @@ def check_policy(artifact_dir: Path, base_ref: str | None) -> tuple[bool, str]:
 def run_self_tests() -> None:
     _self_test_shell_geometry_role_home_rekey()
     _self_test_workspace_tree_row_anchor_paths()
-    assert is_visual_sensitive("crates/lushtext-core/src/ui/window/imp.rs")
+    assert is_visual_sensitive("crates/lushtext-ui/src/ui/window/imp.rs")
     assert is_visual_sensitive("crates/lushtext-model/src/automation.rs")
     assert is_visual_sensitive("resources/ui/window.blp")
     assert is_visual_sensitive("resources/style/style.css")
@@ -686,7 +686,7 @@ def run_self_tests() -> None:
         NATIVE_MINIMAP_HIGHLIGHT_INVARIANT
     ]
     assert required_animation_invariants_for_changes(
-        ["crates/lushtext-core/src/ui/editor_page/overscroll.rs"]
+        ["crates/lushtext-ui/src/ui/editor_page/overscroll.rs"]
     ) == [NATIVE_MINIMAP_ANIMATION_INVARIANT]
     assert required_animation_invariants_for_changes(
         ["crates/cargo-gtk-proof/src/live.rs"]
@@ -700,9 +700,9 @@ def run_self_tests() -> None:
     # minimap role home separately. A one-sided re-key would otherwise leave the
     # two implementations disagreeing while both kept exiting 0.
     for minimap_role_path in (
-        "crates/lushtext-core/src/ui/editor_page/minimap/mod.rs",
-        "crates/lushtext-core/src/ui/editor_page/minimap/policy.rs",
-        "crates/lushtext-core/src/ui/editor_page/minimap/reflow_execution.rs",
+        "crates/lushtext-ui/src/ui/editor_page/minimap/mod.rs",
+        "crates/lushtext-ui/src/ui/editor_page/minimap/policy.rs",
+        "crates/lushtext-ui/src/ui/editor_page/minimap/reflow_execution.rs",
     ):
         assert is_visual_sensitive(minimap_role_path)
         assert required_invariants_for_changes([minimap_role_path]) == [
@@ -779,14 +779,14 @@ def run_self_tests() -> None:
         assert NATIVE_MINIMAP_HIGHLIGHT_INVARIANT in detail
         ok, detail = proof_covers_required_invariants(
             summary,
-            ["crates/lushtext-core/src/ui/editor_page/overscroll.rs"],
+            ["crates/lushtext-ui/src/ui/editor_page/overscroll.rs"],
         )
         assert not ok
         assert "animation_verified_invariant_ids" in detail
         summary["animation_verified_invariant_ids"] = [NATIVE_MINIMAP_ANIMATION_INVARIANT]
         ok, detail = proof_covers_required_invariants(
             summary,
-            ["crates/lushtext-core/src/ui/editor_page/overscroll.rs"],
+            ["crates/lushtext-ui/src/ui/editor_page/overscroll.rs"],
         )
         assert not ok
         assert "animation-evidence case" in detail
@@ -813,7 +813,7 @@ def run_self_tests() -> None:
         }
         ok, detail = proof_covers_required_invariants(
             summary,
-            ["crates/lushtext-core/src/ui/editor_page/overscroll.rs"],
+            ["crates/lushtext-ui/src/ui/editor_page/overscroll.rs"],
         )
         assert not ok
         assert "lacks animation frame rows" in detail
@@ -848,7 +848,7 @@ def run_self_tests() -> None:
             summary["cases"][0]["animation_frame_evidence"] = invalid
             ok, detail = proof_covers_required_invariants(
                 summary,
-                ["crates/lushtext-core/src/ui/editor_page/overscroll.rs"],
+                ["crates/lushtext-ui/src/ui/editor_page/overscroll.rs"],
             )
             assert not ok
             assert "lacks animation frame rows" in detail
@@ -856,13 +856,13 @@ def run_self_tests() -> None:
         summary["cases"][0]["animation_frame_evidence"] = valid_animation_evidence
         ok, detail = proof_covers_required_invariants(
             summary,
-            ["crates/lushtext-core/src/ui/editor_page/overscroll.rs"],
+            ["crates/lushtext-ui/src/ui/editor_page/overscroll.rs"],
         )
         assert ok
         assert NATIVE_MINIMAP_ANIMATION_INVARIANT in detail
         ok, detail = proof_covers_required_invariants(
             summary,
-            ["crates/lushtext-core/src/ui/window/imp.rs"],
+            ["crates/lushtext-ui/src/ui/window/imp.rs"],
         )
         assert not ok
         assert "workspace-sidebar animation matrix" in detail
@@ -884,7 +884,7 @@ def run_self_tests() -> None:
         summary["passed"] = len(WORKSPACE_SIDEBAR_ANIMATION_CASE_IDS)
         ok, detail = proof_covers_required_invariants(
             summary,
-            ["crates/lushtext-core/src/ui/window/imp.rs"],
+            ["crates/lushtext-ui/src/ui/window/imp.rs"],
         )
         assert ok
         assert "workspace-sidebar animation matrix verified" in detail
@@ -955,8 +955,8 @@ def _self_test_shell_geometry_role_home_rekey() -> None:
     wrong, which is the failure mode this pair exists to prevent.
     """
     moved = [
-        "crates/lushtext-core/src/ui/window/geometry/mod.rs",
-        "crates/lushtext-core/src/ui/window/geometry/execution.rs",
+        "crates/lushtext-ui/src/ui/window/geometry/mod.rs",
+        "crates/lushtext-ui/src/ui/window/geometry/execution.rs",
     ]
     assert required_invariants_for_changes(moved) == [NATIVE_MINIMAP_HIGHLIGHT_INVARIANT], (
         "the geometry role home must require the native minimap highlight invariant"
@@ -972,10 +972,10 @@ def _self_test_shell_geometry_role_home_rekey() -> None:
     # subdirectories, four of them migrated role homes no predicate has ever
     # protected. Broadening a gate is a scope change, not a rename side effect.
     for sibling in (
-        "crates/lushtext-core/src/ui/window/focus_mode/mod.rs",
-        "crates/lushtext-core/src/ui/window/tab_strip/mod.rs",
-        "crates/lushtext-core/src/ui/window/transient_dismissal/mod.rs",
-        "crates/lushtext-core/src/ui/window/notes/browser.rs",
+        "crates/lushtext-ui/src/ui/window/focus_mode/mod.rs",
+        "crates/lushtext-ui/src/ui/window/tab_strip/mod.rs",
+        "crates/lushtext-ui/src/ui/window/transient_dismissal/mod.rs",
+        "crates/lushtext-ui/src/ui/window/notes/browser.rs",
     ):
         assert not required_invariants_for_changes([sibling]), (
             f"{sibling} must not have been pulled into the pixel-invariant key"
@@ -986,8 +986,8 @@ def _self_test_shell_geometry_role_home_rekey() -> None:
 
     # The retained literal keys must survive: both files keep protected code.
     for retained in (
-        "crates/lushtext-core/src/ui/window/actions.rs",
-        "crates/lushtext-core/src/ui/window/imp.rs",
+        "crates/lushtext-ui/src/ui/window/actions.rs",
+        "crates/lushtext-ui/src/ui/window/imp.rs",
     ):
         assert required_invariants_for_changes([retained]) == [
             NATIVE_MINIMAP_HIGHLIGHT_INVARIANT
@@ -1008,8 +1008,8 @@ def _self_test_workspace_tree_row_anchor_paths() -> None:
         "crates/gtk-lush/widgets/src/scroll_request.rs",
         "crates/gtk-lush/widgets/src/slice_geometry.rs",
         "crates/gtk-lush/widgets/src/viewport_slice_bin/imp.rs",
-        "crates/lushtext-core/src/ui/sidebar/workspace_section/row_factory.rs",
-        "crates/lushtext-core/src/ui/sidebar/reveal_execution.rs",
+        "crates/lushtext-ui/src/ui/sidebar/workspace_section/row_factory.rs",
+        "crates/lushtext-ui/src/ui/sidebar/reveal_execution.rs",
         "resources/ui/workspace-section.blp",
         "scripts/visual-geometry-scenarios/workspace-tree-reveal.json",
         "scripts/visual-geometry-scenarios/workspace-tree-reveal-at-rest.json",
@@ -1020,8 +1020,8 @@ def _self_test_workspace_tree_row_anchor_paths() -> None:
         )
     for path in (
         "crates/lushtext-services/src/draft_service.rs",
-        "crates/lushtext-core/src/ui/sidebar/dialogs.rs",
-        "crates/lushtext-core/src/ui/sidebar/persist_execution.rs",
+        "crates/lushtext-ui/src/ui/sidebar/dialogs.rs",
+        "crates/lushtext-ui/src/ui/sidebar/persist_execution.rs",
         "crates/gtk-lush/widgets/src/clip_bin/mod.rs",
     ):
         assert WORKSPACE_TREE_ROW_ANCHORS_INVARIANT not in required_invariants_for_changes(
@@ -1029,8 +1029,8 @@ def _self_test_workspace_tree_row_anchor_paths() -> None:
         ), f"{path} must not require the workspace-tree rendered-row invariant"
     # Mirrored in `crates/cargo-gtk-proof/src/policy.rs`'s self-test.
     for path in (
-        "crates/lushtext-core/src/ui/window/composition/execution.rs",
-        "crates/lushtext-core/src/ui/window/composition/policy.rs",
+        "crates/lushtext-ui/src/ui/window/composition/execution.rs",
+        "crates/lushtext-ui/src/ui/window/composition/policy.rs",
         "resources/ui/window.blp",
         "resources/ui/window.ui",
         "scripts/visual-geometry-scenarios/first-frame-shell.json",
@@ -1040,8 +1040,8 @@ def _self_test_workspace_tree_row_anchor_paths() -> None:
             f"{path} must require the first-frame-shell invariant"
         )
     for path in (
-        "crates/lushtext-core/src/ui/window/construction.rs",
-        "crates/lushtext-core/src/ui/window/session_restore/policy.rs",
+        "crates/lushtext-ui/src/ui/window/construction.rs",
+        "crates/lushtext-ui/src/ui/window/session_restore/policy.rs",
         "resources/ui/status-bar.blp",
     ):
         assert FIRST_FRAME_SHELL_INVARIANT not in required_invariants_for_changes([path]), (

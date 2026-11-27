@@ -30,7 +30,7 @@ LUSHTEXT_CRATES = {
     "lushtext-build-support",
     "lushtext-model",
     "lushtext-services",
-    "lushtext-core",
+    "lushtext-ui",
 }
 REQUIRED_FILES = (
     "Cargo.toml",

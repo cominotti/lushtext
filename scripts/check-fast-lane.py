@@ -188,7 +188,7 @@ def self_test() -> int:
     # check-filesystem-boundary.sh scans the root README.md.
     expect("docs/automation-reference.md", DECLARE)
     expect("README.md", DECLARE)
-    for path in ("crates/lushtext-core/src/app.rs", "crates/lushtext-core/src/ui/AGENTS.md",
+    for path in ("crates/lushtext-ui/src/app.rs", "crates/lushtext-ui/src/ui/AGENTS.md",
                  "crates/lushtext/tests/widget/x.rs", "crates/gtk-lush/settle/src/lib.rs",
                  "crates/gtk-lush/proof-harness/src/lib.rs", "resources/ui/x.blp", "Cargo.lock",
                  "Cargo.toml", ".cargo/mutants.toml", ".gitignore",

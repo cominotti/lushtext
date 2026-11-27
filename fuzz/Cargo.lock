@@ -969,41 +969,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "lushtext-core"
-version = "0.8.3"
-dependencies = [
- "anyhow",
- "crossbeam-channel",
- "gdk4",
- "gio",
- "glib",
- "glib-build-tools",
- "gtk-lush-settle",
- "gtk-lush-signals",
- "gtk-lush-tasks",
- "gtk-lush-viewport",
- "gtk-lush-widgets",
- "gtk4",
- "libadwaita",
- "lushtext-build-support",
- "lushtext-model",
- "lushtext-services",
- "pango",
- "pulldown-cmark",
- "regex",
- "serde_json",
- "sourceview5",
- "thiserror",
- "tracing",
- "workspace-hack",
-]
-
-[[package]]
 name = "lushtext-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
- "lushtext-core",
+ "lushtext-ui",
 ]
 
 [[package]]
@@ -1044,6 +1014,36 @@ dependencies = [
  "thiserror",
  "tracing",
  "unicase",
+ "workspace-hack",
+]
+
+[[package]]
+name = "lushtext-ui"
+version = "0.8.3"
+dependencies = [
+ "anyhow",
+ "crossbeam-channel",
+ "gdk4",
+ "gio",
+ "glib",
+ "glib-build-tools",
+ "gtk-lush-settle",
+ "gtk-lush-signals",
+ "gtk-lush-tasks",
+ "gtk-lush-viewport",
+ "gtk-lush-widgets",
+ "gtk4",
+ "libadwaita",
+ "lushtext-build-support",
+ "lushtext-model",
+ "lushtext-services",
+ "pango",
+ "pulldown-cmark",
+ "regex",
+ "serde_json",
+ "sourceview5",
+ "thiserror",
+ "tracing",
  "workspace-hack",
 ]
 

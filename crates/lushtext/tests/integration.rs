@@ -2,7 +2,7 @@
 
 //! Integration tests for LushText non-GUI services.
 //!
-//! Tests run against lushtext-core directly (pure filesystem operations,
+//! Tests run against lushtext-ui directly (pure filesystem operations,
 //! no display server needed). Split into submodules for parallel compilation.
 //!
 //! Run with: `cargo test --test integration` or `make test-int`

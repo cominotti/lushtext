@@ -82,7 +82,7 @@ jobs:
         run: cargo install --locked cargo-mutants --version "${CARGO_MUTANTS_VERSION}"
 
       - name: Prove non-widget baseline
-        # Do not enable `lushtext-core/property-tests` here. Generated property
+        # Do not enable `lushtext-ui/property-tests` here. Generated property
         # cases have their own CI lane and must not multiply mutation runtime.
         run: cargo nextest run --workspace
 
@@ -130,7 +130,7 @@ jobs:
         run: curl -LsSf "https://get.nexte.st/${CARGO_NEXTEST_VERSION}/linux" | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
 
       - name: Prove non-widget baseline
-        # Do not enable `lushtext-core/property-tests` here. Generated property
+        # Do not enable `lushtext-ui/property-tests` here. Generated property
         # cases have their own CI lane and must not multiply mutation runtime.
         run: cargo nextest run --workspace
 

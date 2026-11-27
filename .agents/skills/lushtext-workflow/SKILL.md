@@ -1,6 +1,6 @@
 ---
 name: lushtext-workflow
-description: "Procedure for adding or restructuring a LushText workflow under the readability convention: the WFR-* matrix row, role home, policy.rs, seam value objects, coordination names, evidence.rs and its proofs, and the gate order. Use when a change under crates/lushtext-core/src/ui/** adds or moves a module, changes a workflow's policy, evidence surface or matrix row, or when make check-workflow-boundaries fails."
+description: "Procedure for adding or restructuring a LushText workflow under the readability convention: the WFR-* matrix row, role home, policy.rs, seam value objects, coordination names, evidence.rs and its proofs, and the gate order. Use when a change under crates/lushtext-ui/src/ui/** adds or moves a module, changes a workflow's policy, evidence surface or matrix row, or when make check-workflow-boundaries fails."
 ---
 
 The convention is normative in `.agents/rules/workflow-convention.md`. This skill
@@ -108,7 +108,7 @@ population an old cell pooled. A correction may move a figure **either** way.
 
 See [references/gate-order.md](references/gate-order.md). Two hazards worth
 knowing before you start: untracked files are invisible to every diff-aware gate,
-and any edit under `crates/lushtext-core/src/ui/`, `crates/lushtext/tests/widget/`,
+and any edit under `crates/lushtext-ui/src/ui/`, `crates/lushtext/tests/widget/`,
 `resources/ui/` or `resources/style/` voids the accessibility, visual, and
 visual-geometry summaries.
 

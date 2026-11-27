@@ -25,7 +25,7 @@ build into the gitignored `build/formal-evaluation/`.
   `src/journal_core.rs` is the copy of the draft journal's decisions;
   `src/bin/table.rs` writes the copy's side of the drift table.
 - `drift/` — the production side of the drift table, built with the
-  **workspace's** own toolchain through a path dependency on `lushtext-core`,
+  **workspace's** own toolchain through a path dependency on `lushtext-ui`,
   in a detached scratch worktree at the compared commit.
 - `table/emit.rs` — the table's inputs and format, included verbatim by both
   sides.

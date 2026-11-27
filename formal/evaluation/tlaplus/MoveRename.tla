@@ -1,6 +1,6 @@
 ------------------------------ MODULE MoveRename ------------------------------
 (* T1, second half: MoveProtocol (the copy fallback) and RenameProtocol from   *)
-(* crates/lushtext-core/src/services/filesystem/write_protocol.rs, with the    *)
+(* crates/lushtext-services/src/filesystem/write_protocol.rs, with the    *)
 (* move-safety and rename-sync Kani harnesses. Disposable evaluation model.    *)
 EXTENDS Naturals
 

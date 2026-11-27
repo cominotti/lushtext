@@ -60,7 +60,7 @@ make test-prop
 That expands to:
 
 ```sh
-cargo nextest run -p lushtext-core --features property-tests --test properties --profile property
+cargo nextest run -p lushtext-ui --features property-tests --test properties --profile property
 ```
 
 Run a deeper opt-in pass:
@@ -77,7 +77,7 @@ wrapper do not compile or execute it unless the feature is explicitly enabled.
 ## Runtime Policy
 
 The shared property helpers live under
-`crates/lushtext-core/tests/properties/support.rs`.
+`crates/lushtext-ui/tests/properties/support.rs`.
 
 - Default pull-request/local case count: 64 cases per property
 - Deep-run knob: `LUSHTEXT_PROPTEST_CASES`
@@ -94,7 +94,7 @@ clear invariant over a compact model, not a broad random end-to-end workflow.
 Minimized failures are persisted at:
 
 ```text
-crates/lushtext-core/proptest-regressions/properties.txt
+crates/lushtext-ui/proptest-regressions/properties.txt
 ```
 
 When `properties.txt` appears or changes, review it like any other regression
@@ -110,7 +110,7 @@ tighten the generator and remove the false regression seed.
   lane.
 - `scripts/run-widget-tests.sh --headless --retries 1` remains the display and
   GTK behavior lane.
-- `cargo bench -p lushtext-core --features test-utils --no-run` still compile-checks benchmark code.
+- `cargo bench -p lushtext-ui --features test-utils --no-run` still compile-checks benchmark code.
 - Mutation testing stays separate by default so generated property cases are
   not multiplied by every mutant.
 

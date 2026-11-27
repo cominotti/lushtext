@@ -5,7 +5,7 @@
 //
 // DISPOSABLE EVALUATION MODEL, NOT A MAINTAINED PROPERTY. The maintained
 // proof is the Kani harness set in
-// crates/lushtext-core/src/services/filesystem/write_protocol/kani_proofs.rs,
+// crates/lushtext-services/src/filesystem/write_protocol/kani_proofs.rs,
 // which drives the real `WriteProtocol` (write_protocol.rs, `step`). This file
 // transliterates that `step` and the harness's model disk so the evaluation
 // (docs/next/formal-verification-quint-vs-tlaplus.md) can check whether Quint

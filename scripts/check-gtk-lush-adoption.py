@@ -30,7 +30,7 @@ LUSHTEXT_PACKAGES = {
     "lushtext-build-support",
     "lushtext-model",
     "lushtext-services",
-    "lushtext-core",
+    "lushtext-ui",
 }
 REQUIRED_MATRIX_FIELDS = (
     "package",

@@ -27,8 +27,8 @@
 //! test asserts the fixed behaviour; the promoted production test is
 //! `draft_service::tests::unapplied_restore_keeps_an_uncommitted_newer_body_under_the_same_stamp`.
 
-use lushtext_core::model::draft::{DraftEntry, DraftManifest, StaleDraftPreservation};
-use lushtext_core::services::draft_service::{self, RegisteredDraft, set_aside};
+use lushtext_model::draft::{DraftEntry, DraftManifest, StaleDraftPreservation};
+use lushtext_services::draft_service::{self, RegisteredDraft, set_aside};
 
 #[test]
 fn unrestored_copy_is_kept_when_an_uncommitted_body_shares_the_entry_stamp() {

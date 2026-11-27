@@ -46,8 +46,8 @@ Assigned by trigger likelihood (impact is always data loss):
 
 - **Collect candidates**: Enumerate every tracked `.rs` file, normalize it as below, then retain every suffix under `ui/`, `services/`, or `model/` plus any other `.rs` file whose contents match a listed domain hint.
 - **Normalize paths**: Normalize separators to `/`, strip any leading `./`, and derive a **path suffix alias** by removing everything through the last `/src/` when present.
-  - `/repo/crates/lushtext-core/src/ui/window/drafts/journal.rs` → `ui/window/drafts/journal.rs`
-  - `/repo/crates/lushtext-core/src/ui/window/session_restore/journal.rs` → `ui/window/session_restore/journal.rs`
+  - `/repo/crates/lushtext-ui/src/ui/window/drafts/journal.rs` → `ui/window/drafts/journal.rs`
+  - `/repo/crates/lushtext-ui/src/ui/window/session_restore/journal.rs` → `ui/window/session_restore/journal.rs`
   - `crates/lushtext-services/src/session_service.rs` → `services/session_service.rs`
   - `packages/editor-core/src/model/draft.rs` → `model/draft.rs`
 - **Match on suffix aliases, not repo layout**: Trigger matching must work for absolute paths, repo-relative paths, crate-relative paths, and future crate moves/reorgs.

@@ -9,7 +9,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use lushtext_core::fuzzing::exercise_markdown_for_fuzzing;
+use lushtext_ui::fuzzing::exercise_markdown_for_fuzzing;
 
 fuzz_target!(|data: &[u8]| {
     let result = exercise_markdown_for_fuzzing(data);

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Every string-named signal connection or emission in lushtext-core goes
+"""Every string-named signal connection or emission in lushtext-ui goes
 through `ui/signal_connect.rs`, which checks the handler's return type against
 the signal's declared return type when the handler is connected.
 
@@ -10,8 +10,8 @@ in GLib's C marshaller, where a panic cannot unwind: the process aborts. A
 handler on `GtkTextView::extend-selection` (`gboolean`) that answered `None`
 outside Protected View aborted LushText on every double click
 (`fix-extend-selection-abort`). This check fails on any of these calls under
-`crates/lushtext-core/src` (comments stripped, call spread over lines
-included), except inside `crates/lushtext-core/src/ui/signal_connect.rs`:
+`crates/lushtext-ui/src` (comments stripped, call spread over lines
+included), except inside `crates/lushtext-ui/src/ui/signal_connect.rs`:
 
 - `connect`, `connect_id`, `connect_local`, `connect_local_id`,
   `connect_closure`, `connect_closure_id`, `connect_unsafe`,
@@ -38,8 +38,8 @@ import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-RUST_ROOT = "crates/lushtext-core/src"
-HELPER = "crates/lushtext-core/src/ui/signal_connect.rs"
+RUST_ROOT = "crates/lushtext-ui/src"
+HELPER = "crates/lushtext-ui/src/ui/signal_connect.rs"
 
 # A method call (`.connect_local(`, also split over lines) or a path call
 # (`ObjectExt::connect_local(`): a local closure that happens to be named
