@@ -37,12 +37,8 @@ RAW_INT_TY_RE = re.compile(
     r"|(?:std::sync::atomic::|core::sync::atomic::)?Atomic(?:U64|U32|Usize)"
     r"|u64|u32|usize|i64|i32)$"
 )
-STRUCT_RE = re.compile(
-    r"(?m)^[ \t]*(?:pub(?:\([^)]*\))?\s+)?struct\s+(\w+)(?:<[^>]*>)?\s*\{([^}]*)\}"
-)
-FIELD_RE = re.compile(
-    r"(?:^|[{\s,])(?:pub(?:\([^)]*\))?\s+)?((?:[a-z_]+_)?generation|editor_id)\s*:\s*([^,}\n]+)"
-)
+STRUCT_RE = re.compile(r"\bstruct\s+(\w+)(?:<[^>]*>)?\s*\{([^}]*)\}")
+FIELD_RE = re.compile(r"\b((?:[a-z_]+_)?generation|editor_id)\s*:\s*([^,}\n]+)")
 REPR_TRANSPARENT_STRUCT_RE = re.compile(
     r"#\[repr\(\s*transparent\s*\)\](?:\s*#\[[^\]]*\])*\s*(?:pub(?:\([^)]*\))?\s+)?struct\s+(\w+)"
 )
@@ -203,8 +199,16 @@ def find_raw_boundary_fields(root: Path) -> list[tuple[str, int, str, str, str]]
                 path.read_text(encoding="utf-8", errors="replace")
             )
             for sm in STRUCT_RE.finditer(prod):
+                line_start = prod.rfind("\n", 0, sm.start()) + 1
+                prefix = prod[line_start : sm.start()].strip()
+                if prefix and prefix != "pub" and not (
+                    prefix.startswith("pub(") and prefix.endswith(")")
+                ):
+                    continue
                 struct_name, body = sm.group(1), sm.group(2)
                 for fm in FIELD_RE.finditer(body):
+                    if fm.start() > 0 and body[fm.start() - 1] not in "{ \t\r\n,":
+                        continue
                     field_name = fm.group(1)
                     field_ty = fm.group(2).strip().rstrip(",").strip()
                     if RAW_INT_TY_RE.match(field_ty):

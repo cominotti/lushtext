@@ -516,14 +516,11 @@ def nearest_rank(values: list[int], percent: int) -> int | None:
 
 def _parse_budget_expr(expr: str, known: dict[str, int]) -> int | None:
     expr = re.sub(r"\.as_us\(\s*\)", "", expr.strip())
-    m = re.fullmatch(r"Micros::from_us\(\s*(.+)\s*\)", expr)
-    if m:
-        expr = m.group(1).strip()
-    else:
-        m = re.fullmatch(r"Micros::from_ms\(\s*(.+)\s*\)", expr)
-        if m:
-            inner = _parse_budget_expr(m.group(1), known)
-            return None if inner is None else inner * 1_000
+    if expr.startswith("Micros::from_us(") and expr.endswith(")"):
+        expr = expr[len("Micros::from_us(") : -1].strip()
+    elif expr.startswith("Micros::from_ms(") and expr.endswith(")"):
+        inner = _parse_budget_expr(expr[len("Micros::from_ms(") : -1].strip(), known)
+        return None if inner is None else inner * 1_000
     if re.fullmatch(r"[0-9_]+", expr):
         return int(expr.replace("_", ""))
     if expr in known:
