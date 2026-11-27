@@ -371,14 +371,7 @@ Invoking `win.print` on a protected document SHALL NOT start a print operation. 
 - **THEN** no print dialog opens and the status lane explains why
 
 ### Requirement: Protected View pure policies carry Kani proofs over stated domains
-The responsiveness and integrity preconditions of Protected View SHALL be proved by Kani harnesses over the production pure cores, following `formal-verification-kani`. The fold placement and its row model SHALL be checked in `crates/lushtext-core/src/model/protected_fold/kani_proofs.rs`. The action-admission table, the entry state, navigation targets, Line Inspector windows and find batches SHALL be checked in `crates/lushtext-core/src/ui/editor_page/protected_view/policy/kani_proofs.rs`. The proved domain of each property SHALL be stated in its harness and in the checked function's rustdoc, as follows.
-
-- **Fold thresholds.** The fold policy takes its thresholds as one validated `FoldThresholds { head_cap, n_dense, v_batch, r_fold }` value. Its preconditions are `n_dense ≥ 1`, `n_dense ≤ head_cap`, `1 ≤ r_fold ≤ MAX_R_FOLD` (the production ring's capacity, 256), `r_fold · n_dense ≤ v_batch` and `r_fold · head_cap ≤ u64::MAX` (checked multiplications; the last lets a window's capped sum live in a `u64`). A harness SHALL prove that the production constants satisfy them, and the generic harnesses SHALL range over every threshold tuple that satisfies them, with `r_fold` from 1 to 3.
-- **Paragraph sequences.** The generic harnesses SHALL range over every sequence of up to six paragraphs whose lengths are arbitrary `u64` values. A window-lemma harness SHALL prove the per-window decision for any `r_fold` lengths, and the checked function's rustdoc SHALL state the argument that extends the bound to sequences of any length.
-- **Wrap mode.** The fold plan SHALL be independent of the wrap mode. The extension from paragraph windows to row windows rests on every paragraph occupying at least one row, which the rustdoc SHALL state and the PR-gated widget test SHALL check against GtkTextView's laid-out rows in both modes.
-- **UTF-8.** The byte-boundary property SHALL be proved for every valid UTF-8 string of up to 8 bytes that contains no paragraph delimiter.
-- **Session generation.** The entry-state harness SHALL range over every start generation up to `u64::MAX − 6`, and the transition's rustdoc SHALL state that bound.
-- **Unwind.** Each harness SHALL declare the `#[kani::unwind]` bound its loops need, and SHALL compute its own row positions and window sums without overflow.
+Protected View responsiveness and integrity preconditions SHALL be proved by Kani harnesses over production pure cores in `lushtext-model` (`protected_fold/kani_proofs.rs`) and `crates/lushtext-ui/src/ui/editor_page/protected_view/policy/kani_proofs.rs`, with exact proved domains and `#[kani::unwind]` bounds stated in harnesses and rustdoc.
 
 #### Scenario: Every window holds at most V_BATCH visible characters
 - **WHEN** the density harness runs the production `fold_step` and `fold_finish` over any paragraph sequence in the stated domain

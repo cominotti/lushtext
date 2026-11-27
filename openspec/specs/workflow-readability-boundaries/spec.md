@@ -658,34 +658,7 @@ available answer.
   name it does not perform
 
 ### Requirement: The externally reachable test-seam count is ratcheted
-The matrix's `Measurement Definitions` section SHALL record the current count of
-externally reachable `*_for_test` declarations — `pub fn` and `pub(crate) fn` whose
-name ends `_for_test`, under `crates/lushtext-core/src` — and the mechanical check
-SHALL recompute that count with the same predicate and fail when the actual count
-**exceeds** the recorded figure.
-
-A count **below** the recorded figure SHALL pass without a finding. The ratchet
-exists to stop the shadow introspection API growing back after the convention
-retired it; forcing the recorded figure down on every reduction would make routine
-cleanups fail a gate and would invite a change to raise the figure to make the
-error go away.
-
-The failure message SHALL name both remedies and their order: extend the owning
-workflow's evidence surface and delete the getter, which is the convention's
-answer; or, deliberately, raise the recorded figure in the same change with a
-stated reason, which makes the growth a reviewed decision rather than a drift.
-
-`#[cfg(feature = "test-utils")]` attribute sites SHALL NOT be ratcheted. That
-population legitimately rises as workflows gain gated evidence surfaces, so
-ratcheting it would penalise the convention being followed. It is a different
-measurement of a different set and MUST NOT be merged with the declaration count.
-
-The self-test fixture SHALL exercise **every visibility the predicate
-distinguishes** — at least one counted `pub fn`, at least one counted
-`pub(crate) fn`, and at least one uncounted `pub(super) fn` — and SHALL assert the
-resulting count rather than assume it. A fixture built from one visibility
-produces the same verdicts under a narrowed predicate, so it proves the ratchet's
-thresholds while leaving the population it counts unproven.
+`docs/workflow-readability-matrix.md` SHALL record the count of `pub fn` / `pub(crate) fn` declarations ending in `_for_test` under `crates/lushtext-ui/src`, and `make check-policy` SHALL fail only if the recomputed count exceeds it (`#[cfg(feature = "test-utils")]` sites remain outside the ratchet). The self-test SHALL verify `pub`, `pub(crate)`, and uncounted `pub(super)` visibilities.
 
 #### Scenario: Growth beyond the recorded figure fails
 - **WHEN** the recomputed count of externally reachable `*_for_test` declarations

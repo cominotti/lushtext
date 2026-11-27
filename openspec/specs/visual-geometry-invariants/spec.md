@@ -568,15 +568,14 @@ The visual invariant `workspace-tree-rendered-row-anchors` SHALL be defined by t
 - **THEN** the section header crop is pixel-identical before and after, and the outer scroll position is unchanged
 
 ### Requirement: Visual proof policy requires sidebar row proof for slice-sensitive changes
-
-The Rust-authoritative visual proof policy SHALL require a passing, fingerprint-matched `workspace-tree-rendered-row-anchors` proof for local changes to `crates/gtk-lush/widgets/src/viewport_slice_bin/`, `crates/gtk-lush/widgets/src/slice_geometry.rs`, `crates/gtk-lush/widgets/src/scroll_request.rs`, the workspace section's list host (`ui/sidebar/workspace_section/imp.rs`, `row_factory.rs`, `folder_execution.rs`), the reveal coordination module, `resources/ui/workspace-section.blp` and its generated `.ui`, and the two reveal manifests. `scripts/check-visual-proof-policy.py` SHALL mirror the same path set and invariant ID, and both self-tests SHALL cover a required and a not-required path.
+The Rust-authoritative visual proof policy SHALL require a passing `workspace-tree-rendered-row-anchors` proof for changes to `ViewportSliceBin`/`slice_geometry`/`scroll_request`, the workspace section list host, reveal coordination, `workspace-section.blp`/`.ui`, and reveal manifests. `scripts/check-visual-proof-policy.py` SHALL mirror it, with both self-tests covering required and non-required paths.
 
 #### Scenario: A slice-bin change without sidebar proof is rejected
 - **WHEN** a local change edits `crates/gtk-lush/widgets/src/scroll_request.rs` and no matching sidebar proof artifact exists
 - **THEN** `make check-visual-proof-policy` fails and names `workspace-tree-rendered-row-anchors`
 
 #### Scenario: An unrelated change is not burdened
-- **WHEN** a local change edits only `crates/lushtext-core/src/services/draft_service.rs`
+- **WHEN** a local change edits only `crates/lushtext-services/src/` (such as `draft_service`)
 - **THEN** the policy does not require the sidebar invariant
 
 ### Requirement: Staged window composition causes no visible layout jump

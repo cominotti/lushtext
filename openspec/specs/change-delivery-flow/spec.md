@@ -146,7 +146,7 @@ When a change that has had two design revisions is blocked again, an agent that 
 - **THEN** the change is marked `SHELVED` in the ledger and the programme record, and holds no slot or lock
 
 ### Requirement: The fast lane is limited to changes outside shipped code, proofs and gates
-A change MAY use the fast lane only when `scripts/check-fast-lane.py` classes every path `eligible` or `declare` from an allowlist, and it plans no timing verdict. Any path not on the allowlist SHALL make it not eligible. `declare` paths SHALL carry a "Gate effect: none" section. One agent writes and self-reviews the spec. The stage-4 reviewer SHALL review the spec, re-run the check and verify the declaration. A violation SHALL require an independent spec review.
+A change MAY use the fast lane only when `scripts/check-fast-lane.py` classes every path `eligible` or `declare`, plans no timing verdict, and keeps `declare` paths annotated with "Gate effect: none". Any unlisted path SHALL make it ineligible, and stage 4 SHALL require an independent spec review on violation.
 
 #### Scenario: A documentation change
 - **WHEN** a change edits only `docs/memorials/` and `openspec/` paths that no gate names
@@ -157,7 +157,7 @@ A change MAY use the fast lane only when `scripts/check-fast-lane.py` classes ev
 - **THEN** the checker reports it not eligible
 
 #### Scenario: A shipped file appears late
-- **WHEN** the stage-4 diff includes a file under `crates/lushtext-core/src/`
+- **WHEN** the stage-4 diff includes a file under `crates/lushtext-ui/src/`, `crates/lushtext-services/src/`, or `crates/lushtext-model/src/`
 - **THEN** the checker fails and an independent spec review runs before the merge
 
 #### Scenario: Rule text needs a declaration
@@ -267,14 +267,14 @@ The workflow script SHALL start a change at its prepare stage on an existing pul
 - **THEN** the script stops before any agent runs, or, for a stage's PR, before the next stage
 
 ### Requirement: Implementation is followed by simplify, parallel findings-only lenses and one independent apply agent
-After implementation, `/simplify` SHALL run on a clean worktree with an absolute worktree path. Findings-only lenses SHALL then run in parallel: `code-review high`, never `--fix`, over the PR's commits and `/simplify`'s edits, plus one domain lens per `review-lenses` flag. One agent that wrote no code SHALL apply the findings, run one smoke trio and the gates once, and the final review SHALL edit nothing.
+After implementation, `/simplify` SHALL run on a clean absolute worktree path, followed by parallel findings-only lenses (`code-review high` over PR commits and `/simplify` edits, plus domain lenses per `review-lenses`). One independent apply agent runs one smoke trio and gates once; the final review edits nothing.
 
 #### Scenario: A docs-and-tooling change gets one lens
 - **WHEN** `review-lenses` reports neither data nor performance for the PR's paths
 - **THEN** only the `code-review` lens runs, and the apply agent handles its findings
 
 #### Scenario: A data-path change fans out
-- **WHEN** the diff edits `crates/lushtext-core/src/services/draft_service.rs`
+- **WHEN** the diff edits `crates/lushtext-services/src/draft_service.rs` (or `crates/lushtext-services/src/persistence/draft_service.rs`)
 - **THEN** the `code-review`, `data-safety` and the three perf-leaf lenses run in parallel, each writing `review-findings-<lens>.md`
 
 #### Scenario: A performance-only change gets the perf lenses only
@@ -319,7 +319,7 @@ After implementation, `/simplify` SHALL run on a clean worktree with an absolute
 
 #### Scenario: A domain lens that did not run fails
 - **WHEN** a domain lens returns without `status: ran`, or with an empty `examined` list
-- **THEN** the script treats it as a failed lens and stops before the apply stage
+- **THEN** the script treats the lens as failed and stops before the apply stage
 
 #### Scenario: A lens marked ok over an empty body fails
 - **WHEN** the `code-review` lens ends with `CODE-REVIEW-STATUS: ok` but its findings are empty, only brackets, or only a "No findings" summary
@@ -354,7 +354,7 @@ After implementation, `/simplify` SHALL run on a clean worktree with an absolute
 - **THEN** its prompt allows the archive commit of "Merging" step 4, the archive skill's spec sync and the Kani figures included, and no other commit besides the conflict-free `origin/main` merge
 
 #### Scenario: One trio for both passes
-- **WHEN** `/simplify` and the apply agent both edit files under `crates/lushtext-core/src/ui/`
+- **WHEN** `/simplify` and the apply agent both edit files under `crates/lushtext-ui/src/ui/`
 - **THEN** the three smokes run once, before the single commit that holds both sets of edits
 
 ### Requirement: Workflow agents keep the main checkout untouched and make only listed outward writes

@@ -1269,6 +1269,19 @@ fn repair_manifest_from_draft_files(
     policy: DraftManifestRepairPolicy,
     missing_manifest: bool,
 ) -> DraftManifestRepairAttempt {
+    if !missing_manifest && !context.preservation.allows_replacement() {
+        return DraftManifestRepairAttempt {
+            repair: RecoveryRepair::Skipped {
+                diagnostics: vec![RecoveryDiagnostic::repair_skipped(
+                    context.class,
+                    context.path,
+                    "persisted draft manifest could not be quarantined; preserving draft bodies in place",
+                )],
+            },
+            completeness: DraftManifestCompleteness::Failed,
+            metrics: DraftManifestRepairMetrics::default(),
+        };
+    }
     let inventory = recoverable_draft_inventory(data_dir, session, cancel, policy);
     let mut diagnostics = Vec::new();
     push_set_aside_diagnostic(&mut diagnostics, context.path, inventory.metrics);

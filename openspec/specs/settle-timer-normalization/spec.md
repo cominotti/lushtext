@@ -6,13 +6,7 @@ timer helpers before any reusable GTK Lush settle API is extracted.
 
 ## Requirements
 ### Requirement: Timer-like call sites are audited before conversion
-The implementation SHALL audit timer-like LushText call sites before
-normalizing helpers. The audit MUST include GLib one-shot timers, recurring
-timers, idle deferrals, timeout futures, generation counters, and `SourceId`
-cancellation sites under `crates/lushtext-core/src/ui` and any directly related
-service helpers. Each candidate MUST be classified as debounce, delayed
-settle/repair, superseding one-shot, chunked yield, heartbeat/polling, stale
-async freshness, pure model/domain generation, or intentionally out of scope.
+The implementation SHALL audit GLib one-shot/recurring timers, idle deferrals, timeout futures, generation counters, and `SourceId` cancellations under `crates/lushtext-ui/src/ui` and related service helpers before converting, classifying each by lifecycle role.
 
 #### Scenario: Debounce candidate is identified
 - **WHEN** a GTK main-loop timer coalesces repeated user or model changes by
@@ -36,7 +30,7 @@ or replacing GTK's main-loop ownership.
 
 #### Scenario: Helper stays application-internal
 - **WHEN** the helper is added
-- **THEN** it is private to the LushText application or `lushtext-core`
+- **THEN** it is private to the LushText application or `lushtext-ui`
 - **AND** no new public `gtk-lush-settle` crate API is created or documented as
   available to external consumers
 

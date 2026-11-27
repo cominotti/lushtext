@@ -132,7 +132,7 @@ filtering, and custom app setup.
 - **THEN** LushText-specific GResource registration, GSettings isolation,
   test-data directory setup, filesystem fixtures, and widget registry
   generation remain in LushText adapter code or explicit app callbacks
-- **AND** `gtk-lush-proof-harness` does not import `lushtext-core`
+- **AND** `gtk-lush-proof-harness` does not import `lushtext-ui`, `lushtext-services`, or `lushtext-model`
 
 ### Requirement: Widget-test window presentation is a single shared helper
 Widget tests SHALL present test windows through one shared presentation

@@ -83,7 +83,7 @@ The release workflow SHALL keep all LushText package and store metadata versions
 
 #### Scenario: Version surfaces are updated together
 - **WHEN** the release helper prepares version `v1.2.3`
-- **THEN** `meson.build`, `crates/lushtext/Cargo.toml`, `crates/lushtext-core/Cargo.toml`, `Cargo.lock`, and `data/dev.cominotti.lushtext.metainfo.xml.in` reflect release version `1.2.3`
+- **THEN** `meson.build`, `crates/lushtext/Cargo.toml`, `crates/lushtext-ui/Cargo.toml`, `crates/lushtext-services/Cargo.toml`, `crates/lushtext-model/Cargo.toml`, `Cargo.lock`, and `data/dev.cominotti.lushtext.metainfo.xml.in` reflect release version `1.2.3`
 
 #### Scenario: AppStream release notes are required
 - **WHEN** the release helper prepares a real release
