@@ -146,6 +146,10 @@ pub const MATERIALIZATION_DRAIN_BATCH: usize = 256;
 /// Live facts observed when the materialization drain inspects one queued
 /// child-store entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pure policy fact bundle for tree materialization"
+)]
 pub struct MaterializationFacts {
     /// Whether the weak store reference still upgrades (false for probes
     /// discarded inside `GtkTreeListRow::is_expandable`).

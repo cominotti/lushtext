@@ -12,6 +12,10 @@ use lushtext_model::values::ProtectedViewGeneration;
 
 /// The observable Protected View state of one editor.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct ProtectedViewEvidence {
     /// Whether the editor is in Protected View.
     pub protected: bool,

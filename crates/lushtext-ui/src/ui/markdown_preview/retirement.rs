@@ -27,7 +27,7 @@ use gtk4::prelude::*;
 use lushtext_model::values::RenderGeneration;
 use lushtext_services::notes::markdown_render::MAX_MARKDOWN_SOURCE_BYTES;
 
-use super::imp;
+use super::projection_execution::create_or_update_tags;
 use super::seams::MarkdownRetirementSession;
 use super::seams::{
     PendingMarkdownRender, PendingMarkdownWork, PlainRetirementTerminal, RetiredMarkdownRender,
@@ -173,7 +173,7 @@ impl LushtextMarkdownPreview {
     }
 
     /// Detach the visible buffer in O(1) and retire its payload in bounded turns.
-    pub(super) fn clear_rendered_state(&self, allow_escape_generation: bool) {
+    pub(super) fn detach_rendered_buffer(&self, allow_escape_generation: bool) {
         let imp = self.imp();
         let retirement_len = imp
             .retirement
@@ -194,13 +194,13 @@ impl LushtextMarkdownPreview {
         }
         let old_buffer = imp.text_view.buffer();
         let new_buffer = gtk4::TextBuffer::new(None::<&gtk4::TextTagTable>);
-        imp::create_or_update_tags(&new_buffer, libadwaita::StyleManager::default().is_dark());
+        create_or_update_tags(&new_buffer, libadwaita::StyleManager::default().is_dark());
         imp.text_view.set_buffer(Some(&new_buffer));
 
         let retired = RetiredMarkdownRender {
             buffer: old_buffer,
-            embeds: std::mem::take(&mut *imp.rendered_embeds.borrow_mut()).into(),
-            links: std::mem::take(&mut *imp.text_link_targets.borrow_mut()).into(),
+            embeds: imp.rendered_embeds.take().into(),
+            links: imp.text_link_targets.take().into(),
         };
         if !retired.is_empty() {
             let mut retirement = imp.retirement.borrow_mut();

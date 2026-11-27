@@ -90,6 +90,10 @@ type Decision = (Instant, bool, u128, i32);
 
 /// What one edit cost, observed from its edit to quiet.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "GTK axiom probe observation flags DTO"
+)]
 pub struct EditCost {
     /// Whether the idle queued before the edit dispatched before the first
     /// update's emission.

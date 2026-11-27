@@ -27,7 +27,7 @@ use super::policy::{
     TAB_SCROLL_REPEAT_DELAY_MS, TAB_SCROLL_REPEAT_INTERVAL_MS, can_scroll, next_scroll_target,
     reveal_frame, reveal_holds_readiness, strip_overflows, tab_in_view,
 };
-use super::watch::TabOverflowState;
+use super::watch::{SelectionRevealPhase, TabOverflowState, TabScrollAnimationPhase};
 
 /// The deepest descendant level of an `AdwTabBar` the lookup walks: bar →
 /// revealer → box → scrolled window (`adw-tab-bar.ui`, ledger A132).
@@ -153,7 +153,7 @@ impl LushtextWindow {
         if page.is_pinned() {
             return None;
         }
-        let scroller = imp.tab_overflow.unpinned.borrow().clone()?;
+        let scroller = imp.tab_overflow.unpinned()?;
         let tab = find_page_tab(&scroller, &page)?;
         let bounds = tab.compute_bounds(&scroller)?;
         Some(tab_in_view(
@@ -200,8 +200,7 @@ impl TabOverflowState {
     /// Whether the pinned tabs overflow their own scroller, read as the
     /// unpinned extent is; false when the lookup did not find it.
     pub(super) fn pinned_overflows(&self) -> bool {
-        self.pinned
-            .borrow()
+        self.pinned()
             .as_ref()
             .is_some_and(|scroller| strip_overflows(current_extent(&scroller.hadjustment())))
     }
@@ -247,19 +246,21 @@ impl LushtextWindow {
     pub(super) fn step_tab_strip(&self, direction: ScrollDirection) -> bool {
         let imp = self.imp();
         let state = &imp.tab_overflow;
-        if !state.controls_visible.get() || imp.tab_view.is_transferring_page() {
+        if !state.published().controls_visible || imp.tab_view.is_transferring_page() {
             return false;
         }
         // The user moves the strip now: a reveal after a restore yields.
         self.end_selection_reveal();
-        let Some(scroller) = state.unpinned.borrow().clone() else {
+        let Some(scroller) = state.unpinned() else {
             return false;
         };
         let adjustment = scroller.hadjustment();
         let rtl = is_rtl(&*imp.tab_bar);
-        let from = state
-            .animation_target
-            .get()
+        let animation_target = match state.scroll.borrow().animation {
+            TabScrollAnimationPhase::Playing { target, .. } => Some(target),
+            TabScrollAnimationPhase::Idle => None,
+        };
+        let from = animation_target
             .filter(|_| self.tab_scroll_animation_playing())
             .unwrap_or_else(|| adjustment.value());
         let extent = extent_at(&adjustment, from);
@@ -286,7 +287,7 @@ impl LushtextWindow {
         // A playing step stops where it is; the new one starts from there.
         let _was_playing = state.pause_step();
         if immediate_steps() {
-            state.animation_target.set(None);
+            state.scroll.borrow_mut().animation = TabScrollAnimationPhase::Idle;
             adjustment.set_value(target);
             return;
         }
@@ -304,22 +305,23 @@ impl LushtextWindow {
                 window.finish_tab_scroll_animation(done);
             }
         });
-        state.animation_target.set(Some(target));
-        state.animation.replace(Some(animation.clone()));
+        state.scroll.borrow_mut().animation = TabScrollAnimationPhase::Playing {
+            animation: animation.clone(),
+            target,
+        };
         // With animations off, Libadwaita completes the animation at once.
         animation.play();
     }
 
     fn finish_tab_scroll_animation(&self, done: &libadwaita::TimedAnimation) {
-        let state = &self.imp().tab_overflow;
-        let current = state
-            .animation
-            .borrow()
-            .as_ref()
-            .is_some_and(|animation| animation == done);
-        if current {
-            state.animation.replace(None);
-            state.animation_target.set(None);
+        {
+            let mut scroll = self.imp().tab_overflow.scroll.borrow_mut();
+            if matches!(
+                scroll.animation,
+                TabScrollAnimationPhase::Playing { ref animation, .. } if animation == done
+            ) {
+                scroll.animation = TabScrollAnimationPhase::Idle;
+            }
         }
         self.schedule_tab_overflow_reconcile();
     }
@@ -339,25 +341,26 @@ impl LushtextWindow {
         let source = glib::timeout_add_local_once(delay, move || {
             if let Some(window) = window_weak.upgrade() {
                 // The source has dispatched: forget its id without removing it.
-                let _dispatched = window.imp().tab_overflow.repeat.take();
+                let _dispatched = window.imp().tab_overflow.scroll.borrow_mut().repeat.take();
                 if window.step_tab_strip(direction) {
                     window.arm_tab_scroll_repeat(direction, repeat_interval());
                 }
             }
         });
-        self.imp().tab_overflow.repeat.replace(Some(source));
+        self.imp()
+            .tab_overflow
+            .scroll
+            .borrow_mut()
+            .repeat
+            .replace(source);
     }
 
     /// Stage: the hold ended (release, gesture cancel, or the button hiding).
     /// The step in flight finishes; no further step starts. Returns whether
     /// a repeat was pending.
     pub(super) fn end_tab_scroll_hold(&self) -> bool {
-        self.imp()
-            .tab_overflow
-            .repeat
-            .take()
-            .map(glib::SourceId::remove)
-            .is_some()
+        let repeat = self.imp().tab_overflow.scroll.borrow_mut().repeat.take();
+        repeat.map(glib::SourceId::remove).is_some()
     }
 
     /// Inversion terminal: the strip's own input started, or is about to
@@ -365,10 +368,10 @@ impl LushtextWindow {
     /// strip's scroll wins (design D3). Counts only when something was active.
     pub(super) fn cancel_tab_scroll_for_strip_input(&self) {
         if self.stop_tab_scroll() {
-            let state = &self.imp().tab_overflow;
-            state
-                .guard_cancellations
-                .set(state.guard_cancellations.get().saturating_add(1));
+            {
+                let mut scroll = self.imp().tab_overflow.scroll.borrow_mut();
+                scroll.guard_cancellations = scroll.guard_cancellations.saturating_add(1);
+            }
             self.schedule_tab_overflow_reconcile();
         }
     }
@@ -376,9 +379,7 @@ impl LushtextWindow {
     /// Pause our step where it stands and drop the repeat (a cancellation,
     /// disposal). Returns whether either was active.
     pub(super) fn stop_tab_scroll(&self) -> bool {
-        let state = &self.imp().tab_overflow;
-        state.animation_target.set(None);
-        let stepping = state.pause_step();
+        let stepping = self.imp().tab_overflow.pause_step();
         let repeating = self.end_tab_scroll_hold();
         stepping || repeating
     }
@@ -410,7 +411,7 @@ impl LushtextWindow {
         let Some(bar) = imp.tab_bar.try_get() else {
             return;
         };
-        if imp.tab_view.selected_page().is_none() || imp.tab_overflow.unpinned.borrow().is_none() {
+        if imp.tab_view.selected_page().is_none() || imp.tab_overflow.unpinned().is_none() {
             return;
         }
         if !bar.is_mapped() {
@@ -436,20 +437,27 @@ impl LushtextWindow {
                     window.selection_reveal_frame(&progress, frames.get(), clock.frame_time());
                 if outcome == glib::ControlFlow::Break {
                     ended.set(true);
-                    window.imp().tab_overflow.selection_reveal.replace(None);
+                    window
+                        .imp()
+                        .tab_overflow
+                        .reveal
+                        .replace(SelectionRevealPhase::Idle);
                     window.schedule_tab_overflow_reconcile();
                 }
                 outcome
             }
         });
         imp.tab_overflow
-            .selection_reveal
-            .replace(Some(SelectionReveal {
-                bar: bar.downgrade(),
-                tick: Some(tick),
-                ended,
-                started_at_us: glib::monotonic_time(),
-            }));
+            .reveal
+            .replace(SelectionRevealPhase::Running {
+                reveal: SelectionReveal {
+                    bar: bar.downgrade(),
+                    tick: Some(tick),
+                    ended,
+                    started_at_us: glib::monotonic_time(),
+                },
+                announcing: false,
+            });
     }
 
     /// One frame of the reveal: `Break` once it is done. The decision is
@@ -464,8 +472,7 @@ impl LushtextWindow {
         let imp = self.imp();
         let Some(adjustment) = imp
             .tab_overflow
-            .unpinned
-            .borrow()
+            .unpinned()
             .as_ref()
             .map(gtk4::ScrolledWindow::hadjustment)
         else {
@@ -485,10 +492,17 @@ impl LushtextWindow {
         match step {
             RevealStep::Wait => glib::ControlFlow::Continue,
             RevealStep::Announce => {
-                let state = &imp.tab_overflow;
-                state.revealing_selection.set(true);
+                if let SelectionRevealPhase::Running { announcing, .. } =
+                    &mut *imp.tab_overflow.reveal.borrow_mut()
+                {
+                    *announcing = true;
+                }
                 imp.tab_view.notify("selected-page");
-                state.revealing_selection.set(false);
+                if let SelectionRevealPhase::Running { announcing, .. } =
+                    &mut *imp.tab_overflow.reveal.borrow_mut()
+                {
+                    *announcing = false;
+                }
                 glib::ControlFlow::Continue
             }
             RevealStep::End => glib::ControlFlow::Break,
@@ -502,19 +516,44 @@ impl LushtextWindow {
         self.forget_owed_selection_reveal();
         let window_weak = self.downgrade();
         let handler = bar.connect_map(move |bar| {
-            if let Some(window) = window_weak.upgrade()
-                && let Some(handler) = window.imp().tab_overflow.owed_reveal.take()
-            {
+            let Some(window) = window_weak.upgrade() else {
+                return;
+            };
+            let owed = {
+                let mut phase = window.imp().tab_overflow.reveal.borrow_mut();
+                if matches!(*phase, SelectionRevealPhase::Owed(_)) {
+                    match std::mem::take(&mut *phase) {
+                        SelectionRevealPhase::Owed(id) => Some(id),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            };
+            if let Some(handler) = owed {
                 bar.disconnect(handler);
                 window.reveal_selected_tab();
             }
         });
-        self.imp().tab_overflow.owed_reveal.replace(Some(handler));
+        self.imp()
+            .tab_overflow
+            .reveal
+            .replace(SelectionRevealPhase::Owed(handler));
     }
 
     /// Drop an owed reveal (a reveal started, disposal). Idempotent.
     pub(super) fn forget_owed_selection_reveal(&self) {
-        let handler = self.imp().tab_overflow.owed_reveal.take();
+        let handler = {
+            let mut phase = self.imp().tab_overflow.reveal.borrow_mut();
+            if matches!(*phase, SelectionRevealPhase::Owed(_)) {
+                match std::mem::take(&mut *phase) {
+                    SelectionRevealPhase::Owed(id) => Some(id),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        };
         if let Some(handler) = handler
             && let Some(bar) = self.imp().tab_bar.try_get()
         {
@@ -525,19 +564,32 @@ impl LushtextWindow {
     /// Stop a running reveal (a step, the user's own selection, the strip's
     /// own input, disposal). Idempotent.
     pub(super) fn end_selection_reveal(&self) {
-        let reveal = self.imp().tab_overflow.selection_reveal.take();
+        let reveal = {
+            let mut phase = self.imp().tab_overflow.reveal.borrow_mut();
+            if matches!(*phase, SelectionRevealPhase::Running { .. }) {
+                Some(std::mem::take(&mut *phase))
+            } else {
+                None
+            }
+        };
         drop(reveal);
     }
 
     /// Whether the selection is being re-announced by the reveal, which the
     /// window's own selection handler ignores: nothing changed.
     pub(in crate::ui::window) fn tab_overflow_reveals_selection(&self) -> bool {
-        self.imp().tab_overflow.revealing_selection.get()
+        matches!(
+            *self.imp().tab_overflow.reveal.borrow(),
+            SelectionRevealPhase::Running {
+                announcing: true,
+                ..
+            }
+        )
     }
 
     /// Whether a step or a hold is active, which is when the strip observers
     /// act at all.
     pub(super) fn tab_scroll_step_active(&self) -> bool {
-        self.tab_scroll_animation_playing() || self.imp().tab_overflow.repeat.borrow().is_some()
+        self.tab_scroll_animation_playing() || self.imp().tab_overflow.repeat_active()
     }
 }

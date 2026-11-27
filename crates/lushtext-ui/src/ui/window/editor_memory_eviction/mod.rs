@@ -88,6 +88,8 @@ use lushtext_model::document::editor_memory::{
 use lushtext_model::values::{Bytes, EditorId};
 
 use super::LushtextWindow;
+use execution::EditorMemoryEvaluationPhase;
+pub(in crate::ui::window) use execution::EditorMemoryState;
 use policy::UntrackDisposition;
 
 impl LushtextWindow {
@@ -133,12 +135,12 @@ impl LushtextWindow {
         }
 
         match policy::untrack_disposition(policy::UntrackFacts {
-            evaluation_running: state.evaluation_running.get(),
-            applying_eviction: state.applying_eviction.get(),
+            evaluation_running: state.evaluation_running(),
+            applying_eviction: state.applying_eviction(),
             remaining_total_bytes: update.map(|update| update.total_bytes.as_bytes()),
             accounting_uncertain: state.accounting_uncertain.get(),
         }) {
-            UntrackDisposition::RearmRunningPass => state.evaluation_armed.set(true),
+            UntrackDisposition::RearmRunningPass => state.set_rearm_after(),
             UntrackDisposition::IgnoreOwnEviction => {}
             UntrackDisposition::SchedulePass => self.schedule_editor_memory_evaluation(),
             UntrackDisposition::RecordWithinBudget => state
@@ -209,12 +211,12 @@ impl LushtextWindow {
         });
 
         match policy::untrack_disposition(policy::UntrackFacts {
-            evaluation_running: state.evaluation_running.get(),
-            applying_eviction: state.applying_eviction.get(),
+            evaluation_running: state.evaluation_running(),
+            applying_eviction: state.applying_eviction(),
             remaining_total_bytes: Some(update.total_bytes.as_bytes()),
             accounting_uncertain: state.accounting_uncertain.get(),
         }) {
-            UntrackDisposition::RearmRunningPass => state.evaluation_armed.set(true),
+            UntrackDisposition::RearmRunningPass => state.set_rearm_after(),
             UntrackDisposition::IgnoreOwnEviction => {}
             UntrackDisposition::SchedulePass => self.schedule_editor_memory_evaluation(),
             UntrackDisposition::RecordWithinBudget => state
@@ -231,14 +233,19 @@ impl LushtextWindow {
         // Remember transitions that happen between bounded eviction turns. A
         // signal emitted synchronously by `evict()` itself is already included
         // in the running pass and does not require a redundant scan.
-        if state.evaluation_running.get() {
-            if !state.applying_eviction.get() {
-                state.evaluation_armed.set(true);
+        match state.phase.get() {
+            EditorMemoryEvaluationPhase::Running {
+                applying_eviction, ..
+            } => {
+                if !applying_eviction {
+                    state.set_rearm_after();
+                }
+                return;
             }
-            return;
-        }
-        if state.evaluation_armed.replace(true) {
-            return;
+            EditorMemoryEvaluationPhase::Scheduled => return,
+            EditorMemoryEvaluationPhase::Idle => {
+                state.phase.set(EditorMemoryEvaluationPhase::Scheduled);
+            }
         }
 
         let window_weak = self.downgrade();
@@ -248,7 +255,13 @@ impl LushtextWindow {
             let Some(window) = window_weak.upgrade() else {
                 return;
             };
-            window.imp().editor_memory.evaluation_armed.set(false);
+            if window.imp().editor_memory.phase.get() == EditorMemoryEvaluationPhase::Scheduled {
+                window
+                    .imp()
+                    .editor_memory
+                    .phase
+                    .set(EditorMemoryEvaluationPhase::Idle);
+            }
             window.evaluate_editor_memory_budget();
         });
     }
@@ -259,9 +272,13 @@ impl LushtextWindow {
     /// `execution` re-finds and re-validates every candidate before clearing it.
     fn evaluate_editor_memory_budget(&self) {
         let memory = &self.imp().editor_memory;
-        if memory.evaluation_running.replace(true) {
+        if memory.evaluation_running() {
             return;
         }
+        memory.phase.set(EditorMemoryEvaluationPhase::Running {
+            rearm_after: false,
+            applying_eviction: false,
+        });
         memory
             .evaluation_count
             .set(memory.evaluation_count.get().wrapping_add(1));
@@ -279,13 +296,16 @@ impl LushtextWindow {
         let decision = evaluate_editor_memory_budget(&snapshot);
         memory.last_outcome.set(decision.outcome);
         if decision.candidates.is_empty() {
-            memory.evaluation_running.set(false);
+            memory.phase.set(EditorMemoryEvaluationPhase::Idle);
             return;
         }
 
         #[cfg(feature = "test-utils")]
-        if let Some(hook) = memory.before_eviction_hook.borrow_mut().take() {
-            hook();
+        {
+            let hook = memory.hooks.borrow_mut().before_eviction.take();
+            if let Some(hook) = hook {
+                hook();
+            }
         }
 
         // Stage 5, and the second inversion.
@@ -317,18 +337,12 @@ impl LushtextWindow {
     /// Inject one transition between candidate selection and safety rechecks.
     #[cfg(feature = "test-utils")]
     pub fn set_before_editor_memory_eviction_hook_for_test<F: FnOnce() + 'static>(&self, hook: F) {
-        self.imp()
-            .editor_memory
-            .before_eviction_hook
-            .replace(Some(Box::new(hook)));
+        self.imp().editor_memory.hooks.borrow_mut().before_eviction = Some(Box::new(hook));
     }
 
     /// Inject one transition between an applied eviction and the next turn.
     #[cfg(feature = "test-utils")]
     pub fn set_after_editor_memory_eviction_hook_for_test<F: FnOnce() + 'static>(&self, hook: F) {
-        self.imp()
-            .editor_memory
-            .after_eviction_hook
-            .replace(Some(Box::new(hook)));
+        self.imp().editor_memory.hooks.borrow_mut().after_eviction = Some(Box::new(hook));
     }
 }

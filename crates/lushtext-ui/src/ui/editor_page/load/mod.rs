@@ -145,7 +145,7 @@ use std::path::Path;
 
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 
-use crate::ui::editor_page::{EditorLoadState, LushtextEditorPage};
+use crate::ui::editor_page::LushtextEditorPage;
 use lushtext_model::document::encoding::DocumentEncoding;
 
 use super::save;
@@ -161,11 +161,9 @@ mod test_policy;
 pub(crate) mod watch;
 
 pub use evidence::LoadEvidence;
-pub use policy::{LoadInstallPhase, LoadOutcome};
+pub use policy::{EditorLoadState, LoadInstallPhase, LoadOutcome};
 
-// Two request-lifetime types the editor page's `imp` struct stores directly.
-pub(crate) use admission::PendingFileLoad;
-pub(crate) use execution::ChunkedLoadInstall;
+pub(crate) use watch::{LoadBufferStatus, LoadState, LoadTrackingState};
 
 #[cfg(feature = "test-utils")]
 pub use test_policy::{
@@ -226,7 +224,8 @@ impl LushtextEditorPage {
     pub fn connect_file_loaded<F: Fn() + 'static>(&self, f: F) {
         self.imp()
             .load
-            .file_loaded_callbacks
+            .callbacks
+            .file_loaded
             .borrow_mut()
             .push(Box::new(f));
     }
@@ -249,14 +248,15 @@ impl LushtextEditorPage {
     pub fn connect_content_republished<F: Fn() + 'static>(&self, f: F) {
         self.imp()
             .load
-            .content_republished_callbacks
+            .callbacks
+            .content_republished
             .borrow_mut()
             .push(Box::new(f));
     }
 
     /// Invoke every content-republished listener; re-entrant registration is safe.
     pub(in crate::ui::editor_page) fn fire_content_republished(&self) {
-        execution::invoke_reentrant_callbacks(&self.imp().load.content_republished_callbacks);
+        execution::invoke_reentrant_callbacks(&self.imp().load.callbacks.content_republished);
     }
 
     /// Register the one-shot terminal for the load request the window is about
@@ -269,7 +269,8 @@ impl LushtextEditorPage {
     pub(crate) fn connect_load_completed_once<F: FnOnce() + 'static>(&self, f: F) {
         self.imp()
             .load
-            .load_completed_callback
+            .callbacks
+            .completed
             .replace(Some(Box::new(f)));
     }
 
@@ -278,10 +279,7 @@ impl LushtextEditorPage {
     /// Window-level open flows undo provisional tab and path state from here,
     /// rather than guessing at failure before the background read has settled.
     pub(crate) fn connect_load_failed_once<F: FnOnce(String) + 'static>(&self, f: F) {
-        self.imp()
-            .load
-            .load_failed_callback
-            .replace(Some(Box::new(f)));
+        self.imp().load.callbacks.failed.replace(Some(Box::new(f)));
     }
 
     /// Whether document-amplifying callbacks must ignore installation edits.
@@ -305,28 +303,15 @@ impl LushtextEditorPage {
             || self.has_incomplete_load_installation()
     }
 
-    /// Whether this buffer holds a partially installed or cleared load.
-    ///
-    /// A cancelled or aborted installation leaves the buffer holding neither the
-    /// old document nor the new one, and leaves this true until a retry installs
-    /// one exact content. Any workflow that would **publish** the buffer must
-    /// refuse while it holds: the document-save workflow does so with
-    /// `EditorSaveError::IncompleteLoadInstallation`, and the draft-recovery
-    /// workflow skips the tab rather than writing a partial buffer over a draft
-    /// that still holds real unsaved work.
-    ///
-    /// This is a cheap accessor over the one cell rather than a whole
-    /// [`evidence::LoadEvidence`] read, because its callers consult it once per
-    /// tab per pass — identical by construction, since both read the same cell.
-    #[must_use]
     /// Whether a load installation was interrupted partway.
     ///
     /// Widened from `pub(crate)` so a widget test can assert the draft-candidate
     /// contract through the production predicate rather than a proxy: this flag is
     /// what makes autosave skip a tab, and the tab/close regression test needs to
     /// feed it to `drafts::policy::draft_candidate_is_eligible`.
+    #[must_use]
     pub fn has_incomplete_load_installation(&self) -> bool {
-        self.imp().load.installation_incomplete.get()
+        self.imp().load.buffer_status.get().is_incomplete()
     }
 
     /// Whether the buffer may not be captured as the document's text right

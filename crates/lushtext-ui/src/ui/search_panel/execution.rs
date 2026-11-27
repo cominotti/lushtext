@@ -23,15 +23,17 @@
 //! latest query is admitted, so the workflow can loop back into this module
 //! without returning to the facade.
 
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk_lush_settle::Debounce;
 use gtk4::prelude::*;
-use gtk4::{self, glib};
+use gtk4::{self, gio, glib};
 
 use lushtext_model::budgets::list_budget::turn_continues;
 use lushtext_model::workspace::content_search::{
@@ -42,13 +44,198 @@ use lushtext_services::filesystem::metadata as fs_metadata;
 use lushtext_services::{persistence::json_store, search::content_search, search::search_history};
 
 use super::LushtextSearchPanel;
-use super::imp::make_display_path;
 use super::item::SearchResultItem;
 use super::policy::{
     self, WorkspaceSearchRequest, WorkspaceSearchStart, WorkspaceSearchSubmission,
 };
+use super::results::make_display_path;
 use super::{SearchFileGroup, SearchMatchLocation, SearchProgressUpdate};
 use crate::ui::accessibility;
+
+/// Phase of one workspace search execution.
+#[derive(Default)]
+pub enum SearchExecutionPhase {
+    #[default]
+    Idle,
+    Running {
+        cancel_token: Arc<AtomicBool>,
+        result_capped: bool,
+    },
+    Completed {
+        result_capped: bool,
+    },
+}
+
+/// Runtime state for one in-flight search and its grouped GTK result models.
+pub struct SearchRuntimeState {
+    /// Root-level model: contains one file-header row per matching file.
+    pub root_store: RefCell<gio::ListStore>,
+    /// Per-file child stores keyed by absolute file path.
+    pub file_groups: RefCell<BTreeMap<Arc<Path>, SearchFileGroup>>,
+    /// Plain match data in arrival order for non-rendering workflows.
+    pub search_matches: RefCell<Vec<SearchMatch>>,
+    /// Algebraic search execution phase (idle, running with cancel token, or completed).
+    pub phase: RefCell<SearchExecutionPhase>,
+    /// Accepted match snapshot from the latest completed (or test-seeded) search.
+    pub accepted_matches: RefCell<Option<Arc<Vec<SearchMatch>>>>,
+    /// Count of zero-copy accepted-snapshot handoffs into Replace Preview.
+    pub shared_snapshot_handoffs: Cell<u64>,
+    /// Regression probe for any compatibility path that deep-clones accepted matches.
+    pub whole_result_clones: Cell<u64>,
+    /// Plain-Rust active-plus-latest ownership policy.
+    pub flight: RefCell<policy::WorkspaceSearchFlight>,
+    /// Direct active-group count; the single-flight invariant keeps this at zero or one.
+    pub active_worker_groups: Cell<u8>,
+    /// High-water active-group count for deterministic concurrency evidence.
+    pub active_worker_groups_high_water: Cell<u8>,
+    /// Debounce for search-entry input.
+    pub search_debounce: Debounce,
+    /// Debounce for glob-entry input, separate from the main query.
+    pub glob_debounce: Debounce,
+    /// Workspace folders to search. Updated by the window when workspaces change.
+    pub workspace_folders: RefCell<Arc<[PathBuf]>>,
+    /// Running total of matches in the current search.
+    pub total_matches: Cell<u32>,
+    /// Running total of files that currently have at least one match.
+    pub total_files: Cell<u32>,
+    /// Matches found by the current search, retained or not (`BeyondBudget`, `Done`).
+    pub matches_found: Cell<usize>,
+    /// Events received by the turn that revealed the current results.
+    pub reveal_turn_events: Cell<usize>,
+    /// The last turn that applied matches: (matches, child-store splices, root-store splices).
+    pub last_match_batch: Cell<(usize, usize, usize)>,
+    /// Last progress count forwarded to the window for approximate completion totals.
+    pub last_progress_count: Cell<usize>,
+    /// Every receive turn that dispatched an event: (events, wall time in µs).
+    #[cfg(feature = "test-utils")]
+    pub event_turn_observations: RefCell<Vec<(usize, i64)>>,
+}
+
+impl Default for SearchRuntimeState {
+    fn default() -> Self {
+        Self {
+            root_store: RefCell::new(gio::ListStore::new::<SearchResultItem>()),
+            file_groups: RefCell::new(BTreeMap::new()),
+            search_matches: RefCell::new(Vec::new()),
+            phase: RefCell::new(SearchExecutionPhase::Idle),
+            accepted_matches: RefCell::new(None),
+            shared_snapshot_handoffs: Cell::new(0),
+            whole_result_clones: Cell::new(0),
+            flight: RefCell::new(policy::WorkspaceSearchFlight::default()),
+            active_worker_groups: Cell::new(0),
+            active_worker_groups_high_water: Cell::new(0),
+            search_debounce: Debounce::default(),
+            glob_debounce: Debounce::default(),
+            workspace_folders: RefCell::new(Arc::from([])),
+            total_matches: Cell::new(0),
+            total_files: Cell::new(0),
+            matches_found: Cell::new(0),
+            reveal_turn_events: Cell::new(0),
+            last_match_batch: Cell::new((0, 0, 0)),
+            last_progress_count: Cell::new(0),
+            #[cfg(feature = "test-utils")]
+            event_turn_observations: RefCell::new(Vec::new()),
+        }
+    }
+}
+
+impl SearchRuntimeState {
+    /// Whether a search worker thread + poll timer is currently active.
+    #[must_use]
+    pub fn is_searching(&self) -> bool {
+        matches!(&*self.phase.borrow(), SearchExecutionPhase::Running { .. })
+    }
+
+    /// Whether the retained-byte budget cut the current search's results.
+    #[must_use]
+    pub fn is_result_capped(&self) -> bool {
+        match &*self.phase.borrow() {
+            SearchExecutionPhase::Idle => false,
+            SearchExecutionPhase::Running { result_capped, .. }
+            | SearchExecutionPhase::Completed { result_capped, .. } => *result_capped,
+        }
+    }
+
+    /// Snapshot of accepted matches from the latest completed search, if any.
+    #[must_use]
+    pub fn accepted_matches_snapshot(&self) -> Option<Arc<Vec<SearchMatch>>> {
+        self.accepted_matches.borrow().as_ref().map(Arc::clone)
+    }
+
+    /// Detach any completed accepted-match snapshot and clear result-capped
+    /// state while leaving any active running worker's cancel token intact.
+    pub(super) fn take_accepted_matches(&self) -> Option<Arc<Vec<SearchMatch>>> {
+        let mut phase = self.phase.borrow_mut();
+        match std::mem::take(&mut *phase) {
+            SearchExecutionPhase::Idle | SearchExecutionPhase::Completed { .. } => {}
+            SearchExecutionPhase::Running { cancel_token, .. } => {
+                *phase = SearchExecutionPhase::Running {
+                    cancel_token,
+                    result_capped: false,
+                };
+            }
+        }
+        self.accepted_matches.borrow_mut().take()
+    }
+
+    fn set_result_capped_active(&self) {
+        let mut phase = self.phase.borrow_mut();
+        match &mut *phase {
+            SearchExecutionPhase::Running { result_capped, .. }
+            | SearchExecutionPhase::Completed { result_capped } => *result_capped = true,
+            SearchExecutionPhase::Idle => {}
+        }
+    }
+
+    /// Mark the current search as running or idle (used by widget tests).
+    #[cfg(feature = "test-utils")]
+    pub fn set_searching(&self, searching: bool) {
+        if searching {
+            if !self.is_searching() {
+                self.phase.replace(SearchExecutionPhase::Running {
+                    cancel_token: Arc::new(AtomicBool::new(false)),
+                    result_capped: self.is_result_capped(),
+                });
+            }
+        } else {
+            self.phase.replace(SearchExecutionPhase::Idle);
+        }
+    }
+
+    /// Install a specific cancel token for the active search (used by widget tests).
+    #[cfg(feature = "test-utils")]
+    pub fn set_running_cancel_token(&self, cancel_token: Arc<AtomicBool>) {
+        let capped = self.is_result_capped();
+        self.phase.replace(SearchExecutionPhase::Running {
+            cancel_token,
+            result_capped: capped,
+        });
+    }
+
+    /// Mark the current search as result-capped (used by widget tests).
+    #[cfg(feature = "test-utils")]
+    pub fn set_result_capped(&self, capped: bool) {
+        let mut phase = self.phase.borrow_mut();
+        match &mut *phase {
+            SearchExecutionPhase::Running { result_capped, .. }
+            | SearchExecutionPhase::Completed { result_capped } => *result_capped = capped,
+            SearchExecutionPhase::Idle => {
+                if capped {
+                    *phase = SearchExecutionPhase::Completed {
+                        result_capped: true,
+                    };
+                }
+            }
+        }
+    }
+
+    /// Whether a running cancel token is currently active (used by widget tests).
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn has_cancel_token(&self) -> bool {
+        matches!(&*self.phase.borrow(), SearchExecutionPhase::Running { .. })
+    }
+}
 
 /// Maximum channel events received and dispatched by one scheduled GTK turn.
 ///
@@ -144,7 +331,7 @@ impl LushtextSearchPanel {
         let imp = self.imp();
 
         if !spec.query.is_empty() && self.result_retirement_saturated() {
-            imp.runtime.deferred_search.replace(Some(spec.clone()));
+            self.defer_search_during_retirement(spec.clone());
             imp.runtime.flight.borrow_mut().clear_pending();
             self.cancel_active_token();
             return;
@@ -188,7 +375,7 @@ impl LushtextSearchPanel {
     /// Cancel all pending intent and let the active worker disconnect precisely.
     pub(super) fn cancel_active_search(&self) {
         let imp = self.imp();
-        imp.runtime.deferred_search.take();
+        self.clear_deferred_search();
         imp.runtime.flight.borrow_mut().clear_pending();
         self.cancel_active_token();
     }
@@ -196,28 +383,30 @@ impl LushtextSearchPanel {
     /// Signal the one active worker without changing compact pending ownership.
     fn cancel_active_token(&self) {
         let imp = self.imp();
-        if let Some(cancel) = imp.runtime.cancel_token.borrow().as_ref()
+        let cancel_token = match &*imp.runtime.phase.borrow() {
+            SearchExecutionPhase::Running { cancel_token, .. } => Some(Arc::clone(cancel_token)),
+            _ => None,
+        };
+        if let Some(cancel) = cancel_token
             && !cancel.swap(true, Ordering::AcqRel)
         {
             let files_searched = imp.runtime.last_progress_count.get();
-            if let Some(ref cb) = *imp.callbacks.progress_callback.borrow() {
-                cb(SearchProgressUpdate::Cancelled { files_searched });
-            }
+            self.emit_progress(SearchProgressUpdate::Cancelled { files_searched });
         }
         if imp.runtime.flight.borrow().snapshot().active == 0 {
-            imp.runtime.cancel_token.take();
+            let mut phase = imp.runtime.phase.borrow_mut();
+            if matches!(*phase, SearchExecutionPhase::Running { .. }) {
+                *phase = SearchExecutionPhase::Idle;
+            }
             imp.runtime.active_worker_groups.set(0);
         }
-        imp.runtime
-            .searching
-            .set(imp.runtime.cancel_token.borrow().is_some());
         self.refresh_accessibility_state();
     }
 
     /// Launch one request only after the previous controller/walker disconnected.
     fn spawn_search_request(&self, start: WorkspaceSearchStart) {
         let imp = self.imp();
-        debug_assert!(imp.runtime.cancel_token.borrow().is_none());
+        debug_assert!(!imp.runtime.is_searching());
         let WorkspaceSearchStart {
             generation,
             request,
@@ -235,14 +424,13 @@ impl LushtextSearchPanel {
         let (plan_tx, plan_rx) = crossbeam_channel::bounded(1);
         let cancel = Arc::new(AtomicBool::new(false));
         let progress_counter = Arc::new(AtomicUsize::new(0));
-        imp.runtime.cancel_token.replace(Some(cancel.clone()));
-        imp.runtime.searching.set(true);
-        imp.runtime.result_capped.set(false);
+        imp.runtime.phase.replace(SearchExecutionPhase::Running {
+            cancel_token: cancel.clone(),
+            result_capped: false,
+        });
         imp.runtime.matches_found.set(0);
         self.refresh_accessibility_state();
-        if let Some(ref cb) = *imp.callbacks.progress_callback.borrow() {
-            cb(SearchProgressUpdate::Started);
-        }
+        self.emit_progress(SearchProgressUpdate::Started);
 
         let timer_cancel = cancel.clone();
         imp.error_label.set_visible(false);
@@ -377,9 +565,9 @@ impl LushtextSearchPanel {
                 apply_match_batch(&panel, turn_matches, traversal_plan.as_deref(), &folders);
             }
             if let Some(retained) = budget_reached
-                && !imp.runtime.result_capped.get()
+                && !imp.runtime.is_result_capped()
             {
-                imp.runtime.result_capped.set(true);
+                imp.runtime.set_result_capped_active();
                 imp.count_label.add_css_class("warning");
                 accessibility::announce_with_lane(
                     &*imp.count_label,
@@ -398,17 +586,16 @@ impl LushtextSearchPanel {
             let files_visited = progress_counter.load(Ordering::Relaxed);
             if !completion_notified && files_visited > imp.runtime.last_progress_count.get() {
                 imp.runtime.last_progress_count.set(files_visited);
-                if let Some(ref cb) = *imp.callbacks.progress_callback.borrow() {
-                    cb(SearchProgressUpdate::Progress {
-                        files_searched: files_visited,
-                    });
-                }
+                panel.emit_progress(SearchProgressUpdate::Progress {
+                    files_searched: files_visited,
+                });
             }
 
             let total = imp.runtime.total_matches.get();
             let files = imp.runtime.total_files.get();
+            let result_capped = imp.runtime.is_result_capped();
             if !cancelled && total > 0 && !search_incomplete {
-                let label = if imp.runtime.result_capped.get() {
+                let label = if result_capped {
                     policy::limited_count_label(
                         total as usize,
                         files as usize,
@@ -421,10 +608,7 @@ impl LushtextSearchPanel {
                     imp.count_label.set_text(&label);
                     panel.refresh_accessibility_state();
                 }
-            } else if !cancelled
-                && !completion_notified
-                && imp.runtime.searching.get()
-                && total == 0
+            } else if !cancelled && !completion_notified && imp.runtime.is_searching() && total == 0
             {
                 imp.count_label.set_text("Searching\u{2026}");
                 panel.refresh_accessibility_state();
@@ -433,17 +617,21 @@ impl LushtextSearchPanel {
             if done {
                 if !cancelled && !completion_notified {
                     completion_notified = true;
-                    imp.runtime.searching.set(false);
+                    let accepted = std::mem::take(&mut *imp.runtime.search_matches.borrow_mut());
+                    imp.runtime
+                        .accepted_matches
+                        .replace(Some(Arc::new(accepted)));
+                    imp.runtime
+                        .phase
+                        .replace(SearchExecutionPhase::Completed { result_capped });
                     panel.refresh_accessibility_state();
                     let files_visited = progress_counter.load(Ordering::Relaxed);
                     if files_visited > imp.runtime.last_progress_count.get() {
                         imp.runtime.last_progress_count.set(files_visited);
                     }
-                    if let Some(ref cb) = *imp.callbacks.progress_callback.borrow() {
-                        cb(SearchProgressUpdate::Done {
-                            files_searched: imp.runtime.last_progress_count.get(),
-                        });
-                    }
+                    panel.emit_progress(SearchProgressUpdate::Done {
+                        files_searched: imp.runtime.last_progress_count.get(),
+                    });
                 }
                 if !cancelled && total == 0 && !search_incomplete {
                     imp.count_label.set_text("No results found");
@@ -452,22 +640,20 @@ impl LushtextSearchPanel {
                 }
                 if !cancelled {
                     panel.update_replace_button_sensitivity();
-                    let accepted = std::mem::take(&mut *imp.runtime.search_matches.borrow_mut());
-                    imp.runtime
-                        .accepted_matches
-                        .replace(Some(Arc::new(accepted)));
                 }
 
-                if !cancelled && total > 0 && !imp.preview.preview_mode.get() {
+                if !cancelled && total > 0 && !panel.is_preview_mode() {
                     imp.save_button.set_visible(true);
                 }
 
                 // A limited search is not saved, as a capped one never was.
-                if !cancelled && total > 0 && !imp.runtime.result_capped.get() {
+                if !cancelled && total > 0 && !result_capped {
                     persist_search_history(&panel, &history_spec);
                 }
 
-                imp.runtime.cancel_token.take();
+                if cancelled {
+                    imp.runtime.phase.replace(SearchExecutionPhase::Idle);
+                }
                 imp.runtime.active_worker_groups.set(0);
                 let next = imp.runtime.flight.borrow_mut().finish(generation);
                 if let Some(next) = next {
@@ -477,11 +663,15 @@ impl LushtextSearchPanel {
                         panel.spawn_search_request(next);
                     } else {
                         imp.runtime.flight.borrow_mut().finish(next.generation);
-                        imp.runtime.searching.set(false);
+                        if imp.runtime.is_searching() {
+                            imp.runtime.phase.replace(SearchExecutionPhase::Idle);
+                        }
                         panel.refresh_accessibility_state();
                     }
                 } else {
-                    imp.runtime.searching.set(false);
+                    if imp.runtime.is_searching() {
+                        imp.runtime.phase.replace(SearchExecutionPhase::Idle);
+                    }
                     panel.refresh_accessibility_state();
                 }
 
@@ -502,13 +692,13 @@ impl LushtextSearchPanel {
         } else {
             self.hide_results_feedback();
         }
-        let preview_outcome = imp.preview.preview_outcome.take();
-        let checked_match_ids = std::mem::take(&mut *imp.preview.checked_match_ids.borrow_mut());
+        let preview_release = self.take_active_preview_for_release();
         self.detach_visible_results();
-        self.release_superseded_preview(preview_outcome, checked_match_ids);
+        if let Some((outcome, checked_match_ids)) = preview_release {
+            self.release_superseded_preview(Some(outcome), checked_match_ids);
+        }
         imp.runtime.total_matches.set(0);
         imp.runtime.total_files.set(0);
-        imp.runtime.result_capped.set(false);
         imp.runtime.matches_found.set(0);
         imp.runtime.reveal_turn_events.set(0);
         imp.navigation.current_match_index.set(None);
@@ -520,8 +710,7 @@ impl LushtextSearchPanel {
         imp.error_label.set_text("");
         imp.error_label.remove_css_class("error");
         self.invalidate_active_preview();
-        imp.preview.preview_pending.set(false);
-        imp.preview.preview_mode.set(false);
+        self.reset_preview_to_idle();
         self.reset_replace_button_label_unless_running();
         self.update_replace_button_sensitivity();
         self.refresh_accessibility_state();

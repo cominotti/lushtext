@@ -39,9 +39,11 @@
 //! this row's files were "all under `ui/search_panel/**`" — false by 928
 //! production lines at the time.
 
+use std::cell::{Cell, RefCell};
 use std::time::Duration;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk_lush_settle::SupersedingTimer;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
 
@@ -50,6 +52,87 @@ use lushtext_services::coordination::notifications::{
 };
 
 use super::LushtextWindow;
+
+/// Workspace-search progress lifecycle for the status-bar heartbeat flow.
+#[derive(Debug, Default)]
+pub(super) enum SearchTrackingPhase {
+    #[default]
+    Idle,
+    Tracking {
+        /// Periodic lease renewal for active search progress notifications.
+        heartbeat_source_id: Option<glib::SourceId>,
+        /// Whether search progress is allowed to render after the initial delay.
+        visible: bool,
+    },
+}
+
+/// Replace All progress-polling or wait-keepalive lifecycle.
+#[derive(Debug, Default)]
+pub(super) enum ReplaceProgressPhase {
+    #[default]
+    Idle,
+    /// Waiting for disposal capacity (`replace-all-confirm-disposal-lane` design D6).
+    WaitingForDisposal { keepalive_source_id: glib::SourceId },
+    /// Polling the Replace All run in flight (design D8).
+    PollingRun { poll_source_id: glib::SourceId },
+}
+
+/// Search-progress lease state used by the status-bar heartbeat flow.
+#[derive(Default)]
+pub struct SearchProgressState {
+    /// Active workspace-search progress tracking and heartbeat source.
+    pub(super) tracking: RefCell<SearchTrackingPhase>,
+    /// Superseding delay before progress is allowed to appear in the status bar.
+    pub(super) visibility_timer: SupersedingTimer,
+    /// Active Replace All wait keepalive or run progress poll.
+    pub(super) replace: RefCell<ReplaceProgressPhase>,
+    /// A close waits for the Replace All run in flight (design D8).
+    pub(super) close_after_replace_run: Cell<bool>,
+    /// Open and Replace in Editor waiting for its tab's load to settle
+    /// (stream-replace-all design D7): the editor, weakly, and the prefill.
+    pub(super) pending_editor_replace: RefCell<
+        Option<(
+            glib::WeakRef<crate::ui::editor_page::LushtextEditorPage>,
+            crate::ui::search_bar::policy::EditorReplacePrefill,
+        )>,
+    >,
+}
+
+impl SearchProgressState {
+    /// Whether workspace search progress is currently allowed to render.
+    pub(crate) fn is_visible(&self) -> bool {
+        matches!(
+            *self.tracking.borrow(),
+            SearchTrackingPhase::Tracking { visible: true, .. }
+        )
+    }
+
+    /// Take and clear any active Replace All keepalive or poll source ID.
+    fn take_replace_source(&self) -> Option<glib::SourceId> {
+        match std::mem::take(&mut *self.replace.borrow_mut()) {
+            ReplaceProgressPhase::Idle => None,
+            ReplaceProgressPhase::WaitingForDisposal {
+                keepalive_source_id,
+            } => Some(keepalive_source_id),
+            ReplaceProgressPhase::PollingRun { poll_source_id } => Some(poll_source_id),
+        }
+    }
+
+    /// Remove any active search heartbeat timer on window disposal.
+    pub(super) fn dispose(&self) {
+        if let SearchTrackingPhase::Tracking {
+            heartbeat_source_id: Some(source_id),
+            ..
+        } = std::mem::take(&mut *self.tracking.borrow_mut())
+        {
+            source_id.remove();
+        }
+        let _ = self.visibility_timer.invalidate();
+        if let Some(source_id) = self.take_replace_source() {
+            source_id.remove();
+        }
+    }
+}
 
 /// The close-during-run dialog's options, each explained by a grouped row.
 const CLOSE_DURING_RUN_OPTIONS: [(&str, &str); 3] = [
@@ -143,15 +226,36 @@ impl LushtextWindow {
                 || poll_replace_progress(&window_weak, &announced),
             )
         });
-        self.imp()
-            .search_progress
-            .replace_poll_source_id
-            .replace(Some(source_id));
+        let previous =
+            self.imp()
+                .search_progress
+                .replace
+                .replace(ReplaceProgressPhase::PollingRun {
+                    poll_source_id: source_id,
+                });
+        match previous {
+            ReplaceProgressPhase::Idle => {}
+            ReplaceProgressPhase::WaitingForDisposal {
+                keepalive_source_id,
+            } => keepalive_source_id.remove(),
+            ReplaceProgressPhase::PollingRun { poll_source_id } => poll_source_id.remove(),
+        }
     }
 
     /// Retire the Replace All progress poll and its message.
     pub(crate) fn stop_replace_progress_tracking(&self) {
-        if let Some(source_id) = self.imp().search_progress.replace_poll_source_id.take() {
+        let taken = {
+            let mut replace = self.imp().search_progress.replace.borrow_mut();
+            if matches!(*replace, ReplaceProgressPhase::PollingRun { .. }) {
+                match std::mem::take(&mut *replace) {
+                    ReplaceProgressPhase::PollingRun { poll_source_id } => Some(poll_source_id),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        };
+        if let Some(source_id) = taken {
             source_id.remove();
             if self
                 .imp()
@@ -186,11 +290,11 @@ impl LushtextWindow {
             };
             let panel = &window.imp().search_panel;
             if !panel.replace_admission_deferred() {
-                window
-                    .imp()
-                    .search_progress
-                    .replace_wait_keepalive_source_id
-                    .take();
+                let mut replace = window.imp().search_progress.replace.borrow_mut();
+                if matches!(*replace, ReplaceProgressPhase::WaitingForDisposal { .. }) {
+                    // The source returned `Break`; drop its ID without calling `remove()`.
+                    let _ = std::mem::take(&mut *replace);
+                }
                 return glib::ControlFlow::Break;
             }
             if !panel.search_worker_running() {
@@ -198,10 +302,20 @@ impl LushtextWindow {
             }
             glib::ControlFlow::Continue
         });
-        self.imp()
-            .search_progress
-            .replace_wait_keepalive_source_id
-            .replace(Some(source_id));
+        let previous =
+            self.imp()
+                .search_progress
+                .replace
+                .replace(ReplaceProgressPhase::WaitingForDisposal {
+                    keepalive_source_id: source_id,
+                });
+        match previous {
+            ReplaceProgressPhase::Idle => {}
+            ReplaceProgressPhase::WaitingForDisposal {
+                keepalive_source_id,
+            } => keepalive_source_id.remove(),
+            ReplaceProgressPhase::PollingRun { poll_source_id } => poll_source_id.remove(),
+        }
     }
 
     /// Retire the waiting text's keepalive and the waiting text. While a
@@ -210,7 +324,20 @@ impl LushtextWindow {
     /// alone.
     pub(crate) fn stop_replace_wait_keepalive(&self) {
         let imp = self.imp();
-        let Some(source_id) = imp.search_progress.replace_wait_keepalive_source_id.take() else {
+        let taken = {
+            let mut replace = imp.search_progress.replace.borrow_mut();
+            if matches!(*replace, ReplaceProgressPhase::WaitingForDisposal { .. }) {
+                match std::mem::take(&mut *replace) {
+                    ReplaceProgressPhase::WaitingForDisposal {
+                        keepalive_source_id,
+                    } => Some(keepalive_source_id),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        };
+        let Some(source_id) = taken else {
             return;
         };
         source_id.remove();
@@ -332,7 +459,12 @@ impl LushtextWindow {
     pub(crate) fn prepare_search_progress_tracking(&self) {
         self.finish_search_progress_tracking();
         let imp = self.imp();
-        imp.search_progress.visible.set(false);
+        imp.search_progress
+            .tracking
+            .replace(SearchTrackingPhase::Tracking {
+                heartbeat_source_id: None,
+                visible: false,
+            });
         self.start_search_progress_heartbeat();
 
         imp.search_progress.visibility_timer.arm(
@@ -345,7 +477,11 @@ impl LushtextWindow {
                 {
                     return;
                 }
-                imp.search_progress.visible.set(true);
+                if let SearchTrackingPhase::Tracking { visible, .. } =
+                    &mut *imp.search_progress.tracking.borrow_mut()
+                {
+                    *visible = true;
+                }
             },
         );
     }
@@ -388,9 +524,12 @@ impl LushtextWindow {
     }
 
     pub(crate) fn finish_search_progress_tracking(&self) {
-        self.imp().search_progress.visible.set(false);
         let _ = self.imp().search_progress.visibility_timer.invalidate();
         self.stop_search_progress_heartbeat();
+        self.imp()
+            .search_progress
+            .tracking
+            .replace(SearchTrackingPhase::Idle);
         if self
             .imp()
             .notification_bus
@@ -414,7 +553,7 @@ impl LushtextWindow {
             }
 
             if imp.search_panel_revealer.reveals_child()
-                && imp.search_progress.visible.get()
+                && imp.search_progress.is_visible()
                 && imp
                     .notification_bus
                     .heartbeat(NotificationOwner::Search, NotificationSurface::StatusBar)
@@ -423,14 +562,32 @@ impl LushtextWindow {
             }
             glib::ControlFlow::Continue
         });
-        self.imp()
-            .search_progress
-            .heartbeat_source_id
-            .replace(Some(source_id));
+        let mut tracking = self.imp().search_progress.tracking.borrow_mut();
+        match &mut *tracking {
+            SearchTrackingPhase::Tracking {
+                heartbeat_source_id,
+                ..
+            } => {
+                *heartbeat_source_id = Some(source_id);
+            }
+            SearchTrackingPhase::Idle => {
+                *tracking = SearchTrackingPhase::Tracking {
+                    heartbeat_source_id: Some(source_id),
+                    visible: false,
+                };
+            }
+        }
     }
 
     fn stop_search_progress_heartbeat(&self) {
-        if let Some(source_id) = self.imp().search_progress.heartbeat_source_id.take() {
+        let source_id = match &mut *self.imp().search_progress.tracking.borrow_mut() {
+            SearchTrackingPhase::Tracking {
+                heartbeat_source_id,
+                ..
+            } => heartbeat_source_id.take(),
+            SearchTrackingPhase::Idle => None,
+        };
+        if let Some(source_id) = source_id {
             source_id.remove();
         }
     }
@@ -446,7 +603,10 @@ fn poll_replace_progress(
         return glib::ControlFlow::Break;
     };
     let Some(progress) = window.imp().search_panel.replace_run_progress() else {
-        window.imp().search_progress.replace_poll_source_id.take();
+        let mut replace = window.imp().search_progress.replace.borrow_mut();
+        if matches!(*replace, ReplaceProgressPhase::PollingRun { .. }) {
+            let _ = std::mem::take(&mut *replace);
+        }
         return glib::ControlFlow::Break;
     };
     let (done, total, _, phase) = progress.snapshot();

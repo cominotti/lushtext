@@ -629,6 +629,10 @@ pub(super) fn wrapped_layout_analysis_required_for_bytes(
 
 /// Pure availability inputs gathered from GTK state by `current_availability`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pure policy decision mask for minimap capabilities"
+)]
 pub(super) struct MinimapAvailabilityPolicy {
     pub(super) focus_suppressed: bool,
     pub(super) preference_enabled: bool,
@@ -2878,6 +2882,10 @@ pub fn paragraph_may_cross(
 
 /// Incremental logical-line accumulator independent of GTK iterator ownership.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pure bounded analysis fact mask"
+)]
 pub struct MinimapAnalysisAccumulator {
     policy: MinimapAnalysisPolicy,
     collect_markers: bool,

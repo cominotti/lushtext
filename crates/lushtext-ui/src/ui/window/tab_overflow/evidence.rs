@@ -38,6 +38,10 @@ use super::scroll_execution::{current_extent, is_rtl};
 
 /// Everything a test may observe about the tab strip's overflow controls.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct TabOverflowEvidence {
     /// Whether the lookup found the unpinned tab scroller.
     pub scroller_found: bool,
@@ -123,10 +127,13 @@ pub struct TabOverflowEvidence {
 pub fn tab_overflow_evidence(window: &LushtextWindow) -> TabOverflowEvidence {
     let imp = window.imp();
     let state = &imp.tab_overflow;
-    let unpinned = state.unpinned.borrow().clone();
+    let published = state.published();
+    let unpinned = state.unpinned();
     let controls = state.controls();
     let animation_active = state.animation_playing();
-    let repeat_active = state.repeat.borrow().is_some();
+    let repeat_active = state.repeat_active();
+    let guard_cancellations = state.guard_cancellations();
+    let selection_reveal_pending = state.selection_reveal_pending();
     let bar = imp.tab_bar.try_get();
     let popover = controls.as_ref().map(|controls| controls.popover.facts());
     let popover_visible = controls
@@ -139,11 +146,11 @@ pub fn tab_overflow_evidence(window: &LushtextWindow) -> TabOverflowEvidence {
     };
     TabOverflowEvidence {
         scroller_found: unpinned.is_some(),
-        controls_visible: state.controls_visible.get(),
-        controls_shown_count: state.controls_shown_count.get(),
-        group_attached: state.group_attached.get(),
-        can_scroll_back: state.can_scroll_back.get(),
-        can_scroll_forward: state.can_scroll_forward.get(),
+        controls_visible: published.controls_visible,
+        controls_shown_count: published.controls_shown_count,
+        group_attached: published.group_attached,
+        can_scroll_back: published.can_scroll_back,
+        can_scroll_forward: published.can_scroll_forward,
         scroll_actions_enabled: [
             action_enabled(SCROLL_BACK_ACTION),
             action_enabled(SCROLL_FORWARD_ACTION),
@@ -152,8 +159,8 @@ pub fn tab_overflow_evidence(window: &LushtextWindow) -> TabOverflowEvidence {
         repeat_active,
         reconcile_pending: state.reconcile.pending() || state.waiting_for_terminal.get(),
         reconcile_waits_for_terminal: state.waiting_for_terminal.get(),
-        guard_cancellations: state.guard_cancellations.get(),
-        selection_reveal_pending: state.selection_reveal.borrow().is_some(),
+        guard_cancellations,
+        selection_reveal_pending,
         selected_tab_in_view: window.selected_tab_in_view(),
         extent: unpinned.map(|scroller| current_extent(&scroller.hadjustment())),
         rtl: bar.as_ref().is_some_and(is_rtl),
@@ -163,8 +170,8 @@ pub fn tab_overflow_evidence(window: &LushtextWindow) -> TabOverflowEvidence {
             .as_ref()
             .map(|controls| (controls.back.clone(), controls.forward.clone())),
         group: controls.as_ref().map(|controls| controls.group.clone()),
-        all_tabs_button_visible: state.all_tabs_visible.get(),
-        all_tabs_count: state.all_tabs_count.get(),
+        all_tabs_button_visible: published.all_tabs_visible,
+        all_tabs_count: published.all_tabs_count,
         all_tabs_actions_enabled: [
             action_enabled(TOGGLE_ALL_TABS_ACTION),
             action_enabled(SET_ALL_TABS_VISIBLE_ACTION),
@@ -181,7 +188,7 @@ pub fn tab_overflow_evidence(window: &LushtextWindow) -> TabOverflowEvidence {
         popover_announcements: popover.map_or(0, |facts| facts.announcements),
         popover_announcement_pending: popover.is_some_and(|facts| facts.announcement_pending),
         popover_row_objects: popover.map_or(0, |facts| facts.row_objects),
-        all_tabs_count_publications: state.all_tabs_count_publications.get(),
+        all_tabs_count_publications: published.all_tabs_count_publications,
         all_tabs: controls.map(|controls| (controls.all_tabs, controls.popover)),
     }
 }

@@ -19,8 +19,14 @@ use gtk4::{glib, prelude::*};
 use lushtext_services::notes::markdown_render::MAX_MARKDOWN_SOURCE_BYTES;
 
 use super::LushtextWindow;
-use super::imp::{PREVIEW_LAYOUT_EDITOR, PREVIEW_LAYOUT_PREVIEW, PREVIEW_SETTLE_DELAY_MS};
 use crate::ui::window::StagedSurface;
+
+/// Normal preview presentation: editor content with optional end preview pane.
+pub(super) const PREVIEW_LAYOUT_EDITOR: &str = "editor";
+/// Focused preview presentation: Markdown preview fills the editor content area.
+pub(super) const PREVIEW_LAYOUT_PREVIEW: &str = "preview";
+/// Short delay for Adwaita layout and embedded preview children to settle.
+pub(super) const PREVIEW_SETTLE_DELAY_MS: u64 = 16;
 
 /// Content placeholder shown while the preview waits for installed text.
 const PREPARING_MARKDOWN_PREVIEW: &str = "Preparing Markdown preview…";

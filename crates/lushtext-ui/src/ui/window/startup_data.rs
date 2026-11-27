@@ -6,7 +6,8 @@
 //! consumers must wait until app-owned metadata is known to be current or the
 //! user chooses a safe upgrade action.
 
-use std::path::Path;
+use std::cell::{Cell, RefCell};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -21,6 +22,23 @@ use lushtext_services::{
 };
 
 use super::LushtextWindow;
+
+/// Startup data-flow gate state owned by the window shell.
+#[derive(Default)]
+pub struct StartupDataFlowState {
+    /// Whether format preflight and any required user decision have resolved.
+    pub completed: Cell<bool>,
+    /// Whether a preflight task is already running for this window.
+    pub(super) running: Cell<bool>,
+    /// External activation paths queued while startup metadata consumers are paused.
+    ///
+    /// Bounded by `MAX_PENDING_ACTIVATION_OPENS`; see
+    /// `startup_data::queue_activation_open_if_startup_pending` for why the
+    /// overflow is dropped rather than opened immediately.
+    pub pending_activation_paths: RefCell<Vec<PathBuf>>,
+    /// How many activation opens were refused because the queue was full.
+    pub(super) dropped_activation_opens: Cell<usize>,
+}
 
 /// Ceiling on activation opens held while the startup gate is closed.
 ///

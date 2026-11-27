@@ -20,10 +20,8 @@
 //!
 //! # Owned state
 //!
-//! | Field of `imp::SearchPreviewState` | Purpose |
-//! | --- | --- |
-//! | `parked_replace_run` | the one [`ParkedReplaceRun`] waiting, if any |
-//! | `replace_admission_wakeup` | its one paced capacity wakeup |
+//! [`ReplaceAdmissionState`] keeps [`ReplaceAdmissionPhase`] (whether one
+//! [`ParkedReplaceRun`] waits) alongside its one paced capacity wakeup.
 //!
 //! # Admission attempt
 //!
@@ -48,6 +46,8 @@
 //! [`LushtextSearchPanel::cancel_parked_replace_run`]. Dispose cancels the
 //! wakeup and drops the parked run without calling back (`imp::dispose`).
 
+use std::cell::RefCell;
+
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -56,6 +56,21 @@ use lushtext_services::search::content_search::ReplaceJournalFreshness;
 
 use super::policy::{self, ReplaceAdmissionDecision, ReplaceAdmissionFacts, ReplaceWaitEnd};
 use super::{GuardedReplacements, LushtextSearchPanel};
+
+/// Phase of a confirmed Replace All run awaiting disposal capacity.
+#[derive(Default)]
+pub(super) enum ReplaceAdmissionPhase {
+    #[default]
+    Idle,
+    Parked(ParkedReplaceRun),
+}
+
+/// Owned Replace stage-4 admission state.
+#[derive(Default)]
+pub(super) struct ReplaceAdmissionState {
+    pub(super) phase: RefCell<ReplaceAdmissionPhase>,
+    pub(super) wakeup: crate::ui::plain_disposal::DisposalCapacityWakeup,
+}
 
 /// A confirmed Replace All parked until the disposal lane can admit its undo
 /// reservation: the checked selection and the journal freshness the window
@@ -143,17 +158,21 @@ impl LushtextSearchPanel {
             run: parked,
             observed_epoch,
         } = refused;
-        let previous = imp.preview.parked_replace_run.replace(Some(parked));
-        debug_assert!(previous.is_none(), "one parked run per panel");
+        let previous = imp
+            .replace_admission
+            .phase
+            .replace(ReplaceAdmissionPhase::Parked(parked));
+        debug_assert!(
+            matches!(previous, ReplaceAdmissionPhase::Idle),
+            "one parked run per panel"
+        );
         drop(previous);
         let panel_weak = self.downgrade();
-        imp.preview
-            .replace_admission_wakeup
-            .arm(observed_epoch, move || {
-                if let Some(panel) = panel_weak.upgrade() {
-                    panel.resume_parked_replace_run();
-                }
-            });
+        imp.replace_admission.wakeup.arm(observed_epoch, move || {
+            if let Some(panel) = panel_weak.upgrade() {
+                panel.resume_parked_replace_run();
+            }
+        });
         if attempt == AdmissionAttempt::First {
             self.project_replace_wait(true);
         }
@@ -162,7 +181,8 @@ impl LushtextSearchPanel {
     /// Resumption point of the capacity wakeup: decide, then hand the
     /// outcome to the window.
     fn resume_parked_replace_run(&self) {
-        let Some(parked) = self.imp().preview.parked_replace_run.take() else {
+        let ReplaceAdmissionPhase::Parked(parked) = self.imp().replace_admission.phase.take()
+        else {
             return;
         };
         let facts = ReplaceAdmissionFacts {
@@ -192,8 +212,8 @@ impl LushtextSearchPanel {
     /// whether a wait was cancelled.
     pub(crate) fn cancel_parked_replace_run(&self) -> bool {
         let imp = self.imp();
-        imp.preview.replace_admission_wakeup.cancel();
-        let Some(parked) = imp.preview.parked_replace_run.take() else {
+        imp.replace_admission.wakeup.cancel();
+        let ReplaceAdmissionPhase::Parked(parked) = imp.replace_admission.phase.take() else {
             return false;
         };
         self.retire_parked_selection(parked);
@@ -210,10 +230,8 @@ impl LushtextSearchPanel {
     /// its request and Show Skipped Files exactly as they were: the run that
     /// waited was never admitted, so it has no report to replace them with.
     pub(crate) fn end_deferred_replace_run(&self) {
-        let imp = self.imp();
-        imp.preview.replace_run.replace(None);
-        imp.preview.run_intent.replace(None);
-        imp.replace_all_button.set_label("Replace All");
+        self.clear_deferred_replace_run_control();
+        self.imp().replace_all_button.set_label("Replace All");
         self.update_replace_button_sensitivity();
         self.finish_replace_transaction();
     }
@@ -230,13 +248,16 @@ impl LushtextSearchPanel {
         self.imp()
             .callbacks
             .replace_run_resumed_callback
-            .replace(Some(Box::new(f)));
+            .replace(Some(std::rc::Rc::new(f)));
     }
 
     /// Whether a confirmed Replace All is waiting for disposal capacity.
     #[must_use]
     pub fn replace_admission_deferred(&self) -> bool {
-        self.imp().preview.parked_replace_run.borrow().is_some()
+        matches!(
+            &*self.imp().replace_admission.phase.borrow(),
+            ReplaceAdmissionPhase::Parked(_)
+        )
     }
 
     fn retire_parked_selection(&self, parked: ParkedReplaceRun) {
@@ -246,13 +267,16 @@ impl LushtextSearchPanel {
     /// Invoke the window's resumption callback, then leave the waiting
     /// presentation unless the window parked the run again.
     fn hand_resumption_to_window(&self, resumption: ReplaceAdmissionResumption) {
-        let imp = self.imp();
-        let callback = imp.callbacks.replace_run_resumed_callback.borrow();
-        if let Some(ref callback) = *callback {
+        let callback = self
+            .imp()
+            .callbacks
+            .replace_run_resumed_callback
+            .borrow()
+            .clone();
+        if let Some(callback) = callback {
             callback(resumption);
         } else {
             // No window to resume with: end the wait here, writing nothing.
-            drop(callback);
             if let ReplaceAdmissionResumption::Resume(parked) = resumption {
                 self.retire_parked_selection(parked);
             }

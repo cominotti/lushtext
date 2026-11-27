@@ -515,7 +515,7 @@ fn test_search_panel_accessibility_tracks_busy_error_and_result_visibility() {
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     let imp = panel.imp();
 
-    imp.runtime.searching.set(true);
+    imp.runtime.set_searching(true);
     panel.refresh_accessibility_state_for_test();
     assert!(gtk4::test_accessible_has_state(
         &*imp.search_entry,
@@ -526,7 +526,7 @@ fn test_search_panel_accessibility_tracks_busy_error_and_result_visibility() {
         gtk4::AccessibleState::Busy
     ));
 
-    imp.runtime.searching.set(false);
+    imp.runtime.set_searching(false);
     imp.error_label.set_visible(true);
     panel.refresh_accessibility_state_for_test();
     assert!(gtk4::test_accessible_has_state(
@@ -548,7 +548,7 @@ fn test_search_panel_accessibility_tracks_replace_preview_and_undo_state() {
     wait_for_journal_disk_idle(&panel);
     let imp = panel.imp();
 
-    imp.preview.preview_pending.set(true);
+    imp.replace_execution.set_preview_pending(true);
     imp.replace_all_button.set_label("Preparing Preview…");
     imp.replace_all_button.set_sensitive(false);
     panel.refresh_accessibility_state_for_test();
@@ -557,7 +557,7 @@ fn test_search_panel_accessibility_tracks_replace_preview_and_undo_state() {
         .properties(&[gtk4::AccessibleProperty::ValueText])
         .assert_on(&*imp.replace_all_button);
 
-    imp.preview.preview_pending.set(false);
+    imp.replace_execution.set_preview_pending(false);
     panel.set_persisted_undo_backup(sample_replace_backup("/tmp/undo.txt"));
     imp.undo_button.set_visible(true);
     panel.refresh_accessibility_state_for_test();
@@ -643,7 +643,7 @@ fn test_start_search_uses_passed_query_spec_instead_of_live_widget_state() {
     panel.start_search(&search_spec("needle"));
 
     wait_until(Duration::from_secs(2), || {
-        !panel.imp().runtime.searching.get()
+        !panel.imp().runtime.is_searching()
     });
 
     assert_eq!(panel.query(), "absent");
@@ -700,9 +700,7 @@ fn test_rapid_workspace_queries_keep_one_worker_and_publish_latest_generation() 
     let accepted = panel
         .imp()
         .runtime
-        .accepted_matches
-        .borrow()
-        .clone()
+        .accepted_matches_snapshot()
         .expect("latest accepted snapshot");
     assert_eq!(accepted.len(), 1);
     assert!(accepted[0].line_content.contains("latest query"));
@@ -716,14 +714,7 @@ fn test_search_panel_connect_close_requested() {
     panel.connect_close_requested(move || {
         called.set(true);
     });
-    assert!(
-        panel
-            .imp()
-            .callbacks
-            .close_requested_callback
-            .borrow()
-            .is_some()
-    );
+    assert!(panel.imp().callbacks.has_close_requested());
 }
 
 #[test]
@@ -734,7 +725,7 @@ fn test_search_panel_connect_open_file() {
     panel.connect_open_file(move |_path, _line| {
         called.set(true);
     });
-    assert!(panel.imp().callbacks.open_file_callback.borrow().is_some());
+    assert!(panel.imp().callbacks.has_open_file());
 }
 
 #[test]
@@ -745,7 +736,7 @@ fn test_search_panel_clear_results_resets_state() {
     // Simulate some state.
     panel.imp().runtime.total_matches.set(42);
     panel.imp().runtime.total_files.set(5);
-    panel.imp().runtime.result_capped.set(true);
+    panel.imp().runtime.set_result_capped(true);
 
     // Add a file group to root_store.
     let file_item = SearchResultItem::new_file("/test.rs", "test.rs", 3);
@@ -756,7 +747,7 @@ fn test_search_panel_clear_results_resets_state() {
 
     assert_eq!(panel.imp().runtime.total_matches.get(), 0);
     assert_eq!(panel.imp().runtime.total_files.get(), 0);
-    assert!(!panel.imp().runtime.result_capped.get());
+    assert!(!panel.imp().runtime.is_result_capped());
     assert_eq!(panel.imp().runtime.root_store.borrow().n_items(), 0);
     assert!(panel.imp().runtime.file_groups.borrow().is_empty());
 }
@@ -822,10 +813,10 @@ fn test_large_result_retirement_is_sliced_and_cannot_clear_new_generation() {
         .with_replace_preview_delay(Duration::from_millis(300))
         .install();
     panel.enter_preview_mode("replacement");
-    assert!(panel.imp().preview.preview_pending.get());
+    assert!(panel.imp().replace_execution.is_preview_pending());
 
     panel.close();
-    assert!(!panel.imp().preview.preview_pending.get());
+    assert!(!panel.imp().replace_execution.is_preview_pending());
     assert!(panel.imp().runtime.accepted_matches.borrow().is_none());
 
     populate_large_result_generation(&panel, "/second-generation.txt", 10_000);
@@ -835,7 +826,7 @@ fn test_large_result_retirement_is_sliced_and_cannot_clear_new_generation() {
 
     assert!(panel.is_searching());
     wait_until(Duration::from_secs(10), || {
-        !panel.is_searching() && !panel.imp().preview.preview_worker_running.get()
+        !panel.is_searching() && !panel.imp().replace_execution.is_preview_worker_running()
     });
 
     let evidence = panel.evidence();
@@ -902,9 +893,7 @@ fn test_retirement_backpressure_retains_only_latest_query_and_bounds_generations
     let accepted = panel
         .imp()
         .runtime
-        .accepted_matches
-        .borrow()
-        .clone()
+        .accepted_matches_snapshot()
         .expect("latest deferred search accepted");
     assert_eq!(accepted.len(), 1);
     assert!(accepted[0].line_content.contains("latest query"));
@@ -1312,7 +1301,7 @@ fn test_connect_navigate_callback_stored() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     panel.connect_navigate_to_match(|_path, _line| {});
-    assert!(panel.imp().callbacks.navigate_callback.borrow().is_some());
+    assert!(panel.imp().callbacks.has_navigate());
 }
 
 #[test]
@@ -1328,7 +1317,7 @@ fn test_connect_search_progress_callback_stored() {
                 | SearchProgressUpdate::Done { .. }
         );
     });
-    assert!(panel.imp().callbacks.progress_callback.borrow().is_some());
+    assert!(panel.imp().callbacks.has_progress());
 }
 
 // ---------------------------------------------------------------------------
@@ -1415,8 +1404,8 @@ fn test_exit_preview_mode_clears_state() {
 
     panel.exit_preview_mode();
     assert!(!panel.is_preview_mode());
-    assert!(panel.imp().preview.preview_outcome.borrow().is_none());
-    assert!(panel.imp().preview.checked_match_ids.borrow().is_empty());
+    assert_eq!(panel.replace_preview_count(), 0);
+    assert_eq!(panel.checked_replacement_count(), 0);
     wait_until(Duration::from_secs(10), || !panel.replace_preview_pending());
     assert_eq!(panel.evidence().preview_retirement_pending, 0);
 }
@@ -1432,7 +1421,7 @@ fn test_enter_preview_mode_shows_pending_until_worker_finishes() {
         .install();
     panel.enter_preview_mode("goodbye");
 
-    assert!(panel.imp().preview.preview_pending.get());
+    assert!(panel.imp().replace_execution.is_preview_pending());
     assert!(!panel.is_preview_mode());
     assert!(!panel.imp().replace_all_button.is_sensitive());
     assert_eq!(
@@ -1441,7 +1430,7 @@ fn test_enter_preview_mode_shows_pending_until_worker_finishes() {
     );
 
     wait_until(Duration::from_secs(10), || {
-        panel.is_preview_mode() && !panel.imp().preview.preview_pending.get()
+        panel.is_preview_mode() && !panel.imp().replace_execution.is_preview_pending()
     });
     assert_eq!(
         panel.imp().replace_all_button.label().as_deref(),
@@ -1459,14 +1448,14 @@ fn test_stale_replace_preview_result_is_rejected_after_replacement_change() {
         .with_replace_preview_delay(Duration::from_millis(250))
         .install();
     panel.enter_preview_mode("goodbye");
-    assert!(panel.imp().preview.preview_pending.get());
+    assert!(panel.imp().replace_execution.is_preview_pending());
 
     panel.imp().replace_entry.set_text("newer replacement");
     flush_events();
 
-    assert!(!panel.imp().preview.preview_pending.get());
+    assert!(!panel.imp().replace_execution.is_preview_pending());
     assert!(!panel.is_preview_mode());
-    assert!(panel.imp().preview.preview_outcome.borrow().is_none());
+    assert!(!panel.is_preview_mode() && !panel.imp().replace_execution.is_preview_pending());
     assert_eq!(
         panel.imp().replace_all_button.label().as_deref(),
         Some("Replace All")
@@ -1476,7 +1465,7 @@ fn test_stale_replace_preview_result_is_rejected_after_replacement_change() {
     flush_events();
 
     assert!(!panel.is_preview_mode());
-    assert!(panel.imp().preview.preview_outcome.borrow().is_none());
+    assert!(!panel.is_preview_mode() && !panel.imp().replace_execution.is_preview_pending());
 }
 
 #[test]
@@ -1485,14 +1474,14 @@ fn test_query_edit_invalidates_preview_before_debounce() {
     let panel = panel_with_one_search_match();
     panel.enter_preview_mode("goodbye");
     wait_until(Duration::from_secs(10), || {
-        !panel.imp().preview.preview_worker_running.get()
+        !panel.imp().replace_execution.is_preview_worker_running()
     });
     assert!(panel.is_preview_mode(), "initial preview was not accepted");
 
     panel.imp().search_entry.set_text("new query");
     flush_after_delay(Duration::from_millis(200));
     assert!(!panel.is_preview_mode());
-    assert!(panel.imp().preview.preview_outcome.borrow().is_none());
+    assert!(!panel.is_preview_mode() && !panel.imp().replace_execution.is_preview_pending());
 }
 
 #[test]
@@ -1504,7 +1493,7 @@ fn test_glob_edit_invalidates_preview_before_debounce() {
     panel.imp().glob_entry.set_text("*.rs");
     flush_events();
     assert!(!panel.is_preview_mode());
-    assert!(panel.imp().preview.preview_outcome.borrow().is_none());
+    assert!(!panel.is_preview_mode() && !panel.imp().replace_execution.is_preview_pending());
 }
 
 #[test]
@@ -1521,22 +1510,22 @@ fn test_superseding_preview_requests_coalesce_to_latest_result() {
     panel.enter_preview_mode("latest");
 
     wait_until(Duration::from_secs(10), || {
-        !panel.imp().preview.preview_worker_running.get()
+        !panel.imp().replace_execution.is_preview_worker_running()
     });
     assert!(
         panel.is_preview_mode(),
-        "latest request was not accepted: generation={} pending={} outcome={}",
-        panel.imp().preview.preview_generation.get(),
-        panel.imp().preview.preview_pending.get(),
-        panel.imp().preview.preview_outcome.borrow().is_some()
+        "latest request was not accepted: generation={} pending={} mode={}",
+        panel.evidence().preview_generation,
+        panel.imp().replace_execution.is_preview_pending(),
+        panel.is_preview_mode()
     );
-    let outcome = panel.imp().preview.preview_outcome.borrow();
-    let replacement = outcome
-        .as_ref()
-        .and_then(|outcome| outcome.replacements.first())
+    let (replacement, _) = panel
+        .imp()
+        .replace_execution
+        .first_preview_pair()
         .expect("latest preview row");
-    assert_eq!(replacement.replacement.as_ref(), "latest");
-    assert!(!panel.imp().preview.preview_worker_running.get());
+    assert_eq!(replacement, "latest");
+    assert!(!panel.imp().replace_execution.is_preview_worker_running());
     let evidence = panel.evidence();
     assert!(evidence.preview_retirement_jobs >= 1);
     assert_eq!(evidence.preview_retirement_pending, 0);
@@ -1571,17 +1560,16 @@ fn test_new_search_cancels_active_preview_before_latest_request_runs() {
     panel.enter_preview_mode("latest");
 
     wait_until(Duration::from_secs(10), || {
-        !panel.imp().preview.preview_worker_running.get()
+        !panel.imp().replace_execution.is_preview_worker_running()
     });
     assert!(panel.is_preview_mode(), "latest request was not accepted");
-    let outcome = panel.imp().preview.preview_outcome.borrow();
     assert_eq!(
-        outcome
-            .as_ref()
-            .and_then(|outcome| outcome.replacements.first())
+        panel
+            .imp()
+            .replace_execution
+            .first_preview_pair()
             .expect("latest preview")
-            .replacement
-            .as_ref(),
+            .0,
         "latest"
     );
 }
@@ -1651,14 +1639,12 @@ fn test_bounded_preview_reports_omitted_and_confirms_only_generated_checked_rows
 
     panel
         .imp()
-        .preview
-        .checked_match_ids
-        .borrow_mut()
-        .remove(&SearchMatchId::from_index(1));
+        .replace_execution
+        .uncheck_match(SearchMatchId::from_index(1));
     panel.activate_confirm_replacements();
     wait_until(Duration::from_secs(10), || {
-        !panel.imp().preview.preview_pending.get()
-            && !panel.imp().preview.preview_worker_running.get()
+        !panel.imp().replace_execution.is_preview_pending()
+            && !panel.imp().replace_execution.is_preview_worker_running()
             && confirmed.borrow().len() == 1
     });
     let confirmed = confirmed.borrow();
@@ -1716,8 +1702,8 @@ fn test_invalid_preview_rows_report_private_free_reason_counts_and_never_confirm
 
     panel.activate_confirm_replacements();
     wait_until(Duration::from_secs(10), || {
-        !panel.imp().preview.preview_pending.get()
-            && !panel.imp().preview.preview_worker_running.get()
+        !panel.imp().replace_execution.is_preview_pending()
+            && !panel.imp().replace_execution.is_preview_worker_running()
             && confirmed.borrow().len() == 1
     });
     let confirmed = confirmed.borrow();
@@ -1736,13 +1722,13 @@ fn test_all_unchecked_preview_rows_retire_without_apply() {
     });
     panel.enter_preview_mode("goodbye");
     wait_until(Duration::from_secs(10), || panel.is_preview_mode());
-    panel.imp().preview.checked_match_ids.borrow_mut().clear();
+    panel.imp().replace_execution.clear_checked_matches();
 
     panel.activate_confirm_replacements();
 
     wait_until(Duration::from_secs(10), || {
-        !panel.imp().preview.preview_pending.get()
-            && !panel.imp().preview.preview_worker_running.get()
+        !panel.imp().replace_execution.is_preview_pending()
+            && !panel.imp().replace_execution.is_preview_worker_running()
     });
     assert!(confirmed.borrow().is_empty());
     let evidence = panel.evidence();
@@ -1776,7 +1762,7 @@ fn test_confirmation_selection_rejects_stale_generation_off_main() {
         .install();
 
     panel.activate_confirm_replacements();
-    assert!(panel.imp().preview.preview_pending.get());
+    assert!(panel.imp().replace_execution.is_preview_pending());
     assert!(!panel.imp().undo_button.is_sensitive());
     panel.activate_undo_replacements();
     assert_eq!(*undo_calls.borrow(), 0);
@@ -1785,11 +1771,11 @@ fn test_confirmation_selection_rejects_stale_generation_off_main() {
     flush_events();
 
     wait_until(Duration::from_secs(10), || {
-        !panel.imp().preview.preview_worker_running.get()
+        !panel.imp().replace_execution.is_preview_worker_running()
     });
     assert!(confirmed.borrow().is_empty());
     assert!(!panel.is_preview_mode());
-    assert!(!panel.imp().preview.preview_pending.get());
+    assert!(!panel.imp().replace_execution.is_preview_pending());
     let evidence = panel.evidence();
     assert_eq!(evidence.preview_selection_jobs, 1);
     assert!(evidence.preview_retirement_jobs >= 1);
@@ -1810,16 +1796,15 @@ fn test_entering_new_preview_retires_visible_outcome_before_latest_generation() 
     panel.enter_preview_mode("latest");
 
     wait_until(Duration::from_secs(10), || {
-        panel.is_preview_mode() && !panel.imp().preview.preview_worker_running.get()
+        panel.is_preview_mode() && !panel.imp().replace_execution.is_preview_worker_running()
     });
-    let outcome = panel.imp().preview.preview_outcome.borrow();
     assert_eq!(
-        outcome
-            .as_ref()
-            .and_then(|outcome| outcome.replacements.first())
+        panel
+            .imp()
+            .replace_execution
+            .first_preview_pair()
             .expect("latest preview row")
-            .replacement
-            .as_ref(),
+            .0,
         "latest"
     );
     assert!(panel.evidence().preview_retirement_jobs >= 1);
@@ -1920,13 +1905,10 @@ fn test_large_and_empty_replacement_previews_remain_accessible() {
     assert_eq!(
         panel
             .imp()
-            .preview
-            .preview_outcome
-            .borrow()
-            .as_ref()
+            .replace_execution
+            .first_preview_pair()
             .expect("preview")
-            .replacements[0]
-            .replaced_line,
+            .1,
         "let  = 1;"
     );
 }
@@ -1944,7 +1926,7 @@ fn test_clear_results_preserves_undo_backup() {
     let backup = sample_replace_backup("/test.rs");
     panel.set_undo_backup(backup.clone());
     panel.show_undo_button();
-    assert!(panel.imp().preview.undo_backup.borrow().is_some());
+    assert!(panel.has_undo_backup());
     wait_for_journal_disk_idle(&panel);
     assert_eq!(
         search_backup::load(&data_dir).expect("expected operation to succeed"),
@@ -1955,7 +1937,7 @@ fn test_clear_results_preserves_undo_backup() {
     // previous Replace All. Undo remains available until it is used or a new
     // Replace All replaces the backup.
     panel.start_search(&search_spec(""));
-    assert!(panel.imp().preview.undo_backup.borrow().is_some());
+    assert!(panel.has_undo_backup());
     assert!(
         panel.imp().undo_button.property::<bool>("visible"),
         "undo_button should stay visible after a new search starts"
@@ -2085,18 +2067,13 @@ fn test_search_panel_close_cancels_active_search() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     let cancel = Arc::new(AtomicBool::new(false));
-    panel
-        .imp()
-        .runtime
-        .cancel_token
-        .replace(Some(cancel.clone()));
-    panel.imp().runtime.searching.set(true);
+    panel.imp().runtime.set_running_cancel_token(cancel.clone());
 
     panel.close();
 
     assert!(cancel.load(Ordering::Relaxed));
-    assert!(panel.imp().runtime.cancel_token.borrow().is_none());
-    assert!(!panel.imp().runtime.searching.get());
+    assert!(!panel.imp().runtime.has_cancel_token());
+    assert!(!panel.imp().runtime.is_searching());
 }
 
 #[test]
@@ -2117,7 +2094,7 @@ fn test_set_undo_backup_updates_ui_before_delayed_disk_save() {
     panel.set_undo_backup(backup.clone());
     panel.show_undo_button();
 
-    assert!(panel.imp().preview.undo_backup.borrow().is_some());
+    assert!(panel.has_undo_backup());
     assert!(panel.imp().undo_button.property::<bool>("visible"));
     assert_eq!(
         panel.evidence().journal_disk_jobs_in_flight,
@@ -2158,7 +2135,7 @@ fn test_clear_undo_backup_updates_ui_before_delayed_disk_delete() {
         .install();
     panel.clear_undo_backup_for_test();
 
-    assert!(panel.imp().preview.undo_backup.borrow().is_none());
+    assert!(!panel.has_undo_backup());
     assert!(!panel.imp().undo_button.property::<bool>("visible"));
     assert_eq!(
         search_backup::load(&data_dir).expect("expected operation to succeed"),
@@ -2190,7 +2167,7 @@ fn test_clear_after_delayed_undo_backup_save_keeps_disk_empty() {
     panel.set_undo_backup(backup);
     panel.clear_undo_backup_for_test();
 
-    assert!(panel.imp().preview.undo_backup.borrow().is_none());
+    assert!(!panel.has_undo_backup());
     wait_for_journal_disk_idle(&panel);
     assert!(
         search_backup::load(&data_dir)
@@ -2415,7 +2392,7 @@ fn test_connect_undo_all_callback_stored() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     panel.connect_undo_all(|_backup| {});
-    assert!(panel.imp().callbacks.undo_callback.borrow().is_some());
+    assert!(panel.imp().callbacks.has_undo());
 }
 
 #[test]
@@ -2768,7 +2745,7 @@ fn test_search_panel_no_results_keeps_results_body_hidden() {
     panel.start_search(&search_spec("needle"));
 
     wait_until(Duration::from_secs(2), || {
-        !panel.imp().runtime.searching.get()
+        !panel.imp().runtime.is_searching()
     });
 
     let imp = panel.imp();
@@ -2858,7 +2835,7 @@ fn test_search_panel_followup_search_keeps_results_body_open_until_new_outcome()
     );
 
     wait_until(Duration::from_secs(2), || {
-        !panel.imp().runtime.searching.get()
+        !panel.imp().runtime.is_searching()
     });
 
     assert!(imp.results_feedback_revealer.reveals_child());
@@ -2894,7 +2871,7 @@ fn test_search_panel_single_result_reports_one_result_in_one_file() {
     panel.start_search(&search_spec("needle"));
 
     wait_until(Duration::from_secs(10), || {
-        !panel.imp().runtime.searching.get() && panel.imp().runtime.total_matches.get() == 1
+        !panel.imp().runtime.is_searching() && panel.imp().runtime.total_matches.get() == 1
     });
 
     let imp = panel.imp();
@@ -2929,7 +2906,7 @@ fn test_search_panel_many_results_group_by_file_and_scroll_within_clamp() {
     panel.start_search(&search_spec("needle"));
 
     wait_until(Duration::from_secs(15), || {
-        !panel.imp().runtime.searching.get() && panel.imp().runtime.total_files.get() == 12
+        !panel.imp().runtime.is_searching() && panel.imp().runtime.total_files.get() == 12
     });
 
     let imp = panel.imp();
@@ -3068,7 +3045,7 @@ fn test_replace_all_then_undo_restores_original_file_bytes() {
     panel.start_search(&search_spec("needle"));
 
     wait_until(Duration::from_secs(15), || {
-        !panel.imp().runtime.searching.get() && panel.imp().runtime.total_matches.get() == 2
+        !panel.imp().runtime.is_searching() && panel.imp().runtime.total_matches.get() == 2
     });
     assert_eq!(panel.imp().runtime.total_matches.get(), 2);
 
@@ -3211,7 +3188,7 @@ fn replace_all_over_with(
     panel.set_workspace_folders(vec![dir.to_path_buf()]);
     panel.start_search(&search_spec("needle"));
     wait_until(plan.budget, || {
-        !panel.imp().runtime.searching.get()
+        !panel.imp().runtime.is_searching()
             && panel.imp().runtime.total_matches.get() == plan.search_matches
     });
 
@@ -3319,7 +3296,7 @@ fn test_replace_all_with_no_matches_writes_nothing_and_journals_nothing() {
     panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
     panel.start_search(&search_spec("needle"));
     wait_until(Duration::from_secs(15), || {
-        !panel.imp().runtime.searching.get()
+        !panel.imp().runtime.is_searching()
     });
     assert_eq!(panel.evidence().match_count, 0);
 
@@ -3452,7 +3429,7 @@ fn test_replace_all_applies_only_checked_rows_and_records_apply_counts() {
     panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
     panel.start_search(&search_spec("needle"));
     wait_until(Duration::from_secs(15), || {
-        !panel.imp().runtime.searching.get() && panel.imp().runtime.total_matches.get() == 2
+        !panel.imp().runtime.is_searching() && panel.imp().runtime.total_matches.get() == 2
     });
 
     panel.enter_preview_mode("thread");
@@ -3464,22 +3441,10 @@ fn test_replace_all_applies_only_checked_rows_and_records_apply_counts() {
     // Uncheck the row belonging to the second file, so only the first is written.
     let unchecked = panel
         .imp()
-        .preview
-        .preview_outcome
-        .borrow()
-        .as_ref()
-        .expect("preview outcome")
-        .replacements
-        .iter()
-        .find(|replacement| replacement.path == second)
-        .expect("a preview row for the second file")
-        .match_id;
-    panel
-        .imp()
-        .preview
-        .checked_match_ids
-        .borrow_mut()
-        .remove(&unchecked);
+        .replace_execution
+        .preview_match_id_for_path(&second)
+        .expect("a preview row for the second file");
+    panel.imp().replace_execution.uncheck_match(unchecked);
     assert_eq!(panel.evidence().checked_replacement_count, 1);
 
     panel.activate_confirm_replacements();
@@ -3722,7 +3687,7 @@ fn test_search_panel_capped_results_warn_and_keep_every_delivered_match() {
 
         let imp = panel.imp();
         assert!(
-            imp.runtime.result_capped.get(),
+            imp.runtime.is_result_capped(),
             "reaching the retained-byte budget must set the limited state, not stop silently",
         );
         let total = imp.runtime.total_matches.get();
@@ -3750,7 +3715,7 @@ fn test_search_panel_capped_results_warn_and_keep_every_delivered_match() {
         );
         assert!(imp.results_body_revealer.reveals_child());
         // The retained matches are a gapless prefix: ids 0..total in order.
-        let accepted = imp.runtime.accepted_matches.borrow().clone();
+        let accepted = imp.runtime.accepted_matches_snapshot();
         let accepted = accepted.expect("a limited search is a completed search");
         assert_eq!(accepted.len(), total as usize);
         assert!(
@@ -3833,7 +3798,7 @@ fn test_search_past_mains_count_cap_shows_every_match() {
 
     panel.enter_preview_mode("thread");
     wait_until(Duration::from_secs(120), || {
-        panel.is_preview_mode() && !panel.imp().preview.preview_pending.get()
+        panel.is_preview_mode() && !panel.imp().replace_execution.is_preview_pending()
     });
     let evidence = panel.evidence();
     assert_eq!(evidence.replace_preview_count, 16 * 1024);
@@ -3968,7 +3933,7 @@ fn test_preview_after_a_limited_search_states_the_search_limit() {
         let retained = panel.evidence().match_count as usize;
         panel.enter_preview_mode("thread");
         wait_until(Duration::from_secs(60), || {
-            panel.is_preview_mode() && !panel.imp().preview.preview_pending.get()
+            panel.is_preview_mode() && !panel.imp().replace_execution.is_preview_pending()
         });
         let evidence = panel.evidence();
         assert_eq!(evidence.replace_preview_count as usize, retained);
@@ -4000,10 +3965,10 @@ fn test_search_panel_superseding_a_capped_search_discards_it_immediately() {
     // Supersede while the capped search is still streaming into the panel.
     wait_until(Duration::from_secs(30), || {
         let imp = panel.imp();
-        imp.runtime.searching.get() && imp.runtime.total_matches.get() > 250
+        imp.runtime.is_searching() && imp.runtime.total_matches.get() > 250
     });
     assert!(
-        panel.imp().runtime.searching.get(),
+        panel.imp().runtime.is_searching(),
         "the fixture must still be streaming when the newer query arrives",
     );
     // The retained latest request is only admitted while it still matches the
@@ -4014,7 +3979,7 @@ fn test_search_panel_superseding_a_capped_search_discards_it_immediately() {
 
     wait_until(Duration::from_secs(60), || {
         let imp = panel.imp();
-        !imp.runtime.searching.get() && imp.runtime.total_matches.get() == 1
+        !imp.runtime.is_searching() && imp.runtime.total_matches.get() == 1
     });
 
     let imp = panel.imp();
@@ -4023,7 +3988,7 @@ fn test_search_panel_superseding_a_capped_search_discards_it_immediately() {
     assert_eq!(imp.runtime.total_matches.get(), 1);
     assert_eq!(imp.runtime.total_files.get(), 1);
     assert_eq!(imp.count_label.text().as_str(), "1 results in 1 files");
-    assert!(!imp.runtime.result_capped.get());
+    assert!(!imp.runtime.is_result_capped());
     assert!(!imp.count_label.has_css_class("warning"));
     assert!(!panel.evidence().result_capped);
 }
@@ -4076,7 +4041,7 @@ fn test_search_turns_dispatch_and_retire_at_most_256() {
     panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
     panel.start_search(&search_spec("needle"));
     wait_until(Duration::from_secs(60), || {
-        !panel.imp().runtime.searching.get()
+        !panel.imp().runtime.is_searching()
     });
 
     let turns = panel.evidence().event_turn_observations;
@@ -4151,7 +4116,7 @@ fn test_search_and_preview_dispatches_fit_the_settle_budget() {
         assert_eq!(evidence.match_count, 18_000);
         panel.enter_preview_mode("thread");
         let (held, preview_worst) = worst_dispatch_until(Duration::from_secs(120), || {
-            panel.is_preview_mode() && !panel.imp().preview.preview_pending.get()
+            panel.is_preview_mode() && !panel.imp().replace_execution.is_preview_pending()
         });
         assert!(held, "the preview settles");
         panel.start_search(&search_spec(""));
@@ -4769,7 +4734,7 @@ fn cancel_mid_run_restores_every_file(cancel: impl FnOnce(&LushtextWindow, &Lush
     panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
     panel.start_search(&search_spec("needle"));
     wait_until(Duration::from_secs(15), || {
-        !panel.imp().runtime.searching.get() && panel.imp().runtime.total_matches.get() == 5
+        !panel.imp().runtime.is_searching() && panel.imp().runtime.total_matches.get() == 5
     });
     panel.enter_preview_mode("thread");
     wait_until(Duration::from_secs(15), || {
@@ -4848,7 +4813,7 @@ fn replace_all_held_at_second_file_with(
     panel.set_workspace_folders(vec![dir.to_path_buf()]);
     panel.start_search(&search_spec("needle"));
     wait_until(Duration::from_secs(15), || {
-        !panel.imp().runtime.searching.get() && panel.imp().runtime.total_matches.get() == 3
+        !panel.imp().runtime.is_searching() && panel.imp().runtime.total_matches.get() == 3
     });
     panel.enter_preview_mode("thread");
     wait_until(Duration::from_secs(15), || {
@@ -5127,7 +5092,7 @@ fn search_through_fields(panel: &LushtextSearchPanel, query: &str, regex: bool, 
     panel.imp().regex_toggle.set_active(regex);
     panel.set_query(query);
     wait_until(Duration::from_secs(15), || {
-        !panel.imp().runtime.searching.get() && panel.imp().runtime.total_matches.get() == matches
+        !panel.imp().runtime.is_searching() && panel.imp().runtime.total_matches.get() == matches
     });
 }
 
@@ -5458,7 +5423,7 @@ fn test_an_apply_while_another_window_runs_is_refused() {
     panel_a.set_workspace_folders(vec![dir_a.path().to_path_buf()]);
     panel_a.start_search(&search_spec("needle"));
     wait_until(Duration::from_secs(15), || {
-        !panel_a.imp().runtime.searching.get() && panel_a.imp().runtime.total_matches.get() == 1
+        !panel_a.imp().runtime.is_searching() && panel_a.imp().runtime.total_matches.get() == 1
     });
     panel_a.enter_preview_mode("thread");
     wait_until(Duration::from_secs(15), || {
@@ -5473,10 +5438,7 @@ fn test_an_apply_while_another_window_runs_is_refused() {
     let evidence = panel_a.evidence();
     assert!(!evidence.replace_transaction_pending && !evidence.replace_in_flight);
     assert_eq!(status_text(&window_a), OTHER_WINDOW_BUSY);
-    assert!(
-        panel_a.imp().preview.preview_mode.get(),
-        "A can retry its preview"
-    );
+    assert!(panel_a.is_preview_mode(), "A can retry its preview");
     fixture::assert_text(&file_a, "needle\n");
 
     wait_until(Duration::from_secs(30), || {
@@ -5509,10 +5471,8 @@ fn test_an_undo_while_another_window_runs_is_refused() {
     });
     let journal = panel_a
         .imp()
-        .preview
-        .undo_backup
-        .borrow()
-        .clone()
+        .journal
+        .undo_backup()
         .expect("A's undo journal");
 
     let dir_b = tempfile::tempdir().expect("expected operation to succeed");
@@ -5521,7 +5481,7 @@ fn test_an_undo_while_another_window_runs_is_refused() {
         !panel_a.evidence().has_undo_backup,
         "B's run retired A's Undo"
     );
-    panel_a.imp().preview.undo_backup.replace(Some(journal));
+    panel_a.imp().journal.replace_undo_backup(Some(journal));
     panel_a.activate_undo_replacements();
     flush_after_delay(Duration::from_millis(300));
     assert!(!panel_a.evidence().replace_transaction_pending);
@@ -5600,7 +5560,7 @@ fn preview_named_files(
     panel.set_workspace_folders(vec![dir.to_path_buf()]);
     panel.start_search(&search_spec("needle"));
     wait_until(Duration::from_secs(15), || {
-        !panel.imp().runtime.searching.get() && panel.imp().runtime.total_matches.get() == 3
+        !panel.imp().runtime.is_searching() && panel.imp().runtime.total_matches.get() == 3
     });
     panel.enter_preview_mode("thread");
     wait_until(Duration::from_secs(15), || {
@@ -5780,7 +5740,7 @@ fn test_a_waiting_run_refuses_another_windows_apply_and_undo() {
     fixture::write_text(&second_a, "needle\n");
     panel_a.start_search(&search_spec("needle"));
     wait_until(Duration::from_secs(15), || {
-        !panel_a.imp().runtime.searching.get() && panel_a.imp().runtime.total_matches.get() == 1
+        !panel_a.imp().runtime.is_searching() && panel_a.imp().runtime.total_matches.get() == 1
     });
     panel_a.enter_preview_mode("thread");
     wait_until(Duration::from_secs(15), || {
@@ -5800,10 +5760,7 @@ fn test_a_waiting_run_refuses_another_windows_apply_and_undo() {
     panel_a.activate_confirm_replacements();
     flush_after_delay(Duration::from_millis(300));
     assert_eq!(status_text(&window_a), OTHER_WINDOW_BUSY);
-    assert!(
-        panel_a.imp().preview.preview_mode.get(),
-        "A keeps its preview for a retry"
-    );
+    assert!(panel_a.is_preview_mode(), "A keeps its preview for a retry");
     assert!(!panel_a.evidence().replace_transaction_pending);
     fixture::assert_text(&second_a, "needle\n");
 
@@ -5864,7 +5821,7 @@ fn test_an_apply_while_another_window_runs_is_refused_across_an_index_build() {
     panel_a.set_workspace_folders(vec![dir_a.path().to_path_buf()]);
     panel_a.start_search(&search_spec("needle"));
     wait_until(Duration::from_secs(15), || {
-        !panel_a.imp().runtime.searching.get() && panel_a.imp().runtime.total_matches.get() == 1
+        !panel_a.imp().runtime.is_searching() && panel_a.imp().runtime.total_matches.get() == 1
     });
     panel_a.enter_preview_mode("thread");
     wait_until(Duration::from_secs(15), || {
@@ -5887,10 +5844,7 @@ fn test_an_apply_while_another_window_runs_is_refused_across_an_index_build() {
     let evidence = panel_a.evidence();
     assert!(!evidence.replace_transaction_pending && !evidence.replace_in_flight);
     assert_eq!(status_text(&window_a), OTHER_WINDOW_BUSY);
-    assert!(
-        panel_a.imp().preview.preview_mode.get(),
-        "A can retry its preview"
-    );
+    assert!(panel_a.is_preview_mode(), "A can retry its preview");
     fixture::assert_text(&file_a, "needle\n");
 
     wait_until(Duration::from_secs(30), || {
@@ -5937,7 +5891,7 @@ fn test_cancel_while_waiting_keeps_the_earlier_undo_and_skip_report() {
     fixture::write_text(&later, "needle\n");
     panel.start_search(&search_spec("needle"));
     wait_until(Duration::from_secs(15), || {
-        !panel.imp().runtime.searching.get() && panel.imp().runtime.total_matches.get() == 2
+        !panel.imp().runtime.is_searching() && panel.imp().runtime.total_matches.get() == 2
     });
     panel.enter_preview_mode("thread");
     wait_until(Duration::from_secs(15), || {
@@ -6064,10 +6018,10 @@ fn test_a_new_search_while_waiting_hands_the_status_line_back() {
         .install();
     panel.start_search(&search_spec("needle"));
     wait_until(Duration::from_secs(5), || {
-        panel.imp().runtime.searching.get()
+        panel.imp().runtime.is_searching()
     });
     let mut saw_waiting_during_search = false;
-    while panel.imp().runtime.searching.get() {
+    while panel.imp().runtime.is_searching() {
         saw_waiting_during_search |= status_text(&window) == REPLACE_WAITING;
         flush_after_delay(Duration::from_millis(50));
     }
@@ -6267,7 +6221,7 @@ fn test_destroying_a_waiting_window_writes_nothing_and_frees_the_transaction() {
     panel_a.set_workspace_folders(vec![dir_a.path().to_path_buf()]);
     panel_a.start_search(&search_spec("needle"));
     wait_until(Duration::from_secs(15), || {
-        !panel_a.imp().runtime.searching.get() && panel_a.imp().runtime.total_matches.get() == 1
+        !panel_a.imp().runtime.is_searching() && panel_a.imp().runtime.total_matches.get() == 1
     });
     panel_a.enter_preview_mode("thread");
     wait_until(Duration::from_secs(15), || {

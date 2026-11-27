@@ -73,12 +73,24 @@ impl LushtextEditorPage {
     #[cfg(feature = "test-utils")]
     #[must_use]
     pub fn minimap_marker_strip_widget(&self) -> Option<gtk4::DrawingArea> {
-        self.imp().minimap.marker_strip.borrow().as_ref().cloned()
+        self.imp()
+            .minimap
+            .projection
+            .marker_strip
+            .borrow()
+            .as_ref()
+            .cloned()
     }
 
     /// The semantic marker strip, or `None` before installation or after dispose.
     #[cfg(not(feature = "test-utils"))]
     pub(crate) fn minimap_marker_strip_widget(&self) -> Option<gtk4::DrawingArea> {
-        self.imp().minimap.marker_strip.borrow().as_ref().cloned()
+        self.imp()
+            .minimap
+            .projection
+            .marker_strip
+            .borrow()
+            .as_ref()
+            .cloned()
     }
 }

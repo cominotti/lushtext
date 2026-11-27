@@ -388,7 +388,10 @@ impl super::LushtextWorkspaceSection {
                                 // the old subtree state is retired; the renamed
                                 // rows stay expanded in place.
                                 section.rename_expanded_subtree(&old_path, &new_path);
-                                super::scan_execution::clear_dir_state(&section, &old_path);
+                                super::scan_execution::retire_dir_subtrees(
+                                    &section,
+                                    std::slice::from_ref(&old_path),
+                                );
                                 imp.dir_rows
                                     .borrow_mut()
                                     .insert(new_path.clone(), tree_row.downgrade());
@@ -414,28 +417,20 @@ impl super::LushtextWorkspaceSection {
                             // a stale row, and let the next refresh re-project.
                             if ticket.is_dir() {
                                 section.rename_expanded_subtree(&old_path, &new_path);
-                                super::scan_execution::clear_dir_state(&section, &old_path);
+                                super::scan_execution::retire_dir_subtrees(
+                                    &section,
+                                    std::slice::from_ref(&old_path),
+                                );
                             }
                             section.rename_cached_item(&old_path, &new_path);
                             section.request_workspace_watch_restart();
                         }
                         imp.is_new_item.set(false);
 
-                        // End the callback borrow before invoking so a callback
-                        // that re-enters registration cannot panic; restore it
-                        // unless invocation registered a replacement.
                         if ticket.is_new() && !ticket.is_dir() {
-                            let cb = imp.create_callback.borrow_mut().take();
-                            if let Some(cb) = cb {
-                                cb(&new_path);
-                                imp.create_callback.borrow_mut().get_or_insert(cb);
-                            }
+                            section.notify_file_created(&new_path);
                         } else if !ticket.is_new() {
-                            let cb = imp.rename_callback.borrow_mut().take();
-                            if let Some(cb) = cb {
-                                cb(&old_path, &new_path);
-                                imp.rename_callback.borrow_mut().get_or_insert(cb);
-                            }
+                            section.notify_file_renamed(&old_path, &new_path);
                         }
 
                         if let RenameDurability::Unconfirmed(error) = &durability {
@@ -600,9 +595,7 @@ impl super::LushtextWorkspaceSection {
                 |section, (path, outcome)| match outcome {
                     ConfirmedDeleteOutcome::Removed => {
                         let _ = section.remove_from_model(&path);
-                        if let Some(ref cb) = *section.imp().delete_callback.borrow() {
-                            cb(&path);
-                        }
+                        section.notify_file_deleted(&path);
                     }
                     ConfirmedDeleteOutcome::RefusedIdentityChanged => {
                         // Not an error: nothing was destroyed, and the tree row is

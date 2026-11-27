@@ -62,8 +62,8 @@ use lushtext_services::{persistence::draft_service, persistence::json_store};
 
 use super::policy;
 use super::seams::{
-    DraftRestoreTicket, DraftRestoreTracking, GuardedDraftRestoreResolution,
-    GuardedPreloadedDraftRestore,
+    DraftJournalMembership, DraftRestoreTicket, DraftRestoreTracking,
+    GuardedDraftRestoreResolution, GuardedPreloadedDraftRestore,
 };
 use super::{
     DRAFT_RESTORE_DISPOSAL_RESERVATION_BYTES, attach_draft_body_disposal_probe,
@@ -138,7 +138,7 @@ impl LushtextWindow {
 
     /// Admit at most one lazy draft body to GTK and reject stale completions.
     pub(super) fn drive_lazy_draft_restore_queue(&self) {
-        if self.imp().drafts.lazy_restore_inflight.get() {
+        if self.imp().drafts.is_lazy_restore_inflight() {
             return;
         }
         if self.imp().drafts.lazy_restore_queue.borrow().is_empty() {
@@ -168,7 +168,7 @@ impl LushtextWindow {
         else {
             return;
         };
-        self.imp().drafts.lazy_restore_inflight.set(true);
+        self.imp().drafts.set_lazy_restore_inflight(true);
         self.note_draft_restore_started();
         let data_dir = json_store::data_dir();
         let entry = candidate.entry.clone();
@@ -221,7 +221,7 @@ impl LushtextWindow {
 
     pub(super) fn finish_draft_restore_tracking(&self, tracking: DraftRestoreTracking) {
         if matches!(tracking, DraftRestoreTracking::Lazy) {
-            self.imp().drafts.lazy_restore_inflight.set(false);
+            self.imp().drafts.set_lazy_restore_inflight(false);
         }
         self.note_draft_restore_finished();
         if matches!(tracking, DraftRestoreTracking::Lazy) {
@@ -240,12 +240,12 @@ impl LushtextWindow {
     /// comparing them.
     pub(crate) fn draft_workflow_blocks_readiness(&self) -> bool {
         let drafts = &self.imp().drafts;
-        policy::draft_workflow_blocks_readiness(policy::DraftReadinessState {
-            autosave_inflight: drafts.autosave_inflight.get(),
-            mutation_inflight: drafts.mutation_inflight.get(),
+        policy::draft_workflow_blocks_readiness(policy::DraftReadinessFacts {
+            autosave_inflight: drafts.is_autosave_inflight(),
+            mutation_inflight: drafts.is_mutation_inflight(),
             pending_deletes: !drafts.pending_deletes.borrow().is_empty(),
             restores_inflight: drafts.restore_inflight_count.get() > 0,
-            lazy_restore_inflight: drafts.lazy_restore_inflight.get(),
+            lazy_restore_inflight: drafts.is_lazy_restore_inflight(),
             lazy_queue_non_empty: !drafts.lazy_restore_queue.borrow().is_empty(),
         })
     }
@@ -384,18 +384,19 @@ impl LushtextWindow {
         let key = journal.next_key.get().saturating_add(1);
         journal.next_key.set(key);
         journal.windows.borrow_mut().push((key, self.downgrade()));
-        self.imp().drafts.journal_key.set(key);
-        *self.imp().drafts.journal.borrow_mut() = Some(journal);
+        *self.imp().drafts.journal_membership.borrow_mut() =
+            DraftJournalMembership::Joined { key, journal };
     }
 
     /// Leave the journal when the window leaves its application, or at the
     /// latest at dispose: release the lane and every claim this window holds,
     /// exactly once however often either path runs.
     pub(in crate::ui::window) fn leave_process_draft_journal(&self) {
-        let Some(journal) = self.imp().drafts.journal.borrow_mut().take() else {
+        let DraftJournalMembership::Joined { key, journal } =
+            std::mem::take(&mut *self.imp().drafts.journal_membership.borrow_mut())
+        else {
             return;
         };
-        let key = self.imp().drafts.journal_key.get();
         journal
             .windows
             .borrow_mut()
@@ -414,7 +415,7 @@ impl LushtextWindow {
     /// at the latest.
     fn leave_process_draft_journal_unless_busy(&self) {
         let drafts = &self.imp().drafts;
-        if drafts.mutation_inflight.get() || drafts.orphan_cleanup_inflight.get() {
+        if drafts.is_mutation_inflight() || drafts.is_orphan_cleanup_inflight() {
             return;
         }
         self.leave_process_draft_journal();
@@ -425,8 +426,11 @@ impl LushtextWindow {
     /// more journal work, so every decision below fails closed on `None`: it
     /// may still be alive (ledger A21), and journal work outside the lane
     /// could run inside another window's pass.
-    fn process_draft_journal(&self) -> Option<Rc<ProcessDraftJournal>> {
-        self.imp().drafts.journal.borrow().clone()
+    fn process_draft_journal(&self) -> Option<(JournalWindowKey, Rc<ProcessDraftJournal>)> {
+        match &*self.imp().drafts.journal_membership.borrow() {
+            DraftJournalMembership::Unjoined => None,
+            DraftJournalMembership::Joined { key, journal } => Some((*key, Rc::clone(journal))),
+        }
     }
 
     /// Whether journal mutation work may not start now: this window's own
@@ -434,20 +438,18 @@ impl LushtextWindow {
     /// lane. Every admission pre-check uses this one predicate, so none can
     /// forget the cross-window half.
     pub(super) fn journal_mutation_busy(&self) -> bool {
-        self.imp().drafts.mutation_inflight.get()
-            || self.process_draft_journal().is_some_and(|journal| {
-                journal.holder(self.imp().drafts.journal_key.get())
-                    == JournalLaneHolder::OtherWindow
-            })
+        self.imp().drafts.is_mutation_inflight()
+            || self
+                .process_draft_journal()
+                .is_some_and(|(key, journal)| journal.holder(key) == JournalLaneHolder::OtherWindow)
     }
 
     /// Take the lane for journal work, when it is free. Returns whether this
     /// window now holds it; on `false` the caller marks itself pending.
     pub(super) fn take_journal_lane(&self) -> bool {
-        let Some(journal) = self.process_draft_journal() else {
+        let Some((key, journal)) = self.process_draft_journal() else {
             return false;
         };
-        let key = self.imp().drafts.journal_key.get();
         if journal_core::journal_lane_admission(journal.holder(key))
             == JournalLaneAdmission::MarkPending
         {
@@ -459,8 +461,8 @@ impl LushtextWindow {
 
     /// Release the lane this window's journal work held.
     pub(super) fn release_journal_lane(&self) {
-        if let Some(journal) = self.process_draft_journal() {
-            journal.release(self.imp().drafts.journal_key.get());
+        if let Some((key, journal)) = self.process_draft_journal() {
+            journal.release(key);
         }
         // A window removed from its application while this work was in flight
         // deferred leaving the journal to here.
@@ -473,8 +475,8 @@ impl LushtextWindow {
     /// to be empty. No other window can have marked itself pending in between,
     /// so none is woken: waking would re-run a pass that just found nothing.
     pub(super) fn return_unused_journal_lane(&self) {
-        if let Some(journal) = self.process_draft_journal()
-            && journal.lane.get() == Some(self.imp().drafts.journal_key.get())
+        if let Some((key, journal)) = self.process_draft_journal()
+            && journal.lane.get() == Some(key)
         {
             journal.lane.set(None);
         }
@@ -499,10 +501,9 @@ impl LushtextWindow {
     /// The first window to claim an id owns it while it keeps an editor for
     /// it; a claim whose owner no longer has one passes to the asking window.
     pub(super) fn claim_draft_id(&self, draft_id: &str) -> DraftClaim {
-        let Some(journal) = self.process_draft_journal() else {
+        let Some((key, journal)) = self.process_draft_journal() else {
             return DraftClaim::OtherWindow;
         };
-        let key = self.imp().drafts.journal_key.get();
         let owner = journal.claims.borrow().get(draft_id).copied();
         match owner {
             Some(owner) if owner == key => return DraftClaim::ThisWindow,
@@ -525,15 +526,13 @@ impl LushtextWindow {
     /// Decide this window's startup restore: the first window of the process
     /// to ask restores the session and owns orphan-cleanup scheduling.
     pub(in crate::ui::window) fn claim_startup_restore(&self) -> journal_core::StartupRestore {
-        let Some(journal) = self.process_draft_journal() else {
+        let Some((key, journal)) = self.process_draft_journal() else {
             return journal_core::StartupRestore::RestoreSession;
         };
         let decision = journal_core::startup_restore(journal.session_restored.get());
         if decision == journal_core::StartupRestore::RestoreSession {
             journal.session_restored.set(true);
-            journal
-                .cleanup_owner
-                .set(Some(self.imp().drafts.journal_key.get()));
+            journal.cleanup_owner.set(Some(key));
         }
         decision
     }
@@ -541,10 +540,9 @@ impl LushtextWindow {
     /// Whether this window schedules orphan cleanup for the process. The
     /// first window that asks after the owner closed takes it over.
     pub(super) fn owns_process_orphan_cleanup(&self) -> bool {
-        let Some(journal) = self.process_draft_journal() else {
+        let Some((key, journal)) = self.process_draft_journal() else {
             return false;
         };
-        let key = self.imp().drafts.journal_key.get();
         if let Some(owner) = journal.cleanup_owner.get() {
             owner == key
         } else {
@@ -556,7 +554,7 @@ impl LushtextWindow {
     /// Every other live window of this window's journal, in creation order.
     fn journal_peers(&self) -> Vec<Self> {
         self.process_draft_journal()
-            .map_or_default(|journal| journal.peers(self.imp().drafts.journal_key.get()))
+            .map_or_default(|(key, journal)| journal.peers(key))
     }
 
     /// Mirror a manifest this window just adopted into every other window's
@@ -609,7 +607,7 @@ impl LushtextWindow {
     pub(in crate::ui::window) fn process_windows(&self) -> Vec<Self> {
         self.process_draft_journal().map_or_else(
             || vec![self.clone()],
-            |journal| {
+            |(_, journal)| {
                 journal
                     .windows
                     .borrow()
@@ -622,7 +620,7 @@ impl LushtextWindow {
 
     /// The next process-wide session-save generation.
     pub(in crate::ui::window) fn next_process_session_generation(&self) -> SessionGeneration {
-        let Some(journal) = self.process_draft_journal() else {
+        let Some((_, journal)) = self.process_draft_journal() else {
             return SessionGeneration::ZERO;
         };
         let next = SessionGeneration::new(journal.session_generation.get().get().saturating_add(1));

@@ -40,6 +40,10 @@ use lushtext_model::values::SaveGeneration;
 /// admission, the admitted request's identity, how the buffer was captured, and
 /// how the durable write ended.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct SaveEvidence {
     // --- in-flight save ---
     /// Whether a save currently owns this editor.
@@ -117,11 +121,17 @@ impl LushtextEditorPage {
     #[must_use]
     pub fn save_evidence(&self) -> SaveEvidence {
         let imp = self.imp();
-        let admitted_borrow = imp.save.admitted.borrow();
-        let admitted = admitted_borrow.as_ref();
+        let flight = imp.save.flight.borrow();
+        let admitted = match &*flight {
+            super::admission::SaveFlightPhase::Admitted(ticket) => Some(ticket),
+            super::admission::SaveFlightPhase::Idle | super::admission::SaveFlightPhase::Queued => {
+                None
+            }
+        };
         let admission = admission::admission_snapshot();
+        let mirror = imp.save.mirror.get();
         SaveEvidence {
-            inflight: imp.save.inflight.get(),
+            inflight: imp.save.is_inflight(),
             generation: imp.save.generation.get(),
             admitted_path: admitted.map(|ticket| ticket.path.clone()),
             admitted_explicit_destination: admitted.map(|ticket| ticket.explicit_destination),
@@ -138,32 +148,46 @@ impl LushtextEditorPage {
             capture_mode: execution::capture_mode(self),
             capture_in_flight: execution::capture_in_flight(self),
             write_classification: imp.save.write_classification.get(),
-            formatting_rewrote_buffer: imp.save.formatting_rewrote_buffer.get(),
-            mirror_back_completed: imp.save.mirror_back_completed.get(),
+            formatting_rewrote_buffer: mirror.rewrote_buffer(),
+            mirror_back_completed: mirror.mirror_back_completed(),
         }
     }
 }
 
 /// Record which request the workflow just admitted.
 pub(super) fn record_admitted_ticket(editor: &LushtextEditorPage, ticket: QueuedSaveTicket) {
-    editor.imp().save.admitted.replace(Some(ticket));
-    editor.imp().save.formatting_rewrote_buffer.set(false);
-    editor.imp().save.mirror_back_completed.set(false);
+    *editor.imp().save.flight.borrow_mut() = super::admission::SaveFlightPhase::Admitted(ticket);
+    editor
+        .imp()
+        .save
+        .mirror
+        .set(super::admission::SaveMirrorStatus::Unrewritten);
 }
 
 /// Record that the admitted request reached a terminal and released the editor.
 pub(super) fn clear_admitted_ticket(editor: &LushtextEditorPage) {
-    editor.imp().save.admitted.borrow_mut().take();
+    editor.imp().save.clear_flight();
 }
 
 /// Record whether save formatting rewrote the text that was written.
 pub(super) fn record_formatting_rewrite(editor: &LushtextEditorPage, rewrote: bool) {
-    editor.imp().save.formatting_rewrote_buffer.set(rewrote);
+    editor.imp().save.mirror.set(if rewrote {
+        super::admission::SaveMirrorStatus::RewrotePendingMirror
+    } else {
+        super::admission::SaveMirrorStatus::Unrewritten
+    });
 }
 
 /// Record that the formatted text finished installing back into the buffer.
 pub(super) fn record_mirror_back_completed(editor: &LushtextEditorPage) {
-    editor.imp().save.mirror_back_completed.set(true);
+    let current = editor.imp().save.mirror.get();
+    editor
+        .imp()
+        .save
+        .mirror
+        .set(super::admission::SaveMirrorStatus::Mirrored {
+            rewrote: current.rewrote_buffer(),
+        });
 }
 
 /// Record how the durable write ended, against the durable-write contract.

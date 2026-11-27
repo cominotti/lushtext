@@ -36,6 +36,10 @@ use lushtext_model::persistence::draft::DraftManifestAuthority;
 /// and its serialization gate, the autosave lane, the restore lane, and orphan
 /// cleanup.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct DraftEvidence {
     // --- the journal's record ---
     /// Entries in the in-memory manifest.
@@ -177,9 +181,9 @@ impl LushtextWindow {
         let lazy_restore_queued = drafts.lazy_restore_queue.borrow().len();
         let authority = drafts.manifest_authority.get();
         let restores_inflight = drafts.restore_inflight_count.get();
-        let autosave_inflight = drafts.autosave_inflight.get();
-        let mutation_inflight = drafts.mutation_inflight.get();
-        let lazy_restore_inflight = drafts.lazy_restore_inflight.get();
+        let autosave_inflight = drafts.is_autosave_inflight();
+        let mutation_inflight = drafts.is_mutation_inflight();
+        let lazy_restore_inflight = drafts.is_lazy_restore_inflight();
         // A disposed window has no tab view, so this is the honest `None`.
         let mounted_pages = imp.tab_view.try_get().map(|view| view.n_pages());
 
@@ -198,8 +202,8 @@ impl LushtextWindow {
             unrestored_copy_next_due_ticks,
             autosave_timer_ticks: drafts.autosave_timer_ticks.get(),
             autosave_inflight,
-            autosave_pending: drafts.autosave_pending.get(),
-            first_dirty_timer_pending: drafts.first_dirty_autosave_pending.get(),
+            autosave_pending: drafts.is_autosave_pending(),
+            first_dirty_timer_pending: drafts.is_first_dirty_autosave_pending(),
             retained_complete_bodies: drafts.retained_complete_bodies.get(),
             max_retained_complete_bodies: drafts.max_retained_complete_bodies.get(),
             preloaded_entries,
@@ -207,14 +211,14 @@ impl LushtextWindow {
             lazy_restore_inflight,
             lazy_restore_queued,
             restores_inflight,
-            cleanup_timer_pending: drafts.orphan_cleanup_timer_pending.get(),
-            cleanup_worker_active: drafts.orphan_cleanup_inflight.get(),
+            cleanup_timer_pending: drafts.is_orphan_cleanup_timer_pending(),
+            cleanup_worker_active: drafts.is_orphan_cleanup_inflight(),
             cleanup_workers_started: drafts.orphan_cleanup_workers_started.get(),
             cleanup_workers_high_water: drafts.orphan_cleanup_workers_high_water.get(),
-            cleanup_pending_offset: drafts.orphan_cleanup_pending_offset.get(),
+            cleanup_pending_offset: drafts.orphan_cleanup_pending_offset(),
             cleanup_failure_streak: drafts.orphan_cleanup_failure_streak.get(),
             blocks_readiness: super::policy::draft_workflow_blocks_readiness(
-                super::policy::DraftReadinessState {
+                super::policy::DraftReadinessFacts {
                     autosave_inflight,
                     mutation_inflight,
                     pending_deletes: pending_delete_count > 0,

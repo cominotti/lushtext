@@ -15,14 +15,36 @@
 //! It owns no `policy.rs` and no `evidence.rs`, and it keeps every behavior obligation
 //! stated below and in the workflow's matrix row.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::ObjectExt;
 
+use crate::ui::signal_connect;
+use lushtext_model::workspace::{WorkspaceId, WorkspaceScope};
 use lushtext_services::coordination::notifications::NotificationSeverity;
 
 use super::{LushtextSidebar, WorkspaceSection};
+
+/// Typed outward events emitted by `LushtextSidebar` over its `"sidebar-event"`
+/// GObject signal.
+#[derive(Clone)]
+pub(super) enum SidebarEvent {
+    FileActivated(PathBuf),
+    LocalHistoryRequested(PathBuf),
+    DocumentNoteRequested(PathBuf),
+    FileRenamed(PathBuf, PathBuf),
+    FileDeleted(PathBuf),
+    FileCreated(PathBuf),
+    Message(String, NotificationSeverity),
+    FolderNoteRequested(WorkspaceId),
+    FolderNoteForFolderRequested(WorkspaceId, PathBuf),
+    WorkspaceStructureChanged,
+    WorkspaceScopeChanged(WorkspaceScope),
+}
+
+#[derive(Clone, glib::Boxed)]
+#[boxed_type(name = "LushtextSidebarEvent")]
+pub(super) struct BoxedSidebarEvent(pub(super) SidebarEvent);
 
 impl LushtextSidebar {
     /// Wire one section's callbacks into the sidebar shell.
@@ -156,73 +178,57 @@ impl LushtextSidebar {
         });
     }
 
+    pub(super) fn emit_sidebar_event(&self, event: SidebarEvent) {
+        signal_connect::emit_void(self, "sidebar-event", &[&BoxedSidebarEvent(event)]);
+    }
+
+    pub(super) fn connect_sidebar_event<F: Fn(&SidebarEvent) + 'static>(&self, handler: F) {
+        signal_connect::connect_void(self, "sidebar-event", false, move |values| {
+            if let Some(Ok(boxed)) = values.get(1).map(glib::Value::get::<&BoxedSidebarEvent>) {
+                handler(&boxed.0);
+            }
+        });
+    }
+
     fn emit_file_activated(&self, path: &Path) {
-        if let Some(ref callback) = *self.imp().file_activated_callback.borrow() {
-            callback(path);
-        }
+        self.emit_sidebar_event(SidebarEvent::FileActivated(path.to_path_buf()));
     }
 
     fn emit_local_history_requested(&self, path: &Path) {
-        if let Some(ref callback) = *self.imp().local_history_callback.borrow() {
-            callback(path);
-        }
+        self.emit_sidebar_event(SidebarEvent::LocalHistoryRequested(path.to_path_buf()));
     }
 
     fn emit_document_note_requested(&self, path: &Path) {
-        if let Some(ref callback) = *self.imp().document_note_callback.borrow() {
-            callback(path);
-        }
+        self.emit_sidebar_event(SidebarEvent::DocumentNoteRequested(path.to_path_buf()));
     }
 
     fn emit_file_renamed(&self, old_path: &Path, new_path: &Path) {
-        // End the borrow before invoking so a callback that re-enters
-        // registration cannot panic; restore unless a replacement was set.
-        let callback = self.imp().rename_callback.borrow_mut().take();
-        if let Some(callback) = callback {
-            callback(old_path, new_path);
-            self.imp()
-                .rename_callback
-                .borrow_mut()
-                .get_or_insert(callback);
-        }
+        self.emit_sidebar_event(SidebarEvent::FileRenamed(
+            old_path.to_path_buf(),
+            new_path.to_path_buf(),
+        ));
     }
 
     fn emit_file_deleted(&self, path: &Path) {
-        if let Some(ref callback) = *self.imp().delete_callback.borrow() {
-            callback(path);
-        }
+        self.emit_sidebar_event(SidebarEvent::FileDeleted(path.to_path_buf()));
     }
 
     fn emit_file_created(&self, path: &Path) {
-        let callback = self.imp().create_callback.borrow_mut().take();
-        if let Some(callback) = callback {
-            callback(path);
-            self.imp()
-                .create_callback
-                .borrow_mut()
-                .get_or_insert(callback);
-        }
+        self.emit_sidebar_event(SidebarEvent::FileCreated(path.to_path_buf()));
     }
 
-    fn emit_message(&self, text: &str, severity: NotificationSeverity) {
-        if let Some(ref callback) = *self.imp().message_callback.borrow() {
-            callback(text, severity);
-        }
+    pub(super) fn emit_message(&self, text: &str, severity: NotificationSeverity) {
+        self.emit_sidebar_event(SidebarEvent::Message(text.to_string(), severity));
     }
 
-    fn emit_folder_note_requested(&self, workspace_id: &lushtext_model::workspace::WorkspaceId) {
-        if let Some(ref callback) = *self.imp().folder_note_callback.borrow() {
-            callback(workspace_id.clone());
-        }
+    fn emit_folder_note_requested(&self, workspace_id: &WorkspaceId) {
+        self.emit_sidebar_event(SidebarEvent::FolderNoteRequested(workspace_id.clone()));
     }
 
-    fn emit_folder_note_for_folder_requested(
-        &self,
-        workspace_id: &lushtext_model::workspace::WorkspaceId,
-        path: &Path,
-    ) {
-        if let Some(ref callback) = *self.imp().folder_note_for_folder_callback.borrow() {
-            callback(workspace_id.clone(), path.to_path_buf());
-        }
+    fn emit_folder_note_for_folder_requested(&self, workspace_id: &WorkspaceId, path: &Path) {
+        self.emit_sidebar_event(SidebarEvent::FolderNoteForFolderRequested(
+            workspace_id.clone(),
+            path.to_path_buf(),
+        ));
     }
 }

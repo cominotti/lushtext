@@ -42,70 +42,105 @@ pub(super) type PageWatch = (
     [glib::SignalHandlerId; 2],
 );
 
+/// Installation lifecycle for the overflow controls and strip scrollers.
+#[derive(Debug, Default)]
+pub(super) enum OverflowInstallPhase {
+    #[default]
+    Uninstalled,
+    Installed {
+        controls: OverflowControls,
+        unpinned: Option<gtk4::ScrolledWindow>,
+        pinned: Option<gtk4::ScrolledWindow>,
+    },
+}
+
+/// Last-published overflow control visibility, enablement, and counters.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only last-published control state snapshot DTO"
+)]
+pub(super) struct PublishedControlsSnapshot {
+    pub(super) controls_visible: bool,
+    pub(super) group_attached: bool,
+    pub(super) unpinned_overflowing: bool,
+    pub(super) can_scroll_back: bool,
+    pub(super) can_scroll_forward: bool,
+    pub(super) all_tabs_visible: bool,
+    pub(super) pointer_in_group: bool,
+    pub(super) controls_shown_count: u32,
+    pub(super) all_tabs_count: u32,
+    pub(super) all_tabs_count_publications: u32,
+}
+
+/// Step-animation lifecycle for strip scrolling.
+#[derive(Debug, Default)]
+pub(super) enum TabScrollAnimationPhase {
+    #[default]
+    Idle,
+    Playing {
+        animation: libadwaita::TimedAnimation,
+        target: f64,
+    },
+}
+
+/// Active scroll step animation, hold-repeat source, and guard cancellation count.
+#[derive(Debug, Default)]
+pub(super) struct TabScrollController {
+    pub(super) animation: TabScrollAnimationPhase,
+    pub(super) repeat: Option<glib::SourceId>,
+    pub(super) guard_cancellations: u32,
+}
+
+/// Lifecycle of bringing the selected tab into view after a restore or pick.
+#[derive(Debug, Default)]
+pub(super) enum SelectionRevealPhase {
+    #[default]
+    Idle,
+    Owed(glib::SignalHandlerId),
+    Running {
+        reveal: super::scroll_execution::SelectionReveal,
+        announcing: bool,
+    },
+}
+
+/// Focus save/restore lifecycle for the All Tabs popup.
+#[derive(Debug, Default)]
+pub(super) enum AllTabsFocusPhase {
+    #[default]
+    Idle,
+    Saved {
+        widget: Option<glib::WeakRef<gtk4::Widget>>,
+    },
+    RestorePending {
+        widget: Option<glib::WeakRef<gtk4::Widget>>,
+        generation: FocusRestoreGeneration,
+    },
+}
+
 /// The workflow's one production state, held by the window. The readiness
 /// blocker, the automation snapshot and the evidence surface all read it.
 #[derive(Debug, Default)]
 pub(crate) struct TabOverflowState {
-    /// Whether the observers are installed.
-    pub(super) installed: Cell<bool>,
-    /// The end group, built once.
-    pub(super) controls: RefCell<Option<OverflowControls>>,
-    /// The unpinned tab scroller, when the lookup found it.
-    pub(super) unpinned: RefCell<Option<gtk4::ScrolledWindow>>,
-    /// The pinned tab scroller, when the lookup found it.
-    pub(super) pinned: RefCell<Option<gtk4::ScrolledWindow>>,
-    /// Whether the scroll buttons show.
-    pub(super) controls_visible: Cell<bool>,
-    /// How many times the scroll buttons appeared.
-    pub(super) controls_shown_count: Cell<u32>,
-    /// Whether the end group is the bar's end action widget.
-    pub(super) group_attached: Cell<bool>,
-    /// Whether the unpinned tabs overflowed at the last reconcile.
-    pub(super) unpinned_overflowing: Cell<bool>,
-    /// Whether Back may move, as last published.
-    pub(super) can_scroll_back: Cell<bool>,
-    /// Whether Forward may move, as last published.
-    pub(super) can_scroll_forward: Cell<bool>,
+    /// Whether the observers and end-group controls are installed.
+    pub(super) install: RefCell<OverflowInstallPhase>,
+    /// Last-published control flags and counters.
+    pub(super) published: Cell<PublishedControlsSnapshot>,
     /// The scheduled reconcile.
     pub(super) reconcile: SettleBurst,
     /// A reconcile that found the tab model in a projection batch and waits
     /// for its terminal.
     pub(super) waiting_for_terminal: Cell<bool>,
-    /// Our playing step, if any.
-    pub(super) animation: RefCell<Option<libadwaita::TimedAnimation>>,
-    /// Where the playing step lands.
-    pub(super) animation_target: Cell<Option<f64>>,
-    /// The hold-to-repeat source, if a hold is repeating.
-    pub(super) repeat: RefCell<Option<glib::SourceId>>,
-    /// Steps and holds the strip's own input cancelled.
-    pub(super) guard_cancellations: Cell<u32>,
-    /// Whether the pointer is over our end group, where a wheel moves no
-    /// strip: the tab box's wheel handler sits on the box (design F1).
-    pub(super) pointer_in_group: Cell<bool>,
-    /// The reveal of the selected tab after a session restore, while it runs.
-    pub(super) selection_reveal: RefCell<Option<super::scroll_execution::SelectionReveal>>,
-    /// Whether the reveal is re-announcing the unchanged selection right now.
-    pub(super) revealing_selection: Cell<bool>,
-    /// A reveal asked for while the bar was unmapped (Focus Mode hid the
-    /// strip): the bar's one-shot `map` handler that starts it. It does not
-    /// block readiness, since the strip may stay hidden indefinitely.
-    pub(super) owed_reveal: RefCell<Option<glib::SignalHandlerId>>,
-    /// Whether the All Tabs button shows, as last published.
-    pub(super) all_tabs_visible: Cell<bool>,
-    /// The count the All Tabs button shows, as last published.
-    pub(super) all_tabs_count: Cell<u32>,
-    /// How many times the All Tabs count changed.
-    pub(super) all_tabs_count_publications: Cell<u32>,
-    /// The focus to give back when the popover closes without an activation.
-    pub(super) saved_focus: RefCell<Option<glib::WeakRef<gtk4::Widget>>>,
-    /// Whether the popover's focus restore waits for its idle. Until it runs,
-    /// the reconcile's hand-off stands down: the menu button focuses itself on
-    /// close, and a hand-off from it would compete with the restore.
-    pub(super) focus_restore_pending: Cell<bool>,
-    /// The generation of the latest focus restore; a reopened popover or
+    /// Playing step animation, hold-to-repeat timer, and guard cancellations.
+    pub(super) scroll: RefCell<TabScrollController>,
+    /// Selection reveal lifecycle (`Idle`, `Owed` on next map, or `Running`).
+    pub(super) reveal: RefCell<SelectionRevealPhase>,
+    /// Focus restore lifecycle for the All Tabs popup.
+    pub(super) all_tabs_focus: RefCell<AllTabsFocusPhase>,
+    /// The generation of the latest focus restore; a reopened popup or
     /// disposal advances it, so an older restore's idle does nothing.
     pub(super) focus_restore_generation: Cell<FocusRestoreGeneration>,
-    /// The re-snapshot of an open popover after a tab change.
+    /// The re-snapshot of an open popup after a tab change.
     pub(super) resnapshot: gtk_lush_settle::Debounce,
     /// Each tab page's title and pinned handlers, by page address.
     pub(super) page_watches: RefCell<std::collections::HashMap<usize, PageWatch>>,
@@ -121,23 +156,77 @@ pub(super) fn release_page_watch((page, handlers): PageWatch) {
 }
 
 impl TabOverflowState {
+    /// Whether the observers and controls have been installed.
+    pub(super) fn is_installed(&self) -> bool {
+        matches!(
+            *self.install.borrow(),
+            OverflowInstallPhase::Installed { .. }
+        )
+    }
+
     /// The end group, once the install stage built it (a clone, so no borrow
     /// is held while a caller drives GTK).
     pub(super) fn controls(&self) -> Option<OverflowControls> {
-        self.controls.borrow().clone()
+        match &*self.install.borrow() {
+            OverflowInstallPhase::Installed { controls, .. } => Some(controls.clone()),
+            OverflowInstallPhase::Uninstalled => None,
+        }
+    }
+
+    /// The unpinned tab scroller, when installed and found.
+    pub(super) fn unpinned(&self) -> Option<gtk4::ScrolledWindow> {
+        match &*self.install.borrow() {
+            OverflowInstallPhase::Installed { unpinned, .. } => unpinned.clone(),
+            OverflowInstallPhase::Uninstalled => None,
+        }
+    }
+
+    /// The pinned tab scroller, when installed and found.
+    pub(super) fn pinned(&self) -> Option<gtk4::ScrolledWindow> {
+        match &*self.install.borrow() {
+            OverflowInstallPhase::Installed { pinned, .. } => pinned.clone(),
+            OverflowInstallPhase::Uninstalled => None,
+        }
+    }
+
+    /// Snapshot of last-published control flags and counters.
+    pub(super) fn published(&self) -> PublishedControlsSnapshot {
+        self.published.get()
+    }
+
+    /// Update the published controls snapshot in place.
+    pub(super) fn update_published(&self, update: impl FnOnce(&mut PublishedControlsSnapshot)) {
+        let mut published = self.published.get();
+        update(&mut published);
+        self.published.set(published);
     }
 
     /// Whether our step animation is playing.
     pub(super) fn animation_playing(&self) -> bool {
-        self.animation.borrow().as_ref().is_some_and(is_playing)
+        matches!(
+            self.scroll.borrow().animation,
+            TabScrollAnimationPhase::Playing { ref animation, .. } if is_playing(animation)
+        )
+    }
+
+    /// Whether a hold-to-repeat timer is currently armed.
+    pub(super) fn repeat_active(&self) -> bool {
+        self.scroll.borrow().repeat.is_some()
+    }
+
+    /// Steps and holds the strip's own input cancelled.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(super) fn guard_cancellations(&self) -> u32 {
+        self.scroll.borrow().guard_cancellations
     }
 
     /// Take our step animation, pausing it where it stands when it plays
     /// (`adw_animation_pause`, never `reset` or `skip`: module docs of
     /// `scroll_execution.rs`). Returns whether it was playing.
     pub(super) fn pause_step(&self) -> bool {
-        match self.animation.take() {
-            Some(animation) if is_playing(&animation) => {
+        let taken = std::mem::take(&mut self.scroll.borrow_mut().animation);
+        match taken {
+            TabScrollAnimationPhase::Playing { animation, .. } if is_playing(&animation) => {
                 libadwaita::prelude::AnimationExt::pause(&animation);
                 true
             }
@@ -145,20 +234,36 @@ impl TabOverflowState {
         }
     }
 
+    /// Whether a selection reveal is currently running.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(super) fn selection_reveal_pending(&self) -> bool {
+        matches!(*self.reveal.borrow(), SelectionRevealPhase::Running { .. })
+    }
+
+    /// Whether a popup focus restore idle is currently pending.
+    pub(super) fn focus_restore_pending(&self) -> bool {
+        matches!(
+            *self.all_tabs_focus.borrow(),
+            AllTabsFocusPhase::RestorePending { .. }
+        )
+    }
+
     /// Whether the readiness blocker `tab-overflow` holds: a step, a hold, a
     /// reconcile, a focus restore or a selection reveal (for a bounded time,
-    /// `policy::reveal_holds_readiness`) is pending, or the All Tabs popover
+    /// `policy::reveal_holds_readiness`) is pending, or the All Tabs popup
     /// is still publishing or retiring rows.
     pub(crate) fn blocks_readiness(&self) -> bool {
+        let reveal_blocks = match &*self.reveal.borrow() {
+            SelectionRevealPhase::Running { reveal, .. } => {
+                reveal.blocks_readiness(glib::monotonic_time())
+            }
+            SelectionRevealPhase::Idle | SelectionRevealPhase::Owed(_) => false,
+        };
         self.reconcile.pending()
             || self.waiting_for_terminal.get()
-            || self.repeat.borrow().is_some()
-            || self.focus_restore_pending.get()
-            || self
-                .selection_reveal
-                .borrow()
-                .as_ref()
-                .is_some_and(|reveal| reveal.blocks_readiness(glib::monotonic_time()))
+            || self.repeat_active()
+            || self.focus_restore_pending()
+            || reveal_blocks
             || self
                 .controls()
                 .is_some_and(|controls| controls.popover.publishing())
@@ -176,7 +281,7 @@ impl LushtextWindow {
     pub(crate) fn install_tab_overflow(&self) {
         let imp = self.imp();
         let state = &imp.tab_overflow;
-        if state.installed.replace(true) {
+        if state.is_installed() {
             return;
         }
         let bar = imp.tab_bar.get();
@@ -197,7 +302,6 @@ impl LushtextWindow {
                 }
             },
         );
-        state.controls.replace(Some(built));
 
         for scroller in [&unpinned, &pinned].into_iter().flatten() {
             let adjustment = scroller.hadjustment();
@@ -214,8 +318,11 @@ impl LushtextWindow {
                 }
             });
         }
-        state.unpinned.replace(unpinned);
-        state.pinned.replace(pinned);
+        state.install.replace(OverflowInstallPhase::Installed {
+            controls: built,
+            unpinned,
+            pinned,
+        });
 
         let window_weak = self.downgrade();
         bar.connect_is_overflowing_notify(move |_| {
@@ -251,7 +358,7 @@ impl LushtextWindow {
         let window_weak = self.downgrade();
         scroll.connect_scroll(move |_, _, _| {
             if let Some(window) = window_weak.upgrade()
-                && !window.imp().tab_overflow.pointer_in_group.get()
+                && !window.imp().tab_overflow.published().pointer_in_group
             {
                 window.yield_to_strip_input();
             }
@@ -281,13 +388,19 @@ impl LushtextWindow {
             let window_weak = self.downgrade();
             motion.connect_enter(move |_, _, _| {
                 if let Some(window) = window_weak.upgrade() {
-                    window.imp().tab_overflow.pointer_in_group.set(true);
+                    window
+                        .imp()
+                        .tab_overflow
+                        .update_published(|published| published.pointer_in_group = true);
                 }
             });
             let window_weak = self.downgrade();
             motion.connect_leave(move |_| {
                 if let Some(window) = window_weak.upgrade() {
-                    window.imp().tab_overflow.pointer_in_group.set(false);
+                    window
+                        .imp()
+                        .tab_overflow
+                        .update_published(|published| published.pointer_in_group = false);
                 }
             });
             controls.group.add_controller(motion);
@@ -372,7 +485,7 @@ impl LushtextWindow {
     /// allocation that notified).
     pub(crate) fn schedule_tab_overflow_reconcile(&self) {
         let state = &self.imp().tab_overflow;
-        if !state.installed.get() || self.imp().disposing.get() {
+        if !state.is_installed() || self.imp().disposing.get() {
             return;
         }
         let _handle = state
@@ -416,7 +529,7 @@ impl LushtextWindow {
         let (Some(bar), Some(tab_view)) = (imp.tab_bar.try_get(), imp.tab_view.try_get()) else {
             return;
         };
-        let unpinned = state.unpinned.borrow().clone();
+        let unpinned = state.unpinned();
         let extent = unpinned
             .as_ref()
             .map(|scroller| current_extent(&scroller.hadjustment()));
@@ -429,8 +542,8 @@ impl LushtextWindow {
             bar_overflowing: bar.is_overflowing(),
             pinned_overflows: state.pinned_overflows(),
         };
-        state.unpinned_overflowing.set(facts.unpinned_overflows);
-        let was_visible = state.controls_visible.get();
+        let prev = state.published();
+        let was_visible = prev.controls_visible;
         let tab_count = u32::try_from(tab_view.n_pages()).unwrap_or(0);
         let OverflowControlsPlan {
             buttons_visible,
@@ -446,57 +559,66 @@ impl LushtextWindow {
             rtl: is_rtl(&bar),
             tab_count,
         });
-        let focused = (!state.focus_restore_pending.get())
+        let focused = (!state.focus_restore_pending())
             .then(|| controls.focused_control(self))
             .flatten();
 
         if buttons_visible != was_visible {
             controls.back.set_visible(buttons_visible);
             controls.forward.set_visible(buttons_visible);
-            state.controls_visible.set(buttons_visible);
-            if buttons_visible {
-                state
-                    .controls_shown_count
-                    .set(state.controls_shown_count.get().saturating_add(1));
-            } else {
+            if !buttons_visible {
                 self.end_tab_scroll_hold();
             }
         }
         self.set_tab_overflow_action_enabled(SCROLL_BACK_ACTION, can_scroll_back);
         self.set_tab_overflow_action_enabled(SCROLL_FORWARD_ACTION, can_scroll_forward);
-        state.can_scroll_back.set(can_scroll_back);
-        state.can_scroll_forward.set(can_scroll_forward);
 
         if all_tabs_visible {
             controls.show_all_tabs_count(tab_count);
-            if state.all_tabs_count.replace(tab_count) != tab_count {
-                state
-                    .all_tabs_count_publications
-                    .set(state.all_tabs_count_publications.get().saturating_add(1));
-            }
         } else if controls.popover.is_visible() {
-            // The group is about to hide or detach: close the popover first,
+            // The group is about to hide or detach: close the popup first,
             // with its focus restore (design D1).
             controls.popover.popdown();
         }
-        if all_tabs_visible != state.all_tabs_visible.get() {
+        if all_tabs_visible != prev.all_tabs_visible {
             controls.all_tabs.set_visible(all_tabs_visible);
-            state.all_tabs_visible.set(all_tabs_visible);
         }
         self.set_tab_overflow_action_enabled(TOGGLE_ALL_TABS_ACTION, all_tabs_visible);
         self.set_tab_overflow_action_enabled(SET_ALL_TABS_VISIBLE_ACTION, all_tabs_visible);
 
-        if group_attached != state.group_attached.get() {
+        if group_attached != prev.group_attached {
             if group_attached {
                 bar.set_end_action_widget(Some(&controls.group));
             } else {
                 bar.set_end_action_widget(None::<&gtk4::Widget>);
-                // A detached group is under no pointer, whether or not GTK
-                // delivered its `leave`.
-                state.pointer_in_group.set(false);
             }
-            state.group_attached.set(group_attached);
         }
+        state.update_published(|published| {
+            published.unpinned_overflowing = facts.unpinned_overflows;
+            if buttons_visible != was_visible {
+                published.controls_visible = buttons_visible;
+                if buttons_visible {
+                    published.controls_shown_count =
+                        published.controls_shown_count.saturating_add(1);
+                }
+            }
+            published.can_scroll_back = can_scroll_back;
+            published.can_scroll_forward = can_scroll_forward;
+            if all_tabs_visible && published.all_tabs_count != tab_count {
+                published.all_tabs_count = tab_count;
+                published.all_tabs_count_publications =
+                    published.all_tabs_count_publications.saturating_add(1);
+            }
+            published.all_tabs_visible = all_tabs_visible;
+            if group_attached != prev.group_attached {
+                published.group_attached = group_attached;
+                if !group_attached {
+                    // A detached group is under no pointer, whether or not GTK
+                    // delivered its `leave`.
+                    published.pointer_in_group = false;
+                }
+            }
+        });
 
         let focus_facts = ControlFocusFacts {
             back_available: can_scroll_back,
@@ -529,8 +651,8 @@ impl LushtextWindow {
         state.waiting_for_terminal.set(false);
         let _ = state.reconcile.clear();
         let _ = state.resnapshot.invalidate();
-        state.saved_focus.replace(None);
         self.cancel_all_tabs_focus_restore();
+        state.all_tabs_focus.replace(AllTabsFocusPhase::Idle);
         let watches: Vec<_> = state.page_watches.borrow_mut().drain().collect();
         for (_, watch) in watches {
             release_page_watch(watch);

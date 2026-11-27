@@ -495,15 +495,12 @@ pub(crate) fn before<A: Copy + Debug + 'static>(kind: ProtocolKind, action: &A) 
             });
             run.step = Some(installed.trace.steps.len() - 1);
         }
-        let mut hooks = Vec::new();
-        let mut index = 0;
-        while index < installed.plan.hooks.len() {
-            if matches_action(&installed.plan.hooks[index].0, run, nth) {
-                hooks.push(installed.plan.hooks.remove(index).1);
-            } else {
-                index += 1;
-            }
-        }
+        let hooks: Vec<_> = installed
+            .plan
+            .hooks
+            .extract_if(.., |(matcher, _)| matches_action(matcher, run, nth))
+            .map(|(_, action)| action)
+            .collect();
         // A named crash counts its occurrence here; `after` re-checks the
         // ordinal form only.
         let crash_now = installed

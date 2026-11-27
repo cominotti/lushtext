@@ -884,6 +884,10 @@ pub struct AutomationWindowConstructionSnapshot {
 
 /// Non-content metadata for one tab.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only D-Bus automation snapshot DTO"
+)]
 pub struct AutomationTabSnapshot {
     /// Zero-based tab index in the visible tab model.
     pub index: u32,
@@ -929,6 +933,10 @@ pub struct AutomationTabSnapshot {
 
 /// Window-level surface state that scenario helpers commonly assert.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only D-Bus automation snapshot DTO"
+)]
 pub struct AutomationSurfaceSnapshot {
     /// Rendered workspace sidebar visibility.
     pub workspace_sidebar_visible: bool,
@@ -1146,6 +1154,10 @@ pub struct AutomationVisualScrollAnchorSnapshot {
 
 /// Search-related state with bounded query/count fields only.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only D-Bus automation snapshot DTO"
+)]
 pub struct AutomationSearchSnapshot {
     /// Whether the selected editor's search bar is visible.
     pub editor_search_visible: bool,
@@ -1169,6 +1181,10 @@ pub struct AutomationSearchSnapshot {
 
 /// Workspace state that can be read from the mounted sidebar model.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only D-Bus automation snapshot DTO"
+)]
 pub struct AutomationWorkspaceSnapshot {
     /// Current scope kind: `all` or `workspace`.
     pub scope_kind: String,
@@ -1244,6 +1260,10 @@ pub struct AutomationCommandPaletteSnapshot {
 
 /// Notes and bookmark state that is safe to expose without sidecar reads.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only D-Bus automation snapshot DTO"
+)]
 pub struct AutomationNotesSnapshot {
     /// Whether the notes menu popover is currently open.
     pub notes_menu_open: bool,
@@ -1282,6 +1302,10 @@ pub struct AutomationLocalHistorySnapshot {
 
 /// Workspace content search and Replace All state.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only D-Bus automation snapshot DTO"
+)]
 pub struct AutomationContentSearchSnapshot {
     /// Whether the workspace search panel is visible.
     pub visible: bool,

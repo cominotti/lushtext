@@ -1138,7 +1138,7 @@ fn test_preserved_drafts_over_the_bound_notify_once_and_the_review_action_opens_
     window.autosave_tick_for_test();
     wait_until(Duration::from_secs(10), || {
         let state = app.set_aside_review_state();
-        !state.evaluation_inflight
+        !state.evaluation_inflight()
             && state.placements_seen == draft_service::set_aside::placements()
     });
     assert_eq!(app.set_aside_review_state().notices_published, 1);

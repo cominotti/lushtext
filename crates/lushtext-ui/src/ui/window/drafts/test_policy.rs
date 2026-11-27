@@ -97,6 +97,10 @@ pub fn set_draft_manifest_completion_delay_for_test(delay_ms: u64) {
 
 /// Selected draft recovery stages to inject failures into on the next write pass.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "test fault-injection plan DTO"
+)]
 pub struct DraftMutationFailurePlan {
     pub body: bool,
     pub manifest: bool,

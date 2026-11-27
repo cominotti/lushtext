@@ -25,8 +25,9 @@
 
 use std::sync::Arc;
 
-use glib::subclass::prelude::ObjectSubclassIsExt;
+use glib::subclass::prelude::{ObjectSubclassExt, ObjectSubclassIsExt};
 use gtk4::glib;
+use gtk4::prelude::*;
 
 use crate::ui::plain_disposal::DisposalOwned;
 use lushtext_model::values::FlightGeneration;
@@ -245,5 +246,64 @@ impl LushtextCommandPalette {
         let searching = imp.palette_open.get() && imp.search_flight.borrow().has_work();
         imp.searching.set(searching);
         imp.refresh_accessibility_state();
+    }
+}
+
+impl super::imp::LushtextCommandPalette {
+    /// Restart the query flight from the currently visible entry text.
+    ///
+    /// Query stage 1 for every adapter-owned entry point: the mode dropdown,
+    /// Tab and Shift+Tab cycling, and source installation.
+    pub(super) fn restart_query(&self) {
+        self.obj()
+            .start_query_flight(self.search_entry.text().to_string());
+    }
+
+    /// Replace the open file-backed tab source and repaint if the palette is open.
+    pub(super) fn install_open_tabs(&self, open_tabs: Vec<PaletteFileEntry>) {
+        *self.open_tabs.borrow_mut() = Arc::from(open_tabs);
+        self.restart_query_if_open();
+    }
+
+    /// Replace the cached note rows and repaint if a note-showing mode is active.
+    pub(super) fn install_note_entries(
+        &self,
+        note_entries: DisposalOwned<Box<[PaletteNoteEntry]>>,
+    ) {
+        let note_entries = note_entries.into_retained_current();
+        let previous =
+            std::mem::replace(&mut *self.note_entries.borrow_mut(), Arc::new(note_entries));
+        drop(previous);
+        if self.palette_open.get() && matches!(self.mode.get(), SearchMode::All | SearchMode::Notes)
+        {
+            self.restart_query();
+        }
+    }
+
+    /// Replace the workspace group label and repaint if it actually changed.
+    pub(super) fn install_workspace_group_label(&self, label: String) {
+        if *self.workspace_group_label.borrow() == label {
+            return;
+        }
+        *self.workspace_group_label.borrow_mut() = label;
+        self.restart_query_if_open();
+    }
+
+    /// Replace every window-owned source in one turn.
+    pub(super) fn install_sources(
+        &self,
+        open_tabs: Vec<PaletteFileEntry>,
+        workspace_group_label: &str,
+    ) {
+        *self.open_tabs.borrow_mut() = Arc::from(open_tabs);
+        *self.workspace_group_label.borrow_mut() = workspace_group_label.to_string();
+        self.restart_query_if_open();
+    }
+
+    /// Restart the query only while the palette is showing results.
+    pub(super) fn restart_query_if_open(&self) {
+        if self.palette_open.get() {
+            self.restart_query();
+        }
     }
 }

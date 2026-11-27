@@ -960,22 +960,6 @@ marking new ones `UNCLASSIFIED`; review the diff).
 |---|---|---|---|---|
 | `crates/lushtext-ui/src/ui/language_catalog.rs` | `CATALOG_BUILD_PRIORITY` | 198 | out: priority | GLib, CSS, mark or gutter priority (D1) |
 
-### `crates/lushtext-ui/src/ui/markdown_preview/imp.rs`
-
-| File | Constant | Value | Kind | Rounding or reason |
-|---|---|---|---|---|
-| `crates/lushtext-ui/src/ui/markdown_preview/imp.rs` | `LIST_ITEM_MARKER_MARGIN` | 24 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-ui/src/ui/markdown_preview/imp.rs` | `LIST_ITEM_MARKER_SLOT` | 36 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-ui/src/ui/markdown_preview/imp.rs` | `LIST_ITEM_DEPTH_STEP` | 28 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-ui/src/ui/markdown_preview/imp.rs` | `BLOCKQUOTE_BASE_MARGIN` | 18 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-ui/src/ui/markdown_preview/imp.rs` | `BLOCKQUOTE_DEPTH_STEP` | 20 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-ui/src/ui/markdown_preview/imp.rs` | `ALERT_BODY_LEFT_MARGIN` | 24 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-ui/src/ui/markdown_preview/imp.rs` | `ALERT_BODY_RIGHT_MARGIN` | 16 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-ui/src/ui/markdown_preview/imp.rs` | `FOOTNOTE_DEF_LEFT_MARGIN` | 32 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-ui/src/ui/markdown_preview/imp.rs` | `FOOTNOTE_DEF_RIGHT_MARGIN` | 16 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-ui/src/ui/markdown_preview/imp.rs` | `DEFINITION_DEF_LEFT_MARGIN` | 32 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-ui/src/ui/markdown_preview/imp.rs` | `DEFINITION_DEF_RIGHT_MARGIN` | 16 | out: geometry | UI geometry in sp or px (D1) |
-
 ### `crates/lushtext-ui/src/ui/markdown_preview/mod.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
@@ -1003,6 +987,22 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-ui/src/ui/markdown_preview/policy.rs` | `PREVIEW_MIN_WIDTH_SP` | 1 | out: geometry | UI geometry in sp or px (D1) |
 | `crates/lushtext-ui/src/ui/markdown_preview/policy.rs` | `PREVIEW_DEFAULT_WIDTH_SP` | 300 | out: geometry | UI geometry in sp or px (D1) |
 | `crates/lushtext-ui/src/ui/markdown_preview/policy.rs` | `PREVIEW_MAX_WIDTH_DIVISOR` | 3 | out: factor | factor, divisor or unit (D1) |
+
+### `crates/lushtext-ui/src/ui/markdown_preview/projection_execution.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-ui/src/ui/markdown_preview/projection_execution.rs` | `LIST_ITEM_MARKER_MARGIN` | 24 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/projection_execution.rs` | `LIST_ITEM_MARKER_SLOT` | 36 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/projection_execution.rs` | `LIST_ITEM_DEPTH_STEP` | 28 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/projection_execution.rs` | `BLOCKQUOTE_BASE_MARGIN` | 18 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/projection_execution.rs` | `BLOCKQUOTE_DEPTH_STEP` | 20 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/projection_execution.rs` | `ALERT_BODY_LEFT_MARGIN` | 24 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/projection_execution.rs` | `ALERT_BODY_RIGHT_MARGIN` | 16 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/projection_execution.rs` | `FOOTNOTE_DEF_LEFT_MARGIN` | 32 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/projection_execution.rs` | `FOOTNOTE_DEF_RIGHT_MARGIN` | 16 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/projection_execution.rs` | `DEFINITION_DEF_LEFT_MARGIN` | 32 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-ui/src/ui/markdown_preview/projection_execution.rs` | `DEFINITION_DEF_RIGHT_MARGIN` | 16 | out: geometry | UI geometry in sp or px (D1) |
 
 ### `crates/lushtext-ui/src/ui/markdown_preview/seams.rs`
 
@@ -1230,13 +1230,23 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-ui/src/ui/window/geometry/policy.rs` | `MIN_EDITOR_CONTENT_WIDTH_SP` | 620 | out: geometry | UI geometry in sp or px (D1) |
 | `crates/lushtext-ui/src/ui/window/geometry/policy.rs` | `DUAL_PANE_LAYOUT_OVERHEAD_SP` | 32 | out: geometry | UI geometry in sp or px (D1) |
 
+### `crates/lushtext-ui/src/ui/window/geometry/mod.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-ui/src/ui/window/geometry/mod.rs` | `WORKSPACE_SIDEBAR_TRANSITION_SETTLE_DELAY_MS` | 260 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+
 ### `crates/lushtext-ui/src/ui/window/imp.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-ui/src/ui/window/imp.rs` | `PREVIEW_SETTLE_DELAY_MS` | 16 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-ui/src/ui/window/imp.rs` | `WORKSPACE_SIDEBAR_TRANSITION_SETTLE_DELAY_MS` | 260 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
 | `crates/lushtext-ui/src/ui/window/imp.rs` | `LushtextWindow::record_layout_probe_span::LAYOUT_PROBE_SPANS` | 16 | out: structural | enum length, bucket or worker count, or capacity hint (D1) |
+
+### `crates/lushtext-ui/src/ui/window/preview.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-ui/src/ui/window/preview.rs` | `PREVIEW_SETTLE_DELAY_MS` | 16 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
 
 ### `crates/lushtext-ui/src/ui/window/local_history/policy.rs`
 
@@ -1336,17 +1346,12 @@ marking new ones `UNCLASSIFIED`; review the diff).
 |---|---|---|---|---|
 | `crates/lushtext-ui/src/ui/window/startup_data.rs` | `MAX_PENDING_ACTIVATION_OPENS` | 64 | presentation cap | up from 64: files a CLI open admits (D12) |
 
-### `crates/lushtext-ui/src/ui/window/tab_overflow/all_tabs_popover/imp.rs`
-
-| File | Constant | Value | Kind | Rounding or reason |
-|---|---|---|---|---|
-| `crates/lushtext-ui/src/ui/window/tab_overflow/all_tabs_popover/imp.rs` | `ROW_SPACING_SP` | 6 | out: geometry | UI geometry in sp: space between an All Tabs row's dot, text and state icons (`tab-strip-overflow-navigation` D6) |
-| `crates/lushtext-ui/src/ui/window/tab_overflow/all_tabs_popover/imp.rs` | `ROW_MARGIN_VERTICAL_SP` | 3 | out: geometry | UI geometry in sp: an All Tabs row's vertical inset (D6) |
-
 ### `crates/lushtext-ui/src/ui/window/tab_overflow/all_tabs_popover/item.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
+| `crates/lushtext-ui/src/ui/window/tab_overflow/all_tabs_popover/item.rs` | `ROW_SPACING_SP` | 6 | out: geometry | UI geometry in sp: space between an All Tabs row's dot, text and state icons (`tab-strip-overflow-navigation` D6) |
+| `crates/lushtext-ui/src/ui/window/tab_overflow/all_tabs_popover/item.rs` | `ROW_MARGIN_VERTICAL_SP` | 3 | out: geometry | UI geometry in sp: an All Tabs row's vertical inset (D6) |
 | `crates/lushtext-ui/src/ui/window/tab_overflow/all_tabs_popover/item.rs` | `LIVE_ROW_PRUNE_AT` | 1,024 | cap | map entries of handed-out row objects before dead ones are pruned; GTK holds about 205 rows (A1) plus the selection (`tab-strip-overflow-navigation` D6) |
 
 ### `crates/lushtext-ui/src/ui/window/tab_overflow/policy.rs`

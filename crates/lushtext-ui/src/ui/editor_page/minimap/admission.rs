@@ -13,7 +13,13 @@
 //! eligibility is decided from an estimate, never from a scan, so a 2 MiB
 //! document costs one comparison rather than a walk.
 
+use std::cell::{Cell, RefCell};
+
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk_lush_settle::{Debounce, SettleBurst};
+use gtk_lush_signals::SignalBag;
+use gtk_lush_widgets::RenderHoldOverlay;
+use lushtext_model::values::{AnalysisGeneration, MarkerGeneration, SearchGeneration};
 use sourceview5::prelude::*;
 
 use super::LushtextEditorPage;
@@ -22,13 +28,101 @@ use super::policy::{
     MinimapAnalysisPolicy, MinimapAnalysisRequest, MinimapAvailability, MinimapAvailabilityPolicy,
     minimap_availability_for_policy, wrapped_layout_analysis_required_for_bytes,
 };
+use super::{MinimapAnalysisCache, MinimapMarkerBins, MinimapModifiedTracking};
 use crate::config::keys;
+
+#[derive(Default)]
+pub(super) enum MinimapAnalysisRun {
+    #[default]
+    Idle,
+    Active {
+        session: Option<MinimapAnalysisSession>,
+        source_id: Option<glib::SourceId>,
+    },
+}
+
+#[derive(Default)]
+pub(super) struct MinimapAnalysis {
+    pub(super) generation: Cell<AnalysisGeneration>,
+    pub(super) lifetime: Cell<u64>,
+    pub(super) run: RefCell<MinimapAnalysisRun>,
+    pub(super) cache: RefCell<Option<MinimapAnalysisCache>>,
+    #[cfg(feature = "test-utils")]
+    pub(super) slices: Cell<usize>,
+    #[cfg(feature = "test-utils")]
+    pub(super) chars_per_slice_high_water: Cell<usize>,
+    #[cfg(feature = "test-utils")]
+    pub(super) cancellations: Cell<usize>,
+    #[cfg(feature = "test-utils")]
+    pub(super) terminals: Cell<usize>,
+    #[cfg(feature = "test-utils")]
+    pub(super) after_slice_hook: RefCell<Option<Box<dyn FnOnce()>>>,
+}
+
+#[derive(Default)]
+pub(super) struct MinimapProjection {
+    pub(super) map_signals: SignalBag,
+    pub(super) maps_built: Cell<u64>,
+    pub(super) retired_maps: RefCell<Vec<glib::WeakRef<sourceview5::Map>>>,
+    pub(super) marker_strip: RefCell<Option<gtk4::DrawingArea>>,
+    pub(super) marker_bins: RefCell<Option<MinimapMarkerBins>>,
+    pub(super) marker_generation: Cell<MarkerGeneration>,
+    pub(super) search_generation: Cell<SearchGeneration>,
+    pub(super) watched_search_context: RefCell<Option<glib::WeakRef<sourceview5::SearchContext>>>,
+    pub(super) search_signals: SignalBag,
+    pub(super) availability: Cell<MinimapAvailability>,
+}
+
+#[derive(Default)]
+pub(super) struct MinimapRefresh {
+    pub(super) debounce: Debounce,
+    pub(super) pending: Cell<bool>,
+    pub(super) reduced_feedback_shown: Cell<bool>,
+}
+
+#[derive(Default)]
+pub(super) struct MinimapReflow {
+    pub(super) settle: SettleBurst,
+    pub(super) reveal_pending: Cell<bool>,
+}
+
+/// Minimap widgets, marker state, and signal lifetimes for one editor tab.
+#[derive(Default)]
+pub struct MinimapState {
+    pub source_map: RefCell<Option<sourceview5::Map>>,
+    pub(super) projection: MinimapProjection,
+    pub(super) modified: MinimapModifiedTracking,
+    pub(super) analysis: MinimapAnalysis,
+    pub(super) refresh: MinimapRefresh,
+    /// Reusable render-hold owner for frozen minimap pixels during width reflow.
+    pub render_hold: RefCell<Option<RenderHoldOverlay>>,
+    pub(super) reflow: MinimapReflow,
+    /// Prevents programmatic loads and evictions from being recorded as user edits.
+    pub tracking_suspended: Cell<bool>,
+    pub(super) buffer_signals: SignalBag,
+}
+
+impl MinimapState {
+    pub(crate) fn dispose(&self) {
+        let _ = self.refresh.debounce.invalidate();
+        let _ = self.reflow.settle.clear();
+        self.refresh.pending.set(false);
+        self.reflow.reveal_pending.set(false);
+        self.buffer_signals.clear();
+        self.projection.map_signals.clear();
+        self.source_map.take();
+        self.projection.marker_strip.take();
+        self.render_hold.take();
+        self.projection.search_signals.clear();
+        self.projection.marker_bins.take();
+    }
+}
 
 impl LushtextEditorPage {
     /// Report the current minimap availability for this editor page.
     #[must_use]
     pub(super) fn minimap_availability_state(&self) -> MinimapAvailability {
-        self.imp().minimap.availability.get()
+        self.imp().minimap.projection.availability.get()
     }
 
     /// Whether the minimap is currently visible for this editor page.
@@ -64,10 +158,17 @@ impl LushtextEditorPage {
     /// markers that are not settled yet.
     pub(super) fn minimap_work_outstanding(&self) -> bool {
         let minimap = &self.imp().minimap;
-        minimap.refresh_pending.get()
-            || minimap.analysis_session.borrow().is_some()
-            || minimap.reflow_settle.pending()
-            || minimap.reflow_reveal_pending.get()
+        let analysis_active = matches!(
+            *minimap.analysis.run.borrow(),
+            MinimapAnalysisRun::Active {
+                session: Some(_),
+                ..
+            }
+        );
+        minimap.refresh.pending.get()
+            || analysis_active
+            || minimap.reflow.settle.pending()
+            || minimap.reflow.reveal_pending.get()
             || self.modified_tag_retirement_pending()
             || (minimap.source_map.borrow().is_some() && self.search_scan_pending())
     }
@@ -82,16 +183,12 @@ impl LushtextEditorPage {
         }
 
         let imp = self.imp();
-        let minimap = &imp.minimap;
-        let current_generation = minimap.analysis_generation.get();
-        let cache_satisfies = minimap
-            .analysis_cache
-            .borrow()
-            .as_ref()
-            .is_some_and(|cache| {
-                cache.generation == current_generation
-                    && (!request.long_line_markers || cache.markers_collected)
-            });
+        let analysis = &imp.minimap.analysis;
+        let current_generation = analysis.generation.get();
+        let cache_satisfies = analysis.cache.borrow().as_ref().is_some_and(|cache| {
+            cache.generation == current_generation
+                && (!request.long_line_markers || cache.markers_collected)
+        });
         if cache_satisfies {
             self.cancel_minimap_analysis(
                 super::retirement::MinimapCacheDisposition::Retain,
@@ -100,11 +197,13 @@ impl LushtextEditorPage {
             return;
         }
 
-        let active_matches = minimap
-            .analysis_session
-            .borrow()
-            .as_ref()
-            .is_some_and(|session| session.request == request);
+        let active_matches = matches!(
+            &*analysis.run.borrow(),
+            MinimapAnalysisRun::Active {
+                session: Some(session),
+                ..
+            } if session.request == request
+        );
         if active_matches {
             return;
         }
@@ -115,23 +214,20 @@ impl LushtextEditorPage {
 
         // Reserve a fresh generation: cancellation above already advanced it, so
         // read it again rather than incrementing the stale value read on entry.
-        let generation = minimap.analysis_generation.get().next();
-        minimap.analysis_generation.set(generation);
-        let lifetime = minimap.analysis_lifetime.get();
+        let generation = analysis.generation.get().next();
+        analysis.generation.set(generation);
+        let lifetime = analysis.lifetime.get();
         let buffer = self.buffer();
         let cursor_mark = buffer.create_mark(None, &buffer.start_iter(), true);
         let policy = MinimapAnalysisPolicy::PRODUCTION;
-        minimap
-            .analysis_session
-            .replace(Some(MinimapAnalysisSession {
-                generation,
-                lifetime,
-                request,
-                buffer,
-                cursor_mark,
-                accumulator: MinimapAnalysisAccumulator::new(policy, request.long_line_markers),
-            }));
-
+        let session = MinimapAnalysisSession {
+            generation,
+            lifetime,
+            request,
+            buffer,
+            cursor_mark,
+            accumulator: MinimapAnalysisAccumulator::new(policy, request.long_line_markers),
+        };
         let editor_weak = self.downgrade();
         let source_id = glib::idle_add_local(move || {
             let Some(editor) = editor_weak.upgrade() else {
@@ -139,7 +235,10 @@ impl LushtextEditorPage {
             };
             editor.run_minimap_analysis_slice(generation, lifetime)
         });
-        minimap.analysis_source_id.replace(Some(source_id));
+        *analysis.run.borrow_mut() = MinimapAnalysisRun::Active {
+            session: Some(session),
+            source_id: Some(source_id),
+        };
     }
 }
 

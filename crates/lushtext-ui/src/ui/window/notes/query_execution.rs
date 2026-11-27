@@ -29,7 +29,7 @@ use gtk4::prelude::*;
 use crate::ui::accessibility;
 use lushtext_services::palette as palette_service;
 
-use super::browser::NotesBrowserState;
+use super::browser::{NotesBrowserState, NotesListPhase};
 use super::policy::{
     GroupedNoteRows, NOTES_BROWSER_SEARCH_DEBOUNCE_MS, NotesEmptyStateFacts, group_note_rows,
     notes_browser_empty_label, notes_browser_limit_message, should_announce_limit,
@@ -40,7 +40,7 @@ use super::seams::{
 
 /// Debounce browser search so large note sets do not rebuild on every keystroke.
 pub(super) fn schedule_notes_browser_search(state: &Rc<NotesBrowserState>, query: String) {
-    if !state.source_ready.get() || state.disposed.get() {
+    if !state.is_source_ready() || state.disposed.get() {
         return;
     }
     if query.is_empty() {
@@ -164,7 +164,7 @@ fn publish_notes_browser_query(state: &Rc<NotesBrowserState>, grouped: GroupedNo
             limited: state.listed_count.get().is_limited(),
         },
     );
-    state.publishing.set(true);
+    state.list_phase.replace(NotesListPhase::Publishing);
     state.rows.publish(grouped, state.source_generation.get());
     let selected = if state.rows.is_empty() {
         None
@@ -181,7 +181,7 @@ fn publish_notes_browser_query(state: &Rc<NotesBrowserState>, grouped: GroupedNo
     if let Some(position) = selected {
         state.selection.set_selected(position);
     }
-    state.publishing.set(false);
+    state.list_phase.replace(NotesListPhase::Idle);
     state.show_results(empty_message);
     // After `show_results`: the list is realized once its stack page shows.
     state.track_row_growth();

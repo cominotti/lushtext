@@ -24,14 +24,15 @@
 //! **hold** a workflow's GTK-side state; what it may not do is coordinate an
 //! ordered stage, and it does not.
 
-use std::cell::{Cell, RefCell};
-use std::rc::{Rc, Weak};
-use std::sync::Arc;
+use std::{
+    cell::{Cell, RefCell},
+    rc::{Rc, Weak},
+    sync::Arc,
+};
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_settle::Debounce;
-use gtk4::gio;
-use gtk4::prelude::*;
+use gtk4::{gio, prelude::*};
 use libadwaita::prelude::{AdwDialogExt, NavigationPageExt};
 
 use crate::ui::accessibility;
@@ -129,9 +130,6 @@ pub(super) struct NotesBrowserState {
     pub(super) limit_announced_generation: Cell<Option<NotesSourceGeneration>>,
     /// Limit announcements raised by this dialog (evidence).
     pub(super) limit_announcements: Cell<u64>,
-    /// True while a query publish selects programmatically, so the selection
-    /// handler does not treat it as the user's navigation.
-    pub(super) publishing: Cell<bool>,
     /// The sliced open-editor capture: the capture in progress, its turn
     /// source, and its evidence (turns, restarts, rows counted but not copied,
     /// the longest turn).
@@ -141,23 +139,20 @@ pub(super) struct NotesBrowserState {
     /// rebinds in place and an unbound one stops listening. Bounded by the
     /// realized rows (A1).
     pub(super) bound_rows: RefCell<BoundRowHandlers>,
-    /// The staged first publish growing one step per frame
-    /// (`lighten-notes-browser-rows` D5), while it grows.
-    pub(super) row_growth: RefCell<Option<crate::ui::list_growth::RowGrowth>>,
+    /// Row publication / staged-growth phase for the list view.
+    pub(super) list_phase: RefCell<NotesListPhase>,
     /// Debounce used to rebuild browser search rows after typing settles.
     pub(super) search_debounce: Debounce,
     /// One-active/one-latest ownership for background full-source matching.
     pub(super) query_runtime: RefCell<palette_service::NotesBrowserQueryCoordinator>,
     /// Generation owner for the initial bounded source construction.
     pub(super) source_refreshes: RefCell<palette_service::NoteSourceRefreshCoordinator>,
-    /// Active compact source request waiting for disposal admission before sidecar I/O.
-    pub(super) source_admission: RefCell<Option<palette_service::NoteSourceRefreshStart>>,
+    /// Lifecycle phase of bounded source construction and admission.
+    pub(super) source_phase: RefCell<NotesSourcePhase>,
     /// One paced capacity wakeup for the browser source.
     pub(super) source_capacity_wakeup: crate::ui::plain_disposal::ProgressDisposalCapacityWakeup,
     /// Typed source omissions (content-free evidence).
     pub(super) source_truncation: RefCell<Vec<palette_service::NoteSourceTruncationReason>>,
-    /// Whether bounded source construction has published this dialog's source.
-    pub(super) source_ready: Cell<bool>,
     /// Whether dialog teardown has invalidated all source and query publication.
     pub(super) disposed: Cell<bool>,
     /// Inventory mode that owns the current source/query generations.
@@ -165,6 +160,27 @@ pub(super) struct NotesBrowserState {
     /// One-active/one-latest ownership for closed-file bookmark excerpt loads.
     pub(super) preview_loads:
         RefCell<lushtext_services::notes::bookmark_excerpt::BookmarkExcerptPreviewCoordinator>,
+}
+
+/// Lifecycle phase of the browser's bounded source construction.
+#[derive(Default)]
+pub(super) enum NotesSourcePhase {
+    #[default]
+    Loading,
+    AwaitingAdmission(Box<palette_service::NoteSourceRefreshStart>),
+    Ready,
+}
+
+/// Lifecycle phase of publishing and growing rows in the browser list view.
+#[derive(Default)]
+pub(super) enum NotesListPhase {
+    #[default]
+    Idle,
+    Publishing,
+    Growing(
+        #[expect(dead_code, reason = "RAII growth handle kept alive while growing")]
+        crate::ui::list_growth::RowGrowth,
+    ),
 }
 
 /// `content-changed` handlers of bound rows and headers, by the address of
@@ -207,13 +223,10 @@ pub struct OpenEditorSnapshotEvidence {
     pub worst_turn_us: u64,
 }
 
-/// Scalar bounded-source and query-ownership evidence.
-///
-/// Not feature-gated: `evidence::NotesEvidence` carries it in **both** feature
-/// configurations, so gating the type would compile only under `test-utils` —
-/// the exact default-feature break slot 4 recorded. Only the *re-export* for the
-/// external widget harness is gated.
+/// Scalar bounded-source and query-ownership evidence (present in all builds so
+/// `evidence::NotesEvidence` stays uniform across feature sets).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[expect(clippy::struct_excessive_bools, reason = "snapshot DTO")]
 pub struct NotesBrowserRuntimeSnapshot {
     /// Rows retained by the immutable admitted source.
     pub source_entries: usize,
@@ -342,7 +355,7 @@ impl ActiveNotesBrowser {
         Some(NotesBrowserRuntimeSnapshot {
             source_entries,
             source_truncated,
-            source_ready: state.source_ready.get(),
+            source_ready: state.is_source_ready(),
             mode: state.mode.get(),
             query,
             source,
@@ -593,10 +606,9 @@ impl LushtextWindow {
             listed_count: Cell::new(NotesBrowserListedCount::default()),
             limit_announced_generation: Cell::new(None),
             limit_announcements: Cell::new(0),
-            publishing: Cell::new(false),
             snapshot_capture: Rc::default(),
             bound_rows: RefCell::default(),
-            row_growth: RefCell::default(),
+            list_phase: RefCell::default(),
             search_debounce: Debounce::default(),
             preview_loads: RefCell::default(),
             all_entries: RefCell::new(Arc::new(
@@ -606,11 +618,10 @@ impl LushtextWindow {
             )),
             query_runtime: RefCell::default(),
             source_refreshes: RefCell::default(),
-            source_admission: RefCell::default(),
+            source_phase: RefCell::default(),
             source_capacity_wakeup:
                 crate::ui::plain_disposal::ProgressDisposalCapacityWakeup::default(),
             source_truncation: RefCell::new(Vec::new()),
-            source_ready: Cell::new(false),
             disposed: Cell::new(false),
             mode: Cell::new(mode),
         });
@@ -637,7 +648,7 @@ impl LushtextWindow {
                 // A publish selects programmatically, and teardown clears the
                 // model: neither is the user's navigation.
                 if let Some(state) = state.upgrade()
-                    && !state.publishing.get()
+                    && !state.is_publishing()
                     && !state.disposed.get()
                 {
                     NotesBrowserState::refresh_preview(
@@ -867,6 +878,17 @@ fn build_notes_browser_shell(
 
     shell
 }
+/// Build a padded vertical container wired for Escape-to-close.
+fn notes_vertical_box(dialog: &libadwaita::Dialog) -> gtk4::Box {
+    let content = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    install_dialog_escape_close(dialog, &content);
+    content
+}
+
 /// Build the browse rail used by the unified notes browser.
 fn build_notes_sidebar(
     dialog: &libadwaita::Dialog,
@@ -874,12 +896,7 @@ fn build_notes_sidebar(
     results_stack: &gtk4::Stack,
     limit_label: &gtk4::Label,
 ) -> gtk4::Box {
-    let content = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
-    content.set_margin_start(18);
-    content.set_margin_end(18);
-    content.set_margin_top(18);
-    content.set_margin_bottom(18);
-    install_dialog_escape_close(dialog, &content);
+    let content = notes_vertical_box(dialog);
 
     content.append(search_entry);
     // The list's own scroller is the only one, so the list gets a real
@@ -899,12 +916,7 @@ fn build_notes_preview_page(
     preview_stack: &gtk4::Stack,
     open_button: &gtk4::Button,
 ) -> gtk4::Box {
-    let content = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
-    content.set_margin_start(18);
-    content.set_margin_end(18);
-    content.set_margin_top(18);
-    content.set_margin_bottom(18);
-    install_dialog_escape_close(dialog, &content);
+    let content = notes_vertical_box(dialog);
 
     let header = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
     header.append(back_button);
@@ -991,6 +1003,14 @@ impl NotesBrowserEntryExt for NotesBrowserEntry {
 }
 
 impl NotesBrowserState {
+    pub(super) fn is_source_ready(&self) -> bool {
+        matches!(*self.source_phase.borrow(), NotesSourcePhase::Ready)
+    }
+
+    pub(super) fn is_publishing(&self) -> bool {
+        matches!(*self.list_phase.borrow(), NotesListPhase::Publishing)
+    }
+
     /// Follow a publish: grow a staged first publish one step per frame, or
     /// stop a growth a later publish ended.
     pub(super) fn track_row_growth(&self) {
@@ -998,10 +1018,15 @@ impl NotesBrowserState {
         if !self.list_view.is_realized() {
             self.rows.finish_growth();
         }
-        let growth = (self.rows.growing_rows() > 0).then(|| {
-            crate::ui::list_growth::RowGrowth::start(Box::new(self.rows.clone()), &self.list_view)
-        });
-        let previous = self.row_growth.replace(growth);
+        let next = if self.rows.growing_rows() > 0 {
+            NotesListPhase::Growing(crate::ui::list_growth::RowGrowth::start(
+                Box::new(self.rows.clone()),
+                &self.list_view,
+            ))
+        } else {
+            NotesListPhase::Idle
+        };
+        let previous = self.list_phase.replace(next);
         drop(previous);
     }
 
@@ -1010,8 +1035,10 @@ impl NotesBrowserState {
         if self.rows.growing_rows() == 0 {
             return;
         }
-        let growth = self.row_growth.take();
-        drop(growth);
+        if matches!(*self.list_phase.borrow(), NotesListPhase::Growing(_)) {
+            let previous = self.list_phase.replace(NotesListPhase::Idle);
+            drop(previous);
+        }
         self.rows.finish_growth();
     }
 

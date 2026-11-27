@@ -61,7 +61,10 @@ use lushtext_services::palette::{
 use lushtext_services::persistence::recovery_metadata::RecoveryDiagnostic;
 use lushtext_services::{palette as palette_service, persistence::json_store};
 
-use super::browser::{NotesBrowserEntry, NotesBrowserState, OpenEditorSnapshotEvidence};
+use super::browser::{
+    NotesBrowserEntry, NotesBrowserState, NotesListPhase, NotesSourcePhase,
+    OpenEditorSnapshotEvidence,
+};
 use super::policy;
 use super::policy::{
     CaptureSliceDecision, NOTES_OPEN_EDITOR_SNAPSHOT_RETAINED_BYTE_LIMIT, NotesBrowserListedCount,
@@ -480,8 +483,13 @@ pub(super) fn start_notes_browser_source_load(
     );
     let Some(reservation) = reservation else {
         let mode = start.request.mode;
-        debug_assert!(state.source_admission.borrow().is_none());
-        state.source_admission.replace(Some(start));
+        debug_assert!(!matches!(
+            *state.source_phase.borrow(),
+            NotesSourcePhase::AwaitingAdmission(_)
+        ));
+        state
+            .source_phase
+            .replace(NotesSourcePhase::AwaitingAdmission(Box::new(start)));
         let state_weak = Rc::downgrade(state);
         state.source_capacity_wakeup.arm(observed_epoch, move || {
             if let Some(state) = state_weak.upgrade() {
@@ -531,10 +539,18 @@ pub(super) fn start_notes_browser_source_load(
 }
 
 pub(super) fn retry_notes_browser_source_admission(state: &Rc<NotesBrowserState>) {
-    let Some(start) = state.source_admission.borrow_mut().take() else {
+    if !matches!(
+        *state.source_phase.borrow(),
+        NotesSourcePhase::AwaitingAdmission(_)
+    ) {
+        return;
+    }
+    let NotesSourcePhase::AwaitingAdmission(start) =
+        state.source_phase.replace(NotesSourcePhase::Loading)
+    else {
         return;
     };
-    start_notes_browser_source_load(state, start);
+    start_notes_browser_source_load(state, *start);
 }
 
 fn finish_notes_browser_source_load(
@@ -576,7 +592,7 @@ fn finish_notes_browser_source_load(
                     found: load.rows_found.max(listed),
                     found_is_lower_bound: load.found_is_lower_bound,
                 });
-                state.source_ready.set(true);
+                state.source_phase.replace(NotesSourcePhase::Ready);
                 // The limit notice and its one announcement follow the query
                 // publish; a byte cut is no longer a status-bar warning.
                 if had_recovery_diagnostics {
@@ -610,11 +626,11 @@ impl NotesBrowserState {
     pub(super) fn begin_mode(&self, mode: palette_service::NotesBrowserMode) {
         let _ = self.search_debounce.invalidate();
         self.query_runtime.borrow_mut().invalidate();
-        self.source_ready.set(false);
+        self.source_phase.replace(NotesSourcePhase::Loading);
         self.source_truncation.borrow_mut().clear();
         self.listed_count.set(NotesBrowserListedCount::default());
-        let growth = self.row_growth.take();
-        drop(growth);
+        let previous = self.list_phase.replace(NotesListPhase::Idle);
+        drop(previous);
         self.rows.clear();
         update_notes_browser_limit_label(self);
         self.split_view.set_show_content(false);
@@ -637,15 +653,14 @@ impl NotesBrowserState {
         }
         let _ = self.search_debounce.invalidate();
         self.source_refreshes.borrow_mut().invalidate();
-        self.source_admission.borrow_mut().take();
+        self.source_phase.replace(NotesSourcePhase::Loading);
         self.source_capacity_wakeup.cancel();
         self.query_runtime.borrow_mut().invalidate();
         self.preview_loads.borrow_mut().invalidate();
-        self.source_ready.set(false);
         stop_open_editor_capture(self);
-        let growth = self.row_growth.take();
-        drop(growth);
-        self.bound_rows.borrow_mut().clear();
+        let previous = self.list_phase.replace(NotesListPhase::Idle);
+        drop(previous);
+        self.bound_rows.take().clear();
         let state = Rc::clone(self);
         let retirement = crate::ui::list_retirement::RowRetirement::start(
             Box::new(self.rows.clone()),

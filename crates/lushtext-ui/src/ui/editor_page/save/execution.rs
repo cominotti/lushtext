@@ -203,7 +203,7 @@ pub(super) fn begin_admitted_save(
             let Some(editor) = editor_weak.upgrade() else {
                 return;
             };
-            editor.imp().save.snapshot.take();
+            editor.imp().save.take_snapshot();
             match outcome {
                 buffer_snapshot::BufferSnapshotOutcome::Captured(text) => {
                     write_snapshot_async(&editor, path, text, restore_state, admitted, callback);
@@ -224,7 +224,7 @@ pub(super) fn begin_admitted_save(
         #[cfg(not(feature = "test-utils"))]
         let snapshot =
             buffer_snapshot::snapshot_buffer_text_async(editor.buffer(), snapshot_callback);
-        editor.imp().save.snapshot.replace(Some(snapshot));
+        editor.imp().save.set_snapshot(snapshot);
         return;
     }
 
@@ -354,7 +354,6 @@ fn finish_save_snapshot_without_write(
 ) {
     restore_state.restore(editor);
     evidence::clear_admitted_ticket(editor);
-    editor.imp().save.inflight.set(false);
     editor.notify_memory_policy_changed();
     editor.refresh_accessibility_metadata();
     callback(Err(EditorSaveError::SnapshotCancelled));
@@ -580,7 +579,6 @@ const fn classify_write_error(error: &EditorSaveError) -> SaveWriteClassificatio
 fn restore_view_after_save(editor: &LushtextEditorPage, restore: SaveViewInteractivity) {
     restore.restore(editor);
     evidence::clear_admitted_ticket(editor);
-    editor.imp().save.inflight.set(false);
     editor.notify_memory_policy_changed();
 }
 
@@ -634,7 +632,7 @@ fn finish_accepted_save(
     editor.set_document_encoding_state(state);
     let has_bom = state.save_encoding.writes_bom();
     editor.set_has_bom(has_bom);
-    editor.imp().document_metadata.decode_inexact.set(false);
+    editor.imp().document_metadata.set_decode_inexact(false);
     let mut findings: Vec<FileHealthFinding> = editor
         .file_health()
         .into_iter()
@@ -685,7 +683,7 @@ fn finish_accepted_save_facts(
 
 /// Whether this editor's save capture is yielding through the main loop.
 pub(super) fn capture_in_flight(editor: &LushtextEditorPage) -> bool {
-    editor.imp().save.snapshot.borrow().is_some()
+    editor.imp().save.has_snapshot()
 }
 
 /// Which capture mode this editor's buffer would take right now.
@@ -727,8 +725,6 @@ impl LushtextEditorPage {
     ///
     /// Preserved actuation seam, paired with the pause above.
     pub fn resume_save_snapshot_for_test(&self) {
-        if let Some(snapshot) = self.imp().save.snapshot.borrow().as_ref() {
-            snapshot.resume_for_test();
-        }
+        self.imp().save.resume_snapshot();
     }
 }

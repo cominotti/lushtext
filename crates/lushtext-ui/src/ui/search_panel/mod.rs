@@ -291,37 +291,38 @@ impl LushtextSearchPanel {
 
     /// Register a callback invoked when the user activates a match result.
     pub fn connect_open_file<F: Fn(&Path, u32) + 'static>(&self, f: F) {
-        self.imp()
-            .callbacks
-            .open_file_callback
-            .replace(Some(Box::new(f)));
+        self.replace_panel_event_handler(results::PanelEventSlot::OpenFile, move |event| {
+            if let results::SearchPanelEvent::OpenFile(path, line) = event {
+                f(path, *line);
+            }
+        });
     }
 
     /// Register a callback invoked when the user presses Escape.
     pub fn connect_close_requested<F: Fn() + 'static>(&self, f: F) {
-        self.imp()
-            .callbacks
-            .close_requested_callback
-            .replace(Some(Box::new(f)));
+        self.replace_panel_event_handler(results::PanelEventSlot::CloseRequested, move |event| {
+            if matches!(event, results::SearchPanelEvent::CloseRequested) {
+                f();
+            }
+        });
     }
 
     /// Register a callback invoked when F4/Shift+F4 navigates to a match.
     pub fn connect_navigate_to_match<F: Fn(&Path, u32) + 'static>(&self, f: F) {
-        self.imp()
-            .callbacks
-            .navigate_callback
-            .replace(Some(Box::new(f)));
+        self.replace_panel_event_handler(results::PanelEventSlot::Navigate, move |event| {
+            if let results::SearchPanelEvent::Navigate(path, line) = event {
+                f(path, *line);
+            }
+        });
     }
 
     /// Register a callback invoked on search progress and completion.
-    ///
-    /// The callback receives a named progress update instead of positional
-    /// booleans so callers can pattern-match the workflow state explicitly.
     pub fn connect_search_progress<F: Fn(SearchProgressUpdate) + 'static>(&self, f: F) {
-        self.imp()
-            .callbacks
-            .progress_callback
-            .replace(Some(Box::new(f)));
+        self.replace_panel_event_handler(results::PanelEventSlot::Progress, move |event| {
+            if let results::SearchPanelEvent::Progress(update) = event {
+                f(*update);
+            }
+        });
     }
 
     /// Register a callback invoked when "Confirm Replace" is clicked with checked replacements.
@@ -329,7 +330,7 @@ impl LushtextSearchPanel {
         self.imp()
             .callbacks
             .replace_callback
-            .replace(Some(Box::new(f)));
+            .replace(Some(std::rc::Rc::new(f)));
     }
 
     /// Register a callback invoked when "Undo" is clicked with the backup to restore.
@@ -339,10 +340,11 @@ impl LushtextSearchPanel {
         &self,
         f: F,
     ) {
-        self.imp()
-            .callbacks
-            .undo_callback
-            .replace(Some(Box::new(f)));
+        self.replace_panel_event_handler(results::PanelEventSlot::Undo, move |event| {
+            if let results::SearchPanelEvent::Undo(backup) = event {
+                f(std::sync::Arc::clone(backup));
+            }
+        });
     }
 
     /// Register the raw backup callback used by the external widget harness.
@@ -354,12 +356,11 @@ impl LushtextSearchPanel {
     }
 
     /// Register a callback pushing status messages to the window's status bar.
-    ///
-    /// Carries a severity like the sidebar's: a failed journal write is a warning.
     pub fn connect_message<F: Fn(&str, NotificationSeverity) + 'static>(&self, f: F) {
-        self.imp()
-            .callbacks
-            .message_callback
-            .replace(Some(Box::new(f)));
+        self.replace_panel_event_handler(results::PanelEventSlot::Message, move |event| {
+            if let results::SearchPanelEvent::Message(text, severity) = event {
+                f(text, *severity);
+            }
+        });
     }
 }

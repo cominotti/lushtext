@@ -21,11 +21,16 @@
 //! Control therefore resumes in the drain and again in each scan completion, and a plan
 //! superseded in between must reach a superseded terminal rather than splicing stale rows.
 
-use std::collections::{HashMap, HashSet};
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+#[cfg(feature = "test-utils")]
+use std::sync::Arc;
 use std::time::Duration;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk_lush_settle::Debounce;
+use gtk4::gio;
 use gtk4::glib;
 use gtk4::prelude::*;
 
@@ -36,6 +41,208 @@ use lushtext_services::watch::workspace_watch::WORKSPACE_WATCH_PATH_CAP;
 use super::super::file_tree_item::FileTreeItem;
 use super::LushtextWorkspaceSection;
 use super::WorkspaceScanPressureEvidence;
+
+/// Pending refresh granularity queued in [`RefreshRuntimeState`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum PendingRefreshMode {
+    /// No refresh work queued.
+    #[default]
+    Idle,
+    /// Targeted directories in `pending_paths` await a refresh pass.
+    Paths,
+    /// Full section reload dominates any queued targeted paths.
+    Full,
+}
+
+/// Bounded expanded-store scan dispatch phase for [`RefreshRuntimeState`].
+#[derive(Debug, Default)]
+pub(super) enum ScanDispatchPhase {
+    /// No idle source is continuing an expanded-store batch dispatch.
+    #[default]
+    Idle,
+    /// One idle source is scheduled to dispatch the next batch.
+    Scheduled(glib::SourceId),
+}
+
+/// Whether the active refresh burst should announce manual completion.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum RefreshAnnouncement {
+    /// Automatic or silent refresh.
+    #[default]
+    Silent,
+    /// User-requested manual refresh waiting to announce completion.
+    ManualPending,
+}
+
+/// Deduplicated scan-failure state for [`RefreshRuntimeState`].
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) enum RefreshErrorState {
+    /// No active refresh error.
+    #[default]
+    Clear,
+    /// Most recent refresh error already surfaced to the user.
+    Reported(String),
+}
+
+/// Debounced refresh state for one workspace section.
+#[derive(Default)]
+pub struct RefreshRuntimeState {
+    /// Debounce used to drop stale refresh callbacks.
+    pub debounce: Debounce,
+    /// Paths accumulated since the last refresh run, capped by watcher policy.
+    pub pending_paths: RefCell<HashSet<PathBuf>>,
+    /// Coalesced refresh mode (idle, targeted paths, or full reload).
+    pub(super) pending_mode: Cell<PendingRefreshMode>,
+    /// Weak expanded-store refresh requests dispatched in bounded GTK batches.
+    pub scan_dispatch_queue: RefCell<VecDeque<(PathBuf, glib::WeakRef<gio::ListStore>)>>,
+    /// Sole source continuing a bounded expanded-store dispatch.
+    pub(super) scan_dispatch_phase: RefCell<ScanDispatchPhase>,
+    /// Largest expanded-store dispatch batch processed in one GTK turn.
+    pub scan_dispatch_batch_high_water: Cell<usize>,
+    /// Largest weak expanded-store queue retained by this section.
+    pub scan_dispatch_queue_high_water: Cell<usize>,
+    /// Whether the current scan burst should announce manual-refresh completion.
+    pub(super) manual_refresh: Cell<RefreshAnnouncement>,
+    /// Last scan failure shown to the user so repeated auto-refresh attempts do
+    /// not spam the status bar while a folder remains unreadable.
+    pub(super) last_reported_error: RefCell<RefreshErrorState>,
+    /// Accepted GTK reconciliation batches in the latest refresh lifecycle.
+    pub reconcile_batch_count: Cell<u64>,
+    /// Largest changed-row batch accepted in the latest refresh lifecycle.
+    pub reconcile_max_batch_rows: Cell<usize>,
+    /// Exact current reconciliation terminals published by this section.
+    pub reconcile_terminal_count: Cell<u64>,
+    /// Active batch sources retired because a newer scan superseded them.
+    pub reconcile_superseded_count: Cell<u64>,
+    /// Rows in the most recently accepted terminal child-cache replacement.
+    pub cache_rebuild_input_rows: Cell<usize>,
+    /// Plain map/row operations in that terminal child-cache replacement.
+    pub cache_rebuild_operations: Cell<usize>,
+    /// Full child-cache rebuilds a batch splice fell back to because the
+    /// caches disagreed with their mirror; zero in every normal flow.
+    pub cache_full_rebuilds: Cell<u64>,
+    /// Cache resets because a new live store took over a directory, each
+    /// costing the previous store's rows once.
+    pub cache_owner_resets: Cell<u64>,
+    /// Largest cache operation count one applied batch performed.
+    pub cache_batch_operations_high_water: Cell<usize>,
+    /// Largest number of row batches one GTK turn applied.
+    pub reconcile_max_batches_per_turn: Cell<usize>,
+    /// Wall time of the latest reconciliation terminal, microseconds.
+    pub reconcile_last_terminal_us: Cell<u64>,
+    /// Largest active scan count observed for any one materialized store.
+    pub scan_active_per_store_high_water: Cell<usize>,
+    /// Largest pending request count observed for any one materialized store.
+    pub scan_pending_per_store_high_water: Cell<usize>,
+    /// Largest weak-only queued payload count observed for any one store.
+    pub scan_weak_pending_high_water: Cell<usize>,
+    /// Mirror snapshots captured when a request actually received worker admission.
+    pub scan_mirror_captures: Cell<u64>,
+    /// Active scan cancellation requests caused by newer generations.
+    pub scan_cancellation_requests: Cell<u64>,
+    /// Worker scans that stopped at a filesystem cancellation checkpoint.
+    pub scan_cancelled_terminals: Cell<u64>,
+    /// Completions rejected by lifetime, store, target, or scan identity.
+    pub scan_stale_completions: Cell<u64>,
+    /// Current latest-only scans that published terminal reconciliation state.
+    pub scan_terminal_publications: Cell<u64>,
+    /// Child `gio::ListStore` instances created by `build_children_model`.
+    pub child_model_creations: Cell<u64>,
+    /// Probe child stores dropped by GTK before the materialization drain ran.
+    pub child_model_probes_discarded: Cell<u64>,
+    /// Installed child stores handed to `populate_child_store` by the drain.
+    pub child_materializations: Cell<u64>,
+    /// Submissions to `populate_child_store` across the section's lifetime.
+    pub scan_submissions: Cell<u64>,
+    /// Submissions to `populate_child_store` keyed by directory path.
+    pub scan_submissions_by_path: RefCell<HashMap<PathBuf, u64>>,
+    /// Largest active emptiness-probe count for any one configured folder.
+    pub empty_probe_active_per_folder_high_water: Cell<usize>,
+    /// Largest pending emptiness-probe count for any one configured folder.
+    pub empty_probe_pending_per_folder_high_water: Cell<usize>,
+    /// Older emptiness results rejected after a newer folder request existed.
+    pub empty_probe_stale_rejections: Cell<u64>,
+    /// Current emptiness results published to top-level folder rows.
+    pub empty_probe_terminal_publications: Cell<u64>,
+    /// Complete flattened-model expansion derivations run by this section.
+    ///
+    /// Full derivations are reserved for bootstrap, pre-replacement capture,
+    /// and the test oracle; a targeted in-place refresh must not add to this.
+    pub expansion_capture_scans: Cell<u64>,
+    /// Flattened rows visited across all full expansion derivations.
+    pub expansion_capture_rows: Cell<u64>,
+    #[cfg(feature = "test-utils")]
+    /// Section-local delay between GTK reconciliation batches in lifecycle tests.
+    pub test_reconcile_batch_delay: Cell<Duration>,
+    #[cfg(feature = "test-utils")]
+    /// Section-local worker delay before directory traversal in churn tests.
+    pub test_scan_delay: Cell<Duration>,
+    #[cfg(feature = "test-utils")]
+    /// Empty-folder reads completed before their delayed worker handoff.
+    pub test_empty_probe_reads: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl RefreshRuntimeState {
+    /// Whether a pending full reload dominates any queued targeted paths.
+    #[must_use]
+    pub fn is_full_reload_pending(&self) -> bool {
+        self.pending_mode.get() == PendingRefreshMode::Full
+    }
+
+    /// Whether any refresh work is queued.
+    pub(super) fn has_pending_work(&self) -> bool {
+        self.pending_mode.get() != PendingRefreshMode::Idle
+            || !self.pending_paths.borrow().is_empty()
+    }
+
+    /// Whether a scan dispatch source is currently scheduled.
+    pub(super) fn is_dispatch_scheduled(&self) -> bool {
+        matches!(
+            *self.scan_dispatch_phase.borrow(),
+            ScanDispatchPhase::Scheduled(_)
+        )
+    }
+
+    /// Whether a refresh error has been surfaced to the user.
+    pub(super) fn has_reported_error(&self) -> bool {
+        !matches!(*self.last_reported_error.borrow(), RefreshErrorState::Clear)
+    }
+
+    /// Cancel any queued expanded-store dispatch batch and drop its idle source.
+    pub(super) fn retire_dispatch(&self) {
+        self.scan_dispatch_queue.borrow_mut().clear();
+        if let ScanDispatchPhase::Scheduled(source) =
+            self.scan_dispatch_phase.replace(ScanDispatchPhase::Idle)
+        {
+            source.remove();
+        }
+    }
+
+    /// Empty-probe reads issued, for the evidence surface.
+    #[cfg_attr(
+        not(feature = "test-utils"),
+        expect(
+            clippy::unused_self,
+            reason = "the counter this reports is recorded only under `test-utils`, so \
+                      the receiver is genuinely unused in a default-feature build. It \
+                      stays a method because the evidence surface reaches it uniformly \
+                      in both configurations. Gated with `cfg_attr` so the expectation \
+                      is self-policing: it fires exactly where the receiver is unused, \
+                      and fails the build if that stops being true."
+        )
+    )]
+    pub(crate) fn empty_probe_reads_for_evidence(&self) -> u64 {
+        #[cfg(feature = "test-utils")]
+        {
+            self.test_empty_probe_reads
+                .load(std::sync::atomic::Ordering::Acquire)
+        }
+        #[cfg(not(feature = "test-utils"))]
+        {
+            0
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 enum RefreshTrigger {
@@ -83,8 +290,8 @@ impl LushtextWorkspaceSection {
         }
         self.imp()
             .refresh_runtime
-            .manual_refresh_announcing
-            .set(true);
+            .manual_refresh
+            .set(RefreshAnnouncement::ManualPending);
         self.emit_message("Refreshing workspace folders", NotificationSeverity::Info);
         self.schedule_refresh(true, Vec::new(), RefreshTrigger::Manual);
     }
@@ -131,10 +338,11 @@ impl LushtextWorkspaceSection {
         let runtime = &self.imp().refresh_runtime;
         if full_reload {
             runtime.pending_paths.borrow_mut().clear();
-            if runtime.pending_full_reload.replace(true) && !manual {
+            let previous = runtime.pending_mode.replace(PendingRefreshMode::Full);
+            if previous == PendingRefreshMode::Full && !manual {
                 return;
             }
-        } else if runtime.pending_full_reload.get() {
+        } else if runtime.pending_mode.get() == PendingRefreshMode::Full {
             return;
         } else {
             let mut pending_paths = runtime.pending_paths.borrow_mut();
@@ -142,9 +350,12 @@ impl LushtextWorkspaceSection {
                 pending_paths.insert(path);
                 if pending_paths.len() > WORKSPACE_WATCH_PATH_CAP {
                     pending_paths.clear();
-                    runtime.pending_full_reload.set(true);
+                    runtime.pending_mode.set(PendingRefreshMode::Full);
                     break;
                 }
+            }
+            if runtime.pending_mode.get() != PendingRefreshMode::Full && !pending_paths.is_empty() {
+                runtime.pending_mode.set(PendingRefreshMode::Paths);
             }
         }
 
@@ -219,21 +430,23 @@ impl LushtextWorkspaceSection {
 
     fn apply_queued_refresh(&self) {
         let pending_paths = self.take_pending_refresh_paths();
-        let pending_full = self
+        let mode = self
             .imp()
             .refresh_runtime
-            .pending_full_reload
-            .replace(false);
-        if !pending_full && pending_paths.is_empty() {
-            return;
+            .pending_mode
+            .replace(PendingRefreshMode::Idle);
+        match mode {
+            PendingRefreshMode::Idle => return,
+            PendingRefreshMode::Paths if pending_paths.is_empty() => return,
+            PendingRefreshMode::Full => {
+                self.snapshot_refresh_state();
+                self.refresh_materialized_view();
+                return;
+            }
+            PendingRefreshMode::Paths => {}
         }
 
         self.snapshot_refresh_state();
-
-        if pending_full {
-            self.refresh_materialized_view();
-            return;
-        }
 
         match self.plan_refresh(&pending_paths) {
             RefreshPlan::Full => self.reload_current_view(),
@@ -245,12 +458,14 @@ impl LushtextWorkspaceSection {
 
     /// Surface one recoverable scan failure without repeating the same warning.
     pub(super) fn report_refresh_error(&self, message: &str) {
-        let mut last_error = self.imp().refresh_runtime.last_reported_error.borrow_mut();
-        if last_error.as_deref() == Some(message) {
-            return;
+        {
+            let mut last_error = self.imp().refresh_runtime.last_reported_error.borrow_mut();
+            if matches!(&*last_error, RefreshErrorState::Reported(existing) if existing == message)
+            {
+                return;
+            }
+            *last_error = RefreshErrorState::Reported(message.to_string());
         }
-        *last_error = Some(message.to_string());
-        drop(last_error);
         self.sync_file_tree_error_state();
         self.emit_message(message, NotificationSeverity::Warning);
     }
@@ -259,8 +474,7 @@ impl LushtextWorkspaceSection {
         self.imp()
             .refresh_runtime
             .last_reported_error
-            .borrow_mut()
-            .take();
+            .replace(RefreshErrorState::Clear);
         self.sync_file_tree_error_state();
     }
 
@@ -314,11 +528,8 @@ impl LushtextWorkspaceSection {
 
     fn queue_refresh_directories(&self, directories: Vec<RefreshDirectory>) {
         let runtime = &self.imp().refresh_runtime;
-        if let Some(source) = runtime.scan_dispatch_source.take() {
-            source.remove();
-        }
+        runtime.retire_dispatch();
         let mut queue = runtime.scan_dispatch_queue.borrow_mut();
-        queue.clear();
         queue.extend(directories.into_iter().flat_map(|directory| {
             directory
                 .stores
@@ -363,21 +574,28 @@ impl LushtextWorkspaceSection {
             .borrow()
             .is_empty()
         {
-            self.imp().refresh_runtime.scan_dispatch_source.take();
+            self.imp()
+                .refresh_runtime
+                .scan_dispatch_phase
+                .replace(ScanDispatchPhase::Idle);
             super::scan_execution::sync_child_scan_busy_state(self);
             return;
         }
         let section_weak = self.downgrade();
         let source = glib::idle_add_local_once(move || {
             if let Some(section) = section_weak.upgrade() {
-                section.imp().refresh_runtime.scan_dispatch_source.take();
+                section
+                    .imp()
+                    .refresh_runtime
+                    .scan_dispatch_phase
+                    .replace(ScanDispatchPhase::Idle);
                 section.dispatch_refresh_scan_batch();
             }
         });
         self.imp()
             .refresh_runtime
-            .scan_dispatch_source
-            .replace(Some(source));
+            .scan_dispatch_phase
+            .replace(ScanDispatchPhase::Scheduled(source));
         super::scan_execution::sync_child_scan_busy_state(self);
     }
 
@@ -503,9 +721,7 @@ impl LushtextWorkspaceSection {
                 .map(|row| row.path.clone())
                 .collect::<Vec<_>>();
 
-            for path in removed_paths {
-                super::scan_execution::clear_dir_state(self, &path);
-            }
+            super::scan_execution::retire_dir_subtrees(self, &removed_paths);
 
             let prefix = common_folder_prefix_len(&current_folders, &desired_folders);
             let suffix =

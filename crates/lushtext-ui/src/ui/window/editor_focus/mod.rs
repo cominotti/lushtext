@@ -149,7 +149,7 @@ impl LushtextWindow {
     /// tab is not yet shown (`defer-background-tab-layout`) installs sooner.
     pub(in crate::ui::window) fn opened_document_focus_pending(&self) -> bool {
         self.imp().opened_document_handoff_pending.get()
-            || self.imp().session.restore_runtime.borrow().is_some()
+            || self.imp().session.has_active_restore_runtime()
             || self.composition_activation_adds_pages()
     }
 

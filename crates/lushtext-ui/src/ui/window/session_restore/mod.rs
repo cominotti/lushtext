@@ -116,7 +116,7 @@ use gtk4::glib;
 
 use super::LushtextWindow;
 
-pub(crate) use admission::SessionRestoreRuntime;
+pub(in crate::ui::window) use admission::{CloseSafetyPhase, SessionState};
 
 impl LushtextWindow {
     /// Cancel scheduled restore ownership without publishing widgets during dispose.
@@ -136,7 +136,7 @@ impl LushtextWindow {
     /// because both read `session.restoring`.
     #[must_use]
     pub(crate) fn session_restore_in_progress(&self) -> bool {
-        self.imp().session.restoring.get()
+        self.imp().session.is_restoring()
     }
 
     /// Whether draft or session close-safety work is already running.
@@ -146,7 +146,7 @@ impl LushtextWindow {
     /// and it is identical by construction because both read the same cell.
     #[must_use]
     pub(crate) fn close_safety_in_progress(&self) -> bool {
-        self.imp().session.close_safety_inflight.get()
+        self.imp().session.is_close_safety_inflight()
     }
 
     /// Start a supplied restore generation through production admission policy.

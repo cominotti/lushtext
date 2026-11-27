@@ -46,7 +46,7 @@ use super::{admission, evidence};
 
 /// Cancel any in-progress file load. Safe to call even if no load is active.
 pub(crate) fn cancel_load(editor: &LushtextEditorPage) {
-    if editor.imp().load.finalizing.get() {
+    if editor.imp().load.is_finalizing() {
         // Final projection owns the main thread and has no cancellable payload
         // work left. A cancel can still withdraw a reload queued reentrantly by
         // an earlier callback.
@@ -54,21 +54,20 @@ pub(crate) fn cancel_load(editor: &LushtextEditorPage) {
         return;
     }
     let was_loading = editor.imp().load_state.get() == EditorLoadState::Loading;
-    let installation_active = editor.imp().load.installation.borrow().is_some();
+    let installation_active = editor.imp().load.installation().is_some();
     admission::discard_pending_request(editor);
     let slot_occupancy = if installation_active {
         policy::InstallSlotOccupancy::Occupied
     } else {
         policy::InstallSlotOccupancy::Idle
     };
-    editor
-        .imp()
-        .load
-        .user_cancel_pending
-        .set(policy::publishes_user_cancellation(
-            was_loading,
-            slot_occupancy,
-        ));
+    editor.imp().load.user_cancel_pending.set(
+        if policy::publishes_user_cancellation(was_loading, slot_occupancy) {
+            super::watch::UserCancelPending::PublishTerminal
+        } else {
+            super::watch::UserCancelPending::No
+        },
+    );
     cancel_current_load_resources(editor, AbortDisposition::Cancel);
     admission::retire_load_identity(editor);
     if was_loading && !installation_active {
@@ -100,11 +99,13 @@ pub(super) fn finish_user_cancelled_load(editor: &LushtextEditorPage) {
 /// Disposal is not a user cancellation surface: the page is leaving the widget
 /// hierarchy, so a retry notification would be invisible and stale.
 pub(crate) fn dispose_load_resources(editor: &LushtextEditorPage) {
-    if editor.imp().load.finalizing.get() {
-        editor.imp().load.dispose_during_finalization.set(true);
-    }
+    editor.imp().load.mark_dispose_during_finalization();
     admission::discard_pending_request(editor);
-    editor.imp().load.user_cancel_pending.set(false);
+    editor
+        .imp()
+        .load
+        .user_cancel_pending
+        .set(super::watch::UserCancelPending::No);
     cancel_current_load_resources(editor, AbortDisposition::Dispose);
     admission::retire_load_identity(editor);
 }
@@ -123,8 +124,7 @@ pub(super) fn cancel_noninstall_load_resources(editor: &LushtextEditorPage) {
 
 fn cancel_current_load_resources(editor: &LushtextEditorPage, disposition: AbortDisposition) {
     cancel_noninstall_load_resources(editor);
-    let installation = editor.imp().load.installation.borrow().clone();
-    if let Some(session) = installation {
+    if let Some(session) = editor.imp().load.installation() {
         abort_installation(&session, disposition);
     }
 }
@@ -184,7 +184,7 @@ pub(super) fn abort_installation(
         // would re-analyse the remainder after every deleted slice.
         editor.begin_chunked_highlight();
     }
-    editor.imp().load.installation_incomplete.set(true);
+    editor.imp().load.mark_installation_incomplete();
     editor.abandon_protected_install();
     execution::schedule_install_slice(session);
 }
@@ -215,8 +215,14 @@ pub(super) fn run_cancelled_clear_slice(session: &Rc<RefCell<ChunkedLoadInstall>
     execution::clear_installation_owner(&editor, session);
     buffer.end_irreversible_action();
     buffer.set_modified(false);
-    editor.imp().load.install_owns_changes.set(false);
-    editor.imp().load.installation_slice_count.set(slice_count);
+    editor
+        .imp()
+        .load
+        .clear_install_owns_changes_keeping_incomplete();
+    editor
+        .imp()
+        .load
+        .update_metrics(|m| m.slice_count = slice_count);
     if let Some(restore) = restore {
         execution::restore_load_installation_state(
             &editor,
@@ -224,7 +230,15 @@ pub(super) fn run_cancelled_clear_slice(session: &Rc<RefCell<ChunkedLoadInstall>
             lushtext_model::document::held_input::ContentDisposition::Unpublished,
         );
     }
-    if editor.imp().load.user_cancel_pending.replace(false) {
+    let publish_cancelled = matches!(
+        editor
+            .imp()
+            .load
+            .user_cancel_pending
+            .replace(super::watch::UserCancelPending::No),
+        super::watch::UserCancelPending::PublishTerminal
+    );
+    if publish_cancelled {
         finish_user_cancelled_load(&editor);
     } else {
         editor.refresh_accessibility_metadata();

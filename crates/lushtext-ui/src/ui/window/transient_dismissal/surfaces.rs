@@ -32,16 +32,16 @@ use gtk4::prelude::*;
 use crate::ui::editor_page::LushtextEditorPage;
 
 use super::super::LushtextWindow;
-use super::policy::{TransientDismissal, TransientSurfaceState};
+use super::policy::{TransientDismissal, TransientSurfaceSnapshot};
 
 /// Observe every dismissible surface's live visibility.
 ///
 /// Written once and always compiled. The evidence surface calls this rather than
 /// repeating it, so a probe and the ladder cannot disagree about what is visible;
 /// a second observer would compile in both configurations and drift in one.
-pub(super) fn observed_surface_state(window: &LushtextWindow) -> TransientSurfaceState {
+pub(super) fn observed_surface_state(window: &LushtextWindow) -> TransientSurfaceSnapshot {
     let imp = window.imp();
-    TransientSurfaceState {
+    TransientSurfaceSnapshot {
         command_palette_revealed: imp
             .palette_revealer
             .try_get()

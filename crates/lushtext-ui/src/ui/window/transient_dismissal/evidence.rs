@@ -31,15 +31,15 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 
 use super::super::LushtextWindow;
 use super::policy::{
-    ChildEscapeHandling, EscapeOutcome, TransientDismissal, TransientSurfaceState, escape_outcome,
-    topmost_dismissible,
+    ChildEscapeHandling, EscapeOutcome, TransientDismissal, TransientSurfaceSnapshot,
+    escape_outcome, topmost_dismissible,
 };
 
 /// Everything a test or probe may observe about transient dismissal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransientDismissalEvidence {
     /// The live visibility of each dismissible shell surface.
-    pub surfaces: TransientSurfaceState,
+    pub surfaces: TransientSurfaceSnapshot,
     /// Whether a child widget has latched the current Escape request.
     ///
     /// Read, never consumed — see the module doc.

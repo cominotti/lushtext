@@ -31,12 +31,22 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use sourceview5::prelude::*;
 
-use super::execution::BufferReplacementTerminalDiagnostic;
 use super::policy::{
-    BufferReplacementMetrics, BufferReplacementTicket, BufferReplacementWorkflow, ReplacementPhase,
+    BufferReplacementCancelReason, BufferReplacementMetrics, BufferReplacementTicket,
+    BufferReplacementWorkflow, ReplacementPhase,
 };
 use crate::ui::editor_page::LushtextEditorPage;
 use lushtext_model::values::BufferReplacementGeneration;
+
+/// Content-free terminal evidence retained by one editor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BufferReplacementTerminalDiagnostic {
+    pub ticket: BufferReplacementTicket,
+    pub cancel_reason: Option<BufferReplacementCancelReason>,
+    pub metrics: BufferReplacementMetrics,
+    pub source_released: bool,
+    pub guard_released: bool,
+}
 
 /// One consistent read of the bounded buffer-replacement workflow.
 ///
@@ -44,6 +54,10 @@ use lushtext_model::values::BufferReplacementGeneration;
 /// active session is doing, how bounded it has stayed, and how the last session
 /// ended.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct BufferReplacementEvidence {
     // --- ownership ---
     /// Whether a replacement session currently owns this editor.
@@ -109,7 +123,7 @@ impl LushtextEditorPage {
 
         // Every borrow is taken, read, and dropped before the struct literal, so
         // no `Ref` outlives the value it produced.
-        let active = imp.replacement.active.borrow().clone();
+        let active = imp.replacement.active_session();
         let (active_workflow, active_generation, phase, mutation_started, metrics) =
             match active.as_ref() {
                 Some(session) => {
@@ -121,8 +135,8 @@ impl LushtextEditorPage {
                     (
                         Some(workflow),
                         Some(generation),
-                        Some(session.phase),
-                        session.mutation_started,
+                        Some(session.phase_kind()),
+                        session.mutation_started(),
                         session.metrics,
                     )
                 }
@@ -131,7 +145,7 @@ impl LushtextEditorPage {
         let in_progress = active.is_some();
         drop(active);
 
-        let pending_request = imp.replacement.pending.borrow().is_some();
+        let pending_request = imp.replacement.has_pending();
         let last_terminal = *imp.replacement.last_terminal.borrow();
         let projection_suspended = imp.replacement.projection_suspended.get();
         let published_slice_count = imp.replacement.slice_count.get();

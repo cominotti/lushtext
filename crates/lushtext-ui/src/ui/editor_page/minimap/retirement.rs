@@ -97,34 +97,35 @@ impl LushtextEditorPage {
     ) {
         let clear_cache = matches!(cache, MinimapCacheDisposition::Clear);
         let release_markers = matches!(markers, MinimapMarkersDisposition::Release);
-        let imp = self.imp();
-        let had_session = imp.minimap.analysis_session.borrow().is_some();
-        let source_id = imp.minimap.analysis_source_id.take();
-        let had_source = source_id.is_some();
-        if had_session || had_source || clear_cache {
-            imp.minimap
-                .analysis_generation
-                .set(imp.minimap.analysis_generation.get().next());
+        let analysis = &self.imp().minimap.analysis;
+        let old = std::mem::take(&mut *analysis.run.borrow_mut());
+        let (session, source_id) = match old {
+            super::admission::MinimapAnalysisRun::Idle => (None, None),
+            super::admission::MinimapAnalysisRun::Active { session, source_id } => {
+                (session, source_id)
+            }
+        };
+        let had_active = session.is_some() || source_id.is_some();
+        if had_active || clear_cache {
+            analysis.generation.set(analysis.generation.get().next());
         }
         if let Some(source_id) = source_id {
             source_id.remove();
         }
-        if let Some(session) = imp.minimap.analysis_session.take() {
+        if let Some(session) = session {
             session.buffer.delete_mark(&session.cursor_mark);
         }
         if clear_cache {
-            imp.minimap.analysis_cache.take();
-        } else if release_markers
-            && let Some(cache) = imp.minimap.analysis_cache.borrow_mut().as_mut()
-        {
+            analysis.cache.take();
+        } else if release_markers && let Some(cache) = analysis.cache.borrow_mut().as_mut() {
             cache.result.long_line_lines.clear();
             cache.markers_collected = false;
         }
         #[cfg(feature = "test-utils")]
-        if had_session || had_source {
-            imp.minimap
-                .analysis_cancellations
-                .set(imp.minimap.analysis_cancellations.get().saturating_add(1));
+        if had_active {
+            analysis
+                .cancellations
+                .set(analysis.cancellations.get().saturating_add(1));
         }
     }
 
@@ -150,7 +151,7 @@ impl LushtextEditorPage {
     }
 
     pub(super) fn retire_minimap_analysis(&self) {
-        let lifetime = &self.imp().minimap.analysis_lifetime;
+        let lifetime = &self.imp().minimap.analysis.lifetime;
         lifetime.set(lifetime.get().wrapping_add(1));
         self.cancel_minimap_analysis(
             MinimapCacheDisposition::Clear,
@@ -187,10 +188,11 @@ impl LushtextEditorPage {
     pub(super) fn retire_native_source_map(&self) {
         let imp = self.imp();
         imp.minimap_overlay.set_visible(false);
+        let projection = &imp.minimap.projection;
         let Some(source_map) = imp.minimap.source_map.borrow_mut().take() else {
             return;
         };
-        imp.minimap.map_signals.clear();
+        projection.map_signals.clear();
         if let Some(render_hold) = imp.minimap.render_hold.borrow().as_ref() {
             render_hold.clear();
         }
@@ -202,7 +204,7 @@ impl LushtextEditorPage {
         // binding) and re-lays out every edited paragraph from its validation
         // idle. The reflow freeze refers to its live child weakly for this
         // reason. The weak reference below is evidence only.
-        let mut retired = imp.minimap.retired_maps.borrow_mut();
+        let mut retired = projection.retired_maps.borrow_mut();
         retired.retain(|map| map.upgrade().is_some());
         retired.push(source_map.downgrade());
         drop(retired);

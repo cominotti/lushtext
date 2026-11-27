@@ -106,6 +106,10 @@ use super::workspace_section::{self, LushtextWorkspaceSection};
 /// Every field is a scalar or an owned value: the surface never hands out a borrow,
 /// a widget, or a GTK collection.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct WorkspaceTreeEvidence {
     // --- workspace list ---
     /// Persisted workspaces.
@@ -407,6 +411,10 @@ impl LushtextSidebar {
 /// single derivation and the two cannot disagree. It exists only so a polled snapshot
 /// need not allocate the full surface's per-section collections.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub(crate) struct WorkspaceSnapshotEvidence {
     pub(crate) scope_kind: String,
     pub(crate) scope_workspace_id: Option<String>,
@@ -456,6 +464,10 @@ pub struct DirectoryListingEvidence {
 /// derived scalar is computed into a local before the struct literal so no field is read
 /// from inside a mutable borrow, and nothing here is a `TemplateChild`.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct WorkspaceSectionEvidence {
     /// Whether this section still has watcher, mailbox, or refresh work pending.
     pub refresh_blocks_readiness: bool,
@@ -596,7 +608,7 @@ impl LushtextWorkspaceSection {
             let runtime = &imp.refresh_runtime;
             (
                 runtime.pending_paths.borrow().len(),
-                runtime.pending_full_reload.get(),
+                runtime.is_full_reload_pending(),
             )
         };
         let refresh = &imp.refresh_runtime;
@@ -694,14 +706,14 @@ impl LushtextWorkspaceSection {
             .iter()
             .filter_map(|(key, rows)| {
                 let path = paths.get(key)?.clone();
-                let listed = rows.iter().filter(|row| row.path.is_some()).count();
-                let budget = rows.iter().rev().find_map(|row| match row.placeholder {
+                let listed = rows.iter().filter(|row| row.path().is_some()).count();
+                let budget = rows.iter().rev().find_map(|row| match row.placeholder() {
                     Some(DirectoryPlaceholder::Budget { total, .. }) => Some(total),
                     _ => None,
                 });
                 let loading = rows
                     .iter()
-                    .filter(|row| row.placeholder == Some(DirectoryPlaceholder::Loading))
+                    .filter(|row| row.placeholder() == Some(DirectoryPlaceholder::Loading))
                     .count();
                 Some(DirectoryListingEvidence {
                     path,
@@ -724,7 +736,10 @@ impl LushtextWorkspaceSection {
         let mut limited = 0;
         let mut loading = 0;
         for rows in mirrors.values() {
-            match rows.last().and_then(|row| row.placeholder) {
+            match rows
+                .last()
+                .and_then(lushtext_services::workspace::file_tree::DirectoryRowState::placeholder)
+            {
                 Some(DirectoryPlaceholder::Budget { .. }) => limited += 1,
                 Some(DirectoryPlaceholder::Loading) => loading += 1,
                 None => {}

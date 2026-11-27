@@ -29,6 +29,7 @@
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 
+use super::admission::{CloseSafetyPhase, SessionRestorePhase, SessionSaveFailurePhase};
 use super::policy::SessionRestoreTurnMetrics;
 use crate::ui::window::LushtextWindow;
 use lushtext_model::values::{FailedRestoreGeneration, RestoreGeneration, SelectionGeneration};
@@ -38,6 +39,10 @@ use lushtext_model::values::{FailedRestoreGeneration, RestoreGeneration, Selecti
 /// Field groups follow the workflow's two stage orders: the journal's write
 /// state, then the restore generation's admission and boundedness.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct SessionRestoreEvidence {
     // --- journal ---
     /// Whether the newest attempted session-file save failed and needs retry.
@@ -132,27 +137,46 @@ impl LushtextWindow {
 
         // Every borrow is taken, read, and dropped before the struct literal, so
         // no `Ref` outlives the value it produced.
-        let (active, scheduled_source, metrics) = {
-            let runtime = session.restore_runtime.borrow();
-            runtime.as_ref().map_or_else(
-                || {
-                    (
-                        false,
-                        false,
-                        session.last_restore_outcome.get().unwrap_or_default(),
-                    )
-                },
-                |runtime| {
-                    (
-                        true,
-                        runtime.scheduled_source.is_some(),
-                        runtime.policy.metrics(),
-                    )
-                },
-            )
+        let (active, scheduled_source, metrics, restoring, startup_load_cancellable) = {
+            let phase = session.restore_phase.borrow();
+            match &*phase {
+                SessionRestorePhase::Idle => (
+                    false,
+                    false,
+                    session.last_restore_outcome.get().unwrap_or_default(),
+                    false,
+                    false,
+                ),
+                SessionRestorePhase::ReadingStartup { .. } => (
+                    false,
+                    false,
+                    session.last_restore_outcome.get().unwrap_or_default(),
+                    true,
+                    true,
+                ),
+                SessionRestorePhase::AwaitingActivationOpens => (
+                    false,
+                    false,
+                    session.last_restore_outcome.get().unwrap_or_default(),
+                    true,
+                    false,
+                ),
+                SessionRestorePhase::Restoring { runtime } => (
+                    true,
+                    runtime.scheduled_source.is_some(),
+                    runtime.policy.metrics(),
+                    true,
+                    false,
+                ),
+            }
         };
-        let startup_load_cancellable = session.restore_cancel.borrow().is_some();
-        let failure_detail_present = session.failure_detail.borrow().is_some();
+        let (save_failed, failed_generation, failure_detail_present) = {
+            match &*session.save_failure.borrow() {
+                SessionSaveFailurePhase::Healthy => (false, FailedRestoreGeneration::ZERO, false),
+                SessionSaveFailurePhase::Failed { generation, .. } => (true, *generation, true),
+            }
+        };
+        let close_safety = session.close_safety.get();
         let startup_descriptors_pending = self.startup_session_descriptors_pending();
         let projection_deferred = self.tab_projection_refresh_deferred();
         // A disposed window has no tab view, so this is the honest `None` rather
@@ -160,16 +184,16 @@ impl LushtextWindow {
         let mounted_pages = imp.tab_view.try_get().map(|view| view.n_pages());
 
         SessionRestoreEvidence {
-            save_failed: session.save_failed.get(),
-            failed_generation: session.failed_generation.get(),
+            save_failed,
+            failed_generation,
             failure_detail_present,
             startup_descriptors_pending,
             startup_load_cancellable,
-            close_safety_inflight: session.close_safety_inflight.get(),
-            close_safety_bypass: session.close_safety_bypass.get(),
+            close_safety_inflight: close_safety == CloseSafetyPhase::Inflight,
+            close_safety_bypass: close_safety == CloseSafetyPhase::BypassPending,
             active,
             scheduled_source,
-            restoring: session.restoring.get(),
+            restoring,
             projection_deferred,
             generation: metrics.generation,
             total_descriptors: metrics.total_descriptors,

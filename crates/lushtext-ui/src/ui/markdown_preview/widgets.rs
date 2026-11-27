@@ -100,7 +100,7 @@ impl LushtextMarkdownPreview {
         accessibility::set_hidden(&*imp.scrolled_window, true);
         accessibility::set_hidden(&*imp.text_view, true);
         accessibility::set_hidden(&*imp.placeholder, false);
-        self.clear_rendered_state(true);
+        self.detach_rendered_buffer(true);
         imp.showing_content.set(false);
     }
 
@@ -113,21 +113,21 @@ impl LushtextMarkdownPreview {
     pub(crate) fn show_content_placeholder(&self, description: &str) {
         self.cancel_render_session();
         self.show_content_view();
-        self.clear_rendered_state(true);
+        self.detach_rendered_buffer(true);
         self.imp().text_view.buffer().set_text(description);
     }
 
     /// Clear the rendered content without showing the placeholder.
     pub fn clear(&self) {
         self.cancel_render_session();
-        self.clear_rendered_state(true);
+        self.detach_rendered_buffer(true);
     }
 
     /// Render an accessible terminal when a caller cannot produce a plan.
     pub fn show_render_failure(&self, description: &str) {
         self.cancel_render_session();
         self.show_content_view();
-        self.clear_rendered_state(true);
+        self.detach_rendered_buffer(true);
         self.imp().text_view.buffer().set_text(description);
         accessibility::set_description(&*self.imp().text_view, description);
         let mut session = self.imp().render_session.borrow_mut();

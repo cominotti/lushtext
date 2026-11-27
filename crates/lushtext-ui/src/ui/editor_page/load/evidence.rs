@@ -46,6 +46,10 @@ use lushtext_model::values::LoadGeneration;
 /// the shared byte admission it waits in, how the decoded payload is being
 /// installed, and how the load ended.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct LoadEvidence {
     // --- request identity and freshness ---
     /// Monotonic identity of this editor's newest load request.
@@ -167,7 +171,7 @@ impl LushtextEditorPage {
             )
         };
 
-        let session = imp.load.installation.borrow().clone();
+        let session = imp.load.installation();
         let (installation_phase, installation_weight) =
             session.as_ref().map_or((None, None), |session| {
                 let session = session.borrow();
@@ -178,12 +182,16 @@ impl LushtextEditorPage {
         let admission_snapshot = admission::admission_snapshot();
 
         let settle_stage = self.settle_stage_now(installation_phase.is_some());
+        let metrics = imp.load.metrics.get();
         LoadEvidence {
             generation: imp.load_tracking.generation.get(),
             cancel_token_identity,
             cancel_requested,
-            pending_request_parked: imp.load.pending_load.borrow().is_some(),
-            previous_request_cancelled: imp.load.previous_request_cancelled.get(),
+            pending_request_parked: matches!(
+                *imp.load.pending_load.borrow(),
+                super::watch::PendingReloadSlot::Parked(_)
+            ),
+            previous_request_cancelled: imp.load.previous_request_cancelled.get().into_option(),
             queued_count: admission_snapshot.queued_count,
             active_count: admission_snapshot.active_count,
             active_weight: admission_snapshot.active_weight,
@@ -194,14 +202,14 @@ impl LushtextEditorPage {
             installation_active: installation_phase.is_some(),
             installation_phase,
             installation_weight,
-            installation_slice_count: imp.load.installation_slice_count.get(),
-            installation_chunked: imp.load.installation_chunked.get(),
-            installation_highlight_chunked: imp.load.installation_highlight_chunked.get(),
-            installation_incomplete: imp.load.installation_incomplete.get(),
-            finalizing: imp.load.finalizing.get(),
+            installation_slice_count: metrics.slice_count,
+            installation_chunked: metrics.chunked,
+            installation_highlight_chunked: metrics.highlight_chunked,
+            installation_incomplete: imp.load.buffer_status.get().is_incomplete(),
+            finalizing: imp.load.is_finalizing(),
             protected: crate::ui::protected_fold::ProtectedSliceEvidence::read(
-                imp.load.protected_install.get(),
-                imp.load.protected_clear_turns.get(),
+                metrics.protected_install,
+                metrics.protected_clear_turns,
                 &imp.protected_boundaries,
             ),
             projection_suspended: imp.load.projection_suspended.get(),
@@ -209,7 +217,7 @@ impl LushtextEditorPage {
             outcome: imp.load.outcome.get(),
             settle_stage,
             language_attach: self.language_attach_evidence(),
-            formatting_applied_before_insert: imp.load.formatting_applied_before_insert.get(),
+            formatting_applied_before_insert: metrics.formatting_applied_before_insert,
             restyle: self.restyle_evidence(),
         }
     }
@@ -218,7 +226,7 @@ impl LushtextEditorPage {
     /// construction to [`LoadEvidence::settle_stage`].
     #[must_use]
     pub(crate) fn document_settle_stage(&self) -> SettleStage {
-        let installing = self.imp().load.installation.borrow().is_some();
+        let installing = self.imp().load.installation().is_some();
         self.settle_stage_now(installing)
     }
 
@@ -227,7 +235,7 @@ impl LushtextEditorPage {
         let facts = SettleFacts {
             open_complete: imp.load_state.get() != EditorLoadState::Loading,
             language_attached: !self.language_attach_pending(),
-            post_open_work_pending: installing || imp.load.finalizing.get(),
+            post_open_work_pending: installing || imp.load.is_finalizing(),
             last_mark_us: imp.load.settle.last_mark_us.get(),
             last_sentinel_us: imp.load.settle.last_sentinel_us.get(),
         };
@@ -246,7 +254,11 @@ pub(super) fn record_retired_request_cancellation(editor: &LushtextEditorPage, c
         .imp()
         .load
         .previous_request_cancelled
-        .set(Some(cancelled));
+        .set(if cancelled {
+            super::watch::RetiredRequestCancellation::Cancelled
+        } else {
+            super::watch::RetiredRequestCancellation::Uncancelled
+        });
 }
 
 /// Which installation slicing path an accepted payload took.
@@ -266,13 +278,12 @@ impl InstallStartFacts {
 
 /// Record which installation path the accepted payload took.
 pub(super) fn record_install_started(editor: &LushtextEditorPage, facts: InstallStartFacts) {
-    let load = &editor.imp().load;
-    load.installation_chunked.set(facts.chunked);
-    load.installation_highlight_chunked
-        .set(facts.highlight_chunked);
-    load.protected_install
-        .set(crate::ui::protected_fold::FoldedInstallMetrics::default());
-    load.protected_clear_turns.set(0);
+    editor.imp().load.update_metrics(|m| {
+        m.chunked = facts.chunked;
+        m.highlight_chunked = facts.highlight_chunked;
+        m.protected_install = crate::ui::protected_fold::FoldedInstallMetrics::default();
+        m.protected_clear_turns = 0;
+    });
 }
 
 /// Record the newest sliced protected install's counts (C3).
@@ -280,13 +291,16 @@ pub(super) fn record_protected_install(
     editor: &LushtextEditorPage,
     metrics: crate::ui::protected_fold::FoldedInstallMetrics,
 ) {
-    editor.imp().load.protected_install.set(metrics);
+    editor.imp().load.update_metrics(|m| {
+        m.protected_install = metrics;
+    });
 }
 
 /// Record one ledger clear turn (C3).
 pub(super) fn record_protected_clear_turn(editor: &LushtextEditorPage) {
-    let turns = &editor.imp().load.protected_clear_turns;
-    turns.set(turns.get().saturating_add(1));
+    editor.imp().load.update_metrics(|m| {
+        m.protected_clear_turns = m.protected_clear_turns.saturating_add(1);
+    });
 }
 
 /// Record how the newest load for this editor ended.

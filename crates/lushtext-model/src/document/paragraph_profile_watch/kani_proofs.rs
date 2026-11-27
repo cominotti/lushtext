@@ -347,6 +347,10 @@ impl Invariant {
 /// What one step observed: the three checked properties, and the shapes the
 /// general harnesses cover ([`cover_step_shapes`]).
 #[derive(Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Kani harness transition record over orthogonal model flags"
+)]
 struct Step {
     invariant_holds: bool,
     reads_in_range: bool,

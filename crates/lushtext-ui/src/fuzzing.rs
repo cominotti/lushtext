@@ -14,7 +14,7 @@ use std::sync::atomic::AtomicBool;
 
 use crate::ui::editor_page::{MinimapAnalysisAccumulator, MinimapAnalysisPolicy};
 use lushtext_model::document::encoding::{DocumentEncoding, LineEnding};
-use lushtext_model::document::formatting_overrides::FormattingOverrides;
+use lushtext_model::document::formatting_overrides::{FormattingOverrides, IndentWidthSetting};
 use lushtext_model::persistence::draft::{DraftEntry, DraftManifest};
 use lushtext_model::persistence::session::{SessionData, SessionTab};
 use lushtext_model::workspace::content_search::{ContentSearchOptions, SearchMatch};
@@ -323,8 +323,8 @@ fn run_formatting_operation(reader: &mut ScriptReader<'_>, report: &mut Operatio
         tab_width: Some(u32::from(reader.take_byte() % 12) + 1),
         insert_spaces: Some(reader.take_byte() & 1 == 1),
         indent_width: Some(match reader.take_byte() % 13 {
-            0 => -1,
-            value => i32::from(value),
+            0 => IndentWidthSetting::InheritTabWidth,
+            value => IndentWidthSetting::Spaces(value),
         }),
         line_ending: Some(line_ending_from_byte(reader.take_byte())),
         save_encoding: Some(encoding_from_byte(reader.take_byte())),

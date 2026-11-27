@@ -4240,11 +4240,11 @@ fn test_target_state_actions_drive_visible_surfaces_without_toggle_parity() {
 
     activate_boolean_action(&window, "set-focus-mode", true);
     wait_until(Duration::from_secs(2), || {
-        window.imp().focus_mode.active.get() && action_state_bool(&window, "toggle-focus-mode")
+        window.imp().focus_mode.is_active() && action_state_bool(&window, "toggle-focus-mode")
     });
     activate_boolean_action(&window, "set-focus-mode", false);
     wait_until(Duration::from_secs(2), || {
-        !window.imp().focus_mode.active.get() && !action_state_bool(&window, "toggle-focus-mode")
+        !window.imp().focus_mode.is_active() && !action_state_bool(&window, "toggle-focus-mode")
     });
 
     activate_boolean_action(&window, "set-preview-pane-visible", true);
@@ -4979,7 +4979,7 @@ fn test_alt_p_preview_only_works_inside_focus_mode_and_blocks_preview_restore() 
     activate_action(&window, "toggle-focus-mode");
     activate_action(&window, "toggle-preview-mode");
 
-    assert!(window.imp().focus_mode.active.get());
+    assert!(window.imp().focus_mode.is_active());
     assert!(window.imp().preview_mode.get());
     assert!(window.imp().markdown_preview.property::<bool>("visible"));
 
@@ -5188,11 +5188,11 @@ fn test_escape_closes_command_palette_before_exiting_focus_mode() {
     flush_events();
 
     assert!(!window.imp().palette_revealer.reveals_child());
-    assert!(window.imp().focus_mode.active.get());
+    assert!(window.imp().focus_mode.is_active());
 
     emit_escape_on_window_controller(&window);
     flush_events();
-    assert!(!window.imp().focus_mode.active.get());
+    assert!(!window.imp().focus_mode.is_active());
 }
 
 #[test]
@@ -5261,13 +5261,13 @@ fn test_mode_toggles_record_state_specific_workflow_announcements() {
 
     activate_action(&window, "toggle-focus-mode");
     wait_until(Duration::from_secs(2), || {
-        window.imp().focus_mode.active.get()
+        window.imp().focus_mode.is_active()
     });
     assert_workflow_announcement_recorded(&window, "focus-mode-on");
 
     activate_action(&window, "toggle-focus-mode");
     wait_until(Duration::from_secs(2), || {
-        !window.imp().focus_mode.active.get()
+        !window.imp().focus_mode.is_active()
     });
     assert_workflow_announcement_recorded(&window, "focus-mode-off");
 
@@ -8164,12 +8164,12 @@ fn test_draft_autosave_marks_pending_when_editing_during_inflight_batch() {
     present_window(&window);
 
     let editor = active_editor(&window);
-    window.imp().drafts.autosave_inflight.set(true);
+    window.imp().drafts.set_autosave_inflight(true);
     editor.buffer().set_text("changed during autosave");
 
-    assert!(window.imp().drafts.autosave_pending.get());
-    window.imp().drafts.autosave_inflight.set(false);
-    window.imp().drafts.autosave_pending.set(false);
+    assert!(window.imp().drafts.is_autosave_pending());
+    window.imp().drafts.set_autosave_inflight(false);
+    window.imp().drafts.set_autosave_pending(false);
 }
 
 #[test]
@@ -10077,9 +10077,9 @@ fn test_delete_draft_by_id_preserves_unattributable_file_backed_body_while_autos
 
     // Another tab's autosave holds the window-wide `autosave_inflight` flag.
     // Saving or discarding this unregistered tab must still keep the body.
-    window.imp().drafts.autosave_inflight.set(true);
+    window.imp().drafts.set_autosave_inflight(true);
     window.delete_draft_by_id(&draft_id);
-    window.imp().drafts.autosave_inflight.set(false);
+    window.imp().drafts.set_autosave_inflight(false);
     wait_until(Duration::from_secs(5), || {
         !window.draft_evidence().mutation_inflight
     });
@@ -15658,8 +15658,7 @@ fn test_sync_session_save_failure_keeps_retry_state_and_warns_user() {
         window
             .imp()
             .session
-            .failure_detail
-            .borrow()
+            .failure_detail()
             .as_deref()
             .is_some_and(|detail| detail.contains("session.json"))
     );

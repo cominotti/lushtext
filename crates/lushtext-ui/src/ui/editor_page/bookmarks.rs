@@ -6,14 +6,48 @@
 //! source buffer owns the live line tracking through `GtkSourceMark`. This
 //! module bridges those two shapes and keeps the public editor facade small.
 
+use std::cell::{Cell, RefCell};
+
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk_lush_settle::Debounce;
 use gtk4::prelude::*;
 use sourceview5::prelude::*;
 
 use lushtext_model::persistence::bookmark::{BookmarkId, BookmarkRecord};
 use lushtext_model::values::BookmarkGeneration;
 
-use super::{LushtextEditorPage, imp};
+use super::LushtextEditorPage;
+
+type NotesChangedCallback = Box<dyn Fn()>;
+type BookmarkActivatedCallback = Box<dyn Fn(BookmarkRecord)>;
+
+/// Debounced persistence state shared by note-sidecar projections.
+#[derive(Default)]
+pub struct NotesPersistenceState {
+    pub save_debounce: Debounce,
+    pub save_inflight: Cell<bool>,
+    pub save_dirty: Cell<bool>,
+    pub save_generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    pub save_failure_streak: Cell<u32>,
+    pub sidecar_resolved: Cell<bool>,
+}
+
+/// One live bookmark projected into a `GtkSourceMark`.
+#[derive(Clone)]
+pub struct LiveBookmark {
+    pub record: BookmarkRecord,
+    pub mark: sourceview5::Mark,
+}
+
+/// Live bookmark projection state scoped to one editor tab.
+#[derive(Default)]
+pub struct BookmarkState {
+    pub entries: RefCell<Vec<LiveBookmark>>,
+    pub change_generation: Cell<BookmarkGeneration>,
+    pub changed_callback: RefCell<Option<NotesChangedCallback>>,
+    pub activated_callback: RefCell<Option<BookmarkActivatedCallback>>,
+    pub persistence: NotesPersistenceState,
+}
 
 /// Source-mark category used for bookmark gutter indicators.
 ///
@@ -280,7 +314,7 @@ pub(super) fn load_bookmarks(editor: &LushtextEditorPage, bookmarks: &[BookmarkR
         let iter = iter_at_line_or_last(&buffer, bookmark.line);
         let mark = buffer.create_source_mark(Some(&bookmark.id.0), BOOKMARK_MARK_CATEGORY, &iter);
 
-        live_entries.push(imp::LiveBookmark {
+        live_entries.push(LiveBookmark {
             record: bookmark.clone(),
             mark,
         });
@@ -343,7 +377,7 @@ pub(super) fn toggle_bookmark_at_cursor(editor: &LushtextEditorPage) -> Bookmark
         .bookmarks
         .entries
         .borrow_mut()
-        .push(imp::LiveBookmark { record, mark });
+        .push(LiveBookmark { record, mark });
     editor
         .imp()
         .bookmarks

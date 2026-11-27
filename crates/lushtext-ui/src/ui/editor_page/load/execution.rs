@@ -46,7 +46,7 @@ use gtk4::glib;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use sourceview5::prelude::*;
 
-use crate::ui::editor_page::imp::EditorCallback;
+use super::watch::EditorCallback;
 use crate::ui::editor_page::{
     EditorLoadState, InlineAlertLifetime, LushtextEditorPage, PendingWarningAction,
 };
@@ -549,8 +549,7 @@ fn finish_chunked_install(session: &Rc<RefCell<ChunkedLoadInstall>>) {
         source.remove();
     }
     if let Some(editor) = editor.as_ref() {
-        editor.imp().load.finalizing.set(true);
-        editor.imp().load.dispose_during_finalization.set(false);
+        editor.imp().load.begin_finalization();
     }
     if let Some(mark) = mark {
         buffer.delete_mark(&mark);
@@ -566,8 +565,11 @@ fn finish_chunked_install(session: &Rc<RefCell<ChunkedLoadInstall>>) {
         drop(loaded);
         return;
     };
-    editor.imp().load.installation_slice_count.set(slice_count);
-    let disposed_during_finalization = editor.imp().load.dispose_during_finalization.get();
+    editor
+        .imp()
+        .load
+        .update_metrics(|m| m.slice_count = slice_count);
+    let disposed_during_finalization = editor.imp().load.dispose_during_finalization();
     if disposed_during_finalization || editor.imp().load_tracking.generation.get() != generation {
         buffer.end_irreversible_action();
         // The suspension this installation captured must be given back when a
@@ -619,8 +621,8 @@ fn conclude_installation(
     // A terminal that did not publish the load (cancelled, superseded) leaves
     // the buffer without the bytes the last decode fact described; the
     // publishing terminal sets the fact again in `complete_loaded_installation_now`.
-    if !editor.is_protected_view() || editor.imp().load.installation_incomplete.get() {
-        editor.imp().document_metadata.decode_inexact.set(false);
+    if !editor.is_protected_view() || editor.imp().load.buffer_status.get().is_incomplete() {
+        editor.imp().document_metadata.set_decode_inexact(false);
     }
     clear_installation_owner(editor, session);
     finish_load_finalization(editor, permit);
@@ -631,15 +633,7 @@ pub(super) fn clear_installation_owner(
     editor: &LushtextEditorPage,
     session: &Rc<RefCell<ChunkedLoadInstall>>,
 ) {
-    let is_current = editor
-        .imp()
-        .load
-        .installation
-        .borrow()
-        .as_ref()
-        .is_some_and(|current| Rc::ptr_eq(current, session));
-    if is_current {
-        editor.imp().load.installation.take();
+    if editor.imp().load.clear_installation_if_current(session) {
         editor.set_load_chunked_owner(false);
     }
 }
@@ -776,7 +770,7 @@ fn publish_load_error(
     editor.imp().load_state.set(error_state);
     editor.imp().latest_load_failed.set(true);
     // No bytes were loaded, so no decode fact about them stands.
-    editor.imp().document_metadata.decode_inexact.set(false);
+    editor.imp().document_metadata.set_decode_inexact(false);
     evidence::record_outcome(editor, LoadOutcome::Failed);
     editor.notify_memory_policy_changed();
     editor.emit_inline_notification(
@@ -796,7 +790,7 @@ fn publish_load_error(
     // No installation began before a worker error, so no guard is held here
     // and a listener sees the buffer and language as they now stand.
     editor.fire_content_republished();
-    if let Some(callback) = editor.imp().load.load_failed_callback.take() {
+    if let Some(callback) = editor.imp().load.callbacks.failed.take() {
         callback(error_text);
     }
 }
@@ -806,7 +800,7 @@ pub(super) fn install_loaded_direct(
     loaded: GuardedLoadResult,
     permit: Option<TransientLoadPermit>,
 ) {
-    editor.imp().load.installation_slice_count.set(0);
+    editor.imp().load.update_metrics(|m| m.slice_count = 0);
     let plan = highlight_plan_for(editor, &loaded);
     let restore = begin_load_installation(editor, false, plan);
     // The direct path leaves the minimap projection attached, so a body the
@@ -823,8 +817,7 @@ pub(super) fn install_loaded_direct(
     // A direct install's old text is small by the same threshold, so its
     // formatting goes on before the one `set_text` (D6.2).
     apply_pending_formatting(editor);
-    editor.imp().load.finalizing.set(true);
-    editor.imp().load.dispose_during_finalization.set(false);
+    editor.imp().load.begin_finalization();
     buffer.begin_irreversible_action();
     {
         let _span = PostOpenSpan::begin("post_open_install_direct");
@@ -852,7 +845,7 @@ pub(super) fn install_loaded_direct(
             .protected_boundaries
             .forget(buffer.upcast_ref());
     }
-    if editor.imp().load.dispose_during_finalization.get() {
+    if editor.imp().load.dispose_during_finalization() {
         buffer.end_irreversible_action();
         finish_load_finalization(editor, permit);
         return;
@@ -908,27 +901,30 @@ fn start_chunked_install(
         folded,
         highlight,
     }));
-    editor.imp().load.installation_slice_count.set(0);
-    editor.imp().load.install_owns_changes.set(true);
+    editor.imp().load.update_metrics(|m| m.slice_count = 0);
+    editor.imp().load.mark_install_owns_changes();
     editor.set_load_chunked_owner(session.borrow().highlight.is_some());
-    editor
-        .imp()
-        .load
-        .installation
-        .replace(Some(Rc::clone(&session)));
+    editor.imp().load.set_installation(Rc::clone(&session));
     schedule_install_slice(&session);
 }
 
 /// Apply the EditorConfig overrides the planning worker resolved, if any,
 /// before the install's first insert (`bound-post-open-settle`, D6.2).
 fn apply_pending_formatting(editor: &LushtextEditorPage) {
-    let pending = editor.imp().load.pending_formatting.take();
+    let pending = editor
+        .imp()
+        .load
+        .pending_formatting
+        .replace(super::watch::PendingEditorConfig::None);
+    let overrides = match pending {
+        super::watch::PendingEditorConfig::None => None,
+        super::watch::PendingEditorConfig::Overrides(overrides) => Some(overrides),
+    };
     editor
         .imp()
         .load
-        .formatting_applied_before_insert
-        .set(pending.is_some());
-    if let Some(overrides) = pending {
+        .update_metrics(|m| m.formatting_applied_before_insert = overrides.is_some());
+    if let Some(overrides) = overrides {
         editor.apply_editorconfig_overrides(overrides);
     }
 }
@@ -1072,8 +1068,11 @@ fn complete_loaded_installation_now(
     let eviction_reload = editor.imp().residency.evicted.get();
     editor.imp().canonical_file_path.replace(canonical_path);
     editor.imp().latest_load_failed.set(false);
-    editor.imp().load.installation_incomplete.set(false);
-    editor.imp().load.install_owns_changes.set(false);
+    editor
+        .imp()
+        .load
+        .buffer_status
+        .set(super::watch::LoadBufferStatus::Whole);
     editor.imp().replacement.left_partial.set(false);
     editor.imp().residency.evicted.set(false);
     editor.set_document_encoding_state(encoding_state);
@@ -1081,8 +1080,7 @@ fn complete_loaded_installation_now(
     editor
         .imp()
         .document_metadata
-        .decode_inexact
-        .set(decode_round_trips == Some(false));
+        .set_decode_inexact(decode_round_trips == Some(false));
     editor.set_file_health(file_health);
     // The scale gates syntax, bracket matching, invisibles, search
     // highlighting and the minimap before a highlight idle can run.
@@ -1129,11 +1127,11 @@ fn complete_loaded_installation_now(
     // The guard was restored above and the state is `Loaded`, so projections
     // that stood down during installation (the Markdown preview) re-render now.
     editor.fire_content_republished();
-    editor.imp().load.load_failed_callback.borrow_mut().take();
-    if let Some(callback) = editor.imp().load.load_completed_callback.take() {
+    editor.imp().load.callbacks.failed.take();
+    if let Some(callback) = editor.imp().load.callbacks.completed.take() {
         callback();
     }
-    invoke_reentrant_callbacks(&editor.imp().load.file_loaded_callbacks);
+    invoke_reentrant_callbacks(&editor.imp().load.callbacks.file_loaded);
     // Settle is read after the publish: its sentinel must follow it.
     editor.record_settle_mark();
 }
@@ -1190,8 +1188,7 @@ pub(super) fn finish_load_finalization(
     editor: &LushtextEditorPage,
     permit: Option<TransientLoadPermit>,
 ) {
-    editor.imp().load.finalizing.set(false);
-    let disposed = editor.imp().load.dispose_during_finalization.replace(false);
+    let disposed = editor.imp().load.finish_finalization();
     let pending = admission::take_pending_request(editor);
     drop(permit);
     match pending {

@@ -87,10 +87,8 @@ impl LushtextSidebar {
                 for diagnostic in &load.diagnostics {
                     tracing::warn!("{}", diagnostic.summary());
                 }
-                if !load.diagnostics.is_empty()
-                    && let Some(ref callback) = *sidebar.imp().message_callback.borrow()
-                {
-                    callback(
+                if !load.diagnostics.is_empty() {
+                    sidebar.emit_message(
                         "Workspace state needed recovery; unsupported metadata was preserved",
                         NotificationSeverity::Warning,
                     );
@@ -371,8 +369,6 @@ impl LushtextSidebar {
 
     /// Notify the window that workspace structure changed.
     pub(super) fn notify_workspace_structure_changed(&self) {
-        if let Some(ref callback) = *self.imp().workspace_structure_changed_callback.borrow() {
-            callback();
-        }
+        self.emit_sidebar_event(super::callbacks::SidebarEvent::WorkspaceStructureChanged);
     }
 }

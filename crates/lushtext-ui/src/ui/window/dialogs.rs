@@ -664,21 +664,15 @@ impl super::LushtextWindow {
     }
 
     fn begin_close_save_session(&self) -> u64 {
-        let state = &self.imp().session;
-        let identity = state.next_close_save_identity.get().wrapping_add(1);
-        state.next_close_save_identity.set(identity);
-        state.active_close_save_identity.set(Some(identity));
-        identity
+        self.imp().session.begin_close_save_session()
     }
 
     pub(crate) fn close_save_session_is_current(&self, identity: u64) -> bool {
-        self.imp().session.active_close_save_identity.get() == Some(identity)
+        self.imp().session.close_save_session_is_current(identity)
     }
 
     fn finish_close_save_session(&self, identity: u64) {
-        if self.close_save_session_is_current(identity) {
-            self.imp().session.active_close_save_identity.set(None);
-        }
+        self.imp().session.finish_close_save_session(identity);
     }
 
     /// Expire the active close-save session, as a superseding close would.
@@ -696,7 +690,7 @@ impl super::LushtextWindow {
     /// side.
     #[cfg(feature = "test-utils")]
     pub fn expire_close_save_session_for_test(&self) {
-        if let Some(identity) = self.imp().session.active_close_save_identity.get() {
+        if let Some(identity) = self.imp().session.active_close_save_identity() {
             self.finish_close_save_session(identity);
         }
     }
@@ -835,7 +829,10 @@ impl super::LushtextWindow {
         }
         let fingerprint = close_safety_editor_fingerprint(self);
         let was_sensitive = self.is_sensitive();
-        self.imp().session.close_safety_inflight.set(true);
+        self.imp()
+            .session
+            .close_safety
+            .set(super::session_restore::CloseSafetyPhase::Inflight);
         self.set_sensitive(false);
         self.imp().search_panel.close();
         // Bookmark sidecars are debounced and held weakly, so a bookmark added
@@ -981,8 +978,11 @@ fn finish_async_close_safety(
         );
         return;
     }
-    window.imp().session.close_safety_inflight.set(false);
-    window.imp().session.close_safety_bypass.set(true);
+    window
+        .imp()
+        .session
+        .close_safety
+        .set(super::session_restore::CloseSafetyPhase::BypassPending);
     // The confirmed close of the last window persists the settings writer's
     // pending values synchronously, so the window size, maximized state and
     // surface visibility on disk are exact. A window closing while others
@@ -995,8 +995,11 @@ fn finish_async_close_safety(
 }
 
 fn abort_async_close_safety(window: &super::LushtextWindow, was_sensitive: bool) {
-    window.imp().session.close_safety_inflight.set(false);
-    window.imp().session.close_safety_bypass.set(false);
+    window
+        .imp()
+        .session
+        .close_safety
+        .set(super::session_restore::CloseSafetyPhase::Idle);
     window.set_sensitive(was_sensitive);
     window.clear_close_discard_drafts();
     let modified = window.modified_editors();

@@ -52,7 +52,7 @@
 //! deterministic) and wrong under its intent, and it earned nothing: the row
 //! template is a **class constant**, identical for every popover and every read.
 //! It is now reached directly through
-//! `imp::LushtextOpenPopover::row_layout_snapshot()` by the one test that
+//! `item::row_layout_snapshot()` by the one test that
 //! asserts GNOME source parity, so no per-read cost is paid by the surface's
 //! other eleven readers.
 
@@ -63,8 +63,8 @@ use crate::ui::window::LushtextWindow;
 use lushtext_model::persistence::recent_document::RecentDocumentEntry;
 use lushtext_model::values::RecentDocumentsGeneration;
 
-use super::item::OpenPopoverItem;
-use super::{LushtextOpenPopover, imp};
+use super::LushtextOpenPopover;
+use super::item::{self, OpenPopoverItem};
 
 /// Grid placement of one child inside the GNOME-shaped recent row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +85,10 @@ pub struct OpenPopoverRowChildLayoutSnapshot {
 /// with the GNOME Text Editor source constants without poking through GTK's
 /// recycled list rows.
 #[derive(Debug, Clone, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only layout snapshot DTO"
+)]
 pub struct OpenPopoverRowLayoutSnapshot {
     /// Top margin on the row grid.
     pub grid_margin_top: i32,
@@ -158,8 +162,8 @@ pub struct OpenPopoverRowLayoutSnapshot {
     pub remove_layout: OpenPopoverRowChildLayoutSnapshot,
 }
 
-impl From<imp::RecentRowChildLayout> for OpenPopoverRowChildLayoutSnapshot {
-    fn from(value: imp::RecentRowChildLayout) -> Self {
+impl From<item::RecentRowChildLayout> for OpenPopoverRowChildLayoutSnapshot {
+    fn from(value: item::RecentRowChildLayout) -> Self {
         Self {
             column: value.column,
             row: value.row,
@@ -169,8 +173,8 @@ impl From<imp::RecentRowChildLayout> for OpenPopoverRowChildLayoutSnapshot {
     }
 }
 
-impl From<imp::RecentRowLayoutSnapshot> for OpenPopoverRowLayoutSnapshot {
-    fn from(value: imp::RecentRowLayoutSnapshot) -> Self {
+impl From<item::RecentRowLayoutSnapshot> for OpenPopoverRowLayoutSnapshot {
+    fn from(value: item::RecentRowLayoutSnapshot) -> Self {
         Self {
             grid_margin_top: value.grid_margin_top,
             grid_margin_bottom: value.grid_margin_bottom,
@@ -349,6 +353,10 @@ fn scroller_geometry(popover: &LushtextOpenPopover) -> OpenPopoverScrollerGeomet
 /// the in-memory entry list plus six scalars; reading it takes shared borrows
 /// only, releases each before the struct literal is built, and advances nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct RecentDocumentsJournalEvidence {
     /// Newest-first entries currently held in memory.
     ///
@@ -383,14 +391,14 @@ pub fn recent_documents_journal_evidence(
 ) -> RecentDocumentsJournalEvidence {
     let state = &window.imp().recent_documents;
     let entries = state.entries.borrow().clone();
-    let removed_while_loading = state.removed_while_loading.borrow().clone();
+    let removed_while_loading = state.removed_while_loading();
     RecentDocumentsJournalEvidence {
         entries,
-        loading: state.loading.get(),
+        loading: state.is_loading(),
         removed_while_loading,
         generation: state.generation.get(),
         rows_dirty: state.rows_dirty.get(),
-        save_inflight: state.save_inflight.get(),
-        save_pending: state.save_pending.get(),
+        save_inflight: state.is_save_inflight(),
+        save_pending: state.is_save_pending(),
     }
 }

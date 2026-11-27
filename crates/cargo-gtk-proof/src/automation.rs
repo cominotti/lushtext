@@ -176,8 +176,11 @@ impl AutomationClient {
         timeout_msec: u32,
     ) -> Result<ReadinessWait, String> {
         let parameters = glib::Variant::from((predicate, timeout_msec));
-        let result =
-            self.call_automation("WaitForReady", Some(&parameters), timeout_msec as i32)?;
+        let result = self.call_automation(
+            "WaitForReady",
+            Some(&parameters),
+            i32::try_from(timeout_msec).unwrap_or(i32::MAX),
+        )?;
         parse_wait_for_ready_result(predicate, &result)
     }
 

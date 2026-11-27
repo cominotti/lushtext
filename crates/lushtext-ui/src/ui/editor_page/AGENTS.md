@@ -16,12 +16,15 @@ This folder owns one open editor tab: buffer state, file I/O choreography, exter
     (cancellation and disposal: payload, charge, partial buffer, identity).
   - `save/` — Ctrl+S, Save As, close-with-changes: `admission.rs` and
     `execution.rs`.
-  - `buffer_replacement/`, `minimap/` and `protected_view/`; their facades and
+  - `buffer_replacement/` (`admission.rs`, `execution.rs`, `policy.rs`, `evidence.rs`),
+    `minimap/`, and `protected_view/`; their facades and
     `docs/workflow-readability-matrix.md` list their files.
 - Cross-cutting editor-page state that neither document workflow owns lives
   beside them: shared document identity and metadata in `document_identity.rs`,
-  and the deferred cursor/scroll group in `restore_position.rs` (five owning
-  workflows). Both are reached through named operations, not by reaching into
+  shared GSettings/theme bindings & formatting overrides in `formatting.rs`,
+  typed window notification/memory-policy observers in `callbacks.rs`, and the
+  deferred cursor/scroll group in `restore_position.rs` (five owning workflows).
+  Both state hubs are reached through named operations, not by reaching into
   another workflow's state.
 - Keep Focus Mode presentation in `focus_mode.rs`, minimap behavior in the
   `minimap/` role home, dynamic editor overscroll in `overscroll.rs`, bookmark projection

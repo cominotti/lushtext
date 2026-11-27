@@ -20,22 +20,11 @@ use gtk_lush_settle::{Debounce, SupersedingTimer};
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
-use lushtext_model::workspace::{WorkspaceId, WorkspaceScope, WorkspacesFile};
-use lushtext_services::coordination::notifications::NotificationSeverity;
+use lushtext_model::workspace::{WorkspaceScope, WorkspacesFile};
 use std::cell::{Cell, RefCell};
-use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use super::workspace_section::LushtextWorkspaceSection;
-
-type FileCallback = Box<dyn Fn(&Path)>;
-type MessageCallback = Box<dyn Fn(&str, NotificationSeverity)>;
-type RenameCallback = Box<dyn Fn(&Path, &Path)>;
-type WorkspaceCallback = Box<dyn Fn(WorkspaceId)>;
-type FolderNotePathCallback = Box<dyn Fn(WorkspaceId, PathBuf)>;
-type WorkspaceScopeCallback = Box<dyn Fn(WorkspaceScope)>;
-type WorkspacePersistenceFlushCallback =
-    Box<dyn FnOnce(Result<(), super::persist_execution::WorkspacePersistenceFlushError>)>;
 
 /// Private template implementation for the multi-workspace sidebar.
 ///
@@ -99,34 +88,13 @@ pub struct LushtextSidebar {
     /// Superseding semantics remove a stale arm when the animation re-arms.
     pub workspace_filter_settle_timer: SupersedingTimer,
 
-    /// Callback for file double-click activation, forwarded to the window.
-    pub file_activated_callback: RefCell<Option<FileCallback>>,
-    /// Callback for file-row local-history requests, forwarded to the window.
-    pub local_history_callback: RefCell<Option<FileCallback>>,
-    /// Callback for file-row document-note requests, forwarded to the window.
-    pub document_note_callback: RefCell<Option<FileCallback>>,
-    /// Callback for sidebar file renames so the window can update open tabs.
-    pub rename_callback: RefCell<Option<RenameCallback>>,
-    /// Callback for sidebar file deletion so the window can close affected tabs.
-    pub delete_callback: RefCell<Option<FileCallback>>,
-    /// Callback for sidebar-created files so the window can open the new tab.
-    pub create_callback: RefCell<Option<FileCallback>>,
-    /// Callback forwarding workspace-section status messages to the window.
-    pub message_callback: RefCell<Option<MessageCallback>>,
-    /// Callback for workspace-header note requests, forwarded to the window.
-    pub folder_note_callback: RefCell<Option<WorkspaceCallback>>,
-    /// Callback for exact top-level folder-row note requests.
-    pub folder_note_for_folder_callback: RefCell<Option<FolderNotePathCallback>>,
-    /// Callback notifying the window that workspace structure changed.
-    pub workspace_structure_changed_callback: RefCell<Option<Box<dyn Fn()>>>,
-    /// Callback notifying the window that the shared workspace scope changed.
-    pub workspace_scope_changed_callback: RefCell<Option<WorkspaceScopeCallback>>,
     /// Debounce for workspace persistence (150ms).
     pub persist_debounce: Debounce,
     /// Requested, in-flight, durable, and failed workspace-save generations.
     pub persistence: RefCell<WorkspacePersistenceState>,
     /// Close-flush completions waiting for the newest requested durable terminal.
-    pub(super) persistence_flush_waiters: RefCell<Vec<WorkspacePersistenceFlushCallback>>,
+    pub(super) persistence_flush_waiters:
+        RefCell<Vec<super::persist_execution::WorkspacePersistenceFlushCallback>>,
     /// Application settings for feature toggles.
     pub settings: gio::Settings,
     /// Settings handlers for the visibility keys, released on dispose so a
@@ -155,17 +123,6 @@ impl Default for LushtextSidebar {
             applied_workspace_filter: RefCell::new(WorkspaceScope::All),
             workspace_filter_animation_active: Cell::default(),
             workspace_filter_settle_timer: SupersedingTimer::default(),
-            file_activated_callback: RefCell::default(),
-            local_history_callback: RefCell::default(),
-            document_note_callback: RefCell::default(),
-            rename_callback: RefCell::default(),
-            delete_callback: RefCell::default(),
-            create_callback: RefCell::default(),
-            message_callback: RefCell::default(),
-            folder_note_callback: RefCell::default(),
-            folder_note_for_folder_callback: RefCell::default(),
-            workspace_structure_changed_callback: RefCell::default(),
-            workspace_scope_changed_callback: RefCell::default(),
             persist_debounce: Debounce::default(),
             persistence: RefCell::default(),
             persistence_flush_waiters: RefCell::default(),
@@ -195,6 +152,18 @@ impl ObjectSubclass for LushtextSidebar {
 }
 
 impl ObjectImpl for LushtextSidebar {
+    fn signals() -> &'static [glib::subclass::Signal] {
+        static SIGNALS: std::sync::OnceLock<Vec<glib::subclass::Signal>> =
+            std::sync::OnceLock::new();
+        SIGNALS.get_or_init(|| {
+            vec![
+                glib::subclass::Signal::builder("sidebar-event")
+                    .param_types([super::callbacks::BoxedSidebarEvent::static_type()])
+                    .build(),
+            ]
+        })
+    }
+
     fn dispose(&self) {
         self.visibility_signals.clear();
         // A reveal in flight ends here rather than resuming against a torn-down tree.

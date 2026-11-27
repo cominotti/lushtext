@@ -73,44 +73,103 @@ pub enum DirectoryPlaceholder {
 
 /// Plain projection retained for one materialized GTK child store.
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct DirectoryRowState {
-    /// Filesystem path for a real row; absent only for a placeholder row.
-    pub path: Option<PathBuf>,
-    /// Whether a real row represents a directory.
-    pub is_dir: bool,
-    /// Bounded empty-directory hint copied from the accepted scan.
-    pub is_empty: Option<bool>,
-    /// The synthetic row this is, if it is one.
-    pub placeholder: Option<DirectoryPlaceholder>,
+pub enum DirectoryRowState {
+    /// A regular file (or non-directory entry) listed by an accepted scan.
+    File {
+        /// Filesystem path of the entry.
+        path: PathBuf,
+    },
+    /// A subdirectory listed by an accepted scan.
+    Directory {
+        /// Filesystem path of the directory.
+        path: PathBuf,
+        /// Bounded empty-directory hint copied from the accepted scan.
+        is_empty: Option<bool>,
+    },
+    /// A synthetic row ending a listing.
+    Placeholder(DirectoryPlaceholder),
 }
 
 impl DirectoryRowState {
     /// Convert one scanned filesystem entry into its retained row projection.
     #[must_use]
     pub fn from_entry(entry: DirectoryEntry) -> Self {
-        Self {
-            path: Some(entry.path),
-            is_dir: entry.is_dir,
-            is_empty: entry.is_empty,
-            placeholder: None,
+        if entry.is_dir {
+            Self::Directory {
+                path: entry.path,
+                is_empty: entry.is_empty,
+            }
+        } else {
+            Self::File { path: entry.path }
         }
+    }
+
+    /// Build a file row projection for `path`.
+    #[must_use]
+    pub const fn file(path: PathBuf) -> Self {
+        Self::File { path }
+    }
+
+    /// Build a directory row projection for `path` and optional emptiness hint.
+    #[must_use]
+    pub const fn directory(path: PathBuf, is_empty: Option<bool>) -> Self {
+        Self::Directory { path, is_empty }
     }
 
     /// The synthetic row `placeholder` ends a listing with.
     #[must_use]
     pub const fn placeholder_row(placeholder: DirectoryPlaceholder) -> Self {
-        Self {
-            path: None,
-            is_dir: false,
-            is_empty: None,
-            placeholder: Some(placeholder),
-        }
+        Self::Placeholder(placeholder)
     }
 
     /// Whether this is a synthetic row rather than a filesystem entry.
     #[must_use]
     pub const fn is_placeholder(&self) -> bool {
-        self.placeholder.is_some()
+        matches!(self, Self::Placeholder(_))
+    }
+
+    /// Filesystem path for a real row, or `None` for a placeholder.
+    #[must_use]
+    pub fn path(&self) -> Option<&Path> {
+        match self {
+            Self::File { path } | Self::Directory { path, .. } => Some(path.as_path()),
+            Self::Placeholder(_) => None,
+        }
+    }
+
+    /// Consume the row and return its filesystem path when it is a real row.
+    #[must_use]
+    pub fn into_path(self) -> Option<PathBuf> {
+        match self {
+            Self::File { path } | Self::Directory { path, .. } => Some(path),
+            Self::Placeholder(_) => None,
+        }
+    }
+
+    /// Directory path when this row represents a directory.
+    #[must_use]
+    pub fn directory_path(&self) -> Option<&Path> {
+        match self {
+            Self::Directory { path, .. } => Some(path.as_path()),
+            Self::File { .. } | Self::Placeholder(_) => None,
+        }
+    }
+
+    /// Update the filesystem path of a real row after an in-place rename.
+    pub fn set_path(&mut self, new_path: PathBuf) {
+        match self {
+            Self::File { path } | Self::Directory { path, .. } => *path = new_path,
+            Self::Placeholder(_) => {}
+        }
+    }
+
+    /// Synthetic placeholder kind when this is a placeholder row.
+    #[must_use]
+    pub const fn placeholder(&self) -> Option<DirectoryPlaceholder> {
+        match self {
+            Self::Placeholder(placeholder) => Some(*placeholder),
+            Self::File { .. } | Self::Directory { .. } => None,
+        }
     }
 }
 
@@ -179,15 +238,13 @@ pub fn plan_directory_reconciliation(
     let replacement_end = desired.len().saturating_sub(suffix);
     let desired_paths = desired
         .iter()
-        .filter(|row| row.is_dir)
-        .filter_map(|row| row.path.as_deref())
+        .filter_map(DirectoryRowState::directory_path)
         .collect::<HashSet<_>>();
     let candidates = current[prefix..prefix.saturating_add(removed)]
         .iter()
-        .filter(|row| row.is_dir)
-        .filter_map(|row| row.path.as_ref())
-        .filter(|path| !desired_paths.contains(path.as_path()))
-        .cloned()
+        .filter_map(DirectoryRowState::directory_path)
+        .filter(|path| !desired_paths.contains(*path))
+        .map(Path::to_path_buf)
         .collect::<HashSet<_>>();
     let mut removed_directory_roots = candidates
         .iter()
@@ -923,19 +980,11 @@ mod tests {
     }
 
     fn row(name: impl Into<String>) -> DirectoryRowState {
-        DirectoryRowState {
-            path: Some(PathBuf::from(name.into())),
-            is_dir: false,
-            is_empty: None,
-            placeholder: None,
-        }
+        DirectoryRowState::file(PathBuf::from(name.into()))
     }
 
     fn directory_row(name: impl Into<String>) -> DirectoryRowState {
-        DirectoryRowState {
-            is_dir: true,
-            ..row(name)
-        }
+        DirectoryRowState::directory(PathBuf::from(name.into()), None)
     }
 
     fn apply_plan(
@@ -1528,7 +1577,7 @@ mod tests {
             let kept_applied = apply_plan_keeping(current, plan);
             proptest::prop_assert_eq!(&applied, &desired);
             proptest::prop_assert_eq!(&kept_applied, &desired);
-            let unique_paths: HashSet<_> = kept_applied.iter().filter_map(|r| r.path.as_ref()).collect();
+            let unique_paths: HashSet<_> = kept_applied.iter().filter_map(DirectoryRowState::path).collect();
             proptest::prop_assert_eq!(unique_paths.len(), kept_applied.len());
         }
     }

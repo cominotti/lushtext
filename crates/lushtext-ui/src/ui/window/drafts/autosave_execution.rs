@@ -42,7 +42,7 @@ use lushtext_services::{editor_io, persistence::draft_service, persistence::json
 use super::policy;
 use super::policy::DraftPipelineFailures;
 use super::policy::{
-    AutosaveAdmission, AutosaveLaneState, CloseFlushWaitState, DraftCandidateFacts,
+    AutosaveAdmission, AutosaveLaneState, CloseFlushWaitFacts, DraftCandidateFacts,
     SnapshotLivenessFacts, autosave_admission, captured_snapshot_is_current, close_flush_must_wait,
     draft_candidate_is_eligible,
 };
@@ -93,12 +93,12 @@ impl LushtextWindow {
         // Another window's journal work counts as a mutation in flight: the
         // lane is process-wide, and a pass started now would race it.
         if autosave_admission(AutosaveLaneState {
-            autosave_inflight: drafts.autosave_inflight.get(),
+            autosave_inflight: drafts.is_autosave_inflight(),
             mutation_inflight: self.journal_mutation_busy(),
-            cleanup_inflight: drafts.orphan_cleanup_inflight.get(),
+            cleanup_inflight: drafts.is_orphan_cleanup_inflight(),
         }) == AutosaveAdmission::MarkPending
         {
-            drafts.autosave_pending.set(true);
+            drafts.set_autosave_pending(true);
             return;
         }
 
@@ -106,7 +106,7 @@ impl LushtextWindow {
         // its mutation intent, which must not be minted for a pass that then
         // does not run.
         if !self.take_journal_lane() {
-            self.imp().drafts.autosave_pending.set(true);
+            self.imp().drafts.set_autosave_pending(true);
             return;
         }
         let dirty_tabs = self.collect_dirty_draft_candidates();
@@ -115,8 +115,7 @@ impl LushtextWindow {
             return;
         }
 
-        self.imp().drafts.autosave_inflight.set(true);
-        self.imp().drafts.mutation_inflight.set(true);
+        self.imp().drafts.begin_autosave_run();
         self.register_new_draft_ids_then(dirty_tabs, |window, candidates, refused| {
             window.drive_dirty_draft_pipeline(
                 candidates,
@@ -272,27 +271,27 @@ impl LushtextWindow {
     pub(crate) fn schedule_first_dirty_draft_autosave(&self) {
         let drafts = &self.imp().drafts;
         if autosave_admission(AutosaveLaneState {
-            autosave_inflight: drafts.autosave_inflight.get(),
+            autosave_inflight: drafts.is_autosave_inflight(),
             mutation_inflight: self.journal_mutation_busy(),
             cleanup_inflight: false,
         }) == AutosaveAdmission::MarkPending
         {
-            drafts.autosave_pending.set(true);
+            drafts.set_autosave_pending(true);
             return;
         }
-        drafts.first_dirty_autosave_pending.set(true);
+        drafts.set_first_dirty_autosave_pending(true);
         self.imp().drafts.first_dirty_autosave_timer.arm(
             self,
             first_dirty_autosave_debounce(),
             move |window, _| {
-                window.imp().drafts.first_dirty_autosave_pending.set(false);
+                window.imp().drafts.set_first_dirty_autosave_pending(false);
                 window.autosave_tick();
             },
         );
     }
 
     pub(super) fn cancel_first_dirty_draft_autosave(&self) {
-        self.imp().drafts.first_dirty_autosave_pending.set(false);
+        self.imp().drafts.set_first_dirty_autosave_pending(false);
         let _ = self.imp().drafts.first_dirty_autosave_timer.invalidate();
     }
 
@@ -312,7 +311,7 @@ impl LushtextWindow {
         let (candidates, restore_blocked) = self.collect_draft_candidates(true, &HashSet::new());
         if restore_blocked > 0 {
             // Retried by a later tick once the pending restore has resolved.
-            self.imp().drafts.autosave_pending.set(true);
+            self.imp().drafts.set_autosave_pending(true);
         }
         candidates
     }
@@ -423,7 +422,7 @@ impl LushtextWindow {
             };
             match outcome {
                 buffer_snapshot::BufferSnapshotOutcome::Captured(text) => {
-                    window.imp().drafts.close_snapshot.take();
+                    window.imp().drafts.take_close_snapshot();
                     let Some(editor) = candidate.editor.upgrade() else {
                         let mut failures = failures;
                         failures.snapshot_cancelled += 1;
@@ -496,7 +495,7 @@ impl LushtextWindow {
                     );
                 }
                 buffer_snapshot::BufferSnapshotOutcome::ExceededLimit { .. } => {
-                    window.imp().drafts.close_snapshot.take();
+                    window.imp().drafts.take_close_snapshot();
                     let mut failures = failures;
                     failures.over_limit += 1;
                     if let Some(editor) = candidate.editor.upgrade() {
@@ -505,7 +504,7 @@ impl LushtextWindow {
                     window.drive_close_draft_pipeline(candidates, accepted, failures, on_done);
                 }
                 buffer_snapshot::BufferSnapshotOutcome::Cancelled(_) => {
-                    window.imp().drafts.close_snapshot.take();
+                    window.imp().drafts.take_close_snapshot();
                     let mut failures = failures;
                     failures.snapshot_cancelled += 1;
                     window.drive_close_draft_pipeline(candidates, accepted, failures, on_done);
@@ -519,7 +518,7 @@ impl LushtextWindow {
                 automatic_draft_limit(),
                 finish_snapshot,
             );
-            *self.imp().drafts.close_snapshot.borrow_mut() = Some(snapshot);
+            self.imp().drafts.set_close_snapshot(snapshot);
         } else {
             finish_snapshot(buffer_snapshot::snapshot_buffer_text_direct_budgeted(
                 &candidate.buffer,
@@ -627,8 +626,7 @@ impl LushtextWindow {
                     // Close flush owns this transaction's acceptance result.
                     // Do not let an edit-coalesced regular tick clear retry state
                     // before the close caller observes success or failure.
-                    window.imp().drafts.autosave_pending.set(false);
-                    window.imp().drafts.mutation_inflight.set(false);
+                    window.imp().drafts.finish_close_flush_run();
                     window.release_journal_lane();
                     window.drive_pending_draft_mutations();
                     window.wait_for_draft_mutations_then(move || {
@@ -641,8 +639,8 @@ impl LushtextWindow {
 
     /// Run a close continuation only after queued draft mutations have drained.
     fn wait_for_draft_mutations_then<F: FnOnce() + 'static>(&self, on_done: F) {
-        if close_flush_must_wait(CloseFlushWaitState {
-            mutation_inflight: self.imp().drafts.mutation_inflight.get(),
+        if close_flush_must_wait(CloseFlushWaitFacts {
+            mutation_inflight: self.imp().drafts.is_mutation_inflight(),
             cleanup_inflight: false,
             pending_deletes: !self.imp().drafts.pending_deletes.borrow().is_empty(),
             restores_inflight: self.imp().drafts.restore_inflight_count.get() > 0,
@@ -680,7 +678,7 @@ impl LushtextWindow {
             };
             match outcome {
                 buffer_snapshot::BufferSnapshotOutcome::Captured(text) => {
-                    window.imp().drafts.autosave_snapshot.take();
+                    window.imp().drafts.take_autosave_snapshot();
                     let Some(editor) = candidate.editor.upgrade() else {
                         window.drive_dirty_draft_pipeline(candidates, accepted, failures);
                         return;
@@ -698,7 +696,7 @@ impl LushtextWindow {
                             buffer_untrusted: editor.draft_capture_blocked(),
                         },
                     ) {
-                        window.imp().drafts.autosave_pending.set(true);
+                        window.imp().drafts.set_autosave_pending(true);
                         window.drive_dirty_draft_pipeline(candidates, accepted, failures);
                         return;
                     }
@@ -754,7 +752,7 @@ impl LushtextWindow {
                     );
                 }
                 buffer_snapshot::BufferSnapshotOutcome::ExceededLimit { .. } => {
-                    window.imp().drafts.autosave_snapshot.take();
+                    window.imp().drafts.take_autosave_snapshot();
                     let mut failures = failures;
                     failures.over_limit += 1;
                     if let Some(editor) = candidate.editor.upgrade()
@@ -766,10 +764,10 @@ impl LushtextWindow {
                     window.drive_dirty_draft_pipeline(candidates, accepted, failures);
                 }
                 buffer_snapshot::BufferSnapshotOutcome::Cancelled(_) => {
-                    window.imp().drafts.autosave_snapshot.take();
+                    window.imp().drafts.take_autosave_snapshot();
                     let mut failures = failures;
                     failures.snapshot_cancelled += 1;
-                    window.imp().drafts.autosave_pending.set(true);
+                    window.imp().drafts.set_autosave_pending(true);
                     window.drive_dirty_draft_pipeline(candidates, accepted, failures);
                 }
             }
@@ -781,7 +779,7 @@ impl LushtextWindow {
                 automatic_draft_limit(),
                 finish_snapshot,
             );
-            *self.imp().drafts.autosave_snapshot.borrow_mut() = Some(snapshot);
+            self.imp().drafts.set_autosave_snapshot(snapshot);
         } else {
             finish_snapshot(buffer_snapshot::snapshot_buffer_text_direct_budgeted(
                 &candidate.buffer,
@@ -870,8 +868,7 @@ impl LushtextWindow {
         if let Some(message) = failures.retryable_status_message() {
             self.publish_status_message(&message, NotificationSeverity::Warning);
         }
-        self.imp().drafts.autosave_inflight.set(false);
-        self.imp().drafts.mutation_inflight.set(false);
+        self.imp().drafts.finish_autosave_run();
         self.release_journal_lane();
         self.drive_pending_draft_mutations();
     }
@@ -900,8 +897,8 @@ impl LushtextWindow {
 
     /// Remember that a fresh autosave pass is needed after the active batch.
     pub(crate) fn mark_draft_autosave_pending_if_inflight(&self) {
-        if self.imp().drafts.autosave_inflight.get() || self.imp().drafts.mutation_inflight.get() {
-            self.imp().drafts.autosave_pending.set(true);
+        if self.imp().drafts.is_autosave_inflight() || self.imp().drafts.is_mutation_inflight() {
+            self.imp().drafts.set_autosave_pending(true);
         }
     }
 
@@ -915,9 +912,9 @@ impl LushtextWindow {
         &self,
         on_done: F,
     ) {
-        if close_flush_must_wait(CloseFlushWaitState {
+        if close_flush_must_wait(CloseFlushWaitFacts {
             mutation_inflight: self.journal_mutation_busy(),
-            cleanup_inflight: self.imp().drafts.orphan_cleanup_inflight.get(),
+            cleanup_inflight: self.imp().drafts.is_orphan_cleanup_inflight(),
             pending_deletes: !self.imp().drafts.pending_deletes.borrow().is_empty(),
             restores_inflight: self.imp().drafts.restore_inflight_count.get() > 0,
         }) {
@@ -944,7 +941,7 @@ impl LushtextWindow {
         // Free a moment ago (`close_flush_must_wait`), and nothing ran since.
         let taken = self.take_journal_lane();
         debug_assert!(taken, "the journal lane was checked free just above");
-        self.imp().drafts.mutation_inflight.set(true);
+        self.imp().drafts.begin_mutation_run();
         self.register_new_draft_ids_then(candidates, move |window, candidates, refused| {
             window.drive_close_draft_pipeline(
                 candidates,

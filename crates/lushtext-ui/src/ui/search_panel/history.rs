@@ -14,7 +14,9 @@
 //! takes none of those names, and owns no `policy.rs` and no `evidence.rs`. Its
 //! behavior obligations are unchanged. Named in that workflow's matrix row.
 
-use glib::subclass::prelude::ObjectSubclassIsExt;
+use std::cell::{Cell, RefCell};
+
+use glib::subclass::prelude::{ObjectSubclassExt, ObjectSubclassIsExt};
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
 use libadwaita::prelude::*;
@@ -22,6 +24,128 @@ use lushtext_model::workspace::content_search::{SavedSearch, SearchHistoryEntry,
 use lushtext_services::{persistence::json_store, search::saved_searches};
 
 use super::LushtextSearchPanel;
+
+/// Saved-search and recent-history state for the search entry popover.
+#[derive(Default)]
+pub struct SearchHistoryState {
+    /// Guards against spurious searches during construction-time GSettings restore.
+    pub constructed_complete: Cell<bool>,
+    /// Guards against redundant searches while restoring one saved query spec.
+    pub restoring_history: Cell<bool>,
+    /// Persisted recent-search entries (most recent first, capped by the service).
+    pub history_entries: RefCell<Vec<SearchHistoryEntry>>,
+    /// Named saved searches shown in the popover's first section.
+    pub saved_searches: RefCell<Vec<SavedSearch>>,
+}
+
+pub(super) fn create_history_popover() -> gtk4::Popover {
+    let popover = gtk4::Popover::new();
+    popover.set_autohide(true);
+    popover.set_has_arrow(false);
+    crate::ui::accessibility::set_label(&popover, "Saved searches and recent history");
+    popover
+}
+
+pub(super) fn create_dropdown_heading(title: &str) -> gtk4::Label {
+    let label = gtk4::Label::new(Some(title));
+    label.add_css_class("heading");
+    label.set_halign(gtk4::Align::Start);
+    label.set_margin_start(8);
+    label.set_margin_top(6);
+    label.set_margin_bottom(4);
+    label
+}
+
+pub(super) fn create_dropdown_list() -> gtk4::ListBox {
+    let list = gtk4::ListBox::new();
+    list.set_selection_mode(gtk4::SelectionMode::Single);
+    list.set_activate_on_single_click(true);
+    list
+}
+
+impl super::imp::LushtextSearchPanel {
+    /// Assemble the saved-search/history dropdown popover and parent it to `search_entry`.
+    pub(super) fn assemble_history_dropdown(&self) {
+        self.dropdown_box.append(&self.saved_header);
+        self.dropdown_box.append(&self.saved_searches_list);
+        self.dropdown_box.append(&self.dropdown_separator);
+        self.dropdown_box.append(&self.recent_header);
+        self.dropdown_box.append(&self.history_list);
+
+        let scroll = gtk4::ScrolledWindow::new();
+        scroll.set_max_content_height(300);
+        scroll.set_propagate_natural_height(true);
+        scroll.set_child(Some(&self.dropdown_box));
+        self.history_popover.set_child(Some(&scroll));
+        self.history_popover.set_parent(&*self.search_entry);
+    }
+
+    /// Wire focus -> popover show and row-activated -> restore history entry.
+    pub(super) fn setup_history(&self) {
+        let panel_weak = self.obj().downgrade();
+        self.search_entry
+            .connect_notify_local(Some("has-focus"), move |entry, _| {
+                let Some(panel) = panel_weak.upgrade() else {
+                    return;
+                };
+                let imp = panel.imp();
+                // Only show on focus-in (not focus-out), when entries exist,
+                // and not during preview mode.
+                let has_entries = !imp.history.history_entries.borrow().is_empty()
+                    || !imp.history.saved_searches.borrow().is_empty();
+                if entry.has_focus() && has_entries && !panel.is_preview_mode() {
+                    panel.populate_dropdown();
+                    imp.history_popover.popup();
+                }
+            });
+
+        let panel_weak = self.obj().downgrade();
+        self.history_list.connect_row_activated(move |_, row| {
+            let Some(panel) = panel_weak.upgrade() else {
+                return;
+            };
+            let Ok(idx) = usize::try_from(row.index()) else {
+                return;
+            };
+            let entry = {
+                let entries = panel.imp().history.history_entries.borrow();
+                entries.get(idx).cloned()
+            };
+            if let Some(entry) = entry {
+                panel.restore_from_history(&entry);
+            }
+        });
+
+        let panel_weak = self.obj().downgrade();
+        self.saved_searches_list
+            .connect_row_activated(move |_, row| {
+                let Some(panel) = panel_weak.upgrade() else {
+                    return;
+                };
+                let Ok(idx) = usize::try_from(row.index()) else {
+                    return;
+                };
+                let entry = {
+                    let entries = panel.imp().history.saved_searches.borrow();
+                    entries.get(idx).cloned()
+                };
+                if let Some(entry) = entry {
+                    panel.restore_from_saved_search(&entry);
+                }
+            });
+    }
+
+    /// Wire the save button to open the save search dialog.
+    pub(super) fn setup_save_button(&self) {
+        let panel_weak = self.obj().downgrade();
+        self.save_button.connect_clicked(move |_| {
+            let Some(panel) = panel_weak.upgrade() else {
+                return;
+            };
+            panel.show_save_search_dialog();
+        });
+    }
+}
 
 impl LushtextSearchPanel {
     /// Store loaded search history entries.
@@ -157,12 +281,10 @@ impl LushtextSearchPanel {
                 let entry = SavedSearch::from_spec(name, panel.current_query_spec());
 
                 saved_searches::add(&mut panel.imp().history.saved_searches.borrow_mut(), entry);
-                if let Some(ref cb) = *panel.imp().callbacks.message_callback.borrow() {
-                    cb(
-                        &format!("Search saved as '{display_name}'"),
-                        lushtext_services::coordination::notifications::NotificationSeverity::Info,
-                    );
-                }
+                panel.emit_message(
+                    &format!("Search saved as '{display_name}'"),
+                    lushtext_services::coordination::notifications::NotificationSeverity::Info,
+                );
                 // Persist a snapshot so later UI edits do not race this
                 // background save.
                 let entries_clone = panel.imp().history.saved_searches.borrow().clone();

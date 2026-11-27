@@ -5,6 +5,7 @@
 //! sliced retirement of its rows.
 
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::time::Duration;
 
 use gtk4::prelude::*;
@@ -13,37 +14,25 @@ use gtk4::{CompositeTemplate, gdk, glib};
 
 use super::super::TOGGLE_ALL_TABS_ACCEL;
 use super::super::policy::{
-    ALL_TABS_ANNOUNCE_DELAY_MS, ALL_TABS_CURRENT_TOOLTIP, ALL_TABS_LIST_DESCRIPTION,
-    ALL_TABS_LIST_LABEL, ALL_TABS_NO_MATCH_TITLE, ALL_TABS_PINNED_TOOLTIP,
-    ALL_TABS_SEARCH_DESCRIPTION, ALL_TABS_SEARCH_LABEL, AllTabsCandidate, AllTabsRowState,
+    ALL_TABS_ANNOUNCE_DELAY_MS, ALL_TABS_LIST_DESCRIPTION, ALL_TABS_LIST_LABEL,
+    ALL_TABS_NO_MATCH_TITLE, ALL_TABS_SEARCH_DESCRIPTION, ALL_TABS_SEARCH_LABEL, AllTabsRowState,
     all_tabs_highlight, all_tabs_list_value_text, all_tabs_match_announcement, all_tabs_row_name,
-    rank_all_tabs,
 };
 #[cfg(feature = "test-utils")]
 use super::AllTabsPopoverFacts;
-use super::item::{AllTabsItem, AllTabsRow, AllTabsRowModel};
-use crate::ui::accessibility::{self, AnnouncementLane, AnnouncementThrottler, RowAccessibility};
+use super::item::{
+    AllTabsItem, AllTabsRow, AllTabsRowModel, BoundTabRowHandlers, build_all_tabs_row_factory,
+    rank_source_rows,
+};
+use crate::ui::accessibility::{self, AnnouncementLane, AnnouncementThrottler};
 use crate::ui::list_growth::RowGrowth;
 use crate::ui::list_retirement::RowRetirement;
 use crate::ui::row_text::LushtextRowText;
 
-type ActivateCallback = Box<dyn Fn(Option<libadwaita::TabPage>)>;
+type ActivateCallback = Rc<dyn Fn(Option<libadwaita::TabPage>)>;
 
 /// The announcement throttle key of the match count.
 const ANNOUNCEMENT_KEY: &str = "all-tabs-results";
-/// Spacing between a row's marker, text and state icons, in sp.
-const ROW_SPACING_SP: i32 = 6;
-/// A row's vertical margin, in sp.
-const ROW_MARGIN_VERTICAL_SP: i32 = 3;
-
-/// The widgets of one row, found from its child by position.
-struct RowWidgets {
-    marker: LushtextRowText,
-    title: LushtextRowText,
-    subtitle: LushtextRowText,
-    pinned: gtk4::Image,
-    current: gtk4::Image,
-}
 
 #[derive(CompositeTemplate, Default)]
 #[template(resource = "/dev/cominotti/lushtext/ui/all-tabs-popover.ui")]
@@ -68,7 +57,7 @@ pub struct LushtextAllTabsPopover {
     growth: RefCell<Option<RowGrowth>>,
     retirement: RefCell<Option<RowRetirement>>,
     /// `content-changed` handlers of bound rows, by list-item address.
-    bound: RefCell<std::collections::HashMap<usize, (AllTabsItem, glib::SignalHandlerId)>>,
+    pub(super) bound: RefCell<BoundTabRowHandlers>,
     pub(super) activate_callback: RefCell<Option<ActivateCallback>>,
     /// Whether the current popup ended with a row activation.
     pub(super) activated: Cell<bool>,
@@ -114,7 +103,8 @@ impl ObjectImpl for LushtextAllTabsPopover {
         });
         self.list_view.set_model(Some(&selection));
         self.selection.replace(Some(selection));
-        self.list_view.set_factory(Some(&self.build_factory()));
+        self.list_view
+            .set_factory(Some(&build_all_tabs_row_factory(&self.obj())));
         self.apply_accessibility_metadata();
         self.setup_search();
         self.setup_keys();
@@ -135,7 +125,7 @@ impl ObjectImpl for LushtextAllTabsPopover {
     }
 
     fn dispose(&self) {
-        self.bound_handlers_clear();
+        self.bound.take().clear();
         let growth = self.growth.take();
         drop(growth);
         let retirement = self.retirement.take();
@@ -267,27 +257,7 @@ impl LushtextAllTabsPopover {
             })
             .flatten();
         let query = self.search_entry.text().to_string();
-        let (listed, rows, selected) = {
-            let source = self.source.borrow();
-            let candidates: Vec<AllTabsCandidate<'_>> = source
-                .iter()
-                .map(|row| AllTabsCandidate {
-                    title: &row.title,
-                    folder: row.folder.as_deref(),
-                    folder_path: row.folder_path.as_deref(),
-                })
-                .collect();
-            let listed = rank_all_tabs(&query, &candidates);
-            let rows: Vec<AllTabsRow> = listed
-                .iter()
-                .filter_map(|index| source.get(usize::try_from(*index).ok()?).cloned())
-                .collect();
-            let selected = source
-                .iter()
-                .position(|row| row.current)
-                .and_then(|index| u32::try_from(index).ok());
-            (listed, rows, selected)
-        };
+        let (listed, rows, selected) = rank_source_rows(&self.source.borrow(), &query);
         let empty = rows.is_empty();
         self.model.publish(rows);
         self.track_growth();
@@ -413,7 +383,8 @@ impl LushtextAllTabsPopover {
             .and_then(|row| row.page.upgrade());
         self.activated.set(true);
         self.obj().popdown();
-        if let Some(callback) = self.activate_callback.borrow().as_ref() {
+        let callback = self.activate_callback.borrow().clone();
+        if let Some(callback) = callback {
             callback(page);
         }
     }
@@ -511,155 +482,4 @@ impl LushtextAllTabsPopover {
             row_objects: self.model.live_rows(),
         }
     }
-
-    fn bound_handlers_clear(&self) {
-        for (_, (item, handler)) in self.bound.borrow_mut().drain() {
-            item.disconnect(handler);
-        }
-    }
-
-    fn build_factory(&self) -> gtk4::SignalListItemFactory {
-        let factory = gtk4::SignalListItemFactory::new();
-        factory.connect_setup(|_, object| {
-            let Some(list_item) = object.downcast_ref::<gtk4::ListItem>() else {
-                return;
-            };
-            list_item.set_child(Some(&build_row()));
-        });
-        let popover_weak = self.obj().downgrade();
-        factory.connect_bind(move |_, object| {
-            let Some(list_item) = object.downcast_ref::<gtk4::ListItem>() else {
-                return;
-            };
-            let Some(item) = list_item
-                .item()
-                .and_then(|item| item.downcast::<AllTabsItem>().ok())
-            else {
-                return;
-            };
-            project_row(list_item, &item);
-            let handler = item.connect_content_changed({
-                let list_item = list_item.downgrade();
-                move |item| {
-                    if let Some(list_item) = list_item.upgrade() {
-                        project_row(&list_item, item);
-                    }
-                }
-            });
-            if let Some(popover) = popover_weak.upgrade()
-                && let Some((old, old_handler)) = popover
-                    .imp()
-                    .bound
-                    .borrow_mut()
-                    .insert(list_item.as_ptr() as usize, (item, handler))
-            {
-                old.disconnect(old_handler);
-            }
-        });
-        let popover_weak = self.obj().downgrade();
-        factory.connect_unbind(move |_, object| {
-            let Some(list_item) = object.downcast_ref::<gtk4::ListItem>() else {
-                return;
-            };
-            if let Some(popover) = popover_weak.upgrade()
-                && let Some((item, handler)) = popover
-                    .imp()
-                    .bound
-                    .borrow_mut()
-                    .remove(&(list_item.as_ptr() as usize))
-            {
-                item.disconnect(handler);
-            }
-            accessibility::clear_row_accessibility_for_list_item(list_item);
-            if let Some(widgets) = list_item.child().as_ref().and_then(row_widgets) {
-                widgets.title.set_text("");
-                widgets.subtitle.set_text("");
-            }
-        });
-        factory
-    }
-}
-
-/// One row: the unsaved-changes dot, the title over its folder, then the
-/// pinned and current-tab icons.
-fn build_row() -> gtk4::Box {
-    let row = gtk4::Box::new(gtk4::Orientation::Horizontal, ROW_SPACING_SP);
-    row.set_margin_top(ROW_MARGIN_VERTICAL_SP);
-    row.set_margin_bottom(ROW_MARGIN_VERTICAL_SP);
-    row.add_css_class("all-tabs-row");
-    let marker = LushtextRowText::new();
-    marker.set_ellipsize(gtk4::pango::EllipsizeMode::None);
-    marker.set_text("•");
-    marker.set_valign(gtk4::Align::Center);
-    accessibility::set_role(&marker, gtk4::AccessibleRole::Presentation);
-    row.append(&marker);
-    let text = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-    text.set_hexpand(true);
-    text.set_valign(gtk4::Align::Center);
-    let title = LushtextRowText::new();
-    title.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
-    title.set_xalign(0.0);
-    let subtitle = LushtextRowText::new();
-    subtitle.set_ellipsize(gtk4::pango::EllipsizeMode::Start);
-    subtitle.set_xalign(0.0);
-    subtitle.add_css_class("caption");
-    subtitle.add_css_class("dim-label");
-    text.append(&title);
-    text.append(&subtitle);
-    row.append(&text);
-    let pinned = gtk4::Image::from_icon_name("view-pin-symbolic");
-    pinned.set_tooltip_text(Some(ALL_TABS_PINNED_TOOLTIP));
-    accessibility::set_role(&pinned, gtk4::AccessibleRole::Presentation);
-    row.append(&pinned);
-    let current = gtk4::Image::from_icon_name("object-select-symbolic");
-    current.set_tooltip_text(Some(ALL_TABS_CURRENT_TOOLTIP));
-    accessibility::set_role(&current, gtk4::AccessibleRole::Presentation);
-    row.append(&current);
-    row
-}
-
-fn row_widgets(child: &gtk4::Widget) -> Option<RowWidgets> {
-    let marker = child.first_child()?;
-    let text = marker.next_sibling()?;
-    let pinned = text.next_sibling()?;
-    let current = pinned.next_sibling()?;
-    let title = text.first_child()?;
-    let subtitle = title.next_sibling()?;
-    Some(RowWidgets {
-        marker: marker.downcast().ok()?,
-        title: title.downcast().ok()?,
-        subtitle: subtitle.downcast().ok()?,
-        pinned: pinned.downcast().ok()?,
-        current: current.downcast().ok()?,
-    })
-}
-
-fn project_row(list_item: &gtk4::ListItem, item: &AllTabsItem) {
-    let (Some(row), Some(widgets)) = (item.row(), list_item.child().as_ref().and_then(row_widgets))
-    else {
-        return;
-    };
-    // The dot keeps its width when hidden, so titles stay aligned.
-    widgets
-        .marker
-        .set_opacity(if row.modified { 1.0 } else { 0.0 });
-    widgets.title.set_text(&row.title);
-    widgets.subtitle.set_text(row.subtitle());
-    widgets.subtitle.set_tooltip_text(Some(row.subtitle()));
-    widgets.pinned.set_visible(row.pinned);
-    widgets.current.set_visible(row.current);
-    let name = all_tabs_row_name(
-        &row.title,
-        AllTabsRowState {
-            modified: row.modified,
-            pinned: row.pinned,
-            current: row.current,
-        },
-    );
-    accessibility::apply_list_item_row_accessibility(
-        list_item,
-        RowAccessibility::new(&name)
-            .description(row.subtitle())
-            .selected(list_item.is_selected()),
-    );
 }

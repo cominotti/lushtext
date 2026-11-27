@@ -57,6 +57,10 @@ use super::super::LushtextWindow;
 
 /// Everything a test or probe may observe about editor-memory eviction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct EditorMemoryEvictionEvidence {
     /// Completed aggregate passes, for burst-coalescing assertions.
     pub evaluation_count: u64,
@@ -108,8 +112,8 @@ pub fn editor_memory_eviction_evidence(window: &LushtextWindow) -> EditorMemoryE
         incremental_total_bytes,
         ledger_reconciles,
         last_outcome: memory.last_outcome.get(),
-        evaluation_running: memory.evaluation_running.get(),
-        evaluation_armed: memory.evaluation_armed.get(),
+        evaluation_running: memory.evaluation_running(),
+        evaluation_armed: memory.evaluation_armed(),
         accounting_uncertain: memory.accounting_uncertain.get(),
         eviction_dispatch_count: memory.eviction_dispatch_count.get(),
         resident_pages: resident_pages(window),

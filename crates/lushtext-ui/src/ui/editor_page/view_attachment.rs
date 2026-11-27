@@ -70,6 +70,16 @@ use sourceview5::prelude::*;
 
 use super::LushtextEditorPage;
 
+#[derive(Default)]
+enum HiddenWatchPhase {
+    #[default]
+    Inactive,
+    Watching {
+        handlers: Vec<(gtk4::Adjustment, glib::SignalHandlerId)>,
+        detach_queued: bool,
+    },
+}
+
 /// What the editor's view currently shows.
 #[derive(Default)]
 pub(crate) struct ViewAttachmentState {
@@ -83,9 +93,7 @@ pub(crate) struct ViewAttachmentState {
     kept_top: std::cell::RefCell<Option<gtk4::TextMark>>,
     /// The hidden-validation watch on the view's adjustments, while unmapped
     /// and attached.
-    watch: std::cell::RefCell<Vec<(gtk4::Adjustment, glib::SignalHandlerId)>>,
-    /// A detach is queued for the completion-priority idle.
-    detach_queued: std::cell::Cell<bool>,
+    hidden_watch: std::cell::RefCell<HiddenWatchPhase>,
     /// The kept top line a reattached view is being held at while it lays
     /// the document out again (A83).
     restoring: std::cell::RefCell<Option<TopLineRestore>>,
@@ -364,7 +372,6 @@ impl LushtextEditorPage {
     pub(super) fn attach_view(&self) {
         self.stop_hidden_validation_watch();
         let state = &self.imp().view_attachment;
-        state.detach_queued.set(false);
         if self.view_shows_document() {
             // Shown again before it was detached: the line kept at the hide
             // is the one the view still shows.
@@ -614,30 +621,51 @@ impl LushtextEditorPage {
             });
             watch.push((adjustment, id));
         }
-        *self.imp().view_attachment.watch.borrow_mut() = watch;
+        *self.imp().view_attachment.hidden_watch.borrow_mut() = HiddenWatchPhase::Watching {
+            handlers: watch,
+            detach_queued: false,
+        };
     }
 
     fn stop_hidden_validation_watch(&self) {
-        for (adjustment, id) in self.imp().view_attachment.watch.borrow_mut().drain(..) {
-            adjustment.disconnect(id);
+        let old = std::mem::take(&mut *self.imp().view_attachment.hidden_watch.borrow_mut());
+        if let HiddenWatchPhase::Watching { handlers, .. } = old {
+            for (adjustment, id) in handlers {
+                adjustment.disconnect(id);
+            }
         }
     }
 
     /// Detach from an idle one step above the validation idle, so the view
     /// lays out at most the batch that revealed it.
     fn queue_hidden_detach(&self) {
-        let state = &self.imp().view_attachment;
-        if state.detach_queued.replace(true) {
+        let should_queue = {
+            let mut phase = self.imp().view_attachment.hidden_watch.borrow_mut();
+            match &mut *phase {
+                HiddenWatchPhase::Watching { detach_queued, .. } if !*detach_queued => {
+                    *detach_queued = true;
+                    true
+                }
+                _ => false,
+            }
+        };
+        if !should_queue {
             return;
         }
         let editor_weak = self.downgrade();
         glib::idle_add_local_full(gtk_lush_tasks::completion_priority(), move || {
             if let Some(editor) = editor_weak.upgrade() {
-                let state = &editor.imp().view_attachment;
-                if state.detach_queued.replace(false)
-                    && !editor.is_mapped()
-                    && !editor.in_destruction()
-                {
+                let should_detach = {
+                    let mut phase = editor.imp().view_attachment.hidden_watch.borrow_mut();
+                    match &mut *phase {
+                        HiddenWatchPhase::Watching { detach_queued, .. } if *detach_queued => {
+                            *detach_queued = false;
+                            true
+                        }
+                        _ => false,
+                    }
+                };
+                if should_detach && !editor.is_mapped() && !editor.in_destruction() {
                     editor.detach_view_now();
                 }
             }
@@ -692,12 +720,13 @@ impl LushtextEditorPage {
 
     fn keep_top(&self, document: &sourceview5::Buffer, top: &gtk4::TextIter) {
         let mark = document.create_mark(None, top, true);
-        if let Some(old) = self
+        let old = self
             .imp()
             .view_attachment
             .kept_top
             .borrow_mut()
-            .replace(mark)
+            .replace(mark);
+        if let Some(old) = old
             && !old.is_deleted()
         {
             document.delete_mark(&old);

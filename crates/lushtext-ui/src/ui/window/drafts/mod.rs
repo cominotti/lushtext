@@ -191,6 +191,7 @@ use std::time::Duration;
 use lushtext_services::persistence::draft_service;
 
 pub use seams::DraftFlushError;
+pub(in crate::ui::window) use seams::DraftState;
 
 #[cfg(feature = "test-utils")]
 pub use test_policy::{
@@ -346,8 +347,3 @@ pub(super) fn attach_draft_body_disposal_probe(
     let owner = test_policy::attach_body_disposal_probe(owner);
     owner
 }
-
-pub(crate) use admission::ProcessDraftJournal;
-/// Re-export for the window imp's state group.
-pub(super) use policy::{DraftMutationIntent, DraftMutationOrder};
-pub(crate) use seams::{DraftRestoreTicket, PendingPreservation};

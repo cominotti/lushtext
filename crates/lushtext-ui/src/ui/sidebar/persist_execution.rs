@@ -36,6 +36,10 @@ use lushtext_services::{persistence::json_store, workspace::workspace_manager};
 
 use super::LushtextSidebar;
 
+/// Completion callback registered by a window close-time flush waiter.
+pub(super) type WorkspacePersistenceFlushCallback =
+    Box<dyn FnOnce(Result<(), WorkspacePersistenceFlushError>)>;
+
 /// Typed user-safe failure returned by an asynchronous workspace close flush.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct WorkspacePersistenceFlushError {
@@ -213,8 +217,6 @@ impl LushtextSidebar {
     }
 
     fn publish_workspace_persistence_message(&self, text: &str, severity: NotificationSeverity) {
-        if let Some(ref callback) = *self.imp().message_callback.borrow() {
-            callback(text, severity);
-        }
+        self.emit_message(text, severity);
     }
 }

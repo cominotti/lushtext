@@ -161,7 +161,9 @@ pub use tab_strip::policy::TabLayoutEntry;
 #[cfg(feature = "test-utils")]
 pub use transient_dismissal::evidence::{TransientDismissalEvidence, transient_dismissal_evidence};
 #[cfg(feature = "test-utils")]
-pub use transient_dismissal::policy::{EscapeOutcome, TransientDismissal, TransientSurfaceState};
+pub use transient_dismissal::policy::{
+    EscapeOutcome, TransientDismissal, TransientSurfaceSnapshot,
+};
 
 /// Map a GSettings `color-scheme` string to its `libadwaita::ColorScheme` variant.
 /// Unknown values fall back to `Default` (follow system).

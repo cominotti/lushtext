@@ -12,7 +12,7 @@
 //! paragraph-aligned sliced install for a body too large for one GTK turn.
 
 use lushtext_model::document::paragraph_boundary::DocumentProfile;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -26,7 +26,6 @@ use crate::ui::protected_fold::{BoundaryLedger, FoldedInstall};
 use gtk4::glib;
 use gtk4::prelude::*;
 use libadwaita::prelude::{AdwDialogExt, SidebarItemExt};
-use lushtext_model::document::protected_fold::FoldPlan;
 use std::sync::Arc;
 
 use crate::ui::editor_page::LushtextEditorPage;
@@ -38,17 +37,6 @@ use lushtext_services::persistence::local_history_service;
 
 use super::policy;
 use crate::ui::window::LushtextWindow;
-
-/// Current window width, falling back to the configured default before the
-/// window is mapped in widget tests or at startup.
-fn current_window_width(window: &LushtextWindow) -> Sp {
-    policy::current_window_dimension(Sp::new(window.width()), Sp::new(window.default_size().0))
-}
-
-/// Current window height, with the same pre-map fallback.
-fn current_window_height(window: &LushtextWindow) -> Sp {
-    policy::current_window_dimension(Sp::new(window.height()), Sp::new(window.default_size().1))
-}
 
 pub(super) type GuardedLocalHistorySnapshot =
     crate::ui::plain_disposal::DisposalOwned<LocalHistorySnapshot>;
@@ -130,78 +118,76 @@ const fn preview_install_delay() -> u64 {
     0
 }
 
-fn record_preview_install_slice() {
-    PREVIEW_INSTALL_SLICES.fetch_add(1, Ordering::Release);
-}
-
 fn record_preview_install_cancellation() {
     PREVIEW_INSTALL_CANCELLATIONS.fetch_add(1, Ordering::Release);
 }
 
 /// UI state for one open local-history browser dialog.
 pub(super) struct LocalHistoryBrowserState {
-    /// Window that owns the dialog and receives status updates.
     pub(super) window: LushtextWindow,
-    /// Active editor the browser belongs to.
     pub(super) editor: LushtextEditorPage,
-    /// Saved path whose lineage is being browsed.
     pub(super) path: PathBuf,
-    /// Dialog containing the browser widgets.
     pub(super) dialog: libadwaita::Dialog,
-    /// Adaptive split view used for wide and narrow dialog layouts.
     split_view: libadwaita::NavigationSplitView,
-    /// Adwaita sidebar rail showing snapshots newest-first.
     sidebar: libadwaita::Sidebar,
-    /// Header label for the selected snapshot.
     preview_title: gtk4::Label,
-    /// Secondary metadata label for the selected snapshot.
     preview_meta: gtk4::Label,
-    /// Buffer backing the read-only preview text view.
     preview_buffer: gtk4::TextBuffer,
-    /// Stack switching between loading, error, and content preview states.
     preview_stack: gtk4::Stack,
-    /// Restore action for the selected snapshot.
     pub(super) restore_button: gtk4::Button,
-    /// Copy action for the selected snapshot text.
     pub(super) copy_button: gtk4::Button,
-    /// Back button shown when the adaptive split view collapses.
     back_button: gtk4::Button,
-    /// Snapshot metadata backing the current list rows.
     snapshots: Vec<LocalHistorySnapshotMeta>,
-    /// Last fully loaded snapshot preview.
-    pub(super) loaded_snapshot: RefCell<Option<LoadedSnapshot>>,
     /// Copy routing of the preview view: copies of a folded snapshot are cut
     /// from the snapshot, not from the buffer (`ui/folded_text.rs`).
     preview_copy: Rc<FoldedTextSurface>,
-    /// Paragraph profile of the last loaded snapshot (worker-computed).
-    pub(super) loaded_profile: RefCell<Option<DocumentProfile>>,
     /// One-active/one-latest ownership for snapshot body reads.
     preview_loads: RefCell<local_history_service::LocalHistoryPreviewCoordinator>,
-    /// Active compact selection waiting for disposal admission before disk I/O.
-    preview_admission: RefCell<Option<local_history_service::LocalHistoryPreviewStart>>,
     /// One paced capacity wakeup for the selected snapshot.
     preview_capacity_wakeup: crate::ui::plain_disposal::DisposalCapacityWakeup,
-    /// Current browser-local sliced GTK installation, when required.
-    preview_install: RefCell<Option<LocalHistoryPreviewInstallSession>>,
-    /// The boundary marks a sliced protected preview left in
-    /// `preview_buffer`, which the bounded clear follows.
+    /// Lifecycle phase of the selected preview (admission, install, loaded, or disposed).
+    preview_phase: RefCell<PreviewPhase>,
+    /// Boundary marks a sliced protected preview left in `preview_buffer`.
     preview_boundaries: BoundaryLedger,
-    /// The idle running the bounded clear of a large preview buffer
-    /// (`clear_preview_buffer`); an install waits while it is armed.
-    preview_clear: RefCell<Option<glib::SourceId>>,
-    /// Whether dialog teardown invalidated all preview work.
-    disposed: Cell<bool>,
-    /// Active safety capture for a pending restore, disposed with the dialog.
-    pub(super) restore_snapshot: RefCell<Option<buffer_snapshot::BufferSnapshotHandle>>,
-    /// Compact current restore intent retained while progress capacity is full.
-    pub(super) restore_pending: Cell<bool>,
+    /// Bounded clear phase for a large preview buffer.
+    clear_phase: RefCell<ClearPhase>,
+    /// Restore-safety phase (idle, waiting for progress capacity, or capturing).
+    restore_phase: RefCell<RestorePhase>,
     /// One paced progress-capacity wakeup for the pending restore intent.
     pub(super) restore_capacity_wakeup: crate::ui::plain_disposal::ProgressDisposalCapacityWakeup,
 }
 
+enum PreviewPhase {
+    Idle,
+    AwaitingAdmission(local_history_service::LocalHistoryPreviewStart),
+    Installing {
+        session: LocalHistoryPreviewInstallSession,
+        profile: DocumentProfile,
+    },
+    Loaded {
+        snapshot: LoadedSnapshot,
+        profile: DocumentProfile,
+    },
+    RestoringSnapshot {
+        profile: DocumentProfile,
+    },
+    Disposed,
+}
+
+enum ClearPhase {
+    Idle,
+    Running(glib::SourceId),
+}
+
+enum RestorePhase {
+    Idle,
+    AwaitingCapacity,
+    Capturing(buffer_snapshot::BufferSnapshotHandle),
+}
+
 struct LocalHistoryPreviewInstallSession {
     generation: HistoryPreviewGeneration,
-    snapshot: Option<LoadedSnapshot>,
+    snapshot: LoadedSnapshot,
     offset: usize,
     source_id: Option<glib::SourceId>,
     /// The sliced install of a snapshot whose longest paragraph exceeds
@@ -222,8 +208,13 @@ impl LushtextWindow {
             return;
         }
 
-        let (dialog_width, dialog_height) =
-            policy::viewer_dialog_size(current_window_width(self), current_window_height(self));
+        let (dialog_width, dialog_height) = policy::viewer_dialog_size(
+            policy::current_window_dimension(Sp::new(self.width()), Sp::new(self.default_size().0)),
+            policy::current_window_dimension(
+                Sp::new(self.height()),
+                Sp::new(self.default_size().1),
+            ),
+        );
         let dialog = libadwaita::Dialog::builder()
             .title("Local History")
             .content_width(dialog_width.as_sp())
@@ -286,24 +277,38 @@ impl LushtextWindow {
             "Local history preview",
             "Read-only preview for the selected local-history snapshot",
         );
-        set_local_history_preview_accessibility(
-            &preview_stack,
-            "Loading snapshot",
-            PreviewStackAccessibility {
-                busy: true,
-                invalid: false,
-            },
-        );
         preview_stack.add_named(&loading_preview_widget(), Some("loading"));
-        preview_stack.add_named(&empty_snapshot_widget(), Some("empty"));
-        preview_stack.add_named(&preview_error_widget("Preview unavailable"), Some("error"));
+        preview_stack.add_named(
+            &preview_status_page(
+                "document-new-symbolic",
+                "This snapshot was empty",
+                "No text had been saved at this point. For “Before edits” entries, this can mean the file was empty before the current unsaved changes began.",
+                "No text had been saved at this point",
+                false,
+            ),
+            Some("empty"),
+        );
+        preview_stack.add_named(
+            &preview_status_page(
+                "dialog-warning-symbolic",
+                "Preview unavailable",
+                "This snapshot could not be loaded right now.",
+                "This snapshot could not be loaded right now",
+                true,
+            ),
+            Some("error"),
+        );
         let preview_scroll = gtk4::ScrolledWindow::builder()
             .vexpand(true)
             .hexpand(true)
             .child(&preview_view)
             .build();
         preview_stack.add_named(&preview_scroll, Some("content"));
-        preview_stack.set_visible_child_name("loading");
+        set_preview_stack_state(
+            &preview_stack,
+            PreviewStackState::Loading,
+            "Loading snapshot",
+        );
 
         let restore_button = gtk4::Button::with_label("Restore");
         restore_button.add_css_class("suggested-action");
@@ -368,18 +373,13 @@ impl LushtextWindow {
             copy_button,
             back_button,
             snapshots,
-            loaded_snapshot: RefCell::new(None),
             preview_copy,
-            loaded_profile: RefCell::new(None),
             preview_loads: RefCell::default(),
-            preview_admission: RefCell::default(),
             preview_capacity_wakeup: crate::ui::plain_disposal::DisposalCapacityWakeup::default(),
-            preview_install: RefCell::new(None),
+            preview_phase: RefCell::new(PreviewPhase::Idle),
             preview_boundaries: BoundaryLedger::default(),
-            preview_clear: RefCell::new(None),
-            disposed: Cell::new(false),
-            restore_snapshot: RefCell::new(None),
-            restore_pending: Cell::new(false),
+            clear_phase: RefCell::new(ClearPhase::Idle),
+            restore_phase: RefCell::new(RestorePhase::Idle),
             restore_capacity_wakeup:
                 crate::ui::plain_disposal::ProgressDisposalCapacityWakeup::default(),
         });
@@ -407,8 +407,7 @@ impl LushtextWindow {
                 let Some(state) = state.upgrade() else {
                     return;
                 };
-                let snapshot = state.loaded_snapshot.borrow();
-                let Some(snapshot) = snapshot.as_ref() else {
+                let Some(snapshot) = state.loaded_snapshot() else {
                     return;
                 };
                 gtk4::prelude::RootExt::display(&state.window)
@@ -425,7 +424,7 @@ impl LushtextWindow {
                 let Some(state) = state.upgrade() else {
                     return;
                 };
-                if state.loaded_snapshot.borrow().is_none() {
+                if state.loaded_snapshot().is_none() {
                     return;
                 }
                 set_local_history_action_enabled(&state.restore_button, false);
@@ -442,7 +441,8 @@ impl LushtextWindow {
             let state = Rc::downgrade(&state);
             move |sidebar| {
                 if let Some(state) = state.upgrade()
-                    && let Some(index) = history_sidebar_item_index(sidebar.selected_item())
+                    && let Some(item) = sidebar.selected_item()
+                    && let Ok(index) = usize::try_from(item.index())
                 {
                     state.load_preview_for_index(index, true);
                 }
@@ -467,12 +467,8 @@ impl LushtextWindow {
         state.dialog.connect_closed({
             let state_holder = Rc::clone(&state_holder);
             move |_| {
-                if let Some(state) = state_holder.borrow().as_ref()
-                    && let Some(snapshot) = state.restore_snapshot.take()
-                {
-                    snapshot.dispose();
-                }
                 if let Some(state) = state_holder.borrow().as_ref() {
+                    state.dispose_restore_capture();
                     state.dispose_preview_runtime();
                 }
                 state_holder.borrow_mut().take();
@@ -492,51 +488,99 @@ impl LushtextWindow {
             .follows_content_size(false)
             .build();
 
-        let status = libadwaita::StatusPage::builder()
-            .icon_name("document-open-recent-symbolic")
-            .title("No local history yet")
-            .description(format!(
+        let status = preview_status_page(
+            "document-open-recent-symbolic",
+            "No local history yet",
+            &format!(
                 "{}\n\nSaved snapshots will appear after you edit or save this document.",
                 path.display()
-            ))
-            .build();
+            ),
+            "Saved snapshots will appear after this document is edited or saved",
+            false,
+        );
         status.set_hexpand(true);
         status.set_vexpand(true);
-        accessibility::set_role(&status, gtk4::AccessibleRole::Status);
-        accessibility::set_labelled_description(
-            &status,
-            "No local history yet",
-            "Saved snapshots will appear after this document is edited or saved",
-        );
         dialog.set_child(Some(&status));
         dialog
     }
 }
 
 impl LocalHistoryBrowserState {
+    fn is_disposed(&self) -> bool {
+        matches!(*self.preview_phase.borrow(), PreviewPhase::Disposed)
+    }
+
+    fn loaded_snapshot(&self) -> Option<LoadedSnapshot> {
+        match &*self.preview_phase.borrow() {
+            PreviewPhase::Loaded { snapshot, .. } => Some(Arc::clone(snapshot)),
+            _ => None,
+        }
+    }
+
+    pub(super) fn has_non_empty_loaded_snapshot(&self) -> bool {
+        matches!(
+            &*self.preview_phase.borrow(),
+            PreviewPhase::Loaded { snapshot, .. } if !snapshot.text.is_empty()
+        )
+    }
+
+    pub(super) fn loaded_profile(&self) -> DocumentProfile {
+        match &*self.preview_phase.borrow() {
+            PreviewPhase::Installing { profile, .. }
+            | PreviewPhase::Loaded { profile, .. }
+            | PreviewPhase::RestoringSnapshot { profile } => profile.clone(),
+            PreviewPhase::Idle | PreviewPhase::AwaitingAdmission(_) | PreviewPhase::Disposed => {
+                DocumentProfile::EMPTY
+            }
+        }
+    }
+
+    pub(super) fn set_restore_awaiting_capacity(&self) {
+        self.restore_phase.replace(RestorePhase::AwaitingCapacity);
+    }
+
+    pub(super) fn take_restore_awaiting_capacity(&self) -> bool {
+        if !matches!(*self.restore_phase.borrow(), RestorePhase::AwaitingCapacity) {
+            return false;
+        }
+        self.restore_phase.replace(RestorePhase::Idle);
+        true
+    }
+
+    pub(super) fn set_restore_capturing(&self, snapshot: buffer_snapshot::BufferSnapshotHandle) {
+        self.restore_phase
+            .replace(RestorePhase::Capturing(snapshot));
+    }
+
+    pub(super) fn finish_restore_capture(&self) {
+        self.restore_phase.replace(RestorePhase::Idle);
+    }
+
+    fn dispose_restore_capture(&self) {
+        if let RestorePhase::Capturing(snapshot) = self.restore_phase.replace(RestorePhase::Idle) {
+            snapshot.dispose();
+        }
+    }
+
     fn load_preview_for_index(self: &Rc<Self>, index: usize, user_selected: bool) {
         let Some(meta) = self.snapshots.get(index).cloned() else {
             return;
         };
-
-        self.restore_pending.set(false);
-        self.restore_capacity_wakeup.cancel();
-        self.cancel_preview_install();
-        if let Some(snapshot) = self.loaded_snapshot.take() {
-            retire_local_history_snapshot(snapshot);
+        if self.is_disposed() {
+            return;
         }
+
+        self.dispose_restore_capture();
+        self.restore_capacity_wakeup.cancel();
+        self.retire_active_preview();
         self.preview_title.set_label("Loading snapshot…");
         self.preview_meta
             .set_label(&policy::format_snapshot_meta(meta.origin, meta.byte_len));
         self.clear_preview_buffer();
-        self.preview_stack.set_visible_child_name("loading");
-        set_local_history_preview_accessibility(
+        set_preview_stack_state(
             &self.preview_stack,
+            PreviewStackState::Loading,
             "Loading snapshot",
-            PreviewStackAccessibility {
-                busy: true,
-                invalid: false,
-            },
         );
         set_local_history_action_enabled(&self.restore_button, false);
         set_local_history_action_enabled(&self.copy_button, false);
@@ -573,8 +617,12 @@ impl LocalHistoryBrowserState {
         let Some(reservation) =
             crate::ui::plain_disposal::try_reserve_for_gtk(policy::PREVIEW_RESERVATION_BYTES)
         else {
-            debug_assert!(self.preview_admission.borrow().is_none());
-            self.preview_admission.replace(Some(start));
+            debug_assert!(!matches!(
+                *self.preview_phase.borrow(),
+                PreviewPhase::AwaitingAdmission(_)
+            ));
+            self.preview_phase
+                .replace(PreviewPhase::AwaitingAdmission(start));
             let state_weak = Rc::downgrade(self);
             self.preview_capacity_wakeup.arm(observed_epoch, move || {
                 if let Some(state) = state_weak.upgrade() {
@@ -584,13 +632,10 @@ impl LocalHistoryBrowserState {
             self.preview_title.set_label("Preview deferred");
             self.preview_meta
                 .set_label("Waiting for memory pressure to clear");
-            set_local_history_preview_accessibility(
+            set_preview_stack_state(
                 &self.preview_stack,
+                PreviewStackState::Loading,
                 "Snapshot preview deferred by memory pressure",
-                PreviewStackAccessibility {
-                    busy: true,
-                    invalid: false,
-                },
             );
             return;
         };
@@ -617,7 +662,7 @@ impl LocalHistoryBrowserState {
             },
             move |(), result| {
                 let Some(state) = state_weak.upgrade() else {
-                    retire_local_history_preview_result(result);
+                    drop(result);
                     return;
                 };
                 state.finish_preview_load(generation, result);
@@ -626,28 +671,26 @@ impl LocalHistoryBrowserState {
     }
 
     fn retry_preview_admission(self: &Rc<Self>) {
-        let Some(start) = self.preview_admission.borrow_mut().take() else {
-            return;
-        };
-        self.start_preview_load(start);
+        match self.preview_phase.replace(PreviewPhase::Idle) {
+            PreviewPhase::AwaitingAdmission(start) => self.start_preview_load(start),
+            other => {
+                self.preview_phase.replace(other);
+            }
+        }
     }
 
     fn finish_cancelled_preview_admission(self: &Rc<Self>) {
-        let cancelled = self
-            .preview_admission
-            .borrow()
-            .as_ref()
-            .is_some_and(|start| start.cancellation.is_cancelled());
-        if !cancelled {
-            return;
-        }
-        self.preview_capacity_wakeup.cancel();
-        let start = self.preview_admission.borrow_mut().take();
-        if let Some(start) = start {
-            self.finish_preview_load(
-                start.generation,
-                Ok(GuardedLocalHistoryPreviewLoadOutcome::Cancelled),
-            );
+        match self.preview_phase.replace(PreviewPhase::Idle) {
+            PreviewPhase::AwaitingAdmission(start) if start.cancellation.is_cancelled() => {
+                self.preview_capacity_wakeup.cancel();
+                self.finish_preview_load(
+                    start.generation,
+                    Ok(GuardedLocalHistoryPreviewLoadOutcome::Cancelled),
+                );
+            }
+            other => {
+                self.preview_phase.replace(other);
+            }
         }
     }
 
@@ -661,16 +704,14 @@ impl LocalHistoryBrowserState {
     ) {
         let (accepted, next) = {
             let mut loads = self.preview_loads.borrow_mut();
-            let accepted = loads.is_current(generation) && !self.disposed.get();
+            let accepted = loads.is_current(generation) && !self.is_disposed();
             let next = loads.finish(generation);
             (accepted, next)
         };
         if accepted {
             match result {
                 Ok(GuardedLocalHistoryPreviewLoadOutcome::Loaded(snapshot, profile)) => {
-                    let fold_plan = profile.fold_plan.clone();
-                    self.loaded_profile.replace(Some(*profile));
-                    self.begin_preview_install(generation, snapshot, fold_plan);
+                    self.begin_preview_install(generation, snapshot, *profile);
                 }
                 Ok(GuardedLocalHistoryPreviewLoadOutcome::Missing) => {
                     self.show_preview_error("Snapshot missing");
@@ -682,7 +723,7 @@ impl LocalHistoryBrowserState {
                 }
             }
         } else {
-            retire_local_history_preview_result(result);
+            drop(result);
         }
         if let Some(next) = next {
             self.start_preview_load(next);
@@ -690,39 +731,21 @@ impl LocalHistoryBrowserState {
     }
 
     /// Show the preview pane's error state under one title.
-    ///
-    /// The two failing outcomes — a snapshot whose body is gone, and a read that
-    /// errored — present identically apart from that title. The title is also the
-    /// accessible name, so one helper is what keeps the visible label and the
-    /// announced name from drifting apart.
     fn show_preview_error(&self, title: &str) {
         self.preview_title.set_label(title);
         self.preview_meta.set_label("");
-        self.preview_stack.set_visible_child_name("error");
-        set_local_history_preview_accessibility(
-            &self.preview_stack,
-            title,
-            PreviewStackAccessibility {
-                busy: false,
-                invalid: true,
-            },
-        );
+        set_preview_stack_state(&self.preview_stack, PreviewStackState::Error, title);
     }
 
-    /// Install a snapshot into the preview. A snapshot with a paragraph over
-    /// `L_PROTECT_EDIT` installs folded at insertion through the Protected
-    /// View executor (`protected-view-inspector-and-surfaces` task 3.1): the
-    /// preview view is already non-editable and caret-free, and its giant
-    /// paragraphs show only their heads, so no layout reaches a hidden tail.
+    /// Install a snapshot into the preview, folding paragraphs over `L_PROTECT_EDIT`.
     fn begin_preview_install(
         self: &Rc<Self>,
         generation: HistoryPreviewGeneration,
         snapshot: GuardedLocalHistorySnapshot,
-        fold_plan: Option<std::sync::Arc<FoldPlan>>,
+        profile: DocumentProfile,
     ) {
+        let fold_plan = profile.fold_plan.clone();
         let snapshot: LoadedSnapshot = Arc::new(snapshot);
-        // A folded snapshot's copies are cut from the snapshot itself; an
-        // unfolded one is copied by GTK, which then sees every character.
         self.preview_copy
             .set_folded_source(fold_plan.clone().map(|plan| {
                 let weak = Arc::downgrade(&snapshot);
@@ -738,52 +761,44 @@ impl LocalHistoryBrowserState {
         match policy::preview_install_plan(snapshot.text.len()) {
             policy::PreviewInstallPlan::Empty => {
                 self.clear_preview_buffer();
-                self.preview_stack.set_visible_child_name("empty");
-                set_local_history_preview_accessibility(
+                set_preview_stack_state(
                     &self.preview_stack,
+                    PreviewStackState::Empty,
                     "This snapshot was empty",
-                    PreviewStackAccessibility::default(),
                 );
-                // Copy stays disabled because there is nothing to copy, while
-                // Restore stays enabled: restoring to an empty document is a
-                // legitimate thing the user may want.
+                // Copy stays disabled when empty, while Restore stays enabled.
                 set_local_history_action_enabled(&self.copy_button, false);
                 set_local_history_action_enabled(&self.restore_button, true);
-                self.loaded_snapshot.replace(Some(snapshot));
+                self.preview_phase
+                    .replace(PreviewPhase::Loaded { snapshot, profile });
             }
             policy::PreviewInstallPlan::Direct
                 if fold_plan.is_none() && self.clear_preview_buffer() =>
             {
                 self.preview_buffer.set_text(&snapshot.text);
-                self.finish_preview_install(snapshot);
+                self.finish_preview_install(snapshot, profile);
             }
             policy::PreviewInstallPlan::Direct | policy::PreviewInstallPlan::Sliced => {
                 self.clear_preview_buffer();
-                self.preview_install
-                    .replace(Some(LocalHistoryPreviewInstallSession {
+                let fold = fold_plan
+                    .map(|plan| FoldedInstall::new(plan, self.preview_buffer.upcast_ref(), false));
+                self.preview_phase.replace(PreviewPhase::Installing {
+                    session: LocalHistoryPreviewInstallSession {
                         generation,
-                        snapshot: Some(snapshot),
+                        snapshot,
                         offset: 0,
                         source_id: None,
-                        fold: fold_plan.map(|plan| {
-                            FoldedInstall::new(plan, self.preview_buffer.upcast_ref(), false)
-                        }),
-                    }));
+                        fold,
+                    },
+                    profile,
+                });
                 self.schedule_preview_install_slice();
             }
         }
     }
 
-    /// Empty the preview buffer. A small buffer with no boundary marks goes
-    /// in one `set_text("")`; a large one (a snapshot of up to 50 MB) is
-    /// cleared in bounded turns from an idle, following the boundary ledger
-    /// from each protected paragraph's start and then ordinary paragraph
-    /// slices, as the editor's clears do (`sliced-protected-install` review:
-    /// one `set_text("")` here deleted the whole document in one dispatch).
-    /// Returns whether the buffer is empty now; an install started meanwhile
-    /// waits for the clear (`run_preview_install_slice`).
     fn clear_preview_buffer(self: &Rc<Self>) -> bool {
-        if self.preview_clear.borrow().is_some() {
+        if matches!(*self.clear_phase.borrow(), ClearPhase::Running(_)) {
             return false;
         }
         if self.preview_boundaries.is_empty()
@@ -800,15 +815,17 @@ impl LocalHistoryBrowserState {
         let state_weak = Rc::downgrade(self);
         let source = glib::idle_add_local_once(move || {
             if let Some(state) = state_weak.upgrade() {
-                state.preview_clear.borrow_mut().take();
+                state.clear_phase.replace(ClearPhase::Idle);
                 state.run_preview_clear_turn();
             }
         });
-        self.preview_clear.replace(Some(source));
+        if let ClearPhase::Running(old) = self.clear_phase.replace(ClearPhase::Running(source)) {
+            old.remove();
+        }
     }
 
     fn run_preview_clear_turn(self: &Rc<Self>) {
-        if self.disposed.get() {
+        if self.is_disposed() {
             return;
         }
         let started_us = glib::monotonic_time();
@@ -847,7 +864,7 @@ impl LocalHistoryBrowserState {
                 }
             })
         };
-        if let Some(session) = self.preview_install.borrow_mut().as_mut() {
+        if let PreviewPhase::Installing { session, .. } = &mut *self.preview_phase.borrow_mut() {
             session.source_id = Some(source_id);
         } else {
             source_id.remove();
@@ -855,27 +872,26 @@ impl LocalHistoryBrowserState {
     }
 
     fn run_preview_install_slice(self: &Rc<Self>) {
-        let Some(mut session) = self.preview_install.take() else {
-            return;
+        let (mut session, profile) = match self.preview_phase.replace(PreviewPhase::Idle) {
+            PreviewPhase::Installing { session, profile } => (session, profile),
+            other => {
+                self.preview_phase.replace(other);
+                return;
+            }
         };
         session.source_id = None;
-        if self.disposed.get() || !self.preview_loads.borrow().is_current(session.generation) {
-            if let Some(snapshot) = session.snapshot.take() {
-                retire_local_history_snapshot(snapshot);
-            }
+        if self.is_disposed() || !self.preview_loads.borrow().is_current(session.generation) {
+            drop(session.snapshot);
             record_preview_install_cancellation();
             return;
         }
-        let Some(snapshot) = session.snapshot.as_ref() else {
-            return;
-        };
-        if self.preview_clear.borrow().is_some() {
-            // The previous snapshot is still being cleared in bounded turns.
-            self.preview_install.replace(Some(session));
+        if matches!(*self.clear_phase.borrow(), ClearPhase::Running(_)) {
+            self.preview_phase
+                .replace(PreviewPhase::Installing { session, profile });
             self.schedule_preview_install_slice();
             return;
         }
-        let text = snapshot.text.as_str();
+        let text = session.snapshot.text.as_str();
         // One hidden-tail insert per main-loop iteration, process-wide
         // (`ui/protected_fold.rs`): a deferred turn waits for the next one.
         match install_slice(
@@ -886,15 +902,13 @@ impl LocalHistoryBrowserState {
             &self.preview_boundaries,
         ) {
             InstallSlice::Deferred => {
-                self.preview_install.replace(Some(session));
+                self.preview_phase
+                    .replace(PreviewPhase::Installing { session, profile });
                 self.schedule_preview_install_slice();
                 return;
             }
             InstallSlice::Broken => {
-                // Fail closed: the partial preview is not the snapshot.
-                if let Some(snapshot) = session.snapshot.take() {
-                    retire_local_history_snapshot(snapshot);
-                }
+                drop(session.snapshot);
                 PREVIEW_BROKEN_INSTALLS.fetch_add(1, Ordering::Release);
                 record_preview_install_cancellation();
                 self.clear_preview_buffer();
@@ -903,86 +917,88 @@ impl LocalHistoryBrowserState {
             }
             InstallSlice::Inserted => {}
         }
-        record_preview_install_slice();
+        PREVIEW_INSTALL_SLICES.fetch_add(1, Ordering::Release);
 
-        if policy::preview_install_is_complete(session.offset, snapshot.text.len()) {
-            let snapshot = session.snapshot.take().expect("install snapshot exists");
-            self.finish_preview_install(snapshot);
+        if policy::preview_install_is_complete(session.offset, session.snapshot.text.len()) {
+            self.finish_preview_install(session.snapshot, profile);
         } else {
-            self.preview_install.replace(Some(session));
+            self.preview_phase
+                .replace(PreviewPhase::Installing { session, profile });
             self.schedule_preview_install_slice();
         }
     }
 
-    fn finish_preview_install(&self, snapshot: LoadedSnapshot) {
-        self.preview_stack.set_visible_child_name("content");
-        set_local_history_preview_accessibility(
+    fn finish_preview_install(&self, snapshot: LoadedSnapshot, profile: DocumentProfile) {
+        set_preview_stack_state(
             &self.preview_stack,
+            PreviewStackState::Content,
             &format!(
                 "Snapshot from {}",
                 format_history_time(snapshot.meta.captured_at_millis)
             ),
-            PreviewStackAccessibility::default(),
         );
         set_local_history_action_enabled(&self.copy_button, true);
         set_local_history_action_enabled(&self.restore_button, true);
-        self.loaded_snapshot.replace(Some(snapshot));
+        self.preview_phase
+            .replace(PreviewPhase::Loaded { snapshot, profile });
     }
 
-    fn cancel_preview_install(&self) {
-        let Some(mut session) = self.preview_install.take() else {
+    fn retire_active_preview(&self) {
+        if matches!(*self.preview_phase.borrow(), PreviewPhase::Disposed) {
             return;
-        };
-        if let Some(source_id) = session.source_id.take() {
-            source_id.remove();
         }
-        if let Some(snapshot) = session.snapshot.take() {
-            retire_local_history_snapshot(snapshot);
-        }
-        record_preview_install_cancellation();
+        retire_preview_phase(self.preview_phase.replace(PreviewPhase::Idle));
     }
 
     /// Put a snapshot a restore did not consume back as the loaded one, and
     /// route the folded preview's copies through it again.
     pub(super) fn return_loaded_snapshot(&self, snapshot: GuardedLocalHistorySnapshot) {
+        if self.is_disposed() {
+            return;
+        }
         let snapshot: LoadedSnapshot = Arc::new(snapshot);
-        let plan = self
-            .loaded_profile
-            .borrow()
-            .as_ref()
-            .and_then(|profile| profile.fold_plan.clone());
-        self.preview_copy.set_folded_source(plan.map(|plan| {
-            let weak = Arc::downgrade(&snapshot);
-            let source: std::sync::Weak<dyn SurfaceText> = weak;
-            (source, plan)
-        }));
-        self.loaded_snapshot.replace(Some(snapshot));
+        let profile = self.loaded_profile();
+        self.preview_copy
+            .set_folded_source(profile.fold_plan.clone().map(|plan| {
+                let weak = Arc::downgrade(&snapshot);
+                let source: std::sync::Weak<dyn SurfaceText> = weak;
+                (source, plan)
+            }));
+        self.preview_phase
+            .replace(PreviewPhase::Loaded { snapshot, profile });
     }
 
     /// Run `then` with the loaded snapshot taken back owned (a restore moves
-    /// it into the editor). A folded preview's copy worker may still hold a
-    /// clone for the few milliseconds it cuts its range; the snapshot then
-    /// stays loaded and the take is retried shortly.
+    /// it into the editor), retrying if a folded copy worker still holds a ref.
     pub(super) fn with_owned_loaded_snapshot(
         self: &Rc<Self>,
         then: impl FnOnce(&Rc<Self>, GuardedLocalHistorySnapshot) + 'static,
     ) {
-        let Some(shared) = self.loaded_snapshot.take() else {
-            return;
+        let (snapshot, profile) = match self.preview_phase.replace(PreviewPhase::Idle) {
+            PreviewPhase::Loaded { snapshot, profile } => (snapshot, profile),
+            other => {
+                self.preview_phase.replace(other);
+                return;
+            }
         };
-        match Arc::try_unwrap(shared) {
+        match Arc::try_unwrap(snapshot) {
             Ok(snapshot) => {
+                self.preview_phase
+                    .replace(PreviewPhase::RestoringSnapshot { profile });
                 self.preview_copy.set_folded_source(None);
                 then(self, snapshot);
             }
             Err(shared) => {
-                self.loaded_snapshot.replace(Some(shared));
+                self.preview_phase.replace(PreviewPhase::Loaded {
+                    snapshot: shared,
+                    profile,
+                });
                 let weak = Rc::downgrade(self);
                 glib::timeout_add_local_once(
                     Duration::from_millis(OWNED_SNAPSHOT_RETRY_MS),
                     move || {
                         if let Some(state) = weak.upgrade()
-                            && !state.disposed.get()
+                            && !state.is_disposed()
                         {
                             state.with_owned_loaded_snapshot(then);
                         }
@@ -993,24 +1009,37 @@ impl LocalHistoryBrowserState {
     }
 
     fn dispose_preview_runtime(&self) {
-        if self.disposed.replace(true) {
+        if self.is_disposed() {
             return;
         }
         self.preview_loads.borrow_mut().invalidate();
         self.preview_copy.set_folded_source(None);
-        self.preview_admission.borrow_mut().take();
         self.preview_capacity_wakeup.cancel();
-        self.restore_pending.set(false);
+        self.dispose_restore_capture();
         self.restore_capacity_wakeup.cancel();
-        self.cancel_preview_install();
-        if let Some(source) = self.preview_clear.borrow_mut().take() {
+        if let ClearPhase::Running(source) = self.clear_phase.replace(ClearPhase::Idle) {
             source.remove();
         }
-        if let Some(snapshot) = self.loaded_snapshot.take() {
-            retire_local_history_snapshot(snapshot);
-        }
+        retire_preview_phase(self.preview_phase.replace(PreviewPhase::Disposed));
         set_local_history_action_enabled(&self.restore_button, false);
         set_local_history_action_enabled(&self.copy_button, false);
+    }
+}
+
+fn retire_preview_phase(phase: PreviewPhase) {
+    match phase {
+        PreviewPhase::Installing { mut session, .. } => {
+            if let Some(source_id) = session.source_id.take() {
+                source_id.remove();
+            }
+            drop(session.snapshot);
+            record_preview_install_cancellation();
+        }
+        PreviewPhase::Loaded { snapshot, .. } => drop(snapshot),
+        PreviewPhase::Idle
+        | PreviewPhase::AwaitingAdmission(_)
+        | PreviewPhase::RestoringSnapshot { .. }
+        | PreviewPhase::Disposed => {}
     }
 }
 
@@ -1046,48 +1075,34 @@ fn clear_preview_turn(buffer: &gtk4::TextBuffer, ledger: &BoundaryLedger) -> usi
     deleted
 }
 
-fn retire_local_history_preview_result(
-    result: Result<GuardedLocalHistoryPreviewLoadOutcome, local_history_service::LocalHistoryError>,
-) {
-    if let Ok(GuardedLocalHistoryPreviewLoadOutcome::Loaded(snapshot, _)) = result {
-        drop(snapshot);
-    }
-}
-
-fn retire_local_history_snapshot(snapshot: LoadedSnapshot) {
-    drop(snapshot);
-}
-
 fn populate_history_sidebar(state: &LocalHistoryBrowserState) {
     let section = libadwaita::SidebarSection::new();
     section.set_title(Some("Snapshots"));
     for meta in &state.snapshots {
-        section.append(history_sidebar_item(meta));
+        let subtitle = policy::format_snapshot_meta(meta.origin, meta.byte_len);
+        section.append(
+            libadwaita::SidebarItem::builder()
+                .title(format_history_time(meta.captured_at_millis))
+                .subtitle(subtitle.clone())
+                .tooltip(subtitle)
+                .icon_name("document-open-recent-symbolic")
+                .build(),
+        );
     }
     state.sidebar.append(section);
 }
 
-fn history_sidebar_item(meta: &LocalHistorySnapshotMeta) -> libadwaita::SidebarItem {
-    let title = format_history_time(meta.captured_at_millis);
-    let subtitle = policy::format_snapshot_meta(meta.origin, meta.byte_len);
-    libadwaita::SidebarItem::builder()
-        .title(title)
-        .subtitle(subtitle.clone())
-        .tooltip(subtitle)
-        .icon_name("document-open-recent-symbolic")
-        .build()
-}
-
-fn history_sidebar_item_index(item: Option<libadwaita::SidebarItem>) -> Option<usize> {
-    item.and_then(|item| usize::try_from(item.index()).ok())
-}
-
-fn build_history_sidebar(path: &Path, sidebar: &libadwaita::Sidebar) -> gtk4::Box {
+fn padded_vertical_box() -> gtk4::Box {
     let content = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
     content.set_margin_start(18);
     content.set_margin_end(18);
     content.set_margin_top(18);
     content.set_margin_bottom(18);
+    content
+}
+
+fn build_history_sidebar(path: &Path, sidebar: &libadwaita::Sidebar) -> gtk4::Box {
+    let content = padded_vertical_box();
 
     let title = gtk4::Label::new(Some("Snapshots"));
     title.set_halign(gtk4::Align::Start);
@@ -1120,11 +1135,7 @@ fn build_history_preview_page(
     copy_button: &gtk4::Button,
     restore_button: &gtk4::Button,
 ) -> gtk4::Box {
-    let content = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
-    content.set_margin_start(18);
-    content.set_margin_end(18);
-    content.set_margin_top(18);
-    content.set_margin_bottom(18);
+    let content = padded_vertical_box();
 
     let header = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
     header.append(back_button);
@@ -1153,21 +1164,26 @@ pub(super) fn set_local_history_action_enabled(button: &gtk4::Button, enabled: b
     accessibility::set_disabled(button, !enabled);
 }
 
-#[derive(Clone, Copy, Default)]
-struct PreviewStackAccessibility {
-    busy: bool,
-    invalid: bool,
+#[derive(Clone, Copy)]
+enum PreviewStackState {
+    Loading,
+    Empty,
+    Error,
+    Content,
 }
 
-/// Update the preview stack's workflow state after selection or preview loading.
-fn set_local_history_preview_accessibility(
-    stack: &gtk4::Stack,
-    value_text: &str,
-    state: PreviewStackAccessibility,
-) {
+/// Update the preview stack's visible child and accessible workflow state.
+fn set_preview_stack_state(stack: &gtk4::Stack, kind: PreviewStackState, value_text: &str) {
+    let (child, busy, invalid) = match kind {
+        PreviewStackState::Loading => ("loading", true, false),
+        PreviewStackState::Empty => ("empty", false, false),
+        PreviewStackState::Error => ("error", false, true),
+        PreviewStackState::Content => ("content", false, false),
+    };
+    stack.set_visible_child_name(child);
     accessibility::set_value_text(stack, value_text);
-    accessibility::set_busy(stack, state.busy);
-    accessibility::set_invalid(stack, state.invalid);
+    accessibility::set_busy(stack, busy);
+    accessibility::set_invalid(stack, invalid);
 }
 
 fn loading_preview_widget() -> gtk4::Widget {
@@ -1181,49 +1197,30 @@ fn loading_preview_widget() -> gtk4::Widget {
     label.upcast()
 }
 
-fn empty_snapshot_widget() -> gtk4::Widget {
+fn preview_status_page(
+    icon_name: &str,
+    title: &str,
+    description: &str,
+    accessible_description: &str,
+    invalid: bool,
+) -> gtk4::Widget {
     let status = libadwaita::StatusPage::builder()
-        .icon_name("document-new-symbolic")
-        .title("This snapshot was empty")
-        .description(
-            "No text had been saved at this point. For “Before edits” entries, this can mean the file was empty before the current unsaved changes began.",
-        )
-        .build();
-    accessibility::set_role(&status, gtk4::AccessibleRole::Status);
-    accessibility::set_labelled_description(
-        &status,
-        "This snapshot was empty",
-        "No text had been saved at this point",
-    );
-    status.upcast()
-}
-
-fn preview_error_widget(title: &str) -> gtk4::Widget {
-    let status = libadwaita::StatusPage::builder()
-        .icon_name("dialog-warning-symbolic")
+        .icon_name(icon_name)
         .title(title)
-        .description("This snapshot could not be loaded right now.")
+        .description(description)
         .build();
     accessibility::set_role(&status, gtk4::AccessibleRole::Status);
-    accessibility::set_labelled_description(
-        &status,
-        title,
-        "This snapshot could not be loaded right now",
-    );
-    accessibility::set_invalid(&status, true);
+    accessibility::set_labelled_description(&status, title, accessible_description);
+    if invalid {
+        accessibility::set_invalid(&status, true);
+    }
     status.upcast()
 }
 
 fn format_history_time(captured_at_millis: u64) -> String {
-    glib::DateTime::from_unix_local((captured_at_millis / 1000) as i64)
+    i64::try_from(captured_at_millis / 1000)
         .ok()
-        .map_or_else(
-            || "Unknown time".to_string(),
-            |datetime| {
-                datetime.format("%Y-%m-%d %H:%M").map_or_else(
-                    |_| "Unknown time".to_string(),
-                    |formatted| formatted.to_string(),
-                )
-            },
-        )
+        .and_then(|secs| glib::DateTime::from_unix_local(secs).ok())
+        .and_then(|dt| dt.format("%Y-%m-%d %H:%M").ok())
+        .map_or_else(|| "Unknown time".to_string(), Into::into)
 }

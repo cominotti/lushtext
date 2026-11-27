@@ -146,29 +146,62 @@ pub struct HeldInputEvidence {
     pub notices: u64,
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum UserActionDisposition {
+    #[default]
+    Clean,
+    Tainted,
+    Overflowed,
+}
+
+#[derive(Clone, Copy, Default)]
+enum UserActionPhase {
+    #[default]
+    Idle,
+    Active {
+        depth: u32,
+        start_len: usize,
+        disposition: UserActionDisposition,
+    },
+}
+
+#[derive(Default)]
+enum HeldEpisodePhase {
+    #[default]
+    Idle,
+    Holding {
+        text: HeldText,
+        episode: HeldEpisode,
+        first_hold: gtk4::TextMark,
+        preedit_since: Option<i64>,
+    },
+}
+
+#[derive(Default)]
+enum HeldSettleSchedule {
+    #[default]
+    Unscheduled,
+    RetryTimeout(glib::SourceId),
+    ImmediateIdle(glib::SourceId),
+}
+
+impl HeldSettleSchedule {
+    fn take_source(&mut self) -> Option<glib::SourceId> {
+        match std::mem::take(self) {
+            Self::Unscheduled => None,
+            Self::RetryTimeout(id) | Self::ImmediateIdle(id) => Some(id),
+        }
+    }
+}
+
 /// One editor's held-typing state.
 #[derive(Default)]
 pub struct HeldInputState {
-    text: RefCell<HeldText>,
-    episode: Cell<HeldEpisode>,
-    /// Where the caret was when the episode's first character was held.
-    first_hold: RefCell<Option<gtk4::TextMark>>,
-    /// Depth of the buffer's user action (GTK emits only the outermost).
-    user_action: Cell<u32>,
-    /// The current user action had a deletion refused.
-    tainted: Cell<bool>,
-    /// Held bytes when the current user action began.
-    action_start_len: Cell<usize>,
-    /// The current user action overflowed: the rest of it is refused.
-    action_overflowed: Cell<bool>,
-    /// When a settle dispatch first saw the current composition.
-    preedit_since: Cell<Option<i64>>,
+    episode: RefCell<HeldEpisodePhase>,
+    user_action: Cell<UserActionPhase>,
+    settle: RefCell<HeldSettleSchedule>,
     /// The view's drop targets are held for the held window.
     drop_targets_held: Cell<bool>,
-    /// The queued settle dispatch, if any.
-    settle_source: RefCell<Option<glib::SourceId>>,
-    /// Whether that dispatch is the immediate one (not a retry timeout).
-    settle_immediate: Cell<bool>,
     notice_times: Cell<[Option<i64>; 3]>,
     evidence: Cell<HeldInputEvidence>,
 }
@@ -189,13 +222,19 @@ impl LushtextEditorPage {
     /// Whether held text waits for its replay.
     #[must_use]
     pub fn has_held_text(&self) -> bool {
-        !self.held_state().text.borrow().is_empty()
+        matches!(
+            &*self.held_state().episode.borrow(),
+            HeldEpisodePhase::Holding { text, .. } if !text.is_empty()
+        )
     }
 
     /// Characters held now.
     #[must_use]
     pub fn held_char_count(&self) -> u64 {
-        self.held_state().text.borrow().char_count()
+        match &*self.held_state().episode.borrow() {
+            HeldEpisodePhase::Idle => 0,
+            HeldEpisodePhase::Holding { text, .. } => text.char_count(),
+        }
     }
 
     /// Whether closing this editor would lose the user's text: the document
@@ -223,7 +262,10 @@ impl LushtextEditorPage {
 
     /// The held text, for the input method's surrounding text.
     pub(super) fn held_text_snapshot(&self) -> String {
-        self.held_state().text.borrow().as_str().to_owned()
+        match &*self.held_state().episode.borrow() {
+            HeldEpisodePhase::Idle => String::new(),
+            HeldEpisodePhase::Holding { text, .. } => text.as_str().to_owned(),
+        }
     }
 
     /// Apply an input method's `delete-surrounding` to the held text when it
@@ -232,12 +274,15 @@ impl LushtextEditorPage {
         if !self.has_held_text() || super::edit_lock::own_edit_in_progress() {
             return false;
         }
-        let applied = self
-            .held_state()
-            .text
-            .borrow_mut()
-            .delete_surrounding(offset, n_chars);
-        if applied && !self.has_held_text() {
+        let (applied, empty) = {
+            let mut phase = self.held_state().episode.borrow_mut();
+            let HeldEpisodePhase::Holding { text, .. } = &mut *phase else {
+                return false;
+            };
+            let applied = text.delete_surrounding(offset, n_chars);
+            (applied, text.is_empty())
+        };
+        if applied && empty {
             self.end_held_episode();
         }
         applied
@@ -261,23 +306,48 @@ impl LushtextEditorPage {
         buffer.connect_begin_user_action(move |_| {
             if let Some(editor) = editor.upgrade() {
                 let state = editor.held_state();
-                if state.user_action.get() == 0 {
-                    state.tainted.set(false);
-                    state.action_overflowed.set(false);
-                    state.action_start_len.set(state.text.borrow().len_bytes());
-                }
-                state
-                    .user_action
-                    .set(state.user_action.get().saturating_add(1));
+                let next = match state.user_action.get() {
+                    UserActionPhase::Idle => {
+                        let start_len = match &*state.episode.borrow() {
+                            HeldEpisodePhase::Idle => 0,
+                            HeldEpisodePhase::Holding { text, .. } => text.len_bytes(),
+                        };
+                        UserActionPhase::Active {
+                            depth: 1,
+                            start_len,
+                            disposition: UserActionDisposition::Clean,
+                        }
+                    }
+                    UserActionPhase::Active {
+                        depth,
+                        start_len,
+                        disposition,
+                    } => UserActionPhase::Active {
+                        depth: depth.saturating_add(1),
+                        start_len,
+                        disposition,
+                    },
+                };
+                state.user_action.set(next);
             }
         });
         let editor = self.downgrade();
         buffer.connect_end_user_action(move |_| {
             if let Some(editor) = editor.upgrade() {
                 let state = editor.held_state();
-                state
-                    .user_action
-                    .set(state.user_action.get().saturating_sub(1));
+                let next = match state.user_action.get() {
+                    UserActionPhase::Active {
+                        depth,
+                        start_len,
+                        disposition,
+                    } if depth > 1 => UserActionPhase::Active {
+                        depth: depth - 1,
+                        start_len,
+                        disposition,
+                    },
+                    UserActionPhase::Active { .. } | UserActionPhase::Idle => UserActionPhase::Idle,
+                };
+                state.user_action.set(next);
             }
         });
         let view = self.source_view();
@@ -304,7 +374,12 @@ impl LushtextEditorPage {
         text: &str,
     ) -> bool {
         let state = self.held_state();
-        let user_action = state.user_action.get() > 0;
+        let (user_action, tainted) = match state.user_action.get() {
+            UserActionPhase::Idle => (false, false),
+            UserActionPhase::Active { disposition, .. } => {
+                (true, disposition == UserActionDisposition::Tainted)
+            }
+        };
         let held = self.holds_typed_input();
         let facts = InsertFacts {
             own_edit: super::edit_lock::own_edit_in_progress(),
@@ -314,7 +389,7 @@ impl LushtextEditorPage {
             at_caret: user_action
                 && held
                 && location.offset() == buffer.iter_at_mark(&buffer.get_insert()).offset(),
-            tainted: state.tainted.get(),
+            tainted,
         };
         match insert_disposition(facts) {
             InsertDisposition::Pass => false,
@@ -336,7 +411,7 @@ impl LushtextEditorPage {
     /// user's request whatever the user action. Returns whether to stop it.
     pub(super) fn decide_removal(&self, user_request: bool) -> bool {
         let state = self.held_state();
-        let user_action = state.user_action.get() > 0;
+        let user_action = matches!(state.user_action.get(), UserActionPhase::Active { .. });
         let facts = RemovalFacts {
             own_edit: super::edit_lock::own_edit_in_progress(),
             locked: self.edits_locked(),
@@ -347,10 +422,17 @@ impl LushtextEditorPage {
             InsertDisposition::Pass => false,
             InsertDisposition::Hold => true,
             InsertDisposition::Refuse { notify } => {
-                if user_action {
+                if let UserActionPhase::Active {
+                    depth, start_len, ..
+                } = state.user_action.get()
+                {
                     // The rest of this user action is a different edit's
                     // (typing over a selection, Replace, moving lines).
-                    state.tainted.set(true);
+                    state.user_action.set(UserActionPhase::Active {
+                        depth,
+                        start_len,
+                        disposition: UserActionDisposition::Tainted,
+                    });
                 }
                 if notify {
                     self.refuse_user_edit();
@@ -362,21 +444,50 @@ impl LushtextEditorPage {
 
     fn hold_typed_text(&self, buffer: &gtk4::TextBuffer, text: &str) {
         let state = self.held_state();
-        if state.action_overflowed.get() {
+        if matches!(
+            state.user_action.get(),
+            UserActionPhase::Active {
+                disposition: UserActionDisposition::Overflowed,
+                ..
+            }
+        ) {
             // An earlier segment of this user action overflowed: the action is
             // refused whole, so none of its later segments is kept either.
             return;
         }
         let first = !self.has_held_text();
-        if first {
-            state.episode.set(HeldEpisode::new());
+        let new_mark = if first {
             let caret = buffer.iter_at_mark(&buffer.get_insert());
-            let mark = buffer.create_mark(None, &caret, true);
-            if let Some(old) = state.first_hold.replace(Some(mark)) {
-                buffer.delete_mark(&old);
-            }
+            Some(buffer.create_mark(None, &caret, true))
+        } else {
+            None
+        };
+        let (outcome, unused_mark) = {
+            let mut phase = state.episode.borrow_mut();
+            let unused_mark = match (&mut *phase, new_mark) {
+                (HeldEpisodePhase::Idle, Some(mark)) => {
+                    *phase = HeldEpisodePhase::Holding {
+                        text: HeldText::default(),
+                        episode: HeldEpisode::new(),
+                        first_hold: mark,
+                        preedit_since: None,
+                    };
+                    None
+                }
+                (HeldEpisodePhase::Holding { first_hold, .. }, Some(mark)) => {
+                    Some(std::mem::replace(first_hold, mark))
+                }
+                (_, None) => None,
+            };
+            let outcome = match &mut *phase {
+                HeldEpisodePhase::Holding { text: held, .. } => held.hold(text),
+                HeldEpisodePhase::Idle => HoldOutcome::Overflow,
+            };
+            (outcome, unused_mark)
+        };
+        if let Some(mark) = unused_mark {
+            buffer.delete_mark(&mark);
         }
-        let outcome = state.text.borrow_mut().hold(text);
         match outcome {
             HoldOutcome::Held => {
                 self.update_held_evidence(|e| e.holds = e.holds.saturating_add(1));
@@ -394,9 +505,25 @@ impl LushtextEditorPage {
             HoldOutcome::Overflow => {
                 // Paste atomicity: what this action already held goes too, so
                 // a multi-segment paste is never partly held.
-                state.action_overflowed.set(true);
-                let start = state.action_start_len.get();
-                state.text.borrow_mut().truncate_to(start);
+                let start = match state.user_action.get() {
+                    UserActionPhase::Active {
+                        depth, start_len, ..
+                    } => {
+                        state.user_action.set(UserActionPhase::Active {
+                            depth,
+                            start_len,
+                            disposition: UserActionDisposition::Overflowed,
+                        });
+                        start_len
+                    }
+                    UserActionPhase::Idle => 0,
+                };
+                {
+                    let mut phase = state.episode.borrow_mut();
+                    if let HeldEpisodePhase::Holding { text: held, .. } = &mut *phase {
+                        held.truncate_to(start);
+                    }
+                }
                 self.update_held_evidence(|e| e.overflows = e.overflows.saturating_add(1));
                 let name = self.held_document_name();
                 self.publish_held_notice(
@@ -420,8 +547,15 @@ impl LushtextEditorPage {
         if !self.source_view().is_editable() || super::edit_lock::own_edit_in_progress() {
             return false;
         }
-        let removed = self.held_state().text.borrow_mut().backspace();
-        if removed && !self.has_held_text() {
+        let (removed, empty) = {
+            let mut phase = self.held_state().episode.borrow_mut();
+            let HeldEpisodePhase::Holding { text, .. } = &mut *phase else {
+                return false;
+            };
+            let removed = text.backspace();
+            (removed, text.is_empty())
+        };
+        if removed && empty {
             self.end_held_episode();
         }
         removed
@@ -441,14 +575,17 @@ impl LushtextEditorPage {
     /// A lock holder released: fold its content disposition into the episode
     /// and, when it was the last, queue the settle dispatch.
     pub(super) fn held_input_after_release(&self, release: ContentDisposition, last: bool) {
-        let state = self.held_state();
-        if !self.has_held_text() {
-            return;
-        }
-        state
-            .episode
-            .set(state.episode.get().after_release(release));
-        if last {
+        let has_held = {
+            let mut phase = self.held_state().episode.borrow_mut();
+            match &mut *phase {
+                HeldEpisodePhase::Holding { text, episode, .. } if !text.is_empty() => {
+                    *episode = episode.after_release(release);
+                    true
+                }
+                _ => false,
+            }
+        };
+        if has_held && last {
             self.queue_held_settle(true);
         }
     }
@@ -479,36 +616,39 @@ impl LushtextEditorPage {
     /// retry timeout), otherwise a retry after the polling interval.
     fn queue_held_settle(&self, immediate: bool) {
         let state = self.held_state();
-        // Taken into a local first: the `RefMut` must not live into the block,
-        // which borrows the cell again.
-        let pending = state.settle_source.borrow_mut().take();
-        if let Some(existing) = pending {
-            if state.settle_immediate.get() || !immediate {
-                state.settle_source.replace(Some(existing));
+        // Taken into a local first: the `RefMut` must not live across `remove()`.
+        let existing = std::mem::take(&mut *state.settle.borrow_mut());
+        match existing {
+            HeldSettleSchedule::ImmediateIdle(id) => {
+                *state.settle.borrow_mut() = HeldSettleSchedule::ImmediateIdle(id);
                 return;
             }
-            existing.remove();
+            HeldSettleSchedule::RetryTimeout(id) if !immediate => {
+                *state.settle.borrow_mut() = HeldSettleSchedule::RetryTimeout(id);
+                return;
+            }
+            HeldSettleSchedule::RetryTimeout(id) => id.remove(),
+            HeldSettleSchedule::Unscheduled => {}
         }
         let editor = self.downgrade();
         let run = move || {
             if let Some(editor) = editor.upgrade() {
-                editor.held_state().settle_source.borrow_mut().take();
+                *editor.held_state().settle.borrow_mut() = HeldSettleSchedule::Unscheduled;
                 editor.run_held_settle();
             }
             glib::ControlFlow::Break
         };
         let priority = settle_priority();
-        let source = if immediate {
-            glib::idle_add_local_full(priority, run)
+        let scheduled = if immediate {
+            HeldSettleSchedule::ImmediateIdle(glib::idle_add_local_full(priority, run))
         } else {
-            glib::timeout_add_local_full(
+            HeldSettleSchedule::RetryTimeout(glib::timeout_add_local_full(
                 Duration::from_millis(SETTLE_RETRY_INTERVAL_MS),
                 priority,
                 run,
-            )
+            ))
         };
-        state.settle_immediate.set(immediate);
-        state.settle_source.replace(Some(source));
+        *state.settle.borrow_mut() = scheduled;
     }
 
     /// Whether a composition holds the replay back. A composition older than
@@ -518,16 +658,30 @@ impl LushtextEditorPage {
         let state = self.held_state();
         let Some(im) = super::surrounding_text::view_im_context(self.source_view().upcast_ref())
         else {
-            state.preedit_since.set(None);
+            if let HeldEpisodePhase::Holding { preedit_since, .. } =
+                &mut *state.episode.borrow_mut()
+            {
+                *preedit_since = None;
+            }
             return false;
         };
         if im.preedit_string().0.is_empty() {
-            state.preedit_since.set(None);
+            if let HeldEpisodePhase::Holding { preedit_since, .. } =
+                &mut *state.episode.borrow_mut()
+            {
+                *preedit_since = None;
+            }
             return false;
         }
-        let since = *state.preedit_since.get().get_or_insert(now);
-        state.preedit_since.set(Some(since));
-        if now.saturating_sub(since) < PREEDIT_DEADLINE_MS.saturating_mul(1_000) {
+        let expired = {
+            let mut phase = state.episode.borrow_mut();
+            let HeldEpisodePhase::Holding { preedit_since, .. } = &mut *phase else {
+                return false;
+            };
+            let since = *preedit_since.get_or_insert(now);
+            now.saturating_sub(since) >= PREEDIT_DEADLINE_MS.saturating_mul(1_000)
+        };
+        if !expired {
             return true;
         }
         self.reset_held_preedit(&im);
@@ -535,7 +689,11 @@ impl LushtextEditorPage {
     }
 
     fn reset_held_preedit(&self, im: &gtk4::IMContext) {
-        self.held_state().preedit_since.set(None);
+        if let HeldEpisodePhase::Holding { preedit_since, .. } =
+            &mut *self.held_state().episode.borrow_mut()
+        {
+            *preedit_since = None;
+        }
         im.reset();
         self.update_held_evidence(|e| e.preedit_resets = e.preedit_resets.saturating_add(1));
     }
@@ -552,9 +710,12 @@ impl LushtextEditorPage {
 
     /// Decide and act on the held text now. Returns false when it must wait.
     fn settle_held_text(&self, preedit: bool) -> bool {
-        if !self.has_held_text() {
-            return true;
-        }
+        let broken = match &*self.held_state().episode.borrow() {
+            HeldEpisodePhase::Holding { text, episode, .. } if !text.is_empty() => {
+                episode.is_broken()
+            }
+            _ => return true,
+        };
         let state = self.load_state();
         let facts = SettleFacts {
             locked: self.edits_locked()
@@ -563,7 +724,7 @@ impl LushtextEditorPage {
             loading: state == EditorLoadState::Loading,
             preedit,
             restore_pending: self.draft_restore_pending(),
-            broken: self.held_state().episode.get().is_broken(),
+            broken,
             load_failed: state == EditorLoadState::Failed,
             installation_incomplete: self.has_incomplete_load_installation(),
             evicted: self.is_evicted(),
@@ -612,8 +773,7 @@ impl LushtextEditorPage {
             {
                 self.reset_held_preedit(&im);
             }
-            let pending = self.held_state().settle_source.borrow_mut().take();
-            if let Some(source) = pending {
+            if let Some(source) = self.held_state().settle.borrow_mut().take_source() {
                 source.remove();
             }
             self.update_held_evidence(|e| e.close_flushes = e.close_flushes.saturating_add(1));
@@ -636,26 +796,36 @@ impl LushtextEditorPage {
     /// End the held episode: drop the first-hold mark, and let the drop
     /// targets and the accessible description follow.
     fn end_held_episode(&self) {
-        if let Some(mark) = self.held_state().first_hold.take() {
-            self.buffer().delete_mark(&mark);
+        if let HeldEpisodePhase::Holding { first_hold, .. } =
+            std::mem::take(&mut *self.held_state().episode.borrow_mut())
+        {
+            self.buffer().delete_mark(&first_hold);
         }
         self.refresh_accessibility_metadata();
     }
 
     /// Insert the held text as one user action (one undo action, like typing).
     fn replay_held_text(&self) {
-        let text = self.held_state().text.borrow_mut().take();
-        let anchor = self.held_state().episode.get().anchor();
-        let mark = self.held_state().first_hold.take();
+        let HeldEpisodePhase::Holding {
+            mut text,
+            episode,
+            first_hold: mark,
+            ..
+        } = std::mem::take(&mut *self.held_state().episode.borrow_mut())
+        else {
+            return;
+        };
+        let text = text.take();
+        let anchor = episode.anchor();
         let chars = u64::try_from(text.chars().count()).unwrap_or(u64::MAX);
         let buffer = self.buffer();
         let view = self.source_view();
         let editable = view.is_editable();
         let inserted = crate::ui::responsiveness_probe::span("held_input_replay", || {
             buffer.begin_user_action();
-            let inserted = match (anchor, mark.as_ref()) {
-                (ReplayAnchor::FirstHold, Some(mark)) if !mark.is_deleted() => {
-                    let mut at = buffer.iter_at_mark(mark);
+            let inserted = match anchor {
+                ReplayAnchor::FirstHold if !mark.is_deleted() => {
+                    let mut at = buffer.iter_at_mark(&mark);
                     let inserted = buffer.insert_interactive(&mut at, &text, editable);
                     if inserted {
                         buffer.place_cursor(&at);
@@ -667,13 +837,20 @@ impl LushtextEditorPage {
             buffer.end_user_action();
             inserted
         });
-        if let Some(mark) = mark {
-            buffer.delete_mark(&mark);
-        }
+        buffer.delete_mark(&mark);
         if !inserted {
             // The buffer refused the insert: the text goes to a new tab, never
             // nowhere.
-            self.held_state().text.borrow_mut().hold(&text);
+            let mut restored_text = HeldText::default();
+            restored_text.hold(&text);
+            let caret = buffer.iter_at_mark(&buffer.get_insert());
+            let new_mark = buffer.create_mark(None, &caret, true);
+            *self.held_state().episode.borrow_mut() = HeldEpisodePhase::Holding {
+                text: restored_text,
+                episode,
+                first_hold: new_mark,
+                preedit_since: None,
+            };
             self.rescue_held_text(Some(NoDocumentCause::Replaced));
             return;
         }
@@ -697,9 +874,18 @@ impl LushtextEditorPage {
         let Some(window) = self.root().and_downcast::<LushtextWindow>() else {
             return false;
         };
-        let text = self.held_state().text.borrow_mut().take();
+        let HeldEpisodePhase::Holding {
+            mut text,
+            first_hold,
+            ..
+        } = std::mem::take(&mut *self.held_state().episode.borrow_mut())
+        else {
+            return true;
+        };
+        let text = text.take();
         let chars = u64::try_from(text.chars().count()).unwrap_or(u64::MAX);
-        self.end_held_episode();
+        self.buffer().delete_mark(&first_hold);
+        self.refresh_accessibility_metadata();
         self.update_held_evidence(|e| {
             if cause.is_some() {
                 e.rescued_no_document = e.rescued_no_document.saturating_add(1);

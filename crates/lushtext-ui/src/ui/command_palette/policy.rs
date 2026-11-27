@@ -693,25 +693,22 @@ pub fn next_activatable(activatable: &[bool], current: u32, delta: i32) -> Optio
     let is_activatable =
         |position: u32| usize::try_from(position).is_ok_and(|index| activatable[index]);
 
-    if delta > 0 {
-        let mut position = current.saturating_add(1);
-        while position < len {
-            if is_activatable(position) {
-                return Some(position);
-            }
-            position = position.saturating_add(1);
-        }
+    let start = usize::try_from(current).unwrap_or(usize::MAX);
+    let next = if delta > 0 {
+        activatable
+            .iter()
+            .enumerate()
+            .skip(start.saturating_add(1))
+            .find_map(|(index, &ok)| ok.then_some(index))
     } else {
-        let mut position = current.saturating_sub(1);
-        loop {
-            if is_activatable(position) {
-                return Some(position);
-            }
-            if position == 0 {
-                break;
-            }
-            position = position.saturating_sub(1);
-        }
+        activatable[..start]
+            .iter()
+            .enumerate()
+            .rfind(|&(_, &ok)| ok)
+            .map(|(index, _)| index)
+    };
+    if let Some(position) = next {
+        return u32::try_from(position).ok();
     }
 
     Some(current).filter(|position| is_activatable(*position))

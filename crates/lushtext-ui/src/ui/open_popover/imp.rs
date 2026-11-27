@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Open popover GObject implementation: template binding, filtering, and keynav.
+//! Open popover GObject implementation: template binding, filtering, signals, and keynav.
 
-use crate::ui::accessibility::{self, RowAccessibility};
+use crate::ui::accessibility;
 use crate::ui::open_popover::item::OpenPopoverItem;
 use crate::ui::open_popover::policy;
+use crate::ui::signal_connect;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, gio, glib};
@@ -18,151 +19,12 @@ const RECENT_SCROLLER_MAX_HEIGHT: i32 = 600;
 /// GNOME Text Editor 50.1 fixes the recent-list content width to 250px.
 const RECENT_SCROLLER_CONTENT_WIDTH: i32 = 250;
 
-type OpenFileCallback = Box<dyn Fn()>;
-type OpenRecentCallback = Box<dyn Fn(PathBuf)>;
-type RemoveRecentCallback = Box<dyn Fn(PathBuf)>;
-type DismissCallback = Box<dyn Fn()>;
+/// Boxed path payload carried by `recent-activated` and `remove-requested` signals.
+#[derive(Clone, Debug, glib::Boxed)]
+#[boxed_type(name = "LushtextOpenPopoverPath")]
+pub(super) struct BoxedPath(pub(super) PathBuf);
 
-/// Row subtree shared by production factory setup and test snapshots.
-///
-/// Building the GNOME-shaped row in one place keeps the visible widget tree and
-/// tests that assert parity with GNOME Text Editor's source layout pinned to
-/// the same constants.
-struct RecentRowWidgets {
-    /// Stable grid parent returned to the list-factory row.
-    grid: gtk4::Grid,
-    /// Stack showing the optional open-document marker in the leading gutter.
-    #[cfg_attr(
-        not(feature = "test-utils"),
-        expect(
-            dead_code,
-            reason = "production uses the widget through the grid; test snapshots inspect it directly"
-        )
-    )]
-    marker_stack: gtk4::Stack,
-    /// Primary filename text reused by recycled rows as their item changes.
-    #[cfg_attr(
-        not(feature = "test-utils"),
-        expect(
-            dead_code,
-            reason = "production uses the widget through the grid; test snapshots inspect it directly"
-        )
-    )]
-    title: gtk4::Inscription,
-    /// Secondary path text reused by recycled rows as their item changes.
-    #[cfg_attr(
-        not(feature = "test-utils"),
-        expect(
-            dead_code,
-            reason = "production uses the widget through the grid; test snapshots inspect it directly"
-        )
-    )]
-    subtitle: gtk4::Inscription,
-    /// Relative-age text kept separate so layout snapshots can verify GNOME parity.
-    #[cfg_attr(
-        not(feature = "test-utils"),
-        expect(
-            dead_code,
-            reason = "production uses the widget through the grid; test snapshots inspect it directly"
-        )
-    )]
-    age: gtk4::Inscription,
-    /// Remove button wired by the factory after the row receives its item.
-    remove: gtk4::Button,
-}
-
-/// Internal grid attachment tuple captured before conversion to the public row snapshot.
-#[cfg(feature = "test-utils")]
-pub(super) struct RecentRowChildLayout {
-    /// GtkGrid column occupied by the child.
-    pub column: i32,
-    /// GtkGrid row occupied by the child.
-    pub row: i32,
-    /// Number of GtkGrid columns spanned by the child.
-    pub column_span: i32,
-    /// Number of GtkGrid rows spanned by the child.
-    pub row_span: i32,
-}
-
-/// Internal test-only snapshot of the GNOME-shaped recent-row skeleton.
-///
-/// Tests capture this before row data is bound so source-parity checks do not
-/// depend on GTK's recycled `ListView` rows being visible.
-#[cfg(feature = "test-utils")]
-pub(super) struct RecentRowLayoutSnapshot {
-    /// Top margin on the row grid.
-    pub grid_margin_top: i32,
-    /// Bottom margin on the row grid.
-    pub grid_margin_bottom: i32,
-    /// Start margin on the row grid.
-    pub grid_margin_start: i32,
-    /// End margin on the row grid.
-    pub grid_margin_end: i32,
-    /// Vertical spacing between title and subtitle rows.
-    pub grid_row_spacing: u32,
-    /// Horizontal spacing between marker, text, age, and remove columns.
-    pub grid_column_spacing: u32,
-    /// Height request; GNOME's row does not force a fixed row height.
-    pub grid_height_request: i32,
-    /// Whether the leading marker/spacer stack is horizontally homogeneous.
-    pub marker_hhomogeneous: bool,
-    /// Whether the leading marker/spacer stack is vertically homogeneous.
-    pub marker_vhomogeneous: bool,
-    /// Grid position for the leading marker/spacer stack.
-    pub marker_layout: RecentRowChildLayout,
-    /// Title overflow mode.
-    pub title_overflow: gtk4::InscriptionOverflow,
-    /// Title x alignment.
-    pub title_xalign: f32,
-    /// Whether title can take remaining horizontal room.
-    pub title_hexpand: bool,
-    /// Grid position for the title.
-    pub title_layout: RecentRowChildLayout,
-    /// Subtitle overflow mode.
-    pub subtitle_overflow: gtk4::InscriptionOverflow,
-    /// Subtitle minimum character width.
-    pub subtitle_min_chars: u32,
-    /// Subtitle natural character width.
-    pub subtitle_nat_chars: u32,
-    /// Subtitle minimum line count.
-    pub subtitle_min_lines: u32,
-    /// Subtitle natural line count.
-    pub subtitle_nat_lines: u32,
-    /// Whether subtitle carries GNOME's caption class.
-    pub subtitle_has_caption: bool,
-    /// Whether subtitle carries GNOME's dim-label class.
-    pub subtitle_has_dim_label: bool,
-    /// Grid position for the subtitle.
-    pub subtitle_layout: RecentRowChildLayout,
-    /// Whether the optional age inscription is visible before binding row data.
-    pub age_visible: bool,
-    /// Age horizontal alignment.
-    pub age_halign: gtk4::Align,
-    /// Age vertical alignment.
-    pub age_valign: gtk4::Align,
-    /// Whether age carries GNOME's caption class.
-    pub age_has_caption: bool,
-    /// Whether age carries GNOME's dim-label class.
-    pub age_has_dim_label: bool,
-    /// Grid position for the age inscription.
-    pub age_layout: RecentRowChildLayout,
-    /// Icon used by the remove button.
-    pub remove_icon_name: Option<String>,
-    /// Tooltip used by the remove button.
-    pub remove_tooltip: Option<String>,
-    /// Remove button horizontal alignment.
-    pub remove_halign: gtk4::Align,
-    /// Remove button vertical alignment.
-    pub remove_valign: gtk4::Align,
-    /// Whether remove carries GNOME's flat class.
-    pub remove_has_flat: bool,
-    /// Whether remove carries GNOME's circular class.
-    pub remove_has_circular: bool,
-    /// Grid position for the remove button.
-    pub remove_layout: RecentRowChildLayout,
-}
-
-/// Private GObject implementation for the Open popover.
+/// Private GObject implementation for the recent-documents popover.
 ///
 /// GTK binds template children and stores signal-facing state here; public
 /// callers use the wrapper in `mod.rs`, while this type stays on the GTK thread.
@@ -199,14 +61,6 @@ pub struct LushtextOpenPopover {
     /// `Cell` lets focus/key signal handlers update it through GObject's shared
     /// `&self`; it is cleared whenever the popover opens or rows are rebound.
     pub keyboard_row_position: Cell<Option<u32>>,
-    /// Callback for the popover's file chooser button.
-    pub open_file_callback: RefCell<Option<OpenFileCallback>>,
-    /// Callback for recent row activation.
-    pub open_recent_callback: RefCell<Option<OpenRecentCallback>>,
-    /// Callback for the compact row remove button.
-    pub remove_recent_callback: RefCell<Option<RemoveRecentCallback>>,
-    /// Callback after Escape/cancel dismissal so the window can restore focus.
-    pub dismiss_callback: RefCell<Option<DismissCallback>>,
 }
 
 impl Default for LushtextOpenPopover {
@@ -222,10 +76,6 @@ impl Default for LushtextOpenPopover {
             source_rows: RefCell::default(),
             rows_store: gio::ListStore::new::<OpenPopoverItem>(),
             keyboard_row_position: Cell::default(),
-            open_file_callback: RefCell::default(),
-            open_recent_callback: RefCell::default(),
-            remove_recent_callback: RefCell::default(),
-            dismiss_callback: RefCell::default(),
         }
     }
 }
@@ -249,6 +99,23 @@ impl ObjectSubclass for LushtextOpenPopover {
 }
 
 impl ObjectImpl for LushtextOpenPopover {
+    fn signals() -> &'static [glib::subclass::Signal] {
+        use std::sync::OnceLock;
+        static SIGNALS: OnceLock<Vec<glib::subclass::Signal>> = OnceLock::new();
+        SIGNALS.get_or_init(|| {
+            vec![
+                glib::subclass::Signal::builder("open-file-requested").build(),
+                glib::subclass::Signal::builder("recent-activated")
+                    .param_types([BoxedPath::static_type()])
+                    .build(),
+                glib::subclass::Signal::builder("remove-requested")
+                    .param_types([BoxedPath::static_type()])
+                    .build(),
+                glib::subclass::Signal::builder("dismissed-from-keyboard").build(),
+            ]
+        })
+    }
+
     fn constructed(&self) {
         self.parent_constructed();
         crate::ui::entry_paste_cap::cap_single_line_inserts(&*self.search_entry);
@@ -265,7 +132,8 @@ impl ObjectImpl for LushtextOpenPopover {
         self.recent_scroller
             .set_max_content_height(RECENT_SCROLLER_MAX_HEIGHT);
 
-        self.setup_factory();
+        self.list_view
+            .set_factory(Some(&super::item::build_recent_row_factory(&self.obj())));
         self.setup_search();
         self.setup_keyboard();
         self.setup_activation();
@@ -286,53 +154,6 @@ impl WidgetImpl for LushtextOpenPopover {}
 impl PopoverImpl for LushtextOpenPopover {}
 
 impl LushtextOpenPopover {
-    /// Build a snapshot of the row skeleton before recycled rows bind data.
-    ///
-    /// Read by the workflow's evidence surface. It constructs a throwaway row
-    /// through the same helper the factory uses, registers nothing, and stores
-    /// nothing, so repeated reads stay identical.
-    #[cfg(feature = "test-utils")]
-    pub(super) fn row_layout_snapshot() -> RecentRowLayoutSnapshot {
-        let row = build_recent_row_widgets();
-        RecentRowLayoutSnapshot {
-            grid_margin_top: row.grid.margin_top(),
-            grid_margin_bottom: row.grid.margin_bottom(),
-            grid_margin_start: row.grid.margin_start(),
-            grid_margin_end: row.grid.margin_end(),
-            grid_row_spacing: row.grid.row_spacing(),
-            grid_column_spacing: row.grid.column_spacing(),
-            grid_height_request: row.grid.height_request(),
-            marker_hhomogeneous: row.marker_stack.is_hhomogeneous(),
-            marker_vhomogeneous: row.marker_stack.is_vhomogeneous(),
-            marker_layout: child_layout(&row.grid, &row.marker_stack),
-            title_overflow: row.title.text_overflow(),
-            title_xalign: row.title.xalign(),
-            title_hexpand: row.title.hexpands(),
-            title_layout: child_layout(&row.grid, &row.title),
-            subtitle_overflow: row.subtitle.text_overflow(),
-            subtitle_min_chars: row.subtitle.min_chars(),
-            subtitle_nat_chars: row.subtitle.nat_chars(),
-            subtitle_min_lines: row.subtitle.min_lines(),
-            subtitle_nat_lines: row.subtitle.nat_lines(),
-            subtitle_has_caption: row.subtitle.has_css_class("caption"),
-            subtitle_has_dim_label: row.subtitle.has_css_class("dim-label"),
-            subtitle_layout: child_layout(&row.grid, &row.subtitle),
-            age_visible: row.age.property::<bool>("visible"),
-            age_halign: row.age.halign(),
-            age_valign: row.age.valign(),
-            age_has_caption: row.age.has_css_class("caption"),
-            age_has_dim_label: row.age.has_css_class("dim-label"),
-            age_layout: child_layout(&row.grid, &row.age),
-            remove_icon_name: row.remove.icon_name().map(Into::into),
-            remove_tooltip: row.remove.tooltip_text().map(Into::into),
-            remove_halign: row.remove.halign(),
-            remove_valign: row.remove.valign(),
-            remove_has_flat: row.remove.has_css_class("flat"),
-            remove_has_circular: row.remove.has_css_class("circular"),
-            remove_layout: child_layout(&row.grid, &row.remove),
-        }
-    }
-
     fn apply_accessibility_metadata(&self) {
         accessibility::set_labelled_description(
             &*self.search_entry,
@@ -361,162 +182,6 @@ impl LushtextOpenPopover {
             "No recent documents",
             "No recently opened documents are available",
         );
-    }
-
-    /// Build the recycled `ListView` row factory and wire row focus, keys, removal, and path tooltips.
-    ///
-    /// `unbind` clears row-level tooltips so GTK row recycling cannot leak a
-    /// previous document path into later filtered results.
-    fn setup_factory(&self) {
-        let factory = gtk4::SignalListItemFactory::new();
-        let obj_weak = self.obj().downgrade();
-
-        factory.connect_setup(move |_, list_item| {
-            // SignalListItemFactory creates a small reusable row subtree; GTK
-            // later binds different OpenPopoverItem objects into the same row.
-            // Factory callbacks receive a generic GObject; downcast_ref narrows
-            // it to the ListItem type GTK promises for list factories.
-            let list_item = list_item
-                .downcast_ref::<gtk4::ListItem>()
-                .expect("ListItem");
-            // The grid subtree owns focus so keynav still works when focus
-            // lands on row children such as the remove button.
-            list_item.set_focusable(false);
-            let row = build_recent_row_widgets();
-            let focus = gtk4::EventControllerFocus::new();
-            let list_item_weak = list_item.downgrade();
-            let obj_weak_for_focus = obj_weak.clone();
-            focus.connect_enter(move |_| {
-                let Some(obj) = obj_weak_for_focus.upgrade() else {
-                    return;
-                };
-                let Some(list_item) = list_item_weak.upgrade() else {
-                    return;
-                };
-                obj.imp().sync_keyboard_position_from_focus(&list_item);
-            });
-            row.grid.add_controller(focus);
-
-            let row_keys = gtk4::EventControllerKey::new();
-            // Capture row-child keys before button/list defaults so arrows keep
-            // driving the no-selection row navigation contract.
-            row_keys.set_propagation_phase(gtk4::PropagationPhase::Capture);
-            let list_item_weak = list_item.downgrade();
-            let obj_weak_for_keys = obj_weak.clone();
-            row_keys.connect_key_pressed(move |_, keyval, _, _| {
-                let Some(obj) = obj_weak_for_keys.upgrade() else {
-                    return glib::Propagation::Proceed;
-                };
-                let Some(list_item) = list_item_weak.upgrade() else {
-                    return glib::Propagation::Proceed;
-                };
-                obj.imp().handle_focused_row_key(&list_item, keyval)
-            });
-            row.grid.add_controller(row_keys);
-
-            accessibility::set_label(&row.remove, "Remove recent document");
-            let list_item_weak = list_item.downgrade();
-            let obj_weak = obj_weak.clone();
-            row.remove.connect_clicked(move |_| {
-                let Some(obj) = obj_weak.upgrade() else {
-                    return;
-                };
-                let Some(list_item) = list_item_weak.upgrade() else {
-                    return;
-                };
-                let Some(item) = list_item.item().and_downcast::<OpenPopoverItem>() else {
-                    return;
-                };
-                obj.imp().remove_recent(item.path());
-            });
-
-            list_item.set_child(Some(&row.grid));
-        });
-
-        let bind_obj_weak = self.obj().downgrade();
-        factory.connect_bind(move |_, list_item| {
-            // bind runs whenever GTK reuses a ListItem for a new OpenPopoverItem.
-            // Refresh every item-specific row property here, including tooltips.
-            let list_item = list_item
-                .downcast_ref::<gtk4::ListItem>()
-                .expect("ListItem");
-            let item = list_item
-                .item()
-                .and_downcast::<OpenPopoverItem>()
-                .expect("OpenPopoverItem");
-            let grid = list_item
-                .child()
-                .and_downcast::<gtk4::Grid>()
-                .expect("recent row grid");
-            let title = grid
-                .child_at(1, 0)
-                .and_downcast::<gtk4::Inscription>()
-                .expect("recent row title");
-            let subtitle = grid
-                .child_at(1, 1)
-                .and_downcast::<gtk4::Inscription>()
-                .expect("recent row subtitle");
-            let age = grid
-                .child_at(2, 1)
-                .and_downcast::<gtk4::Inscription>()
-                .expect("recent row age");
-            let remove = grid
-                .child_at(3, 0)
-                .and_downcast::<gtk4::Button>()
-                .expect("recent row remove button");
-
-            let path_tooltip = item.path().display().to_string();
-            set_recent_row_non_action_tooltip(&grid, Some(&path_tooltip));
-            title.set_text(Some(&item.title()));
-            subtitle.set_text(Some(&item.subtitle()));
-            match item.age_label() {
-                Some(label) if !label.is_empty() => {
-                    age.set_text(Some(&label));
-                    age.set_visible(true);
-                }
-                _ => age.set_visible(false),
-            }
-            let row_label = format!("Open recent document {}", item.title());
-            let row_description = match item.age_label() {
-                Some(age) if !age.is_empty() => format!("{}. {}", item.subtitle(), age),
-                _ => item.subtitle(),
-            };
-            let position = i32::try_from(list_item.position()).unwrap_or(i32::MAX - 1) + 1;
-            let set_size = bind_obj_weak.upgrade().map_or(position, |obj| {
-                i32::try_from(obj.imp().rows_store.n_items()).unwrap_or(i32::MAX)
-            });
-            accessibility::apply_row_accessibility(
-                &grid,
-                RowAccessibility::new(&row_label)
-                    .description(&row_description)
-                    .position(position, set_size),
-            );
-
-            let bounded_path = accessibility::bounded_announcement_text(&path_tooltip, 160);
-            accessibility::set_labelled_description(
-                &remove,
-                &format!("Remove {} from recent documents", item.title()),
-                &format!("Keeps the file on disk at {bounded_path}"),
-            );
-        });
-
-        factory.connect_unbind(|_, list_item| {
-            // unbind clears item-specific state before GTK recycles the row for
-            // a later filter result.
-            let list_item = list_item
-                .downcast_ref::<gtk4::ListItem>()
-                .expect("ListItem");
-            if let Some(grid) = list_item.child().and_downcast::<gtk4::Grid>() {
-                set_recent_row_non_action_tooltip(&grid, None);
-                accessibility::clear_row_accessibility(&grid);
-                if let Some(remove) = grid.child_at(3, 0).and_downcast::<gtk4::Button>() {
-                    accessibility::set_label(&remove, "Remove recent document");
-                    accessibility::reset_property(&remove, gtk4::AccessibleProperty::Description);
-                }
-            }
-        });
-
-        self.list_view.set_factory(Some(&factory));
     }
 
     fn setup_search(&self) {
@@ -602,9 +267,7 @@ impl LushtextOpenPopover {
                 return;
             };
             obj.popdown();
-            if let Some(ref cb) = *obj.imp().open_file_callback.borrow() {
-                cb();
-            }
+            signal_connect::emit_void(&obj, "open-file-requested", &[]);
         });
     }
 
@@ -692,22 +355,18 @@ impl LushtextOpenPopover {
         };
         self.search_entry.set_text("");
         self.obj().popdown();
-        if let Some(ref cb) = *self.open_recent_callback.borrow() {
-            cb(item.path());
-        }
+        let boxed = BoxedPath(item.path());
+        signal_connect::emit_void(&*self.obj(), "recent-activated", &[&boxed]);
     }
 
-    fn remove_recent(&self, path: PathBuf) {
-        if let Some(ref cb) = *self.remove_recent_callback.borrow() {
-            cb(path);
-        }
+    pub(super) fn remove_recent(&self, path: PathBuf) {
+        let boxed = BoxedPath(path);
+        signal_connect::emit_void(&*self.obj(), "remove-requested", &[&boxed]);
     }
 
     fn dismiss_from_keyboard(&self) {
         self.obj().popdown();
-        if let Some(ref cb) = *self.dismiss_callback.borrow() {
-            cb();
-        }
+        signal_connect::emit_void(&*self.obj(), "dismissed-from-keyboard", &[]);
     }
 
     fn focus_first_row(&self) {
@@ -726,7 +385,7 @@ impl LushtextOpenPopover {
     /// Keep the synthetic keyboard row position aligned when focus lands inside a row.
     ///
     /// This replaces selection state because the list intentionally uses `NoSelection`.
-    fn sync_keyboard_position_from_focus(&self, list_item: &gtk4::ListItem) {
+    pub(super) fn sync_keyboard_position_from_focus(&self, list_item: &gtk4::ListItem) {
         let position = list_item.position();
         // GTK can report focus on a recycled ListItem while its position is
         // invalid or outside the current filtered store, so only sync visible rows.
@@ -737,8 +396,8 @@ impl LushtextOpenPopover {
 
     /// Handle arrow/Escape keys from a focused row child before the ListView fallback.
     ///
-    /// Returns `Stop` only for keys consumed by the popover navigation contract.
-    fn handle_focused_row_key(
+    /// Returns `Stop` only for keys consumed by the navigation contract.
+    pub(super) fn handle_focused_row_key(
         &self,
         list_item: &gtk4::ListItem,
         keyval: gdk4::Key,
@@ -784,110 +443,5 @@ impl LushtextOpenPopover {
         self.list_view
             .scroll_to(next, gtk4::ListScrollFlags::FOCUS, None);
         glib::Propagation::Stop
-    }
-}
-
-/// Build the GNOME Text Editor recent-row skeleton.
-///
-/// The marker stack and hidden age cell are present even though LushText does
-/// not currently show modified markers or ages for every row; source parity
-/// depends on preserving those columns so text and close buttons align.
-fn build_recent_row_widgets() -> RecentRowWidgets {
-    let grid = gtk4::Grid::builder()
-        .row_spacing(3)
-        .column_spacing(6)
-        .focusable(true)
-        .margin_top(3)
-        .margin_bottom(3)
-        .margin_start(0)
-        .margin_end(6)
-        .build();
-
-    let marker_stack = gtk4::Stack::builder()
-        .hhomogeneous(true)
-        .vhomogeneous(true)
-        .build();
-    let empty = gtk4::Label::new(None);
-    let is_modified = gtk4::Label::builder()
-        .label("•")
-        .halign(gtk4::Align::Center)
-        .valign(gtk4::Align::Baseline)
-        .build();
-    marker_stack.add_child(&empty);
-    marker_stack.add_child(&is_modified);
-    grid.attach(&marker_stack, 0, 0, 1, 1);
-
-    let title = gtk4::Inscription::builder()
-        .xalign(0.0)
-        .text_overflow(gtk4::InscriptionOverflow::EllipsizeMiddle)
-        .hexpand(true)
-        .build();
-    grid.attach(&title, 1, 0, 2, 1);
-
-    let subtitle = gtk4::Inscription::builder()
-        .text_overflow(gtk4::InscriptionOverflow::EllipsizeEnd)
-        .min_chars(25)
-        .nat_chars(25)
-        .hexpand(true)
-        .min_lines(1)
-        .nat_lines(1)
-        .xalign(0.0)
-        .build();
-    subtitle.add_css_class("caption");
-    subtitle.add_css_class("dim-label");
-    grid.attach(&subtitle, 1, 1, 1, 1);
-
-    let age = gtk4::Inscription::builder()
-        .halign(gtk4::Align::End)
-        .valign(gtk4::Align::Center)
-        .visible(false)
-        .build();
-    age.add_css_class("caption");
-    age.add_css_class("dim-label");
-    grid.attach(&age, 2, 1, 1, 1);
-
-    let remove = gtk4::Button::builder()
-        .icon_name("window-close-symbolic")
-        .tooltip_text("Remove")
-        .halign(gtk4::Align::End)
-        .valign(gtk4::Align::Center)
-        .build();
-    remove.add_css_class("flat");
-    remove.add_css_class("circular");
-    grid.attach(&remove, 3, 0, 1, 2);
-
-    RecentRowWidgets {
-        grid,
-        marker_stack,
-        title,
-        subtitle,
-        age,
-        remove,
-    }
-}
-
-/// Apply the document-path tooltip only to row surfaces that open the document.
-///
-/// The remove button keeps its own action tooltip, while GTK's recycled list
-/// rows get refreshed or cleared every time their bound item changes.
-fn set_recent_row_non_action_tooltip(grid: &gtk4::Grid, tooltip: Option<&str>) {
-    grid.set_tooltip_text(tooltip);
-    // These coordinates mirror build_recent_row_widgets and deliberately skip
-    // the remove button at column 3 so it keeps the action tooltip.
-    for (column, row) in [(0, 0), (1, 0), (1, 1), (2, 1)] {
-        if let Some(child) = grid.child_at(column, row) {
-            child.set_tooltip_text(tooltip);
-        }
-    }
-}
-
-#[cfg(feature = "test-utils")]
-fn child_layout(grid: &gtk4::Grid, child: &impl IsA<gtk4::Widget>) -> RecentRowChildLayout {
-    let (column, row, column_span, row_span) = grid.query_child(child);
-    RecentRowChildLayout {
-        column,
-        row,
-        column_span,
-        row_span,
     }
 }

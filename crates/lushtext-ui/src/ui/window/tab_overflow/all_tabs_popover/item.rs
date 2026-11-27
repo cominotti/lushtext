@@ -28,8 +28,227 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
-use super::super::policy::ALL_TABS_UNTITLED_SUBTITLE;
+use super::super::policy::{
+    ALL_TABS_CURRENT_TOOLTIP, ALL_TABS_PINNED_TOOLTIP, ALL_TABS_UNTITLED_SUBTITLE,
+    AllTabsCandidate, AllTabsRowState, all_tabs_row_name, rank_all_tabs,
+};
+use crate::ui::accessibility::{self, RowAccessibility};
+use crate::ui::row_text::LushtextRowText;
 use crate::ui::signal_connect;
+
+/// Spacing between a row's marker, text and state icons, in sp.
+const ROW_SPACING_SP: i32 = 6;
+/// A row's vertical margin, in sp.
+const ROW_MARGIN_VERTICAL_SP: i32 = 3;
+
+/// `content-changed` handlers of bound rows, by list-item address.
+#[derive(Default)]
+pub(super) struct BoundTabRowHandlers {
+    handlers: HashMap<usize, (AllTabsItem, glib::SignalHandlerId)>,
+}
+
+impl BoundTabRowHandlers {
+    pub(super) fn insert(
+        &mut self,
+        owner: usize,
+        item: AllTabsItem,
+        handler: glib::SignalHandlerId,
+    ) {
+        if let Some((old, old_handler)) = self.handlers.insert(owner, (item, handler)) {
+            old.disconnect(old_handler);
+        }
+    }
+
+    pub(super) fn remove(&mut self, owner: usize) {
+        if let Some((item, handler)) = self.handlers.remove(&owner) {
+            item.disconnect(handler);
+        }
+    }
+
+    pub(super) fn clear(&mut self) {
+        for (_, (item, handler)) in self.handlers.drain() {
+            item.disconnect(handler);
+        }
+    }
+}
+
+/// The widgets of one row, found from its child by position.
+struct RowWidgets {
+    marker: LushtextRowText,
+    title: LushtextRowText,
+    subtitle: LushtextRowText,
+    pinned: gtk4::Image,
+    current: gtk4::Image,
+}
+
+/// Rank and filter `source` rows against `query`.
+pub(super) fn rank_source_rows(
+    source: &[AllTabsRow],
+    query: &str,
+) -> (Vec<u32>, Vec<AllTabsRow>, Option<u32>) {
+    let candidates: Vec<AllTabsCandidate<'_>> = source
+        .iter()
+        .map(|row| AllTabsCandidate {
+            title: &row.title,
+            folder: row.folder.as_deref(),
+            folder_path: row.folder_path.as_deref(),
+        })
+        .collect();
+    let listed = rank_all_tabs(query, &candidates);
+    let rows: Vec<AllTabsRow> = listed
+        .iter()
+        .filter_map(|index| source.get(usize::try_from(*index).ok()?).cloned())
+        .collect();
+    let selected = source
+        .iter()
+        .position(|row| row.current)
+        .and_then(|index| u32::try_from(index).ok());
+    (listed, rows, selected)
+}
+
+/// Build the recycled `GtkListView` row factory for the All Tabs list.
+pub(super) fn build_all_tabs_row_factory(
+    owner: &super::LushtextAllTabsPopover,
+) -> gtk4::SignalListItemFactory {
+    let factory = gtk4::SignalListItemFactory::new();
+    factory.connect_setup(|_, object| {
+        let Some(list_item) = object.downcast_ref::<gtk4::ListItem>() else {
+            return;
+        };
+        list_item.set_child(Some(&build_row()));
+    });
+    let popover_weak = owner.downgrade();
+    factory.connect_bind(move |_, object| {
+        let Some(list_item) = object.downcast_ref::<gtk4::ListItem>() else {
+            return;
+        };
+        let Some(item) = list_item
+            .item()
+            .and_then(|item| item.downcast::<AllTabsItem>().ok())
+        else {
+            return;
+        };
+        project_row(list_item, &item);
+        let handler = item.connect_content_changed({
+            let list_item = list_item.downgrade();
+            move |item| {
+                if let Some(list_item) = list_item.upgrade() {
+                    project_row(&list_item, item);
+                }
+            }
+        });
+        if let Some(popover) = popover_weak.upgrade() {
+            popover
+                .imp()
+                .bound
+                .borrow_mut()
+                .insert(list_item.as_ptr() as usize, item, handler);
+        }
+    });
+    let popover_weak = owner.downgrade();
+    factory.connect_unbind(move |_, object| {
+        let Some(list_item) = object.downcast_ref::<gtk4::ListItem>() else {
+            return;
+        };
+        if let Some(popover) = popover_weak.upgrade() {
+            popover
+                .imp()
+                .bound
+                .borrow_mut()
+                .remove(list_item.as_ptr() as usize);
+        }
+        accessibility::clear_row_accessibility_for_list_item(list_item);
+        if let Some(widgets) = list_item.child().as_ref().and_then(row_widgets) {
+            widgets.title.set_text("");
+            widgets.subtitle.set_text("");
+        }
+    });
+    factory
+}
+
+/// One row: the unsaved-changes dot, the title over its folder, then the
+/// pinned and current-tab icons.
+fn build_row() -> gtk4::Box {
+    let row = gtk4::Box::new(gtk4::Orientation::Horizontal, ROW_SPACING_SP);
+    row.set_margin_top(ROW_MARGIN_VERTICAL_SP);
+    row.set_margin_bottom(ROW_MARGIN_VERTICAL_SP);
+    row.add_css_class("all-tabs-row");
+    let marker = LushtextRowText::new();
+    marker.set_ellipsize(gtk4::pango::EllipsizeMode::None);
+    marker.set_text("•");
+    marker.set_valign(gtk4::Align::Center);
+    accessibility::set_role(&marker, gtk4::AccessibleRole::Presentation);
+    row.append(&marker);
+    let text = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    text.set_hexpand(true);
+    text.set_valign(gtk4::Align::Center);
+    let title = LushtextRowText::new();
+    title.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
+    title.set_xalign(0.0);
+    let subtitle = LushtextRowText::new();
+    subtitle.set_ellipsize(gtk4::pango::EllipsizeMode::Start);
+    subtitle.set_xalign(0.0);
+    subtitle.add_css_class("caption");
+    subtitle.add_css_class("dim-label");
+    text.append(&title);
+    text.append(&subtitle);
+    row.append(&text);
+    let pinned = gtk4::Image::from_icon_name("view-pin-symbolic");
+    pinned.set_tooltip_text(Some(ALL_TABS_PINNED_TOOLTIP));
+    accessibility::set_role(&pinned, gtk4::AccessibleRole::Presentation);
+    row.append(&pinned);
+    let current = gtk4::Image::from_icon_name("object-select-symbolic");
+    current.set_tooltip_text(Some(ALL_TABS_CURRENT_TOOLTIP));
+    accessibility::set_role(&current, gtk4::AccessibleRole::Presentation);
+    row.append(&current);
+    row
+}
+
+fn row_widgets(child: &gtk4::Widget) -> Option<RowWidgets> {
+    let marker = child.first_child()?;
+    let text = marker.next_sibling()?;
+    let pinned = text.next_sibling()?;
+    let current = pinned.next_sibling()?;
+    let title = text.first_child()?;
+    let subtitle = title.next_sibling()?;
+    Some(RowWidgets {
+        marker: marker.downcast().ok()?,
+        title: title.downcast().ok()?,
+        subtitle: subtitle.downcast().ok()?,
+        pinned: pinned.downcast().ok()?,
+        current: current.downcast().ok()?,
+    })
+}
+
+fn project_row(list_item: &gtk4::ListItem, item: &AllTabsItem) {
+    let (Some(row), Some(widgets)) = (item.row(), list_item.child().as_ref().and_then(row_widgets))
+    else {
+        return;
+    };
+    // The dot keeps its width when hidden, so titles stay aligned.
+    widgets
+        .marker
+        .set_opacity(if row.modified { 1.0 } else { 0.0 });
+    widgets.title.set_text(&row.title);
+    widgets.subtitle.set_text(row.subtitle());
+    widgets.subtitle.set_tooltip_text(Some(row.subtitle()));
+    widgets.pinned.set_visible(row.pinned);
+    widgets.current.set_visible(row.current);
+    let name = all_tabs_row_name(
+        &row.title,
+        AllTabsRowState {
+            modified: row.modified,
+            pinned: row.pinned,
+            current: row.current,
+        },
+    );
+    accessibility::apply_list_item_row_accessibility(
+        list_item,
+        RowAccessibility::new(&name)
+            .description(row.subtitle())
+            .selected(list_item.is_selected()),
+    );
+}
 
 /// One open tab as the All Tabs list shows it: no document text.
 #[derive(Clone, Debug)]

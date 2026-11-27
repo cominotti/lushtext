@@ -186,6 +186,11 @@ pub(super) fn replace_all_matches(bar: &LushtextSearchBar) {
     report_match_state(bar);
 }
 
+/// Convert a GtkSourceView `-1` sentinel count or occurrence position at the adapter boundary.
+fn gtk_match_count(raw: i32) -> Option<u32> {
+    u32::try_from(raw).ok() // ffi-sentinel: GtkSourceView returns -1 when scanning or unpositioned
+}
+
 /// Write the match counter label and its accessible value text.
 ///
 /// Lives here rather than in the facade because it mutates widgets: the facade
@@ -194,7 +199,8 @@ pub(super) fn replace_all_matches(bar: &LushtextSearchBar) {
 /// "no matches" from flickering on every keystroke.
 pub(super) fn project_match_count(bar: &LushtextSearchBar, current: i32, total: i32) {
     let label = &bar.imp().match_label;
-    if let Some(count) = policy::match_count_label(current, total) {
+    if let Some(count) = policy::match_count_label(gtk_match_count(current), gtk_match_count(total))
+    {
         label.set_label(&count);
         accessibility::set_value_text(&**label, &count);
     } else {
@@ -212,21 +218,22 @@ pub(super) fn report_match_state(bar: &LushtextSearchBar) {
     let Some(context) = bar.search_context() else {
         return;
     };
-    let total = context.occurrences_count();
+    let raw_total = context.occurrences_count();
+    let total = gtk_match_count(raw_total);
     let search_text = bar.search_entry().text();
 
-    let current = if total > 0 {
+    let current = if total.is_some_and(|count| count > 0) {
         let buffer = context.buffer();
         let (selection_start, selection_end) = selection_or_cursor(&buffer);
         policy::current_occurrence(
             total,
-            context.occurrence_position(&selection_start, &selection_end),
+            gtk_match_count(context.occurrence_position(&selection_start, &selection_end)),
         )
     } else {
-        policy::current_occurrence(total, 0)
+        policy::current_occurrence(total, Some(0))
     };
 
-    bar.set_match_count(current, total);
+    bar.set_match_count(i32::try_from(current).unwrap_or(i32::MAX), raw_total);
 
     let entry = bar.search_entry();
     let no_matches = policy::query_has_no_matches(search_text.as_str(), total);

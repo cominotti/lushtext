@@ -167,7 +167,7 @@ impl LushtextEditorPage {
             )
         );
         let outlives_load =
-            self.imp().document_metadata.alert_lifetime.get() == InlineAlertLifetime::OutlivesLoad;
+            self.imp().document_metadata.alert.get().lifetime == InlineAlertLifetime::OutlivesLoad;
         shown && (protective || outlives_load)
     }
 

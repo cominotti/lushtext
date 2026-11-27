@@ -137,9 +137,8 @@ impl LushtextSidebar {
 
     /// Notify the window that the current workspace scope changed.
     pub(super) fn notify_workspace_scope_changed(&self) {
-        if let Some(ref callback) = *self.imp().workspace_scope_changed_callback.borrow() {
-            callback(self.imp().current_scope.borrow().clone());
-        }
+        let scope = self.imp().current_scope.borrow().clone();
+        self.emit_sidebar_event(super::callbacks::SidebarEvent::WorkspaceScopeChanged(scope));
     }
 
     /// Apply a selector-driven scope change, persist it, and refresh visible sections.

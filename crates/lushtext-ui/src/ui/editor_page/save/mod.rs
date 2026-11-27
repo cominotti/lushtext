@@ -140,6 +140,7 @@ pub mod evidence;
 mod execution;
 pub mod policy;
 
+pub(crate) use admission::SaveState;
 pub use evidence::SaveEvidence;
 
 use policy::SaveAdmissionPriority;
@@ -225,6 +226,6 @@ impl LushtextEditorPage {
     /// Whether this tab has a background save in progress.
     #[must_use]
     pub fn is_saving(&self) -> bool {
-        self.imp().save.inflight.get()
+        self.imp().save.is_inflight()
     }
 }

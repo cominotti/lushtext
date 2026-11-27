@@ -16,12 +16,121 @@
 //! It arrived here when slot 3b dissolved `load_save.rs`; before that it sat
 //! inside the file that also held both document workflows.
 
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
+use lushtext_model::document::encoding::{
+    DocumentEncodingState, FileHealthFinding, InvisibleCharactersMode,
+};
+use lushtext_model::values::{
+    AccessGeneration, DraftGeneration, LossyAnalysisGeneration, PolicyGeneration,
+};
 use sourceview5::prelude::*;
 
 use super::{EditorLoadState, LushtextEditorPage};
+use crate::ui::buffer_snapshot::BufferSnapshotHandle;
+
+/// Whether automatic crash recovery is paused after a snapshot exceeded policy.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum DraftRecoveryStatus {
+    #[default]
+    Normal,
+    AutomaticLimited,
+}
+
+/// Draft-recovery state scoped to one editor tab.
+#[derive(Default)]
+pub struct DraftState {
+    pub draft_dirty: Cell<bool>,
+    pub dirty_generation: Cell<DraftGeneration>,
+    pub draft_id: RefCell<Option<String>>,
+    pub draft_restored: Cell<bool>,
+    pub(crate) recovery_status: Cell<DraftRecoveryStatus>,
+}
+
+/// One editor-scoped warning action routed through the shared inline alert buttons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingWarningAction {
+    /// Open the line-ending chooser so mixed endings can be normalized.
+    NormalizeLineEndings,
+    /// Restore the buffer state that existed before a local-history restore.
+    UndoLocalHistoryRestore,
+    /// Open the local-history browser, where a stale draft's edits were kept.
+    ShowLocalHistory,
+    /// Open the Line Inspector (the Protected View alert).
+    InspectLine,
+    /// Run the Protected View entry undo (the Protected View alert).
+    UndoProtectedEntry,
+}
+
+/// Whether the editor's current inline alert survives the next successful load.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum InlineAlertLifetime {
+    SupersededByLoad,
+    #[default]
+    OutlivesLoad,
+}
+
+/// Shared info-bar action and load-survival policy for one inline alert.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct InlineAlertRoute {
+    pub(crate) warning_action: Option<PendingWarningAction>,
+    pub(crate) lifetime: InlineAlertLifetime,
+}
+
+/// Whether decoded on-disk bytes round-trip under the active encoding and BOM.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum DecodeRoundTrip {
+    #[default]
+    Exact,
+    Inexact,
+}
+
+/// Encoding, line-ending, health, and save-confirmation state for one tab.
+#[derive(Default)]
+pub struct DocumentMetadataState {
+    pub encoding_state: Cell<DocumentEncodingState>,
+    pub has_bom: Cell<bool>,
+    pub(crate) decode_round_trips: Cell<DecodeRoundTrip>,
+    pub file_health: RefCell<Vec<FileHealthFinding>>,
+    pub invisible_mode: Cell<InvisibleCharactersMode>,
+    pub(crate) alert: Cell<InlineAlertRoute>,
+    pub allow_lossy_save_once: Cell<bool>,
+    pub lossy_analysis_generation: Cell<LossyAnalysisGeneration>,
+    /// Active large-buffer capture for the newest lossy-analysis request.
+    pub lossy_analysis_snapshot: RefCell<Option<BufferSnapshotHandle>>,
+}
+
+impl DocumentMetadataState {
+    pub(crate) fn set_decode_inexact(&self, inexact: bool) {
+        self.decode_round_trips.set(if inexact {
+            DecodeRoundTrip::Inexact
+        } else {
+            DecodeRoundTrip::Exact
+        });
+    }
+
+    pub(crate) fn decode_is_inexact(&self) -> bool {
+        self.decode_round_trips.get() == DecodeRoundTrip::Inexact
+    }
+
+    pub(crate) fn update_alert(&self, f: impl FnOnce(&mut InlineAlertRoute)) {
+        let mut route = self.alert.get();
+        f(&mut route);
+        self.alert.set(route);
+    }
+}
+
+/// Window-wide memory-residency and eviction bookkeeping for one editor tab.
+#[derive(Default)]
+pub struct MemoryResidencyState {
+    pub evicted: Cell<bool>,
+    pub access_generation: Cell<AccessGeneration>,
+    pub policy_generation: Cell<PolicyGeneration>,
+    #[cfg(feature = "test-utils")]
+    pub estimate_override: Cell<Option<u64>>,
+}
 
 impl LushtextEditorPage {
     /// Set the file path (used by Save As and rename) and refresh highlighting.

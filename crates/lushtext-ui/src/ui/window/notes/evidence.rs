@@ -52,6 +52,10 @@ use super::browser::{ActiveNotesBrowser, NotesBrowserRuntimeSnapshot, OpenEditor
 
 /// Everything observable about one window's notes and bookmarks workflow.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "read-only workflow evidence DTO"
+)]
 pub struct NotesEvidence {
     /// Bounded source, query, and preview ownership for the visible browser
     /// dialog; `None` when no browser is presented.

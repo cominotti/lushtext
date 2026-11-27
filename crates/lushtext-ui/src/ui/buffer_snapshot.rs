@@ -101,23 +101,15 @@ type SnapshotCallback = Box<dyn FnOnce(BufferSnapshotOutcome)>;
 /// Result of copying a GTK buffer under a UTF-8 byte budget.
 #[derive(Debug, PartialEq, Eq)]
 pub enum BufferSnapshotOutcome {
-    /// The complete buffer was captured within the configured limit.
     Captured(BufferSnapshotPayload),
-    /// Capture exceeded the budget; the byte count is a copied lower bound.
-    ExceededLimit {
-        /// Bytes retained through the first chunk that proved overflow.
-        observed_at_least: u64,
-    },
-    /// The snapshot ended without publishing partial text.
+    ExceededLimit { observed_at_least: u64 },
     Cancelled(BufferSnapshotCancelReason),
 }
 
 /// Why a chunked snapshot rejected its partial capture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BufferSnapshotCancelReason {
-    /// The source buffer changed while capture was yielding to the main loop.
     SourceMutated,
-    /// The owning workflow superseded the capture explicitly.
     Superseded,
 }
 
@@ -150,34 +142,27 @@ impl BufferSnapshotAdmission {
         let retained_weight =
             byte_len.saturating_add(u64::try_from(size_of::<String>()).unwrap_or(u64::MAX));
         self.reservation.shrink_to(retained_weight);
+        let guarded = self.reservation.own(SnapshotChunks {
+            chunks,
+            byte_len,
+            #[cfg(feature = "test-utils")]
+            metrics,
+        });
         BufferSnapshotPayload {
-            storage: BufferSnapshotStorage::Chunked(self.reservation.own(SnapshotChunks {
-                chunks,
-                byte_len,
-                #[cfg(feature = "test-utils")]
-                metrics,
-            })),
+            storage: BufferSnapshotStorage::Chunked(guarded),
         }
     }
 }
 
 /// Scalar capture metrics, carried without exposing document text.
 ///
-/// A **component** of [`BufferSnapshotEvidence`], not an observation path of its
-/// own. These five fields were previously declared twice — here and inline in
-/// the session state type — which is exactly the duplication one surface
-/// removes.
+/// A component of [`BufferSnapshotEvidence`], declared once and embedded in session evidence.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BufferSnapshotCaptureMetrics {
-    /// Main-loop turns the capture has consumed.
     pub slice_count: usize,
-    /// Independently allocated UTF-8 chunks held so far.
     pub chunk_count: usize,
-    /// Capacity reserved for the chunk vector.
     pub reserved_chunk_capacity: usize,
-    /// Largest single chunk, in bytes.
     pub max_chunk_bytes: usize,
-    /// Total bytes observed by the capture.
     pub captured_bytes: u64,
 }
 
@@ -273,10 +258,6 @@ impl BufferSnapshotPayload {
     }
 
     /// The capture metrics for this completed payload.
-    ///
-    /// Reads a component of the lane's surface rather than being a second
-    /// observation path: a payload is a finished capture, so it has metrics but
-    /// no live session or process counters.
     #[cfg(feature = "test-utils")]
     #[must_use]
     pub fn capture_metrics(&self) -> BufferSnapshotCaptureMetrics {
@@ -330,44 +311,24 @@ impl PartialEq for BufferSnapshotPayload {
 impl Eq for BufferSnapshotPayload {}
 
 /// Process-wide handoff counters proving which thread coalesced and dropped.
-///
-/// A **component** of [`BufferSnapshotEvidence`]. Process-wide rather than
-/// per-session, which is why the surface carries it beside an optional session
-/// rather than inside one: the whole point is to prove that a document-sized
-/// body was coalesced and destroyed off the GTK thread even after the session
-/// that produced it is gone.
 #[cfg(feature = "test-utils")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BufferSnapshotHandoffCounters {
-    /// Bodies coalesced on a worker thread.
     pub worker_coalesces: u64,
-    /// Bodies coalesced on the GTK thread.
     pub gtk_coalesces: u64,
-    /// Bodies destroyed on a worker thread.
     pub worker_drops: u64,
-    /// Bodies destroyed on the GTK thread.
     pub gtk_drops: u64,
 }
 
-/// The whole observable state of the snapshot lane.
-///
-/// One accessor reads all of it — see [`buffer_snapshot_evidence`]. Both
-/// components answer honestly in every stage: `session` is `None` when no
-/// capture is live or the session has been dropped, and `handoff` is always
-/// readable because its counters outlive any session.
+/// The whole observable state of the snapshot lane (`session` is `None` once dropped).
 #[cfg(feature = "test-utils")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BufferSnapshotEvidence {
-    /// The live chunked capture, if one is still owned.
     pub session: Option<BufferSnapshotSessionEvidence>,
-    /// Process-wide worker/GTK handoff counters.
     pub handoff: BufferSnapshotHandoffCounters,
 }
 
-/// Read the lane's whole surface, optionally including one session's state.
-///
-/// Pass `None` to read the process-wide counters alone, which is the only thing
-/// observable before a capture starts or after every session has ended.
+/// Read the lane's whole surface, optionally including one live session's state.
 #[cfg(feature = "test-utils")]
 #[must_use]
 pub fn buffer_snapshot_evidence(session: Option<&BufferSnapshotHandle>) -> BufferSnapshotEvidence {
@@ -383,9 +344,6 @@ pub fn buffer_snapshot_evidence(session: Option<&BufferSnapshotHandle>) -> Buffe
 }
 
 /// Consume a payload the way a worker would, for handoff assertions.
-///
-/// An **actuator**, not an observation: it destroys the payload. Kept separate
-/// from the surface for that reason.
 #[cfg(feature = "test-utils")]
 #[must_use]
 pub fn coalesce_snapshot_payload_for_test(payload: BufferSnapshotPayload) -> String {
@@ -414,26 +372,109 @@ impl SnapshotCapacityWakeup {
             }
         }
     }
-
     fn arm(&self, observed_epoch: u64, callback: impl FnOnce() + 'static) {
         match self {
-            Self::Ordinary(wakeup) => wakeup.arm(observed_epoch, callback),
-            Self::Progress(wakeup) => wakeup.arm(observed_epoch, callback),
+            Self::Ordinary(w) => w.arm(observed_epoch, callback),
+            Self::Progress(w) => w.arm(observed_epoch, callback),
         }
     }
-
     fn cancel(&self) {
         match self {
-            Self::Ordinary(wakeup) => wakeup.cancel(),
-            Self::Progress(wakeup) => wakeup.cancel(),
+            Self::Ordinary(w) => w.cancel(),
+            Self::Progress(w) => w.cancel(),
+        }
+    }
+    #[cfg(feature = "test-utils")]
+    fn is_armed(&self) -> bool {
+        match self {
+            Self::Ordinary(w) => w.is_armed(),
+            Self::Progress(w) => w.is_armed(),
+        }
+    }
+}
+
+/// Explicit lifecycle phase for one chunked GTK snapshot session.
+#[derive(Default)]
+enum SnapshotPhase {
+    AwaitingAdmission {
+        capacity_wakeup: SnapshotCapacityWakeup,
+        callback: Option<SnapshotCallback>,
+        pending_cancel: Option<(BufferSnapshotCancelReason, Option<glib::SourceId>)>,
+    },
+    Capturing {
+        progress_mark: gtk4::TextMark,
+        chunks: Vec<String>,
+        reservation: DisposalReservation,
+        changed_handler: glib::SignalHandlerId,
+        scheduled_source: Option<glib::SourceId>,
+        callback: Option<SnapshotCallback>,
+        cancel_reason: Option<BufferSnapshotCancelReason>,
+    },
+    #[default]
+    Terminal,
+}
+
+impl SnapshotPhase {
+    fn capture_metrics(
+        chunks: Option<&Vec<String>>,
+        slice_count: usize,
+        observed_bytes: u64,
+    ) -> BufferSnapshotCaptureMetrics {
+        BufferSnapshotCaptureMetrics {
+            slice_count,
+            chunk_count: chunks.map_or(0, Vec::len),
+            reserved_chunk_capacity: chunks.map_or(0, Vec::capacity),
+            max_chunk_bytes: chunks
+                .and_then(|c| c.iter().map(String::len).max())
+                .unwrap_or(0),
+            captured_bytes: observed_bytes,
         }
     }
 
     #[cfg(feature = "test-utils")]
-    fn is_armed(&self) -> bool {
-        match self {
-            Self::Ordinary(wakeup) => wakeup.is_armed(),
-            Self::Progress(wakeup) => wakeup.is_armed(),
+    fn to_evidence(
+        &self,
+        slice_count: usize,
+        observed_bytes: u64,
+    ) -> BufferSnapshotSessionEvidence {
+        let (active, mark, handler, source, wakeup, cb, chunks) = match self {
+            Self::AwaitingAdmission {
+                capacity_wakeup,
+                callback,
+                pending_cancel,
+            } => (
+                true,
+                false,
+                false,
+                pending_cancel.as_ref().is_some_and(|(_, s)| s.is_some()),
+                capacity_wakeup.is_armed(),
+                callback.is_some(),
+                None,
+            ),
+            Self::Capturing {
+                chunks,
+                scheduled_source,
+                callback,
+                ..
+            } => (
+                true,
+                true,
+                true,
+                scheduled_source.is_some(),
+                false,
+                callback.is_some(),
+                Some(chunks),
+            ),
+            Self::Terminal => (false, false, false, false, false, false, None),
+        };
+        BufferSnapshotSessionEvidence {
+            active,
+            progress_mark_live: mark,
+            changed_handler_live: handler,
+            scheduled_source_live: source,
+            admission_retry_source_live: wakeup,
+            callback_pending: cb,
+            capture: Self::capture_metrics(chunks, slice_count, observed_bytes),
         }
     }
 }
@@ -441,21 +482,13 @@ impl SnapshotCapacityWakeup {
 /// One lifecycle-owned chunked snapshot on GTK's main thread.
 struct ChunkedSnapshotSession {
     buffer: gtk4::TextBuffer,
-    progress_mark: Option<gtk4::TextMark>,
-    chunks: Vec<String>,
     observed_bytes: u64,
-    reservation: Option<DisposalReservation>,
     byte_policy: SnapshotBytePolicy,
     admission_lane: BufferSnapshotAdmissionLane,
-    capacity_wakeup: SnapshotCapacityWakeup,
-    cancel_reason: Option<BufferSnapshotCancelReason>,
-    changed_handler: Option<glib::SignalHandlerId>,
-    scheduled_source: Option<glib::SourceId>,
-    callback: Option<SnapshotCallback>,
-    terminal: bool,
     slice_count: usize,
     #[cfg(feature = "test-utils")]
     test_mutation: Option<BufferSnapshotTestMutation>,
+    phase: SnapshotPhase,
 }
 
 /// Main-thread handle for superseding or disposing a chunked GTK snapshot.
@@ -468,29 +501,43 @@ pub struct BufferSnapshotHandle(Weak<RefCell<ChunkedSnapshotSession>>);
 impl BufferSnapshotHandle {
     /// Stop the next slice and deliver a typed cancellation outcome.
     pub(crate) fn cancel(&self) {
-        if let Some(session) = self.0.upgrade() {
-            let should_schedule = {
-                let mut state = session.borrow_mut();
-                if state.terminal || state.cancel_reason.is_some() {
-                    return;
+        let Some(session) = self.0.upgrade() else {
+            return;
+        };
+        let should_schedule = {
+            let mut state = session.borrow_mut();
+            match &mut state.phase {
+                SnapshotPhase::Terminal => return,
+                SnapshotPhase::AwaitingAdmission {
+                    capacity_wakeup,
+                    pending_cancel,
+                    ..
+                } => {
+                    if pending_cancel.is_some() {
+                        return;
+                    }
+                    capacity_wakeup.cancel();
+                    *pending_cancel = Some((BufferSnapshotCancelReason::Superseded, None));
+                    true
                 }
-                state.cancel_reason = Some(BufferSnapshotCancelReason::Superseded);
-                let awaiting_admission = state.reservation.is_none();
-                if awaiting_admission {
-                    state.capacity_wakeup.cancel();
+                SnapshotPhase::Capturing { cancel_reason, .. } => {
+                    if cancel_reason.is_some() {
+                        return;
+                    }
+                    *cancel_reason = Some(BufferSnapshotCancelReason::Superseded);
+                    false
                 }
-                awaiting_admission && state.scheduled_source.is_none()
-            };
-            if should_schedule {
-                schedule_snapshot_slice(&session);
             }
+        };
+        if should_schedule {
+            schedule_snapshot_slice(&session);
         }
     }
 
     /// Tear down a disposed owner's snapshot without invoking its callback.
     pub(crate) fn dispose(&self) {
         if let Some(session) = self.0.upgrade() {
-            finish_snapshot(&session, None);
+            finish_snapshot(&session, None, false);
         }
     }
 
@@ -498,7 +545,7 @@ impl BufferSnapshotHandle {
     pub(crate) fn is_active(&self) -> bool {
         self.0
             .upgrade()
-            .is_some_and(|session| !session.borrow().terminal)
+            .is_some_and(|session| !matches!(session.borrow().phase, SnapshotPhase::Terminal))
     }
 
     #[cfg(feature = "test-utils")]
@@ -517,49 +564,35 @@ impl BufferSnapshotHandle {
         let Some(session) = self.0.upgrade() else {
             return;
         };
-        let should_schedule = {
+        let removed_source = {
             let mut state = session.borrow_mut();
-            if state.terminal || state.reservation.is_none() {
-                false
-            } else {
-                if let Some(source) = state.scheduled_source.take() {
-                    source.remove();
-                }
-                true
+            match &mut state.phase {
+                SnapshotPhase::Capturing {
+                    scheduled_source, ..
+                } => Some(scheduled_source.take()),
+                SnapshotPhase::AwaitingAdmission { .. } | SnapshotPhase::Terminal => None,
             }
         };
-        if should_schedule {
-            schedule_snapshot_slice(&session);
+        let Some(source) = removed_source else {
+            return;
+        };
+        if let Some(source) = source {
+            source.remove();
         }
+        schedule_snapshot_slice(&session);
     }
 
-    /// This session's component of the lane's evidence surface.
-    ///
-    /// `None` once the session has been dropped, which is the honest answer
-    /// rather than a zeroed record that reads like a live idle capture. Every
-    /// field is copied out under one shared borrow that is released before the
-    /// value is returned, so no field can be read from inside a mutable borrow
-    /// of the same state.
+    /// This session's component of the lane's evidence surface (`None` once dropped).
     #[cfg(feature = "test-utils")]
     #[must_use]
     fn session_evidence(&self) -> Option<BufferSnapshotSessionEvidence> {
         let session = self.0.upgrade()?;
         let session = session.borrow();
-        Some(BufferSnapshotSessionEvidence {
-            active: !session.terminal,
-            progress_mark_live: session.progress_mark.is_some(),
-            changed_handler_live: session.changed_handler.is_some(),
-            scheduled_source_live: session.scheduled_source.is_some(),
-            admission_retry_source_live: session.capacity_wakeup.is_armed(),
-            callback_pending: session.callback.is_some(),
-            capture: BufferSnapshotCaptureMetrics {
-                slice_count: session.slice_count,
-                chunk_count: session.chunks.len(),
-                reserved_chunk_capacity: session.chunks.capacity(),
-                max_chunk_bytes: session.chunks.iter().map(String::len).max().unwrap_or(0),
-                captured_bytes: session.observed_bytes,
-            },
-        })
+        Some(
+            session
+                .phase
+                .to_evidence(session.slice_count, session.observed_bytes),
+        )
     }
 }
 
@@ -592,26 +625,16 @@ pub enum BufferSnapshotTestEdit {
 }
 
 /// One live chunked capture's ownership state and capture metrics.
-///
-/// A **component** of [`BufferSnapshotEvidence`]. The capture metrics are
-/// embedded rather than repeated: this type previously re-declared all five of
-/// them, so the same fact had two declarations and could disagree with itself.
 #[cfg(feature = "test-utils")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[expect(clippy::struct_excessive_bools, reason = "evidence DTO")]
 pub struct BufferSnapshotSessionEvidence {
-    /// Whether the session has not yet reached its terminal.
     pub active: bool,
-    /// Whether the progress mark is still installed in the buffer.
     pub progress_mark_live: bool,
-    /// Whether the buffer-changed guard handler is still connected.
     pub changed_handler_live: bool,
-    /// Whether a slice is scheduled on the main loop.
     pub scheduled_source_live: bool,
-    /// Whether the session is waiting on disposal admission capacity.
     pub admission_retry_source_live: bool,
-    /// Whether the terminal callback has yet to run.
     pub callback_pending: bool,
-    /// Scalar capture metrics for this session.
     pub capture: BufferSnapshotCaptureMetrics,
 }
 
@@ -685,9 +708,10 @@ pub(crate) fn snapshot_buffer_text_async<F: FnOnce(BufferSnapshotOutcome) + 'sta
     callback: F,
 ) -> BufferSnapshotHandle {
     start_chunked_snapshot(
-        buffer.upcast::<gtk4::TextBuffer>(),
+        buffer.upcast(),
         SnapshotBytePolicy::Unbounded,
         BufferSnapshotAdmissionLane::Ordinary,
+        None,
         Box::new(callback),
         #[cfg(feature = "test-utils")]
         None,
@@ -704,9 +728,10 @@ pub(crate) fn snapshot_buffer_text_async_budgeted<F: FnOnce(BufferSnapshotOutcom
     callback: F,
 ) -> BufferSnapshotHandle {
     start_chunked_snapshot(
-        buffer.upcast::<gtk4::TextBuffer>(),
+        buffer.upcast(),
         SnapshotBytePolicy::Limited(max_bytes),
         BufferSnapshotAdmissionLane::Ordinary,
+        None,
         Box::new(callback),
         #[cfg(feature = "test-utils")]
         None,
@@ -734,10 +759,11 @@ pub(crate) fn snapshot_buffer_text_async_progress_budgeted_admitted<
     admission: BufferSnapshotAdmission,
     callback: F,
 ) -> BufferSnapshotHandle {
-    start_chunked_snapshot_admitted(
-        buffer.upcast::<gtk4::TextBuffer>(),
+    start_chunked_snapshot(
+        buffer.upcast(),
         SnapshotBytePolicy::Limited(max_bytes),
-        admission,
+        BufferSnapshotAdmissionLane::Progress,
+        Some(admission),
         Box::new(callback),
         #[cfg(feature = "test-utils")]
         None,
@@ -751,10 +777,12 @@ pub fn snapshot_buffer_text_async_for_test<F: FnOnce(BufferSnapshotOutcome) + 's
     mutation: Option<BufferSnapshotTestMutation>,
     callback: F,
 ) -> BufferSnapshotHandle {
+    let policy = max_bytes.map_or(SnapshotBytePolicy::Unbounded, SnapshotBytePolicy::Limited);
     start_chunked_snapshot(
         buffer,
-        max_bytes.map_or(SnapshotBytePolicy::Unbounded, SnapshotBytePolicy::Limited),
+        policy,
         BufferSnapshotAdmissionLane::Ordinary,
+        None,
         Box::new(callback),
         mutation,
     )
@@ -764,85 +792,52 @@ fn start_chunked_snapshot(
     buffer: gtk4::TextBuffer,
     byte_policy: SnapshotBytePolicy,
     admission_lane: BufferSnapshotAdmissionLane,
+    preadmitted: Option<BufferSnapshotAdmission>,
     callback: SnapshotCallback,
     #[cfg(feature = "test-utils")] test_mutation: Option<BufferSnapshotTestMutation>,
 ) -> BufferSnapshotHandle {
-    let session = new_chunked_snapshot_session(
-        buffer,
-        byte_policy,
-        admission_lane,
-        callback,
-        #[cfg(feature = "test-utils")]
-        test_mutation,
-    );
-    let handle = BufferSnapshotHandle(Rc::downgrade(&session));
-    retry_snapshot_admission(&session);
-    handle
-}
-
-fn start_chunked_snapshot_admitted(
-    buffer: gtk4::TextBuffer,
-    byte_policy: SnapshotBytePolicy,
-    admission: BufferSnapshotAdmission,
-    callback: SnapshotCallback,
-    #[cfg(feature = "test-utils")] test_mutation: Option<BufferSnapshotTestMutation>,
-) -> BufferSnapshotHandle {
-    let session = new_chunked_snapshot_session(
-        buffer,
-        byte_policy,
-        BufferSnapshotAdmissionLane::Progress,
-        callback,
-        #[cfg(feature = "test-utils")]
-        test_mutation,
-    );
-    let handle = BufferSnapshotHandle(Rc::downgrade(&session));
-    activate_snapshot_session(&session, admission);
-    handle
-}
-
-fn new_chunked_snapshot_session(
-    buffer: gtk4::TextBuffer,
-    byte_policy: SnapshotBytePolicy,
-    admission_lane: BufferSnapshotAdmissionLane,
-    callback: SnapshotCallback,
-    #[cfg(feature = "test-utils")] test_mutation: Option<BufferSnapshotTestMutation>,
-) -> Rc<RefCell<ChunkedSnapshotSession>> {
-    Rc::new(RefCell::new(ChunkedSnapshotSession {
-        buffer,
-        progress_mark: None,
-        chunks: Vec::new(),
-        observed_bytes: 0,
-        reservation: None,
-        byte_policy,
-        admission_lane,
+    let phase = SnapshotPhase::AwaitingAdmission {
         capacity_wakeup: SnapshotCapacityWakeup::new(admission_lane),
-        cancel_reason: None,
-        changed_handler: None,
-        scheduled_source: None,
         callback: Some(callback),
-        terminal: false,
+        pending_cancel: None,
+    };
+    let session = Rc::new(RefCell::new(ChunkedSnapshotSession {
+        buffer,
+        observed_bytes: 0,
+        byte_policy,
+        admission_lane,
         slice_count: 0,
         #[cfg(feature = "test-utils")]
         test_mutation,
-    }))
+        phase,
+    }));
+    let handle = BufferSnapshotHandle(Rc::downgrade(&session));
+    match preadmitted {
+        Some(admission) => activate_snapshot_session(&session, admission),
+        None => retry_snapshot_admission(&session),
+    }
+    handle
 }
 
 fn retry_snapshot_admission(session: &Rc<RefCell<ChunkedSnapshotSession>>) {
-    let (char_count, byte_policy, admission_lane, cancel_reason, terminal) = {
+    let (char_count, byte_policy, admission_lane, pending_cancel) = {
         let state = session.borrow();
+        let SnapshotPhase::AwaitingAdmission { pending_cancel, .. } = &state.phase else {
+            return;
+        };
         (
             state.buffer.char_count(),
             state.byte_policy,
             state.admission_lane,
-            state.cancel_reason,
-            state.terminal,
+            pending_cancel.as_ref().map(|(reason, _)| *reason),
         )
     };
-    if terminal {
-        return;
-    }
-    if let Some(reason) = cancel_reason {
-        finish_snapshot(session, Some(BufferSnapshotOutcome::Cancelled(reason)));
+    if let Some(reason) = pending_cancel {
+        finish_snapshot(
+            session,
+            Some(BufferSnapshotOutcome::Cancelled(reason)),
+            false,
+        );
         return;
     }
 
@@ -856,12 +851,14 @@ fn retry_snapshot_admission(session: &Rc<RefCell<ChunkedSnapshotSession>>) {
     }
 
     let session_for_wakeup = Rc::clone(session);
-    session
-        .borrow()
-        .capacity_wakeup
-        .arm(observed_epoch, move || {
+    if let SnapshotPhase::AwaitingAdmission {
+        capacity_wakeup, ..
+    } = &session.borrow().phase
+    {
+        capacity_wakeup.arm(observed_epoch, move || {
             retry_snapshot_admission(&session_for_wakeup);
         });
+    }
 }
 
 fn activate_snapshot_session(
@@ -874,50 +871,94 @@ fn activate_snapshot_session(
     } = admission;
     let signal_buffer = session.borrow().buffer.clone();
     let progress_mark = signal_buffer.create_mark(None, &signal_buffer.start_iter(), true);
-    {
-        let mut state = session.borrow_mut();
-        debug_assert!(state.reservation.is_none());
-        state.capacity_wakeup.cancel();
-        state.progress_mark = Some(progress_mark);
-        state.chunks = Vec::with_capacity(chunk_capacity);
-        state.reservation = Some(reservation);
-    }
 
     let session_weak = Rc::downgrade(session);
-    let handler = signal_buffer.connect_changed(move |_| {
+    let changed_handler = signal_buffer.connect_changed(move |_| {
         let Some(session) = session_weak.upgrade() else {
             return;
         };
         let mut session = session.borrow_mut();
-        if !session.terminal && session.cancel_reason.is_none() {
+        if let SnapshotPhase::Capturing { cancel_reason, .. } = &mut session.phase
+            && cancel_reason.is_none()
+        {
             // GtkTextIter becomes invalid after character-count changes. The
             // signal records cancellation synchronously; terminal delivery is
             // deferred to the slice path to avoid workflow reentrancy here.
-            session.cancel_reason = Some(BufferSnapshotCancelReason::SourceMutated);
+            *cancel_reason = Some(BufferSnapshotCancelReason::SourceMutated);
         }
     });
-    session.borrow_mut().changed_handler = Some(handler);
+
+    let stale_source = {
+        let mut state = session.borrow_mut();
+        let SnapshotPhase::AwaitingAdmission {
+            capacity_wakeup,
+            callback,
+            pending_cancel,
+        } = std::mem::take(&mut state.phase)
+        else {
+            drop(reservation);
+            signal_buffer.disconnect(changed_handler);
+            signal_buffer.delete_mark(&progress_mark);
+            return;
+        };
+        capacity_wakeup.cancel();
+        let (cancel_reason, stale_source) =
+            pending_cancel.map_or((None, None), |(r, s)| (Some(r), s));
+        state.phase = SnapshotPhase::Capturing {
+            progress_mark,
+            chunks: Vec::with_capacity(chunk_capacity),
+            reservation,
+            changed_handler,
+            scheduled_source: None,
+            callback,
+            cancel_reason,
+        };
+        stale_source
+    };
+    if let Some(source) = stale_source {
+        source.remove();
+    }
 
     run_snapshot_slice(session);
 }
 
+fn store_scheduled_source(
+    session: &Rc<RefCell<ChunkedSnapshotSession>>,
+    source_id: glib::SourceId,
+) {
+    let mut state = session.borrow_mut();
+    match &mut state.phase {
+        SnapshotPhase::AwaitingAdmission {
+            pending_cancel: Some((_, slot)),
+            ..
+        } => {
+            *slot = Some(source_id);
+        }
+        SnapshotPhase::Capturing {
+            scheduled_source, ..
+        } => *scheduled_source = Some(source_id),
+        SnapshotPhase::AwaitingAdmission { .. } | SnapshotPhase::Terminal => {
+            drop(state);
+            source_id.remove();
+        }
+    }
+}
+
 fn schedule_snapshot_slice(session: &Rc<RefCell<ChunkedSnapshotSession>>) {
     let session_for_source = Rc::clone(session);
-    let source_id = glib::idle_add_local_once(move || {
-        run_snapshot_slice(&session_for_source);
-    });
-    session.borrow_mut().scheduled_source = Some(source_id);
+    let source_id = glib::idle_add_local_once(move || run_snapshot_slice(&session_for_source));
+    store_scheduled_source(session, source_id);
 }
 
 fn try_snapshot_admission(
     char_count: i32,
     byte_policy: SnapshotBytePolicy,
-    admission_lane: BufferSnapshotAdmissionLane,
+    lane: BufferSnapshotAdmissionLane,
 ) -> Option<BufferSnapshotAdmission> {
-    let (reservation_weight, chunk_capacity) = snapshot_allocation_plan(char_count, byte_policy);
-    let reservation = match admission_lane {
-        BufferSnapshotAdmissionLane::Ordinary => try_reserve_for_gtk(reservation_weight),
-        BufferSnapshotAdmissionLane::Progress => try_reserve_progress_for_gtk(reservation_weight),
+    let (weight, chunk_capacity) = snapshot_allocation_plan(char_count, byte_policy);
+    let reservation = match lane {
+        BufferSnapshotAdmissionLane::Ordinary => try_reserve_for_gtk(weight),
+        BufferSnapshotAdmissionLane::Progress => try_reserve_progress_for_gtk(weight),
     }?;
     Some(BufferSnapshotAdmission {
         reservation,
@@ -949,30 +990,42 @@ fn snapshot_allocation_plan(char_count: i32, byte_policy: SnapshotBytePolicy) ->
 }
 
 fn run_snapshot_slice(session: &Rc<RefCell<ChunkedSnapshotSession>>) {
-    let (buffer, mark, cancel_reason) = {
+    let step = {
         let mut state = session.borrow_mut();
-        state.scheduled_source.take();
-        if state.terminal {
+        let buffer = state.buffer.clone();
+        match &mut state.phase {
+            SnapshotPhase::Terminal => return,
+            SnapshotPhase::AwaitingAdmission { pending_cancel, .. } => {
+                match pending_cancel.take() {
+                    Some((reason, source)) => Err((reason, source)),
+                    None => return,
+                }
+            }
+            SnapshotPhase::Capturing {
+                progress_mark,
+                scheduled_source,
+                cancel_reason,
+                ..
+            } => {
+                scheduled_source.take();
+                cancel_reason
+                    .map_or_else(|| Ok((buffer, progress_mark.clone())), |r| Err((r, None)))
+            }
+        }
+    };
+    let (buffer, mark) = match step {
+        Ok(pair) => pair,
+        Err((reason, source)) => {
+            if let Some(s) = source {
+                s.remove();
+            }
+            finish_snapshot(
+                session,
+                Some(BufferSnapshotOutcome::Cancelled(reason)),
+                false,
+            );
             return;
         }
-        (
-            state.buffer.clone(),
-            state.progress_mark.clone(),
-            state.cancel_reason,
-        )
-    };
-    if let Some(reason) = cancel_reason {
-        finish_snapshot(session, Some(BufferSnapshotOutcome::Cancelled(reason)));
-        return;
-    }
-    let Some(mark) = mark else {
-        finish_snapshot(
-            session,
-            Some(BufferSnapshotOutcome::Cancelled(
-                BufferSnapshotCancelReason::Superseded,
-            )),
-        );
-        return;
     };
 
     // GTK 4 invalidates every outstanding iterator after an indexable content
@@ -991,11 +1044,11 @@ fn run_snapshot_slice(session: &Rc<RefCell<ChunkedSnapshotSession>>) {
     buffer.move_mark(&mark, &end);
 
     let overflow = {
-        let mut state = session.borrow_mut();
-        state.slice_count += 1;
+        let state = &mut *session.borrow_mut();
+        let byte_policy = state.byte_policy;
         let chunk = chunk.to_string();
         let chunk_bytes = chunk.len();
-        let overflow = match state.byte_policy {
+        let overflow = match byte_policy {
             SnapshotBytePolicy::Unbounded => {
                 state.observed_bytes = state
                     .observed_bytes
@@ -1006,133 +1059,122 @@ fn run_snapshot_slice(session: &Rc<RefCell<ChunkedSnapshotSession>>) {
                 classify_chunk_bytes(&mut state.observed_bytes, chunk_bytes, max_bytes)
             }
         };
-        state.chunks.push(chunk);
+        if let SnapshotPhase::Capturing { chunks, .. } = &mut state.phase {
+            state.slice_count += 1;
+            chunks.push(chunk);
+        }
         overflow
     };
 
     #[cfg(feature = "test-utils")]
     let paused = apply_test_mutation(session, reached_end);
 
-    let cancel_reason = session.borrow().cancel_reason;
+    let cancel_reason = match &session.borrow().phase {
+        SnapshotPhase::Capturing { cancel_reason, .. } => *cancel_reason,
+        _ => None,
+    };
     if let Some(reason) = cancel_reason {
-        finish_snapshot(session, Some(BufferSnapshotOutcome::Cancelled(reason)));
+        finish_snapshot(
+            session,
+            Some(BufferSnapshotOutcome::Cancelled(reason)),
+            false,
+        );
         return;
     }
     if let Some(outcome) = overflow {
-        finish_snapshot(session, Some(outcome));
+        finish_snapshot(session, Some(outcome), false);
         return;
     }
     if reached_end {
-        finish_captured_snapshot(session);
+        finish_snapshot(session, None, true);
         return;
     }
     #[cfg(feature = "test-utils")]
-    if paused {
-        // The public lifecycle handle is intentionally weak. Retain the paused
-        // test session through a removable source just like an ordinary slice.
-        let session_for_source = Rc::clone(session);
-        let source_id =
-            glib::timeout_add_local_once(BUFFER_SNAPSHOT_TEST_PAUSE_TIMEOUT, move || {
-                run_snapshot_slice(&session_for_source);
-            });
-        session.borrow_mut().scheduled_source = Some(source_id);
-        return;
-    }
-
-    // One millisecond gives GTK a scheduling point without materially slowing
-    // a many-megabyte capture. The source ID stays session-owned so disposal
-    // removes it immediately rather than leaving a stale callback queued.
+    let delay = if paused {
+        BUFFER_SNAPSHOT_TEST_PAUSE_TIMEOUT
+    } else {
+        Duration::from_millis(1)
+    };
+    #[cfg(not(feature = "test-utils"))]
+    let delay = Duration::from_millis(1);
     let session_for_source = Rc::clone(session);
-    let source_id = glib::timeout_add_local_once(Duration::from_millis(1), move || {
-        run_snapshot_slice(&session_for_source);
-    });
-    session.borrow_mut().scheduled_source = Some(source_id);
+    let source_id =
+        glib::timeout_add_local_once(delay, move || run_snapshot_slice(&session_for_source));
+    store_scheduled_source(session, source_id);
 }
 
 fn finish_snapshot(
     session: &Rc<RefCell<ChunkedSnapshotSession>>,
     outcome: Option<BufferSnapshotOutcome>,
-) {
-    finish_snapshot_inner(session, outcome, false);
-}
-
-fn finish_captured_snapshot(session: &Rc<RefCell<ChunkedSnapshotSession>>) {
-    finish_snapshot_inner(session, None, true);
-}
-
-fn finish_snapshot_inner(
-    session: &Rc<RefCell<ChunkedSnapshotSession>>,
-    outcome: Option<BufferSnapshotOutcome>,
     captured: bool,
 ) {
-    session.borrow().capacity_wakeup.cancel();
-    let (buffer, chunks, observed_bytes, reservation, mark, handler, source, callback, metrics) = {
+    let (buffer, observed_bytes, slice_count, old_phase) = {
         let mut state = session.borrow_mut();
-        if state.terminal {
+        let old_phase = std::mem::take(&mut state.phase);
+        if matches!(old_phase, SnapshotPhase::Terminal) {
             return;
         }
-        state.terminal = true;
-        let metrics = BufferSnapshotCaptureMetrics {
-            slice_count: state.slice_count,
-            chunk_count: state.chunks.len(),
-            reserved_chunk_capacity: state.chunks.capacity(),
-            max_chunk_bytes: state.chunks.iter().map(String::len).max().unwrap_or(0),
-            captured_bytes: state.observed_bytes,
-        };
         (
             state.buffer.clone(),
-            std::mem::take(&mut state.chunks),
             state.observed_bytes,
-            state.reservation.take(),
-            state.progress_mark.take(),
-            state.changed_handler.take(),
-            state.scheduled_source.take(),
-            state.callback.take(),
-            metrics,
+            state.slice_count,
+            old_phase,
         )
     };
-
-    if let Some(source) = source {
-        source.remove();
-    }
-    if let Some(handler) = handler {
-        buffer.disconnect(handler);
-    }
-    if let Some(mark) = mark {
-        buffer.delete_mark(&mark);
-    }
-    let Some(mut reservation) = reservation else {
-        debug_assert!(!captured);
-        debug_assert!(chunks.is_empty());
-        if let (Some(outcome), Some(callback)) = (outcome, callback) {
-            callback(outcome);
+    match old_phase {
+        SnapshotPhase::Terminal => {}
+        SnapshotPhase::AwaitingAdmission {
+            capacity_wakeup,
+            callback,
+            pending_cancel,
+        } => {
+            capacity_wakeup.cancel();
+            if let Some((_, Some(source))) = pending_cancel {
+                source.remove();
+            }
+            debug_assert!(!captured);
+            if let (Some(outcome), Some(callback)) = (outcome, callback) {
+                callback(outcome);
+            }
         }
-        return;
-    };
-    let retained_weight = observed_bytes.saturating_add(
-        u64::try_from(metrics.reserved_chunk_capacity)
-            .unwrap_or(u64::MAX)
-            .saturating_mul(u64::try_from(size_of::<String>()).unwrap_or(u64::MAX)),
-    );
-    reservation.shrink_to(retained_weight);
-    let guarded = reservation.own(SnapshotChunks {
-        chunks,
-        byte_len: observed_bytes,
-        #[cfg(feature = "test-utils")]
-        metrics,
-    });
-    if captured {
-        if let Some(callback) = callback {
-            callback(BufferSnapshotOutcome::Captured(BufferSnapshotPayload {
-                storage: BufferSnapshotStorage::Chunked(guarded),
-            }));
-        }
-    } else {
-        // Cancellation, overflow, and silent teardown hand off every retained
-        // chunk before a compact terminal callback can synchronously retry.
-        drop(guarded);
-        if let (Some(outcome), Some(callback)) = (outcome, callback) {
-            callback(outcome);
+        SnapshotPhase::Capturing {
+            progress_mark,
+            chunks,
+            mut reservation,
+            changed_handler,
+            scheduled_source,
+            callback,
+            ..
+        } => {
+            if let Some(source) = scheduled_source {
+                source.remove();
+            }
+            buffer.disconnect(changed_handler);
+            buffer.delete_mark(&progress_mark);
+            let metrics =
+                SnapshotPhase::capture_metrics(Some(&chunks), slice_count, observed_bytes);
+            let header = u64::try_from(metrics.reserved_chunk_capacity)
+                .unwrap_or(u64::MAX)
+                .saturating_mul(u64::try_from(size_of::<String>()).unwrap_or(u64::MAX));
+            reservation.shrink_to(observed_bytes.saturating_add(header));
+            let guarded = reservation.own(SnapshotChunks {
+                chunks,
+                byte_len: observed_bytes,
+                #[cfg(feature = "test-utils")]
+                metrics,
+            });
+            if captured {
+                if let Some(callback) = callback {
+                    callback(BufferSnapshotOutcome::Captured(BufferSnapshotPayload {
+                        storage: BufferSnapshotStorage::Chunked(guarded),
+                    }));
+                }
+            } else {
+                drop(guarded);
+                if let (Some(outcome), Some(callback)) = (outcome, callback) {
+                    callback(outcome);
+                }
+            }
         }
     }
 }
@@ -1141,55 +1183,45 @@ fn finish_snapshot_inner(
 fn apply_test_mutation(session: &Rc<RefCell<ChunkedSnapshotSession>>, reached_end: bool) -> bool {
     let mutation = {
         let mut state = session.borrow_mut();
-        let should_run = state
-            .test_mutation
-            .is_some_and(|mutation| match mutation.trigger {
-                BufferSnapshotTestTrigger::AfterSlice(slice) => slice == state.slice_count,
-                BufferSnapshotTestTrigger::FinalSlice => reached_end,
-            });
-        should_run.then(|| state.test_mutation.take()).flatten()
+        let matches = state.test_mutation.is_some_and(|m| match m.trigger {
+            BufferSnapshotTestTrigger::AfterSlice(slice) => slice == state.slice_count,
+            BufferSnapshotTestTrigger::FinalSlice => reached_end,
+        });
+        matches.then(|| state.test_mutation.take()).flatten()
     };
     let Some(mutation) = mutation else {
         return false;
     };
-    if mutation.edit == BufferSnapshotTestEdit::Dispose {
-        finish_snapshot(session, None);
-        return false;
+    match mutation.edit {
+        BufferSnapshotTestEdit::Dispose => {
+            finish_snapshot(session, None, false);
+            return false;
+        }
+        BufferSnapshotTestEdit::Pause => return true,
+        _ => {}
     }
-    if mutation.edit == BufferSnapshotTestEdit::Pause {
-        return true;
-    }
-
     let (buffer, mark) = {
         let state = session.borrow();
-        (state.buffer.clone(), state.progress_mark.clone())
+        let mark = match &state.phase {
+            SnapshotPhase::Capturing { progress_mark, .. } => Some(progress_mark.clone()),
+            _ => None,
+        };
+        (state.buffer.clone(), mark)
     };
-    let Some(mark) = mark else {
-        return false;
+    let Some(mark) = mark else { return false };
+    let delete_one = |mut s: gtk4::TextIter| {
+        let mut e = s;
+        if e.forward_char() {
+            buffer.delete(&mut s, &mut e);
+        }
     };
     match mutation.edit {
         BufferSnapshotTestEdit::InsertBeforeMark => {
-            let mut iter = buffer.start_iter();
-            buffer.insert(&mut iter, "before");
+            buffer.insert(&mut buffer.start_iter(), "before");
         }
-        BufferSnapshotTestEdit::InsertAfterMark => {
-            let mut iter = buffer.end_iter();
-            buffer.insert(&mut iter, "after");
-        }
-        BufferSnapshotTestEdit::DeleteBeforeMark => {
-            let mut start = buffer.start_iter();
-            let mut end = start;
-            if end.forward_char() {
-                buffer.delete(&mut start, &mut end);
-            }
-        }
-        BufferSnapshotTestEdit::DeleteAfterMark => {
-            let mut start = buffer.iter_at_mark(&mark);
-            let mut end = start;
-            if end.forward_char() {
-                buffer.delete(&mut start, &mut end);
-            }
-        }
+        BufferSnapshotTestEdit::InsertAfterMark => buffer.insert(&mut buffer.end_iter(), "after"),
+        BufferSnapshotTestEdit::DeleteBeforeMark => delete_one(buffer.start_iter()),
+        BufferSnapshotTestEdit::DeleteAfterMark => delete_one(buffer.iter_at_mark(&mark)),
         BufferSnapshotTestEdit::Dispose | BufferSnapshotTestEdit::Pause => unreachable!(),
     }
     false

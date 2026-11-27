@@ -77,6 +77,9 @@ mod chrome;
 #[cfg(feature = "test-utils")]
 pub mod evidence;
 
+use chrome::FocusModePhase;
+pub(in crate::ui::window) use chrome::FocusModeState;
+
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::gio;
 use gtk4::prelude::*;
@@ -147,7 +150,7 @@ impl LushtextWindow {
     /// Return whether this window is currently in Focus Mode.
     #[must_use]
     pub(crate) fn is_focus_mode_active(&self) -> bool {
-        self.imp().focus_mode.active.get()
+        self.imp().focus_mode.is_active()
     }
 
     /// Record that the user changed preview state while Focus Mode was active.
@@ -156,11 +159,11 @@ impl LushtextWindow {
     /// restore a previous side-by-side preview over a preview state the user
     /// asked for during the focused session.
     pub(crate) fn mark_focus_mode_preview_changed(&self) {
-        if self.is_focus_mode_active() {
-            self.imp()
-                .focus_mode
-                .preview_changed_while_focused
-                .set(true);
+        if let FocusModePhase::Active { entry, .. } = self.imp().focus_mode.phase.get() {
+            self.imp().focus_mode.phase.set(FocusModePhase::Active {
+                entry,
+                preview_changed_while_focused: true,
+            });
         }
     }
 
@@ -186,7 +189,7 @@ impl LushtextWindow {
     /// Enter Focus Mode, capturing the shell state that exit must restore.
     fn enter_focus_mode(&self) {
         let imp = self.imp();
-        if imp.focus_mode.active.get() {
+        if imp.focus_mode.is_active() {
             return;
         }
 
@@ -195,14 +198,10 @@ impl LushtextWindow {
             was_fullscreen: self.is_fullscreen(),
             had_side_by_side_preview: imp.preview_visible.get(),
         };
-        imp.focus_mode.active.set(true);
-        imp.focus_mode
-            .was_fullscreen_on_entry
-            .set(entry.was_fullscreen);
-        imp.focus_mode
-            .restore_side_by_side_preview
-            .set(entry.had_side_by_side_preview);
-        imp.focus_mode.preview_changed_while_focused.set(false);
+        imp.focus_mode.phase.set(FocusModePhase::Active {
+            entry,
+            preview_changed_while_focused: false,
+        });
 
         // Stage 2 — take.
         if !entry.was_fullscreen {
@@ -229,20 +228,22 @@ impl LushtextWindow {
     /// Leave Focus Mode, restoring only the shell state this mode borrowed.
     fn exit_focus_mode(&self) {
         let imp = self.imp();
-        if !imp.focus_mode.active.get() {
+        let FocusModePhase::Active {
+            entry,
+            preview_changed_while_focused,
+        } = imp.focus_mode.phase.get()
+        else {
             return;
-        }
+        };
 
         // Stage 1 — decide, before any state is cleared.
-        let entry = FocusModeEntry {
-            was_fullscreen: imp.focus_mode.was_fullscreen_on_entry.get(),
-            had_side_by_side_preview: imp.focus_mode.restore_side_by_side_preview.get(),
-        };
-        let restore =
-            policy::exit_restoration(entry, imp.focus_mode.preview_changed_while_focused.get());
+        let restore = policy::exit_restoration(entry, preview_changed_while_focused);
 
         // Stage 2 — give back.
-        imp.focus_mode.active.set(false);
+        imp.focus_mode.phase.set(FocusModePhase::Inactive {
+            last_entry: entry,
+            last_preview_changed_while_focused: preview_changed_while_focused,
+        });
         let _ = imp.focus_mode.affordance_timer.invalidate();
         chrome::set_affordance_revealed(self, false);
         self.set_preview_mode_for_focus_mode(false);
@@ -283,7 +284,7 @@ impl LushtextWindow {
     /// timer's callback one budget later.
     pub(super) fn reveal_focus_mode_affordance_temporarily(&self) {
         let imp = self.imp();
-        if !imp.focus_mode.active.get() {
+        if !imp.focus_mode.is_active() {
             return;
         }
         chrome::set_affordance_revealed(self, true);
@@ -320,7 +321,7 @@ impl LushtextWindow {
             .state()
             .and_then(|state| state.get::<bool>())
             .unwrap_or(!active);
-        if active != self.imp().focus_mode.active.get() {
+        if active != self.imp().focus_mode.is_active() {
             action.change_state(&active.to_variant());
         } else if current != active {
             action.set_state(&active.to_variant());
