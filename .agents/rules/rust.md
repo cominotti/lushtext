@@ -526,6 +526,18 @@ indices (`usize`), slice indexing, and single-function temporaries as primitives
 `scripts/check-domain-value-types.py` (in `make check-policy`) gates both the
 layout assertions and boundary field usage.
 
+## Two-Zone Rust Rule (Hot / Kani / Arena vs Cold / Orchestration)
+
+LushText separates performance-critical / formally verified Rust from cold UI orchestration:
+
+- **Hot / Kani / Arena zone** (`lushtext-model` proven modules, `ui/**/policy.rs`, `services/editor_io/text_scans/`, `services/palette/index/`, `services/palette/fuzzy`, `services/search/content_search` inner loops): keep strict zero-cost semantics — slices, borrowed views, `Copy` value types, `FileOrdinal(u32)` / `usize` indices, and pinned cache layouts. Zero `Arc` in `ui/**/policy.rs` or Kani-checked cores (except documented non-Kani attachments such as `DocumentProfile::fold_plan`), and zero `Box<dyn>` inside hot ranking/scan loops.
+- **Cold / Orchestration / UI zone** (`ui/**` shells/widgets, dialogs, async workers):
+  - Prefer concrete parameter types (`&Path` / `SharedPath`) over needless `<P: AsRef<Path>>` monomorphization.
+  - Prefer `SharedPath(Arc<Path>)` / `SharedStr(Arc<str>)` / `SharedPaths` (`lushtext-model::values::shared`, isolated from Kani) for cheap `O(1)` cloning of bounded immutable paths, IDs, and labels across GTK closures and `spawn_blocking_then` handoffs — never double-indirected `Arc<PathBuf>`.
+  - Document-sized payloads shared with workers (`String`, `Vec<u8>`, `FileIndex`, note/preview snapshots) **must** wrap `Arc<DisposalOwned<T>>` (`ui::plain_disposal`), never naked `Arc<String>` or `Arc<Vec<u8>>`.
+  - Box large, rarely populated cold optional/enum state (`Option<Box<T>>`), and convert cold UI generic `<F: Fn*>` helpers to `Box<dyn Fn...>` or thin `<= 8`-line `impl Fn*` facades calling non-generic `fn *_inner(..., Box<dyn Fn...>)` (`<= 25` cold UI generic `Fn` signatures).
+  - Enforced by `scripts/check-arc-safety.py` (`make check-arc-safety`, in `make check-policy`).
+
 ## Error Handling
 
 - Services and cross-module UI boundaries return domain-named `thiserror::Error` enums per workflow/domain (per "Error and Literal Ownership" above), never `anyhow::Result` or `Result<_, String>` (`scripts/check-error-contracts.py` and `scripts/check-hexagonal-boundaries.py` enforce this in `make check-policy`). Preserve underlying causes via `#[source]` / `#[from]` where lossless so callers and logs keep structured context without error-string matching or downcasting.

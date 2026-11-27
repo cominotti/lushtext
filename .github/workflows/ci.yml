@@ -90,6 +90,9 @@ jobs:
       - name: Idiomatic state machines and C-ism ceilings
         run: make check-idiomatic-state
 
+      - name: Two-Zone Arc safety and cold generic-Fn ceilings
+        run: make check-arc-safety
+
       - name: Agent guidance and skill policy
         run: make check-agent-skills
 
