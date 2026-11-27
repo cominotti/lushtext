@@ -22,6 +22,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
 
+use lushtext_model::values::RenderGeneration;
 use lushtext_services::notes::markdown_render::{
     InlineFootnoteLowering, lower_inline_footnotes_cancellable, plan_markdown_cancellable,
 };
@@ -37,7 +38,7 @@ impl LushtextMarkdownPreview {
     /// Keep one document-sized planner active and one replaceable latest source.
     pub(super) fn enqueue_markdown_plan(
         &self,
-        generation: u64,
+        generation: RenderGeneration,
         markdown: &str,
         context: MarkdownPreviewRenderContext,
     ) {
@@ -123,7 +124,7 @@ impl LushtextMarkdownPreview {
                         }
                         InlineFootnoteLowering::Cancelled => None,
                     };
-                    if generation_counter.load(Ordering::Acquire) == generation {
+                    if generation_counter.load(Ordering::Acquire) == generation.get() {
                         plan
                     } else {
                         if plan.is_some() {
@@ -150,11 +151,7 @@ impl LushtextMarkdownPreview {
                 imp.planning_worker_running.set(false);
                 imp.planning_cancel_token.take();
                 if let Some(plan) = plan {
-                    if imp
-                        .render_session
-                        .borrow()
-                        .is_current(lushtext_model::values::RenderGeneration::new(generation))
-                    {
+                    if imp.render_session.borrow().is_current(generation) {
                         preview.start_render_plan(generation, plan, context);
                     } else {
                         preview.retire_guarded_markdown(plan);
@@ -162,9 +159,7 @@ impl LushtextMarkdownPreview {
                 }
                 let queued = imp.queued_plan.take();
                 if let Some(queued) = queued {
-                    if imp.render_session.borrow().is_current(
-                        lushtext_model::values::RenderGeneration::new(queued.generation),
-                    ) {
+                    if imp.render_session.borrow().is_current(queued.generation) {
                         preview.spawn_markdown_plan(queued);
                     } else {
                         preview.retire_guarded_markdown(queued);

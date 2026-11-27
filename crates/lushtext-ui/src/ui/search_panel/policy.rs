@@ -37,6 +37,7 @@ use std::sync::Arc;
 
 use crate::ui::search_bar::policy::EditorReplacePrefill;
 use lushtext_model::budgets::list_budget::grouped_thousands;
+use lushtext_model::values::{FlightGeneration, ReplacePreviewGeneration, UndoBackupGeneration};
 use lushtext_model::workspace::content_search::{
     ReplacePreviewBudget, ReplacePreviewOutcome, ReplaceSkipReason, ReplaceSkipReport,
     ReplaceSkippedFile, Replacement, SearchMatchId, SearchQuerySpec,
@@ -170,8 +171,11 @@ pub fn combined_undo_weight(weights: impl IntoIterator<Item = Option<u64>>) -> O
 /// mismatch means a newer Replace All or undo already superseded this one, so
 /// the step must abandon its payload rather than resurrect stale journal state.
 #[must_use]
-pub const fn journal_generation_is_current(observed: u32, reserved: u32) -> bool {
-    observed == reserved
+pub const fn journal_generation_is_current(
+    observed: UndoBackupGeneration,
+    reserved: UndoBackupGeneration,
+) -> bool {
+    observed.get() == reserved.get()
 }
 
 /// Observable counts from the most recent durable Replace All apply.
@@ -251,7 +255,7 @@ pub struct WorkspaceSearchRequest {
 /// One request admitted to become the only active controller/walker group.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceSearchStart {
-    pub generation: u64,
+    pub generation: FlightGeneration,
     pub request: WorkspaceSearchRequest,
 }
 
@@ -259,7 +263,7 @@ pub struct WorkspaceSearchStart {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkspaceSearchSubmission {
     Start(WorkspaceSearchStart),
-    Supersede { active_generation: u64 },
+    Supersede { active_generation: FlightGeneration },
 }
 
 /// Direct ownership counters for readiness and concurrency evidence.
@@ -267,7 +271,7 @@ pub enum WorkspaceSearchSubmission {
 pub struct WorkspaceSearchFlightSnapshot {
     pub active: usize,
     pub pending: usize,
-    pub active_generation: Option<u64>,
+    pub active_generation: Option<FlightGeneration>,
 }
 
 /// At most one active search plus one replaceable latest pending request.
@@ -294,23 +298,22 @@ impl WorkspaceSearchFlight {
         let active_generation = self.coordinator.active_generation();
         match self.coordinator.submit(request) {
             Some(start) => WorkspaceSearchSubmission::Start(WorkspaceSearchStart {
-                generation: start.generation.get(),
+                generation: start.generation,
                 request: start.request,
             }),
             None => WorkspaceSearchSubmission::Supersede {
                 active_generation: active_generation
-                    .expect("a superseded submission always has an active generation")
-                    .get(),
+                    .expect("a superseded submission always has an active generation"),
             },
         }
     }
 
     /// Finish only the current generation and admit the retained latest query.
-    pub fn finish(&mut self, generation: u64) -> Option<WorkspaceSearchStart> {
+    pub fn finish(&mut self, generation: FlightGeneration) -> Option<WorkspaceSearchStart> {
         self.coordinator
-            .finish(lushtext_model::values::FlightGeneration::new(generation))
+            .finish(generation)
             .map(|start| WorkspaceSearchStart {
-                generation: start.generation.get(),
+                generation: start.generation,
                 request: start.request,
             })
     }
@@ -326,10 +329,7 @@ impl WorkspaceSearchFlight {
         WorkspaceSearchFlightSnapshot {
             active: snapshot.active,
             pending: snapshot.pending,
-            active_generation: self
-                .coordinator
-                .active_generation()
-                .map(lushtext_model::values::FlightGeneration::get),
+            active_generation: self.coordinator.active_generation(),
         }
     }
 }
@@ -385,14 +385,14 @@ impl SearchRetirementSliceBudget {
 /// impossible to compare loosely.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplacePreviewTicket {
-    generation: u32,
+    generation: ReplacePreviewGeneration,
     query_spec: SearchQuerySpec,
 }
 
 /// Live preview state observed on GTK when a preview worker completion resumes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplacePreviewFacts {
-    pub generation: u32,
+    pub generation: ReplacePreviewGeneration,
     pub pending: bool,
     pub query_spec: SearchQuerySpec,
 }
@@ -400,7 +400,7 @@ pub struct ReplacePreviewFacts {
 impl ReplacePreviewTicket {
     /// Capture the expectation for one preview attempt at its entry point.
     #[must_use]
-    pub fn new(generation: u32, query_spec: SearchQuerySpec) -> Self {
+    pub fn new(generation: ReplacePreviewGeneration, query_spec: SearchQuerySpec) -> Self {
         Self {
             generation,
             query_spec,
@@ -408,7 +408,7 @@ impl ReplacePreviewTicket {
     }
 
     #[must_use]
-    pub const fn generation(&self) -> u32 {
+    pub const fn generation(&self) -> ReplacePreviewGeneration {
         self.generation
     }
 
@@ -846,7 +846,7 @@ mod preview_ticket_tests {
 
     fn facts(generation: u32, pending: bool, query: &str) -> ReplacePreviewFacts {
         ReplacePreviewFacts {
-            generation,
+            generation: ReplacePreviewGeneration::new(generation),
             pending,
             query_spec: spec(query),
         }
@@ -854,8 +854,8 @@ mod preview_ticket_tests {
 
     #[test]
     fn matching_generation_pending_and_query_publishes() {
-        let ticket = ReplacePreviewTicket::new(7, spec("needle"));
-        assert_eq!(ticket.generation(), 7);
+        let ticket = ReplacePreviewTicket::new(ReplacePreviewGeneration::new(7), spec("needle"));
+        assert_eq!(ticket.generation(), ReplacePreviewGeneration::new(7));
         assert_eq!(ticket.query_spec(), &spec("needle"));
         assert!(ticket.is_current(&facts(7, true, "needle")));
         assert!(ticket.may_dispatch(&facts(7, true, "needle")));
@@ -863,7 +863,7 @@ mod preview_ticket_tests {
 
     #[test]
     fn each_stale_clause_rejects_the_completion() {
-        let ticket = ReplacePreviewTicket::new(7, spec("needle"));
+        let ticket = ReplacePreviewTicket::new(ReplacePreviewGeneration::new(7), spec("needle"));
         assert!(!ticket.is_current(&facts(8, true, "needle")));
         assert!(!ticket.is_current(&facts(7, false, "needle")));
         assert!(!ticket.is_current(&facts(7, true, "other")));
@@ -873,9 +873,9 @@ mod preview_ticket_tests {
     fn same_generation_with_changed_options_is_not_current() {
         let mut changed = spec("needle");
         changed.options.regex = true;
-        let ticket = ReplacePreviewTicket::new(3, spec("needle"));
+        let ticket = ReplacePreviewTicket::new(ReplacePreviewGeneration::new(3), spec("needle"));
         assert!(!ticket.is_current(&ReplacePreviewFacts {
-            generation: 3,
+            generation: ReplacePreviewGeneration::new(3),
             pending: true,
             query_spec: changed,
         }));
@@ -883,7 +883,7 @@ mod preview_ticket_tests {
 
     #[test]
     fn dispatch_ignores_query_drift_but_not_generation_or_pending() {
-        let ticket = ReplacePreviewTicket::new(2, spec("needle"));
+        let ticket = ReplacePreviewTicket::new(ReplacePreviewGeneration::new(2), spec("needle"));
         assert!(ticket.may_dispatch(&facts(2, true, "typed-more")));
         assert!(!ticket.may_dispatch(&facts(3, true, "needle")));
         assert!(!ticket.may_dispatch(&facts(2, false, "needle")));
@@ -891,9 +891,13 @@ mod preview_ticket_tests {
 
     #[test]
     fn superseding_a_retained_request_replaces_the_whole_expectation() {
-        let mut ticket = ReplacePreviewTicket::new(2, spec("needle"));
-        ticket.supersede(ReplacePreviewTicket::new(5, spec("latest")));
-        assert_eq!(ticket.generation(), 5);
+        let mut ticket =
+            ReplacePreviewTicket::new(ReplacePreviewGeneration::new(2), spec("needle"));
+        ticket.supersede(ReplacePreviewTicket::new(
+            ReplacePreviewGeneration::new(5),
+            spec("latest"),
+        ));
+        assert_eq!(ticket.generation(), ReplacePreviewGeneration::new(5));
         assert!(ticket.is_current(&facts(5, true, "latest")));
         assert!(!ticket.is_current(&facts(2, true, "needle")));
     }
@@ -952,7 +956,13 @@ mod flight_tests {
             panic!("first request should start");
         };
         flight.submit(request("latest"));
-        assert!(flight.finish(first.generation.wrapping_add(99)).is_none());
+        assert!(
+            flight
+                .finish(FlightGeneration::new(
+                    first.generation.get().wrapping_add(99)
+                ))
+                .is_none()
+        );
         assert_eq!(flight.snapshot().active_generation, Some(first.generation));
     }
 
@@ -1205,13 +1215,20 @@ mod replace_weight_tests {
 
     #[test]
     fn journal_generation_matches_only_its_own_reservation() {
-        assert!(journal_generation_is_current(7, 7));
-        assert!(!journal_generation_is_current(8, 7));
-        assert!(!journal_generation_is_current(6, 7));
-        assert!(journal_generation_is_current(0, 0));
+        let g = UndoBackupGeneration::new;
+        assert!(journal_generation_is_current(g(7), g(7)));
+        assert!(!journal_generation_is_current(g(8), g(7)));
+        assert!(!journal_generation_is_current(g(6), g(7)));
+        assert!(journal_generation_is_current(
+            UndoBackupGeneration::ZERO,
+            UndoBackupGeneration::ZERO
+        ));
         // The counter wraps, so the far side of a wrap must not be accepted.
-        assert!(!journal_generation_is_current(0, u32::MAX));
-        assert!(journal_generation_is_current(u32::MAX, u32::MAX));
+        assert!(!journal_generation_is_current(
+            UndoBackupGeneration::ZERO,
+            g(u32::MAX)
+        ));
+        assert!(journal_generation_is_current(g(u32::MAX), g(u32::MAX)));
     }
 
     #[test]

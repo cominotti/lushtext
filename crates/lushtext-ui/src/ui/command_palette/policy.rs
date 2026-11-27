@@ -532,7 +532,7 @@ pub const fn index_flush_is_blocked(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FileIndexMutationTicket {
     /// Generation of the index this batch cloned from.
-    pub base_generation: u64,
+    pub base_generation: lushtext_model::values::FileIndexGeneration,
     /// Batch kind the worker was dispatched with.
     pub kind: FileIndexUpdateBatchKind,
 }
@@ -541,7 +541,7 @@ pub struct FileIndexMutationTicket {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FileIndexMutationFacts {
     /// Generation the installed index currently carries.
-    pub live_generation: u64,
+    pub live_generation: lushtext_model::values::FileIndexGeneration,
 }
 
 /// What a resuming mutation completion is allowed to do.
@@ -550,7 +550,7 @@ pub enum FileIndexMutationArbitration {
     /// The batch still descends from the live index; install it.
     Accept {
         /// Generation the installed index takes.
-        next_generation: u64,
+        next_generation: lushtext_model::values::FileIndexGeneration,
     },
     /// A full replacement won the race; discard and replay through a rebuild.
     RejectAndReplay,
@@ -559,7 +559,10 @@ pub enum FileIndexMutationArbitration {
 impl FileIndexMutationTicket {
     /// Open one batch against the generation it cloned from.
     #[must_use]
-    pub const fn new(base_generation: u64, kind: FileIndexUpdateBatchKind) -> Self {
+    pub const fn new(
+        base_generation: lushtext_model::values::FileIndexGeneration,
+        kind: FileIndexUpdateBatchKind,
+    ) -> Self {
         Self {
             base_generation,
             kind,
@@ -569,7 +572,7 @@ impl FileIndexMutationTicket {
     /// Whether the live index is still the one this batch cloned from.
     #[must_use]
     pub const fn is_current(&self, facts: FileIndexMutationFacts) -> bool {
-        self.base_generation == facts.live_generation
+        self.base_generation.get() == facts.live_generation.get()
     }
 
     /// Decide install-or-replay for one resuming worker completion.
@@ -581,7 +584,7 @@ impl FileIndexMutationTicket {
     pub const fn arbitrate(&self, facts: FileIndexMutationFacts) -> FileIndexMutationArbitration {
         if self.is_current(facts) {
             FileIndexMutationArbitration::Accept {
-                next_generation: self.base_generation.wrapping_add(1),
+                next_generation: self.base_generation.next(),
             }
         } else {
             FileIndexMutationArbitration::RejectAndReplay
@@ -1030,20 +1033,29 @@ mod tests {
 
     #[test]
     fn mutation_ticket_accepts_only_its_own_base_generation() {
-        let ticket = FileIndexMutationTicket::new(7, FileIndexUpdateBatchKind::Incremental);
-        assert!(ticket.is_current(FileIndexMutationFacts { live_generation: 7 }));
+        let gen7 = lushtext_model::values::FileIndexGeneration::new(7);
+        let gen8 = lushtext_model::values::FileIndexGeneration::new(8);
+        let ticket = FileIndexMutationTicket::new(gen7, FileIndexUpdateBatchKind::Incremental);
+        assert!(ticket.is_current(FileIndexMutationFacts {
+            live_generation: gen7
+        }));
         assert_eq!(
-            ticket.arbitrate(FileIndexMutationFacts { live_generation: 7 }),
-            FileIndexMutationArbitration::Accept { next_generation: 8 }
+            ticket.arbitrate(FileIndexMutationFacts {
+                live_generation: gen7
+            }),
+            FileIndexMutationArbitration::Accept {
+                next_generation: gen8
+            }
         );
     }
 
     #[test]
     fn mutation_ticket_rejects_every_other_generation() {
-        let ticket = FileIndexMutationTicket::new(7, FileIndexUpdateBatchKind::Incremental);
+        let gen7 = lushtext_model::values::FileIndexGeneration::new(7);
+        let ticket = FileIndexMutationTicket::new(gen7, FileIndexUpdateBatchKind::Incremental);
         for live in [0u64, 6, 8, 9, u64::MAX] {
             let facts = FileIndexMutationFacts {
-                live_generation: live,
+                live_generation: lushtext_model::values::FileIndexGeneration::new(live),
             };
             assert!(!ticket.is_current(facts), "generation {live} is not 7");
             assert_eq!(
@@ -1056,12 +1068,15 @@ mod tests {
 
     #[test]
     fn mutation_ticket_next_generation_wraps() {
-        let ticket = FileIndexMutationTicket::new(u64::MAX, FileIndexUpdateBatchKind::Rebuild);
+        let max_gen = lushtext_model::values::FileIndexGeneration::new(u64::MAX);
+        let ticket = FileIndexMutationTicket::new(max_gen, FileIndexUpdateBatchKind::Rebuild);
         assert_eq!(
             ticket.arbitrate(FileIndexMutationFacts {
-                live_generation: u64::MAX
+                live_generation: max_gen
             }),
-            FileIndexMutationArbitration::Accept { next_generation: 0 }
+            FileIndexMutationArbitration::Accept {
+                next_generation: lushtext_model::values::FileIndexGeneration::ZERO
+            }
         );
     }
 

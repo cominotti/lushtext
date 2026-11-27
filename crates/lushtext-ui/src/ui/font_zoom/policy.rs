@@ -13,6 +13,8 @@
 //!   system font at 100 %, where auxiliary monospace widgets keep GTK's
 //!   default font.
 
+use lushtext_model::values::FontZoomGeneration;
+
 /// Lowest zoom the UI exposes, percent (as `ui/window/zoom.rs`).
 pub const ZOOM_MIN: u32 = 50;
 /// Highest zoom the UI exposes, percent.
@@ -90,7 +92,7 @@ pub fn zoom_set(lattice: Option<u32>) -> Vec<u32> {
 
 /// The class that selects `zoom` in generation `generation`'s rules.
 #[must_use]
-pub fn zoom_class(generation: u64, zoom: u32) -> String {
+pub fn zoom_class(generation: FontZoomGeneration, zoom: u32) -> String {
     format!("lushtext-font-{generation}-zoom-{}", clamp_zoom(zoom))
 }
 
@@ -126,7 +128,11 @@ pub fn monospace_declarations(base: &BaseFont, zoom: u32) -> Option<String> {
 /// The provider text of generation `generation` for `base` and the zoom set of
 /// `lattice`.
 #[must_use]
-pub fn provider_text(generation: u64, base: &BaseFont, lattice: Option<u32>) -> String {
+pub fn provider_text(
+    generation: FontZoomGeneration,
+    base: &BaseFont,
+    lattice: Option<u32>,
+) -> String {
     let mut css = String::new();
     for zoom in zoom_set(lattice) {
         let class = zoom_class(generation, zoom);
@@ -217,11 +223,11 @@ mod tests {
     #[test]
     fn the_system_font_at_100_keeps_gtk_monospace_defaults() {
         let system = &bases()[0];
-        let text = provider_text(1, system, None);
+        let text = provider_text(FontZoomGeneration::new(1), system, None);
         assert!(!text.contains(".monospace.lushtext-font-1-zoom-100 "));
         assert!(text.contains(".monospace.lushtext-font-1-zoom-110 "));
         assert!(text.contains("textview.tab-content-editor-surface.lushtext-font-1-zoom-100,"));
-        let custom = provider_text(1, &bases()[1], None);
+        let custom = provider_text(FontZoomGeneration::new(1), &bases()[1], None);
         assert!(custom.contains(".monospace.lushtext-font-1-zoom-100 "));
     }
 
@@ -258,7 +264,10 @@ mod tests {
     fn clamping_matches_the_legacy_range() {
         assert_eq!(clamp_zoom(10), 50);
         assert_eq!(clamp_zoom(900), 400);
-        assert_eq!(zoom_class(3, 900), "lushtext-font-3-zoom-400");
+        assert_eq!(
+            zoom_class(FontZoomGeneration::new(3), 900),
+            "lushtext-font-3-zoom-400"
+        );
         assert_eq!(lattice_of(5), None, "below the range clamps to 50");
     }
 }

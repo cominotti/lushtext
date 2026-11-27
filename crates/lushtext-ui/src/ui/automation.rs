@@ -1114,9 +1114,7 @@ fn workspace_snapshot(window: &LushtextWindow) -> AutomationWorkspaceSnapshot {
         excluded_names,
         excluded_names_truncated,
         reveal_status: reveal_status.as_str().to_string(),
-        reveal_generation: lushtext_model::values::RevealGeneration::new(
-            evidence.reveal_generation,
-        ),
+        reveal_generation: evidence.reveal_generation,
         reveal_depth: evidence.reveal_depth,
         limited_directory_count: bounded_len(evidence.limited_directory_count),
         loading_directory_count: bounded_len(evidence.loading_directory_count),

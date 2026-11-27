@@ -46,6 +46,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
 use lushtext_model::budgets::list_budget::turn_continues;
+use lushtext_model::values::MirrorGeneration;
 use lushtext_model::workspace::workspace_visibility::WorkspaceEntryVisibility;
 use lushtext_services::coordination::notifications::NotificationSeverity;
 use lushtext_services::workspace::file_tree::{
@@ -89,7 +90,7 @@ struct ChildReconcileProgress {
     remove_remaining: usize,
     inserted: usize,
     replacement: VecDeque<DirectoryRowState>,
-    mirror_generation: u64,
+    mirror_generation: MirrorGeneration,
     /// The loading row that ends the directory while batches remain, and the
     /// listing's total for its label (`bound-lists-by-budget-not-count` D6).
     loading_row: Option<(FileTreeItem, usize)>,
@@ -954,14 +955,17 @@ fn cancel_child_store_runtime(section: &LushtextWorkspaceSection, store_key: usi
     cancel_store_reconciliation(section, store_key);
 }
 
-fn child_mirror_generation(section: &LushtextWorkspaceSection, store: &gio::ListStore) -> u64 {
+fn child_mirror_generation(
+    section: &LushtextWorkspaceSection,
+    store: &gio::ListStore,
+) -> MirrorGeneration {
     section
         .imp()
         .child_row_mirror_generations
         .borrow()
         .get(&child_store_key(store))
         .copied()
-        .unwrap_or(0)
+        .unwrap_or(MirrorGeneration::ZERO)
 }
 
 fn splice_child_store(
@@ -971,7 +975,7 @@ fn splice_child_store(
     removed: usize,
     rows: &[DirectoryRowState],
     items: &[FileTreeItem],
-) -> u64 {
+) -> MirrorGeneration {
     #[expect(
         clippy::cast_possible_truncation,
         reason = "Directory child stores are capped below u32::MAX"
@@ -1100,10 +1104,13 @@ fn child_store_is_live(
             .is_some_and(|store| child_store_key(&store) == store_key)
 }
 
-fn advance_child_mirror_generation(section: &LushtextWorkspaceSection, store_key: usize) -> u64 {
+fn advance_child_mirror_generation(
+    section: &LushtextWorkspaceSection,
+    store_key: usize,
+) -> MirrorGeneration {
     let mut generations = section.imp().child_row_mirror_generations.borrow_mut();
     let generation = generations.entry(store_key).or_default();
-    *generation = generation.wrapping_add(1);
+    *generation = generation.next();
     *generation
 }
 
@@ -1156,7 +1163,7 @@ struct ScannedChildrenPlan {
     dir_path: PathBuf,
     token: Arc<AtomicBool>,
     ticket: ChildScanTicket,
-    mirror_generation: u64,
+    mirror_generation: MirrorGeneration,
     plan: DirectoryReconciliationPlan,
     limited: Option<(usize, usize)>,
 }
@@ -1621,7 +1628,7 @@ fn append_loading_row(
     section: &LushtextWorkspaceSection,
     store: &gio::ListStore,
     total_rows: usize,
-) -> Option<u64> {
+) -> Option<MirrorGeneration> {
     if total_rows <= CHILD_APPEND_BATCH_SIZE {
         return None;
     }

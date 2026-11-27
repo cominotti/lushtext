@@ -227,7 +227,7 @@ pub struct LushtextCommandPalette {
     /// Serializes index clone/mutation workers so results cannot overwrite out of order.
     pub(super) index_update_worker_running: Cell<bool>,
     /// Invalidates a worker result when a full index replacement wins meanwhile.
-    pub(super) file_index_generation: Cell<u64>,
+    pub(super) file_index_generation: Cell<lushtext_model::values::FileIndexGeneration>,
     /// Debounce for coalescing index update flushes (75ms).
     pub(super) index_update_debounce: Debounce,
     /// One paced retry after replacement admission reports memory pressure.
@@ -287,7 +287,7 @@ impl Default for LushtextCommandPalette {
             pending_index_update_bytes: Cell::new(0),
             index_update_rebuild_pending: Cell::new(false),
             index_update_worker_running: Cell::new(false),
-            file_index_generation: Cell::new(0),
+            file_index_generation: Cell::new(lushtext_model::values::FileIndexGeneration::ZERO),
             index_update_debounce: Debounce::default(),
             index_update_capacity_wakeup:
                 crate::ui::plain_disposal::DisposalCapacityWakeup::default(),

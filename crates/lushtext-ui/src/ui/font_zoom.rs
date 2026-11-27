@@ -40,6 +40,7 @@ use std::cell::RefCell;
 
 use gtk4::glib;
 use gtk4::prelude::*;
+use lushtext_model::values::FontZoomGeneration;
 
 use self::policy::BaseFont;
 
@@ -57,7 +58,7 @@ const PRUNE_FLOOR: usize = 64;
 /// One loaded generation of font rules.
 #[derive(Clone, Debug, PartialEq)]
 struct Generation {
-    number: u64,
+    number: FontZoomGeneration,
     /// Index into the two providers.
     provider: usize,
     base: BaseFont,
@@ -109,9 +110,9 @@ pub struct FontZoomEvidence {
     /// Provider loads (`load_from_string`) made.
     pub provider_loads: u64,
     /// The generation the registered widgets carry, 0 before the first load.
-    pub generation: u64,
+    pub generation: FontZoomGeneration,
     /// The generation loaded but not yet swapped in, if any.
-    pub pending_generation: Option<u64>,
+    pub pending_generation: Option<FontZoomGeneration>,
     /// The class every registered widget carries.
     pub current_class: Option<String>,
 }
@@ -286,10 +287,10 @@ fn load(base: &BaseFont, zoom: u32) {
                     .pending
                     .as_ref()
                     .map_or(current.number, |(pending, _)| pending.number)
-                    .wrapping_add(1),
+                    .next(),
                 1 - current.provider,
             ),
-            None => (1, 0),
+            None => (FontZoomGeneration::new(1), 0),
         };
         let generation = Generation {
             number,

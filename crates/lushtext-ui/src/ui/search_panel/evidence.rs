@@ -35,6 +35,9 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
 
+use lushtext_model::values::{
+    ReplacePreviewGeneration, ReplaceTransactionGeneration, UndoBackupGeneration,
+};
 use lushtext_model::workspace::content_search::SearchQuerySpec;
 
 use super::LushtextSearchPanel;
@@ -142,7 +145,7 @@ pub struct SearchPanelEvidence {
     /// Superseded preview payloads still awaiting final off-main destruction.
     pub preview_retirement_pending: usize,
     /// Generation identifying the current preview attempt.
-    pub preview_generation: u32,
+    pub preview_generation: ReplacePreviewGeneration,
     /// Whether the preview owns its single disposal-capacity retry source.
     ///
     /// Test-gated for the same reason as
@@ -159,7 +162,7 @@ pub struct SearchPanelEvidence {
     /// answers "is the apply transaction claimed".
     pub replace_transaction_pending: bool,
     /// Journal generation the claimed transaction reserved and has not handed off.
-    pub replace_transaction_generation: Option<u32>,
+    pub replace_transaction_generation: Option<ReplaceTransactionGeneration>,
     /// Counts published by the most recent durable Replace All apply.
     pub last_apply_counts: Option<super::policy::ReplaceApplyCounts>,
     /// Whether a durable Replace All run is in flight (design D8), including
@@ -192,7 +195,7 @@ pub struct SearchPanelEvidence {
     /// Whether a Replace All undo backup is available.
     pub has_undo_backup: bool,
     /// Generation invalidating stale journal installs, clears, saves, and deletes.
-    pub undo_backup_generation: u32,
+    pub undo_backup_generation: UndoBackupGeneration,
     /// Files the installed undo journal can restore.
     pub undo_backup_entry_count: usize,
     /// Disposal weight the installed undo journal retains.
@@ -376,9 +379,11 @@ impl LushtextSearchPanel {
             skipped_files_listed,
 
             has_undo_backup,
-            undo_backup_generation: preview
-                .undo_backup_generation
-                .load(std::sync::atomic::Ordering::Acquire),
+            undo_backup_generation: UndoBackupGeneration::new(
+                preview
+                    .undo_backup_generation
+                    .load(std::sync::atomic::Ordering::Acquire),
+            ),
             undo_backup_entry_count,
             undo_backup_retained_bytes,
             journal_disk_jobs: preview.journal_disk_jobs.get(),

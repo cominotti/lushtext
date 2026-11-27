@@ -225,7 +225,7 @@ impl LushtextMarkdownPreview {
     pub(super) fn advance_rendered_embed_generation(&self) {
         let imp = self.imp();
         imp.rendered_embed_generation
-            .set(imp.rendered_embed_generation.get().wrapping_add(1));
+            .set(imp.rendered_embed_generation.get().next());
     }
 }
 

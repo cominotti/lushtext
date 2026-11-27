@@ -71,7 +71,7 @@ impl LushtextCommandPalette {
             released_len,
         );
         imp.file_index_generation
-            .set(imp.file_index_generation.get().wrapping_add(1));
+            .set(imp.file_index_generation.get().next());
         imp.restart_query_if_open();
     }
 

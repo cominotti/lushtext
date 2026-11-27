@@ -17,6 +17,7 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use lushtext_model::budgets::list_budget::grouped_thousands;
+use lushtext_model::values::{ScanGeneration, TargetGeneration};
 use lushtext_model::workspace::workspace_visibility::WorkspaceEntryVisibility;
 use lushtext_model::workspace::{WorkspaceId, WorkspaceScope, WorkspacesFile};
 use lushtext_services::workspace::file_tree::{SidebarScanBudget, compare_directory_entries};
@@ -754,9 +755,9 @@ pub struct WorkspaceScanTicket {
     /// Section lifetime that admitted the request.
     pub lifetime: u64,
     /// Latest target generation for this store at submission time.
-    pub target_generation: u64,
+    pub target_generation: TargetGeneration,
     /// Unique scan generation within this store flight.
-    pub scan_generation: u64,
+    pub scan_generation: ScanGeneration,
 }
 
 /// Result of submitting one new compact request.
@@ -808,8 +809,8 @@ pub struct WorkspaceScanFlightMetrics {
 /// One-active plus one-latest policy for a materialized child store.
 #[derive(Debug, Default)]
 pub struct WorkspaceScanFlight {
-    next_scan_generation: u64,
-    next_target_generation: u64,
+    next_scan_generation: ScanGeneration,
+    next_target_generation: TargetGeneration,
     active: Option<WorkspaceScanTicket>,
     pending: Option<WorkspaceScanTicket>,
     metrics: WorkspaceScanFlightMetrics,
@@ -818,8 +819,8 @@ pub struct WorkspaceScanFlight {
 impl WorkspaceScanFlight {
     /// Submit a request and either admit it or replace the sole pending ticket.
     pub fn submit(&mut self, lifetime: u64) -> WorkspaceScanSubmission {
-        self.next_scan_generation = self.next_scan_generation.wrapping_add(1);
-        self.next_target_generation = self.next_target_generation.wrapping_add(1);
+        self.next_scan_generation = self.next_scan_generation.next();
+        self.next_target_generation = self.next_target_generation.next();
         let ticket = WorkspaceScanTicket {
             lifetime,
             target_generation: self.next_target_generation,
@@ -879,7 +880,7 @@ impl WorkspaceScanFlight {
                 self.metrics.cancellation_requests.saturating_add(1);
         }
         self.pending = None;
-        self.next_target_generation = self.next_target_generation.wrapping_add(1);
+        self.next_target_generation = self.next_target_generation.next();
     }
 
     /// Return the active ticket without exposing any adapter payload.

@@ -145,9 +145,9 @@ pub struct WorkspaceTreeEvidence {
     /// Whether the newest requested generation retains a failed terminal.
     pub persistence_failed: bool,
     /// Newest requested persistence generation.
-    pub persistence_requested_generation: u64,
+    pub persistence_requested_generation: lushtext_model::values::PersistenceGeneration,
     /// Newest durably accepted persistence generation.
-    pub persistence_durable_generation: u64,
+    pub persistence_durable_generation: lushtext_model::values::PersistenceGeneration,
     /// Close-time flush callbacks still awaiting a terminal.
     pub persistence_flush_waiters: usize,
 
@@ -182,7 +182,7 @@ pub struct WorkspaceTreeEvidence {
     /// The latest reveal's status; `None` before any reveal in this window.
     pub reveal_status: super::policy::WorkspaceRevealStatus,
     /// The latest reveal's request generation; `0` before any reveal.
-    pub reveal_generation: u64,
+    pub reveal_generation: lushtext_model::values::RevealGeneration,
     /// Tree depth of the latest reveal's target row, once resolved.
     pub reveal_depth: Option<u32>,
     /// Expanded directories whose listing the retained-byte budget cut
@@ -309,8 +309,12 @@ impl LushtextSidebar {
             let state = imp.persistence.borrow();
             (
                 state.is_failed(),
-                state.requested_generation().value(),
-                state.durable_generation().value(),
+                lushtext_model::values::PersistenceGeneration::new(
+                    state.requested_generation().value(),
+                ),
+                lushtext_model::values::PersistenceGeneration::new(
+                    state.durable_generation().value(),
+                ),
             )
         };
         let persistence_flush_waiters = imp.persistence_flush_waiters.borrow().len();
@@ -415,7 +419,7 @@ pub(crate) struct WorkspaceSnapshotEvidence {
     pub(crate) persistence_pending: bool,
     pub(crate) filter_animation_active: bool,
     pub(crate) reveal_status: super::policy::WorkspaceRevealStatus,
-    pub(crate) reveal_generation: u64,
+    pub(crate) reveal_generation: lushtext_model::values::RevealGeneration,
     pub(crate) reveal_depth: Option<u32>,
     /// Expanded directories whose listing ends in a budget row.
     pub(crate) limited_directory_count: usize,
@@ -507,7 +511,7 @@ pub struct WorkspaceSectionEvidence {
     /// The effective materialized watch target set.
     pub watch_targets: Vec<lushtext_services::watch::workspace_watch::WorkspaceWatchTarget>,
     /// Monotonic identity of that target set.
-    pub watch_target_generation: u64,
+    pub watch_target_generation: lushtext_model::values::TargetGeneration,
     /// Whether the installed watcher matches the current target generation.
     pub watcher_is_current: bool,
     /// Whether terminal unavailability belongs to the latest effective targets.
