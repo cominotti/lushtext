@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, UNIX_EPOCH};
 
+use crate::editor_io;
 use crate::filesystem::backend_tap::{
     self as tap, Address, Call, Injected, ProtocolKind, TapPlan, TapTrace,
 };
@@ -30,11 +31,161 @@ use crate::persistence::draft_service::journal_model::{
     SingleWindowScope, bit,
 };
 use crate::persistence::draft_service::{
-    self, DraftOrphanCleanupFailure, DraftOrphanCleanupManifestError, DraftOrphanCleanupPlan,
-    DraftRegistration, RegisteredDraft, drafts_dir, set_aside,
+    self, DraftBodyWriteError, DraftOrphanCleanupFailure, DraftOrphanCleanupManifestError,
+    DraftOrphanCleanupPlan, DraftOrphanCleanupScanError, DraftReadError, DraftRegistration,
+    DraftSetAsideError, RegisteredDraft, drafts_dir, set_aside,
 };
-use crate::persistence::recovery_metadata::{RecoveryMetadataClass, RecoveryProblem};
-use crate::{editor_io, persistence::session_service};
+use crate::persistence::recovery_metadata::{
+    RecoveryMetadataClass, RecoveryMetadataError, RecoveryProblem,
+};
+use crate::persistence::session_service::{self, SessionServiceError};
+
+/// Typed divergence or environment error returned by draft-service conformance checking.
+#[derive(Debug, thiserror::Error)]
+pub enum DraftConformanceError {
+    /// Seeding an initial draft body failed.
+    #[error("seed body {id}: {source}")]
+    SeedBody {
+        /// Draft slot index.
+        id: usize,
+        /// Underlying body-write error.
+        #[source]
+        source: DraftBodyWriteError,
+    },
+    /// Seeding the initial draft manifest failed.
+    #[error("seed manifest: {0}")]
+    SeedManifest(#[source] RecoveryMetadataError),
+    /// Seeding the initial session file failed.
+    #[error("seed session: {0}")]
+    SeedSession(#[source] SessionServiceError),
+    /// Loading the draft manifest for state abstraction or startup check failed.
+    #[error("{context}: {source}")]
+    LoadManifest {
+        /// Context describing which conformance step loaded the manifest.
+        context: &'static str,
+        /// Underlying recovery metadata error.
+        #[source]
+        source: RecoveryMetadataError,
+    },
+    /// A file-backed manifest entry lacked `original_mtime_secs`.
+    #[error("file-backed manifest entry {draft_id} missing original_mtime_secs")]
+    MissingEntryMtime {
+        /// Draft ID whose manifest entry omitted mtime.
+        draft_id: String,
+    },
+    /// A manifest entry recorded an mtime not created by the conformance driver.
+    #[error("unmapped entry mtime {mtime} for id {id} ({draft_id})")]
+    UnmappedEntryMtime {
+        /// Recorded mtime seconds.
+        mtime: u64,
+        /// Draft slot index.
+        id: usize,
+        /// Draft ID string.
+        draft_id: String,
+    },
+    /// An unexpected entry appeared inside the drafts directory.
+    #[error("unknown file in drafts directory: {name}")]
+    UnknownDraftsEntry {
+        /// Unexpected filename.
+        name: String,
+    },
+    /// Reading a draft body during state abstraction failed.
+    #[error("abstract read_draft {id}: {source}")]
+    AbstractReadDraft {
+        /// Draft slot index.
+        id: usize,
+        /// Underlying draft read error.
+        #[source]
+        source: DraftReadError,
+    },
+    /// A draft body listed in the directory scan vanished before it could be read.
+    #[error("listed draft body disappeared: {name}")]
+    ListedDraftDisappeared {
+        /// Disappeared draft filename.
+        name: String,
+    },
+    /// A draft or set-aside body contained text not produced by `content_text`.
+    #[error("{kind} body {name} contains unmapped text: {text:?}")]
+    UnmappedBodyText {
+        /// `"draft"` or `"set-aside"`.
+        kind: &'static str,
+        /// Filename or path display string.
+        name: String,
+        /// Observed UTF-8 content.
+        text: String,
+    },
+    /// A seeded backing file was missing on disk.
+    #[error("missing backing file {}", path.display())]
+    MissingBackingFile {
+        /// Missing backing file path.
+        path: PathBuf,
+    },
+    /// A backing file had an mtime not registered in the driver's mtime map.
+    #[error("unmapped backing mtime {mtime} for id {id}")]
+    UnmappedBackingMtime {
+        /// Observed backing file mtime.
+        mtime: u64,
+        /// Draft slot index.
+        id: usize,
+    },
+    /// Listing the set-aside area failed during state abstraction.
+    #[error("abstract set_aside::list: {0}")]
+    AbstractSetAsideList(#[source] DraftSetAsideError),
+    /// The set-aside listing exceeded the bounded scan cap.
+    #[error("set-aside listing exceeded scan bound")]
+    SetAsideScanLimitExceeded,
+    /// Reading a set-aside body failed during state abstraction.
+    #[error("abstract set_aside::read {}: {source}", path.display())]
+    AbstractSetAsideRead {
+        /// Set-aside body path.
+        path: PathBuf,
+        /// Underlying set-aside error.
+        #[source]
+        source: DraftSetAsideError,
+    },
+    /// Abstracted real state diverged from the Kani-checked journal model.
+    #[error("step {step_idx} ({action} id={id}): {detail}{history}")]
+    ModelDivergence {
+        /// Step index where divergence was observed.
+        step_idx: usize,
+        /// Action executed on that step.
+        action: String,
+        /// Draft slot index.
+        id: usize,
+        /// Structured mismatch description.
+        detail: String,
+        /// Formatted history suffix when available.
+        history: String,
+    },
+    /// Cleanup inspection failed during an `Inspect` step.
+    #[error("step {step_idx} Inspect failed: {source}")]
+    InspectFailed {
+        /// Step index.
+        step_idx: usize,
+        /// Underlying scan error.
+        #[source]
+        source: DraftOrphanCleanupScanError,
+    },
+    /// A real service operation failed or fell back unexpectedly without an injected fault.
+    #[error("step {step_idx} {operation}: {detail}")]
+    UnexpectedStepOutcome {
+        /// Step index.
+        step_idx: usize,
+        /// Conformance action/operation name.
+        operation: &'static str,
+        /// Detailed diagnostic message.
+        detail: String,
+    },
+    /// `RestoreApply` encountered an unexpected state against the model.
+    #[error("step {step_idx} RestoreApply {detail}")]
+    RestoreApplyDivergence {
+        /// Step index.
+        step_idx: usize,
+        /// Detailed mismatch message.
+        detail: String,
+    },
+}
+
 use lushtext_model::persistence::draft::{
     DraftEntry, DraftManifest, DraftManifestAuthority, FileDraftRestoreResolution,
     FileDraftRestoreSkip, PreloadedDraftRestore, PreloadedDraftSkip, StaleDraftPreservation,
@@ -494,7 +645,7 @@ impl DriverEnv {
     fn seed_previous_session(
         &mut self,
         model: &Journal<SingleWindowScope, DRAFT_IDS, 1, 1>,
-    ) -> Result<(), String> {
+    ) -> Result<(), DraftConformanceError> {
         let mut entries = Vec::new();
         let mut tabs = Vec::new();
         for id in 0..DRAFT_IDS {
@@ -535,7 +686,7 @@ impl DriverEnv {
                     &self.draft_ids[id],
                     &content_text(content),
                 )
-                .map_err(|e| format!("seed body {id}: {e}"))?;
+                .map_err(|source| DraftConformanceError::SeedBody { id, source })?;
             }
         }
         if !entries.is_empty() {
@@ -544,7 +695,7 @@ impl DriverEnv {
                 cleanup_continuation: None,
             };
             draft_service::save_manifest(&self.data_dir, &manifest)
-                .map_err(|e| format!("seed manifest: {e}"))?;
+                .map_err(DraftConformanceError::SeedManifest)?;
         }
         if !tabs.is_empty() {
             let session = SessionData {
@@ -552,7 +703,7 @@ impl DriverEnv {
                 active_tab_index: Some(0),
             };
             session_service::save(&self.data_dir, &session)
-                .map_err(|e| format!("seed session: {e}"))?;
+                .map_err(DraftConformanceError::SeedSession)?;
         }
         Ok(())
     }
@@ -665,9 +816,13 @@ impl DriverEnv {
         self.persisted_entries = [None, None, None];
     }
 
-    fn abstract_state(&self) -> Result<AbstractState, String> {
-        let manifest = draft_service::load_manifest(&self.data_dir)
-            .map_err(|e| format!("abstract load_manifest: {e}"))?;
+    fn abstract_state(&self) -> Result<AbstractState, DraftConformanceError> {
+        let manifest = draft_service::load_manifest(&self.data_dir).map_err(|source| {
+            DraftConformanceError::LoadManifest {
+                context: "abstract load_manifest",
+                source,
+            }
+        })?;
 
         let mut entry = [ProjectedEntry {
             present: false,
@@ -677,16 +832,16 @@ impl DriverEnv {
             if let Some(found) = manifest.find_by_id(&self.draft_ids[id]) {
                 let backing = if self.backing_paths[id].is_some() {
                     let mtime = found.original_mtime_secs.ok_or_else(|| {
-                        format!(
-                            "file-backed manifest entry {} missing original_mtime_secs",
-                            self.draft_ids[id]
-                        )
+                        DraftConformanceError::MissingEntryMtime {
+                            draft_id: self.draft_ids[id].clone(),
+                        }
                     })?;
                     *self.mtime_versions[id].get(&mtime).ok_or_else(|| {
-                        format!(
-                            "unmapped entry mtime {mtime} for id {id} ({})",
-                            self.draft_ids[id]
-                        )
+                        DraftConformanceError::UnmappedEntryMtime {
+                            mtime,
+                            id,
+                            draft_id: self.draft_ids[id].clone(),
+                        }
                     })?
                 } else {
                     0
@@ -719,13 +874,19 @@ impl DriverEnv {
                 let matched_id =
                     (0..DRAFT_IDS).find(|&id| format!("{}.draft", self.draft_ids[id]) == name);
                 let Some(id) = matched_id else {
-                    return Err(format!("unknown file in drafts directory: {name}"));
+                    return Err(DraftConformanceError::UnknownDraftsEntry { name });
                 };
                 let text = draft_service::read_draft(&self.data_dir, &self.draft_ids[id])
-                    .map_err(|e| format!("abstract read_draft {id}: {e}"))?
-                    .ok_or_else(|| format!("listed draft body disappeared: {name}"))?;
-                let content = parse_content_text(&text)
-                    .ok_or_else(|| format!("draft body {name} contains unmapped text: {text:?}"))?;
+                    .map_err(|source| DraftConformanceError::AbstractReadDraft { id, source })?
+                    .ok_or_else(|| DraftConformanceError::ListedDraftDisappeared {
+                        name: name.clone(),
+                    })?;
+                let content =
+                    parse_content_text(&text).ok_or(DraftConformanceError::UnmappedBodyText {
+                        kind: "draft",
+                        name,
+                        text,
+                    })?;
                 body[id] = Some(content);
             }
         }
@@ -733,28 +894,36 @@ impl DriverEnv {
         let mut backing = [0u8; DRAFT_IDS];
         for (id, backing_slot) in backing.iter_mut().enumerate() {
             if let Some(path) = self.backing_paths[id].as_deref() {
-                let mtime = editor_io::mtime_secs(path)
-                    .ok_or_else(|| format!("missing backing file {}", path.display()))?;
+                let mtime = editor_io::mtime_secs(path).ok_or_else(|| {
+                    DraftConformanceError::MissingBackingFile {
+                        path: path.to_path_buf(),
+                    }
+                })?;
                 *backing_slot = *self.mtime_versions[id]
                     .get(&mtime)
-                    .ok_or_else(|| format!("unmapped backing mtime {mtime} for id {id}"))?;
+                    .ok_or(DraftConformanceError::UnmappedBackingMtime { mtime, id })?;
             }
         }
 
-        let listing = set_aside::list(&self.data_dir)
-            .map_err(|e| format!("abstract set_aside::list: {e}"))?;
+        let listing =
+            set_aside::list(&self.data_dir).map_err(DraftConformanceError::AbstractSetAsideList)?;
         if !listing.totals.complete {
-            return Err("set-aside listing exceeded scan bound".to_string());
+            return Err(DraftConformanceError::SetAsideScanLimitExceeded);
         }
         let mut preserved = 0u16;
         for item in &listing.rows {
-            let text = set_aside::read(&self.data_dir, &item.path)
-                .map_err(|e| format!("abstract set_aside::read {}: {e}", item.path.display()))?;
+            let text = set_aside::read(&self.data_dir, &item.path).map_err(|source| {
+                DraftConformanceError::AbstractSetAsideRead {
+                    path: item.path.clone(),
+                    source,
+                }
+            })?;
             let content = parse_content_text(&text).ok_or_else(|| {
-                format!(
-                    "set-aside body {} contains unmapped text: {text:?}",
-                    item.path.display()
-                )
+                DraftConformanceError::UnmappedBodyText {
+                    kind: "set-aside",
+                    name: item.path.display().to_string(),
+                    text,
+                }
             })?;
             preserved |= bit(content);
         }
@@ -777,47 +946,78 @@ fn compare_states(
     real: &AbstractState,
     model: &Journal<SingleWindowScope, DRAFT_IDS, 1, 1>,
     counts: &mut ReachCounts,
-) -> Result<(), String> {
+) -> Result<(), DraftConformanceError> {
     counts.leftovers_observed += real.leftovers;
+    let action_name = format!("{action:?}");
     for i in 0..DRAFT_IDS {
         let m_entry = model.entry[i];
         let r_entry = real.entry[i];
         if r_entry.present != m_entry.present
             || (m_entry.present && r_entry.backing != m_entry.backing)
         {
-            return Err(format!(
-                "step {step_idx} ({action:?} id={id}): manifest entry[{i}] mismatch: real={r_entry:?}, model=(present={}, backing={})",
-                m_entry.present, m_entry.backing
-            ));
+            return Err(DraftConformanceError::ModelDivergence {
+                step_idx,
+                action: action_name,
+                id,
+                detail: format!(
+                    "manifest entry[{i}] mismatch: real={r_entry:?}, model=(present={}, backing={})",
+                    m_entry.present, m_entry.backing
+                ),
+                history: String::new(),
+            });
         }
         if real.body[i] != model.body[i] {
-            return Err(format!(
-                "step {step_idx} ({action:?} id={id}): body[{i}] mismatch: real={:?}, model={:?}",
-                real.body[i], model.body[i]
-            ));
+            return Err(DraftConformanceError::ModelDivergence {
+                step_idx,
+                action: action_name,
+                id,
+                detail: format!(
+                    "body[{i}] mismatch: real={:?}, model={:?}",
+                    real.body[i], model.body[i]
+                ),
+                history: String::new(),
+            });
         }
         if real.backing[i] != model.backing[i] {
-            return Err(format!(
-                "step {step_idx} ({action:?} id={id}): backing[{i}] mismatch: real={}, model={}",
-                real.backing[i], model.backing[i]
-            ));
+            return Err(DraftConformanceError::ModelDivergence {
+                step_idx,
+                action: action_name,
+                id,
+                detail: format!(
+                    "backing[{i}] mismatch: real={}, model={}",
+                    real.backing[i], model.backing[i]
+                ),
+                history: String::new(),
+            });
         }
     }
     if (model.preserved & !real.preserved) != 0 {
-        return Err(format!(
-            "step {step_idx} ({action:?} id={id}): preserved mismatch: real={:#b} does not cover model={:#b}",
-            real.preserved, model.preserved
-        ));
+        return Err(DraftConformanceError::ModelDivergence {
+            step_idx,
+            action: action_name,
+            id,
+            detail: format!(
+                "preserved mismatch: real={:#b} does not cover model={:#b}",
+                real.preserved, model.preserved
+            ),
+            history: String::new(),
+        });
     }
     if real.preserved != model.preserved {
         counts.extra_preserved_steps += 1;
     }
     if real.trusted != model.me().trusted {
-        return Err(format!(
-            "step {step_idx} ({action:?} id={id}): authority trusted mismatch: real={}, model={}",
-            real.trusted,
-            model.me().trusted
-        ));
+        return Err(DraftConformanceError::ModelDivergence {
+            step_idx,
+            action: action_name,
+            id,
+            detail: format!(
+                "authority trusted mismatch: real={}, model={}",
+                real.trusted,
+                model.me().trusted
+            ),
+            history: String::new(),
+        });
     }
     Ok(())
 }
@@ -928,7 +1128,7 @@ fn run_exec_cleanup_step(
     fault: DraftFault,
     domain: FaultDomain,
     step_idx: usize,
-) -> Result<(), String> {
+) -> Result<(), DraftConformanceError> {
     let mut stepped = false;
     let mut model_fault = Fault::None;
     if model.lane_holder()
@@ -949,10 +1149,11 @@ fn run_exec_cleanup_step(
         let drafts_parent = drafts_dir(&env.data_dir);
         let fired = classify_trace_fault(&trace, Some(&drafts_parent));
         if !outcome.failures.is_empty() && (!injected || fired == TraceFaultKind::None) {
-            return Err(format!(
-                "step {step_idx} ExecCleanup unexpected failures: {:?}",
-                outcome.failures
-            ));
+            return Err(DraftConformanceError::UnexpectedStepOutcome {
+                step_idx,
+                operation: "ExecCleanup",
+                detail: format!("unexpected failures: {:?}", outcome.failures),
+            });
         }
         let load_failed = outcome.failures.iter().any(|failure| {
             matches!(
@@ -1040,7 +1241,7 @@ pub fn check_draft_script(
     initial_bits: [bool; INITIAL_LAYOUT_BITS],
     ops: &[DraftOp],
     domain: FaultDomain,
-) -> Result<ReachCounts, String> {
+) -> Result<ReachCounts, DraftConformanceError> {
     let mut choices = ScriptChoices::new(initial_bits);
     let mut model = Journal::<SingleWindowScope, DRAFT_IDS, 1, 1>::previous_session(&mut choices);
     model.assert_invariants();
@@ -1106,10 +1307,11 @@ pub fn check_draft_script(
                             && !matches!(diag.problem, RecoveryProblem::Repaired { .. })
                     });
                     if fired == TraceFaultKind::None && !env.authority.is_trusted() {
-                        return Err(format!(
-                            "step {step_idx} Startup unexpectedly untrusted: {:?}",
-                            restored.diagnostics
-                        ));
+                        return Err(DraftConformanceError::UnexpectedStepOutcome {
+                            step_idx,
+                            operation: "Startup",
+                            detail: format!("unexpectedly untrusted: {:?}", restored.diagnostics),
+                        });
                     }
                     model_fault = if !phase1_failed {
                         Fault::None
@@ -1143,8 +1345,13 @@ pub fn check_draft_script(
                     // queues `DeletionStep::Preserve`. Replay any retired/attempted steps
                     // against what happened on disk and in `restored`.
                     if !phase1_failed && model.me().trusted {
-                        let disk_manifest = draft_service::load_manifest(&env.data_dir)
-                            .map_err(|e| format!("Startup post-check load_manifest: {e}"))?;
+                        let disk_manifest =
+                            draft_service::load_manifest(&env.data_dir).map_err(|source| {
+                                DraftConformanceError::LoadManifest {
+                                    context: "Startup post-check load_manifest",
+                                    source,
+                                }
+                            })?;
                         for slot in 0..DRAFT_IDS {
                             if model.me().editors[slot].deletion.is_none() {
                                 continue;
@@ -1324,9 +1531,13 @@ pub fn check_draft_script(
                                     env.authority = authority;
                                     env.tokens[id] = registered.pop();
                                     if fired == TraceFaultKind::None {
-                                        return Err(format!(
-                                            "step {step_idx} Register unexpectedly fell back to Additive without fault"
-                                        ));
+                                        return Err(DraftConformanceError::UnexpectedStepOutcome {
+                                            step_idx,
+                                            operation: "Register",
+                                            detail:
+                                                "unexpectedly fell back to Additive without fault"
+                                                    .to_string(),
+                                        });
                                     }
                                     model_fault = Fault::BeforeEffect;
                                     let id_moved = if !model.untitled(id)
@@ -1352,9 +1563,11 @@ pub fn check_draft_script(
                                 Err(error) => {
                                     env.authority = error.authority();
                                     if !injected || fired == TraceFaultKind::None {
-                                        return Err(format!(
-                                            "step {step_idx} Register unexpected error: {error}"
-                                        ));
+                                        return Err(DraftConformanceError::UnexpectedStepOutcome {
+                                            step_idx,
+                                            operation: "Register",
+                                            detail: format!("unexpected error: {error}"),
+                                        });
                                     }
                                     model_fault = if fired == TraceFaultKind::AfterEffect {
                                         Fault::AfterEffect
@@ -1421,9 +1634,11 @@ pub fn check_draft_script(
                             Ok(()) => model_fault = Fault::None,
                             Err(error) => {
                                 if !injected || fired == TraceFaultKind::None {
-                                    return Err(format!(
-                                        "step {step_idx} WriteBody unexpected error: {error}"
-                                    ));
+                                    return Err(DraftConformanceError::UnexpectedStepOutcome {
+                                        step_idx,
+                                        operation: "WriteBody",
+                                        detail: format!("unexpected error: {error}"),
+                                    });
                                 }
                                 model_fault = if fired == TraceFaultKind::AfterEffect {
                                     Fault::AfterEffect
@@ -1470,9 +1685,11 @@ pub fn check_draft_script(
                         Err(error) => {
                             env.authority = error.authority();
                             if !injected || fired == TraceFaultKind::None {
-                                return Err(format!(
-                                    "step {step_idx} Commit unexpected error: {error}"
-                                ));
+                                return Err(DraftConformanceError::UnexpectedStepOutcome {
+                                    step_idx,
+                                    operation: "Commit",
+                                    detail: format!("unexpected error: {error}"),
+                                });
                             }
                             model_fault = if fired == TraceFaultKind::AfterEffect {
                                 Fault::AfterEffect
@@ -1506,9 +1723,11 @@ pub fn check_draft_script(
                                 Ok(_) => model_fault = Fault::None,
                                 Err(error) => {
                                     if !injected || fired == TraceFaultKind::None {
-                                        return Err(format!(
-                                            "step {step_idx} DeletionStep(Preserve) unexpected error: {error}"
-                                        ));
+                                        return Err(DraftConformanceError::UnexpectedStepOutcome {
+                                            step_idx,
+                                            operation: "DeletionStep(Preserve)",
+                                            detail: format!("unexpected error: {error}"),
+                                        });
                                     }
                                     model_fault = if fired == TraceFaultKind::AfterEffect {
                                         Fault::AfterEffect
@@ -1530,9 +1749,11 @@ pub fn check_draft_script(
                                 Ok(()) => model_fault = Fault::None,
                                 Err(error) => {
                                     if !injected || fired == TraceFaultKind::None {
-                                        return Err(format!(
-                                            "step {step_idx} DeletionStep(DeleteBody) unexpected error: {error}"
-                                        ));
+                                        return Err(DraftConformanceError::UnexpectedStepOutcome {
+                                            step_idx,
+                                            operation: "DeletionStep(DeleteBody)",
+                                            detail: format!("unexpected error: {error}"),
+                                        });
                                     }
                                     model_fault = Fault::BeforeEffect;
                                 }
@@ -1569,9 +1790,11 @@ pub fn check_draft_script(
                                 Err(error) => {
                                     env.authority = error.authority();
                                     if !injected || fired == TraceFaultKind::None {
-                                        return Err(format!(
-                                            "step {step_idx} DeletionStep(RemoveEntry) unexpected error: {error}"
-                                        ));
+                                        return Err(DraftConformanceError::UnexpectedStepOutcome {
+                                            step_idx,
+                                            operation: "DeletionStep(RemoveEntry)",
+                                            detail: format!("unexpected error: {error}"),
+                                        });
                                     }
                                     model_fault = if fired == TraceFaultKind::AfterEffect {
                                         Fault::AfterEffect
@@ -1599,7 +1822,10 @@ pub fn check_draft_script(
                     let guard = tap::install(TapPlan::record());
                     let plan =
                         draft_service::inspect_orphan_cleanup_against_persisted(&env.data_dir, 0)
-                            .map_err(|e| format!("step {step_idx} Inspect failed: {e}"))?;
+                            .map_err(|source| DraftConformanceError::InspectFailed {
+                            step_idx,
+                            source,
+                        })?;
                     let _trace = guard.finish();
                     env.cleanup_plan = Some(plan);
                 }
@@ -1642,15 +1868,17 @@ pub fn check_draft_script(
                             FileDraftRestoreSkip::MissingDraft,
                         )) => RestoreEnding::MissingBody,
                         Ok(FileDraftRestoreResolution::Skip(FileDraftRestoreSkip::Oversized)) => {
-                            return Err(format!(
-                                "step {step_idx} RestoreApply observed Oversized with tiny payloads"
-                            ));
+                            return Err(DraftConformanceError::RestoreApplyDivergence {
+                                step_idx,
+                                detail: "observed Oversized with tiny payloads".to_string(),
+                            });
                         }
                         Err(_) => {
                             if !injected {
-                                return Err(format!(
-                                    "step {step_idx} RestoreApply unexpected read error"
-                                ));
+                                return Err(DraftConformanceError::RestoreApplyDivergence {
+                                    step_idx,
+                                    detail: "unexpected read error".to_string(),
+                                });
                             }
                             RestoreEnding::ReadFailed
                         }
@@ -1660,9 +1888,12 @@ pub fn check_draft_script(
                             Ok(_) => model_fault = Fault::None,
                             Err(error) => {
                                 if !injected {
-                                    return Err(format!(
-                                        "step {step_idx} RestoreApply preserve_stale_draft_body failed: {error}"
-                                    ));
+                                    return Err(DraftConformanceError::RestoreApplyDivergence {
+                                        step_idx,
+                                        detail: format!(
+                                            "preserve_stale_draft_body failed: {error}"
+                                        ),
+                                    });
                                 }
                                 model_fault = Fault::BeforeEffect;
                             }
@@ -1680,17 +1911,20 @@ pub fn check_draft_script(
                         && !model.stale(id)
                         && !model.me().editors[id].unverified_mtime
                     {
-                        return Err(format!(
-                            "step {step_idx} RestoreApply returned Stale while model.stale({id})=false (entry=(present={}, backing={}), backing={}, persisted={:?}, disk_mtime={:?})\nhistory: {}",
-                            model.entry[id].present,
-                            model.entry[id].backing,
-                            model.backing[id],
-                            entry,
-                            env.backing_paths[id]
-                                .as_deref()
-                                .and_then(editor_io::mtime_secs),
-                            history.join(" -> "),
-                        ));
+                        return Err(DraftConformanceError::RestoreApplyDivergence {
+                            step_idx,
+                            detail: format!(
+                                "returned Stale while model.stale({id})=false (entry=(present={}, backing={}), backing={}, persisted={:?}, disk_mtime={:?})\nhistory: {}",
+                                model.entry[id].present,
+                                model.entry[id].backing,
+                                model.backing[id],
+                                entry,
+                                env.backing_paths[id]
+                                    .as_deref()
+                                    .and_then(editor_io::mtime_secs),
+                                history.join(" -> "),
+                            ),
+                        });
                     }
                     choices.next_restore_ending = Some(ending);
                 }
@@ -1701,8 +1935,11 @@ pub fn check_draft_script(
 
         model.assert_invariants();
         let real = env.abstract_state()?;
-        if let Err(err) = compare_states(step_idx + 1, action, id, &real, &model, &mut counts) {
-            return Err(format!("{err}\nhistory: {}", history.join(" -> ")));
+        if let Err(mut err) = compare_states(step_idx + 1, action, id, &real, &model, &mut counts) {
+            if let DraftConformanceError::ModelDivergence { history: h, .. } = &mut err {
+                *h = format!("\nhistory: {}", history.join(" -> "));
+            }
+            return Err(err);
         }
     }
 
@@ -2072,5 +2309,27 @@ mod tests {
             check_draft_script(dir.path(), bits, &script, FaultDomain::Full)
                 .unwrap_or_else(|err| panic!("At({call}) diverged: {err}"));
         }
+    }
+
+    #[test]
+    fn abstract_state_returns_structured_errors_on_unknown_and_unmapped_draft_entries() {
+        let dir = TempDir::new().expect("tempdir");
+        let env = DriverEnv::new(dir.path());
+        fixture::create_dir_all(&drafts_dir(&env.data_dir));
+        fixture::write_text(&drafts_dir(&env.data_dir).join("stray.draft"), "surprise");
+
+        assert!(matches!(
+            env.abstract_state(),
+            Err(DraftConformanceError::UnknownDraftsEntry { ref name }) if name == "stray.draft"
+        ));
+
+        let dir2 = TempDir::new().expect("tempdir");
+        let env2 = DriverEnv::new(dir2.path());
+        draft_service::fixture::write_body(&env2.data_dir, &env2.draft_ids[0], "not mapped")
+            .expect("seed body");
+        assert!(matches!(
+            env2.abstract_state(),
+            Err(DraftConformanceError::UnmappedBodyText { kind: "draft", .. })
+        ));
     }
 }

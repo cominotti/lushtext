@@ -387,6 +387,202 @@ fn run_primitive(case: &WriteCase, layout: &Layout) -> Ended {
     }
 }
 
+/// Typed divergence reported by write-shell conformance replay against the proven disk models.
+#[derive(Debug, thiserror::Error)]
+pub enum WriteShellConformanceError {
+    /// Model destination content was empty or torn where concrete bytes were expected.
+    #[error("the model shows {content} at the destination")]
+    InvalidModelDestinationContent {
+        /// Unexpected model content state.
+        content: String,
+    },
+    /// Trace contained a run kind outside the write-shell cores.
+    #[error("an unexpected {kind} run")]
+    UnexpectedRunKind {
+        /// Observed protocol kind.
+        kind: String,
+    },
+    /// Completed step count did not match the observed snapshot count.
+    #[error("{completed} actions completed, {observed} were observed")]
+    ObservedActionCountMismatch {
+        /// Number of completed trace steps.
+        completed: usize,
+        /// Number of observed post-action snapshots.
+        observed: usize,
+    },
+    /// One observed step diverged from its pinned call table or disk model.
+    #[error("{context}: {source}")]
+    Step {
+        /// Core, run, ordinal, and action name for the failing step.
+        context: String,
+        /// Underlying conformance divergence.
+        #[source]
+        source: Box<WriteShellConformanceError>,
+    },
+    /// Unexpected directory entries appeared in the sandbox root.
+    #[error("unexpected entries: {strays:?}")]
+    UnexpectedStrays {
+        /// Stray entry names observed in the sandbox.
+        strays: Vec<String>,
+    },
+    /// A fault-free action made a different number of backend calls than pinned.
+    #[error("{calls} backend calls, the table pins {expected}")]
+    UnexpectedBackendCallCount {
+        /// Observed backend call count.
+        calls: usize,
+        /// Pinned call count.
+        expected: usize,
+    },
+    /// A faulted action exceeded the pinned call ceiling.
+    #[error("{calls} backend calls, at most {expected} pinned")]
+    ExcessBackendCallCount {
+        /// Observed backend call count.
+        calls: usize,
+        /// Pinned maximum call count.
+        expected: usize,
+    },
+    /// Trace emitted an action missing from the call table.
+    #[error("an action the call table does not pin")]
+    UnpinnedAction,
+    /// Trace or replay state was missing an expected record.
+    #[error("{detail}")]
+    MissingProtocolState {
+        /// Description of the missing protocol record.
+        detail: &'static str,
+    },
+    /// Outcome fed back to the write core disagreed with observed backend calls.
+    #[error("fed {fed}, its calls say {expected} (failed call: {failed})")]
+    FedWriteOutcomeMismatch {
+        /// Outcome fed to the write core.
+        fed: String,
+        /// Outcome implied by backend calls.
+        expected: String,
+        /// First failed backend call, if any.
+        failed: String,
+    },
+    /// Boolean outcome fed to a move or rename core disagreed with observed calls.
+    #[error("fed {fed}, its calls say {expected}")]
+    FedBoolOutcomeMismatch {
+        /// Outcome fed to the core.
+        fed: bool,
+        /// Expected boolean outcome.
+        expected: bool,
+    },
+    /// Core expected a different pending action than the trace executed.
+    #[error("the core asked for {pending}")]
+    UnexpectedCoreAction {
+        /// Debug representation of the expected core action.
+        pending: String,
+    },
+    /// Real destination bytes did not match the model's visible destination state.
+    #[error("the destination holds {real:?}, the model shows {visible}")]
+    DestinationMismatch {
+        /// Actual destination bytes on disk, if present.
+        real: Option<Vec<u8>>,
+        /// Expected model visibility state.
+        visible: String,
+    },
+    /// Number of temp files on disk disagreed with the model's linked temp flag.
+    #[error("{actual} temp files, the model's temp is {state}linked")]
+    TempCountMismatch {
+        /// Observed temp file count on disk.
+        actual: usize,
+        /// `""` when linked, `"not "` when unlinked.
+        state: &'static str,
+    },
+    /// Temp file permissions were wider than the metadata source mode.
+    #[error("temp {name} has mode {mode:o}, wider than {max_mode:o}")]
+    TempModeTooWide {
+        /// Temp file name.
+        name: String,
+        /// Observed mode bits.
+        mode: u32,
+        /// Source mode mask ceiling.
+        max_mode: u32,
+    },
+    /// Source file presence disagreed with the move model.
+    #[error("the source is {presence}present, the model says {model_present}")]
+    SourcePresenceMismatch {
+        /// `""` when present, `"not "` when absent.
+        presence: &'static str,
+        /// Model's `source_present` value.
+        model_present: bool,
+    },
+    /// Move reached a state where neither source nor durable destination existed.
+    #[error("the move lost its only durable copy")]
+    MoveLostOnlyCopy,
+    /// Rename state on disk disagreed with the rename model.
+    #[error("the entry {verb} its new name, the model says renamed = {model_renamed}")]
+    RenameStateMismatch {
+        /// `"has"` or `"lacks"`.
+        verb: &'static str,
+        /// Model's `renamed` value.
+        model_renamed: bool,
+    },
+    /// Top-level core did not reach a terminal finish action.
+    #[error("the {kind} core did not finish: {state}")]
+    CoreDidNotFinish {
+        /// Core kind (`write`, `copy`, `move`, or `rename`).
+        kind: &'static str,
+        /// Remaining core state.
+        state: String,
+    },
+    /// Primitive return classification disagreed with the core's terminal classification.
+    #[error("returned {returned}, the core ended {expected}")]
+    EndedMismatch {
+        /// Classification returned by the real primitive.
+        returned: String,
+        /// Expected classification from the core.
+        expected: String,
+    },
+    /// Post-run harness invariant failed.
+    #[error("{detail}")]
+    Invariant {
+        /// Invariant failure message.
+        detail: &'static str,
+    },
+    /// Simulated crash left a torn destination according to the disk model.
+    #[error("a crash left a torn destination: {content}")]
+    CrashTornDestination {
+        /// Torn destination content state.
+        content: String,
+    },
+    /// Simulated crash destination check failed.
+    #[error("after the crash: {source}")]
+    AfterCrash {
+        /// Underlying destination mismatch.
+        #[source]
+        source: Box<WriteShellConformanceError>,
+    },
+    /// Simulated crash of a move lost both source and destination.
+    #[error("after the crash the move lost its only copy")]
+    CrashMoveLostCopy,
+    /// Simulated crash left entries outside the sweepable temp-file contract.
+    #[error("after the crash, entries LushText cannot sweep: {strays:?}")]
+    CrashUnsweepableStrays {
+        /// Unsweepable stray entry names.
+        strays: Vec<String>,
+    },
+    /// Leftover temp file lacked modification time metadata.
+    #[error("leftover {name} has no modification time")]
+    LeftoverMissingMtime {
+        /// Leftover temp filename.
+        name: String,
+    },
+    /// Leftover temp file did not parse as a durable temp name.
+    #[error("leftover {name} is not a durable temp name")]
+    LeftoverInvalidTempName {
+        /// Leftover filename.
+        name: String,
+    },
+    /// Leftover temp file was not accepted by the startup leftover sweeper.
+    #[error("leftover {name} is not one a later sweep removes")]
+    LeftoverNotSweepable {
+        /// Leftover filename.
+        name: String,
+    },
+}
+
 /// Seed `root`, run the case, and check every action against the models.
 ///
 /// # Errors
@@ -397,7 +593,10 @@ fn run_primitive(case: &WriteCase, layout: &Layout) -> Ended {
 ///
 /// Panics when a shared model's own assertion fails (a second temp, new
 /// bytes in a wider file), which is a divergence too.
-pub fn check_write_case(root: &Path, case: &WriteCase) -> Result<WriteCaseReport, String> {
+pub fn check_write_case(
+    root: &Path,
+    case: &WriteCase,
+) -> Result<WriteCaseReport, WriteShellConformanceError> {
     let layout = Layout::new(root, case.primitive);
     fixture::create_dir_all(&root.join("a"));
     fixture::create_dir_all(&root.join("b"));
@@ -529,17 +728,25 @@ impl<'a> Replay<'a> {
             )
     }
 
-    fn content_bytes(&self, content: Content) -> Result<Option<Vec<u8>>, String> {
+    fn content_bytes(
+        &self,
+        content: Content,
+    ) -> Result<Option<Vec<u8>>, WriteShellConformanceError> {
         match content {
             Content::Old => Ok(self.case.destination_exists.then(|| self.case.old.clone())),
             Content::New => Ok(Some(self.case.new.clone())),
             Content::Empty | Content::Torn => {
-                Err(format!("the model shows {content:?} at the destination"))
+                Err(WriteShellConformanceError::InvalidModelDestinationContent {
+                    content: format!("{content:?}"),
+                })
             }
         }
     }
 
-    fn check(mut self, ended: Option<Ended>) -> Result<WriteCaseReport, String> {
+    fn check(
+        mut self,
+        ended: Option<Ended>,
+    ) -> Result<WriteCaseReport, WriteShellConformanceError> {
         let mut report = WriteCaseReport {
             crashed: ended.is_none(),
             injected: self.case.faults.len() - self.trace.unfired.len(),
@@ -553,8 +760,11 @@ impl<'a> Replay<'a> {
             *counter += 1;
         }
         for step in &self.trace.steps {
-            let core = WriteCore::of(step.kind)
-                .ok_or_else(|| format!("an unexpected {:?} run", step.kind))?;
+            let core = WriteCore::of(step.kind).ok_or_else(|| {
+                WriteShellConformanceError::UnexpectedRunKind {
+                    kind: format!("{:?}", step.kind),
+                }
+            })?;
             report.actions.push(ActionShape {
                 core,
                 run: occurrence[step.run],
@@ -573,11 +783,10 @@ impl<'a> Replay<'a> {
             .filter(|step| step.outcome.is_some())
             .count();
         if observed.len() != completed {
-            return Err(format!(
-                "{} actions completed, {} were observed",
+            return Err(WriteShellConformanceError::ObservedActionCountMismatch {
                 completed,
-                observed.len()
-            ));
+                observed: observed.len(),
+            });
         }
         for (index, snapshot) in &observed {
             let step = &self.trace.steps[*index];
@@ -587,7 +796,10 @@ impl<'a> Replay<'a> {
                 occurrence[step.run], step.ordinal, step.action_name
             );
             self.step(step, core, snapshot)
-                .map_err(|error| format!("{context}: {error}"))?;
+                .map_err(|source| WriteShellConformanceError::Step {
+                    context,
+                    source: Box::new(source),
+                })?;
         }
         match ended {
             Some(ended) => self.check_end(ended)?,
@@ -601,9 +813,11 @@ impl<'a> Replay<'a> {
         step: &StepRecord,
         core: WriteCore,
         snapshot: &Snapshot,
-    ) -> Result<(), String> {
+    ) -> Result<(), WriteShellConformanceError> {
         if !snapshot.strays.is_empty() {
-            return Err(format!("unexpected entries: {:?}", snapshot.strays));
+            return Err(WriteShellConformanceError::UnexpectedStrays {
+                strays: snapshot.strays.clone(),
+            });
         }
         let failed = step
             .backend_calls()
@@ -612,13 +826,16 @@ impl<'a> Replay<'a> {
         let calls = step.backend_calls().count();
         if let Some(expected) = expected_calls(core, &step.action_name, self.metadata_source()) {
             if failed.is_none() && calls != expected {
-                return Err(format!("{calls} backend calls, the table pins {expected}"));
+                return Err(WriteShellConformanceError::UnexpectedBackendCallCount {
+                    calls,
+                    expected,
+                });
             }
             if failed.is_some() && calls > expected {
-                return Err(format!("{calls} backend calls, at most {expected} pinned"));
+                return Err(WriteShellConformanceError::ExcessBackendCallCount { calls, expected });
             }
         } else {
-            return Err("an action the call table does not pin".to_string());
+            return Err(WriteShellConformanceError::UnpinnedAction);
         }
         match core {
             WriteCore::Write => self.step_write(step, failed.as_ref(), snapshot),
@@ -632,9 +849,17 @@ impl<'a> Replay<'a> {
         step: &StepRecord,
         failed: Option<&tap::CallRecord>,
         snapshot: &Snapshot,
-    ) -> Result<(), String> {
-        let action: WriteAction = step.action().ok_or("not a write action")?;
-        let fed: StepOutcome = step.outcome().ok_or("no fed outcome")?;
+    ) -> Result<(), WriteShellConformanceError> {
+        let action: WriteAction =
+            step.action()
+                .ok_or(WriteShellConformanceError::MissingProtocolState {
+                    detail: "not a write action",
+                })?;
+        let fed: StepOutcome =
+            step.outcome()
+                .ok_or(WriteShellConformanceError::MissingProtocolState {
+                    detail: "no fed outcome",
+                })?;
         let required_source = matches!(
             self.case.primitive,
             WritePrimitive::Copy | WritePrimitive::Move
@@ -668,10 +893,11 @@ impl<'a> Replay<'a> {
             (_, None) => StepOutcome::Done,
         };
         if fed != expected {
-            return Err(format!(
-                "fed {fed:?}, its calls say {expected:?} (failed call: {:?})",
-                failed.map(|record| (record.call, &record.path))
-            ));
+            return Err(WriteShellConformanceError::FedWriteOutcomeMismatch {
+                fed: format!("{fed:?}"),
+                expected: format!("{expected:?}"),
+                failed: format!("{:?}", failed.map(|record| (record.call, &record.path))),
+            });
         }
         // The shell feeds a temp removal back as `Done` whatever happened; the
         // model is stepped with what the removal call really did.
@@ -681,48 +907,63 @@ impl<'a> Replay<'a> {
             fed
         };
         let run = step.run;
-        let disk = self.disks[run].as_mut().ok_or("no disk for the run")?;
+        let disk =
+            self.disks[run]
+                .as_mut()
+                .ok_or(WriteShellConformanceError::MissingProtocolState {
+                    detail: "no disk for the run",
+                })?;
         let shell_outcome = disk.execute(action, Shell::Production, model_outcome);
         disk.assert_new_bytes_are_never_wider();
         let disk = *disk;
-        let (protocol, pending) = self.write_cores[run].ok_or("no write core")?;
+        let (protocol, pending) =
+            self.write_cores[run].ok_or(WriteShellConformanceError::MissingProtocolState {
+                detail: "no write core",
+            })?;
         if pending != action {
-            return Err(format!("the core asked for {pending:?}"));
+            return Err(WriteShellConformanceError::UnexpectedCoreAction {
+                pending: format!("{pending:?}"),
+            });
         }
         self.write_cores[run] = Some(protocol.step(shell_outcome));
         // Nested in a move, the copy writes the move's destination too.
         self.check_destination(disk.visible(), snapshot)?;
         let linked = disk.temp.is_some_and(|temp| temp.linked);
         if snapshot.temps.len() != usize::from(linked) {
-            return Err(format!(
-                "{} temp files, the model's temp is {}linked",
-                snapshot.temps.len(),
-                if linked { "" } else { "not " }
-            ));
+            return Err(WriteShellConformanceError::TempCountMismatch {
+                actual: snapshot.temps.len(),
+                state: if linked { "" } else { "not " },
+            });
         }
         if self.metadata_source() {
             for (name, mode) in &snapshot.temps {
                 if mode & 0o777 & !self.case.mode != 0 {
-                    return Err(format!(
-                        "temp {name} has mode {mode:o}, wider than {:o}",
-                        self.case.mode
-                    ));
+                    return Err(WriteShellConformanceError::TempModeTooWide {
+                        name: name.clone(),
+                        mode: *mode,
+                        max_mode: self.case.mode,
+                    });
                 }
             }
         }
         Ok(())
     }
 
-    fn check_destination(&self, visible: Content, snapshot: &Snapshot) -> Result<(), String> {
+    fn check_destination(
+        &self,
+        visible: Content,
+        snapshot: &Snapshot,
+    ) -> Result<(), WriteShellConformanceError> {
         let expected = self.content_bytes(visible)?;
         let real = snapshot
             .destination
             .as_ref()
             .map(|(bytes, _)| bytes.clone());
         if real != expected {
-            return Err(format!(
-                "the destination holds {real:?}, the model shows {visible:?}"
-            ));
+            return Err(WriteShellConformanceError::DestinationMismatch {
+                real,
+                visible: format!("{visible:?}"),
+            });
         }
         Ok(())
     }
@@ -732,9 +973,17 @@ impl<'a> Replay<'a> {
         step: &StepRecord,
         failed: Option<&tap::CallRecord>,
         snapshot: &Snapshot,
-    ) -> Result<(), String> {
-        let action: MoveAction = step.action().ok_or("not a move action")?;
-        let fed: bool = step.outcome().ok_or("no fed outcome")?;
+    ) -> Result<(), WriteShellConformanceError> {
+        let action: MoveAction =
+            step.action()
+                .ok_or(WriteShellConformanceError::MissingProtocolState {
+                    detail: "not a move action",
+                })?;
+        let fed: bool = step
+            .outcome()
+            .ok_or(WriteShellConformanceError::MissingProtocolState {
+                detail: "no fed outcome",
+            })?;
         let expected = match action {
             // The copy's result is its nested write's class.
             MoveAction::Copy => {
@@ -755,32 +1004,40 @@ impl<'a> Replay<'a> {
             _ => failed.is_none(),
         };
         if fed != expected {
-            return Err(format!("fed {fed}, its calls say {expected}"));
+            return Err(WriteShellConformanceError::FedBoolOutcomeMismatch { fed, expected });
         }
-        let disk = self.moves[step.run].as_mut().ok_or("no move model")?;
+        let disk = self.moves[step.run].as_mut().ok_or(
+            WriteShellConformanceError::MissingProtocolState {
+                detail: "no move model",
+            },
+        )?;
         disk.execute(action, fed);
         let disk = *disk;
-        let (protocol, pending) = self.move_cores[step.run].ok_or("no move core")?;
+        let (protocol, pending) =
+            self.move_cores[step.run].ok_or(WriteShellConformanceError::MissingProtocolState {
+                detail: "no move core",
+            })?;
         if pending != action {
-            return Err(format!("the core asked for {pending:?}"));
+            return Err(WriteShellConformanceError::UnexpectedCoreAction {
+                pending: format!("{pending:?}"),
+            });
         }
         self.move_cores[step.run] = Some(protocol.step(fed));
         if snapshot.source.is_some() != disk.source_present {
-            return Err(format!(
-                "the source is {}present, the model says {}",
-                if snapshot.source.is_some() {
+            return Err(WriteShellConformanceError::SourcePresenceMismatch {
+                presence: if snapshot.source.is_some() {
                     ""
                 } else {
                     "not "
                 },
-                disk.source_present
-            ));
+                model_present: disk.source_present,
+            });
         }
         if disk.destination_durable {
             self.check_destination(Content::New, snapshot)?;
         }
         if !(disk.source_present || disk.destination_durable) {
-            return Err("the move lost its only durable copy".to_string());
+            return Err(WriteShellConformanceError::MoveLostOnlyCopy);
         }
         Ok(())
     }
@@ -790,34 +1047,54 @@ impl<'a> Replay<'a> {
         step: &StepRecord,
         failed: Option<&tap::CallRecord>,
         snapshot: &Snapshot,
-    ) -> Result<(), String> {
-        let action: RenameAction = step.action().ok_or("not a rename action")?;
-        let fed: bool = step.outcome().ok_or("no fed outcome")?;
+    ) -> Result<(), WriteShellConformanceError> {
+        let action: RenameAction =
+            step.action()
+                .ok_or(WriteShellConformanceError::MissingProtocolState {
+                    detail: "not a rename action",
+                })?;
+        let fed: bool = step
+            .outcome()
+            .ok_or(WriteShellConformanceError::MissingProtocolState {
+                detail: "no fed outcome",
+            })?;
         if fed != failed.is_none() {
-            return Err(format!("fed {fed}, its calls say {}", failed.is_none()));
+            return Err(WriteShellConformanceError::FedBoolOutcomeMismatch {
+                fed,
+                expected: failed.is_none(),
+            });
         }
-        let namespace = self.renames[step.run].as_mut().ok_or("no namespace")?;
+        let namespace = self.renames[step.run].as_mut().ok_or(
+            WriteShellConformanceError::MissingProtocolState {
+                detail: "no namespace",
+            },
+        )?;
         namespace.execute(action, fed);
         let namespace = *namespace;
-        let (protocol, pending) = self.rename_cores[step.run].ok_or("no rename core")?;
+        let (protocol, pending) = self.rename_cores[step.run].ok_or(
+            WriteShellConformanceError::MissingProtocolState {
+                detail: "no rename core",
+            },
+        )?;
         if pending != action {
-            return Err(format!("the core asked for {pending:?}"));
+            return Err(WriteShellConformanceError::UnexpectedCoreAction {
+                pending: format!("{pending:?}"),
+            });
         }
         self.rename_cores[step.run] = Some(protocol.step(fed));
         let moved = snapshot.source.is_none()
             && snapshot.destination.as_ref().map(|(bytes, _)| bytes) == Some(&self.case.new);
         if moved != namespace.renamed {
-            return Err(format!(
-                "the entry {} its new name, the model says renamed = {}",
-                if moved { "has" } else { "lacks" },
-                namespace.renamed
-            ));
+            return Err(WriteShellConformanceError::RenameStateMismatch {
+                verb: if moved { "has" } else { "lacks" },
+                model_renamed: namespace.renamed,
+            });
         }
         Ok(())
     }
 
     /// The returned result against the top-level core's end.
-    fn check_end(&self, ended: Ended) -> Result<(), String> {
+    fn check_end(&self, ended: Ended) -> Result<(), WriteShellConformanceError> {
         let top = self.trace.runs.iter().position(|run| run.parent.is_none());
         let expected = match (self.case.primitive, top) {
             // A rename refused by an injected or real cross-device error
@@ -828,33 +1105,61 @@ impl<'a> Replay<'a> {
                     Some((_, WriteAction::Finish(WriteClass::Success))) => Ended::Ok,
                     Some((_, WriteAction::Finish(WriteClass::BeforeRename))) => Ended::BeforeRename,
                     Some((_, WriteAction::Finish(WriteClass::AfterRename))) => Ended::AfterRename,
-                    other => return Err(format!("the write core did not finish: {other:?}")),
+                    other => {
+                        return Err(WriteShellConformanceError::CoreDidNotFinish {
+                            kind: "write",
+                            state: format!("{other:?}"),
+                        });
+                    }
                 }
             }
             (WritePrimitive::Copy, Some(run)) => match self.write_cores[run] {
                 Some((_, WriteAction::Finish(WriteClass::Success))) => Ended::Ok,
                 Some((_, WriteAction::Finish(_))) => Ended::Failed,
-                other => return Err(format!("the copy core did not finish: {other:?}")),
+                other => {
+                    return Err(WriteShellConformanceError::CoreDidNotFinish {
+                        kind: "copy",
+                        state: format!("{other:?}"),
+                    });
+                }
             },
             (WritePrimitive::Move, Some(run)) => match self.move_cores[run] {
                 Some((_, MoveAction::Finish(true))) => Ended::Ok,
                 Some((_, MoveAction::Finish(false))) => Ended::Failed,
-                other => return Err(format!("the move core did not finish: {other:?}")),
+                other => {
+                    return Err(WriteShellConformanceError::CoreDidNotFinish {
+                        kind: "move",
+                        state: format!("{other:?}"),
+                    });
+                }
             },
             (WritePrimitive::Rename { .. }, Some(run)) => match self.rename_cores[run] {
                 Some((_, RenameAction::Finish(RenameClass::Success))) => Ended::Ok,
                 Some((_, RenameAction::Finish(_))) => Ended::Failed,
-                other => return Err(format!("the rename core did not finish: {other:?}")),
+                other => {
+                    return Err(WriteShellConformanceError::CoreDidNotFinish {
+                        kind: "rename",
+                        state: format!("{other:?}"),
+                    });
+                }
             },
             (WritePrimitive::RenameNoReplace { .. }, Some(run)) => match self.rename_cores[run] {
                 Some((_, RenameAction::Finish(RenameClass::Success))) => Ended::Ok,
                 Some((_, RenameAction::Finish(RenameClass::BeforeRename))) => Ended::BeforeRename,
                 Some((_, RenameAction::Finish(RenameClass::AfterRename))) => Ended::AfterRename,
-                other => return Err(format!("the rename core did not finish: {other:?}")),
+                other => {
+                    return Err(WriteShellConformanceError::CoreDidNotFinish {
+                        kind: "rename",
+                        state: format!("{other:?}"),
+                    });
+                }
             },
         };
         if ended != expected {
-            return Err(format!("returned {ended:?}, the core ended {expected:?}"));
+            return Err(WriteShellConformanceError::EndedMismatch {
+                returned: format!("{ended:?}"),
+                expected: format!("{expected:?}"),
+            });
         }
         // The harness's own classification facts, on the real run.
         for (run, disk) in self.disks.iter().enumerate() {
@@ -863,27 +1168,33 @@ impl<'a> Replay<'a> {
                 continue;
             };
             if disk.every_step_done && class != WriteClass::Success {
-                return Err("a write with no failure did not succeed".to_string());
+                return Err(WriteShellConformanceError::Invariant {
+                    detail: "a write with no failure did not succeed",
+                });
             }
             if disk.temp_name_attempts > 0
                 && disk.every_temp_name_taken
                 && disk.temp_name_attempts
                     != crate::filesystem::write_protocol::MAX_TEMP_NAME_ATTEMPTS
             {
-                return Err("a write gave up on taken names early".to_string());
+                return Err(WriteShellConformanceError::Invariant {
+                    detail: "a write gave up on taken names early",
+                });
             }
             if class == WriteClass::BeforeRename
                 && disk.temp.is_some_and(|temp| temp.linked)
                 && !disk.removal_failed
             {
-                return Err("a failed write left its temp behind".to_string());
+                return Err(WriteShellConformanceError::Invariant {
+                    detail: "a failed write left its temp behind",
+                });
             }
         }
         Ok(())
     }
 
     /// After a crash: the live crash view, and leftovers a later launch sweeps.
-    fn check_crash(&self) -> Result<(), String> {
+    fn check_crash(&self) -> Result<(), WriteShellConformanceError> {
         let now = self.layout.snapshot();
         let write = self
             .disks
@@ -894,15 +1205,20 @@ impl<'a> Replay<'a> {
         if let Some((_, disk)) = write {
             let (content, _) = disk.after_crash(false);
             if !matches!(content, Content::Old | Content::New) {
-                return Err(format!("a crash left a torn destination: {content:?}"));
+                return Err(WriteShellConformanceError::CrashTornDestination {
+                    content: format!("{content:?}"),
+                });
             }
-            self.check_destination(content, &now)
-                .map_err(|error| format!("after the crash: {error}"))?;
+            self.check_destination(content, &now).map_err(|source| {
+                WriteShellConformanceError::AfterCrash {
+                    source: Box::new(source),
+                }
+            })?;
         }
         if let Some(disk) = self.moves.iter().flatten().next()
             && !(disk.source_present || disk.destination_durable)
         {
-            return Err("after the crash the move lost its only copy".to_string());
+            return Err(WriteShellConformanceError::CrashMoveLostCopy);
         }
         let directory = self
             .layout
@@ -912,10 +1228,7 @@ impl<'a> Replay<'a> {
         let target = self.layout.destination_name();
         // Every leftover, not only those that parse: a stray name fails.
         if !now.strays.is_empty() {
-            return Err(format!(
-                "after the crash, entries LushText cannot sweep: {:?}",
-                now.strays
-            ));
+            return Err(WriteShellConformanceError::CrashUnsweepableStrays { strays: now.strays });
         }
         for (name, _) in &now.temps {
             let path = directory.join(name);
@@ -927,10 +1240,13 @@ impl<'a> Replay<'a> {
                         + Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
                 });
             let Some(modified) = modified else {
-                return Err(format!("leftover {name} has no modification time"));
+                return Err(WriteShellConformanceError::LeftoverMissingMtime {
+                    name: name.clone(),
+                });
             };
-            let parsed = temp_name::parse(name)
-                .ok_or_else(|| format!("leftover {name} is not a durable temp name"))?;
+            let parsed = temp_name::parse(name).ok_or_else(|| {
+                WriteShellConformanceError::LeftoverInvalidTempName { name: name.clone() }
+            })?;
             let clock = LeftoverClock {
                 current_pid: std::process::id(),
                 // A later launch: a launch never sweeps its own temps.
@@ -947,7 +1263,9 @@ impl<'a> Replay<'a> {
                 LeftoverScope::Target(std::ffi::OsStr::new(&target)),
                 clock,
             ) {
-                return Err(format!("leftover {name} is not one a later sweep removes"));
+                return Err(WriteShellConformanceError::LeftoverNotSweepable {
+                    name: name.clone(),
+                });
             }
         }
         Ok(())
@@ -956,3 +1274,30 @@ impl<'a> Replay<'a> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod error_tests {
+    use super::*;
+
+    #[test]
+    fn replay_returns_structured_conformance_errors_on_invalid_inputs() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let case = WriteCase::plain(WritePrimitive::Replace, false);
+        let layout = Layout::new(root.path(), case.primitive);
+        let trace = TapTrace::default();
+        let replay = Replay::new(&case, &layout, &trace, Vec::new());
+
+        assert!(matches!(
+            replay.content_bytes(Content::Torn),
+            Err(WriteShellConformanceError::InvalidModelDestinationContent { ref content })
+                if content == "Torn"
+        ));
+        assert!(matches!(
+            replay.check(Some(Ended::Ok)),
+            Err(WriteShellConformanceError::EndedMismatch {
+                ref returned,
+                ref expected
+            }) if returned == "Ok" && expected == "Failed"
+        ));
+    }
+}

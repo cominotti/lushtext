@@ -23,7 +23,6 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::Result;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::glib;
@@ -104,7 +103,7 @@ impl LushtextWindow {
         &self,
         result: std::result::Result<draft_service::DraftRegistration, DraftManifestFailure>,
         registered: &[DraftEntry],
-    ) -> std::result::Result<Vec<draft_service::RegisteredDraft>, String> {
+    ) -> std::result::Result<Vec<draft_service::RegisteredDraft>, DraftManifestFailure> {
         match result {
             Ok(mut registration) => {
                 let tokens = registration.take_registered();
@@ -126,7 +125,7 @@ impl LushtextWindow {
             }
             Err(error) => {
                 self.reject_draft_manifest_authority(error.authority);
-                Err(error.detail)
+                Err(error)
             }
         }
     }
@@ -300,9 +299,9 @@ impl LushtextWindow {
     ///
     /// Returns an error when any dirty draft file cannot be written or when
     /// the draft manifest cannot be updated after successful draft writes.
-    pub fn flush_dirty_drafts(&self) -> Result<()> {
+    pub fn flush_dirty_drafts(&self) -> Result<(), super::seams::DraftSyncFlushError> {
         if self.journal_mutation_busy() || self.imp().drafts.orphan_cleanup_inflight.get() {
-            anyhow::bail!("draft persistence is already in progress");
+            return Err(super::seams::DraftSyncFlushError::AlreadyInProgress);
         }
         let tab_view = &self.imp().tab_view;
         let data_dir = json_store::data_dir();
@@ -401,8 +400,8 @@ impl LushtextWindow {
                 .map_err(DraftManifestFailure::from);
                 match self.apply_draft_registration(result, std::slice::from_ref(&entry)) {
                     Ok(mut tokens) => token = tokens.pop(),
-                    Err(detail) => {
-                        registration_errors.push(format!("{draft_id}: {detail}"));
+                    Err(failure) => {
+                        registration_errors.push(format!("{draft_id}: {}", failure.detail));
                         continue;
                     }
                 }
@@ -437,25 +436,23 @@ impl LushtextWindow {
                     Ok(commit) => commit,
                     Err(error) => {
                         self.reject_draft_manifest_authority(error.authority());
-                        return Err(anyhow::anyhow!(
-                            "failed to save draft manifest on close: {error}"
-                        ));
+                        return Err(super::seams::DraftSyncFlushError::ManifestSave {
+                            detail: error.to_string(),
+                        });
                     }
                 };
             self.accept_draft_manifest_commit(commit);
         }
         if !registration_errors.is_empty() {
-            return Err(anyhow::anyhow!(
-                "failed to save draft manifest on close: {}",
-                registration_errors.join("; ")
-            ));
+            return Err(super::seams::DraftSyncFlushError::ManifestSave {
+                detail: registration_errors.join("; "),
+            });
         }
         if !write_errors.is_empty() {
-            return Err(anyhow::anyhow!(
-                "failed to write {} drafts on close: {}",
-                write_errors.len(),
-                write_errors.join("; ")
-            ));
+            return Err(super::seams::DraftSyncFlushError::BodyWrite {
+                count: write_errors.len(),
+                details: write_errors.join("; "),
+            });
         }
         self.clear_close_discard_drafts();
         Ok(())
@@ -800,9 +797,13 @@ impl LushtextWindow {
                     journal_core::DeletionStep::DeleteBody => {
                         delay_draft_delete_for_test();
                         body_error = fail_next_draft_delete_for_test()
-                            .and_then(|()| draft_service::delete_draft_file(&data_dir, &draft_id))
                             .err()
-                            .map(|error| error.to_string());
+                            .map(|error| error.to_string())
+                            .or_else(|| {
+                                draft_service::delete_draft_file(&data_dir, &draft_id)
+                                    .err()
+                                    .map(|error| error.to_string())
+                            });
                         body_error.is_none()
                     }
                     _ => {

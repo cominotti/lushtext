@@ -9,11 +9,19 @@
 use crate::persistence::app_data_layout::{AppDataLayout, AppDataLocation};
 use crate::persistence::json_format::KIND_SEARCH_HISTORY;
 use crate::persistence::recovery_metadata::{
-    RecoveryLoad, RecoveryLoadConfig, RecoveryMetadataClass, load_enveloped_json_or_default,
-    save_enveloped_json_path,
+    RecoveryLoad, RecoveryLoadConfig, RecoveryMetadataClass, RecoveryMetadataError,
+    load_enveloped_json_or_default, save_enveloped_json_path,
 };
 use lushtext_model::workspace::content_search::SearchHistoryEntry;
 use std::path::Path;
+
+/// Typed errors returned when persisting search history.
+#[derive(Debug, thiserror::Error)]
+pub enum SearchHistoryError {
+    /// Recovery-aware metadata validation or durable write failed.
+    #[error(transparent)]
+    Recovery(#[from] RecoveryMetadataError),
+}
 
 /// Maximum number of history entries to retain.
 ///
@@ -50,7 +58,7 @@ pub fn load_recovering(data_dir: &Path) -> RecoveryLoad<Vec<SearchHistoryEntry>>
 /// # Errors
 ///
 /// Returns an error if the history file cannot be serialized or written.
-pub fn save(data_dir: &Path, entries: &[SearchHistoryEntry]) -> anyhow::Result<()> {
+pub fn save(data_dir: &Path, entries: &[SearchHistoryEntry]) -> Result<(), SearchHistoryError> {
     let path = search_history_path(data_dir);
     let config = RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::SearchHistory);
     let entries = entries.to_vec();
@@ -251,5 +259,23 @@ mod tests {
         save(dir.path(), &entries).expect("save a full history");
         assert_eq!(load(dir.path()), entries);
         assert_eq!(MAX_HISTORY, 32);
+    }
+
+    #[test]
+    fn save_returns_recovery_error_when_quarantine_is_blocked() {
+        let dir = TempDir::new().expect("tempdir");
+        fixture::write_text(&search_history_path(dir.path()), "corrupt");
+        fixture::write_text(
+            &dir.path()
+                .join(crate::persistence::recovery_metadata::QUARANTINE_DIR),
+            "blocker",
+        );
+
+        let error = save(dir.path(), &[make_entry("needle")])
+            .expect_err("blocked quarantine must surface typed error");
+        assert!(matches!(
+            error,
+            SearchHistoryError::Recovery(RecoveryMetadataError::UnsafeReplacement { .. })
+        ));
     }
 }

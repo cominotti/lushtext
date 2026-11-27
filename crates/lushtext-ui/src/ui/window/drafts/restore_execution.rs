@@ -23,7 +23,6 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 
-use anyhow::Result;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -181,7 +180,7 @@ impl LushtextWindow {
     pub(super) fn finish_draft_restore(
         &self,
         ticket: &DraftRestoreTicket,
-        result: Result<GuardedDraftRestoreResolution>,
+        result: std::result::Result<GuardedDraftRestoreResolution, draft_service::DraftReadError>,
         tracking: DraftRestoreTracking,
     ) {
         self.release_draft_restore(&ticket.entry.draft_id);

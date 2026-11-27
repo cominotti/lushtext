@@ -6,7 +6,6 @@
 //! stable saved-file identity, load/save one note for that file, migrate notes
 //! after in-app renames, and collect workspace-scoped rows for note browsers.
 
-use anyhow::{Context, Result};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
@@ -14,13 +13,97 @@ use crate::filesystem::{
     DirectoryScanPolicy, metadata as fs_metadata, mutate as fs_mutate, tree as fs_tree,
 };
 use crate::persistence::app_data_layout::{AppDataLayout, AppDataLocation};
-use crate::persistence::recovery_metadata::{RecoveryDiagnostic, RecoveryMetadataClass};
+use crate::persistence::recovery_metadata::{
+    RecoveryDiagnostic, RecoveryMetadataClass, RecoveryMetadataError,
+};
 use lushtext_model::persistence::document_note::DocumentNoteDocument;
 use lushtext_model::persistence::note::RichNoteBody;
 use lushtext_model::persistence::note::RichNoteMergeDecision;
 use lushtext_model::persistence::sidecar_identity::DocumentSidecarIdentity;
 
-use super::note_storage;
+use super::note_storage::{self, NoteStorageError};
+
+/// Typed errors returned by document-note sidecar persistence and workspace listing operations.
+#[derive(Debug, thiserror::Error)]
+pub enum DocumentNoteError {
+    /// Resolving the canonical identity for a saved document failed.
+    #[error("failed to canonicalize {}: {source}", path.display())]
+    Canonicalize {
+        /// Saved document path that could not be canonicalized.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// Recovery-aware metadata validation or durable replacement failed.
+    #[error(transparent)]
+    Recovery(#[from] RecoveryMetadataError),
+    /// Deleting a document-note sidecar failed.
+    #[error("failed to delete document note sidecar {}: {source}", path.display())]
+    DeleteSidecar {
+        /// Document-note sidecar file path that could not be deleted.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// Deleting an obsolete document-note sidecar after migration failed.
+    #[error("failed to delete obsolete document note sidecar {}: {source}", path.display())]
+    DeleteObsoleteSidecar {
+        /// Obsolete sidecar file path that could not be removed.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// Inspecting the document-note sidecar directory failed.
+    #[error("failed to inspect {}: {source}", path.display())]
+    InspectDir {
+        /// Document-note sidecar directory path that could not be inspected.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// Scanning the document-note sidecar directory failed.
+    #[error("failed to read {}: {source}", path.display())]
+    ScanDir {
+        /// Document-note sidecar directory path that could not be scanned.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// Both source and target sidecars exist with equal timestamps and differing text.
+    #[error(
+        "ambiguous document note sidecar conflict for {}; both copies were preserved",
+        path.display()
+    )]
+    AmbiguousConflict {
+        /// Target document display path whose sidecar merge conflicted.
+        path: PathBuf,
+    },
+    /// One or more document-note sidecars could not be migrated during a rename pass.
+    #[error("{failures} document-note sidecar(s) could not be migrated; {migrated} succeeded")]
+    IncompleteMigration {
+        /// Number of document-note sidecars that failed migration.
+        failures: usize,
+        /// Number of document-note sidecars that succeeded.
+        migrated: usize,
+    },
+}
+
+impl From<NoteStorageError> for DocumentNoteError {
+    fn from(error: NoteStorageError) -> Self {
+        match error {
+            NoteStorageError::Canonicalize { path, source } => Self::Canonicalize { path, source },
+            NoteStorageError::IncompleteMigration {
+                failures, migrated, ..
+            } => Self::IncompleteMigration { failures, migrated },
+            NoteStorageError::Recovery(source) => Self::Recovery(source),
+        }
+    }
+}
 
 /// Lightweight workspace-facing document-note row for note browsers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,23 +133,26 @@ pub fn document_notes_dir(data_dir: &Path) -> PathBuf {
 ///
 /// # Errors
 ///
-/// Returns an error if the file identity cannot be resolved or the sidecar
-/// directory cannot be scanned. Malformed or unreadable sidecars are preserved
-/// through recovery diagnostics and treated as absent.
-pub fn load_for_path(data_dir: &Path, path: &Path) -> Result<Option<DocumentNoteDocument>> {
+/// Returns an error if the file identity cannot be resolved. Malformed or
+/// unreadable sidecars are preserved through recovery diagnostics and treated
+/// as absent.
+pub fn load_for_path(
+    data_dir: &Path,
+    path: &Path,
+) -> Result<Option<DocumentNoteDocument>, DocumentNoteError> {
     let identity = note_storage::resolve_document_identity(path)?;
-    load_for_identity(
+    Ok(load_for_identity(
         data_dir,
         &identity,
         crate::persistence::recovery_metadata::DEFAULT_MAX_METADATA_BYTES,
-    )
+    ))
 }
 
 pub(crate) fn load_for_identity(
     data_dir: &Path,
     identity: &DocumentSidecarIdentity,
     max_bytes: u64,
-) -> Result<Option<DocumentNoteDocument>> {
+) -> Option<DocumentNoteDocument> {
     let path =
         document_notes_dir(data_dir).join(note_storage::sidecar_filename(&identity.sidecar_id));
     let load = note_storage::load_json_file_recovering_with_max_bytes::<DocumentNoteDocument>(
@@ -76,7 +162,7 @@ pub(crate) fn load_for_identity(
         max_bytes,
     );
     note_storage::trace_recovery_diagnostics(&load.diagnostics);
-    Ok(load.value)
+    load.value
 }
 
 /// Save the current document note for a saved file.
@@ -91,7 +177,7 @@ pub fn save_for_path(
     data_dir: &Path,
     path: &Path,
     note: &RichNoteBody,
-) -> Result<DocumentSidecarIdentity> {
+) -> Result<DocumentSidecarIdentity, DocumentNoteError> {
     let identity = note_storage::resolve_document_identity(path)?;
     save_document(
         data_dir,
@@ -108,7 +194,10 @@ pub fn save_for_path(
 /// # Errors
 ///
 /// Returns an error if the sidecar cannot be written or deleted.
-pub fn save_document(data_dir: &Path, document: &DocumentNoteDocument) -> Result<()> {
+pub fn save_document(
+    data_dir: &Path,
+    document: &DocumentNoteDocument,
+) -> Result<(), DocumentNoteError> {
     if document.note.is_empty() {
         return delete_sidecar_file(data_dir, &document.identity);
     }
@@ -116,12 +205,12 @@ pub fn save_document(data_dir: &Path, document: &DocumentNoteDocument) -> Result
     let path = document_notes_dir(data_dir).join(note_storage::sidecar_filename(
         &document.identity.sidecar_id,
     ));
-    note_storage::save_json_file_recovering(
+    Ok(note_storage::save_json_file_recovering(
         data_dir,
         &path,
         RecoveryMetadataClass::DocumentNoteSidecar,
         document,
-    )
+    )?)
 }
 
 /// Delete the document note for a saved file path if it exists.
@@ -130,22 +219,20 @@ pub fn save_document(data_dir: &Path, document: &DocumentNoteDocument) -> Result
 ///
 /// Returns an error if the file identity cannot be resolved or an existing
 /// sidecar cannot be deleted.
-pub fn delete_for_path(data_dir: &Path, path: &Path) -> Result<()> {
+pub fn delete_for_path(data_dir: &Path, path: &Path) -> Result<(), DocumentNoteError> {
     let identity = note_storage::resolve_document_identity(path)?;
     delete_sidecar_file(data_dir, &identity)
 }
 
-fn delete_sidecar_file(data_dir: &Path, identity: &DocumentSidecarIdentity) -> Result<()> {
+fn delete_sidecar_file(
+    data_dir: &Path,
+    identity: &DocumentSidecarIdentity,
+) -> Result<(), DocumentNoteError> {
     let path =
         document_notes_dir(data_dir).join(note_storage::sidecar_filename(&identity.sidecar_id));
-    match fs_mutate::remove_file_if_exists(&path) {
-        Ok(_) => Ok(()),
-        Err(error) => Err(anyhow::anyhow!(
-            "failed to delete document note sidecar {}: {}",
-            path.display(),
-            error
-        )),
-    }
+    fs_mutate::remove_file_if_exists(&path)
+        .map_err(|source| DocumentNoteError::DeleteSidecar { path, source })?;
+    Ok(())
 }
 
 /// Move document-note sidecars after an in-app rename of a file or directory tree.
@@ -156,16 +243,29 @@ fn delete_sidecar_file(data_dir: &Path, identity: &DocumentSidecarIdentity) -> R
 ///
 /// Returns an error if the sidecar directory cannot be scanned or a migrated
 /// sidecar cannot be read, rewritten, or cleaned up.
-pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Result<usize> {
+pub fn move_path_tree(
+    data_dir: &Path,
+    old_path: &Path,
+    new_path: &Path,
+) -> Result<usize, DocumentNoteError> {
     let dir = document_notes_dir(data_dir);
-    if !fs_metadata::path_status(&dir)?.is_present() {
+    let dir_present = fs_metadata::path_status(&dir)
+        .map_err(|source| DocumentNoteError::InspectDir {
+            path: dir.clone(),
+            source,
+        })?
+        .is_present();
+    if !dir_present {
         return Ok(0);
     }
 
     let mut tally = note_storage::SidecarMigrationTally::new("document-note");
-    for entry in fs_tree::scan_directory(&dir, DirectoryScanPolicy::visible_workspace())
-        .with_context(|| format!("failed to read {}", dir.display()))?
-    {
+    for entry in fs_tree::scan_directory(&dir, DirectoryScanPolicy::visible_workspace()).map_err(
+        |source| DocumentNoteError::ScanDir {
+            path: dir.clone(),
+            source,
+        },
+    )? {
         let sidecar_path = entry.path;
         if sidecar_path.extension().and_then(OsStr::to_str) != Some("json") {
             continue;
@@ -203,7 +303,7 @@ pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Resu
         tally.record(&sidecar_path, outcome);
     }
 
-    tally.finish()
+    Ok(tally.finish()?)
 }
 
 fn merge_document_note_target(
@@ -211,7 +311,7 @@ fn merge_document_note_target(
     target_path: &Path,
     mut source: DocumentNoteDocument,
     target_identity: DocumentSidecarIdentity,
-) -> Result<DocumentNoteDocument> {
+) -> Result<DocumentNoteDocument, DocumentNoteError> {
     let load = note_storage::load_json_file_recovering::<DocumentNoteDocument>(
         data_dir,
         target_path,
@@ -231,7 +331,7 @@ fn merge_document_note_documents(
     source: DocumentNoteDocument,
     mut target: DocumentNoteDocument,
     target_identity: DocumentSidecarIdentity,
-) -> Result<DocumentNoteDocument> {
+) -> Result<DocumentNoteDocument, DocumentNoteError> {
     match source.note.merge_decision_against(&target.note) {
         RichNoteMergeDecision::UseSelf => Ok(DocumentNoteDocument {
             identity: target_identity,
@@ -241,22 +341,20 @@ fn merge_document_note_documents(
             target.identity = target_identity;
             Ok(target)
         }
-        RichNoteMergeDecision::Conflict => Err(anyhow::anyhow!(
-            "ambiguous document note sidecar conflict for {}; both copies were preserved",
-            target_identity.display_path.display()
-        )),
+        RichNoteMergeDecision::Conflict => Err(DocumentNoteError::AmbiguousConflict {
+            path: target_identity.display_path,
+        }),
     }
 }
 
-fn remove_obsolete_sidecar(path: &Path) -> Result<()> {
-    match fs_mutate::remove_file_if_exists(path) {
-        Ok(_) => Ok(()),
-        Err(error) => Err(anyhow::anyhow!(
-            "failed to delete obsolete document note sidecar {}: {}",
-            path.display(),
-            error
-        )),
-    }
+fn remove_obsolete_sidecar(path: &Path) -> Result<(), DocumentNoteError> {
+    fs_mutate::remove_file_if_exists(path).map_err(|source| {
+        DocumentNoteError::DeleteObsoleteSidecar {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    Ok(())
 }
 
 /// Collect document notes under the current workspace folders for note browsers.
@@ -268,7 +366,7 @@ fn remove_obsolete_sidecar(path: &Path) -> Result<()> {
 pub fn list_workspace_document_notes(
     data_dir: &Path,
     workspace_folders: &[PathBuf],
-) -> Result<Vec<WorkspaceDocumentNote>> {
+) -> Result<Vec<WorkspaceDocumentNote>, DocumentNoteError> {
     Ok(list_workspace_document_notes_recovering(data_dir, workspace_folders)?.notes)
 }
 
@@ -280,10 +378,16 @@ pub fn list_workspace_document_notes(
 pub fn list_workspace_document_notes_recovering(
     data_dir: &Path,
     workspace_folders: &[PathBuf],
-) -> Result<WorkspaceDocumentNoteListing> {
+) -> Result<WorkspaceDocumentNoteListing, DocumentNoteError> {
     let canonical_folders = note_storage::canonicalize_folders(workspace_folders);
     let dir = document_notes_dir(data_dir);
-    if !fs_metadata::path_status(&dir)?.is_present() {
+    let dir_present = fs_metadata::path_status(&dir)
+        .map_err(|source| DocumentNoteError::InspectDir {
+            path: dir.clone(),
+            source,
+        })?
+        .is_present();
+    if !dir_present {
         return Ok(WorkspaceDocumentNoteListing {
             notes: Vec::new(),
             diagnostics: Vec::new(),
@@ -292,9 +396,12 @@ pub fn list_workspace_document_notes_recovering(
 
     let mut notes = Vec::new();
     let mut diagnostics = Vec::new();
-    for entry in fs_tree::scan_directory(&dir, DirectoryScanPolicy::visible_workspace())
-        .with_context(|| format!("failed to read {}", dir.display()))?
-    {
+    for entry in fs_tree::scan_directory(&dir, DirectoryScanPolicy::visible_workspace()).map_err(
+        |source| DocumentNoteError::ScanDir {
+            path: dir.clone(),
+            source,
+        },
+    )? {
         let load = note_storage::load_json_file_recovering::<DocumentNoteDocument>(
             data_dir,
             &entry.path,
@@ -394,12 +501,76 @@ mod tests {
 
         let error =
             delete_for_path(dir.path(), &file_path).expect_err("directory sidecar should fail");
-        assert!(
-            error
-                .to_string()
-                .contains("failed to delete document note sidecar"),
-            "unexpected error: {error}"
+        assert!(matches!(
+            error,
+            DocumentNoteError::DeleteSidecar { ref path, .. } if path == &sidecar_path
+        ));
+    }
+
+    #[test]
+    fn save_for_path_reports_canonicalize_error_for_missing_file() {
+        let dir = TempDir::new().expect("tempdir");
+        let missing = dir.path().join("missing.rs");
+
+        let error = save_for_path(dir.path(), &missing, &RichNoteBody::new("note"))
+            .expect_err("missing file should fail");
+
+        assert!(matches!(
+            error,
+            DocumentNoteError::Canonicalize { ref path, .. } if path == &missing
+        ));
+    }
+
+    #[test]
+    fn merge_document_note_documents_returns_ambiguous_conflict_variant() {
+        let source_identity = DocumentSidecarIdentity::from_paths(
+            PathBuf::from("/workspace/old.rs"),
+            PathBuf::from("/workspace/old.rs"),
         );
+        let target_identity = DocumentSidecarIdentity::from_paths(
+            PathBuf::from("/workspace/new.rs"),
+            PathBuf::from("/workspace/new.rs"),
+        );
+        let source = DocumentNoteDocument {
+            identity: source_identity,
+            note: RichNoteBody {
+                text: "source text".to_string(),
+                created_at_secs: 1,
+                updated_at_secs: 10,
+            },
+        };
+        let target = DocumentNoteDocument {
+            identity: target_identity.clone(),
+            note: RichNoteBody {
+                text: "target text".to_string(),
+                created_at_secs: 1,
+                updated_at_secs: 10,
+            },
+        };
+
+        let error = merge_document_note_documents(source, target, target_identity.clone())
+            .expect_err("equal-timestamp distinct bodies should conflict");
+
+        assert!(matches!(
+            error,
+            DocumentNoteError::AmbiguousConflict { ref path }
+                if path == &target_identity.display_path
+        ));
+    }
+
+    #[test]
+    fn list_workspace_document_notes_reports_scan_error_when_dir_is_file() {
+        let dir = TempDir::new().expect("tempdir");
+        let notes_root = document_notes_dir(dir.path());
+        fixture::write_text(&notes_root, "not a directory");
+
+        let error = list_workspace_document_notes_recovering(dir.path(), &[])
+            .expect_err("file at document_notes_dir should fail scan");
+
+        assert!(matches!(
+            error,
+            DocumentNoteError::ScanDir { ref path, .. } if path == &notes_root
+        ));
     }
 
     #[test]
@@ -532,12 +703,13 @@ mod tests {
         // The aggregate message reports the incomplete kind; the per-item
         // cause stays in the warning log so one poisoned sidecar can no longer
         // abandon every sidecar sorted after it.
-        assert!(
-            error
-                .to_string()
-                .contains("document-note sidecar(s) could not be migrated"),
-            "unexpected error: {error}"
-        );
+        assert!(matches!(
+            error,
+            DocumentNoteError::IncompleteMigration {
+                failures: 1,
+                migrated: 0,
+            }
+        ));
         assert!(fs_metadata::exists(&old_sidecar_path));
         assert!(fs_metadata::exists(&new_sidecar_path));
     }

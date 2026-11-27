@@ -11,11 +11,60 @@ use std::collections::HashMap;
 #[cfg(any(test, feature = "test-utils"))]
 use std::sync::Mutex;
 
-use anyhow::{Context, Result, bail};
-
 #[cfg(any(test, feature = "test-utils"))]
 use crate::persistence::json_format::KIND_SESSION;
 use crate::persistence::json_format::SUPPORTED_JSON_VERSION;
+
+/// Typed errors returned by format-upgrade legacy converters and registry dispatch.
+#[derive(Debug, thiserror::Error)]
+pub enum FormatConverterError {
+    /// No converter was registered for the requested document kind and source version.
+    #[error("no converter registered for {kind} v{from_version}")]
+    NoConverter {
+        /// Stable JSON envelope kind string.
+        kind: &'static str,
+        /// Source format version requested for conversion.
+        from_version: u32,
+    },
+    /// A registered converter targeted a version other than the current supported version.
+    #[error(
+        "converter for {kind} v{from_version} targets v{to_version}, expected v{expected_version}"
+    )]
+    UnexpectedTargetVersion {
+        /// Stable JSON envelope kind string.
+        kind: &'static str,
+        /// Source format version handled by the converter.
+        from_version: u32,
+        /// Target version declared in the converter entry.
+        to_version: u32,
+        /// Current supported format version.
+        expected_version: u32,
+    },
+    /// The registered converter failed while transforming the payload.
+    #[error("failed to convert {kind} v{from_version}: {source}")]
+    StepFailed {
+        /// Stable JSON envelope kind string.
+        kind: &'static str,
+        /// Source format version passed to the converter.
+        from_version: u32,
+        /// Error returned by the converter function.
+        #[source]
+        source: Box<FormatConverterError>,
+    },
+    /// A test or fixture converter hit a JSON syntax or serialization failure.
+    #[error("JSON conversion error: {0}")]
+    Json(#[from] serde_json::Error),
+    /// A test or converter hit an I/O failure.
+    #[error("I/O conversion error: {0}")]
+    Io(#[from] std::io::Error),
+    /// The manual v0 session fixture input was not valid JSON.
+    #[error("manual session v0 fixture is not valid JSON: {source}")]
+    InvalidFixtureJson {
+        /// Underlying JSON parse error.
+        #[source]
+        source: serde_json::Error,
+    },
+}
 
 /// Manual-test switch that registers a synthetic v0 session converter.
 ///
@@ -26,7 +75,7 @@ use crate::persistence::json_format::SUPPORTED_JSON_VERSION;
 const MANUAL_SESSION_V0_FIXTURE_ENV: &str = "LUSHTEXT_FORMAT_UPGRADE_MANUAL_SESSION_V0";
 
 /// Function pointer that converts one recognized older envelope to latest bytes.
-pub type ConverterFn = fn(&[u8]) -> Result<Vec<u8>>;
+pub type ConverterFn = fn(&[u8]) -> Result<Vec<u8>, FormatConverterError>;
 
 #[derive(Clone, Copy)]
 struct ConverterEntry {
@@ -137,18 +186,28 @@ impl ConverterRegistry {
     ///
     /// Returns an error if no converter exists, if the converter fails, or if
     /// the converter does not produce the current latest version.
-    pub fn convert(&self, kind: &'static str, from_version: u32, bytes: &[u8]) -> Result<Vec<u8>> {
+    pub fn convert(
+        &self,
+        kind: &'static str,
+        from_version: u32,
+        bytes: &[u8],
+    ) -> Result<Vec<u8>, FormatConverterError> {
         let Some(entry) = self.converters.get(&(kind, from_version)) else {
-            bail!("no converter registered for {kind} v{from_version}");
+            return Err(FormatConverterError::NoConverter { kind, from_version });
         };
         if entry.to_version != SUPPORTED_JSON_VERSION {
-            bail!(
-                "converter for {kind} v{from_version} targets v{}, expected v{}",
-                entry.to_version,
-                SUPPORTED_JSON_VERSION
-            );
+            return Err(FormatConverterError::UnexpectedTargetVersion {
+                kind,
+                from_version,
+                to_version: entry.to_version,
+                expected_version: SUPPORTED_JSON_VERSION,
+            });
         }
-        (entry.convert)(bytes).with_context(|| format!("failed to convert {kind} v{from_version}"))
+        (entry.convert)(bytes).map_err(|source| FormatConverterError::StepFailed {
+            kind,
+            from_version,
+            source: Box::new(source),
+        })
     }
 }
 
@@ -158,9 +217,9 @@ impl ConverterRegistry {
 /// historical converters should live beside this module with typed old-format
 /// structs and release-specific tests.
 #[cfg(any(test, feature = "test-utils"))]
-fn convert_manual_session_v0_fixture_to_v1(bytes: &[u8]) -> Result<Vec<u8>> {
-    let value: serde_json::Value =
-        serde_json::from_slice(bytes).context("manual session v0 fixture is not valid JSON")?;
+fn convert_manual_session_v0_fixture_to_v1(bytes: &[u8]) -> Result<Vec<u8>, FormatConverterError> {
+    let value: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|source| FormatConverterError::InvalidFixtureJson { source })?;
     let data = value
         .get("data")
         .cloned()
@@ -177,7 +236,7 @@ mod tests {
     use super::*;
     use crate::persistence::json_format::KIND_SESSION;
 
-    fn passthrough(bytes: &[u8]) -> Result<Vec<u8>> {
+    fn passthrough(bytes: &[u8]) -> Result<Vec<u8>, FormatConverterError> {
         Ok(bytes.to_vec())
     }
 
@@ -220,5 +279,50 @@ mod tests {
         assert_eq!(value["kind"], KIND_SESSION);
         assert_eq!(value["version"], SUPPORTED_JSON_VERSION);
         assert_eq!(value["data"]["tabs"][0]["path"], "/tmp/a.txt");
+    }
+
+    #[test]
+    fn registry_convert_returns_structured_errors_on_missing_mismatch_and_invalid_json() {
+        let registry = ConverterRegistry::default();
+        assert!(matches!(
+            registry.convert(KIND_SESSION, 0, b"{}"),
+            Err(FormatConverterError::NoConverter {
+                kind: KIND_SESSION,
+                from_version: 0
+            })
+        ));
+
+        let bad_target = ConverterRegistry::default().with_converter(
+            KIND_SESSION,
+            0,
+            SUPPORTED_JSON_VERSION + 1,
+            passthrough,
+        );
+        assert!(matches!(
+            bad_target.convert(KIND_SESSION, 0, b"{}"),
+            Err(FormatConverterError::UnexpectedTargetVersion {
+                kind: KIND_SESSION,
+                from_version: 0,
+                ..
+            })
+        ));
+
+        let fixture_registry = ConverterRegistry::default().with_converter(
+            KIND_SESSION,
+            0,
+            SUPPORTED_JSON_VERSION,
+            convert_manual_session_v0_fixture_to_v1,
+        );
+        let err = fixture_registry
+            .convert(KIND_SESSION, 0, b"{not json")
+            .expect_err("corrupt JSON should fail");
+        assert!(matches!(
+            err,
+            FormatConverterError::StepFailed {
+                kind: KIND_SESSION,
+                from_version: 0,
+                ..
+            }
+        ));
     }
 }

@@ -284,7 +284,7 @@ The blocking Rust lint gate is curated and all-featured:
 command (the hook skips only the Clippy step for a docs-only commit, decided
 fail-closed by `scripts/precommit-scope.py`, and `make check-precommit-scope`
 fails if a Rust build input is on its allowlist), and `make check` also runs the fast policy audits (`make check-policy`:
-filesystem boundary, Blueprint drift and template contract, and the rest).
+filesystem boundary, hexagonal crate boundaries, domain value types, typed error contracts, Blueprint drift and template contract, and the rest).
 Broad Clippy groups (`restriction`, `pedantic`, `nursery`, `cargo`) are
 advisory discovery inputs, not blocking policy; run `make lint-advisory` after a
 toolchain or dependency update. Dependency policy is

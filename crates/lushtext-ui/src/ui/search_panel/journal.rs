@@ -595,9 +595,11 @@ impl LushtextSearchPanel {
                 let mut diagnostics = recovery.diagnostics;
                 diagnostics.extend(search_backup::cleanup_stale(&data_dir).diagnostics);
                 report_startup_diagnostics(&diagnostics);
-                Ok::<PersistedUndoStartupLoad, anyhow::Error>(PersistedUndoStartupLoad {
-                    active_backup: None,
-                })
+                Ok::<PersistedUndoStartupLoad, search_backup::SearchBackupError>(
+                    PersistedUndoStartupLoad {
+                        active_backup: None,
+                    },
+                )
             },
             move |panel, result| {
                 panel.finish_journal_disk_job();

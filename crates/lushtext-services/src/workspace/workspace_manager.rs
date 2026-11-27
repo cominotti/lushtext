@@ -10,13 +10,24 @@ use crate::filesystem::metadata as fs_metadata;
 use crate::persistence::app_data_layout::{AppDataLayout, AppDataLocation};
 use crate::persistence::json_format::KIND_WORKSPACE_STATE;
 use crate::persistence::recovery_metadata::{
-    RecoveryLoad, RecoveryLoadConfig, RecoveryMetadataClass, load_enveloped_json_or_default,
-    save_enveloped_json_path,
+    RecoveryLoad, RecoveryLoadConfig, RecoveryMetadataClass, RecoveryMetadataError,
+    load_enveloped_json_or_default, save_enveloped_json_path,
 };
-use anyhow::Result;
 use lushtext_model::workspace::{
     WorkspaceFolderId, WorkspaceFolderMoveDirection, WorkspaceId, WorkspacesFile,
 };
+
+/// Typed errors returned when loading or saving workspace configuration.
+#[derive(Debug, thiserror::Error)]
+pub enum WorkspaceManagerError {
+    /// Recovery-aware metadata validation or durable write failed.
+    #[error(transparent)]
+    Recovery(#[from] RecoveryMetadataError),
+    /// Injected test-only persistence failure.
+    #[cfg(feature = "test-utils")]
+    #[error("injected workspace persistence failure")]
+    InjectedSaveFailure,
+}
 #[cfg(feature = "test-utils")]
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -323,7 +334,7 @@ fn folder_identities_match(
 ///
 /// This compatibility wrapper currently returns recovered state. Use
 /// [`load_recovering`] when diagnostics matter to the caller.
-pub fn load(data_dir: &Path) -> Result<WorkspacesFile> {
+pub fn load(data_dir: &Path) -> Result<WorkspacesFile, WorkspaceManagerError> {
     Ok(load_recovering(data_dir).value)
 }
 
@@ -351,7 +362,7 @@ fn trace_recovery_diagnostics(load: &RecoveryLoad<WorkspacesFile>) {
 /// # Errors
 ///
 /// Returns an error if the workspace file cannot be serialized or written.
-pub fn save(data_dir: &Path, file: &WorkspacesFile) -> Result<()> {
+pub fn save(data_dir: &Path, file: &WorkspacesFile) -> Result<(), WorkspaceManagerError> {
     let path = workspaces_path(data_dir);
     #[cfg(feature = "test-utils")]
     if let Some(fault) = workspace_save_faults_for_test()
@@ -363,7 +374,7 @@ pub fn save(data_dir: &Path, file: &WorkspacesFile) -> Result<()> {
             std::thread::sleep(std::time::Duration::from_millis(fault.delay_ms));
         }
         if fault.fail {
-            anyhow::bail!("injected workspace persistence failure");
+            return Err(WorkspaceManagerError::InjectedSaveFailure);
         }
     }
     let config = RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::WorkspaceState);
@@ -1328,5 +1339,23 @@ mod tests {
         assert_eq!(quarantine_entries.len(), 1);
         let loaded = load_recovering(dir.path());
         assert!(loaded.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn save_returns_recovery_error_when_quarantine_is_blocked() {
+        let dir = TempDir::new().expect("tempdir");
+        fixture::write_text(&workspaces_path(dir.path()), "corrupt");
+        fixture::write_text(
+            &dir.path()
+                .join(crate::persistence::recovery_metadata::QUARANTINE_DIR),
+            "blocker",
+        );
+
+        let error = save(dir.path(), &WorkspacesFile::default())
+            .expect_err("blocked quarantine must surface typed error");
+        assert!(matches!(
+            error,
+            WorkspaceManagerError::Recovery(RecoveryMetadataError::UnsafeReplacement { .. })
+        ));
     }
 }

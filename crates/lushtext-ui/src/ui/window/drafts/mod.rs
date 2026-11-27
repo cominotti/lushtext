@@ -300,34 +300,41 @@ pub(super) fn delay_draft_delete_for_test() {
     sleep_configured_test_delay(test_policy::delete_delay_ms());
 }
 
-pub(super) fn fail_next_draft_body_for_test() -> anyhow::Result<()> {
+/// Typed error produced by test-only injected draft failure hooks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+pub(super) struct InjectedDraftTestError(&'static str);
+
+pub(super) fn fail_next_draft_body_for_test() -> Result<(), InjectedDraftTestError> {
     #[cfg(feature = "test-utils")]
     if test_policy::take_body_failure() {
-        anyhow::bail!("injected draft body failure");
+        return Err(InjectedDraftTestError("injected draft body failure"));
     }
     Ok(())
 }
 
-pub(super) fn fail_next_draft_manifest_for_test() -> anyhow::Result<()> {
+pub(super) fn fail_next_draft_manifest_for_test() -> Result<(), InjectedDraftTestError> {
     #[cfg(feature = "test-utils")]
     if test_policy::take_manifest_failure() {
-        anyhow::bail!("injected draft manifest failure");
+        return Err(InjectedDraftTestError("injected draft manifest failure"));
     }
     Ok(())
 }
 
-pub(super) fn injected_draft_registration_failure_for_test() -> anyhow::Result<()> {
+pub(super) fn injected_draft_registration_failure_for_test() -> Result<(), InjectedDraftTestError> {
     #[cfg(feature = "test-utils")]
     if test_policy::take_registration_failure() {
-        anyhow::bail!("injected draft registration failure");
+        return Err(InjectedDraftTestError(
+            "injected draft registration failure",
+        ));
     }
     Ok(())
 }
 
-pub(super) fn fail_next_draft_delete_for_test() -> anyhow::Result<()> {
+pub(super) fn fail_next_draft_delete_for_test() -> Result<(), InjectedDraftTestError> {
     #[cfg(feature = "test-utils")]
     if test_policy::take_delete_failure() {
-        anyhow::bail!("injected draft delete failure");
+        return Err(InjectedDraftTestError("injected draft delete failure"));
     }
     Ok(())
 }

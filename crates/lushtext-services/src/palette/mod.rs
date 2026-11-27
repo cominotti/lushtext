@@ -50,7 +50,7 @@ pub use notes::{
     NoteSourceMetrics, NoteSourceRefreshCoordinator, NoteSourceRefreshCoordinatorSnapshot,
     NoteSourceRefreshRequest, NoteSourceRefreshStart, NoteSourceTruncationReason, NotesBrowserMode,
     NotesBrowserQueryCoordinator, NotesBrowserQueryRequest, NotesBrowserQueryResult,
-    PALETTE_NOTE_SOURCE_LIMITS, PaletteNoteSourceLoad, PaletteNoteSourceOutcome,
+    NotesPaletteError, PALETTE_NOTE_SOURCE_LIMITS, PaletteNoteSourceLoad, PaletteNoteSourceOutcome,
     admit_synthetic_note_bodies_for_benchmark, bookmark_display_label, build_note_entries,
     format_line_label, load_note_entries_bounded_for_scope, load_palette_note_entries_for_scope,
     open_tab_source_for_path, path_is_in_folders, query_notes_browser_source, search_note_entries,

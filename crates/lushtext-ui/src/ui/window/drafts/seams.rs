@@ -28,6 +28,7 @@ use lushtext_model::persistence::draft::{
 use lushtext_model::values::{DraftGeneration, LoadGeneration};
 use lushtext_services::persistence::draft_service;
 
+use super::InjectedDraftTestError;
 use super::policy::DraftMutationIntent;
 use crate::ui::window::LushtextWindow;
 
@@ -138,7 +139,7 @@ pub(super) struct DraftManifestFailure {
 }
 
 impl DraftManifestFailure {
-    pub(super) fn injected(error: &anyhow::Error) -> Self {
+    pub(super) fn injected(error: &InjectedDraftTestError) -> Self {
         Self {
             authority: DraftManifestAuthority::default(),
             detail: error.to_string(),
@@ -155,9 +156,50 @@ impl From<draft_service::DraftManifestUpdateError> for DraftManifestFailure {
     }
 }
 
+/// Typed body-stage error returned by the worker writing one draft body.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum DraftBodyStageError {
+    /// Test-only injected body write failure.
+    #[error(transparent)]
+    Injected(#[from] InjectedDraftTestError),
+    /// Service-level durable body write failure.
+    #[error(transparent)]
+    Service(#[from] draft_service::DraftBodyWriteError),
+}
+
+/// Typed errors returned by the synchronous draft flush helper.
+#[derive(Debug, thiserror::Error)]
+pub enum DraftSyncFlushError {
+    /// Another draft journal transaction or cleanup pass was already running.
+    #[error("draft persistence is already in progress")]
+    AlreadyInProgress,
+    /// Updating the draft manifest on close failed.
+    #[error("failed to save draft manifest on close: {detail}")]
+    ManifestSave {
+        /// Diagnostic summary from manifest registration or commit.
+        detail: String,
+    },
+    /// Writing one or more draft bodies on close failed.
+    #[error("failed to write {count} drafts on close: {details}")]
+    BodyWrite {
+        /// Number of draft bodies that failed to write.
+        count: usize,
+        /// Joined failure details.
+        details: String,
+    },
+}
+
 /// Typed close-safety failure used by callers and deterministic widget tests.
 #[derive(Debug, thiserror::Error)]
 pub enum DraftFlushError {
+    /// One or more drafts are still restoring or owned by another window.
+    #[error(
+        "{count} drafts are still being restored or are owned by another window; close remains retryable"
+    )]
+    RestoreBlocked {
+        /// Number of drafts blocked from close flush.
+        count: usize,
+    },
     /// One or more eligible drafts never reached manifest acceptance.
     #[error(
         "automatic recovery could not confirm {total} draft(s) (cancelled: {cancelled}, over limit: {over_limit}, body write: {body_write})"

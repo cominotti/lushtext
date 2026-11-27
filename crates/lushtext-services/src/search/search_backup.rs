@@ -9,6 +9,7 @@
 //! Legacy inline entries (`replace-all-undo-entry`) still load and undo after
 //! an upgrade; new runs never write them.
 
+pub use super::search_backup_error::SearchBackupError;
 use crate::coordination::protocol_drive::{Protocol, drive};
 use crate::filesystem::backend_tap::ProtocolKind;
 use crate::filesystem::leftovers::LaunchId;
@@ -33,7 +34,6 @@ use crate::{
         save_enveloped_json_path,
     },
 };
-use anyhow::{Context, Result};
 use lushtext_model::persistence::sidecar_identity::stable_path_hash;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
@@ -264,10 +264,10 @@ pub struct ReplaceBackupCleanupReport {
 /// # Errors
 ///
 /// Returns an error if a previous holder panicked while owning the coordinator.
-pub fn acquire_journal_guard() -> Result<MutexGuard<'static, ()>> {
+pub fn acquire_journal_guard() -> Result<MutexGuard<'static, ()>, SearchBackupError> {
     journal_lock()
         .lock()
-        .map_err(|_| anyhow::anyhow!("replace undo backup disk lock poisoned"))
+        .map_err(|_| SearchBackupError::LockPoisoned)
 }
 
 /// Load the persisted Replace All undo backup from disk.
@@ -277,7 +277,7 @@ pub fn acquire_journal_guard() -> Result<MutexGuard<'static, ()>> {
 /// Returns an error if a complete active backup cannot be converted back into
 /// UTF-8 file content. Malformed or inactive persisted state is treated as
 /// recovery metadata and returns an empty backup.
-pub fn load(data_dir: &Path) -> Result<ReplaceUndoBackup> {
+pub fn load(data_dir: &Path) -> Result<ReplaceUndoBackup, SearchBackupError> {
     Ok(load_recovering(data_dir).active_backup())
 }
 
@@ -372,7 +372,7 @@ fn load_retired_backup(data_dir: &Path) -> ReplaceBackupRecoveryLoad {
 /// Returns an error if a previous holder panicked while owning the guard.
 pub fn acquire_journal_guard_cancellable(
     cancel: &AtomicBool,
-) -> Result<Option<MutexGuard<'static, ()>>> {
+) -> Result<Option<MutexGuard<'static, ()>>, SearchBackupError> {
     acquire_journal_guard_while_current(|| !cancel.load(Ordering::Relaxed))
 }
 
@@ -389,7 +389,7 @@ pub fn acquire_journal_guard_cancellable(
 /// Returns an error if a previous holder panicked while owning the guard.
 pub fn acquire_journal_guard_while_current(
     mut current: impl FnMut() -> bool,
-) -> Result<Option<MutexGuard<'static, ()>>> {
+) -> Result<Option<MutexGuard<'static, ()>>, SearchBackupError> {
     loop {
         if !current() {
             return Ok(None);
@@ -397,9 +397,7 @@ pub fn acquire_journal_guard_while_current(
         match journal_lock().try_lock() {
             Ok(guard) => return Ok(Some(guard)),
             Err(TryLockError::WouldBlock) => std::thread::sleep(JOURNAL_GUARD_POLL),
-            Err(TryLockError::Poisoned(_)) => {
-                anyhow::bail!("replace undo backup disk lock poisoned")
-            }
+            Err(TryLockError::Poisoned(_)) => return Err(SearchBackupError::LockPoisoned),
         }
     }
 }
@@ -440,7 +438,10 @@ pub fn body_path(data_dir: &Path, path: &Path) -> PathBuf {
 /// Returns an error, and changes nothing, when an entry `backup` retains is
 /// missing on disk (it is reported, never rebuilt), or when the smaller
 /// manifest cannot be written.
-pub fn shrink_journal_to(data_dir: &Path, backup: &ReplaceUndoBackup) -> Result<()> {
+pub fn shrink_journal_to(
+    data_dir: &Path,
+    backup: &ReplaceUndoBackup,
+) -> Result<(), SearchBackupError> {
     if backup.is_empty() {
         return delete(data_dir);
     }
@@ -457,9 +458,7 @@ pub fn shrink_journal_to(data_dir: &Path, backup: &ReplaceUndoBackup) -> Result<
             .iter()
             .all(|entry_file| fs_metadata::exists(&journal_dir.join(entry_file)));
     if !is_superset {
-        anyhow::bail!(
-            "replace undo journal no longer holds every retained entry; it is not rebuilt"
-        );
+        return Err(SearchBackupError::MissingRetainedEntry);
     }
 
     let manifest = load_manifest_value(data_dir, &journal_dir);
@@ -619,11 +618,13 @@ fn remove_unlisted_bodies(journal_dir: &Path, retained: &HashSet<String>) {
 /// # Errors
 ///
 /// Returns an error when prior journal state cannot be made inactive and removed.
-pub fn begin_incremental_journal(data_dir: &Path) -> Result<()> {
+pub fn begin_incremental_journal(data_dir: &Path) -> Result<(), SearchBackupError> {
     delete(data_dir)?;
     let bodies = layout_path(data_dir, AppDataLocation::ReplaceJournalBodies);
-    fs_write::create_dir_all_durable(&bodies)
-        .with_context(|| format!("failed to create {}", bodies.display()))?;
+    fs_write::create_dir_all_durable(&bodies).map_err(|source| SearchBackupError::CreateDir {
+        path: bodies,
+        source,
+    })?;
     Ok(())
 }
 
@@ -632,7 +633,11 @@ pub fn begin_incremental_journal(data_dir: &Path) -> Result<()> {
 /// # Errors
 ///
 /// Returns an error if the entry cannot be durably written.
-pub fn save_stream_entry(data_dir: &Path, path: &Path, record: &StreamEntryRecord) -> Result<()> {
+pub fn save_stream_entry(
+    data_dir: &Path,
+    path: &Path,
+    record: &StreamEntryRecord,
+) -> Result<(), SearchBackupError> {
     let disk = ReplaceStreamDiskEntry {
         path: path.to_path_buf(),
         body_file: body_file_name(path),
@@ -665,16 +670,21 @@ pub fn save_stream_entry(data_dir: &Path, path: &Path, record: &StreamEntryRecor
 /// # Errors
 ///
 /// Returns an error when the active marker cannot be written durably.
-pub fn mark_incremental_journal_active(data_dir: &Path, launch: LaunchId) -> Result<()> {
+pub fn mark_incremental_journal_active(
+    data_dir: &Path,
+    launch: LaunchId,
+) -> Result<(), SearchBackupError> {
     let journal_dir = layout_path(data_dir, AppDataLocation::ReplaceJournalDir);
-    fs_write::create_dir_all_durable(&journal_dir)
-        .with_context(|| format!("failed to create {}", journal_dir.display()))?;
-    fs_mutate::remove_file_if_exists(&journal_dir.join(cleanup_marker_file_name())).with_context(
-        || {
-            format!(
-                "failed to clear replace journal cleanup marker in {}",
-                journal_dir.display()
-            )
+    fs_write::create_dir_all_durable(&journal_dir).map_err(|source| {
+        SearchBackupError::CreateDir {
+            path: journal_dir.clone(),
+            source,
+        }
+    })?;
+    fs_mutate::remove_file_if_exists(&journal_dir.join(cleanup_marker_file_name())).map_err(
+        |source| SearchBackupError::ClearCleanupMarker {
+            dir: journal_dir.clone(),
+            source,
         },
     )?;
     let manifest = ReplaceJournalManifest {
@@ -694,12 +704,17 @@ pub fn mark_incremental_journal_active(data_dir: &Path, launch: LaunchId) -> Res
 /// # Errors
 ///
 /// Returns an error when the manifest is missing or cannot be rewritten.
-pub fn rearm_journal(journal_dir: &Path, launch: LaunchId) -> Result<()> {
+pub fn rearm_journal(journal_dir: &Path, launch: LaunchId) -> Result<(), SearchBackupError> {
     let data_dir = journal_dir
         .parent()
-        .ok_or_else(|| anyhow::anyhow!("replace undo journal has no parent directory"))?;
-    let mut manifest = load_manifest_value(data_dir, journal_dir)
-        .ok_or_else(|| anyhow::anyhow!("replace undo journal has no active manifest"))?;
+        .ok_or_else(|| SearchBackupError::MissingParent {
+            path: journal_dir.to_path_buf(),
+        })?;
+    let mut manifest = load_manifest_value(data_dir, journal_dir).ok_or_else(|| {
+        SearchBackupError::MissingActiveManifest {
+            journal_dir: journal_dir.to_path_buf(),
+        }
+    })?;
     manifest.pid = Some(launch.pid);
     manifest.launch_nonce = Some(launch.nonce);
     save_journal_manifest(data_dir, journal_dir, &manifest)
@@ -722,15 +737,14 @@ fn load_manifest_value(data_dir: &Path, journal_dir: &Path) -> Option<ReplaceJou
 /// # Errors
 ///
 /// Returns an error if an existing entry cannot be removed.
-pub fn delete_entry(data_dir: &Path, path: &Path) -> Result<()> {
+pub fn delete_entry(data_dir: &Path, path: &Path) -> Result<(), SearchBackupError> {
     let entry_path = entry_path(data_dir, path);
     match fs_mutate::remove_file_if_exists(&entry_path) {
         Ok(_) => Ok(()),
-        Err(e) => Err(anyhow::anyhow!(
-            "failed to delete replace journal entry {}: {}",
-            entry_path.display(),
-            e
-        )),
+        Err(source) => Err(SearchBackupError::DeleteEntry {
+            path: entry_path,
+            source,
+        }),
     }
 }
 
@@ -739,15 +753,11 @@ pub fn delete_entry(data_dir: &Path, path: &Path) -> Result<()> {
 /// # Errors
 ///
 /// Returns an error if an existing body cannot be removed.
-pub fn delete_body(data_dir: &Path, path: &Path) -> Result<()> {
+pub fn delete_body(data_dir: &Path, path: &Path) -> Result<(), SearchBackupError> {
     let body = body_path(data_dir, path);
     match fs_mutate::remove_file_if_exists(&body) {
         Ok(_) => Ok(()),
-        Err(e) => Err(anyhow::anyhow!(
-            "failed to delete replace undo body {}: {}",
-            body.display(),
-            e
-        )),
+        Err(source) => Err(SearchBackupError::DeleteBody { path: body, source }),
     }
 }
 
@@ -759,13 +769,18 @@ pub fn delete_body(data_dir: &Path, path: &Path) -> Result<()> {
 ///
 /// Returns an error when the entry is missing, malformed, not legacy, or its
 /// payload exceeds `limit`.
-pub fn load_legacy_original(entry_file: &Path, limit: u64) -> Result<Vec<u8>> {
-    let journal_dir = entry_file
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("replace undo entry has no journal directory"))?;
+pub fn load_legacy_original(entry_file: &Path, limit: u64) -> Result<Vec<u8>, SearchBackupError> {
+    let journal_dir =
+        entry_file
+            .parent()
+            .ok_or_else(|| SearchBackupError::EntryMissingJournalDir {
+                entry_file: entry_file.to_path_buf(),
+            })?;
     let data_dir = journal_dir
         .parent()
-        .ok_or_else(|| anyhow::anyhow!("replace undo journal has no parent directory"))?;
+        .ok_or_else(|| SearchBackupError::MissingParent {
+            path: journal_dir.to_path_buf(),
+        })?;
     let load = load_enveloped_json_optional_accepting::<AnyDiskEntry>(
         &RecoveryLoadConfig::new(
             data_dir,
@@ -778,12 +793,19 @@ pub fn load_legacy_original(entry_file: &Path, limit: u64) -> Result<Vec<u8>> {
     match load.value {
         Some(AnyDiskEntry::Legacy(disk)) => {
             if replace_entry_payload_bytes(&disk) > limit {
-                anyhow::bail!("legacy replace undo entry exceeds the undo payload limit");
+                return Err(SearchBackupError::LegacyEntryExceedsPayloadLimit {
+                    entry_file: entry_file.to_path_buf(),
+                    limit,
+                });
             }
             Ok(disk.original_content.into_bytes())
         }
-        Some(AnyDiskEntry::Stream(_)) => anyhow::bail!("replace undo entry is not a legacy entry"),
-        None => anyhow::bail!("legacy replace undo entry could not be loaded"),
+        Some(AnyDiskEntry::Stream(_)) => Err(SearchBackupError::NotLegacyEntry {
+            entry_file: entry_file.to_path_buf(),
+        }),
+        None => Err(SearchBackupError::LegacyEntryUnreadable {
+            entry_file: entry_file.to_path_buf(),
+        }),
     }
 }
 
@@ -798,26 +820,31 @@ pub fn load_legacy_original(entry_file: &Path, limit: u64) -> Result<Vec<u8>> {
 /// Returns an error when the journal directory cannot be created, an old cleanup
 /// marker cannot be removed, the manifest exceeds the supported entry cap, or
 /// the active manifest cannot be written durably.
-pub fn mark_journal_active(data_dir: &Path, backup: &ReplaceUndoBackup) -> Result<()> {
+pub fn mark_journal_active(
+    data_dir: &Path,
+    backup: &ReplaceUndoBackup,
+) -> Result<(), SearchBackupError> {
     if backup.is_empty() {
         return delete(data_dir);
     }
     if entry_count_exceeds_cap(backup.len()) {
-        anyhow::bail!(
-            "replace undo journal has {} entries, above the {JOURNAL_SCAN_MAX_ENTRIES} entry cap",
-            backup.len()
-        );
+        return Err(SearchBackupError::EntryCapExceeded {
+            count: backup.len(),
+            cap: JOURNAL_SCAN_MAX_ENTRIES,
+        });
     }
 
     let journal_dir = layout_path(data_dir, AppDataLocation::ReplaceJournalDir);
-    fs_write::create_dir_all_durable(&journal_dir)
-        .with_context(|| format!("failed to create {}", journal_dir.display()))?;
-    fs_mutate::remove_file_if_exists(&journal_dir.join(cleanup_marker_file_name())).with_context(
-        || {
-            format!(
-                "failed to clear replace journal cleanup marker in {}",
-                journal_dir.display()
-            )
+    fs_write::create_dir_all_durable(&journal_dir).map_err(|source| {
+        SearchBackupError::CreateDir {
+            path: journal_dir.clone(),
+            source,
+        }
+    })?;
+    fs_mutate::remove_file_if_exists(&journal_dir.join(cleanup_marker_file_name())).map_err(
+        |source| SearchBackupError::ClearCleanupMarker {
+            dir: journal_dir.clone(),
+            source,
         },
     )?;
 
@@ -843,7 +870,7 @@ fn save_journal_manifest(
     data_dir: &Path,
     journal_dir: &Path,
     manifest: &ReplaceJournalManifest,
-) -> Result<()> {
+) -> Result<(), SearchBackupError> {
     let manifest_path = journal_dir.join(manifest_file_name());
     let config = RecoveryLoadConfig::new(
         data_dir,
@@ -1282,7 +1309,7 @@ fn effective_max_replace_undo_bytes() -> u64 {
 pub mod fixture {
     use super::{
         AppDataLocation, KIND_REPLACE_UNDO_ENTRY, LaunchId, RecoveryLoadConfig,
-        RecoveryMetadataClass, ReplaceBackupDiskEntry, ReplaceJournalManifest, Result,
+        RecoveryMetadataClass, ReplaceBackupDiskEntry, ReplaceJournalManifest, SearchBackupError,
         StreamEntryRecord, TargetIdentity, body_path, entry_path, layout_path,
         save_enveloped_json_path, save_journal_manifest, save_stream_entry,
     };
@@ -1302,12 +1329,13 @@ pub mod fixture {
     pub fn write_stream_journal(
         data_dir: &Path,
         files: &[(&Path, &[u8], &[u8])],
-    ) -> Result<ReplaceUndoBackup> {
+    ) -> Result<ReplaceUndoBackup, SearchBackupError> {
         super::begin_incremental_journal(data_dir)?;
         let launch = LaunchId::current();
         for (index, (path, original, replaced)) in files.iter().enumerate() {
             let body = body_path(data_dir, path);
-            fs_write::atomic_replace(&body, WriteLabel::REPLACE_UNDO_BODY, original)?;
+            fs_write::atomic_replace(&body, WriteLabel::REPLACE_UNDO_BODY, original)
+                .map_err(|source| SearchBackupError::WriteFixtureBody { path: body, source })?;
             let record = StreamEntryRecord {
                 original: ContentDigest::of(original),
                 replaced: ContentDigest::of(replaced),
@@ -1358,10 +1386,15 @@ pub mod fixture {
         data_dir: &Path,
         files: &[(&Path, &[u8], &[u8])],
         incremental: bool,
-    ) -> Result<ReplaceUndoBackup> {
+    ) -> Result<ReplaceUndoBackup, SearchBackupError> {
         super::delete(data_dir)?;
         let journal_dir = layout_path(data_dir, AppDataLocation::ReplaceJournalDir);
-        fs_write::create_dir_all_durable(&journal_dir)?;
+        fs_write::create_dir_all_durable(&journal_dir).map_err(|source| {
+            SearchBackupError::CreateDir {
+                path: journal_dir.clone(),
+                source,
+            }
+        })?;
         for (path, original, replaced) in files {
             let disk = ReplaceBackupDiskEntry {
                 path: path.to_path_buf(),
@@ -1402,18 +1435,17 @@ pub mod fixture {
 /// # Errors
 ///
 /// Returns an error if an existing backup file cannot be deleted.
-pub fn delete(data_dir: &Path) -> Result<()> {
+pub fn delete(data_dir: &Path) -> Result<(), SearchBackupError> {
     mark_cleanup_in_progress(data_dir)?;
 
     let legacy = layout_path(data_dir, AppDataLocation::RetiredReplaceBackup);
     match fs_mutate::remove_file_if_exists(&legacy) {
         Ok(_) => {}
-        Err(e) => {
-            return Err(anyhow::anyhow!(
-                "failed to delete replace backup {}: {}",
-                legacy.display(),
-                e
-            ));
+        Err(source) => {
+            return Err(SearchBackupError::DeleteLegacyBackup {
+                path: legacy,
+                source,
+            });
         }
     }
 
@@ -1427,20 +1459,29 @@ pub fn delete(data_dir: &Path) -> Result<()> {
             }
             Ok(())
         }
-        Err(e) => Err(anyhow::anyhow!(
-            "failed to delete replace journal {}: {}",
-            journal_dir.display(),
-            e
-        )),
+        Err(source) => Err(SearchBackupError::DeleteJournalDir {
+            path: journal_dir,
+            source,
+        }),
     }
 }
 
 /// Write the inactive cleanup marker before removing legacy or journal state.
-fn mark_cleanup_in_progress(data_dir: &Path) -> Result<()> {
+fn mark_cleanup_in_progress(data_dir: &Path) -> Result<(), SearchBackupError> {
     let legacy = layout_path(data_dir, AppDataLocation::RetiredReplaceBackup);
     let journal_dir = layout_path(data_dir, AppDataLocation::ReplaceJournalDir);
-    let has_legacy = fs_metadata::path_status(&legacy)?.is_present();
-    let has_journal = fs_metadata::path_status(&journal_dir)?.is_present();
+    let has_legacy = fs_metadata::path_status(&legacy)
+        .map_err(|source| SearchBackupError::ProbeStatus {
+            path: legacy.clone(),
+            source,
+        })?
+        .is_present();
+    let has_journal = fs_metadata::path_status(&journal_dir)
+        .map_err(|source| SearchBackupError::ProbeStatus {
+            path: journal_dir.clone(),
+            source,
+        })?
+        .is_present();
     if !has_legacy && !has_journal {
         return Ok(());
     }
@@ -1452,14 +1493,16 @@ fn mark_cleanup_in_progress(data_dir: &Path) -> Result<()> {
             tracing::warn!("{}", diagnostic.summary());
         }
         if !replacement_safe {
-            anyhow::bail!(
-                "retired replace backup is not safe to delete after recovery diagnostics"
-            );
+            return Err(SearchBackupError::RetiredBackupUnsafeToDelete);
         }
     }
 
-    fs_write::create_dir_all_durable(&journal_dir)
-        .with_context(|| format!("failed to create {}", journal_dir.display()))?;
+    fs_write::create_dir_all_durable(&journal_dir).map_err(|source| {
+        SearchBackupError::CreateDir {
+            path: journal_dir.clone(),
+            source,
+        }
+    })?;
     let marker = ReplaceJournalCleanupMarker {
         reason: "stale replace undo journal cleanup started".to_string(),
     };
@@ -1470,11 +1513,9 @@ fn mark_cleanup_in_progress(data_dir: &Path) -> Result<()> {
         RecoveryMetadataClass::ReplaceAllUndoJournal,
     );
     let diagnostics = save_enveloped_json_path(&config, KIND_REPLACE_UNDO_CLEANUP_MARKER, &marker)
-        .with_context(|| {
-            format!(
-                "failed to mark replace journal cleanup in {}",
-                journal_dir.display()
-            )
+        .map_err(|source| SearchBackupError::MarkCleanupInProgress {
+            dir: journal_dir,
+            source,
         })?;
     for diagnostic in diagnostics {
         tracing::warn!("{}", diagnostic.summary());
@@ -1793,23 +1834,34 @@ mod tests {
         }
     }
 
-    fn load(data_dir: &Path) -> Result<ReplaceUndoBackup> {
+    fn load(data_dir: &Path) -> Result<ReplaceUndoBackup, SearchBackupError> {
         super::load(data_dir).map(from_real)
     }
 
     /// Write one body and its streamed entry, as pass A and P4 do.
-    fn save_entry(data_dir: &Path, path: &Path, entry: &ReplaceUndoEntry) -> Result<()> {
+    fn save_entry(
+        data_dir: &Path,
+        path: &Path,
+        entry: &ReplaceUndoEntry,
+    ) -> Result<(), SearchBackupError> {
         let bodies = layout_path(data_dir, AppDataLocation::ReplaceJournalBodies);
-        fs_write::create_dir_all_durable(&bodies)?;
+        fs_write::create_dir_all_durable(&bodies).map_err(|source| {
+            SearchBackupError::CreateDir {
+                path: bodies,
+                source,
+            }
+        })?;
         let original = entry
             .original_bytes
             .as_deref()
             .expect("a fixture entry carries its bytes");
+        let body = body_path(data_dir, path);
         fs_write::atomic_replace(
-            &body_path(data_dir, path),
+            &body,
             crate::filesystem::WriteLabel::REPLACE_UNDO_BODY,
             original,
-        )?;
+        )
+        .map_err(|source| SearchBackupError::WriteFixtureBody { path: body, source })?;
         save_stream_entry(
             data_dir,
             path,
@@ -1822,7 +1874,7 @@ mod tests {
     }
 
     /// A complete manifest-listed journal, as `main`'s `save` wrote one.
-    fn save(data_dir: &Path, backup: &ReplaceUndoBackup) -> Result<()> {
+    fn save(data_dir: &Path, backup: &ReplaceUndoBackup) -> Result<(), SearchBackupError> {
         delete(data_dir)?;
         if backup.is_empty() {
             return Ok(());
@@ -1833,11 +1885,17 @@ mod tests {
         mark_journal_active(data_dir, backup)
     }
 
-    fn mark_journal_active(data_dir: &Path, backup: &ReplaceUndoBackup) -> Result<()> {
+    fn mark_journal_active(
+        data_dir: &Path,
+        backup: &ReplaceUndoBackup,
+    ) -> Result<(), SearchBackupError> {
         super::mark_journal_active(data_dir, &to_real(data_dir, backup))
     }
 
-    fn shrink_journal_to(data_dir: &Path, backup: &ReplaceUndoBackup) -> Result<()> {
+    fn shrink_journal_to(
+        data_dir: &Path,
+        backup: &ReplaceUndoBackup,
+    ) -> Result<(), SearchBackupError> {
         super::shrink_journal_to(data_dir, &to_real(data_dir, backup))
     }
 
@@ -2092,6 +2150,10 @@ mod tests {
 
         let fresh = journal_with(&["/tmp/a.rs", "/tmp/b.rs"]);
         shrink_journal_to(dir.path(), &fresh).expect_err("shrink does not rebuild");
+        assert!(matches!(
+            shrink_journal_to(dir.path(), &fresh),
+            Err(SearchBackupError::MissingRetainedEntry)
+        ));
 
         let load = load_recovering(dir.path());
         assert!(load.active);
@@ -2301,6 +2363,10 @@ mod tests {
         ));
 
         let error = delete(dir.path()).expect_err("directory backup should fail deletion");
+        assert!(matches!(
+            error,
+            SearchBackupError::RetiredBackupUnsafeToDelete
+        ));
 
         assert!(
             error.to_string().contains("not safe to delete"),
@@ -2621,6 +2687,13 @@ mod tests {
 
         let error = mark_journal_active(dir.path(), &backup)
             .expect_err("oversized manifest should not be written");
+        assert!(matches!(
+            error,
+            SearchBackupError::EntryCapExceeded {
+                count,
+                cap: JOURNAL_SCAN_MAX_ENTRIES,
+            } if count == JOURNAL_SCAN_MAX_ENTRIES + 1
+        ));
 
         assert!(
             error.to_string().contains("entry cap"),
@@ -2751,5 +2824,61 @@ mod tests {
         );
         worker.join().expect("worker joins");
         drop(held);
+    }
+
+    #[test]
+    fn structured_errors_report_invalid_journal_and_legacy_entry_states() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let journal = journal_dir(dir.path());
+        fixture::create_dir_all(&journal);
+        let launch = LaunchId { pid: 1, nonce: 2 };
+
+        assert!(matches!(
+            rearm_journal(Path::new("/"), launch),
+            Err(SearchBackupError::MissingParent { .. })
+        ));
+        assert!(matches!(
+            rearm_journal(&journal, launch),
+            Err(SearchBackupError::MissingActiveManifest { .. })
+        ));
+
+        let missing_entry = journal.join("missing.json");
+        assert!(matches!(
+            load_legacy_original(&missing_entry, 1024),
+            Err(SearchBackupError::LegacyEntryUnreadable { .. })
+        ));
+        assert!(matches!(
+            load_legacy_original(Path::new("/"), 1024),
+            Err(SearchBackupError::EntryMissingJournalDir { .. })
+        ));
+        assert!(matches!(
+            load_legacy_original(Path::new("standalone.json"), 1024),
+            Err(SearchBackupError::MissingParent { .. })
+        ));
+
+        let target = PathBuf::from("/tmp/streamed.rs");
+        save_entry(
+            dir.path(),
+            &target,
+            &ReplaceUndoEntry::new(b"before".to_vec(), b"after".to_vec()),
+        )
+        .expect("save streamed entry");
+        assert!(matches!(
+            load_legacy_original(&entry_path(dir.path(), &target), 1024),
+            Err(SearchBackupError::NotLegacyEntry { .. })
+        ));
+
+        let legacy_dir = TempDir::new().expect("expected operation to succeed");
+        let legacy_target = PathBuf::from("/tmp/legacy.rs");
+        super::fixture::write_legacy_journal(
+            legacy_dir.path(),
+            &[(&legacy_target, b"before-content", b"after-content")],
+            false,
+        )
+        .expect("save legacy journal");
+        assert!(matches!(
+            load_legacy_original(&entry_path(legacy_dir.path(), &legacy_target), 4),
+            Err(SearchBackupError::LegacyEntryExceedsPayloadLimit { limit: 4, .. })
+        ));
     }
 }

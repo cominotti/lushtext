@@ -11,7 +11,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::filesystem::{
@@ -24,6 +23,95 @@ use lushtext_model::persistence::sidecar_identity::stable_path_hash;
 
 use super::diagnostics::FormatClassification;
 use super::inventory::FormatInventoryItem;
+
+/// Typed errors returned when creating or executing format-upgrade backups.
+#[derive(Debug, thiserror::Error)]
+pub enum FormatBackupError {
+    /// Creating a backup directory failed.
+    #[error("failed to create {}: {source}", path.display())]
+    CreateDir {
+        /// Directory path that could not be created.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+    /// Every candidate timestamped backup directory attempt already existed.
+    #[error("failed to reserve a unique format-upgrade backup directory after {attempts} attempts")]
+    BackupDirAttemptsExhausted {
+        /// Maximum directory-reservation attempts tried.
+        attempts: u32,
+    },
+    /// Copying a scanned item into the backup directory failed.
+    #[error("failed to back up {}: {source}", path.display())]
+    WriteBackup {
+        /// Original item path being backed up.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+    /// Writing the durable backup manifest failed.
+    #[error("failed to write {}: {source}", path.display())]
+    WriteManifest {
+        /// Backup manifest path.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+    /// Inspecting an original item before backup or removal failed.
+    #[error("failed to inspect {}: {source}", path.display())]
+    Inspect {
+        /// Item path being inspected.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+    /// An item path was no longer a regular file.
+    #[error("expected regular file, found {status:?}")]
+    NotRegularFile {
+        /// Item path that was not a regular file.
+        path: PathBuf,
+        /// Observed path status.
+        status: PathStatus,
+    },
+    /// The item changed on disk after the format-upgrade scan captured its facts.
+    #[error("{relative_path} changed after the format scan; scan again before applying")]
+    ChangedAfterScan {
+        /// App-data-relative path of the changed item.
+        relative_path: String,
+    },
+    /// The item exceeded the maximum byte size admitted for backup reads.
+    #[error("{relative_path} is {byte_size} bytes, above the {limit} byte backup limit")]
+    BackupLimitExceeded {
+        /// App-data-relative path of the oversized item.
+        relative_path: String,
+        /// Observed byte size of the item.
+        byte_size: u64,
+        /// Configured backup byte limit.
+        limit: u64,
+    },
+    /// Reading the original item bytes failed.
+    #[error("failed to read {}: {source}", path.display())]
+    Read {
+        /// Original item path.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+    /// Removing the original item after durable backup failed.
+    #[error("failed to remove {}: {source}", path.display())]
+    Remove {
+        /// Original item path.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+}
 
 /// App-data directory containing format-upgrade backup attempts.
 ///
@@ -104,11 +192,13 @@ impl BackupSession {
     /// Returns an error when the app-data backup directory cannot be created or
     /// no unique attempt directory can be reserved within the bounded retry
     /// count.
-    pub(crate) fn create(data_dir: &Path, action: &'static str) -> Result<Self> {
+    pub(crate) fn create(data_dir: &Path, action: &'static str) -> Result<Self, FormatBackupError> {
         let created_at_unix_secs = current_unix_secs();
         let base = data_dir.join(FORMAT_UPGRADE_BACKUP_DIR);
-        fs_write::create_dir_all_durable(&base)
-            .with_context(|| format!("failed to create {}", base.display()))?;
+        fs_write::create_dir_all_durable(&base).map_err(|source| FormatBackupError::CreateDir {
+            path: base.clone(),
+            source,
+        })?;
 
         for attempt in 0..MAX_BACKUP_DIR_ATTEMPTS {
             let name = format!("{created_at_unix_secs}-{action}-{attempt:02}");
@@ -116,8 +206,11 @@ impl BackupSession {
             match fs_write::create_dir_durable(&root) {
                 Ok(()) => {
                     let items_dir = root.join(FORMAT_UPGRADE_BACKUP_ITEMS_DIR);
-                    fs_write::create_dir_durable(&items_dir).with_context(|| {
-                        format!("failed to create backup items dir {}", items_dir.display())
+                    fs_write::create_dir_durable(&items_dir).map_err(|source| {
+                        FormatBackupError::CreateDir {
+                            path: items_dir.clone(),
+                            source,
+                        }
                     })?;
                     return Ok(Self {
                         root,
@@ -128,16 +221,15 @@ impl BackupSession {
                     });
                 }
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(error) => {
-                    return Err(error)
-                        .with_context(|| format!("failed to create {}", root.display()));
+                Err(source) => {
+                    return Err(FormatBackupError::CreateDir { path: root, source });
                 }
             }
         }
 
-        anyhow::bail!(
-            "failed to reserve a unique format-upgrade backup directory after {MAX_BACKUP_DIR_ATTEMPTS} attempts"
-        )
+        Err(FormatBackupError::BackupDirAttemptsExhausted {
+            attempts: MAX_BACKUP_DIR_ATTEMPTS,
+        })
     }
 
     /// Preserve one item by copying its original bytes into this backup run.
@@ -146,12 +238,19 @@ impl BackupSession {
     ///
     /// Returns an error when the item is not a regular file, cannot be read, or
     /// cannot be written durably to the backup directory.
-    pub(crate) fn copy_item(&mut self, data_dir: &Path, item: &FormatInventoryItem) -> Result<()> {
+    pub(crate) fn copy_item(
+        &mut self,
+        data_dir: &Path,
+        item: &FormatInventoryItem,
+    ) -> Result<(), FormatBackupError> {
         let backup_path = self.backup_path_for(item);
         let bytes = read_preservable_file(item)?;
         fs_write::atomic_replace(&backup_path, WriteLabel::FORMAT_UPGRADE_BACKUP, &bytes)
             .map_err(fs_write::DurableWriteError::into_io_error)
-            .with_context(|| format!("failed to back up {}", item.absolute_path.display()))?;
+            .map_err(|source| FormatBackupError::WriteBackup {
+                path: item.absolute_path.clone(),
+                source,
+            })?;
         self.records.push(success_record(
             data_dir,
             item,
@@ -179,7 +278,7 @@ impl BackupSession {
     /// # Errors
     ///
     /// Returns an error when manifest serialization or durable write fails.
-    pub(crate) fn finish(self, data_dir: &Path) -> Result<FormatBackupManifest> {
+    pub(crate) fn finish(self, data_dir: &Path) -> Result<FormatBackupManifest, FormatBackupError> {
         let manifest = FormatBackupManifest {
             lushtext_version: env!("CARGO_PKG_VERSION").to_string(),
             created_at_unix_secs: self.created_at_unix_secs,
@@ -194,7 +293,10 @@ impl BackupSession {
             |writer| serde_json::to_writer_pretty(writer, &envelope).map_err(io::Error::other),
         )
         .map_err(fs_write::DurableWriteError::into_io_error)
-        .with_context(|| format!("failed to write {}", manifest_path.display()))?;
+        .map_err(|source| FormatBackupError::WriteManifest {
+            path: manifest_path.clone(),
+            source,
+        })?;
 
         let relative_manifest = manifest_path.strip_prefix(data_dir).map_or_else(
             |_| manifest_path.display().to_string(),
@@ -223,7 +325,9 @@ impl BackupSession {
 /// # Errors
 ///
 /// Returns an error when the source changed, is no longer regular, or cannot be read.
-pub(crate) fn read_preservable_item_bytes(item: &FormatInventoryItem) -> Result<Vec<u8>> {
+pub(crate) fn read_preservable_item_bytes(
+    item: &FormatInventoryItem,
+) -> Result<Vec<u8>, FormatBackupError> {
     read_preservable_file(item)
 }
 
@@ -232,10 +336,16 @@ pub(crate) fn read_preservable_item_bytes(item: &FormatInventoryItem) -> Result<
 /// # Errors
 ///
 /// Returns an error when the source changed since scan or cannot be removed.
-pub(crate) fn remove_original_after_manifest(item: &FormatInventoryItem) -> Result<()> {
+pub(crate) fn remove_original_after_manifest(
+    item: &FormatInventoryItem,
+) -> Result<(), FormatBackupError> {
     ensure_regular_file_unchanged(item)?;
-    fs_mutate::remove_file_if_exists(&item.absolute_path)
-        .with_context(|| format!("failed to remove {}", item.absolute_path.display()))?;
+    fs_mutate::remove_file_if_exists(&item.absolute_path).map_err(|source| {
+        FormatBackupError::Remove {
+            path: item.absolute_path.clone(),
+            source,
+        }
+    })?;
     Ok(())
 }
 
@@ -245,40 +355,52 @@ fn current_unix_secs() -> u64 {
         .map_or(0, |duration| duration.as_secs())
 }
 
-fn read_preservable_file(item: &FormatInventoryItem) -> Result<Vec<u8>> {
+fn read_preservable_file(item: &FormatInventoryItem) -> Result<Vec<u8>, FormatBackupError> {
     let byte_size = ensure_regular_file_unchanged(item)?;
     if byte_size > MAX_BACKUP_ITEM_BYTES {
-        anyhow::bail!(
-            "{} is {} bytes, above the {} byte backup limit",
-            item.path.display(),
+        return Err(FormatBackupError::BackupLimitExceeded {
+            relative_path: item.path.display(),
             byte_size,
-            MAX_BACKUP_ITEM_BYTES
-        );
+            limit: MAX_BACKUP_ITEM_BYTES,
+        });
     }
-    fs_read::bytes(&item.absolute_path)
-        .with_context(|| format!("failed to read {}", item.absolute_path.display()))
+    fs_read::bytes(&item.absolute_path).map_err(|source| FormatBackupError::Read {
+        path: item.absolute_path.clone(),
+        source,
+    })
 }
 
 /// Re-check the scanned file before copy or removal so an old plan cannot
 /// overwrite or discard metadata that changed after inventory.
-fn ensure_regular_file_unchanged(item: &FormatInventoryItem) -> Result<u64> {
+fn ensure_regular_file_unchanged(item: &FormatInventoryItem) -> Result<u64, FormatBackupError> {
     let path = &item.absolute_path;
     match fs_metadata::path_status(path) {
-        Ok(PathStatus::File) => Ok(()),
-        Ok(status) => anyhow::bail!("expected regular file, found {status:?}"),
-        Err(error) => Err(error).with_context(|| format!("failed to inspect {}", path.display())),
-    }?;
+        Ok(PathStatus::File) => {}
+        Ok(status) => {
+            return Err(FormatBackupError::NotRegularFile {
+                path: path.clone(),
+                status,
+            });
+        }
+        Err(source) => {
+            return Err(FormatBackupError::Inspect {
+                path: path.clone(),
+                source,
+            });
+        }
+    }
 
-    let current = fs_metadata::file_facts(path)
-        .with_context(|| format!("failed to inspect {}", path.display()))?;
+    let current = fs_metadata::file_facts(path).map_err(|source| FormatBackupError::Inspect {
+        path: path.clone(),
+        source,
+    })?;
     if let Some(scanned) = item.file_facts
         && (current.byte_size != scanned.byte_size
             || current.modified_at_secs != scanned.modified_at_secs)
     {
-        anyhow::bail!(
-            "{} changed after the format scan; scan again before applying",
-            item.path.display()
-        );
+        return Err(FormatBackupError::ChangedAfterScan {
+            relative_path: item.path.display(),
+        });
     }
 
     Ok(current.byte_size)
@@ -387,16 +509,16 @@ mod tests {
 
         let error = BackupSession::create(dir.path(), "convert")
             .expect_err("non-collision create errors must stop backup creation");
-        let io_error = error
-            .chain()
-            .find_map(|cause| cause.downcast_ref::<io::Error>())
-            .expect("directory creation failure should preserve the underlying I/O error");
         assert!(
             matches!(
-                io_error.kind(),
-                io::ErrorKind::AlreadyExists | io::ErrorKind::NotADirectory
+                &error,
+                FormatBackupError::CreateDir { source, .. }
+                    if matches!(
+                        source.kind(),
+                        io::ErrorKind::AlreadyExists | io::ErrorKind::NotADirectory
+                    )
             ),
-            "unexpected I/O error kind: {io_error:?}"
+            "directory creation failure should preserve the underlying I/O error: {error:?}"
         );
         let message = error.to_string();
 
@@ -490,6 +612,10 @@ mod tests {
         let error =
             read_preservable_item_bytes(&item).expect_err("stale scan should block backup reads");
         assert!(
+            matches!(error, FormatBackupError::ChangedAfterScan { .. }),
+            "expected ChangedAfterScan, got {error:?}"
+        );
+        assert!(
             error.to_string().contains("changed after the format scan"),
             "unexpected error: {error}"
         );
@@ -509,6 +635,38 @@ mod tests {
         let bytes = read_preservable_item_bytes(&item).expect("exact-limit read should pass");
 
         assert_eq!(bytes.len() as u64, MAX_BACKUP_ITEM_BYTES);
+    }
+
+    #[test]
+    fn read_preservable_item_bytes_rejects_oversized_and_directory_items() {
+        let dir = TempDir::new().expect("temp dir");
+        let huge_path = dir.path().join("huge.json");
+        fixture::create_sparse_file(&huge_path, MAX_BACKUP_ITEM_BYTES + 1);
+        let huge_item = item(
+            dir.path(),
+            "huge.json",
+            FormatClassification::Current { version: Some(1) },
+        );
+        assert!(matches!(
+            read_preservable_item_bytes(&huge_item),
+            Err(FormatBackupError::BackupLimitExceeded { .. })
+        ));
+
+        let folder_path = dir.path().join("dir.json");
+        fixture::create_dir(&folder_path);
+        let folder_item = FormatInventoryItem {
+            kind: FormatMetadataKind::Session,
+            path: FormatItemPath::from_relative("dir.json"),
+            absolute_path: folder_path,
+            file_facts: None,
+            classification: FormatClassification::UnsafeToReplace {
+                detail: "directory".to_string(),
+            },
+        };
+        assert!(matches!(
+            read_preservable_item_bytes(&folder_item),
+            Err(FormatBackupError::NotRegularFile { .. })
+        ));
     }
 
     #[test]

@@ -185,18 +185,11 @@ impl DecodedImage {
             MAX_PREVIEW_IMAGE_SOURCE_BYTES,
             || {},
             is_cancelled,
-        )
-        .map_err(|error| {
-            if is_cancelled() {
-                ImageDecodeError::Cancelled
-            } else {
-                ImageDecodeError::Failed(error)
-            }
-        })?;
+        )?;
         if is_cancelled() {
             return Err(ImageDecodeError::Cancelled);
         }
-        let pixbuf = decode_preview_pixbuf_from_bytes(&bytes).map_err(ImageDecodeError::Failed)?;
+        let pixbuf = decode_preview_pixbuf_from_bytes(&bytes)?;
         if is_cancelled() {
             return Err(ImageDecodeError::Cancelled);
         }
@@ -245,6 +238,7 @@ impl DecodedImage {
     }
 }
 
+#[derive(Debug)]
 enum ImageDecodeError {
     Cancelled,
     Failed(String),
@@ -255,48 +249,54 @@ fn read_preview_image_bytes_with_limit<F, C>(
     byte_limit: u64,
     after_facts: F,
     is_cancelled: C,
-) -> Result<Vec<u8>, String>
+) -> Result<Vec<u8>, ImageDecodeError>
 where
     F: FnOnce(),
     C: Fn() -> bool,
 {
     if is_cancelled() {
-        return Err("image preview read was cancelled".to_string());
+        return Err(ImageDecodeError::Cancelled);
     }
-    let facts = fs_metadata::file_facts(path).map_err(|error| error.to_string())?;
+    let facts = fs_metadata::file_facts(path)
+        .map_err(|error| ImageDecodeError::Failed(error.to_string()))?;
     if facts.byte_size > byte_limit {
-        return Err(format!(
+        return Err(ImageDecodeError::Failed(format!(
             "image is too large for preview ({} bytes, limit {} bytes)",
             facts.byte_size, byte_limit
-        ));
+        )));
     }
     after_facts();
     let bytes = fs_read::bounded_bytes(path, byte_limit, facts.byte_size, &is_cancelled).map_err(
         |error| match error {
-            fs_read::BoundedFileReadError::LimitExceeded { .. } => {
-                format!("image grew beyond the {byte_limit}-byte preview limit")
+            fs_read::BoundedFileReadError::LimitExceeded { .. } => ImageDecodeError::Failed(
+                format!("image grew beyond the {byte_limit}-byte preview limit"),
+            ),
+            fs_read::BoundedFileReadError::Cancelled => ImageDecodeError::Cancelled,
+            fs_read::BoundedFileReadError::Io(source) => {
+                ImageDecodeError::Failed(source.to_string())
             }
-            fs_read::BoundedFileReadError::Cancelled => {
-                "image preview read was cancelled".to_string()
-            }
-            fs_read::BoundedFileReadError::Io(source) => source.to_string(),
         },
     )?;
     if is_cancelled() {
-        return Err("image preview read was cancelled".to_string());
+        return Err(ImageDecodeError::Cancelled);
     }
-    let current = fs_metadata::file_facts(path).map_err(|error| error.to_string())?;
+    let current = fs_metadata::file_facts(path)
+        .map_err(|error| ImageDecodeError::Failed(error.to_string()))?;
     if current.identity != facts.identity
         || current.byte_size != facts.byte_size
         || current.modified_at_nanos != facts.modified_at_nanos
     {
-        return Err("image changed while it was being read for preview".to_string());
+        return Err(ImageDecodeError::Failed(
+            "image changed while it was being read for preview".to_string(),
+        ));
     }
     Ok(bytes)
 }
 
 /// Decode one preview image from already-boundary-read bytes.
-fn decode_preview_pixbuf_from_bytes(bytes: &[u8]) -> Result<gtk4::gdk_pixbuf::Pixbuf, String> {
+fn decode_preview_pixbuf_from_bytes(
+    bytes: &[u8],
+) -> Result<gtk4::gdk_pixbuf::Pixbuf, ImageDecodeError> {
     let loader = gtk4::gdk_pixbuf::PixbufLoader::new();
     let source_too_large = std::rc::Rc::new(std::cell::Cell::new(false));
     let source_too_large_for_signal = source_too_large.clone();
@@ -313,18 +313,22 @@ fn decode_preview_pixbuf_from_bytes(bytes: &[u8]) -> Result<gtk4::gdk_pixbuf::Pi
         let (display_width, display_height) = bounded_image_size(width, height);
         loader.set_size(display_width, display_height);
     });
-    loader.write(bytes).map_err(|error| error.to_string())?;
-    loader.close().map_err(|error| error.to_string())?;
+    loader
+        .write(bytes)
+        .map_err(|error| ImageDecodeError::Failed(error.to_string()))?;
+    loader
+        .close()
+        .map_err(|error| ImageDecodeError::Failed(error.to_string()))?;
 
     if source_too_large.get() {
-        return Err(format!(
+        return Err(ImageDecodeError::Failed(format!(
             "image dimensions exceed preview limit ({MAX_PREVIEW_IMAGE_SOURCE_PIXELS} pixels)"
-        ));
+        )));
     }
 
-    loader
-        .pixbuf()
-        .ok_or_else(|| "image loader did not produce a pixbuf".to_string())
+    loader.pixbuf().ok_or_else(|| {
+        ImageDecodeError::Failed("image loader did not produce a pixbuf".to_string())
+    })
 }
 
 /// Resolve one Markdown image destination into a local image or an explicit fallback.
@@ -807,7 +811,10 @@ mod tests {
         )
         .expect_err("growth beyond the image limit must fail");
 
-        assert!(error.contains("grew beyond"));
+        assert!(matches!(
+            error,
+            ImageDecodeError::Failed(ref detail) if detail.contains("grew beyond")
+        ));
     }
 
     #[test]

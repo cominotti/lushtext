@@ -7,7 +7,6 @@
 //! workspace-folder filtering, and in-app rename migration. Keeping those helpers
 //! here avoids subtle drift between the different persistence services.
 
-use anyhow::{Context, Result};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
@@ -21,22 +20,77 @@ use crate::persistence::json_format::{
 };
 use crate::persistence::recovery_metadata::{
     RecoveryDiagnostic, RecoveryLoad, RecoveryLoadConfig, RecoveryMetadataClass,
-    load_enveloped_json_optional_accepting, save_enveloped_json_path_accepting,
+    RecoveryMetadataError, load_enveloped_json_optional_accepting,
+    save_enveloped_json_path_accepting,
 };
 use lushtext_model::persistence::sidecar_identity::DocumentSidecarIdentity;
 
 const NO_LEGACY_SIDECAR_KINDS: &[&str] = &[];
 const LEGACY_FOLDER_NOTE_SIDECAR_KINDS: &[&str] = &[KIND_LEGACY_WORKSPACE_NOTE_SIDECAR];
 
+/// Typed errors returned by shared note-sidecar persistence helpers.
+#[derive(Debug, thiserror::Error)]
+pub enum NoteStorageError {
+    /// Resolving the canonical path for a saved document failed.
+    #[error("failed to canonicalize {}: {source}", path.display())]
+    Canonicalize {
+        /// Saved document path that could not be canonicalized.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// One or more sidecars failed during a rename-migration pass.
+    #[error("{failures} {kind_label} sidecar(s) could not be migrated; {migrated} succeeded")]
+    IncompleteMigration {
+        /// Sidecar kind label included in the aggregate summary.
+        kind_label: &'static str,
+        /// Number of sidecars that failed migration.
+        failures: usize,
+        /// Number of sidecars that succeeded.
+        migrated: usize,
+    },
+    /// Recovery-aware metadata validation or durable replacement failed.
+    #[error(transparent)]
+    Recovery(#[from] RecoveryMetadataError),
+}
+
+/// Typed errors returned by the legacy strict-load test helper [`load_json_file`].
+#[cfg(test)]
+#[derive(Debug, thiserror::Error)]
+pub enum LegacyJsonLoadError {
+    /// Reading the sidecar file from disk failed.
+    #[error("failed to read {}: {source}", path.display())]
+    Read {
+        /// Sidecar file path that could not be read.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// Parsing the sidecar JSON bytes failed.
+    #[error("failed to parse {}: {source}", path.display())]
+    Parse {
+        /// Sidecar file path whose JSON could not be parsed.
+        path: PathBuf,
+        /// Underlying JSON parse error.
+        #[source]
+        source: serde_json::Error,
+    },
+}
+
 /// Resolve the stable identity for one saved document path.
 ///
 /// # Errors
 ///
 /// Returns an error if the path cannot be canonicalized.
-pub fn resolve_document_identity(path: &Path) -> Result<DocumentSidecarIdentity> {
+pub fn resolve_document_identity(path: &Path) -> Result<DocumentSidecarIdentity, NoteStorageError> {
     let display_path = path.to_path_buf();
-    let canonical_path = fs_metadata::canonical_path(path)
-        .with_context(|| format!("failed to canonicalize {}", path.display()))?;
+    let canonical_path =
+        fs_metadata::canonical_path(path).map_err(|source| NoteStorageError::Canonicalize {
+            path: path.to_path_buf(),
+            source,
+        })?;
     Ok(DocumentSidecarIdentity::from_paths(
         display_path,
         canonical_path,
@@ -160,12 +214,12 @@ impl SidecarMigrationTally {
     }
 
     /// Record one sidecar's outcome, logging a skip warning on failure.
-    pub fn record(&mut self, sidecar_path: &Path, outcome: Result<()>) {
+    pub fn record<E: std::fmt::Display>(&mut self, sidecar_path: &Path, outcome: Result<(), E>) {
         match outcome {
             Ok(()) => self.migrated += 1,
             Err(error) => {
                 tracing::warn!(
-                    "Skipping {} sidecar {} during migration: {error:#}",
+                    "Skipping {} sidecar {} during migration: {error}",
                     self.kind_label,
                     sidecar_path.display()
                 );
@@ -180,14 +234,13 @@ impl SidecarMigrationTally {
     ///
     /// Returns an error naming how many sidecars were refused and how many
     /// succeeded, so the caller's migration kind stays pending for a later retry.
-    pub fn finish(self) -> Result<usize> {
+    pub fn finish(self) -> Result<usize, NoteStorageError> {
         if self.failures > 0 {
-            anyhow::bail!(
-                "{} {} sidecar(s) could not be migrated; {} succeeded",
-                self.failures,
-                self.kind_label,
-                self.migrated
-            );
+            return Err(NoteStorageError::IncompleteMigration {
+                kind_label: self.kind_label,
+                failures: self.failures,
+                migrated: self.migrated,
+            });
         }
         Ok(self.migrated)
     }
@@ -199,19 +252,21 @@ impl SidecarMigrationTally {
 ///
 /// Returns an error if the file cannot be read or parsed.
 #[cfg(test)]
-pub fn load_json_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
+pub fn load_json_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, LegacyJsonLoadError> {
     match fs_read::bytes(path) {
         Ok(bytes) => {
-            let value = serde_json::from_slice(&bytes)
-                .with_context(|| format!("failed to parse {}", path.display()))?;
+            let value =
+                serde_json::from_slice(&bytes).map_err(|source| LegacyJsonLoadError::Parse {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
             Ok(Some(value))
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(anyhow::anyhow!(
-            "failed to read {}: {}",
-            path.display(),
-            error
-        )),
+        Err(source) => Err(LegacyJsonLoadError::Read {
+            path: path.to_path_buf(),
+            source,
+        }),
     }
 }
 
@@ -255,7 +310,7 @@ pub fn save_json_file_recovering<T>(
     path: &Path,
     class: RecoveryMetadataClass,
     value: &T,
-) -> Result<()>
+) -> Result<(), NoteStorageError>
 where
     T: Serialize + DeserializeOwned,
 {
@@ -385,19 +440,68 @@ mod tests {
     }
 
     #[test]
-    fn load_json_file_distinguishes_missing_from_other_read_errors() {
+    fn load_json_file_distinguishes_missing_from_other_read_and_parse_errors() {
         let dir = TempDir::new().expect("tempdir");
         let missing_path = dir.path().join("missing.json");
+        let corrupt_path = dir.path().join("corrupt.json");
+        fixture::write_text(&corrupt_path, "{not valid json");
 
         assert!(
             load_json_file::<serde_json::Value>(&missing_path)
                 .expect("missing file should be accepted")
                 .is_none()
         );
-        let error = load_json_file::<serde_json::Value>(dir.path()).expect_err("directory read");
-        assert!(
-            error.to_string().contains("failed to read"),
-            "unexpected error: {error}"
+        let read_error =
+            load_json_file::<serde_json::Value>(dir.path()).expect_err("directory read");
+        assert!(matches!(
+            read_error,
+            LegacyJsonLoadError::Read { ref path, .. } if path == dir.path()
+        ));
+
+        let parse_error =
+            load_json_file::<serde_json::Value>(&corrupt_path).expect_err("corrupt json");
+        assert!(matches!(
+            parse_error,
+            LegacyJsonLoadError::Parse { ref path, .. } if path == &corrupt_path
+        ));
+    }
+
+    #[test]
+    fn resolve_document_identity_reports_canonicalize_error_for_missing_path() {
+        let dir = TempDir::new().expect("tempdir");
+        let missing = dir.path().join("missing.rs");
+
+        let error = resolve_document_identity(&missing).expect_err("missing path should fail");
+
+        assert!(matches!(
+            error,
+            NoteStorageError::Canonicalize { ref path, .. } if path == &missing
+        ));
+    }
+
+    #[test]
+    fn sidecar_migration_tally_reports_incomplete_migration_counts() {
+        let mut tally = SidecarMigrationTally::new("bookmark");
+        tally.record::<NoteStorageError>(Path::new("/tmp/ok.json"), Ok(()));
+        tally.record(
+            Path::new("/tmp/bad.json"),
+            Err(NoteStorageError::Canonicalize {
+                path: PathBuf::from("/tmp/bad.json"),
+                source: std::io::Error::from(std::io::ErrorKind::NotFound),
+            }),
         );
+
+        let error = tally
+            .finish()
+            .expect_err("failed item must report incomplete");
+
+        assert!(matches!(
+            error,
+            NoteStorageError::IncompleteMigration {
+                kind_label: "bookmark",
+                failures: 1,
+                migrated: 1,
+            }
+        ));
     }
 }

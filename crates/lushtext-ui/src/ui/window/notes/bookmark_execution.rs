@@ -430,8 +430,8 @@ impl LushtextWindow {
             let label = (!label_row.text().trim().is_empty()).then(|| label_row.text().to_string());
             let target_line = match parse_bookmark_target_line(&line_row.text()) {
                 Ok(line) => line,
-                Err(message) => {
-                    show_bookmark_edit_error(&error_label, Some(&line_row), &message);
+                Err(error) => {
+                    show_bookmark_edit_error(&error_label, Some(&line_row), &error.to_string());
                     return;
                 }
             };

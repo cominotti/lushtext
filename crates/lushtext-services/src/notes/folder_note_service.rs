@@ -6,7 +6,6 @@
 //! transient UI slot identifier, so removing and re-adding the same folder can
 //! restore the same note.
 
-use anyhow::{Context, Result};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
@@ -14,12 +13,96 @@ use crate::filesystem::{
     DirectoryScanPolicy, metadata as fs_metadata, mutate as fs_mutate, tree as fs_tree,
 };
 use crate::persistence::app_data_layout::{AppDataLayout, AppDataLocation};
-use crate::persistence::recovery_metadata::{RecoveryDiagnostic, RecoveryMetadataClass};
+use crate::persistence::recovery_metadata::{
+    RecoveryDiagnostic, RecoveryMetadataClass, RecoveryMetadataError,
+};
 use lushtext_model::persistence::folder_note::{FolderNoteDocument, FolderNoteIdentity};
 use lushtext_model::persistence::note::{RichNoteBody, RichNoteMergeDecision};
 use lushtext_model::workspace::{WorkspaceConfig, WorkspaceScope};
 
-use super::note_storage;
+use super::note_storage::{self, NoteStorageError};
+
+/// Typed errors returned by folder-note sidecar persistence and workspace listing operations.
+#[derive(Debug, thiserror::Error)]
+pub enum FolderNoteError {
+    /// Resolving the canonical identity for a workspace folder failed.
+    #[error("failed to canonicalize {}: {source}", path.display())]
+    Canonicalize {
+        /// Workspace folder path that could not be canonicalized.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// Recovery-aware metadata validation or durable replacement failed.
+    #[error(transparent)]
+    Recovery(#[from] RecoveryMetadataError),
+    /// Deleting a folder-note sidecar failed.
+    #[error("failed to delete folder note sidecar {}: {source}", path.display())]
+    DeleteSidecar {
+        /// Folder-note sidecar file path that could not be deleted.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// Deleting an obsolete folder-note sidecar after migration failed.
+    #[error("failed to delete obsolete folder note sidecar {}: {source}", path.display())]
+    DeleteObsoleteSidecar {
+        /// Obsolete sidecar file path that could not be removed.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// Inspecting a folder-note sidecar directory failed.
+    #[error("failed to inspect {}: {source}", path.display())]
+    InspectDir {
+        /// Folder-note sidecar directory path that could not be inspected.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// Scanning a folder-note sidecar directory failed.
+    #[error("failed to read {}: {source}", path.display())]
+    ScanDir {
+        /// Folder-note sidecar directory path that could not be scanned.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// Both source and target sidecars exist with equal timestamps and differing text.
+    #[error(
+        "ambiguous folder note sidecar conflict for {}; both copies were preserved",
+        path.display()
+    )]
+    AmbiguousConflict {
+        /// Target folder display path whose sidecar merge conflicted.
+        path: PathBuf,
+    },
+    /// One or more folder-note sidecars could not be migrated during a rename pass.
+    #[error("{failures} folder-note sidecar(s) could not be migrated; {migrated} succeeded")]
+    IncompleteMigration {
+        /// Number of folder-note sidecars that failed migration.
+        failures: usize,
+        /// Number of folder-note sidecars that succeeded.
+        migrated: usize,
+    },
+}
+
+impl From<NoteStorageError> for FolderNoteError {
+    fn from(error: NoteStorageError) -> Self {
+        match error {
+            NoteStorageError::Canonicalize { path, source } => Self::Canonicalize { path, source },
+            NoteStorageError::IncompleteMigration {
+                failures, migrated, ..
+            } => Self::IncompleteMigration { failures, migrated },
+            NoteStorageError::Recovery(source) => Self::Recovery(source),
+        }
+    }
+}
 
 /// Lightweight workspace-facing note row for unified note browsers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,10 +156,13 @@ fn legacy_folder_note_sidecar_path(data_dir: &Path, identity: &FolderNoteIdentit
 /// # Errors
 ///
 /// Returns an error if the folder cannot be canonicalized.
-pub fn resolve_folder_note_identity(folder: &Path) -> Result<FolderNoteIdentity> {
+pub fn resolve_folder_note_identity(folder: &Path) -> Result<FolderNoteIdentity, FolderNoteError> {
     let display_folder = folder.to_path_buf();
-    let canonical_folder = fs_metadata::canonical_path(folder)
-        .with_context(|| format!("failed to canonicalize {}", folder.display()))?;
+    let canonical_folder =
+        fs_metadata::canonical_path(folder).map_err(|source| FolderNoteError::Canonicalize {
+            path: folder.to_path_buf(),
+            source,
+        })?;
     Ok(FolderNoteIdentity::from_folders(
         display_folder,
         canonical_folder,
@@ -87,10 +173,13 @@ pub fn resolve_folder_note_identity(folder: &Path) -> Result<FolderNoteIdentity>
 ///
 /// # Errors
 ///
-/// Returns an error if the folder identity cannot be resolved or the sidecar
-/// directory cannot be scanned. Malformed or unreadable sidecars are preserved
-/// through recovery diagnostics and treated as absent.
-pub fn load_for_folder(data_dir: &Path, folder: &Path) -> Result<Option<FolderNoteDocument>> {
+/// Returns an error if the folder identity cannot be resolved. Malformed or
+/// unreadable sidecars are preserved through recovery diagnostics and treated
+/// as absent.
+pub fn load_for_folder(
+    data_dir: &Path,
+    folder: &Path,
+) -> Result<Option<FolderNoteDocument>, FolderNoteError> {
     Ok(load_for_folder_recovering(data_dir, folder)?.document)
 }
 
@@ -99,7 +188,10 @@ pub fn load_for_folder(data_dir: &Path, folder: &Path) -> Result<Option<FolderNo
 /// # Errors
 ///
 /// Returns an error if the folder identity cannot be resolved.
-pub fn load_for_folder_recovering(data_dir: &Path, folder: &Path) -> Result<FolderNoteLoad> {
+pub fn load_for_folder_recovering(
+    data_dir: &Path,
+    folder: &Path,
+) -> Result<FolderNoteLoad, FolderNoteError> {
     let identity = resolve_folder_note_identity(folder)?;
     Ok(load_for_identity_recovering(
         data_dir,
@@ -157,7 +249,7 @@ fn load_folder_note_sidecar(
 pub(crate) fn sidecar_lookup_for_folder(
     data_dir: &Path,
     folder: &Path,
-) -> Result<(FolderNoteIdentity, [PathBuf; 2])> {
+) -> Result<(FolderNoteIdentity, [PathBuf; 2]), FolderNoteError> {
     let identity = resolve_folder_note_identity(folder)?;
     let paths = [
         folder_note_sidecar_path(data_dir, &identity),
@@ -178,7 +270,7 @@ pub fn save_for_folder(
     data_dir: &Path,
     folder: &Path,
     note: &RichNoteBody,
-) -> Result<FolderNoteIdentity> {
+) -> Result<FolderNoteIdentity, FolderNoteError> {
     let identity = resolve_folder_note_identity(folder)?;
     save_document(
         data_dir,
@@ -195,18 +287,21 @@ pub fn save_for_folder(
 /// # Errors
 ///
 /// Returns an error if the sidecar cannot be written or deleted.
-pub fn save_document(data_dir: &Path, document: &FolderNoteDocument) -> Result<()> {
+pub fn save_document(
+    data_dir: &Path,
+    document: &FolderNoteDocument,
+) -> Result<(), FolderNoteError> {
     if document.note.is_empty() {
         return delete_sidecar_file(data_dir, &document.identity);
     }
 
     let path = folder_note_sidecar_path(data_dir, &document.identity);
-    note_storage::save_json_file_recovering(
+    Ok(note_storage::save_json_file_recovering(
         data_dir,
         &path,
         RecoveryMetadataClass::FolderNoteSidecar,
         document,
-    )
+    )?)
 }
 
 /// Delete the note for one workspace folder if it exists.
@@ -215,23 +310,21 @@ pub fn save_document(data_dir: &Path, document: &FolderNoteDocument) -> Result<(
 ///
 /// Returns an error if the folder identity cannot be resolved or an existing
 /// sidecar cannot be deleted.
-pub fn delete_for_folder(data_dir: &Path, folder: &Path) -> Result<()> {
+pub fn delete_for_folder(data_dir: &Path, folder: &Path) -> Result<(), FolderNoteError> {
     let identity = resolve_folder_note_identity(folder)?;
     delete_sidecar_file(data_dir, &identity)
 }
 
-fn delete_sidecar_file(data_dir: &Path, identity: &FolderNoteIdentity) -> Result<()> {
+fn delete_sidecar_file(
+    data_dir: &Path,
+    identity: &FolderNoteIdentity,
+) -> Result<(), FolderNoteError> {
     for path in [
         folder_note_sidecar_path(data_dir, identity),
         legacy_folder_note_sidecar_path(data_dir, identity),
     ] {
-        if let Err(error) = fs_mutate::remove_file_if_exists(&path) {
-            return Err(anyhow::anyhow!(
-                "failed to delete folder note sidecar {}: {}",
-                path.display(),
-                error
-            ));
-        }
+        fs_mutate::remove_file_if_exists(&path)
+            .map_err(|source| FolderNoteError::DeleteSidecar { path, source })?;
     }
     Ok(())
 }
@@ -244,18 +337,31 @@ fn delete_sidecar_file(data_dir: &Path, identity: &FolderNoteIdentity) -> Result
 ///
 /// Returns an error if the sidecar directory cannot be scanned or a migrated
 /// sidecar cannot be read, rewritten, or cleaned up.
-pub fn move_folder_tree(data_dir: &Path, old_folder: &Path, new_folder: &Path) -> Result<usize> {
+pub fn move_folder_tree(
+    data_dir: &Path,
+    old_folder: &Path,
+    new_folder: &Path,
+) -> Result<usize, FolderNoteError> {
     let mut tally = note_storage::SidecarMigrationTally::new("folder-note");
     for dir in [
         folder_notes_dir(data_dir),
         legacy_folder_notes_dir(data_dir),
     ] {
-        if !fs_metadata::path_status(&dir)?.is_present() {
+        let dir_present = fs_metadata::path_status(&dir)
+            .map_err(|source| FolderNoteError::InspectDir {
+                path: dir.clone(),
+                source,
+            })?
+            .is_present();
+        if !dir_present {
             continue;
         }
 
         for entry in fs_tree::scan_directory(&dir, DirectoryScanPolicy::visible_workspace())
-            .with_context(|| format!("failed to read {}", dir.display()))?
+            .map_err(|source| FolderNoteError::ScanDir {
+                path: dir.clone(),
+                source,
+            })?
         {
             let sidecar_path = entry.path;
             if sidecar_path.extension().and_then(OsStr::to_str) != Some("json") {
@@ -295,7 +401,7 @@ pub fn move_folder_tree(data_dir: &Path, old_folder: &Path, new_folder: &Path) -
         }
     }
 
-    tally.finish()
+    Ok(tally.finish()?)
 }
 
 fn merge_folder_note_target(
@@ -303,7 +409,7 @@ fn merge_folder_note_target(
     target_path: &Path,
     mut source: FolderNoteDocument,
     target_identity: FolderNoteIdentity,
-) -> Result<FolderNoteDocument> {
+) -> Result<FolderNoteDocument, FolderNoteError> {
     let load = note_storage::load_json_file_recovering::<FolderNoteDocument>(
         data_dir,
         target_path,
@@ -323,7 +429,7 @@ fn merge_folder_note_documents(
     source: FolderNoteDocument,
     mut target: FolderNoteDocument,
     target_identity: FolderNoteIdentity,
-) -> Result<FolderNoteDocument> {
+) -> Result<FolderNoteDocument, FolderNoteError> {
     match source.note.merge_decision_against(&target.note) {
         RichNoteMergeDecision::UseSelf => Ok(FolderNoteDocument {
             identity: target_identity,
@@ -333,22 +439,20 @@ fn merge_folder_note_documents(
             target.identity = target_identity;
             Ok(target)
         }
-        RichNoteMergeDecision::Conflict => Err(anyhow::anyhow!(
-            "ambiguous folder note sidecar conflict for {}; both copies were preserved",
-            target_identity.display_folder.display()
-        )),
+        RichNoteMergeDecision::Conflict => Err(FolderNoteError::AmbiguousConflict {
+            path: target_identity.display_folder,
+        }),
     }
 }
 
-fn remove_obsolete_sidecar(path: &Path) -> Result<()> {
-    match fs_mutate::remove_file_if_exists(path) {
-        Ok(_) => Ok(()),
-        Err(error) => Err(anyhow::anyhow!(
-            "failed to delete obsolete folder note sidecar {}: {}",
-            path.display(),
-            error
-        )),
-    }
+fn remove_obsolete_sidecar(path: &Path) -> Result<(), FolderNoteError> {
+    fs_mutate::remove_file_if_exists(path).map_err(|source| {
+        FolderNoteError::DeleteObsoleteSidecar {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    Ok(())
 }
 
 /// Collect folder notes covered by the current shared workspace scope.
@@ -360,7 +464,7 @@ pub fn list_folder_notes_for_scope(
     data_dir: &Path,
     workspaces: &[WorkspaceConfig],
     scope: &WorkspaceScope,
-) -> Result<Vec<ListedFolderNote>> {
+) -> Result<Vec<ListedFolderNote>, FolderNoteError> {
     Ok(list_folder_notes_for_scope_recovering(data_dir, workspaces, scope)?.notes)
 }
 
@@ -373,7 +477,7 @@ pub fn list_folder_notes_for_scope_recovering(
     data_dir: &Path,
     workspaces: &[WorkspaceConfig],
     scope: &WorkspaceScope,
-) -> Result<FolderNoteListing> {
+) -> Result<FolderNoteListing, FolderNoteError> {
     let visible_workspaces: Vec<&WorkspaceConfig> = match scope {
         WorkspaceScope::All => workspaces.iter().collect(),
         WorkspaceScope::Workspace(workspace_id) => workspaces
@@ -617,12 +721,58 @@ mod tests {
 
         let error =
             delete_for_folder(dir.path(), &folder).expect_err("directory sidecar should fail");
-        assert!(
-            error
-                .to_string()
-                .contains("failed to delete folder note sidecar"),
-            "unexpected error: {error}"
+        assert!(matches!(
+            error,
+            FolderNoteError::DeleteSidecar { ref path, .. } if path == &sidecar_path
+        ));
+    }
+
+    #[test]
+    fn resolve_folder_note_identity_reports_canonicalize_error_for_missing_folder() {
+        let dir = TempDir::new().expect("tempdir");
+        let missing = dir.path().join("missing-folder");
+
+        let error = resolve_folder_note_identity(&missing).expect_err("missing folder should fail");
+
+        assert!(matches!(
+            error,
+            FolderNoteError::Canonicalize { ref path, .. } if path == &missing
+        ));
+    }
+
+    #[test]
+    fn move_folder_tree_reports_scan_error_when_sidecar_dir_is_file() {
+        let dir = TempDir::new().expect("tempdir");
+        let notes_root = folder_notes_dir(dir.path());
+        fixture::write_text(&notes_root, "not a directory");
+
+        let error = move_folder_tree(dir.path(), &dir.path().join("old"), &dir.path().join("new"))
+            .expect_err("file at folder_notes_dir should fail scan");
+
+        assert!(matches!(
+            error,
+            FolderNoteError::ScanDir { ref path, .. } if path == &notes_root
+        ));
+    }
+
+    #[test]
+    fn merge_folder_note_documents_returns_ambiguous_conflict_variant() {
+        let source_folder = Path::new("/workspace/old");
+        let target_folder = Path::new("/workspace/new");
+        let source = folder_note_document(source_folder, "source folder note", 10);
+        let target = folder_note_document(target_folder, "target folder note", 10);
+        let target_identity = FolderNoteIdentity::from_folders(
+            target_folder.to_path_buf(),
+            target_folder.to_path_buf(),
         );
+
+        let error = merge_folder_note_documents(source, target, target_identity)
+            .expect_err("equal-timestamp distinct folder notes should conflict");
+
+        assert!(matches!(
+            error,
+            FolderNoteError::AmbiguousConflict { ref path } if path == target_folder
+        ));
     }
 
     #[test]
@@ -763,12 +913,13 @@ mod tests {
 
         // The aggregate message reports the incomplete kind; the per-item cause
         // stays in the warning log.
-        assert!(
-            error
-                .to_string()
-                .contains("folder-note sidecar(s) could not be migrated"),
-            "unexpected error: {error}"
-        );
+        assert!(matches!(
+            error,
+            FolderNoteError::IncompleteMigration {
+                failures: 1,
+                migrated: 0,
+            }
+        ));
         assert!(fs_metadata::exists(&old_sidecar_path));
         assert!(fs_metadata::exists(&new_sidecar_path));
     }

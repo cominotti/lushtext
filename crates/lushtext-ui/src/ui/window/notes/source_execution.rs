@@ -78,11 +78,11 @@ enum GuardedNoteSourceOutcome {
         had_recovery_diagnostics: bool,
     },
     Cancelled,
-    Failed(anyhow::Error),
+    Failed(palette_service::NotesPaletteError),
 }
 
 fn guard_note_source_on_worker(
-    result: anyhow::Result<PaletteNoteSourceOutcome>,
+    result: Result<PaletteNoteSourceOutcome, palette_service::NotesPaletteError>,
     reservation: crate::ui::plain_disposal::DisposalReservation,
 ) -> GuardedNoteSourceOutcome {
     match result {

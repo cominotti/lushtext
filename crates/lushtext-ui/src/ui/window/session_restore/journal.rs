@@ -26,6 +26,22 @@ use gtk4::glib;
 use gtk4::prelude::*;
 
 use crate::ui::editor_page::LushtextEditorPage;
+
+/// Typed errors returned when closing or validating session persistence on close.
+#[derive(Debug, thiserror::Error)]
+pub enum SessionCloseSaveError {
+    /// Persisting the ordered session snapshot failed.
+    #[error(transparent)]
+    Service(#[from] lushtext_services::persistence::session_service::SessionServiceError),
+    /// Existing session recovery evidence could not be quarantined before overwriting.
+    #[error(
+        "session recovery evidence could not be preserved safely; close was cancelled: {detail}"
+    )]
+    UnsafeRecoveryEvidence {
+        /// Diagnostic summary explaining why preservation failed.
+        detail: String,
+    },
+}
 /// The startup preload's byte reservation, named in this workflow's vocabulary.
 ///
 /// A **delegating alias, not a fork**: the value is owned by
@@ -264,6 +280,7 @@ impl LushtextWindow {
         };
         match session.and_then(|session| {
             session_service::save_ordered(&data_dir, &session, ordered_generation)
+                .map_err(SessionCloseSaveError::from)
         }) {
             Ok(true) => self.clear_session_save_failure(generation),
             Ok(false) => {}
@@ -276,7 +293,7 @@ impl LushtextWindow {
     }
 
     /// Save session for close on a background worker, then report whether close may continue.
-    pub fn save_session_for_close_async<F: FnOnce(anyhow::Result<()>) + 'static>(
+    pub fn save_session_for_close_async<F: FnOnce(Result<(), SessionCloseSaveError>) + 'static>(
         &self,
         on_done: F,
     ) {
@@ -299,6 +316,7 @@ impl LushtextWindow {
                     session
                 };
                 session_service::save_ordered(&data_dir, &session, ordered_generation)
+                    .map_err(SessionCloseSaveError::from)
             },
             move |window, result| {
                 let close_result = match result {
@@ -475,7 +493,7 @@ impl LushtextWindow {
 fn load_and_merge_persisted_session_for_close(
     data_dir: &Path,
     current: SessionData,
-) -> anyhow::Result<SessionData> {
+) -> Result<SessionData, SessionCloseSaveError> {
     let persisted = session_service::load_recovering(data_dir);
     if !persisted.replacement_allowed() {
         let detail = persisted
@@ -484,9 +502,7 @@ fn load_and_merge_persisted_session_for_close(
             .map(RecoveryDiagnostic::summary)
             .collect::<Vec<_>>()
             .join("; ");
-        anyhow::bail!(
-            "session recovery evidence could not be preserved safely; close was cancelled: {detail}"
-        );
+        return Err(SessionCloseSaveError::UnsafeRecoveryEvidence { detail });
     }
     Ok(policy::merge_persisted_session_with_current(
         persisted.value,

@@ -4,10 +4,50 @@
 
 use crate::filesystem::{WriteLabel, read, write};
 use crate::persistence::app_data_layout::{AppDataLayout, AppDataLocation};
-use anyhow::{Context, Result};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Typed errors returned when loading or saving app-owned JSON files.
+#[derive(Debug, thiserror::Error)]
+pub enum JsonStoreError {
+    /// Parent directory for the JSON file could not be created durably.
+    #[error("failed to create {}: {source}", path.display())]
+    CreateDir {
+        /// Directory path that could not be created.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// Reading the JSON file from disk failed (other than `NotFound`).
+    #[error("failed to read {}: {source}", path.display())]
+    Read {
+        /// Path that could not be read.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// Parsing existing JSON bytes failed.
+    #[error("failed to parse {}: {source}", path.display())]
+    Parse {
+        /// Path whose JSON contents were malformed.
+        path: PathBuf,
+        /// Underlying JSON decode error.
+        #[source]
+        source: serde_json::Error,
+    },
+    /// Serializing or durably writing the JSON file failed.
+    #[error("failed to write {}: {source}", path.display())]
+    Write {
+        /// Destination file path.
+        path: PathBuf,
+        /// Underlying write error.
+        #[source]
+        source: std::io::Error,
+    },
+}
 
 /// Returns the application data directory (`$XDG_DATA_HOME/lushtext`).
 ///
@@ -75,13 +115,17 @@ pub fn style_schemes_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
 /// # Errors
 ///
 /// Returns an error if the file exists but cannot be read or parsed as JSON.
-pub fn load<T: DeserializeOwned + Default>(data_dir: &Path, filename: &str) -> Result<T> {
+pub fn load<T: DeserializeOwned + Default>(
+    data_dir: &Path,
+    filename: &str,
+) -> Result<T, JsonStoreError> {
     let path = data_dir.join(filename);
     match read::bytes(&path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .with_context(|| format!("failed to parse {}", path.display())),
+        Ok(bytes) => {
+            serde_json::from_slice(&bytes).map_err(|source| JsonStoreError::Parse { path, source })
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
-        Err(e) => Err(anyhow::anyhow!("failed to read {}: {}", path.display(), e)),
+        Err(source) => Err(JsonStoreError::Read { path, source }),
     }
 }
 
@@ -93,9 +137,15 @@ pub fn load<T: DeserializeOwned + Default>(data_dir: &Path, filename: &str) -> R
 ///
 /// Returns an error if the parent directory cannot be created, the value cannot
 /// be serialized, or the temp file cannot be flushed, synced, or renamed.
-pub fn save<T: Serialize>(data_dir: &Path, filename: &str, value: &T) -> Result<()> {
-    write::create_dir_all_durable(data_dir)
-        .with_context(|| format!("failed to create {}", data_dir.display()))?;
+pub fn save<T: Serialize>(
+    data_dir: &Path,
+    filename: &str,
+    value: &T,
+) -> Result<(), JsonStoreError> {
+    write::create_dir_all_durable(data_dir).map_err(|source| JsonStoreError::CreateDir {
+        path: data_dir.to_path_buf(),
+        source,
+    })?;
     let path = data_dir.join(filename);
     // The shared helper owns the temp-file-then-rename ordering, the full fsync
     // contract, and identity-metadata preservation. Streaming JSON avoids a
@@ -103,8 +153,10 @@ pub fn save<T: Serialize>(data_dir: &Path, filename: &str, value: &T) -> Result<
     write::atomic_replace_stream(&path, WriteLabel::JSON, |writer| {
         serde_json::to_writer_pretty(writer, value).map_err(std::io::Error::other)
     })
-    .map_err(write::DurableWriteError::into_io_error)
-    .with_context(|| format!("failed to write {}", path.display()))
+    .map_err(|error| JsonStoreError::Write {
+        path,
+        source: error.into_io_error(),
+    })
 }
 
 #[cfg(test)]
@@ -145,8 +197,8 @@ mod tests {
     fn test_load_malformed_json_returns_error() {
         let dir = TempDir::new().expect("expected operation to succeed");
         fixture::write_text(&dir.path().join("bad.json"), "not valid json {{{");
-        let result: Result<TestData> = load(dir.path(), "bad.json");
-        assert!(result.is_err());
+        let result: Result<TestData, JsonStoreError> = load(dir.path(), "bad.json");
+        assert!(matches!(result, Err(JsonStoreError::Parse { .. })));
     }
 
     #[test]
@@ -154,9 +206,10 @@ mod tests {
         let dir = TempDir::new().expect("expected operation to succeed");
         fixture::create_dir(&dir.path().join("data.json"));
 
-        let error: Result<TestData> = load(dir.path(), "data.json");
+        let error: Result<TestData, JsonStoreError> = load(dir.path(), "data.json");
 
         let error = error.expect_err("directory JSON path should fail");
+        assert!(matches!(error, JsonStoreError::Read { .. }));
         assert!(
             error.to_string().contains("failed to read"),
             "unexpected error: {error}"
@@ -266,5 +319,28 @@ mod tests {
             Some(home.path()),
         );
         assert_eq!(dir, private.path());
+    }
+
+    #[test]
+    fn test_save_to_file_blocked_parent_returns_create_dir_error() {
+        let dir = TempDir::new().expect("tempdir");
+        let file_parent = dir.path().join("not-a-dir");
+        fixture::write_text(&file_parent, "blocker");
+        let error = save(
+            &file_parent.join("child"),
+            "data.json",
+            &TestData::default(),
+        )
+        .expect_err("file parent should prevent CreateDir");
+        assert!(matches!(error, JsonStoreError::CreateDir { .. }));
+    }
+
+    #[test]
+    fn test_save_over_directory_returns_write_error() {
+        let dir = TempDir::new().expect("tempdir");
+        fixture::create_dir(&dir.path().join("target.json"));
+        let error = save(dir.path(), "target.json", &TestData::default())
+            .expect_err("directory target should fail write");
+        assert!(matches!(error, JsonStoreError::Write { .. }));
     }
 }

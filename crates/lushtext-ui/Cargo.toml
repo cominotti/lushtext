@@ -55,7 +55,6 @@ gdk4        = { workspace = true }
 pango       = { workspace = true }
 crossbeam-channel = { workspace = true }
 serde_json  = { workspace = true }
-anyhow      = { workspace = true }
 thiserror   = { workspace = true }
 tracing        = { workspace = true }
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }

@@ -9,11 +9,19 @@
 use crate::persistence::app_data_layout::{AppDataLayout, AppDataLocation};
 use crate::persistence::json_format::KIND_SAVED_SEARCHES;
 use crate::persistence::recovery_metadata::{
-    RecoveryLoad, RecoveryLoadConfig, RecoveryMetadataClass, load_enveloped_json_or_default,
-    save_enveloped_json_path,
+    RecoveryLoad, RecoveryLoadConfig, RecoveryMetadataClass, RecoveryMetadataError,
+    load_enveloped_json_or_default, save_enveloped_json_path,
 };
 use lushtext_model::workspace::content_search::SavedSearch;
 use std::path::Path;
+
+/// Typed errors returned when persisting saved searches.
+#[derive(Debug, thiserror::Error)]
+pub enum SavedSearchesError {
+    /// Recovery-aware metadata validation or durable write failed.
+    #[error(transparent)]
+    Recovery(#[from] RecoveryMetadataError),
+}
 
 /// `AppDataLocation::SavedSearches` under the data home `data_dir`.
 fn saved_searches_path(data_dir: &std::path::Path) -> std::path::PathBuf {
@@ -44,7 +52,7 @@ pub fn load_recovering(data_dir: &Path) -> RecoveryLoad<Vec<SavedSearch>> {
 /// # Errors
 ///
 /// Returns an error if the saved-search file cannot be serialized or written.
-pub fn save(data_dir: &Path, entries: &[SavedSearch]) -> anyhow::Result<()> {
+pub fn save(data_dir: &Path, entries: &[SavedSearch]) -> Result<(), SavedSearchesError> {
     let path = saved_searches_path(data_dir);
     let config = RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::SavedSearches);
     let entries = entries.to_vec();
@@ -204,5 +212,23 @@ mod tests {
         assert_eq!(load.value.len(), 1);
         assert_eq!(load.value[0].name, "Legacy");
         assert!(!load.value[0].spec.options.hidden);
+    }
+
+    #[test]
+    fn save_returns_recovery_error_when_quarantine_is_blocked() {
+        let dir = TempDir::new().expect("tempdir");
+        fixture::write_text(&saved_searches_path(dir.path()), "corrupt");
+        fixture::write_text(
+            &dir.path()
+                .join(crate::persistence::recovery_metadata::QUARANTINE_DIR),
+            "blocker",
+        );
+
+        let error = save(dir.path(), &[make_saved("Saved", "needle")])
+            .expect_err("blocked quarantine must surface typed error");
+        assert!(matches!(
+            error,
+            SavedSearchesError::Recovery(RecoveryMetadataError::UnsafeReplacement { .. })
+        ));
     }
 }

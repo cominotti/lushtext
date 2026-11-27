@@ -307,7 +307,9 @@ mod tests {
 
     #[test]
     fn converter_backed_older_version_offers_convert() {
-        fn convert(bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
+        fn convert(
+            bytes: &[u8],
+        ) -> Result<Vec<u8>, crate::persistence::format_upgrade::FormatConverterError> {
             Ok(bytes.to_vec())
         }
 

@@ -1091,7 +1091,6 @@ dependencies = [
 name = "lushtext-services"
 version = "0.8.3"
 dependencies = [
- "anyhow",
  "crossbeam-channel",
  "dirs",
  "editorconfig-parser",

@@ -7,7 +7,6 @@
 //! service owns that source policy while GTK adapters decide how to render and
 //! activate the rows.
 
-use anyhow::{Context, Result};
 #[cfg(test)]
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -44,6 +43,39 @@ use crate::coordination::single_flight::{
 use super::runtime::{
     PaletteSearchCancellation, PaletteSearchCoordinator, PaletteSearchMetrics, PaletteSearchOutcome,
 };
+
+/// Typed errors returned when loading command-palette or Browse Notes sources.
+#[derive(Debug, thiserror::Error)]
+pub enum NotesPaletteError {
+    /// Inspecting a sidecar directory failed.
+    #[error("failed to inspect {}: {source}", path.display())]
+    InspectDir {
+        /// Sidecar directory path that could not be inspected.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// Scanning a sidecar directory failed.
+    #[error("failed to read {}: {detail}", path.display())]
+    ScanDir {
+        /// Sidecar directory path that could not be scanned.
+        path: PathBuf,
+        /// Underlying directory-scan failure detail.
+        detail: String,
+    },
+    /// Resolving or listing folder notes for the workspace scope failed.
+    #[error(transparent)]
+    FolderNote(#[from] folder_note_service::FolderNoteError),
+    /// Listing workspace bookmarks failed.
+    #[cfg(test)]
+    #[error(transparent)]
+    Bookmark(#[from] bookmark_service::BookmarkServiceError),
+    /// Listing workspace document notes failed.
+    #[cfg(test)]
+    #[error(transparent)]
+    DocumentNote(#[from] document_note_service::DocumentNoteError),
+}
 
 #[cfg(feature = "test-utils")]
 static NOTES_BROWSER_QUERY_DELAY_MS: std::sync::atomic::AtomicU64 =
@@ -361,7 +393,7 @@ pub fn load_note_entries_for_scope(
     data_dir: &Path,
     scope_snapshot: &WorkspaceScopeSnapshot,
     open_editor_snapshots: Vec<PaletteOpenEditorNoteSnapshot>,
-) -> Result<PaletteNoteSourceLoad> {
+) -> Result<PaletteNoteSourceLoad, NotesPaletteError> {
     let visible_workspaces = scope_snapshot.visible_workspaces();
     let scope_folders = scope_snapshot.folder_paths();
     let folder_notes = if visible_workspaces.is_empty() {
@@ -440,7 +472,7 @@ pub fn load_palette_note_entries_for_scope(
     scope_snapshot: &WorkspaceScopeSnapshot,
     open_editor_snapshots: &[PaletteOpenEditorNoteSnapshot],
     cancellation: &PaletteSearchCancellation,
-) -> Result<PaletteNoteSourceOutcome> {
+) -> Result<PaletteNoteSourceOutcome, NotesPaletteError> {
     load_note_entries_bounded_for_scope(
         data_dir,
         scope_snapshot,
@@ -495,7 +527,7 @@ pub fn load_note_entries_bounded_for_scope(
     mode: NotesBrowserMode,
     limits: NoteSourceLimits,
     cancellation: &PaletteSearchCancellation,
-) -> Result<PaletteNoteSourceOutcome> {
+) -> Result<PaletteNoteSourceOutcome, NotesPaletteError> {
     delay_note_source_for_test();
     if cancellation.is_cancelled() {
         return Ok(PaletteNoteSourceOutcome::Cancelled {
@@ -526,7 +558,7 @@ pub fn load_note_entries_bounded_for_scope(
         &mut admission,
         |admission| admission.try_charge_construction(live_identity_bytes),
         |admission| admission.release_construction(live_identity_bytes),
-        |admission| -> Result<ControlFlow<NoteSourceTerminal, ()>> {
+        |admission| -> Result<ControlFlow<NoteSourceTerminal, ()>, NotesPaletteError> {
             if scope_folders.is_empty() {
                 return Ok(ControlFlow::Continue(()));
             }
@@ -536,7 +568,7 @@ pub fn load_note_entries_bounded_for_scope(
                 admission,
                 |admission| admission.try_charge_construction(canonical_folder_bytes),
                 |admission| admission.release_construction(canonical_folder_bytes),
-                |admission| -> Result<ControlFlow<NoteSourceTerminal, ()>> {
+                |admission| -> Result<ControlFlow<NoteSourceTerminal, ()>, NotesPaletteError> {
                     let dir = bookmark_service::bookmarks_dir(data_dir);
                     let BoundedSidecarEntries::Admitted {
                         entries: sidecars,
@@ -558,7 +590,7 @@ pub fn load_note_entries_bounded_for_scope(
                             return Ok(ControlFlow::Break(NoteSourceTerminal::Cancelled));
                         }
                         let Some(parse) =
-                            reserve_sidecar_parse(std::slice::from_ref(&entry.path), admission)?
+                            reserve_sidecar_parse(std::slice::from_ref(&entry.path), admission)
                         else {
                             if admission.unreadable_flow().is_break() {
                                 return Ok(ControlFlow::Break(NoteSourceTerminal::Complete));
@@ -680,7 +712,7 @@ pub fn load_note_entries_bounded_for_scope(
                 }
                 let (identity, paths) =
                     folder_note_service::sidecar_lookup_for_folder(data_dir, &folder)?;
-                let Some(parse) = reserve_sidecar_parse(&paths, &mut admission)? else {
+                let Some(parse) = reserve_sidecar_parse(&paths, &mut admission) else {
                     if admission.unreadable_flow().is_break() {
                         return Ok(admission.complete());
                     }
@@ -732,7 +764,7 @@ pub fn load_note_entries_bounded_for_scope(
             &mut admission,
             |admission| admission.try_charge_construction(canonical_folder_bytes),
             |admission| admission.release_construction(canonical_folder_bytes),
-            |admission| -> Result<ControlFlow<NoteSourceTerminal, ()>> {
+            |admission| -> Result<ControlFlow<NoteSourceTerminal, ()>, NotesPaletteError> {
                 let dir = document_note_service::document_notes_dir(data_dir);
                 let BoundedSidecarEntries::Admitted {
                     entries: sidecars,
@@ -749,7 +781,7 @@ pub fn load_note_entries_bounded_for_scope(
                         return Ok(ControlFlow::Break(NoteSourceTerminal::Cancelled));
                     }
                     let Some(parse) =
-                        reserve_sidecar_parse(std::slice::from_ref(&entry.path), admission)?
+                        reserve_sidecar_parse(std::slice::from_ref(&entry.path), admission)
                     else {
                         if admission.unreadable_flow().is_break() {
                             return Ok(ControlFlow::Break(NoteSourceTerminal::Complete));
@@ -844,17 +876,14 @@ pub fn load_note_entries_bounded_for_scope(
         {
             let sidecar_path = document_note_service::document_notes_dir(data_dir)
                 .join(note_storage::sidecar_filename(&identity.sidecar_id));
-            let Some(parse) = reserve_sidecar_parse(&[sidecar_path], &mut admission)? else {
+            let Some(parse) = reserve_sidecar_parse(&[sidecar_path], &mut admission) else {
                 if admission.unreadable_flow().is_break() {
                     return Ok(admission.complete());
                 }
                 continue;
             };
-            let document = document_note_service::load_for_identity(
-                data_dir,
-                &identity,
-                parse.max_read_bytes,
-            )?;
+            let document =
+                document_note_service::load_for_identity(data_dir, &identity, parse.max_read_bytes);
             let document_bytes = document
                 .as_ref()
                 .map_or(0, DocumentNoteDocument::retained_heap_byte_weight);
@@ -907,7 +936,7 @@ struct SidecarParseReservation {
 fn reserve_sidecar_parse(
     paths: &[PathBuf],
     admission: &mut NoteSourceAdmission,
-) -> Result<Option<SidecarParseReservation>> {
+) -> Option<SidecarParseReservation> {
     let default_max = crate::persistence::recovery_metadata::DEFAULT_MAX_METADATA_BYTES;
     let mut readable_bytes = 0u64;
     let mut has_oversized = false;
@@ -928,9 +957,9 @@ fn reserve_sidecar_parse(
         .saturating_add(model_byte_limit)
         .saturating_add(NOTE_SIDECAR_DIAGNOSTIC_RESERVATION_BYTES);
     if !admission.try_charge_construction(charged_bytes) {
-        return Ok(None);
+        return None;
     }
-    Ok(Some(SidecarParseReservation {
+    Some(SidecarParseReservation {
         charged_bytes,
         model_byte_limit,
         max_read_bytes: if readable_bytes == 0 && has_oversized {
@@ -938,7 +967,7 @@ fn reserve_sidecar_parse(
         } else {
             readable_bytes
         },
-    }))
+    })
 }
 
 /// Settle a sidecar parse reservation directly against its actual byte cost.
@@ -992,8 +1021,14 @@ fn bounded_sidecar_entries(
     sidecar_limit: Option<usize>,
     cancellation: &PaletteSearchCancellation,
     admission: &mut NoteSourceAdmission,
-) -> Result<BoundedSidecarEntries> {
-    if !fs_metadata::path_status(dir)?.is_present() {
+) -> Result<BoundedSidecarEntries, NotesPaletteError> {
+    let dir_present = fs_metadata::path_status(dir)
+        .map_err(|source| NotesPaletteError::InspectDir {
+            path: dir.to_path_buf(),
+            source,
+        })?
+        .is_present();
+    if !dir_present {
         return Ok(BoundedSidecarEntries::Admitted {
             entries: Vec::new(),
             retained_bytes: 0,
@@ -1031,9 +1066,11 @@ fn bounded_sidecar_entries(
             admission.add_truncation(NoteSourceTruncationReason::ConstructionByteLimit);
         }
     }
-    if let Some(error) = scan.error {
-        return Err(anyhow::anyhow!(error))
-            .with_context(|| format!("failed to read {}", dir.display()));
+    if let Some(detail) = scan.error {
+        return Err(NotesPaletteError::ScanDir {
+            path: dir.to_path_buf(),
+            detail,
+        });
     }
     if !admission.observe_construction_overlap(scan.peak_retained_bytes)
         || !admission.try_charge_sidecar_paths(scan.retained_bytes)
@@ -2874,7 +2911,6 @@ mod tests {
         let mut exact = NoteSourceAdmission::with_limits(limits(required.saturating_add(17)));
         assert!(exact.try_charge_construction(17));
         let reservation = reserve_sidecar_parse(std::slice::from_ref(&path), &mut exact)
-            .expect("preflight")
             .expect("exact parse envelope");
         assert_eq!(reservation.charged_bytes, required);
         assert_eq!(exact.metrics.peak_construction_bytes, required + 17);
@@ -2882,11 +2918,7 @@ mod tests {
 
         let mut one_under = NoteSourceAdmission::with_limits(limits(required.saturating_add(16)));
         assert!(one_under.try_charge_construction(17));
-        assert!(
-            reserve_sidecar_parse(&[path], &mut one_under)
-                .expect("preflight")
-                .is_none()
-        );
+        assert!(reserve_sidecar_parse(&[path], &mut one_under).is_none());
         assert!(
             one_under
                 .metrics
@@ -2919,7 +2951,6 @@ mod tests {
 
         let reservation =
             reserve_sidecar_parse(std::slice::from_ref(&sidecar_path), &mut admission)
-                .expect("metadata failure stays in the recovery flow")
                 .expect("diagnostic reservation");
         let load = note_storage::load_json_file_recovering_with_max_bytes::<BookmarkDocument>(
             dir.path(),
@@ -3732,5 +3763,59 @@ mod tests {
                 .iter()
                 .any(|entry| entry.title == "Bookmark · Persisted bookmark")
         );
+    }
+
+    #[test]
+    fn load_palette_note_entries_reports_scan_dir_when_bookmarks_dir_is_a_file() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path().join("workspace");
+        fixture::create_dir_all(&root);
+        let bookmarks_root = bookmark_service::bookmarks_dir(dir.path());
+        fixture::write_text(&bookmarks_root, "not a directory");
+        let scope = WorkspacesFile {
+            current_scope: WorkspaceScope::All,
+            workspaces: vec![workspace("ws", "Core", vec![root])],
+        }
+        .current_scope_snapshot();
+
+        let error = load_palette_note_entries_for_scope(
+            dir.path(),
+            &scope,
+            &[],
+            &PaletteSearchCancellation::default(),
+        )
+        .expect_err("file at bookmarks_dir should fail scan");
+
+        assert!(matches!(
+            error,
+            NotesPaletteError::ScanDir { ref path, .. } if path == &bookmarks_root
+        ));
+    }
+
+    #[test]
+    fn load_palette_note_entries_reports_folder_note_error_for_missing_workspace_folder() {
+        let dir = TempDir::new().expect("tempdir");
+        let missing_folder = dir.path().join("missing-workspace");
+        let scope = WorkspacesFile {
+            current_scope: WorkspaceScope::All,
+            workspaces: vec![workspace("ws", "Core", vec![missing_folder.clone()])],
+        }
+        .current_scope_snapshot();
+
+        let error = load_palette_note_entries_for_scope(
+            dir.path(),
+            &scope,
+            &[],
+            &PaletteSearchCancellation::default(),
+        )
+        .expect_err("missing workspace folder should fail identity resolution");
+
+        assert!(matches!(
+            error,
+            NotesPaletteError::FolderNote(folder_note_service::FolderNoteError::Canonicalize {
+                ref path,
+                ..
+            }) if path == &missing_folder
+        ));
     }
 }

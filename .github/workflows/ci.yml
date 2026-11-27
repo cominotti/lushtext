@@ -84,6 +84,9 @@ jobs:
       - name: Domain value types
         run: make check-domain-value-types
 
+      - name: Error contracts
+        run: make check-error-contracts
+
       - name: Agent guidance and skill policy
         run: make check-agent-skills
 
