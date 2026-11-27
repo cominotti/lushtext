@@ -5,8 +5,8 @@ Timing: none (no timed path touched).
 
 ## 1. Failing-first error contract gate & rule alignment
 
-- [ ] 1.1 Write `scripts/check-error-contracts.py` with `--self-test` (proving failure on `anyhow::Result` and `Result<_, String>` in production fixtures) and verify the real scan fails on the 22 `lushtext-services` `anyhow` files, 12 `lushtext-ui` `anyhow` files, and 19 `Result<_, String>` sites.
-- [ ] 1.2 Wire `check-error-contracts` into `Makefile` (`check-policy`) and `.github/workflows/ci.yml`, update `.agents/rules/rust.md` to resolve the `anyhow` contradiction in favor of domain-named `thiserror` enums, run `make check-agent-docs`, create a signed commit (`git commit -S`), and push the branch.
+- [x] 1.1 Write `scripts/check-error-contracts.py` with `--self-test` (proving failure on `anyhow::Result` and `Result<_, String>` in production fixtures) and verify the real scan fails on the 22 `lushtext-services` `anyhow` files, 12 `lushtext-ui` `anyhow` files, and 19 `Result<_, String>` sites.
+- [x] 1.2 Wire `check-error-contracts` into `Makefile` (`check-policy`) and `.github/workflows/ci.yml`, update `.agents/rules/rust.md` to resolve the `anyhow` contradiction in favor of domain-named `thiserror` enums, run `make check-agent-docs`, create a signed commit (`git commit -S`), and push the branch.
 
 ## 2. Migrate `lushtext-services` & conformance modules to typed `thiserror` enums
 

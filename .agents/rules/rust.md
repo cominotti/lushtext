@@ -528,7 +528,7 @@ layout assertions and boundary field usage.
 
 ## Error Handling
 
-- Services return `anyhow::Result`.
+- Services and cross-module UI boundaries return domain-named `thiserror::Error` enums per workflow/domain (per "Error and Literal Ownership" above), never `anyhow::Result` or `Result<_, String>` (`scripts/check-error-contracts.py` and `scripts/check-hexagonal-boundaries.py` enforce this in `make check-policy`). Preserve underlying causes via `#[source]` / `#[from]` where lossless so callers and logs keep structured context without error-string matching or downcasting.
 - For file I/O: try the operation and handle errors; avoid preflight existence checks that race with the operation.
 - In GTK signal handlers: log errors with `tracing::error!`, don't panic.
 
