@@ -916,6 +916,14 @@ pub mod a114 {
     };
 }
 
+/// The expanded-directory tree list and constants the A118 probe measures,
+/// for its sample.
+pub mod a118 {
+    pub use crate::probes::a118::{
+        AFTER_ROWS, HEAD_REMOVALS, LARGE_CHILDREN, SMALL_CHILDREN, TreeFixture, tree_fixture,
+    };
+}
+
 /// The text view whose `extend-selection` the A122 probe emits, for its
 /// sample.
 pub mod a122 {

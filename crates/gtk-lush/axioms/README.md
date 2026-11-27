@@ -161,7 +161,10 @@ feedback events in it (`parse_trace`). A135 (`stop-expander-bind-time-child-scan
 models on return) extends A22's tree-model family. A114
 (`slice-large-directory-collapse` R4/D20: a tree list row object nothing
 references dies, and the next fetch hands out a new one without its handlers
-while the node keeps its expansion) also extends the tree-model family. Every
+while the node keeps its expansion) and A118 (on a mapped tree list, removing
+bound rows destroys and replaces their row widgets inside `items-changed` and
+never reuses one, while removing unbound rows after or before the band changes
+none and leaves the band in place) also extend the tree-model family. Every
 later axiom follows the same steps. Rewriting an
 unpinned axiom from measurement (as A10 was) keeps its id, gives it a probe,
 and renames its catalogue entry to the new statement.

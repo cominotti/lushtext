@@ -94,14 +94,14 @@ struct ChildReconcileProgress {
     /// The loading row that ends the directory while batches remain, and the
     /// listing's total for its label (`bound-lists-by-budget-not-count` D6).
     loading_row: Option<(FileTreeItem, usize)>,
-    /// Whether the directory was empty when this load began. Its first rows
-    /// make `GtkListView` create row widgets, up to its realized-row cap
-    /// (about 205, A1), and each costs a setup, a bind and a first layout:
-    /// one 256-row batch created about 200 of them in one dispatch (19 ms,
-    /// and a 19 ms frame after it, at 10,000 entries; `main` the same). So
-    /// the first `CHILD_APPEND_BATCH_SIZE` rows go in batches of
-    /// `FIRST_BATCH_ROWS`, the turn's time slice stops after a few of them,
-    /// and the load waits past one frame after the very first.
+    /// Whether the directory was empty when this load began (or is refilling
+    /// around a kept run). Its first rows make `GtkListView` create row
+    /// widgets, up to its realized-row cap (about 205, A1), and each costs a
+    /// setup, a bind and a first layout: one 256-row batch created about 200
+    /// of them in one dispatch (19 ms, and a 19 ms frame after it, at 10,000
+    /// entries). So the first `CHILD_APPEND_BATCH_SIZE` rows go in batches of
+    /// `FIRST_BATCH_ROWS`, and the load waits past one frame after each small
+    /// warm-up batch so the realized band fills at most one unit per frame (D10).
     warming_up: bool,
     /// Rows a previous store of this directory left in the path caches, when
     /// this load's store took the directory over (a collapse and re-expansion,
@@ -111,6 +111,40 @@ struct ChildReconcileProgress {
     stale_cache_rows: Vec<PathBuf>,
     /// Rows to reserve in the caches once `stale_cache_rows` is forgotten.
     reserve_rows: Option<usize>,
+    /// The plan's kept run (`DirectoryReconciliationPlan::Splice::kept_at`),
+    /// as `(k, rows)`: the store keeps `rows` current rows at `position`, the
+    /// first `k` inserted rows go before them and the rest after them, so no
+    /// row the store still lists is destroyed and created again (A118, P2).
+    kept: Option<(usize, usize)>,
+}
+
+impl ChildReconcileProgress {
+    /// Store position of the next inserted row: after the kept rows once the
+    /// rows before them are in.
+    fn insert_position(&self) -> usize {
+        let skip = match self.kept {
+            Some((before, rows)) if self.inserted >= before => rows,
+            _ => 0,
+        };
+        self.position
+            .saturating_add(self.inserted)
+            .saturating_add(skip)
+    }
+
+    /// At most `batch_rows`, and never across the kept rows: a batch ends
+    /// where they start.
+    fn batch_limit(&self, batch_rows: usize) -> usize {
+        match self.kept {
+            Some((before, _)) if self.inserted < before => batch_rows.min(before - self.inserted),
+            _ => batch_rows,
+        }
+    }
+
+    /// Rows the listing shows so far: the inserted ones plus the kept ones.
+    fn listed_rows(&self) -> usize {
+        self.inserted
+            .saturating_add(self.kept.map_or(0, |(_, rows)| rows))
+    }
 }
 
 /// The retained-byte budget a directory scan applies: the workflow policy's,
@@ -154,7 +188,8 @@ pub(crate) struct RetiringListing {
     mirror: Vec<DirectoryRowState>,
 }
 
-/// Rows per batch while a directory that was empty receives its first
+/// Rows per batch, one batch per frame, while a directory that was empty
+/// (or refilling around a kept run) receives its first
 /// `CHILD_APPEND_BATCH_SIZE` rows (see `ChildReconcileProgress::warming_up`).
 ///
 /// Kind: cap; a power of two, rounded down.
@@ -1148,17 +1183,43 @@ fn apply_scanned_children(section: &LushtextWorkspaceSection, scanned: ScannedCh
         return;
     }
     retire_removed_child_subtrees(section, &plan);
+    let mirror_was_empty = section
+        .imp()
+        .child_row_mirrors
+        .borrow()
+        .get(&store_key)
+        .is_none_or(Vec::is_empty);
 
     match plan {
         DirectoryReconciliationPlan::Unchanged => {
+            finish_child_reconciliation(section, &store, &dir_path, &token, ticket);
+        }
+        // The kept rows stay; at most one warm-up unit of rows goes in around them.
+        DirectoryReconciliationPlan::Splice {
+            position,
+            removed,
+            replacement,
+            kept_at: Some(before),
+            ..
+        } if replacement.len().saturating_sub(removed) <= FIRST_BATCH_ROWS => {
+            let after = &replacement[before.saturating_add(removed)..];
+            let after_items = build_child_items(after);
+            let after_position = position.saturating_add(removed);
+            splice_child_store(section, &store, after_position, 0, after, &after_items);
+            let head = &replacement[..before];
+            let head_items = build_child_items(head);
+            splice_child_store(section, &store, position, 0, head, &head_items);
             finish_child_reconciliation(section, &store, &dir_path, &token, ticket);
         }
         DirectoryReconciliationPlan::Splice {
             position,
             removed,
             replacement,
+            kept_at: None,
             ..
-        } if removed.saturating_add(replacement.len()) <= CHILD_RECONCILE_DIRECT_ROWS => {
+        } if removed.saturating_add(replacement.len()) <= CHILD_RECONCILE_DIRECT_ROWS
+            && !(mirror_was_empty && replacement.len() > FIRST_BATCH_ROWS) =>
+        {
             let items = build_child_items(&replacement);
             splice_child_store(section, &store, position, removed, &replacement, &items);
             finish_child_reconciliation(section, &store, &dir_path, &token, ticket);
@@ -1166,19 +1227,23 @@ fn apply_scanned_children(section: &LushtextWorkspaceSection, scanned: ScannedCh
         DirectoryReconciliationPlan::Splice {
             position,
             removed,
-            replacement,
+            mut replacement,
+            kept_at,
             ..
         } => {
-            let mirror_was_empty = section
-                .imp()
-                .child_row_mirrors
-                .borrow()
-                .get(&child_store_key(&store))
-                .is_none_or(Vec::is_empty);
+            // A kept run leaves the store untouched; only the rows around it go in.
+            let kept = kept_at.map(|before| {
+                replacement.drain(before..before.saturating_add(removed));
+                (before, removed)
+            });
             // A directory that takes several turns ends with a loading row
             // until its last batch; the row is part of the mirror, so a later
             // reconciliation removes it if this one is superseded.
-            let total_rows = replacement.iter().filter(|row| row.path.is_some()).count();
+            let total_rows = replacement
+                .iter()
+                .filter(|row| row.path.is_some())
+                .count()
+                .saturating_add(kept.map_or(0, |(_, rows)| rows));
             let stale_cache_rows = take_over_child_cache(section, &store, &dir_path);
             // Reserving rehashes what the maps hold, so a takeover reserves
             // only once the previous store's rows are forgotten.
@@ -1197,14 +1262,17 @@ fn apply_scanned_children(section: &LushtextWorkspaceSection, scanned: ScannedCh
                 .map(|item| (item, total_rows));
             let progress = Rc::new(RefCell::new(ChildReconcileProgress {
                 position,
-                remove_remaining: removed,
+                remove_remaining: if kept.is_some() { 0 } else { removed },
                 inserted: 0,
                 replacement: VecDeque::from(replacement),
                 mirror_generation,
                 loading_row,
-                warming_up: mirror_was_empty,
+                // Rows around a kept run enter the realized band just as into
+                // an empty store, so they warm up one unit per frame.
+                warming_up: mirror_was_empty || kept.is_some(),
                 stale_cache_rows,
                 reserve_rows,
+                kept,
             }));
             apply_next_reconcile_batch(section, store, dir_path, token, ticket, progress);
         }
@@ -1278,12 +1346,12 @@ fn apply_next_reconcile_batch(
         if !turn_continues(elapsed, batches_this_turn) {
             break;
         }
-        let (position, removed, rows) = {
+        let (position, removed, rows, small_batch) = {
             let mut progress = progress.borrow_mut();
             if progress.remove_remaining > 0 {
                 let removed = progress.remove_remaining.min(CHILD_APPEND_BATCH_SIZE);
                 progress.remove_remaining -= removed;
-                (progress.position, removed, Vec::new())
+                (progress.position, removed, Vec::new(), false)
             } else {
                 let batch_rows =
                     if progress.warming_up && progress.inserted < CHILD_APPEND_BATCH_SIZE {
@@ -1291,25 +1359,24 @@ fn apply_next_reconcile_batch(
                     } else {
                         CHILD_APPEND_BATCH_SIZE
                     };
-                let mut rows = Vec::with_capacity(batch_rows);
-                for _ in 0..batch_rows {
+                let take = progress.batch_limit(batch_rows);
+                let mut rows = Vec::with_capacity(take);
+                for _ in 0..take {
                     let Some(row) = progress.replacement.pop_front() else {
                         break;
                     };
                     rows.push(row);
                 }
-                let position = progress.position.saturating_add(progress.inserted);
+                let position = progress.insert_position();
                 progress.inserted = progress.inserted.saturating_add(rows.len());
-                (position, 0, rows)
+                let small_batch = batch_rows == FIRST_BATCH_ROWS && !rows.is_empty();
+                (position, 0, rows, small_batch)
             }
         };
         let items = build_child_items(&rows);
         let generation = splice_child_store(section, &store, position, removed, &rows, &items);
         progress.borrow_mut().mirror_generation = generation;
         batches_this_turn += 1;
-        let first_small_batch = progress.borrow().warming_up
-            && !rows.is_empty()
-            && progress.borrow().inserted == rows.len();
 
         let complete = {
             let progress = progress.borrow();
@@ -1320,7 +1387,7 @@ fn apply_next_reconcile_batch(
             finish_child_reconciliation(section, &store, &dir_path, &token, ticket);
             return;
         }
-        if first_small_batch {
+        if small_batch {
             after_frame = true;
             break;
         }
@@ -1336,7 +1403,7 @@ fn apply_next_reconcile_batch(
     }
     // The loading row's label moves at most once per turn.
     if let Some((item, total)) = progress.borrow().loading_row.as_ref() {
-        let listed = progress.borrow().inserted.min(*total);
+        let listed = progress.borrow().listed_rows().min(*total);
         item.set_placeholder_label(crate::ui::sidebar::policy::loading_row_label(
             listed, *total,
         ));
@@ -1353,7 +1420,7 @@ fn apply_next_reconcile_batch(
     );
 }
 
-/// How long the load waits after a first small batch: past one 60 Hz frame
+/// How long the load waits after each small warm-up batch: past one 60 Hz frame
 /// interval, so the list is laid out in the slice bin's band before the next
 /// batch (see `ChildReconcileProgress::warming_up`).
 const AFTER_FIRST_BATCH_DELAY: Duration = Duration::from_millis(20);

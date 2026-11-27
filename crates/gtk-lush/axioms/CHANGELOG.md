@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- A118 probe and sample (`perf/sidebar-expansion-cap-kept-refill-and-a118`):
+  on a mapped `GtkListView` over a `GtkTreeListModel`, removing bound rows
+  destroys their row widgets inside `items-changed` and creates fresh ones
+  for rows entering the band without reusing a removed list item, while
+  removing unbound rows after or before the band destroys and creates none
+  and leaves the band bound to the same items. Fixture `fixtures::a118`
+  (`tree_fixture`, `TreeFixture`, `SMALL_CHILDREN`, `LARGE_CHILDREN`,
+  `AFTER_ROWS`, `HEAD_REMOVALS`).
 - A114 probe and sample (`slice-large-directory-collapse` R4, D20): a
   `GtkTreeListModel` keeps no row object for a node nothing references; the
   next `get_item` hands out a new object without the dead one's handlers,

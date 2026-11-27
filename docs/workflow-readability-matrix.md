@@ -2602,6 +2602,8 @@ Re-derived by `stop-expander-bind-time-child-scans` (2026-11-26, same non-`#[cfg
 
 Re-derived by `fix/sidebar-header-collapse-watch-and-a114` (2026-11-26, same non-`#[cfg(test)]` line counter at `origin/main` `3c442112` and post-fix, excluding cross-cutting `width_preset.rs` + `width_preset/kani_proofs.rs`): **16,637 → 16,659 production lines** across `crates/lushtext-core/src/ui/sidebar/**` (+22 net: `workspace_section/folder_execution.rs` 1,071 → 1,088 for `set_row_expanded_and_record`, `workspace_section/watch.rs` 550 → 554 for `pub(super) install_expanded_watch_hook` + doc, `workspace_section/row_factory.rs` 453 → 454 to install the watch hook at bind, `reveal_execution.rs` 538 ± 0, `workspace_section/reorder_execution.rs` 939 ± 0; **0** `*_for_test` getters added).
 
+Re-derived by `perf/sidebar-expansion-cap-kept-refill-and-a118` (2026-11-26, same non-`#[cfg(test)]` line counter at `origin/main` `af3b0f21` and post-fix, excluding cross-cutting `width_preset.rs` + `width_preset/kani_proofs.rs`): **16,658 → 16,725 production lines** across `crates/lushtext-core/src/ui/sidebar/**` (+67 net, all in `workspace_section/scan_execution.rs` 2,845 → 2,912 for the D10 `warming_up` per-batch frame break and P2 `ChildReconcileProgress::kept` refill reconciliation; **0** `*_for_test` getters added). The workflow's service planner `crates/lushtext-services/src/file_tree.rs` (owned by `lushtext-services`, outside `ui/sidebar/**`) grew **873 → 899** production lines (+26 for `DirectoryReconciliationPlan::Splice::kept_at` and `kept_run_offset`).
+
 
 ### WFR-COMMAND-PALETTE
 

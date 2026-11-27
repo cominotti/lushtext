@@ -1930,6 +1930,24 @@ const CATALOGUE: &[Axiom] = &[
         probe: Some(probes::probe_a117),
     },
     Axiom {
+        id: AxiomId::new(118),
+        name: "a118_removing_bound_rows_replaces_their_row_widgets",
+        statement: "On a mapped GtkListView over a GtkTreeListModel, removing rows a list item is \
+                    bound to destroys those list items inside the removal's items-changed and \
+                    creates fresh ones for the rows entering the band in the same call, never \
+                    reusing a removed one; removing the unbound rows after or before the band \
+                    destroys and creates none and leaves the band on the same items",
+        dependent_designs: &[
+            "sidebar D10 warm-up pacing and P2 kept-run reconciliation: removing bound rows tears \
+             down and re-creates their row widgets inside items-changed, so scan_execution.rs \
+             keeps kept_at runs in place and refills new rows around them in FIRST_BATCH_ROWS (32) \
+             frame-paced warm-up batches",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a118),
+    },
+    Axiom {
         id: AxiomId::new(122),
         name: "a122_an_extend_selection_handler_returning_false_lets_gtk_select",
         statement: "GtkTextView's extend-selection (emitted on a double or triple click) returns \
