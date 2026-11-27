@@ -45,7 +45,7 @@ ACTIVE_CEILINGS: dict[str, int] = {
 CFG_TEST_RE = re.compile(r"^\s*#\[cfg\(\s*test\s*\)\]")
 BOX_FN_RE = re.compile(r"\bBox\s*<\s*dyn\s+Fn(?:Mut|Once)?\b")
 STATE_STRUCT_RE = re.compile(
-    r"\bstruct\s+([A-Za-z0-9_]*(?:State|Session|Progress)|State)\b"
+    r"\bstruct\s+([A-Za-z0-9_]*(?:State|Session|Progress))\b"
 )
 FLAT_FIELD_RE = re.compile(
     r"^(?:pub(?:\([^)]*\))?\s+)?[a-zA-Z0-9_]+\s*:\s*"
