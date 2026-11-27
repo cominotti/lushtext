@@ -34,7 +34,7 @@
 //! before the paragraph-aligned clear below runs (`delete_buffer_slice`).
 //!
 //! The install side of that rule is
-//! [`next_install_boundary`](lushtext_model::file_load::next_install_boundary),
+//! [`next_install_boundary`](lushtext_model::document::file_load::next_install_boundary),
 //! which stays in `model/` because `services/editor_io.rs` depends on the same
 //! module. The clear side is `clear_slice_char_count` plus
 //! `clear_slice_extends_to_paragraph_end`, which together say "take at most
@@ -47,8 +47,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 mod kani_proofs;
 
 use crate::ui::editor_page::EditorLoadState;
-use lushtext_model::file_load::SYNCHRONOUS_INSTALL_THRESHOLD_BYTES;
-use lushtext_model::highlight_chunking::HighlightInstallOrder;
+use lushtext_model::document::file_load::SYNCHRONOUS_INSTALL_THRESHOLD_BYTES;
+use lushtext_model::document::highlight_chunking::HighlightInstallOrder;
 
 /// Bound deletion work by characters so even four-byte Unicode stays within the
 /// byte-oriented installation slice policy.
@@ -220,10 +220,12 @@ pub(crate) fn requires_chunked_install(
 /// (`model::protected_install::hidden_tail_requires_slicing`). Such a body is
 /// installed in bounded turns at any size.
 pub(crate) fn protected_install_is_sliced(
-    plan: Option<&lushtext_model::protected_fold::FoldPlan>,
+    plan: Option<&lushtext_model::document::protected_fold::FoldPlan>,
 ) -> bool {
     plan.is_some_and(|plan| {
-        lushtext_model::protected_install::hidden_tail_requires_slicing(plan.hidden_chars())
+        lushtext_model::document::protected_install::hidden_tail_requires_slicing(
+            plan.hidden_chars(),
+        )
     })
 }
 
@@ -372,7 +374,7 @@ pub const SETTLE_QUIET_US: i64 = 100_000;
 /// Kind: wall-clock interval, µs, derived (2 × `REFERENCE_FRAME_US`, 16,666);
 /// no rounding of its own.
 pub const INPUT_QUIET_US: i64 =
-    2 * lushtext_model::responsiveness_budget::REFERENCE_FRAME_US as i64;
+    2 * lushtext_model::budgets::responsiveness_budget::REFERENCE_FRAME_US as i64;
 
 /// The ceiling on that wait, from the editor's first frame: after it the
 /// attach runs at the next low-priority dispatch whatever the input (review R6).
@@ -517,7 +519,7 @@ pub const fn highlight_attach_plan(order: HighlightInstallOrder) -> HighlightAtt
 
 // ─── Paced restyle of dense documents (`bound-post-open-settle`, D9) ─────
 
-pub use lushtext_model::buffer_replacement::batch_exceeds_slice;
+pub use lushtext_model::document::buffer_replacement::batch_exceeds_slice;
 
 /// A half-open run of buffer paragraphs (GTK lines), `first..end`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -890,7 +892,7 @@ mod tests {
         // bounding test below does) cannot catch the value drifting.
         assert_eq!(
             CLEAR_SLICE_CHARS,
-            lushtext_model::buffer_replacement::REPLACEMENT_CLEAR_SLICE_CHARS
+            lushtext_model::document::buffer_replacement::REPLACEMENT_CLEAR_SLICE_CHARS
         );
     }
 

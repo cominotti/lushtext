@@ -32,10 +32,14 @@ use crate::ui::editor_page::{
     BufferReplacementOutcome, BufferReplacementRequest, BufferReplacementTicket,
     BufferReplacementWorkflow, InlineAlertLifetime, LushtextEditorPage,
 };
-use lushtext_model::draft::{FileDraftRestoreSkip, PreloadedDraftSkip, StaleDraftPreservation};
-use lushtext_services::draft_service;
-use lushtext_services::draft_service::journal_core::{self, RestoreEnding};
-use lushtext_services::notifications::{InlineActionNotification, InlineNotificationStyle};
+use lushtext_model::persistence::draft::{
+    FileDraftRestoreSkip, PreloadedDraftSkip, StaleDraftPreservation,
+};
+use lushtext_services::coordination::notifications::{
+    InlineActionNotification, InlineNotificationStyle,
+};
+use lushtext_services::persistence::draft_service;
+use lushtext_services::persistence::draft_service::journal_core::{self, RestoreEnding};
 
 use super::policy;
 use super::seams::{
@@ -245,7 +249,7 @@ impl LushtextWindow {
     pub fn open_set_aside_draft(
         &self,
         text: String,
-        profile: lushtext_model::paragraph_boundary::DocumentProfile,
+        profile: lushtext_model::document::paragraph_boundary::DocumentProfile,
     ) {
         self.new_tab();
         let Some(editor) = self.active_editor() else {
@@ -288,7 +292,7 @@ impl LushtextWindow {
         &self,
         ticket: &DraftRestoreTicket,
         content: crate::ui::plain_disposal::DisposalOwned<String>,
-        profile: lushtext_model::paragraph_boundary::DocumentProfile,
+        profile: lushtext_model::document::paragraph_boundary::DocumentProfile,
         tracking: DraftRestoreTracking,
     ) {
         let Some(editor) = ticket.current_editor(self) else {
@@ -410,7 +414,9 @@ impl LushtextWindow {
             title: "Draft Not Restored".to_string(),
             body: policy::stale_draft_alert_body(
                 preservation,
-                &draft_service::set_aside_dir(&lushtext_services::json_store::data_dir()),
+                &draft_service::set_aside_dir(
+                    &lushtext_services::persistence::json_store::data_dir(),
+                ),
             ),
             primary_button: (preservation == StaleDraftPreservation::LocalHistory)
                 .then(|| policy::SHOW_IN_LOCAL_HISTORY_LABEL.to_string()),

@@ -11,7 +11,7 @@
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
-use pulldown_cmark::{CodeBlockKind, Event};
+use lushtext_services::notes::markdown_render::{MarkdownCodeBlockKind, MarkdownEvent};
 use sourceview5::prelude::*;
 use std::path::Path;
 
@@ -48,8 +48,8 @@ impl CodeBlockTheme {
 /// Buffered Markdown code block collected before we create an anchored source view.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct BufferedCodeBlock {
-    /// Original pulldown-cmark block kind, including fenced info string.
-    kind: CodeBlockKind<'static>,
+    /// Code block kind, including fenced language hint.
+    kind: MarkdownCodeBlockKind,
     /// Literal code text emitted between code-block start and end tags.
     text: String,
     /// Total source bytes observed, even after preview storage stops.
@@ -57,20 +57,20 @@ pub(super) struct BufferedCodeBlock {
 }
 
 impl BufferedCodeBlock {
-    /// Start buffering one code block from pulldown-cmark's borrowed event data.
-    fn new(kind: CodeBlockKind<'_>) -> Self {
+    /// Start buffering one code block from planned event data.
+    fn new(kind: MarkdownCodeBlockKind) -> Self {
         Self {
-            kind: kind.into_static(),
+            kind,
             text: String::new(),
             source_bytes: 0,
         }
     }
 
     /// Fold one event inside the code block into literal text.
-    fn push_event(&mut self, event: Event<'_>) {
+    fn push_event(&mut self, event: MarkdownEvent) {
         match event {
-            Event::Text(text) | Event::Code(text) => self.push_literal(&text),
-            Event::SoftBreak | Event::HardBreak => self.push_literal("\n"),
+            MarkdownEvent::Text(text) | MarkdownEvent::Code(text) => self.push_literal(&text),
+            MarkdownEvent::SoftBreak | MarkdownEvent::HardBreak => self.push_literal("\n"),
             _ => {}
         }
     }
@@ -111,11 +111,11 @@ impl BufferedCodeBlock {
     /// Return the first info-string word from a fenced block, if present.
     fn language_hint(&self) -> Option<&str> {
         match &self.kind {
-            CodeBlockKind::Fenced(info) => info
+            MarkdownCodeBlockKind::Fenced { language } => language
                 .split_whitespace()
                 .next()
                 .filter(|hint| !hint.is_empty()),
-            CodeBlockKind::Indented => None,
+            MarkdownCodeBlockKind::Indented => None,
         }
     }
 
@@ -142,7 +142,7 @@ pub(super) struct ActiveCodeBlock {
 
 impl ActiveCodeBlock {
     /// Start buffering one code block and remember where it should be laid out.
-    pub(super) fn new(kind: CodeBlockKind<'_>, layout: EmbeddedBlockLayout) -> Self {
+    pub(super) fn new(kind: MarkdownCodeBlockKind, layout: EmbeddedBlockLayout) -> Self {
         Self {
             code_block: BufferedCodeBlock::new(kind),
             layout,
@@ -150,7 +150,7 @@ impl ActiveCodeBlock {
     }
 
     /// Fold one parser event into the underlying literal code buffer.
-    pub(super) fn push_event(&mut self, event: Event<'_>) {
+    pub(super) fn push_event(&mut self, event: MarkdownEvent) {
         self.code_block.push_event(event);
     }
 
@@ -525,7 +525,7 @@ mod tests {
 
     #[test]
     fn test_code_block_preview_budget_flags_large_blocks() {
-        let mut code_block = BufferedCodeBlock::new(CodeBlockKind::Indented);
+        let mut code_block = BufferedCodeBlock::new(MarkdownCodeBlockKind::Indented);
         code_block.text = "x".repeat(MAX_PREVIEW_CODE_BLOCK_BYTES);
         assert!(!code_block.exceeds_preview_widget_budget());
 
@@ -538,7 +538,7 @@ mod tests {
         // The planner stops retaining code text at its carried ceiling and
         // forwards the remainder as a count. Charging it must reproduce the
         // decision a single-turn render would have made.
-        let mut code_block = BufferedCodeBlock::new(CodeBlockKind::Indented);
+        let mut code_block = BufferedCodeBlock::new(MarkdownCodeBlockKind::Indented);
         code_block.push_literal("kept\n");
         assert!(!code_block.exceeds_preview_widget_budget());
 
@@ -552,9 +552,11 @@ mod tests {
 
     #[test]
     fn an_omission_line_is_not_charged_as_observed_source_bytes() {
-        let mut active =
-            ActiveCodeBlock::new(CodeBlockKind::Indented, EmbeddedBlockLayout::default());
-        active.push_event(Event::Text("kept\n".into()));
+        let mut active = ActiveCodeBlock::new(
+            MarkdownCodeBlockKind::Indented,
+            EmbeddedBlockLayout::default(),
+        );
+        active.push_event(MarkdownEvent::Text("kept\n".into()));
         let charged = active.code_block.source_bytes;
 
         active.push_omission_line("[omitted run]");
@@ -569,9 +571,9 @@ mod tests {
 
     #[test]
     fn test_code_block_buffer_stops_storing_after_preview_budget() {
-        let mut code_block = BufferedCodeBlock::new(CodeBlockKind::Indented);
-        code_block.push_event(Event::Text(
-            "x".repeat(MAX_PREVIEW_CODE_BLOCK_BYTES + 512).into(),
+        let mut code_block = BufferedCodeBlock::new(MarkdownCodeBlockKind::Indented);
+        code_block.push_event(MarkdownEvent::Text(
+            "x".repeat(MAX_PREVIEW_CODE_BLOCK_BYTES + 512),
         ));
 
         assert_eq!(code_block.text.len(), MAX_PREVIEW_CODE_BLOCK_BYTES);

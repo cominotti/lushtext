@@ -21,7 +21,7 @@ use sourceview5::prelude::*;
 use crate::config::keys;
 use lushtext_services::{
     filesystem::{WriteLabel, read as fs_read, write as fs_write},
-    json_store,
+    persistence::json_store,
 };
 
 use super::LushtextEditorPage;

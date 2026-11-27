@@ -31,7 +31,7 @@ use gtk4::glib;
 use sourceview5::prelude::*;
 
 use crate::ui::editor_page::LushtextEditorPage;
-use lushtext_services::local_history_service::LocalHistoryAvailability;
+use lushtext_services::persistence::local_history_service::LocalHistoryAvailability;
 
 /// Process-local preview installation counters.
 ///

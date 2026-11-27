@@ -28,7 +28,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 
 use crate::ui::window::LushtextWindow;
-use lushtext_model::draft::DraftManifestAuthority;
+use lushtext_model::persistence::draft::DraftManifestAuthority;
 
 /// One consistent read of the draft-recovery workflow.
 ///

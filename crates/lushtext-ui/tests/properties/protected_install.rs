@@ -20,10 +20,12 @@
 //! `N_visible` characters", which depends on C2's density rule, which may
 //! shorten a head (K8b proves C2's fold of a lone paragraph).
 
-use lushtext_model::buffer_replacement::SliceBudget;
-use lushtext_model::paragraph_boundary::next_paragraph_break;
-use lushtext_model::protected_fold::{FoldRange, FoldThresholds, fold_byte_offset, plan_folds};
-use lushtext_model::protected_install::{
+use lushtext_model::document::buffer_replacement::SliceBudget;
+use lushtext_model::document::paragraph_boundary::next_paragraph_break;
+use lushtext_model::document::protected_fold::{
+    FoldRange, FoldThresholds, fold_byte_offset, plan_folds,
+};
+use lushtext_model::document::protected_install::{
     PRODUCTION_LIMITS, ProtectedInstallCursor, ProtectedInstallLimits, SliceKind,
     clear_ranges_for_turn, plan_protected_install,
 };
@@ -313,7 +315,7 @@ proptest! {
         cost in magnitude(),
         margin in magnitude(),
     ) {
-        use lushtext_model::protected_install::{MAX_SLICE_BYTES, MIN_TAIL_SLICE_BYTES};
+        use lushtext_model::document::protected_install::{MAX_SLICE_BYTES, MIN_TAIL_SLICE_BYTES};
         match ProtectedInstallLimits::for_settle_budget(budget_us, cost, margin) {
             Ok(bytes) => {
                 prop_assert!(fits(bytes as u128, budget_us, cost, margin));

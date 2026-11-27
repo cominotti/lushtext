@@ -78,6 +78,9 @@ jobs:
       - name: Filesystem boundary policy
         run: make check-filesystem-boundary
 
+      - name: Hexagonal crate boundaries
+        run: make check-hexagonal-boundaries
+
       - name: Agent guidance and skill policy
         run: make check-agent-skills
 

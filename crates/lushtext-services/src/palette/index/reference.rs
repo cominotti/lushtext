@@ -10,12 +10,12 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::file_tree;
 use crate::filesystem::metadata as fs_metadata;
-use lushtext_model::palette::{
+use crate::workspace::file_tree;
+use lushtext_model::workspace::palette::{
     FileOrdinal, PaletteFileIdentity, PaletteFileIdentityFailure, ScoredResult, SearchResultItem,
 };
-use lushtext_model::workspace_visibility::WorkspaceEntryVisibility;
+use lushtext_model::workspace::workspace_visibility::WorkspaceEntryVisibility;
 
 use super::super::fuzzy::{
     CountedSelection, RestCount, search_items_cancellable, search_items_cancellable_counting,

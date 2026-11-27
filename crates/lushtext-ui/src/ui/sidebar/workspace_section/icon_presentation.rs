@@ -105,7 +105,7 @@ mod tests {
     fn placeholder_rows_keep_symbolic_status_icon() {
         let item = FileTreeItem::new_placeholder(
             "Showing 10 of 20 entries",
-            lushtext_services::file_tree::DirectoryPlaceholder::Budget {
+            lushtext_services::workspace::file_tree::DirectoryPlaceholder::Budget {
                 shown: 10,
                 total: 20,
             },

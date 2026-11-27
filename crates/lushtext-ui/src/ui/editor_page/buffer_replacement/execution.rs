@@ -22,11 +22,11 @@ use sourceview5::prelude::*;
 
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::protected_fold::FoldedInstall;
-use lushtext_model::buffer_replacement::{
+use lushtext_model::document::buffer_replacement::{
     BufferReplacementMode, BufferReplacementPlan, SliceBudget, next_clear_char_count,
     next_slice_boundary,
 };
-use lushtext_model::paragraph_boundary::DocumentProfile;
+use lushtext_model::document::paragraph_boundary::DocumentProfile;
 
 use super::evidence;
 use super::policy::{
@@ -363,7 +363,7 @@ pub(crate) struct BufferReplacementSession {
     budget: SliceBudget,
     /// The body's Protected View fold plan, shared with `profile`, which a
     /// direct replacement applies at insertion (`ui::protected_fold`).
-    fold_plan: Option<std::sync::Arc<lushtext_model::protected_fold::FoldPlan>>,
+    fold_plan: Option<std::sync::Arc<lushtext_model::document::protected_fold::FoldPlan>>,
     /// The sliced install of a protected body (C3), which the install turns
     /// step; `None` for an ordinary body.
     folded: Option<FoldedInstall>,
@@ -515,11 +515,11 @@ fn begin(editor: &LushtextEditorPage, request: BufferReplacementRequest) {
     // (`chunked-highlight-attach`): attaching it to the whole body at the
     // terminal would analyse it in 30 ms worker slices (A69).
     let highlight = request.profile.as_ref().and_then(|profile| {
-        lushtext_model::highlight_chunking::highlight_install_order_with(
+        lushtext_model::document::highlight_chunking::highlight_install_order_with(
             editor.syntax_language(),
             profile.summary().total_bytes,
             editor.scale_for_incoming_profile(profile).syntax_enabled,
-            lushtext_model::document_scale::markdown_chunked_cap(),
+            lushtext_model::document::document_scale::markdown_chunked_cap(),
         )
         .is_chunked()
         .then(|| crate::ui::editor_page::language_attach::HighlightChunks::new(budget))
@@ -636,7 +636,7 @@ fn begin_guard(editor: &LushtextEditorPage, keep_highlight: bool) -> Replacement
 fn restore_guard(
     editor: &LushtextEditorPage,
     guard: ReplacementGuard,
-    release: lushtext_model::held_input::ContentDisposition,
+    release: lushtext_model::document::held_input::ContentDisposition,
 ) {
     let imp = editor.imp();
     imp.replacement
@@ -1206,9 +1206,9 @@ fn finish_session(
     // What the buffer holds now, for text typed meanwhile (`held_input.rs`):
     // a whole new body, the untouched old one, or a cleared one.
     let release = match (cancellation, mutated) {
-        (None, _) => lushtext_model::held_input::ContentDisposition::WholeContent,
-        (Some(_), true) => lushtext_model::held_input::ContentDisposition::Unpublished,
-        (Some(_), false) => lushtext_model::held_input::ContentDisposition::Unchanged,
+        (None, _) => lushtext_model::document::held_input::ContentDisposition::WholeContent,
+        (Some(_), true) => lushtext_model::document::held_input::ContentDisposition::Unpublished,
+        (Some(_), false) => lushtext_model::document::held_input::ContentDisposition::Unchanged,
     };
     let outcome = match cancellation {
         None => {
@@ -1357,7 +1357,7 @@ impl LushtextEditorPage {
         // production body-installing replacement does (draft recovery, local
         // history, mirror-back), so the chunked highlighted install applies.
         let profile = profile_body
-            .then(|| lushtext_model::paragraph_boundary::DocumentProfile::of_text(&body));
+            .then(|| lushtext_model::document::paragraph_boundary::DocumentProfile::of_text(&body));
         let request = BufferReplacementRequest::new_returning_body_on_cancel(
             BufferReplacementTicket {
                 workflow: BufferReplacementWorkflow::Test,

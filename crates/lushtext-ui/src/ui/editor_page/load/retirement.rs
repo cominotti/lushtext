@@ -36,7 +36,9 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use sourceview5::prelude::*;
 
 use crate::ui::editor_page::{EditorLoadState, InlineAlertLifetime, LushtextEditorPage};
-use lushtext_services::notifications::{InlineActionNotification, InlineNotificationStyle};
+use lushtext_services::coordination::notifications::{
+    InlineActionNotification, InlineNotificationStyle,
+};
 
 use super::execution::{self, ChunkedLoadInstall};
 use super::policy::{self, AbortAction, AbortDisposition, LoadInstallPhase, LoadOutcome};
@@ -214,7 +216,7 @@ pub(super) fn run_cancelled_clear_slice(session: &Rc<RefCell<ChunkedLoadInstall>
         execution::restore_load_installation_state(
             &editor,
             restore,
-            lushtext_model::held_input::ContentDisposition::Unpublished,
+            lushtext_model::document::held_input::ContentDisposition::Unpublished,
         );
     }
     if editor.imp().load.user_cancel_pending.replace(false) {

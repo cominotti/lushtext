@@ -5,8 +5,8 @@
 use crate::common::TestContext;
 use lushtext_model::workspace::{WorkspaceConfig, WorkspaceId, WorkspaceScope, WorkspacesFile};
 use lushtext_services::filesystem::fixture;
-use lushtext_services::recovery_metadata::RecoveryProblem;
-use lushtext_services::workspace_manager;
+use lushtext_services::persistence::recovery_metadata::RecoveryProblem;
+use lushtext_services::workspace::workspace_manager;
 
 #[test]
 fn test_missing_workspace_file_restores_empty_shell_state() {

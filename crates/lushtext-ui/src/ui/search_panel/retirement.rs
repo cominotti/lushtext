@@ -109,9 +109,9 @@ struct RetiredSearchGtkState {
     file_groups: BTreeMap<std::sync::Arc<std::path::Path>, SearchFileGroup>,
     match_rows: Vec<Option<gtk4::TreeListRow>>,
     file_rows: BTreeMap<std::sync::Arc<std::path::Path>, gtk4::TreeListRow>,
-    search_matches: Vec<lushtext_model::content_search::SearchMatch>,
-    accepted_matches: Option<Arc<Vec<lushtext_model::content_search::SearchMatch>>>,
-    accepted_match_rows: Vec<lushtext_model::content_search::SearchMatch>,
+    search_matches: Vec<lushtext_model::workspace::content_search::SearchMatch>,
+    accepted_matches: Option<Arc<Vec<lushtext_model::workspace::content_search::SearchMatch>>>,
+    accepted_match_rows: Vec<lushtext_model::workspace::content_search::SearchMatch>,
     match_positions: Vec<SearchMatchLocation>,
 }
 

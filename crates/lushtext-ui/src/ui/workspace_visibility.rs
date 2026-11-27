@@ -11,7 +11,7 @@ use gtk4::gio;
 use gtk4::prelude::*;
 
 use crate::config::keys;
-use lushtext_model::workspace_visibility::WorkspaceEntryVisibility;
+use lushtext_model::workspace::workspace_visibility::WorkspaceEntryVisibility;
 
 /// Build the current visibility rule from the two persisted keys.
 #[must_use]

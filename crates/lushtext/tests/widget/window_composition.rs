@@ -29,7 +29,7 @@ use crate::common::{
 use gio::prelude::*;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_model::session::{SessionData, SessionTab};
+use lushtext_model::persistence::session::{SessionData, SessionTab};
 use lushtext_ui::app::LushtextApplication;
 use lushtext_ui::config::keys;
 use lushtext_ui::ui::automation::current_idle_blocker;
@@ -823,7 +823,7 @@ fn test_reads_and_projections_during_composition_force_nothing() {
     // A status message renders the notification and the status bar.
     window.publish_status_message(
         "composition projection probe",
-        lushtext_services::notifications::NotificationSeverity::Info,
+        lushtext_services::coordination::notifications::NotificationSeverity::Info,
     );
     // Session-restored pages run the tab projections (content stack, sidebar
     // row states, Open popover rows, status bar) on the invisible tab view.
@@ -1206,8 +1206,8 @@ fn test_closing_before_restore_reaches_the_pages_keeps_unrestored_descriptors() 
     let dir = tempfile::tempdir().expect("session tempdir");
     let path = dir.path().join("kept.txt");
     fixture::write_text(&path, "kept\n");
-    lushtext_services::session_service::save(
-        &lushtext_services::json_store::data_dir(),
+    lushtext_services::persistence::session_service::save(
+        &lushtext_services::persistence::json_store::data_dir(),
         &session_with(&path),
     )
     .expect("seed the session");
@@ -1221,9 +1221,10 @@ fn test_closing_before_restore_reaches_the_pages_keeps_unrestored_descriptors() 
     crate::common::wait_for_startup_data_flow(&window);
     window.close();
     wait_until(COMPOSED, || !app.windows().contains(window.upcast_ref()));
-    let session =
-        lushtext_services::session_service::load(&lushtext_services::json_store::data_dir())
-            .expect("load the session");
+    let session = lushtext_services::persistence::session_service::load(
+        &lushtext_services::persistence::json_store::data_dir(),
+    )
+    .expect("load the session");
     assert!(
         session
             .tabs
@@ -1245,8 +1246,8 @@ fn test_a_cli_open_keeps_priority_over_the_restored_session() {
     let cli = dir.path().join("cli.txt");
     fixture::write_text(&restored, "restored\n");
     fixture::write_text(&cli, "cli\n");
-    lushtext_services::session_service::save(
-        &lushtext_services::json_store::data_dir(),
+    lushtext_services::persistence::session_service::save(
+        &lushtext_services::persistence::json_store::data_dir(),
         &session_with(&restored),
     )
     .expect("seed the session");
@@ -1417,8 +1418,8 @@ fn test_staged_content_is_rooted_and_focusable_in_the_dispatch_that_reveals_it()
 #[test]
 fn test_a_cli_open_into_an_empty_session_is_saved() {
     ensure_gtk_init();
-    let data_dir = lushtext_services::json_store::data_dir();
-    lushtext_services::session_service::save(&data_dir, &SessionData::default())
+    let data_dir = lushtext_services::persistence::json_store::data_dir();
+    lushtext_services::persistence::session_service::save(&data_dir, &SessionData::default())
         .expect("seed an empty session");
     let dir = tempfile::tempdir().expect("activation tempdir");
     let cli = dir.path().join("saved.txt");
@@ -1433,7 +1434,7 @@ fn test_a_cli_open_into_an_empty_session_is_saved() {
         window.imp().tab_view.n_pages() == 1 && !window.session_restore_evidence().restoring
     });
     let saved = || {
-        lushtext_services::session_service::load(&data_dir).is_ok_and(|session| {
+        lushtext_services::persistence::session_service::load(&data_dir).is_ok_and(|session| {
             session
                 .tabs
                 .iter()
@@ -1560,8 +1561,8 @@ fn test_a_restored_session_gives_the_selected_editor_keyboard_focus() {
     let dir = tempfile::tempdir().expect("session tempdir");
     let path = dir.path().join("restored-typing.txt");
     fixture::write_text(&path, "restored\n");
-    let data_dir = lushtext_services::json_store::data_dir();
-    lushtext_services::session_service::save(&data_dir, &session_with(&path))
+    let data_dir = lushtext_services::persistence::json_store::data_dir();
+    lushtext_services::persistence::session_service::save(&data_dir, &session_with(&path))
         .expect("seed the session");
     seed_layout(true, false, 1600, 900);
     let app = app();
@@ -1578,7 +1579,7 @@ fn test_a_restored_session_gives_the_selected_editor_keyboard_focus() {
     let region = focus_region(&window);
     window.destroy();
     flush_events();
-    lushtext_services::session_service::save(&data_dir, &SessionData::default())
+    lushtext_services::persistence::session_service::save(&data_dir, &SessionData::default())
         .expect("reset the session");
     assert!(
         focused,
@@ -1613,15 +1614,15 @@ fn test_the_focus_handoff_precedes_a_protected_documents_alert_announcement() {
     let dir = tempfile::tempdir().expect("protected tempdir");
     let path = dir.path().join("protected-focus.txt");
     let giant = "giant ".repeat(
-        usize::try_from(lushtext_model::document_scale::L_PROTECT_EDIT / 6 + 2)
+        usize::try_from(lushtext_model::document::document_scale::L_PROTECT_EDIT / 6 + 2)
             .expect("a small length"),
     );
     fixture::write_text(&path, &format!("short head line\n{giant}\ntail line\n"));
-    let data_dir = lushtext_services::json_store::data_dir();
+    let data_dir = lushtext_services::persistence::json_store::data_dir();
     for restore in [false, true] {
         seed_layout(true, false, 1600, 900);
         if restore {
-            lushtext_services::session_service::save(&data_dir, &session_with(&path))
+            lushtext_services::persistence::session_service::save(&data_dir, &session_with(&path))
                 .expect("seed the session");
         }
         let app = app();
@@ -1651,8 +1652,11 @@ fn test_the_focus_handoff_precedes_a_protected_documents_alert_announcement() {
         window.destroy();
         flush_events();
         if restore {
-            lushtext_services::session_service::save(&data_dir, &SessionData::default())
-                .expect("reset the session");
+            lushtext_services::persistence::session_service::save(
+                &data_dir,
+                &SessionData::default(),
+            )
+            .expect("reset the session");
         }
         assert!(
             announced,

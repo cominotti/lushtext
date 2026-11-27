@@ -16,10 +16,10 @@ use std::cmp::Ordering;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
-use lushtext_model::list_budget::grouped_thousands;
+use lushtext_model::budgets::list_budget::grouped_thousands;
+use lushtext_model::workspace::workspace_visibility::WorkspaceEntryVisibility;
 use lushtext_model::workspace::{WorkspaceId, WorkspaceScope, WorkspacesFile};
-use lushtext_model::workspace_visibility::WorkspaceEntryVisibility;
-use lushtext_services::file_tree::{SidebarScanBudget, compare_directory_entries};
+use lushtext_services::workspace::file_tree::{SidebarScanBudget, compare_directory_entries};
 
 /// Attempts `create_unique` makes before giving up on a free name.
 ///
@@ -329,8 +329,8 @@ pub fn rename_durability_warning(durability: &RenameDurability, new_name: &str) 
 
 /// The severity of [`rename_durability_warning`]'s message.
 pub const RENAME_DURABILITY_WARNING_SEVERITY:
-    lushtext_services::notifications::NotificationSeverity =
-    lushtext_services::notifications::NotificationSeverity::Warning;
+    lushtext_services::coordination::notifications::NotificationSeverity =
+    lushtext_services::coordination::notifications::NotificationSeverity::Warning;
 
 /// Build the candidate name for one `create_unique` attempt.
 ///
@@ -1284,7 +1284,7 @@ mod tests {
         );
         assert_eq!(
             RENAME_DURABILITY_WARNING_SEVERITY,
-            lushtext_services::notifications::NotificationSeverity::Warning
+            lushtext_services::coordination::notifications::NotificationSeverity::Warning
         );
     }
 

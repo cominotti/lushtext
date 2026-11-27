@@ -144,15 +144,16 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{self, gio};
-use lushtext_services::content_search::ReplaceUndoBackup;
-use lushtext_services::notifications::NotificationSeverity;
+use lushtext_services::coordination::notifications::NotificationSeverity;
+use lushtext_services::search::content_search::ReplaceUndoBackup;
 
 use self::item::SearchResultItem;
 
 pub(crate) type GuardedReplaceUndoBackup =
     crate::ui::plain_disposal::DisposalOwned<ReplaceUndoBackup>;
-pub(crate) type GuardedReplacements =
-    crate::ui::plain_disposal::DisposalOwned<lushtext_model::content_search::CheckedReplaceRun>;
+pub(crate) type GuardedReplacements = crate::ui::plain_disposal::DisposalOwned<
+    lushtext_model::workspace::content_search::CheckedReplaceRun,
+>;
 
 glib::wrapper! {
     /// Workspace search and Replace All panel owned by the main window shell.

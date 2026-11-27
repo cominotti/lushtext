@@ -21,7 +21,7 @@ use crate::common::{
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_model::workspace::{WorkspaceConfig, WorkspaceFolder, WorkspaceId, WorkspacesFile};
-use lushtext_services::{json_store, workspace_manager};
+use lushtext_services::{persistence::json_store, workspace::workspace_manager};
 use lushtext_ui::ui::accessibility::test_audit::AccessibleAudit;
 use lushtext_ui::ui::sidebar::LushtextSidebar;
 use lushtext_ui::ui::sidebar::file_tree_item::FileTreeItem;
@@ -2396,7 +2396,7 @@ fn test_reveal_geometry_snapshot_is_bounded_and_unlabelled() {
 #[test]
 fn test_directory_expansion_dispatches_fit_the_settle_budget() {
     use crate::common::{timing_verdicts_enforced, worst_dispatch_until};
-    use lushtext_model::responsiveness_budget::B_SETTLE_US;
+    use lushtext_model::budgets::responsiveness_budget::B_SETTLE_US;
     let mut terminals = Vec::new();
     for count in [10_000usize, 16 * 1024 + 1, 128 * 1024] {
         let tree = large_tree(&[("nested", count)], 800);
@@ -3066,7 +3066,7 @@ fn test_a_reorder_drag_gives_every_realized_row_a_shield() {
 /// deferred restore expanded it again.
 #[test]
 fn test_the_folder_header_collapses_every_root() {
-    use lushtext_services::workspace_watch::WorkspaceWatchTarget;
+    use lushtext_services::watch::workspace_watch::WorkspaceWatchTarget;
     ensure_gtk_init();
     let dir = tempfile::tempdir().expect("two roots tempdir");
     let first = dir.path().join("first");

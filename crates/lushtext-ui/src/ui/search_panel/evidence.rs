@@ -35,7 +35,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
 
-use lushtext_model::content_search::SearchQuerySpec;
+use lushtext_model::workspace::content_search::SearchQuerySpec;
 
 use super::LushtextSearchPanel;
 use super::skipped_files::SkippedFilesModel;
@@ -243,7 +243,7 @@ impl SearchPanelEvidence {
     #[must_use]
     pub fn undo_backup_matches(
         &self,
-        expected: &lushtext_services::content_search::ReplaceUndoBackup,
+        expected: &lushtext_services::search::content_search::ReplaceUndoBackup,
     ) -> bool {
         self.undo_backup
             .as_ref()
@@ -283,12 +283,13 @@ impl LushtextSearchPanel {
                 files_done,
                 files_total,
                 bytes_written,
-                rolling_back: phase == lushtext_services::content_search::ReplacePhase::RollingBack,
+                rolling_back: phase
+                    == lushtext_services::search::content_search::ReplacePhase::RollingBack,
             }
         });
         let skip_report = self.last_skip_report();
         let replace_skip_counts = skip_report.as_ref().map_or([0; 11], |report| {
-            lushtext_model::content_search::ReplaceSkipReason::ALL
+            lushtext_model::workspace::content_search::ReplaceSkipReason::ALL
                 .map(|reason| report.count(reason))
         });
         let skipped_files_model = self.skipped_files_model();
@@ -614,7 +615,7 @@ impl LushtextSearchPanel {
         let imp = self.imp();
         SearchQuerySpec::new(
             imp.search_entry.text().to_string(),
-            lushtext_model::content_search::ContentSearchOptions {
+            lushtext_model::workspace::content_search::ContentSearchOptions {
                 case_sensitive: imp.case_toggle.is_active(),
                 regex: imp.regex_toggle.is_active(),
                 whole_word: imp.word_toggle.is_active(),

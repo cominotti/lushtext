@@ -14,8 +14,10 @@ use crate::common::{
 };
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_model::buffer_replacement::V_SLICE;
-use lushtext_services::notifications::{InlineActionNotification, InlineNotificationStyle};
+use lushtext_model::document::buffer_replacement::V_SLICE;
+use lushtext_services::coordination::notifications::{
+    InlineActionNotification, InlineNotificationStyle,
+};
 use lushtext_ui::ui::editor_page::load::policy::{ATTACH_DEADLINE_US, SettleStage};
 use lushtext_ui::ui::editor_page::{EditorLoadState, InlineAlertLifetime, LushtextEditorPage};
 use lushtext_ui::ui::window::LushtextWindow;
@@ -914,8 +916,8 @@ const LARGE_MARKDOWN: usize = 400 * 1024;
 
 /// Give Markdown the model's chunked cap for one test: no shipped language
 /// has one (`document_scale::chunked_threshold`, re-review F1).
-fn chunked_markdown_cap() -> lushtext_model::document_scale::MarkdownChunkedCapGuard {
-    lushtext_model::document_scale::override_markdown_chunked_cap_for_test()
+fn chunked_markdown_cap() -> lushtext_model::document::document_scale::MarkdownChunkedCapGuard {
+    lushtext_model::document::document_scale::override_markdown_chunked_cap_for_test()
 }
 
 /// Record the buffer's character count every time a language is set on it.
@@ -934,7 +936,7 @@ fn chars_at_attach(editor: &LushtextEditorPage) -> std::rc::Rc<std::cell::RefCel
 
 #[test]
 fn test_a_large_markdown_document_installs_highlighted_chunk_by_chunk() {
-    use lushtext_model::highlight_chunking::HIGHLIGHT_CHUNK_BYTES;
+    use lushtext_model::document::highlight_chunking::HIGHLIGHT_CHUNK_BYTES;
     ensure_gtk_init();
     let _cap = chunked_markdown_cap();
     let window = test_window();
@@ -1000,7 +1002,7 @@ fn test_a_shipped_markdown_document_above_its_gate_is_reduced_and_not_chunked() 
     // No shipped language has a chunked cap (re-review F1): a 400 KiB
     // Markdown document, above the 320 KiB gate and below the model cap,
     // loses highlighting for its size and takes no chunked install.
-    use lushtext_model::document_scale::{ReductionReason, ScaleFeature};
+    use lushtext_model::document::document_scale::{ReductionReason, ScaleFeature};
     ensure_gtk_init();
     let window = test_window();
     present_window(&window);
@@ -1347,7 +1349,7 @@ fn test_an_evicted_large_markdown_reloads_highlighted_without_a_language_during_
 
 #[test]
 fn test_a_save_formatting_mirror_back_installs_a_large_markdown_in_chunks() {
-    use lushtext_model::highlight_chunking::HIGHLIGHT_CHUNK_BYTES;
+    use lushtext_model::document::highlight_chunking::HIGHLIGHT_CHUNK_BYTES;
     ensure_gtk_init();
     let _cap = chunked_markdown_cap();
     let window = test_window();

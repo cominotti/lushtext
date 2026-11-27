@@ -11,9 +11,9 @@ use crate::common::{
     wait_until,
 };
 use gtk4::prelude::*;
-use lushtext_model::document_scale::L_PROTECT_EDIT;
-use lushtext_model::paragraph_boundary::DocumentProfile;
-use lushtext_model::protected_fold::HEAD_CAP;
+use lushtext_model::document::document_scale::L_PROTECT_EDIT;
+use lushtext_model::document::paragraph_boundary::DocumentProfile;
+use lushtext_model::document::protected_fold::HEAD_CAP;
 use lushtext_ui::ui::editor_page::{EditorLoadState, LushtextEditorPage};
 use std::time::Duration;
 
@@ -188,7 +188,7 @@ fn test_unprotected_load_is_not_folded() {
 
 // ─── Edit-growth entry and the entry undo (tasks 3.3, 3.3a) ─────────────────
 
-use lushtext_model::protected_fold::N_DENSE;
+use lushtext_model::document::protected_fold::N_DENSE;
 
 /// A loaded, editable page holding `body`.
 fn editable_page(body: &str, name: &str) -> (LushtextEditorPage, gtk4::ApplicationWindow) {
@@ -675,9 +675,12 @@ fn recover_draft(
     tempfile::TempDir,
 ) {
     use crate::common::{active_editor, test_window};
-    use lushtext_model::draft::{DraftEntry, DraftManifest};
-    use lushtext_model::session::{SessionData, SessionTab};
-    use lushtext_services::{draft_service, editor_io, json_store, session_service};
+    use lushtext_model::persistence::draft::{DraftEntry, DraftManifest};
+    use lushtext_model::persistence::session::{SessionData, SessionTab};
+    use lushtext_services::{
+        editor_io, persistence::draft_service, persistence::json_store,
+        persistence::session_service,
+    };
 
     ensure_gtk_init();
     let dir = tempfile::tempdir().expect("protected-view tempdir");
@@ -777,10 +780,10 @@ fn test_recovering_a_giant_paragraph_draft_folds_it_and_keeps_it_as_the_source()
         !evidence.autosave_inflight && !evidence.mutation_inflight
     });
     assert!(!editor.draft_dirty());
-    let data_dir = lushtext_services::json_store::data_dir();
+    let data_dir = lushtext_services::persistence::json_store::data_dir();
     let draft_id = editor.draft_id().expect("draft id");
     assert_eq!(
-        lushtext_services::draft_service::read_draft(&data_dir, &draft_id)
+        lushtext_services::persistence::draft_service::read_draft(&data_dir, &draft_id)
             .expect("read draft")
             .as_deref(),
         Some(draft.as_str()),
@@ -1024,9 +1027,12 @@ fn test_eviction_releases_the_source_and_the_reload_retains_a_new_one() {
     let chars = u64::try_from(page.buffer().char_count()).expect("count");
     assert_eq!(
         page.estimated_live_buffer_bytes(),
-        lushtext_model::editor_memory::estimate_live_editor_bytes(chars, page.file_size(), false)
-            + before.source_bytes.expect("source")
-            + lushtext_model::editor_memory::protected_boundary_bytes(
+        lushtext_model::document::editor_memory::estimate_live_editor_bytes(
+            chars,
+            page.file_size(),
+            false
+        ) + before.source_bytes.expect("source")
+            + lushtext_model::document::editor_memory::protected_boundary_bytes(
                 page.load_evidence().protected.boundaries_live
             ),
         "the source and the boundary marks are charged to the live-editor estimate"
@@ -1230,8 +1236,8 @@ fn test_the_automation_snapshot_counts_protected_find_matches() {
 
 // ─── Sliced protected install (`sliced-protected-install`, C3) ─────────────
 
-use lushtext_model::buffer_replacement::SliceBudget;
-use lushtext_model::protected_install::{
+use lushtext_model::document::buffer_replacement::SliceBudget;
+use lushtext_model::document::protected_install::{
     PRODUCTION_LIMITS, PROTECTED_CLEAR_SLICE_BYTES, PROTECTED_TAIL_SLICE_BYTES,
     ProtectedInstallCursor, SliceKind, plan_protected_install,
 };
@@ -1242,7 +1248,7 @@ use lushtext_model::protected_install::{
 /// its head, unmarked).
 fn expected_slices_and_boundaries(
     body: &str,
-    plan: &lushtext_model::protected_fold::FoldPlan,
+    plan: &lushtext_model::document::protected_fold::FoldPlan,
 ) -> (u64, u64) {
     let mut cursor = ProtectedInstallCursor::new();
     let (mut slices, mut boundaries, mut run) = (0, 0, 0);
@@ -1676,7 +1682,7 @@ fn test_an_undelimited_folded_last_paragraph_is_never_the_last_line_sliced() {
 /// trailing `\n`. `giant` picks the snapshot: below 2,097,152 characters (an
 /// 8 MiB estimate) a direct read, above it the chunked capture.
 fn assert_autosaved_draft_is_byte_identical(name: &str, giant: usize) {
-    use lushtext_services::{draft_service, json_store};
+    use lushtext_services::{persistence::draft_service, persistence::json_store};
     let draft = format!("{}{}", body_with_giants(&[]), "g".repeat(giant));
     let (window, editor, path, _dir) = recover_draft(&draft);
     assert!(editor.is_protected_view(), "{name}: protected");

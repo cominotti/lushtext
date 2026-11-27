@@ -22,7 +22,7 @@
 use std::cell::Cell;
 
 use crate::ui::responsiveness_probe;
-use lushtext_model::construction_spans::{StartupSpans, span_duration_us};
+use lushtext_model::budgets::construction_spans::{StartupSpans, span_duration_us};
 
 thread_local! {
     static STARTUP: Cell<StartupSpans> = const { Cell::new(StartupSpans {

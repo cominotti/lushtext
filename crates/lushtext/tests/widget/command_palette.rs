@@ -10,13 +10,13 @@ use crate::common::{
 use glib::prelude::ToValue;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_model::palette::{
+use lushtext_model::workspace::palette::{
     CommandCategory, CommandDef, FileOrdinal, PaletteFileEntry, PaletteFileIdentity,
     PaletteNoteCategory, PaletteNoteEntry, PaletteNoteTarget, SearchMode,
 };
 use lushtext_model::workspace::{WorkspaceConfig, WorkspaceId, WorkspaceScope, WorkspacesFile};
 use lushtext_services::palette::{FileIndex, NoteSourceRefreshRequest, OwnedIndexedFile};
-use lushtext_services::{json_store, workspace_manager};
+use lushtext_services::{persistence::json_store, workspace::workspace_manager};
 use lushtext_ui::ui::accessibility::{self, test_audit::AccessibleAudit};
 use lushtext_ui::ui::command_palette::item::PaletteItem;
 use lushtext_ui::ui::command_palette::policy::LARGE_INDEX_RETIREMENT_FILES;

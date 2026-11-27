@@ -41,10 +41,12 @@ use crate::ui::editor_page::LushtextEditorPage;
 /// invisible to review and to every test — both names denote the same constant,
 /// so a later change that made them differ would compile and pass.
 use crate::ui::plain_disposal::PROGRESS_DISPOSAL_RETAINED_BYTE_CAPACITY as STARTUP_PRELOAD_RESERVATION_BYTES;
-use lushtext_model::session::{SessionData, SessionTab};
-use lushtext_services::notifications::NotificationSeverity;
-use lushtext_services::recovery_metadata::RecoveryDiagnostic;
-use lushtext_services::{draft_service, json_store, session_service};
+use lushtext_model::persistence::session::{SessionData, SessionTab};
+use lushtext_services::coordination::notifications::NotificationSeverity;
+use lushtext_services::persistence::recovery_metadata::RecoveryDiagnostic;
+use lushtext_services::{
+    persistence::draft_service, persistence::json_store, persistence::session_service,
+};
 
 use super::policy;
 use crate::ui::window::LushtextWindow;
@@ -54,7 +56,10 @@ use crate::ui::window::LushtextWindow;
 struct GuardedStartupRestore {
     loaded: draft_service::RestoreState,
     preloaded: crate::ui::plain_disposal::DisposalOwned<
-        std::collections::HashMap<String, lushtext_model::draft::PreloadedDraftRestore>,
+        std::collections::HashMap<
+            String,
+            lushtext_model::persistence::draft::PreloadedDraftRestore,
+        >,
     >,
 }
 

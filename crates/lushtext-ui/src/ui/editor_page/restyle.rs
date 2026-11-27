@@ -51,7 +51,7 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 
 use super::LushtextEditorPage;
 use super::load::policy::{ParagraphSpan, RestyleCursor, next_restyle_range};
-use lushtext_model::buffer_replacement::V_SLICE;
+use lushtext_model::document::buffer_replacement::V_SLICE;
 
 /// The most lines a document may have for its reattach to be paced
 /// (`prepare_paced_reattach`): about 6.5 ms of hidden-line validation in the

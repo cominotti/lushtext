@@ -13,7 +13,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{self, gdk};
-use pulldown_cmark::Event;
+use lushtext_services::notes::markdown_render::MarkdownEvent;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -161,10 +161,10 @@ impl BufferedImage {
     }
 
     /// Fold one event inside the image into plain alternative text.
-    pub(super) fn push_event(&mut self, event: Event<'_>) {
+    pub(super) fn push_event(&mut self, event: MarkdownEvent) {
         match event {
-            Event::Text(text) | Event::Code(text) => self.alt_text.push_str(&text),
-            Event::SoftBreak | Event::HardBreak => self.alt_text.push(' '),
+            MarkdownEvent::Text(text) | MarkdownEvent::Code(text) => self.alt_text.push_str(&text),
+            MarkdownEvent::SoftBreak | MarkdownEvent::HardBreak => self.alt_text.push(' '),
             _ => {}
         }
     }

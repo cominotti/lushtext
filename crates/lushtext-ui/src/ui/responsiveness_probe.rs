@@ -140,13 +140,15 @@ pub(crate) fn span<R>(name: &'static str, work: impl FnOnce() -> R) -> R {
 /// stream (`bound-window-construction-dispatch`).
 #[cfg(feature = "responsiveness-probes")]
 pub(crate) fn record_span(name: &'static str, start_us: i64, end_us: i64) {
-    measurement::record(lushtext_services::responsiveness_log::ProbeRecord::Span {
-        t_us: glib::monotonic_time(),
-        name,
-        start_us,
-        end_us,
-    });
-    if lushtext_services::responsiveness_log::arms_settle_sentinel(name) {
+    measurement::record(
+        lushtext_services::instrumentation::responsiveness_log::ProbeRecord::Span {
+            t_us: glib::monotonic_time(),
+            name,
+            start_us,
+            end_us,
+        },
+    );
+    if lushtext_services::instrumentation::responsiveness_log::arms_settle_sentinel(name) {
         measurement::arm_settle_sentinel();
     }
 }
@@ -184,7 +186,7 @@ impl PostOpenSpan {
     /// Start the span `name`.
     pub(crate) fn begin(name: &'static str) -> Self {
         debug_assert!(
-            lushtext_services::responsiveness_log::POST_OPEN_SPANS.contains(&name),
+            lushtext_services::instrumentation::responsiveness_log::POST_OPEN_SPANS.contains(&name),
             "{name} is not a post-open span"
         );
         Self {
@@ -503,7 +505,7 @@ mod measurement {
 
     use super::LatenessWatchdog;
     use crate::ui::signal_connect;
-    use lushtext_services::responsiveness_log::{
+    use lushtext_services::instrumentation::responsiveness_log::{
         ADJUSTMENT_UPPER_MARK, ADJUSTMENT_VALUE_MARK, DEFAULT_FRAME_PHASE_FRAMES,
         DEFAULT_LATE_THRESHOLD_US, EDITOR_USER_INSERT_MARK, EVIDENCE_CHANNEL_CAPACITY,
         EvidenceWriter, FRAME_PHASES_ENV, FrameTimingsQueue, FrameTimingsState,
@@ -1198,7 +1200,7 @@ mod measurement {
 
             use gtk4::subclass::prelude::*;
 
-            use lushtext_services::responsiveness_log::ProbeImTrigger;
+            use lushtext_services::instrumentation::responsiveness_log::ProbeImTrigger;
 
             #[derive(Default)]
             pub struct ProbeImContext {

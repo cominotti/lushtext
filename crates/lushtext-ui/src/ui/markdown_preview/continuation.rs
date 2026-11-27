@@ -20,10 +20,10 @@
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
-use pulldown_cmark::{Event, Tag, TagEnd};
+use lushtext_services::notes::markdown_render::{MarkdownEvent, MarkdownTag, MarkdownTagEnd};
 use std::collections::HashMap;
 
-use lushtext_services::markdown_render::{
+use lushtext_services::notes::markdown_render::{
     MAX_MARKDOWN_PLACEHOLDER_WIDGETS, MarkdownBlockOmission, MarkdownCarrySignature,
     MarkdownCodeBlockKind, MarkdownEventBatch, MarkdownOmissionMarker, MarkdownOmissionReason,
     MarkdownOmissionScope, MarkdownOpenContainer,
@@ -236,7 +236,7 @@ impl MarkdownProjectionContinuation {
 
             if let Some(table) = &mut self.active_table {
                 match event {
-                    Event::End(TagEnd::Table) => {
+                    MarkdownEvent::End(MarkdownTagEnd::Table) => {
                         let table = self
                             .active_table
                             .take()
@@ -257,7 +257,7 @@ impl MarkdownProjectionContinuation {
 
             if let Some(code_block) = &mut self.active_code_block {
                 match event {
-                    Event::End(TagEnd::CodeBlock) => {
+                    MarkdownEvent::End(MarkdownTagEnd::CodeBlock) => {
                         let active_code_block = self
                             .active_code_block
                             .take()
@@ -284,7 +284,7 @@ impl MarkdownProjectionContinuation {
 
             if let Some(image) = &mut active_image {
                 match event {
-                    Event::End(TagEnd::Image) => {
+                    MarkdownEvent::End(MarkdownTagEnd::Image) => {
                         let image = active_image.take().expect("active image should exist");
                         preview.insert_image_widget(&buffer, &mut iter, &image, context);
                         buffer.insert(&mut iter, "\n");
@@ -314,7 +314,7 @@ impl MarkdownProjectionContinuation {
             }
 
             match event {
-                Event::Start(Tag::Table(alignments)) => {
+                MarkdownEvent::Start(MarkdownTag::Table(alignments)) => {
                     if self.needs_block_separator {
                         buffer.insert(&mut iter, "\n");
                     }
@@ -325,8 +325,8 @@ impl MarkdownProjectionContinuation {
                         Some(BufferedTableBuilder::new(alignments, context.clone()));
                     self.needs_block_separator = false;
                 }
-                Event::Start(tag) => match tag {
-                    Tag::Heading { level, .. } => {
+                MarkdownEvent::Start(tag) => match tag {
+                    MarkdownTag::Heading { level, .. } => {
                         if self.needs_block_separator {
                             buffer.insert(&mut iter, "\n");
                         }
@@ -334,7 +334,7 @@ impl MarkdownProjectionContinuation {
                         self.tag_stack.push(heading_tag_name(idx));
                         self.needs_block_separator = false;
                     }
-                    Tag::Paragraph => {
+                    MarkdownTag::Paragraph => {
                         if current_list_item_needs_paragraph_separator(&self.list_item_stack) {
                             buffer.insert(&mut iter, "\n");
                             clear_current_list_item_paragraph_end(&mut self.list_item_stack);
@@ -351,14 +351,14 @@ impl MarkdownProjectionContinuation {
                         }
                         self.needs_block_separator = false;
                     }
-                    Tag::DefinitionList => {
+                    MarkdownTag::DefinitionList => {
                         if self.needs_block_separator {
                             buffer.insert(&mut iter, "\n");
                         }
                         self.held.push(MarkdownOpenContainer::DefinitionList);
                         self.needs_block_separator = false;
                     }
-                    Tag::DefinitionListTitle => {
+                    MarkdownTag::DefinitionListTitle => {
                         if self.needs_block_separator {
                             buffer.insert(&mut iter, "\n");
                         } else {
@@ -367,7 +367,7 @@ impl MarkdownProjectionContinuation {
                         self.tag_stack.push(TAG_DEFINITION_TERM.to_string());
                         self.needs_block_separator = false;
                     }
-                    Tag::DefinitionListDefinition => {
+                    MarkdownTag::DefinitionListDefinition => {
                         if self.needs_block_separator {
                             buffer.insert(&mut iter, "\n");
                         } else {
@@ -379,7 +379,7 @@ impl MarkdownProjectionContinuation {
                             .push(MarkdownOpenContainer::DefinitionListDefinition);
                         self.needs_block_separator = false;
                     }
-                    Tag::BlockQuote(kind) => {
+                    MarkdownTag::BlockQuote(kind) => {
                         if self.needs_block_separator {
                             buffer.insert(&mut iter, "\n");
                         }
@@ -408,7 +408,7 @@ impl MarkdownProjectionContinuation {
                         self.held.push(MarkdownOpenContainer::BlockQuote { kind });
                         self.needs_block_separator = false;
                     }
-                    Tag::CodeBlock(kind) => {
+                    MarkdownTag::CodeBlock(kind) => {
                         if self.needs_block_separator {
                             buffer.insert(&mut iter, "\n");
                         }
@@ -419,13 +419,12 @@ impl MarkdownProjectionContinuation {
                             self.generic_blockquote_depth,
                             &self.definition_stack,
                         );
-                        self.held.push(MarkdownOpenContainer::CodeBlock {
-                            kind: MarkdownCodeBlockKind::from_tag(&kind),
-                        });
+                        self.held
+                            .push(MarkdownOpenContainer::CodeBlock { kind: kind.clone() });
                         self.active_code_block = Some(ActiveCodeBlock::new(kind, layout));
                         self.needs_block_separator = false;
                     }
-                    Tag::List(start_num) => {
+                    MarkdownTag::List(start_num) => {
                         if !self.list_item_stack.is_empty() {
                             if flush_pending_list_prefix(
                                 &buffer,
@@ -447,7 +446,7 @@ impl MarkdownProjectionContinuation {
                         });
                         self.needs_block_separator = false;
                     }
-                    Tag::Item => {
+                    MarkdownTag::Item => {
                         self.pending_list_prefix = Some(match self.list_stack.last() {
                             Some(frame) => frame.prefix(),
                             None => ListMarker::Unordered.prefix(),
@@ -459,7 +458,7 @@ impl MarkdownProjectionContinuation {
                         self.list_item_stack.push(ListItemRenderState::default());
                         self.held.push(MarkdownOpenContainer::Item);
                     }
-                    Tag::FootnoteDefinition(label) => {
+                    MarkdownTag::FootnoteDefinition(label) => {
                         if self.needs_block_separator {
                             buffer.insert(&mut iter, "\n");
                         }
@@ -478,10 +477,12 @@ impl MarkdownProjectionContinuation {
                         insert_with_tags(&buffer, &mut iter, &format!("[{number}] "), &tags);
                         self.needs_block_separator = false;
                     }
-                    Tag::Emphasis => self.tag_stack.push(TAG_ITALIC.to_string()),
-                    Tag::Strong => self.tag_stack.push(TAG_BOLD.to_string()),
-                    Tag::Strikethrough => self.tag_stack.push(TAG_STRIKETHROUGH.to_string()),
-                    Tag::Link { dest_url, .. } => {
+                    MarkdownTag::Emphasis => self.tag_stack.push(TAG_ITALIC.to_string()),
+                    MarkdownTag::Strong => self.tag_stack.push(TAG_BOLD.to_string()),
+                    MarkdownTag::Strikethrough => {
+                        self.tag_stack.push(TAG_STRIKETHROUGH.to_string());
+                    }
+                    MarkdownTag::Link { dest_url, .. } => {
                         insert_blockquote_rail_if_needed(
                             &buffer,
                             &mut iter,
@@ -499,7 +500,7 @@ impl MarkdownProjectionContinuation {
                             pushed_tag,
                         });
                     }
-                    Tag::Image { dest_url, .. } => {
+                    MarkdownTag::Image { dest_url, .. } => {
                         if self.needs_block_separator || (!iter.starts_line() && iter.offset() > 0)
                         {
                             buffer.insert(&mut iter, "\n");
@@ -510,13 +511,13 @@ impl MarkdownProjectionContinuation {
                     // Skip elements we don't render natively (HTML, math, metadata, etc.).
                     _ => {}
                 },
-                Event::End(tag_end) => match tag_end {
-                    TagEnd::Heading(_) => {
+                MarkdownEvent::End(tag_end) => match tag_end {
+                    MarkdownTagEnd::Heading(_) => {
                         pop_tag(&mut self.tag_stack);
                         buffer.insert(&mut iter, "\n");
                         self.needs_block_separator = true;
                     }
-                    TagEnd::Paragraph => {
+                    MarkdownTagEnd::Paragraph => {
                         if self.list_item_stack.is_empty() {
                             ensure_rendered_line_break(&buffer, &mut iter);
                             if self.definition_stack.is_empty() {
@@ -531,7 +532,7 @@ impl MarkdownProjectionContinuation {
                             self.needs_block_separator = false;
                         }
                     }
-                    TagEnd::BlockQuote(kind) => {
+                    MarkdownTagEnd::BlockQuote(kind) => {
                         if kind.is_some() {
                             pop_tag(&mut self.tag_stack);
                         } else {
@@ -543,28 +544,28 @@ impl MarkdownProjectionContinuation {
                         self.pop_held(&MarkdownOpenContainer::BlockQuote { kind });
                         self.needs_block_separator = true;
                     }
-                    TagEnd::FootnoteDefinition => {
+                    MarkdownTagEnd::FootnoteDefinition => {
                         pop_tag(&mut self.tag_stack);
                         self.needs_block_separator = true;
                     }
-                    TagEnd::DefinitionList => {
+                    MarkdownTagEnd::DefinitionList => {
                         ensure_rendered_line_break(&buffer, &mut iter);
                         self.pop_held(&MarkdownOpenContainer::DefinitionList);
                         self.needs_block_separator = true;
                     }
-                    TagEnd::DefinitionListTitle => {
+                    MarkdownTagEnd::DefinitionListTitle => {
                         pop_tag(&mut self.tag_stack);
                         ensure_rendered_line_break(&buffer, &mut iter);
                         self.needs_block_separator = false;
                     }
-                    TagEnd::DefinitionListDefinition => {
+                    MarkdownTagEnd::DefinitionListDefinition => {
                         pop_tag(&mut self.tag_stack);
                         ensure_rendered_line_break(&buffer, &mut iter);
                         self.definition_stack.pop();
                         self.pop_held(&MarkdownOpenContainer::DefinitionListDefinition);
                         self.needs_block_separator = false;
                     }
-                    TagEnd::List(_) => {
+                    MarkdownTagEnd::List(_) => {
                         self.list_stack.pop();
                         self.pop_held(&MarkdownOpenContainer::List {
                             ordered: false,
@@ -577,7 +578,7 @@ impl MarkdownProjectionContinuation {
                             self.needs_block_separator = false;
                         }
                     }
-                    TagEnd::Item => {
+                    MarkdownTagEnd::Item => {
                         if flush_pending_list_prefix(
                             &buffer,
                             &mut iter,
@@ -596,10 +597,12 @@ impl MarkdownProjectionContinuation {
                         self.pop_held(&MarkdownOpenContainer::Item);
                         self.advance_held_list_ordinal();
                     }
-                    TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => {
+                    MarkdownTagEnd::Emphasis
+                    | MarkdownTagEnd::Strong
+                    | MarkdownTagEnd::Strikethrough => {
                         pop_tag(&mut self.tag_stack);
                     }
-                    TagEnd::Link => {
+                    MarkdownTagEnd::Link => {
                         if let Some(link) = active_text_links.pop() {
                             if link.pushed_tag {
                                 pop_tag(&mut self.tag_stack);
@@ -617,7 +620,7 @@ impl MarkdownProjectionContinuation {
                     }
                     _ => {}
                 },
-                Event::Text(text) => {
+                MarkdownEvent::Text(text) => {
                     insert_blockquote_rail_if_needed(
                         &buffer,
                         &mut iter,
@@ -633,7 +636,7 @@ impl MarkdownProjectionContinuation {
                     mark_current_list_item_content(&mut self.list_item_stack);
                     mark_current_definition_content(&mut self.definition_stack);
                 }
-                Event::Code(code) => {
+                MarkdownEvent::Code(code) => {
                     insert_blockquote_rail_if_needed(
                         &buffer,
                         &mut iter,
@@ -650,7 +653,7 @@ impl MarkdownProjectionContinuation {
                     mark_current_list_item_content(&mut self.list_item_stack);
                     mark_current_definition_content(&mut self.definition_stack);
                 }
-                Event::FootnoteReference(label) => {
+                MarkdownEvent::FootnoteReference(label) => {
                     insert_blockquote_rail_if_needed(
                         &buffer,
                         &mut iter,
@@ -672,7 +675,7 @@ impl MarkdownProjectionContinuation {
                     mark_current_list_item_content(&mut self.list_item_stack);
                     mark_current_definition_content(&mut self.definition_stack);
                 }
-                Event::TaskListMarker(checked) => {
+                MarkdownEvent::TaskListMarker(checked) => {
                     insert_blockquote_rail_if_needed(
                         &buffer,
                         &mut iter,
@@ -689,15 +692,15 @@ impl MarkdownProjectionContinuation {
                     mark_current_list_item_content(&mut self.list_item_stack);
                     mark_current_definition_content(&mut self.definition_stack);
                 }
-                Event::SoftBreak => {
+                MarkdownEvent::SoftBreak => {
                     buffer.insert(&mut iter, " ");
                 }
-                Event::HardBreak => {
+                MarkdownEvent::HardBreak => {
                     buffer.insert(&mut iter, "\n");
                     mark_current_list_item_content(&mut self.list_item_stack);
                     mark_current_definition_content(&mut self.definition_stack);
                 }
-                Event::Rule => {
+                MarkdownEvent::Rule => {
                     if self.needs_block_separator {
                         buffer.insert(&mut iter, "\n");
                     }
@@ -1001,7 +1004,7 @@ fn same_container_kind(left: &MarkdownOpenContainer, right: &MarkdownOpenContain
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lushtext_services::markdown_render::UnretainedEmbedCounts;
+    use lushtext_services::notes::markdown_render::UnretainedEmbedCounts;
 
     #[test]
     fn container_marker_text_names_both_the_budget_and_the_unit() {
@@ -1085,7 +1088,7 @@ mod tests {
     /// One real planned batch, so the seam is exercised against planner output
     /// rather than a hand-built signature.
     fn first_planned_batch(markdown: &str) -> MarkdownEventBatch {
-        lushtext_services::markdown_render::plan_markdown(markdown)
+        lushtext_services::notes::markdown_render::plan_markdown(markdown)
             .batches
             .into_iter()
             .next()

@@ -21,7 +21,7 @@ use std::sync::Arc;
 use gtk4::prelude::*;
 
 use crate::ui::accessibility::{self, AnnouncementLane};
-use lushtext_model::palette::PaletteCategory;
+use lushtext_model::workspace::palette::PaletteCategory;
 use lushtext_services::palette::CategoryRanking;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;

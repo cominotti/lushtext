@@ -21,7 +21,7 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
 use lushtext_model::workspace::{WorkspaceId, WorkspaceScope, WorkspacesFile};
-use lushtext_services::notifications::NotificationSeverity;
+use lushtext_services::coordination::notifications::NotificationSeverity;
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;

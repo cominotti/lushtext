@@ -40,8 +40,10 @@ use libadwaita::prelude::{AdwDialogExt, AlertDialogExt, AlertDialogExtManual};
 use crate::ui::markdown_preview::{LushtextMarkdownPreview, MarkdownPreviewRenderContext};
 use crate::ui::status_bar::MessageKind;
 use crate::ui::{accessibility, buffer_snapshot};
-use lushtext_model::note::{NoteEditorPresentation, NoteViewMode, RichNoteBody};
-use lushtext_services::{document_note_service, folder_note_service, json_store};
+use lushtext_model::persistence::note::{NoteEditorPresentation, NoteViewMode, RichNoteBody};
+use lushtext_services::{
+    notes::document_note_service, notes::folder_note_service, persistence::json_store,
+};
 
 use super::LushtextWindow;
 use super::policy::FolderNoteOpenTarget;

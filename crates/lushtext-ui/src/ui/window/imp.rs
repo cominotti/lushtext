@@ -40,12 +40,12 @@ use gtk_lush_widgets::ClipBin;
 use gtk4::prelude::*;
 use gtk4::{self, CompositeTemplate, gio, glib};
 use libadwaita::subclass::prelude::*;
-use lushtext_model::draft::{
+use lushtext_model::persistence::draft::{
     DraftEntry, DraftManifest, DraftManifestAuthority, PreloadedDraftRestore,
 };
-use lushtext_model::recent_document::RecentDocumentEntry;
+use lushtext_model::persistence::recent_document::RecentDocumentEntry;
 use lushtext_model::workspace::WorkspaceScope;
-use lushtext_services::notifications::NotificationBus;
+use lushtext_services::coordination::notifications::NotificationBus;
 use lushtext_services::palette::{
     FileIndexBuildCoordinator, FileIndexBuildStart, NoteSourceRefreshCoordinator,
     NoteSourceRefreshStart,
@@ -89,7 +89,7 @@ pub struct SecondarySurfaceState {
 #[derive(Default)]
 pub struct EditorMemoryState {
     /// Constant-work per-editor residency records and saturating aggregates.
-    pub ledger: RefCell<lushtext_model::editor_memory::EditorResidencyLedger>,
+    pub ledger: RefCell<lushtext_model::document::editor_memory::EditorResidencyLedger>,
     /// Previously selected editor, retained weakly for O(1) eligibility refresh.
     pub active_editor: RefCell<Option<glib::WeakRef<LushtextEditorPage>>>,
     /// Exceptional lifecycle state requiring a current full reconciliation.
@@ -107,7 +107,7 @@ pub struct EditorMemoryState {
     /// Full tab scans performed only for enforcement or reconciliation.
     pub full_scan_count: Cell<u64>,
     /// Stable result of the most recently completed aggregate policy pass.
-    pub last_outcome: Cell<lushtext_model::editor_memory::EditorMemoryBudgetOutcome>,
+    pub last_outcome: Cell<lushtext_model::document::editor_memory::EditorMemoryBudgetOutcome>,
     /// Idle dispatches used to prove that candidate application stays bounded.
     #[cfg(feature = "test-utils")]
     pub eviction_dispatch_count: Cell<u64>,
@@ -518,7 +518,7 @@ pub struct LushtextWindow {
     /// Application-wide settings for geometry, sidebar layout, and editor behavior.
     pub settings: gio::Settings,
     /// This window's startup-to-first-frame spans (`ui::construction_spans`).
-    pub construction: RefCell<lushtext_model::construction_spans::WindowConstructionSpans>,
+    pub construction: RefCell<lushtext_model::budgets::construction_spans::WindowConstructionSpans>,
     /// Staged composition: which stages ran and what they hold (`composition/`).
     pub(crate) composition: super::composition::CompositionState,
     /// Measure and allocation spans recorded so far by the measurement build.

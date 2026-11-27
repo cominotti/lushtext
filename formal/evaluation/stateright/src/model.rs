@@ -13,7 +13,7 @@
 //! returns `None`: the set of reachable journal states within `max_steps`
 //! steps is the same, since a no-op only consumes budget.
 
-use lushtext_services::draft_service::journal_core::RestoreEnding;
+use lushtext_services::persistence::draft_service::journal_core::RestoreEnding;
 use stateright::{Model, Property};
 
 use crate::env::{self, Action, IDS, Journal, PreviousId};

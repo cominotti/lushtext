@@ -19,7 +19,7 @@
 //! This module imports no toolkit crate, which is what keeps it inside the
 //! `ui/**/policy.rs` mutation scope.
 
-use lushtext_model::editor_memory::{
+use lushtext_model::document::editor_memory::{
     EDITOR_MEMORY_LOWER_WATER_BYTES, EDITOR_MEMORY_UPPER_BUDGET_BYTES, EditorMemoryBudgetOutcome,
 };
 

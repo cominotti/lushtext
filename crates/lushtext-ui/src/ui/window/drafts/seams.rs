@@ -22,10 +22,10 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 
 use crate::ui::editor_page::LushtextEditorPage;
-use lushtext_model::draft::{
+use lushtext_model::persistence::draft::{
     DraftEntry, DraftManifestAuthority, FileDraftRestoreSkip, PreloadedDraftSkip,
 };
-use lushtext_services::draft_service;
+use lushtext_services::persistence::draft_service;
 
 use super::policy::DraftMutationIntent;
 use crate::ui::window::LushtextWindow;
@@ -207,7 +207,7 @@ pub(super) enum GuardedDraftRestoreResolution {
         crate::ui::plain_disposal::DisposalOwned<String>,
         // Boxed: the profile (with its optional fold plan) is most of the
         // variant, and the compact variant is a byte.
-        Box<lushtext_model::paragraph_boundary::DocumentProfile>,
+        Box<lushtext_model::document::paragraph_boundary::DocumentProfile>,
     ),
     Compact(FileDraftRestoreSkip),
 }
@@ -217,7 +217,7 @@ pub(super) enum GuardedPreloadedDraftRestore {
         crate::ui::plain_disposal::DisposalOwned<String>,
         // Boxed: the profile (with its optional fold plan) is most of the
         // variant, and the compact variant is a byte.
-        Box<lushtext_model::paragraph_boundary::DocumentProfile>,
+        Box<lushtext_model::document::paragraph_boundary::DocumentProfile>,
     ),
     Compact(PreloadedDraftSkip),
 }
@@ -290,7 +290,7 @@ pub(super) struct OrphanCleanupUiResult {
 #[derive(Clone, Debug)]
 pub(crate) struct PendingPreservation {
     /// The persisted entry whose body is preserved before deletion.
-    pub(crate) entry: lushtext_model::draft::DraftEntry,
+    pub(crate) entry: lushtext_model::persistence::draft::DraftEntry,
     /// Whether the outcome is announced as a stale-draft inline warning.
     pub(crate) announce_as_stale: bool,
 }

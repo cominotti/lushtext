@@ -25,8 +25,8 @@ use gtk4::glib;
 use gtk4::prelude::*;
 
 use lushtext_model::workspace::{WorkspaceConfig, WorkspaceId, WorkspacesFile};
-use lushtext_services::notifications::NotificationSeverity;
-use lushtext_services::{json_store, workspace_manager};
+use lushtext_services::coordination::notifications::NotificationSeverity;
+use lushtext_services::{persistence::json_store, workspace::workspace_manager};
 
 use crate::ui::sidebar::policy;
 

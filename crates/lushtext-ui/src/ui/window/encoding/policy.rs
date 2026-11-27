@@ -16,7 +16,7 @@
 //! entire user-facing contract of the Decision And Detail Dialogs rule in
 //! `.agents/rules/ui.md`.
 
-use lushtext_model::encoding::{
+use lushtext_model::document::encoding::{
     DocumentEncoding, FileHealthFindingKind, InvisibleCharactersMode, LineEnding,
 };
 

@@ -155,7 +155,10 @@ impl LushtextWindow {
     /// producer of a `SessionData`, and no headless test can reach it without
     /// staging a whole app-data directory and a startup gate.
     #[cfg(feature = "test-utils")]
-    pub fn restore_session_for_test(&self, session: lushtext_model::session::SessionData) {
+    pub fn restore_session_for_test(
+        &self,
+        session: lushtext_model::persistence::session::SessionData,
+    ) {
         self.begin_session_restore(session, false);
     }
 

@@ -23,10 +23,12 @@ use gtk4::prelude::*;
 
 use crate::app::LushtextApplication;
 use crate::ui::preferences::{drafts_phrase, lower_bound_prefix};
-use lushtext_services::draft_service::set_aside;
-use lushtext_services::draft_service::set_aside_retention::{SetAsideTotals, notice_due};
-use lushtext_services::json_store;
-use lushtext_services::notifications::NotificationSeverity;
+use lushtext_services::coordination::notifications::NotificationSeverity;
+use lushtext_services::persistence::draft_service::set_aside;
+use lushtext_services::persistence::draft_service::set_aside_retention::{
+    SetAsideTotals, notice_due,
+};
+use lushtext_services::persistence::json_store;
 
 use super::LushtextWindow;
 

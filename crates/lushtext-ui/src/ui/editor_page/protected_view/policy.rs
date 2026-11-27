@@ -41,8 +41,8 @@
 
 use core::num::NonZeroU64;
 
-use lushtext_model::document_scale::L_PROTECT;
-use lushtext_model::protected_fold::HEAD_CAP;
+use lushtext_model::document::document_scale::L_PROTECT;
+use lushtext_model::document::protected_fold::HEAD_CAP;
 
 #[cfg(kani)]
 mod kani_proofs;
@@ -56,7 +56,7 @@ mod kani_proofs;
 /// workflow narrates in its own vocabulary. It is small enough that the
 /// inspector's caret, IM and accessibility paths stay within the
 /// `L_protect_stall` basis.
-pub(crate) use lushtext_model::protected_fold::N_INSPECT;
+pub(crate) use lushtext_model::document::protected_fold::N_INSPECT;
 
 /// [`N_INSPECT`] as the non-zero width the window functions take.
 pub(crate) const N_INSPECT_WIDTH: NonZeroU64 = match NonZeroU64::new(N_INSPECT) {

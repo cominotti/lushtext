@@ -8,6 +8,7 @@
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use gtk4::gio;
 use gtk4::prelude::ListModelExt;
+use lushtext_services::search::content_search::generate_replacement_preview;
 use notify_debouncer_full::notify::event::{AccessKind, AccessMode, CreateKind};
 use notify_debouncer_full::notify::{Event, EventKind};
 use std::cell::{Cell, RefCell};
@@ -20,65 +21,71 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 use tempfile::TempDir;
 
-use lushtext_model::bookmark::BookmarkRecord;
-use lushtext_model::buffer_replacement::{
+use lushtext_model::document::buffer_replacement::{
     BufferReplacementPlan, REPLACEMENT_CLEAR_SLICE_CHARS, REPLACEMENT_INSERT_SLICE_BYTES,
 };
-use lushtext_model::content_search::{
-    ContentSearchOptions, MAX_REPLACE_PREVIEW_ROWS, Replacement, SearchEvent, SearchMatch,
-    SearchMatchId, generate_replacement_preview,
-};
-use lushtext_model::document_scale::DocumentScale;
-use lushtext_model::draft::{DraftEntry, DraftManifest};
-use lushtext_model::editor_memory::{
+use lushtext_model::document::document_scale::DocumentScale;
+use lushtext_model::document::editor_memory::{
     EDITOR_MEMORY_UPPER_BUDGET_BYTES, EditorResidency, EditorResidencyLedger,
     estimate_live_editor_bytes, evaluate_editor_memory_budget,
 };
-use lushtext_model::encoding::{DocumentEncoding, LineEnding};
-use lushtext_model::file_load::{
+use lushtext_model::document::encoding::{DocumentEncoding, LineEnding};
+use lushtext_model::document::file_load::{
     FileLoadAdmissionPolicy, FileLoadAdmissionRequest, FileLoadPriority,
     TRANSIENT_LOAD_SHARED_BUDGET_BYTES, next_install_boundary, transient_load_weight,
 };
-use lushtext_model::local_history::LocalHistorySnapshotOrigin;
-use lushtext_model::local_history::{LocalHistoryDocument, LocalHistorySnapshotMeta};
-use lushtext_model::migration_ledger::MigrationKind;
-use lushtext_model::palette::{
+use lushtext_model::document::paragraph_boundary::{DocumentProfile, ProfileSummary};
+use lushtext_model::persistence::bookmark::BookmarkRecord;
+use lushtext_model::persistence::draft::{DraftEntry, DraftManifest};
+use lushtext_model::persistence::local_history::LocalHistorySnapshotOrigin;
+use lushtext_model::persistence::local_history::{LocalHistoryDocument, LocalHistorySnapshotMeta};
+use lushtext_model::persistence::migration_ledger::MigrationKind;
+use lushtext_model::persistence::recent_document::{RecentDocumentEntry, RecentDocumentRow};
+use lushtext_model::persistence::session::{SessionData, SessionTab};
+use lushtext_model::persistence::sidecar_identity::{
+    next_record_id, now_epoch_millis, stable_bytes_hash,
+};
+use lushtext_model::workspace::content_search::{
+    ContentSearchOptions, MAX_REPLACE_PREVIEW_ROWS, Replacement, SearchEvent, SearchMatch,
+    SearchMatchId,
+};
+use lushtext_model::workspace::palette::{
     FileOrdinal, PaletteCategory, PaletteFileEntry, PaletteFileIdentity, PaletteNoteCategory,
     PaletteNoteEntry, PaletteNoteTarget, PaletteOpenEditorNoteSnapshot, PaletteSearchRow,
     SearchMode, SearchResultItem,
 };
-use lushtext_model::paragraph_boundary::{DocumentProfile, ProfileSummary};
-use lushtext_model::recent_document::{RecentDocumentEntry, RecentDocumentRow};
-use lushtext_model::session::{SessionData, SessionTab};
-use lushtext_model::sidecar_identity::{next_record_id, now_epoch_millis, stable_bytes_hash};
+use lushtext_model::workspace::workspace_search::{
+    WorkspaceSearchFallbackMetrics, WorkspaceSearchTraversalPlan,
+};
+use lushtext_model::workspace::workspace_visibility::WorkspaceEntryVisibility;
 use lushtext_model::workspace::{
     WorkspaceConfig, WorkspaceFolder, WorkspaceId, WorkspaceScope, WorkspacesFile,
 };
-use lushtext_model::workspace_search::{
-    WorkspaceSearchFallbackMetrics, WorkspaceSearchTraversalPlan,
-};
-use lushtext_model::workspace_visibility::WorkspaceEntryVisibility;
-use lushtext_services::content_search;
 use lushtext_services::editor_io;
-use lushtext_services::file_tree::{
-    self, DirectoryEntry, DirectoryPlaceholder, DirectoryReconciliationPlan, DirectoryRowState,
-};
 use lushtext_services::filesystem::{
     DirectoryScanPolicy, fixture, metadata as fs_metadata, read as fs_read, tree as fs_tree,
 };
-use lushtext_services::json_format::KIND_LOCAL_HISTORY_INDEX;
-use lushtext_services::markdown_render::{MARKDOWN_EVENTS_PER_PROJECTION_SLICE, plan_markdown};
+use lushtext_services::notes::markdown_render::{
+    MARKDOWN_EVENTS_PER_PROJECTION_SLICE, plan_markdown,
+};
 use lushtext_services::palette::{self, FileIndex, OwnedIndexedFile};
-use lushtext_services::recent_documents;
-use lushtext_services::recovery_metadata::{
+use lushtext_services::persistence::json_format::KIND_LOCAL_HISTORY_INDEX;
+use lushtext_services::persistence::recent_documents;
+use lushtext_services::persistence::recovery_metadata::{
     RecoveryLoadConfig, RecoveryMetadataClass, save_enveloped_json_path,
 };
-use lushtext_services::workspace_manager;
-use lushtext_services::workspace_watch::{WORKSPACE_WATCH_PATH_CAP, WorkspaceWatchMailbox};
+use lushtext_services::search::content_search;
+use lushtext_services::watch::workspace_watch::{WORKSPACE_WATCH_PATH_CAP, WorkspaceWatchMailbox};
+use lushtext_services::workspace::file_tree::{
+    self, DirectoryEntry, DirectoryPlaceholder, DirectoryReconciliationPlan, DirectoryRowState,
+};
+use lushtext_services::workspace::workspace_manager;
 use lushtext_services::{
-    bookmark_service, draft_service,
-    local_history_service::{self, LocalHistoryCapturePolicy},
-    migration_ledger, session_service,
+    notes::bookmark_service,
+    persistence::draft_service,
+    persistence::local_history_service::{self, LocalHistoryCapturePolicy},
+    persistence::migration_ledger,
+    persistence::session_service,
 };
 use lushtext_ui::ui::command_palette::policy::{MAX_CATEGORY_VIEW_ROWS, category_row_limit};
 use lushtext_ui::ui::editor_page::save::policy::{
@@ -1622,7 +1629,7 @@ fn bench_end_to_end_boundedness(c: &mut Criterion) {
     fixture::create_dir_all(&note_workspace);
     let noted_file = note_workspace.join("main.rs");
     fixture::write_text(&noted_file, "fn main() {}\n");
-    lushtext_services::bookmark_service::save_for_path(
+    lushtext_services::notes::bookmark_service::save_for_path(
         &deep_data_dir,
         &noted_file,
         &[BookmarkRecord::new(
@@ -1631,7 +1638,7 @@ fn bench_end_to_end_boundedness(c: &mut Criterion) {
         )],
     )
     .expect("save benchmark bookmark sidecar");
-    let malformed_path = lushtext_services::bookmark_service::bookmarks_dir(&deep_data_dir)
+    let malformed_path = lushtext_services::notes::bookmark_service::bookmarks_dir(&deep_data_dir)
         .join("malformed-🙂.json");
     fixture::write_text(&malformed_path, "{ malformed recovery fixture");
     let note_scope = WorkspacesFile {
@@ -2833,7 +2840,8 @@ fn bench_editor_memory_policy(c: &mut Criterion) {
     let bookkeeping_heavy = (0..10_000usize)
         .map(|editor_id| EditorResidency {
             editor_id,
-            estimated_bytes: lushtext_model::editor_memory::EVICTED_EDITOR_BOOKKEEPING_BYTES + 1,
+            estimated_bytes:
+                lushtext_model::document::editor_memory::EVICTED_EDITOR_BOOKKEEPING_BYTES + 1,
             access_generation: u64::try_from(editor_id).expect("benchmark generation"),
             policy_generation: 1,
             eligible_for_eviction: true,
@@ -3599,7 +3607,7 @@ fn bench_transient_file_load(c: &mut Criterion) {
     });
 
     let exclusive_near_limit = [transient_load_weight(
-        lushtext_model::document_scale::REFUSE_TO_OPEN - 1,
+        lushtext_model::document::document_scale::REFUSE_TO_OPEN - 1,
     )];
     group.bench_function("admission/exclusive_near_supported_limit", |b| {
         b.iter(|| black_box(run_transient_load_policy(&exclusive_near_limit, false)));
@@ -4086,12 +4094,12 @@ fn bench_quality_gap_scale(c: &mut Criterion) {
     );
 
     let preview_request =
-        |index: u32| lushtext_services::bookmark_excerpt::BookmarkExcerptPreviewRequest {
+        |index: u32| lushtext_services::notes::bookmark_excerpt::BookmarkExcerptPreviewRequest {
             path: PathBuf::from(format!("/bench/notes/bookmark-{index}.md")),
             line: index,
         };
     let mut preview_coordinator =
-        lushtext_services::bookmark_excerpt::BookmarkExcerptPreviewCoordinator::default();
+        lushtext_services::notes::bookmark_excerpt::BookmarkExcerptPreviewCoordinator::default();
     let first_preview = preview_coordinator
         .submit(preview_request(0))
         .expect("first preview submission starts");
@@ -4130,7 +4138,7 @@ fn bench_quality_gap_scale(c: &mut Criterion) {
     group.bench_function("bookmark_preview_flight/rapid_10000", |b| {
         b.iter(|| {
             let mut coordinator =
-                lushtext_services::bookmark_excerpt::BookmarkExcerptPreviewCoordinator::default();
+                lushtext_services::notes::bookmark_excerpt::BookmarkExcerptPreviewCoordinator::default();
             let mut active = coordinator.submit(preview_request(0));
             for index in 1..10_000u32 {
                 assert!(coordinator.submit(preview_request(index)).is_none());
@@ -4183,10 +4191,12 @@ fn bench_quality_gap_scale(c: &mut Criterion) {
 }
 
 /// Largest event count any single projection batch of one plan carries.
-fn max_batch_events_of(plan: &lushtext_services::markdown_render::MarkdownRenderPlan) -> usize {
+fn max_batch_events_of(
+    plan: &lushtext_services::notes::markdown_render::MarkdownRenderPlan,
+) -> usize {
     plan.batches
         .iter()
-        .map(lushtext_services::markdown_render::MarkdownEventBatch::len)
+        .map(lushtext_services::notes::markdown_render::MarkdownEventBatch::len)
         .max()
         .unwrap_or(0)
 }
@@ -4306,7 +4316,7 @@ fn bench_search_interactive_policies(c: &mut Criterion) {
         let mut flight = WorkspaceSearchFlight::default();
         for index in 0..query_count {
             let submission = flight.submit(WorkspaceSearchRequest {
-                spec: lushtext_model::content_search::SearchQuerySpec::new(
+                spec: lushtext_model::workspace::content_search::SearchQuerySpec::new(
                     format!("query-{index}"),
                     ContentSearchOptions::default(),
                 ),

@@ -33,8 +33,8 @@ use crate::ui::window::local_history::policy::{
     BaselineCaptureFacts, BaselineCaptureTicket, PeriodicCaptureFacts, PeriodicCaptureTicket,
     baseline_capture_is_current, periodic_capture_is_current, should_reschedule_periodic_capture,
 };
-use lushtext_model::local_history::LocalHistorySnapshotOrigin;
-use lushtext_services::{json_store, local_history_service};
+use lushtext_model::persistence::local_history::LocalHistorySnapshotOrigin;
+use lushtext_services::{persistence::json_store, persistence::local_history_service};
 
 use super::LushtextEditorPage;
 
@@ -427,7 +427,7 @@ impl LushtextEditorPage {
         &self,
         text: Option<(
             crate::ui::plain_disposal::DisposalOwned<String>,
-            lushtext_model::paragraph_boundary::DocumentProfile,
+            lushtext_model::document::paragraph_boundary::DocumentProfile,
         )>,
     ) {
         self.imp().local_history.restore_undo_text.replace(text);
@@ -439,7 +439,7 @@ impl LushtextEditorPage {
         &self,
     ) -> Option<(
         crate::ui::plain_disposal::DisposalOwned<String>,
-        lushtext_model::paragraph_boundary::DocumentProfile,
+        lushtext_model::document::paragraph_boundary::DocumentProfile,
     )> {
         self.imp()
             .local_history

@@ -4,37 +4,40 @@
 
 use std::path::Path;
 
-use lushtext_model::bookmark::{BookmarkDocument, BookmarkId, BookmarkRecord};
-use lushtext_model::content_search::{
+use lushtext_model::persistence::bookmark::{BookmarkDocument, BookmarkId, BookmarkRecord};
+use lushtext_model::persistence::document_note::DocumentNoteDocument;
+use lushtext_model::persistence::draft::{DraftEntry, DraftManifest};
+use lushtext_model::persistence::folder_note::{FolderNoteDocument, FolderNoteIdentity};
+use lushtext_model::persistence::local_history::{
+    LocalHistoryDocument, LocalHistorySnapshotOrigin,
+};
+use lushtext_model::persistence::migration_ledger::{MigrationKind, MigrationLedgerDocument};
+use lushtext_model::persistence::note::RichNoteBody;
+use lushtext_model::persistence::session::{SessionData, SessionTab};
+use lushtext_model::persistence::sidecar_identity::{DocumentSidecarIdentity, stable_path_hash};
+use lushtext_model::workspace::content_search::{
     ContentSearchOptions, SavedSearch, SearchHistoryEntry, SearchQuerySpec,
 };
-use lushtext_model::document_note::DocumentNoteDocument;
-use lushtext_model::draft::{DraftEntry, DraftManifest};
-use lushtext_model::folder_note::{FolderNoteDocument, FolderNoteIdentity};
-use lushtext_model::local_history::{LocalHistoryDocument, LocalHistorySnapshotOrigin};
-use lushtext_model::migration_ledger::{MigrationKind, MigrationLedgerDocument};
-use lushtext_model::note::RichNoteBody;
-use lushtext_model::session::{SessionData, SessionTab};
-use lushtext_model::sidecar_identity::{DocumentSidecarIdentity, stable_path_hash};
 use lushtext_model::workspace::{
     WorkspaceConfig, WorkspaceFolder, WorkspaceId, WorkspaceScope, WorkspacesFile,
 };
 use lushtext_services::filesystem::fixture;
-use lushtext_services::json_format::{
+use lushtext_services::persistence::json_format::{
     self, JsonFormatError, KIND_BOOKMARK_SIDECAR, KIND_DOCUMENT_NOTE_SIDECAR, KIND_DRAFT_MANIFEST,
     KIND_FOLDER_NOTE_SIDECAR, KIND_LEGACY_WORKSPACE_NOTE_SIDECAR, KIND_LOCAL_HISTORY_INDEX,
     KIND_MIGRATION_LEDGER, KIND_REPLACE_UNDO_CLEANUP_MARKER, KIND_REPLACE_UNDO_ENTRY,
     KIND_REPLACE_UNDO_MANIFEST, KIND_REPLACE_UNDO_STREAM_ENTRY, KIND_SAVED_SEARCHES,
     KIND_SEARCH_HISTORY, KIND_SESSION, KIND_WORKSPACE_STATE,
 };
-use lushtext_services::recovery_metadata::{
+use lushtext_services::persistence::recovery_metadata::{
     RecoveryLoadConfig, RecoveryLoadOutcome, RecoveryMetadataClass, RecoveryProblem,
     load_enveloped_json_or_default,
 };
 use lushtext_services::{
-    bookmark_service, document_note_service, draft_service, folder_note_service,
-    local_history_service, migration_ledger, saved_searches, search_backup, search_history,
-    session_service, workspace_manager,
+    notes::bookmark_service, notes::document_note_service, notes::folder_note_service,
+    persistence::draft_service, persistence::local_history_service, persistence::migration_ledger,
+    persistence::session_service, search::saved_searches, search::search_backup,
+    search::search_history, workspace::workspace_manager,
 };
 use serde::de::DeserializeOwned;
 use tempfile::TempDir;

@@ -1168,7 +1168,13 @@ gtk-lush-public-api-advisory:
 gtk-lush-api-advisory: gtk-lush-semver-advisory gtk-lush-public-api-advisory
 
 # Aggregate policy target for fast audits that sit beside rustfmt and Clippy.
-check-policy: check-filesystem-boundary check-temp-scope check-rustc-frontend-threads test-flatpak-install-origin check-flatpak-source-tree check-agent-helpers check-build-cache-helpers check-precommit-scope check-session-hygiene check-cargo-public-api-install check-settings-writes check-font-zoom-registration check-signal-connections check-thresholds check-responsiveness-lane check-kani-shards check-widget-shards check-gtk-axioms check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-flatpak-ci-builds check-explicit-simd check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test check-terminology check-kill-point-gating check-workflow-scripts
+check-policy: check-filesystem-boundary check-hexagonal-boundaries check-temp-scope check-rustc-frontend-threads test-flatpak-install-origin check-flatpak-source-tree check-agent-helpers check-build-cache-helpers check-precommit-scope check-session-hygiene check-cargo-public-api-install check-settings-writes check-font-zoom-registration check-signal-connections check-thresholds check-responsiveness-lane check-kani-shards check-widget-shards check-gtk-axioms check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-flatpak-ci-builds check-explicit-simd check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test check-terminology check-kill-point-gating check-workflow-scripts
+
+# Hexagonal crate boundaries and 1,000-line file-size ratchet.
+check-hexagonal-boundaries:
+	@echo "Checking hexagonal crate boundaries..."
+	python3 ./scripts/check-hexagonal-boundaries.py --self-test
+	python3 ./scripts/check-hexagonal-boundaries.py
 
 # The crash-kill-points feature gates only services::kill_point::reach, so the
 # crash smoke's kill-point victim is the ordinary binary plus kill points.

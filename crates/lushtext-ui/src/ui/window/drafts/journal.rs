@@ -31,12 +31,12 @@ use gtk4::prelude::*;
 
 use crate::ui::buffer_snapshot;
 use crate::ui::editor_page::LushtextEditorPage;
-use lushtext_model::draft::{
+use lushtext_model::persistence::draft::{
     DraftEntry, DraftManifestAuthority, PreloadedDraftRestore, StaleDraftPreservation,
 };
-use lushtext_services::draft_service::journal_core;
-use lushtext_services::notifications::NotificationSeverity;
-use lushtext_services::{draft_service, editor_io, json_store};
+use lushtext_services::coordination::notifications::NotificationSeverity;
+use lushtext_services::persistence::draft_service::journal_core;
+use lushtext_services::{editor_io, persistence::draft_service, persistence::json_store};
 
 use super::policy;
 use super::seams::{DraftManifestFailure, PendingPreservation};
@@ -72,7 +72,7 @@ impl LushtextWindow {
     /// window that owns cleanup for the process (`schedule_orphan_cleanup`).
     pub(super) fn adopt_draft_manifest(
         &self,
-        mut manifest: lushtext_model::draft::DraftManifest,
+        mut manifest: lushtext_model::persistence::draft::DraftManifest,
         authority: DraftManifestAuthority,
     ) {
         let drafts = &self.imp().drafts;
@@ -237,7 +237,7 @@ impl LushtextWindow {
     /// convention exists to remove.
     pub(crate) fn adopt_startup_draft_records(
         &self,
-        manifest: lushtext_model::draft::DraftManifest,
+        manifest: lushtext_model::persistence::draft::DraftManifest,
         authority: DraftManifestAuthority,
         preloaded: crate::ui::plain_disposal::DisposalOwned<HashMap<String, PreloadedDraftRestore>>,
     ) {

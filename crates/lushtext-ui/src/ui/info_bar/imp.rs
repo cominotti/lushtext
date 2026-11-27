@@ -15,7 +15,7 @@ use crate::ui::accessibility;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
-use lushtext_services::notifications::{InlineActionNotification, InlineAlertAction};
+use lushtext_services::coordination::notifications::{InlineActionNotification, InlineAlertAction};
 use std::cell::{Cell, RefCell};
 
 /// Stored callback for inline alert button actions.

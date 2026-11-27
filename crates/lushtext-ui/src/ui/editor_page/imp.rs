@@ -18,10 +18,12 @@ use gtk_lush_widgets::RenderHoldOverlay;
 use gtk4::gio;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
-use lushtext_model::bookmark::BookmarkRecord;
-use lushtext_model::encoding::{DocumentEncodingState, FileHealthFinding, InvisibleCharactersMode};
-use lushtext_model::formatting_overrides::FormattingOverrides;
-use lushtext_services::notifications::InlineActionNotification;
+use lushtext_model::document::encoding::{
+    DocumentEncodingState, FileHealthFinding, InvisibleCharactersMode,
+};
+use lushtext_model::document::formatting_overrides::FormattingOverrides;
+use lushtext_model::persistence::bookmark::BookmarkRecord;
+use lushtext_services::coordination::notifications::InlineActionNotification;
 use sourceview5::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -295,7 +297,8 @@ pub struct LoadState {
     /// EditorConfig overrides the planning worker resolved, applied by the
     /// install after any clear and before the first insert
     /// (`bound-post-open-settle`, D6.2, review R17).
-    pub pending_formatting: Cell<Option<lushtext_model::formatting_overrides::FormattingOverrides>>,
+    pub pending_formatting:
+        Cell<Option<lushtext_model::document::formatting_overrides::FormattingOverrides>>,
     /// Whether the newest install applied EditorConfig before its first
     /// insert (evidence).
     pub formatting_applied_before_insert: Cell<bool>,
@@ -555,15 +558,16 @@ pub struct LocalHistoryState {
     pub restore_undo_text: RefCell<
         Option<(
             crate::ui::plain_disposal::DisposalOwned<String>,
-            lushtext_model::paragraph_boundary::DocumentProfile,
+            lushtext_model::document::paragraph_boundary::DocumentProfile,
         )>,
     >,
     /// Buffer signal lifetimes that drive automatic local-history capture.
     pub buffer_signals: SignalBag,
     /// Deterministic policy seam for widget tests without allocating huge buffers.
     #[cfg(feature = "test-utils")]
-    pub availability_override:
-        Cell<Option<lushtext_services::local_history_service::LocalHistoryAvailability>>,
+    pub availability_override: Cell<
+        Option<lushtext_services::persistence::local_history_service::LocalHistoryAvailability>,
+    >,
 }
 
 /// Window-wide memory-residency and eviction bookkeeping for one editor tab.
@@ -907,7 +911,7 @@ impl ObjectImpl for LushtextEditorPage {
         crate::ui::font_zoom::follow_editor_font(&*self.source_view);
 
         let settings = &self.settings;
-        let invisible_mode = lushtext_model::encoding::InvisibleCharactersMode::from_id(
+        let invisible_mode = lushtext_model::document::encoding::InvisibleCharactersMode::from_id(
             settings.string(keys::INVISIBLE_CHARACTERS_MODE).as_str(),
         )
         .unwrap_or_default();

@@ -15,8 +15,8 @@ use crate::common::{
 };
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_model::document_scale::{ReductionReason, ScaleFeature};
-use lushtext_model::reanalysis_pacing::override_reanalysis_allowance_for_test;
+use lushtext_model::document::document_scale::{ReductionReason, ScaleFeature};
+use lushtext_model::document::reanalysis_pacing::override_reanalysis_allowance_for_test;
 use lushtext_ui::ui::editor_page::load::policy::SettleStage;
 use lushtext_ui::ui::editor_page::{EditorLoadState, LushtextEditorPage};
 use lushtext_ui::ui::window::LushtextWindow;

@@ -13,7 +13,7 @@
 use std::time::Duration;
 
 use crate::ui::accessibility::AnnouncementLane;
-use lushtext_services::notifications::{
+use lushtext_services::coordination::notifications::{
     InlineActionNotification, InlineNotificationStyle, NotificationOwner, NotificationSurface,
     StatusMessage,
 };
@@ -228,7 +228,7 @@ pub fn document_alert_projection_is_current(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lushtext_services::notifications::NotificationSeverity;
+    use lushtext_services::coordination::notifications::NotificationSeverity;
 
     fn message(text: &str, severity: NotificationSeverity) -> StatusMessage {
         StatusMessage {

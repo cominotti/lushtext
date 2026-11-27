@@ -20,7 +20,7 @@ use glib::subclass::prelude::*;
 use gtk4::glib;
 use std::cell::{Cell, RefCell};
 
-use lushtext_model::content_search::SearchMatchId;
+use lushtext_model::workspace::content_search::SearchMatchId;
 
 mod imp {
     use super::{

@@ -6,8 +6,8 @@
 //! Keeping it in the property lane exercises mixed line endings and awkward
 //! trailing whitespace without involving GTK buffers or filesystem writes.
 
-use lushtext_model::encoding::{DocumentEncoding, LineEnding};
-use lushtext_model::formatting_overrides::FormattingOverrides;
+use lushtext_model::document::encoding::{DocumentEncoding, LineEnding};
+use lushtext_model::document::formatting_overrides::FormattingOverrides;
 use lushtext_services::editor_io::apply_save_formatting_overrides;
 use proptest::prelude::*;
 

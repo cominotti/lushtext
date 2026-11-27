@@ -5,7 +5,7 @@
 //! watch, the minimap's retire-and-rebuild, and the reduced-features notice.
 //!
 //! Every fixture is synthetic. Thresholds are read from
-//! `lushtext_model::document_scale`, never restated.
+//! `lushtext_model::document::document_scale`, never restated.
 
 use crate::common::{
     LogCapture, editor_text, ensure_gtk_init, fixture, flush_events, present_window,
@@ -14,14 +14,16 @@ use crate::common::{
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
-use lushtext_model::document_scale::{
+use lushtext_model::document::document_scale::{
     DocumentScale, L_INVISIBLES, L_MINIMAP, L_PROTECT_EDIT, L_SEARCH_HIGHLIGHT, L_SYNTAX,
     L_WRAP_EDIT, LocalHistoryAvailability, R_BATCH, ReducedFeatures, V_BATCH,
 };
-use lushtext_model::paragraph_boundary::DocumentProfile;
-use lushtext_model::paragraph_wrap::REWRAP_MARGIN;
-use lushtext_model::surrounding_text::SURROUNDING_WINDOW_CHARS;
-use lushtext_services::notifications::{InlineActionNotification, InlineNotificationStyle};
+use lushtext_model::document::paragraph_boundary::DocumentProfile;
+use lushtext_model::document::paragraph_wrap::REWRAP_MARGIN;
+use lushtext_model::document::surrounding_text::SURROUNDING_WINDOW_CHARS;
+use lushtext_services::coordination::notifications::{
+    InlineActionNotification, InlineNotificationStyle,
+};
 use lushtext_ui::config::keys;
 use lushtext_ui::ui::editor_page::{
     EditorLoadState, InlineAlertLifetime, LushtextEditorPage, MinimapAvailability, NO_WRAP_TAG,
@@ -348,7 +350,9 @@ fn test_gated_search_session_keeps_counts_without_highlighting() {
 fn test_invisibles_are_forced_off_for_gated_documents() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
-    page.set_invisible_characters_mode(lushtext_model::encoding::InvisibleCharactersMode::All);
+    page.set_invisible_characters_mode(
+        lushtext_model::document::encoding::InvisibleCharactersMode::All,
+    );
     page.buffer()
         .set_text(&format!("{}\n", "z".repeat(n(L_INVISIBLES) + 1)));
     assert!(!page.document_scale().invisibles_allowed);
@@ -356,7 +360,7 @@ fn test_invisibles_are_forced_off_for_gated_documents() {
     // The per-document mode is kept for the other documents.
     assert_eq!(
         page.invisible_characters_mode(),
-        lushtext_model::encoding::InvisibleCharactersMode::All
+        lushtext_model::document::encoding::InvisibleCharactersMode::All
     );
 }
 
@@ -714,7 +718,7 @@ fn test_a_dense_short_line_document_stays_editable() {
         !evidence
             .scale
             .reduced
-            .contains(lushtext_model::document_scale::ScaleFeature::ProtectedView)
+            .contains(lushtext_model::document::document_scale::ScaleFeature::ProtectedView)
     );
 }
 

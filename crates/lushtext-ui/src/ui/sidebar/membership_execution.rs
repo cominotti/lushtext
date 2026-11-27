@@ -28,8 +28,8 @@ use gtk4::glib;
 use lushtext_model::workspace::{
     WorkspaceConfig, WorkspaceFolderId, WorkspaceFolderMoveDirection, WorkspaceId,
 };
-use lushtext_services::notifications::NotificationSeverity;
-use lushtext_services::workspace_manager;
+use lushtext_services::coordination::notifications::NotificationSeverity;
+use lushtext_services::workspace::workspace_manager;
 use workspace_manager::{
     WorkspaceFolderAddError, WorkspaceFolderRemoveError, WorkspaceFolderReorderError,
 };

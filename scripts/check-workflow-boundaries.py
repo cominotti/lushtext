@@ -546,10 +546,10 @@ WHOLE_PIXEL_POLICY_MODULES: dict[str, int] = {
     "ui/editor_page/minimap/policy.rs": 8,
     "ui/markdown_preview/policy.rs": 0,
     "ui/sidebar/width_preset.rs": 0,
-    "model/editor_memory.rs": 0,
+    "model/document/editor_memory.rs": 0,
     "ui/window/local_history/policy.rs": 0,
     "ui/window/focus_mode/policy.rs": 0,
-    "model/protected_fold.rs": 0,
+    "model/document/protected_fold.rs": 0,
     "ui/editor_page/protected_view/policy.rs": 0,
     "ui/window/tab_overflow/policy.rs": 0,
 }

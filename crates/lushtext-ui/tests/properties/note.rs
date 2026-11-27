@@ -5,7 +5,9 @@
 //! The generated cases keep GTK out of the loop and prove the normalized dirty
 //! rule that both document-note and folder-note dialogs rely on.
 
-use lushtext_model::note::{NoteEditorPresentation, NoteViewMode, normalize_note_text};
+use lushtext_model::persistence::note::{
+    NoteEditorPresentation, NoteViewMode, normalize_note_text,
+};
 use proptest::prelude::*;
 
 use crate::support;

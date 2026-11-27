@@ -8,7 +8,7 @@ use crate::common::{
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_model::workspace::{WorkspaceConfig, WorkspaceId, WorkspacesFile};
-use lushtext_services::{json_store, workspace_manager};
+use lushtext_services::{persistence::json_store, workspace::workspace_manager};
 use lushtext_ui::ui::accessibility::test_audit::AccessibleAudit;
 use lushtext_ui::ui::sidebar::LushtextSidebar;
 use lushtext_ui::ui::window::LushtextWindow;

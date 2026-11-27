@@ -43,8 +43,8 @@ use gtk4::glib;
 use gtk4::prelude::*;
 
 #[cfg(doc)]
-use lushtext_model::list_budget::LIST_RETIREMENT_UNIT_ROWS;
-use lushtext_model::list_budget::{retirement_unit_cut, turn_continues, unheld_ranges};
+use lushtext_model::budgets::list_budget::LIST_RETIREMENT_UNIT_ROWS;
+use lushtext_model::budgets::list_budget::{retirement_unit_cut, turn_continues, unheld_ranges};
 
 /// A lazy list model whose rows a [`RowRetirement`] removes.
 ///

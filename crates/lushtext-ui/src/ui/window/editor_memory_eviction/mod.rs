@@ -82,7 +82,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 
 use crate::ui::editor_page::LushtextEditorPage;
-use lushtext_model::editor_memory::{
+use lushtext_model::document::editor_memory::{
     EditorMemoryBudgetOutcome, EditorResidency, evaluate_editor_memory_budget,
 };
 

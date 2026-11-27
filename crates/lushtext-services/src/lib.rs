@@ -1,65 +1,33 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Application services: business logic and I/O operations.
+//! Application services: business logic and driven I/O adapters.
 //!
-//! This layer sits between the domain model (`model/`) and the UI (`ui/`).
-//! All services are GTK-free and fully unit-testable. Includes workspace
-//! management, session persistence, file tree scanning, editor file I/O,
-//! file size policy, bounded file peek and bookmark excerpt snapshots, fuzzy
-//! search, and the background task concurrency guard.
+//! This layer sits between the domain model (`lushtext-model`) and the UI (`lushtext-ui`).
+//! All services are GTK-free and fully unit-testable, organized into driven
+//! adapters (`filesystem/`, `persistence/`, `watch/`) and application services
+//! (`notes/`, `search/`, `workspace/`, `editor_io/`, `palette/`,
+//! `coordination/`, `instrumentation/`).
 
-pub mod action_catalog;
-pub mod app_data_layout;
-pub mod app_data_leftovers;
-pub mod bookmark_excerpt;
-pub mod bookmark_service;
-#[cfg(any(test, feature = "test-utils"))]
-pub mod conformance;
-pub mod content_search;
-pub mod document_note_service;
-pub mod draft_service;
-mod durable_write;
-pub mod editor_io;
-pub mod editorconfig;
-pub mod file_peek;
-pub mod file_tree;
+// Driven adapters.
 pub mod filesystem;
-pub mod folder_note_service;
-pub mod format_upgrade;
-pub mod fuzzy;
-pub mod json_format;
-pub mod json_store;
-pub mod kill_point;
-pub mod local_history_service;
-pub mod markdown_render;
-pub mod migration_ledger;
-mod note_storage;
-pub mod notifications;
+pub mod persistence;
+pub mod watch;
+
+// Application services.
+pub mod coordination;
+pub mod editor_io;
+pub mod instrumentation;
+pub mod notes;
 pub mod palette;
-pub(crate) mod protocol_drive;
-pub mod read_fault;
-pub mod recent_documents;
-pub mod recovery_metadata;
-#[cfg(any(test, feature = "responsiveness-probes"))]
-pub mod responsiveness_log;
-pub mod saved_searches;
-pub mod search_backup;
-pub mod search_history;
-pub mod session_service;
-pub mod single_flight;
-pub mod smoke_list_budgets;
-pub mod sync;
-#[cfg(any(test, feature = "test-utils"))]
-pub mod test_isolation;
-pub mod workspace_manager;
-pub mod workspace_watch;
+pub mod search;
+pub mod workspace;
 
 /// Feature-gated pure service hooks used only by the property-test target.
 #[cfg(feature = "property-tests")]
 pub mod property_testing {
     use std::path::{Path, PathBuf};
 
-    use lushtext_model::sidecar_identity::DocumentSidecarIdentity;
+    use lushtext_model::persistence::sidecar_identity::DocumentSidecarIdentity;
 
     /// Rebase a saved-document sidecar identity through the shared note helper.
     ///
@@ -71,6 +39,6 @@ pub mod property_testing {
         old_path: &Path,
         new_path: &Path,
     ) -> Option<(PathBuf, PathBuf)> {
-        super::note_storage::rebase_identity_paths(identity, old_path, new_path)
+        super::notes::note_storage::rebase_identity_paths(identity, old_path, new_path)
     }
 }

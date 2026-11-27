@@ -30,8 +30,8 @@ use crate::ui::sidebar::seams::{
     WorkspaceWatchDisposition, WorkspaceWatchFacts, WorkspaceWatchTicket,
 };
 use lushtext_model::workspace::FolderTreeEntry;
-use lushtext_services::notifications::NotificationSeverity;
-use lushtext_services::workspace_watch::{
+use lushtext_services::coordination::notifications::NotificationSeverity;
+use lushtext_services::watch::workspace_watch::{
     WorkspaceWatchChange, WorkspaceWatchError, WorkspaceWatchTarget, WorkspaceWatcher,
 };
 

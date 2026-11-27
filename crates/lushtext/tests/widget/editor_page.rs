@@ -11,15 +11,17 @@ use gio::prelude::ListModelExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
-use lushtext_model::document_scale::LocalHistoryAvailability;
-use lushtext_model::editor_memory::EVICTED_EDITOR_BOOKKEEPING_BYTES;
-use lushtext_model::encoding::{DocumentEncoding, DocumentEncodingState};
-use lushtext_model::formatting_overrides::FormattingOverrides;
-use lushtext_model::paragraph_boundary::DocumentProfile;
-use lushtext_model::protected_install::PROTECTED_TAIL_SLICE_BYTES;
+use lushtext_model::document::document_scale::LocalHistoryAvailability;
+use lushtext_model::document::editor_memory::EVICTED_EDITOR_BOOKKEEPING_BYTES;
+use lushtext_model::document::encoding::{DocumentEncoding, DocumentEncodingState};
+use lushtext_model::document::formatting_overrides::FormattingOverrides;
+use lushtext_model::document::paragraph_boundary::DocumentProfile;
+use lushtext_model::document::protected_install::PROTECTED_TAIL_SLICE_BYTES;
+use lushtext_services::coordination::notifications::{
+    InlineActionNotification, InlineNotificationStyle,
+};
 use lushtext_services::editor_io::{self, EditorLoadError, LoadResult};
-use lushtext_services::local_history_service;
-use lushtext_services::notifications::{InlineActionNotification, InlineNotificationStyle};
+use lushtext_services::persistence::local_history_service;
 use lushtext_ui::config::keys;
 use lushtext_ui::ui::accessibility::{AnnouncementLane, test_audit::AccessibleAudit};
 use lushtext_ui::ui::editor_page::save::policy::{SaveCaptureMode, SaveWriteClassification};

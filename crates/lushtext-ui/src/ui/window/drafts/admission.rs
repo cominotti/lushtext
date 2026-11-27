@@ -49,14 +49,14 @@ use gtk4::glib;
 use gtk4::prelude::*;
 
 use crate::ui::editor_page::LushtextEditorPage;
-use lushtext_model::draft::{
+use lushtext_model::persistence::draft::{
     DraftEntry, FileDraftRestoreResolution, PreloadedDraftRestore, PreloadedDraftSkip,
 };
-use lushtext_model::draft::{DraftManifest, DraftManifestAuthority};
-use lushtext_services::draft_service::journal_core::{
+use lushtext_model::persistence::draft::{DraftManifest, DraftManifestAuthority};
+use lushtext_services::persistence::draft_service::journal_core::{
     self, DraftClaim, JournalLaneAdmission, JournalLaneHolder,
 };
-use lushtext_services::{draft_service, json_store};
+use lushtext_services::{persistence::draft_service, persistence::json_store};
 
 use super::policy;
 use super::seams::{

@@ -21,7 +21,7 @@
 set -euo pipefail
 
 SELF="scripts/check-kill-point-gating.sh"
-GATE_FILE="crates/lushtext-services/src/kill_point.rs"
+GATE_FILE="crates/lushtext-services/src/instrumentation/kill_point.rs"
 # shellcheck disable=SC2016,SC1003
 SMOKE_BUILD_LINE='CARGO_PROFILE_DEV_DEBUG=$(SMOKE_PROFILE_DEBUG) cargo build -p lushtext --features crash-kill-points --target-dir "$(SMOKE_TARGET_DIR)" && \'
 
@@ -122,7 +122,7 @@ self_test() {
     local tmp=$SELF_TEST_DIR
     make_tree() {
         local dir=$1
-        mkdir -p "$dir/crates/lushtext-services/src" "$dir/crates/lushtext-ui/src" "$dir/crates/lushtext"
+        mkdir -p "$dir/crates/lushtext-services/src/instrumentation" "$dir/crates/lushtext-ui/src" "$dir/crates/lushtext"
         printf '#[cfg(feature = "crash-kill-points")]\npub fn reach() {}\n' \
             >"$dir/$GATE_FILE"
         printf '[features]\ncrash-kill-points = []\n' >"$dir/crates/lushtext-services/Cargo.toml"

@@ -11,8 +11,8 @@ use glib::prelude::Cast;
 use glib::prelude::ToValue;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_model::recent_document::{RecentDocumentEntry, RecentDocumentRow};
-use lushtext_services::recent_documents;
+use lushtext_model::persistence::recent_document::{RecentDocumentEntry, RecentDocumentRow};
+use lushtext_services::persistence::recent_documents;
 use lushtext_ui::ui::accessibility::test_audit::AccessibleAudit;
 use lushtext_ui::ui::open_popover::LushtextOpenPopover;
 use lushtext_ui::ui::open_popover::evidence::{

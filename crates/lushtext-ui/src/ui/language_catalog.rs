@@ -43,7 +43,7 @@ use std::sync::Arc;
 
 use gtk4::glib;
 
-use lushtext_model::language_guess::{LanguageGlobTable, LanguageGlobs};
+use lushtext_model::document::language_guess::{LanguageGlobTable, LanguageGlobs};
 
 enum CatalogState {
     NotStarted,

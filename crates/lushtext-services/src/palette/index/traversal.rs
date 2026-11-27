@@ -28,9 +28,9 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::file_tree;
 use crate::filesystem::metadata as fs_metadata;
-use lushtext_model::workspace_visibility::WorkspaceEntryVisibility;
+use crate::workspace::file_tree;
+use lushtext_model::workspace::workspace_visibility::WorkspaceEntryVisibility;
 
 use super::arena::{
     DirCanonical, DirDisplay, DirRecord, FileExtra, FileRecord, FolderRecord, IdentityKind, NO_DIR,

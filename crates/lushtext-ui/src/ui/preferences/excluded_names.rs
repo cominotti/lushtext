@@ -15,7 +15,7 @@ use libadwaita::prelude::*;
 use crate::config::keys;
 use crate::ui::accessibility;
 use crate::ui::workspace_visibility::{excluded_names, set_excluded_names};
-use lushtext_model::workspace_visibility::{
+use lushtext_model::workspace::workspace_visibility::{
     ExcludedNameRejection, add_excluded_name, remove_excluded_name,
 };
 

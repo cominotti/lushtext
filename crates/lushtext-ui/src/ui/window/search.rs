@@ -44,9 +44,10 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
 use gtk4::{self, gio, glib};
-use lushtext_services::notifications::NotificationSeverity;
+use lushtext_services::coordination::notifications::NotificationSeverity;
 use lushtext_services::{
-    content_search, filesystem::metadata as fs_metadata, json_store, saved_searches, search_history,
+    filesystem::metadata as fs_metadata, persistence::json_store, search::content_search,
+    search::saved_searches, search::search_history,
 };
 use std::collections::HashSet;
 #[cfg(feature = "test-utils")]
@@ -58,9 +59,9 @@ use crate::ui::window::StagedSurface;
 
 enum GuardedReplaceApplyResult {
     Applied {
-        result: Box<lushtext_model::content_search::ReplaceResult>,
+        result: Box<lushtext_model::workspace::content_search::ReplaceResult>,
         backup: Option<crate::ui::search_panel::GuardedReplaceUndoBackup>,
-        skip_report: Box<lushtext_model::content_search::ReplaceSkipReport>,
+        skip_report: Box<lushtext_model::workspace::content_search::ReplaceSkipReport>,
         /// Cancelled, with files the rollback could not restore.
         cancelled: bool,
     },
@@ -609,7 +610,7 @@ impl LushtextWindow {
         {
             // Every file is open with unsaved changes or an active save:
             // nothing runs, and the report says which files and why (5.5a).
-            let report = lushtext_model::content_search::ReplaceSkipReport::unsaved_only(
+            let report = lushtext_model::workspace::content_search::ReplaceSkipReport::unsaved_only(
                 &run.replacements.replacements,
             );
             let mut message = String::from(

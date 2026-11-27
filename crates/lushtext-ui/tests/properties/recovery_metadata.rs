@@ -7,7 +7,7 @@
 //! overwritten before preservation.
 
 use lushtext_services::filesystem::fixture;
-use lushtext_services::recovery_metadata::{
+use lushtext_services::persistence::recovery_metadata::{
     RecoveryLoad, RecoveryLoadConfig, RecoveryLoadOutcome, RecoveryMetadataClass,
     load_json_or_default,
 };

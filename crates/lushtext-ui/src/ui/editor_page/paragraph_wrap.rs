@@ -32,7 +32,9 @@ use gtk4::prelude::*;
 use super::LushtextEditorPage;
 use super::document_scale::{inserted_run_start, read_paragraph_chars};
 use crate::ui::signal_connect;
-use lushtext_model::paragraph_wrap::{ParagraphWrap, long_interior_paragraphs, paragraph_wrap};
+use lushtext_model::document::paragraph_wrap::{
+    ParagraphWrap, long_interior_paragraphs, paragraph_wrap,
+};
 
 /// The tag that unwraps a paragraph: the gate applies it to the whole
 /// paragraph, and GTK reads it from the first character (ledger A53).

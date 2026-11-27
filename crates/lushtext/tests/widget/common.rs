@@ -51,7 +51,7 @@ pub fn ensure_gtk_init() {
         // directories on first use, which is why they must be set before GTK
         // starts; this only checks that they were.
         assert!(
-            lushtext_services::test_isolation::environment_is_isolated_within(
+            lushtext_services::instrumentation::test_isolation::environment_is_isolated_within(
                 &std::env::temp_dir()
             ),
             "widget test started without private app data; run it through the widget harness"
@@ -692,7 +692,7 @@ impl Drop for DraftPipelinePolicyReset {
             set_lazy_draft_read_delay_for_test,
         };
         set_automatic_draft_limit_for_test(
-            lushtext_services::draft_service::MAX_AUTOMATIC_DRAFT_BYTES,
+            lushtext_services::persistence::draft_service::MAX_AUTOMATIC_DRAFT_BYTES,
         );
         set_lazy_draft_read_delay_for_test(0);
         set_draft_mutation_delays_for_test(0, 0, 0);

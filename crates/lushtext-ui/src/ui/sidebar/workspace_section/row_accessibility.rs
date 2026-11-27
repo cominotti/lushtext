@@ -215,13 +215,13 @@ fn file_tree_row_description(
 
 /// The accessible description of a placeholder row of `placeholder`.
 fn placeholder_row_description(
-    placeholder: lushtext_services::file_tree::DirectoryPlaceholder,
+    placeholder: lushtext_services::workspace::file_tree::DirectoryPlaceholder,
 ) -> &'static str {
     match placeholder {
-        lushtext_services::file_tree::DirectoryPlaceholder::Budget { .. } => {
+        lushtext_services::workspace::file_tree::DirectoryPlaceholder::Budget { .. } => {
             crate::ui::sidebar::policy::budget_row_description()
         }
-        lushtext_services::file_tree::DirectoryPlaceholder::Loading => {
+        lushtext_services::workspace::file_tree::DirectoryPlaceholder::Loading => {
             crate::ui::sidebar::policy::loading_row_description()
         }
     }

@@ -29,7 +29,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 
 use crate::ui::plain_disposal::DisposalOwned;
-use lushtext_model::palette::{
+use lushtext_model::workspace::palette::{
     PaletteCategory, PaletteFileEntry, PaletteNoteEntry, PaletteSearchRow, SearchMode,
 };
 use lushtext_services::palette::{

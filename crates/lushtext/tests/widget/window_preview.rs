@@ -22,10 +22,10 @@ use crate::common::{
 use glib::prelude::ToVariant;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_services::editor_io;
-use lushtext_services::notifications::{
+use lushtext_services::coordination::notifications::{
     InlineActionNotification, InlineNotificationStyle, NotificationSeverity,
 };
+use lushtext_services::editor_io;
 use lushtext_ui::ui::accessibility::test_audit::AccessibleAudit;
 use lushtext_ui::ui::editor_page::{
     BufferReplacementCancelReason, EditorLoadState, InlineAlertLifetime, LushtextEditorPage,

@@ -7,7 +7,7 @@ Timing: none (no timed path touched).
 
 - [x] 1.1 Create `docs/next/idiomatic-rust-hexagonal-programme.md` recording the 5-change programme scope, `main` (`3c442112`) baselines, ratchet policy, and ordering rationale; verify `scripts/check-agent-docs.sh` passes.
 - [x] 1.2 Write `scripts/check-hexagonal-boundaries.py` with `--self-test` (testing forbidden cross-layer Cargo dependencies in `lushtext-model`, `lushtext-services`, and `lushtext-ui`, plus a new `> 1,000`-line production file rejection) and verify `--self-test` fails on the intentional violation fixtures before passing on valid fixtures, and that running the real check on the current pre-refactor tree fails on the known `lushtext-core` leaks (`regex`, `pulldown-cmark`, missing `lushtext-ui`).
-- [ ] 1.3 Wire `check-hexagonal-boundaries` into `Makefile` (`check-policy`) and `.github/workflows/ci.yml`; create a signed commit (`git commit -S`) and push the branch.
+- [x] 1.3 Wire `check-hexagonal-boundaries` into `Makefile` (`check-policy`) and `.github/workflows/ci.yml`; create a signed commit (`git commit -S`) and push the branch.
 
 ## 2. Rename `crates/lushtext-core` to `crates/lushtext-ui` & re-key all gates
 
@@ -17,10 +17,10 @@ Timing: none (no timed path touched).
 
 ## 3. Bounded-context module layout & infra leak removal
 
-- [ ] 3.1 Reorganize `crates/lushtext-model/src/` into `values/`, `document/`, `workspace/`, `persistence/`, `budgets/`, and `automation/`, and move `regex` expansion logic out of `lushtext-model` into `lushtext-services`; verify `cargo test -p lushtext-model` and `make check-kani-shards` pass.
-- [ ] 3.2 Reorganize `crates/lushtext-services/src/` into separated driven adapters (`filesystem/`, `persistence/`, `watch/`) and application services (`notes/`, `search/`, `workspace/`, `editor_io/`, `palette/`, `coordination/`, `instrumentation/`); verify `cargo test -p lushtext-services` passes.
-- [ ] 3.3 Move `regex` usage from `ui/editor_page/protected_view/find_execution.rs` and `pulldown_cmark` usage (including `InlineFootnoteLowering` in `ui/markdown_preview/policy.rs`) from `ui/markdown_preview/*` behind `lushtext-services` domain APIs, keeping `preview_width` and its 6 Kani harnesses intact in `ui/markdown_preview/policy.rs`, and remove `regex` / `pulldown-cmark` from `crates/lushtext-ui/Cargo.toml`; verify `cargo test -p lushtext-ui`, `make test-unit`, and `core-geometry-policies` Kani shard pass.
-- [ ] 3.4 Update `AGENTS.md`, `README.md`, `docs/workflow-readability-matrix.md`, and `docs/thresholds.md` with the organized module paths, run `make check-policy`, create a signed commit (`git commit -S`), and push the branch.
+- [x] 3.1 Reorganize `crates/lushtext-model/src/` into `values/`, `document/`, `workspace/`, `persistence/`, `budgets/`, and `automation/`, and move `regex` expansion logic out of `lushtext-model` into `lushtext-services`; verify `cargo test -p lushtext-model` and `make check-kani-shards` pass.
+- [x] 3.2 Reorganize `crates/lushtext-services/src/` into separated driven adapters (`filesystem/`, `persistence/`, `watch/`) and application services (`notes/`, `search/`, `workspace/`, `editor_io/`, `palette/`, `coordination/`, `instrumentation/`); verify `cargo test -p lushtext-services` passes.
+- [x] 3.3 Move `regex` usage from `ui/editor_page/protected_view/find_execution.rs` and `pulldown_cmark` usage (including `InlineFootnoteLowering` in `ui/markdown_preview/policy.rs`) from `ui/markdown_preview/*` behind `lushtext-services` domain APIs, keeping `preview_width` and its 6 Kani harnesses intact in `ui/markdown_preview/policy.rs`, and remove `regex` / `pulldown-cmark` from `crates/lushtext-ui/Cargo.toml`; verify `cargo test -p lushtext-ui`, `make test-unit`, and `core-geometry-policies` Kani shard pass.
+- [x] 3.4 Update `AGENTS.md`, `README.md`, `docs/workflow-readability-matrix.md`, and `docs/thresholds.md` with the organized module paths, run `make check-policy`, create a signed commit (`git commit -S`), and push the branch.
 
 ## 4. Relocate GTK-free tests/benches & green full validation
 

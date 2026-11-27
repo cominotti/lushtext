@@ -8,7 +8,7 @@
 
 use glib::subclass::prelude::*;
 use gtk4::glib;
-use lushtext_model::recent_document::RecentDocumentRow;
+use lushtext_model::persistence::recent_document::RecentDocumentRow;
 use std::cell::RefCell;
 use std::path::PathBuf;
 

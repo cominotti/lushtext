@@ -35,10 +35,10 @@ use crate::ui::editor_page::{EditorLoadState, LushtextEditorPage};
 use crate::ui::responsiveness_probe::PostOpenSpan;
 use crate::ui::sidebar::seams::SidebarFileRowStateSnapshot;
 use crate::ui::status_bar::MessageKind;
-use lushtext_services::draft_service::journal_core;
-use lushtext_services::editorconfig;
+use lushtext_services::coordination::notifications::InlineActionNotification;
 use lushtext_services::filesystem::metadata as fs_metadata;
-use lushtext_services::notifications::InlineActionNotification;
+use lushtext_services::persistence::draft_service::journal_core;
+use lushtext_services::workspace::editorconfig;
 
 use super::LushtextWindow;
 
@@ -975,12 +975,13 @@ impl LushtextWindow {
             imp.status_bar.set_editorconfig_active(ec_active);
             imp.status_bar
                 .set_encoding_label(e.opened_encoding().label());
-            let line_ending_label =
-                if e.detected_line_ending() == lushtext_model::encoding::LineEnding::Mixed {
-                    "Mixed"
-                } else {
-                    e.save_line_ending().label()
-                };
+            let line_ending_label = if e.detected_line_ending()
+                == lushtext_model::document::encoding::LineEnding::Mixed
+            {
+                "Mixed"
+            } else {
+                e.save_line_ending().label()
+            };
             imp.status_bar.set_line_ending_label(line_ending_label);
         } else {
             imp.status_bar.set_metadata_visible(false);

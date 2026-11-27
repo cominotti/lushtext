@@ -45,13 +45,13 @@ use crate::ui::sidebar::policy::{
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
-use lushtext_model::list_budget::turn_continues;
-use lushtext_model::workspace_visibility::WorkspaceEntryVisibility;
-use lushtext_services::file_tree::{
+use lushtext_model::budgets::list_budget::turn_continues;
+use lushtext_model::workspace::workspace_visibility::WorkspaceEntryVisibility;
+use lushtext_services::coordination::notifications::NotificationSeverity;
+use lushtext_services::workspace::file_tree::{
     DirectoryPlaceholder, DirectoryReconciliationPlan, DirectoryRowState,
     plan_directory_reconciliation,
 };
-use lushtext_services::notifications::NotificationSeverity;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -150,7 +150,9 @@ impl ChildReconcileProgress {
 /// unless a widget test or a smoke binary lowers it.
 fn directory_retained_bytes() -> u64 {
     let mut bytes = crate::ui::sidebar::policy::SIDEBAR_DIRECTORY_RETAINED_BYTES;
-    if let Some(smoke) = lushtext_services::smoke_list_budgets::sidebar_directory_retained_bytes() {
+    if let Some(smoke) =
+        lushtext_services::instrumentation::smoke_list_budgets::sidebar_directory_retained_bytes()
+    {
         bytes = smoke;
     }
     #[cfg(feature = "test-utils")]
@@ -423,7 +425,7 @@ pub(super) fn start_child_scan(
             if !scan_delay.is_zero() {
                 std::thread::sleep(scan_delay);
             }
-            let scan = lushtext_services::file_tree::scan_sidebar_directory(
+            let scan = lushtext_services::workspace::file_tree::scan_sidebar_directory(
                 &path,
                 scan_budget,
                 lookahead_cap,
@@ -1542,7 +1544,7 @@ fn snapshot_child_rows(store: &gio::ListStore) -> Vec<DirectoryRowState> {
 /// Build the desired child-row state from a fresh scan: every listed entry,
 /// then the budget row when the retained-byte budget cut the listing.
 fn desired_child_rows(
-    entries: Vec<lushtext_services::file_tree::DirectoryEntry>,
+    entries: Vec<lushtext_services::workspace::file_tree::DirectoryEntry>,
     limited: Option<(usize, usize)>,
 ) -> Vec<DirectoryRowState> {
     let mut rows = entries
@@ -2924,12 +2926,12 @@ mod index_tests {
                 "",
             );
         }
-        let scan = lushtext_services::file_tree::scan_sidebar_directory(
+        let scan = lushtext_services::workspace::file_tree::scan_sidebar_directory(
             dir.path(),
             crate::ui::sidebar::policy::sidebar_scan_budget(retained_bytes),
             8,
             || false,
-            &lushtext_model::workspace_visibility::WorkspaceEntryVisibility::default(),
+            &lushtext_model::workspace::workspace_visibility::WorkspaceEntryVisibility::default(),
         );
         let limited = scan
             .truncated

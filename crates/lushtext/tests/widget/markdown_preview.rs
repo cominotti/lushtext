@@ -9,7 +9,7 @@ use crate::common::{
 use gio::prelude::ListModelExt;
 use glib::prelude::{Cast, IsA};
 use gtk4::prelude::*;
-use lushtext_services::markdown_render::{
+use lushtext_services::notes::markdown_render::{
     MARKDOWN_EVENTS_PER_PROJECTION_SLICE, MAX_MARKDOWN_PLACEHOLDER_WIDGETS,
     MAX_MARKDOWN_SOURCE_BYTES,
 };

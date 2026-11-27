@@ -6,10 +6,12 @@ use crate::common::{ensure_gtk_init, fixture, fs_metadata, isolated_data_dir, wa
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
-use lushtext_services::format_upgrade::{
+use lushtext_services::persistence::format_upgrade::{
     FORMAT_UPGRADE_BACKUP_DIR, test_support::ConverterRegistry,
 };
-use lushtext_services::json_format::{KIND_BOOKMARK_SIDECAR, KIND_SESSION, SUPPORTED_JSON_VERSION};
+use lushtext_services::persistence::json_format::{
+    KIND_BOOKMARK_SIDECAR, KIND_SESSION, SUPPORTED_JSON_VERSION,
+};
 use lushtext_ui::config::keys;
 use lushtext_ui::ui::accessibility::{AnnouncementLane, test_audit::AccessibleAudit};
 use lushtext_ui::ui::preferences::LushtextPreferences;
@@ -688,7 +690,7 @@ fn set_aside_rows(prefs: &LushtextPreferences) -> Vec<libadwaita::ActionRow> {
 fn listed_fingerprint(
     prefs: &LushtextPreferences,
     path: &std::path::Path,
-) -> lushtext_services::draft_service::set_aside_retention::SetAsideFingerprint {
+) -> lushtext_services::persistence::draft_service::set_aside_retention::SetAsideFingerprint {
     prefs
         .imp()
         .data_set_aside_listing
@@ -705,7 +707,7 @@ fn listed_fingerprint(
 }
 
 fn seed_set_aside(data_dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
-    let area = lushtext_services::draft_service::set_aside_dir(data_dir);
+    let area = lushtext_services::persistence::draft_service::set_aside_dir(data_dir);
     fixture::create_dir_all(&area);
     let path = area.join(name);
     fixture::write_text(&path, body);
@@ -859,7 +861,7 @@ fn test_data_page_opens_a_preserved_draft_in_a_new_untitled_tab_and_keeps_it() {
     let draft_id = editor.draft_id().expect("the new tab has a draft id");
     window.autosave_tick_for_test();
     wait_until(Duration::from_secs(10), || {
-        lushtext_services::draft_service::read_draft(data_dir.path(), &draft_id)
+        lushtext_services::persistence::draft_service::read_draft(data_dir.path(), &draft_id)
             .ok()
             .flatten()
             .as_deref()
@@ -887,8 +889,9 @@ fn set_aside_summary(prefs: &LushtextPreferences) -> Option<(String, String)> {
 }
 
 fn set_aside_names(data_dir: &std::path::Path) -> Vec<String> {
-    let mut names =
-        fixture::entry_names(&lushtext_services::draft_service::set_aside_dir(data_dir));
+    let mut names = fixture::entry_names(
+        &lushtext_services::persistence::draft_service::set_aside_dir(data_dir),
+    );
     names.sort();
     names
 }
@@ -1052,7 +1055,7 @@ fn test_delete_all_preserved_drafts_removes_exactly_the_confirmed_set() {
     // While the dialog is open: a new body is set aside, and one listed body
     // is replaced by different content under its name.
     seed_set_aside(data_dir.path(), "aaaa000000000004.4.draft", "four");
-    let changed = lushtext_services::draft_service::set_aside_dir(data_dir.path())
+    let changed = lushtext_services::persistence::draft_service::set_aside_dir(data_dir.path())
         .join("aaaa000000000002.2.draft");
     fixture::remove_file(&changed);
     fixture::write_text(&changed, "two, rewritten after the confirmation");
@@ -1095,7 +1098,7 @@ fn app_data_files(root: &std::path::Path) -> Vec<(std::path::PathBuf, u64)> {
 
 #[test]
 fn test_preserved_drafts_over_the_bound_notify_once_and_the_review_action_opens_them() {
-    use lushtext_services::draft_service;
+    use lushtext_services::persistence::draft_service;
     let data_dir = isolated_data_dir();
     seed_set_aside_bodies(data_dir.path(), 129);
     let window = crate::common::test_window();

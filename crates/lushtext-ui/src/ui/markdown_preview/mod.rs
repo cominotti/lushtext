@@ -124,7 +124,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use std::sync::atomic::Ordering;
 
-pub use lushtext_services::markdown_render::MarkdownRenderState;
+pub use lushtext_services::notes::markdown_render::MarkdownRenderState;
 
 use images::{ActiveImageWork, PendingImageWork};
 
@@ -138,12 +138,14 @@ pub use evidence::{
 // `crate::ui::markdown_preview::…`, so the facade re-exports them from the role
 // modules that own them.
 #[cfg(feature = "property-tests")]
-pub use policy::lower_inline_footnotes_for_property_test;
+pub use lushtext_services::notes::markdown_render::lower_inline_footnotes_for_property_test;
+#[cfg(feature = "fuzzing")]
+pub use lushtext_services::notes::markdown_render::{
+    lowered_markdown_for_fuzzing, preprocess_markdown_for_fuzzing,
+};
 pub(crate) use policy::{
     PREVIEW_DEFAULT_WIDTH_SP, PREVIEW_MIN_WIDTH_SP, clamped_preview_width, preferred_preview_width,
 };
-#[cfg(feature = "fuzzing")]
-pub use policy::{lowered_markdown_for_fuzzing, preprocess_markdown_for_fuzzing};
 pub use seams::MarkdownPreviewRenderContext;
 
 glib::wrapper! {

@@ -18,10 +18,10 @@
 use std::path::PathBuf;
 
 use crate::ui::editor_page::BookmarkEditError;
-use lushtext_model::list_budget::grouped_thousands;
-use lushtext_model::palette::PaletteNoteCategory;
+use lushtext_model::budgets::list_budget::grouped_thousands;
 use lushtext_model::workspace::WorkspaceConfig;
-use lushtext_services::bookmark_excerpt;
+use lushtext_model::workspace::palette::PaletteNoteCategory;
+use lushtext_services::notes::bookmark_excerpt;
 use lushtext_services::palette as palette_service;
 use lushtext_services::palette::NotesBrowserMode;
 

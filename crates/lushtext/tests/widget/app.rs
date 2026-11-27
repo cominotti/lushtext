@@ -11,8 +11,11 @@ use glib::prelude::ObjectExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::{GtkApplicationExt, TextBufferExt};
 use gtk4::{IconTheme, gdk};
-use lushtext_model::session::{SessionData, SessionTab};
-use lushtext_services::{editor_io, json_store, session_service, test_isolation};
+use lushtext_model::persistence::session::{SessionData, SessionTab};
+use lushtext_services::{
+    editor_io, instrumentation::test_isolation, persistence::json_store,
+    persistence::session_service,
+};
 use lushtext_ui::app::LushtextApplication;
 use lushtext_ui::config;
 use lushtext_ui::ui::automation::app_snapshot;

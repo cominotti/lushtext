@@ -14,9 +14,9 @@ use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
-use lushtext_services::notifications::{NotificationSeverity, StatusMessage};
+use lushtext_services::coordination::notifications::{NotificationSeverity, StatusMessage};
 
-pub use lushtext_services::notifications::NotificationSeverity as MessageKind;
+pub use lushtext_services::coordination::notifications::NotificationSeverity as MessageKind;
 
 /// Duration of the visible status-message acknowledgement pulse.
 ///

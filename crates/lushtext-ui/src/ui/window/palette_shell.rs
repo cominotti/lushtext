@@ -39,7 +39,7 @@ use gtk4::prelude::*;
 use crate::ui::accessibility::AnnouncementLane;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
-use lushtext_model::palette::{
+use lushtext_model::workspace::palette::{
     PaletteCategory, PaletteFileEntry, PaletteFileIdentity, PaletteFileIdentityFailure, SearchMode,
 };
 use lushtext_services::palette::{

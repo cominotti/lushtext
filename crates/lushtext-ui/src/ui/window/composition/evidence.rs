@@ -25,7 +25,7 @@ use gtk4::prelude::*;
 
 use super::super::LushtextWindow;
 use super::policy::{CompositionPlan, CompositionStage, StageSet, composition_blocks_readiness};
-use lushtext_model::construction_spans::span_duration_us;
+use lushtext_model::budgets::construction_spans::span_duration_us;
 
 /// Everything a test, the readiness poll, or the snapshot may observe about
 /// one window's composition.

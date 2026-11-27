@@ -36,7 +36,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use gtk4::prelude::*;
 
-use lushtext_services::markdown_render::{
+use lushtext_services::notes::markdown_render::{
     MAX_MARKDOWN_RETAINED_BYTES, MAX_MARKDOWN_SOURCE_BYTES, MarkdownEventBatch, MarkdownPlanLimit,
     MarkdownRenderPlan,
 };
@@ -391,8 +391,9 @@ pub(super) struct MarkdownRetirementSession {
 mod tests {
     use super::*;
     use crate::ui::markdown_preview::imp::list_item_text_margin;
-    use lushtext_services::markdown_render::{MarkdownPlanLimit, markdown_render_options};
-    use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+    use lushtext_services::notes::markdown_render::{
+        MarkdownEvent, MarkdownPlanLimit, MarkdownTag, MarkdownTagEnd, parse_markdown_events,
+    };
 
     #[test]
     fn simplified_terminal_copy_reports_completion_and_a_count() {
@@ -513,29 +514,30 @@ mod tests {
     }
 
     fn parser_event_labels(markdown: &str) -> Vec<String> {
-        Parser::new_ext(markdown, markdown_render_options())
+        parse_markdown_events(markdown)
+            .into_iter()
             .map(|event| match event {
-                Event::Start(tag) => match tag {
-                    Tag::BlockQuote(_) => "Start::BlockQuote".to_string(),
-                    Tag::CodeBlock(_) => "Start::CodeBlock".to_string(),
+                MarkdownEvent::Start(tag) => match tag {
+                    MarkdownTag::BlockQuote(_) => "Start::BlockQuote".to_string(),
+                    MarkdownTag::CodeBlock(_) => "Start::CodeBlock".to_string(),
                     other => format!("Start::{other:?}"),
                 },
-                Event::End(tag) => match tag {
-                    TagEnd::BlockQuote(_) => "End::BlockQuote".to_string(),
-                    TagEnd::CodeBlock => "End::CodeBlock".to_string(),
+                MarkdownEvent::End(tag) => match tag {
+                    MarkdownTagEnd::BlockQuote(_) => "End::BlockQuote".to_string(),
+                    MarkdownTagEnd::CodeBlock => "End::CodeBlock".to_string(),
                     other => format!("End::{other:?}"),
                 },
-                Event::Text(text) => format!("Text::{text}"),
-                Event::Code(code) => format!("Code::{code}"),
-                Event::SoftBreak => "SoftBreak".to_string(),
-                Event::HardBreak => "HardBreak".to_string(),
-                Event::Rule => "Rule".to_string(),
-                Event::FootnoteReference(label) => format!("FootnoteReference::{label}"),
-                Event::TaskListMarker(checked) => format!("TaskListMarker::{checked}"),
-                Event::Html(html) => format!("Html::{html}"),
-                Event::InlineHtml(html) => format!("InlineHtml::{html}"),
-                Event::InlineMath(math) => format!("InlineMath::{math}"),
-                Event::DisplayMath(math) => format!("DisplayMath::{math}"),
+                MarkdownEvent::Text(text) => format!("Text::{text}"),
+                MarkdownEvent::Code(code) => format!("Code::{code}"),
+                MarkdownEvent::SoftBreak => "SoftBreak".to_string(),
+                MarkdownEvent::HardBreak => "HardBreak".to_string(),
+                MarkdownEvent::Rule => "Rule".to_string(),
+                MarkdownEvent::FootnoteReference(label) => format!("FootnoteReference::{label}"),
+                MarkdownEvent::TaskListMarker(checked) => format!("TaskListMarker::{checked}"),
+                MarkdownEvent::Html(html) => format!("Html::{html}"),
+                MarkdownEvent::InlineHtml(html) => format!("InlineHtml::{html}"),
+                MarkdownEvent::InlineMath(math) => format!("InlineMath::{math}"),
+                MarkdownEvent::DisplayMath(math) => format!("DisplayMath::{math}"),
             })
             .collect()
     }

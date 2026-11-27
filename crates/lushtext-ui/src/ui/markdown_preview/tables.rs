@@ -8,7 +8,9 @@
 //! lived in `mod.rs`; only the code location moved.
 
 use gtk4::prelude::*;
-use pulldown_cmark::{Alignment, Event, Tag, TagEnd};
+use lushtext_services::notes::markdown_render::{
+    MarkdownAlignment, MarkdownEvent, MarkdownTag, MarkdownTagEnd,
+};
 
 use crate::ui::accessibility;
 
@@ -31,7 +33,7 @@ const MAX_PREVIEW_TABLE_CELLS: usize = 1_024;
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct BufferedTable {
     /// Column alignments emitted by pulldown-cmark for this table.
-    alignments: Vec<Alignment>,
+    alignments: Vec<MarkdownAlignment>,
     /// Header and body rows in source order.
     rows: Vec<BufferedTableRow>,
     /// Total source cells observed, even after row buffering stops.
@@ -109,11 +111,11 @@ struct BufferedTableCell {
 }
 
 /// Mutable builder that accumulates table rows and cells while pulldown-cmark
-/// is inside one `Tag::Table(..)` block.
+/// is inside one `MarkdownTag::Table(..)` block.
 #[derive(Debug, Default)]
 pub(super) struct BufferedTableBuilder {
     /// Column alignments emitted by pulldown-cmark for this table.
-    alignments: Vec<Alignment>,
+    alignments: Vec<MarkdownAlignment>,
     /// Render context reused by the inline builders for this table.
     render_context: MarkdownPreviewRenderContext,
     /// Completed header and body rows.
@@ -133,7 +135,7 @@ pub(super) struct BufferedTableBuilder {
 impl BufferedTableBuilder {
     /// Start buffering one Markdown table.
     pub(super) fn new(
-        alignments: Vec<Alignment>,
+        alignments: Vec<MarkdownAlignment>,
         render_context: MarkdownPreviewRenderContext,
     ) -> Self {
         Self {
@@ -178,9 +180,9 @@ impl BufferedTableBuilder {
     }
 
     /// Fold one event from inside the active table into the buffered model.
-    pub(super) fn push_event(&mut self, event: Event<'_>) {
+    pub(super) fn push_event(&mut self, event: MarkdownEvent) {
         match event {
-            Event::Start(Tag::TableHead) => {
+            MarkdownEvent::Start(MarkdownTag::TableHead) => {
                 if self.over_budget {
                     self.current_row = None;
                     return;
@@ -192,7 +194,7 @@ impl BufferedTableBuilder {
                     spans_all_columns: false,
                 });
             }
-            Event::End(TagEnd::TableHead) => {
+            MarkdownEvent::End(MarkdownTagEnd::TableHead) => {
                 if !self.over_budget
                     && let Some(row) = self.current_row.take()
                 {
@@ -200,7 +202,7 @@ impl BufferedTableBuilder {
                 }
                 self.in_header = false;
             }
-            Event::Start(Tag::TableRow) => {
+            MarkdownEvent::Start(MarkdownTag::TableRow) => {
                 if self.over_budget {
                     self.current_row = None;
                     return;
@@ -211,14 +213,14 @@ impl BufferedTableBuilder {
                     spans_all_columns: false,
                 });
             }
-            Event::End(TagEnd::TableRow) => {
+            MarkdownEvent::End(MarkdownTagEnd::TableRow) => {
                 if !self.over_budget
                     && let Some(row) = self.current_row.take()
                 {
                     self.rows.push(row);
                 }
             }
-            Event::Start(Tag::TableCell) => {
+            MarkdownEvent::Start(MarkdownTag::TableCell) => {
                 self.observed_cells = self.observed_cells.saturating_add(1);
                 if self.observed_cells > MAX_PREVIEW_TABLE_CELLS {
                     self.over_budget = true;
@@ -229,7 +231,7 @@ impl BufferedTableBuilder {
                         Some(TableCellMarkupBuilder::new(self.render_context.clone()));
                 }
             }
-            Event::End(TagEnd::TableCell) => {
+            MarkdownEvent::End(MarkdownTagEnd::TableCell) => {
                 if !self.over_budget
                     && let (Some(row), Some(cell)) =
                         (self.current_row.as_mut(), self.current_cell.take())
@@ -334,28 +336,32 @@ impl TableCellMarkupBuilder {
 
     /// Fold one pulldown-cmark event into the limited markup subset we support
     /// for `GtkLabel` table cells.
-    pub(super) fn push_event(&mut self, event: Event<'_>) {
+    pub(super) fn push_event(&mut self, event: MarkdownEvent) {
         match event {
-            Event::Start(Tag::Strong) => self.push_style(TableCellStyle::Bold),
-            Event::End(TagEnd::Strong) => self.pop_style(TableCellStyle::Bold),
-            Event::Start(Tag::Emphasis) => self.push_style(TableCellStyle::Italic),
-            Event::End(TagEnd::Emphasis) => self.pop_style(TableCellStyle::Italic),
-            Event::Start(Tag::Strikethrough) => self.push_style(TableCellStyle::Strikethrough),
-            Event::End(TagEnd::Strikethrough) => self.pop_style(TableCellStyle::Strikethrough),
-            Event::Start(Tag::Link { dest_url, .. }) => {
-                if let Some(target) = resolve_link_target(dest_url.as_ref(), &self.render_context) {
+            MarkdownEvent::Start(MarkdownTag::Strong) => self.push_style(TableCellStyle::Bold),
+            MarkdownEvent::End(MarkdownTagEnd::Strong) => self.pop_style(TableCellStyle::Bold),
+            MarkdownEvent::Start(MarkdownTag::Emphasis) => self.push_style(TableCellStyle::Italic),
+            MarkdownEvent::End(MarkdownTagEnd::Emphasis) => self.pop_style(TableCellStyle::Italic),
+            MarkdownEvent::Start(MarkdownTag::Strikethrough) => {
+                self.push_style(TableCellStyle::Strikethrough);
+            }
+            MarkdownEvent::End(MarkdownTagEnd::Strikethrough) => {
+                self.pop_style(TableCellStyle::Strikethrough);
+            }
+            MarkdownEvent::Start(MarkdownTag::Link { dest_url, .. }) => {
+                if let Some(target) = resolve_link_target(&dest_url, &self.render_context) {
                     self.push_link(target.uri);
                 }
             }
-            Event::End(TagEnd::Link) => self.pop_style(TableCellStyle::Link),
-            Event::Text(text) => self.push_text(&text),
-            Event::Code(code) => {
+            MarkdownEvent::End(MarkdownTagEnd::Link) => self.pop_style(TableCellStyle::Link),
+            MarkdownEvent::Text(text) => self.push_text(&text),
+            MarkdownEvent::Code(code) => {
                 self.markup.push_str("<tt>");
                 self.push_text(&code);
                 self.markup.push_str("</tt>");
             }
-            Event::SoftBreak => self.markup.push(' '),
-            Event::HardBreak => self.markup.push('\n'),
+            MarkdownEvent::SoftBreak => self.markup.push(' '),
+            MarkdownEvent::HardBreak => self.markup.push('\n'),
             _ => {}
         }
     }
@@ -451,7 +457,7 @@ fn build_table_widget(preview: &LushtextMarkdownPreview, table: &BufferedTable) 
     for (row_index, row) in table.rows.iter().enumerate() {
         if row.spans_all_columns {
             let markup = row.cells.first().map_or("", |cell| cell.markup.as_str());
-            let label = build_table_cell_label(preview, markup, false, Alignment::Left);
+            let label = build_table_cell_label(preview, markup, false, MarkdownAlignment::Left);
             label.set_wrap(true);
             label.add_css_class("markdown-table-omission-row");
             accessibility::set_label(&label, &label.text());
@@ -477,7 +483,7 @@ fn build_table_widget(preview: &LushtextMarkdownPreview, table: &BufferedTable) 
                 .alignments
                 .get(column_index)
                 .copied()
-                .unwrap_or(Alignment::None);
+                .unwrap_or(MarkdownAlignment::None);
             let label = build_table_cell_label(preview, markup, row.is_header, alignment);
             grid.attach(
                 &label,
@@ -512,7 +518,7 @@ fn build_table_cell_label(
     preview: &LushtextMarkdownPreview,
     markup: &str,
     is_header: bool,
-    alignment: Alignment,
+    alignment: MarkdownAlignment,
 ) -> gtk4::Label {
     let label = gtk4::Label::new(None);
     label.set_hexpand(true);
@@ -561,11 +567,11 @@ fn build_table_cell_label(
 }
 
 /// Map Markdown table alignment to the matching GTK label alignment value.
-fn alignment_xalign(alignment: Alignment) -> f32 {
+fn alignment_xalign(alignment: MarkdownAlignment) -> f32 {
     match alignment {
-        Alignment::Left | Alignment::None => 0.0,
-        Alignment::Center => 0.5,
-        Alignment::Right => 1.0,
+        MarkdownAlignment::Left | MarkdownAlignment::None => 0.0,
+        MarkdownAlignment::Center => 0.5,
+        MarkdownAlignment::Right => 1.0,
     }
 }
 
@@ -596,26 +602,28 @@ impl LushtextMarkdownPreview {
 mod tests {
     use super::*;
     use crate::ui::markdown_preview::MarkdownPreviewRenderContext;
-    use pulldown_cmark::{Alignment, Event, LinkType, Tag, TagEnd};
+    use lushtext_services::notes::markdown_render::{
+        MarkdownAlignment, MarkdownEvent, MarkdownLinkType, MarkdownTag, MarkdownTagEnd,
+    };
 
     #[test]
     fn test_table_cell_markup_builder_supports_inline_subset() {
         let mut builder = TableCellMarkupBuilder::new(MarkdownPreviewRenderContext::default());
-        builder.push_event(Event::Start(Tag::Strong));
-        builder.push_event(Event::Text("bold".into()));
-        builder.push_event(Event::End(TagEnd::Strong));
-        builder.push_event(Event::Text(" ".into()));
-        builder.push_event(Event::Start(Tag::Emphasis));
-        builder.push_event(Event::Text("italic".into()));
-        builder.push_event(Event::End(TagEnd::Emphasis));
-        builder.push_event(Event::Text(" ".into()));
-        builder.push_event(Event::Start(Tag::Strikethrough));
-        builder.push_event(Event::Text("strike".into()));
-        builder.push_event(Event::End(TagEnd::Strikethrough));
-        builder.push_event(Event::Text(" ".into()));
-        builder.push_event(Event::Code("code".into()));
-        builder.push_event(Event::HardBreak);
-        builder.push_event(Event::Text("<escaped>".into()));
+        builder.push_event(MarkdownEvent::Start(MarkdownTag::Strong));
+        builder.push_event(MarkdownEvent::Text("bold".into()));
+        builder.push_event(MarkdownEvent::End(MarkdownTagEnd::Strong));
+        builder.push_event(MarkdownEvent::Text(" ".into()));
+        builder.push_event(MarkdownEvent::Start(MarkdownTag::Emphasis));
+        builder.push_event(MarkdownEvent::Text("italic".into()));
+        builder.push_event(MarkdownEvent::End(MarkdownTagEnd::Emphasis));
+        builder.push_event(MarkdownEvent::Text(" ".into()));
+        builder.push_event(MarkdownEvent::Start(MarkdownTag::Strikethrough));
+        builder.push_event(MarkdownEvent::Text("strike".into()));
+        builder.push_event(MarkdownEvent::End(MarkdownTagEnd::Strikethrough));
+        builder.push_event(MarkdownEvent::Text(" ".into()));
+        builder.push_event(MarkdownEvent::Code("code".into()));
+        builder.push_event(MarkdownEvent::HardBreak);
+        builder.push_event(MarkdownEvent::Text("<escaped>".into()));
 
         assert_eq!(
             builder.finish(),
@@ -626,14 +634,14 @@ mod tests {
     #[test]
     fn test_table_cell_markup_builder_renders_launchable_links() {
         let mut builder = TableCellMarkupBuilder::new(MarkdownPreviewRenderContext::default());
-        builder.push_event(Event::Start(Tag::Link {
-            link_type: LinkType::Inline,
+        builder.push_event(MarkdownEvent::Start(MarkdownTag::Link {
+            link_type: MarkdownLinkType::Inline,
             dest_url: "https://example.com".into(),
-            title: "".into(),
-            id: "".into(),
+            title: String::new(),
+            id: String::new(),
         }));
-        builder.push_event(Event::Text("example".into()));
-        builder.push_event(Event::End(TagEnd::Link));
+        builder.push_event(MarkdownEvent::Text("example".into()));
+        builder.push_event(MarkdownEvent::End(MarkdownTagEnd::Link));
 
         assert_eq!(
             builder.finish(),
@@ -644,25 +652,25 @@ mod tests {
     #[test]
     fn test_buffered_table_builder_keeps_header_rows_and_cells() {
         let mut builder = BufferedTableBuilder::new(
-            vec![Alignment::Left, Alignment::Right],
+            vec![MarkdownAlignment::Left, MarkdownAlignment::Right],
             MarkdownPreviewRenderContext::default(),
         );
-        builder.push_event(Event::Start(Tag::TableHead));
-        builder.push_event(Event::Start(Tag::TableCell));
-        builder.push_event(Event::Text("Name".into()));
-        builder.push_event(Event::End(TagEnd::TableCell));
-        builder.push_event(Event::Start(Tag::TableCell));
-        builder.push_event(Event::Text("Value".into()));
-        builder.push_event(Event::End(TagEnd::TableCell));
-        builder.push_event(Event::End(TagEnd::TableHead));
-        builder.push_event(Event::Start(Tag::TableRow));
-        builder.push_event(Event::Start(Tag::TableCell));
-        builder.push_event(Event::Text("one".into()));
-        builder.push_event(Event::End(TagEnd::TableCell));
-        builder.push_event(Event::Start(Tag::TableCell));
-        builder.push_event(Event::Text("two".into()));
-        builder.push_event(Event::End(TagEnd::TableCell));
-        builder.push_event(Event::End(TagEnd::TableRow));
+        builder.push_event(MarkdownEvent::Start(MarkdownTag::TableHead));
+        builder.push_event(MarkdownEvent::Start(MarkdownTag::TableCell));
+        builder.push_event(MarkdownEvent::Text("Name".into()));
+        builder.push_event(MarkdownEvent::End(MarkdownTagEnd::TableCell));
+        builder.push_event(MarkdownEvent::Start(MarkdownTag::TableCell));
+        builder.push_event(MarkdownEvent::Text("Value".into()));
+        builder.push_event(MarkdownEvent::End(MarkdownTagEnd::TableCell));
+        builder.push_event(MarkdownEvent::End(MarkdownTagEnd::TableHead));
+        builder.push_event(MarkdownEvent::Start(MarkdownTag::TableRow));
+        builder.push_event(MarkdownEvent::Start(MarkdownTag::TableCell));
+        builder.push_event(MarkdownEvent::Text("one".into()));
+        builder.push_event(MarkdownEvent::End(MarkdownTagEnd::TableCell));
+        builder.push_event(MarkdownEvent::Start(MarkdownTag::TableCell));
+        builder.push_event(MarkdownEvent::Text("two".into()));
+        builder.push_event(MarkdownEvent::End(MarkdownTagEnd::TableCell));
+        builder.push_event(MarkdownEvent::End(MarkdownTagEnd::TableRow));
 
         let table = builder.finish();
         assert_eq!(table.header_row_count(), 1);
@@ -678,7 +686,7 @@ mod tests {
         let column_count = 10;
         let row_count = (MAX_PREVIEW_TABLE_CELLS / column_count) + 1;
         let table = BufferedTable {
-            alignments: vec![Alignment::Left; column_count],
+            alignments: vec![MarkdownAlignment::Left; column_count],
             rows: (0..row_count)
                 .map(|_| BufferedTableRow {
                     is_header: false,
@@ -700,15 +708,15 @@ mod tests {
     #[test]
     fn test_table_builder_stops_buffering_after_preview_budget() {
         let mut builder = BufferedTableBuilder::new(
-            vec![Alignment::Left],
+            vec![MarkdownAlignment::Left],
             MarkdownPreviewRenderContext::default(),
         );
         for index in 0..=MAX_PREVIEW_TABLE_CELLS {
-            builder.push_event(Event::Start(Tag::TableRow));
-            builder.push_event(Event::Start(Tag::TableCell));
-            builder.push_event(Event::Text(format!("cell {index}").into()));
-            builder.push_event(Event::End(TagEnd::TableCell));
-            builder.push_event(Event::End(TagEnd::TableRow));
+            builder.push_event(MarkdownEvent::Start(MarkdownTag::TableRow));
+            builder.push_event(MarkdownEvent::Start(MarkdownTag::TableCell));
+            builder.push_event(MarkdownEvent::Text(format!("cell {index}")));
+            builder.push_event(MarkdownEvent::End(MarkdownTagEnd::TableCell));
+            builder.push_event(MarkdownEvent::End(MarkdownTagEnd::TableRow));
         }
 
         let table = builder.finish();

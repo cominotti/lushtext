@@ -416,7 +416,7 @@ fn test_a_protected_tab_detaches_and_reattaches_without_primary_selection_critic
     let protected = dir.path().join("protected.txt");
     let small = dir.path().join("small.txt");
     let giant = "giant ".repeat(
-        usize::try_from(lushtext_model::document_scale::L_PROTECT_EDIT / 6 + 2)
+        usize::try_from(lushtext_model::document::document_scale::L_PROTECT_EDIT / 6 + 2)
             .expect("a small length"),
     );
     fixture::write_text(&protected, &format!("head\n{giant}\ntail\n"));
@@ -448,7 +448,7 @@ fn test_a_protected_tab_detaches_and_reattaches_without_primary_selection_critic
 
 fn giant_paragraph() -> String {
     "giant ".repeat(
-        usize::try_from(lushtext_model::document_scale::L_PROTECT_EDIT / 6 + 2)
+        usize::try_from(lushtext_model::document::document_scale::L_PROTECT_EDIT / 6 + 2)
             .expect("a small length"),
     )
 }

@@ -28,10 +28,10 @@ use gtk4::prelude::*;
 use std::path::Path;
 
 use crate::ui::status_bar::MessageKind;
-use lushtext_model::migration_ledger::MigrationKind;
+use lushtext_model::persistence::migration_ledger::MigrationKind;
 use lushtext_services::{
-    bookmark_service, document_note_service, folder_note_service, json_store,
-    local_history_service, migration_ledger,
+    notes::bookmark_service, notes::document_note_service, notes::folder_note_service,
+    persistence::json_store, persistence::local_history_service, persistence::migration_ledger,
 };
 
 use super::LushtextWindow;

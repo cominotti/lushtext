@@ -26,7 +26,7 @@
 
 use std::borrow::Cow;
 
-use lushtext_model::encoding::LineEnding;
+use lushtext_model::document::encoding::LineEnding;
 
 #[cfg(any(test, feature = "test-utils", feature = "fuzzing"))]
 pub mod reference;

@@ -17,7 +17,7 @@
 
 #![cfg(unix)]
 
-use lushtext_services::conformance::write_shell::{
+use lushtext_services::instrumentation::conformance::write_shell::{
     WriteCase, WriteFault, WriteFaultKind, WritePrimitive, check_write_case,
 };
 use proptest::prelude::*;
@@ -48,7 +48,7 @@ fn fault_strategy() -> impl Strategy<Value = GeneratedFault> {
 /// The fault a generated one names in the fault-free run's actions.
 fn resolve(
     generated: GeneratedFault,
-    actions: &[lushtext_services::conformance::write_shell::ActionShape],
+    actions: &[lushtext_services::instrumentation::conformance::write_shell::ActionShape],
 ) -> Option<WriteFault> {
     let faultable: Vec<_> = actions.iter().filter(|action| action.points > 0).collect();
     if faultable.is_empty() {

@@ -56,10 +56,10 @@ use std::sync::Arc;
 
 use gtk4::prelude::*;
 
-use lushtext_model::buffer_replacement::{PacedSlice, ParagraphLength, SliceBudget};
-use lushtext_model::paragraph_boundary::next_paragraph_break;
-use lushtext_model::protected_fold::{FoldPlan, fold_byte_offset};
-use lushtext_model::protected_install::{
+use lushtext_model::document::buffer_replacement::{PacedSlice, ParagraphLength, SliceBudget};
+use lushtext_model::document::paragraph_boundary::next_paragraph_break;
+use lushtext_model::document::protected_fold::{FoldPlan, fold_byte_offset};
+use lushtext_model::document::protected_install::{
     PRODUCTION_LIMITS, PROTECTED_TAIL_SCAN_BYTES, ProtectedInstallCursor, SliceKind,
     clear_ranges_for_turn, paragraph_content_end, plan_protected_install,
 };

@@ -15,8 +15,10 @@ use gtk4::prelude::*;
 use libadwaita::prelude::{AdwDialogExt, AlertDialogExt, PreferencesGroupExt};
 
 use crate::ui::status_bar::MessageKind;
-use lushtext_services::draft_service::journal_core::StartupRestore;
-use lushtext_services::{app_data_leftovers, format_upgrade, json_store};
+use lushtext_services::persistence::draft_service::journal_core::StartupRestore;
+use lushtext_services::{
+    persistence::app_data_leftovers, persistence::format_upgrade, persistence::json_store,
+};
 
 use super::LushtextWindow;
 

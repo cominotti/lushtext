@@ -131,7 +131,7 @@ fn test_typing_while_the_file_is_read_is_not_deleted_by_the_install() {
 
 #[test]
 fn test_a_draft_holds_the_replayed_text() {
-    use lushtext_services::{draft_service, json_store};
+    use lushtext_services::{persistence::draft_service, persistence::json_store};
     let (window, dir) = presented();
     let text = dense(710, 400);
     let path = write(&dir, "draft-held.txt", &text);
@@ -185,7 +185,7 @@ fn test_an_insertion_over_the_cap_is_refused_whole() {
     let path = write(&dir, "overflow-held.txt", &text);
     let editor = open_until_installing(&window, &path);
     type_keys(&editor, "a");
-    let paste = "p".repeat(lushtext_model::held_input::HELD_TEXT_CAP_BYTES);
+    let paste = "p".repeat(lushtext_model::document::held_input::HELD_TEXT_CAP_BYTES);
     editor
         .source_view()
         .emit_by_name::<()>("insert-at-cursor", &[&paste]);
@@ -594,7 +594,7 @@ fn test_an_overflowing_paste_is_never_partly_held() {
     let editor = open_until_installing(&window, &path);
     type_keys(&editor, "k");
     // One user action, two segments: the second overflows the cap.
-    let half = "p".repeat(lushtext_model::held_input::HELD_TEXT_CAP_BYTES / 2 + 1);
+    let half = "p".repeat(lushtext_model::document::held_input::HELD_TEXT_CAP_BYTES / 2 + 1);
     let buffer = editor.buffer();
     buffer.begin_user_action();
     let _ = buffer.insert_interactive_at_cursor(&half, true);

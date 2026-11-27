@@ -19,7 +19,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::{gio, prelude::*};
 
 use crate::ui::open_popover::policy;
-use lushtext_services::recent_documents;
+use lushtext_services::persistence::recent_documents;
 
 use super::LushtextWindow;
 

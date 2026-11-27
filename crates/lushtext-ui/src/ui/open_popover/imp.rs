@@ -8,8 +8,8 @@ use crate::ui::open_popover::policy;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, gio, glib};
-use lushtext_model::recent_document::RecentDocumentRow;
-use lushtext_services::recent_documents;
+use lushtext_model::persistence::recent_document::RecentDocumentRow;
+use lushtext_services::persistence::recent_documents;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 

@@ -39,7 +39,7 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
 use crate::ui::signal_connect;
-use lushtext_model::palette::PaletteNoteCategory;
+use lushtext_model::workspace::palette::PaletteNoteCategory;
 
 use super::policy::{GroupedNoteRows, NoteSectionBounds};
 
@@ -256,7 +256,7 @@ impl NotesBrowserRowModel {
         };
         let old_len = self.len();
         if old_len == 0 && new_len > 0 {
-            let first = lushtext_model::list_budget::staged_first_rows(new_len);
+            let first = lushtext_model::budgets::list_budget::staged_first_rows(new_len);
             let _ = self.replace_projection(new);
             self.imp().listed.set((first < new_len).then_some(first));
             self.imp().live.borrow_mut().clear();
@@ -356,7 +356,8 @@ impl NotesBrowserRowModel {
             return false;
         };
         let projected = self.full_len();
-        let Some(next) = lushtext_model::list_budget::next_growth(listed, projected) else {
+        let Some(next) = lushtext_model::budgets::list_budget::next_growth(listed, projected)
+        else {
             self.imp().listed.set(None);
             return false;
         };

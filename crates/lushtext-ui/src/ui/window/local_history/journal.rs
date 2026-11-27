@@ -22,11 +22,12 @@ use gtk4::prelude::*;
 
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
-use lushtext_model::local_history::LocalHistorySnapshotMeta;
-use lushtext_model::migration_ledger::MigrationKind;
-use lushtext_services::recovery_metadata::RecoveryDiagnostic;
+use lushtext_model::persistence::local_history::LocalHistorySnapshotMeta;
+use lushtext_model::persistence::migration_ledger::MigrationKind;
+use lushtext_services::persistence::recovery_metadata::RecoveryDiagnostic;
 use lushtext_services::{
-    filesystem::metadata as fs_metadata, json_store, local_history_service, migration_ledger,
+    filesystem::metadata as fs_metadata, persistence::json_store,
+    persistence::local_history_service, persistence::migration_ledger,
 };
 
 use crate::ui::window::LushtextWindow;
@@ -86,7 +87,7 @@ impl LushtextWindow {
                     local_history_service::LocalHistoryAvailability::Unavailable,
                     |facts| {
                         local_history_service::availability_for_scale(
-                            lushtext_model::document_scale::DocumentScale::for_total_bytes(
+                            lushtext_model::document::document_scale::DocumentScale::for_total_bytes(
                                 facts.byte_size,
                             ),
                         )

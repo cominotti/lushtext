@@ -34,10 +34,10 @@ use gtk4::{self, CompositeTemplate, glib};
 use lushtext_model::workspace::{
     FolderTreeEntry, WorkspaceFolderId, WorkspaceFolderMoveDirection, WorkspaceId,
 };
-use lushtext_services::file_peek::PeekRequestToken;
-use lushtext_services::file_tree::DirectoryRowState;
-use lushtext_services::notifications::NotificationSeverity;
-use lushtext_services::workspace_watch::WorkspaceWatcher;
+use lushtext_services::coordination::notifications::NotificationSeverity;
+use lushtext_services::watch::workspace_watch::WorkspaceWatcher;
+use lushtext_services::workspace::file_peek::PeekRequestToken;
+use lushtext_services::workspace::file_tree::DirectoryRowState;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -631,12 +631,12 @@ impl WatchRuntimeState {
     pub(crate) fn watch_evidence(
         &self,
     ) -> (
-        Vec<lushtext_services::workspace_watch::WorkspaceWatchTarget>,
+        Vec<lushtext_services::watch::workspace_watch::WorkspaceWatchTarget>,
         u64,
         usize,
         bool,
         bool,
-        Option<lushtext_services::workspace_watch::WorkspaceWatchMailboxSnapshot>,
+        Option<lushtext_services::watch::workspace_watch::WorkspaceWatchMailboxSnapshot>,
     ) {
         let (targets, generation, touched, current) = {
             let mirror = self.targets.borrow();
@@ -662,7 +662,7 @@ impl WatchRuntimeState {
             .watcher
             .borrow()
             .as_ref()
-            .map(lushtext_services::workspace_watch::WorkspaceWatcher::mailbox_snapshot);
+            .map(lushtext_services::watch::workspace_watch::WorkspaceWatcher::mailbox_snapshot);
         (
             targets,
             generation,

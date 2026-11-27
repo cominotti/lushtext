@@ -15,7 +15,7 @@ use crate::common::{
     worst_dispatch_until,
 };
 use gtk4::prelude::*;
-use lushtext_model::responsiveness_budget::{B_INTERACT_US, B_SETTLE_US};
+use lushtext_model::budgets::responsiveness_budget::{B_INTERACT_US, B_SETTLE_US};
 use lushtext_ui::config::keys;
 use lushtext_ui::ui::editor_page::{LushtextEditorPage, MinimapMarkerKind};
 use sourceview5::prelude::SearchSettingsExt;

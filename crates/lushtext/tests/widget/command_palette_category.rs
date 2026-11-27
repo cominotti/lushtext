@@ -11,12 +11,12 @@ use crate::common::{
 use glib::prelude::ToValue;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_model::bookmark::BookmarkRecord;
-use lushtext_model::palette::{
+use lushtext_model::budgets::responsiveness_budget::B_SETTLE_US;
+use lushtext_model::persistence::bookmark::BookmarkRecord;
+use lushtext_model::workspace::palette::{
     FileOrdinal, PaletteCategory, PaletteFileEntry, PaletteFileIdentity, PaletteNoteCategory,
     PaletteNoteEntry, PaletteNoteTarget, SearchMode,
 };
-use lushtext_model::responsiveness_budget::B_SETTLE_US;
 use lushtext_services::palette::{FileIndex, MAX_INDEXED_FILES};
 use lushtext_ui::ui::command_palette::item::PaletteItem;
 use lushtext_ui::ui::command_palette::policy::MAX_CATEGORY_VIEW_ROWS;
@@ -213,7 +213,7 @@ fn quiet(palette: &LushtextCommandPalette) {
 /// lane case "End in the category view" (design D10).
 #[test]
 fn test_palette_category_of_a_million_files_is_cut_at_the_row_cap() {
-    use lushtext_model::responsiveness_budget::B_INTERACT_US;
+    use lushtext_model::budgets::responsiveness_budget::B_INTERACT_US;
     ensure_gtk_init();
     let palette = LushtextCommandPalette::new();
     let window = gtk4::Window::new();
@@ -820,7 +820,7 @@ fn test_palette_category_bar_and_list_fit_a_narrow_overlay() {
 /// Whole-frame worst values are printed only.
 #[test]
 fn test_palette_category_dispatches_stay_within_their_budgets() {
-    use lushtext_model::responsiveness_budget::B_INTERACT_US;
+    use lushtext_model::budgets::responsiveness_budget::B_INTERACT_US;
     ensure_gtk_init();
     let palette = LushtextCommandPalette::new();
     let window = gtk4::Window::new();

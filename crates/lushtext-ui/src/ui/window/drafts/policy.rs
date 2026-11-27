@@ -190,10 +190,10 @@ pub(super) const SHOW_IN_LOCAL_HISTORY_LABEL: &str = "Show in _Local History";
 /// Body text of the stale-draft warning, naming where the edits were kept.
 #[must_use]
 pub(super) fn stale_draft_alert_body(
-    preservation: lushtext_model::draft::StaleDraftPreservation,
+    preservation: lushtext_model::persistence::draft::StaleDraftPreservation,
     set_aside_dir: &std::path::Path,
 ) -> String {
-    use lushtext_model::draft::StaleDraftPreservation;
+    use lushtext_model::persistence::draft::StaleDraftPreservation;
     match preservation {
         StaleDraftPreservation::LocalHistory => "The file changed on disk, so unsaved changes from a previous session were kept in Local History instead of being restored.".to_string(),
         StaleDraftPreservation::SetAside => format!(
@@ -215,10 +215,10 @@ until they are kept.";
 /// edited, so no inline alert is shown.
 #[must_use]
 pub(super) fn stale_draft_status_message(
-    preservation: lushtext_model::draft::StaleDraftPreservation,
+    preservation: lushtext_model::persistence::draft::StaleDraftPreservation,
     set_aside_dir: &std::path::Path,
 ) -> String {
-    use lushtext_model::draft::StaleDraftPreservation;
+    use lushtext_model::persistence::draft::StaleDraftPreservation;
     match preservation {
         StaleDraftPreservation::LocalHistory => {
             "Unsaved changes from a previous session were kept in Local History.".to_string()
@@ -300,9 +300,9 @@ pub(super) enum OrphanCleanupFollowUp {
 /// `Delete`, and `Status` failures never modify persisted manifest authority.
 #[must_use]
 pub(super) fn orphan_cleanup_revokes_authority(
-    failures: &[lushtext_services::draft_service::DraftOrphanCleanupFailure],
+    failures: &[lushtext_services::persistence::draft_service::DraftOrphanCleanupFailure],
 ) -> bool {
-    use lushtext_services::draft_service::{
+    use lushtext_services::persistence::draft_service::{
         DraftOrphanCleanupFailure, DraftOrphanCleanupManifestError,
     };
     failures.iter().any(|failure| {
@@ -391,9 +391,9 @@ pub(super) fn orphan_cleanup_failure_message(
 /// `examine_globs`.
 #[must_use]
 pub(super) fn grouped_orphan_cleanup_failure_message(
-    failures: &[lushtext_services::draft_service::DraftOrphanCleanupFailure],
+    failures: &[lushtext_services::persistence::draft_service::DraftOrphanCleanupFailure],
 ) -> String {
-    use lushtext_services::draft_service::DraftOrphanCleanupFailure;
+    use lushtext_services::persistence::draft_service::DraftOrphanCleanupFailure;
 
     let mut status = 0usize;
     let mut delete = 0usize;
@@ -460,7 +460,7 @@ mod tests {
 
     #[test]
     fn stale_draft_status_message_names_each_destination() {
-        use lushtext_model::draft::StaleDraftPreservation;
+        use lushtext_model::persistence::draft::StaleDraftPreservation;
         let dir = std::path::Path::new("/data/drafts/set-aside");
         assert!(
             stale_draft_status_message(StaleDraftPreservation::LocalHistory, dir)
@@ -478,7 +478,7 @@ mod tests {
 
     #[test]
     fn stale_draft_alert_names_each_destination() {
-        use lushtext_model::draft::StaleDraftPreservation;
+        use lushtext_model::persistence::draft::StaleDraftPreservation;
         let dir = std::path::Path::new("/data/lushtext/drafts/set-aside");
         assert!(
             stale_draft_alert_body(StaleDraftPreservation::LocalHistory, dir)
@@ -504,7 +504,7 @@ mod tests {
     /// produce the expected text.
     #[test]
     fn grouped_cleanup_message_maps_each_service_variant_to_its_own_category() {
-        use lushtext_services::draft_service::{
+        use lushtext_services::persistence::draft_service::{
             DraftOrphanCleanupDeleteError, DraftOrphanCleanupFailure,
             DraftOrphanCleanupManifestError, DraftOrphanCleanupStatusError,
         };
@@ -557,7 +557,7 @@ mod tests {
     /// failure: both mean the durable record could not be advanced.
     #[test]
     fn grouped_cleanup_message_counts_both_manifest_variants_as_manifest() {
-        use lushtext_services::draft_service::{
+        use lushtext_services::persistence::draft_service::{
             DraftOrphanCleanupFailure, DraftOrphanCleanupManifestError,
         };
         use std::path::PathBuf;
@@ -581,7 +581,7 @@ mod tests {
 
     #[test]
     fn orphan_cleanup_manifest_write_failure_revokes_authority() {
-        use lushtext_services::draft_service::{
+        use lushtext_services::persistence::draft_service::{
             DraftOrphanCleanupDeleteError, DraftOrphanCleanupFailure,
             DraftOrphanCleanupManifestError,
         };

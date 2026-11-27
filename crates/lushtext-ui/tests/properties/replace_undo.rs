@@ -11,12 +11,12 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 
-use lushtext_model::content_search::{
+use lushtext_model::workspace::content_search::{
     BoundedDiagnosticSample, MAX_REPLACE_DIAGNOSTIC_BYTES, MAX_REPLACE_DIAGNOSTIC_ENTRIES,
     Replacement, UndoPayloadLedger,
 };
-use lushtext_services::content_search::{apply_replacements, undo_replacements};
 use lushtext_services::filesystem::{fixture, read as fs_read};
+use lushtext_services::search::content_search::{apply_replacements, undo_replacements};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 
@@ -59,7 +59,9 @@ impl ReplaceUndoFile {
     /// Build the preview instruction consumed by the production Replace All service.
     fn replacement_for_path(&self, path: PathBuf) -> Replacement {
         Replacement {
-            match_id: lushtext_model::content_search::SearchMatchId::from_index(self.line_index),
+            match_id: lushtext_model::workspace::content_search::SearchMatchId::from_index(
+                self.line_index,
+            ),
             path,
             line_number: u64::try_from(self.line_index + 1).unwrap_or(u64::MAX),
             original_line: self.lines[self.line_index].clone().into(),

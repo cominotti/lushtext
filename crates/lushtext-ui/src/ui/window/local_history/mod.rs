@@ -139,7 +139,7 @@ pub use evidence::LocalHistoryEvidence;
 pub use evidence::{LocalHistoryPreviewInstallEvidence, local_history_preview_install_evidence};
 
 #[cfg(feature = "test-utils")]
-pub use lushtext_services::local_history_service::set_local_history_preview_read_delay_for_test;
+pub use lushtext_services::persistence::local_history_service::set_local_history_preview_read_delay_for_test;
 #[cfg(feature = "test-utils")]
 pub use test_policy::{
     set_local_history_baseline_delay_for_test, set_local_history_baseline_failures_for_test,

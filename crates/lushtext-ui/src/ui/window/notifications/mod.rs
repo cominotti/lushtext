@@ -120,7 +120,7 @@ use glib::prelude::ObjectExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 
 use crate::ui::editor_page::LushtextEditorPage;
-use lushtext_services::notifications::{
+use lushtext_services::coordination::notifications::{
     InlineActionNotification, InlineAlertAction, NotificationOwner, NotificationPayload,
     NotificationSeverity, NotificationSurface, StatusMessage,
 };

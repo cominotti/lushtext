@@ -178,7 +178,7 @@ fn notes_browser_source_limits() -> palette_service::NoteSourceLimits {
     let text_bytes = test_policy::notes_browser_source_text_bytes();
     #[cfg(not(feature = "test-utils"))]
     let text_bytes: Option<usize> = None;
-    let smoke = lushtext_services::smoke_list_budgets::notes_source_text_bytes()
+    let smoke = lushtext_services::instrumentation::smoke_list_budgets::notes_source_text_bytes()
         .and_then(|bytes| usize::try_from(bytes).ok());
     policy::notes_browser_source_limits_for_text_bytes(text_bytes.or(smoke).unwrap_or(usize::MAX))
 }

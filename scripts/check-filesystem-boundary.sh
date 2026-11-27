@@ -47,7 +47,7 @@ fi
 
 direct_sys_imports="$(
   rg -n -U '(^use[^\n;]*filesystem::sys|filesystem::\{[^;]*\bsys\b|crate::services::filesystem::sys|super::filesystem::sys)' crates/lushtext-ui/src crates/lushtext-services/src 2>/dev/null \
-    | rg -v '(^crates/lushtext-services/src/filesystem/|^crates/lushtext-services/src/durable_write\.rs:)' \
+    | rg -v '(^crates/lushtext-services/src/filesystem/|^crates/lushtext-services/src/persistence/durable_write\.rs:)' \
     || true
 )"
 
@@ -58,8 +58,8 @@ if [[ -n "$direct_sys_imports" ]]; then
 fi
 
 direct_durable_imports="$(
-  rg -n -U '(^use[^\n;]*(crate::services|super|services)::durable_write|(^use[^\n;]*(crate::services|super|services)::\{[^;]*\bdurable_write\b)|crate::services::durable_write|super::durable_write|services::durable_write|durable_write::)' crates/lushtext-ui/src crates/lushtext-services/src 2>/dev/null \
-    | rg -v '(^crates/lushtext-services/src/filesystem/write\.rs:|^crates/lushtext-services/src/durable_write\.rs:)' \
+  rg -n -U '(^use[^\n;]*(crate::services|crate::persistence|super|services|persistence)::durable_write|(^use[^\n;]*(crate::services|crate::persistence|super|services|persistence)::\{[^;]*\bdurable_write\b)|crate::services::persistence::durable_write|crate::persistence::durable_write|super::durable_write|services::persistence::durable_write|persistence::durable_write|durable_write::)' crates/lushtext-ui/src crates/lushtext-services/src 2>/dev/null \
+    | rg -v '(^crates/lushtext-services/src/filesystem/write\.rs:|^crates/lushtext-services/src/persistence/durable_write\.rs:|^crates/lushtext-services/src/persistence/mod\.rs:)' \
     || true
 )"
 
@@ -118,7 +118,7 @@ fi
 engine_adapter_hits="$(
   rg -n -U '(^use[^\n;]*(grep_searcher|ignore)::|grep_searcher::|ignore::|WalkBuilder::|SearcherBuilder::)' \
     crates/lushtext-services/src crates/lushtext-ui/src crates/lushtext/src --glob '*.rs' 2>/dev/null \
-    | rg -v '^crates/lushtext-services/src/content_search/search\.rs:' \
+    | rg -v '^crates/lushtext-services/src/search/content_search/search\.rs:' \
     || true
 )"
 
@@ -211,7 +211,7 @@ from pathlib import Path
 root = Path(sys.argv[1])
 GATE = '#[cfg(any(test, feature = "test-utils"))]'
 FIXTURE_PARENTS = (
-    "crates/lushtext-services/src/draft_service.rs",
+    "crates/lushtext-services/src/persistence/draft_service.rs",
     "crates/lushtext-services/src/filesystem/mod.rs",
 )
 SHIPPING_FILES = (
@@ -285,9 +285,9 @@ PY
 # A fixture tree that passes; each self-test case overwrites one file of it.
 make_fixture_tree() {
   local tree="$1"
-  mkdir -p "$tree/crates/lushtext-services/src/filesystem" "$tree/crates/lushtext-ui" "$tree/crates/lushtext" "$tree/build-aux" "$tree/snap"
+  mkdir -p "$tree/crates/lushtext-services/src/filesystem" "$tree/crates/lushtext-services/src/persistence" "$tree/crates/lushtext-ui" "$tree/crates/lushtext" "$tree/build-aux" "$tree/snap"
   printf '#[cfg(any(test, feature = "test-utils"))]\npub mod fixture;\n' \
-    > "$tree/crates/lushtext-services/src/draft_service.rs"
+    > "$tree/crates/lushtext-services/src/persistence/draft_service.rs"
   printf 'pub mod read;\n#[cfg(any(test, feature = "test-utils"))]\npub mod fixture;\n' \
     > "$tree/crates/lushtext-services/src/filesystem/mod.rs"
   printf '[features]\nproperty-tests = ["test-utils"]\ntest-utils = []\n' > "$tree/crates/lushtext-services/Cargo.toml"
@@ -317,7 +317,7 @@ fixture_gating_case() {
 fixture_gating_self_test() {
   local scratch status=0
   scratch="$(mktemp -d)"
-  local draft=crates/lushtext-services/src/draft_service.rs
+  local draft=crates/lushtext-services/src/persistence/draft_service.rs
   local fs_mod=crates/lushtext-services/src/filesystem/mod.rs
   {
     fixture_gating_case pass good &&

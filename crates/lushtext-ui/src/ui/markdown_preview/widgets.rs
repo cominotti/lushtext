@@ -27,7 +27,7 @@ use gtk4::prelude::*;
 use crate::ui::accessibility;
 use crate::ui::editor_page::approximate_char_width_pango_units;
 use crate::ui::window::focus_mode::policy::readable_column_margin;
-use lushtext_services::markdown_render::MarkdownRenderState;
+use lushtext_services::notes::markdown_render::MarkdownRenderState;
 
 use super::LushtextMarkdownPreview;
 use super::seams::{EmbeddedBlockLayout, RenderedEmbed};

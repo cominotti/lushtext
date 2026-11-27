@@ -35,10 +35,10 @@ use gtk4::prelude::*;
 
 use crate::ui::buffer_snapshot;
 use crate::ui::editor_page::LushtextEditorPage;
-use lushtext_model::draft::{DraftEntry, DraftManifestAuthority};
-use lushtext_services::draft_service::journal_core;
-use lushtext_services::notifications::NotificationSeverity;
-use lushtext_services::{draft_service, editor_io, json_store};
+use lushtext_model::persistence::draft::{DraftEntry, DraftManifestAuthority};
+use lushtext_services::coordination::notifications::NotificationSeverity;
+use lushtext_services::persistence::draft_service::journal_core;
+use lushtext_services::{editor_io, persistence::draft_service, persistence::json_store};
 
 use super::policy;
 use super::policy::DraftPipelineFailures;

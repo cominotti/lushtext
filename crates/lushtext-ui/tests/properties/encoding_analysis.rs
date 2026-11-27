@@ -3,7 +3,7 @@
 //! Property equivalence for exact save-encoding representability analysis.
 
 use encoding_rs::EncoderResult;
-use lushtext_model::encoding::DocumentEncoding;
+use lushtext_model::document::encoding::DocumentEncoding;
 use lushtext_services::editor_io::{LossyEncodingIssue, analyze_lossy_encoding};
 use proptest::prelude::*;
 

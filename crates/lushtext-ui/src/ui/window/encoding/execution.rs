@@ -30,7 +30,7 @@ use crate::ui::buffer_snapshot;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::editor_page::ProtectedAction;
 use crate::ui::status_bar::MessageKind;
-use lushtext_model::encoding::{
+use lushtext_model::document::encoding::{
     DocumentEncoding, FileHealthFindingKind, InvisibleCharactersMode, LineEnding,
 };
 use lushtext_services::editor_io::{self, LossyEncodingPreview};

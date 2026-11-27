@@ -10,10 +10,11 @@ use std::collections::BTreeSet;
 use std::ops::Range;
 use std::path::PathBuf;
 
-use lushtext_model::content_search::{
-    ContentSearchOptions, Replacement, SearchMatch, SearchMatchId, generate_replacement_preview,
+use lushtext_model::workspace::content_search::{
+    ContentSearchOptions, Replacement, SearchMatch, SearchMatchId,
 };
-use lushtext_services::content_search::{
+use lushtext_services::search::content_search::generate_replacement_preview;
+use lushtext_services::search::content_search::{
     apply_replacements_to_text_for_property_test,
     apply_replacements_to_text_in_chunks_for_property_test,
     apply_replacements_to_text_reference_for_property_test,
@@ -204,7 +205,9 @@ fn build_unique_line_replacements(
             .cloned()
             .unwrap_or_else(|| "missing generated line".to_string());
         replacements.push(Replacement {
-            match_id: lushtext_model::content_search::SearchMatchId::from_index(replacements.len()),
+            match_id: lushtext_model::workspace::content_search::SearchMatchId::from_index(
+                replacements.len(),
+            ),
             path: PathBuf::from("/tmp/lushtext-property-search.txt"),
             line_number,
             original_line: original_line.into(),

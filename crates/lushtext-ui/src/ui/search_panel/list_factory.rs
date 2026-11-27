@@ -489,7 +489,7 @@ fn render_match_markup(content: &str, start: usize, end: usize) -> String {
 fn preview_match_id_for_checkbox(
     panel: &super::LushtextSearchPanel,
     checkbox: &gtk4::CheckButton,
-) -> Option<lushtext_model::content_search::SearchMatchId> {
+) -> Option<lushtext_model::workspace::content_search::SearchMatchId> {
     let expander = checkbox
         .parent()
         .and_then(|w| w.parent())

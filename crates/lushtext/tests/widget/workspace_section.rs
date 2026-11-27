@@ -13,7 +13,7 @@ use lushtext_model::workspace::{
     FolderTreeEntry, WorkspaceFolder, WorkspaceFolderId, WorkspaceFolderMoveDirection, WorkspaceId,
 };
 use lushtext_services::filesystem::metadata as fs_metadata;
-use lushtext_services::workspace_watch::{WORKSPACE_WATCH_PATH_CAP, WorkspaceWatchTarget};
+use lushtext_services::watch::workspace_watch::{WORKSPACE_WATCH_PATH_CAP, WorkspaceWatchTarget};
 use lushtext_ui::ui::accessibility::test_audit::AccessibleAudit;
 use lushtext_ui::ui::sidebar::file_tree_item::FileTreeItem;
 use lushtext_ui::ui::sidebar::workspace_section::LushtextWorkspaceSection;
@@ -4166,7 +4166,7 @@ fn test_rapid_successful_watcher_generations_install_only_the_latest() {
             .watcher
             .borrow()
             .as_ref()
-            .map(lushtext_services::workspace_watch::WorkspaceWatcher::watched_target_count),
+            .map(lushtext_services::watch::workspace_watch::WorkspaceWatcher::watched_target_count),
         Some(1)
     );
     assert_eq!(
@@ -6624,7 +6624,7 @@ fn test_scrolling_and_collapsing_300_directories_starts_no_bind_time_child_scans
             "300-dirs",
             root.clone(),
         ));
-    lushtext_services::workspace_manager::save(iso.path(), &workspaces)
+    lushtext_services::workspace::workspace_manager::save(iso.path(), &workspaces)
         .expect("save workspaces.json");
     sidebar.load_workspaces();
     wait_until(Duration::from_secs(10), || {

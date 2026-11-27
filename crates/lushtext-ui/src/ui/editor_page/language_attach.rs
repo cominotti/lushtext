@@ -61,8 +61,8 @@ use sourceview5::prelude::*;
 use super::LushtextEditorPage;
 use super::load::policy::{ATTACH_DEADLINE_US, INPUT_QUIET_US, deferred_attach_may_run};
 use crate::ui::responsiveness_probe::PostOpenSpan;
-use lushtext_model::buffer_replacement::SliceBudget;
-use lushtext_model::highlight_chunking::{ChunkFacts, ChunkGate, chunk_gate};
+use lushtext_model::document::buffer_replacement::SliceBudget;
+use lushtext_model::document::highlight_chunking::{ChunkFacts, ChunkGate, chunk_gate};
 
 /// What the editor knows about the language its document wants.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

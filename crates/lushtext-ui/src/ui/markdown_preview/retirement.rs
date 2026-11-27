@@ -24,7 +24,7 @@ use std::sync::atomic::Ordering;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 
-use lushtext_services::markdown_render::MAX_MARKDOWN_SOURCE_BYTES;
+use lushtext_services::notes::markdown_render::MAX_MARKDOWN_SOURCE_BYTES;
 
 use super::imp;
 use super::seams::MarkdownRetirementSession;

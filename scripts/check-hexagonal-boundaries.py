@@ -42,56 +42,40 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 MAX_PRODUCTION_LINES = 1000
-LEGACY_OVERSIZED_CEILING = 30
+LEGACY_OVERSIZED_CEILING = 28
 
-# Legacy production files that already exceeded 1,000 production lines on `main`
-# (`ddfb7e2b`, 30 files total). Change 1 ratchets this list (keyed by crate-relative
-# path) so no new >= 1,000-line file can be introduced and splits only lower it.
+# Legacy production files that still exceed 1,000 production lines after Change 1's
+# module reorganization (28 files total, down from 30 on `main` `ddfb7e2b`).
+# Later changes tighten this ratchet further and may never add new >= 1,000-line files.
 LEGACY_OVERSIZED_FILES: dict[str, int] = {
-    "crates/lushtext-model/src/automation.rs": 1450,
-    "crates/lushtext-model/src/content_search.rs": 1400,
-    "crates/lushtext-model/src/document_scale.rs": 1250,
-    "crates/lushtext-services/src/conformance/draft_service.rs": 1750,
-    "crates/lushtext-services/src/draft_service/journal_model.rs": 1750,
-    "crates/lushtext-services/src/editor_io.rs": 1950,
-    "crates/lushtext-services/src/markdown_render.rs": 1150,
-    "crates/lushtext-services/src/palette/index/reference.rs": 1250,
-    "crates/lushtext-services/src/recovery_metadata.rs": 1300,
+    "crates/lushtext-model/src/automation/mod.rs": 1400,
+    "crates/lushtext-model/src/document/document_scale.rs": 1220,
+    "crates/lushtext-model/src/workspace/content_search.rs": 1100,
+    "crates/lushtext-services/src/editor_io/mod.rs": 1920,
+    "crates/lushtext-services/src/palette/index/reference.rs": 1240,
+    "crates/lushtext-services/src/persistence/draft_service/journal_model.rs": 1750,
+    "crates/lushtext-services/src/persistence/recovery_metadata.rs": 1270,
     "crates/lushtext-ui/src/ui/automation.rs": 2550,
-    "crates/lushtext-ui/src/ui/buffer_snapshot.rs": 1250,
+    "crates/lushtext-ui/src/ui/buffer_snapshot.rs": 1230,
     "crates/lushtext-ui/src/ui/editor_page/buffer_replacement/execution.rs": 1450,
-    "crates/lushtext-ui/src/ui/editor_page/imp.rs": 1280,
-    "crates/lushtext-ui/src/ui/editor_page/load/execution.rs": 1300,
-    "crates/lushtext-ui/src/ui/editor_page/minimap/projection_execution.rs": 1220,
-    "crates/lushtext-ui/src/ui/editor_page/protected_view/policy.rs": 1320,
+    "crates/lushtext-ui/src/ui/editor_page/imp.rs": 1260,
+    "crates/lushtext-ui/src/ui/editor_page/load/execution.rs": 1290,
+    "crates/lushtext-ui/src/ui/editor_page/minimap/projection_execution.rs": 1210,
+    "crates/lushtext-ui/src/ui/editor_page/protected_view/policy.rs": 1310,
     "crates/lushtext-ui/src/ui/markdown_preview/continuation.rs": 1050,
-    "crates/lushtext-ui/src/ui/sidebar/policy.rs": 1180,
-    "crates/lushtext-ui/src/ui/sidebar/workspace_section/folder_execution.rs": 1130,
+    "crates/lushtext-ui/src/ui/sidebar/policy.rs": 1170,
+    "crates/lushtext-ui/src/ui/sidebar/workspace_section/folder_execution.rs": 1120,
     "crates/lushtext-ui/src/ui/sidebar/workspace_section/scan_execution.rs": 2950,
-    "crates/lushtext-ui/src/ui/window/dialogs.rs": 1050,
-    "crates/lushtext-ui/src/ui/window/documents.rs": 1420,
-    "crates/lushtext-ui/src/ui/window/drafts/autosave_execution.rs": 1050,
-    "crates/lushtext-ui/src/ui/window/imp.rs": 1430,
-    "crates/lushtext-ui/src/ui/window/local_history/preview_execution.rs": 1240,
-    "crates/lushtext-ui/src/ui/window/notes/bookmark_execution.rs": 1100,
-    "crates/lushtext-ui/src/ui/window/notes/browser.rs": 1540,
-    "crates/lushtext-ui/src/ui/window/notes/editor_execution.rs": 1140,
-    "crates/lushtext-ui/src/ui/window/notes/source_execution.rs": 1050,
-    "crates/lushtext-ui/src/ui/window/search.rs": 1060,
-}
-
-# Reorganized bounded-context aliases accepted alongside pre-reorg paths during
-# Task 3, then tightened once Task 3 completes.
-REORG_LEGACY_ALIASES: dict[str, int] = {
-    "crates/lushtext-model/src/automation/mod.rs": 1450,
-    "crates/lushtext-model/src/workspace/content_search.rs": 1400,
-    "crates/lushtext-model/src/document/document_scale.rs": 1250,
-    "crates/lushtext-services/src/instrumentation/conformance/draft_service.rs": 1750,
-    "crates/lushtext-services/src/notes/draft_service/journal_model.rs": 1750,
-    "crates/lushtext-services/src/editor_io/mod.rs": 1950,
-    "crates/lushtext-services/src/notes/markdown_render.rs": 1150,
-    "crates/lushtext-services/src/palette/index/reference.rs": 1250,
-    "crates/lushtext-services/src/persistence/recovery_metadata.rs": 1300,
+    "crates/lushtext-ui/src/ui/window/dialogs.rs": 1040,
+    "crates/lushtext-ui/src/ui/window/documents.rs": 1410,
+    "crates/lushtext-ui/src/ui/window/drafts/autosave_execution.rs": 1030,
+    "crates/lushtext-ui/src/ui/window/imp.rs": 1420,
+    "crates/lushtext-ui/src/ui/window/local_history/preview_execution.rs": 1230,
+    "crates/lushtext-ui/src/ui/window/notes/bookmark_execution.rs": 1090,
+    "crates/lushtext-ui/src/ui/window/notes/browser.rs": 1530,
+    "crates/lushtext-ui/src/ui/window/notes/editor_execution.rs": 1130,
+    "crates/lushtext-ui/src/ui/window/notes/source_execution.rs": 1040,
+    "crates/lushtext-ui/src/ui/window/search.rs": 1050,
 }
 
 GTK_CRATES = {
@@ -220,7 +204,7 @@ def check_metadata_boundaries(metadata: dict) -> list[str]:
 def check_file_sizes(root: Path) -> list[str]:
     """Enforce the 1,000-line ceiling on new production files and the legacy ratchet."""
     findings: list[str] = []
-    legacy_ceilings = {**LEGACY_OVERSIZED_FILES, **REORG_LEGACY_ALIASES}
+    legacy_ceilings = LEGACY_OVERSIZED_FILES
     legacy_hits = 0
 
     for crate_dir in ("crates/lushtext-model/src", "crates/lushtext-services/src", "crates/lushtext-ui/src"):

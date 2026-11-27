@@ -40,7 +40,7 @@ use std::sync::atomic::Ordering;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
 
-use lushtext_services::markdown_render::MarkdownRenderState;
+use lushtext_services::notes::markdown_render::MarkdownRenderState;
 
 use super::test_policy::{
     IMAGE_CANCELLED_WORK, IMAGE_CANDIDATE_INSPECTIONS, IMAGE_DECODED_RESULTS, IMAGE_PIXEL_DROPS,

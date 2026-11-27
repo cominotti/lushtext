@@ -22,9 +22,9 @@ use crate::ui::editor_page::{LushtextEditorPage, PendingWarningAction};
 use crate::ui::plain_disposal::DisposalOwned;
 use crate::ui::protected_fold::fold_tag;
 use crate::ui::window::LushtextWindow;
-use lushtext_model::document_scale::protects_by_length;
-use lushtext_model::paragraph_boundary::DocumentProfile;
-use lushtext_model::protected_fold::{FoldPlan, FoldRange, FoldThresholds, plan_folds};
+use lushtext_model::document::document_scale::protects_by_length;
+use lushtext_model::document::paragraph_boundary::DocumentProfile;
+use lushtext_model::document::protected_fold::{FoldPlan, FoldRange, FoldThresholds, plan_folds};
 
 /// The per-editor Protected View state.
 #[derive(Debug)]

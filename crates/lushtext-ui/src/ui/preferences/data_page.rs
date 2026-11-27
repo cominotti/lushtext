@@ -15,7 +15,7 @@ use gtk4::prelude::*;
 use libadwaita::prelude::*;
 
 use crate::ui::accessibility;
-use lushtext_services::{format_upgrade, json_store};
+use lushtext_services::{persistence::format_upgrade, persistence::json_store};
 
 use super::LushtextPreferences;
 

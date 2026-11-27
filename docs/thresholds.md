@@ -199,350 +199,350 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-ui/src/fuzzing.rs` | `OPERATION_SCRIPT_MAX_PATH_BYTES` | 64 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
 | `crates/lushtext-ui/src/fuzzing.rs` | `OPERATION_SCRIPT_MAX_FILES` | 3 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
 
-### `crates/lushtext-model/src/attention_refresh.rs`
+### `crates/lushtext-model/src/budgets/attention_refresh.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-model/src/attention_refresh.rs` | `ATTENTION_REFRESH_DURATION_MULTIPLIER` | 10 | out: factor | factor, divisor or unit (D1) |
+| `crates/lushtext-model/src/budgets/attention_refresh.rs` | `ATTENTION_REFRESH_DURATION_MULTIPLIER` | 10 | out: factor | factor, divisor or unit (D1) |
 
-### `crates/lushtext-model/src/automation.rs`
-
-| File | Constant | Value | Kind | Rounding or reason |
-|---|---|---|---|---|
-| `crates/lushtext-model/src/automation.rs` | `AUTOMATION_WORKFLOW_EVENT_LIMIT` | 128 | presentation cap | up from 128: events an automation client receives (D12) |
-
-### `crates/lushtext-model/src/buffer_replacement.rs`
+### `crates/lushtext-model/src/automation/mod.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-model/src/buffer_replacement.rs` | `SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES` | 524,288 | cap | 512 KiB: laid out within 6.2 ms of main at 512-704 KiB (D8, task 5.3) |
-| `crates/lushtext-model/src/buffer_replacement.rs` | `REPLACEMENT_CLEAR_SLICE_CHARS` | 65,536 | cap | power of two |
-| `crates/lushtext-model/src/buffer_replacement.rs` | `REPLACEMENT_INSERT_SLICE_BYTES` | 262,144 | cap | power of two |
-| `crates/lushtext-model/src/buffer_replacement.rs` | `V_SLICE` | 16,384 | cap | 16,384: lane dispatches within main's, laid out no slower (D8, task 5.2) |
+| `crates/lushtext-model/src/automation/mod.rs` | `AUTOMATION_WORKFLOW_EVENT_LIMIT` | 128 | presentation cap | up from 128: events an automation client receives (D12) |
 
-### `crates/lushtext-model/src/construction_spans.rs`
+### `crates/lushtext-model/src/document/buffer_replacement.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-model/src/construction_spans.rs` | `MAX_CONSTRUCTION_STAGES` | 64 | coverage window | rounded up (D5) |
+| `crates/lushtext-model/src/document/buffer_replacement.rs` | `SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES` | 524,288 | cap | 512 KiB: laid out within 6.2 ms of main at 512-704 KiB (D8, task 5.3) |
+| `crates/lushtext-model/src/document/buffer_replacement.rs` | `REPLACEMENT_CLEAR_SLICE_CHARS` | 65,536 | cap | power of two |
+| `crates/lushtext-model/src/document/buffer_replacement.rs` | `REPLACEMENT_INSERT_SLICE_BYTES` | 262,144 | cap | power of two |
+| `crates/lushtext-model/src/document/buffer_replacement.rs` | `V_SLICE` | 16,384 | cap | 16,384: lane dispatches within main's, laid out no slower (D8, task 5.2) |
 
-### `crates/lushtext-model/src/content_search.rs`
-
-| File | Constant | Value | Kind | Rounding or reason |
-|---|---|---|---|---|
-| `crates/lushtext-model/src/content_search.rs` | `MAX_SEARCH_MATCH_LINE_BYTES` | 4,096 | presentation cap | up from 4,096: past it a match line is cut (D12) |
-| `crates/lushtext-model/src/content_search.rs` | `MAX_REPLACE_PREVIEW_ROWS` | 16,384 | presentation cap | up from 10,000: M3, preview worst dispatch 27.8-29.2 ms vs main 26.0-28.6 ms, 64 MiB budget unchanged (D12) |
-| `crates/lushtext-model/src/content_search.rs` | `MAX_REPLACE_PREVIEW_BYTES` | 67,108,864 | presentation cap | up from 67,108,864: past it Replace Preview omits rows (D12) |
-| `crates/lushtext-model/src/content_search.rs` | `MAX_REPLACE_DIAGNOSTIC_ENTRIES` | 32 | presentation cap | up from 32: diagnostics a user reads after Replace All (D12) |
-| `crates/lushtext-model/src/content_search.rs` | `MAX_REPLACE_DIAGNOSTIC_BYTES` | 32,768 | presentation cap | up from 32,768: diagnostic text a user reads (D12) |
-| `crates/lushtext-model/src/content_search.rs` | `BEYOND_BUDGET_REPORT_INTERVAL_MS` | 250 | out: time | cadence of the running found count (`bound-lists-by-budget-not-count` D4) |
-| `crates/lushtext-model/src/content_search.rs` | `MAX_REPLACE_SKIP_LIST_BYTES` | 4,194,304 | presentation cap | up from 4,194,304: new; path bytes the skip list keeps, which lists every file of a 16,384-file run at typical path lengths and counts the rest (`stream-replace-all` D7) |
-
-### `crates/lushtext-model/src/cursor_step.rs`
+### `crates/lushtext-model/src/budgets/construction_spans.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-model/src/cursor_step.rs` | `L_LOGICAL_CURSOR_STEP` | 256 | policy tier | power of two: above it an arrow step in a left-to-right paragraph is answered logically, which lands on the same place (A107); hides nothing (`adopt-gnome-51` L2) |
+| `crates/lushtext-model/src/budgets/construction_spans.rs` | `MAX_CONSTRUCTION_STAGES` | 64 | coverage window | rounded up (D5) |
 
-### `crates/lushtext-model/src/document_scale.rs`
-
-| File | Constant | Value | Kind | Rounding or reason |
-|---|---|---|---|---|
-| `crates/lushtext-model/src/document_scale.rs` | `S_SYNTAX` | 1,048,576 | presentation cap | up from 1,048,576: plain-text highlighting turns off above it (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `attach_threshold::HTML` | 47,104 | presentation cap, exception | up from 47,104, kept: A69's sweep: the power of two above fails its attach bound (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `attach_threshold::MARKDOWN` | 327,680 | presentation cap, exception | up from 327,680, kept: A69's sweep: the power of two above fails its attach bound (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `attach_threshold::RUST` | 188,416 | presentation cap, exception | up from 188,416, kept: A69's sweep: the power of two above fails its attach bound (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `attach_threshold::JSON` | 24,576 | presentation cap, exception | up from 24,576, kept: A69's sweep: the power of two above fails its attach bound (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `attach_threshold::C` | 86,016 | presentation cap, exception | up from 86,016, kept: A69's sweep: the power of two above fails its attach bound (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `attach_threshold::PYTHON` | 49,152 | presentation cap, exception | up from 49,152, kept: A69's sweep: the power of two above fails its attach bound (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `attach_threshold::JAVASCRIPT` | 18,432 | presentation cap, exception | up from 18,432, kept: A69's sweep: the power of two above fails its attach bound (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `attach_threshold::TYPESCRIPT` | 10,752 | presentation cap, exception | up from 10,752, kept: A69's sweep: the power of two above fails its attach bound (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `attach_threshold::YAML` | 147,456 | presentation cap, exception | up from 147,456, kept: A69's sweep: the power of two above fails its attach bound (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `attach_threshold::XML` | 135,168 | presentation cap, exception | up from 135,168, kept: A69's sweep: the power of two above fails its attach bound (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `attach_threshold::CSS` | 37,888 | presentation cap, exception | up from 37,888, kept: A69's sweep derived it as the largest passing CSS size, so 64 KiB fails (cited; D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `attach_threshold::SHELL` | 39,936 | presentation cap, exception | up from 39,936, kept: A69's sweep: the power of two above fails its attach bound (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `typing_threshold::HTML` | 16,384 | presentation cap | up from 16,384: highlighting turns off above it (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `typing_threshold::JSON` | 20,480 | presentation cap, exception | up from 20,480, kept: A69's sweep: the power of two above fails the typing bound (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `MODEL_MARKDOWN_CAP` | 524,288 | policy tier | power of two |
-| `crates/lushtext-model/src/document_scale.rs` | `S_SYNTAX_OTHER` | 48,128 | presentation cap, exception | up from 48,128, kept: A69's sweep (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `L_SYNTAX` | 2,000 | presentation cap, exception | up from 2,000, kept: 2,048 breaks MAX_SYNTAX_PARAGRAPH_BYTES <= HIGHLIGHT_CHUNK_BYTES (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `S_MINIMAP` | 10,000,000 | presentation cap, exception | up from 10,000,000, kept: M10, a 16 MiB open with the minimap 37-38 ms vs main 23-27 ms and one settle past the 10 s cap (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `L_MINIMAP` | 22,000 | presentation cap, exception | up from 22,000, kept: M14 measured the minimap-on background dispatch at 32,768 13.4 ms worse than main's at 22,000 (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `L_INVISIBLES` | 50,000 | presentation cap, exception | up from 50,000, kept: it must not exceed L_PROTECT_EDIT (Protected View has invisibles off, C2 D10; asserted) (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `L_SEARCH_HIGHLIGHT` | 16,384 | presentation cap | up from 10,000: M14, find worst 9.6-10.0 ms vs main 6.5-8.6 ms (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `L_WRAP_EDIT` | 8,192 | presentation cap | up from 8,192: word wrap turns off above it (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `L_PROTECT` | 512 | presentation cap | up from 500: Protected View length gate (D7) (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `L_EDIT_STALL` | 3,500 | measurement record | measured, decides nothing (D2) |
-| `crates/lushtext-model/src/document_scale.rs` | `L_PROTECT_EDIT` | 50,000 | presentation cap, exception | up from 50,000, kept: the maintainer's editability contract; C5 measured the keystroke cost rising past it (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `N_VISIBLE` | 262,144 | cap | rounded down (D4) |
-| `crates/lushtext-model/src/document_scale.rs` | `V_BATCH` | 65,536 | presentation cap | up from 56,000: N_DENSE 256 (main 250); M11, folded page worst 10.9-15.0 ms vs main 11.3-19.2 ms at 100 % and 50 % zoom (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `R_BATCH` | 256 | coverage window | 224 rounded up to 256 (D5) |
-| `crates/lushtext-model/src/document_scale.rs` | `UNDO_TOTAL_BYTES` | 67,108,864 | presentation cap | up from 50,000,000: undo turns off above it (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `HISTORY_SAVE_ONLY_BYTES` | 16,777,216 | presentation cap | up from 10,000,000: M10, periodic capture at the tier worst dispatch under 1 ms (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `HISTORY_UNAVAILABLE_BYTES` | 67,108,864 | presentation cap | up from 50,000,000: local history turns off above it (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `REFUSE_TO_OPEN` | 536,870,912 | presentation cap | up from 500,000,000: opening is refused above it (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `MULTIPLIER_WITH_UNDO` | 3 | out: factor | factor, divisor or unit (D1) |
-| `crates/lushtext-model/src/document_scale.rs` | `MULTIPLIER_WITHOUT_UNDO` | 2 | out: factor | factor, divisor or unit (D1) |
-| `crates/lushtext-model/src/document_scale.rs` | `PRESENTATION_MASK` | `expr: ScaleFeature::Undo.bit() - 1` | out: identifier | format version, discriminant or sentinel (D1) |
-| `crates/lushtext-model/src/document_scale.rs` | `byte_tier_reference::DISABLE_SYNTAX_HIGHLIGHTING` | 16,777,216 | presentation cap | up from 10,000,000: independent mirror of HISTORY_SAVE_ONLY_BYTES (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `byte_tier_reference::DISABLE_UNDO_HISTORY` | 67,108,864 | presentation cap | up from 50,000,000: reference mirror of UNDO_TOTAL_BYTES (D12) |
-| `crates/lushtext-model/src/document_scale.rs` | `byte_tier_reference::REFUSE_TO_OPEN` | 536,870,912 | presentation cap | up from 500,000,000: reference mirror of REFUSE_TO_OPEN (D12) |
-
-### `crates/lushtext-model/src/draft.rs`
+### `crates/lushtext-model/src/workspace/content_search.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-model/src/draft.rs` | `UNPROVEN_BACKING_MTIME_SECS` | 18,446,744,073,709,551,615 | out: identifier | format version, discriminant or sentinel (D1) |
+| `crates/lushtext-model/src/workspace/content_search.rs` | `MAX_SEARCH_MATCH_LINE_BYTES` | 4,096 | presentation cap | up from 4,096: past it a match line is cut (D12) |
+| `crates/lushtext-model/src/workspace/content_search.rs` | `MAX_REPLACE_PREVIEW_ROWS` | 16,384 | presentation cap | up from 10,000: M3, preview worst dispatch 27.8-29.2 ms vs main 26.0-28.6 ms, 64 MiB budget unchanged (D12) |
+| `crates/lushtext-model/src/workspace/content_search.rs` | `MAX_REPLACE_PREVIEW_BYTES` | 67,108,864 | presentation cap | up from 67,108,864: past it Replace Preview omits rows (D12) |
+| `crates/lushtext-model/src/workspace/content_search.rs` | `MAX_REPLACE_DIAGNOSTIC_ENTRIES` | 32 | presentation cap | up from 32: diagnostics a user reads after Replace All (D12) |
+| `crates/lushtext-model/src/workspace/content_search.rs` | `MAX_REPLACE_DIAGNOSTIC_BYTES` | 32,768 | presentation cap | up from 32,768: diagnostic text a user reads (D12) |
+| `crates/lushtext-model/src/workspace/content_search.rs` | `BEYOND_BUDGET_REPORT_INTERVAL_MS` | 250 | out: time | cadence of the running found count (`bound-lists-by-budget-not-count` D4) |
+| `crates/lushtext-model/src/workspace/content_search.rs` | `MAX_REPLACE_SKIP_LIST_BYTES` | 4,194,304 | presentation cap | up from 4,194,304: new; path bytes the skip list keeps, which lists every file of a 16,384-file run at typical path lengths and counts the rest (`stream-replace-all` D7) |
 
-### `crates/lushtext-model/src/editor_memory.rs`
-
-| File | Constant | Value | Kind | Rounding or reason |
-|---|---|---|---|---|
-| `crates/lushtext-model/src/editor_memory.rs` | `EDITOR_MEMORY_UPPER_BUDGET_BYTES` | 268,435,456 | cap | power of two |
-| `crates/lushtext-model/src/editor_memory.rs` | `EDITOR_MEMORY_LOWER_WATER_BYTES` | `expr: EDITOR_MEMORY_UPPER_BUDGET_BYTES.saturating_mul(90) / 100` | derived | computed from named inputs; not rounded (D2) |
-| `crates/lushtext-model/src/editor_memory.rs` | `EVICTED_EDITOR_BOOKKEEPING_BYTES` | 4,096 | coverage window | power of two, rounded up |
-| `crates/lushtext-model/src/editor_memory.rs` | `PROTECTED_BOUNDARY_BYTES` | 128 | coverage window | power of two, rounded up |
-
-### `crates/lushtext-model/src/file_load.rs`
+### `crates/lushtext-model/src/document/cursor_step.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-model/src/file_load.rs` | `TRANSIENT_LOAD_SHARED_BUDGET_BYTES` | 268,435,456 | cap | power of two |
-| `crates/lushtext-model/src/file_load.rs` | `TRANSIENT_LOAD_FIXED_OVERHEAD_BYTES` | 1,048,576 | cap | power of two |
-| `crates/lushtext-model/src/file_load.rs` | `TRANSIENT_LOAD_SOURCE_MULTIPLIER` | 8 | out: factor | factor, divisor or unit (D1) |
-| `crates/lushtext-model/src/file_load.rs` | `LIVE_RESIDENCY_BYTES_PER_CHAR` | 4 | external fact | exact, cited from its source |
-| `crates/lushtext-model/src/file_load.rs` | `DECODED_BODY_SOURCE_MULTIPLIER` | 3 | out: factor | factor, divisor or unit (D1) |
-| `crates/lushtext-model/src/file_load.rs` | `SYNCHRONOUS_INSTALL_THRESHOLD_BYTES` | 524,288 | derived | computed from named inputs; not rounded (D2) |
-| `crates/lushtext-model/src/file_load.rs` | `INSTALL_SLICE_BYTES` | 262,144 | derived | computed from named inputs; not rounded (D2) |
-| `crates/lushtext-model/src/file_load.rs` | `MAX_ADMITTED_FILE_LOADS` | 8 | cap | power of two |
-| `crates/lushtext-model/src/file_load.rs` | `MAX_CONSECUTIVE_ACTIVE_BYPASSES` | 2 | cap | power of two |
+| `crates/lushtext-model/src/document/cursor_step.rs` | `L_LOGICAL_CURSOR_STEP` | 256 | policy tier | power of two: above it an arrow step in a left-to-right paragraph is answered logically, which lands on the same place (A107); hides nothing (`adopt-gnome-51` L2) |
 
-### `crates/lushtext-model/src/held_input.rs`
+### `crates/lushtext-model/src/document/document_scale.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-model/src/held_input.rs` | `HELD_TEXT_CAP_BYTES` | 4,096 | presentation cap | up from 4,096: typed text kept during install (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `S_SYNTAX` | 1,048,576 | presentation cap | up from 1,048,576: plain-text highlighting turns off above it (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `attach_threshold::HTML` | 47,104 | presentation cap, exception | up from 47,104, kept: A69's sweep: the power of two above fails its attach bound (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `attach_threshold::MARKDOWN` | 327,680 | presentation cap, exception | up from 327,680, kept: A69's sweep: the power of two above fails its attach bound (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `attach_threshold::RUST` | 188,416 | presentation cap, exception | up from 188,416, kept: A69's sweep: the power of two above fails its attach bound (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `attach_threshold::JSON` | 24,576 | presentation cap, exception | up from 24,576, kept: A69's sweep: the power of two above fails its attach bound (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `attach_threshold::C` | 86,016 | presentation cap, exception | up from 86,016, kept: A69's sweep: the power of two above fails its attach bound (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `attach_threshold::PYTHON` | 49,152 | presentation cap, exception | up from 49,152, kept: A69's sweep: the power of two above fails its attach bound (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `attach_threshold::JAVASCRIPT` | 18,432 | presentation cap, exception | up from 18,432, kept: A69's sweep: the power of two above fails its attach bound (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `attach_threshold::TYPESCRIPT` | 10,752 | presentation cap, exception | up from 10,752, kept: A69's sweep: the power of two above fails its attach bound (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `attach_threshold::YAML` | 147,456 | presentation cap, exception | up from 147,456, kept: A69's sweep: the power of two above fails its attach bound (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `attach_threshold::XML` | 135,168 | presentation cap, exception | up from 135,168, kept: A69's sweep: the power of two above fails its attach bound (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `attach_threshold::CSS` | 37,888 | presentation cap, exception | up from 37,888, kept: A69's sweep derived it as the largest passing CSS size, so 64 KiB fails (cited; D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `attach_threshold::SHELL` | 39,936 | presentation cap, exception | up from 39,936, kept: A69's sweep: the power of two above fails its attach bound (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `typing_threshold::HTML` | 16,384 | presentation cap | up from 16,384: highlighting turns off above it (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `typing_threshold::JSON` | 20,480 | presentation cap, exception | up from 20,480, kept: A69's sweep: the power of two above fails the typing bound (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `MODEL_MARKDOWN_CAP` | 524,288 | policy tier | power of two |
+| `crates/lushtext-model/src/document/document_scale.rs` | `S_SYNTAX_OTHER` | 48,128 | presentation cap, exception | up from 48,128, kept: A69's sweep (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `L_SYNTAX` | 2,000 | presentation cap, exception | up from 2,000, kept: 2,048 breaks MAX_SYNTAX_PARAGRAPH_BYTES <= HIGHLIGHT_CHUNK_BYTES (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `S_MINIMAP` | 10,000,000 | presentation cap, exception | up from 10,000,000, kept: M10, a 16 MiB open with the minimap 37-38 ms vs main 23-27 ms and one settle past the 10 s cap (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `L_MINIMAP` | 22,000 | presentation cap, exception | up from 22,000, kept: M14 measured the minimap-on background dispatch at 32,768 13.4 ms worse than main's at 22,000 (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `L_INVISIBLES` | 50,000 | presentation cap, exception | up from 50,000, kept: it must not exceed L_PROTECT_EDIT (Protected View has invisibles off, C2 D10; asserted) (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `L_SEARCH_HIGHLIGHT` | 16,384 | presentation cap | up from 10,000: M14, find worst 9.6-10.0 ms vs main 6.5-8.6 ms (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `L_WRAP_EDIT` | 8,192 | presentation cap | up from 8,192: word wrap turns off above it (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `L_PROTECT` | 512 | presentation cap | up from 500: Protected View length gate (D7) (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `L_EDIT_STALL` | 3,500 | measurement record | measured, decides nothing (D2) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `L_PROTECT_EDIT` | 50,000 | presentation cap, exception | up from 50,000, kept: the maintainer's editability contract; C5 measured the keystroke cost rising past it (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `N_VISIBLE` | 262,144 | cap | rounded down (D4) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `V_BATCH` | 65,536 | presentation cap | up from 56,000: N_DENSE 256 (main 250); M11, folded page worst 10.9-15.0 ms vs main 11.3-19.2 ms at 100 % and 50 % zoom (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `R_BATCH` | 256 | coverage window | 224 rounded up to 256 (D5) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `UNDO_TOTAL_BYTES` | 67,108,864 | presentation cap | up from 50,000,000: undo turns off above it (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `HISTORY_SAVE_ONLY_BYTES` | 16,777,216 | presentation cap | up from 10,000,000: M10, periodic capture at the tier worst dispatch under 1 ms (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `HISTORY_UNAVAILABLE_BYTES` | 67,108,864 | presentation cap | up from 50,000,000: local history turns off above it (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `REFUSE_TO_OPEN` | 536,870,912 | presentation cap | up from 500,000,000: opening is refused above it (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `MULTIPLIER_WITH_UNDO` | 3 | out: factor | factor, divisor or unit (D1) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `MULTIPLIER_WITHOUT_UNDO` | 2 | out: factor | factor, divisor or unit (D1) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `PRESENTATION_MASK` | `expr: ScaleFeature::Undo.bit() - 1` | out: identifier | format version, discriminant or sentinel (D1) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `byte_tier_reference::DISABLE_SYNTAX_HIGHLIGHTING` | 16,777,216 | presentation cap | up from 10,000,000: independent mirror of HISTORY_SAVE_ONLY_BYTES (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `byte_tier_reference::DISABLE_UNDO_HISTORY` | 67,108,864 | presentation cap | up from 50,000,000: reference mirror of UNDO_TOTAL_BYTES (D12) |
+| `crates/lushtext-model/src/document/document_scale.rs` | `byte_tier_reference::REFUSE_TO_OPEN` | 536,870,912 | presentation cap | up from 500,000,000: reference mirror of REFUSE_TO_OPEN (D12) |
 
-### `crates/lushtext-model/src/highlight_chunking.rs`
-
-| File | Constant | Value | Kind | Rounding or reason |
-|---|---|---|---|---|
-| `crates/lushtext-model/src/highlight_chunking.rs` | `HIGHLIGHT_CHUNK_BYTES` | 8,192 | cap | power of two |
-| `crates/lushtext-model/src/highlight_chunking.rs` | `MAX_SYNTAX_PARAGRAPH_BYTES` | 8,003 | derived | computed from named inputs; not rounded (D2) |
-
-### `crates/lushtext-model/src/list_budget.rs`
-
-| File | Constant | Value | Kind | Rounding or reason |
-|---|---|---|---|---|
-| `crates/lushtext-model/src/list_budget.rs` | `LIST_TURN_SLICE_US` | 4,000 | out: time | time unit; `B_INTERACT_US / 2`, half the interaction budget per list turn (`bound-lists-by-budget-not-count` D2) |
-| `crates/lushtext-model/src/list_budget.rs` | `LIST_RETIREMENT_UNIT_ROWS` | 16 | cap | power of two; rows one sliced-retirement unit removes, sized so `LIST_TURN_SLICE_US` plus one unit's teardown fits `B_INTERACT_US` (`lighten-notes-browser-rows` D4, task 1.4) |
-| `crates/lushtext-model/src/list_budget.rs` | `LIST_FIRST_ROWS` | 32 | coverage window | power of two, rounded up; covers the tallest viewport the notes browser (700 sp) and palette (400 px) show, about 20 rows at the smallest row height (`lighten-notes-browser-rows` D5) |
-| `crates/lushtext-model/src/list_budget.rs` | `LIST_GROWTH_STEP_ROWS` | 32 | cap | power of two, rounded down; rows a growth frame realizes, about 5 ms of layout (64 measured 10.3–10.6 ms, task 6) |
-| `crates/lushtext-model/src/list_budget.rs` | `LIST_GROWTH_BAND_ROWS` | 256 | coverage window | power of two, rounded up over GTK's about 205 realized rows (A1); past it the rest is listed at once |
-
-### `crates/lushtext-model/src/paragraph_boundary.rs`
-
-| File | Constant | Value | Kind | Rounding or reason |
-|---|---|---|---|---|
-| `crates/lushtext-model/src/paragraph_boundary.rs` | `FALSE_SEPARATOR_LEADS #[cfg(not(kani))]` | 4 | out: structural | enum length, bucket or worker count, or capacity hint (D1) |
-| `crates/lushtext-model/src/paragraph_boundary.rs` | `DELIMITER_SEARCH_CHUNK #[cfg(not(kani))]` | 65,536 | cap | power of two |
-| `crates/lushtext-model/src/paragraph_boundary.rs` | `PROFILE_THRESHOLD_COUNT` | 6 | out: structural | enum length, bucket or worker count, or capacity hint (D1) |
-| `crates/lushtext-model/src/paragraph_boundary.rs` | `MAX_PROFILED_OFFSETS #[cfg(not(kani))]` | 256 | cap | power of two |
-| `crates/lushtext-model/src/paragraph_boundary.rs` | `MAX_DENSITY_WINDOW #[cfg(not(kani))]` | 256 | cap | power of two |
-| `crates/lushtext-model/src/paragraph_boundary.rs` | `MAX_PROFILED_OFFSETS #[cfg(kani)]` | 4 | out: tool | Kani harness bound (D1) |
-| `crates/lushtext-model/src/paragraph_boundary.rs` | `MAX_DENSITY_WINDOW #[cfg(kani)]` | 4 | out: tool | Kani harness bound (D1) |
-
-### `crates/lushtext-model/src/paragraph_wrap.rs`
-
-| File | Constant | Value | Kind | Rounding or reason |
-|---|---|---|---|---|
-| `crates/lushtext-model/src/paragraph_wrap.rs` | `REWRAP_MARGIN` | 1,024 | coverage window | power of two, rounded up |
-
-### `crates/lushtext-model/src/protected_fold.rs`
-
-| File | Constant | Value | Kind | Rounding or reason |
-|---|---|---|---|---|
-| `crates/lushtext-model/src/protected_fold.rs` | `N_HEAD` | 10,000 | presentation cap, exception | up from 10,000, kept: C2's sweep, 16.1 ms at 14,000 wrap off and 20.7 ms at 20,000 wrap on, so 16,384 fails (cited; D12) |
-| `crates/lushtext-model/src/protected_fold.rs` | `A28_MEASURED_ADVANCE_UNITS` | 9,011 | external fact | exact, cited from its source |
-| `crates/lushtext-model/src/protected_fold.rs` | `A28_MAX_ZOOM_PERCENT` | 400 | out: percent | percentage, permille or zoom percent (D1) |
-| `crates/lushtext-model/src/protected_fold.rs` | `A28_SAFE_CHARS` | 59,579 | derived | computed from named inputs; not rounded (D2) |
-| `crates/lushtext-model/src/protected_fold.rs` | `R_FOLD` | 256 | derived | computed from named inputs; not rounded (D2) |
-| `crates/lushtext-model/src/protected_fold.rs` | `R_FOLD_MIN_ZOOM_PERCENT` | 50 | out: percent | percentage, permille or zoom percent (D1) |
-| `crates/lushtext-model/src/protected_fold.rs` | `N_DENSE` | 256 | derived | computed from named inputs; not rounded (D2) |
-| `crates/lushtext-model/src/protected_fold.rs` | `HEAD_CAP` | `expr: min_u64(min_u64(N_VISIBLE, N_HEAD), A28_SAFE_CHARS)` | derived | computed from named inputs; not rounded (D2) |
-| `crates/lushtext-model/src/protected_fold.rs` | `N_INSPECT` | 512 | presentation cap | up from 500: characters the Line Inspector shows (D7) (D12) |
-| `crates/lushtext-model/src/protected_fold.rs` | `MAX_R_FOLD` | 256 | cap | power of two |
-| `crates/lushtext-model/src/protected_fold.rs` | `FoldRange::RETAINED_BYTES` | `expr: std::mem::size_of::<Self>() as u64` | derived | computed from named inputs; not rounded (D2) |
-
-### `crates/lushtext-model/src/protected_install.rs`
+### `crates/lushtext-model/src/persistence/draft.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-model/src/protected_install.rs` | `MAX_UTF8_SCALAR_BYTES` | 4 | external fact | exact, cited from its source |
-| `crates/lushtext-model/src/protected_install.rs` | `MIN_TAIL_SLICE_BYTES` | 4 | external fact | the longest UTF-8 scalar |
-| `crates/lushtext-model/src/protected_install.rs` | `MAX_SLICE_BYTES` | 262,144 | cap | power of two |
-| `crates/lushtext-model/src/protected_install.rs` | `B_SETTLE_US` | `expr: super::responsiveness_budget::B_SETTLE_US` | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-model/src/protected_install.rs` | `PROTECTED_TAIL_COST_NS_PER_KIB` | 26,000 | out: rate | measured rate (D1) |
-| `crates/lushtext-model/src/protected_install.rs` | `PROTECTED_CLEAR_COST_NS_PER_KIB` | 26,000 | out: rate | measured rate (D1) |
-| `crates/lushtext-model/src/protected_install.rs` | `PROTECTED_SLICE_MARGIN_PERCENT` | 100 | out: percent | percentage, permille or zoom percent (D1) |
-| `crates/lushtext-model/src/protected_install.rs` | `PROTECTED_TAIL_SLICE_BYTES` | 262,144 | cap | power of two |
-| `crates/lushtext-model/src/protected_install.rs` | `PROTECTED_CLEAR_SLICE_BYTES` | 262,144 | cap | power of two |
-| `crates/lushtext-model/src/protected_install.rs` | `PROTECTED_TAIL_SCAN_BYTES` | 33,554,432 | cap | power of two |
+| `crates/lushtext-model/src/persistence/draft.rs` | `UNPROVEN_BACKING_MTIME_SECS` | 18,446,744,073,709,551,615 | out: identifier | format version, discriminant or sentinel (D1) |
 
-### `crates/lushtext-model/src/reanalysis_pacing.rs`
+### `crates/lushtext-model/src/document/editor_memory.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-model/src/reanalysis_pacing.rs` | `REANALYSIS_ALLOWANCE_US` | `expr: B_SETTLE_US` | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-model/src/reanalysis_pacing.rs` | `STEP_TARGET_US` | 2,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-model/src/reanalysis_pacing.rs` | `FIRST_STEP_CHARS` | 512 | coverage window | power of two, rounded up |
-| `crates/lushtext-model/src/reanalysis_pacing.rs` | `MIN_STEP_CHARS` | 128 | cap | power of two |
-| `crates/lushtext-model/src/reanalysis_pacing.rs` | `MAX_STEP_CHARS` | 1,048,576 | cap | power of two |
-| `crates/lushtext-model/src/reanalysis_pacing.rs` | `MAX_STEPS` | 256 | cap | power of two |
+| `crates/lushtext-model/src/document/editor_memory.rs` | `EDITOR_MEMORY_UPPER_BUDGET_BYTES` | 268,435,456 | cap | power of two |
+| `crates/lushtext-model/src/document/editor_memory.rs` | `EDITOR_MEMORY_LOWER_WATER_BYTES` | `expr: EDITOR_MEMORY_UPPER_BUDGET_BYTES.saturating_mul(90) / 100` | derived | computed from named inputs; not rounded (D2) |
+| `crates/lushtext-model/src/document/editor_memory.rs` | `EVICTED_EDITOR_BOOKKEEPING_BYTES` | 4,096 | coverage window | power of two, rounded up |
+| `crates/lushtext-model/src/document/editor_memory.rs` | `PROTECTED_BOUNDARY_BYTES` | 128 | coverage window | power of two, rounded up |
 
-### `crates/lushtext-model/src/recent_document.rs`
+### `crates/lushtext-model/src/document/file_load.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-model/src/recent_document.rs` | `age_label::MINUTE` | 60 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-model/src/recent_document.rs` | `age_label::HOUR` | 3,600 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-model/src/recent_document.rs` | `age_label::DAY` | 86,400 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-model/src/document/file_load.rs` | `TRANSIENT_LOAD_SHARED_BUDGET_BYTES` | 268,435,456 | cap | power of two |
+| `crates/lushtext-model/src/document/file_load.rs` | `TRANSIENT_LOAD_FIXED_OVERHEAD_BYTES` | 1,048,576 | cap | power of two |
+| `crates/lushtext-model/src/document/file_load.rs` | `TRANSIENT_LOAD_SOURCE_MULTIPLIER` | 8 | out: factor | factor, divisor or unit (D1) |
+| `crates/lushtext-model/src/document/file_load.rs` | `LIVE_RESIDENCY_BYTES_PER_CHAR` | 4 | external fact | exact, cited from its source |
+| `crates/lushtext-model/src/document/file_load.rs` | `DECODED_BODY_SOURCE_MULTIPLIER` | 3 | out: factor | factor, divisor or unit (D1) |
+| `crates/lushtext-model/src/document/file_load.rs` | `SYNCHRONOUS_INSTALL_THRESHOLD_BYTES` | 524,288 | derived | computed from named inputs; not rounded (D2) |
+| `crates/lushtext-model/src/document/file_load.rs` | `INSTALL_SLICE_BYTES` | 262,144 | derived | computed from named inputs; not rounded (D2) |
+| `crates/lushtext-model/src/document/file_load.rs` | `MAX_ADMITTED_FILE_LOADS` | 8 | cap | power of two |
+| `crates/lushtext-model/src/document/file_load.rs` | `MAX_CONSECUTIVE_ACTIVE_BYPASSES` | 2 | cap | power of two |
 
-### `crates/lushtext-model/src/responsiveness_budget.rs`
-
-| File | Constant | Value | Kind | Rounding or reason |
-|---|---|---|---|---|
-| `crates/lushtext-model/src/responsiveness_budget.rs` | `B_INTERACT_US` | 8,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-model/src/responsiveness_budget.rs` | `B_SETTLE_US` | 16,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-model/src/responsiveness_budget.rs` | `REFERENCE_FRAME_US` | 8,333 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-model/src/responsiveness_budget.rs` | `INPUT_TO_FRAME_FRAMES` | 2 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-model/src/responsiveness_budget.rs` | `INPUT_TO_FRAME_US` | 16,666 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-model/src/responsiveness_budget.rs` | `SCROLL_P95_FRAME_GAP_US` | 8,333 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-model/src/responsiveness_budget.rs` | `SCROLL_FRAME_GAP_PERCENTILE` | 95 | out: percent | percentage, permille or zoom percent (D1) |
-| `crates/lushtext-model/src/responsiveness_budget.rs` | `HISTOGRAM_BUCKETS` | 24 | out: structural | enum length, bucket or worker count, or capacity hint (D1) |
-
-### `crates/lushtext-model/src/sidecar_identity.rs`
+### `crates/lushtext-model/src/document/held_input.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-model/src/sidecar_identity.rs` | `stable_bytes_hash::FNV_OFFSET` | 14,695,981,039,346,656,037 | out: code | exit code, errno or hash constant (D1) |
-| `crates/lushtext-model/src/sidecar_identity.rs` | `stable_bytes_hash::FNV_PRIME` | 1,099,511,628,211 | out: code | exit code, errno or hash constant (D1) |
+| `crates/lushtext-model/src/document/held_input.rs` | `HELD_TEXT_CAP_BYTES` | 4,096 | presentation cap | up from 4,096: typed text kept during install (D12) |
 
-### `crates/lushtext-model/src/size_units.rs`
-
-| File | Constant | Value | Kind | Rounding or reason |
-|---|---|---|---|---|
-| `crates/lushtext-model/src/size_units.rs` | `KIB` | 1,024 | out: factor | factor, divisor or unit (D1) |
-
-### `crates/lushtext-model/src/surrounding_text.rs`
+### `crates/lushtext-model/src/document/highlight_chunking.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-model/src/surrounding_text.rs` | `SURROUNDING_WINDOW_CHARS` | 1,024 | presentation cap | up from 1,024: context an input method receives (D12) |
-| `crates/lushtext-model/src/surrounding_text.rs` | `SURROUNDING_MAX_SELECTION_CHARS` | 8,192 | presentation cap | up from 8,192: selection an input method receives (D12) |
+| `crates/lushtext-model/src/document/highlight_chunking.rs` | `HIGHLIGHT_CHUNK_BYTES` | 8,192 | cap | power of two |
+| `crates/lushtext-model/src/document/highlight_chunking.rs` | `MAX_SYNTAX_PARAGRAPH_BYTES` | 8,003 | derived | computed from named inputs; not rounded (D2) |
 
-### `crates/lushtext-model/src/workspace_search.rs`
-
-| File | Constant | Value | Kind | Rounding or reason |
-|---|---|---|---|---|
-| `crates/lushtext-model/src/workspace_search.rs` | `WORKSPACE_SEARCH_FALLBACK_ENTRY_LIMIT` | 65,536 | presentation cap | up from 65,536: past it the search is incomplete (D12) |
-| `crates/lushtext-model/src/workspace_search.rs` | `WORKSPACE_SEARCH_FALLBACK_PATH_BYTE_LIMIT` | 8,388,608 | presentation cap | up from 8,388,608: past it the search is incomplete (D12) |
-
-### `crates/lushtext-model/src/workspace_visibility.rs`
+### `crates/lushtext-model/src/budgets/list_budget.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-model/src/workspace_visibility.rs` | `SNAPSHOT_EXCLUDED_NAMES_LIMIT` | 64 | presentation cap | up from 64: names an automation snapshot lists (D12) |
+| `crates/lushtext-model/src/budgets/list_budget.rs` | `LIST_TURN_SLICE_US` | 4,000 | out: time | time unit; `B_INTERACT_US / 2`, half the interaction budget per list turn (`bound-lists-by-budget-not-count` D2) |
+| `crates/lushtext-model/src/budgets/list_budget.rs` | `LIST_RETIREMENT_UNIT_ROWS` | 16 | cap | power of two; rows one sliced-retirement unit removes, sized so `LIST_TURN_SLICE_US` plus one unit's teardown fits `B_INTERACT_US` (`lighten-notes-browser-rows` D4, task 1.4) |
+| `crates/lushtext-model/src/budgets/list_budget.rs` | `LIST_FIRST_ROWS` | 32 | coverage window | power of two, rounded up; covers the tallest viewport the notes browser (700 sp) and palette (400 px) show, about 20 rows at the smallest row height (`lighten-notes-browser-rows` D5) |
+| `crates/lushtext-model/src/budgets/list_budget.rs` | `LIST_GROWTH_STEP_ROWS` | 32 | cap | power of two, rounded down; rows a growth frame realizes, about 5 ms of layout (64 measured 10.3–10.6 ms, task 6) |
+| `crates/lushtext-model/src/budgets/list_budget.rs` | `LIST_GROWTH_BAND_ROWS` | 256 | coverage window | power of two, rounded up over GTK's about 205 realized rows (A1); past it the rest is listed at once |
 
-### `crates/lushtext-services/src/app_data_leftovers.rs`
-
-| File | Constant | Value | Kind | Rounding or reason |
-|---|---|---|---|---|
-| `crates/lushtext-services/src/app_data_leftovers.rs` | `MAX_LINEAGES_PER_PASS` | 1,024 | cap | power of two |
-| `crates/lushtext-services/src/app_data_leftovers.rs` | `MAX_BACKUP_RUNS_PER_PASS` | 256 | cap | power of two |
-
-### `crates/lushtext-services/src/bookmark_excerpt.rs`
+### `crates/lushtext-model/src/document/paragraph_boundary.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-services/src/bookmark_excerpt.rs` | `BOOKMARK_EXCERPT_CONTEXT_BEFORE_LINES` | 3 | out: presentation | presentation shape: rows or lines a surface shows (D1) |
-| `crates/lushtext-services/src/bookmark_excerpt.rs` | `BOOKMARK_EXCERPT_CONTEXT_AFTER_LINES` | 7 | out: presentation | presentation shape: rows or lines a surface shows (D1) |
-| `crates/lushtext-services/src/bookmark_excerpt.rs` | `BOOKMARK_EXCERPT_SCAN_BYTE_LIMIT` | 1,048,576 | presentation cap | up from 1,048,576: past it a bookmark has no excerpt (D12) |
-| `crates/lushtext-services/src/bookmark_excerpt.rs` | `BOOKMARK_EXCERPT_SCAN_LINE_LIMIT` | 32,768 | presentation cap | up from 20,000: M12, 28.8-28.9 MiB peak vs main 28.1-28.5, under 1 ms; the 1 MiB byte limit bounds it (D12) |
-| `crates/lushtext-services/src/bookmark_excerpt.rs` | `BOOKMARK_EXCERPT_LINE_CHAR_LIMIT` | 4,096 | presentation cap | up from 4,096: characters an excerpt line shows (D12) |
-| `crates/lushtext-services/src/bookmark_excerpt.rs` | `BOOKMARK_EXCERPT_CANCELLATION_CHECK_LINES` | 1,024 | cap | power of two |
+| `crates/lushtext-model/src/document/paragraph_boundary.rs` | `FALSE_SEPARATOR_LEADS #[cfg(not(kani))]` | 4 | out: structural | enum length, bucket or worker count, or capacity hint (D1) |
+| `crates/lushtext-model/src/document/paragraph_boundary.rs` | `DELIMITER_SEARCH_CHUNK #[cfg(not(kani))]` | 65,536 | cap | power of two |
+| `crates/lushtext-model/src/document/paragraph_boundary.rs` | `PROFILE_THRESHOLD_COUNT` | 6 | out: structural | enum length, bucket or worker count, or capacity hint (D1) |
+| `crates/lushtext-model/src/document/paragraph_boundary.rs` | `MAX_PROFILED_OFFSETS #[cfg(not(kani))]` | 256 | cap | power of two |
+| `crates/lushtext-model/src/document/paragraph_boundary.rs` | `MAX_DENSITY_WINDOW #[cfg(not(kani))]` | 256 | cap | power of two |
+| `crates/lushtext-model/src/document/paragraph_boundary.rs` | `MAX_PROFILED_OFFSETS #[cfg(kani)]` | 4 | out: tool | Kani harness bound (D1) |
+| `crates/lushtext-model/src/document/paragraph_boundary.rs` | `MAX_DENSITY_WINDOW #[cfg(kani)]` | 4 | out: tool | Kani harness bound (D1) |
 
-### `crates/lushtext-services/src/conformance/draft_service.rs`
-
-| File | Constant | Value | Kind | Rounding or reason |
-|---|---|---|---|---|
-| `crates/lushtext-services/src/conformance/draft_service.rs` | `DRAFT_IDS` | 3 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
-| `crates/lushtext-services/src/conformance/draft_service.rs` | `INITIAL_LAYOUT_BITS` | 8 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
-| `crates/lushtext-services/src/conformance/draft_service.rs` | `BASE_MTIME_SECS` | 1,700,000,000 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
-
-### `crates/lushtext-services/src/content_search/replace/mod.rs`
+### `crates/lushtext-model/src/document/paragraph_wrap.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-services/src/content_search/replace/mod.rs` | `MAX_REPLACE_FILE_BYTES` | 536,870,912 | derived | `DocumentScale::REFUSE_TO_OPEN`, the open tier: past it no editor fallback exists (`stream-replace-all` D1) |
-| `crates/lushtext-services/src/content_search/replace/mod.rs` | `MAIN_REPLACE_FILE_BYTES` | 10,485,760 | presentation cap, exception | up from 10,485,760, kept: `main`'s first-pass per-file limit, replayed by the no-loss ledger so no file `main` replaced is displaced (`stream-replace-all` D4) |
-| `crates/lushtext-services/src/content_search/replace/mod.rs` | `MAIN_MAX_REPLACE_FILE_BYTES` | 16,777,216 | presentation cap, exception | up from 16,777,216, kept: `main`'s second-pass per-file limit, replayed by the no-loss ledger (`stream-replace-all` D4) |
-| `crates/lushtext-services/src/content_search/replace/mod.rs` | `MAIN_REPLACE_UNDO_BYTES` | 67,108,864 | presentation cap, exception | up from 67,108,864, kept: `main`'s aggregate undo payload, replayed by the no-loss ledger and the legacy inline journal's load bound (`stream-replace-all` D4, D6) |
-| `crates/lushtext-services/src/content_search/replace/mod.rs` | `REPLACE_DISK_RESERVE_BYTES` | 1,073,741,824 | policy tier | free space kept on the journal's and the target's filesystem beyond `main`'s admission; at least `MAIN_REPLACE_UNDO_BYTES + MAIN_MAX_REPLACE_FILE_BYTES` by a compile-time assertion (`stream-replace-all` D4) |
-| `crates/lushtext-services/src/content_search/replace/mod.rs` | `MAX_REPLACE_UNDO_RETAINED_BYTES` | 67,108,864 | cap | power of two |
+| `crates/lushtext-model/src/document/paragraph_wrap.rs` | `REWRAP_MARGIN` | 1,024 | coverage window | power of two, rounded up |
 
-### `crates/lushtext-services/src/content_search/replace/stream.rs`
+### `crates/lushtext-model/src/document/protected_fold.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-services/src/content_search/replace/stream.rs` | `REPLACE_STREAM_CHUNK_BYTES` | 262,144 | cap | power of two; two buffers retained per file at most; the smallest size within 5 % of the best measured throughput (`stream-replace-all` D2, task 2.4) |
+| `crates/lushtext-model/src/document/protected_fold.rs` | `N_HEAD` | 10,000 | presentation cap, exception | up from 10,000, kept: C2's sweep, 16.1 ms at 14,000 wrap off and 20.7 ms at 20,000 wrap on, so 16,384 fails (cited; D12) |
+| `crates/lushtext-model/src/document/protected_fold.rs` | `A28_MEASURED_ADVANCE_UNITS` | 9,011 | external fact | exact, cited from its source |
+| `crates/lushtext-model/src/document/protected_fold.rs` | `A28_MAX_ZOOM_PERCENT` | 400 | out: percent | percentage, permille or zoom percent (D1) |
+| `crates/lushtext-model/src/document/protected_fold.rs` | `A28_SAFE_CHARS` | 59,579 | derived | computed from named inputs; not rounded (D2) |
+| `crates/lushtext-model/src/document/protected_fold.rs` | `R_FOLD` | 256 | derived | computed from named inputs; not rounded (D2) |
+| `crates/lushtext-model/src/document/protected_fold.rs` | `R_FOLD_MIN_ZOOM_PERCENT` | 50 | out: percent | percentage, permille or zoom percent (D1) |
+| `crates/lushtext-model/src/document/protected_fold.rs` | `N_DENSE` | 256 | derived | computed from named inputs; not rounded (D2) |
+| `crates/lushtext-model/src/document/protected_fold.rs` | `HEAD_CAP` | `expr: min_u64(min_u64(N_VISIBLE, N_HEAD), A28_SAFE_CHARS)` | derived | computed from named inputs; not rounded (D2) |
+| `crates/lushtext-model/src/document/protected_fold.rs` | `N_INSPECT` | 512 | presentation cap | up from 500: characters the Line Inspector shows (D7) (D12) |
+| `crates/lushtext-model/src/document/protected_fold.rs` | `MAX_R_FOLD` | 256 | cap | power of two |
+| `crates/lushtext-model/src/document/protected_fold.rs` | `FoldRange::RETAINED_BYTES` | `expr: std::mem::size_of::<Self>() as u64` | derived | computed from named inputs; not rounded (D2) |
 
-### `crates/lushtext-services/src/draft_service.rs`
-
-| File | Constant | Value | Kind | Rounding or reason |
-|---|---|---|---|---|
-| `crates/lushtext-services/src/draft_service.rs` | `MAX_AUTOMATIC_DRAFT_BYTES` | 67,108,864 | presentation cap | up from 67,108,864: past it unsaved work has no draft (D12) |
-| `crates/lushtext-services/src/draft_service.rs` | `MAX_EAGER_DRAFT_PRELOAD_BYTES` | 67,108,864 | cap | power of two |
-| `crates/lushtext-services/src/draft_service.rs` | `MAX_MANIFEST_REPAIR_DRAFT_SCAN` | 2,048 | cap | power of two |
-| `crates/lushtext-services/src/draft_service.rs` | `MAX_MANIFEST_REPAIR_PAGE_ENTRIES` | 256 | cap | power of two |
-| `crates/lushtext-services/src/draft_service.rs` | `MAX_MANIFEST_REPAIR_METADATA_BYTES` | 524,288 | cap | power of two |
-| `crates/lushtext-services/src/draft_service.rs` | `MAX_MANIFEST_REPAIR_DIAGNOSTICS` | 4 | presentation cap | up from 4: diagnostics reported from a repair (task 9.1) (D12) |
-| `crates/lushtext-services/src/draft_service.rs` | `MANIFEST_REPAIR_ENTRY_OVERHEAD_BYTES` | 128 | coverage window | rounded up (D5) |
-| `crates/lushtext-services/src/draft_service.rs` | `MANIFEST_REPAIR_AUXILIARY_ENTRY_ALLOWANCE` | 1 | coverage window | power of two, rounded up |
-| `crates/lushtext-services/src/draft_service.rs` | `MAX_ORPHAN_CLEANUP_DRAFT_SCAN` | 2,048 | cap | power of two |
-
-### `crates/lushtext-services/src/draft_service/journal_model.rs`
+### `crates/lushtext-model/src/document/protected_install.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-services/src/draft_service/journal_model.rs` | `MAX_IDS` | 3 | out: tool | verification model scope (Kani harnesses and the conformance driver; never shipped) |
-| `crates/lushtext-services/src/draft_service/journal_model.rs` | `MAX_EDITS` | 3 | out: tool | verification model scope (Kani harnesses and the conformance driver; never shipped) |
-| `crates/lushtext-services/src/draft_service/journal_model.rs` | `CONTENTS` | 7 | out: tool | verification model scope (Kani harnesses and the conformance driver; never shipped) |
+| `crates/lushtext-model/src/document/protected_install.rs` | `MAX_UTF8_SCALAR_BYTES` | 4 | external fact | exact, cited from its source |
+| `crates/lushtext-model/src/document/protected_install.rs` | `MIN_TAIL_SLICE_BYTES` | 4 | external fact | the longest UTF-8 scalar |
+| `crates/lushtext-model/src/document/protected_install.rs` | `MAX_SLICE_BYTES` | 262,144 | cap | power of two |
+| `crates/lushtext-model/src/document/protected_install.rs` | `B_SETTLE_US` | `expr: crate::budgets::responsiveness_budget::B_SETTLE_US` | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-model/src/document/protected_install.rs` | `PROTECTED_TAIL_COST_NS_PER_KIB` | 26,000 | out: rate | measured rate (D1) |
+| `crates/lushtext-model/src/document/protected_install.rs` | `PROTECTED_CLEAR_COST_NS_PER_KIB` | 26,000 | out: rate | measured rate (D1) |
+| `crates/lushtext-model/src/document/protected_install.rs` | `PROTECTED_SLICE_MARGIN_PERCENT` | 100 | out: percent | percentage, permille or zoom percent (D1) |
+| `crates/lushtext-model/src/document/protected_install.rs` | `PROTECTED_TAIL_SLICE_BYTES` | 262,144 | cap | power of two |
+| `crates/lushtext-model/src/document/protected_install.rs` | `PROTECTED_CLEAR_SLICE_BYTES` | 262,144 | cap | power of two |
+| `crates/lushtext-model/src/document/protected_install.rs` | `PROTECTED_TAIL_SCAN_BYTES` | 33,554,432 | cap | power of two |
 
-### `crates/lushtext-services/src/draft_service/set_aside.rs`
-
-| File | Constant | Value | Kind | Rounding or reason |
-|---|---|---|---|---|
-| `crates/lushtext-services/src/draft_service/set_aside.rs` | `MAX_SET_ASIDE_NAME_ATTEMPTS` | 64 | retry budget | power of two |
-| `crates/lushtext-services/src/draft_service/set_aside.rs` | `MAX_LISTED_SET_ASIDE_BODIES` | 256 | presentation cap | up from 256: bodies the review lists (D12) |
-| `crates/lushtext-services/src/draft_service/set_aside.rs` | `MAX_SET_ASIDE_SCAN_ENTRIES` | 16,384 | presentation cap | up from 10,000: M12, 27.6-28.0 MiB, 23 ms (main 27.4-27.9 MiB, 14 ms) (D12) |
-
-### `crates/lushtext-services/src/draft_service/set_aside_retention.rs`
-
-| File | Constant | Value | Kind | Rounding or reason |
-|---|---|---|---|---|
-| `crates/lushtext-services/src/draft_service/set_aside_retention.rs` | `SOFT_BOUND_BODIES` | 128 | policy tier | 100 to 128 (D6) |
-| `crates/lushtext-services/src/draft_service/set_aside_retention.rs` | `SOFT_BOUND_BYTES` | 268,435,456 | policy tier | power of two |
-| `crates/lushtext-services/src/draft_service/set_aside_retention.rs` | `MATERIAL_GROWTH_PERCENT` | 25 | out: percent | percentage, permille or zoom percent (D1) |
-
-### `crates/lushtext-services/src/editor_io.rs`
+### `crates/lushtext-model/src/document/reanalysis_pacing.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-services/src/editor_io.rs` | `MAX_LOSSY_PREVIEW_ISSUES` | 8 | presentation cap | up from 8: issues the lossy-decode preview lists (D12) |
-| `crates/lushtext-services/src/editor_io.rs` | `LOAD_PROCESSING_CHUNK_BYTES` | 262,144 | cap | power of two |
-| `crates/lushtext-services/src/editor_io.rs` | `DIRECT_LOAD_PROCESSING_THRESHOLD_BYTES` | 1,048,576 | cap | power of two |
-| `crates/lushtext-services/src/editor_io.rs` | `ROUND_TRIP_CHUNK_BYTES` | 65,536 | cap | power of two |
+| `crates/lushtext-model/src/document/reanalysis_pacing.rs` | `REANALYSIS_ALLOWANCE_US` | `expr: B_SETTLE_US` | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-model/src/document/reanalysis_pacing.rs` | `STEP_TARGET_US` | 2,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-model/src/document/reanalysis_pacing.rs` | `FIRST_STEP_CHARS` | 512 | coverage window | power of two, rounded up |
+| `crates/lushtext-model/src/document/reanalysis_pacing.rs` | `MIN_STEP_CHARS` | 128 | cap | power of two |
+| `crates/lushtext-model/src/document/reanalysis_pacing.rs` | `MAX_STEP_CHARS` | 1,048,576 | cap | power of two |
+| `crates/lushtext-model/src/document/reanalysis_pacing.rs` | `MAX_STEPS` | 256 | cap | power of two |
+
+### `crates/lushtext-model/src/persistence/recent_document.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-model/src/persistence/recent_document.rs` | `age_label::MINUTE` | 60 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-model/src/persistence/recent_document.rs` | `age_label::HOUR` | 3,600 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-model/src/persistence/recent_document.rs` | `age_label::DAY` | 86,400 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+
+### `crates/lushtext-model/src/budgets/responsiveness_budget.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-model/src/budgets/responsiveness_budget.rs` | `B_INTERACT_US` | 8,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-model/src/budgets/responsiveness_budget.rs` | `B_SETTLE_US` | 16,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-model/src/budgets/responsiveness_budget.rs` | `REFERENCE_FRAME_US` | 8,333 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-model/src/budgets/responsiveness_budget.rs` | `INPUT_TO_FRAME_FRAMES` | 2 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-model/src/budgets/responsiveness_budget.rs` | `INPUT_TO_FRAME_US` | 16,666 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-model/src/budgets/responsiveness_budget.rs` | `SCROLL_P95_FRAME_GAP_US` | 8,333 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-model/src/budgets/responsiveness_budget.rs` | `SCROLL_FRAME_GAP_PERCENTILE` | 95 | out: percent | percentage, permille or zoom percent (D1) |
+| `crates/lushtext-model/src/budgets/responsiveness_budget.rs` | `HISTOGRAM_BUCKETS` | 24 | out: structural | enum length, bucket or worker count, or capacity hint (D1) |
+
+### `crates/lushtext-model/src/persistence/sidecar_identity.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-model/src/persistence/sidecar_identity.rs` | `stable_bytes_hash::FNV_OFFSET` | 14,695,981,039,346,656,037 | out: code | exit code, errno or hash constant (D1) |
+| `crates/lushtext-model/src/persistence/sidecar_identity.rs` | `stable_bytes_hash::FNV_PRIME` | 1,099,511,628,211 | out: code | exit code, errno or hash constant (D1) |
+
+### `crates/lushtext-model/src/budgets/size_units.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-model/src/budgets/size_units.rs` | `KIB` | 1,024 | out: factor | factor, divisor or unit (D1) |
+
+### `crates/lushtext-model/src/document/surrounding_text.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-model/src/document/surrounding_text.rs` | `SURROUNDING_WINDOW_CHARS` | 1,024 | presentation cap | up from 1,024: context an input method receives (D12) |
+| `crates/lushtext-model/src/document/surrounding_text.rs` | `SURROUNDING_MAX_SELECTION_CHARS` | 8,192 | presentation cap | up from 8,192: selection an input method receives (D12) |
+
+### `crates/lushtext-model/src/workspace/workspace_search.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-model/src/workspace/workspace_search.rs` | `WORKSPACE_SEARCH_FALLBACK_ENTRY_LIMIT` | 65,536 | presentation cap | up from 65,536: past it the search is incomplete (D12) |
+| `crates/lushtext-model/src/workspace/workspace_search.rs` | `WORKSPACE_SEARCH_FALLBACK_PATH_BYTE_LIMIT` | 8,388,608 | presentation cap | up from 8,388,608: past it the search is incomplete (D12) |
+
+### `crates/lushtext-model/src/workspace/workspace_visibility.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-model/src/workspace/workspace_visibility.rs` | `SNAPSHOT_EXCLUDED_NAMES_LIMIT` | 64 | presentation cap | up from 64: names an automation snapshot lists (D12) |
+
+### `crates/lushtext-services/src/persistence/app_data_leftovers.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-services/src/persistence/app_data_leftovers.rs` | `MAX_LINEAGES_PER_PASS` | 1,024 | cap | power of two |
+| `crates/lushtext-services/src/persistence/app_data_leftovers.rs` | `MAX_BACKUP_RUNS_PER_PASS` | 256 | cap | power of two |
+
+### `crates/lushtext-services/src/notes/bookmark_excerpt.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-services/src/notes/bookmark_excerpt.rs` | `BOOKMARK_EXCERPT_CONTEXT_BEFORE_LINES` | 3 | out: presentation | presentation shape: rows or lines a surface shows (D1) |
+| `crates/lushtext-services/src/notes/bookmark_excerpt.rs` | `BOOKMARK_EXCERPT_CONTEXT_AFTER_LINES` | 7 | out: presentation | presentation shape: rows or lines a surface shows (D1) |
+| `crates/lushtext-services/src/notes/bookmark_excerpt.rs` | `BOOKMARK_EXCERPT_SCAN_BYTE_LIMIT` | 1,048,576 | presentation cap | up from 1,048,576: past it a bookmark has no excerpt (D12) |
+| `crates/lushtext-services/src/notes/bookmark_excerpt.rs` | `BOOKMARK_EXCERPT_SCAN_LINE_LIMIT` | 32,768 | presentation cap | up from 20,000: M12, 28.8-28.9 MiB peak vs main 28.1-28.5, under 1 ms; the 1 MiB byte limit bounds it (D12) |
+| `crates/lushtext-services/src/notes/bookmark_excerpt.rs` | `BOOKMARK_EXCERPT_LINE_CHAR_LIMIT` | 4,096 | presentation cap | up from 4,096: characters an excerpt line shows (D12) |
+| `crates/lushtext-services/src/notes/bookmark_excerpt.rs` | `BOOKMARK_EXCERPT_CANCELLATION_CHECK_LINES` | 1,024 | cap | power of two |
+
+### `crates/lushtext-services/src/instrumentation/conformance/draft_service.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-services/src/instrumentation/conformance/draft_service.rs` | `DRAFT_IDS` | 3 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
+| `crates/lushtext-services/src/instrumentation/conformance/draft_service.rs` | `INITIAL_LAYOUT_BITS` | 8 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
+| `crates/lushtext-services/src/instrumentation/conformance/draft_service.rs` | `BASE_MTIME_SECS` | 1,700,000,000 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
+
+### `crates/lushtext-services/src/search/content_search/replace/mod.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-services/src/search/content_search/replace/mod.rs` | `MAX_REPLACE_FILE_BYTES` | 536,870,912 | derived | `DocumentScale::REFUSE_TO_OPEN`, the open tier: past it no editor fallback exists (`stream-replace-all` D1) |
+| `crates/lushtext-services/src/search/content_search/replace/mod.rs` | `MAIN_REPLACE_FILE_BYTES` | 10,485,760 | presentation cap, exception | up from 10,485,760, kept: `main`'s first-pass per-file limit, replayed by the no-loss ledger so no file `main` replaced is displaced (`stream-replace-all` D4) |
+| `crates/lushtext-services/src/search/content_search/replace/mod.rs` | `MAIN_MAX_REPLACE_FILE_BYTES` | 16,777,216 | presentation cap, exception | up from 16,777,216, kept: `main`'s second-pass per-file limit, replayed by the no-loss ledger (`stream-replace-all` D4) |
+| `crates/lushtext-services/src/search/content_search/replace/mod.rs` | `MAIN_REPLACE_UNDO_BYTES` | 67,108,864 | presentation cap, exception | up from 67,108,864, kept: `main`'s aggregate undo payload, replayed by the no-loss ledger and the legacy inline journal's load bound (`stream-replace-all` D4, D6) |
+| `crates/lushtext-services/src/search/content_search/replace/mod.rs` | `REPLACE_DISK_RESERVE_BYTES` | 1,073,741,824 | policy tier | free space kept on the journal's and the target's filesystem beyond `main`'s admission; at least `MAIN_REPLACE_UNDO_BYTES + MAIN_MAX_REPLACE_FILE_BYTES` by a compile-time assertion (`stream-replace-all` D4) |
+| `crates/lushtext-services/src/search/content_search/replace/mod.rs` | `MAX_REPLACE_UNDO_RETAINED_BYTES` | 67,108,864 | cap | power of two |
+
+### `crates/lushtext-services/src/search/content_search/replace/stream.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-services/src/search/content_search/replace/stream.rs` | `REPLACE_STREAM_CHUNK_BYTES` | 262,144 | cap | power of two; two buffers retained per file at most; the smallest size within 5 % of the best measured throughput (`stream-replace-all` D2, task 2.4) |
+
+### `crates/lushtext-services/src/persistence/draft_service.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-services/src/persistence/draft_service.rs` | `MAX_AUTOMATIC_DRAFT_BYTES` | 67,108,864 | presentation cap | up from 67,108,864: past it unsaved work has no draft (D12) |
+| `crates/lushtext-services/src/persistence/draft_service.rs` | `MAX_EAGER_DRAFT_PRELOAD_BYTES` | 67,108,864 | cap | power of two |
+| `crates/lushtext-services/src/persistence/draft_service.rs` | `MAX_MANIFEST_REPAIR_DRAFT_SCAN` | 2,048 | cap | power of two |
+| `crates/lushtext-services/src/persistence/draft_service.rs` | `MAX_MANIFEST_REPAIR_PAGE_ENTRIES` | 256 | cap | power of two |
+| `crates/lushtext-services/src/persistence/draft_service.rs` | `MAX_MANIFEST_REPAIR_METADATA_BYTES` | 524,288 | cap | power of two |
+| `crates/lushtext-services/src/persistence/draft_service.rs` | `MAX_MANIFEST_REPAIR_DIAGNOSTICS` | 4 | presentation cap | up from 4: diagnostics reported from a repair (task 9.1) (D12) |
+| `crates/lushtext-services/src/persistence/draft_service.rs` | `MANIFEST_REPAIR_ENTRY_OVERHEAD_BYTES` | 128 | coverage window | rounded up (D5) |
+| `crates/lushtext-services/src/persistence/draft_service.rs` | `MANIFEST_REPAIR_AUXILIARY_ENTRY_ALLOWANCE` | 1 | coverage window | power of two, rounded up |
+| `crates/lushtext-services/src/persistence/draft_service.rs` | `MAX_ORPHAN_CLEANUP_DRAFT_SCAN` | 2,048 | cap | power of two |
+
+### `crates/lushtext-services/src/persistence/draft_service/journal_model.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-services/src/persistence/draft_service/journal_model.rs` | `MAX_IDS` | 3 | out: tool | verification model scope (Kani harnesses and the conformance driver; never shipped) |
+| `crates/lushtext-services/src/persistence/draft_service/journal_model.rs` | `MAX_EDITS` | 3 | out: tool | verification model scope (Kani harnesses and the conformance driver; never shipped) |
+| `crates/lushtext-services/src/persistence/draft_service/journal_model.rs` | `CONTENTS` | 7 | out: tool | verification model scope (Kani harnesses and the conformance driver; never shipped) |
+
+### `crates/lushtext-services/src/persistence/draft_service/set_aside.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-services/src/persistence/draft_service/set_aside.rs` | `MAX_SET_ASIDE_NAME_ATTEMPTS` | 64 | retry budget | power of two |
+| `crates/lushtext-services/src/persistence/draft_service/set_aside.rs` | `MAX_LISTED_SET_ASIDE_BODIES` | 256 | presentation cap | up from 256: bodies the review lists (D12) |
+| `crates/lushtext-services/src/persistence/draft_service/set_aside.rs` | `MAX_SET_ASIDE_SCAN_ENTRIES` | 16,384 | presentation cap | up from 10,000: M12, 27.6-28.0 MiB, 23 ms (main 27.4-27.9 MiB, 14 ms) (D12) |
+
+### `crates/lushtext-services/src/persistence/draft_service/set_aside_retention.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-services/src/persistence/draft_service/set_aside_retention.rs` | `SOFT_BOUND_BODIES` | 128 | policy tier | 100 to 128 (D6) |
+| `crates/lushtext-services/src/persistence/draft_service/set_aside_retention.rs` | `SOFT_BOUND_BYTES` | 268,435,456 | policy tier | power of two |
+| `crates/lushtext-services/src/persistence/draft_service/set_aside_retention.rs` | `MATERIAL_GROWTH_PERCENT` | 25 | out: percent | percentage, permille or zoom percent (D1) |
+
+### `crates/lushtext-services/src/editor_io/mod.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-services/src/editor_io/mod.rs` | `MAX_LOSSY_PREVIEW_ISSUES` | 8 | presentation cap | up from 8: issues the lossy-decode preview lists (D12) |
+| `crates/lushtext-services/src/editor_io/mod.rs` | `LOAD_PROCESSING_CHUNK_BYTES` | 262,144 | cap | power of two |
+| `crates/lushtext-services/src/editor_io/mod.rs` | `DIRECT_LOAD_PROCESSING_THRESHOLD_BYTES` | 1,048,576 | cap | power of two |
+| `crates/lushtext-services/src/editor_io/mod.rs` | `ROUND_TRIP_CHUNK_BYTES` | 65,536 | cap | power of two |
 
 ### `crates/lushtext-services/src/editor_io/text_scans/health_avx2.rs`
 
@@ -552,12 +552,12 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-services/src/editor_io/text_scans/health_avx2.rs` | `BLOCK_READ` | 66 | out: structural | AVX2 block layout: two 256-bit vectors of lead positions (D1), plus the last lead's two continuation bytes |
 | `crates/lushtext-services/src/editor_io/text_scans/health_avx2.rs` | `HALF` | 32 | out: structural | AVX2 block layout: two 256-bit vectors of lead positions (D1) |
 
-### `crates/lushtext-services/src/file_peek.rs`
+### `crates/lushtext-services/src/workspace/file_peek.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-services/src/file_peek.rs` | `PEEK_SAMPLE_BYTE_LIMIT` | 16,384 | presentation cap | up from 16,384: bytes the file peek shows (D12) |
-| `crates/lushtext-services/src/file_peek.rs` | `PEEK_SAMPLE_LINE_LIMIT` | 60 | out: presentation | presentation shape: rows or lines a surface shows (D1) |
+| `crates/lushtext-services/src/workspace/file_peek.rs` | `PEEK_SAMPLE_BYTE_LIMIT` | 16,384 | presentation cap | up from 16,384: bytes the file peek shows (D12) |
+| `crates/lushtext-services/src/workspace/file_peek.rs` | `PEEK_SAMPLE_LINE_LIMIT` | 60 | out: presentation | presentation shape: rows or lines a surface shows (D1) |
 
 ### `crates/lushtext-services/src/filesystem/sys.rs`
 
@@ -571,58 +571,65 @@ marking new ones `UNCLASSIFIED`; review the diff).
 |---|---|---|---|---|
 | `crates/lushtext-services/src/filesystem/write_protocol.rs` | `MAX_TEMP_NAME_ATTEMPTS` | 8 | cap | power of two |
 
-### `crates/lushtext-services/src/format_upgrade/backup.rs`
+### `crates/lushtext-services/src/persistence/format_upgrade/backup.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-services/src/format_upgrade/backup.rs` | `MAX_BACKUP_DIR_ATTEMPTS` | 64 | retry budget | power of two |
-| `crates/lushtext-services/src/format_upgrade/backup.rs` | `MAX_BACKUP_ITEM_BYTES` | 16,777,216 | presentation cap | up from 16,777,216: past it an item is not backed up (D12) |
+| `crates/lushtext-services/src/persistence/format_upgrade/backup.rs` | `MAX_BACKUP_DIR_ATTEMPTS` | 64 | retry budget | power of two |
+| `crates/lushtext-services/src/persistence/format_upgrade/backup.rs` | `MAX_BACKUP_ITEM_BYTES` | 16,777,216 | presentation cap | up from 16,777,216: past it an item is not backed up (D12) |
 
-### `crates/lushtext-services/src/format_upgrade/diagnostics.rs`
-
-| File | Constant | Value | Kind | Rounding or reason |
-|---|---|---|---|---|
-| `crates/lushtext-services/src/format_upgrade/diagnostics.rs` | `SIDECAR_SCAN_MAX_ENTRIES` | 16,384 | presentation cap | up from 10,000: M12, preflight 34.4-35.3 MiB, 107 ms (main 31.5-32.3, 64 ms) (D12) |
-| `crates/lushtext-services/src/format_upgrade/diagnostics.rs` | `LOCAL_HISTORY_SCAN_MAX_LINEAGES` | 16,384 | presentation cap | up from 10,000: M12, with the sidecar scan (D12) |
-| `crates/lushtext-services/src/format_upgrade/diagnostics.rs` | `REPLACE_JOURNAL_SCAN_MAX_ENTRIES` | 16,384 | presentation cap | up from 10,000: equal to JOURNAL_SCAN_MAX_ENTRIES (asserted); M12 (D12) |
-| `crates/lushtext-services/src/format_upgrade/diagnostics.rs` | `DRAFT_BODY_SCAN_MAX_ENTRIES` | 2,048 | cap | power of two |
-
-### `crates/lushtext-services/src/json_format.rs`
+### `crates/lushtext-services/src/persistence/format_upgrade/diagnostics.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-services/src/json_format.rs` | `SUPPORTED_JSON_VERSION` | 1 | out: identifier | format version, discriminant or sentinel (D1) |
+| `crates/lushtext-services/src/persistence/format_upgrade/diagnostics.rs` | `SIDECAR_SCAN_MAX_ENTRIES` | 16,384 | presentation cap | up from 10,000: M12, preflight 34.4-35.3 MiB, 107 ms (main 31.5-32.3, 64 ms) (D12) |
+| `crates/lushtext-services/src/persistence/format_upgrade/diagnostics.rs` | `LOCAL_HISTORY_SCAN_MAX_LINEAGES` | 16,384 | presentation cap | up from 10,000: M12, with the sidecar scan (D12) |
+| `crates/lushtext-services/src/persistence/format_upgrade/diagnostics.rs` | `REPLACE_JOURNAL_SCAN_MAX_ENTRIES` | 16,384 | presentation cap | up from 10,000: equal to JOURNAL_SCAN_MAX_ENTRIES (asserted); M12 (D12) |
+| `crates/lushtext-services/src/persistence/format_upgrade/diagnostics.rs` | `DRAFT_BODY_SCAN_MAX_ENTRIES` | 2,048 | cap | power of two |
 
-### `crates/lushtext-services/src/local_history_service.rs`
-
-| File | Constant | Value | Kind | Rounding or reason |
-|---|---|---|---|---|
-| `crates/lushtext-services/src/local_history_service.rs` | `PER_DOCUMENT_SNAPSHOT_CAP` | 64 | retention tier | rounded up (D6) |
-| `crates/lushtext-services/src/local_history_service.rs` | `GLOBAL_SNAPSHOT_CAP` | 256 | retention tier | rounded up (D6) |
-| `crates/lushtext-services/src/local_history_service.rs` | `DEFAULT_RECONCILE_MAX_LINEAGES` | 512 | cap | power of two |
-| `crates/lushtext-services/src/local_history_service.rs` | `DEFAULT_RECONCILE_MAX_MILLIS` | 50 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-services/src/local_history_service.rs` | `MAX_INDEX_REPAIR_SNAPSHOT_BYTES` | 67,108,864 | presentation cap | up from 67,108,864: past it a damaged lineage stays unavailable (D12) |
-
-### `crates/lushtext-services/src/markdown_render.rs`
+### `crates/lushtext-services/src/persistence/json_format.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-services/src/markdown_render.rs` | `MAX_MARKDOWN_SOURCE_BYTES` | 4,194,304 | presentation cap | up from 4,194,304: past it the preview is limited (D12) |
-| `crates/lushtext-services/src/markdown_render.rs` | `MAX_MARKDOWN_EVENTS` | 65,536 | presentation cap | up from 50,000: M13, planning 35.1-35.4 MiB vs 33.1-33.5, projection worst 0.6-2.3 ms (D12) |
-| `crates/lushtext-services/src/markdown_render.rs` | `MAX_MARKDOWN_STRUCTURE_DEPTH` | 128 | presentation cap | up from 128: deeper structure is omitted from the preview (D12) |
-| `crates/lushtext-services/src/markdown_render.rs` | `MAX_MARKDOWN_EMBED_DESCRIPTORS` | 256 | presentation cap | up from 256: embeds past it are omitted (D12) |
-| `crates/lushtext-services/src/markdown_render.rs` | `MAX_MARKDOWN_RETAINED_BYTES` | 8,388,608 | presentation cap | up from 8,388,608: past it the preview is limited (D12) |
-| `crates/lushtext-services/src/markdown_render.rs` | `MARKDOWN_EVENTS_PER_PROJECTION_SLICE` | 256 | cap | power of two |
-| `crates/lushtext-services/src/markdown_render.rs` | `MARKDOWN_BYTES_PER_PROJECTION_SLICE` | 262,144 | cap | power of two |
-| `crates/lushtext-services/src/markdown_render.rs` | `MAX_MARKDOWN_CARRIED_EMBED_BYTES` | 65,536 | presentation cap | up from 65,536: a larger embed falls back (D12) |
-| `crates/lushtext-services/src/markdown_render.rs` | `MAX_MARKDOWN_CARRIED_TABLE_CELLS` | 1,024 | presentation cap | up from 1,000: M13, table build worst 10.3-12.3 ms vs main 10.8-11.4 ms (D12) |
-| `crates/lushtext-services/src/markdown_render.rs` | `MAX_MARKDOWN_PLACEHOLDER_WIDGETS` | 64 | presentation cap | up from 64: placeholders past it are omitted (D12) |
+| `crates/lushtext-services/src/persistence/json_format.rs` | `SUPPORTED_JSON_VERSION` | 1 | out: identifier | format version, discriminant or sentinel (D1) |
 
-### `crates/lushtext-services/src/migration_ledger.rs`
+### `crates/lushtext-services/src/persistence/local_history_service.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-services/src/migration_ledger.rs` | `MAX_MIGRATION_ATTEMPTS` | 4 | retry budget | rounded up (D6) |
+| `crates/lushtext-services/src/persistence/local_history_service.rs` | `PER_DOCUMENT_SNAPSHOT_CAP` | 64 | retention tier | rounded up (D6) |
+| `crates/lushtext-services/src/persistence/local_history_service.rs` | `GLOBAL_SNAPSHOT_CAP` | 256 | retention tier | rounded up (D6) |
+| `crates/lushtext-services/src/persistence/local_history_service.rs` | `DEFAULT_RECONCILE_MAX_LINEAGES` | 512 | cap | power of two |
+| `crates/lushtext-services/src/persistence/local_history_service.rs` | `DEFAULT_RECONCILE_MAX_MILLIS` | 50 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-services/src/persistence/local_history_service.rs` | `MAX_INDEX_REPAIR_SNAPSHOT_BYTES` | 67,108,864 | presentation cap | up from 67,108,864: past it a damaged lineage stays unavailable (D12) |
+
+### `crates/lushtext-services/src/notes/markdown_render/inline_footnotes.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-services/src/notes/markdown_render/inline_footnotes.rs` | `MAX_INLINE_FOOTNOTE_REPLACEMENTS` | 16,384 | derived | computed from named inputs; not rounded (D2) |
+| `crates/lushtext-services/src/notes/markdown_render/inline_footnotes.rs` | `LOWERING_CANCEL_CHECK_BYTES` | 4,096 | cap | power of two |
+
+### `crates/lushtext-services/src/notes/markdown_render/mod.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-services/src/notes/markdown_render/mod.rs` | `MAX_MARKDOWN_SOURCE_BYTES` | 4,194,304 | presentation cap | up from 4,194,304: past it the preview is limited (D12) |
+| `crates/lushtext-services/src/notes/markdown_render/mod.rs` | `MAX_MARKDOWN_EVENTS` | 65,536 | presentation cap | up from 50,000: M13, planning 35.1-35.4 MiB vs 33.1-33.5, projection worst 0.6-2.3 ms (D12) |
+| `crates/lushtext-services/src/notes/markdown_render/mod.rs` | `MAX_MARKDOWN_STRUCTURE_DEPTH` | 128 | presentation cap | up from 128: deeper structure is omitted from the preview (D12) |
+| `crates/lushtext-services/src/notes/markdown_render/mod.rs` | `MAX_MARKDOWN_EMBED_DESCRIPTORS` | 256 | presentation cap | up from 256: embeds past it are omitted (D12) |
+| `crates/lushtext-services/src/notes/markdown_render/mod.rs` | `MAX_MARKDOWN_RETAINED_BYTES` | 8,388,608 | presentation cap | up from 8,388,608: past it the preview is limited (D12) |
+| `crates/lushtext-services/src/notes/markdown_render/mod.rs` | `MARKDOWN_EVENTS_PER_PROJECTION_SLICE` | 256 | cap | power of two |
+| `crates/lushtext-services/src/notes/markdown_render/mod.rs` | `MARKDOWN_BYTES_PER_PROJECTION_SLICE` | 262,144 | cap | power of two |
+| `crates/lushtext-services/src/notes/markdown_render/mod.rs` | `MAX_MARKDOWN_CARRIED_EMBED_BYTES` | 65,536 | presentation cap | up from 65,536: a larger embed falls back (D12) |
+| `crates/lushtext-services/src/notes/markdown_render/mod.rs` | `MAX_MARKDOWN_CARRIED_TABLE_CELLS` | 1,024 | presentation cap | up from 1,000: M13, table build worst 10.3-12.3 ms vs main 10.8-11.4 ms (D12) |
+| `crates/lushtext-services/src/notes/markdown_render/mod.rs` | `MAX_MARKDOWN_PLACEHOLDER_WIDGETS` | 64 | presentation cap | up from 64: placeholders past it are omitted (D12) |
+
+### `crates/lushtext-services/src/persistence/migration_ledger.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-services/src/persistence/migration_ledger.rs` | `MAX_MIGRATION_ATTEMPTS` | 4 | retry budget | rounded up (D6) |
 
 ### `crates/lushtext-services/src/palette/fuzzy.rs`
 
@@ -693,59 +700,59 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-services/src/palette/workspace_index_fixture.rs` | `BRANCH_ROLL` | 256 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
 | `crates/lushtext-services/src/palette/workspace_index_fixture.rs` | `SECOND_LEVEL_ROLLS` | 8 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
 
-### `crates/lushtext-services/src/read_fault.rs`
+### `crates/lushtext-services/src/instrumentation/read_fault.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-services/src/read_fault.rs` | `EACCES #[cfg(feature="smoke-read-faults")]` | 13 | out: code | exit code, errno or hash constant (D1) |
+| `crates/lushtext-services/src/instrumentation/read_fault.rs` | `EACCES #[cfg(feature="smoke-read-faults")]` | 13 | out: code | exit code, errno or hash constant (D1) |
 
-### `crates/lushtext-services/src/recent_documents.rs`
-
-| File | Constant | Value | Kind | Rounding or reason |
-|---|---|---|---|---|
-| `crates/lushtext-services/src/recent_documents.rs` | `MAX_RECENTS` | 256 | retention tier | rounded up (D6) |
-| `crates/lushtext-services/src/recent_documents.rs` | `MAX_RECENT_DOCUMENTS_BYTES` | 4,194,304 | coverage window | loads a full store of worst-case entries (D6) |
-| `crates/lushtext-services/src/recent_documents.rs` | `MAX_RECENT_LOAD_CANDIDATES` | 512 | derived | computed from named inputs; not rounded (D2) |
-| `crates/lushtext-services/src/recent_documents.rs` | `MAX_RECENT_LOAD_DIAGNOSTICS` | 32 | presentation cap | up from 20: 32 bounded messages, no timed path (D12, task 9.4) |
-
-### `crates/lushtext-services/src/recovery_metadata.rs`
+### `crates/lushtext-services/src/persistence/recent_documents.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-services/src/recovery_metadata.rs` | `DEFAULT_MAX_METADATA_BYTES` | 16,777,216 | presentation cap | up from 16,777,216: past it metadata is refused (D12) |
-| `crates/lushtext-services/src/recovery_metadata.rs` | `MAX_QUARANTINE_NAME_ATTEMPTS` | 64 | retry budget | power of two |
+| `crates/lushtext-services/src/persistence/recent_documents.rs` | `MAX_RECENTS` | 256 | retention tier | rounded up (D6) |
+| `crates/lushtext-services/src/persistence/recent_documents.rs` | `MAX_RECENT_DOCUMENTS_BYTES` | 4,194,304 | coverage window | loads a full store of worst-case entries (D6) |
+| `crates/lushtext-services/src/persistence/recent_documents.rs` | `MAX_RECENT_LOAD_CANDIDATES` | 512 | derived | computed from named inputs; not rounded (D2) |
+| `crates/lushtext-services/src/persistence/recent_documents.rs` | `MAX_RECENT_LOAD_DIAGNOSTICS` | 32 | presentation cap | up from 20: 32 bounded messages, no timed path (D12, task 9.4) |
 
-### `crates/lushtext-services/src/responsiveness_log.rs`
-
-| File | Constant | Value | Kind | Rounding or reason |
-|---|---|---|---|---|
-| `crates/lushtext-services/src/responsiveness_log.rs` | `PROBE_LOG_VERSION` | 1 | out: identifier | format version, discriminant or sentinel (D1) |
-| `crates/lushtext-services/src/responsiveness_log.rs` | `EVIDENCE_CHANNEL_CAPACITY` | 4,096 | cap | power of two |
-| `crates/lushtext-services/src/responsiveness_log.rs` | `DEFAULT_LATE_THRESHOLD_US` | 1,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-services/src/responsiveness_log.rs` | `SECOND_RECORD_INTERVAL_US` | 1,000,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-services/src/responsiveness_log.rs` | `TOP_K_RECORD_INTERVAL_US` | 5,000,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
-| `crates/lushtext-services/src/responsiveness_log.rs` | `TOP_K` | 16 | cap | power of two |
-| `crates/lushtext-services/src/responsiveness_log.rs` | `DEFAULT_FRAME_PHASE_FRAMES` | 4 | cap | power of two |
-| `crates/lushtext-services/src/responsiveness_log.rs` | `MAX_FRAME_PHASE_FRAMES` | 16,384 | coverage window | rounded up (D5) |
-
-### `crates/lushtext-services/src/search_backup.rs`
+### `crates/lushtext-services/src/persistence/recovery_metadata.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-services/src/search_backup.rs` | `JOURNAL_SCAN_MAX_ENTRIES` | 16,384 | presentation cap | up from 10,000: at least MAX_REPLACE_PREVIEW_ROWS, the files one Replace All can touch (asserted; `bound-lists-by-budget-not-count` D3); M12, 33.9-34.5 MiB, 381-392 ms (D12) |
+| `crates/lushtext-services/src/persistence/recovery_metadata.rs` | `DEFAULT_MAX_METADATA_BYTES` | 16,777,216 | presentation cap | up from 16,777,216: past it metadata is refused (D12) |
+| `crates/lushtext-services/src/persistence/recovery_metadata.rs` | `MAX_QUARANTINE_NAME_ATTEMPTS` | 64 | retry budget | power of two |
 
-### `crates/lushtext-services/src/search_history.rs`
-
-| File | Constant | Value | Kind | Rounding or reason |
-|---|---|---|---|---|
-| `crates/lushtext-services/src/search_history.rs` | `MAX_HISTORY` | 32 | retention tier | rounded up (D6) |
-
-### `crates/lushtext-services/src/workspace_watch.rs`
+### `crates/lushtext-services/src/instrumentation/responsiveness_log.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-services/src/workspace_watch.rs` | `WORKSPACE_WATCH_PATH_CAP` | 1,024 | cap | power of two |
-| `crates/lushtext-services/src/workspace_watch.rs` | `WATCH_ERROR_MESSAGE_CAP_BYTES` | 1,024 | presentation cap | up from 1,024: error text a user reads (D12) |
+| `crates/lushtext-services/src/instrumentation/responsiveness_log.rs` | `PROBE_LOG_VERSION` | 1 | out: identifier | format version, discriminant or sentinel (D1) |
+| `crates/lushtext-services/src/instrumentation/responsiveness_log.rs` | `EVIDENCE_CHANNEL_CAPACITY` | 4,096 | cap | power of two |
+| `crates/lushtext-services/src/instrumentation/responsiveness_log.rs` | `DEFAULT_LATE_THRESHOLD_US` | 1,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-services/src/instrumentation/responsiveness_log.rs` | `SECOND_RECORD_INTERVAL_US` | 1,000,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-services/src/instrumentation/responsiveness_log.rs` | `TOP_K_RECORD_INTERVAL_US` | 5,000,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-services/src/instrumentation/responsiveness_log.rs` | `TOP_K` | 16 | cap | power of two |
+| `crates/lushtext-services/src/instrumentation/responsiveness_log.rs` | `DEFAULT_FRAME_PHASE_FRAMES` | 4 | cap | power of two |
+| `crates/lushtext-services/src/instrumentation/responsiveness_log.rs` | `MAX_FRAME_PHASE_FRAMES` | 16,384 | coverage window | rounded up (D5) |
+
+### `crates/lushtext-services/src/search/search_backup.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-services/src/search/search_backup.rs` | `JOURNAL_SCAN_MAX_ENTRIES` | 16,384 | presentation cap | up from 10,000: at least MAX_REPLACE_PREVIEW_ROWS, the files one Replace All can touch (asserted; `bound-lists-by-budget-not-count` D3); M12, 33.9-34.5 MiB, 381-392 ms (D12) |
+
+### `crates/lushtext-services/src/search/search_history.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-services/src/search/search_history.rs` | `MAX_HISTORY` | 32 | retention tier | rounded up (D6) |
+
+### `crates/lushtext-services/src/watch/workspace_watch.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-services/src/watch/workspace_watch.rs` | `WORKSPACE_WATCH_PATH_CAP` | 1,024 | cap | power of two |
+| `crates/lushtext-services/src/watch/workspace_watch.rs` | `WATCH_ERROR_MESSAGE_CAP_BYTES` | 1,024 | presentation cap | up from 1,024: error text a user reads (D12) |
 
 ### `crates/lushtext-ui/src/ui/accessibility.rs`
 
@@ -993,8 +1000,6 @@ marking new ones `UNCLASSIFIED`; review the diff).
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-ui/src/ui/markdown_preview/policy.rs` | `MAX_INLINE_FOOTNOTE_REPLACEMENTS` | 16,384 | derived | computed from named inputs; not rounded (D2) |
-| `crates/lushtext-ui/src/ui/markdown_preview/policy.rs` | `LOWERING_CANCEL_CHECK_BYTES` | 4,096 | cap | power of two |
 | `crates/lushtext-ui/src/ui/markdown_preview/policy.rs` | `PREVIEW_MIN_WIDTH_SP` | 1 | out: geometry | UI geometry in sp or px (D1) |
 | `crates/lushtext-ui/src/ui/markdown_preview/policy.rs` | `PREVIEW_DEFAULT_WIDTH_SP` | 300 | out: geometry | UI geometry in sp or px (D1) |
 | `crates/lushtext-ui/src/ui/markdown_preview/policy.rs` | `PREVIEW_MAX_WIDTH_DIVISOR` | 3 | out: factor | factor, divisor or unit (D1) |
@@ -1025,7 +1030,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-ui/src/ui/plain_disposal.rs` | `DISPOSAL_WORKERS` | 2 | out: structural | enum length, bucket or worker count, or capacity hint (D1) |
 | `crates/lushtext-ui/src/ui/plain_disposal.rs` | `DISPOSAL_QUEUE_CAPACITY` | 8 | cap | power of two |
 | `crates/lushtext-ui/src/ui/plain_disposal.rs` | `DISPOSAL_RETAINED_BYTE_CAPACITY` | 134,217,728 | cap | power of two |
-| `crates/lushtext-ui/src/ui/plain_disposal.rs` | `FILE_LOAD_OVERWEIGHT_PROGRESS_CAPACITY` | `expr: lushtext_model::document_scale::REFUSE_TO_OPEN .saturating_mul(lushtext_model::file_load::DECODED_BODY_SOURCE_MULTIPLIER)` | derived | computed from named inputs; not rounded (D2) |
+| `crates/lushtext-ui/src/ui/plain_disposal.rs` | `FILE_LOAD_OVERWEIGHT_PROGRESS_CAPACITY` | `expr: lushtext_model::document::document_scale::REFUSE_TO_OPEN .saturating_mul(lushtext_model::document::file_load::DECODED_BODY_SOURCE_MULTIPLIER)` | derived | computed from named inputs; not rounded (D2) |
 | `crates/lushtext-ui/src/ui/plain_disposal.rs` | `PROGRESS_DISPOSAL_RETAINED_BYTE_CAPACITY` | 75,497,472 | derived | computed from named inputs; not rounded (D2) |
 | `crates/lushtext-ui/src/ui/plain_disposal.rs` | `MAX_SMALL_PENDING_DISPOSAL_BYTES #[cfg(feature="test-utils")]` | 65,536 | cap | power of two |
 | `crates/lushtext-ui/src/ui/plain_disposal.rs` | `aggregate_pressure_evidence_for_test::MIB` | 1,048,576 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |

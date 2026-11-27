@@ -25,7 +25,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use lushtext_model::file_load::TRANSIENT_LOAD_SHARED_BUDGET_BYTES;
+use lushtext_model::document::file_load::TRANSIENT_LOAD_SHARED_BUDGET_BYTES;
 
 /// Process-wide ordinary budget shared with transient editor file loads.
 ///

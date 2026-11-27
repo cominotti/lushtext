@@ -44,7 +44,7 @@ use libadwaita::prelude::AdwDialogExt;
 use crate::ui::accessibility;
 use crate::ui::list_growth::RowGrowth;
 use crate::ui::row_text::LushtextRowText;
-use lushtext_model::content_search::{ReplaceSkipReason, ReplaceSkipReport};
+use lushtext_model::workspace::content_search::{ReplaceSkipReason, ReplaceSkipReport};
 
 use super::LushtextSearchPanel;
 use super::policy;
@@ -88,7 +88,7 @@ glib::wrapper! {
 }
 
 impl SkippedFileRow {
-    fn new(file: &lushtext_model::content_search::ReplaceSkippedFile) -> Self {
+    fn new(file: &lushtext_model::workspace::content_search::ReplaceSkippedFile) -> Self {
         let row: Self = glib::Object::new();
         let imp = row.imp();
         imp.title.replace(file.path.file_name().map_or_else(
@@ -223,7 +223,7 @@ impl SkippedFilesModel {
             .replace(policy::skip_sections(report.files()));
         model.imp().report.replace(Some(report));
         let full = model.imp().full_len();
-        let first = lushtext_model::list_budget::staged_first_rows(full);
+        let first = lushtext_model::budgets::list_budget::staged_first_rows(full);
         model.imp().listed.set((first < full).then_some(first));
         model
             .imp()
@@ -247,7 +247,7 @@ impl SkippedFilesModel {
             return false;
         };
         let full = imp.full_len();
-        let Some(next) = lushtext_model::list_budget::next_growth(listed, full) else {
+        let Some(next) = lushtext_model::budgets::list_budget::next_growth(listed, full) else {
             imp.listed.set(None);
             self.record_growth_end();
             return false;

@@ -35,7 +35,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
 
-use lushtext_model::palette::{PaletteCategory, SearchMode};
+use lushtext_model::workspace::palette::{PaletteCategory, SearchMode};
 use lushtext_services::palette::PaletteSearchCoordinatorSnapshot;
 
 use super::LushtextCommandPalette;

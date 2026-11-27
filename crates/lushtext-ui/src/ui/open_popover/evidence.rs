@@ -60,7 +60,7 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 
 use crate::ui::window::LushtextWindow;
-use lushtext_model::recent_document::RecentDocumentEntry;
+use lushtext_model::persistence::recent_document::RecentDocumentEntry;
 
 use super::item::OpenPopoverItem;
 use super::{LushtextOpenPopover, imp};

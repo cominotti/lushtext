@@ -146,7 +146,7 @@ use std::path::Path;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 
 use crate::ui::editor_page::{EditorLoadState, LushtextEditorPage};
-use lushtext_model::encoding::DocumentEncoding;
+use lushtext_model::document::encoding::DocumentEncoding;
 
 use super::save;
 

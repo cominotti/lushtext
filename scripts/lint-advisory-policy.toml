@@ -371,7 +371,7 @@ rationale = "`WorkspaceSearchRootIndex::canonical_candidate` returns `Option<Opt
 [[rules]]
 code = "clippy::manual_assert_eq"
 classification = "accepted_advisory"
-path_globs = ["crates/lushtext-services/src/draft_service/set_aside.rs"]
+path_globs = ["crates/lushtext-services/src/persistence/draft_service/set_aside.rs"]
 max_count = 1
 rationale = "One unit-test equality assertion on a struct value; scoped so a new occurrence elsewhere still fails the lane."
 

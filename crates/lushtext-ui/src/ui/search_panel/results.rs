@@ -137,7 +137,7 @@ impl LushtextSearchPanel {
     /// models or reconstruct original ranges from row objects.
     pub(super) fn accepted_search_matches(
         &self,
-    ) -> Option<std::sync::Arc<Vec<lushtext_model::content_search::SearchMatch>>> {
+    ) -> Option<std::sync::Arc<Vec<lushtext_model::workspace::content_search::SearchMatch>>> {
         let imp = self.imp();
         let accepted = imp.runtime.accepted_matches.borrow().clone();
         if accepted.is_some() {

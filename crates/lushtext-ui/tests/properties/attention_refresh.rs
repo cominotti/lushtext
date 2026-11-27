@@ -14,7 +14,7 @@
 //! the real decision, advancing a virtual clock, and asserts the invariant over
 //! the refreshes that actually started.
 
-use lushtext_model::attention_refresh::{
+use lushtext_model::budgets::attention_refresh::{
     ATTENTION_REFRESH_MAX_INTERVAL, ATTENTION_REFRESH_MIN_INTERVAL, AttentionRefreshAdmission,
     AttentionRefreshFacts, admit_attention_refresh, attention_refresh_interval,
 };

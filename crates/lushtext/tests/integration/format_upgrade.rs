@@ -8,10 +8,10 @@
 use std::path::Path;
 
 use lushtext_services::filesystem::fixture;
-use lushtext_services::format_upgrade::{
+use lushtext_services::persistence::format_upgrade::{
     FormatClassification, FormatMetadataKind, build_plan, scan,
 };
-use lushtext_services::json_format::{
+use lushtext_services::persistence::json_format::{
     JsonEnvelopeRef, KIND_BOOKMARK_SIDECAR, KIND_DOCUMENT_NOTE_SIDECAR, KIND_DRAFT_MANIFEST,
     KIND_FOLDER_NOTE_SIDECAR, KIND_LOCAL_HISTORY_INDEX, KIND_MIGRATION_LEDGER,
     KIND_REPLACE_UNDO_CLEANUP_MARKER, KIND_REPLACE_UNDO_ENTRY, KIND_REPLACE_UNDO_MANIFEST,

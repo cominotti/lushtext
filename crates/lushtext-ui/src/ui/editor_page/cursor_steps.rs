@@ -33,7 +33,7 @@
 use gtk4::prelude::*;
 
 use super::LushtextEditorPage;
-use lushtext_model::cursor_step::logical_step_suffices;
+use lushtext_model::document::cursor_step::logical_step_suffices;
 
 /// Whether the visual step `count` from the insert of `view` should be
 /// answered logically.

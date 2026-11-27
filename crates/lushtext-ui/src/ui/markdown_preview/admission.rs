@@ -23,12 +23,12 @@ use gtk4::prelude::*;
 
 use crate::ui::accessibility;
 use crate::ui::buffer_snapshot::{BufferSnapshotHandle, BufferSnapshotPayload};
-use lushtext_services::markdown_render::{
-    MAX_MARKDOWN_SOURCE_BYTES, markdown_render_options, plan_markdown, source_limited_markdown_plan,
+use lushtext_services::notes::markdown_render::{
+    InlineFootnoteLowering, MAX_MARKDOWN_SOURCE_BYTES, lower_inline_footnotes, plan_markdown,
+    source_limited_markdown_plan,
 };
 
 use super::policy::inline_footnote_limited_plan;
-use super::policy::{InlineFootnoteLowering, lower_inline_footnotes};
 use super::seams::{
     GuardedPendingMarkdownPlan, MARKDOWN_PLAN_RESERVATION_BYTES, PendingMarkdownRender,
     SnapshotMarkdownPlanOutcome,
@@ -36,7 +36,7 @@ use super::seams::{
 use super::{
     LushtextMarkdownPreview, MARKDOWN_BACKGROUND_PLAN_THRESHOLD_BYTES, MarkdownPreviewRenderContext,
 };
-use lushtext_services::markdown_render::MarkdownRenderState;
+use lushtext_services::notes::markdown_render::MarkdownRenderState;
 
 impl LushtextMarkdownPreview {
     /// Replace the app-local note-source capture owned by this preview.
@@ -104,7 +104,7 @@ impl LushtextMarkdownPreview {
                     return SnapshotMarkdownPlanOutcome::CapacityUnavailable { source_bytes };
                 };
                 let source = source.into_inner_on_worker();
-                let plan = match lower_inline_footnotes(&source, markdown_render_options()) {
+                let plan = match lower_inline_footnotes(&source) {
                     InlineFootnoteLowering::Lowered(lowered) => plan_markdown(&lowered),
                     InlineFootnoteLowering::Unchanged => plan_markdown(&source),
                     InlineFootnoteLowering::Limited => inline_footnote_limited_plan(source.len()),
@@ -193,7 +193,7 @@ impl LushtextMarkdownPreview {
                 self.finish_markdown_capacity_pressure(generation, markdown.len());
                 return;
             };
-            let plan = match lower_inline_footnotes(markdown, markdown_render_options()) {
+            let plan = match lower_inline_footnotes(markdown) {
                 InlineFootnoteLowering::Lowered(lowered) => plan_markdown(&lowered),
                 InlineFootnoteLowering::Unchanged => plan_markdown(markdown),
                 InlineFootnoteLowering::Limited => inline_footnote_limited_plan(markdown.len()),

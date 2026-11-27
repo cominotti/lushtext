@@ -150,7 +150,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
 use item::PaletteItem;
-use lushtext_model::palette::{PaletteFileEntry, PaletteNoteEntry, SearchMode};
+use lushtext_model::workspace::palette::{PaletteFileEntry, PaletteNoteEntry, SearchMode};
 use lushtext_services::palette::FileIndex;
 use std::path::Path;
 
@@ -268,7 +268,8 @@ impl LushtextCommandPalette {
     #[cfg(feature = "test-utils")]
     pub fn set_note_entries(&self, note_entries: Vec<PaletteNoteEntry>) {
         let entries = note_entries.into_boxed_slice();
-        let retained = lushtext_model::palette::palette_note_entries_retained_byte_weight(&entries);
+        let retained =
+            lushtext_model::workspace::palette::palette_note_entries_retained_byte_weight(&entries);
         let entries = crate::ui::plain_disposal::try_own_for_gtk(retained, entries)
             .expect("widget-test note rows should fit disposal admission");
         self.set_guarded_note_entries(entries);

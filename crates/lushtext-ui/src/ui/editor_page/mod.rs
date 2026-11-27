@@ -50,12 +50,12 @@ use crate::ui::info_bar::LushtextInfoBar;
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_model::bookmark::BookmarkRecord;
-use lushtext_model::encoding::{
+use lushtext_model::document::encoding::{
     DocumentEncoding, DocumentEncodingState, FileHealthFinding, InvisibleCharactersMode, LineEnding,
 };
-use lushtext_model::formatting_overrides::FormattingOverrides;
-use lushtext_services::notifications::InlineActionNotification;
+use lushtext_model::document::formatting_overrides::FormattingOverrides;
+use lushtext_model::persistence::bookmark::BookmarkRecord;
+use lushtext_services::coordination::notifications::InlineActionNotification;
 
 #[cfg(feature = "test-utils")]
 pub use crate::ui::buffer_snapshot::{
@@ -557,7 +557,7 @@ impl LushtextEditorPage {
     /// pages report only their fixed bookkeeping estimate.
     pub fn estimated_live_buffer_bytes(&self) -> u64 {
         if self.is_evicted() {
-            return lushtext_model::editor_memory::EVICTED_EDITOR_BOOKKEEPING_BYTES;
+            return lushtext_model::document::editor_memory::EVICTED_EDITOR_BOOKKEEPING_BYTES;
         }
         #[cfg(feature = "test-utils")]
         if let Some(bytes) = self.imp().residency.estimate_override.get() {
@@ -573,7 +573,7 @@ impl LushtextEditorPage {
         .unwrap_or(0);
         // A protected document also holds its text source (the installed body
         // or the edit entry's capture), retained beside the buffer.
-        lushtext_model::editor_memory::estimate_live_editor_bytes(
+        lushtext_model::document::editor_memory::estimate_live_editor_bytes(
             character_count,
             self.file_size(),
             self.is_evicted(),
@@ -583,9 +583,11 @@ impl LushtextEditorPage {
                 .map_or(0, |source| source.retained_bytes()),
         )
         // The boundary marks a sliced protected install left (C3, task 4.7).
-        .saturating_add(lushtext_model::editor_memory::protected_boundary_bytes(
-            self.imp().protected_boundaries.live_boundaries(),
-        ))
+        .saturating_add(
+            lushtext_model::document::editor_memory::protected_boundary_bytes(
+                self.imp().protected_boundaries.live_boundaries(),
+            ),
+        )
     }
 
     /// Current least-recently-used generation assigned by the owning window.
@@ -888,7 +890,7 @@ impl LushtextEditorPage {
     /// target line.
     pub fn update_bookmark(
         &self,
-        id: &lushtext_model::bookmark::BookmarkId,
+        id: &lushtext_model::persistence::bookmark::BookmarkId,
         label: Option<String>,
         target_line: u32,
     ) -> Result<BookmarkEditOutcome, BookmarkEditError> {

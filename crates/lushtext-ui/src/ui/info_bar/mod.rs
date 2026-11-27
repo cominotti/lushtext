@@ -9,7 +9,7 @@
 mod imp;
 
 use crate::ui::accessibility;
-use lushtext_services::notifications::{
+use lushtext_services::coordination::notifications::{
     InlineActionNotification, InlineAlertAction, InlineNotificationStyle,
 };
 // This widget is a **called presentation surface** of the notification

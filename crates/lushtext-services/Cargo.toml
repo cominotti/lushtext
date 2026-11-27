@@ -48,6 +48,7 @@ encoding_rs           = { workspace = true }
 unicase               = { workspace = true }
 editorconfig-parser   = { workspace = true }
 pulldown-cmark        = { workspace = true }
+regex                 = { workspace = true }
 workspace-hack        = { version = "0.1", path = "../../workspace-hack" }
 
 [dev-dependencies]

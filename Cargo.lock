@@ -1334,7 +1334,6 @@ dependencies = [
  "gtk-lush-proof-spine",
  "memchr",
  "proptest",
- "regex",
  "serde",
  "serde_json",
  "tracing",
@@ -1360,6 +1359,7 @@ dependencies = [
  "nucleo-matcher",
  "proptest",
  "pulldown-cmark",
+ "regex",
  "rustix",
  "serde",
  "serde_json",
@@ -1397,8 +1397,6 @@ dependencies = [
  "notify-debouncer-full",
  "pango",
  "proptest",
- "pulldown-cmark",
- "regex",
  "serde",
  "serde_json",
  "sha2",
@@ -2540,7 +2538,6 @@ dependencies = [
 name = "workspace-hack"
 version = "0.1.0"
 dependencies = [
- "aho-corasick",
  "bitflags",
  "clap",
  "clap_builder",
@@ -2559,8 +2556,6 @@ dependencies = [
  "pango-sys",
  "proc-macro2",
  "quote",
- "regex-automata",
- "regex-syntax",
  "serde",
  "serde_core",
  "simdutf8",

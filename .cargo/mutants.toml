@@ -88,7 +88,7 @@ exclude_globs = [
     # filesystem boundary, but they are not production behavior themselves.
     "crates/lushtext-services/src/filesystem/fixture.rs",
     # Its draft-body sibling is fixture code for the same reason (1 mutant).
-    "crates/lushtext-services/src/draft_service/fixture.rs",
+    "crates/lushtext-services/src/persistence/draft_service/fixture.rs",
     # The conformance tap and drivers (`verify-shell-conformance-against-proven-cores`)
     # are test seams and test drivers, compiled only under `cfg(test)` and
     # `test-utils`: the active tap's state machine, the drivers, and the
@@ -96,7 +96,7 @@ exclude_globs = [
     # `test-utils` build never compiles.
     "crates/lushtext-services/src/filesystem/backend_tap.rs",
     "crates/lushtext-services/src/filesystem/backend_tap/**",
-    "crates/lushtext-services/src/conformance/**",
+    "crates/lushtext-services/src/instrumentation/conformance/**",
     # The scalar scans the accelerated `editor_io::text_scans` replaced, kept
     # verbatim as the oracle the property tests and the `editor_bytes` fuzz
     # target compare against (`simd-line-scans`, design D1). An oracle is not
@@ -139,7 +139,7 @@ exclude_globs = [
     # behaviour, and proof strength measures the harnesses that use them.
     # Path-keyed: re-key these entries if the modules move.
     "crates/lushtext-services/src/filesystem/write_protocol/disk_model.rs",
-    "crates/lushtext-services/src/draft_service/journal_model.rs",
+    "crates/lushtext-services/src/persistence/draft_service/journal_model.rs",
 ]
 
 exclude_re = [
@@ -152,7 +152,7 @@ exclude_re = [
     # Property-test-only bridge: the default mutation lane intentionally omits
     # `lushtext-ui/property-tests`; the property lane covers this helper.
     "crates/lushtext-services/src/lib\\.rs:.*property_testing::rebase_document_identity_paths",
-    "crates/lushtext-services/src/content_search/replace/stream\\.rs:.*apply_replacements_to_text_for_property_test",
+    "crates/lushtext-services/src/search/content_search/replace/stream\\.rs:.*apply_replacements_to_text_for_property_test",
     "crates/lushtext-services/src/palette/commands\\.rs:.*merge_sorted_for_property_test",
     # Race-only branches: if metadata says a file exists but it disappears before
     # the read, recovery treats the state as missing. This is intentionally the
@@ -257,11 +257,11 @@ exclude_re = [
     # former `:252:` anchor had drifted off the function and matched nothing.
     "crates/lushtext-services/src/recent_documents\\.rs:.*: replace (match guard error\\.kind\\(\\) == std::io::ErrorKind::NotFound with (true|false)|== with !=) in load_recent_file",
     # Equivalent while the public JSON envelope is still v1.
-    "crates/lushtext-services/src/format_upgrade/diagnostics\\.rs:.*latest_format_version -> u32 with 1",
+    "crates/lushtext-services/src/persistence/format_upgrade/diagnostics\\.rs:.*latest_format_version -> u32 with 1",
     # Equivalent after the preceding exact-version branch in
     # `classify_json_bytes`: latest-version envelopes return before the
     # future-version comparison, so `>` and `>=` see the same remaining inputs.
-    "crates/lushtext-services/src/format_upgrade/inventory\\.rs:.*replace > with >= in classify_json_bytes",
+    "crates/lushtext-services/src/persistence/format_upgrade/inventory\\.rs:.*replace > with >= in classify_json_bytes",
     # Equivalent on the Unix paths used by this target: `Path::parent()` does
     # not yield the same root path, so the loop guard behaves identically.
     "crates/lushtext-services/src/editorconfig\\.rs:.*replace match guard parent != dir with true in resolve_for_path",

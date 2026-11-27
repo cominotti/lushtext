@@ -16,7 +16,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use lushtext_services::workspace_watch::WorkspaceWatchTarget;
+use lushtext_services::watch::workspace_watch::WorkspaceWatchTarget;
 // The two generation newtypes moved to the workflow's `seams.rs`: they are seam
 // values, captured at dispatch and compared at completion.
 use crate::ui::sidebar::seams::WatchTargetGeneration;

@@ -27,7 +27,7 @@ use std::hash::{DefaultHasher, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use lushtext_model::palette::PaletteFileIdentityFailure;
+use lushtext_model::workspace::palette::PaletteFileIdentityFailure;
 
 /// No directory: the parent of a root directory record.
 ///

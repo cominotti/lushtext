@@ -18,7 +18,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
 
-use lushtext_model::session::SessionData;
+use lushtext_model::persistence::session::SessionData;
 
 use super::policy::{SessionRestorePlanPermit, SessionRestorePolicy};
 use super::{evidence, execution};

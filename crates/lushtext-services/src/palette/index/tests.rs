@@ -11,7 +11,7 @@ use super::arena::force_hash_collisions_for_test;
 use super::traversal::BuildLedger;
 use super::*;
 use crate::filesystem::fixture;
-use lushtext_model::palette::{PaletteFileIdentity, PaletteFileIdentityFailure};
+use lushtext_model::workspace::palette::{PaletteFileIdentity, PaletteFileIdentityFailure};
 
 fn owned(path: &str, folder: &Arc<PathBuf>) -> OwnedIndexedFile {
     OwnedIndexedFile::new(

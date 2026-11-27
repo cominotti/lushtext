@@ -54,12 +54,10 @@ glib        = { workspace = true }
 gdk4        = { workspace = true }
 pango       = { workspace = true }
 crossbeam-channel = { workspace = true }
-regex       = { workspace = true }
 serde_json  = { workspace = true }
 anyhow      = { workspace = true }
 thiserror   = { workspace = true }
 tracing        = { workspace = true }
-pulldown-cmark      = { workspace = true }
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 [lints]

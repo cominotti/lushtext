@@ -22,10 +22,11 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
 
-use lushtext_services::markdown_render::{markdown_render_options, plan_markdown_cancellable};
+use lushtext_services::notes::markdown_render::{
+    InlineFootnoteLowering, lower_inline_footnotes_cancellable, plan_markdown_cancellable,
+};
 
 use super::policy::inline_footnote_limited_plan;
-use super::policy::{InlineFootnoteLowering, lower_inline_footnotes_cancellable};
 use super::seams::try_guard_markdown_source;
 use super::seams::{GuardedPendingMarkdownPlan, PendingMarkdownPlan};
 #[cfg(feature = "test-utils")]
@@ -110,11 +111,7 @@ impl LushtextMarkdownPreview {
                     if cancel.load(Ordering::Acquire) {
                         return None;
                     }
-                    let plan = match lower_inline_footnotes_cancellable(
-                        &source,
-                        markdown_render_options(),
-                        &cancel,
-                    ) {
+                    let plan = match lower_inline_footnotes_cancellable(&source, &cancel) {
                         InlineFootnoteLowering::Lowered(lowered) => {
                             plan_markdown_cancellable(&lowered, &cancel)
                         }

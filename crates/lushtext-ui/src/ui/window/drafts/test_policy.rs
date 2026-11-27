@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 
 use super::policy::FIRST_DIRTY_AUTOSAVE_DEBOUNCE_MS;
-use lushtext_services::draft_service;
+use lushtext_services::persistence::draft_service;
 
 /// Every test-only timing, limit, and fault override this workflow owns.
 ///

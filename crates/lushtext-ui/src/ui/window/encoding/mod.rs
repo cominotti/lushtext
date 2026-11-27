@@ -73,7 +73,7 @@ mod execution;
 mod test_policy;
 
 use crate::ui::editor_page::LushtextEditorPage;
-use lushtext_model::encoding::{DocumentEncoding, InvisibleCharactersMode, LineEnding};
+use lushtext_model::document::encoding::{DocumentEncoding, InvisibleCharactersMode, LineEnding};
 use lushtext_services::editor_io::LossyEncodingPreview;
 
 use super::LushtextWindow;

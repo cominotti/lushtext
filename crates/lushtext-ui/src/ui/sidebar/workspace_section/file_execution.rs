@@ -30,10 +30,10 @@ use glib::prelude::*;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
+use lushtext_services::coordination::notifications::NotificationSeverity;
 use lushtext_services::filesystem::{
     metadata as fs_metadata, mutate as fs_mutate, write as fs_write,
 };
-use lushtext_services::notifications::NotificationSeverity;
 use std::path::{Path, PathBuf};
 
 /// Result of one user-confirmed delete, separating a safety refusal from a failure.

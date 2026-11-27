@@ -48,7 +48,9 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
 use crate::ui::plain_disposal::DisposalOwned;
-use lushtext_model::palette::{FileOrdinal, PaletteCategory, PaletteFileEntry, PaletteNoteEntry};
+use lushtext_model::workspace::palette::{
+    FileOrdinal, PaletteCategory, PaletteFileEntry, PaletteNoteEntry,
+};
 use lushtext_services::palette::{FileIndex, all_commands};
 
 use super::item::PaletteItem;
@@ -229,7 +231,7 @@ impl PaletteCategoryModel {
         // D5): the frame after it (X1) realizes the first rows only, and the
         // view's row growth lists the rest over the next frames.
         if old_len == 0 && new_len > 0 {
-            let first = lushtext_model::list_budget::staged_first_rows(new_len);
+            let first = lushtext_model::budgets::list_budget::staged_first_rows(new_len);
             *self.imp().projection.borrow_mut() = new;
             self.imp().listed.set((first < new_len).then_some(first));
             self.imp().live.borrow_mut().clear();
@@ -350,7 +352,7 @@ impl PaletteCategoryModel {
             return false;
         };
         let ranked = self.full_len();
-        let Some(next) = lushtext_model::list_budget::next_growth(listed, ranked) else {
+        let Some(next) = lushtext_model::budgets::list_budget::next_growth(listed, ranked) else {
             self.imp().listed.set(None);
             return false;
         };

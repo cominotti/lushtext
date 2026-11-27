@@ -16,12 +16,13 @@ use glib::prelude::{Cast, CastNone, ToVariant};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::{AdwApplicationWindowExt, AdwDialogExt};
-use lushtext_model::bookmark::BookmarkRecord;
-use lushtext_model::note::RichNoteBody;
-use lushtext_model::responsiveness_budget::{B_INTERACT_US, B_SETTLE_US};
+use lushtext_model::budgets::responsiveness_budget::{B_INTERACT_US, B_SETTLE_US};
+use lushtext_model::persistence::bookmark::BookmarkRecord;
+use lushtext_model::persistence::note::RichNoteBody;
 use lushtext_model::workspace::{WorkspaceConfig, WorkspaceId, WorkspaceScope, WorkspacesFile};
 use lushtext_services::{
-    bookmark_service, document_note_service, folder_note_service, json_store, workspace_manager,
+    notes::bookmark_service, notes::document_note_service, notes::folder_note_service,
+    persistence::json_store, workspace::workspace_manager,
 };
 use lushtext_ui::ui::editor_page::LushtextEditorPage;
 use lushtext_ui::ui::window::{

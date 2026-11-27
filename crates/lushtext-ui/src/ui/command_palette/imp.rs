@@ -25,7 +25,7 @@ use gtk_lush_settle::Debounce;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, gio, glib};
-use lushtext_model::palette::{
+use lushtext_model::workspace::palette::{
     PaletteCategory, PaletteFileEntry, PaletteNoteEntry, PaletteSearchRow, SearchMode,
 };
 use lushtext_services::palette::{self, FileIndex};
@@ -908,7 +908,7 @@ fn grouped_row_kinds(items: &[PaletteItem]) -> Vec<GroupedRowKind> {
 #[cfg(test)]
 mod tests {
     use super::grouped_row_categories;
-    use lushtext_model::palette::{PaletteCategory, PaletteSearchRow, SearchMode};
+    use lushtext_model::workspace::palette::{PaletteCategory, PaletteSearchRow, SearchMode};
     use std::path::PathBuf;
 
     fn file(name: &str) -> PaletteSearchRow {

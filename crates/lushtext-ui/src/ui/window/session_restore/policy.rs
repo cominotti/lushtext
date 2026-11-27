@@ -16,9 +16,9 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use lushtext_model::draft::{PreloadedDraftRestore, PreloadedDraftSkip};
-use lushtext_model::session::{SessionData, SessionTab};
-use lushtext_services::recovery_metadata::{
+use lushtext_model::persistence::draft::{PreloadedDraftRestore, PreloadedDraftSkip};
+use lushtext_model::persistence::session::{SessionData, SessionTab};
+use lushtext_services::persistence::recovery_metadata::{
     RecoveryDiagnostic, RecoveryPreservation, RecoveryProblem,
 };
 
@@ -560,7 +560,9 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    use lushtext_services::recovery_metadata::{RecoveryMetadataClass, RecoveryPreservation};
+    use lushtext_services::persistence::recovery_metadata::{
+        RecoveryMetadataClass, RecoveryPreservation,
+    };
 
     fn tab(path: Option<&str>) -> SessionTab {
         SessionTab {

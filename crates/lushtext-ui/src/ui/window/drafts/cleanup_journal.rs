@@ -16,9 +16,9 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::glib;
 
-use lushtext_model::draft::DraftManifestAuthority;
-use lushtext_services::notifications::NotificationSeverity;
-use lushtext_services::{draft_service, json_store};
+use lushtext_model::persistence::draft::DraftManifestAuthority;
+use lushtext_services::coordination::notifications::NotificationSeverity;
+use lushtext_services::{persistence::draft_service, persistence::json_store};
 
 use super::policy;
 use super::policy::{

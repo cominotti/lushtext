@@ -103,7 +103,7 @@ use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 
 use lushtext_model::workspace::{WorkspaceId, WorkspaceScope, WorkspacesFile};
-use lushtext_services::notifications::NotificationSeverity;
+use lushtext_services::coordination::notifications::NotificationSeverity;
 use seams::SidebarFileRowStateSnapshot;
 
 #[cfg(feature = "test-utils")]

@@ -505,7 +505,7 @@ pub struct WorkspaceSectionEvidence {
 
     // --- watch ---
     /// The effective materialized watch target set.
-    pub watch_targets: Vec<lushtext_services::workspace_watch::WorkspaceWatchTarget>,
+    pub watch_targets: Vec<lushtext_services::watch::workspace_watch::WorkspaceWatchTarget>,
     /// Monotonic identity of that target set.
     pub watch_target_generation: u64,
     /// Whether the installed watcher matches the current target generation.
@@ -517,7 +517,8 @@ pub struct WorkspaceSectionEvidence {
     /// Install workers started, for restart-churn assertions.
     pub watcher_worker_starts: usize,
     /// The installed handle's bounded coalescing mailbox, if a watcher is installed.
-    pub watch_mailbox: Option<lushtext_services::workspace_watch::WorkspaceWatchMailboxSnapshot>,
+    pub watch_mailbox:
+        Option<lushtext_services::watch::workspace_watch::WorkspaceWatchMailboxSnapshot>,
     /// Notices GTK consumed on the most recent poll.
     pub watch_last_poll_notices: usize,
     /// Flattened rows the mirror has touched since the last reset.
@@ -681,7 +682,7 @@ impl LushtextWorkspaceSection {
     /// Every materialized directory listing, from the plain mirrors only
     /// (inert: no store is read and nothing is materialized).
     fn directory_listing_evidence(&self) -> Vec<DirectoryListingEvidence> {
-        use lushtext_services::file_tree::DirectoryPlaceholder;
+        use lushtext_services::workspace::file_tree::DirectoryPlaceholder;
         let imp = self.imp();
         let paths = imp.child_store_paths.borrow();
         let mirrors = imp.child_row_mirrors.borrow();
@@ -714,7 +715,7 @@ impl LushtextWorkspaceSection {
     /// Expanded directories whose listing ends in a budget row, and those
     /// still loading: their last mirror row only, for the polled snapshot.
     pub(crate) fn directory_tail_counts(&self) -> (usize, usize) {
-        use lushtext_services::file_tree::DirectoryPlaceholder;
+        use lushtext_services::workspace::file_tree::DirectoryPlaceholder;
         let mirrors = self.imp().child_row_mirrors.borrow();
         let mut limited = 0;
         let mut loading = 0;

@@ -15,7 +15,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use lushtext_model::content_search::ReplacePreviewBudget;
+use lushtext_model::workspace::content_search::ReplacePreviewBudget;
 
 static SEARCH_WORKER_DELAY_MS: AtomicU64 = AtomicU64::new(0);
 static REPLACE_PREVIEW_DELAY_MS: AtomicU64 = AtomicU64::new(0);

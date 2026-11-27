@@ -52,7 +52,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
 
-use lushtext_services::content_search::ReplaceJournalFreshness;
+use lushtext_services::search::content_search::ReplaceJournalFreshness;
 
 use super::policy::{self, ReplaceAdmissionDecision, ReplaceAdmissionFacts, ReplaceWaitEnd};
 use super::{GuardedReplacements, LushtextSearchPanel};

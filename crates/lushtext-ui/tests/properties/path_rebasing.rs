@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use lushtext_model::sidecar_identity::DocumentSidecarIdentity;
+use lushtext_model::persistence::sidecar_identity::DocumentSidecarIdentity;
 use lushtext_services::property_testing::rebase_document_identity_paths;
 use proptest::prelude::*;
 

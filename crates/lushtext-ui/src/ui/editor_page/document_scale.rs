@@ -50,11 +50,11 @@ use crate::ui::responsiveness_probe::PostOpenSpan;
 use crate::ui::signal_connect;
 use crate::ui::status_bar::MessageKind;
 use crate::ui::window::LushtextWindow;
-use lushtext_model::document_scale::{DocumentScale, ReducedFeatures, SyntaxLanguage};
-use lushtext_model::paragraph_boundary::{
+use lushtext_model::document::document_scale::{DocumentScale, ReducedFeatures, SyntaxLanguage};
+use lushtext_model::document::paragraph_boundary::{
     DocumentProfile, ParagraphDelimiter, ProfileConfig, ProfileSummary, paragraph_chars_from_line,
 };
-use lushtext_model::paragraph_profile_watch::{
+use lushtext_model::document::paragraph_profile_watch::{
     DeleteFacts, InsertFacts, ProfileWatchState, WatchPlan, complete, plan_delete, plan_insert,
 };
 
@@ -249,7 +249,7 @@ impl LushtextEditorPage {
     /// (`bound-post-open-settle`, D6 and D9). Read from the live watch.
     pub(crate) fn is_dense_document(&self) -> bool {
         let state = &self.imp().document_scale;
-        lushtext_model::buffer_replacement::batch_exceeds_slice(
+        lushtext_model::document::buffer_replacement::batch_exceeds_slice(
             state.watch.get().summary(state.total_bytes.get()),
         )
     }
@@ -277,7 +277,7 @@ impl LushtextEditorPage {
         DocumentScale::for_profile_in_with(
             profile.summary(),
             self.syntax_language(),
-            lushtext_model::document_scale::markdown_chunked_cap(),
+            lushtext_model::document::document_scale::markdown_chunked_cap(),
         )
         .join(self.document_scale())
     }
@@ -292,7 +292,7 @@ impl LushtextEditorPage {
         let loaded = DocumentScale::for_profile_in_with(
             summary,
             self.syntax_language(),
-            lushtext_model::document_scale::markdown_chunked_cap(),
+            lushtext_model::document::document_scale::markdown_chunked_cap(),
         );
         self.cancel_reanalysis_pacing();
         let state = &self.imp().document_scale;
@@ -542,7 +542,7 @@ impl LushtextEditorPage {
         let candidate = DocumentScale::for_profile_in_with(
             next.summary(scale_state.total_bytes.get()),
             self.syntax_language(),
-            lushtext_model::document_scale::markdown_chunked_cap(),
+            lushtext_model::document::document_scale::markdown_chunked_cap(),
         );
         // Presentation features meet; the byte tiers stay those of the latest
         // load or save (an edit does not toggle undo, design Open Question 4).
@@ -650,7 +650,7 @@ mod notice_limit_tests {
 
     /// No loss against `main` (`power-of-two-thresholds` D12): `main` passed a
     /// 320-character notice through whole; the limit rounds up to 512, and
-    /// `lushtext_model::document_scale::tests::the_longest_unprotected_notice_fits_256_characters`
+    /// `lushtext_model::document::document_scale::tests::the_longest_unprotected_notice_fits_256_characters`
     /// pins the longest shipped notice at 229 <= 256 < 512.
     #[test]
     fn no_loss_the_reduced_features_notice_keeps_every_character_main_kept() {

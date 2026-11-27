@@ -43,16 +43,17 @@
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
-use lushtext_model::content_search::{
+use lushtext_model::workspace::content_search::{
     ReplacePreviewOutcome, ReplacePreviewSkipReason, SearchMatchId,
-    generate_replacement_preview_with_budget_and_cancel,
 };
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use lushtext_model::content_search::ReplaceSkipReport;
-use lushtext_services::content_search::ReplaceProgress;
+use lushtext_model::workspace::content_search::ReplaceSkipReport;
+use lushtext_services::search::content_search::{
+    ReplaceProgress, generate_replacement_preview_with_budget_and_cancel,
+};
 
 use super::LushtextSearchPanel;
 use super::policy::{
@@ -73,7 +74,7 @@ pub(crate) struct ReplaceRunControl {
 
 /// Latest plain-Rust preview request retained by the panel's single-flight worker.
 pub(super) struct ReplacePreviewRequest {
-    search_matches: std::sync::Arc<Vec<lushtext_model::content_search::SearchMatch>>,
+    search_matches: std::sync::Arc<Vec<lushtext_model::workspace::content_search::SearchMatch>>,
     replacement_text: String,
     /// Identity of this attempt, validated as a unit when the worker resumes.
     ticket: ReplacePreviewTicket,
@@ -120,7 +121,7 @@ impl LushtextSearchPanel {
         if self.replace_run_in_flight() {
             self.publish_journal_message(
                 PREVIEW_REFUSED_DURING_RUN,
-                lushtext_services::notifications::NotificationSeverity::Warning,
+                lushtext_services::coordination::notifications::NotificationSeverity::Warning,
             );
             return;
         }
@@ -273,7 +274,7 @@ impl LushtextSearchPanel {
     /// its line budget).
     #[cfg(feature = "test-utils")]
     pub fn connect_replace_all<
-        F: Fn(Vec<lushtext_model::content_search::Replacement>) + 'static,
+        F: Fn(Vec<lushtext_model::workspace::content_search::Replacement>) + 'static,
     >(
         &self,
         f: F,
@@ -545,7 +546,7 @@ impl LushtextSearchPanel {
         &self,
         path: &std::path::Path,
     ) -> Option<(
-        lushtext_model::content_search::ReplaceSkippedFile,
+        lushtext_model::workspace::content_search::ReplaceSkippedFile,
         Arc<super::policy::ReplaceRunIntent>,
     )> {
         let preview = &self.imp().preview;
@@ -743,10 +744,10 @@ impl LushtextSearchPanel {
     }
 }
 
-fn replace_preview_budget() -> lushtext_model::content_search::ReplacePreviewBudget {
+fn replace_preview_budget() -> lushtext_model::workspace::content_search::ReplacePreviewBudget {
     #[cfg(feature = "test-utils")]
     if let Some(budget) = super::test_policy::replace_preview_budget_override() {
         return budget;
     }
-    lushtext_model::content_search::ReplacePreviewBudget::default()
+    lushtext_model::workspace::content_search::ReplacePreviewBudget::default()
 }

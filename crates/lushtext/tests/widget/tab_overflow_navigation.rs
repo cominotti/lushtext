@@ -22,7 +22,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::translate::IntoGlib;
 use gtk4::gio;
 use gtk4::prelude::*;
-use lushtext_model::session::{SessionData, SessionTab};
+use lushtext_model::persistence::session::{SessionData, SessionTab};
 use lushtext_services::filesystem::fixture;
 use lushtext_ui::ui::window::{
     LushtextAllTabsPopover, LushtextWindow, TabOverflowEvidence, TabOverflowTestTiming,

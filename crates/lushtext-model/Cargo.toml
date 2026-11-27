@@ -18,7 +18,6 @@ test-utils = []
 gtk-lush-proof-spine = { workspace = true }
 encoding_rs          = { workspace = true }
 memchr               = { workspace = true }
-regex                = { workspace = true }
 serde                = { workspace = true }
 workspace-hack       = { version = "0.1", path = "../../workspace-hack" }
 

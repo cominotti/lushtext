@@ -36,12 +36,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::ui::search_bar::policy::EditorReplacePrefill;
-use lushtext_model::content_search::{
+use lushtext_model::budgets::list_budget::grouped_thousands;
+use lushtext_model::workspace::content_search::{
     ReplacePreviewBudget, ReplacePreviewOutcome, ReplaceSkipReason, ReplaceSkipReport,
     ReplaceSkippedFile, Replacement, SearchMatchId, SearchQuerySpec,
 };
-use lushtext_model::list_budget::grouped_thousands;
-use lushtext_services::single_flight::SingleFlightCoordinator;
+use lushtext_services::coordination::single_flight::SingleFlightCoordinator;
 
 /// Bytes one generated preview row retains besides its charged source text.
 ///
@@ -101,7 +101,7 @@ pub fn completed_preview_reservation_weight(outcome: &ReplacePreviewOutcome) -> 
                     .ineligible_files
                     .capacity()
                     .saturating_mul(std::mem::size_of::<
-                        lushtext_model::content_search::ReplacePreviewIneligibleFile,
+                        lushtext_model::workspace::content_search::ReplacePreviewIneligibleFile,
                     >()),
                 |total, file| total.saturating_add(file.path.as_os_str().len()),
             ),
@@ -459,7 +459,7 @@ pub const SEARCH_MATCH_FIXED_CHARGE: u64 = 2 * 1024;
 ///
 /// Kind: derived; computed from the constants it names, not rounded.
 pub const MAIN_SEARCH_WORST_RETENTION: u64 = MAIN_SEARCH_CAP_MATCHES
-    * (lushtext_model::content_search::MAX_SEARCH_MATCH_LINE_BYTES as u64
+    * (lushtext_model::workspace::content_search::MAX_SEARCH_MATCH_LINE_BYTES as u64
         + 2 * LINUX_PATH_MAX_BYTES
         + SEARCH_MATCH_FIXED_CHARGE);
 /// The match-count cap `main` applied before this budget (`RESULT_CAP`).
@@ -667,7 +667,7 @@ pub fn replace_in_editor_availability(
         }
         ReplaceSkipReason::LineTooLong
             if longest_skipped_line_bytes.is_some_and(|bytes| {
-                bytes > lushtext_model::document_scale::L_PROTECT_EDIT.saturating_mul(4)
+                bytes > lushtext_model::document::document_scale::L_PROTECT_EDIT.saturating_mul(4)
             }) =>
         {
             ReplaceInEditorAvailability::ProtectedView
@@ -695,12 +695,12 @@ pub struct ReplaceRunIntent {
 pub fn editor_replace_prefill(intent: &ReplaceRunIntent) -> EditorReplacePrefill {
     let options = &intent.query.options;
     let replacement = if options.regex {
-        regex::Regex::new(&intent.query.query)
-            .ok()
-            .and_then(|pattern| {
-                let names: Vec<Option<&str>> = pattern.capture_names().collect();
-                rust_replacement_to_gtksourceview(&intent.replacement, &names)
-            })
+        lushtext_services::search::regex_query::regex_capture_names(&intent.query.query).and_then(
+            |names| {
+                let name_refs: Vec<Option<&str>> = names.iter().map(Option::as_deref).collect();
+                rust_replacement_to_gtksourceview(&intent.replacement, &name_refs)
+            },
+        )
     } else {
         Some(intent.replacement.clone())
     };
@@ -831,7 +831,7 @@ mod search_budget_wording_tests {
 #[cfg(test)]
 mod preview_ticket_tests {
     use super::*;
-    use lushtext_model::content_search::ContentSearchOptions;
+    use lushtext_model::workspace::content_search::ContentSearchOptions;
 
     fn spec(query: &str) -> SearchQuerySpec {
         SearchQuerySpec {
@@ -898,7 +898,7 @@ mod preview_ticket_tests {
 #[cfg(test)]
 mod flight_tests {
     use super::*;
-    use lushtext_model::content_search::ContentSearchOptions;
+    use lushtext_model::workspace::content_search::ContentSearchOptions;
 
     fn request(query: &str) -> WorkspaceSearchRequest {
         WorkspaceSearchRequest {
@@ -1102,7 +1102,7 @@ mod replace_weight_tests {
             replacements: Vec::new(),
             match_to_preview: Vec::new(),
             omitted_eligible: 0,
-            skipped: lushtext_model::content_search::ReplacePreviewSkipCounts::default(),
+            skipped: lushtext_model::workspace::content_search::ReplacePreviewSkipCounts::default(),
             charged_bytes,
             limiting_reason: None,
             ineligible_files: Vec::new(),
@@ -1304,7 +1304,7 @@ mod skip_report_tests {
 #[cfg(test)]
 mod replace_in_editor_tests {
     use super::*;
-    use lushtext_model::content_search::ContentSearchOptions;
+    use lushtext_model::workspace::content_search::ContentSearchOptions;
 
     const NAMES: [Option<&str>; 3] = [None, None, Some("word")];
 
@@ -1377,7 +1377,7 @@ mod replace_in_editor_tests {
     #[test]
     fn availability_follows_the_reason_and_the_protect_bound() {
         use ReplaceInEditorAvailability::{NotOpenable, Offered, ProtectedView};
-        let limit = lushtext_model::document_scale::L_PROTECT_EDIT * 4;
+        let limit = lushtext_model::document::document_scale::L_PROTECT_EDIT * 4;
         assert_eq!(
             replace_in_editor_availability(ReplaceSkipReason::LargerThanOpenTier, None),
             NotOpenable
@@ -1409,39 +1409,6 @@ mod replace_in_editor_tests {
         }
     }
 
-    /// GRegex's replacement expansion as GtkSourceView applies it, restricted
-    /// to what the translator emits: `\\` is a backslash, `\g<N>` and
-    /// `\g<name>` a group (a missing one expands to nothing), and every other
-    /// character is literal, `$` included. Ledger A127 pins each rule against
-    /// real GtkSourceView ([`A127_OBSERVED`]).
-    fn gregex_expand(template: &str, captures: &regex::Captures<'_>) -> String {
-        let mut out = String::new();
-        let mut rest = template;
-        while let Some(position) = rest.find('\\') {
-            out.push_str(&rest[..position]);
-            let tail = &rest[position + 1..];
-            if let Some(after) = tail.strip_prefix('\\') {
-                out.push('\\');
-                rest = after;
-            } else if let Some(group) = tail.strip_prefix("g<")
-                && let Some(end) = group.find('>')
-            {
-                let name = &group[..end];
-                let found = match name.parse::<usize>() {
-                    Ok(number) => captures.get(number),
-                    Err(_) => captures.name(name),
-                };
-                out.push_str(found.map_or("", |m| m.as_str()));
-                rest = &group[end + 1..];
-            } else {
-                out.push('\\');
-                rest = tail;
-            }
-        }
-        out.push_str(rest);
-        out
-    }
-
     /// Ledger A127, as GtkSourceView 5.20, 5.22 and 5.23 replaced
     /// `foo-bar baz-qux` for `(?P<first>\w+)-(\w+)` (the probe's
     /// `EXPANSIONS`): each GRegex replacement and the buffer it left.
@@ -1454,44 +1421,38 @@ mod replace_in_editor_tests {
         ("$1", "$1 $1"),
     ];
 
-    fn gregex_replace_all(pattern: &regex::Regex, text: &str, template: &str) -> String {
-        let mut out = String::new();
-        let mut last = 0;
-        for captures in pattern.captures_iter(text) {
-            let whole = captures.get(0).expect("group 0");
-            out.push_str(&text[last..whole.start()]);
-            out.push_str(&gregex_expand(template, &captures));
-            last = whole.end();
-        }
-        out.push_str(&text[last..]);
-        out
-    }
-
     #[test]
     fn the_gregex_model_matches_axiom_a127() {
-        let pattern = regex::Regex::new(A127_PATTERN).expect("pattern");
+        use lushtext_services::search::regex_query::{regex_capture_names, test_support};
+
         for (template, observed) in A127_OBSERVED {
             assert_eq!(
-                gregex_replace_all(&pattern, A127_DOCUMENT, template),
+                test_support::gregex_replace_all(A127_PATTERN, A127_DOCUMENT, template),
                 observed,
                 "{template}"
             );
         }
         // And the translated Rust templates land on the same buffers.
-        let names: Vec<_> = pattern.capture_names().collect();
+        let names = regex_capture_names(A127_PATTERN).expect("pattern");
+        let name_refs: Vec<Option<&str>> = names.iter().map(Option::as_deref).collect();
         for (rust, observed) in [
             ("$2-$1", "bar-foo qux-baz"),
             ("${first}!", "foo! baz!"),
             ("${1}0", "foo0 baz0"),
             ("$$1", "$1 $1"),
         ] {
-            let translated = rust_replacement_to_gtksourceview(rust, &names).expect("groups exist");
+            let translated =
+                rust_replacement_to_gtksourceview(rust, &name_refs).expect("groups exist");
             assert_eq!(
-                gregex_replace_all(&pattern, A127_DOCUMENT, &translated),
+                test_support::gregex_replace_all(A127_PATTERN, A127_DOCUMENT, &translated),
                 observed,
                 "{rust} -> {translated}"
             );
-            assert_eq!(pattern.replace_all(A127_DOCUMENT, rust), observed, "{rust}");
+            assert_eq!(
+                test_support::rust_replace_all(A127_PATTERN, A127_DOCUMENT, rust),
+                observed,
+                "{rust}"
+            );
         }
     }
 
@@ -1523,12 +1484,6 @@ mod replace_in_editor_tests {
         "}",
     ];
 
-    fn rust_expand(captures: &regex::Captures<'_>, template: &str) -> String {
-        let mut out = String::new();
-        captures.expand(template, &mut out);
-        out
-    }
-
     proptest::proptest! {
         /// A template with no missing reference translates, and GtkSourceView
         /// expands the translation to exactly what Rust expands the template to.
@@ -1536,17 +1491,20 @@ mod replace_in_editor_tests {
         fn a_closed_template_expands_alike(
             pieces in proptest::collection::vec(proptest::sample::select(&CLOSED_PIECES[..]), 0..12),
         ) {
-            let pattern = regex::Regex::new(PROPERTY_PATTERN).expect("pattern");
-            let captures = pattern.captures(PROPERTY_TEXT).expect("match");
-            let names: Vec<_> = pattern.capture_names().collect();
+            use lushtext_services::search::regex_query::{regex_capture_names, test_support};
+
+            let names = regex_capture_names(PROPERTY_PATTERN).expect("pattern");
+            let name_refs: Vec<Option<&str>> = names.iter().map(Option::as_deref).collect();
             let template = pieces.concat();
-            let translated = rust_replacement_to_gtksourceview(&template, &names);
+            let translated = rust_replacement_to_gtksourceview(&template, &name_refs);
             proptest::prop_assert!(translated.is_some(), "{template}");
-            proptest::prop_assert_eq!(
-                gregex_expand(translated.as_deref().unwrap_or_default(), &captures),
-                rust_expand(&captures, &template),
-                "{}", template
+            let (gregex, rust) = test_support::expand_first_capture_pair(
+                PROPERTY_PATTERN,
+                PROPERTY_TEXT,
+                translated.as_deref().unwrap_or_default(),
+                &template,
             );
+            proptest::prop_assert_eq!(gregex, rust, "{}", template);
         }
 
         /// Any template either translates to the same expansion, or names a
@@ -1555,16 +1513,21 @@ mod replace_in_editor_tests {
         fn any_template_expands_alike_or_is_refused(
             pieces in proptest::collection::vec(proptest::sample::select(&OPEN_PIECES[..]), 0..12),
         ) {
-            let pattern = regex::Regex::new(PROPERTY_PATTERN).expect("pattern");
-            let captures = pattern.captures(PROPERTY_TEXT).expect("match");
-            let names: Vec<_> = pattern.capture_names().collect();
+            use lushtext_services::search::regex_query::{regex_capture_names, test_support};
+
+            let names = regex_capture_names(PROPERTY_PATTERN).expect("pattern");
+            let name_refs: Vec<Option<&str>> = names.iter().map(Option::as_deref).collect();
             let template = pieces.concat();
-            match rust_replacement_to_gtksourceview(&template, &names) {
-                Some(translated) => proptest::prop_assert_eq!(
-                    gregex_expand(&translated, &captures),
-                    rust_expand(&captures, &template),
-                    "{} -> {}", template, translated
-                ),
+            match rust_replacement_to_gtksourceview(&template, &name_refs) {
+                Some(translated) => {
+                    let (gregex, rust) = test_support::expand_first_capture_pair(
+                        PROPERTY_PATTERN,
+                        PROPERTY_TEXT,
+                        &translated,
+                        &template,
+                    );
+                    proptest::prop_assert_eq!(gregex, rust, "{} -> {}", template, translated);
+                }
                 None => {
                     // Refused only for a reference: a template without `$` has none.
                     proptest::prop_assert!(

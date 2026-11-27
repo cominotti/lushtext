@@ -213,7 +213,7 @@ impl AllTabsRowModel {
         let new_len = u32::try_from(rows.len()).unwrap_or(u32::MAX);
         let old_len = self.len();
         if old_len == 0 && new_len > 0 {
-            let first = lushtext_model::list_budget::staged_first_rows(new_len);
+            let first = lushtext_model::budgets::list_budget::staged_first_rows(new_len);
             self.imp().rows.replace(Rc::from(rows));
             self.imp().listed.set((first < new_len).then_some(first));
             self.imp().live.borrow_mut().clear();
@@ -285,7 +285,7 @@ impl AllTabsRowModel {
             return false;
         };
         let full = self.full_len();
-        let Some(next) = lushtext_model::list_budget::next_growth(listed, full) else {
+        let Some(next) = lushtext_model::budgets::list_budget::next_growth(listed, full) else {
             self.imp().listed.set(None);
             return false;
         };

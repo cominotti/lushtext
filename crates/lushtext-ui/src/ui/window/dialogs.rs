@@ -419,7 +419,7 @@ impl super::LushtextWindow {
         let mut busy = None;
         for editor in editors {
             if editor.flush_held_text_for_close()
-                == lushtext_model::held_input::CloseDisposition::Busy
+                == lushtext_model::document::held_input::CloseDisposition::Busy
                 && busy.is_none()
             {
                 busy = Some(editor.clone());

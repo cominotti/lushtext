@@ -48,9 +48,9 @@ use gtk4::prelude::*;
 use crate::ui::editor_page::WHOLE_LINE_CHUNK_BYTES as COPY_CHUNK_BYTES;
 use crate::ui::protected_fold::{BoundaryLedger, FoldedInstall, tail_insert_admitted};
 use crate::ui::signal_connect;
-use lushtext_model::buffer_replacement::SliceBudget;
-use lushtext_model::buffer_replacement::next_replacement_boundary;
-use lushtext_model::protected_fold::FoldPlan;
+use lushtext_model::document::buffer_replacement::SliceBudget;
+use lushtext_model::document::buffer_replacement::next_replacement_boundary;
+use lushtext_model::document::protected_fold::FoldPlan;
 
 /// MIME types a [`SourceTextProvider`] offers: UTF-8 text only. No `GType` is
 /// offered, so no reader can make GTK materialize the text as one `GValue`.
@@ -630,7 +630,7 @@ pub(crate) fn install_slice(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lushtext_model::protected_fold::FoldRange;
+    use lushtext_model::document::protected_fold::FoldRange;
 
     #[test]
     fn char_ranges_cut_on_character_boundaries() {

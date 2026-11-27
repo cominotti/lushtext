@@ -88,7 +88,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 #[cfg(feature = "test-utils")]
 use gtk4::prelude::{AdjustmentExt, EditableExt};
 use gtk4::{gio, glib};
-use lushtext_model::recent_document::RecentDocumentRow;
+use lushtext_model::persistence::recent_document::RecentDocumentRow;
 use std::path::PathBuf;
 
 // glib::wrapper! generates the public wrapper for the custom GtkPopover.

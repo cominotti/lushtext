@@ -18,7 +18,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::{Cast, ListBoxRowExt, WidgetExt};
 use libadwaita::prelude::ActionRowExt;
 use libadwaita::prelude::PreferencesGroupExt;
-use lushtext_model::encoding::FileHealthFinding;
+use lushtext_model::document::encoding::FileHealthFinding;
 
 glib::wrapper! {
     // Exposes the private ObjectSubclass as the public GTK widget used by the
@@ -162,7 +162,7 @@ impl Default for LushtextPropertiesPanel {
 fn format_file_size(bytes: Option<u64>) -> String {
     bytes.map_or_else(
         || "Not available".to_string(),
-        lushtext_model::size_units::iec_size,
+        lushtext_model::budgets::size_units::iec_size,
     )
 }
 

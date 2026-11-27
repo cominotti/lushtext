@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 
-use lushtext_model::draft::{PreloadedDraftRestore, PreloadedDraftSkip};
+use lushtext_model::persistence::draft::{PreloadedDraftRestore, PreloadedDraftSkip};
 
 /// Release every eager preload body to a worker, keeping the compact markers.
 ///

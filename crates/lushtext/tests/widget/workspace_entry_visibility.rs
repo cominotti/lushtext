@@ -16,10 +16,14 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
 use libadwaita::prelude::*;
-use lushtext_model::content_search::{ContentSearchOptions, SavedSearch, SearchQuerySpec};
+use lushtext_model::workspace::content_search::{
+    ContentSearchOptions, SavedSearch, SearchQuerySpec,
+};
+use lushtext_model::workspace::workspace_visibility::WorkspaceEntryVisibility;
 use lushtext_model::workspace::{WorkspaceConfig, WorkspaceId, WorkspacesFile};
-use lushtext_model::workspace_visibility::WorkspaceEntryVisibility;
-use lushtext_services::{bookmark_service, json_store, workspace_manager};
+use lushtext_services::{
+    notes::bookmark_service, persistence::json_store, workspace::workspace_manager,
+};
 use lushtext_ui::config::keys;
 use lushtext_ui::ui::automation::app_snapshot;
 use lushtext_ui::ui::command_palette::item::PaletteItem;
@@ -790,7 +794,7 @@ fn test_bookmark_inside_hidden_folder_is_browsable_and_row_appears_when_revealed
     bookmark_service::save_for_path(
         &json_store::data_dir(),
         &path,
-        &[lushtext_model::bookmark::BookmarkRecord::new(
+        &[lushtext_model::persistence::bookmark::BookmarkRecord::new(
             0,
             Some("hidden bookmark".to_owned()),
         )],

@@ -30,8 +30,8 @@ use gtk4::glib;
 use gtk4::prelude::*;
 
 use lushtext_model::workspace::{FolderTreeEntry, WorkspaceFolderId};
-use lushtext_services::notifications::NotificationSeverity;
-use lushtext_services::workspace_watch::WORKSPACE_WATCH_PATH_CAP;
+use lushtext_services::coordination::notifications::NotificationSeverity;
+use lushtext_services::watch::workspace_watch::WORKSPACE_WATCH_PATH_CAP;
 
 use super::super::file_tree_item::FileTreeItem;
 use super::LushtextWorkspaceSection;

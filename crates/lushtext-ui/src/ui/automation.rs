@@ -46,11 +46,11 @@ use lushtext_model::automation::{
     READINESS_BLOCKER_WORKSPACE_PERSIST, READINESS_BLOCKER_WORKSPACE_SEARCH,
     READINESS_BLOCKER_WORKSPACE_SIDEBAR_ANIMATION, READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
 };
-use lushtext_model::content_search::ReplaceSkipReason;
-use lushtext_model::palette::{PaletteCategory, SearchMode};
-use lushtext_services::action_catalog;
-use lushtext_services::local_history_service::LocalHistoryAvailability;
-use lushtext_services::notifications::NotificationSeverity;
+use lushtext_model::workspace::content_search::ReplaceSkipReason;
+use lushtext_model::workspace::palette::{PaletteCategory, SearchMode};
+use lushtext_services::coordination::notifications::NotificationSeverity;
+use lushtext_services::persistence::local_history_service::LocalHistoryAvailability;
+use lushtext_services::workspace::action_catalog;
 use std::time::{Duration, Instant};
 
 /// Stable interface version for the first automation contract.
@@ -1091,7 +1091,7 @@ fn workspace_snapshot(window: &LushtextWindow) -> AutomationWorkspaceSnapshot {
     let settings = &window.imp().settings;
     let show_hidden_files = settings.boolean(crate::config::keys::WORKSPACE_SHOW_HIDDEN_FILES);
     let (excluded_names, excluded_names_truncated) =
-        lushtext_model::workspace_visibility::snapshot_excluded_names(
+        lushtext_model::workspace::workspace_visibility::snapshot_excluded_names(
             &crate::ui::workspace_visibility::excluded_names(settings),
         );
     let excluded_names = excluded_names

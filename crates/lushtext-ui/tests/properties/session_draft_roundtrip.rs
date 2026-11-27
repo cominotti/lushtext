@@ -8,8 +8,8 @@
 
 use std::path::{Path, PathBuf};
 
-use lushtext_model::draft::{DraftEntry, DraftManifest};
-use lushtext_model::session::{SessionData, SessionTab};
+use lushtext_model::persistence::draft::{DraftEntry, DraftManifest};
+use lushtext_model::persistence::session::{SessionData, SessionTab};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 

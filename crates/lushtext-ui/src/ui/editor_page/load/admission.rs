@@ -37,9 +37,9 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 
 use crate::ui::editor_page::{EditorLoadState, LushtextEditorPage};
 use crate::ui::window::LushtextWindow;
-use lushtext_model::editor_memory::EDITOR_MEMORY_UPPER_BUDGET_BYTES;
-use lushtext_model::encoding::DocumentEncoding;
-use lushtext_model::file_load::{
+use lushtext_model::document::editor_memory::EDITOR_MEMORY_UPPER_BUDGET_BYTES;
+use lushtext_model::document::encoding::DocumentEncoding;
+use lushtext_model::document::file_load::{
     FileLoadAdmissionPolicy, FileLoadAdmissionRequest, FileLoadAdmissionSnapshot, FileLoadPriority,
     decoded_body_reservation_weight,
 };
@@ -283,8 +283,9 @@ fn begin_load_request_now(
                         .and_then(|name| table.guess(name))
                         .map(str::to_owned)
                 }),
-                editorconfig: resolve_editorconfig
-                    .then(|| lushtext_services::editorconfig::resolve_for_path(&file_path)),
+                editorconfig: resolve_editorconfig.then(|| {
+                    lushtext_services::workspace::editorconfig::resolve_for_path(&file_path)
+                }),
             };
             (plan, joined)
         },
@@ -336,7 +337,7 @@ struct PlanningJoin {
     /// when the catalog was not ready, `Some(None)` for no language.
     language_guess: Option<Option<String>>,
     /// The path's EditorConfig overrides, when EditorConfig is in use.
-    editorconfig: Option<lushtext_model::formatting_overrides::FormattingOverrides>,
+    editorconfig: Option<lushtext_model::document::formatting_overrides::FormattingOverrides>,
 }
 
 impl PlanningJoin {

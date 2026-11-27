@@ -6,11 +6,11 @@
 //! removal must be confirmed on disk, while status, deletion, and manifest-write
 //! failures must preserve their evidence for a later trusted pass.
 
-use lushtext_model::draft::{DraftEntry, DraftManifest};
-use lushtext_services::draft_service::{
+use lushtext_model::persistence::draft::{DraftEntry, DraftManifest};
+use lushtext_services::filesystem::{fixture, metadata as fs_metadata};
+use lushtext_services::persistence::draft_service::{
     self, DraftOrphanCleanupFailure, DraftOrphanCleanupFault, DraftOrphanCleanupRetentionReason,
 };
-use lushtext_services::filesystem::{fixture, metadata as fs_metadata};
 use std::path::Path;
 use tempfile::TempDir;
 

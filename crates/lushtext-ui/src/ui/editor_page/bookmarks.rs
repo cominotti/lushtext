@@ -10,7 +10,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use sourceview5::prelude::*;
 
-use lushtext_model::bookmark::{BookmarkId, BookmarkRecord};
+use lushtext_model::persistence::bookmark::{BookmarkId, BookmarkRecord};
 
 use super::{LushtextEditorPage, imp};
 

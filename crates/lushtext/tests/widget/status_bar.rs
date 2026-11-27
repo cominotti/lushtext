@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use crate::common::{accessible_hidden, ensure_gtk_init, flush_after_delay};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_services::notifications::StatusMessage;
+use lushtext_services::coordination::notifications::StatusMessage;
 use lushtext_ui::ui::accessibility::{AnnouncementLane, test_audit::AccessibleAudit};
 use lushtext_ui::ui::status_bar::{LushtextStatusBar, MessageKind};
 

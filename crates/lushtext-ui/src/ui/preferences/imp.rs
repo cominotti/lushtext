@@ -144,7 +144,7 @@ pub struct LushtextPreferences {
     /// The listing the set-aside group shows; Delete All confirms exactly its
     /// rows' fingerprints.
     pub data_set_aside_listing:
-        RefCell<Option<lushtext_services::draft_service::SetAsideDraftListing>>,
+        RefCell<Option<lushtext_services::persistence::draft_service::SetAsideDraftListing>>,
     /// `app.review-preserved-drafts` asked for the group: focus its summary
     /// row once the listing lands.
     pub data_set_aside_focus_pending: Cell<bool>,

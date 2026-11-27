@@ -32,9 +32,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::ui::editor_page::LushtextEditorPage;
-use lushtext_model::recent_document::RecentDocumentEntry;
-use lushtext_services::json_store;
-use lushtext_services::recent_documents;
+use lushtext_model::persistence::recent_document::RecentDocumentEntry;
+use lushtext_services::persistence::json_store;
+use lushtext_services::persistence::recent_documents;
 
 use super::LushtextWindow;
 

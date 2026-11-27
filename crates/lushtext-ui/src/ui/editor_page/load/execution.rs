@@ -24,7 +24,7 @@
 //! boundary. That is a performance contract with a user-visible failure mode,
 //! not refactorable detail; see [`super::policy`] for why, and note that the
 //! insert side reads its boundary from
-//! [`next_install_boundary`](lushtext_model::file_load::next_install_boundary) in
+//! [`next_install_boundary`](lushtext_model::document::file_load::next_install_boundary) in
 //! `model/`.
 //!
 //! ## Small payloads take the direct path
@@ -37,7 +37,7 @@
 use crate::ui::editor_page::edit_lock::EditLock;
 use crate::ui::editor_page::protected_view::execution::ProtectedInstallSource;
 use crate::ui::protected_fold::FoldedInstall;
-use lushtext_model::held_input::ContentDisposition;
+use lushtext_model::document::held_input::ContentDisposition;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
@@ -51,11 +51,13 @@ use crate::ui::editor_page::{
     EditorLoadState, InlineAlertLifetime, LushtextEditorPage, PendingWarningAction,
 };
 use crate::ui::responsiveness_probe::PostOpenSpan;
-use lushtext_model::buffer_replacement::{SliceBudget, next_slice_boundary};
-use lushtext_model::document_scale::DocumentScale;
-use lushtext_model::encoding::FileHealthFindingKind;
+use lushtext_model::document::buffer_replacement::{SliceBudget, next_slice_boundary};
+use lushtext_model::document::document_scale::DocumentScale;
+use lushtext_model::document::encoding::FileHealthFindingKind;
+use lushtext_services::coordination::notifications::{
+    InlineActionNotification, InlineNotificationStyle,
+};
 use lushtext_services::editor_io::{self, EditorLoadError};
-use lushtext_services::notifications::{InlineActionNotification, InlineNotificationStyle};
 
 use super::admission::{self, GuardedLoadResult, TransientLoadPermit};
 use super::policy::{
@@ -647,9 +649,11 @@ pub(super) fn accept_admitted_load_outcome(
             // the residency of the characters not yet installed, and no worker
             // (design D4 of `defer-background-tab-layout`).
             let mut permit = permit;
-            permit.retain_for_install(lushtext_model::file_load::install_retained_weight(
-                u64::try_from(loaded.content.len()).unwrap_or(u64::MAX),
-            ));
+            permit.retain_for_install(
+                lushtext_model::document::file_load::install_retained_weight(
+                    u64::try_from(loaded.content.len()).unwrap_or(u64::MAX),
+                ),
+            );
             install_guarded_load(editor, ticket.load_generation, loaded, Some(permit));
         }
         Err(EditorLoadError::Cancelled) => {}
@@ -919,11 +923,11 @@ fn highlight_plan_for(
         .scale_for_incoming_profile(&loaded.metadata.profile)
         .syntax_enabled;
     policy::highlight_attach_plan(
-        lushtext_model::highlight_chunking::highlight_install_order_with(
+        lushtext_model::document::highlight_chunking::highlight_install_order_with(
             editor.syntax_language(),
             loaded.metadata.summary().total_bytes,
             syntax_allowed,
-            lushtext_model::document_scale::markdown_chunked_cap(),
+            lushtext_model::document::document_scale::markdown_chunked_cap(),
         ),
     )
 }
@@ -1230,7 +1234,8 @@ impl LushtextEditorPage {
     pub fn apply_loaded_content_for_test(&self, content: &str, reported_size: u64) {
         // The worker profiles the body; this test path does the same off the
         // load pipeline, as the analysis pass would.
-        let profile = lushtext_model::paragraph_boundary::DocumentProfile::of_text(content);
+        let profile =
+            lushtext_model::document::paragraph_boundary::DocumentProfile::of_text(content);
         let content = content.to_string();
         let weight = u64::try_from(content.capacity()).unwrap_or(u64::MAX);
         let reservation = crate::ui::plain_disposal::try_reserve_for_gtk(weight)

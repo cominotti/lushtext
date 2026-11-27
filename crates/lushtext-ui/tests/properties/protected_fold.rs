@@ -10,7 +10,7 @@
 //! the window bound, "no gratuitous fold", the fold shape and slicing
 //! independence all follow from equality plus the reference's own checks.
 
-use lushtext_model::protected_fold::{
+use lushtext_model::document::protected_fold::{
     FoldRange, FoldThresholds, ProductionFoldState, fold_finish, fold_step, plan_folds,
 };
 use proptest::prelude::*;

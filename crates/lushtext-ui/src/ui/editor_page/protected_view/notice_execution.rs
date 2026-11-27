@@ -26,7 +26,9 @@ use super::policy::{
 use crate::ui::editor_page::{InlineAlertLifetime, LushtextEditorPage, PendingWarningAction};
 use crate::ui::status_bar::MessageKind;
 use crate::ui::window::LushtextWindow;
-use lushtext_services::notifications::{InlineActionNotification, InlineNotificationStyle};
+use lushtext_services::coordination::notifications::{
+    InlineActionNotification, InlineNotificationStyle,
+};
 
 /// The editor's notice state.
 #[derive(Debug, Default)]

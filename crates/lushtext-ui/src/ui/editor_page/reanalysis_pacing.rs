@@ -40,7 +40,7 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use sourceview5::prelude::*;
 
-use lushtext_model::reanalysis_pacing::{
+use lushtext_model::document::reanalysis_pacing::{
     PacingNext, PacingSession, StepReport, after_step_within, reanalysis_allowance_us,
 };
 

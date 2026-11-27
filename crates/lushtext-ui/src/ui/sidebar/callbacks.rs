@@ -20,7 +20,7 @@ use std::path::Path;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::ObjectExt;
 
-use lushtext_services::notifications::NotificationSeverity;
+use lushtext_services::coordination::notifications::NotificationSeverity;
 
 use super::{LushtextSidebar, WorkspaceSection};
 

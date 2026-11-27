@@ -25,7 +25,7 @@ use gtk4::prelude::*;
 use libadwaita::prelude::*;
 
 use crate::ui::accessibility;
-use lushtext_model::encoding::{DocumentEncoding, LineEnding};
+use lushtext_model::document::encoding::{DocumentEncoding, LineEnding};
 
 use super::super::LushtextWindow;
 use super::policy::{self, ChoiceRowState};

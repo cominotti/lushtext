@@ -11,9 +11,9 @@
 
 use std::path::{Path, PathBuf};
 
-use lushtext_services::content_search::undo_replacements;
 use lushtext_services::filesystem::fixture;
-use lushtext_services::search_backup;
+use lushtext_services::search::content_search::undo_replacements;
+use lushtext_services::search::search_backup;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use tempfile::TempDir;

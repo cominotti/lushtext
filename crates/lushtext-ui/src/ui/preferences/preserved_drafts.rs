@@ -19,12 +19,12 @@ use gtk4::prelude::*;
 use libadwaita::prelude::*;
 
 use crate::ui::accessibility;
-use lushtext_services::draft_service::set_aside::SetAsideBulkDeletion;
-use lushtext_services::draft_service::set_aside_retention::{
+use lushtext_services::persistence::draft_service::set_aside::SetAsideBulkDeletion;
+use lushtext_services::persistence::draft_service::set_aside_retention::{
     BoundStatus, SetAsideFingerprint, SetAsideTotals, bound_status,
 };
-use lushtext_services::draft_service::{self, SetAsideDraftListing};
-use lushtext_services::json_store;
+use lushtext_services::persistence::draft_service::{self, SetAsideDraftListing};
+use lushtext_services::persistence::json_store;
 
 use super::LushtextPreferences;
 
@@ -360,7 +360,9 @@ impl LushtextPreferences {
                 // Profiled on the reading worker, for the document scale.
                 draft_service::set_aside::read(&json_store::data_dir(), &path).map(|text| {
                     let profile =
-                        lushtext_model::paragraph_boundary::DocumentProfile::of_text(&text);
+                        lushtext_model::document::paragraph_boundary::DocumentProfile::of_text(
+                            &text,
+                        );
                     (text, profile)
                 })
             },

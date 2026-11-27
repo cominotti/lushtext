@@ -10,7 +10,7 @@
 use sourceview5::prelude::ViewExt;
 use sourceview5::{SpaceLocationFlags, SpaceTypeFlags};
 
-use lushtext_model::encoding::InvisibleCharactersMode;
+use lushtext_model::document::encoding::InvisibleCharactersMode;
 
 use super::LushtextEditorPage;
 

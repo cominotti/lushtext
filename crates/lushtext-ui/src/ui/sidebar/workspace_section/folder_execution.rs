@@ -33,8 +33,8 @@ use crate::ui::sidebar::policy::{
     WorkspaceScanFinish as ChildScanFinish, WorkspaceScanSubmission as ChildScanSubmission,
     WorkspaceScanTicket as ChildScanTicket,
 };
+use lushtext_model::workspace::workspace_visibility::WorkspaceEntryVisibility;
 use lushtext_model::workspace::{FolderTreeEntry, WorkspaceFolder, WorkspaceFolderId};
-use lushtext_model::workspace_visibility::WorkspaceEntryVisibility;
 
 use super::LushtextWorkspaceSection;
 
@@ -844,7 +844,8 @@ fn start_folder_empty_probe(
     gtk_lush_tasks::spawn_blocking_then(
         (top_level_store, item, request.folder_path, permit),
         move || {
-            let is_empty = lushtext_services::file_tree::is_dir_empty(&path_for_check, &visibility);
+            let is_empty =
+                lushtext_services::workspace::file_tree::is_dir_empty(&path_for_check, &visibility);
             #[cfg(feature = "test-utils")]
             {
                 empty_probe_reads.fetch_add(1, std::sync::atomic::Ordering::Release);

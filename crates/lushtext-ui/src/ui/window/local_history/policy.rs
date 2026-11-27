@@ -10,16 +10,18 @@
 //! workflow owns one `policy.rs`, and this is it.
 //!
 //! Sizing and paragraph-boundary arithmetic is **called, not copied**:
-//! `lushtext_model::buffer_replacement` owns it, and forking a shared limit would
+//! `lushtext_model::document::buffer_replacement` owns it, and forking a shared limit would
 //! let it drift while both copies still read as correct.
 
 #![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]
 
 use std::path::PathBuf;
 
-use lushtext_model::buffer_replacement::SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES;
-use lushtext_model::local_history::{LocalHistorySnapshotMeta, LocalHistorySnapshotOrigin};
-use lushtext_services::local_history_service::LocalHistoryAvailability;
+use lushtext_model::document::buffer_replacement::SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES;
+use lushtext_model::persistence::local_history::{
+    LocalHistorySnapshotMeta, LocalHistorySnapshotOrigin,
+};
+use lushtext_services::persistence::local_history_service::LocalHistoryAvailability;
 
 // --- viewer geometry -------------------------------------------------------
 
@@ -309,7 +311,7 @@ pub(super) fn format_snapshot_meta(origin: LocalHistorySnapshotOrigin, byte_len:
 /// app names use (`power-of-two-thresholds` D14).
 #[must_use]
 pub(super) fn format_bytes(byte_len: u64) -> String {
-    lushtext_model::size_units::iec_size(byte_len)
+    lushtext_model::budgets::size_units::iec_size(byte_len)
 }
 
 #[cfg(test)]

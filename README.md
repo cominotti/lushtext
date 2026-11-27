@@ -588,7 +588,7 @@ Cargo workspace:
 - `crates/lushtext-build-support` - build-script helper crate.
 - `crates/lushtext-model` - pure GTK-free domain types and verified policy.
 - `crates/lushtext-services` - GTK-free application services and I/O adapters.
-- `crates/lushtext-ui` - GTK widgets plus `model` and `services` re-exports. Its main-window adapter keeps pure responsive policy in
+- `crates/lushtext-ui` - GTK widgets consuming `lushtext-model` and `lushtext-services`. Its main-window adapter keeps pure responsive policy in
   `ui/window/geometry/policy.rs`, keeps draft intent epochs in
   `ui/window/drafts/`, bounds progressive tab restoration in
   `ui/window/session_restore/`, composes each window in bounded stages
@@ -610,7 +610,7 @@ Cargo workspace:
   `folder_execution.rs`, `file_execution.rs`, `peek_execution.rs`,
   `reorder_execution.rs`, `watch.rs`) live in `workspace_section/`. Plain policy
   for weighted disposal and workspace search lives in
-  `model/{workspace_search,plain_disposal}.rs`, while the
+  `crates/lushtext-model/src/{workspace/workspace_search.rs,document/plain_disposal.rs}`, while the
   workspace tree workflow's own pure policy — per-store scan ownership,
   workspace-save generations, inline-rename intent, and the confirmed-delete
   identity verdict — lives beside that workflow in `ui/sidebar/policy.rs`.
@@ -620,7 +620,7 @@ Cargo workspace:
   outside the input dispatch through `ui/list_retirement.rs`, and the notes
   browser lists a large first result in a few frames through
   `ui/list_growth.rs`; the pure planning behind both is in
-  `model/list_budget.rs`.
+  `crates/lushtext-model/src/budgets/list_budget.rs`.
 - `crates/lushtext` - thin binary entry point plus integration tests.
 - `crates/gtk-lush/` - governed `0.0.0` GTK Lush family crates for extracting
   reusable GTK4/Libadwaita patterns. These are functional in-tree APIs, not
@@ -695,7 +695,7 @@ buffer-replacement one is worth reading for the smallest complete example: a
 168-line facade narrating one stage order, one `execution.rs`, and a `policy.rs`
 holding the decisions that keep a half-replaced document from ever being visible.
 The direct-versus-sliced threshold and the paragraph-boundary arithmetic it
-depends on stay cross-cutting in `model/buffer_replacement.rs`, called by three
+depends on stay cross-cutting in `crates/lushtext-model/src/document/buffer_replacement.rs`, called by three
 owning workflows and copied by none — a forked shared limit can drift while both
 copies still read as correct.
 
@@ -775,7 +775,7 @@ in `formal/evaluation/`.
 Kani proves the pure cores; shell conformance checks that the imperative code
 driving them obeys them. A test-only tap at the one protocol loop and at every
 fallible filesystem call records each action and injects faults and crashes,
-and `crates/lushtext-services/src/conformance/` replays both the real
+and `crates/lushtext-services/src/instrumentation/conformance/` replays both the real
 durable-write primitives (`write_shell.rs`) and the draft journal (`draft_service.rs`)
 through their proven cores and the same models the Kani harnesses run, after
 every action (an exhaustive enumeration in `make test`, generated properties
@@ -853,7 +853,7 @@ measurement binary with the smoke-only `responsiveness-probes` feature into
 `target/responsiveness/` (`make responsiveness-build`), runs it headless on
 synthetic fixtures from `scripts/generate-long-line-fixtures.py`, and reports
 main-loop stalls, frame gaps and input-to-frame latency against the budgets in
-`model/responsiveness_budget.rs`. It runs nightly and on demand, never as a
+`crates/lushtext-model/src/budgets/responsiveness_budget.rs`. It runs nightly and on demand, never as a
 pull-request gate, and is not part of `make end-user-smoke`; the measured
 values live in [`docs/next/long-line-documents.md`](docs/next/long-line-documents.md).
 

@@ -38,7 +38,7 @@ use crate::ui::accessibility;
 use crate::ui::markdown_preview::{LushtextMarkdownPreview, MarkdownPreviewRenderContext};
 use crate::ui::row_text::LushtextRowText;
 use crate::ui::status_bar::MessageKind;
-use lushtext_model::palette::{PaletteNoteEntry, PaletteNoteTarget};
+use lushtext_model::workspace::palette::{PaletteNoteEntry, PaletteNoteTarget};
 use lushtext_services::palette as palette_service;
 
 use super::LushtextWindow;
@@ -163,7 +163,7 @@ pub(super) struct NotesBrowserState {
     pub(super) mode: Cell<palette_service::NotesBrowserMode>,
     /// One-active/one-latest ownership for closed-file bookmark excerpt loads.
     pub(super) preview_loads:
-        RefCell<lushtext_services::bookmark_excerpt::BookmarkExcerptPreviewCoordinator>,
+        RefCell<lushtext_services::notes::bookmark_excerpt::BookmarkExcerptPreviewCoordinator>,
 }
 
 /// `content-changed` handlers of bound rows and headers, by the address of
@@ -227,7 +227,8 @@ pub struct NotesBrowserRuntimeSnapshot {
     /// Initial bounded-source ownership counters.
     pub source: palette_service::NoteSourceRefreshCoordinatorSnapshot,
     /// Closed-file bookmark excerpt ownership counters.
-    pub preview: lushtext_services::bookmark_excerpt::BookmarkExcerptPreviewCoordinatorSnapshot,
+    pub preview:
+        lushtext_services::notes::bookmark_excerpt::BookmarkExcerptPreviewCoordinatorSnapshot,
     /// Rows the list shows for the current query, including the rows a
     /// staged first publish is still listing (`lighten-notes-browser-rows`
     /// D5): the final length from the first publish on.

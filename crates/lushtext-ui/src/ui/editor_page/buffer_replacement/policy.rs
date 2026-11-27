@@ -6,7 +6,7 @@
 //! buffer can be left visible** and **which terminal a caller is told about**.
 //! Those are the workflow's own decisions, distinct from the cross-cutting
 //! sizing and paragraph-boundary arithmetic in
-//! [`lushtext_model::buffer_replacement`], which this workflow **calls** and never
+//! [`lushtext_model::document::buffer_replacement`], which this workflow **calls** and never
 //! copies: forking a shared limit lets it drift while both copies still read as
 //! correct.
 //!
@@ -18,10 +18,12 @@
 /// slice (`sliced-protected-install`, C3). Calls the shared
 /// `model::protected_install::hidden_tail_requires_slicing`, never a copy.
 pub(super) fn protected_install_is_sliced(
-    plan: Option<&lushtext_model::protected_fold::FoldPlan>,
+    plan: Option<&lushtext_model::document::protected_fold::FoldPlan>,
 ) -> bool {
     plan.is_some_and(|plan| {
-        lushtext_model::protected_install::hidden_tail_requires_slicing(plan.hidden_chars())
+        lushtext_model::document::protected_install::hidden_tail_requires_slicing(
+            plan.hidden_chars(),
+        )
     })
 }
 

@@ -81,7 +81,7 @@ use super::file_tree_item::FileTreeItem;
 use crate::ui::accessibility;
 use crate::ui::sidebar::seams::SidebarFileRowStateSnapshot;
 use lushtext_model::workspace::{WorkspaceFolderId, WorkspaceFolderMoveDirection, WorkspaceId};
-use lushtext_services::notifications::NotificationSeverity;
+use lushtext_services::coordination::notifications::NotificationSeverity;
 
 // glib::wrapper! generates the public GObject wrapper around the private
 // imp.rs subclass; the extends/implements list declares the GTK interfaces the

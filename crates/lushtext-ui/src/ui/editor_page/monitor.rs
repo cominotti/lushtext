@@ -13,8 +13,10 @@ use gtk4::gio;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 
+use lushtext_services::coordination::notifications::{
+    InlineActionNotification, InlineNotificationStyle,
+};
 use lushtext_services::editor_io;
-use lushtext_services::notifications::{InlineActionNotification, InlineNotificationStyle};
 
 use super::{InlineAlertLifetime, LushtextEditorPage};
 

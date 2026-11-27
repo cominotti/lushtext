@@ -18,8 +18,8 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
 use libadwaita::prelude::*;
-use lushtext_model::content_search::{SavedSearch, SearchHistoryEntry, SearchQuerySpec};
-use lushtext_services::{json_store, saved_searches};
+use lushtext_model::workspace::content_search::{SavedSearch, SearchHistoryEntry, SearchQuerySpec};
+use lushtext_services::{persistence::json_store, search::saved_searches};
 
 use super::LushtextSearchPanel;
 
@@ -160,7 +160,7 @@ impl LushtextSearchPanel {
                 if let Some(ref cb) = *panel.imp().callbacks.message_callback.borrow() {
                     cb(
                         &format!("Search saved as '{display_name}'"),
-                        lushtext_services::notifications::NotificationSeverity::Info,
+                        lushtext_services::coordination::notifications::NotificationSeverity::Info,
                     );
                 }
                 // Persist a snapshot so later UI edits do not race this

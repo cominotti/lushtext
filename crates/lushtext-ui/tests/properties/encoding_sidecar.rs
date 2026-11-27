@@ -7,8 +7,8 @@
 
 use std::path::{Path, PathBuf};
 
-use lushtext_model::encoding::{DocumentEncoding, LineEnding};
-use lushtext_model::sidecar_identity::{stable_bytes_hash, stable_path_hash};
+use lushtext_model::document::encoding::{DocumentEncoding, LineEnding};
+use lushtext_model::persistence::sidecar_identity::{stable_bytes_hash, stable_path_hash};
 use proptest::prelude::*;
 
 use crate::support;

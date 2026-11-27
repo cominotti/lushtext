@@ -33,13 +33,13 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use gtk4::{self, glib};
 
-use lushtext_model::content_search::{
+use lushtext_model::budgets::list_budget::turn_continues;
+use lushtext_model::workspace::content_search::{
     SearchEvent, SearchHistoryEntry, SearchMatch, SearchQuerySpec, SearchRetention,
 };
-use lushtext_model::list_budget::turn_continues;
-use lushtext_model::workspace_search::WorkspaceSearchTraversalPlan;
+use lushtext_model::workspace::workspace_search::WorkspaceSearchTraversalPlan;
 use lushtext_services::filesystem::metadata as fs_metadata;
-use lushtext_services::{content_search, json_store, search_history};
+use lushtext_services::{persistence::json_store, search::content_search, search::search_history};
 
 use super::LushtextSearchPanel;
 use super::imp::make_display_path;
@@ -85,7 +85,9 @@ fn receive_search_event(
 /// unless a widget test or a smoke binary overrides the budget.
 fn search_retention() -> SearchRetention {
     let mut budget_bytes = policy::SEARCH_RESULTS_RETAINED_BYTES;
-    if let Some(bytes) = lushtext_services::smoke_list_budgets::search_retained_bytes() {
+    if let Some(bytes) =
+        lushtext_services::instrumentation::smoke_list_budgets::search_retained_bytes()
+    {
         budget_bytes = bytes;
     }
     #[cfg(feature = "test-utils")]
@@ -563,7 +565,8 @@ fn apply_match_batch(
         let mut plain = imp.runtime.search_matches.borrow_mut();
         let mut positions = imp.navigation.match_positions.borrow_mut();
         for search_match in matches {
-            let match_id = lushtext_model::content_search::SearchMatchId::from_index(plain.len());
+            let match_id =
+                lushtext_model::workspace::content_search::SearchMatchId::from_index(plain.len());
             let search_match = search_match.with_id(match_id);
             let path = Arc::clone(&search_match.path);
             let group = groups.entry(Arc::clone(&path)).or_insert_with(|| {

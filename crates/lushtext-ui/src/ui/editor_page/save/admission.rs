@@ -26,7 +26,7 @@ use crate::ui::window::LushtextWindow;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
-use lushtext_model::editor_memory::EDITOR_MEMORY_UPPER_BUDGET_BYTES;
+use lushtext_model::document::editor_memory::EDITOR_MEMORY_UPPER_BUDGET_BYTES;
 use lushtext_services::editor_io::EditorSaveError;
 
 use super::policy::{

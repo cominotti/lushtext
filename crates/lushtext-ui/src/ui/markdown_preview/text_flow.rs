@@ -11,7 +11,9 @@
 //! applying a batch to the state a generation carries between GTK turns.
 
 use gtk4::prelude::*;
-use pulldown_cmark::{Event, HeadingLevel, TagEnd};
+use lushtext_services::notes::markdown_render::{
+    MarkdownEvent, MarkdownHeadingLevel, MarkdownTagEnd,
+};
 use std::collections::HashMap;
 
 use super::imp::{
@@ -168,8 +170,11 @@ pub(super) fn current_definition_needs_paragraph_separator(
 
 /// Return whether the current event should force any delayed list marker to be
 /// inserted before the renderer processes the event itself.
-pub(super) fn should_flush_pending_list_prefix(event: &Event<'_>) -> bool {
-    !matches!(event, Event::TaskListMarker(_) | Event::End(TagEnd::Item))
+pub(super) fn should_flush_pending_list_prefix(event: &MarkdownEvent) -> bool {
+    !matches!(
+        event,
+        MarkdownEvent::TaskListMarker(_) | MarkdownEvent::End(MarkdownTagEnd::Item)
+    )
 }
 
 /// Insert a delayed list marker using whatever formatting tags are active for
@@ -222,15 +227,15 @@ pub(super) fn footnote_number(
     number
 }
 
-/// Convert a `HeadingLevel` to a 0-based index for the tag name array.
-pub(super) fn heading_level_to_index(level: HeadingLevel) -> usize {
+/// Convert a [`MarkdownHeadingLevel`] to a 0-based index for the tag name array.
+pub(super) fn heading_level_to_index(level: MarkdownHeadingLevel) -> usize {
     match level {
-        HeadingLevel::H1 => 0,
-        HeadingLevel::H2 => 1,
-        HeadingLevel::H3 => 2,
-        HeadingLevel::H4 => 3,
-        HeadingLevel::H5 => 4,
-        HeadingLevel::H6 => 5,
+        MarkdownHeadingLevel::H1 => 0,
+        MarkdownHeadingLevel::H2 => 1,
+        MarkdownHeadingLevel::H3 => 2,
+        MarkdownHeadingLevel::H4 => 3,
+        MarkdownHeadingLevel::H5 => 4,
+        MarkdownHeadingLevel::H6 => 5,
     }
 }
 

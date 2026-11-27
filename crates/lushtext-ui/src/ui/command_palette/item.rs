@@ -16,7 +16,7 @@
 use crate::ui::signal_connect;
 use glib::subclass::prelude::*;
 use gtk4::glib;
-use lushtext_model::palette::{CommandDef, PaletteCategory, PaletteNoteTarget};
+use lushtext_model::workspace::palette::{CommandDef, PaletteCategory, PaletteNoteTarget};
 use lushtext_services::palette::IndexedFile;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;

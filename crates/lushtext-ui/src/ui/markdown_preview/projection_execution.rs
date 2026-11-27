@@ -23,10 +23,10 @@ use gtk4::prelude::*;
 use std::collections::VecDeque;
 
 use super::code_blocks::CodeBlockTheme;
-use lushtext_services::markdown_render::MarkdownRenderState;
+use lushtext_services::notes::markdown_render::MarkdownRenderState;
 
 use crate::ui::accessibility;
-use lushtext_services::markdown_render::MarkdownEventBatch;
+use lushtext_services::notes::markdown_render::MarkdownEventBatch;
 
 use super::continuation::{ContinuationBreach, MarkdownProjectionContinuation};
 use super::seams::{

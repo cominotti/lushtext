@@ -4,7 +4,7 @@
 
 use std::collections::BTreeSet;
 
-use lushtext_model::file_load::{
+use lushtext_model::document::file_load::{
     FileLoadAdmissionPolicy, FileLoadAdmissionRequest, FileLoadPriority, INSTALL_SLICE_BYTES,
     TRANSIENT_LOAD_FIXED_OVERHEAD_BYTES, TRANSIENT_LOAD_SOURCE_MULTIPLIER, next_install_boundary,
     transient_load_weight,

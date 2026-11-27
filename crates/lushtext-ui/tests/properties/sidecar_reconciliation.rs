@@ -9,22 +9,23 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use lushtext_model::bookmark::{BookmarkDocument, BookmarkId, BookmarkRecord};
-use lushtext_model::document_note::DocumentNoteDocument;
-use lushtext_model::folder_note::FolderNoteDocument;
-use lushtext_model::local_history::{
+use lushtext_model::persistence::bookmark::{BookmarkDocument, BookmarkId, BookmarkRecord};
+use lushtext_model::persistence::document_note::DocumentNoteDocument;
+use lushtext_model::persistence::folder_note::FolderNoteDocument;
+use lushtext_model::persistence::local_history::{
     LocalHistoryDocument, LocalHistorySnapshotMeta, LocalHistorySnapshotOrigin,
 };
-use lushtext_model::note::RichNoteBody;
-use lushtext_model::sidecar_identity::{
+use lushtext_model::persistence::note::RichNoteBody;
+use lushtext_model::persistence::sidecar_identity::{
     DocumentSidecarIdentity, next_record_id, now_epoch_millis, stable_bytes_hash,
 };
 use lushtext_services::{
-    bookmark_service, document_note_service,
     filesystem::{fixture, metadata as fs_metadata},
-    folder_note_service,
-    json_format::{JsonEnvelopeRef, KIND_LOCAL_HISTORY_INDEX},
-    local_history_service,
+    notes::bookmark_service,
+    notes::document_note_service,
+    notes::folder_note_service,
+    persistence::json_format::{JsonEnvelopeRef, KIND_LOCAL_HISTORY_INDEX},
+    persistence::local_history_service,
 };
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;

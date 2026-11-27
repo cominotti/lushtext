@@ -511,7 +511,7 @@ pub fn rank_all_tabs(query: &str, candidates: &[AllTabsCandidate<'_>]) -> Vec<u3
         return indexed.map(|(_, index)| index).collect();
     }
     let folded = trimmed.to_lowercase();
-    let mut fuzzy = lushtext_services::fuzzy::FuzzyQuery::new(trimmed);
+    let mut fuzzy = lushtext_services::palette::fuzzy_query::FuzzyQuery::new(trimmed);
     let mut ranked: Vec<(AllTabsMatch, u32)> = indexed
         .filter_map(|(candidate, index)| {
             let title = candidate.title.to_lowercase();

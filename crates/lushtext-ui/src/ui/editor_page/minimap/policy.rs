@@ -657,9 +657,9 @@ pub(super) fn minimap_availability_for_policy(
 /// The status feedback when the scale policy disables the minimap, naming
 /// line length or size as the reason.
 pub(super) fn minimap_unavailable_message(
-    reduced: lushtext_model::document_scale::ReducedFeatures,
+    reduced: lushtext_model::document::document_scale::ReducedFeatures,
 ) -> &'static str {
-    use lushtext_model::document_scale::{ReductionReason, ScaleFeature};
+    use lushtext_model::document::document_scale::{ReductionReason, ScaleFeature};
     if reduced.has_reason(ScaleFeature::Minimap, ReductionReason::LongParagraph) {
         "Minimap unavailable for this document's line lengths"
     } else {
@@ -2929,7 +2929,7 @@ impl MinimapAnalysisAccumulator {
     /// of `text`, for every text, every policy, and every split of a document
     /// into consecutive calls (a `\r` ending one call and a `\n` starting the
     /// next are one CRLF). Outside Kani, the line breaks come from
-    /// [`next_paragraph_break`](lushtext_model::paragraph_boundary::next_paragraph_break)
+    /// [`next_paragraph_break`](lushtext_model::document::paragraph_boundary::next_paragraph_break)
     /// (a SIMD skip), the characters from the
     /// standard library's word-at-a-time count, and a closed line whose byte
     /// length cannot carry it past a threshold still in play
@@ -2952,7 +2952,7 @@ impl MinimapAnalysisAccumulator {
         // Imported here, not at the top of the module, so the module's
         // line-anchored mutation exclusions (`.cargo/mutants.toml`) keep
         // their line numbers.
-        use lushtext_model::paragraph_boundary::{
+        use lushtext_model::document::paragraph_boundary::{
             ParagraphDelimiter, count_scalars, next_paragraph_break,
         };
 
@@ -3009,8 +3009,10 @@ impl MinimapAnalysisAccumulator {
         // The running count only grows, so a threshold is crossed by one of
         // these scalars exactly when it is crossed by the last; the marker
         // records the line, which none of them changes.
-        let chars = usize::try_from(lushtext_model::paragraph_boundary::count_scalars(content))
-            .unwrap_or(usize::MAX);
+        let chars = usize::try_from(lushtext_model::document::paragraph_boundary::count_scalars(
+            content,
+        ))
+        .unwrap_or(usize::MAX);
         self.current_line_chars = self.current_line_chars.saturating_add(chars);
         self.check_thresholds();
     }

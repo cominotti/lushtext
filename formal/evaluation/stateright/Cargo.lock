@@ -1083,7 +1083,6 @@ dependencies = [
  "encoding_rs",
  "gtk-lush-proof-spine",
  "memchr",
- "regex",
  "serde",
  "workspace-hack",
 ]
@@ -1106,6 +1105,7 @@ dependencies = [
  "notify-debouncer-full",
  "nucleo-matcher",
  "pulldown-cmark",
+ "regex",
  "rustix",
  "serde",
  "serde_json",
@@ -2208,7 +2208,6 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 name = "workspace-hack"
 version = "0.1.0"
 dependencies = [
- "aho-corasick",
  "bitflags 2.13.0",
  "clap",
  "clap_builder",
@@ -2227,8 +2226,6 @@ dependencies = [
  "pango-sys",
  "proc-macro2",
  "quote",
- "regex-automata",
- "regex-syntax",
  "serde",
  "serde_core",
  "simdutf8",

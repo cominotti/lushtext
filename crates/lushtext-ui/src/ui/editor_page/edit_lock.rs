@@ -54,7 +54,7 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use super::LushtextEditorPage;
 use super::protected_view::interaction_execution::DropTargetHold;
 use crate::ui::signal_connect;
-use lushtext_model::held_input::ContentDisposition;
+use lushtext_model::document::held_input::ContentDisposition;
 
 /// One held edit lock, returned by [`LushtextEditorPage::lock_edits`] and
 /// consumed by [`LushtextEditorPage::unlock_edits`].

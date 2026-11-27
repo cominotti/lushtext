@@ -14,7 +14,7 @@ use gtk_lush_signals::SignalBag;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib, pango};
 use libadwaita::prelude::*;
-use pulldown_cmark::BlockQuoteKind;
+use lushtext_services::notes::markdown_render::MarkdownBlockQuoteKind;
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 
@@ -176,24 +176,24 @@ pub(super) fn blockquote_rail_prefix(depth: usize) -> String {
 }
 
 /// Return the tag name used for a typed alert callout title.
-pub(super) fn alert_title_tag_name(kind: BlockQuoteKind) -> &'static str {
+pub(super) fn alert_title_tag_name(kind: MarkdownBlockQuoteKind) -> &'static str {
     match kind {
-        BlockQuoteKind::Note => "alert-title-note",
-        BlockQuoteKind::Tip => "alert-title-tip",
-        BlockQuoteKind::Important => "alert-title-important",
-        BlockQuoteKind::Warning => "alert-title-warning",
-        BlockQuoteKind::Caution => "alert-title-caution",
+        MarkdownBlockQuoteKind::Note => "alert-title-note",
+        MarkdownBlockQuoteKind::Tip => "alert-title-tip",
+        MarkdownBlockQuoteKind::Important => "alert-title-important",
+        MarkdownBlockQuoteKind::Warning => "alert-title-warning",
+        MarkdownBlockQuoteKind::Caution => "alert-title-caution",
     }
 }
 
 /// Return the user-facing title inserted at the start of a typed alert callout.
-pub(super) fn alert_title(kind: BlockQuoteKind) -> &'static str {
+pub(super) fn alert_title(kind: MarkdownBlockQuoteKind) -> &'static str {
     match kind {
-        BlockQuoteKind::Note => "Note",
-        BlockQuoteKind::Tip => "Tip",
-        BlockQuoteKind::Important => "Important",
-        BlockQuoteKind::Warning => "Warning",
-        BlockQuoteKind::Caution => "Caution",
+        MarkdownBlockQuoteKind::Note => "Note",
+        MarkdownBlockQuoteKind::Tip => "Tip",
+        MarkdownBlockQuoteKind::Important => "Important",
+        MarkdownBlockQuoteKind::Warning => "Warning",
+        MarkdownBlockQuoteKind::Caution => "Caution",
     }
 }
 
@@ -277,7 +277,8 @@ pub struct LushtextMarkdownPreview {
     /// Active app-local source-buffer capture for note preview rendering.
     pub source_snapshot: RefCell<Option<BufferSnapshotHandle>>,
     /// GTK-free generation, terminal, and readiness ownership state.
-    pub(super) render_session: RefCell<lushtext_services::markdown_render::MarkdownRenderSession>,
+    pub(super) render_session:
+        RefCell<lushtext_services::notes::markdown_render::MarkdownRenderSession>,
     /// Whether the one document-sized Markdown planner is still draining.
     pub(super) planning_worker_running: Cell<bool>,
     /// Cancellation token for the active planner.
@@ -308,7 +309,8 @@ pub struct LushtextMarkdownPreview {
     /// Current-generation image work that still blocks render readiness.
     pub(super) current_image_work_count: Cell<usize>,
     /// GTK-free count/byte ownership and high-water image admission state.
-    pub(super) image_admission: RefCell<lushtext_services::markdown_render::MarkdownImageAdmission>,
+    pub(super) image_admission:
+        RefCell<lushtext_services::notes::markdown_render::MarkdownImageAdmission>,
     /// Detached buffers/widgets/links awaiting bounded main-loop retirement.
     pub(super) retirement: RefCell<Option<super::seams::MarkdownRetirementSession>>,
     /// Whether the one retirement idle source is armed.
@@ -601,27 +603,27 @@ pub(super) fn create_or_update_tags(buffer: &gtk4::TextBuffer, is_dark: bool) {
 
     for (kind, light, dark) in [
         (
-            BlockQuoteKind::Note,
+            MarkdownBlockQuoteKind::Note,
             ALERT_TITLE_NOTE_LIGHT,
             ALERT_TITLE_NOTE_DARK,
         ),
         (
-            BlockQuoteKind::Tip,
+            MarkdownBlockQuoteKind::Tip,
             ALERT_TITLE_TIP_LIGHT,
             ALERT_TITLE_TIP_DARK,
         ),
         (
-            BlockQuoteKind::Important,
+            MarkdownBlockQuoteKind::Important,
             ALERT_TITLE_IMPORTANT_LIGHT,
             ALERT_TITLE_IMPORTANT_DARK,
         ),
         (
-            BlockQuoteKind::Warning,
+            MarkdownBlockQuoteKind::Warning,
             ALERT_TITLE_WARNING_LIGHT,
             ALERT_TITLE_WARNING_DARK,
         ),
         (
-            BlockQuoteKind::Caution,
+            MarkdownBlockQuoteKind::Caution,
             ALERT_TITLE_CAUTION_LIGHT,
             ALERT_TITLE_CAUTION_DARK,
         ),

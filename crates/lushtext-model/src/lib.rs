@@ -1,49 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Domain data types: workspace configuration, session persistence,
-//! command palette search, and per-file formatting overrides.
+//! Domain data types organized by bounded context.
 //!
-//! All types in this layer are pure Rust with no GTK dependencies, making
-//! them fully unit-testable and usable from background threads.
+//! All types in this layer are pure Rust with no GTK or filesystem dependencies.
 
-pub mod action_catalog;
-pub mod attention_refresh;
 pub mod automation;
-pub mod bookmark;
-pub mod buffer_replacement;
-pub mod construction_spans;
-pub mod content_search;
-pub mod cursor_step;
-pub mod document_note;
-pub mod document_scale;
-pub mod draft;
-pub mod editor_memory;
-pub mod encoding;
-pub mod file_load;
-pub mod folder_note;
-pub mod formatting_overrides;
-pub mod held_input;
-pub mod highlight_chunking;
-pub mod language_guess;
-pub mod list_budget;
-pub mod local_history;
-pub mod migration_ledger;
-pub mod note;
-pub mod palette;
-pub mod paragraph_boundary;
-pub mod paragraph_profile_watch;
-pub mod paragraph_wrap;
-pub mod plain_disposal;
-pub mod protected_fold;
-pub mod protected_install;
-pub mod reanalysis_pacing;
-pub mod recent_document;
-pub mod responsiveness_budget;
-pub mod session;
-pub mod settings_write_batch;
-pub mod sidecar_identity;
-pub mod size_units;
-pub mod surrounding_text;
+pub mod budgets;
+pub mod document;
+pub mod persistence;
+pub mod values;
 pub mod workspace;
-pub mod workspace_search;
-pub mod workspace_visibility;

@@ -18,7 +18,9 @@
 
 use std::sync::Arc;
 
-use lushtext_model::palette::{PaletteCategory, PaletteFileEntry, PaletteNoteEntry, ScoredResult};
+use lushtext_model::workspace::palette::{
+    PaletteCategory, PaletteFileEntry, PaletteNoteEntry, ScoredResult,
+};
 
 use super::commands::{search_commands_cancellable, search_open_files_cancellable};
 pub use super::fuzzy::PALETTE_CATEGORY_CANDIDATE_BYTES;

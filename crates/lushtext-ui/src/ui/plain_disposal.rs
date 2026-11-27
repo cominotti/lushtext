@@ -9,15 +9,15 @@
 
 use crossbeam_channel::{Sender, TrySendError, unbounded};
 #[cfg(feature = "test-utils")]
-use lushtext_model::plain_disposal::PlainDisposalLatest;
+use lushtext_model::document::plain_disposal::PlainDisposalLatest;
 #[cfg(feature = "test-utils")]
-use lushtext_model::plain_disposal::PlainDisposalLatestSnapshot;
+use lushtext_model::document::plain_disposal::PlainDisposalLatestSnapshot;
 #[cfg(any(test, feature = "test-utils"))]
-use lushtext_model::plain_disposal::PlainDisposalSnapshot;
-use lushtext_model::plain_disposal::{
+use lushtext_model::document::plain_disposal::PlainDisposalSnapshot;
+use lushtext_model::document::plain_disposal::{
     PlainDisposalAdmission, PlainDisposalLimits, QueuedPlainDisposal,
 };
-use lushtext_services::sync::lock_unpoisoned;
+use lushtext_services::coordination::sync::lock_unpoisoned;
 #[cfg(feature = "test-utils")]
 use std::cell::Cell;
 use std::cell::RefCell;
@@ -44,8 +44,9 @@ const DISPOSAL_RETAINED_BYTE_CAPACITY: u64 = 128 * 1024 * 1024;
 /// Largest supported source can expand threefold during legacy decoding.
 ///
 /// Kind: derived; computed from the constants it names, not rounded.
-const FILE_LOAD_OVERWEIGHT_PROGRESS_CAPACITY: u64 = lushtext_model::document_scale::REFUSE_TO_OPEN
-    .saturating_mul(lushtext_model::file_load::DECODED_BODY_SOURCE_MULTIPLIER);
+const FILE_LOAD_OVERWEIGHT_PROGRESS_CAPACITY: u64 =
+    lushtext_model::document::document_scale::REFUSE_TO_OPEN
+        .saturating_mul(lushtext_model::document::file_load::DECODED_BODY_SOURCE_MULTIPLIER);
 /// Recovery and Notes source construction retain independent progress capacity.
 ///
 /// The shared ordinary lane may legitimately stay full while long-lived palette
@@ -1042,7 +1043,7 @@ impl PlainDisposalLaneEvidence {
     ///
     /// The predicate a proof needs before it may assert read-to-read identity on
     /// this lane. It delegates to
-    /// [`PlainDisposalSnapshot::is_quiesced`](lushtext_model::plain_disposal::PlainDisposalSnapshot::is_quiesced),
+    /// [`PlainDisposalSnapshot::is_quiesced`](lushtext_model::document::plain_disposal::PlainDisposalSnapshot::is_quiesced),
     /// which is the single definition.
     ///
     /// It existed only as an open-coded `running_jobs == 0 && queued_jobs == 0`

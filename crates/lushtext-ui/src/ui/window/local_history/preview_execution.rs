@@ -11,7 +11,7 @@
 //! reads through the shared coordinator, a disposal reservation per read, and a
 //! paragraph-aligned sliced install for a body too large for one GTK turn.
 
-use lushtext_model::paragraph_boundary::DocumentProfile;
+use lushtext_model::document::paragraph_boundary::DocumentProfile;
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -19,21 +19,21 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use gtk_lush_tasks::spawn_blocking_then;
-use lushtext_services::json_store;
+use lushtext_services::persistence::json_store;
 
 use crate::ui::folded_text::{FoldedTextSurface, InstallSlice, SurfaceText, install_slice};
 use crate::ui::protected_fold::{BoundaryLedger, FoldedInstall};
 use gtk4::glib;
 use gtk4::prelude::*;
 use libadwaita::prelude::{AdwDialogExt, SidebarItemExt};
-use lushtext_model::protected_fold::FoldPlan;
+use lushtext_model::document::protected_fold::FoldPlan;
 use std::sync::Arc;
 
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
 use crate::ui::{accessibility, buffer_snapshot};
-use lushtext_model::local_history::{LocalHistorySnapshot, LocalHistorySnapshotMeta};
-use lushtext_services::local_history_service;
+use lushtext_model::persistence::local_history::{LocalHistorySnapshot, LocalHistorySnapshotMeta};
+use lushtext_services::persistence::local_history_service;
 
 use super::policy;
 use crate::ui::window::LushtextWindow;
@@ -996,7 +996,7 @@ impl LocalHistoryBrowserState {
 ///
 /// Kind: cap; a power of two, rounded down.
 const PREVIEW_DIRECT_CLEAR_CHARS: i32 =
-    lushtext_model::buffer_replacement::REPLACEMENT_CLEAR_SLICE_CHARS;
+    lushtext_model::document::buffer_replacement::REPLACEMENT_CLEAR_SLICE_CHARS;
 
 /// One bounded clear turn of the preview buffer: the next boundary-ledger
 /// ranges while the ledger holds any, then a slice of at most one clear slice
@@ -1007,7 +1007,8 @@ fn clear_preview_turn(buffer: &gtk4::TextBuffer, ledger: &BoundaryLedger) -> usi
     if let Some(turn) = ledger.clear_turn(buffer) {
         return usize::try_from(turn.deleted_bytes).unwrap_or(usize::MAX);
     }
-    let count = lushtext_model::buffer_replacement::next_clear_char_count(buffer.char_count());
+    let count =
+        lushtext_model::document::buffer_replacement::next_clear_char_count(buffer.char_count());
     if count == 0 {
         return 0;
     }

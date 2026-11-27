@@ -16,7 +16,7 @@ use crate::ui::markdown_preview::{
 };
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::{glib, prelude::*};
-use lushtext_services::markdown_render::MAX_MARKDOWN_SOURCE_BYTES;
+use lushtext_services::notes::markdown_render::MAX_MARKDOWN_SOURCE_BYTES;
 
 use super::LushtextWindow;
 use super::imp::{PREVIEW_LAYOUT_EDITOR, PREVIEW_LAYOUT_PREVIEW, PREVIEW_SETTLE_DELAY_MS};
@@ -647,7 +647,7 @@ fn is_markdown(editor: &LushtextEditorPage) -> bool {
 #[cfg(test)]
 mod tests {
     use super::markdown_snapshot_requires_chunked;
-    use lushtext_services::markdown_render::MAX_MARKDOWN_SOURCE_BYTES;
+    use lushtext_services::notes::markdown_render::MAX_MARKDOWN_SOURCE_BYTES;
 
     #[test]
     fn multibyte_sized_markdown_uses_budgeted_snapshot_before_byte_cap() {

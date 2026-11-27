@@ -28,7 +28,7 @@ use super::policy::{
 };
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::search_bar::{ExternalFindHandler, ExternalFindRequest, SearchOption};
-use lushtext_model::paragraph_boundary::next_paragraph_break;
+use lushtext_services::search::regex_query::CompiledFindPattern;
 
 /// The tag on the current match while it lies in visible text.
 const CURRENT_MATCH_TAG: &str = "lushtext-protected-find-current";
@@ -100,30 +100,31 @@ impl LushtextEditorPage {
             bar.set_match_count(0, 0);
             return;
         }
-        let pattern = if bar.option_enabled(SearchOption::Regex) {
-            query
-        } else {
-            regex::escape(&query)
-        };
-        let pattern = if bar.option_enabled(SearchOption::WholeWord) {
-            format!(r"\b(?:{pattern})\b")
-        } else {
-            pattern
-        };
+        let is_regex = bar.option_enabled(SearchOption::Regex);
+        let whole_word = bar.option_enabled(SearchOption::WholeWord);
         let case_insensitive = !bar.option_enabled(SearchOption::CaseSensitive);
         let Some(ticket) = self.protected_view_ticket() else {
             return;
         };
         let cancel = Arc::new(AtomicBool::new(false));
         state.cancel.replace(Some(Arc::clone(&cancel)));
+        let cap = usize::try_from(FIND_RESULT_CAP).unwrap_or(usize::MAX);
         gtk_lush_tasks::spawn_blocking_then(
             self.clone(),
             move || {
-                let regex = regex::RegexBuilder::new(&pattern)
-                    .case_insensitive(case_insensitive)
-                    .build()
-                    .ok()?;
-                Some(find_hits(source.text(), &regex, &cancel))
+                let compiled =
+                    CompiledFindPattern::compile(&query, is_regex, whole_word, case_insensitive)?;
+                Some(
+                    compiled
+                        .find_paragraph_hits(source.text(), cap, &cancel)
+                        .into_iter()
+                        .map(|hit| FindHit {
+                            paragraph: hit.paragraph,
+                            column: hit.column,
+                            chars: hit.chars,
+                        })
+                        .collect::<Vec<_>>(),
+                )
             },
             move |page, hits| {
                 let state = page.protected_find_state();
@@ -304,45 +305,4 @@ fn current_match_tag(buffer: &gtk4::TextBuffer) -> gtk4::TextTag {
         .build();
     table.add(&tag);
     tag
-}
-
-/// Every match of `regex` in `text`, at most `FIND_RESULT_CAP`, as
-/// (paragraph, column, length) in characters, with GTK's paragraph
-/// delimiters (`\n`, `\r`, `\r\n`, U+2029). Columns are counted
-/// incrementally, so many matches in one giant paragraph stay linear.
-fn find_hits(text: &str, regex: &regex::Regex, cancel: &AtomicBool) -> Vec<FindHit> {
-    let cap = usize::try_from(FIND_RESULT_CAP).unwrap_or(usize::MAX);
-    let mut hits = Vec::new();
-    let mut paragraph = 0u64;
-    let mut next_break = next_paragraph_break(text, 0);
-    let mut column_byte = 0usize;
-    let mut column = 0u64;
-    for found in regex.find_iter(text) {
-        if hits.len() >= cap || cancel.load(Ordering::Relaxed) {
-            break;
-        }
-        if found.is_empty() {
-            continue;
-        }
-        while let Some(paragraph_break) = next_break
-            && paragraph_break.next_start <= found.start()
-        {
-            paragraph += 1;
-            column_byte = paragraph_break.next_start;
-            column = 0;
-            next_break = next_paragraph_break(text, paragraph_break.next_start);
-        }
-        column += count_chars(&text[column_byte..found.start()]);
-        column_byte = found.start();
-        hits.push(FindHit {
-            paragraph,
-            column,
-            chars: count_chars(found.as_str()),
-        });
-    }
-    hits
-}
-
-fn count_chars(text: &str) -> u64 {
-    u64::try_from(text.chars().count()).unwrap_or(u64::MAX)
 }

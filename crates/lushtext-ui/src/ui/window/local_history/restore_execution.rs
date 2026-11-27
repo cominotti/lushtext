@@ -12,7 +12,7 @@
 //! anywhere before that point puts the selected snapshot back and leaves the
 //! buffer alone.
 
-use lushtext_model::paragraph_boundary::DocumentProfile;
+use lushtext_model::document::paragraph_boundary::DocumentProfile;
 use std::rc::Rc;
 
 use gtk_lush_tasks::spawn_blocking_then;
@@ -25,9 +25,11 @@ use crate::ui::editor_page::{
     BufferReplacementWorkflow, InlineAlertLifetime, LushtextEditorPage, PendingWarningAction,
 };
 use crate::ui::status_bar::MessageKind;
-use lushtext_model::local_history::LocalHistorySnapshot;
-use lushtext_services::notifications::{InlineActionNotification, InlineNotificationStyle};
-use lushtext_services::{json_store, local_history_service};
+use lushtext_model::persistence::local_history::LocalHistorySnapshot;
+use lushtext_services::coordination::notifications::{
+    InlineActionNotification, InlineNotificationStyle,
+};
+use lushtext_services::{persistence::json_store, persistence::local_history_service};
 
 use super::policy;
 use super::preview_execution::{
@@ -227,8 +229,8 @@ impl LushtextWindow {
                         &data_dir,
                         &path,
                         undo_text.as_str(),
-                        lushtext_model::local_history::LocalHistorySnapshotOrigin::RestoreSafety,
-                        lushtext_services::local_history_service::LocalHistoryCapturePolicy::PreserveDuplicate,
+                        lushtext_model::persistence::local_history::LocalHistorySnapshotOrigin::RestoreSafety,
+                        lushtext_services::persistence::local_history_service::LocalHistoryCapturePolicy::PreserveDuplicate,
                     );
                     (result, (undo_text, undo_profile))
                 },

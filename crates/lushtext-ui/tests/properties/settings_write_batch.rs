@@ -10,7 +10,7 @@
 //! newest value is either pending or what the backend holds, and that a flush
 //! never carries a value the backend already holds.
 
-use lushtext_model::settings_write_batch::SettingsWriteBatch;
+use lushtext_model::persistence::settings_write_batch::SettingsWriteBatch;
 use proptest::prelude::*;
 
 /// Keys per sequence.

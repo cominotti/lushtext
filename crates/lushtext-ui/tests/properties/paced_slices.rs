@@ -5,8 +5,10 @@
 //! alignment, and both budgets, on documents far longer than the Kani
 //! harnesses' six abstract paragraphs.
 
-use lushtext_model::buffer_replacement::{SliceBudget, next_slice_boundary};
-use lushtext_model::paragraph_boundary::{next_paragraph_break, slice_end_after_paragraph};
+use lushtext_model::document::buffer_replacement::{SliceBudget, next_slice_boundary};
+use lushtext_model::document::paragraph_boundary::{
+    next_paragraph_break, slice_end_after_paragraph,
+};
 use proptest::prelude::*;
 
 /// Delimiter-heavy multibyte text with long lines too.

@@ -9,7 +9,7 @@ context: |
   LushText: GTK4/Libadwaita/GtkSourceView text editor in Rust. Every
   invariant lives in one place; read it there, do not paraphrase it here:
   AGENTS.md (architecture, design decisions), .agents/rules/ (conventions),
-  crates/lushtext-model/src/responsiveness_budget.rs (the responsiveness
+  crates/lushtext-model/src/budgets/responsiveness_budget.rs (the responsiveness
   budgets, cited by constant name), .agents/rules/verification-runs.md (which
   verification a change runs), .agents/rules/documentation.md and
   .agents/rules/rust.md (documentation and threshold obligations),

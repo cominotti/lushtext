@@ -13,7 +13,7 @@
 //! payloads (`<= 16` bytes), so `RestoreEnding::Oversized` is never exercised by
 //! this property (it remains covered by unit tests in `draft_service`).
 
-use lushtext_services::conformance::draft_service::{
+use lushtext_services::instrumentation::conformance::draft_service::{
     DraftFault, DraftOp, FaultDomain, INITIAL_LAYOUT_BITS, ReachCounts, check_draft_script,
     evaluate_model_reach,
 };

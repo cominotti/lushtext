@@ -5,7 +5,7 @@
 //! **Cross-cutting coordination with two owning workflows**, `WFR-COMMAND-PALETTE`
 //! and `WFR-WORKSPACE-TREE`; it carries no role name deliberately, in the shape
 //! `editor_focus/` already uses. Its pure half is
-//! [`lushtext_model::attention_refresh`], shared for the same reason.
+//! [`lushtext_model::budgets::attention_refresh`], shared for the same reason.
 //!
 //! # Why this exists
 //!
@@ -47,7 +47,7 @@ use std::time::{Duration, Instant};
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
 
-use lushtext_model::attention_refresh::{
+use lushtext_model::budgets::attention_refresh::{
     AttentionRefreshAdmission, AttentionRefreshFacts, admit_attention_refresh,
 };
 

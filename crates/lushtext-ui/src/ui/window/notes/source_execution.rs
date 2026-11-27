@@ -48,17 +48,17 @@ use gtk4::prelude::*;
 
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
-use lushtext_model::bookmark::BookmarkRecord;
-use lushtext_model::list_budget::{Admission, RetainedBudget, turn_continues};
-use lushtext_model::palette::{
+use lushtext_model::budgets::list_budget::{Admission, RetainedBudget, turn_continues};
+use lushtext_model::persistence::bookmark::BookmarkRecord;
+use lushtext_model::workspace::palette::{
     PaletteNoteEntry, PaletteOpenEditorNoteSnapshot, PaletteOpenTabSource,
 };
 use lushtext_model::workspace::{WorkspaceConfig, WorkspaceScopeSnapshot};
 use lushtext_services::palette::{
     NoteSourceRefreshRequest, NoteSourceRefreshStart, PaletteNoteSourceOutcome,
 };
-use lushtext_services::recovery_metadata::RecoveryDiagnostic;
-use lushtext_services::{json_store, palette as palette_service};
+use lushtext_services::persistence::recovery_metadata::RecoveryDiagnostic;
+use lushtext_services::{palette as palette_service, persistence::json_store};
 
 use super::browser::{NotesBrowserEntry, NotesBrowserState, OpenEditorSnapshotEvidence};
 use super::policy;
@@ -93,7 +93,9 @@ fn guard_note_source_on_worker(
             let entries = std::mem::take(&mut load.entries).into_boxed_slice();
             debug_assert_eq!(
                 metrics.retained_bytes,
-                lushtext_model::palette::palette_note_entries_retained_byte_weight(&entries)
+                lushtext_model::workspace::palette::palette_note_entries_retained_byte_weight(
+                    &entries
+                )
             );
             debug_assert!(
                 metrics.retained_bytes <= palette_service::MAX_PALETTE_NOTE_RETAINED_BYTES

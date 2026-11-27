@@ -50,11 +50,11 @@
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
-use lushtext_services::content_search::{
+use lushtext_services::search::content_search::{
     MAX_REPLACE_UNDO_RETAINED_BYTES, ReplaceJournalFreshness, ReplaceUndoBackup,
     replace_undo_retained_byte_weight,
 };
-use lushtext_services::{json_store, search_backup};
+use lushtext_services::{persistence::json_store, search::search_backup};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -293,7 +293,7 @@ impl LushtextSearchPanel {
         if other_application_panels(self).any(|panel| panel.replace_transaction_claimed()) {
             self.publish_journal_message(
                 "Another window is running Replace All or its Undo; try again when it finishes",
-                lushtext_services::notifications::NotificationSeverity::Warning,
+                lushtext_services::coordination::notifications::NotificationSeverity::Warning,
             );
             return None;
         }
@@ -426,7 +426,7 @@ impl LushtextSearchPanel {
             release_superseded_undo_journal(retired);
             panel.publish_journal_message(
                 "Undo for the earlier Replace All is no longer available",
-                lushtext_services::notifications::NotificationSeverity::Info,
+                lushtext_services::coordination::notifications::NotificationSeverity::Info,
             );
         }
     }
@@ -755,7 +755,7 @@ impl LushtextSearchPanel {
                     // session, but it will not survive a restart.
                     panel.publish_journal_message(
                         "Undo journal could not be saved; undo may not survive a restart",
-                        lushtext_services::notifications::NotificationSeverity::Warning,
+                        lushtext_services::coordination::notifications::NotificationSeverity::Warning,
                     );
                 }
             },
@@ -766,7 +766,7 @@ impl LushtextSearchPanel {
     pub(super) fn publish_journal_message(
         &self,
         message: &str,
-        severity: lushtext_services::notifications::NotificationSeverity,
+        severity: lushtext_services::coordination::notifications::NotificationSeverity,
     ) {
         if let Some(ref callback) = *self.imp().callbacks.message_callback.borrow() {
             callback(message, severity);
@@ -837,7 +837,7 @@ impl LushtextSearchPanel {
 }
 
 fn report_startup_diagnostics(
-    diagnostics: &[lushtext_services::recovery_metadata::RecoveryDiagnostic],
+    diagnostics: &[lushtext_services::persistence::recovery_metadata::RecoveryDiagnostic],
 ) {
     const DETAIL_LIMIT: usize = 8;
     for diagnostic in diagnostics.iter().take(DETAIL_LIMIT) {

@@ -55,7 +55,7 @@ use super::{EditorLoadState, LushtextEditorPage};
 use crate::ui::signal_connect;
 use crate::ui::status_bar::MessageKind;
 use crate::ui::window::LushtextWindow;
-use lushtext_model::held_input::{
+use lushtext_model::document::held_input::{
     CloseDisposition, ContentDisposition, HeldEpisode, HeldText, HoldOutcome, InsertDisposition,
     InsertFacts, NoDocumentCause, RemovalFacts, ReplayAnchor, SettleFacts, SettleVerdict,
     close_disposition, insert_disposition, removal_disposition, settle_verdict,
@@ -711,7 +711,7 @@ impl LushtextEditorPage {
             Some(NoDocumentCause::NotLoaded) => "it did not finish loading",
             Some(NoDocumentCause::Replaced) => "its content was replaced before it was ready",
         };
-        let profile = lushtext_model::paragraph_boundary::DocumentProfile::of_text(&text);
+        let profile = lushtext_model::document::paragraph_boundary::DocumentProfile::of_text(&text);
         window.open_set_aside_draft(text, profile);
         // Published after the tab opened, and never rate-limited: each rescue
         // is the one place the user learns where their text is.

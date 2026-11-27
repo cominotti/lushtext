@@ -8,7 +8,7 @@
 //! same two properties on longer generated slices, and the dispatch
 //! classification against a `u128` reference.
 
-use lushtext_model::responsiveness_budget::{
+use lushtext_model::budgets::responsiveness_budget::{
     HISTOGRAM_BUCKETS, StallVerdict, classify_dispatch, histogram_bucket, nearest_rank_percentile,
 };
 use proptest::prelude::*;

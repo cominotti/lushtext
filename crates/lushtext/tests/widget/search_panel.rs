@@ -9,17 +9,16 @@ use crate::common::{
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
-use lushtext_model::content_search::{
+use lushtext_model::workspace::content_search::{
     BoundedDiagnosticSample, ContentSearchOptions, ReplaceResult, Replacement, SavedSearch,
     SearchEvent, SearchHistoryEntry, SearchMatch, SearchMatchId, SearchQuerySpec,
-    generate_replacement_preview,
 };
-use lushtext_services::content_search::ReplaceUndoBackup;
-use lushtext_services::notifications::{
+use lushtext_services::coordination::notifications::{
     NotificationBus, NotificationOwner, NotificationPayload, NotificationSeverity,
     NotificationSurface, StatusMessage,
 };
-use lushtext_services::{json_store, search_backup};
+use lushtext_services::search::content_search::{ReplaceUndoBackup, generate_replacement_preview};
+use lushtext_services::{persistence::json_store, search::search_backup};
 use lushtext_ui::ui::accessibility::{self, test_audit::AccessibleAudit};
 use lushtext_ui::ui::editor_page::LushtextEditorPage;
 use lushtext_ui::ui::plain_disposal::hold_disposal_capacity_for_test;
@@ -2545,7 +2544,7 @@ fn test_search_history_entry_serialization_roundtrip() {
     ensure_gtk_init();
     let entry = make_history_entry("test query", true, false, true, false, Some("*.rs"));
     let json = serde_json::to_string(&entry).expect("expected operation to succeed");
-    let deserialized: lushtext_model::content_search::SearchHistoryEntry =
+    let deserialized: lushtext_model::workspace::content_search::SearchHistoryEntry =
         serde_json::from_str(&json).expect("expected operation to succeed");
     assert_eq!(entry, deserialized);
 }
@@ -2635,7 +2634,7 @@ fn test_remove_saved_search_updates_state() {
     // remove_saved_search is private, so we test via the service directly
     // and verify the panel state after set_saved_searches.
     let mut current = panel.saved_searches();
-    lushtext_services::saved_searches::remove(&mut current, 1);
+    lushtext_services::search::saved_searches::remove(&mut current, 1);
     panel.set_saved_searches(current);
 
     let after = panel.saved_searches();
@@ -3115,7 +3114,7 @@ fn journal_payload_files(data_dir: &std::path::Path) -> Vec<String> {
 fn journal_entry_file_for(path: &std::path::Path) -> String {
     format!(
         "{}.json",
-        lushtext_model::sidecar_identity::stable_path_hash(path)
+        lushtext_model::persistence::sidecar_identity::stable_path_hash(path)
     )
 }
 
@@ -4079,7 +4078,7 @@ fn median(values: &[i64]) -> i64 {
 #[test]
 fn test_search_and_preview_dispatches_fit_the_settle_budget() {
     use crate::common::{timing_verdicts_enforced, worst_dispatch_until};
-    use lushtext_model::responsiveness_budget::B_SETTLE_US;
+    use lushtext_model::budgets::responsiveness_budget::B_SETTLE_US;
     ensure_gtk_init();
     let dir = tempfile::tempdir().expect("expected operation to succeed");
     write_over_cap_fixture(dir.path());
@@ -4192,7 +4191,7 @@ fn test_search_retention_stays_within_its_charge() {
 /// The count of `reason` in the panel's last skip report.
 fn skipped_for(
     panel: &LushtextSearchPanel,
-    reason: lushtext_model::content_search::ReplaceSkipReason,
+    reason: lushtext_model::workspace::content_search::ReplaceSkipReason,
 ) -> usize {
     panel.evidence().replace_skip_counts[reason.index()]
 }
@@ -4216,7 +4215,7 @@ fn skipped_files_list(window: &LushtextWindow) -> gtk4::ListView {
 /// opens, a row activation opens the file, and closing returns focus.
 #[test]
 fn test_replace_all_with_a_skipped_file_offers_show_skipped_files() {
-    use lushtext_model::content_search::ReplaceSkipReason;
+    use lushtext_model::workspace::content_search::ReplaceSkipReason;
     ensure_gtk_init();
     let _data = isolated_data_dir();
     let window = test_window();
@@ -4315,7 +4314,7 @@ fn test_replace_all_with_a_skipped_file_offers_show_skipped_files() {
 /// files it builds only the rows GTK realizes.
 #[test]
 fn test_skipped_files_dialog_builds_only_realized_rows() {
-    use lushtext_model::content_search::ReplaceSkipReason;
+    use lushtext_model::workspace::content_search::ReplaceSkipReason;
     const FILES: usize = 16 * 1024;
     ensure_gtk_init();
     let _data = isolated_data_dir();
@@ -4358,13 +4357,13 @@ fn test_skipped_files_dialog_builds_only_realized_rows() {
         .skipped_files_item_requests
         .expect("the dialog's model is alive while it is shown");
     assert!(
-        opening_requests <= u64::from(lushtext_model::list_budget::LIST_FIRST_ROWS),
+        opening_requests <= u64::from(lushtext_model::budgets::list_budget::LIST_FIRST_ROWS),
         "the opening dispatch builds at most the staged first rows; it built {opening_requests}",
     );
     assert!(
         opening
             .skipped_files_listed
-            .is_some_and(|listed| listed <= lushtext_model::list_budget::LIST_FIRST_ROWS),
+            .is_some_and(|listed| listed <= lushtext_model::budgets::list_budget::LIST_FIRST_ROWS),
         "the dialog first lists only the staged rows: {:?}",
         opening.skipped_files_listed
     );
@@ -4408,7 +4407,7 @@ fn window_with_staged_skipped_files() -> (
     lushtext_ui::ui::search_panel::LushtextSearchPanel,
     tempfile::TempDir,
 ) {
-    use lushtext_model::content_search::ReplaceSkipReason;
+    use lushtext_model::workspace::content_search::ReplaceSkipReason;
     let window = test_window();
     present_window(&window);
     let dir = tempfile::tempdir().expect("expected operation to succeed");
@@ -4473,7 +4472,7 @@ fn test_skipped_files_key_finishes_the_staged_growth() {
     let list = skipped_files_list(&window);
     assert_eq!(
         panel.evidence().skipped_files_listed,
-        Some(lushtext_model::list_budget::LIST_FIRST_ROWS),
+        Some(lushtext_model::budgets::list_budget::LIST_FIRST_ROWS),
         "the dialog opens with only the staged first rows listed"
     );
     let keys: gtk4::EventControllerKey = skipped_files_capture_controller(list.upcast_ref());
@@ -4504,7 +4503,7 @@ fn test_skipped_files_scroll_starts_the_staged_growth() {
     ensure_gtk_init();
     let _data = isolated_data_dir();
     let (window, panel, _dir) = window_with_staged_skipped_files();
-    let first = lushtext_model::list_budget::LIST_FIRST_ROWS;
+    let first = lushtext_model::budgets::list_budget::LIST_FIRST_ROWS;
     // The delay the dialog waits before growing on its own
     // (`SKIPPED_FILES_GROWTH_DELAY`).
     let delay = Duration::from_millis(512);
@@ -4547,7 +4546,7 @@ fn test_skipped_files_scroll_starts_the_staged_growth() {
 /// nothing runs, and the report lists each file as `UnsavedChanges`.
 #[test]
 fn test_replace_all_with_every_file_unsaved_reports_each_file() {
-    use lushtext_model::content_search::ReplaceSkipReason;
+    use lushtext_model::workspace::content_search::ReplaceSkipReason;
     ensure_gtk_init();
     let _data = isolated_data_dir();
     let window = test_window();
@@ -4623,7 +4622,7 @@ fn test_replace_all_with_every_file_unsaved_reports_each_file() {
 /// as partly replaced with the long line left.
 #[test]
 fn test_replace_all_reports_a_partly_replaced_file() {
-    use lushtext_model::content_search::ReplaceSkipReason;
+    use lushtext_model::workspace::content_search::ReplaceSkipReason;
     ensure_gtk_init();
     let _data = isolated_data_dir();
     let window = test_window();
@@ -4709,7 +4708,7 @@ fn cancel_mid_run_restores_every_file(cancel: impl FnOnce(&LushtextWindow, &Lush
         .collect();
     // Hold the worker after the third file's undo body, so Cancel lands before
     // its pass B starts. The walk orders files by path.
-    lushtext_services::content_search::register_after_pass_a_hook_for_test(
+    lushtext_services::search::content_search::register_after_pass_a_hook_for_test(
         files[2].clone(),
         |_| std::thread::sleep(Duration::from_millis(1_500)),
     );
@@ -4789,7 +4788,7 @@ fn replace_all_held_at_second_file_with(
             path
         })
         .collect();
-    lushtext_services::content_search::register_after_pass_a_hook_for_test(
+    lushtext_services::search::content_search::register_after_pass_a_hook_for_test(
         files[1].clone(),
         |_| std::thread::sleep(Duration::from_millis(1_500)),
     );
@@ -5261,7 +5260,7 @@ fn test_replace_in_editor_leaves_a_missing_group_replacement_empty() {
 /// the action refuses it and any path the last run did not skip.
 #[test]
 fn test_replace_in_editor_has_no_action_for_a_file_too_large_to_open() {
-    use lushtext_model::content_search::ReplaceSkipReason;
+    use lushtext_model::workspace::content_search::ReplaceSkipReason;
     ensure_gtk_init();
     let _data = isolated_data_dir();
     let window = test_window();
@@ -5271,7 +5270,10 @@ fn test_replace_in_editor_has_no_action_for_a_file_too_large_to_open() {
     let big = dir.path().join("big.txt");
     fixture::write_text(&big, "needle\n");
     let panel = replace_all_through_fields(&window, dir.path(), "needle", false, "thread", || {
-        fixture::create_sparse_file(&big, lushtext_model::document_scale::REFUSE_TO_OPEN + 1);
+        fixture::create_sparse_file(
+            &big,
+            lushtext_model::document::document_scale::REFUSE_TO_OPEN + 1,
+        );
     });
     assert_eq!(
         skipped_for(&panel, ReplaceSkipReason::LargerThanOpenTier),
@@ -5851,7 +5853,7 @@ fn test_an_apply_while_another_window_runs_is_refused_across_an_index_build() {
 /// offered during the wait.
 #[test]
 fn test_cancel_while_waiting_keeps_the_earlier_undo_and_skip_report() {
-    use lushtext_model::content_search::ReplaceSkipReason;
+    use lushtext_model::workspace::content_search::ReplaceSkipReason;
     ensure_gtk_init();
     let _data = isolated_data_dir();
     let window = test_window();
@@ -6078,7 +6080,7 @@ fn test_stop_and_close_while_waiting_writes_nothing() {
 /// open with unsaved changes when the run starts; the others are replaced.
 #[test]
 fn test_a_file_edited_while_waiting_is_skipped_as_unsaved() {
-    use lushtext_model::content_search::ReplaceSkipReason;
+    use lushtext_model::workspace::content_search::ReplaceSkipReason;
     ensure_gtk_init();
     let _data = isolated_data_dir();
     let window = test_window();
@@ -6114,7 +6116,7 @@ fn test_a_file_edited_while_waiting_is_skipped_as_unsaved() {
 /// which asks Save Changes? for the edited tabs.
 #[test]
 fn test_every_file_edited_while_waiting_writes_nothing_and_close_resumes() {
-    use lushtext_model::content_search::ReplaceSkipReason;
+    use lushtext_model::workspace::content_search::ReplaceSkipReason;
     ensure_gtk_init();
     let _data = isolated_data_dir();
     let window = test_window();

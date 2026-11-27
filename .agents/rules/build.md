@@ -546,7 +546,7 @@ primitive in `sys.rs` goes through `tap::call`, or the pin in
 `backend_tap/tests.rs` fails.
 
 **Conformance properties** (`verify-shell-conformance-against-proven-cores`).
-`crates/lushtext-services/src/conformance/` (`write_shell.rs`,
+`crates/lushtext-services/src/instrumentation/conformance/` (`write_shell.rs`,
 `draft_service.rs`) holds drivers that take a caller-owned root and the
 operations to run, and name neither `proptest` nor `tempfile`; strategies,
 each case's `TempDir`, the 256-iter / 45 s shrink budget (`max_shrink_iters =

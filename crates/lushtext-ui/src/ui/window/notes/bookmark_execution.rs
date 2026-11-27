@@ -45,9 +45,11 @@ use crate::ui::editor_page::{
     BookmarkEditError, BookmarkNavigationDirection, BookmarkToggleState, LushtextEditorPage,
 };
 use crate::ui::status_bar::MessageKind;
-use lushtext_model::bookmark::BookmarkRecord;
-use lushtext_model::palette::PaletteNoteTarget;
-use lushtext_services::{bookmark_excerpt, bookmark_service, json_store};
+use lushtext_model::persistence::bookmark::BookmarkRecord;
+use lushtext_model::workspace::palette::PaletteNoteTarget;
+use lushtext_services::{
+    notes::bookmark_excerpt, notes::bookmark_service, persistence::json_store,
+};
 
 use super::LushtextWindow;
 use super::browser::NotesBrowserEntryExt;

@@ -34,10 +34,10 @@ use crate::ui::editor_page::{
     BufferReplacementOutcome, BufferReplacementRequest, BufferReplacementTicket,
     BufferReplacementWorkflow, EditorLoadState, EditorSaveError, LushtextEditorPage,
 };
-use lushtext_model::encoding::{
+use lushtext_model::document::encoding::{
     DocumentEncoding, FileHealthFinding, FileHealthFindingKind, FileHealthSeverity,
 };
-use lushtext_model::paragraph_boundary::DocumentProfile;
+use lushtext_model::document::paragraph_boundary::DocumentProfile;
 use lushtext_services::{editor_io, filesystem::metadata as fs_metadata};
 
 use super::admission::{self, SavePayloadPermit};
@@ -75,7 +75,7 @@ impl SaveViewInteractivity {
         // A save never changes what the buffer holds.
         editor.unlock_edits(
             self.lock,
-            lushtext_model::held_input::ContentDisposition::Unchanged,
+            lushtext_model::document::held_input::ContentDisposition::Unchanged,
         );
         editor.source_view().set_cursor_visible(self.cursor_visible);
     }
@@ -294,13 +294,13 @@ fn write_protected_source_async(
             };
             let canonical_path = fs_metadata::canonical_path(&path).ok();
             if history_availability.allows_browsing() {
-                let data_dir = lushtext_services::json_store::data_dir();
-                if let Err(error) = lushtext_services::local_history_service::capture_snapshot_for_path(
+                let data_dir = lushtext_services::persistence::json_store::data_dir();
+                if let Err(error) = lushtext_services::persistence::local_history_service::capture_snapshot_for_path(
                     &data_dir,
                     &path,
                     source.text(),
-                    lushtext_model::local_history::LocalHistorySnapshotOrigin::Save,
-                    lushtext_services::local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
+                    lushtext_model::persistence::local_history::LocalHistorySnapshotOrigin::Save,
+                    lushtext_services::persistence::local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
                 ) {
                     tracing::warn!(
                         "Saved {}, but local-history snapshot capture failed: {error}",
@@ -405,13 +405,13 @@ fn write_snapshot_async(
             let canonical_path = fs_metadata::canonical_path(&path).ok();
 
             if history_availability.allows_browsing() {
-                let data_dir = lushtext_services::json_store::data_dir();
-                if let Err(error) = lushtext_services::local_history_service::capture_snapshot_for_path(
+                let data_dir = lushtext_services::persistence::json_store::data_dir();
+                if let Err(error) = lushtext_services::persistence::local_history_service::capture_snapshot_for_path(
                     &data_dir,
                     &path,
                     formatted_text.as_ref(),
-                    lushtext_model::local_history::LocalHistorySnapshotOrigin::Save,
-                    lushtext_services::local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
+                    lushtext_model::persistence::local_history::LocalHistorySnapshotOrigin::Save,
+                    lushtext_services::persistence::local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
                 ) {
                     tracing::warn!(
                         "Saved {}, but local-history snapshot capture failed: {error}",
@@ -623,7 +623,7 @@ fn finish_accepted_save(
     let mut state = editor.document_encoding_state();
     state.opened_encoding = state.save_encoding;
     state.detected_line_ending = state.save_line_ending;
-    state.decode_confidence = lushtext_model::encoding::DecodeConfidence::Exact;
+    state.decode_confidence = lushtext_model::document::encoding::DecodeConfidence::Exact;
     editor.set_document_encoding_state(state);
     let has_bom = state.save_encoding.writes_bom();
     editor.set_has_bom(has_bom);

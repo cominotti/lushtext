@@ -34,9 +34,9 @@ use gtk4::prelude::*;
 use crate::ui::buffer_snapshot;
 use crate::ui::folded_text::{FoldedTextSurface, InstallSlice, SurfaceText, install_slice};
 use crate::ui::protected_fold::{BoundaryLedger, FoldedInstall};
-use lushtext_model::document_scale::L_PROTECT_EDIT;
-use lushtext_model::paragraph_boundary::DocumentProfile;
-use lushtext_model::protected_fold::FoldPlan;
+use lushtext_model::document::document_scale::L_PROTECT_EDIT;
+use lushtext_model::document::paragraph_boundary::DocumentProfile;
+use lushtext_model::document::protected_fold::FoldPlan;
 
 /// Note-body install turns run, process-wide (evidence).
 pub(super) static NOTE_BODY_INSTALL_SLICES: AtomicU64 = AtomicU64::new(0);

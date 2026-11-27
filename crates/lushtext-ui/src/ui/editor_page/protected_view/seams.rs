@@ -25,7 +25,7 @@ use super::policy::{
 };
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::plain_disposal::DisposalOwned;
-use lushtext_model::paragraph_boundary::next_paragraph_break;
+use lushtext_model::document::paragraph_boundary::next_paragraph_break;
 
 /// Why the editor is in Protected View.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

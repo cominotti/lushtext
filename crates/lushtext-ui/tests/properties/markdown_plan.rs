@@ -7,13 +7,12 @@
 //! signatures chain into each other, and a plan that no global budget stopped
 //! accounts for every parsed event as either projected or omitted.
 
-use lushtext_services::markdown_render::{
+use lushtext_services::notes::markdown_render::{
     MARKDOWN_BYTES_PER_PROJECTION_SLICE, MARKDOWN_EVENTS_PER_PROJECTION_SLICE,
     MAX_MARKDOWN_STRUCTURE_DEPTH, MarkdownCarrySignature, MarkdownEventBatch, MarkdownRenderPlan,
-    markdown_render_options, plan_markdown,
+    count_markdown_events, plan_markdown,
 };
 use proptest::prelude::*;
-use pulldown_cmark::Parser;
 
 use crate::support;
 
@@ -79,7 +78,7 @@ proptest! {
         // when it fires with a top-level block still open.
         prop_assume!(plan.limit.is_none());
 
-        let parsed = Parser::new_ext(&markdown, markdown_render_options()).count();
+        let parsed = count_markdown_events(&markdown);
         prop_assert_eq!(
             plan.metrics.events,
             parsed,

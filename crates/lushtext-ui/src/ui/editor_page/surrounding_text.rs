@@ -40,7 +40,7 @@ use glib::translate::{IntoGlib, ToGlibPtr};
 use gtk4::prelude::*;
 
 use super::LushtextEditorPage;
-use lushtext_model::surrounding_text::{
+use lushtext_model::document::surrounding_text::{
     SURROUNDING_WINDOW_CHARS, SurroundingWindow, surrounding_window,
 };
 

@@ -6,7 +6,7 @@
 //! unsupported, but they must never panic and must not create backup state.
 
 use lushtext_services::filesystem::{fixture, metadata as fs_metadata};
-use lushtext_services::format_upgrade::{
+use lushtext_services::persistence::format_upgrade::{
     FORMAT_UPGRADE_BACKUP_DIR, FormatClassification, build_plan, scan,
 };
 use proptest::prelude::*;

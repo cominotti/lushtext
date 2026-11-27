@@ -31,7 +31,7 @@ VISUAL_SENSITIVE_PREFIXES = (
 # Every path the workspace-tree rendered-row invariant keys on is visual-sensitive
 # as well, through `is_visual_sensitive`, so those paths are not repeated here.
 VISUAL_SENSITIVE_EXACT = (
-    "crates/lushtext-model/src/automation.rs",
+    "crates/lushtext-model/src/automation/mod.rs",
     "scripts/check-visual-proof-policy.py",
     "scripts/lushtext-automation.py",
     "scripts/test-visual-geometry.py",
@@ -206,7 +206,7 @@ def required_invariants_for_changes(paths: list[str]) -> list[str]:
             or path.startswith(SHELL_GEOMETRY_ROLE_HOME_PREFIX)
             or path == "crates/lushtext-ui/src/ui/window/imp.rs"
             or path == "crates/lushtext-ui/src/ui/automation.rs"
-            or path == "crates/lushtext-model/src/automation.rs"
+            or path == "crates/lushtext-model/src/automation/mod.rs"
             or path == "resources/style/style.css"
             or path == "scripts/check-visual-proof-policy.py"
             or path == "scripts/lushtext-automation.py"
@@ -258,7 +258,7 @@ def required_animation_invariants_for_changes(paths: list[str]) -> list[str]:
             or path.startswith(SHELL_GEOMETRY_ROLE_HOME_PREFIX)
             or path == "crates/lushtext-ui/src/ui/window/imp.rs"
             or path == "crates/lushtext-ui/src/ui/automation.rs"
-            or path == "crates/lushtext-model/src/automation.rs"
+            or path == "crates/lushtext-model/src/automation/mod.rs"
             or path == "scripts/check-visual-proof-policy.py"
             or path == "scripts/lushtext-automation.py"
             or path == "scripts/test-visual-geometry.py"
@@ -669,7 +669,7 @@ def run_self_tests() -> None:
     _self_test_shell_geometry_role_home_rekey()
     _self_test_workspace_tree_row_anchor_paths()
     assert is_visual_sensitive("crates/lushtext-ui/src/ui/window/imp.rs")
-    assert is_visual_sensitive("crates/lushtext-model/src/automation.rs")
+    assert is_visual_sensitive("crates/lushtext-model/src/automation/mod.rs")
     assert is_visual_sensitive("resources/ui/window.blp")
     assert is_visual_sensitive("resources/style/style.css")
     assert is_visual_sensitive("scripts/visual-geometry-scenarios/example.json")
@@ -1019,7 +1019,7 @@ def _self_test_workspace_tree_row_anchor_paths() -> None:
             f"{path} must require the workspace-tree rendered-row invariant"
         )
     for path in (
-        "crates/lushtext-services/src/draft_service.rs",
+        "crates/lushtext-services/src/persistence/draft_service.rs",
         "crates/lushtext-ui/src/ui/sidebar/dialogs.rs",
         "crates/lushtext-ui/src/ui/sidebar/persist_execution.rs",
         "crates/gtk-lush/widgets/src/clip_bin/mod.rs",

@@ -11,7 +11,7 @@ use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 
 use lushtext_model::workspace::WorkspaceFolderId;
-use lushtext_services::file_tree::DirectoryPlaceholder;
+use lushtext_services::workspace::file_tree::DirectoryPlaceholder;
 
 // Private implementation module. In GTK's GObject system, every type has
 // a private struct (imp) holding data and a public wrapper providing the API.

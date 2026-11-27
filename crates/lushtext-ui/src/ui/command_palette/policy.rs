@@ -33,8 +33,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use lushtext_model::list_budget::{grouped_thousands, rows_within};
-use lushtext_model::palette::PaletteCategory;
+use lushtext_model::budgets::list_budget::{grouped_thousands, rows_within};
+use lushtext_model::workspace::palette::PaletteCategory;
 use lushtext_services::palette::{
     FileIndex, FileIndexMutationLedger, MAX_INDEXED_FILES, PALETTE_CATEGORY_CANDIDATE_BYTES,
 };
@@ -730,7 +730,9 @@ mod tests {
     /// matching files and the palette caps each category at
     /// [`MAX_RESULTS_PER_SOURCE`].
     fn file_rows_shown(count: usize) -> usize {
-        use lushtext_model::palette::{PaletteFileIdentity, PaletteSearchRow, SearchMode};
+        use lushtext_model::workspace::palette::{
+            PaletteFileIdentity, PaletteSearchRow, SearchMode,
+        };
         use lushtext_services::palette::{
             GroupedSearchInput, OwnedIndexedFile, PaletteSearchCancellation, PaletteSearchOutcome,
             grouped_search,
@@ -806,7 +808,7 @@ mod tests {
 
     #[test]
     fn each_update_kind_actually_mutates_the_index() {
-        use lushtext_model::palette::PaletteFileIdentity;
+        use lushtext_model::workspace::palette::PaletteFileIdentity;
         use lushtext_services::palette::OwnedIndexedFile;
 
         let folder = Arc::new(PathBuf::from("/workspace"));
@@ -1293,7 +1295,7 @@ mod tests {
     /// listed whole (up to the budget's 233,016 rows), is cut and counted.
     #[test]
     fn a_note_category_above_the_row_cap_is_cut_and_counted() {
-        use lushtext_model::palette::{
+        use lushtext_model::workspace::palette::{
             PaletteCategory, PaletteNoteCategory, PaletteNoteEntry, PaletteNoteTarget,
         };
         use lushtext_services::palette::{
@@ -1387,7 +1389,7 @@ mod tests {
     #[test]
     fn leaving_selects_the_more_row_then_the_last_row_then_the_first() {
         use GroupedRowKind::{Header, More, Result};
-        use lushtext_model::palette::PaletteNoteCategory;
+        use lushtext_model::workspace::palette::PaletteNoteCategory;
         let files = PaletteCategory::WorkspaceFiles;
         let notes = PaletteCategory::Note(PaletteNoteCategory::Bookmarks);
         let rows = [

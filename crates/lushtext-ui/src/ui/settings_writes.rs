@@ -63,7 +63,7 @@ use gtk4::prelude::*;
 
 use crate::config;
 use crate::ui::construction_spans;
-use lushtext_model::settings_write_batch::SettingsWriteBatch;
+use lushtext_model::persistence::settings_write_batch::SettingsWriteBatch;
 
 /// Room for every key of the application schema without regrowing.
 const SCHEMA_KEYS_HINT: usize = 64;

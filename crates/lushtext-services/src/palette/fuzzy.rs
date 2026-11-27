@@ -5,8 +5,8 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
-use crate::fuzzy::FuzzyQuery;
-use lushtext_model::palette::{ScoredResult, SearchResultItem};
+use crate::palette::fuzzy_query::FuzzyQuery;
+use lushtext_model::workspace::palette::{ScoredResult, SearchResultItem};
 
 use super::runtime::{PaletteSearchCancellation, PaletteSearchMetrics, PaletteSearchOutcome};
 
@@ -544,7 +544,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lushtext_model::palette::{CommandCategory, CommandDef};
+    use lushtext_model::workspace::palette::{CommandCategory, CommandDef};
 
     static COMMANDS: [CommandDef; 4] = [
         CommandDef {

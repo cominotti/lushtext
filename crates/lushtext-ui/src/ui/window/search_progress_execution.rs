@@ -45,7 +45,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
 
-use lushtext_services::notifications::{
+use lushtext_services::coordination::notifications::{
     NotificationOwner, NotificationSeverity, NotificationSurface, StatusMessage,
 };
 
@@ -453,7 +453,7 @@ fn poll_replace_progress(
     let message = format_replace_progress_message(
         done,
         total,
-        phase == lushtext_services::content_search::ReplacePhase::RollingBack,
+        phase == lushtext_services::search::content_search::ReplacePhase::RollingBack,
     );
     window.update_search_progress_message(&message);
     if !announced.replace(true) {

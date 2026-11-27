@@ -27,7 +27,9 @@ use gtk4::prelude::*;
 use gtk4::{self, glib};
 
 use crate::ui::accessibility;
-use lushtext_services::file_peek::{self, PeekPreviewState, PeekRequestToken, PeekSnapshot};
+use lushtext_services::workspace::file_peek::{
+    self, PeekPreviewState, PeekRequestToken, PeekSnapshot,
+};
 
 use super::super::file_tree_item::FileTreeItem;
 use super::LushtextWorkspaceSection;
@@ -699,7 +701,7 @@ fn format_metadata(snapshot: &PeekSnapshot) -> String {
 /// The file's size in IEC units, as the properties panel and every tier the
 /// app names (`power-of-two-thresholds` D14).
 fn format_file_size(bytes: u64) -> String {
-    lushtext_model::size_units::iec_size(bytes)
+    lushtext_model::budgets::size_units::iec_size(bytes)
 }
 
 /// Render a stable local timestamp for the preview metadata line.

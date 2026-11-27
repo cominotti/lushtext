@@ -188,7 +188,7 @@ pub mod test_policy;
 
 use std::time::Duration;
 
-use lushtext_services::draft_service;
+use lushtext_services::persistence::draft_service;
 
 pub use seams::DraftFlushError;
 

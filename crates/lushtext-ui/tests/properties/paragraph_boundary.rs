@@ -10,7 +10,7 @@
 //! It lives in this property target, not in `model/`, so `model/` keeps no
 //! toolkit dependency even under `cfg(test)`.
 
-use lushtext_model::paragraph_boundary::{
+use lushtext_model::document::paragraph_boundary::{
     DocumentProfile, ParagraphProfileAccumulator, ProfileConfig, next_paragraph_break,
     slice_end_after_paragraph,
 };

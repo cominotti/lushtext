@@ -22,10 +22,10 @@ use gtk_lush_settle::Debounce;
 use gtk4::prelude::*;
 use gtk4::{self, CompositeTemplate, gio, glib};
 use libadwaita::subclass::prelude::*;
-use lushtext_model::content_search::{
+use lushtext_model::workspace::content_search::{
     ReplacePreviewOutcome, SavedSearch, SearchHistoryEntry, SearchMatch, SearchMatchId,
 };
-use lushtext_model::workspace_visibility::WorkspaceEntryVisibility;
+use lushtext_model::workspace::workspace_visibility::WorkspaceEntryVisibility;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -51,7 +51,8 @@ type UndoCallback = Box<dyn Fn(Arc<super::GuardedReplaceUndoBackup>)>;
 
 /// Callback type for the end of a Replace All wait for disposal capacity.
 type ReplaceResumedCallback = Box<dyn Fn(super::replace_admission::ReplaceAdmissionResumption)>;
-type MessageCallback = Box<dyn Fn(&str, lushtext_services::notifications::NotificationSeverity)>;
+type MessageCallback =
+    Box<dyn Fn(&str, lushtext_services::coordination::notifications::NotificationSeverity)>;
 
 /// Delay text-entry searches long enough to batch normal typing without making
 /// the workspace search panel feel sluggish.
@@ -85,7 +86,8 @@ pub struct SearchRuntimeState {
     /// Coalesced detached-generation GTK disposal session.
     pub(super) retirement: RefCell<Option<super::retirement::SearchRetirementSession>>,
     /// Replaceable latest query held while detached-generation disposal is saturated.
-    pub deferred_search: RefCell<Option<lushtext_model::content_search::SearchQuerySpec>>,
+    pub deferred_search:
+        RefCell<Option<lushtext_model::workspace::content_search::SearchQuerySpec>>,
     /// Whether the one bounded retirement idle callback is armed.
     pub retirement_armed: Cell<bool>,
     /// Monotonic identity for detached result generations.
@@ -240,7 +242,7 @@ pub struct SearchPreviewState {
     pub(super) last_run_intent: RefCell<Option<Arc<super::policy::ReplaceRunIntent>>>,
     /// Files the last Replace All run skipped or partly replaced (design D7).
     pub(super) last_skip_report:
-        RefCell<Option<Arc<lushtext_model::content_search::ReplaceSkipReport>>>,
+        RefCell<Option<Arc<lushtext_model::workspace::content_search::ReplaceSkipReport>>>,
     /// The open Skipped Files dialog's model, weakly, for evidence.
     pub(super) skipped_files_model:
         RefCell<Option<glib::WeakRef<super::skipped_files::SkippedFilesModel>>>,

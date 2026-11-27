@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use lushtext_model::palette::{
+use lushtext_model::workspace::palette::{
     CommandCategory, CommandDef, PaletteFileEntry, PaletteFileIdentity, PaletteNoteCategory,
     PaletteNoteEntry, PaletteNoteTarget, PaletteSearchRow, ScoredResult, SearchMode,
     SearchResultItem,
@@ -493,8 +493,8 @@ mod index_parity {
     use std::collections::HashSet;
     use std::path::{Path, PathBuf};
 
-    use lushtext_model::palette::{PaletteFileIdentity, ScoredResult, SearchResultItem};
-    use lushtext_model::workspace_visibility::WorkspaceEntryVisibility;
+    use lushtext_model::workspace::palette::{PaletteFileIdentity, ScoredResult, SearchResultItem};
+    use lushtext_model::workspace::workspace_visibility::WorkspaceEntryVisibility;
     use lushtext_services::filesystem::fixture;
     use lushtext_services::palette::reference::{ReferenceBuildOutcome, ReferenceFileIndex};
     use lushtext_services::palette::{
