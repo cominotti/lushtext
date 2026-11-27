@@ -9,15 +9,22 @@ use crate::coordination::sync::lock_unpoisoned;
 use crate::persistence::app_data_layout::{AppDataLayout, AppDataLocation};
 use crate::persistence::json_format::KIND_SESSION;
 use crate::persistence::recovery_metadata::{
-    RecoveryLoad, RecoveryLoadConfig, RecoveryMetadataClass, load_enveloped_json_or_default,
-    save_enveloped_json_path,
+    RecoveryLoad, RecoveryLoadConfig, RecoveryMetadataClass, RecoveryMetadataError,
+    load_enveloped_json_or_default, save_enveloped_json_path,
 };
-use anyhow::Result;
 use lushtext_model::persistence::session::SessionData;
 use lushtext_model::values::SessionGeneration;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
+
+/// Typed errors returned when persisting the global session file.
+#[derive(Debug, thiserror::Error)]
+pub enum SessionServiceError {
+    /// Recovery-aware JSON metadata validation or durable write failed.
+    #[error(transparent)]
+    Recovery(#[from] RecoveryMetadataError),
+}
 
 /// `AppDataLocation::Session` under the data home `data_dir`.
 fn session_path(data_dir: &std::path::Path) -> std::path::PathBuf {
@@ -39,7 +46,7 @@ fn ordered_session_saves() -> &'static Mutex<HashMap<std::path::PathBuf, Session
 ///
 /// The current recovery-aware implementation does not return `Err`; the
 /// `Result` shape is retained for compatibility with existing callers.
-pub fn load(data_dir: &Path) -> Result<SessionData> {
+pub fn load(data_dir: &Path) -> Result<SessionData, SessionServiceError> {
     Ok(load_recovering(data_dir).value)
 }
 
@@ -62,7 +69,7 @@ pub fn load_recovering(data_dir: &Path) -> RecoveryLoad<SessionData> {
 /// # Errors
 ///
 /// Returns an error if the session file cannot be serialized or written.
-pub fn save(data_dir: &Path, session: &SessionData) -> Result<()> {
+pub fn save(data_dir: &Path, session: &SessionData) -> Result<(), SessionServiceError> {
     let path = session_path(data_dir);
     let config = RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::Session);
     let diagnostics = save_enveloped_json_path(&config, KIND_SESSION, session)?;
@@ -93,7 +100,7 @@ pub fn save_ordered(
     data_dir: &Path,
     session: &SessionData,
     generation: SessionGeneration,
-) -> Result<bool> {
+) -> Result<bool, SessionServiceError> {
     let mut generations = lock_unpoisoned(ordered_session_saves());
     let accepted_generation = generations
         .get(data_dir)
@@ -351,5 +358,23 @@ mod tests {
             crate::persistence::recovery_metadata::RecoveryProblem::UnsupportedFormat { .. }
         ));
         assert!(load.replacement_allowed());
+    }
+
+    #[test]
+    fn save_returns_recovery_error_when_quarantine_is_blocked() {
+        let dir = TempDir::new().expect("tempdir");
+        crate::filesystem::fixture::write_text(&session_path(dir.path()), "corrupt");
+        crate::filesystem::fixture::write_text(
+            &dir.path()
+                .join(crate::persistence::recovery_metadata::QUARANTINE_DIR),
+            "blocker",
+        );
+
+        let error = save(dir.path(), &SessionData::default())
+            .expect_err("blocked quarantine must surface typed error");
+        assert!(matches!(
+            error,
+            SessionServiceError::Recovery(RecoveryMetadataError::UnsafeReplacement { .. })
+        ));
     }
 }

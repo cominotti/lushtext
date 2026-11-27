@@ -608,7 +608,8 @@ impl LocalHistoryBrowserState {
                         &request.path,
                         &request.snapshot_id,
                         &cancellation,
-                    ),
+                    )
+                    .map_err(anyhow::Error::new),
                     reservation,
                 )
             },

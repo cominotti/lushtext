@@ -6,7 +6,6 @@
 //! window adapter decides when an open was explicit enough to record; this
 //! service only maintains the app-owned recent history once asked.
 
-use anyhow::Result;
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -19,10 +18,18 @@ use crate::filesystem::read as fs_read;
 use crate::filesystem::types::PathStatus;
 use crate::palette::fuzzy_query::FuzzyQuery;
 use crate::persistence::app_data_layout::AppDataLocation;
-use crate::persistence::json_store;
+use crate::persistence::json_store::{self, JsonStoreError};
 use lushtext_model::persistence::recent_document::{
     RecentDocumentEntry, RecentDocumentFile, RecentDocumentRow,
 };
+
+/// Typed errors returned when persisting recent-document history.
+#[derive(Debug, thiserror::Error)]
+pub enum RecentDocumentsError {
+    /// Underlying JSON store operation failed.
+    #[error(transparent)]
+    Store(#[from] JsonStoreError),
+}
 
 /// Recent-document storage filename under the app data directory.
 ///
@@ -133,11 +140,12 @@ pub fn load(data_dir: &Path) -> RecentDocumentsLoad {
 /// # Errors
 ///
 /// Returns an error if the JSON file cannot be serialized or written.
-pub fn save(data_dir: &Path, entries: &[RecentDocumentEntry]) -> Result<()> {
+pub fn save(data_dir: &Path, entries: &[RecentDocumentEntry]) -> Result<(), RecentDocumentsError> {
     let file = RecentDocumentFile {
         entries: entries.to_vec(),
     };
-    json_store::save(data_dir, RECENT_DOCUMENTS_FILE, &file)
+    json_store::save(data_dir, RECENT_DOCUMENTS_FILE, &file)?;
+    Ok(())
 }
 
 /// Add or update a recent entry, moving the matching path identity to the top.

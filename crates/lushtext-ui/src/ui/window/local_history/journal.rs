@@ -216,6 +216,7 @@ impl LushtextWindow {
                                 &old_for_move,
                                 &new_for_move,
                             )
+                            .map_err(anyhow::Error::new)
                         })
                     },
                 )

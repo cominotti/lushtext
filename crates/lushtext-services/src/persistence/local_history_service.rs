@@ -8,7 +8,6 @@
 //! or bodies for the browser UI. Everything here stays GTK-free so capture and
 //! browse work can run on background threads.
 
-use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -19,6 +18,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+pub use super::local_history_error::LocalHistoryError;
+use super::local_history_error::{path_is_present, scan_dir_entries};
 use crate::persistence::app_data_layout::{
     AppDataLayout, AppDataLocation, lineage_index_file_name,
 };
@@ -419,8 +420,15 @@ pub fn local_history_dir(data_dir: &Path) -> PathBuf {
 /// # Errors
 ///
 /// Returns an error if the path cannot be canonicalized.
-pub fn resolve_document_identity(path: &Path) -> Result<DocumentSidecarIdentity> {
-    note_storage::resolve_document_identity(path)
+pub fn resolve_document_identity(
+    path: &Path,
+) -> Result<DocumentSidecarIdentity, LocalHistoryError> {
+    note_storage::resolve_document_identity(path).map_err(|error| {
+        LocalHistoryError::ResolveIdentity {
+            path: path.to_path_buf(),
+            detail: error.to_string(),
+        }
+    })
 }
 
 /// The local-history behaviour of a document scale (a byte tier: the 10 MB
@@ -479,7 +487,7 @@ pub fn capture_snapshot_for_path(
     text: &str,
     origin: LocalHistorySnapshotOrigin,
     policy: LocalHistoryCapturePolicy,
-) -> Result<LocalHistoryCaptureOutcome> {
+) -> Result<LocalHistoryCaptureOutcome, LocalHistoryError> {
     capture_snapshot_for_path_with_retention(
         data_dir,
         path,
@@ -510,14 +518,14 @@ pub fn preserve_snapshot_for_path(
     text: &str,
     origin: LocalHistorySnapshotOrigin,
     captured_at_millis: u64,
-) -> Result<bool> {
+) -> Result<bool, LocalHistoryError> {
     // Normalization rewrites exactly the carriage returns.
     if text.contains('\r') {
         return Ok(false);
     }
     let _guard = local_history_lock()
         .lock()
-        .map_err(|_| anyhow::anyhow!("local-history lock poisoned"))?;
+        .map_err(|_| LocalHistoryError::LockPoisoned)?;
     let identity = resolve_document_identity(path)?;
     let outcome = capture_snapshot_for_identity_at_locked(
         data_dir,
@@ -548,7 +556,7 @@ pub fn preserve_snapshot_for_path(
 pub fn list_snapshots_for_path(
     data_dir: &Path,
     path: &Path,
-) -> Result<Vec<LocalHistorySnapshotMeta>> {
+) -> Result<Vec<LocalHistorySnapshotMeta>, LocalHistoryError> {
     Ok(list_snapshots_for_path_recovering(data_dir, path)?.snapshots)
 }
 
@@ -561,10 +569,10 @@ pub fn list_snapshots_for_path(
 pub fn list_snapshots_for_path_recovering(
     data_dir: &Path,
     path: &Path,
-) -> Result<LocalHistorySnapshotListing> {
+) -> Result<LocalHistorySnapshotListing, LocalHistoryError> {
     let _guard = local_history_lock()
         .lock()
-        .map_err(|_| anyhow::anyhow!("local-history lock poisoned"))?;
+        .map_err(|_| LocalHistoryError::LockPoisoned)?;
     let identity = resolve_document_identity(path)?;
     let load = load_document_for_identity_recovering(data_dir, identity)?;
     Ok(LocalHistorySnapshotListing {
@@ -583,7 +591,7 @@ pub fn load_snapshot_for_path(
     data_dir: &Path,
     path: &Path,
     snapshot_id: &str,
-) -> Result<Option<LocalHistorySnapshot>> {
+) -> Result<Option<LocalHistorySnapshot>, LocalHistoryError> {
     let cancellation = LocalHistoryPreviewCancellation::default();
     match load_snapshot_for_path_cancellable(data_dir, path, snapshot_id, &cancellation)? {
         LocalHistoryPreviewLoadOutcome::Loaded(snapshot) => Ok(Some(snapshot)),
@@ -605,13 +613,13 @@ pub fn load_snapshot_for_path_cancellable(
     path: &Path,
     snapshot_id: &str,
     cancellation: &LocalHistoryPreviewCancellation,
-) -> Result<LocalHistoryPreviewLoadOutcome> {
+) -> Result<LocalHistoryPreviewLoadOutcome, LocalHistoryError> {
     if cancellation.is_cancelled() {
         return Ok(LocalHistoryPreviewLoadOutcome::Cancelled);
     }
     let _guard = local_history_lock()
         .lock()
-        .map_err(|_| anyhow::anyhow!("local-history lock poisoned"))?;
+        .map_err(|_| LocalHistoryError::LockPoisoned)?;
     if cancellation.is_cancelled() {
         return Ok(LocalHistoryPreviewLoadOutcome::Cancelled);
     }
@@ -642,12 +650,16 @@ pub fn load_snapshot_for_path_cancellable(
 /// # Errors
 ///
 /// Returns an error if history directories cannot be scanned, merged, or rewritten.
-pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Result<usize> {
+pub fn move_path_tree(
+    data_dir: &Path,
+    old_path: &Path,
+    new_path: &Path,
+) -> Result<usize, LocalHistoryError> {
     let _guard = local_history_lock()
         .lock()
-        .map_err(|_| anyhow::anyhow!("local-history lock poisoned"))?;
+        .map_err(|_| LocalHistoryError::LockPoisoned)?;
     let base_dir = local_history_dir(data_dir);
-    if !fs_metadata::path_status(&base_dir)?.is_present() {
+    if !path_is_present(&base_dir)? {
         return Ok(0);
     }
 
@@ -677,7 +689,9 @@ pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Resu
 /// Returns an error if the history root cannot be scanned. Per-lineage merge or
 /// cleanup failures are preserved in the returned diagnostics so startup can
 /// continue with unaffected lineages.
-pub fn reconcile_lineages(data_dir: &Path) -> Result<LocalHistoryReconcileReport> {
+pub fn reconcile_lineages(
+    data_dir: &Path,
+) -> Result<LocalHistoryReconcileReport, LocalHistoryError> {
     reconcile_lineages_with_budget(data_dir, LocalHistoryReconcileBudget::default())
 }
 
@@ -693,10 +707,10 @@ pub fn reconcile_lineages(data_dir: &Path) -> Result<LocalHistoryReconcileReport
 pub fn reconcile_lineages_with_budget(
     data_dir: &Path,
     budget: LocalHistoryReconcileBudget,
-) -> Result<LocalHistoryReconcileReport> {
+) -> Result<LocalHistoryReconcileReport, LocalHistoryError> {
     let _guard = local_history_lock()
         .lock()
-        .map_err(|_| anyhow::anyhow!("local-history lock poisoned"))?;
+        .map_err(|_| LocalHistoryError::LockPoisoned)?;
     reconcile_lineages_locked(data_dir, budget)
 }
 
@@ -707,10 +721,10 @@ fn capture_snapshot_for_path_with_retention(
     origin: LocalHistorySnapshotOrigin,
     capture_policy: LocalHistoryCapturePolicy,
     retention: RetentionPolicy,
-) -> Result<LocalHistoryCaptureOutcome> {
+) -> Result<LocalHistoryCaptureOutcome, LocalHistoryError> {
     let _guard = local_history_lock()
         .lock()
-        .map_err(|_| anyhow::anyhow!("local-history lock poisoned"))?;
+        .map_err(|_| LocalHistoryError::LockPoisoned)?;
     let identity = resolve_document_identity(path)?;
     capture_snapshot_for_identity_locked(
         data_dir,
@@ -729,7 +743,7 @@ fn capture_snapshot_for_identity_locked(
     origin: LocalHistorySnapshotOrigin,
     capture_policy: LocalHistoryCapturePolicy,
     retention: RetentionPolicy,
-) -> Result<LocalHistoryCaptureOutcome> {
+) -> Result<LocalHistoryCaptureOutcome, LocalHistoryError> {
     capture_snapshot_for_identity_at_locked(
         data_dir,
         identity,
@@ -749,7 +763,7 @@ fn capture_snapshot_for_identity_at_locked(
     capture_policy: LocalHistoryCapturePolicy,
     retention: RetentionPolicy,
     captured_at_millis: Option<u64>,
-) -> Result<LocalHistoryCaptureOutcome> {
+) -> Result<LocalHistoryCaptureOutcome, LocalHistoryError> {
     let normalized = normalize_snapshot_text(text);
     let content_hash = stable_bytes_hash(normalized.as_bytes());
     let mut document = load_document_for_identity(data_dir, identity.clone())?;
@@ -769,10 +783,16 @@ fn capture_snapshot_for_identity_at_locked(
     }
     let doc_dir = document_dir(data_dir, &identity);
     fs_write::create_dir_all_durable(&doc_dir)
-        .with_context(|| format!("failed to create {}", doc_dir.display()))?;
+        .map_err(|e| LocalHistoryError::create_dir(&doc_dir, e))?;
     // Write the body before the index so a crash leaves repairable text
     // evidence instead of metadata that points at a missing snapshot.
-    editor_io::write_snapshot_to_path(&snapshot_path(&doc_dir, &meta.snapshot_id), &normalized)?;
+    let body_path = snapshot_path(&doc_dir, &meta.snapshot_id);
+    editor_io::write_snapshot_to_path(&body_path, &normalized).map_err(|error| {
+        LocalHistoryError::WriteSnapshotBody {
+            path: body_path,
+            source: Box::new(error),
+        }
+    })?;
 
     document.identity = identity;
     document.snapshots.push(meta.clone());
@@ -787,16 +807,15 @@ fn capture_snapshot_for_identity_at_locked(
 fn reconcile_lineages_locked(
     data_dir: &Path,
     budget: LocalHistoryReconcileBudget,
-) -> Result<LocalHistoryReconcileReport> {
+) -> Result<LocalHistoryReconcileReport, LocalHistoryError> {
     let mut report = LocalHistoryReconcileReport::default();
     let base_dir = local_history_dir(data_dir);
-    if !fs_metadata::path_status(&base_dir)?.is_present() {
+    if !path_is_present(&base_dir)? {
         return Ok(report);
     }
 
     let started_at = Instant::now();
-    let mut entries = fs_tree::scan_directory(&base_dir, budget.scan_policy())
-        .with_context(|| format!("failed to read {}", base_dir.display()))?;
+    let mut entries = scan_dir_entries(&base_dir, budget.scan_policy())?;
     if entries.len() > budget.max_lineages {
         entries.truncate(budget.max_lineages);
         report.deferred_lineages += 1;
@@ -826,10 +845,7 @@ fn reconcile_lineages_locked(
         report.diagnostics.extend(load.diagnostics);
         let Some(mut document) = load.value else {
             report.orphaned_lineages += 1;
-            if !fs_metadata::exists(&index_path)
-                && remove_empty_lineage_dir_if_exists(&entry.path).with_context(|| {
-                    format!("failed to clean empty lineage {}", entry.path.display())
-                })?
+            if !fs_metadata::exists(&index_path) && remove_empty_lineage_dir_if_exists(&entry.path)?
             {
                 report.reconciled_lineages += 1;
             } else if !fs_metadata::exists(&index_path) {
@@ -898,14 +914,14 @@ fn mismatched_reconcile_budget_elapsed(
 fn load_document_for_identity(
     data_dir: &Path,
     identity: DocumentSidecarIdentity,
-) -> Result<LocalHistoryDocument> {
+) -> Result<LocalHistoryDocument, LocalHistoryError> {
     Ok(load_document_for_identity_recovering(data_dir, identity)?.value)
 }
 
 fn load_document_for_identity_recovering(
     data_dir: &Path,
     identity: DocumentSidecarIdentity,
-) -> Result<RecoveryLoad<LocalHistoryDocument>> {
+) -> Result<RecoveryLoad<LocalHistoryDocument>, LocalHistoryError> {
     let dir = document_dir(data_dir, &identity);
     let index_path = dir.join(lineage_index_file_name());
     let load = load_history_index(data_dir, &index_path);
@@ -986,10 +1002,10 @@ fn snapshot_path(document_dir: &Path, snapshot_id: &str) -> PathBuf {
 
 fn repair_history_index_from_snapshots(
     document_dir: &Path,
-    index_path: &Path,
+    _index_path: &Path,
     identity: DocumentSidecarIdentity,
-) -> Result<LocalHistoryIndexRepair> {
-    if !fs_metadata::path_status(document_dir)?.is_present() {
+) -> Result<LocalHistoryIndexRepair, LocalHistoryError> {
+    if !path_is_present(document_dir)? {
         return Ok(LocalHistoryIndexRepair::Skipped(
             "lineage directory is missing".to_string(),
         ));
@@ -997,9 +1013,7 @@ fn repair_history_index_from_snapshots(
 
     let mut snapshots = Vec::new();
     let mut repair_body_bytes = 0u64;
-    for entry in fs_tree::scan_directory(document_dir, DirectoryScanPolicy::visible_workspace())
-        .with_context(|| format!("failed to read {}", document_dir.display()))?
-    {
+    for entry in scan_dir_entries(document_dir, DirectoryScanPolicy::visible_workspace())? {
         if entry.kind != FileKind::File
             || entry.path.file_name().and_then(OsStr::to_str) == Some(lineage_index_file_name())
         {
@@ -1073,50 +1087,48 @@ fn repair_history_index_from_snapshots(
         snapshots,
     };
     document.sort_newest_first();
-    save_document_index(document_dir, &document).with_context(|| {
-        format!(
-            "failed to save repaired local-history index {}",
-            index_path.display()
-        )
-    })?;
+    save_document_index(document_dir, &document)?;
     Ok(LocalHistoryIndexRepair::Repaired(document))
 }
 
 fn load_snapshot_text_bounded_cancellable(
     path: &Path,
     cancellation: &LocalHistoryPreviewCancellation,
-) -> Result<Option<String>> {
+) -> Result<Option<String>, LocalHistoryError> {
     let byte_size = validate_snapshot_body_size(path)?;
     read_snapshot_text_after_size_check_cancellable(path, byte_size, cancellation)
 }
 
-fn validate_snapshot_body_size(path: &Path) -> Result<u64> {
-    let facts = fs_metadata::file_facts(path)
-        .with_context(|| format!("failed to inspect {}", path.display()))?;
+fn validate_snapshot_body_size(path: &Path) -> Result<u64, LocalHistoryError> {
+    let facts = fs_metadata::file_facts(path).map_err(|e| LocalHistoryError::inspect(path, e))?;
     if facts.kind != FileKind::File {
-        anyhow::bail!("local-history snapshot {} is not a file", path.display());
+        return Err(LocalHistoryError::SnapshotNotAFile {
+            path: path.to_path_buf(),
+        });
     }
     if !availability_for_scale(DocumentScale::for_total_bytes(facts.byte_size)).allows_browsing() {
-        anyhow::bail!(
-            "local-history snapshot {} is larger than the {} browse limit",
-            path.display(),
-            iec_size(HISTORY_UNAVAILABLE_BYTES)
-        );
+        return Err(LocalHistoryError::SnapshotTooLarge {
+            path: path.to_path_buf(),
+            limit: iec_size(HISTORY_UNAVAILABLE_BYTES),
+        });
     }
     Ok(facts.byte_size)
 }
 
-fn read_snapshot_text_after_size_check(path: &Path, byte_size: u64) -> Result<String> {
+fn read_snapshot_text_after_size_check(
+    path: &Path,
+    byte_size: u64,
+) -> Result<String, LocalHistoryError> {
     let cancellation = LocalHistoryPreviewCancellation::default();
     read_snapshot_text_after_size_check_cancellable(path, byte_size, &cancellation)?
-        .ok_or_else(|| anyhow::anyhow!("fresh local-history read was unexpectedly cancelled"))
+        .ok_or(LocalHistoryError::UnexpectedCancellation)
 }
 
 fn read_snapshot_text_after_size_check_cancellable(
     path: &Path,
     byte_size: u64,
     cancellation: &LocalHistoryPreviewCancellation,
-) -> Result<Option<String>> {
+) -> Result<Option<String>, LocalHistoryError> {
     read_snapshot_text_with_cancel_check(path, byte_size, || {
         delay_local_history_preview_read_for_test();
         cancellation.is_cancelled()
@@ -1127,18 +1139,23 @@ fn read_snapshot_text_with_cancel_check(
     path: &Path,
     byte_size: u64,
     mut cancelled: impl FnMut() -> bool,
-) -> Result<Option<String>> {
+) -> Result<Option<String>, LocalHistoryError> {
     let bytes =
         match fs_read::bounded_bytes(path, HISTORY_UNAVAILABLE_BYTES, byte_size, &mut cancelled) {
             Ok(bytes) => bytes,
             Err(fs_read::BoundedFileReadError::Cancelled) => return Ok(None),
-            Err(error) => {
-                return Err(anyhow::Error::new(error))
-                    .with_context(|| format!("failed to read {}", path.display()));
+            Err(source) => {
+                return Err(LocalHistoryError::ReadSnapshot {
+                    path: path.to_path_buf(),
+                    source,
+                });
             }
         };
-    let text = simdutf8::basic::from_utf8(&bytes)
-        .map_err(|error| anyhow::anyhow!("{} is not valid UTF-8: {error}", path.display()))?;
+    let text =
+        simdutf8::basic::from_utf8(&bytes).map_err(|source| LocalHistoryError::InvalidUtf8 {
+            path: path.to_path_buf(),
+            source,
+        })?;
     Ok(Some(text.to_string()))
 }
 
@@ -1164,17 +1181,27 @@ fn normalize_snapshot_text(text: &str) -> String {
     text.replace("\r\n", "\n").replace('\r', "\n")
 }
 
-fn save_document_index(document_dir: &Path, document: &LocalHistoryDocument) -> Result<()> {
+fn save_document_index(
+    document_dir: &Path,
+    document: &LocalHistoryDocument,
+) -> Result<(), LocalHistoryError> {
+    let index_path = document_dir.join(lineage_index_file_name());
     let data_dir = document_dir
         .parent()
         .and_then(Path::parent)
-        .context("local-history index path is not under app data directory")?;
+        .ok_or_else(|| LocalHistoryError::IndexOutsideAppData {
+            path: index_path.clone(),
+        })?;
     note_storage::save_json_file_recovering(
         data_dir,
-        &document_dir.join(lineage_index_file_name()),
+        &index_path,
         RecoveryMetadataClass::LocalHistoryIndex,
         document,
     )
+    .map_err(|error| LocalHistoryError::SaveIndex {
+        path: index_path,
+        detail: error.to_string(),
+    })
 }
 
 fn trim_document_to_retention(
@@ -1190,9 +1217,12 @@ fn trim_document_to_retention(
     remove_snapshot_files(document_dir, &removed);
 }
 
-fn enforce_global_retention_locked(data_dir: &Path, retention: RetentionPolicy) -> Result<()> {
+fn enforce_global_retention_locked(
+    data_dir: &Path,
+    retention: RetentionPolicy,
+) -> Result<(), LocalHistoryError> {
     let base_dir = local_history_dir(data_dir);
-    if !fs_metadata::path_status(&base_dir)?.is_present() {
+    if !path_is_present(&base_dir)? {
         return Ok(());
     }
 
@@ -1261,11 +1291,9 @@ fn enforce_global_retention_locked(data_dir: &Path, retention: RetentionPolicy) 
 fn load_all_documents_from_base(
     data_dir: &Path,
     base_dir: &Path,
-) -> Result<Vec<LoadedHistoryDocument>> {
+) -> Result<Vec<LoadedHistoryDocument>, LocalHistoryError> {
     let mut documents = Vec::new();
-    for entry in fs_tree::scan_directory(base_dir, DirectoryScanPolicy::visible_workspace())
-        .with_context(|| format!("failed to read {}", base_dir.display()))?
-    {
+    for entry in scan_dir_entries(base_dir, DirectoryScanPolicy::visible_workspace())? {
         let path = entry.path;
         if entry.kind != FileKind::Directory {
             continue;
@@ -1289,7 +1317,7 @@ fn migrate_loaded_document(
     data_dir: &Path,
     loaded: &mut LoadedHistoryDocument,
     new_identity: DocumentSidecarIdentity,
-) -> Result<()> {
+) -> Result<(), LocalHistoryError> {
     let target_dir = document_dir(data_dir, &new_identity);
     if loaded.dir == target_dir {
         loaded.document.identity = new_identity;
@@ -1298,17 +1326,17 @@ fn migrate_loaded_document(
         return Ok(());
     }
 
-    if !fs_metadata::path_status(&target_dir)?.is_present() {
+    if !path_is_present(&target_dir)? {
         if let Some(parent) = target_dir.parent() {
             fs_write::create_dir_all_durable(parent)
-                .with_context(|| format!("failed to create {}", parent.display()))?;
+                .map_err(|e| LocalHistoryError::create_dir(parent, e))?;
         }
-        fs_write::rename_durable(&loaded.dir, &target_dir).with_context(|| {
-            format!(
-                "failed to move {} to {}",
-                loaded.dir.display(),
-                target_dir.display()
-            )
+        fs_write::rename_durable(&loaded.dir, &target_dir).map_err(|source| {
+            LocalHistoryError::MoveLineage {
+                from: loaded.dir.clone(),
+                to: target_dir.clone(),
+                source,
+            }
         })?;
         loaded.dir = target_dir;
         loaded.document.identity = new_identity;
@@ -1332,8 +1360,8 @@ fn migrate_loaded_document(
     for meta in &loaded.document.snapshots {
         let from = snapshot_path(&loaded.dir, &meta.snapshot_id);
         let to = snapshot_path(&target_dir, &meta.snapshot_id);
-        let source_present = fs_metadata::path_status(&from)?.is_present();
-        let target_present = fs_metadata::path_status(&to)?.is_present();
+        let source_present = path_is_present(&from)?;
+        let target_present = path_is_present(&to)?;
         if !source_present && !target_present {
             continue;
         }
@@ -1353,13 +1381,7 @@ fn migrate_loaded_document(
                         Err(error)
                     }
                 })
-                .with_context(|| {
-                    format!(
-                        "failed to move snapshot {} to {}",
-                        from.display(),
-                        to.display()
-                    )
-                })?;
+                .map_err(|source| LocalHistoryError::MoveSnapshot { from, to, source })?;
         }
         migrated_snapshots.push(meta.clone());
     }
@@ -1376,22 +1398,19 @@ fn migrate_loaded_document(
     Ok(())
 }
 
-fn remove_obsolete_lineage(path: &Path) -> Result<()> {
+fn remove_obsolete_lineage(path: &Path) -> Result<(), LocalHistoryError> {
     maybe_fail_obsolete_lineage_cleanup_for_test(path)?;
     fs_mutate::remove_dir_all_if_exists(path)
         .map(|_| ())
-        .map_err(|error| {
-            anyhow::anyhow!(
-                "failed to remove obsolete local-history lineage {}: {}",
-                path.display(),
-                error
-            )
+        .map_err(|source| LocalHistoryError::ObsoleteLineageCleanup {
+            path: path.to_path_buf(),
+            source,
         })
 }
 
 /// Inject the cleanup failure used by cross-environment retry tests.
 #[cfg(any(test, feature = "test-utils"))]
-fn maybe_fail_obsolete_lineage_cleanup_for_test(path: &Path) -> Result<()> {
+fn maybe_fail_obsolete_lineage_cleanup_for_test(path: &Path) -> Result<(), LocalHistoryError> {
     let should_fail = {
         let mut failure = obsolete_lineage_cleanup_failure()
             .lock()
@@ -1407,10 +1426,10 @@ fn maybe_fail_obsolete_lineage_cleanup_for_test(path: &Path) -> Result<()> {
     };
 
     if should_fail {
-        return Err(anyhow::anyhow!(
-            "failed to remove obsolete local-history lineage {}: injected cleanup failure",
-            path.display()
-        ));
+        return Err(LocalHistoryError::ObsoleteLineageCleanup {
+            path: path.to_path_buf(),
+            source: std::io::Error::other("injected cleanup failure"),
+        });
     }
     Ok(())
 }
@@ -1437,17 +1456,18 @@ thread_local! {
 }
 
 #[cfg(not(any(test, feature = "test-utils")))]
-fn maybe_fail_obsolete_lineage_cleanup_for_test(_path: &Path) -> Result<()> {
+fn maybe_fail_obsolete_lineage_cleanup_for_test(_path: &Path) -> Result<(), LocalHistoryError> {
     Ok(())
 }
 
-fn is_obsolete_lineage_cleanup_error(error: &anyhow::Error) -> bool {
-    error
-        .to_string()
-        .contains("failed to remove obsolete local-history lineage")
+fn is_obsolete_lineage_cleanup_error(error: &LocalHistoryError) -> bool {
+    matches!(error, LocalHistoryError::ObsoleteLineageCleanup { .. })
 }
 
-fn cleanup_empty_fallback_lineage(data_dir: &Path, old_path: &Path) -> Result<bool> {
+fn cleanup_empty_fallback_lineage(
+    data_dir: &Path,
+    old_path: &Path,
+) -> Result<bool, LocalHistoryError> {
     // Fallback identities used the displayed path as their canonical key. Only
     // an empty directory is removed here, so any non-empty or symlink-derived
     // evidence stays available for the general reconciliation pass.
@@ -1457,8 +1477,11 @@ fn cleanup_empty_fallback_lineage(data_dir: &Path, old_path: &Path) -> Result<bo
     remove_empty_lineage_dir_if_exists(&fallback_dir)
 }
 
-fn remove_empty_lineage_dir_if_exists(path: &Path) -> Result<bool> {
-    if !fs_metadata::path_status(path)?.is_directory() {
+fn remove_empty_lineage_dir_if_exists(path: &Path) -> Result<bool, LocalHistoryError> {
+    if !fs_metadata::path_status(path)
+        .map_err(|e| LocalHistoryError::inspect(path, e))?
+        .is_directory()
+    {
         return Ok(false);
     }
     let entries = fs_tree::scan_directory(
@@ -1468,7 +1491,7 @@ fn remove_empty_lineage_dir_if_exists(path: &Path) -> Result<bool> {
             include_hidden: true,
         },
     )
-    .with_context(|| format!("failed to inspect {}", path.display()))?;
+    .map_err(|e| LocalHistoryError::scan_dir(path, e))?;
     if !entries.is_empty() {
         return Ok(false);
     }
@@ -2529,12 +2552,28 @@ mod tests {
 
     #[test]
     fn obsolete_lineage_cleanup_error_detection_is_narrow() {
-        let cleanup =
-            anyhow::anyhow!("failed to remove obsolete local-history lineage /tmp/example: denied");
-        let unrelated = anyhow::anyhow!("failed to load local-history lineage /tmp/example");
+        let cleanup = LocalHistoryError::ObsoleteLineageCleanup {
+            path: PathBuf::from("/tmp/example"),
+            source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
+        };
+        let unrelated = LocalHistoryError::ScanDir {
+            path: PathBuf::from("/tmp/example"),
+            source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
+        };
 
         assert!(is_obsolete_lineage_cleanup_error(&cleanup));
         assert!(!is_obsolete_lineage_cleanup_error(&unrelated));
+    }
+
+    #[test]
+    fn validate_snapshot_body_size_rejects_directory_as_snapshot_not_a_file() {
+        let dir = TempDir::new().expect("tempdir");
+        let snapshot_dir = dir.path().join("snapshot.txt");
+        fixture::create_dir(&snapshot_dir);
+
+        let error =
+            validate_snapshot_body_size(&snapshot_dir).expect_err("directory is not a snapshot");
+        assert!(matches!(error, LocalHistoryError::SnapshotNotAFile { .. }));
     }
 
     #[test]

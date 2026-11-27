@@ -264,6 +264,7 @@ impl LushtextWindow {
         };
         match session.and_then(|session| {
             session_service::save_ordered(&data_dir, &session, ordered_generation)
+                .map_err(anyhow::Error::new)
         }) {
             Ok(true) => self.clear_session_save_failure(generation),
             Ok(false) => {}
@@ -299,6 +300,7 @@ impl LushtextWindow {
                     session
                 };
                 session_service::save_ordered(&data_dir, &session, ordered_generation)
+                    .map_err(anyhow::Error::new)
             },
             move |window, result| {
                 let close_result = match result {

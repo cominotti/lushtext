@@ -13,10 +13,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+pub use super::recovery_metadata_error::RecoveryMetadataError;
 use crate::filesystem::{
     PathStatus, WriteLabel, metadata as fs_metadata, read as fs_read, write as fs_write,
 };
@@ -603,17 +603,25 @@ where
 ///
 /// Returns an error when the parent directory is absent or unwritable, the value
 /// cannot serialize, or the durable replacement fails.
-pub fn save_json_path<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+pub fn save_json_path<T: Serialize>(path: &Path, value: &T) -> Result<(), RecoveryMetadataError> {
     let parent = path
         .parent()
-        .context("recovery metadata path has no parent directory")?;
-    fs_write::create_dir_all_durable(parent)
-        .with_context(|| format!("failed to create {}", parent.display()))?;
+        .ok_or_else(|| RecoveryMetadataError::MissingParent {
+            path: path.to_path_buf(),
+        })?;
+    fs_write::create_dir_all_durable(parent).map_err(|source| {
+        RecoveryMetadataError::CreateDir {
+            path: parent.to_path_buf(),
+            source,
+        }
+    })?;
     fs_write::atomic_replace_stream(path, WriteLabel::JSON, |writer| {
         serde_json::to_writer_pretty(writer, value).map_err(io::Error::other)
     })
-    .map_err(fs_write::DurableWriteError::into_io_error)
-    .with_context(|| format!("failed to write {}", path.display()))
+    .map_err(|error| RecoveryMetadataError::Write {
+        path: path.to_path_buf(),
+        source: error.into_io_error(),
+    })
 }
 
 /// Write a v1 envelope after preserving unsupported current metadata if needed.
@@ -631,7 +639,7 @@ pub fn save_enveloped_json_path<T>(
     config: &RecoveryLoadConfig<'_>,
     expected_kind: &'static str,
     value: &T,
-) -> Result<Vec<RecoveryDiagnostic>>
+) -> Result<Vec<RecoveryDiagnostic>, RecoveryMetadataError>
 where
     T: Serialize + DeserializeOwned,
 {
@@ -652,7 +660,7 @@ pub fn save_enveloped_json_path_accepting<T>(
     expected_kind: &'static str,
     accepted_legacy_kinds: &[&'static str],
     value: &T,
-) -> Result<Vec<RecoveryDiagnostic>>
+) -> Result<Vec<RecoveryDiagnostic>, RecoveryMetadataError>
 where
     T: Serialize + DeserializeOwned,
 {
@@ -668,10 +676,10 @@ where
             .map(RecoveryDiagnostic::summary)
             .collect::<Vec<_>>()
             .join("; ");
-        anyhow::bail!(
-            "{} is not safe to replace with v1 JSON: {detail}",
-            config.path.display()
-        );
+        return Err(RecoveryMetadataError::UnsafeReplacement {
+            path: config.path.to_path_buf(),
+            detail,
+        });
     }
 
     let envelope = JsonEnvelopeRef::new(expected_kind, value);
@@ -1733,5 +1741,31 @@ mod tests {
             sanitize_component("Alpha-09_beta space.dot/slash"),
             "Alpha-09_beta-space-dot-slash"
         );
+    }
+
+    #[test]
+    fn save_json_path_without_parent_returns_missing_parent_error() {
+        let error = save_json_path(Path::new(""), &TestMetadata::default())
+            .expect_err("empty path lacks parent directory");
+        assert!(matches!(error, RecoveryMetadataError::MissingParent { .. }));
+    }
+
+    #[test]
+    fn save_enveloped_json_path_returns_unsafe_replacement_when_quarantine_is_blocked() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("session.json");
+        fixture::write_text(&path, "not valid json");
+        // Block quarantine directory creation with a regular file.
+        let quarantine = dir.path().join("blocked-quarantine");
+        fixture::write_text(&quarantine, "blocker");
+        let config = RecoveryLoadConfig::new(dir.path(), &path, RecoveryMetadataClass::Session)
+            .with_quarantine_dir(quarantine);
+
+        let error = save_enveloped_json_path(&config, KIND_SESSION, &TestMetadata::default())
+            .expect_err("blocked quarantine should prevent unsafe overwrite");
+        assert!(matches!(
+            error,
+            RecoveryMetadataError::UnsafeReplacement { .. }
+        ));
     }
 }
