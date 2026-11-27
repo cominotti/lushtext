@@ -1168,7 +1168,7 @@ gtk-lush-public-api-advisory:
 gtk-lush-api-advisory: gtk-lush-semver-advisory gtk-lush-public-api-advisory
 
 # Aggregate policy target for fast audits that sit beside rustfmt and Clippy.
-check-policy: check-filesystem-boundary check-hexagonal-boundaries check-domain-value-types check-error-contracts check-temp-scope check-rustc-frontend-threads test-flatpak-install-origin check-flatpak-source-tree check-agent-helpers check-build-cache-helpers check-precommit-scope check-session-hygiene check-cargo-public-api-install check-settings-writes check-font-zoom-registration check-signal-connections check-thresholds check-responsiveness-lane check-kani-shards check-widget-shards check-gtk-axioms check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-flatpak-ci-builds check-explicit-simd check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test check-terminology check-kill-point-gating check-workflow-scripts
+check-policy: check-filesystem-boundary check-hexagonal-boundaries check-domain-value-types check-error-contracts check-idiomatic-state check-temp-scope check-rustc-frontend-threads test-flatpak-install-origin check-flatpak-source-tree check-agent-helpers check-build-cache-helpers check-precommit-scope check-session-hygiene check-cargo-public-api-install check-settings-writes check-font-zoom-registration check-signal-connections check-thresholds check-responsiveness-lane check-kani-shards check-widget-shards check-gtk-axioms check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-flatpak-ci-builds check-explicit-simd check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test check-terminology check-kill-point-gating check-workflow-scripts
 
 # Hexagonal crate boundaries and 1,000-line file-size ratchet.
 check-hexagonal-boundaries:
@@ -1187,6 +1187,12 @@ check-error-contracts:
 	@echo "Checking typed error contracts..."
 	python3 ./scripts/check-error-contracts.py --self-test
 	python3 ./scripts/check-error-contracts.py
+
+# Idiomatic Rust state machines and C/C++-ism ceilings (imp.rs sizes, callbacks, flat state bags, resets, sentinels).
+check-idiomatic-state:
+	@echo "Checking idiomatic state machines and C-ism ceilings..."
+	python3 ./scripts/check-idiomatic-state.py --self-test
+	python3 ./scripts/check-idiomatic-state.py
 
 # The crash-kill-points feature gates only services::kill_point::reach, so the
 # crash smoke's kill-point victim is the ordinary binary plus kill points.

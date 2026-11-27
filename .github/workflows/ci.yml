@@ -87,6 +87,9 @@ jobs:
       - name: Error contracts
         run: make check-error-contracts
 
+      - name: Idiomatic state machines and C-ism ceilings
+        run: make check-idiomatic-state
+
       - name: Agent guidance and skill policy
         run: make check-agent-skills
 
