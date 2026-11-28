@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -29,12 +30,6 @@ RELEVANT_EXACT_PATHS = (
     "scripts/run-accessibility-smoke.sh",
     "scripts/run-visual-smoke.sh",
     "scripts/smoke_warning_classifiers.py",
-    "docs/accessibility.md",
-    "docs/accessibility-matrix.md",
-    "docs/accessibility-orca-checklist.md",
-    "docs/automation.md",
-    "docs/automation-reference.md",
-    "docs/end-user-coverage.md",
 )
 
 RELEVANT_PREFIXES = (
@@ -140,25 +135,57 @@ def relevant_files(repo_root: Path) -> list[str]:
     return sorted(files)
 
 
+def _git_env() -> dict[str, str]:
+    env = dict(os.environ)
+    for var in (
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_PREFIX",
+        "GIT_INDEX_FILE",
+    ):
+        env.pop(var, None)
+    return env
+
+
 def relevant_status(repo_root: Path) -> tuple[list[str], bool]:
     """Return relevant porcelain rows, and whether git actually answered.
 
     The second element is what keeps a git failure from reading as a clean tree.
     """
-    lines, available = git_lines_checked(
-        repo_root, ["status", "--porcelain=v1", "--untracked-files=all"]
+    result = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all", "-z"],
+        cwd=repo_root,
+        env=_git_env(),
+        check=False,
+        capture_output=True,
     )
-    rows = []
-    for line in lines:
+    if result.returncode != 0:
+        return [], False
+    entries = result.stdout.split(b"\0")
+    rows: list[str] = []
+    i = 0
+    while i < len(entries):
+        raw = entries[i]
+        i += 1
+        if not raw:
+            continue
+        line = os.fsdecode(raw)
+        if len(line) < 4:
+            return [], False
+        xy = line[:2]
         path = line[3:]
-        if " -> " in path:
-            old, new = path.split(" -> ", 1)
-            candidates = (old, new)
-        else:
-            candidates = (path,)
+        candidates = [path]
+        if "R" in xy or "C" in xy:
+            if i < len(entries) and entries[i]:
+                old_path = os.fsdecode(entries[i])
+                candidates.append(old_path)
+            i += 1
         if any(is_relevant(p.replace("\\", "/")) for p in candidates if p):
-            rows.append(line)
-    return sorted(rows), available
+            rows.append(f"{xy} {' -> '.join(reversed(candidates))}" if len(candidates) > 1 else line)
+    return sorted(rows), True
 
 
 def is_relevant(path: str) -> bool:
@@ -170,6 +197,7 @@ def git_lines_checked(repo_root: Path, args: list[str]) -> tuple[list[str], bool
     result = subprocess.run(
         ["git", *args],
         cwd=repo_root,
+        env=_git_env(),
         check=False,
         capture_output=True,
         text=True,
@@ -184,6 +212,7 @@ def git_output(repo_root: Path, args: list[str]) -> str:
     result = subprocess.run(
         ["git", *args],
         cwd=repo_root,
+        env=_git_env(),
         check=False,
         capture_output=True,
         text=True,
@@ -193,14 +222,49 @@ def git_output(repo_root: Path, args: list[str]) -> str:
     return result.stdout.strip()
 
 
+def query_required(repo_root: Path, base_ref: str | None = None) -> bool:
+    """Return True if accessibility/visual smoke proof is required (fail-closed)."""
+    try:
+        fp = source_fingerprint(repo_root, base_ref=base_ref)
+    except Exception:
+        return True
+    if bool(fp.get("dirty")) or not bool(fp.get("status_available", False)):
+        return True
+    if base_ref is not None:
+        if not bool(fp.get("branch_status_available", False)) or bool(
+            fp.get("branch_relevant_changes")
+        ):
+            return True
+    return False
+
+
 def main() -> int:
     import argparse
     import sys
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("repo_root", nargs="?", default=Path.cwd(), type=Path)
+    parser.add_argument(
+        "--base-ref",
+        default=None,
+        help="Optional git base ref (e.g. origin/main) for branch-level queries.",
+    )
+    parser.add_argument(
+        "--query-required",
+        action="store_true",
+        help="Exit 0 and print 'required' when smoke proof is required, else exit 1.",
+    )
     args = parser.parse_args()
-    json.dump(source_fingerprint(args.repo_root), sys.stdout, indent=2, sort_keys=True)
+    if args.query_required:
+        needed = query_required(args.repo_root, base_ref=args.base_ref)
+        print("required" if needed else "not-required")
+        return 0 if needed else 1
+    json.dump(
+        source_fingerprint(args.repo_root, base_ref=args.base_ref),
+        sys.stdout,
+        indent=2,
+        sort_keys=True,
+    )
     sys.stdout.write("\n")
     return 0
 

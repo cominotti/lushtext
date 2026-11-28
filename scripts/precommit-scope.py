@@ -48,15 +48,54 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ALLOWED_DIRS = ("docs", "openspec", ".claude", ".agents")
 SOURCE_ROOTS = ("crates", "fuzz", "workspace-hack")
+GTK_LUSH_PREFIXES = (
+    "crates/gtk-lush/",
+    "crates/gtk-lush-adoption-lab/",
+    "fixtures/gtk-lush-adoption/",
+    ".cargo/",
+    "workspace-hack/",
+)
+GTK_LUSH_EXACT = frozenset(
+    {
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "Makefile",
+        ".github/workflows/ci.yml",
+        "scripts/run-gtk-axioms.sh",
+        "scripts/check-gtk-axioms.py",
+        "scripts/check-gtk-lush-policy.py",
+        "scripts/check-gtk-lush-adoption.py",
+        "scripts/install-cargo-public-api.sh",
+        "scripts/headless-session",
+        "scripts/bounded-log-scan.sh",
+        "scripts/smoke_warning_classifiers.py",
+        "scripts/with-temp-scope.sh",
+        "scripts/precommit-scope.py",
+    }
+)
 INCLUDE_MACROS = ("include_str", "include_bytes", "include")
 STAMP_FILENAME = "lushtext-precommit-check-stamp"
 STAMP_TTL_SECONDS = 1800
+
+
+def is_gtk_lush_path(rel: str) -> bool:
+    """Whether a path can affect GTK Lush crates, axioms, MSRV, or API surface."""
+    norm = rel.replace("\\", "/")
+    if norm in GTK_LUSH_EXACT:
+        return True
+    return norm.startswith(GTK_LUSH_PREFIXES)
 
 
 def allowlisted(rel: str) -> bool:
     """Whether a repository-relative path is on the documentation allowlist."""
     rel = rel.replace("\\", "/")
     if rel.startswith("../") or rel.startswith("/"):
+        return False
+    # Runtime smoke helper scripts executed by run-accessibility-smoke.sh and
+    # run-visual-smoke.sh must stay off the docs-only allowlist so verify-local
+    # and pre-commit cannot short-circuit them.
+    if rel.startswith(".agents/skills/gtk-agentic-debugging/scripts/"):
         return False
     first = rel.split("/", 1)[0]
     if first in ALLOWED_DIRS and "/" in rel:
@@ -68,8 +107,15 @@ def _git_env() -> dict[str, str]:
     env = dict(os.environ)
     # Strip repo-locating overrides so `git -C <repo>` cannot follow a decoy
     # checkout, while keeping GIT_INDEX_FILE for partial-stage hook runs.
-    env.pop("GIT_DIR", None)
-    env.pop("GIT_WORK_TREE", None)
+    for var in (
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_PREFIX",
+    ):
+        env.pop(var, None)
     return env
 
 
@@ -118,6 +164,78 @@ def docs_only_range(repo: Path, base_ref: str, head_ref: str) -> tuple[bool, str
     if outside:
         return False, f"{outside[0]} is outside the documentation allowlist"
     return True, f"{len(paths)} changed path(s) in range, all documentation"
+
+
+def gtk_lush_changed_range(repo: Path, base_ref: str, head_ref: str) -> tuple[bool, str]:
+    """Fail-closed: return True on any gtk-lush path, empty diff, or git error."""
+    if not base_ref or not head_ref:
+        return True, "base and head refs are required"
+    if git(repo, "rev-parse", "--is-inside-work-tree").returncode != 0:
+        return True, "not inside a git work tree"
+    if (
+        git(repo, "rev-parse", "-q", "--verify", f"{base_ref}^{{commit}}").returncode != 0
+        or git(repo, "rev-parse", "-q", "--verify", f"{head_ref}^{{commit}}").returncode != 0
+    ):
+        return True, "base or head commit could not be resolved"
+    diff = git(repo, "diff", "--name-only", "--no-renames", "-z", f"{base_ref}...{head_ref}")
+    if diff.returncode != 0 and git(repo, "merge-base", base_ref, head_ref).returncode != 0:
+        diff = git(repo, "diff", "--name-only", "--no-renames", "-z", base_ref, head_ref)
+    if diff.returncode != 0:
+        return True, "git diff range failed: " + diff.stderr.decode(errors="replace").strip()
+    paths = [os.fsdecode(p) for p in diff.stdout.split(b"\0") if p]
+    if not paths:
+        return True, "range is empty"
+    matched = [p for p in paths if is_gtk_lush_path(p)]
+    if matched:
+        return True, f"{matched[0]} affects gtk-lush"
+    return False, f"{len(paths)} changed path(s) in range, none affect gtk-lush"
+
+
+def _porcelain_paths(repo: Path) -> tuple[bool, list[str]]:
+    res = git(repo, "status", "--porcelain=v1", "--untracked-files=all", "-z")
+    if res.returncode != 0:
+        return False, []
+    entries = res.stdout.split(b"\0")
+    out: list[str] = []
+    i = 0
+    while i < len(entries):
+        entry = entries[i]
+        i += 1
+        if not entry:
+            continue
+        if len(entry) < 4:
+            return False, []
+        xy = entry[:2].decode(errors="replace")
+        path = os.fsdecode(entry[3:])
+        out.append(path)
+        if "R" in xy or "C" in xy:
+            if i < len(entries) and entries[i]:
+                out.append(os.fsdecode(entries[i]))
+            i += 1
+    return True, out
+
+
+def gtk_lush_changed_worktree(repo: Path, base_ref: str | None = None) -> tuple[bool, str]:
+    """Fail-closed worktree + optional branch diff query for GTK Lush scope."""
+    if git(repo, "rev-parse", "--is-inside-work-tree").returncode != 0:
+        return True, "not inside a git work tree"
+    ok_wt, paths = _porcelain_paths(repo)
+    if not ok_wt:
+        return True, "failed to inspect working tree status"
+    all_paths = list(paths)
+    if base_ref:
+        if git(repo, "rev-parse", "-q", "--verify", f"{base_ref}^{{commit}}").returncode != 0:
+            return True, f"base ref '{base_ref}' could not be resolved"
+        diff = git(repo, "diff", "--name-only", "--no-renames", "-z", f"{base_ref}...HEAD")
+        if diff.returncode != 0 and git(repo, "merge-base", base_ref, "HEAD").returncode != 0:
+            diff = git(repo, "diff", "--name-only", "--no-renames", "-z", base_ref, "HEAD")
+        if diff.returncode != 0:
+            return True, "git diff failed"
+        all_paths.extend(os.fsdecode(p) for p in diff.stdout.split(b"\0") if p)
+    matched = [p for p in all_paths if is_gtk_lush_path(p)]
+    if matched:
+        return True, f"{matched[0]} affects gtk-lush"
+    return False, f"{len(all_paths)} changed path(s), none affect gtk-lush"
 
 
 def stamp_path(repo: Path) -> Path:
@@ -612,6 +730,29 @@ def self_test() -> None:
         )
         assert res.returncode == 0, f"CLI stamp-valid failed: {res.stderr.decode()}"
 
+        # gtk-lush scope classification (fail-closed on missing/invalid refs).
+        assert gtk_lush_changed_range(stamp_repo, "missing-ref", "HEAD")[0]
+        assert not gtk_lush_changed_worktree(stamp_repo, None)[0]
+        (stamp_repo / "crates/lushtext-ui/src").mkdir(parents=True, exist_ok=True)
+        (stamp_repo / "crates/lushtext-ui/src/u.rs").write_text("pub fn u() {}\n")
+        run(stamp_repo, "add", "crates/lushtext-ui/src/u.rs")
+        run(stamp_repo, "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "ui-only")
+        head_after_ui = subprocess.run(
+            ["git", "-C", str(stamp_repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert not gtk_lush_changed_range(stamp_repo, f"{head_after_ui}~1", head_after_ui)[0]
+        (stamp_repo / "crates/gtk-lush/widgets/src").mkdir(parents=True, exist_ok=True)
+        (stamp_repo / "crates/gtk-lush/widgets/src/w.rs").write_text("pub fn w() {}\n")
+        assert gtk_lush_changed_worktree(stamp_repo, f"{head_after_ui}~1")[0]
+        run(stamp_repo, "add", "crates/gtk-lush/widgets/src/w.rs")
+        run(stamp_repo, "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "gtk-lush")
+        head_after_gl = subprocess.run(
+            ["git", "-C", str(stamp_repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert gtk_lush_changed_range(stamp_repo, head_after_ui, head_after_gl)[0]
+
     print("precommit-scope self-test: ok")
 
 
@@ -627,6 +768,15 @@ def main(argv: list[str]) -> int:
         ok, why = docs_only_range(Path.cwd(), argv[1], argv[2])
         print(f"precommit-scope: {'docs-only' if ok else 'full gate'}: {why}", file=sys.stderr)
         return 0 if ok else 1
+    if len(argv) == 3 and argv[0] == "gtk-lush-changed-range":
+        changed, why = gtk_lush_changed_range(Path.cwd(), argv[1], argv[2])
+        print(f"precommit-scope: gtk-lush {'changed' if changed else 'unchanged'}: {why}", file=sys.stderr)
+        return 0 if changed else 1
+    if argv and argv[0] == "gtk-lush-changed-worktree" and len(argv) in (1, 2):
+        base = argv[1] if len(argv) == 2 and argv[1] else None
+        changed, why = gtk_lush_changed_worktree(Path.cwd(), base)
+        print(f"precommit-scope: gtk-lush {'changed' if changed else 'unchanged'}: {why}", file=sys.stderr)
+        return 0 if changed else 1
     if argv == ["stamp-write"]:
         ok, why = stamp_write(Path.cwd())
         print(f"precommit-scope: {why}", file=sys.stderr)

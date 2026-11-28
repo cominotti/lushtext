@@ -35,6 +35,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       docs_only: ${{ steps.classify.outputs.docs_only || 'false' }}
+      gtk_lush_changed: ${{ steps.classify.outputs.gtk_lush_changed || 'true' }}
     steps:
       - uses: actions/checkout@v6
         if: github.event_name == 'pull_request'
@@ -49,6 +50,15 @@ jobs:
             echo "docs_only=true" >> "$GITHUB_OUTPUT"
           else
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
+          rc=0
+          ./scripts/precommit-scope.py gtk-lush-changed-range "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" || rc=$?
+          if [ "$rc" -eq 0 ]; then
+            echo "gtk_lush_changed=true" >> "$GITHUB_OUTPUT"
+          elif [ "$rc" -eq 1 ]; then
+            echo "gtk_lush_changed=false" >> "$GITHUB_OUTPUT"
+          else
+            exit "$rc"
           fi
 
   lint-docs:
@@ -200,21 +210,25 @@ jobs:
         run: ./scripts/with-temp-scope.sh nextest -- cargo nextest run --workspace
 
       - name: Run GTK Lush doctests
+        if: needs.scope.outputs.gtk_lush_changed == 'true'
         run: make gtk-lush-doctests
 
       - name: Compile GTK Lush standalone examples
+        if: needs.scope.outputs.gtk_lush_changed == 'true'
         run: make gtk-lush-examples
 
       - name: Test GTK Lush adoption lab
+        if: needs.scope.outputs.gtk_lush_changed == 'true'
         run: make gtk-lush-adoption-lab
 
       - name: Check GTK Lush stock adoption fixtures
+        if: needs.scope.outputs.gtk_lush_changed == 'true'
         run: make gtk-lush-stock-fixtures
 
   gtk-lush-msrv:
     name: GTK Lush MSRV
     needs: scope
-    if: needs.scope.outputs.docs_only != 'true'
+    if: needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.gtk_lush_changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     container:
@@ -245,7 +259,7 @@ jobs:
   gtk-lush-api-advisory:
     name: GTK Lush API Advisory
     needs: scope
-    if: needs.scope.outputs.docs_only != 'true'
+    if: needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.gtk_lush_changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     container:
@@ -318,15 +332,15 @@ jobs:
       image: registry.fedoraproject.org/fedora:45
 
     steps:
-      - name: Skip GTK Axioms on docs-only pull request
-        if: needs.scope.outputs.docs_only == 'true'
-        run: echo "Docs-only pull request; GTK axioms skipped while preserving required check status."
+      - name: Skip GTK Axioms on docs-only or non-gtk-lush pull request
+        if: needs.scope.outputs.docs_only == 'true' || needs.scope.outputs.gtk_lush_changed != 'true'
+        run: echo "Docs-only or non-gtk-lush pull request; GTK axioms skipped while preserving required check status."
 
       - uses: actions/checkout@v6
-        if: needs.scope.outputs.docs_only != 'true'
+        if: needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.gtk_lush_changed == 'true'
 
       - name: Install system dependencies
-        if: needs.scope.outputs.docs_only != 'true'
+        if: needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.gtk_lush_changed == 'true'
         run: |
           dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps=False --setopt=fastestmirror=True --setopt=max_parallel_downloads=10 --setopt=minrate=100k --setopt=timeout=30 install -y \
             gtk4-devel \
@@ -344,11 +358,11 @@ jobs:
             adwaita-mono-fonts
 
       - name: Install Rust toolchain
-        if: needs.scope.outputs.docs_only != 'true'
+        if: needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.gtk_lush_changed == 'true'
         uses: dtolnay/rust-toolchain@1.98.0
 
       - uses: Swatinem/rust-cache@v2
-        if: needs.scope.outputs.docs_only != 'true'
+        if: needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.gtk_lush_changed == 'true'
         with:
           shared-key: fedora-45
 
@@ -363,7 +377,7 @@ jobs:
       # the A29 context-engine cut-off) are skipped here and reported as
       # `skipped (slow): <id>`; the nightly responsiveness workflow runs them.
       - name: Run GTK axiom probes and sample checks
-        if: needs.scope.outputs.docs_only != 'true'
+        if: needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.gtk_lush_changed == 'true'
         run: make gtk-axioms GTK_LUSH_AXIOMS_INCLUDE_SLOW=0
 
   gtk-axioms-floor:
@@ -380,15 +394,15 @@ jobs:
       image: registry.fedoraproject.org/fedora:44
 
     steps:
-      - name: Skip GTK Axioms (GNOME 50 floor) on docs-only pull request
-        if: needs.scope.outputs.docs_only == 'true'
-        run: echo "Docs-only pull request; GTK axioms floor skipped while preserving required check status."
+      - name: Skip GTK Axioms (GNOME 50 floor) on docs-only or non-gtk-lush pull request
+        if: needs.scope.outputs.docs_only == 'true' || needs.scope.outputs.gtk_lush_changed != 'true'
+        run: echo "Docs-only or non-gtk-lush pull request; GTK axioms floor skipped while preserving required check status."
 
       - uses: actions/checkout@v6
-        if: needs.scope.outputs.docs_only != 'true'
+        if: needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.gtk_lush_changed == 'true'
 
       - name: Install system dependencies
-        if: needs.scope.outputs.docs_only != 'true'
+        if: needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.gtk_lush_changed == 'true'
         run: |
           dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps=False --setopt=fastestmirror=True --setopt=max_parallel_downloads=10 --setopt=minrate=100k --setopt=timeout=30 install -y \
             gtk4-devel \
@@ -406,11 +420,11 @@ jobs:
             adwaita-mono-fonts
 
       - name: Install Rust toolchain
-        if: needs.scope.outputs.docs_only != 'true'
+        if: needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.gtk_lush_changed == 'true'
         uses: dtolnay/rust-toolchain@1.98.0
 
       - uses: Swatinem/rust-cache@v2
-        if: needs.scope.outputs.docs_only != 'true'
+        if: needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.gtk_lush_changed == 'true'
         with:
           shared-key: fedora-44
 
@@ -425,7 +439,7 @@ jobs:
       # the A29 context-engine cut-off) are skipped here and reported as
       # `skipped (slow): <id>`; the nightly responsiveness workflow runs them.
       - name: Run GTK axiom probes and sample checks
-        if: needs.scope.outputs.docs_only != 'true'
+        if: needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.gtk_lush_changed == 'true'
         run: make gtk-axioms GTK_LUSH_AXIOMS_INCLUDE_SLOW=0
 
   property-tests:

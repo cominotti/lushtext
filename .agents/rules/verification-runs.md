@@ -285,8 +285,8 @@ inside one `heavy.sh`.
 commit ...` (`heavy.sh` does not pass stdin, so give the message with `-F`), or
 by hand `flock -s target/responsiveness-measure.intent true && flock -s
 target/responsiveness-measure.lock git commit ...` from the main checkout. A
-docs-only commit skips Clippy but still runs `make check-policy`, which builds
-crates, so it goes through `heavy.sh` too. The
+docs-only commit skips Clippy via `make pre-commit-docs` (`check-fmt` +
+zero-Cargo `check-policy-docs`). The
 gate order before a commit is in [`testing.md`](./testing.md).
 
 **Waiting.** Use `scripts/wait-for.sh`, or `tail --pid=<pid> -f /dev/null` / a

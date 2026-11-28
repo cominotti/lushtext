@@ -344,6 +344,11 @@ LushText SHALL provide guardrails that detect accessibility drift in the current
 - **THEN** `scripts/check-accessibility-policy.py` enforces static accessibility rules on those lines
 - **AND** `scripts/accessibility_source_fingerprint.py` does not require re-running `accessibility-smoke` or `visual-smoke`
 
+#### Scenario: Pure Markdown documentation edits keep static doc checks without Mutter smoke runs
+- **WHEN** a change edits only `docs/*.md` files
+- **THEN** static doc and accessibility audits (`check-accessibility-policy --strict-current-tree --static-only`, `check-automation-docs`, and `check-end-user-smoke-workflow`) still enforce synchronization
+- **AND** `scripts/accessibility_source_fingerprint.py` does not invalidate smoke proof or trigger `accessibility-smoke` or `visual-smoke`
+
 #### Scenario: Committed accessibility-relevant branch changes require fresh smoke proof
 - **WHEN** `scripts/check-accessibility-policy.py --strict-current-tree --base-ref origin/main` runs on a clean worktree whose `origin/main...HEAD` diff touches accessibility-relevant files
 - **THEN** missing or stale smoke summaries fail the check even though the working tree is clean

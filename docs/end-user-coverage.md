@@ -204,10 +204,12 @@ they are not default PR gates:
   the compositor lane itself; it verifies that the proof artifact exists, is
   current across staging and commits, includes required invariant coverage,
   identifies authoritative Rust proof when requested, and does not count skipped
-  visual geometry coverage as verification. `make check-smoke-proof` invokes
-  `cargo gtk-proof policy` directly, while `scripts/check-visual-proof-policy.py`
-  remains the `--self-test` compatibility shim and importable metadata helper
-  for Python callers (Python oracle summaries remain diagnostic and non-authoritative).
+  visual geometry coverage as verification. `make check-smoke-proof` calls
+  `scripts/check-visual-proof-policy.py`, fast-skipping Cargo in pure Python on
+  non-visual diffs and delegating to `cargo gtk-proof policy` otherwise; the
+  script also serves as the `--self-test` compatibility shim and importable
+  metadata helper for Python callers (Python oracle summaries remain diagnostic
+  and non-authoritative).
 - `make automation-smoke` launches the real debug binary in a private
   headless session (`plain` profile) under headless Mutter, introspects the app-owned automation
   object, reads catalog/snapshot state, checks stateful action state against

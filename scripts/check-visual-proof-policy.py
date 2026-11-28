@@ -116,8 +116,51 @@ def delegate_cli_to_rust(argv: list[str]) -> int:
         return 2
 
 
+def visual_proof_needed(base_ref: str | None, repo_root: Path = REPO_ROOT) -> tuple[bool, str]:
+    """Return True if Rust visual proof policy checks are required (fail-closed)."""
+    if not (repo_root / ".git").exists():
+        return True, "no .git directory; delegating to Rust proof policy"
+    try:
+        changed = _changed_files_for_root(base_ref, repo_root)
+    except Exception as exc:
+        return True, f"git query failed ({exc}); delegating fail-closed"
+    for path in changed:
+        normalized = path.replace("\\", "/")
+        if is_visual_sensitive(normalized) or normalized.startswith("crates/cargo-gtk-proof/"):
+            return True, f"visual-sensitive path changed: {normalized}"
+    return False, "no visual-sensitive changes"
+
+
+def _parse_fast_path_args(argv: list[str]) -> tuple[bool, Path, str | None]:
+    """Parse only --artifact-dir/--base-ref for pure-Python skip; fail closed otherwise."""
+    artifact_dir = DEFAULT_ARTIFACT_DIR
+    base_ref: str | None = None
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--artifact-dir":
+            if i + 1 >= len(argv):
+                return False, artifact_dir, base_ref
+            artifact_dir = Path(argv[i + 1])
+            i += 2
+        elif arg.startswith("--artifact-dir="):
+            artifact_dir = Path(arg.split("=", 1)[1])
+            i += 1
+        elif arg == "--base-ref":
+            if i + 1 >= len(argv):
+                return False, artifact_dir, base_ref
+            base_ref = argv[i + 1]
+            i += 2
+        elif arg.startswith("--base-ref="):
+            base_ref = arg.split("=", 1)[1]
+            i += 1
+        else:
+            return False, artifact_dir, base_ref
+    return True, artifact_dir, base_ref
+
+
 def _cli_entry_point(argv: list[str]) -> int:
-    """Run this module's own self-tests, then delegate the real check to Rust.
+    """Run this module's own self-tests, fast-skip non-visual trees, or delegate to Rust.
 
     `crates/cargo-gtk-proof` owns the authoritative policy check, but this
     module's predicates stay live: `scripts/visual-geometry-smoke.py` imports it
@@ -127,9 +170,27 @@ def _cli_entry_point(argv: list[str]) -> int:
     Python half asserting nothing while the Rust half passed.
     """
 
+    if "--query-required" in argv:
+        rest = [a for a in argv if a != "--query-required"]
+        ok_args, _artifact_dir, base_ref = _parse_fast_path_args(rest)
+        if not ok_args:
+            print("required")
+            return 0
+        needed, _detail = visual_proof_needed(base_ref, REPO_ROOT)
+        print("required" if needed else "not-required")
+        return 0 if needed else 1
+
     if "--self-test" in argv:
         run_self_tests()
         print("PASS: visual proof policy self-tests (python)")
+        return delegate_cli_to_rust(argv)
+
+    ok_args, _artifact_dir, base_ref = _parse_fast_path_args(argv)
+    if ok_args:
+        needed, _detail = visual_proof_needed(base_ref, REPO_ROOT)
+        if not needed:
+            print("PASS: no visual-sensitive changes (python fast path)")
+            return 0
     return delegate_cli_to_rust(argv)
 
 
@@ -1165,6 +1226,42 @@ def _self_test_workspace_tree_row_anchor_paths() -> None:
     assert case_has_actionable_pixel_evidence(reference_case)
     reference_case["pixel_anchor_evidence"][0]["reference_top_y"] = None
     assert not case_has_actionable_pixel_evidence(reference_case)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        no_git = Path(tmp)
+        needed, _ = visual_proof_needed(None, no_git)
+        assert needed, "missing .git directory must fail closed to Rust delegation"
+
+        saved_git_env = {k: os.environ.pop(k) for k in list(os.environ) if k.startswith("GIT_")}
+        os.environ["GIT_CONFIG_GLOBAL"] = "/dev/null"
+        os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
+        try:
+            for cmd in (
+                ["init", "-q"],
+                ["config", "user.name", "t"],
+                ["config", "user.email", "t@example.invalid"],
+                ["config", "commit.gpgsign", "false"],
+            ):
+                subprocess.run(["git", "-C", str(no_git), *cmd], check=True)
+            (no_git / "docs").mkdir()
+            (no_git / "docs/a.md").write_text("hi\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(no_git), "add", "-A"], check=True)
+            subprocess.run(
+                ["git", "-C", str(no_git), "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "base"],
+                check=True,
+            )
+            needed_clean, _ = visual_proof_needed(None, no_git)
+            assert not needed_clean, "clean repo must take Python fast path"
+
+            (no_git / "crates/cargo-gtk-proof/src").mkdir(parents=True)
+            (no_git / "crates/cargo-gtk-proof/src/policy.rs").write_text("// x\n", encoding="utf-8")
+            needed_proof, _ = visual_proof_needed(None, no_git)
+            assert needed_proof, "crates/cargo-gtk-proof edits must require Rust delegation"
+        finally:
+            for k in list(os.environ):
+                if k.startswith("GIT_"):
+                    os.environ.pop(k, None)
+            os.environ.update(saved_git_env)
 
 
 if __name__ == "__main__":

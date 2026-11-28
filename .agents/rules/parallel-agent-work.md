@@ -232,9 +232,10 @@ Change worktrees live in `.claude/worktrees/<change>`.
   figures (or changes whose `tasks.md` states `Kani: none`), sync delta specs
   and archive the OpenSpec change (`openspec-archive-change`) directly on the PR
   branch as a docs-only commit *after* final code review fixes and *before* the
-  single final `make verify-local VERIFY_RUN_SMOKES=1 GATE_TREES_CHANGE=<change>`
-  gate pass recorded on that exact post-archive `HEAD^{tree}` (or omit
-  `VERIFY_RUN_SMOKES=1` when no smoke-relevant paths changed). That eliminates a separate post-merge
+  single final `make verify-local GATE_TREES_CHANGE=<change>`
+  gate pass (`VERIFY_RUN_SMOKES=auto` default runs `smoke-ui` whenever any
+  smoke-relevant file changed and skips smokes otherwise) recorded on that
+  exact post-archive `HEAD^{tree}`. That eliminates a separate post-merge
   archive PR and its CI cycle while preserving the exact-tree gate invariant
   (skip step 4 below when the archive is already in the PR branch).
   (`programme-change.js` always keeps its stage-4 post-merge archive path.)
@@ -265,9 +266,10 @@ Change worktrees live in `.claude/worktrees/<change>`.
        `make verify-local`), and `make smoke-ui GATE_TREES_CHANGE=<change>` (or
        the three individual smoke records) when the branch or the merged-in
        commits touch a smoke-relevant file, one under the UI prefixes
-       (`testing.md`, "Proof Obligations of a Change") or on the exact list of
-       `scripts/accessibility_source_fingerprint.py`, as its `is_relevant`
-       decides. A docs-only merge commit is no exception.
+       (`testing.md`, "Proof Obligations of a Change"), on the exact list of
+       `scripts/accessibility_source_fingerprint.py` (`is_relevant`), or
+       visual-sensitive (`is_visual_sensitive` / `crates/cargo-gtk-proof/` of
+       `scripts/check-visual-proof-policy.py`). A docs-only merge commit is no exception.
      - Record each gate you run with
        `scripts/gate-trees.sh record <wt> --gate '<gate>' -- scripts/heavy.sh … -- make <gate>`.
        Only that helper writes `gate-trees.log` (under `flock` so `make smoke-ui`
@@ -573,7 +575,8 @@ script, and inside a workflow both skills below run their single-pass forms.
    edits and its own together locally **before** any long gate, runs the full
    gates once on the result (`make check`, the full `make test`, and
    `make smoke-ui GATE_TREES_CHANGE=<change>` or individual smokes when the
-   branch touches `is_relevant` files against `origin/main`), each through
+   branch touches `is_relevant` or `is_visual_sensitive`/`crates/cargo-gtk-proof/`
+   files against `origin/main`), each through
    `scripts/gate-trees.sh record`, re-dispatches a Kani budget run its edits
    make stale (`verification-runs.md`, "Kani"), and pushes at the end. It is the
    last agent that edits code. A read-only agent then checks, in the shell,
@@ -581,7 +584,7 @@ script, and inside a workflow both skills below run their single-pass forms.
    apply agent returned and are pushed, that `scripts/gate-trees.sh lookup`
    finds a `make check` pass and, in a lookup of its own, a `make test` pass
    for that tree, and the three smoke passes whenever `origin/main...HEAD`
-   touches `is_relevant` files; the script stops on any difference, before the
+   touches those smoke-relevant files; the script stops on any difference, before the
    merge stage.
 4. **The final review, merge and archive agent edits nothing.** It reviews
    exactly the apply range the script passes (the lens `HEAD` to the apply
@@ -606,8 +609,9 @@ script, and inside a workflow both skills below run their single-pass forms.
    and the tree it merged. A read-only agent then checks, in the shell, that
    the merge commit is on `origin/main` and has that tree, and runs
    `scripts/gate-trees.sh lookup --tree` against it, with the helper and
-   the smoke-relevance test (`is_relevant` of
-   `scripts/accessibility_source_fingerprint.py`) read from `origin/main`:
+   the smoke-relevance checks (`is_relevant` of
+   `scripts/accessibility_source_fingerprint.py` and `is_visual_sensitive`/
+   `crates/cargo-gtk-proof/` of `scripts/check-visual-proof-policy.py`) read from `origin/main`:
    `make check` and `make test` always, and the three smokes when the
    `origin/main` merge brought commits in and a file of the branch or of
    those commits is smoke-relevant, or, after a merge that made no commit,

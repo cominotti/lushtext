@@ -738,10 +738,10 @@ const CASES = {
     check(ok.result.verdict === 'merged' && ok.work.at(-1) === 'postmerge:demo', JSON.stringify(ok.work))
     const p = ok.prompts['postmerge:demo']
     check(has(p, `'${MC}^{commit}'`) && has(p, `'${T2}^{tree}'`) && has(p, '--tree') && has(p, "'make test'") && has(p, '--change demo'), p)
-    // One smoke predicate everywhere (probe C7 #4): the canonical classifier's
-    // is_relevant, the UI prefixes and its exact paths, never a copy of one half
-    // of it and never the wider visual-proof set.
-    check(has(p, 'a.is_relevant(p)') && !has(p, 'RELEVANT_PREFIXES') && !has(p, 'is_visual_sensitive'), p)
+    // One unified smoke predicate everywhere (smokeCheck, apply-verify, merge, post-merge):
+    // both canonical classifiers (is_relevant and is_visual_sensitive/cargo-gtk-proof),
+    // never an inline copy like RELEVANT_PREFIXES.
+    check(has(p, 'a.is_relevant(p)') && has(p, 'v.is_visual_sensitive(p)') && !has(p, 'RELEVANT_PREFIXES'), p)
     // An abbreviated hash from gh is resolved in the shell, not refused.
     const short = await run({ ...BASE, mode: 'new' }, { merge: () => ({ ...DEFAULTS.merge(), merge_commit: MC.slice(0, 12), final_tree: T2.slice(0, 12) }) })
     check(!short.result.stopped && has(short.prompts['postmerge:demo'], `'${MC.slice(0, 12)}^{commit}'`), JSON.stringify(short.result.stopped))
@@ -823,7 +823,7 @@ const CASES = {
     const r = await run({ ...BASE, mode: 'new' })
     for (const label of ['verify:demo', 'apply:demo']) {
       const p = r.prompts[label]
-      check(has(p, 'a.is_relevant(p)') && has(p, 'origin/main...HEAD'), `${label}: ${p}`)
+      check(has(p, 'a.is_relevant(p)') && has(p, 'v.is_visual_sensitive(p)') && has(p, 'origin/main...HEAD'), `${label}: ${p}`)
       check(!has(p, '"hook"'), `${label}: must not rely on removed pre-commit hook shortcut: ${p}`)
     }
     // The apply stage runs the check even when it made no commit.

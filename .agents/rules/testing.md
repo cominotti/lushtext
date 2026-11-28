@@ -190,12 +190,14 @@ a helper a test must remember to call first
   `make check` / `make pre-commit` keep fast static iteration (fmt, Clippy,
   `check-policy`); `make verify-local-fast` adds `cargo check -p lushtext
   --bins --locked`, the `rustdoc` gate above, and `cargo bench --no-run`;
-  `make verify-local` runs full local CI parity (`verify-local-fast`,
-  `cargo deny`, `make test`, `make test-prop`, `make fuzz-corpus-replay`,
-  conditional GTK Lush checks when `crates/gtk-lush*` changed, and
-  `make check-smoke-proof`). Run `make verify-local-fast` before opening or
-  updating a PR, and `make verify-local` before merging. Public module docs
-  must never intra-doc-link private items — drop the link and keep the name in
+  `make verify-local` defaults to `VERIFY_RUN_SMOKES=auto` (short-circuiting
+  clean docs-only branches to `make pre-commit-docs` unless `VERIFY_FORCE_FULL=1`,
+  else running `verify-local-fast`, `cargo deny`, `make test`, `make test-prop`,
+  `make fuzz-corpus-replay`, conditional GTK Lush checks via `precommit-scope.py`,
+  only the smoke lane(s) needed by the diff, and `make check-smoke-proof`). Run
+  `make verify-local-fast` before opening or updating a PR, and
+  `make verify-local` before merging. Public module docs must never
+  intra-doc-link private items — drop the link and keep the name in
   backticks; never widen visibility for docs.
 - **`git add -N` new files before any diff-aware gate.**
   `make check-smoke-proof` (`scripts/check-visual-proof-policy.py`,
@@ -235,17 +237,21 @@ a helper a test must remember to call first
 - **Files under the UI prefixes need the three smokes (Decision 7 note).**
   The visual-sensitive and accessibility-relevant smoke sets are selected by
   prefix (`crates/lushtext-ui/src/ui/`, `resources/ui/`, `resources/style/`),
-  plus `scripts/lushtext-automation.py` and automation/smoke files in
-  `accessibility_source_fingerprint.py`. Per 2026-11-18 Decision 7,
+  plus `scripts/lushtext-automation.py` and the executable smoke/AT-SPI scripts
+  in `accessibility_source_fingerprint.py`. Pure Markdown documentation files
+  (`docs/*.md`) stay outside runtime smoke fingerprints and are audited statically
+  by `check-accessibility-policy --static-only`, `check-automation-docs`, and
+  `check-end-user-smoke-workflow` (including under `check-policy-docs`). Per
+  2026-11-18 Decision 7,
   `crates/lushtext/tests/widget/` is excluded from both smoke fingerprints
   while retained in `is_policy_path` (static accessibility policy audits +
   `make test-widget-headless`); residual risk is bounded because widget tests do
   not compile into the shipped `lushtext` binary (`cargo check -p lushtext
   --bins --locked`) and test behavior is verified by `make test-widget-headless`.
-  Any edit under `crates/lushtext-ui/src/ui/`, `resources/ui/`, or
-  `resources/style/` (docs included) requires `make smoke-ui` (which pre-builds
-  once and runs `visual-geometry-smoke`, `accessibility-smoke`, and
-  `visual-smoke` in parallel when `SMOKE_PARALLEL=1`).
+  On non-visual branches, `make check-smoke-proof` exits early in pure Python
+  without invoking Cargo. Any edit under `crates/lushtext-ui/src/ui/`,
+  `resources/ui/`, or `resources/style/` requires `make smoke-ui` (or
+  `make verify-local`, which auto-selects it via `VERIFY_RUN_SMOKES=auto`).
 - Filesystem-sensitive changes pass `make check-agent-docs`;
   automation-surface changes pass `make check-automation-docs`, and a change to
   `scripts/lushtext-automation.py` also `make automation-client-self-test`;
