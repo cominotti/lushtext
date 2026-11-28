@@ -138,12 +138,12 @@ pub use retirement::{SearchRetirementOwnership, SearchRetirementSliceObservation
 pub use test_policy::SearchPanelTestPolicy;
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{self, gio};
+use lushtext_model::values::{SharedPath, SharedPaths};
 use lushtext_services::coordination::notifications::NotificationSeverity;
 use lushtext_services::search::content_search::ReplaceUndoBackup;
 
@@ -206,7 +206,7 @@ impl SearchFileGroup {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchMatchLocation {
     /// File containing the match, the path its search match interned.
-    pub path: Arc<Path>,
+    pub path: SharedPath,
     /// 1-based line number for the match.
     pub line_number: u32,
 }
@@ -214,7 +214,7 @@ pub struct SearchMatchLocation {
 impl SearchMatchLocation {
     /// Build one match-navigation target.
     #[must_use]
-    pub fn new(path: impl Into<Arc<Path>>, line_number: u32) -> Self {
+    pub fn new(path: impl Into<SharedPath>, line_number: u32) -> Self {
         let path = path.into();
         Self { path, line_number }
     }
@@ -285,44 +285,28 @@ impl LushtextSearchPanel {
         self.imp()
             .runtime
             .workspace_folders
-            .replace(Arc::from(folders));
+            .replace(SharedPaths::from(folders));
         self.refresh_accessibility_state();
     }
 
     /// Register a callback invoked when the user activates a match result.
     pub fn connect_open_file<F: Fn(&Path, u32) + 'static>(&self, f: F) {
-        self.replace_panel_event_handler(results::PanelEventSlot::OpenFile, move |event| {
-            if let results::SearchPanelEvent::OpenFile(path, line) = event {
-                f(path, *line);
-            }
-        });
+        self.connect_open_file_boxed(Box::new(f));
     }
 
     /// Register a callback invoked when the user presses Escape.
     pub fn connect_close_requested<F: Fn() + 'static>(&self, f: F) {
-        self.replace_panel_event_handler(results::PanelEventSlot::CloseRequested, move |event| {
-            if matches!(event, results::SearchPanelEvent::CloseRequested) {
-                f();
-            }
-        });
+        self.connect_close_requested_boxed(Box::new(f));
     }
 
     /// Register a callback invoked when F4/Shift+F4 navigates to a match.
     pub fn connect_navigate_to_match<F: Fn(&Path, u32) + 'static>(&self, f: F) {
-        self.replace_panel_event_handler(results::PanelEventSlot::Navigate, move |event| {
-            if let results::SearchPanelEvent::Navigate(path, line) = event {
-                f(path, *line);
-            }
-        });
+        self.connect_navigate_to_match_boxed(Box::new(f));
     }
 
     /// Register a callback invoked on search progress and completion.
     pub fn connect_search_progress<F: Fn(SearchProgressUpdate) + 'static>(&self, f: F) {
-        self.replace_panel_event_handler(results::PanelEventSlot::Progress, move |event| {
-            if let results::SearchPanelEvent::Progress(update) = event {
-                f(*update);
-            }
-        });
+        self.connect_search_progress_boxed(Box::new(f));
     }
 
     /// Register a callback invoked when "Confirm Replace" is clicked with checked replacements.
@@ -340,11 +324,7 @@ impl LushtextSearchPanel {
         &self,
         f: F,
     ) {
-        self.replace_panel_event_handler(results::PanelEventSlot::Undo, move |event| {
-            if let results::SearchPanelEvent::Undo(backup) = event {
-                f(std::sync::Arc::clone(backup));
-            }
-        });
+        self.connect_guarded_undo_all_boxed(Box::new(f));
     }
 
     /// Register the raw backup callback used by the external widget harness.
@@ -357,10 +337,6 @@ impl LushtextSearchPanel {
 
     /// Register a callback pushing status messages to the window's status bar.
     pub fn connect_message<F: Fn(&str, NotificationSeverity) + 'static>(&self, f: F) {
-        self.replace_panel_event_handler(results::PanelEventSlot::Message, move |event| {
-            if let results::SearchPanelEvent::Message(text, severity) = event {
-                f(text, *severity);
-            }
-        });
+        self.connect_message_boxed(Box::new(f));
     }
 }

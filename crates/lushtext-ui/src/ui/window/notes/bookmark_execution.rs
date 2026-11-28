@@ -46,6 +46,7 @@ use crate::ui::editor_page::{
 };
 use crate::ui::status_bar::MessageKind;
 use lushtext_model::persistence::bookmark::BookmarkRecord;
+use lushtext_model::values::SharedPath;
 use lushtext_model::workspace::palette::PaletteNoteTarget;
 use lushtext_services::{
     notes::bookmark_excerpt, notes::bookmark_service, persistence::json_store,
@@ -126,7 +127,7 @@ impl LushtextWindow {
         editor: &LushtextEditorPage,
         path: &Path,
     ) {
-        let path = path.to_path_buf();
+        let path = SharedPath::from(path);
         let path_for_load = path.clone();
         let started_at_generation = editor.bookmark_generation();
         let window_weak = self.downgrade();
@@ -542,7 +543,7 @@ impl LushtextWindow {
     /// Workspace persistence has always had a retry path; this is the same
     /// contract for the sidecar the same window owns.
     fn persist_bookmarks_now(&self, editor: &LushtextEditorPage) {
-        let Some(path) = editor.file_path() else {
+        let Some(path) = editor.file_path().map(SharedPath::from) else {
             return;
         };
         let bookmarks = editor.bookmark_records();
@@ -773,7 +774,8 @@ impl NotesBrowserState {
             request,
             cancellation,
         } = start;
-        let path = request.path.clone();
+        let path = SharedPath::from(request.path);
+        let path_for_worker = path.clone();
         let line = request.line;
         let state_weak = Rc::downgrade(state);
         spawn_blocking_then(
@@ -781,11 +783,7 @@ impl NotesBrowserState {
             move || {
                 #[cfg(feature = "test-utils")]
                 super::test_policy::delay_bookmark_excerpt_preview();
-                bookmark_excerpt::load_from_path_cancellable(
-                    &request.path,
-                    request.line,
-                    &cancellation,
-                )
+                bookmark_excerpt::load_from_path_cancellable(&path_for_worker, line, &cancellation)
             },
             move |(), outcome| {
                 let Some(state) = state_weak.upgrade() else {
@@ -810,11 +808,7 @@ impl NotesBrowserState {
     fn finish_bookmark_preview_load(
         state: &Rc<Self>,
         generation: lushtext_model::values::FlightGeneration,
-        completion: Option<(
-            std::path::PathBuf,
-            u32,
-            bookmark_excerpt::BookmarkExcerptState,
-        )>,
+        completion: Option<(SharedPath, u32, bookmark_excerpt::BookmarkExcerptState)>,
     ) {
         let ticket = NotesBrowserTicket::<PreviewFlight>::new(generation, state.mode.get());
         let (accepted, next) = {

@@ -149,11 +149,12 @@ use policy::SaveAdmissionPriority;
 pub(crate) type SaveCallback = Box<dyn FnOnce(Result<(), EditorSaveError>)>;
 
 impl LushtextEditorPage {
-    /// Save this tab to the path it already tracks.
-    ///
-    /// Stage 1 for a plain Ctrl+S. The destination is not explicit, so a load in
-    /// progress refuses the save rather than pre-empting it.
-    pub fn save_file_async<F: FnOnce(Result<(), EditorSaveError>) + 'static>(&self, callback: F) {
+    fn queue_tracked_save_request(
+        &self,
+        priority: SaveAdmissionPriority,
+        close_session_identity: Option<u64>,
+        callback: Box<dyn FnOnce(Result<(), EditorSaveError>) + 'static>,
+    ) {
         let Some(path) = self.imp().file_path.borrow().clone() else {
             callback(Err(EditorSaveError::NoPath));
             return;
@@ -162,10 +163,18 @@ impl LushtextEditorPage {
             self,
             path,
             false,
-            SaveAdmissionPriority::Ordinary,
-            None,
-            Box::new(callback),
+            priority,
+            close_session_identity,
+            callback,
         );
+    }
+
+    /// Save this tab to the path it already tracks.
+    ///
+    /// Stage 1 for a plain Ctrl+S. The destination is not explicit, so a load in
+    /// progress refuses the save rather than pre-empting it.
+    pub fn save_file_async<F: FnOnce(Result<(), EditorSaveError>) + 'static>(&self, callback: F) {
+        self.queue_tracked_save_request(SaveAdmissionPriority::Ordinary, None, Box::new(callback));
     }
 
     /// Save this tab's buffer to a destination the user named.
@@ -199,14 +208,7 @@ impl LushtextEditorPage {
         close_session_identity: u64,
         callback: F,
     ) {
-        let Some(path) = self.imp().file_path.borrow().clone() else {
-            callback(Err(EditorSaveError::NoPath));
-            return;
-        };
-        admission::queue_save_request(
-            self,
-            path,
-            false,
+        self.queue_tracked_save_request(
             SaveAdmissionPriority::Close,
             Some(close_session_identity),
             Box::new(callback),

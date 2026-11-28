@@ -25,8 +25,8 @@
 use std::ffi::{OsStr, OsString};
 use std::hash::{DefaultHasher, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
+use lushtext_model::values::SharedPath;
 use lushtext_model::workspace::palette::PaletteFileIdentityFailure;
 
 /// No directory: the parent of a root directory record.
@@ -180,7 +180,7 @@ pub(super) struct FileExtra {
 /// `workspace_folder_for` returns it) and its root directory record.
 #[derive(Clone, Debug)]
 pub(super) struct FolderRecord {
-    pub(super) display: Arc<PathBuf>,
+    pub(super) display: SharedPath,
     pub(super) root: u32,
 }
 
@@ -312,12 +312,8 @@ pub(super) fn path_bytes(path: &PathBuf) -> u64 {
 }
 
 /// Heap bytes of a shared workspace folder (the `Arc` block and its path).
-pub(super) fn folder_bytes(folder: &Arc<PathBuf>) -> u64 {
-    retained(
-        std::mem::size_of::<PathBuf>()
-            .saturating_add(std::mem::size_of::<usize>().saturating_mul(2))
-            .saturating_add(folder.capacity()),
-    )
+pub(super) fn folder_bytes(folder: &SharedPath) -> u64 {
+    folder.heap_bytes()
 }
 
 /// The failure an I/O error maps to.

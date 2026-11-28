@@ -234,7 +234,7 @@ proptest! {
         duplicate_first in any::<bool>(),
         max in 0usize..=support::MAX_VECTOR_LEN,
     ) {
-        let root = Arc::new(PathBuf::from("/workspace"));
+        let root = lushtext_model::values::SharedPath::from("/workspace");
         let open_tabs = (0..open_count)
             .map(|index| {
                 let path = root.join(format!("open-{index}.rs"));
@@ -256,7 +256,7 @@ proptest! {
                 OwnedIndexedFile::new(
                     path.clone(),
                     PaletteFileIdentity::canonical(path),
-                    Arc::clone(&root),
+                    root.clone(),
                 )
             })
             .collect::<Vec<_>>();
@@ -269,7 +269,7 @@ proptest! {
                 note_text: Some(format!("body-{index}")),
                 target: PaletteNoteTarget::DocumentNote {
                     path: root.join(format!("note-{index}.rs")),
-                    workspace_folders: vec![root.as_ref().clone()],
+                    workspace_folders: vec![root.to_path_buf()],
                 },
             })
             .collect::<Vec<_>>();
@@ -683,7 +683,7 @@ mod index_parity {
                     file.relative_display(),
                     file.name().to_string(),
                     file.identity(),
-                    file.workspace_folder().as_ref().clone(),
+                    file.workspace_folder().to_path_buf(),
                 )
             })
             .collect()
@@ -699,7 +699,7 @@ mod index_parity {
                     file.relative_display(),
                     file.name.clone(),
                     file.identity.clone(),
-                    file.workspace_folder.as_ref().clone(),
+                    file.workspace_folder.to_path_buf(),
                 )
             })
             .collect()

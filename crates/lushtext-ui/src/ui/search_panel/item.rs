@@ -20,11 +20,13 @@ use glib::subclass::prelude::*;
 use gtk4::glib;
 use std::cell::{Cell, RefCell};
 
+use lushtext_model::values::SharedStr;
 use lushtext_model::workspace::content_search::SearchMatchId;
 
 mod imp {
     use super::{
-        Cell, DerivedObjectProperties, ObjectExt, ObjectImpl, ObjectSubclass, RefCell, glib,
+        Cell, DerivedObjectProperties, ObjectExt, ObjectImpl, ObjectSubclass, RefCell, SharedStr,
+        glib,
     };
 
     /// Discriminant for the item type. Avoids string comparison in hot paths.
@@ -41,7 +43,7 @@ mod imp {
         pub kind: Cell<u8>,
         /// Absolute file path (set on both file and match items), one
         /// allocation shared by a file's header and every match item.
-        pub file_path: RefCell<std::sync::Arc<str>>,
+        pub file_path: RefCell<SharedStr>,
         /// Path relative to a workspace folder, shown in the UI (file items only).
         pub display_path: RefCell<String>,
         /// 1-based line number (match items only; 0 for file items).
@@ -92,16 +94,12 @@ impl SearchResultItem {
     /// Create a file header item (expandable group).
     #[must_use]
     pub fn new_file(file_path: &str, display_path: &str, match_count: u32) -> Self {
-        Self::new_file_shared(std::sync::Arc::from(file_path), display_path, match_count)
+        Self::new_file_shared(SharedStr::from(file_path), display_path, match_count)
     }
 
     /// Create a file header item over a path text its match items share.
     #[must_use]
-    pub fn new_file_shared(
-        file_path: std::sync::Arc<str>,
-        display_path: &str,
-        match_count: u32,
-    ) -> Self {
+    pub fn new_file_shared(file_path: SharedStr, display_path: &str, match_count: u32) -> Self {
         let obj: Self = glib::Object::builder().build();
         let inner = obj.imp();
         inner.kind.set(imp::SearchResultItem::KIND_FILE);
@@ -125,7 +123,7 @@ impl SearchResultItem {
         match_id: SearchMatchId,
     ) -> Self {
         Self::new_match_shared(
-            std::sync::Arc::from(file_path),
+            SharedStr::from(file_path),
             line_number,
             line_content,
             match_start,
@@ -137,7 +135,7 @@ impl SearchResultItem {
     /// Create a match item sharing its file header's path text.
     #[must_use]
     pub fn new_match_shared(
-        file_path: std::sync::Arc<str>,
+        file_path: SharedStr,
         line_number: u32,
         line_content: &str,
         match_start: u32,
@@ -168,8 +166,8 @@ impl SearchResultItem {
 
     /// The path text shared by a file's header and its match items.
     #[must_use]
-    pub fn shared_file_path(&self) -> std::sync::Arc<str> {
-        std::sync::Arc::clone(&self.imp().file_path.borrow())
+    pub fn shared_file_path(&self) -> SharedStr {
+        self.imp().file_path.borrow().clone()
     }
 
     #[must_use]

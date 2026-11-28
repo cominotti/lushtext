@@ -36,7 +36,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use gtk4::prelude::*;
 
-use lushtext_model::values::RenderGeneration;
+use lushtext_model::values::{RenderGeneration, SharedPath, SharedPaths};
 use lushtext_services::notes::markdown_render::{
     MAX_MARKDOWN_RETAINED_BYTES, MAX_MARKDOWN_SOURCE_BYTES, MarkdownEventBatch, MarkdownPlanLimit,
     MarkdownRenderPlan,
@@ -54,8 +54,8 @@ use super::test_policy::MARKDOWN_SOURCE_COPIES;
 /// back into the window shell directly.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MarkdownPreviewRenderContext {
-    pub(super) document_path: Option<Arc<PathBuf>>,
-    pub(super) workspace_folders: Arc<[PathBuf]>,
+    pub(super) document_path: Option<SharedPath>,
+    pub(super) workspace_folders: SharedPaths,
 }
 
 impl MarkdownPreviewRenderContext {
@@ -63,8 +63,8 @@ impl MarkdownPreviewRenderContext {
     #[must_use]
     pub fn new(document_path: Option<PathBuf>, workspace_folders: Vec<PathBuf>) -> Self {
         Self {
-            document_path: document_path.map(Arc::new),
-            workspace_folders: Arc::from(workspace_folders),
+            document_path: document_path.map(SharedPath::from),
+            workspace_folders: SharedPaths::from(workspace_folders),
         }
     }
 }
@@ -500,10 +500,10 @@ mod tests {
         let clones = (0..1_000).map(|_| context.clone()).collect::<Vec<_>>();
 
         assert!(clones.iter().all(|clone| {
-            Arc::ptr_eq(
+            SharedPath::ptr_eq(
                 context.document_path.as_ref().expect("document path"),
                 clone.document_path.as_ref().expect("document path"),
-            ) && Arc::ptr_eq(&context.workspace_folders, &clone.workspace_folders)
+            ) && SharedPaths::ptr_eq(&context.workspace_folders, &clone.workspace_folders)
         }));
     }
 

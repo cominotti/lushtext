@@ -45,7 +45,7 @@
 //!    the current work is asked to stop; bounded cleanup restarts it. Otherwise
 //!    the editor's load identity is rotated — a fresh generation and a fresh
 //!    cancellation token — and captured **once** as one
-//!    `policy::LoadRequestTicket`, which every later stage validates as a unit.
+//!    `admission::LoadRequestTicket`, which every later stage validates as a unit.
 //! 3. **Plan.** A compact worker probe reads metadata only and produces the
 //!    plan whose `transient_weight` the shared budget is spent against. **No
 //!    document text has been read yet.**
@@ -116,7 +116,7 @@
 //!
 //! ## One freshness seam, validated as a unit
 //!
-//! `policy::LoadRequestTicket` carries `{load_generation, cancel_token}`. It
+//! `admission::LoadRequestTicket` carries `{load_generation, cancel_token}`. It
 //! is built once in stage 2 and checked by `is_current(&editor)` at the planning
 //! completion, at every drain, and at the read completion. It needs no `*Facts`
 //! companion because every clause it compares is live editor state against

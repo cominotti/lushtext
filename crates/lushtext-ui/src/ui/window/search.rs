@@ -548,6 +548,13 @@ impl LushtextWindow {
         &self,
         callback: F,
     ) {
+        self.after_search_panel_transition_boxed(Box::new(callback));
+    }
+
+    fn after_search_panel_transition_boxed(
+        &self,
+        callback: Box<dyn FnOnce(&LushtextWindow) + 'static>,
+    ) {
         let window_weak = self.downgrade();
         let callback = std::cell::RefCell::new(Some(callback));
         // Schedule on GTK's main loop so focus changes happen after the panel

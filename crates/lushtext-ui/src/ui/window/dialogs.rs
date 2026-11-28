@@ -52,11 +52,11 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::gio;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
-use lushtext_model::values::DraftGeneration;
+use lushtext_model::values::{DraftGeneration, SharedPath, SharedStr};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 #[cfg(feature = "test-utils")]
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -159,19 +159,21 @@ impl super::LushtextWindow {
             self.refresh_status_bar();
             return;
         };
-        let old_path = editor.file_path();
-        let old_canonical_path = editor.canonical_file_path();
-        let old_draft_id = editor.draft_id();
+        let path = SharedPath::from(path);
+        let old_path = editor.file_path().map(SharedPath::from);
+        let old_canonical_path = editor.canonical_file_path().map(SharedPath::from);
+        let old_draft_id = editor.draft_id().map(SharedStr::from);
         let editor = editor.clone();
         let editor_for_result = editor.clone();
         let window = self.clone();
-        editor.save_file_async_to_path(path.clone(), move |save_result| {
+        let path_for_result = path.clone();
+        editor.save_file_async_to_path(path.to_path_buf(), move |save_result| {
             window.complete_save_as(
                 &editor_for_result,
                 old_path.as_deref(),
                 old_canonical_path.as_deref(),
                 old_draft_id.as_deref(),
-                &path,
+                &path_for_result,
                 save_result,
             );
         });
@@ -307,23 +309,24 @@ impl super::LushtextWindow {
                 let window = self.clone();
                 let editor = editor.clone();
                 let editor_for_dialog = editor.clone();
-                let retry_path = path.to_path_buf();
-                let retry_old_path = old_path.map(std::path::Path::to_path_buf);
-                let retry_old_canonical_path = old_canonical_path.map(std::path::Path::to_path_buf);
-                let retry_old_draft_id = old_draft_id.map(ToOwned::to_owned);
+                let retry_path = SharedPath::from(path);
+                let retry_old_path = old_path.map(SharedPath::from);
+                let retry_old_canonical_path = old_canonical_path.map(SharedPath::from);
+                let retry_old_draft_id = old_draft_id.map(SharedStr::from);
                 self.confirm_lossy_save(&editor_for_dialog, &preview, move || {
                     let editor_for_result = editor.clone();
                     let window_for_retry = window.clone();
                     let retry_old_path = retry_old_path.clone();
                     let retry_old_canonical_path = retry_old_canonical_path.clone();
                     let retry_old_draft_id = retry_old_draft_id.clone();
-                    editor.save_file_async_to_path(retry_path.clone(), move |retry_result| {
+                    let retry_path_for_result = retry_path.clone();
+                    editor.save_file_async_to_path(retry_path.to_path_buf(), move |retry_result| {
                         window_for_retry.complete_save_as(
                             &editor_for_result,
                             retry_old_path.as_deref(),
                             retry_old_canonical_path.as_deref(),
                             retry_old_draft_id.as_deref(),
-                            &retry_path,
+                            &retry_path_for_result,
                             retry_result,
                         );
                     });
@@ -361,6 +364,10 @@ impl super::LushtextWindow {
     /// Editor's UX. Calls `on_done(true)` if the user confirms, `on_done(false)`
     /// if cancelled.
     pub fn show_discard_changes_dialog<F: Fn(bool) + 'static>(&self, title: &str, on_done: F) {
+        self.show_discard_changes_dialog_inner(title, Box::new(on_done));
+    }
+
+    fn show_discard_changes_dialog_inner(&self, title: &str, on_done: Box<dyn Fn(bool) + 'static>) {
         let dialog = libadwaita::AlertDialog::builder()
             .heading(format!("Discard Changes to \u{201C}{title}\u{201D}?"))
             .body("Unsaved changes will be permanently lost.")
@@ -481,6 +488,14 @@ impl super::LushtextWindow {
         &self,
         modified: &[(libadwaita::TabPage, LushtextEditorPage)],
         on_done: F,
+    ) {
+        self.show_save_changes_dialog_inner(modified, Box::new(on_done));
+    }
+
+    fn show_save_changes_dialog_inner(
+        &self,
+        modified: &[(libadwaita::TabPage, LushtextEditorPage)],
+        on_done: Box<dyn Fn(bool) + 'static>,
     ) {
         if modified.is_empty() {
             on_done(true);
@@ -616,6 +631,15 @@ impl super::LushtextWindow {
         editors: Vec<LushtextEditorPage>,
         discarded_editors: Vec<LushtextEditorPage>,
         on_done: F,
+    ) {
+        self.save_editors_for_close_inner(editors, discarded_editors, Box::new(on_done));
+    }
+
+    fn save_editors_for_close_inner(
+        &self,
+        editors: Vec<LushtextEditorPage>,
+        discarded_editors: Vec<LushtextEditorPage>,
+        on_done: Box<dyn Fn(bool) + 'static>,
     ) {
         if editors.iter().any(|editor| editor.file_path().is_none()) {
             self.publish_status_message(
@@ -913,7 +937,7 @@ struct CloseSafetyEditorFingerprint {
     /// Typed text held for the editor: a change of it means the user typed
     /// while the close ran, which the close must not drop.
     held_chars: lushtext_model::values::CharCount,
-    path: Option<PathBuf>,
+    path: Option<SharedPath>,
 }
 
 struct CloseSavePipeline {
@@ -948,7 +972,7 @@ fn close_safety_editor_fingerprint_for(
         draft_generation: editor.draft_generation(),
         modified: editor.is_modified(),
         held_chars: lushtext_model::values::CharCount::new(editor.held_char_count()),
-        path: editor.file_path(),
+        path: editor.file_path().map(SharedPath::from),
     }
 }
 

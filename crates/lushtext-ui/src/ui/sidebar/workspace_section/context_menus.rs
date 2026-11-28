@@ -17,14 +17,14 @@ use glib::subclass::prelude::{ObjectSubclassExt, ObjectSubclassIsExt};
 use gtk4::gio;
 use gtk4::prelude::*;
 use gtk4::{self, glib};
+use lushtext_model::values::SharedPath;
 use lushtext_model::workspace::{WorkspaceFolderId, WorkspaceFolderMoveDirection};
-use std::path::PathBuf;
 
 /// Row currently targeted by the file-tree context menu.
 #[derive(Clone)]
 pub(super) struct FileContextTarget {
     /// Path selected when the context menu was opened.
-    pub path: PathBuf,
+    pub path: SharedPath,
     /// Whether the selected row represents a directory.
     pub is_dir: bool,
     /// Stable id when the selected row is a configured workspace folder.
@@ -41,7 +41,7 @@ impl FileContextTarget {
         file_item: &FileTreeItem,
     ) -> Option<Self> {
         Some(Self {
-            path: file_item.path()?,
+            path: file_item.shared_path()?,
             is_dir: file_item.is_dir(),
             workspace_folder_id: file_item.workspace_folder_id(),
             expander: expander.clone(),
@@ -380,7 +380,7 @@ fn show_file_context_menu_for_row(
     wiring: &FileContextMenuWiring,
     pointing_to: gdk4::Rectangle,
 ) -> bool {
-    let Some(path) = file_item.path() else {
+    let Some(path) = file_item.shared_path() else {
         return false;
     };
 

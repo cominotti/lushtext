@@ -32,7 +32,8 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 
 use crate::ui::plain_disposal::DisposalReservation;
-use lushtext_services::palette::FileIndex;
+use lushtext_model::values::SharedPath;
+use lushtext_services::palette::{FileIndex, FileIndexMutationLedger};
 
 use super::LushtextCommandPalette;
 use super::policy::{
@@ -148,6 +149,27 @@ impl LushtextCommandPalette {
     }
 }
 
+/// Apply one pending incremental index mutation under its worker ledger.
+fn apply_file_index_update(
+    update: &FileIndexUpdate,
+    index: &mut FileIndex,
+    ledger: &mut FileIndexMutationLedger,
+) {
+    match update {
+        FileIndexUpdate::Create {
+            path,
+            workspace_folder,
+        } => {
+            let folder = SharedPath::from(workspace_folder.as_path());
+            index.add_path_for_bounded_batch(path, &folder, ledger);
+        }
+        FileIndexUpdate::Delete(path) => index.remove_path_for_bounded_batch(path, ledger),
+        FileIndexUpdate::Rename { old_path, new_path } => {
+            index.rename_path_for_bounded_batch(old_path, new_path, ledger);
+        }
+    }
+}
+
 /// Index stage 5: apply one batch to a worker-owned index on the worker thread.
 fn apply_index_mutation_batch(
     base: &Arc<crate::ui::plain_disposal::DisposalOwned<FileIndex>>,
@@ -158,7 +180,7 @@ fn apply_index_mutation_batch(
             let mut index = (***base).clone();
             let mut ledger = index.incremental_mutation_ledger();
             for update in &batch.updates {
-                update.apply(&mut index, &mut ledger);
+                apply_file_index_update(update, &mut index, &mut ledger);
             }
             index.finish_mutation_batch(&mut ledger);
             debug_assert_eq!(ledger.retained_bytes(), index.retained_byte_weight());
@@ -173,5 +195,76 @@ fn apply_index_mutation_batch(
             drop(batch.updates);
             (***base).rebuild_current_workspace_folders()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn each_update_kind_actually_mutates_the_index() {
+        use lushtext_model::workspace::palette::PaletteFileIdentity;
+        use lushtext_services::palette::OwnedIndexedFile;
+
+        let folder = SharedPath::from("/workspace");
+        let indexed = |name: &str| {
+            let path = folder.join(name);
+            OwnedIndexedFile::new(
+                path.clone(),
+                PaletteFileIdentity::canonical(path),
+                folder.clone(),
+            )
+        };
+        let base = FileIndex::from(vec![indexed("one.rs"), indexed("two.rs")]);
+
+        let mut created = base.clone();
+        let mut ledger = created.incremental_mutation_ledger();
+        apply_file_index_update(
+            &FileIndexUpdate::Create {
+                path: folder.join("three.rs"),
+                workspace_folder: PathBuf::from("/workspace"),
+            },
+            &mut created,
+            &mut ledger,
+        );
+        created.finish_mutation_batch(&mut ledger);
+        assert_eq!(created.len(), 3, "Create must add a file");
+
+        let mut deleted = base.clone();
+        let mut ledger = deleted.incremental_mutation_ledger();
+        apply_file_index_update(
+            &FileIndexUpdate::Delete(folder.join("one.rs")),
+            &mut deleted,
+            &mut ledger,
+        );
+        deleted.finish_mutation_batch(&mut ledger);
+        assert_eq!(deleted.len(), 1, "Delete must remove a file");
+
+        let mut renamed = base;
+        let mut ledger = renamed.incremental_mutation_ledger();
+        apply_file_index_update(
+            &FileIndexUpdate::Rename {
+                old_path: folder.join("one.rs"),
+                new_path: folder.join("renamed.rs"),
+            },
+            &mut renamed,
+            &mut ledger,
+        );
+        renamed.finish_mutation_batch(&mut ledger);
+        assert_eq!(renamed.len(), 2, "Rename keeps the count");
+        assert!(
+            renamed
+                .files()
+                .any(|file| file.path() == folder.join("renamed.rs")),
+            "Rename must move the path"
+        );
+        assert!(
+            !renamed
+                .files()
+                .any(|file| file.path() == folder.join("one.rs")),
+            "Rename must retire the old path"
+        );
     }
 }

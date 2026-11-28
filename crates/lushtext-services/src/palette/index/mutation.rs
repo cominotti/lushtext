@@ -26,9 +26,9 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::hash::{DefaultHasher, Hasher};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
 
 use crate::filesystem::metadata as fs_metadata;
+use lushtext_model::values::SharedPath;
 use lushtext_model::workspace::palette::PaletteFileIdentityFailure;
 
 use super::arena::{
@@ -606,7 +606,7 @@ impl FileIndex {
     /// The folder record of `folder`, created when the index lacks it.
     fn folder_id(
         &mut self,
-        folder: &Arc<PathBuf>,
+        folder: &SharedPath,
         ledger: &mut FileIndexMutationLedger,
     ) -> Option<u32> {
         if let Some(position) = self
@@ -621,7 +621,7 @@ impl FileIndex {
         }
         let id = u32::try_from(self.folders.len()).ok()?;
         self.folders.push(FolderRecord {
-            display: Arc::clone(folder),
+            display: folder.clone(),
             root: NO_DIR,
         });
         Some(id)
@@ -633,7 +633,7 @@ impl FileIndex {
     fn dir_for(
         &mut self,
         path: &Path,
-        folder: &Arc<PathBuf>,
+        folder: &SharedPath,
         ledger: &mut FileIndexMutationLedger,
     ) -> Option<u32> {
         let folder_filter = self
@@ -703,7 +703,7 @@ impl FileIndex {
     /// Resolve and add one filesystem path through the metadata boundary.
     ///
     /// Callers must keep this operation on a background worker.
-    pub fn add_path(&mut self, path: &Path, workspace_folder: &Arc<PathBuf>) {
+    pub fn add_path(&mut self, path: &Path, workspace_folder: &SharedPath) {
         let mut ledger = self.incremental_mutation_ledger();
         self.add_path_for_bounded_batch(path, workspace_folder, &mut ledger);
         self.finish_mutation_batch(&mut ledger);
@@ -712,7 +712,7 @@ impl FileIndex {
     pub fn add_path_for_bounded_batch(
         &mut self,
         path: &Path,
-        workspace_folder: &Arc<PathBuf>,
+        workspace_folder: &SharedPath,
         ledger: &mut FileIndexMutationLedger,
     ) -> bool {
         ledger.canonical_resolutions = ledger.canonical_resolutions.saturating_add(1);
@@ -726,7 +726,7 @@ impl FileIndex {
         &mut self,
         path: &Path,
         identity: Result<PathBuf, PaletteFileIdentityFailure>,
-        folder: &Arc<PathBuf>,
+        folder: &SharedPath,
         ledger: &mut FileIndexMutationLedger,
     ) -> bool {
         let (Some(name), Some(parent)) = (path.file_name(), path.parent()) else {

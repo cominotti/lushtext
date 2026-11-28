@@ -297,6 +297,13 @@ impl LushtextWindow {
         &self,
         on_done: F,
     ) {
+        self.save_session_for_close_async_inner(Box::new(on_done));
+    }
+
+    fn save_session_for_close_async_inner(
+        &self,
+        on_done: Box<dyn FnOnce(Result<(), SessionCloseSaveError>) + 'static>,
+    ) {
         let generation =
             FailedRestoreGeneration::new(self.imp().session.save_debounce.advance().value());
         let ordered_generation = self.next_process_session_generation();

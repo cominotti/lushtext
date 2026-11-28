@@ -13,7 +13,6 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use tempfile::TempDir;
 
@@ -21,6 +20,7 @@ use super::workspace_index_fixture::{self, DEFAULT_SEED, ShapeEntry};
 use super::*;
 use crate::filesystem::fixture;
 use crate::filesystem::metadata::canonical_path;
+use lushtext_model::values::SharedPath;
 use lushtext_model::workspace::palette::{PaletteFileIdentity, PaletteFileIdentityFailure};
 use lushtext_model::workspace::workspace_visibility::WorkspaceEntryVisibility;
 
@@ -44,28 +44,28 @@ fn rows(index: &FileIndex) -> Vec<Row> {
             path: file.path(),
             relative: file.relative_display(),
             identity: file.identity(),
-            folder: file.workspace_folder().as_ref().clone(),
+            folder: file.workspace_folder().to_path_buf(),
         })
         .collect()
 }
 
-fn owned(path: PathBuf, identity: PaletteFileIdentity, folder: &Arc<PathBuf>) -> OwnedIndexedFile {
-    OwnedIndexedFile::new(path, identity, Arc::clone(folder))
+fn owned(path: PathBuf, identity: PaletteFileIdentity, folder: &SharedPath) -> OwnedIndexedFile {
+    OwnedIndexedFile::new(path, identity, folder.clone())
 }
 
 /// The D9 shape of `files` files as in-memory triples under a synthetic
 /// folder, each file's identity its own path.
 fn synthetic_triples(
     files: usize,
-) -> impl Iterator<Item = (PathBuf, PaletteFileIdentity, Arc<PathBuf>)> {
-    let folder = Arc::new(PathBuf::from(SYNTHETIC_ROOT));
+) -> impl Iterator<Item = (PathBuf, PaletteFileIdentity, SharedPath)> {
+    let folder = SharedPath::from(SYNTHETIC_ROOT);
     workspace_index_fixture::shape(files, DEFAULT_SEED).filter_map(move |entry| match entry {
         ShapeEntry::File(relative) => {
             let path = folder.join(relative);
             Some((
                 path.clone(),
                 PaletteFileIdentity::canonical(path),
-                Arc::clone(&folder),
+                folder.clone(),
             ))
         }
         ShapeEntry::Directory(_) => None,
@@ -300,7 +300,7 @@ fn symlinks_keep_the_first_reached_path_and_its_resolved_identity() {
     );
 }
 
-fn add_one(index: &mut FileIndex, path: &Path, folder: &Arc<PathBuf>) -> FileIndexMutationLedger {
+fn add_one(index: &mut FileIndex, path: &Path, folder: &SharedPath) -> FileIndexMutationLedger {
     let mut ledger = index.incremental_mutation_ledger();
     index.add_path_for_bounded_batch(path, folder, &mut ledger);
     index.finish_mutation_batch(&mut ledger);
@@ -313,7 +313,7 @@ fn add_one(index: &mut FileIndex, path: &Path, folder: &Arc<PathBuf>) -> FileInd
 fn adding_to_a_million_file_index_compares_logarithmically() {
     let mut index = FileIndex::from_paths(synthetic_triples(MAX_INDEXED_FILES - 1));
     assert_eq!(index.len(), MAX_INDEXED_FILES - 1);
-    let folder = Arc::new(PathBuf::from(SYNTHETIC_ROOT));
+    let folder = SharedPath::from(SYNTHETIC_ROOT);
     let existing = synthetic_paths(16)[7].clone();
     let added = existing.with_file_name("added_after_the_build.rs");
 
@@ -338,7 +338,7 @@ fn adding_to_a_million_file_index_compares_logarithmically() {
 /// canonical resolution.
 #[test]
 fn renaming_a_large_directory_resolves_once() {
-    let folder = Arc::new(PathBuf::from(SYNTHETIC_ROOT));
+    let folder = SharedPath::from(SYNTHETIC_ROOT);
     let big = folder.join("big");
     let mut index = FileIndex::from_paths(
         (0..10_000)
@@ -348,7 +348,7 @@ fn renaming_a_large_directory_resolves_once() {
                 (
                     path.clone(),
                     PaletteFileIdentity::canonical(path),
-                    Arc::clone(&folder),
+                    folder.clone(),
                 )
             }),
     );
@@ -464,7 +464,7 @@ fn a_second_add_of_one_path_in_one_batch_is_refused() {
     fixture::create_dir_all(&root);
     fixture::write_text(&root.join("one.rs"), "");
     let (mut index, _) = build(std::slice::from_ref(&root));
-    let folder = Arc::new(root.clone());
+    let folder = SharedPath::from(root.as_path());
     fixture::write_text(&root.join("new.rs"), "");
 
     apply(&mut index, |index, ledger| {
@@ -486,7 +486,7 @@ fn a_second_add_of_one_path_in_one_batch_is_refused() {
 /// that subtree and keeps the ledger equal to the installed weight.
 #[test]
 fn a_refused_directory_rename_drops_its_subtree() {
-    let folder = Arc::new(PathBuf::from(SYNTHETIC_ROOT));
+    let folder = SharedPath::from(SYNTHETIC_ROOT);
     let mut index =
         FileIndex::from_paths(["keep/a.rs", "doomed/b.rs", "doomed/deep/c.rs"].iter().map(
             |relative| {
@@ -494,7 +494,7 @@ fn a_refused_directory_rename_drops_its_subtree() {
                 (
                     path.clone(),
                     PaletteFileIdentity::canonical(path),
-                    Arc::clone(&folder),
+                    folder.clone(),
                 )
             },
         ));
@@ -516,7 +516,7 @@ fn a_refused_directory_rename_drops_its_subtree() {
 /// step of the start when compaction runs.
 #[test]
 fn storage_left_by_removals_is_reclaimed() {
-    let folder = Arc::new(PathBuf::from(SYNTHETIC_ROOT));
+    let folder = SharedPath::from(SYNTHETIC_ROOT);
     let paths = synthetic_paths(1 << 17);
     let mut index = FileIndex::from_paths(synthetic_triples(1 << 17));
     let start = index.retained_byte_weight();
@@ -557,7 +557,7 @@ fn storage_left_by_removals_is_reclaimed() {
 /// of the weight, an add that fits the live size is still admitted.
 #[test]
 fn an_add_near_the_cap_reclaims_dead_bytes_first() {
-    let folder = Arc::new(PathBuf::from(SYNTHETIC_ROOT));
+    let folder = SharedPath::from(SYNTHETIC_ROOT);
     let long = "n".repeat(200);
     let path_of = |item: usize| folder.join(format!("d{}/{long}_{item}.rs", item % 512));
     let triple = |item: usize| {
@@ -565,7 +565,7 @@ fn an_add_near_the_cap_reclaims_dead_bytes_first() {
         (
             path.clone(),
             PaletteFileIdentity::canonical(path),
-            Arc::clone(&folder),
+            folder.clone(),
         )
     };
     let probe = FileIndex::from_paths((0..4096).map(triple));

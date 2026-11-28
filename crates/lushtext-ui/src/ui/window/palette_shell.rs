@@ -29,8 +29,6 @@
 //! relationship rather than ownership. Leaving that implicit is the failure the
 //! stage trace was run to prevent.
 
-use std::sync::Arc;
-
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::gio;
@@ -39,7 +37,7 @@ use gtk4::prelude::*;
 use crate::ui::accessibility::AnnouncementLane;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
-use lushtext_model::values::FlightGeneration;
+use lushtext_model::values::{FlightGeneration, SharedPath, SharedPaths};
 use lushtext_model::workspace::palette::{
     PaletteCategory, PaletteFileEntry, PaletteFileIdentity, PaletteFileIdentityFailure, SearchMode,
 };
@@ -193,7 +191,7 @@ impl LushtextWindow {
             std::time::Duration::from_millis(300),
             move |window, _| {
                 let request = FileIndexBuildRequest {
-                    workspace_folders: Arc::from(window.current_workspace_folder_paths()),
+                    workspace_folders: SharedPaths::from(window.current_workspace_folder_paths()),
                     capacity_hint: window.imp().command_palette.file_index_len().max(64),
                     visibility: crate::ui::workspace_visibility::workspace_entry_visibility(
                         &window.imp().settings,
@@ -260,8 +258,13 @@ impl LushtextWindow {
                 // shrink below; a widget test can stretch that window.
                 #[cfg(feature = "test-utils")]
                 crate::ui::command_palette::delay_file_index_build();
+                let workspace_folders: Vec<std::path::PathBuf> = request
+                    .workspace_folders
+                    .iter()
+                    .map(SharedPath::to_path_buf)
+                    .collect();
                 let outcome = FileIndex::rebuild_cancellable_with_hint(
-                    &request.workspace_folders,
+                    &workspace_folders,
                     request.capacity_hint,
                     &cancellation,
                     &request.visibility,

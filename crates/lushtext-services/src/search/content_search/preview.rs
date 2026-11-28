@@ -4,8 +4,8 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
 
+use lushtext_model::values::SharedStr;
 use lushtext_model::workspace::content_search::{
     ContentSearchOptions, ReplacePreviewBudget, ReplacePreviewIneligibleFile, ReplacePreviewLimit,
     ReplacePreviewOutcome, ReplacePreviewSkipCounts, ReplacePreviewSkipReason, ReplaceSkipReason,
@@ -127,7 +127,7 @@ fn generate_replacement_preview_impl(
         None
     };
 
-    let mut literal_replacement: Option<Arc<str>> = None;
+    let mut literal_replacement: Option<SharedStr> = None;
     let mut outcome = ReplacePreviewOutcome {
         replacements: Vec::with_capacity(matches.len().min(budget.max_rows)),
         match_to_preview: vec![None; matches.len()],
@@ -212,7 +212,7 @@ fn generate_replacement_preview_impl(
                 }
                 let mut expanded = String::new();
                 cap.expand(replacement_template, &mut expanded);
-                Arc::<str>::from(expanded)
+                SharedStr::from(expanded)
             } else {
                 // Regex didn't match the extracted range — skip this match rather
                 // than inserting unexpanded backreference syntax ($1/$2) literally.
@@ -226,7 +226,7 @@ fn generate_replacement_preview_impl(
             }
         } else {
             literal_replacement
-                .get_or_insert_with(|| Arc::from(replacement_template))
+                .get_or_insert_with(|| SharedStr::from(replacement_template))
                 .clone()
         };
 
@@ -548,11 +548,11 @@ mod tests {
             "Rust",
             &ContentSearchOptions::default(),
         );
-        assert!(Arc::ptr_eq(
+        assert!(SharedStr::ptr_eq(
             &literal_matches[0].line_content,
             &literal[0].original_line
         ));
-        assert!(Arc::ptr_eq(
+        assert!(SharedStr::ptr_eq(
             &literal[0].replacement,
             &literal[1].replacement
         ));
@@ -575,7 +575,10 @@ mod tests {
         );
         assert_eq!(regex[0].replacement.as_ref(), "<Ada>");
         assert_eq!(regex[1].replacement.as_ref(), "<Bob>");
-        assert!(!Arc::ptr_eq(&regex[0].replacement, &regex[1].replacement));
+        assert!(!SharedStr::ptr_eq(
+            &regex[0].replacement,
+            &regex[1].replacement
+        ));
     }
 
     #[test]

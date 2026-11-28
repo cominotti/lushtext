@@ -229,96 +229,95 @@ impl LushtextSidebar {
     }
 
     pub fn connect_file_activated<F: Fn(&Path) + 'static>(&self, f: F) {
-        self.connect_sidebar_event(move |event| {
+        self.connect_sidebar_event(Box::new(move |event| {
             if let callbacks::SidebarEvent::FileActivated(path) = event {
                 f(path);
             }
-        });
+        }));
     }
 
     pub fn connect_local_history_requested<F: Fn(&Path) + 'static>(&self, f: F) {
-        self.connect_sidebar_event(move |event| {
+        self.connect_sidebar_event(Box::new(move |event| {
             if let callbacks::SidebarEvent::LocalHistoryRequested(path) = event {
                 f(path);
             }
-        });
+        }));
     }
 
     pub fn connect_document_note_requested<F: Fn(&Path) + 'static>(&self, f: F) {
-        self.connect_sidebar_event(move |event| {
+        self.connect_sidebar_event(Box::new(move |event| {
             if let callbacks::SidebarEvent::DocumentNoteRequested(path) = event {
                 f(path);
             }
-        });
+        }));
     }
 
     pub fn connect_file_renamed<F: Fn(&Path, &Path) + 'static>(&self, f: F) {
-        self.connect_sidebar_event(move |event| {
+        self.connect_sidebar_event(Box::new(move |event| {
             if let callbacks::SidebarEvent::FileRenamed(old_path, new_path) = event {
                 f(old_path, new_path);
             }
-        });
+        }));
     }
 
     pub fn connect_file_deleted<F: Fn(&Path) + 'static>(&self, f: F) {
-        self.connect_sidebar_event(move |event| {
+        self.connect_sidebar_event(Box::new(move |event| {
             if let callbacks::SidebarEvent::FileDeleted(path) = event {
                 f(path);
             }
-        });
+        }));
     }
 
     pub fn connect_file_created<F: Fn(&Path) + 'static>(&self, f: F) {
-        self.connect_sidebar_event(move |event| {
+        self.connect_sidebar_event(Box::new(move |event| {
             if let callbacks::SidebarEvent::FileCreated(path) = event {
                 f(path);
             }
-        });
+        }));
     }
 
     pub fn connect_message<F: Fn(&str, NotificationSeverity) + 'static>(&self, f: F) {
-        self.connect_sidebar_event(move |event| {
+        self.connect_sidebar_event(Box::new(move |event| {
             if let callbacks::SidebarEvent::Message(text, severity) = event {
                 f(text, *severity);
             }
-        });
+        }));
     }
 
     pub fn connect_folder_note_requested<F: Fn(WorkspaceId) + 'static>(&self, f: F) {
-        self.connect_sidebar_event(move |event| {
+        self.connect_sidebar_event(Box::new(move |event| {
             if let callbacks::SidebarEvent::FolderNoteRequested(workspace_id) = event {
                 f(workspace_id.clone());
             }
-        });
+        }));
     }
 
     pub fn connect_folder_note_for_folder_requested<F: Fn(WorkspaceId, PathBuf) + 'static>(
         &self,
         f: F,
     ) {
-        self.connect_sidebar_event(move |event| {
-            if let callbacks::SidebarEvent::FolderNoteForFolderRequested(workspace_id, path) = event
-            {
-                f(workspace_id.clone(), path.clone());
+        self.connect_sidebar_event(Box::new(move |event| {
+            if let callbacks::SidebarEvent::FolderNoteForFolderRequested(id, path) = event {
+                f(id.clone(), path.to_path_buf());
             }
-        });
+        }));
     }
 
     pub fn connect_workspace_structure_changed<F: Fn() + 'static>(&self, f: F) {
-        self.connect_sidebar_event(move |event| {
+        self.connect_sidebar_event(Box::new(move |event| {
             if matches!(event, callbacks::SidebarEvent::WorkspaceStructureChanged) {
                 f();
             }
-        });
+        }));
     }
 
     /// Store a callback invoked whenever the current workspace scope changes.
     pub fn connect_workspace_scope_changed<F: Fn(WorkspaceScope) + 'static>(&self, f: F) {
-        self.connect_sidebar_event(move |event| {
+        self.connect_sidebar_event(Box::new(move |event| {
             if let callbacks::SidebarEvent::WorkspaceScopeChanged(scope) = event {
                 f(scope.clone());
             }
-        });
+        }));
     }
 
     /// Return the current workspace scope mirrored by the sidebar shell.

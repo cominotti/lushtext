@@ -10,12 +10,12 @@ use notify_debouncer_full::notify::{Event, EventKind};
 use std::collections::{HashSet, VecDeque};
 use std::hint::black_box;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
 
 use lushtext_model::document::file_load::next_install_boundary;
 use lushtext_model::persistence::local_history::LocalHistorySnapshotOrigin;
+use lushtext_model::values::{SharedPath, SharedPaths};
 use lushtext_model::workspace::content_search::ContentSearchOptions;
 use lushtext_model::workspace::palette::{
     FileOrdinal, PaletteCategory, PaletteFileEntry, PaletteFileIdentity, PaletteNoteCategory,
@@ -45,7 +45,7 @@ use lushtext_ui::ui::sidebar::workspace_section::child_cache_rebuild_operation_e
 
 /// Build a synthetic in-memory file index with realistic file names.
 fn make_synthetic_index(n: usize) -> FileIndex {
-    let root = Arc::new(PathBuf::from("/synthetic/project"));
+    let root = SharedPath::from("/synthetic/project");
     let dirs = [
         "src",
         "src/model",
@@ -73,7 +73,7 @@ fn make_synthetic_index(n: usize) -> FileIndex {
         (
             path.clone(),
             PaletteFileIdentity::canonical(path),
-            Arc::clone(&root),
+            root.clone(),
         )
     }))
 }
@@ -405,7 +405,7 @@ fn bench_file_index_scale_operations(c: &mut Criterion, index: &FileIndex, size:
     group.bench_function(BenchmarkId::new("clone", size), |b| {
         b.iter_with_large_drop(|| index.clone());
     });
-    let root = Arc::new(PathBuf::from("/synthetic/project"));
+    let root = SharedPath::from("/synthetic/project");
     let added = PathBuf::from("/synthetic/project/src/new_file.rs");
     // The index is full at 2^20, so each repetition first frees one file
     // (untimed): the timed add is admitted, not refused at the cap.
@@ -419,7 +419,7 @@ fn bench_file_index_scale_operations(c: &mut Criterion, index: &FileIndex, size:
         index.add_file(OwnedIndexedFile::new(
             added.clone(),
             PaletteFileIdentity::canonical(added.clone()),
-            Arc::clone(&root),
+            root.clone(),
         ));
     };
     let mut admitted = below_cap();
@@ -1005,7 +1005,7 @@ fn bench_search_interactive_policies(c: &mut Criterion) {
                     format!("query-{index}"),
                     ContentSearchOptions::default(),
                 ),
-                folders: Arc::from([PathBuf::from("/workspace")]),
+                folders: SharedPaths::from([PathBuf::from("/workspace")]),
             });
             if index == 0 {
                 assert!(matches!(submission, WorkspaceSearchSubmission::Start(_)));

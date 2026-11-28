@@ -3,9 +3,9 @@
 //! Tests for the GTK-free command palette service: fuzzy scoring, command
 //! filtering, and file-index maintenance.
 
+use lushtext_model::values::{SharedPath, SharedPaths};
 use lushtext_model::workspace::workspace_visibility::WorkspaceEntryVisibility;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use tempfile::TempDir;
 
@@ -21,12 +21,12 @@ fn file_names(index: &FileIndex) -> Vec<String> {
     index.files().map(|file| file.name().to_string()).collect()
 }
 
-fn indexed_file(folder: &Arc<PathBuf>, relative_path: &str) -> OwnedIndexedFile {
+fn indexed_file(folder: &SharedPath, relative_path: &str) -> OwnedIndexedFile {
     let path = folder.join(relative_path);
     OwnedIndexedFile::new(
         path.clone(),
         PaletteFileIdentity::canonical(path),
-        Arc::clone(folder),
+        folder.clone(),
     )
 }
 
@@ -474,8 +474,8 @@ fn file_index_canonical_alias_roots_keep_first_folder_precedence() {
     assert_eq!(index.len(), 1);
     assert_eq!(index.owned_files()[0].path, alias_root.join("main.rs"));
     assert_eq!(
-        index.owned_files()[0].workspace_folder.as_ref(),
-        &alias_root
+        index.owned_files()[0].workspace_folder.as_path(),
+        alias_root.as_path()
     );
     assert_eq!(
         index.owned_files()[0].identity.canonical_path(),
@@ -489,7 +489,7 @@ fn file_index_canonical_alias_roots_keep_first_folder_precedence() {
 
 #[test]
 fn file_index_retains_typed_identity_failure_without_cross_path_deduplication() {
-    let folder = Arc::new(PathBuf::from("/workspace"));
+    let folder = SharedPath::from("/workspace");
     let missing_a = folder.join("missing-a.rs");
     let missing_b = folder.join("missing-b.rs");
     let mut index = FileIndex::default();
@@ -507,7 +507,7 @@ fn file_index_retains_typed_identity_failure_without_cross_path_deduplication() 
 
 #[test]
 fn grouped_search_excludes_open_identity_before_top_one_workspace_retention() {
-    let root = Arc::new(PathBuf::from("/workspace"));
+    let root = SharedPath::from("/workspace");
     let canonical_best = PathBuf::from("/canonical/target.rs");
     let workspace_alias = root.join("target.rs");
     let fallback = root.join("target_fallback.rs");
@@ -515,12 +515,12 @@ fn grouped_search_excludes_open_identity_before_top_one_workspace_retention() {
         OwnedIndexedFile::new(
             workspace_alias.clone(),
             PaletteFileIdentity::canonical(canonical_best.clone()),
-            Arc::clone(&root),
+            root.clone(),
         ),
         OwnedIndexedFile::new(
             fallback.clone(),
             PaletteFileIdentity::canonical(fallback.clone()),
-            Arc::clone(&root),
+            root,
         ),
     ]);
     let open_tabs = vec![PaletteFileEntry::new(
@@ -577,8 +577,8 @@ fn file_index_uses_folder_order_for_primary_context_when_folders_overlap() {
     assert_eq!(
         indexed_file_by_path(&parent_first, &nested_file)
             .workspace_folder
-            .as_ref(),
-        &workspace_folder,
+            .as_path(),
+        workspace_folder.as_path(),
         "the parent folder should be the primary context when it appears first",
     );
 
@@ -586,8 +586,8 @@ fn file_index_uses_folder_order_for_primary_context_when_folders_overlap() {
     assert_eq!(
         indexed_file_by_path(&nested_first, &nested_file)
             .workspace_folder
-            .as_ref(),
-        &nested_folder,
+            .as_path(),
+        nested_folder.as_path(),
         "the nested folder should become primary context after reordering first",
     );
 }
@@ -623,7 +623,7 @@ fn file_index_workspace_folder_is_shared_with_arc() {
     fixture::write_text(&dir.path().join("b.rs"), "");
 
     let index = FileIndex::rebuild(&[dir.path().to_path_buf()]);
-    assert!(Arc::ptr_eq(
+    assert!(SharedPath::ptr_eq(
         &index.owned_files()[0].workspace_folder,
         &index.owned_files()[1].workspace_folder
     ));
@@ -713,23 +713,25 @@ fn file_index_retained_weight_charges_folder_and_explicit_identity_not_raw_capac
     let raw_capacity = raw_path.capacity();
     let canonical_capacity = canonical_path.capacity();
     let folder_capacity = folder_path.capacity();
-    let folder = Arc::new(folder_path);
+    let folder = SharedPath::from(folder_path.as_path());
+    let folder_bytes = folder.heap_bytes();
     let index = FileIndex::from(vec![OwnedIndexedFile::new(
         raw_path,
         PaletteFileIdentity::canonical(canonical_path),
         folder,
     )]);
 
-    // The arena interns the raw path into its name storage and keeps the
+    // The arena interns the raw path into its name storage, keeps the
     // explicit canonical identity boxed to its length (`scale-file-index` D1),
-    // so the caller's spare capacity is not retained; the shared folder path
-    // is, at its capacity.
+    // and shares the folder path via `SharedPath` boxed to its length, so the
+    // caller's spare capacity is not retained.
     let retained = index.retained_byte_weight();
-    let canonical_len = "/canonical/workspace/src/main.rs".len();
-    let required = folder_capacity.saturating_add(canonical_len);
-    assert!(retained >= u64::try_from(required).unwrap_or(u64::MAX));
+    let canonical_len = u64::try_from("/canonical/workspace/src/main.rs".len()).unwrap_or(u64::MAX);
+    let required = folder_bytes.saturating_add(canonical_len);
+    assert!(retained >= required);
     assert!(retained < u64::try_from(raw_capacity).unwrap_or(u64::MAX));
     assert!(retained < u64::try_from(canonical_capacity).unwrap_or(u64::MAX));
+    assert!(retained < u64::try_from(folder_capacity).unwrap_or(u64::MAX));
     assert!(retained <= MAX_FILE_INDEX_RETAINED_BYTES);
 }
 
@@ -1025,7 +1027,7 @@ fn file_index_coordinator_retains_only_active_and_latest_compact_request() {
     let mut coordinator = FileIndexBuildCoordinator::default();
     let request = |name: &str| FileIndexBuildRequest {
         visibility: WorkspaceEntryVisibility::default(),
-        workspace_folders: Arc::from([PathBuf::from(name)]),
+        workspace_folders: SharedPaths::from([PathBuf::from(name)]),
         capacity_hint: 64,
     };
     let first = coordinator
@@ -1043,7 +1045,7 @@ fn file_index_coordinator_retains_only_active_and_latest_compact_request() {
         .expect("latest request starts next");
     assert_eq!(
         latest.request.workspace_folders.as_ref(),
-        &[PathBuf::from("latest")]
+        &[SharedPath::from("latest")]
     );
     assert_eq!(coordinator.snapshot().started, 2);
 }
@@ -1072,7 +1074,7 @@ fn workspace_folder_for_returns_matching_folder() {
     let matched_folder = index
         .workspace_folder_for(&path)
         .expect("expected operation to succeed");
-    assert_eq!(*matched_folder, folder);
+    assert_eq!(matched_folder.as_path(), folder.as_path());
 }
 
 #[test]
@@ -1093,7 +1095,7 @@ fn file_index_len_and_empty_reflect_actual_file_count() {
     assert_eq!(empty.len(), 0);
     assert!(empty.is_empty());
 
-    let folder = Arc::new(PathBuf::from("/workspace"));
+    let folder = SharedPath::from("/workspace");
     let index = FileIndex::from(vec![
         indexed_file(&folder, "src/main.rs"),
         indexed_file(&folder, "src/lib.rs"),
@@ -1104,14 +1106,14 @@ fn file_index_len_and_empty_reflect_actual_file_count() {
 
 #[test]
 fn add_file_registers_the_file_and_workspace_folder() {
-    let folder = Arc::new(PathBuf::from("/workspace"));
+    let folder = SharedPath::from("/workspace");
     let path = folder.join("src/main.rs");
     let mut index = FileIndex::default();
 
     index.add_file(OwnedIndexedFile::new(
         path.clone(),
         PaletteFileIdentity::canonical(path.clone()),
-        Arc::clone(&folder),
+        folder.clone(),
     ));
 
     assert_eq!(index.len(), 1);
@@ -1120,14 +1122,14 @@ fn add_file_registers_the_file_and_workspace_folder() {
         index
             .workspace_folder_for(&folder.join("src/other.rs"))
             .expect("workspace folder should be registered")
-            .as_ref(),
-        folder.as_ref()
+            .as_path(),
+        folder.as_path()
     );
 }
 
 #[test]
 fn add_file_replay_does_not_duplicate_an_existing_path() {
-    let folder = Arc::new(PathBuf::from("/workspace"));
+    let folder = SharedPath::from("/workspace");
     let file = indexed_file(&folder, "src/main.rs");
     let mut index = FileIndex::from(vec![file.clone()]);
 
@@ -1138,14 +1140,14 @@ fn add_file_replay_does_not_duplicate_an_existing_path() {
 
 #[test]
 fn add_file_does_not_exceed_index_cap() {
-    let folder = Arc::new(PathBuf::from("/workspace"));
+    let folder = SharedPath::from("/workspace");
     // Streamed: the cap is 2^20 files, so never hold them as owned rows.
     let mut index = FileIndex::from_paths((0..super::index::MAX_INDEXED_FILES).map(|i| {
         let path = folder.join(format!("src/file-{i}.rs"));
         (
             path.clone(),
             PaletteFileIdentity::canonical(path),
-            Arc::clone(&folder),
+            folder.clone(),
         )
     }));
     assert_eq!(index.len(), super::index::MAX_INDEXED_FILES);
@@ -1161,8 +1163,8 @@ fn add_file_does_not_exceed_index_cap() {
 
 #[test]
 fn file_index_from_vec_preserves_files_and_workspace_folders() {
-    let folder_a = Arc::new(PathBuf::from("/workspace-a"));
-    let folder_b = Arc::new(PathBuf::from("/workspace-b"));
+    let folder_a = SharedPath::from("/workspace-a");
+    let folder_b = SharedPath::from("/workspace-b");
     let index = FileIndex::from(vec![
         indexed_file(&folder_a, "a.rs"),
         indexed_file(&folder_a, "nested/b.rs"),
@@ -1174,21 +1176,21 @@ fn file_index_from_vec_preserves_files_and_workspace_folders() {
         index
             .workspace_folder_for(&folder_a.join("nested/other.rs"))
             .expect("workspace A folder should be indexed")
-            .as_ref(),
-        folder_a.as_ref()
+            .as_path(),
+        folder_a.as_path()
     );
     assert_eq!(
         index
             .workspace_folder_for(&folder_b.join("other.rs"))
             .expect("workspace B folder should be indexed")
-            .as_ref(),
-        folder_b.as_ref()
+            .as_path(),
+        folder_b.as_path()
     );
 }
 
 #[test]
 fn remove_path_removes_exact_and_descendant_paths_only() {
-    let folder = Arc::new(PathBuf::from("/workspace"));
+    let folder = SharedPath::from("/workspace");
     let mut index = FileIndex::from(vec![
         indexed_file(&folder, "README.md"),
         indexed_file(&folder, "src/lib.rs"),
@@ -1208,8 +1210,8 @@ fn remove_path_removes_exact_and_descendant_paths_only() {
 
 #[test]
 fn remove_path_prunes_workspace_folders_after_large_removals() {
-    let folder_a = Arc::new(PathBuf::from("/workspace-a"));
-    let folder_b = Arc::new(PathBuf::from("/workspace-b"));
+    let folder_a = SharedPath::from("/workspace-a");
+    let folder_b = SharedPath::from("/workspace-b");
     let mut index = FileIndex::from(vec![
         indexed_file(&folder_a, "one.rs"),
         indexed_file(&folder_a, "two.rs"),
@@ -1231,14 +1233,14 @@ fn remove_path_prunes_workspace_folders_after_large_removals() {
         index
             .workspace_folder_for(&folder_b.join("other.rs"))
             .expect("surviving folder should remain registered")
-            .as_ref(),
-        folder_b.as_ref()
+            .as_path(),
+        folder_b.as_path()
     );
 }
 
 #[test]
 fn rename_path_updates_exact_and_descendant_paths_only() {
-    let folder = Arc::new(PathBuf::from("/workspace"));
+    let folder = SharedPath::from("/workspace");
     let mut index = FileIndex::from(vec![
         indexed_file(&folder, "src/main.rs"),
         indexed_file(&folder, "src/nested/lib.rs"),
@@ -1280,7 +1282,7 @@ fn file_index_recursion_depth_includes_boundary_and_skips_beyond_it() {
 // --- drill-down-palette-categories: More rows, counts, category ranking ---
 
 fn synthetic_index(count: usize) -> FileIndex {
-    let root = Arc::new(PathBuf::from("/workspace"));
+    let root = SharedPath::from("/workspace");
     FileIndex::from(
         (0..count)
             .map(|n| {
@@ -1288,7 +1290,7 @@ fn synthetic_index(count: usize) -> FileIndex {
                 OwnedIndexedFile::new(
                     path.clone(),
                     PaletteFileIdentity::canonical(path),
-                    Arc::clone(&root),
+                    root.clone(),
                 )
             })
             .collect::<Vec<_>>(),
@@ -1534,7 +1536,7 @@ proptest::proptest! {
         open_picks in proptest::collection::vec(0usize..40, 0..10),
         alias_picks in proptest::collection::vec(0usize..40, 0..10),
     ) {
-        let root = Arc::new(PathBuf::from("/w"));
+        let root = SharedPath::from("/w");
         let files: Vec<OwnedIndexedFile> = names
             .iter()
             .enumerate()
@@ -1547,7 +1549,7 @@ proptest::proptest! {
                 } else {
                     path.clone()
                 };
-                OwnedIndexedFile::new(path, PaletteFileIdentity::canonical(canonical), Arc::clone(&root))
+                OwnedIndexedFile::new(path, PaletteFileIdentity::canonical(canonical), root.clone())
             })
             .collect();
         let excluded: std::collections::HashSet<PathBuf> = open_picks

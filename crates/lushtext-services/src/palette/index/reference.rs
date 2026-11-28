@@ -8,10 +8,10 @@
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use crate::filesystem::metadata as fs_metadata;
 use crate::workspace::file_tree;
+use lushtext_model::values::SharedPath;
 use lushtext_model::workspace::palette::{
     FileOrdinal, PaletteFileIdentity, PaletteFileIdentityFailure, ScoredResult, SearchResultItem,
 };
@@ -201,7 +201,7 @@ impl ReferenceBuildLedger {
 pub struct ReferenceFileIndex {
     files: Vec<OwnedIndexedFile>,
     /// Deduplicated workspace folders for O(k) prefix lookups (k is usually small).
-    workspace_folders: Vec<Arc<PathBuf>>,
+    workspace_folders: Vec<SharedPath>,
 }
 
 impl ReferenceFileIndex {
@@ -284,7 +284,7 @@ impl ReferenceFileIndex {
             unreachable!("an empty file-index vector must fit its installed budget");
         }
         let folder_capacity = workspace_folders.len();
-        let folder_shell_charge = vector_shell_bytes::<Arc<PathBuf>>(folder_capacity);
+        let folder_shell_charge = vector_shell_bytes::<SharedPath>(folder_capacity);
         if ledger.try_charge_installed(folder_shell_charge).is_err() {
             unreachable!("workspace-folder vector shells must fit the installed budget");
         }
@@ -314,7 +314,7 @@ impl ReferenceFileIndex {
                 metrics.truncation = Some(FileIndexTruncationReason::BuildByteLimit);
                 break;
             }
-            let folder_arc = Arc::new(folder.clone());
+            let folder_arc = SharedPath::from(folder);
             let folder_graph_charge = shared_folder_graph_weight(&folder_arc);
             if let Err(reason) = ledger.try_charge_installed(folder_graph_charge) {
                 ledger.release_scratch(canonical_folder_charge);
@@ -406,7 +406,7 @@ impl ReferenceFileIndex {
         let folder_shells = retained_bytes(
             self.workspace_folders
                 .capacity()
-                .saturating_mul(std::mem::size_of::<Arc<PathBuf>>()),
+                .saturating_mul(std::mem::size_of::<SharedPath>()),
         );
         let file_graph = self.files.iter().fold(0u64, |total, file| {
             total.saturating_add(indexed_file_graph_weight(file))
@@ -437,17 +437,15 @@ impl ReferenceFileIndex {
         let original_folder_count = self.workspace_folders.len();
 
         let mut retained_folders = Vec::new();
-        let mut retained_folder_ptrs = HashSet::new();
         let mut folder_graph = 0u64;
         for folder in self.workspace_folders.drain(..) {
             let next_graph = folder_graph
                 .saturating_add(shared_folder_graph_weight(&folder))
-                .saturating_add(retained_bytes(std::mem::size_of::<Arc<PathBuf>>()));
+                .saturating_add(retained_bytes(std::mem::size_of::<SharedPath>()));
             if next_graph > MAX_FILE_INDEX_RETAINED_BYTES {
                 continue;
             }
             folder_graph = next_graph;
-            retained_folder_ptrs.insert(Arc::as_ptr(&folder) as usize);
             retained_folders.push(folder);
         }
         self.workspace_folders = retained_folders.into_boxed_slice().into_vec();
@@ -455,7 +453,11 @@ impl ReferenceFileIndex {
         let mut retained_files = Vec::new();
         let mut file_graph = 0u64;
         for file in self.files.drain(..) {
-            if !retained_folder_ptrs.contains(&(Arc::as_ptr(&file.workspace_folder) as usize)) {
+            if !self
+                .workspace_folders
+                .iter()
+                .any(|existing| SharedPath::ptr_eq(existing, &file.workspace_folder))
+            {
                 continue;
             }
             let next_graph = folder_graph
@@ -507,7 +509,7 @@ impl ReferenceFileIndex {
         let needs_folder = !self
             .workspace_folders
             .iter()
-            .any(|existing| Arc::ptr_eq(existing, &file.workspace_folder));
+            .any(|existing| SharedPath::ptr_eq(existing, &file.workspace_folder));
         let file_shell_growth = vector_shell_growth_for_one(&self.files);
         let folder_shell_growth = if needs_folder {
             vector_shell_growth_for_one(&self.workspace_folders)
@@ -527,8 +529,7 @@ impl ReferenceFileIndex {
         }
         if needs_folder {
             reserve_exactly_one(&mut self.workspace_folders);
-            self.workspace_folders
-                .push(Arc::clone(&file.workspace_folder));
+            self.workspace_folders.push(file.workspace_folder.clone());
         }
         reserve_exactly_one(&mut self.files);
         self.files.push(file);
@@ -539,14 +540,14 @@ impl ReferenceFileIndex {
     /// Resolve and add one filesystem path through the metadata boundary.
     ///
     /// Callers must keep this operation on a background worker.
-    pub fn add_path(&mut self, path: PathBuf, workspace_folder: Arc<PathBuf>) {
+    pub fn add_path(&mut self, path: PathBuf, workspace_folder: SharedPath) {
         self.add_file(indexed_file_from_path(path, workspace_folder));
     }
 
     pub fn add_path_for_bounded_batch(
         &mut self,
         path: PathBuf,
-        workspace_folder: Arc<PathBuf>,
+        workspace_folder: SharedPath,
         ledger: &mut ReferenceMutationLedger,
     ) -> bool {
         self.add_file_for_bounded_batch(indexed_file_from_path(path, workspace_folder), ledger)
@@ -571,7 +572,7 @@ impl ReferenceFileIndex {
             self.workspace_folders.retain(|folder| {
                 self.files
                     .iter()
-                    .any(|file| Arc::ptr_eq(&file.workspace_folder, folder))
+                    .any(|file| SharedPath::ptr_eq(&file.workspace_folder, folder))
             });
         }
         ledger.sync_after_nonincreasing(self);
@@ -600,7 +601,7 @@ impl ReferenceFileIndex {
             };
             if let Some(replacement_path) = replacement_path {
                 let replacement =
-                    indexed_file_from_path(replacement_path, Arc::clone(&file.workspace_folder));
+                    indexed_file_from_path(replacement_path, file.workspace_folder.clone());
                 let previous_weight = indexed_file_graph_weight(file);
                 let replacement_weight = indexed_file_graph_weight(&replacement);
                 if ledger.try_replace(previous_weight, replacement_weight) {
@@ -620,11 +621,12 @@ impl ReferenceFileIndex {
     }
 
     /// Find the workspace folder that contains the given path.
-    pub fn workspace_folder_for(&self, path: &Path) -> Option<Arc<PathBuf>> {
+    #[must_use]
+    pub fn workspace_folder_for(&self, path: &Path) -> Option<SharedPath> {
         self.workspace_folders
             .iter()
             .find(|folder| path.starts_with(folder.as_path()))
-            .map(Arc::clone)
+            .cloned()
     }
 
     fn ordinals(&self) -> impl ExactSizeIterator<Item = u32> + '_ {
@@ -854,20 +856,16 @@ fn indexed_file_graph_weight(file: &OwnedIndexedFile) -> u64 {
     )
 }
 
-fn shared_folder_graph_weight(folder: &Arc<PathBuf>) -> u64 {
-    retained_bytes(
-        std::mem::size_of::<PathBuf>()
-            .saturating_add(std::mem::size_of::<usize>().saturating_mul(2))
-            .saturating_add(path_capacity(folder.as_ref())),
-    )
+fn shared_folder_graph_weight(folder: &SharedPath) -> u64 {
+    folder.heap_bytes()
 }
 
-fn intern_folder(workspace_folders: &mut Vec<Arc<PathBuf>>, folder: &Arc<PathBuf>) {
+fn intern_folder(workspace_folders: &mut Vec<SharedPath>, folder: &SharedPath) {
     if !workspace_folders
         .iter()
-        .any(|existing| Arc::ptr_eq(existing, folder))
+        .any(|existing| SharedPath::ptr_eq(existing, folder))
     {
-        workspace_folders.push(Arc::clone(folder));
+        workspace_folders.push(folder.clone());
     }
 }
 
@@ -894,7 +892,7 @@ struct ReferenceTraversal<'a> {
 
 fn collect_files_bounded(
     dir: &Path,
-    workspace_folder: &Arc<PathBuf>,
+    workspace_folder: &SharedPath,
     traversal: &mut ReferenceTraversal<'_>,
 ) -> bool {
     let Ok(canonical_directory) = fs_metadata::canonical_path(dir) else {
@@ -950,7 +948,7 @@ fn collect_files_bounded(
 /// released at a single point per iteration, whatever exit the entry loop takes.
 fn collect_pending_directories(
     root: &Path,
-    workspace_folder: &Arc<PathBuf>,
+    workspace_folder: &SharedPath,
     traversal: &mut ReferenceTraversal<'_>,
     pending: &mut Vec<(PathBuf, u32)>,
     pending_shell_charge: &mut u64,
@@ -1087,7 +1085,7 @@ fn collect_pending_directories(
                 *pending_graph_charge = pending_graph_charge.saturating_add(pending_charge);
                 pending.push((entry.path, child_depth));
             } else {
-                let file = indexed_file_from_path(entry.path, Arc::clone(workspace_folder));
+                let file = indexed_file_from_path(entry.path, workspace_folder.clone());
                 if matches!(file.identity, PaletteFileIdentity::Unavailable(_)) {
                     traversal.metrics.identity_failures =
                         traversal.metrics.identity_failures.saturating_add(1);
@@ -1180,7 +1178,7 @@ fn is_file_index_byte_limit(reason: FileIndexTruncationReason) -> bool {
     )
 }
 
-fn indexed_file_from_path(path: PathBuf, workspace_folder: Arc<PathBuf>) -> OwnedIndexedFile {
+fn indexed_file_from_path(path: PathBuf, workspace_folder: SharedPath) -> OwnedIndexedFile {
     let identity = match fs_metadata::canonical_path(&path) {
         Ok(canonical) => PaletteFileIdentity::canonical(canonical),
         Err(error) => {
