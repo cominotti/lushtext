@@ -9,6 +9,11 @@ and this crate follows SemVer after functional publication.
 
 ### Added
 
+- `Debounce::is_armed(&self) -> bool` and `SupersedingTimer::is_armed(&self) -> bool`.
+- Main-loop pumping unit tests covering `Debounce`, `SupersedingTimer`,
+  `SettleBurst`, `SettleHandle::schedule_follow_up`, dead-target `pending()`
+  reset, `advance()` source cleanup, and `is_armed()`.
+- Explicit `[features] property-tests = []` gate for `proptest!` suites.
 - First functional in-tree API with `Debounce`, `SettleBurst`, and
   `SupersedingTimer`.
 - Generation-token tests, settle pending-state tests, property tests, doctests,
@@ -18,6 +23,12 @@ and this crate follows SemVer after functional publication.
 
 ### Changed
 
+- `SettleBurst` now tracks all armed primary and follow-up `glib::SourceId`s in
+  one shared state, eagerly removing them on `begin()`/`clear()`, and calls
+  `finish_if_current()` when a weak target drops before dispatch.
+- `Debounce::advance()` now delegates to `invalidate()`, removing any superseded
+  GLib source immediately, and `Debounce::schedule` / `SupersedingTimer::arm`
+  share one internal scheduling helper.
 - `SupersedingTimer` now removes obsolete GLib sources immediately on re-arm or
   invalidation while preserving its existing generation-token API.
 - `Debounce` does the same: a new `schedule` or `invalidate` removes the

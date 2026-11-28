@@ -528,9 +528,9 @@ Governance and publication gates are in `crates/gtk-lush/GOVERNANCE.md`.
 
 ## Property Testing
 
-- Framework: `proptest`, wired for the property-test targets across `lushtext-model`, `lushtext-services`, and `lushtext-ui`
-- Feature: `property-tests` per crate (implies `test-utils` in `lushtext-services` and `lushtext-ui`, because the suite seeds bodies through the test-only fixture modules)
-- Target: `cargo nextest run -p lushtext-model -p lushtext-services -p lushtext-ui --features property-tests --test properties --profile property`
+- Framework: `proptest`, wired for the property-test targets across `lushtext-model`, `lushtext-services`, `lushtext-ui`, and `gtk-lush-settle` (`--lib`)
+- Feature: `property-tests` per crate (implies `test-utils` in `lushtext-services` and `lushtext-ui`, because the suite seeds bodies through the test-only fixture modules; honors `LUSHTEXT_PROPTEST_CASES`, bounded `1..=4096`)
+- Targets: `cargo nextest run -p lushtext-model -p lushtext-services -p lushtext-ui --features property-tests --test properties --profile property` and `cargo nextest run -p gtk-lush-settle --features property-tests --lib --profile property`
 - Makefile targets: `test-prop` (64 cases per property, the CI-safe default), `test-prop-deep` (`PROPTEST_DEEP_CASES=1024` for a manual or scheduled pass)
 - Regression files: `crates/lushtext-services/proptest-regressions/properties.txt`, plus module-scoped `.txt`/`.proptest-regressions` files in `crates/lushtext-model` and `crates/lushtext-ui`
 - Docs: `docs/property-testing.md`

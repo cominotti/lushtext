@@ -4,18 +4,17 @@
 Define LushText's property-based testing lane so generated-input coverage, runtime bounds, regression persistence, documentation, and GTK/session boundaries stay explicit and reviewable.
 
 ## Requirements
+
 ### Requirement: Property Test Dependency and Target
-The project SHALL provide a property-based testing lane using `proptest` as a
-test-only dependency and an explicit property-test target that is not part of
-default test execution.
+The project SHALL provide a `proptest` lane using the `property-tests` Cargo feature across configured pure crates (including `gtk-lush-settle`) so generated property suites stay excluded from default non-widget and mutation test runs and execute only under `make test-prop` / `make test-prop-deep`.
 
 #### Scenario: Default tests exclude property target
-- **WHEN** a developer runs the standard non-widget test command without enabling property tests
-- **THEN** the property-test target is not compiled or executed
+- **WHEN** a developer runs the standard non-widget test command without enabling `property-tests`
+- **THEN** neither workspace property targets nor `gtk-lush-settle` property tests are compiled or executed
 
 #### Scenario: Property target is explicitly enabled
-- **WHEN** a developer runs the property-test command
-- **THEN** the command enables the property-test feature and executes the dedicated property-test target
+- **WHEN** a developer runs `make test-prop` (`CARGO_TEST_PROP` plus `--lib` for `gtk-lush-settle`)
+- **THEN** the command enables `property-tests` and executes both workspace `--test properties` targets and `gtk-lush-settle` `--lib` property tests
 
 ### Requirement: Bounded Property Runtime
 The project SHALL bound property-test runtime with explicit case counts, input

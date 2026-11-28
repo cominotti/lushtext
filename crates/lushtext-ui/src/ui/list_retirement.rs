@@ -79,7 +79,7 @@ struct RetirementJob {
 struct RetirementInner {
     job: RefCell<Option<RetirementJob>>,
     source: RefCell<Option<glib::SourceId>>,
-    unmap_wait: RefCell<Option<(glib::WeakRef<gtk4::ListView>, glib::SignalHandlerId)>>,
+    unmap_wait: gtk_lush_signals::SignalSlot,
     remaining: Cell<u32>,
     turns: Cell<u64>,
     longest_turn_us: Cell<u64>,
@@ -122,17 +122,13 @@ impl RowRetirement {
         }));
         if list_view.is_mapped() {
             let weak = Rc::downgrade(&inner);
-            let handler = list_view.connect_unmap(move |list_view| {
+            let handler = list_view.connect_unmap(move |_| {
                 if let Some(inner) = weak.upgrade() {
-                    if let Some((_, handler)) = inner.unmap_wait.take() {
-                        list_view.disconnect(handler);
-                    }
+                    inner.unmap_wait.clear();
                     schedule_turns(&inner);
                 }
             });
-            inner
-                .unmap_wait
-                .replace(Some((list_view.downgrade(), handler)));
+            inner.unmap_wait.replace(list_view, handler);
         } else {
             schedule_turns(&inner);
         }
@@ -170,11 +166,7 @@ fn cancel(inner: &RetirementInner) {
     if let Some(source) = inner.source.take() {
         source.remove();
     }
-    if let Some((list_view, handler)) = inner.unmap_wait.take()
-        && let Some(list_view) = list_view.upgrade()
-    {
-        list_view.disconnect(handler);
-    }
+    inner.unmap_wait.clear();
     let job = inner.job.take();
     drop(job);
 }

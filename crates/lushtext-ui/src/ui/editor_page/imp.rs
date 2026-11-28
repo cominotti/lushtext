@@ -203,11 +203,10 @@ impl ObjectImpl for LushtextEditorPage {
         self.obj().dispose_minimap_analysis();
         self.minimap.dispose();
         let _ = self.local_history.periodic_timer.invalidate();
-        self.local_history.periodic_timer_token.set(None);
         self.local_history
             .editor_generation
             .set(self.local_history.editor_generation.get().next());
-        self.callbacks.dispose(&self.obj());
+        self.callbacks.dispose();
         self.preference_bindings.signals.clear();
         self.document_buffer_signals.clear();
         self.editing_buffer_signals.clear();

@@ -89,6 +89,6 @@ This bounds active worker/result handoffs, not all memory. Avoid capturing user-
 
 - GTK widgets and `gio::ListStore` stay on the GTK thread.
 - Move plain owned `Send` inputs/results across the worker boundary.
-- Never touch a `ThreadGuard` payload on the worker.
+- Keep non-`Send` `(state, then)` closures on the main thread inside `gtk_lush_tasks`'s `COMPLETION_SLAB` (never move non-`Send` state onto worker threads).
 - Use local signal/timer APIs when closures capture non-`Send` GTK state.
 - Do not state that a GLib/GObject type is `Send` or `Sync` without verifying its current bindings and the actual wrapper used.

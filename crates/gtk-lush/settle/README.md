@@ -27,17 +27,20 @@ assert!(debounce.is_current(token));
 
 - `Debounce` fits trailing latest-input work such as search queries, filter
   updates, and coalesced persistence scheduling. It also exposes
-  advance/invalidate/current-token checks for immediate empty states and async
-  freshness gates tied to the same family. A new schedule or an invalidation
-  removes the superseded GLib source, so a burst of schedules in one dispatch
-  (an edit signal re-arming it per edit) keeps one pending source and one weak
-  reference to the target, not one per schedule.
+  advance/invalidate/is-armed/current-token checks for immediate empty states
+  and async freshness gates tied to the same family. A new schedule, advance, or
+  invalidation removes the superseded GLib source, so a burst of schedules in one
+  dispatch (an edit signal re-arming it per edit) keeps one pending source and
+  one weak reference to the target, not one per schedule.
 - `SettleBurst` fits readiness-visible repair after noisy layout or rendering
   bursts. Its `pending()` state remains true until the current repair handle
-  finishes.
+  finishes (or clears automatically if the weak target drops before dispatch),
+  and `begin()`/`schedule()`/`clear()` eagerly remove all armed primary and
+  follow-up GLib sources.
 - `SupersedingTimer` fits delayed one-shot cleanup or reveal/hide work where
   each new arm supersedes the previous arm. Re-arm and invalidation remove the
-  obsolete GLib source immediately, so long deadlines do not accumulate.
+  obsolete GLib source immediately, so long deadlines do not accumulate, and
+  `is_armed()` reports whether a callback is currently pending.
 
 ## Non-Settle Exceptions
 

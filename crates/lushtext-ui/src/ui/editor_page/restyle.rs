@@ -70,7 +70,7 @@ pub struct RestyleState {
     visible: Cell<ParagraphSpan>,
     generation: Cell<RestyleGeneration>,
     source: RefCell<Option<glib::SourceId>>,
-    map_handler: RefCell<Option<glib::SignalHandlerId>>,
+    map_handler: gtk_lush_signals::SignalSlot,
     /// Evidence: restyles started, reveal dispatches, and the most visible
     /// characters one reveal dispatch made visible.
     restyles: Cell<u64>,
@@ -204,14 +204,14 @@ impl LushtextEditorPage {
         }
         let view = self.imp().source_view.get();
         if !view.is_mapped() {
-            if state.map_handler.borrow().is_none() {
+            if !state.map_handler.is_connected() {
                 let editor = self.downgrade();
                 let handler = view.connect_map(move |_| {
                     if let Some(editor) = editor.upgrade() {
                         editor.arm_reveal();
                     }
                 });
-                state.map_handler.replace(Some(handler));
+                state.map_handler.replace(&view, handler);
             }
             return;
         }
@@ -236,9 +236,7 @@ impl LushtextEditorPage {
         if let Some(source) = state.source.take() {
             source.remove();
         }
-        if let Some(handler) = state.map_handler.take() {
-            self.imp().source_view.disconnect(handler);
-        }
+        state.map_handler.clear();
     }
 
     fn restyle_tag(&self) -> gtk4::TextTag {
@@ -334,9 +332,7 @@ impl LushtextEditorPage {
 
     fn arm_reveal(&self) {
         let state = &self.imp().restyle;
-        if let Some(handler) = state.map_handler.take() {
-            self.imp().source_view.disconnect(handler);
-        }
+        state.map_handler.clear();
         if state.source.borrow().is_some() || state.cursor.get().is_none() {
             return;
         }

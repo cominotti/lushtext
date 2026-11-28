@@ -172,12 +172,12 @@ Main Thread (GTK)                    Background Thread
 │ UI widgets       │                 │ File I/O         │
 │ Signal handlers  │◄─ completion ──│ Directory scan   │
 │ Property updates │    ─────────►  │ Data processing  │
-│                  │  ThreadGuard    │                  │
+│ COMPLETION_SLAB  │  Send payload   │                  │
 └─────────────────┘                 └─────────────────┘
 ```
 
 `spawn_blocking_then` encodes this boundary:
-- `state` (GTK object) stays on the main thread via `ThreadGuard`
+- `state` and `then` (GTK objects / callbacks) stay on the main thread in `COMPLETION_SLAB`
 - `work` runs on a background thread (must be `Send`)
 - `then` runs on the main thread from one completion source at `gtk_lush_tasks::completion_priority()`
 
@@ -189,6 +189,6 @@ This IS the adapter boundary for async operations. The background thread is a dr
 |----------|-----------|-------------|
 | Domain ↔ Application | Module imports (`model/` never imports `services/`) | Code review (no compile-time enforcement within a crate) |
 | Application ↔ UI | Module imports (`services/` never imports `ui/`) | Code review + this skill's [FLAG] severity |
-| Main thread ↔ Background thread | `ThreadGuard` + `spawn_blocking_then` | Compile-time (`Send` bound) |
+| Main thread ↔ Background thread | `COMPLETION_SLAB` + `spawn_blocking_then` | Compile-time (`Send` bound on `work` and result) |
 | Widget public ↔ private | Caller-facing wrapper API / subclass internals, often split across `mod.rs` and `imp.rs` | Rust visibility and module ownership |
 | Rust types ↔ GObject types | `glib::wrapper!` macro + `ObjectSubclass` | Type system |

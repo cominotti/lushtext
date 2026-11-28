@@ -5682,7 +5682,7 @@ def merge_runs(out: Path, sources: list, quiet: bool = False) -> int:
             checks += int(integrity.get("checks", 0))
             violations.extend(integrity.get("violations", []))
         for rep_dir in sorted((source / "cases").rglob("rep*")):
-            if rep_dir.is_dir():
+            if rep_dir.is_dir() and re.fullmatch(r"rep\d+", rep_dir.name):
                 link = out / "cases" / f"part{len(runs) - 1:02d}" / rep_dir.relative_to(source / "cases")
                 link.parent.mkdir(parents=True, exist_ok=True)
                 if link.is_symlink() or link.exists():
@@ -7205,6 +7205,7 @@ def self_test() -> int:
             src = root / f"part{part}"
             (src / "storage").mkdir(parents=True)
             (src / "cases" / "g" / f"p{part}" / "plain" / "rep0").mkdir(parents=True)
+            (src / "cases" / "replace-all" / f"p{part}" / "plain" / "rep0").mkdir(parents=True)
             (src / "run.json").write_text(json.dumps({"run_id": f"rr-{part}", "wall_start": 10 + part, "wall_end": 20 + part, "remote_desktop": {"available": True}}), encoding="utf-8")
             (src / "results.jsonl").write_text("".join(json.dumps({"case": c, "variant": "plain", "rep": 0, "part": part}) + "\n" for c in cases_rows), encoding="utf-8")
             (src / "storage" / "cases.json").write_text(json.dumps({contaminated: {"status": "contaminated"}} if contaminated else {}), encoding="utf-8")
@@ -7217,6 +7218,7 @@ def self_test() -> int:
         merged_run = json.loads((root / "merged/run.json").read_text(encoding="utf-8"))
         expect(merged_run["run_id"] == "rr-0+rr-1" and merged_run["wall_start"] == 10 and merged_run["wall_end"] == 21, "merged run id and window")
         expect((root / "merged/cases/part01/g/p1/plain/rep0").is_symlink(), "case directories are linked into the merged set, one directory per part")
+        expect((root / "merged/cases/part00/replace-all/p0/plain/rep0").is_symlink(), "merge-runs skips rep*-prefixed parent dirs such as replace-all and links only leaf rep<N> dirs")
 
     # The lane's CPU set (nest-heavy-slices-under-user-slice D9): the
     # reference under measure.sh, the inherited cap outside it.

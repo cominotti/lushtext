@@ -162,6 +162,7 @@ endif
 CARGO_TEST_SEARCH_RETIREMENT_RELEASE = CARGO_PROFILE_TEST_DEBUG_ASSERTIONS=false ./scripts/run-widget-tests.sh --headless -- --exact search_panel::test_search_retirement_categories_release_actual_ownership_over_bounded_turns
 CARGO_TEST_WORKSPACE_ROW_STATES = ./scripts/run-widget-tests.sh --headless --retries 1 -- workspace_row_state
 CARGO_TEST_PROP           = $(TEMP_SCOPE) property -- cargo nextest run -p lushtext-model -p lushtext-services -p lushtext-ui --features property-tests --test properties --profile property
+CARGO_TEST_PROP_SETTLE    = $(TEMP_SCOPE) property-settle -- cargo nextest run -p gtk-lush-settle --features property-tests --lib --profile property
 CARGO_TEST_FUZZ_CORPUS_REPLAY = $(TEMP_SCOPE) fuzz-replay -- cargo test -p lushtext-ui --features fuzzing --test fuzz_corpus_replay
 PROPTEST_DEEP_CASES ?= 512
 FORMAT_UPGRADE_TEST_HOME ?=
@@ -436,11 +437,13 @@ test-int:
 test-prop:
 	@echo "Running bounded property tests..."
 	$(CARGO_TEST_PROP)
+	$(CARGO_TEST_PROP_SETTLE)
 
 # Deeper opt-in property pass for local investigation or scheduled checks.
 test-prop-deep:
 	@echo "Running deep property tests with $(PROPTEST_DEEP_CASES) generated cases per property..."
 	LUSHTEXT_PROPTEST_CASES=$(PROPTEST_DEEP_CASES) $(CARGO_TEST_PROP)
+	LUSHTEXT_PROPTEST_CASES=$(PROPTEST_DEEP_CASES) $(CARGO_TEST_PROP_SETTLE)
 
 # List configured cargo-fuzz targets without running them.
 fuzz-list:

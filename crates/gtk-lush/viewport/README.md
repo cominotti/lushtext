@@ -22,4 +22,6 @@ trap, because GTK will not call the subclass vfunc.
 
 The crate reports observation events and rest state. Callers still own repair
 policy such as scroll clamps, minimap refreshes, focus-mode geometry, and visual
-readiness.
+readiness. When calling `ViewportObserver::for_scrollable`, attach the
+scrollable widget to its `GtkScrolledWindow` first so the observer binds to the
+scrolled window's installed adjustments rather than discarded defaults.

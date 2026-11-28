@@ -21,8 +21,13 @@ identity, search generations, persistence ordering, and data-loss policy remain
 caller-owned rules.
 
 The worker cap covers both running worker closures and completed results waiting
-for their GTK-thread completion callback. When capacity is exhausted, work waits
-in a main-thread FIFO until a completion or panic releases a slot.
+for their GTK-thread completion callback. Non-`Send` state and completion
+callbacks stay on the calling GTK thread inside a thread-local slab, so worker
+panics release the slot cleanly on the GTK main loop instead of dropping
+non-`Send` state off-thread. When capacity is exhausted, work waits in a FIFO
+and wakes from a coalesced `completion_priority()` idle when a slot frees.
+Calling `spawn_blocking_then` from a non-main thread panics explicitly on
+delivery when the slab lookup misses.
 
 ## Completion Delivery
 

@@ -84,11 +84,11 @@ pub(super) enum TabScrollAnimationPhase {
     },
 }
 
-/// Active scroll step animation, hold-repeat source, and guard cancellation count.
+/// Active scroll step animation, hold-repeat timer, and guard cancellation count.
 #[derive(Debug, Default)]
 pub(super) struct TabScrollController {
     pub(super) animation: TabScrollAnimationPhase,
-    pub(super) repeat: Option<glib::SourceId>,
+    pub(super) repeat: gtk_lush_settle::SupersedingTimer,
     pub(super) guard_cancellations: u32,
 }
 
@@ -211,7 +211,7 @@ impl TabOverflowState {
 
     /// Whether a hold-to-repeat timer is currently armed.
     pub(super) fn repeat_active(&self) -> bool {
-        self.scroll.borrow().repeat.is_some()
+        self.scroll.borrow().repeat.is_armed()
     }
 
     /// Steps and holds the strip's own input cancelled.

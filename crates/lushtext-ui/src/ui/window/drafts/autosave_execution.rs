@@ -279,19 +279,16 @@ impl LushtextWindow {
             drafts.set_autosave_pending(true);
             return;
         }
-        drafts.set_first_dirty_autosave_pending(true);
         self.imp().drafts.first_dirty_autosave_timer.arm(
             self,
             first_dirty_autosave_debounce(),
             move |window, _| {
-                window.imp().drafts.set_first_dirty_autosave_pending(false);
                 window.autosave_tick();
             },
         );
     }
 
     pub(super) fn cancel_first_dirty_draft_autosave(&self) {
-        self.imp().drafts.set_first_dirty_autosave_pending(false);
         let _ = self.imp().drafts.first_dirty_autosave_timer.invalidate();
     }
 

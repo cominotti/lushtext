@@ -180,7 +180,7 @@ impl LushtextEditorPage {
                 crate::ui::editor_page::local_history::automatic_capture_inflight(),
             automatic_capture_suppressed: state.automatic_capture_suppressed.get(),
             periodic_snapshot_inflight,
-            periodic_timer_pending: state.periodic_timer_token.get().is_some(),
+            periodic_timer_pending: state.periodic_timer.is_armed(),
             periodic_generation: state.periodic_generation.get(),
             edit_generation: state.edit_generation.get(),
             path_generation: state.path_generation.get(),

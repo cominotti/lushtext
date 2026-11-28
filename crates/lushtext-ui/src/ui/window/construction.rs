@@ -234,17 +234,15 @@ impl LushtextWindow {
         let Some(clock) = self.frame_clock() else {
             return;
         };
-        let handler = Rc::new(RefCell::new(None::<glib::SignalHandlerId>));
+        let handler = Rc::new(gtk_lush_signals::SignalSlot::new());
         let handler_slot = Rc::clone(&handler);
         let window_weak = self.downgrade();
-        let id = clock.connect_after_paint(move |clock| {
+        let id = clock.connect_after_paint(move |_| {
             let window = window_weak.upgrade();
             if window.as_ref().is_some_and(|window| !window.is_mapped()) {
                 return;
             }
-            if let Some(id) = handler_slot.borrow_mut().take() {
-                clock.disconnect(id);
-            }
+            handler_slot.clear();
             let Some(window) = window else {
                 return;
             };
@@ -259,7 +257,7 @@ impl LushtextWindow {
             // painted on the mapped window.
             settings_writes::first_frame_presented();
         });
-        handler.replace(Some(id));
+        handler.replace(&clock, id);
     }
 }
 

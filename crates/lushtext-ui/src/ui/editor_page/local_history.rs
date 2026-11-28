@@ -23,7 +23,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use gtk_lush_settle::{SupersedingTimer, TimerToken};
+use gtk_lush_settle::SupersedingTimer;
 use gtk_lush_signals::SignalBag;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::gio;
@@ -134,7 +134,6 @@ pub struct LocalHistoryState {
     pub baseline_retry_budget: Cell<u8>,
     pub periodic_generation: Cell<PeriodicHistoryGeneration>,
     pub periodic_timer: SupersedingTimer,
-    pub periodic_timer_token: Cell<Option<TimerToken>>,
     pub editor_generation: Cell<EditorGeneration>,
     pub path_generation: Cell<PathGeneration>,
     pub edit_generation: Cell<EditGeneration>,
@@ -657,20 +656,13 @@ impl LushtextEditorPage {
         let generation = self.imp().local_history.periodic_generation.get().next();
         self.imp().local_history.periodic_generation.set(generation);
 
-        let token = self.imp().local_history.periodic_timer.arm(
+        let _ = self.imp().local_history.periodic_timer.arm(
             self,
             local_history_capture_interval(),
-            move |editor, token| {
-                if editor.imp().local_history.periodic_timer_token.get() == Some(token) {
-                    editor.imp().local_history.periodic_timer_token.set(None);
-                }
+            move |editor, _| {
                 editor.run_local_history_periodic_capture(generation);
             },
         );
-        self.imp()
-            .local_history
-            .periodic_timer_token
-            .set(Some(token));
     }
 
     pub(crate) fn cancel_local_history_periodic_capture(&self) {
@@ -684,7 +676,6 @@ impl LushtextEditorPage {
             snapshot.dispose();
         }
         let _ = self.imp().local_history.periodic_timer.invalidate();
-        self.imp().local_history.periodic_timer_token.set(None);
         let generation = self.imp().local_history.periodic_generation.get().next();
         self.imp().local_history.periodic_generation.set(generation);
     }
@@ -785,7 +776,6 @@ impl LushtextEditorPage {
     #[cfg(feature = "test-utils")]
     pub fn run_local_history_periodic_capture_for_test(&self) {
         let _ = self.imp().local_history.periodic_timer.invalidate();
-        self.imp().local_history.periodic_timer_token.set(None);
         let generation = self.imp().local_history.periodic_generation.get().next();
         self.imp().local_history.periodic_generation.set(generation);
         self.run_local_history_periodic_capture(generation);

@@ -68,7 +68,9 @@ concurrency cap, completion priority) is in `AGENTS.md`, "Async I/O Pattern".
 ## GTK Main-Loop Timing
 
 Use `gtk_lush_settle::{Debounce, SettleBurst, SupersedingTimer}` for GTK
-main-loop timers where latest-generation semantics are the whole contract.
+main-loop timers where latest-generation semantics are the whole contract,
+reading `is_armed()` instead of duplicating armed-state flags beside `Debounce`
+or `SupersedingTimer`.
 Keep domain generations and worker freshness tokens explicit when they protect
 durable writes, undo journals, file loads, or cross-thread result ownership.
 

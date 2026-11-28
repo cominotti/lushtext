@@ -22,12 +22,10 @@
 //! holds its pages eagerly and creates nothing on demand; no accessor here
 //! reaches a lazily-populated GTK collection such as `GtkTreeListModel`.
 //!
-//! **The affordance timer is deliberately absent.** `SupersedingTimer` exposes no
-//! armed query, and this workflow has no independent record of whether one is
-//! armed. Reporting a guess would be worse than reporting nothing, and adding a
-//! parallel `Cell<bool>` to track it — the shape the draft row needed — is not
-//! justified here because no proof requires it. The observable consequence of the
-//! timer, `affordance_revealed`, is reported instead.
+//! **The affordance timer is deliberately absent.** While
+//! `SupersedingTimer::is_armed()` is available, reporting it is not justified
+//! here because no proof requires it. The observable consequence of the timer,
+//! `affordance_revealed`, is reported instead.
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
 

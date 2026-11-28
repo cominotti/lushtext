@@ -1291,3 +1291,121 @@ fn test_adoption_slice_bin_honours_a_request_in_a_bin_scrolled_past() {
     );
     drop(fixture.window);
 }
+
+// --- gtk-lush-viewport: adjustment page-size and value observation ----------
+
+fn viewport_adjustment(page_size: f64) -> gtk4::Adjustment {
+    gtk4::Adjustment::new(0.0, 0.0, 1_000.0, 1.0, 10.0, page_size)
+}
+
+#[test]
+fn test_adoption_viewport_observer_filters_unchanged_page_size() {
+    ensure_gtk_init();
+    let hadjustment = viewport_adjustment(100.0);
+    let vadjustment = viewport_adjustment(200.0);
+    let calls = Rc::new(Cell::new(0));
+    let observed_calls = Rc::clone(&calls);
+    let _observer = ViewportObserver::new(
+        &hadjustment,
+        &vadjustment,
+        move |_| observed_calls.set(observed_calls.get() + 1),
+        |_| {},
+    );
+
+    hadjustment.set_page_size(100.25);
+    hadjustment.set_page_size(150.0);
+
+    assert_eq!(calls.get(), 1);
+}
+
+#[test]
+fn test_adoption_viewport_observer_accumulates_sub_epsilon_page_size_steps() {
+    ensure_gtk_init();
+    let hadjustment = viewport_adjustment(100.0);
+    let vadjustment = viewport_adjustment(200.0);
+    let calls = Rc::new(Cell::new(0));
+    let previous = Rc::new(Cell::new(0.0));
+    let observed_calls = Rc::clone(&calls);
+    let observed_previous = Rc::clone(&previous);
+    let _observer = ViewportObserver::new(
+        &hadjustment,
+        &vadjustment,
+        move |change| {
+            observed_calls.set(observed_calls.get() + 1);
+            observed_previous.set(change.previous_page_size());
+        },
+        |_| {},
+    );
+
+    hadjustment.set_page_size(100.25);
+    hadjustment.set_page_size(100.6);
+
+    assert_eq!(calls.get(), 1);
+    assert_eq!(previous.get(), 100.0);
+}
+
+#[test]
+fn test_adoption_viewport_observer_reports_axis_and_previous_size() {
+    ensure_gtk_init();
+    let hadjustment = viewport_adjustment(100.0);
+    let vadjustment = viewport_adjustment(200.0);
+    let axis = Rc::new(Cell::new(None));
+    let previous = Rc::new(Cell::new(0.0));
+    let observed_axis = Rc::clone(&axis);
+    let observed_previous = Rc::clone(&previous);
+    let _observer = ViewportObserver::new(
+        &hadjustment,
+        &vadjustment,
+        move |change| {
+            observed_axis.set(Some(change.axis()));
+            observed_previous.set(change.previous_page_size());
+        },
+        |_| {},
+    );
+
+    vadjustment.set_page_size(225.0);
+
+    assert_eq!(axis.get(), Some(ViewportAxis::Vertical));
+    assert_eq!(previous.get(), 200.0);
+}
+
+#[test]
+fn test_adoption_viewport_observer_disconnects_on_drop() {
+    ensure_gtk_init();
+    let hadjustment = viewport_adjustment(100.0);
+    let vadjustment = viewport_adjustment(200.0);
+    let calls = Rc::new(Cell::new(0));
+    {
+        let observed_calls = Rc::clone(&calls);
+        let observer = ViewportObserver::new(
+            &hadjustment,
+            &vadjustment,
+            move |_| observed_calls.set(observed_calls.get() + 1),
+            |_| {},
+        );
+        assert_eq!(observer.len(), 4);
+    }
+
+    hadjustment.set_page_size(140.0);
+
+    assert_eq!(calls.get(), 0);
+}
+
+#[test]
+fn test_adoption_viewport_value_change_reports_rest_state() {
+    ensure_gtk_init();
+    let hadjustment = viewport_adjustment(100.0);
+    let vadjustment = viewport_adjustment(200.0);
+    let rests_at_lower = Rc::new(Cell::new(true));
+    let observed_rest = Rc::clone(&rests_at_lower);
+    let _observer = ViewportObserver::new(
+        &hadjustment,
+        &vadjustment,
+        |_| {},
+        move |change| observed_rest.set(change.rests_at_lower()),
+    );
+
+    vadjustment.set_value(50.0);
+
+    assert!(!rests_at_lower.get());
+}

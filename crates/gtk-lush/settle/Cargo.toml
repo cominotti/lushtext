@@ -25,6 +25,10 @@ performance-roots = ["src"]
 [lints]
 workspace = true
 
+[features]
+# Gate proptest cases behind the workspace property lane (`make test-prop`).
+property-tests = []
+
 [dependencies]
 glib = { workspace = true }
 

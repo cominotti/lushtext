@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk_lush_signals::SignalSlot;
 use gtk4::glib;
 use gtk4::prelude::*;
 use lushtext_services::coordination::notifications::InlineActionNotification;
@@ -20,16 +21,14 @@ type LoadSettledNotificationCallback = Rc<dyn Fn(bool) -> bool>;
 /// Cross-cutting notification callbacks and typed signal handle for one editor tab.
 #[derive(Default)]
 pub(crate) struct EditorCallbacks {
-    memory_changed_handler: RefCell<Option<glib::SignalHandlerId>>,
+    memory_changed_handler: SignalSlot,
     pub(crate) notification: RefCell<Option<NotificationCallback>>,
     pub(crate) notification_load_settled: RefCell<Option<LoadSettledNotificationCallback>>,
 }
 
 impl EditorCallbacks {
-    pub(super) fn dispose(&self, page: &LushtextEditorPage) {
-        if let Some(id) = self.memory_changed_handler.take() {
-            page.disconnect(id);
-        }
+    pub(super) fn dispose(&self) {
+        self.memory_changed_handler.clear();
         self.notification.take();
         self.notification_load_settled.take();
     }
@@ -47,16 +46,14 @@ impl LushtextEditorPage {
     }
 
     fn connect_memory_policy_changed_boxed(&self, f: Box<dyn Fn() + 'static>) {
-        if let Some(prev) = self.imp().callbacks.memory_changed_handler.take() {
-            self.disconnect(prev);
-        }
+        self.imp().callbacks.memory_changed_handler.clear();
         let id = signal_connect::connect_void(self, "memory-policy-changed", false, move |_| {
             f();
         });
         self.imp()
             .callbacks
             .memory_changed_handler
-            .replace(Some(id));
+            .replace(self, id);
     }
 
     pub fn connect_inline_notification<F: Fn(InlineActionNotification) + 'static>(&self, f: F) {

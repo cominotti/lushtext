@@ -345,22 +345,6 @@ pub(crate) struct PendingPreservation {
     pub(crate) announce_as_stale: bool,
 }
 
-/// One-shot timer armed state for the first dirty draft after a clean cycle.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum FirstDirtyTimerPhase {
-    #[default]
-    Disarmed,
-    Armed,
-}
-
-/// Orphan-cleanup timer armed state.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum OrphanCleanupTimerPhase {
-    #[default]
-    Idle,
-    Armed,
-}
-
 /// Orphan-cleanup worker lifecycle and any coalesced follow-up manifest offset.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum OrphanCleanupWorkerPhase {
@@ -432,12 +416,8 @@ pub struct DraftState {
     pub(super) autosave_timer_ticks: Cell<u64>,
     /// Superseding one-shot for the first dirty draft after a clean cycle.
     pub first_dirty_autosave_timer: SupersedingTimer,
-    /// Whether the first-dirty timer currently has a callback armed.
-    pub(super) first_dirty_timer_phase: Cell<FirstDirtyTimerPhase>,
     /// Superseding startup/follow-up timer for bounded orphan cleanup.
     pub orphan_cleanup_timer: SupersedingTimer,
-    /// Whether the owned orphan-cleanup timer currently has a callback armed.
-    orphan_cleanup_timer_phase: Cell<OrphanCleanupTimerPhase>,
     /// Active orphan-cleanup worker and latest requested manifest offset.
     orphan_cleanup_worker: Cell<OrphanCleanupWorkerPhase>,
     /// Consecutive retryable cleanup failures used for bounded backoff.
@@ -627,15 +607,7 @@ impl DraftState {
     }
 
     pub(in crate::ui::window) fn is_first_dirty_autosave_pending(&self) -> bool {
-        self.first_dirty_timer_phase.get() == FirstDirtyTimerPhase::Armed
-    }
-
-    pub(super) fn set_first_dirty_autosave_pending(&self, pending: bool) {
-        self.first_dirty_timer_phase.set(if pending {
-            FirstDirtyTimerPhase::Armed
-        } else {
-            FirstDirtyTimerPhase::Disarmed
-        });
+        self.first_dirty_autosave_timer.is_armed()
     }
 
     pub(super) fn is_orphan_cleanup_inflight(&self) -> bool {
@@ -646,15 +618,7 @@ impl DraftState {
     }
 
     pub(super) fn is_orphan_cleanup_timer_pending(&self) -> bool {
-        self.orphan_cleanup_timer_phase.get() == OrphanCleanupTimerPhase::Armed
-    }
-
-    pub(super) fn set_orphan_cleanup_timer_pending(&self, pending: bool) {
-        self.orphan_cleanup_timer_phase.set(if pending {
-            OrphanCleanupTimerPhase::Armed
-        } else {
-            OrphanCleanupTimerPhase::Idle
-        });
+        self.orphan_cleanup_timer.is_armed()
     }
 
     pub(super) fn begin_orphan_cleanup_worker(&self) {
@@ -754,7 +718,6 @@ impl DraftState {
     /// Cancel owned orphan-cleanup scheduling: window teardown, lost manifest
     /// authority, or a pass that has nothing left to do.
     pub(super) fn dispose_orphan_cleanup(&self) {
-        self.set_orphan_cleanup_timer_pending(false);
         self.clear_orphan_cleanup_pending_offset();
         let _ = self.orphan_cleanup_timer.invalidate();
     }
@@ -764,7 +727,6 @@ impl DraftState {
         if let Some(source_id) = self.autosave_source_id.take() {
             source_id.remove();
         }
-        self.set_first_dirty_autosave_pending(false);
         let _ = self.first_dirty_autosave_timer.invalidate();
         self.dispose_orphan_cleanup();
     }

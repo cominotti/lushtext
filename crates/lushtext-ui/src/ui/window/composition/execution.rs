@@ -71,10 +71,10 @@ struct CompositionRuntime {
     plan: Option<CompositionPlan>,
     /// The queued stage dispatch (R and P, or the reveals), if any.
     dispatch: Option<glib::SourceId>,
-    /// The window's frame clock and this workflow's `after-paint` handler.
-    frame_handler: Option<(gtk4::gdk::FrameClock, glib::SignalHandlerId)>,
-    /// The application and this window's `window-removed` handler.
-    removed_handler: Option<(glib::WeakRef<gtk4::Application>, glib::SignalHandlerId)>,
+    /// The window's frame clock `after-paint` handler.
+    frame_handler: gtk_lush_signals::SignalSlot,
+    /// The application `window-removed` handler.
+    removed_handler: gtk_lush_signals::SignalSlot,
     /// Whether the frame after the last scheduled stage painted.
     complete: bool,
     /// Whether the window left its application; nothing runs afterwards.
@@ -348,7 +348,11 @@ impl LushtextWindow {
                     window.tear_down_composition();
                 }
             });
-            imp.composition.runtime.borrow_mut().removed_handler = Some((app.downgrade(), id));
+            imp.composition
+                .runtime
+                .borrow()
+                .removed_handler
+                .replace(&app, id);
         }
         if test_policy::collapse_to_one_dispatch() {
             self.reveal_every_scheduled_stage_now();
@@ -511,8 +515,8 @@ impl LushtextWindow {
             (
                 runtime.dispatch.take(),
                 runtime.activation_turn.take(),
-                runtime.frame_handler.take(),
-                runtime.removed_handler.take(),
+                std::mem::take(&mut runtime.frame_handler),
+                std::mem::take(&mut runtime.removed_handler),
             )
         };
         if let Some(source) = dispatch {
@@ -521,14 +525,8 @@ impl LushtextWindow {
         if let Some(source) = turn {
             source.remove();
         }
-        if let Some((clock, id)) = frame {
-            clock.disconnect(id);
-        }
-        if let Some((app, id)) = removed
-            && let Some(app) = app.upgrade()
-        {
-            app.disconnect(id);
-        }
+        frame.clear();
+        removed.clear();
     }
 
     /// Release a test policy's hold, so the held stage follows the next frame.
@@ -600,7 +598,7 @@ impl LushtextWindow {
         };
         let already = {
             let mut runtime = self.imp().composition.runtime.borrow_mut();
-            if runtime.torn_down || runtime.frame_handler.is_some() {
+            if runtime.torn_down || runtime.frame_handler.is_connected() {
                 true
             } else {
                 if let Some(plan) = runtime.plan.as_mut() {
@@ -618,7 +616,12 @@ impl LushtextWindow {
                 window.composition_frame_painted();
             }
         });
-        self.imp().composition.runtime.borrow_mut().frame_handler = Some((clock, id));
+        self.imp()
+            .composition
+            .runtime
+            .borrow()
+            .frame_handler
+            .replace(&clock, id);
     }
 
     /// The window was mapped (by stage P or by its caller): record P.
@@ -798,11 +801,9 @@ impl LushtextWindow {
             if !runtime.complete || runtime.activation_shown.pending() {
                 return;
             }
-            runtime.frame_handler.take()
+            std::mem::take(&mut runtime.frame_handler)
         };
-        if let Some((clock, id)) = frame {
-            clock.disconnect(id);
-        }
+        frame.clear();
     }
 
     // --- Activation opens in bounded turns ---------------------------------
